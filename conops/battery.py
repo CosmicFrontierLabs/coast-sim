@@ -1,0 +1,76 @@
+from pydantic import BaseModel, model_validator
+
+
+class Battery(BaseModel):
+    """It's a fake battery"""
+
+    # Battery size - 20 Ah Voltage = 28V
+    # Power drain - 253 W (daily average) - peak power = 416 w
+    # Solar panel power - area = 2.0 m^2 -- solar constant = 1353 w/m^2 --
+    # efficiency = 29.5%  = ~800W charge rate
+    name: str = "Default Battery"
+    amphour: float = 20  # amphour
+    voltage: float = 28  # Volts
+    watthour: float = 560  # 20 * 28
+    emergency_recharge: bool = False
+    max_depth_of_discharge: float = 0.7  # 70% depth of discharge
+    recharge_threshold: float = (
+        0.95  # Threshold at which emergency recharge ends (95% SOC)
+    )
+    charge_level: float = 0  # Current charge level in watthours
+
+    @model_validator(mode="before")
+    @classmethod
+    def set_defaults(cls, values):
+        """Set derived default values"""
+        if "watthour" not in values:
+            values["watthour"] = values.get("amphour", 20) * values.get("voltage", 28)
+
+        return values
+
+    def __init__(self, **data):
+        super().__init__(**data)
+
+        self.charge_level = self.watthour  # Start fully charged
+
+    @property
+    def battery_alert(self):
+        """Is the battery in an alert status caused by discharge"""
+        # Depth of dischange > 30%, start an emergency recharge state
+        if self.battery_level < self.max_depth_of_discharge:
+            self.emergency_recharge = True
+            return True
+        # We're in emergency recharge right now - continue until recharge_threshold
+        elif self.battery_level < self.recharge_threshold and self.emergency_recharge:
+            return True
+        elif self.battery_level >= self.recharge_threshold and self.emergency_recharge:
+            self.emergency_recharge = False
+            return False
+        else:
+            return False
+
+    def charge(self, power, period):
+        """Charge the battery with <power> Watts for <period> seconds"""
+        if self.charge_level < self.watthour:
+            # Battery is not fully charged
+            wattsec = power * period
+            self.charge_level += wattsec / 3600  # watthours
+            # Check if battery is more than 100% full
+            if self.charge_level > self.watthour:
+                self.charge_level = self.watthour
+
+    def drain(self, power, period):
+        """Charge the battery with <power> Watts for <period> seconds"""
+        if self.charge_level > 0:
+            # Battery is not fully charged
+            wattsec = power * period
+            self.charge_level -= wattsec / 3600  # watthours
+            # Check if battery is more than 100% full
+            if self.charge_level < 0:
+                self.charge_level = 0
+        else:
+            return False
+
+    @property
+    def battery_level(self):
+        return self.charge_level / self.watthour

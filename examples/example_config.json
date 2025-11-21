@@ -1,0 +1,163 @@
+{
+    "name": "Example Spacecraft Configuration",
+    "spacecraft_bus": {
+        "name": "Example Spacecraft Bus",
+        "power_draw": {
+            "nominal_power": 50.0,
+            "peak_power": 300.0,
+            "power_mode": {
+                "0": 70.0,
+                "1": 100.0
+            }
+        },
+        "attitude_control": {
+            "slew_acceleration": 0.01,
+            "max_slew_rate": 1.0,
+            "slew_accuracy": 0.01,
+            "settle_time": 10.0
+        }
+    },
+    "solar_panel": {
+        "name": "Default Solar Panel",
+        "panels": [
+            {
+                "name": "Example Solar Panel",
+                "gimbled": false,
+                "sidemount": true,
+                "cant_x": 0.0,
+                "cant_y": 0.0,
+                "azimuth_deg": 0.0,
+                "max_power": 474.21,
+                "conversion_efficiency": 0.94
+            }
+        ],
+        "conversion_efficiency": 0.95
+    },
+    "instruments": {
+        "instruments": [
+            {
+                "name": "Optical Imager",
+                "power_draw": {
+                    "nominal_power": 50.0,
+                    "peak_power": 300.0,
+                    "power_mode": {
+                        "0": 200.0,
+                        "1": 50.0,
+                        "2": 50.0
+                    }
+                }
+            }
+        ]
+    },
+    "battery": {
+        "name": "Default Battery",
+        "amphour": 20.0,
+        "voltage": 28.0,
+        "watthour": 1000.0,
+        "emergency_recharge": false,
+        "max_depth_of_discharge": 0.5,
+        "recharge_threshold": 0.95,
+        "charge_level": 1000.0
+    },
+    "constraint": {
+        "sun_constraint": {
+            "type": "sun",
+            "min_angle": 90.0,
+            "max_angle": null
+        },
+        "anti_sun_constraint": {
+            "type": "sun",
+            "min_angle": 0.0,
+            "max_angle": 180.0
+        },
+        "moon_constraint": {
+            "type": "moon",
+            "min_angle": 20.0,
+            "max_angle": null
+        },
+        "earth_constraint": {
+            "type": "earth_limb",
+            "min_angle": 20.0,
+            "max_angle": null,
+            "include_refraction": false,
+            "horizon_dip": false
+        },
+        "panel_constraint": {
+            "type": "sun",
+            "min_angle": 45.0,
+            "max_angle": 135.0
+        }
+    },
+    "ground_stations": {
+        "stations": [
+            {
+                "code": "NBO",
+                "name": "Nairobi",
+                "latitude_deg": -1.2921,
+                "longitude_deg": 36.8219,
+                "elevation_m": 0.0,
+                "min_elevation_deg": 10.0,
+                "schedule_probability": 0.7,
+                "antenna": {
+                    "bands": [
+                        "S"
+                    ],
+                    "gain_db": null,
+                    "max_data_rate_mbps": null,
+                    "simultaneous_links": 1
+                }
+            },
+            {
+                "code": "SPO",
+                "name": "South Pole",
+                "latitude_deg": -90.0,
+                "longitude_deg": 0.0,
+                "elevation_m": 2835.0,
+                "min_elevation_deg": 10.0,
+                "schedule_probability": 0.2,
+                "antenna": {
+                    "bands": [
+                        "S"
+                    ],
+                    "gain_db": null,
+                    "max_data_rate_mbps": null,
+                    "simultaneous_links": 1
+                }
+            },
+            {
+                "code": "NPO",
+                "name": "North Pole",
+                "latitude_deg": 90.0,
+                "longitude_deg": 0.0,
+                "elevation_m": 0.0,
+                "min_elevation_deg": 10.0,
+                "schedule_probability": 0.2,
+                "antenna": {
+                    "bands": [
+                        "S"
+                    ],
+                    "gain_db": null,
+                    "max_data_rate_mbps": null,
+                    "simultaneous_links": 1
+                }
+            },
+            {
+                "code": "PVG",
+                "name": "Punta Veija",
+                "latitude_deg": 8.7832,
+                "longitude_deg": -71.2325,
+                "elevation_m": 0.0,
+                "min_elevation_deg": 10.0,
+                "schedule_probability": 0.5,
+                "antenna": {
+                    "bands": [
+                        "S"
+                    ],
+                    "gain_db": null,
+                    "max_data_rate_mbps": null,
+                    "simultaneous_links": 1
+                }
+            }
+        ]
+    }
+}
