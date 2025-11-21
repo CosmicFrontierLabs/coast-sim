@@ -14,22 +14,12 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Set version from git
-        run: |
-          VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
-          if [ -z "$VERSION" ]; then
-            echo "No git tags found, using default version 0.1.0"
-            VERSION="0.1.0"
-          fi
-          sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
-          rm Cargo.toml.bak
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
