@@ -6,7 +6,7 @@ classifiers = [
     "Development Status :: 5 - Production/Stable",
     # Indicate who your project is intended for
     "Intended Audience :: Science/Research",
-    # that you indicate you support Python 3. These classifiers are *not*
+    # that you indicate you support cat thon 3. These classifiers are *not*
     # checked by "pip install". See instead "python_requires" below.
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -83,4 +83,6 @@ python_files = ["test_*.py"]
 
 [tool.ruff]
 line-length = 88
-target-version = "py39"
+target-version = "py310"
+lint.select = ["E", "W", "F", "N", "C"]
+lint.ignore = ["C901", "N815", "N801", "C408", "E501"]
