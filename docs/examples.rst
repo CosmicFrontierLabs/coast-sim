@@ -72,7 +72,7 @@ This approach is ideal for rapid prototyping and testing different configuration
    ditl.run()
 
    # Analyze
-   ditl.plot_timeline()
+   ditl.plot()
 
 Example Configuration
 ~~~~~~~~~~~~~~~~~~~~~

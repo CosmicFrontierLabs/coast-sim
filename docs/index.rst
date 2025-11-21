@@ -57,7 +57,7 @@ Quick Example
    ditl.run()
 
    # Analyze results
-   ditl.plot_timeline()
+   ditl.plot()
    ditl.print_statistics()
 
 Indices and tables

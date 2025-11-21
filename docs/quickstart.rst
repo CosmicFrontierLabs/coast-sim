@@ -30,7 +30,7 @@ Here's a simple example of running a Day-In-The-Life (DITL) simulation:
    ditl.run()
 
    # Analyze results
-   ditl.plot_timeline()
+   ditl.plot()
    ditl.print_statistics()
 
 Configuration-Based Approach
