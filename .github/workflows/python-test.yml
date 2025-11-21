@@ -1,4 +1,4 @@
-name: Python/Rust Build and Tests
+name: Python Build and Tests
 
 on:
   push:
