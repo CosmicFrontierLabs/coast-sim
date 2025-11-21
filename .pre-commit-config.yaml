@@ -51,14 +51,14 @@ repos:
         name: Build documentation with Sphinx
         entry: sphinx-build
         language: system
-        always_run: true
-        exclude_types: [file, symlink]
+        files: ^docs/|^docs/.*\.(rst|md|py)$|^docs/conf\.py$
+
         args: [
             "-M", # Run sphinx in make mode, so we can use -D flag later
             # Note: -M requires next 3 args to be builder, source, output
             "html", # Specify builder
             "./docs", # Source directory of documents
-            "./_readthedocs", # Output directory for rendered documents
+            "./docs/_build/html", # Output directory for rendered documents
             "-T", # Show full trace back on exception
             "-E", # Don't use saved env; always read all files
             "-d", # Flag for cached environment and doctrees

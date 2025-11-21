@@ -118,6 +118,7 @@ class DITLMixin:
         - Solar panel performance
         - Queue information (if available)
         - ACS commands (if available)
+        - Ground station pass statistics (if available)
         """
         from collections import Counter
 
