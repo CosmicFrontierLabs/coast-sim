@@ -1,0 +1,73 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: no-commit-to-branch
+        name: Prevent main branch commits
+        description: Prevent the user from committing directly to the primary branch.
+      - id: check-added-large-files
+        name: Check for large files
+        description: Prevent the user from committing very large files.
+        args: ["--maxkb=500"]
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Ruff version.
+    rev: v0.14.2
+    hooks:
+      # Run the linter.
+      - id: ruff-check
+        args: [--extend-select, "I", --fixable, "I", --fix]
+        files: \.(py|ipynb)$
+      # Run the formatter.
+      - id: ruff-format
+        files: \.(py|ipynb)$
+  - repo: https://github.com/asottile/pyupgrade
+    rev: v3.21.0
+    hooks:
+      - id: pyupgrade
+        args: [--py310-plus]
+        files: \.py$
+  - repo: local
+    hooks:
+      - id: jupyter-nb-clear-output
+        name: Clear output from Jupyter notebooks
+        description: Clear output from Jupyter notebooks.
+        files: \.ipynb$
+        exclude: ^docs/pre_executed
+        stages: [pre-commit]
+        language: system
+        entry: jupyter nbconvert --clear-output
+  - repo: https://github.com/abravalheri/validate-pyproject
+    rev: v0.24.1
+    hooks:
+      - id: validate-pyproject
+        name: Validate pyproject.toml
+        description: Verify that pyproject.toml adheres to the established schema.
+  - repo: local
+    hooks:
+      - id: sphinx-build
+        name: Build documentation with Sphinx
+        entry: sphinx-build
+        language: system
+        always_run: true
+        exclude_types: [file, symlink]
+        args: [
+            "-M", # Run sphinx in make mode, so we can use -D flag later
+            # Note: -M requires next 3 args to be builder, source, output
+            "html", # Specify builder
+            "./docs", # Source directory of documents
+            "./_readthedocs", # Output directory for rendered documents
+            "-T", # Show full trace back on exception
+            "-E", # Don't use saved env; always read all files
+            "-d", # Flag for cached environment and doctrees
+            "./docs/_build/doctrees", # Directory
+            "-D", # Flag to override settings in conf.py
+            "exclude_patterns=notebooks/*", # Exclude our notebooks from pre-commit
+          ]
+  - repo: https://github.com/python-jsonschema/check-jsonschema
+    rev: 0.29.4
+    hooks:
+      - id: check-github-workflows
+        args: ["--verbose"]

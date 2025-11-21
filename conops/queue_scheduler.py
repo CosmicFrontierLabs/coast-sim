@@ -1,5 +1,3 @@
-from typing import Optional
-
 from .common import ics_date_conv
 from .constants import DAY_SECONDS
 from .ppst import Plan
@@ -11,8 +9,8 @@ class DumbQueueScheduler:
 
     def __init__(
         self,
-        queue: Optional[Queue] = None,
-        plan: Optional[Plan] = None,
+        queue: Queue | None = None,
+        plan: Plan | None = None,
         year: int = 2021,
         day: int = 4,
         length: int = 1,

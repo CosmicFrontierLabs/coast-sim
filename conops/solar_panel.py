@@ -1,5 +1,4 @@
 from datetime import datetime
-from typing import Optional
 
 import numpy as np
 import rust_ephem
@@ -62,7 +61,7 @@ class SolarPanel(BaseModel):
     cant_y: float = 0.0  # degrees
     azimuth_deg: float = 0.0  # degrees around boresight/X
     max_power: float = 800.0  # Watts at full illumination
-    conversion_efficiency: Optional[float] = None
+    conversion_efficiency: float | None = None
 
     def panel_illumination_fraction(
         self,

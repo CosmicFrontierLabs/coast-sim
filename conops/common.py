@@ -29,12 +29,12 @@ def givename(ra, dec, stem=""):
     )
 
     if np.sign(dec) == -1:
-        name = "{}-{}".format(rapart, decpart)
+        name = f"{rapart}-{decpart}"
     else:
-        name = "{}+{}".format(rapart, decpart)
+        name = f"{rapart}+{decpart}"
 
     if stem != "":
-        name = "{} {}".format(stem, name)
+        name = f"{stem} {name}"
 
     return name
 

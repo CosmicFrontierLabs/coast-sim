@@ -1,4 +1,4 @@
-from typing import Optional, cast
+from typing import cast
 
 import numpy as np
 import rust_ephem
@@ -31,7 +31,7 @@ class DumbScheduler:
         self.ppst: Plan = Plan()
         self.scheduled: list[int] = []
         self.days = days
-        self.saa: Optional[SAA] = None  # will be created lazily
+        self.saa: SAA | None = None  # will be created lazily
         self.targlist: TargetList = TargetList()
         self.gimbled = False
         self.sidemount = False
@@ -44,7 +44,7 @@ class DumbScheduler:
         ).max_angle
         self.step_size = 60
         self.issurvey = False
-        self.config: Optional[Config] = None  # optional: can be set externally
+        self.config: Config | None = None  # optional: can be set externally
 
     def _init_saa(self) -> None:
         if self.saa is None:
@@ -68,7 +68,7 @@ class DumbScheduler:
 
         while ephem_utime[i] < end_limit:
             found = False
-            selected_target: Optional[PlanEntry] = None
+            selected_target: PlanEntry | None = None
             selected_obslen = 0
             selected_slewtime = 0
 
