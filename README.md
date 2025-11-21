@@ -196,6 +196,29 @@ Run with coverage:
 pytest --cov=conops tests/
 ```
 
+## Documentation
+
+Full API documentation is available in the `docs/` directory and can be built using Sphinx.
+
+### Building Documentation
+
+Install documentation dependencies:
+
+```bash
+pip install -e ".[docs]"
+```
+
+Build the HTML documentation:
+
+```bash
+cd docs
+make html
+```
+
+The built documentation will be available in `docs/_build/html/index.html`.
+
+For more information, see `docs/README.md`.
+
 ## Development
 
 ### Setup Development Environment
