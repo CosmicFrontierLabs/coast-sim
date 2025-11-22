@@ -18,7 +18,7 @@ class DITL(DITLMixin):
         constraint (Constraint): Spacecraft constraint model (sun, earth, moon avoidance).
         battery (Battery): Battery model for power tracking and management.
         spacecraft_bus (SpacecraftBus): Spacecraft bus configuration and power draw.
-        instruments (InstrumentSet): Instrument configuration and power draw.
+        instruments (Payload): Instrument configuration and power draw.
         solar_panel (SolarPanelSet): Solar panel configuration and power generation.
         ephem (Ephemeris): Ephemeris data for position and illumination calculations.
         ppst (Plan): Pre-planned pointing schedule to execute.

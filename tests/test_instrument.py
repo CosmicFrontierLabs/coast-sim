@@ -2,9 +2,11 @@ from math import isclose
 
 import pytest
 
-from conops.instrument import Instrument, InstrumentSet
+
 from conops.power import PowerDraw
 from conops.thermal import Heater
+from conops.instrument import Instrument, Payload
+from conops.spacecraft_bus import PowerDraw
 
 
 # fixtures for single instruments and power draws
@@ -25,7 +27,7 @@ def cam_instrument(pd_with_modes):
     return Instrument(name="Cam", power_draw=pd_with_modes)
 
 
-# fixtures for instrument set tests
+# fixtures for payload tests
 @pytest.fixture
 def i1_10_20():
     return Instrument(
@@ -41,8 +43,8 @@ def i2_20_40():
 
 
 @pytest.fixture
-def instrument_set_10_20_and_20_40(i1_10_20, i2_20_40):
-    return InstrumentSet(instruments=[i1_10_20, i2_20_40])
+def payload_10_20_and_20_40(i1_10_20, i2_20_40):
+    return Payload(instruments=[i1_10_20, i2_20_40])
 
 
 @pytest.fixture
@@ -53,8 +55,8 @@ def i1_5_10_mode0():
 
 
 @pytest.fixture
-def instrument_set_mixed(i1_5_10_mode0, i2_20_40):
-    return InstrumentSet(instruments=[i1_5_10_mode0, i2_20_40])
+def payload_mixed(i1_5_10_mode0, i2_20_40):
+    return Payload(instruments=[i1_5_10_mode0, i2_20_40])
 
 
 class TestInstrument:
@@ -94,29 +96,21 @@ class TestInstrument:
         assert isclose(inst.power(999), 75.0)
 
 
-class TestInstrumentSet:
-    def test_instrument_set_aggregates_nominal_power_initial(
-        self, instrument_set_10_20_and_20_40
-    ):
-        instrument_set = instrument_set_10_20_and_20_40
-        assert isclose(instrument_set.power(), 30.0)
+class TestPayload:
+    def test_payload_aggregates_nominal_power_initial(self, payload_10_20_and_20_40):
+        payload = payload_10_20_and_20_40
+        assert isclose(payload.power(), 30.0)
 
-    def test_instrument_set_aggregates_nominal_power_after_change(
-        self, i1_10_20, i2_20_40
-    ):
-        instrument_set = InstrumentSet(instruments=[i1_10_20, i2_20_40])
+    def test_payload_aggregates_nominal_power_after_change(self, i1_10_20, i2_20_40):
+        payload = Payload(instruments=[i1_10_20, i2_20_40])
         i1_10_20.power_draw.nominal_power = 15.0
-        assert isclose(instrument_set.power(), 35.0)
+        assert isclose(payload.power(), 35.0)
 
-    def test_instrument_set_aggregates_mode_0_with_mixed_modes(
-        self, instrument_set_mixed
-    ):
-        instrument_set = instrument_set_mixed
-        assert isclose(instrument_set.power(0), 120.0)
+    def test_payload_aggregates_mode_0_with_mixed_modes(self, payload_mixed):
+        payload = payload_mixed
+        assert isclose(payload.power(0), 120.0)
 
-    def test_instrument_set_aggregates_mode_missing_falls_back_to_nominal(
-        self, instrument_set_mixed
-    ):
+    def test_payload_aggregates_mode_missing_falls_back_to_nominal(self, payload_mixed):
         instrument_set = instrument_set_mixed
         assert isclose(instrument_set.power(99), 25.0)
 

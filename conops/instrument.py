@@ -48,12 +48,12 @@ class Instrument(BaseModel):
         return base_power + heater_power
 
 
-class InstrumentSet(BaseModel):
+class Payload(BaseModel):
     """
     A collection of instruments that can be operated together.
 
     This class manages multiple Instrument instances and provides aggregate
-    operations across all instruments in the set.
+    operations across all instruments in the payload.
 
     Attributes:
         instruments (list[Instrument]): A list of Instrument objects. Defaults to
@@ -63,8 +63,8 @@ class InstrumentSet(BaseModel):
         power(mode): Calculate the total power consumption across all instruments.
 
     Example:
-        >>> instrument_set = InstrumentSet(instruments=[instrument1, instrument2])
-        >>> instrument_set.power()
+        >>> payload = Payload(instruments=[instrument1, instrument2])
+        >>> payload.power()
         125.0
     """
 

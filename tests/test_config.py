@@ -6,7 +6,7 @@ from conops.battery import Battery
 from conops.config import Config
 from conops.constraint import Constraint
 from conops.groundstation import GroundStationRegistry
-from conops.instrument import InstrumentSet
+from conops.instrument import Payload
 from conops.solar_panel import SolarPanelSet
 from conops.spacecraft_bus import SpacecraftBus
 
@@ -19,7 +19,7 @@ class TestConfig:
         # Create minimal required objects
         spacecraft_bus = Mock(spec=SpacecraftBus)
         solar_panel = Mock(spec=SolarPanelSet)
-        instruments = Mock(spec=InstrumentSet)
+        instruments = Mock(spec=Payload)
         battery = Mock(spec=Battery)
         constraint = Mock(spec=Constraint)
         ground_stations = Mock(spec=GroundStationRegistry)
@@ -48,7 +48,7 @@ class TestConfig:
         """Test that Config uses default name."""
         spacecraft_bus = Mock(spec=SpacecraftBus)
         solar_panel = Mock(spec=SolarPanelSet)
-        instruments = Mock(spec=InstrumentSet)
+        instruments = Mock(spec=Payload)
         battery = Mock(spec=Battery)
         constraint = Mock(spec=Constraint)
         # Create a proper mock for panel_constraint with solar_panel attribute
