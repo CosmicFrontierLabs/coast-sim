@@ -272,11 +272,7 @@ class DITLMixin:
             print("-" * 70)
             print(f"Total Passes Executed: {len(self.executed_passes.passes)}")
             total_pass_time = (
-                sum(
-                    (p.set_time - p.rise_time).total_seconds()
-                    for p in self.executed_passes.passes
-                )
-                / 3600
+                sum((p.end - p.begin) for p in self.executed_passes.passes) / 3600
             )
             print(f"Total Pass Time: {total_pass_time:.2f} hours")
 

@@ -2,23 +2,9 @@ import numpy as np
 from pydantic import BaseModel
 
 from .constants import DTOR
+from .power import PowerDraw
+from .thermal import Heater
 from .vector import great_circle, separation
-
-
-class PowerDraw(BaseModel):
-    """
-    Power draw characteristics for a given subsystem, with option to specify
-    different power draws based on operational modes.
-    """
-
-    nominal_power: float = 200
-    peak_power: float = 300
-    power_mode: dict[int, float] = {}
-
-    def power(self, mode: int | None = None) -> float:
-        if mode is None:
-            return self.nominal_power
-        return self.power_mode.get(mode, self.nominal_power)
 
 
 class AttitudeControlSystem(BaseModel):
@@ -132,7 +118,10 @@ class SpacecraftBus(BaseModel):
     name: str = "Default Bus"
     power_draw: PowerDraw = PowerDraw()
     attitude_control: AttitudeControlSystem = AttitudeControlSystem()
+    heater: Heater | None = None
 
     def power(self, mode: int | None = None) -> float:
         """Get the power draw for the spacecraft bus in the given mode."""
-        return self.power_draw.power(mode)
+        base_power = self.power_draw.power(mode)
+        heater_power = self.heater.heat_power(mode) if self.heater else 0.0
+        return base_power + heater_power

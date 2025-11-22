@@ -12,9 +12,17 @@
         },
         "attitude_control": {
             "slew_acceleration": 0.01,
-            "max_slew_rate": 1.0,
+            "max_slew_rate": 0.3,
             "slew_accuracy": 0.01,
             "settle_time": 10.0
+        },
+        "heater": {
+            "name": "Bus Heaters",
+            "power": {
+                "nominal_power": 50.0,
+                "peak_power": 300.0,
+                "power_mode": {}
+            }
         }
     },
     "solar_panel": {
@@ -45,7 +53,8 @@
                         "1": 50.0,
                         "2": 50.0
                     }
-                }
+                },
+                "heater": null
             }
         ]
     },

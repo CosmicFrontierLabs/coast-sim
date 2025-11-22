@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 
 from .spacecraft_bus import PowerDraw
+from .thermal import Heater
 
 
 class Instrument(BaseModel):
@@ -28,10 +29,13 @@ class Instrument(BaseModel):
 
     name: str = "Default Instrument"
     power_draw: PowerDraw = PowerDraw(nominal_power=50, peak_power=100, power_mode={})
+    heater: Heater | None = None
 
     def power(self, mode: int | None = None) -> float:
         """Get the power draw for the spacecraft bus in the given mode."""
-        return self.power_draw.power(mode)
+        base_power = self.power_draw.power(mode)
+        heater_power = self.heater.heat_power(mode) if self.heater else 0.0
+        return base_power + heater_power
 
 
 class InstrumentSet(BaseModel):
