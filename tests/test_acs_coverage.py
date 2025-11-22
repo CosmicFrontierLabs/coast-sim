@@ -709,6 +709,9 @@ class TestGetModeCharging:
         # Mock constraint.in_eclipse to return True (in eclipse)
         monkeypatch.setattr(acs.constraint, "in_eclipse", lambda ra, dec, time: True)
 
+        # Set ACS in_eclipse state to True
+        acs.in_eclipse = True
+
         mode = acs.get_mode(1514764800.0)
         assert mode == ACSMode.SLEWING
 

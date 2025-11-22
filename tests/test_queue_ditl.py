@@ -627,6 +627,7 @@ class TestRecordSpacecraftState:
             roll=15.0,
             obsid=1001,
             mode=ACSMode.SCIENCE,
+            in_eclipse=False,
         )
 
         assert queue_ditl.mode == [ACSMode.SCIENCE]
@@ -649,11 +650,22 @@ class TestRecordSpacecraftState:
         queue_ditl.step_size = 60
 
         queue_ditl._record_spacecraft_state(
-            i=0, utime=1000.0, ra=0.0, dec=0.0, roll=0.0, obsid=0, mode=ACSMode.SCIENCE
+            i=0,
+            utime=1000.0,
+            ra=0.0,
+            dec=0.0,
+            roll=0.0,
+            obsid=0,
+            mode=ACSMode.SCIENCE,
+            in_eclipse=False,
         )
 
-        queue_ditl.spacecraft_bus.power.assert_called_once_with(ACSMode.SCIENCE)
-        queue_ditl.instruments.power.assert_called_once_with(ACSMode.SCIENCE)
+        queue_ditl.spacecraft_bus.power.assert_called_once_with(
+            mode=ACSMode.SCIENCE, in_eclipse=False
+        )
+        queue_ditl.instruments.power.assert_called_once_with(
+            mode=ACSMode.SCIENCE, in_eclipse=False
+        )
         assert queue_ditl.power == [80.0]  # 50 + 30
         queue_ditl.battery.drain.assert_called_once_with(80.0, 60)
         queue_ditl.battery.charge.assert_called_once_with(100.0, 60)
