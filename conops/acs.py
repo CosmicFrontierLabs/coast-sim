@@ -22,6 +22,7 @@ class ACSCommandType(Enum):
     END_PASS = auto()
     START_BATTERY_CHARGE = auto()
     END_BATTERY_CHARGE = auto()
+    ENTER_SAFE_MODE = auto()
 
 
 class ACSCommand(BaseModel):
@@ -76,6 +77,7 @@ class ACS:
         self.obstype = "PPT"
         self.acsmode = ACSMode.SCIENCE  # Start in science/pointing mode
         self.in_eclipse = False  # Initialize eclipse state
+        self.in_safe_mode = False  # Safe mode flag - once True, cannot be exited
 
         # Command queue (sorted by execution_time)
         self.command_queue = []
@@ -96,7 +98,26 @@ class ACS:
         self.saa = None
 
     def enqueue_command(self, command: ACSCommand) -> None:
-        """Add a command to the queue, maintaining time-sorted order."""
+        """Add a command to the queue, maintaining time-sorted order.
+
+        Commands cannot be enqueued if safe mode has been entered, except
+        for SAFE slews which are part of safe mode entry.
+        """
+        # Allow SAFE slews to be enqueued even in safe mode (part of safe mode entry)
+        is_safe_slew = (
+            command.command_type == ACSCommandType.SLEW_TO_TARGET
+            and hasattr(command, "slew")
+            and command.slew is not None
+            and command.slew.obstype == "SAFE"
+        )
+
+        # Prevent any commands from being enqueued in safe mode (except SAFE slews)
+        if self.in_safe_mode and not is_safe_slew:
+            print(
+                f"{unixtime2date(command.execution_time)}: Command {command.command_type.name} rejected - spacecraft is in SAFE MODE"
+            )
+            return
+
         self.command_queue.append(command)
         self.command_queue.sort(key=lambda cmd: cmd.execution_time)
         print(
@@ -127,6 +148,9 @@ class ACS:
                 command, utime
             ),
             ACSCommandType.END_BATTERY_CHARGE: lambda: self._end_battery_charge(utime),
+            ACSCommandType.ENTER_SAFE_MODE: lambda: self._handle_safe_mode_command(
+                utime
+            ),
         }
 
         handler = handlers.get(command.command_type)
@@ -142,6 +166,38 @@ class ACS:
         """Handle START_PASS command."""
         if command.slew is not None and isinstance(command.slew, Pass):
             self._start_slew(command.slew, utime)
+
+    def _handle_safe_mode_command(self, utime: float) -> None:
+        """Handle ENTER_SAFE_MODE command.
+
+        Once safe mode is entered, it cannot be exited. The spacecraft will
+        point solar panels at the Sun and obey bus-level constraints.
+        """
+        print(f"{unixtime2date(utime)}: Entering SAFE MODE - irreversible")
+        self.in_safe_mode = True
+        # Clear command queue to prevent any future commands from executing
+        self.command_queue.clear()
+        print(
+            f"{unixtime2date(utime)}: Command queue cleared - no further commands will be executed"
+        )
+
+        # Initiate slew to Sun pointing for safe mode
+        # Use solar panel optimal pointing to maximize power generation
+        if self.solar_panel is not None:
+            safe_ra, safe_dec = self.solar_panel.optimal_charging_pointing(
+                utime, self.ephem
+            )
+        else:
+            # Fallback: point directly at Sun if no solar panel config
+            index = self.ephem.index(dtutcfromtimestamp(utime))
+            safe_ra = self.ephem.sun[index].ra.deg
+            safe_dec = self.ephem.sun[index].dec.deg
+
+        print(
+            f"{unixtime2date(utime)}: Initiating slew to safe mode pointing at RA={safe_ra:.2f} Dec={safe_dec:.2f}"
+        )
+        # Enqueue slew to safe pointing with a special obsid
+        self._enqueue_slew(safe_ra, safe_dec, obsid=-999, utime=utime, obstype="SAFE")
 
     def _start_slew(self, slew: Slew | Pass, utime: float) -> None:
         """Start executing a slew or pass.
@@ -227,21 +283,29 @@ class ACS:
         slew.obstype = obstype
         slew.obsid = obsid
 
-        # Set up target observation request and check visibility
-        target_request = self._create_target_request(slew, utime)
-        slew.at = target_request
+        # For SAFE mode, skip visibility checking (emergency situation)
+        if obstype == "SAFE":
+            # Initialize slew positions without target
+            is_first_slew = self._initialize_slew_positions(slew, utime)
+            slew.at = None  # No visibility constraint in safe mode
+            execution_time = utime  # Execute immediately
+        else:
+            # Set up target observation request and check visibility
+            target_request = self._create_target_request(slew, utime)
+            slew.at = target_request
 
-        visstart = target_request.next_vis(utime)
-        is_first_slew = self._initialize_slew_positions(slew, target_request, utime)
+            visstart = target_request.next_vis(utime)
+            is_first_slew = self._initialize_slew_positions(slew, utime)
 
-        # Validate slew is possible
-        if not self._is_slew_valid(visstart, slew.obstype, utime):
-            return False
+            # Validate slew is possible
+            if not self._is_slew_valid(visstart, slew.obstype, utime):
+                return False
 
-        # Calculate slew timing
-        execution_time = self._calculate_slew_timing(
-            slew, visstart, utime, is_first_slew
-        )
+            # Calculate slew timing
+            execution_time = self._calculate_slew_timing(
+                slew, visstart, utime, is_first_slew
+            )
+
         slew.slewstart = execution_time
         slew.calc_slewtime()
         self.slew_dists.append(slew.slewdist)
@@ -274,9 +338,7 @@ class ACS:
         target.visibility()
         return target
 
-    def _initialize_slew_positions(
-        self, slew: Slew, target: Pointing, utime: float
-    ) -> bool:
+    def _initialize_slew_positions(self, slew: Slew, utime: float) -> bool:
         """Initialize slew start positions.
 
         If a previous slew exists, start from current pointing (self.ra/dec).
@@ -387,8 +449,11 @@ class ACS:
         """Determine current spacecraft mode based on ACS state and external factors.
 
         This is the authoritative source for determining spacecraft operational mode,
-        considering slewing state, passes, SAA region, and battery charging.
+        considering slewing state, passes, SAA region, battery charging, and safe mode.
         """
+        # Safe mode takes absolute priority - once entered, cannot be exited
+        if self.in_safe_mode:
+            return ACSMode.SAFE
 
         # Check if actively slewing
         if self._is_actively_slewing(utime):
@@ -489,8 +554,11 @@ class ACS:
             # Note: acsmode remains SCIENCE - the DITL will decide if charging is needed
 
     def _calculate_pointing(self, utime: float) -> None:
-        """Calculate current RA/Dec based on slew state."""
-        if self.last_slew is None:
+        """Calculate current RA/Dec based on slew state or safe mode."""
+        # Safe mode overrides all other pointing
+        if self.in_safe_mode:
+            self._calculate_safe_mode_pointing(utime)
+        elif self.last_slew is None:
             # Assume spacecraft is pointing at Earth as initial position
             index = self.ephem.index(dtutcfromtimestamp(utime))
             self.ra, self.dec = (
@@ -499,6 +567,37 @@ class ACS:
             )
         else:
             self.ra, self.dec = self.last_slew.ra_dec(utime)  # type: ignore[assignment]
+
+    def _calculate_safe_mode_pointing(self, utime: float) -> None:
+        """Calculate safe mode pointing - point solar panels at the Sun.
+
+        In safe mode, the spacecraft points to maximize solar panel illumination.
+        This may be perpendicular to the Sun for side-mounted panels or directly
+        at the Sun for body-mounted panels, following the optimal charging pointing.
+        """
+        # Use solar panel optimal pointing if available
+        if self.solar_panel is not None:
+            target_ra, target_dec = self.solar_panel.optimal_charging_pointing(
+                utime, self.ephem
+            )
+        else:
+            # Fallback: point directly at Sun if no solar panel config and that
+            # serves you right for not having solar panels!
+            index = self.ephem.index(dtutcfromtimestamp(utime))
+            target_ra = self.ephem.sun[index].ra.deg
+            target_dec = self.ephem.sun[index].dec.deg
+
+        # If actively slewing to safe mode position, use slew interpolation
+        if (
+            self.current_slew is not None
+            and self.current_slew.obstype == "SAFE"
+            and self.current_slew.is_slewing(utime)
+        ):
+            self.ra, self.dec = self.current_slew.ra_dec(utime)  # type: ignore[assignment]
+        else:
+            # After slew completes or for continuous tracking, maintain optimal pointing
+            self.ra = target_ra
+            self.dec = target_dec
 
     def request_pass(self, gspass: Pass) -> None:
         """Request a groundstation pass."""
@@ -545,6 +644,24 @@ class ACS:
         )
         self.enqueue_command(command)
         print("End battery charge requested")
+
+    def request_safe_mode(self, utime: float) -> None:
+        """Request entry into safe mode.
+
+        Enqueues an ENTER_SAFE_MODE command to be executed at the specified time.
+        Once safe mode is entered, it cannot be exited. The spacecraft will point
+        its solar panels at the Sun and obey bus-level constraints.
+
+        Warning: This is an irreversible operation.
+        """
+        command = ACSCommand(
+            command_type=ACSCommandType.ENTER_SAFE_MODE,
+            execution_time=utime,
+        )
+        self.enqueue_command(command)
+        print(
+            f"{unixtime2date(utime)}: Safe mode entry requested - this is irreversible"
+        )
 
     def initiate_emergency_charging(
         self,
