@@ -7,7 +7,7 @@ from conops.power import PowerDraw
 from conops.thermal import Heater
 
 
-# fixtures for single payload and power draws
+# fixtures for single instrument and power draws
 @pytest.fixture
 def default_instrument():
     return Instrument()
@@ -185,10 +185,10 @@ class TestInstrumentEclipse:
 
 
 class TestPayloadEclipse:
-    """Test eclipse-aware power for instrument sets."""
+    """Test eclipse-aware power for payloads."""
 
     def test_payload_eclipse(self):
-        """Test that instrument set passes eclipse to all payload."""
+        """Test that payload passes eclipse to all instruments."""
         inst1 = Instrument(
             name="Cam1", power_draw=PowerDraw(nominal_power=30.0, eclipse_power=40.0)
         )
@@ -204,7 +204,7 @@ class TestPayloadEclipse:
         assert inst_set.power(in_eclipse=True) == 65.0
 
     def test_payload_with_heaters_eclipse(self):
-        """Test instrument set with heaters in eclipse."""
+        """Test payload with heaters in eclipse."""
         inst1 = Instrument(
             name="Detector",
             power_draw=PowerDraw(nominal_power=35.0),
