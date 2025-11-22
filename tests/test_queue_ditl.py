@@ -615,33 +615,138 @@ class TestFetchNewPPT:
 class TestRecordSpacecraftState:
     """Test _record_spacecraft_state helper method."""
 
-    def test_record_state_basic(self, queue_ditl):
-        """Test basic state recording."""
+    def test_record_state_mode(self, queue_ditl):
+        """Test recorded mode equals ACSMode.SCIENCE."""
         queue_ditl.utime = [1000.0, 1060.0, 1120.0]
 
-        queue_ditl._record_spacecraft_state(
-            i=1,
-            utime=1060.0,
+        queue_ditl._record_pointing_data(
             ra=45.0,
             dec=30.0,
             roll=15.0,
             obsid=1001,
             mode=ACSMode.SCIENCE,
-            in_eclipse=False,
         )
 
         assert queue_ditl.mode == [ACSMode.SCIENCE]
+
+    def test_record_state_ra(self, queue_ditl):
+        """Test recorded RA equals provided value."""
+        queue_ditl.utime = [1000.0, 1060.0, 1120.0]
+
+        queue_ditl._record_pointing_data(
+            ra=45.0,
+            dec=30.0,
+            roll=15.0,
+            obsid=1001,
+            mode=ACSMode.SCIENCE,
+        )
+
         assert queue_ditl.ra == [45.0]
+
+    def test_record_state_dec(self, queue_ditl):
+        """Test recorded Dec equals provided value."""
+        queue_ditl.utime = [1000.0, 1060.0, 1120.0]
+
+        queue_ditl._record_pointing_data(
+            ra=45.0,
+            dec=30.0,
+            roll=15.0,
+            obsid=1001,
+            mode=ACSMode.SCIENCE,
+        )
+
         assert queue_ditl.dec == [30.0]
+
+    def test_record_state_roll(self, queue_ditl):
+        """Test recorded roll equals provided value."""
+        queue_ditl.utime = [1000.0, 1060.0, 1120.0]
+
+        queue_ditl._record_pointing_data(
+            ra=45.0,
+            dec=30.0,
+            roll=15.0,
+            obsid=1001,
+            mode=ACSMode.SCIENCE,
+        )
+
         assert queue_ditl.roll == [15.0]
+
+    def test_record_state_obsid(self, queue_ditl):
+        """Test recorded obsid equals provided value."""
+        queue_ditl.utime = [1000.0, 1060.0, 1120.0]
+
+        queue_ditl._record_pointing_data(
+            ra=45.0,
+            dec=30.0,
+            roll=15.0,
+            obsid=1001,
+            mode=ACSMode.SCIENCE,
+        )
+
         assert queue_ditl.obsid == [1001]
+
+    def test_record_state_panel_length(self, queue_ditl):
+        """Test panel list gets one entry recorded."""
+        queue_ditl.utime = [1000.0, 1060.0, 1120.0]
+
+        queue_ditl._record_power_data(
+            i=0,
+            utime=1000.0,
+            ra=45.0,
+            dec=30.0,
+            mode=ACSMode.SCIENCE,
+            in_eclipse=False,
+        )
+
         assert len(queue_ditl.panel) == 1
+
+    def test_record_state_power_length(self, queue_ditl):
+        """Test power list gets one entry recorded."""
+        queue_ditl.utime = [1000.0, 1060.0, 1120.0]
+
+        queue_ditl._record_power_data(
+            i=0,
+            utime=1000.0,
+            ra=45.0,
+            dec=30.0,
+            mode=ACSMode.SCIENCE,
+            in_eclipse=False,
+        )
+
         assert len(queue_ditl.power) == 1
+
+    def test_record_state_panel_power_length(self, queue_ditl):
+        """Test panel_power list gets one entry recorded."""
+        queue_ditl.utime = [1000.0, 1060.0, 1120.0]
+
+        queue_ditl._record_power_data(
+            i=0,
+            utime=1000.0,
+            ra=45.0,
+            dec=30.0,
+            mode=ACSMode.SCIENCE,
+            in_eclipse=False,
+        )
+
         assert len(queue_ditl.panel_power) == 1
+
+    def test_record_state_batterylevel_length(self, queue_ditl):
+        """Test batterylevel list gets one entry recorded."""
+        queue_ditl.utime = [1000.0, 1060.0, 1120.0]
+
+        queue_ditl._record_power_data(
+            i=0,
+            utime=1000.0,
+            ra=45.0,
+            dec=30.0,
+            mode=ACSMode.SCIENCE,
+            in_eclipse=False,
+        )
+
         assert len(queue_ditl.batterylevel) == 1
 
-    def test_record_state_power_calculations(self, queue_ditl):
-        """Test power and battery calculations."""
+    def test_record_state_spacecraft_power_call(self, queue_ditl):
+        """Spacecraft bus power() called with correct args."""
         queue_ditl.utime = [1000.0]
         queue_ditl.spacecraft_bus.power = Mock(return_value=50.0)
         queue_ditl.instruments.power = Mock(return_value=30.0)
@@ -649,25 +754,97 @@ class TestRecordSpacecraftState:
         queue_ditl.battery.battery_level = 0.75
         queue_ditl.step_size = 60
 
-        queue_ditl._record_spacecraft_state(
+        queue_ditl._record_power_data(
             i=0,
             utime=1000.0,
             ra=0.0,
             dec=0.0,
-            roll=0.0,
-            obsid=0,
+            mode=ACSMode.SCIENCE,
+            in_eclipse=False,
+        )
+        queue_ditl.spacecraft_bus.power.assert_called_once_with(
+            mode=ACSMode.SCIENCE, in_eclipse=False
+        )
+
+    def test_record_state_instruments_power_call(self, queue_ditl):
+        """Instruments power() called with correct args."""
+        queue_ditl.utime = [1000.0]
+        queue_ditl.spacecraft_bus.power = Mock(return_value=50.0)
+        queue_ditl.instruments.power = Mock(return_value=30.0)
+        queue_ditl.acs.solar_panel.power = Mock(return_value=100.0)
+        queue_ditl.battery.battery_level = 0.75
+        queue_ditl.step_size = 60
+
+        queue_ditl._record_power_data(
+            i=0,
+            utime=1000.0,
+            ra=0.0,
+            dec=0.0,
             mode=ACSMode.SCIENCE,
             in_eclipse=False,
         )
 
-        queue_ditl.spacecraft_bus.power.assert_called_once_with(
-            mode=ACSMode.SCIENCE, in_eclipse=False
-        )
         queue_ditl.instruments.power.assert_called_once_with(
             mode=ACSMode.SCIENCE, in_eclipse=False
         )
+
+    def test_record_state_power_sum(self, queue_ditl):
+        """Total power recorded equals sum of bus and instruments."""
+        queue_ditl.utime = [1000.0]
+        queue_ditl.spacecraft_bus.power = Mock(return_value=50.0)
+        queue_ditl.instruments.power = Mock(return_value=30.0)
+        queue_ditl.acs.solar_panel.power = Mock(return_value=100.0)
+        queue_ditl.battery.battery_level = 0.75
+        queue_ditl.step_size = 60
+
+        queue_ditl._record_power_data(
+            i=0,
+            utime=1000.0,
+            ra=0.0,
+            dec=0.0,
+            mode=ACSMode.SCIENCE,
+            in_eclipse=False,
+        )
+
         assert queue_ditl.power == [80.0]  # 50 + 30
+
+    def test_record_state_battery_drain_called(self, queue_ditl):
+        """Battery.drain() called with expected power and timestep."""
+        queue_ditl.utime = [1000.0]
+        queue_ditl.spacecraft_bus.power = Mock(return_value=50.0)
+        queue_ditl.instruments.power = Mock(return_value=30.0)
+        queue_ditl.acs.solar_panel.power = Mock(return_value=100.0)
+        queue_ditl.battery.battery_level = 0.75
+        queue_ditl.step_size = 60
+
+        queue_ditl._record_power_data(
+            i=0,
+            utime=1000.0,
+            ra=0.0,
+            dec=0.0,
+            mode=ACSMode.SCIENCE,
+            in_eclipse=False,
+        )
+
         queue_ditl.battery.drain.assert_called_once_with(80.0, 60)
+
+    def test_record_state_battery_charge_called(self, queue_ditl):
+        """Battery.charge() called with expected panel power and timestep."""
+        queue_ditl.utime = [1000.0]
+        queue_ditl.spacecraft_bus.power = Mock(return_value=50.0)
+        queue_ditl.instruments.power = Mock(return_value=30.0)
+        queue_ditl.acs.solar_panel.power = Mock(return_value=100.0)
+        queue_ditl.battery.battery_level = 0.75
+        queue_ditl.step_size = 60
+
+        queue_ditl._record_power_data(
+            i=0,
+            utime=1000.0,
+            ra=0.0,
+            dec=0.0,
+            mode=ACSMode.SCIENCE,
+            in_eclipse=False,
+        )
         queue_ditl.battery.charge.assert_called_once_with(100.0, 60)
 
 
