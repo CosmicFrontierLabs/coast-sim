@@ -286,7 +286,7 @@ class ACS:
         # For SAFE mode, skip visibility checking (emergency situation)
         if obstype == "SAFE":
             # Initialize slew positions without target
-            is_first_slew = self._initialize_slew_positions(slew, None, utime)
+            is_first_slew = self._initialize_slew_positions(slew, utime)
             slew.at = None  # No visibility constraint in safe mode
             execution_time = utime  # Execute immediately
         else:
@@ -295,7 +295,7 @@ class ACS:
             slew.at = target_request
 
             visstart = target_request.next_vis(utime)
-            is_first_slew = self._initialize_slew_positions(slew, target_request, utime)
+            is_first_slew = self._initialize_slew_positions(slew, utime)
 
             # Validate slew is possible
             if not self._is_slew_valid(visstart, slew.obstype, utime):
@@ -338,9 +338,7 @@ class ACS:
         target.visibility()
         return target
 
-    def _initialize_slew_positions(
-        self, slew: Slew, target: Pointing, utime: float
-    ) -> bool:
+    def _initialize_slew_positions(self, slew: Slew, utime: float) -> bool:
         """Initialize slew start positions.
 
         If a previous slew exists, start from current pointing (self.ra/dec).
