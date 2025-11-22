@@ -291,16 +291,22 @@ class TestDITLPowerCalculations:
         ditl.calc()
         # Should be called at least once
         assert ditl.spacecraft_bus.power.call_count > 0
-        # Should be called with ACS mode
-        ditl.spacecraft_bus.power.assert_called_with(ACSMode.SCIENCE)
+        # Should be called with ACS mode and in_eclipse parameter
+        # Get the last call to check arguments
+        last_call = ditl.spacecraft_bus.power.call_args
+        assert last_call[0][0] == ACSMode.SCIENCE  # mode argument
+        assert "in_eclipse" in last_call[1]  # in_eclipse keyword argument
 
     def test_power_calls_payload_power(self, ditl):
         """Test that power calculation calls payload.power."""
         ditl.calc()
         # Should be called at least once
         assert ditl.payload.power.call_count > 0
-        # Should be called with ACS mode
-        ditl.payload.power.assert_called_with(ACSMode.SCIENCE)
+        # Should be called with ACS mode and in_eclipse parameter
+        # Get the last call to check arguments
+        last_call = ditl.payload.power.call_args
+        assert last_call[0][0] == ACSMode.SCIENCE  # mode argument
+        assert "in_eclipse" in last_call[1]  # in_eclipse keyword argument
 
     def test_power_recorded_in_telemetry(self, ditl):
         """Test that calculated power is recorded in telemetry."""

@@ -66,6 +66,9 @@ class QueueDITL(DITLMixin):
         self.batterylevel = list()
         self.power = list()
         self.panel_power = list()
+        # Subsystem power tracking
+        self.power_bus = list()
+        self.power_payload = list()
         # Target Queue
         self.queue = Queue()
 
@@ -537,10 +540,12 @@ class QueueDITL(DITLMixin):
         self.panel.append(panel_illumination)
         self.panel_power.append(panel_power)
 
-        # Calculate total power consumption
-        total_power = self._calculate_power_consumption(
+        # Calculate power consumption by subsystem
+        bus_power, payload_power, total_power = self._calculate_power_consumption(
             mode=mode, in_eclipse=in_eclipse
         )
+        self.power_bus.append(bus_power)
+        self.power_payload.append(payload_power)
         self.power.append(total_power)
 
         # Update battery state
@@ -559,11 +564,18 @@ class QueueDITL(DITLMixin):
         assert isinstance(panel_power, float)
         return panel_illumination, panel_power
 
-    def _calculate_power_consumption(self, mode: ACSMode, in_eclipse: bool) -> float:
-        """Calculate total spacecraft power consumption."""
-        return self.spacecraft_bus.power(
-            mode=mode, in_eclipse=in_eclipse
-        ) + self.payload.power(mode=mode, in_eclipse=in_eclipse)
+    def _calculate_power_consumption(
+        self, mode: ACSMode, in_eclipse: bool
+    ) -> tuple[float, float, float]:
+        """Calculate total spacecraft power consumption broken down by subsystem.
+
+        Returns:
+            Tuple of (bus_power, payload_power, total_power) in watts
+        """
+        bus_power = self.spacecraft_bus.power(mode=mode, in_eclipse=in_eclipse)
+        payload_power = self.payload.power(mode=mode, in_eclipse=in_eclipse)
+        total_power = bus_power + payload_power
+        return bus_power, payload_power, total_power
 
     def _update_battery_state(
         self, consumed_power: float, generated_power: float

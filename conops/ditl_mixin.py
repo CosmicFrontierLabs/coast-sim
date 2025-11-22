@@ -25,6 +25,9 @@ class DITLMixin:
     ppst: Plan
     utime: list
     ephem: rust_ephem.TLEEphemeris | None
+    # Subsystem power tracking
+    power_bus: list[float]
+    power_payload: list[float]
 
     def __init__(self, config: Config) -> None:
         # Defining telemetry data points
@@ -98,9 +101,24 @@ class DITLMixin:
         ax.set_ylabel("Panel Ill.")
 
         ax = plt.subplot(716)
-        ax.plot(timehours, self.power)
+        # Check if subsystem power data is available
+        if (
+            hasattr(self, "power_bus")
+            and hasattr(self, "power_payload")
+            and self.power_bus
+            and self.power_payload
+        ):
+            # Line plot showing power breakdown
+            ax.plot(timehours, self.power_bus, label="Bus", alpha=0.8)
+            ax.plot(timehours, self.power_payload, label="Payload", alpha=0.8)
+            ax.plot(timehours, self.power, label="Total", linewidth=2, alpha=0.9)
+            ax.legend(loc="upper right", fontsize="small")
+        else:
+            # Fall back to total power only
+            ax.plot(timehours, self.power, label="Total")
         ax.set_ylim(0, max(self.power) * 1.1)
         ax.set_ylabel("Power (W)")
+        ax.xaxis.set_visible(False)
 
         ax = plt.subplot(717)
         ax.plot(timehours, self.obsid)

@@ -45,8 +45,8 @@
         ],
         "conversion_efficiency": 0.95
     },
-    "instruments": {
-        "instruments": [
+    "payload": {
+        "payload": [
             {
                 "name": "Optical Imager",
                 "power_draw": {
