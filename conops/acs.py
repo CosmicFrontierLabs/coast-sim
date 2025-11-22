@@ -75,6 +75,7 @@ class ACS:
         self.roll = 0.0
         self.obstype = "PPT"
         self.acsmode = ACSMode.SCIENCE  # Start in science/pointing mode
+        self.in_eclipse = False  # Initialize eclipse state
 
         # Command queue (sorted by execution_time)
         self.command_queue = []

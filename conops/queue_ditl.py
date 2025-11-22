@@ -163,9 +163,12 @@ class QueueDITL(DITLMixin):
             # Close PPT timeline segment if no active observation
             self._close_ppt_timeline_if_needed(utime)
 
-            # Record spacecraft telemetry
-            self._record_spacecraft_state(
-                i, utime, ra, dec, roll, obsid, mode, in_eclipse=self.acs.in_eclipse
+            # Record pointing and mode
+            self._record_pointing_data(ra, dec, roll, obsid, mode)
+
+            # Calculate and record power data
+            self._record_power_data(
+                i, utime, ra, dec, mode, in_eclipse=self.acs.in_eclipse
             )
 
         # Make sure the last PPT of the day ends (if any)
@@ -508,24 +511,6 @@ class QueueDITL(DITLMixin):
         else:
             print(f"{unixtime2date(utime)} No targets available from Queue")
             return lastra, lastdec
-
-    def _record_spacecraft_state(
-        self,
-        i: int,
-        utime: float,
-        ra: float,
-        dec: float,
-        roll: float,
-        obsid: int,
-        mode: ACSMode,
-        in_eclipse: bool,
-    ) -> None:
-        """Record spacecraft state and power for this timestep."""
-        # Record pointing and mode
-        self._record_pointing_data(ra, dec, roll, obsid, mode)
-
-        # Calculate and record power data
-        self._record_power_data(i, utime, ra, dec, mode, in_eclipse=in_eclipse)
 
     def _record_pointing_data(
         self, ra: float, dec: float, roll: float, obsid: int, mode: ACSMode
