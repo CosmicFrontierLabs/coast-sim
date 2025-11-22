@@ -48,7 +48,7 @@ class QueueDITL(DITLMixin):
         self.constraint = self.config.constraint
         self.battery = self.config.battery
         self.spacecraft_bus = self.config.spacecraft_bus
-        self.instruments = self.config.instruments
+        self.payload = self.config.payload
 
         # Current target
         self.ppt = None
@@ -563,7 +563,7 @@ class QueueDITL(DITLMixin):
         """Calculate total spacecraft power consumption."""
         return self.spacecraft_bus.power(
             mode=mode, in_eclipse=in_eclipse
-        ) + self.instruments.power(mode=mode, in_eclipse=in_eclipse)
+        ) + self.payload.power(mode=mode, in_eclipse=in_eclipse)
 
     def _update_battery_state(
         self, consumed_power: float, generated_power: float

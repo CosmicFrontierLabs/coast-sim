@@ -16,7 +16,7 @@ class Config(BaseModel):
     name: str = "Default Config"
     spacecraft_bus: SpacecraftBus
     solar_panel: SolarPanelSet
-    instruments: Payload
+    payload: Payload
     battery: Battery
     constraint: Constraint
     ground_stations: GroundStationRegistry

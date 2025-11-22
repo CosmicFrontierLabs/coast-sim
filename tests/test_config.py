@@ -19,7 +19,7 @@ class TestConfig:
         # Create minimal required objects
         spacecraft_bus = Mock(spec=SpacecraftBus)
         solar_panel = Mock(spec=SolarPanelSet)
-        instruments = Mock(spec=Payload)
+        payload = Mock(spec=Payload)
         battery = Mock(spec=Battery)
         constraint = Mock(spec=Constraint)
         ground_stations = Mock(spec=GroundStationRegistry)
@@ -29,7 +29,7 @@ class TestConfig:
             name="Test Config",
             spacecraft_bus=spacecraft_bus,
             solar_panel=solar_panel,
-            instruments=instruments,
+            payload=payload,
             battery=battery,
             constraint=constraint,
             ground_stations=ground_stations,
@@ -39,7 +39,7 @@ class TestConfig:
         assert config.name == "Test Config"
         assert config.spacecraft_bus == spacecraft_bus
         assert config.solar_panel == solar_panel
-        assert config.instruments == instruments
+        assert config.payload == payload
         assert config.battery == battery
         assert config.constraint == constraint
         assert config.ground_stations == ground_stations
@@ -48,7 +48,7 @@ class TestConfig:
         """Test that Config uses default name."""
         spacecraft_bus = Mock(spec=SpacecraftBus)
         solar_panel = Mock(spec=SolarPanelSet)
-        instruments = Mock(spec=Payload)
+        payload = Mock(spec=Payload)
         battery = Mock(spec=Battery)
         constraint = Mock(spec=Constraint)
         # Create a proper mock for panel_constraint with solar_panel attribute
@@ -60,7 +60,7 @@ class TestConfig:
         config = Config(
             spacecraft_bus=spacecraft_bus,
             solar_panel=solar_panel,
-            instruments=instruments,
+            payload=payload,
             battery=battery,
             constraint=constraint,
             ground_stations=ground_stations,

@@ -50,28 +50,28 @@ class Instrument(BaseModel):
 
 class Payload(BaseModel):
     """
-    A collection of instruments that can be operated together.
+    A collection of payload that can be operated together.
 
     This class manages multiple Instrument instances and provides aggregate
-    operations across all instruments in the payload.
+    operations across all payload in the payload.
 
     Attributes:
-        instruments (list[Instrument]): A list of Instrument objects. Defaults to
+        payload (list[Instrument]): A list of Instrument objects. Defaults to
             a single default Instrument instance.
 
     Methods:
-        power(mode): Calculate the total power consumption across all instruments.
+        power(mode): Calculate the total power consumption across all payload.
 
     Example:
-        >>> payload = Payload(instruments=[instrument1, instrument2])
+        >>> payload = Payload(payload=[instrument1, instrument2])
         >>> payload.power()
         125.0
     """
 
-    instruments: list[Instrument] = [Instrument()]
+    payload: list[Instrument] = [Instrument()]
 
     def power(self, mode: int | None = None, in_eclipse: bool = False) -> float:
-        """Get the total power draw for all instruments in the given mode.
+        """Get the total power draw for all payload in the given mode.
 
         Args:
             mode: Operational mode (None for nominal)
@@ -81,6 +81,5 @@ class Payload(BaseModel):
             Total power draw in watts
         """
         return sum(
-            instrument.power(mode, in_eclipse=in_eclipse)
-            for instrument in self.instruments
+            instrument.power(mode, in_eclipse=in_eclipse) for instrument in self.payload
         )

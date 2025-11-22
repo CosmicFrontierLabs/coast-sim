@@ -18,7 +18,7 @@ class DITL(DITLMixin):
         constraint (Constraint): Spacecraft constraint model (sun, earth, moon avoidance).
         battery (Battery): Battery model for power tracking and management.
         spacecraft_bus (SpacecraftBus): Spacecraft bus configuration and power draw.
-        instruments (Payload): Instrument configuration and power draw.
+        payload (Payload): Instrument configuration and power draw.
         solar_panel (SolarPanelSet): Solar panel configuration and power generation.
         ephem (Ephemeris): Ephemeris data for position and illumination calculations.
         ppst (Plan): Pre-planned pointing schedule to execute.
@@ -43,7 +43,7 @@ class DITL(DITLMixin):
 
         Args:
             config (Config): Spacecraft configuration containing all subsystems
-                (spacecraft_bus, instruments, solar_panel, battery, constraint,
+                (spacecraft_bus, payload, solar_panel, battery, constraint,
                 ground_stations). Must not be None.
 
         Raises:
@@ -59,7 +59,7 @@ class DITL(DITLMixin):
         self.constraint = self.config.constraint
         self.battery = self.config.battery
         self.spacecraft_bus = self.config.spacecraft_bus
-        self.instruments = self.config.instruments
+        self.payload = self.config.payload
         self.solar_panel = self.config.solar_panel
 
     def calc(self) -> bool:
@@ -149,7 +149,7 @@ class DITL(DITLMixin):
             mode = self.acs.get_mode(self.utime[i])
 
             # Determine the power usage in Watts based on mode from config
-            power_usage = self.spacecraft_bus.power(mode) + self.instruments.power(mode)
+            power_usage = self.spacecraft_bus.power(mode) + self.payload.power(mode)
 
             # Calculate solar panel illumination and power (more efficient than separate calls)
             panel_illumination, panel_power = self.solar_panel.illumination_and_power(

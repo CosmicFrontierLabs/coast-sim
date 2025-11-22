@@ -38,7 +38,7 @@ def create_test_config():
     """Create a minimal test config."""
     spacecraft_bus = Mock(spec=SpacecraftBus)
     solar_panel = Mock(spec=SolarPanelSet)
-    instruments = Mock(spec=Payload)
+    payload = Mock(spec=Payload)
     battery = Mock(spec=Battery)
     battery.capacity = 100.0
     battery.max_depth_of_discharge = 0.3
@@ -50,7 +50,7 @@ def create_test_config():
         name="Test Spacecraft",
         spacecraft_bus=spacecraft_bus,
         solar_panel=solar_panel,
-        instruments=instruments,
+        payload=payload,
         battery=battery,
         constraint=constraint,
         ground_stations=ground_stations,

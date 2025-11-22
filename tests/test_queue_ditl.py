@@ -70,9 +70,9 @@ def mock_config():
         return_value=100.0
     )  # Return slew time in seconds
 
-    # Mock instruments
-    config.instruments = Mock()
-    config.instruments.power = Mock(return_value=30.0)
+    # Mock payload
+    config.payload = Mock()
+    config.payload.power = Mock(return_value=30.0)
 
     # Mock ground stations
     config.ground_stations = Mock()
@@ -182,7 +182,7 @@ class TestQueueDITLInitialization:
             assert ditl.constraint is mock_config.constraint
             assert ditl.battery is mock_config.battery
             assert ditl.spacecraft_bus is mock_config.spacecraft_bus
-            assert ditl.instruments is mock_config.instruments
+            assert ditl.payload is mock_config.payload
 
 
 class TestTimeindex:
@@ -769,7 +769,7 @@ class TestRecordSpacecraftState:
     def test_record_state_spacecraft_power_call(self, queue_ditl):
         queue_ditl.utime = [1000.0]
         queue_ditl.spacecraft_bus.power = Mock(return_value=50.0)
-        queue_ditl.instruments.power = Mock(return_value=30.0)
+        queue_ditl.payload.power = Mock(return_value=30.0)
         queue_ditl.acs.solar_panel.power = Mock(return_value=100.0)
         queue_ditl.battery.battery_level = 0.75
         queue_ditl.step_size = 60
@@ -785,10 +785,10 @@ class TestRecordSpacecraftState:
             mode=ACSMode.SCIENCE, in_eclipse=False
         )
 
-    def test_record_state_instruments_power_call(self, queue_ditl):
+    def test_record_state_payload_power_call(self, queue_ditl):
         queue_ditl.utime = [1000.0]
         queue_ditl.spacecraft_bus.power = Mock(return_value=50.0)
-        queue_ditl.instruments.power = Mock(return_value=30.0)
+        queue_ditl.payload.power = Mock(return_value=30.0)
         queue_ditl.acs.solar_panel.power = Mock(return_value=100.0)
         queue_ditl.battery.battery_level = 0.75
         queue_ditl.step_size = 60
@@ -800,14 +800,14 @@ class TestRecordSpacecraftState:
             mode=ACSMode.SCIENCE,
             in_eclipse=False,
         )
-        queue_ditl.instruments.power.assert_called_once_with(
+        queue_ditl.payload.power.assert_called_once_with(
             mode=ACSMode.SCIENCE, in_eclipse=False
         )
 
     def test_record_state_power_sum(self, queue_ditl):
         queue_ditl.utime = [1000.0]
         queue_ditl.spacecraft_bus.power = Mock(return_value=50.0)
-        queue_ditl.instruments.power = Mock(return_value=30.0)
+        queue_ditl.payload.power = Mock(return_value=30.0)
         queue_ditl.acs.solar_panel.power = Mock(return_value=100.0)
         queue_ditl.battery.battery_level = 0.75
         queue_ditl.step_size = 60
@@ -824,7 +824,7 @@ class TestRecordSpacecraftState:
     def test_record_state_battery_drain_called(self, queue_ditl):
         queue_ditl.utime = [1000.0]
         queue_ditl.spacecraft_bus.power = Mock(return_value=50.0)
-        queue_ditl.instruments.power = Mock(return_value=30.0)
+        queue_ditl.payload.power = Mock(return_value=30.0)
         queue_ditl.acs.solar_panel.power = Mock(return_value=100.0)
         queue_ditl.battery.battery_level = 0.75
         queue_ditl.step_size = 60
@@ -841,7 +841,7 @@ class TestRecordSpacecraftState:
     def test_record_state_battery_charge_called(self, queue_ditl):
         queue_ditl.utime = [1000.0]
         queue_ditl.spacecraft_bus.power = Mock(return_value=50.0)
-        queue_ditl.instruments.power = Mock(return_value=30.0)
+        queue_ditl.payload.power = Mock(return_value=30.0)
         queue_ditl.acs.solar_panel.power = Mock(return_value=100.0)
         queue_ditl.battery.battery_level = 0.75
         queue_ditl.step_size = 60

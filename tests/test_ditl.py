@@ -58,9 +58,9 @@ def mock_config():
     config.spacecraft_bus = Mock()
     config.spacecraft_bus.power = Mock(return_value=50.0)
 
-    # Mock instruments
-    config.instruments = Mock()
-    config.instruments.power = Mock(return_value=30.0)
+    # Mock payload
+    config.payload = Mock()
+    config.payload.power = Mock(return_value=30.0)
 
     # Mock solar panel
     config.solar_panel = Mock()
@@ -124,7 +124,7 @@ class TestDITLInit:
             assert ditl.constraint == mock_config.constraint
             assert ditl.battery == mock_config.battery
             assert ditl.spacecraft_bus == mock_config.spacecraft_bus
-            assert ditl.instruments == mock_config.instruments
+            assert ditl.payload == mock_config.payload
             assert ditl.solar_panel == mock_config.solar_panel
 
     def test_init_without_config_raises_assertion(self):
@@ -231,7 +231,7 @@ class TestDITLSimulationLoop:
     def test_battery_drain_uses_calculated_power(self, ditl):
         """Test that battery drain uses the calculated power usage."""
         ditl.spacecraft_bus.power = Mock(return_value=100.0)
-        ditl.instruments.power = Mock(return_value=50.0)
+        ditl.payload.power = Mock(return_value=50.0)
         ditl.calc()
         # Each drain call should have power = 100 + 50 = 150
         ditl.battery.drain.assert_called_with(150.0, ditl.step_size)
@@ -294,18 +294,18 @@ class TestDITLPowerCalculations:
         # Should be called with ACS mode
         ditl.spacecraft_bus.power.assert_called_with(ACSMode.SCIENCE)
 
-    def test_power_calls_instruments_power(self, ditl):
-        """Test that power calculation calls instruments.power."""
+    def test_power_calls_payload_power(self, ditl):
+        """Test that power calculation calls payload.power."""
         ditl.calc()
         # Should be called at least once
-        assert ditl.instruments.power.call_count > 0
+        assert ditl.payload.power.call_count > 0
         # Should be called with ACS mode
-        ditl.instruments.power.assert_called_with(ACSMode.SCIENCE)
+        ditl.payload.power.assert_called_with(ACSMode.SCIENCE)
 
     def test_power_recorded_in_telemetry(self, ditl):
         """Test that calculated power is recorded in telemetry."""
         ditl.spacecraft_bus.power = Mock(return_value=50.0)
-        ditl.instruments.power = Mock(return_value=30.0)
+        ditl.payload.power = Mock(return_value=30.0)
         ditl.calc()
         # Power should be 50 + 30 = 80
         assert np.max(ditl.power) == 80.0
