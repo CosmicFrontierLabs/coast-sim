@@ -22,6 +22,7 @@ class ACSCommandType(Enum):
     END_PASS = auto()
     START_BATTERY_CHARGE = auto()
     END_BATTERY_CHARGE = auto()
+    ENTER_SAFE_MODE = auto()
 
 
 class ACSCommand(BaseModel):
@@ -76,6 +77,7 @@ class ACS:
         self.obstype = "PPT"
         self.acsmode = ACSMode.SCIENCE  # Start in science/pointing mode
         self.in_eclipse = False  # Initialize eclipse state
+        self.in_safe_mode = False  # Safe mode flag - once True, cannot be exited
 
         # Command queue (sorted by execution_time)
         self.command_queue = []
@@ -96,7 +98,17 @@ class ACS:
         self.saa = None
 
     def enqueue_command(self, command: ACSCommand) -> None:
-        """Add a command to the queue, maintaining time-sorted order."""
+        """Add a command to the queue, maintaining time-sorted order.
+
+        Commands cannot be enqueued if safe mode has been entered.
+        """
+        # Prevent any commands from being enqueued in safe mode
+        if self.in_safe_mode:
+            print(
+                f"{unixtime2date(command.execution_time)}: Command {command.command_type.name} rejected - spacecraft is in SAFE MODE"
+            )
+            return
+
         self.command_queue.append(command)
         self.command_queue.sort(key=lambda cmd: cmd.execution_time)
         print(
@@ -127,6 +139,9 @@ class ACS:
                 command, utime
             ),
             ACSCommandType.END_BATTERY_CHARGE: lambda: self._end_battery_charge(utime),
+            ACSCommandType.ENTER_SAFE_MODE: lambda: self._handle_safe_mode_command(
+                utime
+            ),
         }
 
         handler = handlers.get(command.command_type)
@@ -142,6 +157,18 @@ class ACS:
         """Handle START_PASS command."""
         if command.slew is not None and isinstance(command.slew, Pass):
             self._start_slew(command.slew, utime)
+
+    def _handle_safe_mode_command(self, utime: float) -> None:
+        """Handle ENTER_SAFE_MODE command.
+
+        Once safe mode is entered, it cannot be exited. The spacecraft will
+        point solar panels at the Sun and obey bus-level constraints.
+        """
+        print(f"{unixtime2date(utime)}: Entering SAFE MODE - irreversible")
+        self.in_safe_mode = True
+        # Clear command queue to prevent any future commands from executing
+        self.command_queue.clear()
+        print(f"{unixtime2date(utime)}: Command queue cleared - no further commands will be executed")
 
     def _start_slew(self, slew: Slew | Pass, utime: float) -> None:
         """Start executing a slew or pass.
@@ -387,8 +414,11 @@ class ACS:
         """Determine current spacecraft mode based on ACS state and external factors.
 
         This is the authoritative source for determining spacecraft operational mode,
-        considering slewing state, passes, SAA region, and battery charging.
+        considering slewing state, passes, SAA region, battery charging, and safe mode.
         """
+        # Safe mode takes absolute priority - once entered, cannot be exited
+        if self.in_safe_mode:
+            return ACSMode.SAFE
 
         # Check if actively slewing
         if self._is_actively_slewing(utime):
@@ -489,8 +519,11 @@ class ACS:
             # Note: acsmode remains SCIENCE - the DITL will decide if charging is needed
 
     def _calculate_pointing(self, utime: float) -> None:
-        """Calculate current RA/Dec based on slew state."""
-        if self.last_slew is None:
+        """Calculate current RA/Dec based on slew state or safe mode."""
+        # Safe mode overrides all other pointing
+        if self.in_safe_mode:
+            self._calculate_safe_mode_pointing(utime)
+        elif self.last_slew is None:
             # Assume spacecraft is pointing at Earth as initial position
             index = self.ephem.index(dtutcfromtimestamp(utime))
             self.ra, self.dec = (
@@ -499,6 +532,17 @@ class ACS:
             )
         else:
             self.ra, self.dec = self.last_slew.ra_dec(utime)  # type: ignore[assignment]
+
+    def _calculate_safe_mode_pointing(self, utime: float) -> None:
+        """Calculate safe mode pointing - point solar panels at the Sun.
+
+        In safe mode, the spacecraft points its solar panels directly at the Sun
+        to maximize power generation while obeying bus-level constraints.
+        """
+        index = self.ephem.index(dtutcfromtimestamp(utime))
+        self.ra = self.ephem.sun[index].ra.deg
+        self.dec = self.ephem.sun[index].dec.deg
+        print(f"{unixtime2date(utime)}: Safe mode pointing - Sun at RA={self.ra:.2f} Dec={self.dec:.2f}")
 
     def request_pass(self, gspass: Pass) -> None:
         """Request a groundstation pass."""
@@ -545,6 +589,22 @@ class ACS:
         )
         self.enqueue_command(command)
         print("End battery charge requested")
+
+    def request_safe_mode(self, utime: float) -> None:
+        """Request entry into safe mode.
+
+        Enqueues an ENTER_SAFE_MODE command to be executed at the specified time.
+        Once safe mode is entered, it cannot be exited. The spacecraft will point
+        its solar panels at the Sun and obey bus-level constraints.
+
+        Warning: This is an irreversible operation.
+        """
+        command = ACSCommand(
+            command_type=ACSCommandType.ENTER_SAFE_MODE,
+            execution_time=utime,
+        )
+        self.enqueue_command(command)
+        print(f"{unixtime2date(utime)}: Safe mode entry requested - this is irreversible")
 
     def initiate_emergency_charging(
         self,

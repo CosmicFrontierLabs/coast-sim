@@ -18,6 +18,7 @@ class ACSMode(int, Enum):
     SAA = 2
     PASS = 3
     CHARGING = 4
+    SAFE = 5
 
 
 def givename(ra, dec, stem=""):
