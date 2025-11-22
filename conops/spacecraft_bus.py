@@ -123,5 +123,5 @@ class SpacecraftBus(BaseModel):
     def power(self, mode: int | None = None) -> float:
         """Get the power draw for the spacecraft bus in the given mode."""
         base_power = self.power_draw.power(mode)
-        heater_power = self.heater.heat_power(mode) if self.heater else 0.0
+        heater_power = self.heater.power(mode) if self.heater else 0.0
         return base_power + heater_power
