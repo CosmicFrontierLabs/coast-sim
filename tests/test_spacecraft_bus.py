@@ -262,3 +262,94 @@ class TestSpacecraftBus:
         assert bus.power() == 100
         assert bus.power(1) == 120
         assert bus.power(99) == 100
+
+
+class TestSpacecraftBusEclipse:
+    """Test eclipse-aware power consumption for spacecraft bus."""
+
+    def test_bus_with_heater_eclipse(self):
+        """Test bus power with heater in eclipse."""
+        from conops.thermal import Heater
+
+        bus = SpacecraftBus(
+            name="Test Bus",
+            power_draw=PowerDraw(nominal_power=150.0),
+            heater=Heater(
+                name="Bus Heater",
+                power_draw=PowerDraw(nominal_power=15.0, eclipse_power=35.0),
+            ),
+        )
+
+        # Sunlight: base + heater
+        assert bus.power(in_eclipse=False) == 165.0
+        # Eclipse: base + higher heater power
+        assert bus.power(in_eclipse=True) == 185.0
+
+    def test_bus_base_power_with_eclipse(self):
+        """Test bus base power draw can also be eclipse-aware."""
+        bus = SpacecraftBus(
+            name="Detector Bus",
+            power_draw=PowerDraw(
+                nominal_power=200.0,
+                eclipse_power=210.0,  # Slightly higher in eclipse
+            ),
+        )
+
+        assert bus.power(in_eclipse=False) == 200.0
+        assert bus.power(in_eclipse=True) == 210.0
+
+    def test_bus_full_eclipse_configuration(self):
+        """Test bus with both base and heater eclipse power."""
+        from conops.thermal import Heater
+
+        bus = SpacecraftBus(
+            name="Science Bus",
+            power_draw=PowerDraw(
+                nominal_power=180.0,
+                eclipse_power=190.0,
+                power_mode={2: 250.0},
+                eclipse_power_mode={2: 270.0},
+            ),
+            heater=Heater(
+                name="Bus Heater",
+                power_draw=PowerDraw(
+                    nominal_power=20.0,
+                    eclipse_power=50.0,
+                    power_mode={2: 25.0},
+                    eclipse_power_mode={2: 55.0},
+                ),
+            ),
+        )
+
+        # Nominal mode
+        assert bus.power(in_eclipse=False) == 200.0  # 180 + 20
+        assert bus.power(in_eclipse=True) == 240.0  # 190 + 50
+
+        # Mode 2
+        assert bus.power(mode=2, in_eclipse=False) == 275.0  # 250 + 25
+        assert bus.power(mode=2, in_eclipse=True) == 325.0  # 270 + 55
+
+    def test_bus_no_heater_eclipse(self):
+        """Test bus without heater still handles eclipse."""
+        bus = SpacecraftBus(
+            name="Simple Bus",
+            power_draw=PowerDraw(nominal_power=175.0, eclipse_power=185.0),
+        )
+
+        assert bus.power(in_eclipse=False) == 175.0
+        assert bus.power(in_eclipse=True) == 185.0
+
+    def test_bus_eclipse_backward_compatible(self):
+        """Test that not passing in_eclipse works (defaults to False)."""
+        from conops.thermal import Heater
+
+        bus = SpacecraftBus(
+            power_draw=PowerDraw(nominal_power=150.0, eclipse_power=200.0),
+            heater=Heater(
+                name="Heater",
+                power_draw=PowerDraw(nominal_power=10.0, eclipse_power=30.0),
+            ),
+        )
+
+        # Default should be sunlight (in_eclipse=False)
+        assert bus.power() == 160.0  # 150 + 10 (not eclipse values)
