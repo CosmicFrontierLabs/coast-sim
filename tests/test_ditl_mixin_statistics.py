@@ -11,7 +11,7 @@ from conops.config import Config
 from conops.constraint import Constraint
 from conops.ditl_mixin import DITLMixin
 from conops.groundstation import GroundStationRegistry
-from conops.instrument import InstrumentSet
+from conops.instrument import Payload
 from conops.solar_panel import SolarPanelSet
 from conops.spacecraft_bus import SpacecraftBus
 
@@ -38,7 +38,7 @@ def create_test_config():
     """Create a minimal test config."""
     spacecraft_bus = Mock(spec=SpacecraftBus)
     solar_panel = Mock(spec=SolarPanelSet)
-    instruments = Mock(spec=InstrumentSet)
+    instruments = Mock(spec=Payload)
     battery = Mock(spec=Battery)
     battery.capacity = 100.0
     battery.max_depth_of_discharge = 0.3

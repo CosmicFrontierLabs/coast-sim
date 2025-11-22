@@ -2,11 +2,9 @@ from math import isclose
 
 import pytest
 
-
+from conops.instrument import Instrument, Payload
 from conops.power import PowerDraw
 from conops.thermal import Heater
-from conops.instrument import Instrument, Payload
-from conops.spacecraft_bus import PowerDraw
 
 
 # fixtures for single instruments and power draws
@@ -111,8 +109,8 @@ class TestPayload:
         assert isclose(payload.power(0), 120.0)
 
     def test_payload_aggregates_mode_missing_falls_back_to_nominal(self, payload_mixed):
-        instrument_set = instrument_set_mixed
-        assert isclose(instrument_set.power(99), 25.0)
+        payload = payload_mixed
+        assert isclose(payload.power(99), 25.0)
 
 
 class TestInstrumentEclipse:
@@ -186,7 +184,7 @@ class TestInstrumentEclipse:
         assert instrument.power(in_eclipse=True) == 30.0
 
 
-class TestInstrumentSetEclipse:
+class TestPayloadEclipse:
     """Test eclipse-aware power for instrument sets."""
 
     def test_instrument_set_eclipse(self):
@@ -198,7 +196,7 @@ class TestInstrumentSetEclipse:
             name="Cam2", power_draw=PowerDraw(nominal_power=20.0, eclipse_power=25.0)
         )
 
-        inst_set = InstrumentSet(instruments=[inst1, inst2])
+        inst_set = Payload(instruments=[inst1, inst2])
 
         # Sunlight: 30 + 20 = 50
         assert inst_set.power(in_eclipse=False) == 50.0
@@ -224,7 +222,7 @@ class TestInstrumentSetEclipse:
             ),
         )
 
-        inst_set = InstrumentSet(instruments=[inst1, inst2])
+        inst_set = Payload(instruments=[inst1, inst2])
 
         # Sunlight: (35+5) + (25+3) = 68
         assert inst_set.power(in_eclipse=False) == 68.0
