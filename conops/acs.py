@@ -199,42 +199,6 @@ class ACS:
         # Enqueue slew to safe pointing with a special obsid
         self._enqueue_slew(safe_ra, safe_dec, obsid=-999, utime=utime, obstype="SAFE")
 
-        # Initiate slew to Sun pointing for safe mode
-        index = self.ephem.index(dtutcfromtimestamp(utime))
-        sun_ra = self.ephem.sun[index].ra.deg
-        sun_dec = self.ephem.sun[index].dec.deg
-        print(
-            f"{unixtime2date(utime)}: Slewing to Sun position: RA={sun_ra:.2f} Dec={sun_dec:.2f}"
-        )
-
-        # Determine current pointing as slew start
-        if self.ra == 0.0 and self.dec == 0.0:
-            # No previous pointing, use Earth center as initial
-            start_ra = self.ephem.earth[index].ra.deg
-            start_dec = self.ephem.earth[index].dec.deg
-        else:
-            start_ra = self.ra
-            start_dec = self.dec
-
-        # Create a slew to the Sun for safe mode (no visibility check needed)
-        safe_slew = Slew(
-            constraint=self.constraint,
-            acs_config=self.config.spacecraft_bus.attitude_control,
-        )
-        safe_slew.ephem = self.ephem
-        safe_slew.slewrequest = utime
-        safe_slew.startra = start_ra
-        safe_slew.startdec = start_dec
-        safe_slew.endra = sun_ra
-        safe_slew.enddec = sun_dec
-        safe_slew.obstype = "SAFE"
-        safe_slew.obsid = 999999
-        safe_slew.slewstart = utime
-        safe_slew.calc_slewtime()
-
-        # Start the slew immediately
-        self._start_slew(safe_slew, utime)
-
     def _start_slew(self, slew: Slew | Pass, utime: float) -> None:
         """Start executing a slew or pass.
 
