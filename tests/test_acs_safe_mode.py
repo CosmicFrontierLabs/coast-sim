@@ -41,13 +41,22 @@ def mock_constraint(mock_ephem):
 
 
 @pytest.fixture
-def mock_config():
+def mock_config(mock_ephem):
     """Create a mock config."""
     config = Mock()
     config.ground_stations = Mock()
     config.solar_panel = Mock()
+    # Mock optimal_charging_pointing to return current Sun position dynamically
+    # This lambda captures mock_ephem and reads current sun position on each call
+    config.solar_panel.optimal_charging_pointing = Mock(
+        side_effect=lambda utime, ephem: (ephem.sun[0].ra.deg, ephem.sun[0].dec.deg)
+    )
     config.spacecraft_bus = Mock()
     config.spacecraft_bus.attitude_control = Mock()
+    # Mock predict_slew to return distance and path
+    config.spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))
+    # Mock slew_time to return a reasonable slew duration
+    config.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
     return config
 
 
@@ -185,7 +194,10 @@ class TestSafeModePointing:
         acs.request_safe_mode(utime)
         acs.pointing(utime)
 
-        # Pointing should be at Sun's RA/Dec
+        # After slew completes, pointing should be at Sun's RA/Dec
+        # The mock slew_time returns 100.0 seconds, so advance beyond that
+        acs.pointing(utime + 200)
+
         assert acs.ra == mock_ephem.sun[0].ra.deg
         assert acs.dec == mock_ephem.sun[0].dec.deg
         assert acs.ra == 45.0
@@ -304,6 +316,8 @@ class TestSafeModeCommandInterface:
         acs.request_safe_mode(utime)
         acs.pointing(utime)
 
-        # Command should be in executed list
-        assert len(acs.executed_commands) == 1
+        # Both ENTER_SAFE_MODE and SAFE slew should be executed
+        assert len(acs.executed_commands) == 2
         assert acs.executed_commands[0].command_type == ACSCommandType.ENTER_SAFE_MODE
+        assert acs.executed_commands[1].command_type == ACSCommandType.SLEW_TO_TARGET
+        assert acs.executed_commands[1].slew.obstype == "SAFE"
