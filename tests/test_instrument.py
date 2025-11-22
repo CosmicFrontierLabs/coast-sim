@@ -187,7 +187,7 @@ class TestInstrumentEclipse:
 class TestPayloadEclipse:
     """Test eclipse-aware power for instrument sets."""
 
-    def test_instrument_set_eclipse(self):
+    def test_payload_eclipse(self):
         """Test that instrument set passes eclipse to all instruments."""
         inst1 = Instrument(
             name="Cam1", power_draw=PowerDraw(nominal_power=30.0, eclipse_power=40.0)
@@ -203,7 +203,7 @@ class TestPayloadEclipse:
         # Eclipse: 40 + 25 = 65
         assert inst_set.power(in_eclipse=True) == 65.0
 
-    def test_instrument_set_with_heaters_eclipse(self):
+    def test_payload_with_heaters_eclipse(self):
         """Test instrument set with heaters in eclipse."""
         inst1 = Instrument(
             name="Detector",
