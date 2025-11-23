@@ -55,7 +55,7 @@ from conops import Config, QueueDITL
 from rust_ephem import TLEEphemeris
 
 # Load configuration
-config = Config.from_json("example_config.json")
+config = Config.model_validate_json(open("example_config.json").read())
 
 # Set simulation period
 begin = datetime(2025, 11, 1)
@@ -65,8 +65,11 @@ end = begin + timedelta(days=1)
 ephemeris = TLEEphemeris(tle="example.tle", begin=begin, end=end)
 
 # Run DITL simulation
-ditl = QueueDITL(config, ephemeris, begin, end)
-ditl.run()
+ditl = QueueDITL(config=config)
+ditl.ephem = ephemeris
+ditl.begin = begin
+ditl.end = end
+ditl.calc()
 
 # Analyze results
 ditl.plot()
