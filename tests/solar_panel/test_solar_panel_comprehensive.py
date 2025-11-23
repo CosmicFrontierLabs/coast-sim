@@ -1924,3 +1924,60 @@ class TestIlluminationAndPower:
 
         assert illumination == pytest.approx(1.0, rel=1e-6)
         assert power == pytest.approx(425.0, rel=1e-4)  # 1.0 * 500 * 0.85
+
+    def test_single_panel_cant_x_45_degrees_max_power(self):
+        """
+        Test that a single panel canted at 45 degrees in X-direction generates
+        maximum power that's cos(45°) of the max panel value.
+
+        Setup:
+        - Single panel: sidemount=True, cant_x=45°, cant_y=0°, max_power=1000W, efficiency=0.95
+        - Sun perpendicular to pointing (RA=90°)
+
+        Expected calculation:
+        - sunangle = 90°
+        - cant_mag = 45°
+        - panel_offset_angle = 90 - 45 = 45°
+        - panel_sun_angle = 180 - 90 - 45 = 45°
+        - illumination = cos(45°) ≈ 0.7071
+        - power = 0.7071 * 1000 * 0.95 ≈ 671.0W
+        """
+        panel = SolarPanel(
+            sidemount=True,
+            cant_x=45.0,
+            cant_y=0.0,
+            max_power=1000.0,
+            conversion_efficiency=0.95,
+        )
+        panel_set = SolarPanelSet(panels=[panel])
+
+        ephem = Mock()
+        ephem._tle_ephem = Mock()
+
+        # Sun perpendicular to pointing
+        sun_mock = Mock()
+        sun_mock.ra = Mock()
+        sun_mock.ra.deg = 90.0
+        sun_mock.dec = Mock()
+        sun_mock.dec.deg = 0.0
+
+        sun_array = Mock()
+        sun_array.__getitem__ = Mock(return_value=sun_mock)
+        ephem.sun = sun_array
+
+        ephem.index = Mock(return_value=0)
+
+        mock_constraint = Mock()
+        mock_constraint.in_constraint = Mock(return_value=False)
+
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
+            result = panel_set.power(
+                time=1514764800.0,
+                ephem=ephem,
+                ra=0.0,
+                dec=0.0,
+            )
+
+        illumination = np.cos(np.radians(45.0))  # ≈ 0.7071
+        expected_power = illumination * 1000.0 * 0.95
+        assert result == pytest.approx(expected_power, rel=1e-4)
