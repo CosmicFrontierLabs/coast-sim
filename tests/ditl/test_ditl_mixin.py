@@ -3,25 +3,12 @@ from unittest.mock import Mock, patch
 
 import matplotlib
 import matplotlib.pyplot as plt
-import pytest
 
 from conops.ditl_mixin import DITLMixin
 
 """Unit tests for DITLMixin."""
 
 matplotlib.use("Agg")
-
-
-@pytest.fixture
-def mock_config():
-    """Create a minimal mock config with required attributes for DITLMixin."""
-    cfg = Mock()
-    cfg.name = "test"
-    cfg.constraint = Mock()
-    cfg.constraint.ephem = Mock()  # DITLMixin asserts this is not None
-    cfg.battery = Mock()
-    cfg.battery.max_depth_of_discharge = 0.5
-    return cfg
 
 
 def test_init_sets_defaults_and_uses_passes_and_acs(mock_config):
