@@ -6,7 +6,7 @@ from astropy.coordinates import angular_separation  # type: ignore[import-untype
 
 from ..common import unixtime2date
 from ..config import AttitudeControlSystem, Constraint, SolarPanelSet
-from .pointing import Pointing
+from ..targets import Pointing
 
 
 class EmergencyCharging:

@@ -1,7 +1,6 @@
 from ..common import ics_date_conv
 from ..config import DAY_SECONDS
-from .ppst import Plan
-from .target_queue import Queue
+from ..targets import Plan, Queue
 
 
 class DumbQueueScheduler:

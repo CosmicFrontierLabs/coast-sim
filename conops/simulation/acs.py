@@ -4,8 +4,8 @@ import rust_ephem
 
 from ..common import ACSMode, dtutcfromtimestamp, unixtime2date, unixtime2yearday
 from ..config import DTOR, ACSCommand, ACSCommandType, Config, Constraint
+from ..targets import Pointing
 from .passes import Pass
-from .pointing import Pointing
 from .slew import Slew
 
 

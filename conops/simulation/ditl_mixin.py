@@ -5,10 +5,9 @@ import numpy as np
 import rust_ephem
 
 from ..config import Config
+from ..targets import Plan, PlanEntry
 from .acs import ACS
 from .passes import PassTimes
-from .plan_entry import PlanEntry
-from .ppst import Plan
 
 
 class DITLMixin:

@@ -5,7 +5,7 @@ import rust_ephem
 
 from ..common import dtutcfromtimestamp
 from ..config import Config, Constraint
-from .ppst import Plan, PlanEntry, TargetList
+from ..targets import Plan, PlanEntry, TargetList
 from .saa import SAA
 
 

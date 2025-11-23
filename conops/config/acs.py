@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Any
 import rust_ephem
 
 from ..common import ACSMode, dtutcfromtimestamp, unixtime2date, unixtime2yearday
-from ..simulation.pointing import Pointing
+from ..targets import Pointing
 from .acs_command import ACSCommand, ACSCommandType
 from .config import Config
 from .constants import DTOR

@@ -46,16 +46,18 @@ from .simulation import (
     EmergencyCharging,
     Pass,
     PassTimes,
+    QueueDITL,
+    Slew,
+    optimum_roll,
+    optimum_roll_sidemount,
+)
+from .targets import (
     Plan,
     PlanEntry,
     Pointing,
     Queue,
-    QueueDITL,
-    Slew,
     TargetList,
     TargetQueue,
-    optimum_roll,
-    optimum_roll_sidemount,
 )
 
 __all__ = [
