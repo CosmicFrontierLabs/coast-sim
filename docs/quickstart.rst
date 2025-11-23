@@ -52,10 +52,29 @@ Create a JSON configuration file defining your spacecraft parameters:
            }
        },
        "solar_panel": {
-           "panels": [...]
+           "panels": [
+               {
+                   "name": "Main Solar Panel",
+                   "gimbled": false,
+                   "sidemount": true,
+                   "cant_x": 0.0,
+                   "cant_y": 0.0,
+                   "azimuth_deg": 0.0,
+                   "max_power": 500.0,
+                   "conversion_efficiency": 0.9
+               }
+           ]
        },
-       "instruments": {
-           "instruments": [...]
+       "payload": {
+           "payload": [
+               {
+                   "name": "Telescope Camera",
+                   "power_draw": {
+                       "nominal_power": 100.0,
+                       "peak_power": 150.0
+                   }
+               }
+           ]
        }
    }
 
