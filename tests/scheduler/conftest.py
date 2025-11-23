@@ -41,57 +41,6 @@ def simple_target_factory():
 
 
 @pytest.fixture
-def simple_target():
-    return SimpleTarget(targetid=1, ra=45.0, dec=30.0, exptime=600)
-
-
-@pytest.fixture
-def simple_target_with_name():
-    return SimpleTarget(targetid=42, ra=45.0, dec=30.0, exptime=600, name="Test")
-
-
-@pytest.fixture
-def two_targets():
-    return [
-        SimpleTarget(targetid=1, ra=0.0, dec=0.0, exptime=300),
-        SimpleTarget(targetid=2, ra=90.0, dec=0.0, exptime=300),
-    ]
-
-
-@pytest.fixture
-def target_with_zero_exptime():
-    return SimpleTarget(targetid=2, ra=90.0, dec=0.0, exptime=0)
-
-
-@pytest.fixture
-def short_exptime_target():
-    return SimpleTarget(targetid=1, ra=45.0, dec=30.0, exptime=60)
-
-
-@pytest.fixture
-def long_exptime_target():
-    return SimpleTarget(targetid=1, ra=45.0, dec=30.0, exptime=86400)
-
-
-@pytest.fixture
-def large_target_list():
-    return [
-        SimpleTarget(
-            targetid=i,
-            ra=(i * 3.6) % 360,
-            dec=(i - 50) % 90 - 45,
-            exptime=300,
-        )
-        for i in range(100)
-    ]
-
-
-@pytest.fixture
-def additional_target():
-    return SimpleTarget(targetid=2, ra=90.0, dec=0.0, exptime=300)
-
-
-@pytest.fixture
 def mock_ephemeris():
     """Create a mock ephemeris object."""
     ephem = Mock()
