@@ -14,35 +14,38 @@ from conops.spacecraft_bus import SpacecraftBus
 class TestConfig:
     """Test Config class initialization."""
 
-    def test_config_initialization_and_post_init(self):
-        """Test that Config initializes correctly."""
-        # Create minimal required objects
-        spacecraft_bus = Mock(spec=SpacecraftBus)
-        solar_panel = Mock(spec=SolarPanelSet)
-        payload = Mock(spec=Payload)
-        battery = Mock(spec=Battery)
-        constraint = Mock(spec=Constraint)
-        ground_stations = Mock(spec=GroundStationRegistry)
+    def test_config_sets_name(self, minimal_config):
+        """Test that Config sets the provided name."""
+        assert minimal_config["config"].name == "Test Config"
 
-        # Create config
-        config = Config(
-            name="Test Config",
-            spacecraft_bus=spacecraft_bus,
-            solar_panel=solar_panel,
-            payload=payload,
-            battery=battery,
-            constraint=constraint,
-            ground_stations=ground_stations,
+    def test_config_sets_spacecraft_bus(self, minimal_config):
+        """Test that Config sets spacecraft_bus correctly."""
+        assert (
+            minimal_config["config"].spacecraft_bus == minimal_config["spacecraft_bus"]
         )
 
-        # Verify initialization
-        assert config.name == "Test Config"
-        assert config.spacecraft_bus == spacecraft_bus
-        assert config.solar_panel == solar_panel
-        assert config.payload == payload
-        assert config.battery == battery
-        assert config.constraint == constraint
-        assert config.ground_stations == ground_stations
+    def test_config_sets_solar_panel(self, minimal_config):
+        """Test that Config sets solar_panel correctly."""
+        assert minimal_config["config"].solar_panel == minimal_config["solar_panel"]
+
+    def test_config_sets_payload(self, minimal_config):
+        """Test that Config sets payload correctly."""
+        assert minimal_config["config"].payload == minimal_config["payload"]
+
+    def test_config_sets_battery(self, minimal_config):
+        """Test that Config sets battery correctly."""
+        assert minimal_config["config"].battery == minimal_config["battery"]
+
+    def test_config_sets_constraint(self, minimal_config):
+        """Test that Config sets constraint correctly."""
+        assert minimal_config["config"].constraint == minimal_config["constraint"]
+
+    def test_config_sets_ground_stations(self, minimal_config):
+        """Test that Config sets ground_stations correctly."""
+        assert (
+            minimal_config["config"].ground_stations
+            == minimal_config["ground_stations"]
+        )
 
     def test_config_default_name(self):
         """Test that Config uses default name."""
@@ -51,9 +54,8 @@ class TestConfig:
         payload = Mock(spec=Payload)
         battery = Mock(spec=Battery)
         constraint = Mock(spec=Constraint)
-        # Create a proper mock for panel_constraint with solar_panel attribute
         panel_constraint_mock = Mock()
-        panel_constraint_mock.solar_panel = None  # Initialize to None
+        panel_constraint_mock.solar_panel = None
         constraint.panel_constraint = panel_constraint_mock
         ground_stations = Mock(spec=GroundStationRegistry)
 
