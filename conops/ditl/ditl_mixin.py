@@ -5,9 +5,9 @@ import numpy as np
 import rust_ephem
 
 from ..config import Config
+from ..simulation.acs import ACS
+from ..simulation.passes import PassTimes
 from ..targets import Plan, PlanEntry
-from .acs import ACS
-from .passes import PassTimes
 
 
 class DITLMixin:

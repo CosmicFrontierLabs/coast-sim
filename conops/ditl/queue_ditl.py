@@ -7,10 +7,10 @@ import rust_ephem
 
 from ..common import ACSMode, unixtime2date
 from ..config import ACSCommand, ACSCommandType, Config
+from ..simulation.emergency_charging import EmergencyCharging
+from ..simulation.slew import Slew
 from ..targets import Plan, Pointing, Queue
 from .ditl_mixin import DITLMixin
-from .emergency_charging import EmergencyCharging
-from .slew import Slew
 
 
 class QueueDITL(DITLMixin):

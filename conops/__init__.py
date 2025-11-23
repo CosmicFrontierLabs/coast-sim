@@ -35,18 +35,20 @@ from .config import (
     SpacecraftBus,
     compute_tle_ephemeris,
 )
+from .ditl import (
+    DITL,
+    DITLMixin,
+    QueueDITL,
+)
 from .simulation import (
     ACS,
-    DITL,
     SAA,
-    DITLMixin,
     DITLs,
     DumbQueueScheduler,
     DumbScheduler,
     EmergencyCharging,
     Pass,
     PassTimes,
-    QueueDITL,
     Slew,
     optimum_roll,
     optimum_roll_sidemount,
