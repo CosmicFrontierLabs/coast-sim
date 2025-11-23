@@ -3,8 +3,10 @@ from typing import Any
 import rust_ephem
 
 from ..common import ACSMode, dtutcfromtimestamp, unixtime2date, unixtime2yearday
-from ..config import DTOR, ACSCommand, ACSCommandType, Config, Constraint
+from ..common.enums import ACSCommandType
+from ..config import DTOR, Config, Constraint
 from ..targets import Pointing
+from .acs_command import ACSCommand
 from .passes import Pass
 from .slew import Slew
 

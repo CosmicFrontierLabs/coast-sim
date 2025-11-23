@@ -1,5 +1,3 @@
-from ..common import ACSCommandType
-from .acs_command import ACSCommand
 from .battery import Battery
 from .config import Config
 from .constants import DAY_SECONDS, DTOR
@@ -13,8 +11,6 @@ from .spacecraft_bus import AttitudeControlSystem, SpacecraftBus
 from .thermal import Heater
 
 __all__ = [
-    "ACSCommand",
-    "ACSCommandType",
     "Antenna",
     "Battery",
     "Config",

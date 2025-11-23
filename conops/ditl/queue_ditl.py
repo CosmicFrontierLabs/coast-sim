@@ -6,7 +6,9 @@ import numpy as np
 import rust_ephem
 
 from ..common import ACSMode, unixtime2date
-from ..config import ACSCommand, ACSCommandType, Config
+from ..common.enums import ACSCommandType
+from ..config import Config
+from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
 from ..simulation.slew import Slew
 from ..targets import Plan, Pointing, Queue

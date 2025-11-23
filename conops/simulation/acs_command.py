@@ -5,8 +5,8 @@ from pydantic import BaseModel, ConfigDict
 from ..common import ACSCommandType
 
 if TYPE_CHECKING:
-    from ..simulation.passes import Pass
-    from ..simulation.slew import Slew
+    from .passes import Pass
+    from .slew import Slew
 
 
 class ACSCommand(BaseModel):

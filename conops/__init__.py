@@ -17,7 +17,6 @@ from .common import (
 from .config import (
     DAY_SECONDS,
     DTOR,
-    ACSCommand,
     Antenna,
     AttitudeControlSystem,
     Battery,
@@ -47,6 +46,7 @@ from .schedulers import (
 from .simulation import (
     ACS,
     SAA,
+    ACSCommand,
     EmergencyCharging,
     Pass,
     PassTimes,
