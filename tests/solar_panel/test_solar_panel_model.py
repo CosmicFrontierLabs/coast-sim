@@ -1,38 +1,6 @@
 import pytest
 
-from conops.solar_panel import SolarPanel, SolarPanelSet
-
-
-@pytest.fixture
-def default_panel_set():
-    return SolarPanelSet(name="Default Set")
-
-
-@pytest.fixture
-def multi_panel_set():
-    return SolarPanelSet(
-        name="Array",
-        conversion_efficiency=0.95,
-        panels=[
-            SolarPanel(
-                name="P1", sidemount=True, cant_x=5.0, cant_y=0.0, max_power=300.0
-            ),
-            SolarPanel(
-                name="P2", sidemount=False, cant_x=0.0, cant_y=12.0, max_power=700.0
-            ),
-        ],
-    )
-
-
-@pytest.fixture
-def efficiency_fallback_panel_set():
-    return SolarPanelSet(
-        conversion_efficiency=0.91,
-        panels=[
-            SolarPanel(name="P1", max_power=100.0, conversion_efficiency=None),
-            SolarPanel(name="P2", max_power=100.0, conversion_efficiency=0.88),
-        ],
-    )
+from conops.solar_panel import SolarPanel
 
 
 class TestDefaultSolarPanelSet:
