@@ -1396,3 +1396,531 @@ class TestSolarPanelPowerGenerationRealistic:
             )
 
         assert result == pytest.approx(0.0, abs=1e-6)
+
+
+class TestGetSliceIndices:
+    """Tests for get_slice_indices function."""
+
+    def test_get_slice_indices_multiple_times(self):
+        """Test get_slice_indices with multiple datetime times."""
+        from datetime import datetime, timezone
+
+        from conops.config.solar_panel import get_slice_indices
+
+        times = [
+            datetime(2018, 1, 1, tzinfo=timezone.utc),
+            datetime(2018, 1, 2, tzinfo=timezone.utc),
+            datetime(2018, 1, 3, tzinfo=timezone.utc),
+        ]
+
+        # Mock ephemeris with proper indexing
+        ephem = Mock()
+        ephem.index = Mock(side_effect=[0, 1, 2])
+
+        indices = get_slice_indices(times, ephem)
+
+        expected = np.array([0, 1, 2])
+        np.testing.assert_array_equal(indices, expected)
+        assert ephem.index.call_count == 3
+
+    def test_get_slice_indices_single_time(self):
+        """Test get_slice_indices with single datetime time."""
+        from datetime import datetime, timezone
+
+        from conops.config.solar_panel import get_slice_indices
+
+        time_single = datetime(2018, 1, 1, tzinfo=timezone.utc)
+
+        ephem = Mock()
+        ephem.index = Mock(return_value=5)
+
+        indices = get_slice_indices(time_single, ephem)
+
+        assert indices == 5
+        ephem.index.assert_called_once_with(time_single)
+
+
+class TestPanelIlluminationExceptionHandling:
+    """Tests for exception handling in panel_illumination_fraction."""
+
+    def test_panel_illumination_invalid_ephem_index(self):
+        """Test panel_illumination_fraction with invalid ephem index."""
+        panel = SolarPanel()
+
+        ephem = Mock()
+        ephem.index = Mock(side_effect=IndexError("Invalid index"))
+
+        with pytest.raises(IndexError):
+            panel.panel_illumination_fraction(
+                time=1514764800.0,
+                ephem=ephem,
+                ra=0.0,
+                dec=0.0,
+            )
+
+    def test_panel_illumination_sun_access_error(self):
+        """Test panel_illumination_fraction when sun array access fails."""
+        panel = SolarPanel()
+
+        ephem = Mock()
+        ephem.index = Mock(return_value=0)
+        ephem.sun = Mock()
+        ephem.sun.__getitem__ = Mock(side_effect=KeyError("Sun access failed"))
+
+        # Mock eclipse constraint to avoid rust_ephem issues
+        mock_constraint = Mock()
+        mock_constraint.in_constraint = Mock(return_value=False)
+
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
+            with pytest.raises(KeyError):
+                panel.panel_illumination_fraction(
+                    time=1514764800.0,
+                    ephem=ephem,
+                    ra=0.0,
+                    dec=0.0,
+                )
+
+
+class TestPanelIlluminationEclipseConstraint:
+    """Tests for eclipse constraint evaluation in panel_illumination_fraction."""
+
+    def test_eclipse_constraint_evaluation_true(self):
+        """Test that eclipse constraint is properly evaluated when true."""
+        panel = SolarPanel()
+
+        ephem = Mock()
+        ephem.index = Mock(return_value=0)
+        ephem.sun = Mock()
+        ephem.sun.__getitem__ = Mock(
+            return_value=Mock(ra=Mock(deg=90.0), dec=Mock(deg=0.0))
+        )
+
+        # Mock eclipse constraint to return True (in eclipse)
+        mock_constraint = Mock()
+        mock_constraint.in_constraint = Mock(return_value=True)
+
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
+            result = panel.panel_illumination_fraction(
+                time=1514764800.0,
+                ephem=ephem,
+                ra=0.0,
+                dec=0.0,
+            )
+
+        # Should return 0 due to eclipse
+        assert result == 0.0
+        mock_constraint.in_constraint.assert_called_once()
+
+    def test_eclipse_constraint_evaluation_false(self):
+        """Test that eclipse constraint is properly evaluated when false."""
+        panel = SolarPanel(sidemount=True, cant_x=0.0, cant_y=0.0)
+
+        ephem = Mock()
+        ephem.index = Mock(return_value=0)
+        ephem.sun = Mock()
+        ephem.sun.__getitem__ = Mock(
+            return_value=Mock(ra=Mock(deg=90.0), dec=Mock(deg=0.0))
+        )
+
+        # Mock eclipse constraint to return False (not in eclipse)
+        mock_constraint = Mock()
+        mock_constraint.in_constraint = Mock(return_value=False)
+
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
+            result = panel.panel_illumination_fraction(
+                time=1514764800.0,
+                ephem=ephem,
+                ra=0.0,
+                dec=0.0,
+            )
+
+        # Should return maximum illumination (sun perpendicular)
+        assert result == pytest.approx(1.0, rel=1e-6)
+        mock_constraint.in_constraint.assert_called_once()
+
+
+class TestPowerEdgeCases:
+    """Tests for edge cases in power method."""
+
+    def test_power_with_zero_max_power(self):
+        """Test power calculation when max_power is zero."""
+        panel = SolarPanel(max_power=0.0)
+        panel_set = SolarPanelSet(panels=[panel])
+
+        ephem = Mock()
+        ephem.index = Mock(return_value=0)
+        ephem.sun = Mock()
+        ephem.sun.__getitem__ = Mock(
+            return_value=Mock(ra=Mock(deg=90.0), dec=Mock(deg=0.0))
+        )
+
+        mock_constraint = Mock()
+        mock_constraint.in_constraint = Mock(return_value=False)
+
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
+            result = panel_set.power(time=1514764800.0, ra=0.0, dec=0.0, ephem=ephem)
+
+        assert result == 0.0
+
+    def test_power_with_zero_efficiency(self):
+        """Test power calculation when efficiency is zero."""
+        panel = SolarPanel(max_power=1000.0, conversion_efficiency=0.0)
+        panel_set = SolarPanelSet(panels=[panel])
+
+        ephem = Mock()
+        ephem.index = Mock(return_value=0)
+        ephem.sun = Mock()
+        ephem.sun.__getitem__ = Mock(
+            return_value=Mock(ra=Mock(deg=90.0), dec=Mock(deg=0.0))
+        )
+
+        mock_constraint = Mock()
+        mock_constraint.in_constraint = Mock(return_value=False)
+
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
+            result = panel_set.power(time=1514764800.0, ra=0.0, dec=0.0, ephem=ephem)
+
+        assert result == 0.0
+
+    def test_power_with_negative_efficiency(self):
+        """Test power calculation with negative efficiency (should be clamped)."""
+        panel = SolarPanel(max_power=1000.0, conversion_efficiency=-0.1)
+        panel_set = SolarPanelSet(panels=[panel])
+
+        ephem = Mock()
+        ephem.index = Mock(return_value=0)
+        ephem.sun = Mock()
+        ephem.sun.__getitem__ = Mock(
+            return_value=Mock(ra=Mock(deg=90.0), dec=Mock(deg=0.0))
+        )
+
+        mock_constraint = Mock()
+        mock_constraint.in_constraint = Mock(return_value=False)
+
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
+            result = panel_set.power(time=1514764800.0, ra=0.0, dec=0.0, ephem=ephem)
+
+        # Negative efficiency should still produce some power (illumination * max_power * efficiency)
+        # Since efficiency is negative, result should be negative
+        assert result < 0.0
+
+    def test_power_with_extreme_max_power(self):
+        """Test power calculation with very large max_power."""
+        panel = SolarPanel(max_power=1e6)  # 1 MW
+        panel_set = SolarPanelSet(panels=[panel])
+
+        ephem = Mock()
+        ephem.index = Mock(return_value=0)
+        ephem.sun = Mock()
+        ephem.sun.__getitem__ = Mock(
+            return_value=Mock(ra=Mock(deg=90.0), dec=Mock(deg=0.0))
+        )
+
+        mock_constraint = Mock()
+        mock_constraint.in_constraint = Mock(return_value=False)
+
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
+            result = panel_set.power(time=1514764800.0, ra=0.0, dec=0.0, ephem=ephem)
+
+        # Should handle large values without overflow
+        assert isinstance(result, (float, np.floating))
+
+    def test_panel_illumination_fraction_gimbled_array_time(self):
+        """Test panel_illumination_fraction with gimbled panel and array time."""
+        from datetime import datetime, timezone
+
+        panel = SolarPanel(max_power=500.0, conversion_efficiency=0.9, gimbled=True)
+
+        times = [
+            datetime(2018, 1, 1, tzinfo=timezone.utc),
+            datetime(2018, 1, 2, tzinfo=timezone.utc),
+        ]
+
+        ephem = Mock()
+        ephem.index = Mock(side_effect=[0, 1])
+
+        # Mock eclipse constraint for array evaluation
+        mock_constraint = Mock()
+        mock_result = Mock()
+        mock_result.constraint_array = np.array([False, False])  # Not in eclipse
+        mock_constraint.evaluate = Mock(return_value=mock_result)
+
+        with patch.object(panel, "_eclipse_constraint", mock_constraint):
+            result = panel.panel_illumination_fraction(
+                time=times,
+                ephem=ephem,
+                ra=0.0,
+                dec=0.0,
+            )
+
+        assert isinstance(result, np.ndarray)
+        np.testing.assert_array_equal(
+            result, [1.0, 1.0]
+        )  # Not in eclipse, so fully illuminated
+
+    def test_panel_illumination_fraction_unix_timestamp(self):
+        """Test panel_illumination_fraction with unix timestamp input."""
+        panel = SolarPanel(max_power=500.0, conversion_efficiency=0.9)
+
+        ephem = Mock()
+        ephem.index = Mock(return_value=0)
+        ephem.sun = Mock()
+        ephem.sun.__getitem__ = Mock(
+            return_value=Mock(ra=Mock(deg=90.0), dec=Mock(deg=0.0))
+        )
+
+        # Mock eclipse constraint
+        mock_constraint = Mock()
+        mock_constraint.in_constraint = Mock(return_value=False)  # Not in eclipse
+
+        with patch.object(panel, "_eclipse_constraint", mock_constraint):
+            result = panel.panel_illumination_fraction(
+                time=1514764800.0,  # Unix timestamp
+                ephem=ephem,
+                ra=0.0,
+                dec=0.0,
+            )
+
+        assert isinstance(result, float)
+        assert result == 1.0  # Not in eclipse, so fully illuminated
+
+
+class TestIlluminationAndPower:
+    """Tests for the illumination_and_power method."""
+
+    def test_illumination_and_power_single_panel(self):
+        """Test illumination_and_power with single panel."""
+        panel = SolarPanel(max_power=500.0, conversion_efficiency=0.9)
+        panel_set = SolarPanelSet(panels=[panel])
+
+        ephem = Mock()
+        ephem.index = Mock(return_value=0)
+        ephem.sun = Mock()
+        ephem.sun.__getitem__ = Mock(
+            return_value=Mock(ra=Mock(deg=90.0), dec=Mock(deg=0.0))
+        )
+
+        mock_constraint = Mock()
+        mock_constraint.in_constraint = Mock(return_value=False)
+
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
+            illumination, power = panel_set.illumination_and_power(
+                time=1514764800.0,
+                ephem=ephem,
+                ra=0.0,
+                dec=0.0,
+            )
+
+        # Sun perpendicular to pointing should give max illumination
+        assert illumination == pytest.approx(1.0, rel=1e-6)
+        assert power == pytest.approx(450.0, rel=1e-4)  # 1.0 * 500 * 0.9
+
+    def test_illumination_and_power_multiple_panels(self):
+        """Test illumination_and_power with multiple panels."""
+        panels = [
+            SolarPanel(max_power=300.0, conversion_efficiency=0.95),
+            SolarPanel(max_power=400.0, conversion_efficiency=0.90),
+        ]
+        panel_set = SolarPanelSet(panels=panels)
+
+        ephem = Mock()
+        ephem.index = Mock(return_value=0)
+        ephem.sun = Mock()
+        ephem.sun.__getitem__ = Mock(
+            return_value=Mock(ra=Mock(deg=90.0), dec=Mock(deg=0.0))
+        )
+
+        mock_constraint = Mock()
+        mock_constraint.in_constraint = Mock(return_value=False)
+
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
+            illumination, power = panel_set.illumination_and_power(
+                time=1514764800.0,
+                ephem=ephem,
+                ra=0.0,
+                dec=0.0,
+            )
+
+        # Both panels at max illumination
+        expected_illumination = 1.0
+        expected_power = (1.0 * 300.0 * 0.95) + (1.0 * 400.0 * 0.90)  # 285 + 360 = 645
+
+        assert illumination == pytest.approx(expected_illumination, rel=1e-6)
+        assert power == pytest.approx(expected_power, rel=1e-4)
+
+    def test_illumination_and_power_in_eclipse(self):
+        """Test illumination_and_power during eclipse."""
+        panel = SolarPanel(max_power=1000.0)
+        panel_set = SolarPanelSet(panels=[panel])
+
+        ephem = Mock()
+        ephem.index = Mock(return_value=0)
+        ephem.sun = Mock()
+        ephem.sun.__getitem__ = Mock(
+            return_value=Mock(ra=Mock(deg=90.0), dec=Mock(deg=0.0))
+        )
+
+        mock_constraint = Mock()
+        mock_constraint.in_constraint = Mock(return_value=True)  # In eclipse
+
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
+            illumination, power = panel_set.illumination_and_power(
+                time=1514764800.0,
+                ephem=ephem,
+                ra=0.0,
+                dec=0.0,
+            )
+
+        assert illumination == 0.0
+        assert power == 0.0
+
+    def test_illumination_and_power_empty_panels(self):
+        """Test illumination_and_power with empty panel list."""
+        panel_set = SolarPanelSet(panels=[])
+
+        ephem = Mock()
+        illumination, power = panel_set.illumination_and_power(
+            time=1514764800.0,
+            ephem=ephem,
+            ra=0.0,
+            dec=0.0,
+        )
+
+        assert illumination == 0.0
+        assert power == 0.0
+
+    def test_illumination_and_power_empty_panels_array_time(self):
+        """Test illumination_and_power with empty panel list and array time."""
+        from datetime import datetime, timezone
+
+        panel_set = SolarPanelSet(panels=[])
+
+        times = [
+            datetime(2018, 1, 1, tzinfo=timezone.utc),
+            datetime(2018, 1, 2, tzinfo=timezone.utc),
+        ]
+
+        ephem = Mock()
+        ephem.index = Mock(side_effect=[0, 1])
+        ephem.sun = Mock()
+        ephem.sun.__getitem__ = Mock(
+            return_value=Mock(ra=Mock(deg=90.0), dec=Mock(deg=0.0))
+        )
+
+        # Mock eclipse constraint for dummy panel shape determination
+        mock_constraint = Mock()
+        mock_result = Mock()
+        mock_result.constraint_array = np.array([False, False])
+        mock_constraint.evaluate = Mock(return_value=mock_result)
+
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
+            illumination, power = panel_set.illumination_and_power(
+                time=times,
+                ephem=ephem,
+                ra=0.0,
+                dec=0.0,
+            )
+
+        assert isinstance(illumination, np.ndarray)
+        assert isinstance(power, np.ndarray)
+        assert np.all(illumination == 0.0)
+        assert np.all(power == 0.0)
+
+    def test_illumination_and_power_empty_panels_numpy_array_time(self):
+        """Test illumination_and_power with empty panel list and numpy array time."""
+        panel_set = SolarPanelSet(panels=[])
+
+        times = np.array([1514764800.0, 1514851200.0])  # Unix timestamps
+
+        ephem = Mock()
+        ephem.index = Mock(side_effect=[0, 1])
+        ephem.sun = Mock()
+        ephem.sun.__getitem__ = Mock(
+            return_value=Mock(ra=Mock(deg=90.0), dec=Mock(deg=0.0))
+        )
+
+        # Mock eclipse constraint for dummy panel shape determination
+        mock_constraint = Mock()
+        mock_result = Mock()
+        mock_result.constraint_array = np.array([False, False])
+        mock_constraint.evaluate = Mock(return_value=mock_result)
+
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
+            illumination, power = panel_set.illumination_and_power(
+                time=times,
+                ephem=ephem,
+                ra=0.0,
+                dec=0.0,
+            )
+
+        assert isinstance(illumination, np.ndarray)
+        assert isinstance(power, np.ndarray)
+        assert np.all(illumination == 0.0)
+        assert np.all(power == 0.0)
+
+    def test_illumination_and_power_with_array_times(self):
+        """Test illumination_and_power with array of times."""
+        from datetime import datetime, timezone
+
+        panel = SolarPanel(max_power=500.0, conversion_efficiency=0.9)
+        panel_set = SolarPanelSet(panels=[panel])
+
+        times = [
+            datetime(2018, 1, 1, tzinfo=timezone.utc),
+            datetime(2018, 1, 2, tzinfo=timezone.utc),
+        ]
+
+        ephem = Mock()
+        ephem.index = Mock(side_effect=[0, 1])
+        ephem.sun = Mock()
+        ephem.sun.__getitem__ = Mock(
+            return_value=Mock(ra=Mock(deg=90.0), dec=Mock(deg=0.0))
+        )
+
+        # Mock eclipse constraint for array evaluation
+        mock_constraint = Mock()
+        mock_result = Mock()
+        mock_result.constraint_array = np.array([False, False])  # Not in eclipse
+        mock_constraint.evaluate = Mock(return_value=mock_result)
+
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
+            illumination, power = panel_set.illumination_and_power(
+                time=times,
+                ephem=ephem,
+                ra=0.0,
+                dec=0.0,
+            )
+
+        # Should return arrays
+        assert isinstance(illumination, np.ndarray)
+        assert isinstance(power, np.ndarray)
+        assert len(illumination) == 2
+        assert len(power) == 2
+        np.testing.assert_array_almost_equal(illumination, [1.0, 1.0])
+        np.testing.assert_array_almost_equal(power, [450.0, 450.0])
+
+    def test_illumination_and_power_efficiency_fallback(self):
+        """Test illumination_and_power with efficiency fallback to set level."""
+        panel = SolarPanel(max_power=500.0, conversion_efficiency=None)
+        panel_set = SolarPanelSet(panels=[panel], conversion_efficiency=0.85)
+
+        ephem = Mock()
+        ephem.index = Mock(return_value=0)
+        ephem.sun = Mock()
+        ephem.sun.__getitem__ = Mock(
+            return_value=Mock(ra=Mock(deg=90.0), dec=Mock(deg=0.0))
+        )
+
+        mock_constraint = Mock()
+        mock_constraint.in_constraint = Mock(return_value=False)
+
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
+            illumination, power = panel_set.illumination_and_power(
+                time=1514764800.0,
+                ephem=ephem,
+                ra=0.0,
+                dec=0.0,
+            )
+
+        assert illumination == pytest.approx(1.0, rel=1e-6)
+        assert power == pytest.approx(425.0, rel=1e-4)  # 1.0 * 500 * 0.85

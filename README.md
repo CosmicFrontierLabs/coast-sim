@@ -6,6 +6,8 @@ A Python module for simulating Concept of Operations (ConOps) for space telescop
 
 COASTSim is a comprehensive simulation framework designed to model and analyze the operational behavior of space-based astronomical observatories. It enables mission planners and engineers to simulate Day-In-The-Life (DITL) scenarios, evaluate spacecraft performance, optimize observation schedules, and validate operational constraints before launch.
 
+The package is organized into logical submodules for better maintainability and clearer separation of concerns: `common` (utilities), `config` (configuration), `ditl` (simulation), `schedulers` (planning), `targets` (observations), and `simulation` (core components).
+
 ## Key Features
 
 - **Spacecraft Bus Simulation**: Model power systems, attitude control, and thermal management
@@ -49,26 +51,28 @@ Key dependencies include:
 
 ```python
 from datetime import datetime, timedelta
-from conops.config import Config
-from conops.queue_ditl import QueueDITL
-from conops.ephemeris import compute_tle_ephemeris
+from conops import Config, QueueDITL
+from rust_ephem import TLEEphemeris
 
 # Load configuration
-config = Config.from_json("example_config.json")
+config = Config.from_json_file("example_config.json")
 
 # Set simulation period
 begin = datetime(2025, 11, 1)
 end = begin + timedelta(days=1)
 
 # Compute orbit ephemeris
-ephemeris = compute_tle_ephemeris("example.tle", begin, end)
+ephemeris = TLEEphemeris(tle="example.tle", begin=begin, end=end)
 
 # Run DITL simulation
-ditl = QueueDITL(config, ephemeris, begin, end)
-ditl.run()
+ditl = QueueDITL(config=config)
+ditl.ephem = ephemeris
+ditl.begin = begin
+ditl.end = end
+ditl.calc()
 
 # Analyze results
-ditl.plot_timeline()
+ditl.plot()
 ditl.print_statistics()
 ```
 
@@ -114,72 +118,75 @@ jupyter notebook
 
 ## Core Components
 
-### Configuration (`config.py`)
+### Configuration (`conops.config`)
 
 Pydantic-based configuration management for spacecraft parameters, instruments, and operational constraints.
 
-### Ephemeris (`ephemeris.py`)
+### DITL Simulation (`conops.ditl`)
 
-Orbit propagation using TLE data, providing spacecraft position and velocity vectors.
+Day-In-The-Life simulation classes including DITL, DITLMixin, and QueueDITL for comprehensive timeline simulation.
 
-### Queue Scheduler (`queue_scheduler.py`, `queue_ditl.py`)
+### Scheduling (`conops.schedulers`)
 
-Target observation queue management and intelligent scheduling algorithms.
+Target observation queue management and intelligent scheduling algorithms (DumbScheduler, DumbQueueScheduler).
 
-### Pointing (`pointing.py`)
+### Targets (`conops.targets`)
 
-Spacecraft pointing representation with coordinate transformations.
+Target management classes including Pointing, Queue, Plan, PlanEntry, and PPST for observation planning.
 
-### Attitude Control System (`acs.py`, `spacecraft_bus.py`)
+### Simulation (`conops.simulation`)
 
-Slew modeling with realistic acceleration profiles, settle times, and pointing accuracy.
+Core simulation components including ACS (Attitude Control System), slew modeling, SAA handling, emergency charging, and other simulation utilities.
 
-### Battery & Power (`battery.py`, `solar_panel.py`)
+### Common Utilities (`conops.common`)
 
-Power generation modeling, battery state tracking, and emergency charging scenarios.
-
-### Instruments (`instrument.py`)
-
-Multi-instrument support with individual power profiles and operational modes.
-
-### Constraints (`constraint.py`)
-
-Sun angle, Moon avoidance, Earth limb exclusion, and custom geometric constraints.
-
-### Ground Stations (`groundstation.py`, `passes.py`)
-
-Communication pass prediction and ground station network management.
-
-### SAA Handling (`saa.py`)
-
-South Atlantic Anomaly avoidance for radiation-sensitive instruments.
+Shared utilities, enums (ACSMode, ChargeState, ACSCommandType), vector mathematics, and common functions.
 
 ## Module Structure
 
 ```text
 conops/
-├── __init__.py           # Package initialization
-├── config.py             # Configuration management
-├── ditl.py               # Basic DITL simulation
-├── queue_ditl.py         # Queue-based DITL
-├── scheduler.py          # Scheduling algorithms
-├── queue_scheduler.py    # Queue scheduling
-├── ephemeris.py          # Orbit propagation
-├── pointing.py           # Pointing and coordinates
-├── acs.py                # Attitude control
-├── spacecraft_bus.py     # Spacecraft bus modeling
-├── battery.py            # Battery management
-├── solar_panel.py        # Solar power generation
-├── instrument.py         # Instrument modeling
-├── constraint.py         # Observational constraints
-├── groundstation.py      # Ground station network
-├── passes.py             # Pass calculations
-├── saa.py                # SAA handling
-├── slew.py               # Slew modeling
-├── roll.py               # Roll angle optimization
-├── vector.py             # Vector mathematics
-├── common.py             # Common utilities
-└── constants.py          # Physical constants
+├── __init__.py              # Package initialization and exports
+├── _version.py              # Version information
+├── common/                  # Shared utilities and common functions
+│   ├── __init__.py
+│   ├── common.py
+│   ├── enums.py
+│   └── vector.py
+├── config/                  # Configuration management
+│   ├── __init__.py
+│   ├── config.py
+│   ├── constants.py
+│   ├── constraint.py
+│   ├── battery.py
+│   ├── solar_panel.py
+│   ├── instrument.py
+│   └── spacecraft_bus.py
+├── ditl/                    # Day-In-The-Life simulation
+│   ├── __init__.py
+│   ├── ditl.py
+│   ├── ditl_mixin.py
+│   └── queue_ditl.py
+├── schedulers/              # Scheduling algorithms
+│   ├── __init__.py
+│   ├── scheduler.py
+│   └── queue_scheduler.py
+├── targets/                 # Target management and planning
+│   ├── __init__.py
+│   ├── pointing.py
+│   ├── ppst.py
+│   ├── plan_entry.py
+│   └── target_queue.py
+└── simulation/              # Core simulation components
+    ├── __init__.py
+    ├── acs.py
+    ├── acs_command.py
+    ├── emergency_charging.py
+    ├── passes.py
+    ├── roll.py
+    ├── saa.py
+    ├── slew.py
+    └── ephemeris.py
 ```
 
 ## Testing

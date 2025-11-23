@@ -3,6 +3,7 @@ from math import isclose
 import pytest
 
 from conops import Battery
+from conops.common.enums import ChargeState
 
 """Unit tests for conops.battery.Battery"""
 
@@ -137,3 +138,33 @@ class TestBatteryAlerts:
         b = default_battery
         b.charge_level = b.watthour * 0.96
         assert b.emergency_recharge is False
+
+
+class TestBatteryChargeState:
+    def test_initial_charge_state_not_charging(self, batt_20wh):
+        b = batt_20wh
+        assert b.charge_state == ChargeState.NOT_CHARGING
+
+    def test_charge_state_charging_when_power_positive_and_not_full(self, batt_20wh):
+        b = batt_20wh
+        b.charge_level = 10.0  # Not full
+        b.charge(power=100, period=1)
+        assert b.charge_state == ChargeState.CHARGING
+
+    def test_charge_state_trickle_when_full_and_charging(self, batt_20wh):
+        b = batt_20wh
+        # Already full, charge again
+        b.charge(power=100, period=1)
+        assert b.charge_state == ChargeState.TRICKLE
+
+    def test_charge_state_not_charging_when_power_zero(self, batt_20wh):
+        b = batt_20wh
+        b.charge_level = 10.0
+        b.charge(power=0, period=1)
+        assert b.charge_state == ChargeState.NOT_CHARGING
+
+    def test_drain_clamps_charge_level_to_zero_when_over_drained(self, batt_1wh):
+        b = batt_1wh
+        b.drain(power=3600, period=2)  # Drain 2 Wh from 1 Wh battery
+        assert isclose(b.charge_level, 0.0)
+        assert isclose(b.battery_level, 0.0)
