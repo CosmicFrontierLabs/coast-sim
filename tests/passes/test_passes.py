@@ -5,13 +5,13 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
+from rust_ephem import TLEEphemeris
 
 from conops import (
     Constraint,
     GroundStationRegistry,
     Pass,
     PassTimes,
-    compute_tle_ephemeris,
 )
 
 
@@ -877,16 +877,12 @@ class TestPassTimesGetIntegration:
 
     def test_get_with_real_ephemeris(self, mock_config):
         """Test PassTimes.get with a real TLE ephemeris."""
-        # Import needed modules
-        from datetime import datetime, timezone
-
-        from conops import compute_tle_ephemeris
 
         # Create ephemeris for a short time period
         begin = datetime(2025, 8, 15, 0, 0, 0, tzinfo=timezone.utc)
         end = datetime(2025, 8, 15, 2, 0, 0, tzinfo=timezone.utc)
         tle_path = "examples/example.tle"
-        ephem = compute_tle_ephemeris(tle=tle_path, begin=begin, end=end, step_size=60)
+        ephem = TLEEphemeris(tle=tle_path, begin=begin, end=end, step_size=60)
 
         # Create constraint with ephemeris
         constraint = Mock(spec=Constraint)
@@ -920,7 +916,7 @@ class TestPassTimesGetIntegration:
 
         tle_path = "examples/example.tle"
 
-        ephem = compute_tle_ephemeris(tle=tle_path, begin=begin, end=end, step_size=60)
+        ephem = TLEEphemeris(tle=tle_path, begin=begin, end=end, step_size=60)
 
         # Create constraint with ephemeris
         constraint = Mock(spec=Constraint)

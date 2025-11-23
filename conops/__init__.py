@@ -33,7 +33,6 @@ from .config import (
     SolarPanel,
     SolarPanelSet,
     SpacecraftBus,
-    compute_tle_ephemeris,
 )
 from .ditl import (
     DITL,
@@ -73,7 +72,6 @@ __all__ = [
     "AttitudeControlSystem",
     "Battery",
     "ChargeState",
-    "compute_tle_ephemeris",
     "Config",
     "Constraint",
     "DAY_SECONDS",

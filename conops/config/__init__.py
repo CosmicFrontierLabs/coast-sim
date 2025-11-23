@@ -4,7 +4,6 @@ from .battery import Battery
 from .config import Config
 from .constants import DAY_SECONDS, DTOR
 from .constraint import Constraint
-from .ephemeris import compute_tle_ephemeris
 from .fault_management import FaultManagement
 from .groundstation import Antenna, GroundStation, GroundStationRegistry
 from .instrument import Instrument, Payload
@@ -31,7 +30,6 @@ __all__ = [
     "AttitudeControlSystem",
     "SpacecraftBus",
     "Heater",
-    "compute_tle_ephemeris",
     "DAY_SECONDS",
     "DTOR",
 ]
