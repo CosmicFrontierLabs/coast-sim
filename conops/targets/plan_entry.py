@@ -5,7 +5,6 @@ import rust_ephem
 
 from ..common import givename, roll_over_angle, unixtime2date
 from ..config import AttitudeControlSystem, Constraint
-from ..simulation.saa import SAA
 
 
 class PlanEntry:
@@ -24,7 +23,7 @@ class PlanEntry:
     suncons: float
     sidemount: bool
     gimbled: bool
-    saa: bool | SAA
+    saa: bool
 
     def __init__(
         self,

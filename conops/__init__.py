@@ -38,14 +38,16 @@ from .config import (
 from .ditl import (
     DITL,
     DITLMixin,
+    DITLs,
     QueueDITL,
+)
+from .schedulers import (
+    DumbQueueScheduler,
+    DumbScheduler,
 )
 from .simulation import (
     ACS,
     SAA,
-    DITLs,
-    DumbQueueScheduler,
-    DumbScheduler,
     EmergencyCharging,
     Pass,
     PassTimes,

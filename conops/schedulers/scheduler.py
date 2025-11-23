@@ -5,8 +5,8 @@ import rust_ephem
 
 from ..common import dtutcfromtimestamp
 from ..config import Config, Constraint
+from ..simulation.saa import SAA
 from ..targets import Plan, PlanEntry, TargetList
-from .saa import SAA
 
 
 class DumbScheduler:
