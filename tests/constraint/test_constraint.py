@@ -506,7 +506,7 @@ class TestConstraintWithTimeObjects:
 
     @patch("rust_ephem.SunConstraint.evaluate")
     def test_in_sun_with_time_object_returns_array(
-        self, mock_evaluate, constraint_with_ephem, time_astropy
+        self, mock_evaluate, constraint_with_ephem, time_astropy, time_list
     ):
         """Test in_sun with Time object returns array."""
         # Create a minimal mock ephemeris that passes validation
@@ -525,7 +525,7 @@ class TestConstraintWithTimeObjects:
 
     @patch("rust_ephem.SunConstraint.evaluate")
     def test_in_sun_with_time_object_returns_length_2(
-        self, mock_evaluate, constraint_with_ephem, time_astropy
+        self, mock_evaluate, constraint_with_ephem, time_astropy, time_list
     ):
         """Test in_sun with Time object returns array of length 2."""
         # Create a minimal mock ephemeris that passes validation
@@ -614,7 +614,7 @@ class TestConstraintWithTimeObjects:
 
     @patch("rust_ephem.SunConstraint.evaluate")
     def test_in_anti_sun_with_time_object_returns_array(
-        self, mock_evaluate, constraint_with_ephem, time_astropy
+        self, mock_evaluate, constraint_with_ephem, time_astropy, time_list
     ):
         """Test in_anti_sun with Time object returns array."""
         # Create a minimal mock ephemeris that passes validation
@@ -633,7 +633,7 @@ class TestConstraintWithTimeObjects:
 
     @patch("rust_ephem.SunConstraint.evaluate")
     def test_in_anti_sun_with_time_object_returns_length_2(
-        self, mock_evaluate, constraint_with_ephem, time_astropy
+        self, mock_evaluate, constraint_with_ephem, time_astropy, time_list
     ):
         """Test in_anti_sun with Time object returns array of length 2."""
         # Create a minimal mock ephemeris that passes validation
@@ -652,7 +652,7 @@ class TestConstraintWithTimeObjects:
 
     @patch("rust_ephem.EarthLimbConstraint.evaluate")
     def test_in_earth_with_time_object_returns_array(
-        self, mock_evaluate, constraint_with_ephem, time_astropy
+        self, mock_evaluate, constraint_with_ephem, time_astropy, time_list
     ):
         """Test in_earth with Time object returns array."""
         # Create a minimal mock ephemeris that passes validation
@@ -671,7 +671,7 @@ class TestConstraintWithTimeObjects:
 
     @patch("rust_ephem.EarthLimbConstraint.evaluate")
     def test_in_earth_with_time_object_returns_length_2(
-        self, mock_evaluate, constraint_with_ephem, time_astropy
+        self, mock_evaluate, constraint_with_ephem, time_astropy, time_list
     ):
         """Test in_earth with Time object returns array of length 2."""
         # Create a minimal mock ephemeris that passes validation
@@ -690,7 +690,7 @@ class TestConstraintWithTimeObjects:
 
     @patch("rust_ephem.MoonConstraint.evaluate")
     def test_in_moon_with_time_object_returns_array(
-        self, mock_evaluate, constraint_with_ephem, time_astropy
+        self, mock_evaluate, constraint_with_ephem, time_astropy, time_list
     ):
         """Test in_moon with Time object returns array."""
         # Create a minimal mock ephemeris that passes validation
@@ -709,7 +709,7 @@ class TestConstraintWithTimeObjects:
 
     @patch("rust_ephem.MoonConstraint.evaluate")
     def test_in_moon_with_time_object_returns_length_2(
-        self, mock_evaluate, constraint_with_ephem, time_astropy
+        self, mock_evaluate, constraint_with_ephem, time_astropy, time_list
     ):
         """Test in_moon with Time object returns array of length 2."""
         # Create a minimal mock ephemeris that passes validation
