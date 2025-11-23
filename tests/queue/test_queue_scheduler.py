@@ -2,108 +2,11 @@
 
 from unittest.mock import Mock
 
-import numpy as np
-import pytest
-from astropy.time import Time
+from astropy.time import Time  # type: ignore[import-untyped]
 
 from conops.constants import DAY_SECONDS
 from conops.ppst import Plan
 from conops.queue_scheduler import DumbQueueScheduler
-
-
-@pytest.fixture
-def mock_ephemeris():
-    """Create a mock ephemeris object."""
-    ephem = Mock()
-    # 24 hours of data starting 2021-01-04
-    start_time = Time("2021-01-04 00:00:00", scale="utc").unix
-    timestamps = np.arange(start_time, start_time + DAY_SECONDS, 60)
-    ephem.timestamp = Mock()
-    ephem.timestamp.unix = timestamps
-    return ephem
-
-
-class MockPointing:
-    """Mock Pointing class for testing."""
-
-    def __init__(
-        self,
-        targetid=1,
-        ra=45.0,
-        dec=30.0,
-        merit=100.0,
-        ssmin=300,
-        ssmax=600,
-        name="",
-    ):
-        self.targetid = targetid
-        self.ra = ra
-        self.dec = dec
-        self.merit = merit
-        self.ssmin = ssmin  # Minimum exposure time
-        self.ssmax = ssmax  # Maximum exposure time
-        self.name = name or f"Target_{targetid}"
-        self.done = False
-        self.roll = 0.0
-        self.slewtime = 0
-        self.begin = 0
-        self.end = 0
-
-    def calc_slewtime(self, ra_from, dec_from):
-        """Calculate slew time from prior position."""
-        dist = np.sqrt((self.ra - ra_from) ** 2 + (self.dec - dec_from) ** 2)
-        self.slewtime = max(0, int(dist / 0.5))  # Slew rate of 0.5 deg/sec
-
-    def visible(self, start_time, end_time):
-        """Check if target is visible during time window."""
-        # Mock: always visible unless explicitly marked invisible
-        return getattr(self, "_visible", True)
-
-
-@pytest.fixture
-def mock_queue(mock_ephemeris):
-    """Create a mock queue with sample targets."""
-    queue = Mock()
-    queue.ephem = mock_ephemeris
-    queue.targets = []
-
-    # Add sample targets
-    target1 = MockPointing(targetid=1, ra=45.0, dec=30.0, merit=100, ssmin=300)
-    target2 = MockPointing(targetid=2, ra=90.0, dec=-45.0, merit=90, ssmin=300)
-    target3 = MockPointing(targetid=3, ra=180.0, dec=60.0, merit=80, ssmin=300)
-
-    queue.targets = [target1, target2, target3]
-    queue.__len__ = Mock(return_value=len(queue.targets))
-    queue.__getitem__ = Mock(side_effect=lambda i: queue.targets[i])
-
-    def mock_get(ra, dec, utime):
-        """Mock get method that returns next available target."""
-        for target in queue.targets:
-            if not target.done and target.merit > 0:
-                target.calc_slewtime(ra, dec)
-                if target.visible(utime, utime + target.slewtime + target.ssmax):
-                    target.begin = int(utime)
-                    target.end = int(utime + target.slewtime + target.ssmax)
-                    return target
-        return None
-
-    def mock_meritsort(ra, dec):
-        """Mock meritsort to sort by merit."""
-        queue.targets.sort(key=lambda x: x.merit, reverse=True)
-
-    queue.get = mock_get
-    queue.meritsort = mock_meritsort
-    queue.reset = Mock()
-
-    return queue
-
-
-@pytest.fixture
-def scheduler(mock_queue, mock_ephemeris):
-    """Create a DumbQueueScheduler instance."""
-    scheduler = DumbQueueScheduler(queue=mock_queue, year=2021, day=4, length=1)
-    scheduler.queue.ephem = mock_ephemeris
-    return scheduler
 
 
 class TestDumbQueueSchedulerInit:
@@ -159,10 +62,10 @@ class TestDumbQueueSchedulerSchedule:
         # Plan should be reset after schedule
         assert isinstance(result, Plan)
 
-    def test_schedule_with_single_target(self, scheduler, mock_queue):
+    def test_schedule_with_single_target(self, scheduler, mock_queue, mock_pointing):
         """Test scheduling with a single target."""
         # Set up mock to return one target then None
-        target = MockPointing(targetid=1, ra=45.0, dec=30.0, merit=100, ssmin=300)
+        target = mock_pointing(targetid=1, ra=45.0, dec=30.0, merit=100, ssmin=300)
         target.begin = int(scheduler.ustart)
         target.end = int(scheduler.ustart + 600)  # 10 minutes
 
@@ -179,12 +82,12 @@ class TestDumbQueueSchedulerSchedule:
         result = scheduler.schedule()
         assert len(result) >= 1
 
-    def test_schedule_with_multiple_targets(self, scheduler):
+    def test_schedule_with_multiple_targets(self, scheduler, mock_pointing):
         """Test scheduling with multiple targets."""
         targets = [
-            MockPointing(targetid=1, ra=45.0, dec=30.0, merit=100, ssmin=300),
-            MockPointing(targetid=2, ra=90.0, dec=-45.0, merit=90, ssmin=300),
-            MockPointing(targetid=3, ra=180.0, dec=60.0, merit=80, ssmin=300),
+            mock_pointing(targetid=1, ra=45.0, dec=30.0, merit=100, ssmin=300),
+            mock_pointing(targetid=2, ra=90.0, dec=-45.0, merit=90, ssmin=300),
+            mock_pointing(targetid=3, ra=180.0, dec=60.0, merit=80, ssmin=300),
         ]
 
         # Set different begin/end times for each
@@ -219,9 +122,9 @@ class TestDumbQueueSchedulerSchedule:
         scheduler.schedule()
         scheduler.queue.get.assert_called()
 
-    def test_schedule_respects_time_window(self, scheduler, mock_ephemeris):
+    def test_schedule_respects_time_window(self, scheduler, mock_pointing):
         """Test that scheduler respects the time window."""
-        target = MockPointing(targetid=1, ra=45.0, dec=30.0, merit=100, ssmin=300)
+        target = mock_pointing(targetid=1, ra=45.0, dec=30.0, merit=100, ssmin=300)
 
         scheduler.queue.get = Mock(return_value=target)
         target.begin = scheduler.ustart
@@ -262,9 +165,9 @@ class TestDumbQueueSchedulerStartTime:
 class TestDumbQueueSchedulerTargetProcessing:
     """Test target processing during scheduling."""
 
-    def test_target_marked_done_after_scheduling(self, scheduler):
+    def test_target_marked_done_after_scheduling(self, scheduler, mock_pointing):
         """Test that targets are marked as done after scheduling."""
-        target = MockPointing(targetid=1, ra=45.0, dec=30.0, merit=100)
+        target = mock_pointing(targetid=1, ra=45.0, dec=30.0, merit=100)
         target.begin = scheduler.ustart
         target.end = scheduler.ustart + 600
         target.done = False
@@ -282,10 +185,10 @@ class TestDumbQueueSchedulerTargetProcessing:
         _ = scheduler.schedule()
         assert target.done is True
 
-    def test_target_position_updated_during_scheduling(self, scheduler):
+    def test_target_position_updated_during_scheduling(self, scheduler, mock_pointing):
         """Test that last position is updated correctly."""
-        target1 = MockPointing(targetid=1, ra=45.0, dec=30.0, merit=100)
-        target2 = MockPointing(targetid=2, ra=90.0, dec=-45.0, merit=90)
+        target1 = mock_pointing(targetid=1, ra=45.0, dec=30.0, merit=100)
+        target2 = mock_pointing(targetid=2, ra=90.0, dec=-45.0, merit=90)
 
         target1.begin = scheduler.ustart
         target1.end = scheduler.ustart + 600
@@ -313,9 +216,9 @@ class TestDumbQueueSchedulerTargetProcessing:
 class TestDumbQueueSchedulerEdgeCases:
     """Test edge cases and error handling."""
 
-    def test_zero_duration_target(self, scheduler):
+    def test_zero_duration_target(self, scheduler, mock_pointing):
         """Test handling of zero-duration targets."""
-        target = MockPointing(targetid=1, ra=45.0, dec=30.0, merit=100)
+        target = mock_pointing(targetid=1, ra=45.0, dec=30.0, merit=100)
         target.begin = scheduler.ustart
         target.end = scheduler.ustart  # Zero duration
 
@@ -323,9 +226,9 @@ class TestDumbQueueSchedulerEdgeCases:
 
         scheduler.schedule()
 
-    def test_negative_duration_target(self, scheduler):
+    def test_negative_duration_target(self, scheduler, mock_pointing):
         """Test handling of negative-duration targets."""
-        target = MockPointing(targetid=1, ra=45.0, dec=30.0, merit=100)
+        target = mock_pointing(targetid=1, ra=45.0, dec=30.0, merit=100)
         target.begin = scheduler.ustart
         target.end = scheduler.ustart - 100  # Negative duration
 
@@ -333,11 +236,11 @@ class TestDumbQueueSchedulerEdgeCases:
 
         scheduler.schedule()
 
-    def test_very_long_scheduling_window(self, scheduler):
+    def test_very_long_scheduling_window(self, scheduler, mock_pointing):
         """Test scheduling with very long time window."""
         scheduler.length = 365  # Full year
 
-        target = MockPointing(targetid=1, ra=45.0, dec=30.0, merit=100)
+        target = mock_pointing(targetid=1, ra=45.0, dec=30.0, merit=100)
         target.begin = scheduler.ustart
         target.end = scheduler.ustart + 600
 
@@ -346,10 +249,10 @@ class TestDumbQueueSchedulerEdgeCases:
         result = scheduler.schedule()
         assert isinstance(result, Plan)
 
-    def test_many_targets_in_queue(self, scheduler):
+    def test_many_targets_in_queue(self, scheduler, mock_pointing):
         """Test scheduling with many targets."""
         targets = [
-            MockPointing(
+            mock_pointing(
                 targetid=i,
                 ra=(i * 10) % 360,
                 dec=(i - 50) % 90 - 45,
@@ -383,15 +286,15 @@ class TestDumbQueueSchedulerEdgeCases:
 class TestDumbQueueSchedulerIntegration:
     """Integration tests."""
 
-    def test_full_scheduling_workflow(self, scheduler, mock_queue):
+    def test_full_scheduling_workflow(self, scheduler, mock_pointing):
         """Test complete scheduling workflow."""
         # Need to initialize ustart first
         scheduler.ustart = Time("2021-01-04 00:00:00", scale="utc").unix
 
         # Create real targets
         targets = [
-            MockPointing(targetid=1, ra=45.0, dec=30.0, merit=100),
-            MockPointing(targetid=2, ra=90.0, dec=-45.0, merit=90),
+            mock_pointing(targetid=1, ra=45.0, dec=30.0, merit=100),
+            mock_pointing(targetid=2, ra=90.0, dec=-45.0, merit=90),
         ]
 
         for i, target in enumerate(targets):
@@ -418,11 +321,11 @@ class TestDumbQueueSchedulerIntegration:
             assert entry.begin >= scheduler.ustart
             assert entry.end <= scheduler.ustart + scheduler.length * DAY_SECONDS
 
-    def test_scheduling_with_position_tracking(self, scheduler):
+    def test_scheduling_with_position_tracking(self, scheduler, mock_pointing):
         """Test that position is correctly tracked across targets."""
-        target1 = MockPointing(targetid=1, ra=45.0, dec=30.0, merit=100)
-        target2 = MockPointing(targetid=2, ra=90.0, dec=-45.0, merit=90)
-        target3 = MockPointing(targetid=3, ra=180.0, dec=60.0, merit=80)
+        target1 = mock_pointing(targetid=1, ra=45.0, dec=30.0, merit=100)
+        target2 = mock_pointing(targetid=2, ra=90.0, dec=-45.0, merit=90)
+        target3 = mock_pointing(targetid=3, ra=180.0, dec=60.0, merit=80)
 
         targets = [target1, target2, target3]
 
@@ -450,12 +353,12 @@ class TestDumbQueueSchedulerIntegration:
         # First position should be (0, 0) - default start
         assert positions[0] == (0.0, 0.0)
 
-    def test_plan_entries_in_sequence(self, scheduler):
+    def test_plan_entries_in_sequence(self, scheduler, mock_pointing):
         """Test that plan entries are in time sequence."""
         targets = [
-            MockPointing(targetid=1, ra=45.0, dec=30.0, merit=100),
-            MockPointing(targetid=2, ra=90.0, dec=-45.0, merit=90),
-            MockPointing(targetid=3, ra=180.0, dec=60.0, merit=80),
+            mock_pointing(targetid=1, ra=45.0, dec=30.0, merit=100),
+            mock_pointing(targetid=2, ra=90.0, dec=-45.0, merit=90),
+            mock_pointing(targetid=3, ra=180.0, dec=60.0, merit=80),
         ]
 
         base_time = scheduler.ustart
@@ -484,9 +387,9 @@ class TestDumbQueueSchedulerIntegration:
 class TestDumbQueueSchedulerStateManagement:
     """Test state management and plan reuse."""
 
-    def test_ppst_reset_between_runs(self, scheduler):
+    def test_ppst_reset_between_runs(self, scheduler, mock_pointing):
         """Test that plan is reset between scheduling runs."""
-        target = MockPointing(targetid=1, ra=45.0, dec=30.0, merit=100)
+        target = mock_pointing(targetid=1, ra=45.0, dec=30.0, merit=100)
         target.begin = scheduler.ustart
         target.end = scheduler.ustart + 600
 
