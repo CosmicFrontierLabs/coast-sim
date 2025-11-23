@@ -124,8 +124,12 @@ class DITL(DITLMixin):
         self.panel = np.zeros(simlen).tolist()
         self.obsid = np.zeros(simlen).astype(int).tolist()
         self.batterylevel = np.zeros(simlen).tolist()
+        self.charge_state = np.zeros(simlen).astype(int).tolist()
         self.batteryalert = np.zeros(simlen).tolist()
         self.power = np.zeros(simlen).tolist()
+        # Subsystem power tracking
+        self.power_bus = np.zeros(simlen).tolist()
+        self.power_payload = np.zeros(simlen).tolist()
 
         # Set up initial target in ACS
         self.ppt = self.ppst.which_ppt(self.utime[0])
@@ -149,7 +153,9 @@ class DITL(DITLMixin):
             mode = self.acs.get_mode(self.utime[i])
 
             # Determine the power usage in Watts based on mode from config
-            power_usage = self.spacecraft_bus.power(mode) + self.payload.power(mode)
+            bus_power = self.spacecraft_bus.power(mode, in_eclipse=self.acs.in_eclipse)
+            payload_power = self.payload.power(mode, in_eclipse=self.acs.in_eclipse)
+            power_usage = bus_power + payload_power
 
             # Calculate solar panel illumination and power (more efficient than separate calls)
             panel_illumination, panel_power = self.solar_panel.illumination_and_power(
@@ -165,12 +171,15 @@ class DITL(DITLMixin):
             self.mode[i] = mode
             self.panel[i] = panel_illumination
             self.power[i] = power_usage
+            self.power_bus[i] = bus_power
+            self.power_payload[i] = payload_power
             # Drain the battery based on power usage
             self.battery.drain(power_usage, self.step_size)
             # Charge the battery based on solar panel power
             self.battery.charge(panel_power, self.step_size)
-            # Record battery level
+            # Record battery level and charge state
             self.batterylevel[i] = self.battery.battery_level
+            self.charge_state[i] = self.battery.charge_state
             self.obsid[i] = obsid
 
         return True

@@ -1,5 +1,7 @@
 from pydantic import BaseModel, model_validator
 
+from .common import ChargeState
+
 
 class Battery(BaseModel):
     """It's a fake battery"""
@@ -32,6 +34,23 @@ class Battery(BaseModel):
         super().__init__(**data)
 
         self.charge_level = self.watthour  # Start fully charged
+        self._last_charge_power = 0.0  # Track last charge power for state determination
+
+    @property
+    def charge_state(self) -> ChargeState:
+        """Get the current charging state of the battery.
+
+        Returns:
+            ChargeState.NOT_CHARGING: No charging occurring
+            ChargeState.CHARGING: Battery is being charged and not at full capacity
+            ChargeState.TRICKLE: Battery is at 100% capacity and charging is occurring
+        """
+        if self._last_charge_power <= 0:
+            return ChargeState.NOT_CHARGING
+        elif self.battery_level >= 1.0:
+            return ChargeState.TRICKLE
+        else:
+            return ChargeState.CHARGING
 
     @property
     def battery_alert(self):
@@ -51,6 +70,7 @@ class Battery(BaseModel):
 
     def charge(self, power, period):
         """Charge the battery with <power> Watts for <period> seconds"""
+        self._last_charge_power = power
         if self.charge_level < self.watthour:
             # Battery is not fully charged
             wattsec = power * period
