@@ -39,7 +39,7 @@ class Config(BaseModel):
         if "battery_level" not in self.fault_management.thresholds:
             # Yellow alert at minimum allowed charge level (1.0 - max_depth_of_discharge)
             yellow = 1.0 - self.battery.max_depth_of_discharge
-            # Red alert at 10% additional discharge beyond max_depth_of_discharge
+            # Red alert at 10% below the minimum allowed charge level
             red = max(yellow - 0.1, 0.0)  # Ensure non-negative
             self.fault_management.add_threshold(
                 name="battery_level", yellow=yellow, red=red, direction="below"
