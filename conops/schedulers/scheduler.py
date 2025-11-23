@@ -1,5 +1,3 @@
-from typing import cast
-
 import numpy as np
 import rust_ephem
 
@@ -21,7 +19,6 @@ class DumbScheduler:
             raise ValueError("Constraint must be provided to DumbScheduler")
 
         self.mintime = 5 * 60  # seconds (5 minutes)
-        # self.maxtime = 240*60 # example maximum (commented out in original)
         self.constraint = constraint
         self.ephem: rust_ephem.TLEEphemeris = self.constraint.ephem  # type: ignore[assignment]
         if self.ephem is None:
@@ -32,16 +29,7 @@ class DumbScheduler:
         self.days = days
         self.saa: SAA | None = None  # will be created lazily
         self.targlist: TargetList = TargetList()
-        self.gimbled = False
-        self.sidemount = False
-        # Get sun/anti-sun constraints from Constraint class
-        self.suncons = cast(
-            rust_ephem.SunConstraint, self.constraint.sun_constraint
-        ).min_angle
-        self.antisuncons = cast(
-            rust_ephem.SunConstraint, self.constraint.anti_sun_constraint
-        ).max_angle
-        self.step_size = 60
+        self.step_size = self.ephem.step_size
         self.issurvey = False
         self.config: Config | None = None  # optional: can be set externally
 
@@ -76,7 +64,7 @@ class DumbScheduler:
 
             # iterate until we find one suitable candidate at this time index
             for task in candidates:
-                self.current_time = ephem_utime[i]
+                current_time = ephem_utime[i]
 
                 # Determine slew time based on prior plan entry (if any)
                 if self.ppst and len(self.ppst) > 0:
@@ -91,8 +79,8 @@ class DumbScheduler:
                     slewtime = self._get_default_slew()
 
                 # Check constraints for the observation window
-                obs_start = self.current_time
-                obs_end = self.current_time + task.exptime + slewtime
+                obs_start = current_time
+                obs_end = current_time + task.exptime + slewtime
 
                 # Get ephemeris time indices for observation window
                 begin_idx = self.ephem.index(dtutcfromtimestamp(obs_start))
@@ -110,17 +98,16 @@ class DumbScheduler:
                 goodtime = np.bitwise_not(in_occult).astype(int).tolist()
 
                 # compute contiguous available observation length from start
-                obslen = -self.step_size
+                obslen = 0
                 for k in range(len(goodtime)):
                     if goodtime[k] == 1:
                         obslen += self.step_size
                     else:
                         break
 
-                # Check observation length relative to min time + slewtime and requested exposure
+                # Check observation length relative to min time + slewtime
                 if (
                     obslen >= (self.mintime + slewtime)
-                    and obslen <= (task.exptime + slewtime)
                     and task.targetid not in self.scheduled
                 ):
                     found = True
@@ -131,9 +118,7 @@ class DumbScheduler:
 
             if not found:
                 print(
-                    "WARNING: No target found at time index %s (utime=%s); stopping scheduling",
-                    i,
-                    ephem_utime[i],
+                    f"WARNING: No target found at time index {i} (utime={ephem_utime[i]}); stopping scheduling"
                 )
                 break
 
@@ -143,12 +128,11 @@ class DumbScheduler:
                 constraint=self.constraint,
                 acs_config=(
                     self.config.spacecraft_bus.attitude_control
-                    if hasattr(self, "config") and self.config is not None
+                    if self.config is not None
                     else None
                 ),
             )
 
-            ppt.suncons = self.suncons
             ppt.ephem = self.ephem
             # keep entry angles in units that other code expects (note: original used target.ra)
             ppt.ra = selected_target.ra
@@ -191,4 +175,4 @@ class DumbScheduler:
             # Move to next index for scheduling after this observation
             i = self.ephem.index(dtutcfromtimestamp(ppt.end))
 
-        print("Scheduled %d targets", len(self.ppst))
+        print(f"Scheduled {len(self.ppst)} targets")
