@@ -131,8 +131,12 @@ class SolarPanel(BaseModel):
 
         if self.sidemount:
             # Side-mounted panel with optimal roll assumption
-            # The panel normal is perpendicular to boresight (90°)
-            # cant_x tilts the panel toward (+) or away from (-) the boresight
+            # The panel normal is perpendicular to boresight (90°).
+            # For side-mounted panels, only cant_x is relevant because the cant_y component
+            # does not affect the tilt toward or away from the boresight in the side-mount geometry.
+            # This is a deliberate change from previous behavior, where both cant_x and cant_y
+            # were combined. If this is not the intended behavior, consider reverting to using
+            # np.hypot(self.cant_x, self.cant_y) here.
             panel_offset_angle = 90.0 - self.cant_x
         else:
             # Body-mounted panel: panel normal aligned with boresight, with cant offset
