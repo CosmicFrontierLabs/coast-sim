@@ -82,8 +82,8 @@ class FaultThreshold(BaseModel):
 
     Attributes:
         name: Parameter name (e.g. 'battery_level').
-        yellow: Value at/ beyond which a YELLOW fault is flagged.
-        red: Value at/ beyond which a RED fault is flagged.
+        yellow: Value at or beyond which a YELLOW fault is flagged.
+        red: Value at or beyond which a RED fault is flagged.
         direction: 'below' or 'above' indicating fault when value passes *below* or *above* limit.
     """
 
