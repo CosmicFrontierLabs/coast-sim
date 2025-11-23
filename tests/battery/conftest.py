@@ -13,6 +13,30 @@ from conops.solar_panel import SolarPanel, SolarPanelSet
 
 
 @pytest.fixture
+def default_battery():
+    """Fixture for a default Battery instance."""
+    return Battery()
+
+
+@pytest.fixture
+def battery_with_custom_threshold():
+    """Fixture for a Battery instance with custom recharge threshold."""
+    return Battery(recharge_threshold=0.90)
+
+
+@pytest.fixture
+def battery_with_dod():
+    """Fixture for a Battery instance with max depth of discharge."""
+    return Battery(max_depth_of_discharge=0.7)
+
+
+@pytest.fixture
+def battery_with_dod_and_threshold():
+    """Fixture for a Battery instance with both max depth of discharge and recharge threshold."""
+    return Battery(max_depth_of_discharge=0.7, recharge_threshold=0.95)
+
+
+@pytest.fixture
 def mock_constraint():
     """Create a mock constraint."""
     constraint = Mock(spec=Constraint)
@@ -143,9 +167,3 @@ def batt_20wh():
 def batt_1wh():
     """Create a battery with 1 watthour capacity."""
     return Battery(amphour=1, voltage=1, watthour=1)
-
-
-@pytest.fixture
-def default_battery():
-    """Create a default battery instance."""
-    return Battery()

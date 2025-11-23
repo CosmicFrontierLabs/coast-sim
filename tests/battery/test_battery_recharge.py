@@ -8,7 +8,6 @@ from astropy.coordinates import angular_separation  # type: ignore[import-untype
 
 from conops.battery import Battery
 from conops.common import ACSMode
-from conops.constraint import Constraint
 from conops.emergency_charging import EmergencyCharging
 from conops.pointing import Pointing
 from conops.queue_ditl import QueueDITL
@@ -18,45 +17,50 @@ from conops.solar_panel import SolarPanel, SolarPanelSet
 class TestBattery:
     """Test Battery class emergency recharge functionality."""
 
-    def test_default_recharge_threshold(self):
+    def test_default_recharge_threshold(self, default_battery):
         """Test that recharge_threshold defaults to 0.95 (95%)."""
-        battery = Battery()
-        assert battery.recharge_threshold == 0.95
+        assert default_battery.recharge_threshold == 0.95
 
-    def test_custom_recharge_threshold(self):
+    def test_custom_recharge_threshold(self, battery_with_custom_threshold):
         """Test that custom recharge_threshold can be set."""
-        battery = Battery(recharge_threshold=0.90)
-        assert battery.recharge_threshold == 0.90
+        assert battery_with_custom_threshold.recharge_threshold == 0.90
 
-    def test_battery_alert_triggers_below_max_depth_of_discharge(self):
+    def test_battery_alert_triggers_below_max_depth_of_discharge(
+        self, battery_with_dod
+    ):
         """Test that battery_alert triggers when below max_depth_of_discharge."""
-        battery = Battery(max_depth_of_discharge=0.7)
-        battery.charge_level = battery.watthour * 0.65  # 65% SOC
-        assert battery.battery_alert is True
-        assert battery.emergency_recharge is True
+        battery_with_dod.charge_level = battery_with_dod.watthour * 0.65  # 65% SOC
+        assert battery_with_dod.battery_alert is True
+        assert battery_with_dod.emergency_recharge is True
 
-    def test_battery_alert_continues_until_recharge_threshold(self):
+    def test_battery_alert_continues_until_recharge_threshold(
+        self, battery_with_dod_and_threshold
+    ):
         """Test that battery_alert continues until recharge_threshold is reached."""
-        battery = Battery(max_depth_of_discharge=0.7, recharge_threshold=0.95)
-        battery.charge_level = battery.watthour * 0.65  # Trigger alert
-        assert battery.battery_alert is True
+        battery_with_dod_and_threshold.charge_level = (
+            battery_with_dod_and_threshold.watthour * 0.65
+        )  # Trigger alert
+        assert battery_with_dod_and_threshold.battery_alert is True
 
         # Charge to 90% - should still be in alert
-        battery.charge_level = battery.watthour * 0.90
-        assert battery.battery_alert is True
-        assert battery.emergency_recharge is True
+        battery_with_dod_and_threshold.charge_level = (
+            battery_with_dod_and_threshold.watthour * 0.90
+        )
+        assert battery_with_dod_and_threshold.battery_alert is True
+        assert battery_with_dod_and_threshold.emergency_recharge is True
 
         # Charge to 95% - should clear alert
-        battery.charge_level = battery.watthour * 0.95
-        assert battery.battery_alert is False
-        assert battery.emergency_recharge is False
+        battery_with_dod_and_threshold.charge_level = (
+            battery_with_dod_and_threshold.watthour * 0.95
+        )
+        assert battery_with_dod_and_threshold.battery_alert is False
+        assert battery_with_dod_and_threshold.emergency_recharge is False
 
-    def test_battery_alert_false_when_above_threshold(self):
+    def test_battery_alert_false_when_above_threshold(self, battery_with_dod):
         """Test that battery_alert is False when battery level is sufficient."""
-        battery = Battery(max_depth_of_discharge=0.7)
-        battery.charge_level = battery.watthour * 0.80  # 80% SOC
-        assert battery.battery_alert is False
-        assert battery.emergency_recharge is False
+        battery_with_dod.charge_level = battery_with_dod.watthour * 0.80  # 80% SOC
+        assert battery_with_dod.battery_alert is False
+        assert battery_with_dod.emergency_recharge is False
 
 
 class TestACSMode:
@@ -777,69 +781,6 @@ class TestEmergencyCharging:
 class TestQueueDITLEmergencyCharging:
     """Test QueueDITL emergency charging functionality."""
 
-    @pytest.fixture
-    def mock_config(self):
-        """Create a mock config with required components."""
-        config = Mock()
-        config.constraint = Mock(spec=Constraint)
-        config.constraint.inoccult = Mock(return_value=False)
-        config.constraint.ephem = Mock()  # Add ephem for Pointing initialization
-        # Add panel_constraint with solar_panel for EmergencyCharging initialization
-        config.constraint.panel_constraint = Mock()
-        config.constraint.panel_constraint.solar_panel = Mock(spec=SolarPanel)
-        return config
-
-    @pytest.fixture
-    def queue_ditl(self, mock_config):
-        """Create a QueueDITL instance with mocked dependencies."""
-
-        def mock_ditl_init(self, config=None):
-            """Mock DITLMixin.__init__ that sets config."""
-            self.config = config
-
-        with patch(
-            "conops.queue_ditl.DITLMixin.__init__",
-            side_effect=mock_ditl_init,
-            autospec=False,
-        ):
-            ditl = QueueDITL(config=mock_config)
-            ditl.constraint = mock_config.constraint
-
-            # Mock ephemeris
-            ditl.ephem = Mock()
-            ditl.ephem.index.return_value = np.array([0])
-
-            # Mock sun and earth for eclipse check
-            mock_sun = Mock()
-            mock_earth = Mock()
-            mock_sun.separation.return_value = np.array([2.0])  # Not in eclipse
-
-            # Create mock list-like objects for sun and earth
-            sun_list = Mock()
-            sun_list.__getitem__ = Mock(return_value=mock_sun)
-            earth_list = Mock()
-            earth_list.__getitem__ = Mock(return_value=mock_earth)
-
-            ditl.ephem.sun = sun_list
-            ditl.ephem.earth = earth_list
-            ditl.ephem.earth_radius_angle = np.array([1.0])
-
-            # Mock ACS
-            ditl.acs = Mock()
-            ditl.acs.solar_panel = Mock()
-            ditl.acs.solar_panel.optimal_charging_pointing = Mock(
-                return_value=(180.0, 0.0)
-            )
-
-            # Initialize the tracking variables (already done in __init__ but ensure they exist)
-            if not hasattr(ditl, "charging_ppt"):
-                ditl.charging_ppt = None
-            if not hasattr(ditl, "emergency_charging"):
-                ditl.emergency_charging = Mock(spec=EmergencyCharging)
-                ditl.emergency_charging.next_charging_obsid = 999000
-
-            return ditl
-
     def test_initialization_adds_charging_variables(self, mock_config):
         """Test that QueueDITL initializes charging-related variables."""
 
@@ -892,16 +833,6 @@ class TestQueueDITLEmergencyCharging:
 
 class TestQueueDITLIntegration:
     """Integration tests for emergency charging in DITL loop."""
-
-    @pytest.fixture
-    def mock_battery(self):
-        """Create a mock battery."""
-        battery = Mock(spec=Battery)
-        battery.battery_alert = False
-        battery.battery_level = 0.80
-        battery.drain = Mock()
-        battery.charge = Mock()
-        return battery
 
     def test_mode_set_to_charging_when_battery_alert_and_charging_ppt(
         self, mock_battery

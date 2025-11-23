@@ -44,6 +44,9 @@ class ACS:
         self.constraint = constraint
         self.config = config
 
+        # Set payload constraint if available
+        self.payload_constraint = getattr(config.payload, "constraint", None)
+
         # Current state
         self.ra = 0.0
         self.dec = 0.0
@@ -501,6 +504,15 @@ class ACS:
     def _update_mode(self, utime: float) -> None:
         """Update ACS mode based on current slew/pass state."""
         self.acsmode = self.get_mode(utime)
+
+    def _select_active_constraint(self, utime: float) -> None:
+        """Select between base and payload constraints based on ACS mode."""
+        if self.payload_constraint is not None and self.acsmode == ACSMode.SCIENCE:
+            self.constraint = self.payload_constraint
+        else:
+            # For non-science modes, use the base constraint
+            # The base constraint is set during initialization
+            pass
 
     def _check_constraints(self, utime: float) -> None:
         """Check and log constraint violations for current pointing."""
