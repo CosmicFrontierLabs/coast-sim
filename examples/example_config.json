@@ -21,7 +21,7 @@
         "heater": {
             "name": "Bus Heaters",
             "power_draw": {
-                "nominal_power": 150.0,
+                "nominal_power": 100.0,
                 "peak_power": 300.0,
                 "power_mode": {},
                 "eclipse_power": null,
@@ -99,8 +99,8 @@
         },
         "panel_constraint": {
             "type": "sun",
-            "min_angle": 45.0,
-            "max_angle": 135.0
+            "min_angle": 5.0,
+            "max_angle": 175.0
         }
     },
     "ground_stations": {
@@ -180,7 +180,7 @@
             "battery_level": {
                 "name": "battery_level",
                 "yellow": 0.5,
-                "red": 0.4,
+                "red": 0.3,
                 "direction": "below"
             }
         },
