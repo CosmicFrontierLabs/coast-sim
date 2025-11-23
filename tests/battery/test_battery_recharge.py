@@ -4,7 +4,6 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
-from astropy.coordinates import angular_separation  # type: ignore[import-untyped]
 
 from conops import (
     ACSMode,
@@ -14,6 +13,7 @@ from conops import (
     QueueDITL,
     SolarPanel,
     SolarPanelSet,
+    angular_separation,
 )
 
 

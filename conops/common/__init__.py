@@ -7,6 +7,7 @@ from .common import (
 )
 from .enums import ACSCommandType, ACSMode, ChargeState
 from .vector import (
+    angular_separation,
     great_circle,
     radec2vec,
     roll_over_angle,
@@ -30,4 +31,5 @@ __all__ = [
     "separation",
     "unixtime2date",
     "unixtime2yearday",
+    "angular_separation",
 ]

@@ -2,6 +2,7 @@ from .common import (
     ACSCommandType,
     ACSMode,
     ChargeState,
+    angular_separation,
     dtutcfromtimestamp,
     givename,
     great_circle,
@@ -64,6 +65,7 @@ from .targets import (
 )
 
 __all__ = [
+    "angular_separation",
     "ACS",
     "ACSCommand",
     "ACSCommandType",

@@ -68,6 +68,17 @@ def separation(one, two):
     return np.arccos(np.dot(onevec, twovec))
 
 
+def angular_separation(ra1, dec1, ra2, dec2):
+    """Calculate the angular distance between two RA,Dec values in degrees."""
+    ra1_rad = np.deg2rad(ra1)
+    dec1_rad = np.deg2rad(dec1)
+    ra2_rad = np.deg2rad(ra2)
+    dec2_rad = np.deg2rad(dec2)
+
+    sep_rad = separation([ra1_rad, dec1_rad], [ra2_rad, dec2_rad])
+    return np.rad2deg(sep_rad)
+
+
 def great_circle(ra1, dec1, ra2, dec2, npts=100):
     """Return Great Circle Path between two coordinates"""
     g = Geod(ellps="sphere")

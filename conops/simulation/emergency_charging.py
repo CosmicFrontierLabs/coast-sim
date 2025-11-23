@@ -2,9 +2,9 @@
 
 import numpy as np
 import rust_ephem
-from astropy.coordinates import angular_separation  # type: ignore[import-untyped]
 
 from ..common import unixtime2date
+from ..common.vector import angular_separation
 from ..config import AttitudeControlSystem, Constraint, SolarPanelSet
 from ..targets import Pointing
 

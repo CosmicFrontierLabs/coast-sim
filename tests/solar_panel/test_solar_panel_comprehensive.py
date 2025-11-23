@@ -1,10 +1,10 @@
 """Additional comprehensive tests for solar_panel.py to achieve near 100% coverage."""
 
+from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
-from astropy.time import Time  # type: ignore[import-untyped]
 
 from conops import SolarPanel, SolarPanelSet
 
@@ -22,7 +22,10 @@ class TestSolarPanelSetCoverage:
         )
         assert result_scalar == 0.0
 
-        times = Time([1514764800.0, 1514764860.0], format="unix")
+        times = [
+            datetime.fromtimestamp(1514764800.0, tz=timezone.utc),
+            datetime.fromtimestamp(1514764860.0, tz=timezone.utc),
+        ]
         result_array = panel_set.panel_illumination_fraction(
             time=times, ephem=ephem, ra=0.0, dec=0.0
         )
@@ -305,7 +308,7 @@ class TestSolarPanelSetIllumination:
         """Test illumination with single panel."""
         panel_set = SolarPanelSet(panels=[SolarPanel()])
         mock_ephem = mock_ephemeris
-        mock_time = Time("2018-01-01", format="iso")
+        mock_time = datetime(2018, 1, 1, tzinfo=timezone.utc)
 
         with patch.object(
             SolarPanel,
@@ -328,7 +331,7 @@ class TestSolarPanelSetIllumination:
         ]
         panel_set = SolarPanelSet(panels=panels)
         mock_ephem = mock_ephemeris
-        mock_time = Time("2018-01-01", format="iso")
+        mock_time = datetime(2018, 1, 1, tzinfo=timezone.utc)
 
         with patch.object(
             SolarPanel,
@@ -349,7 +352,7 @@ class TestSolarPanelSetIllumination:
         panels = [SolarPanel(max_power=0.0)]
         panel_set = SolarPanelSet(panels=panels)
         mock_ephem = mock_ephemeris
-        mock_time = Time("2018-01-01", format="iso")
+        mock_time = datetime(2018, 1, 1, tzinfo=timezone.utc)
 
         with patch.object(
             SolarPanel,
@@ -375,7 +378,7 @@ class TestSolarPanelSetPower:
             conversion_efficiency=1.0,
         )
         mock_ephem = mock_ephemeris
-        mock_time = Time("2018-01-01", format="iso")
+        mock_time = datetime(2018, 1, 1, tzinfo=timezone.utc)
 
         with patch.object(
             SolarPanel,
@@ -399,7 +402,7 @@ class TestSolarPanelSetPower:
         ]
         panel_set = SolarPanelSet(panels=panels)
         mock_ephem = mock_ephemeris
-        mock_time = Time("2018-01-01", format="iso")
+        mock_time = datetime(2018, 1, 1, tzinfo=timezone.utc)
 
         with patch.object(
             SolarPanel,
@@ -425,7 +428,7 @@ class TestSolarPanelSetPower:
             conversion_efficiency=0.88,
         )
         mock_ephem = mock_ephemeris
-        mock_time = Time("2018-01-01", format="iso")
+        mock_time = datetime(2018, 1, 1, tzinfo=timezone.utc)
 
         with patch.object(
             SolarPanel,
@@ -445,7 +448,7 @@ class TestSolarPanelSetPower:
         """Test power with empty panel list."""
         panel_set = SolarPanelSet(panels=[])
         mock_ephem = mock_ephemeris
-        mock_time = Time("2018-01-01", format="iso")
+        mock_time = datetime(2018, 1, 1, tzinfo=timezone.utc)
 
         result = panel_set.power(
             time=mock_time,
