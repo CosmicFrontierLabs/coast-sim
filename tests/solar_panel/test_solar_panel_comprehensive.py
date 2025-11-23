@@ -1936,7 +1936,7 @@ class TestIlluminationAndPower:
 
         Expected calculation:
         - sunangle = 90°
-        - cant_mag = 45°
+        - cant_x = 45°
         - panel_offset_angle = 90 - 45 = 45°
         - panel_sun_angle = 180 - 90 - 45 = 45°
         - illumination = cos(45°) ≈ 0.7071
