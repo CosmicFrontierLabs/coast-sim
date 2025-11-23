@@ -55,7 +55,7 @@ from conops import Config, QueueDITL
 from rust_ephem import TLEEphemeris
 
 # Load configuration
-config = Config.model_validate_json(open("example_config.json").read())
+config = Config.from_json_file("example_config.json")
 
 # Set simulation period
 begin = datetime(2025, 11, 1)

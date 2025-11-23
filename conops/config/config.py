@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from pydantic import BaseModel
 
 from .battery import Battery
@@ -39,3 +41,14 @@ class Config(BaseModel):
             self.fault_management.add_threshold(
                 name="battery_level", yellow=yellow, red=red, direction="below"
             )
+
+    @classmethod
+    def from_json_file(cls, filepath: str) -> Config:
+        """Load configuration from a JSON file."""
+        with open(filepath) as f:
+            return cls.model_validate_json(f.read())
+
+    def to_json_file(self, filepath: str) -> None:
+        """Save configuration to a JSON file."""
+        with open(filepath, "w") as f:
+            f.write(self.model_dump_json(indent=4))
