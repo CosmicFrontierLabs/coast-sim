@@ -1,77 +1,9 @@
 """Unit tests for ACS Safe Mode functionality."""
 
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
-import pytest
-
-from conops.acs import ACS, ACSCommand, ACSCommandType
+from conops.acs import ACSCommand, ACSCommandType
 from conops.common import ACSMode
-from conops.constraint import Constraint
-
-
-class DummyEphemeris:
-    """Minimal mock ephemeris for testing."""
-
-    def __init__(self):
-        self.step_size = 1.0
-        # Mock both earth and sun positions
-        self.earth = [Mock(ra=Mock(deg=0.0), dec=Mock(deg=0.0))]
-        self.sun = [Mock(ra=Mock(deg=45.0), dec=Mock(deg=23.5))]
-
-    def index(self, time):
-        return 0
-
-
-@pytest.fixture
-def mock_ephem():
-    """Create a mock ephemeris object."""
-    return DummyEphemeris()
-
-
-@pytest.fixture
-def mock_constraint(mock_ephem):
-    """Create a mock constraint."""
-    constraint = Mock(spec=Constraint)
-    constraint.ephem = mock_ephem
-    constraint.panel_constraint = Mock()
-    constraint.panel_constraint.solar_panel = Mock()
-    constraint.inoccult = Mock(return_value=False)
-    constraint.in_eclipse = Mock(return_value=False)
-    return constraint
-
-
-@pytest.fixture
-def mock_config(mock_ephem):
-    """Create a mock config."""
-    config = Mock()
-    config.ground_stations = Mock()
-    config.solar_panel = Mock()
-    # Mock optimal_charging_pointing to return current Sun position dynamically
-    # This lambda captures mock_ephem and reads current sun position on each call
-    config.solar_panel.optimal_charging_pointing = Mock(
-        side_effect=lambda utime, ephem: (ephem.sun[0].ra.deg, ephem.sun[0].dec.deg)
-    )
-    config.spacecraft_bus = Mock()
-    config.spacecraft_bus.attitude_control = Mock()
-    # Mock predict_slew to return distance and path
-    config.spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))
-    # Mock slew_time to return a reasonable slew duration
-    config.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
-    return config
-
-
-@pytest.fixture
-def acs(mock_constraint, mock_config):
-    """Create an ACS instance with mocked dependencies."""
-    with patch("conops.acs.PassTimes") as mock_passtimes:
-        mock_pt = Mock()
-        mock_pt.passes = []
-        mock_pt.next_pass = Mock(return_value=None)
-        mock_pt.__iter__ = Mock(return_value=iter([]))
-        mock_passtimes.return_value = mock_pt
-        acs_instance = ACS(constraint=mock_constraint, config=mock_config)
-        acs_instance.passrequests = mock_pt
-        return acs_instance
 
 
 class TestSafeModeInitialization:

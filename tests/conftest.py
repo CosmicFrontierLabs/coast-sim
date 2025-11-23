@@ -96,3 +96,77 @@ def acs(mock_constraint, mock_config):
         acs_instance = ACS(constraint=mock_constraint, config=mock_config)
         acs_instance.passrequests = mock_pt
         return acs_instance
+
+
+@pytest.fixture
+def base_constraint():
+    """Create a mock base constraint for config."""
+    constraint = Mock(spec=Constraint)
+    ephem = Mock()
+    ephem.step_size = 60
+    # Mock earth and sun arrays
+    earth_mock = Mock()
+    earth_mock.ra = Mock(deg=0.0)
+    earth_mock.dec = Mock(deg=0.0)
+    ephem.earth = [earth_mock]
+    ephem.index = Mock(return_value=0)
+    constraint.ephem = ephem
+    constraint.in_eclipse = Mock(return_value=False)
+    constraint.inoccult = Mock(return_value=False)
+    return constraint
+
+
+@pytest.fixture
+def payload_constraint():
+    """Create a mock constraint for payload."""
+    constraint = Mock(spec=Constraint)
+    ephem = Mock()
+    ephem.step_size = 60
+    # Mock earth and sun arrays
+    earth_mock = Mock()
+    earth_mock.ra = Mock(deg=0.0)
+    earth_mock.dec = Mock(deg=0.0)
+    ephem.earth = [earth_mock]
+    ephem.index = Mock(return_value=0)
+    constraint.ephem = ephem
+    constraint.in_eclipse = Mock(return_value=False)
+    constraint.inoccult = Mock(return_value=False)
+    return constraint
+
+
+@pytest.fixture
+def config_with_payload_constraint(base_constraint, payload_constraint):
+    """Create a config with base constraint and payload override."""
+    from conops.battery import Battery
+    from conops.config import Config
+    from conops.groundstation import GroundStationRegistry
+    from conops.instrument import Payload
+    from conops.solar_panel import SolarPanelSet
+    from conops.spacecraft_bus import SpacecraftBus
+
+    spacecraft_bus = Mock(spec=SpacecraftBus)
+    spacecraft_bus.attitude_control = Mock()
+    spacecraft_bus.attitude_control.predict_slew = Mock(
+        return_value=(0.0, (Mock(), Mock()))
+    )
+    spacecraft_bus.attitude_control.slew_time = Mock(return_value=10.0)
+
+    payload = Mock(spec=Payload)
+    payload.constraint = payload_constraint
+
+    solar_panel = Mock(spec=SolarPanelSet)
+    solar_panel.optimal_charging_pointing = Mock(return_value=(45.0, 23.5))
+
+    battery = Mock(spec=Battery)
+    ground_stations = Mock(spec=GroundStationRegistry)
+
+    config = Config(
+        name="Test Config",
+        spacecraft_bus=spacecraft_bus,
+        solar_panel=solar_panel,
+        payload=payload,
+        battery=battery,
+        constraint=base_constraint,
+        ground_stations=ground_stations,
+    )
+    return config

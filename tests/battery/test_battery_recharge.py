@@ -152,67 +152,6 @@ class TestSolarPanel:
 class TestEmergencyCharging:
     """Test EmergencyCharging class functionality."""
 
-    @pytest.fixture
-    def mock_constraint(self):
-        """Create a mock constraint."""
-        constraint = Mock(spec=Constraint)
-        constraint.inoccult = Mock(return_value=False)
-        constraint.ephem = Mock()
-        return constraint
-
-    @pytest.fixture
-    def mock_solar_panel(self):
-        """Create a mock solar panel."""
-        panel = Mock(spec=SolarPanel)
-        panel.optimal_charging_pointing = Mock(return_value=(180.0, 0.0))
-        return panel
-
-    @pytest.fixture
-    def mock_acs_config(self):
-        """Create a mock ACS config."""
-        acs_config = Mock()
-        acs_config.slew_time = Mock(return_value=60.0)
-        return acs_config
-
-    @pytest.fixture
-    def emergency_charging(self, mock_constraint, mock_solar_panel, mock_acs_config):
-        """Create an EmergencyCharging instance."""
-        return EmergencyCharging(
-            constraint=mock_constraint,
-            solar_panel=mock_solar_panel,
-            acs_config=mock_acs_config,
-            starting_obsid=999000,
-        )
-
-    @pytest.fixture
-    def mock_ephem(self):
-        """Create a mock ephemeris."""
-        ephem = Mock()
-        from datetime import datetime, timezone
-
-        ephem.timestamp = [datetime.fromtimestamp(1700000000.0, tz=timezone.utc)]
-        ephem.index.return_value = np.array([0])
-
-        # Mock sun and earth for eclipse check
-        mock_sun = Mock()
-        mock_earth = Mock()
-        mock_sun.separation.return_value = np.array([2.0])  # Not in eclipse
-
-        # Create mock list-like objects
-        sun_list = Mock()
-        sun_list.__getitem__ = Mock(return_value=mock_sun)
-        earth_list = Mock()
-        earth_list.__getitem__ = Mock(return_value=mock_earth)
-
-        ephem.sun = sun_list
-        ephem.earth = earth_list
-        ephem.earth_radius_angle = np.array([1.0])
-
-        # Mock in_eclipse to return False (not in eclipse)
-        ephem.in_eclipse = Mock(return_value=False)
-
-        return ephem
-
     def test_initialization(self, mock_constraint, mock_solar_panel, mock_acs_config):
         """Test EmergencyCharging initialization."""
         ec = EmergencyCharging(

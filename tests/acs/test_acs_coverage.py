@@ -2,56 +2,10 @@
 
 from unittest.mock import Mock, patch
 
-import pytest
-
-from conops.acs import ACS, ACSCommand, ACSCommandType
+from conops.acs import ACSCommand, ACSCommandType
 from conops.common import ACSMode
-from conops.constraint import Constraint
 from conops.passes import Pass
 from conops.slew import Slew
-
-
-class DummyEphemeris:
-    """Minimal mock ephemeris for testing."""
-
-    def __init__(self):
-        self.step_size = 1.0
-        self.earth = [Mock(ra=Mock(deg=0.0), dec=Mock(deg=0.0))]
-        self._tle_ephem = Mock()
-
-    def index(self, time):
-        return 0
-
-
-@pytest.fixture
-def mock_ephem():
-    """Create a mock ephemeris object."""
-    return DummyEphemeris()
-
-
-@pytest.fixture
-def mock_constraint(mock_ephem):
-    """Create a mock constraint."""
-    constraint = Mock(spec=Constraint)
-    constraint.ephem = mock_ephem
-    constraint.panel_constraint = Mock()
-    constraint.panel_constraint.solar_panel = Mock()
-    constraint.inoccult = Mock(return_value=False)
-    return constraint
-
-
-@pytest.fixture
-def mock_config():
-    """Create a mock config."""
-    config = Mock()
-    config.ground_stations = Mock()
-    return config
-
-
-@pytest.fixture
-def acs(mock_constraint, mock_config):
-    """Create an ACS instance with mocked dependencies."""
-    return ACS(constraint=mock_constraint, config=mock_config)
 
 
 class TestExecuteCommandCoverage:

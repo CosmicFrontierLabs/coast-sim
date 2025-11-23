@@ -7,21 +7,6 @@ from conops.battery import Battery
 """Unit tests for conops.battery.Battery"""
 
 
-@pytest.fixture
-def default_battery():
-    return Battery()
-
-
-@pytest.fixture
-def batt_1wh():
-    return Battery(amphour=1, voltage=1)  # watthour = 1
-
-
-@pytest.fixture
-def batt_20wh():
-    return Battery(amphour=2, voltage=10)  # watthour = 20
-
-
 class TestBatteryValidation:
     def test_validator_sets_watthour_calculation(self, batt_20wh):
         b = batt_20wh
