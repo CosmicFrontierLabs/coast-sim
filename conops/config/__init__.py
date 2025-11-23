@@ -7,7 +7,8 @@ from .groundstation import Antenna, GroundStation, GroundStationRegistry
 from .instrument import Instrument, Payload
 from .power import PowerDraw
 from .solar_panel import SolarPanel, SolarPanelSet
-from .spacecraft_bus import AttitudeControlSystem, SpacecraftBus
+from .acs import AttitudeControlSystem
+from .spacecraft_bus import SpacecraftBus
 from .thermal import Heater
 
 __all__ = [
