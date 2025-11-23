@@ -99,8 +99,8 @@
         },
         "panel_constraint": {
             "type": "sun",
-            "min_angle": 5.0,
-            "max_angle": 175.0
+            "min_angle": 45.0,
+            "max_angle": 135.0
         }
     },
     "ground_stations": {
