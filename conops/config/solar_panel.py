@@ -117,29 +117,44 @@ class SolarPanel(BaseModel):
                 return float(frac[0])
             return frac
 
-        # Non-gimbled panels: compute illumination based on cant and pointing
+        # Non-gimbled panels: compute illumination based on cant, azimuth, and pointing
         # Calculate sun angle using vector separation (expects radians)
         sun_ra_rad = np.deg2rad(ephem.sun[i].ra.deg)
         sun_dec_rad = np.deg2rad(ephem.sun[i].dec.deg)
         target_ra_rad = np.deg2rad(ra)
         target_dec_rad = np.deg2rad(dec)
+
+        # Calculate angle between boresight and sun
         sunangle = np.rad2deg(
             separation([sun_ra_rad, sun_dec_rad], [target_ra_rad, target_dec_rad])
         )
 
-        # Combine two-axis cant as magnitude with optimal roll assumption
-        cant_mag = np.hypot(self.cant_x, self.cant_y)
-
-        # Side mounted solar panels
         if self.sidemount:
-            # Assumes that roll is optimal to maximize illumination
-            panel_offset_angle = 90 - cant_mag
+            # Side-mounted panel with optimal roll assumption
+            # The panel normal is perpendicular to boresight (90°)
+            # cant_x tilts the panel toward (+) or away from (-) the boresight
+            panel_offset_angle = 90.0 - self.cant_x
         else:
+            # Body-mounted panel: panel normal aligned with boresight, with cant offset
+            cant_mag = np.hypot(self.cant_x, self.cant_y)
             panel_offset_angle = 0 + cant_mag
 
         # Calculate panel illumination for this panel
         panel_sun_angle = 180 - sunangle - panel_offset_angle
         panel = np.cos(np.radians(panel_sun_angle))
+
+        # Apply azimuthal constraint for side-mounted panels
+        # With optimal roll, the spacecraft orients to maximize total power
+        # but panels at different azimuthal positions around the spacecraft
+        # cannot all receive optimal illumination simultaneously
+        if self.sidemount and self.azimuth_deg != 0.0:
+            # Panels at non-zero azimuth receive reduced illumination
+            # based on their angular position around the spacecraft
+            # cos(azimuth) gives the projection factor
+            azimuth_rad = np.deg2rad(self.azimuth_deg)
+            azimuth_factor = np.abs(np.cos(azimuth_rad))
+            panel = panel * azimuth_factor
+
         panel = np.clip(panel * not_in_eclipse, a_min=0, a_max=None)
 
         if scalar:
