@@ -21,6 +21,7 @@ class DITLMixin:
     power: list[float]
     panel_power: list[float]
     batterylevel: list[float]
+    charge_state: list[int]
     obsid: list[int]
     ppst: Plan
     utime: list
@@ -234,11 +235,53 @@ class DITLMixin:
                     f"⚠️  DoD Violations: {violations} steps ({violations / len(self.batterylevel) * 100:.2f}%)"
                 )
 
+        # Charge state statistics
+        if hasattr(self, "charge_state") and self.charge_state:
+            from .common import ChargeState
+
+            print("\nBattery Charging State Distribution:")
+            charge_state_counts = Counter(self.charge_state)
+            total_steps = len(self.charge_state)
+            print(
+                f"{'State':<20} {'Count':<10} {'Percentage':<12} {'Time (hours)':<15}"
+            )
+            print("-" * 70)
+            for state_val, count in sorted(charge_state_counts.items()):
+                state_name = (
+                    ChargeState(state_val).name
+                    if state_val in [s.value for s in ChargeState]
+                    else f"UNKNOWN({state_val})"
+                )
+                percentage = (count / total_steps) * 100
+                time_hours = (count * self.step_size) / 3600
+                print(
+                    f"{state_name:<20} {count:<10} {percentage:>6.2f}%      {time_hours:>10.2f}"
+                )
+
         if self.power:
             print("\nPower Consumption:")
             print(f"  Average: {np.mean(self.power):.2f} W")
             print(f"  Peak: {max(self.power):.2f} W")
             print(f"  Minimum: {min(self.power):.2f} W")
+
+            # Subsystem power breakdown if available
+            if (
+                hasattr(self, "power_bus")
+                and hasattr(self, "power_payload")
+                and self.power_bus
+                and self.power_payload
+            ):
+                print("\n  Subsystem Breakdown:")
+                avg_bus = np.mean(self.power_bus)
+                avg_payload = np.mean(self.power_payload)
+                print(
+                    f"    Bus Average: {avg_bus:.2f} W ({avg_bus / np.mean(self.power) * 100:.1f}%)"
+                )
+                print(
+                    f"    Payload Average: {avg_payload:.2f} W ({avg_payload / np.mean(self.power) * 100:.1f}%)"
+                )
+                print(f"    Bus Peak: {max(self.power_bus):.2f} W")
+                print(f"    Payload Peak: {max(self.power_payload):.2f} W")
 
         if self.panel_power:
             print("\nSolar Panel Generation:")

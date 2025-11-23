@@ -124,6 +124,7 @@ class DITL(DITLMixin):
         self.panel = np.zeros(simlen).tolist()
         self.obsid = np.zeros(simlen).astype(int).tolist()
         self.batterylevel = np.zeros(simlen).tolist()
+        self.charge_state = np.zeros(simlen).astype(int).tolist()
         self.batteryalert = np.zeros(simlen).tolist()
         self.power = np.zeros(simlen).tolist()
         # Subsystem power tracking
@@ -176,8 +177,9 @@ class DITL(DITLMixin):
             self.battery.drain(power_usage, self.step_size)
             # Charge the battery based on solar panel power
             self.battery.charge(panel_power, self.step_size)
-            # Record battery level
+            # Record battery level and charge state
             self.batterylevel[i] = self.battery.battery_level
+            self.charge_state[i] = self.battery.charge_state
             self.obsid[i] = obsid
 
         return True

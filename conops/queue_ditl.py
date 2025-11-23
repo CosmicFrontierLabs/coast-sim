@@ -64,6 +64,7 @@ class QueueDITL(DITLMixin):
         # Power and battery history
         self.panel = list()
         self.batterylevel = list()
+        self.charge_state = list()
         self.power = list()
         self.panel_power = list()
         # Subsystem power tracking
@@ -584,6 +585,7 @@ class QueueDITL(DITLMixin):
         self.battery.drain(consumed_power, self.step_size)
         self.battery.charge(generated_power, self.step_size)
         self.batterylevel.append(self.battery.battery_level)
+        self.charge_state.append(self.battery.charge_state)
 
     def _terminate_ppt(self, utime: float) -> None:
         """Terminate the current science PPT if active."""

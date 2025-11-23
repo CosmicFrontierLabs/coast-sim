@@ -20,6 +20,14 @@ class ACSMode(int, Enum):
     CHARGING = 4
 
 
+class ChargeState(int, Enum):
+    """Battery Charging States"""
+
+    NOT_CHARGING = 0
+    CHARGING = 1
+    TRICKLE = 2
+
+
 def givename(ra, dec, stem=""):
     # Convert RA/Dec (in degrees) into generic "JHHMM.m+/-DDMM" format
     rapart = "J%02d%04.1f" % (np.floor(ra / 15), 60 * ((ra / 15) - np.floor(ra / 15)))
