@@ -24,6 +24,7 @@ def minimal_config():
     battery = Mock(spec=Battery)
     constraint = Mock(spec=Constraint)
     ground_stations = Mock(spec=GroundStationRegistry)
+    fault_management = None
 
     config = Config(
         name=name,
@@ -33,6 +34,7 @@ def minimal_config():
         battery=battery,
         constraint=constraint,
         ground_stations=ground_stations,
+        fault_management=fault_management,
     )
 
     return {
@@ -43,4 +45,5 @@ def minimal_config():
         "battery": battery,
         "constraint": constraint,
         "ground_stations": ground_stations,
+        "fault_management": fault_management,
     }

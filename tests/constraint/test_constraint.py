@@ -620,6 +620,146 @@ class TestConstraintWithTimeObjects:
 
         assert result[1]  # moon violation
 
+    @patch("rust_ephem.SunConstraint.evaluate")
+    def test_in_sun_with_time_object_returns_array(
+        self, mock_evaluate, constraint_with_ephem, time_list
+    ):
+        """Test in_sun with datetime list returns array."""
+        # Mock the evaluate method to return a result with constraint_array
+        mock_result = Mock()
+        mock_result.constraint_array = np.array([True, False])
+        mock_evaluate.return_value = mock_result
+
+        result = constraint_with_ephem.in_sun(45.0, 30.0, time_list)
+
+        assert isinstance(result, np.ndarray)
+
+    @patch("rust_ephem.SunConstraint.evaluate")
+    def test_in_sun_with_time_object_returns_length_2(
+        self, mock_evaluate, constraint_with_ephem, time_list
+    ):
+        """Test in_sun with datetime list returns array of length 2."""
+        # Mock the evaluate method to return a result with constraint_array
+        mock_result = Mock()
+        mock_result.constraint_array = np.array([True, False])
+        mock_evaluate.return_value = mock_result
+
+        result = constraint_with_ephem.in_sun(45.0, 30.0, time_list)
+
+        assert len(result) == 2
+
+    @patch("rust_ephem.SunConstraint.evaluate")
+    def test_in_anti_sun_with_time_object_returns_array(
+        self, mock_evaluate, constraint_with_ephem, time_list
+    ):
+        """Test in_anti_sun with datetime list returns array."""
+        # Mock the evaluate method to return a result with constraint_array
+        mock_result = Mock()
+        mock_result.constraint_array = np.array([True, False])
+        mock_evaluate.return_value = mock_result
+
+        result = constraint_with_ephem.in_anti_sun(45.0, 30.0, time_list)
+
+        assert isinstance(result, np.ndarray)
+
+    @patch("rust_ephem.SunConstraint.evaluate")
+    def test_in_anti_sun_with_time_object_returns_length_2(
+        self, mock_evaluate, constraint_with_ephem, time_list
+    ):
+        """Test in_anti_sun with datetime list returns array of length 2."""
+        # Mock the evaluate method to return a result with constraint_array
+        mock_result = Mock()
+        mock_result.constraint_array = np.array([True, False])
+        mock_evaluate.return_value = mock_result
+
+        result = constraint_with_ephem.in_anti_sun(45.0, 30.0, time_list)
+
+        assert len(result) == 2
+
+    @patch("rust_ephem.EarthLimbConstraint.evaluate")
+    def test_in_earth_with_time_object_returns_array(
+        self, mock_evaluate, constraint_with_ephem, time_list
+    ):
+        """Test in_earth with datetime list returns array."""
+        # Mock the evaluate method to return a result with constraint_array
+        mock_result = Mock()
+        mock_result.constraint_array = np.array([True, False])
+        mock_evaluate.return_value = mock_result
+
+        result = constraint_with_ephem.in_earth(45.0, 30.0, time_list)
+
+        assert isinstance(result, np.ndarray)
+
+    @patch("rust_ephem.EarthLimbConstraint.evaluate")
+    def test_in_earth_with_time_object_returns_length_2(
+        self, mock_evaluate, constraint_with_ephem, time_list
+    ):
+        """Test in_earth with datetime list returns array of length 2."""
+        # Mock the evaluate method to return a result with constraint_array
+        mock_result = Mock()
+        mock_result.constraint_array = np.array([True, False])
+        mock_evaluate.return_value = mock_result
+
+        result = constraint_with_ephem.in_earth(45.0, 30.0, time_list)
+
+        assert len(result) == 2
+
+    @patch("rust_ephem.MoonConstraint.evaluate")
+    def test_in_moon_with_time_object_returns_array(
+        self, mock_evaluate, constraint_with_ephem, time_list
+    ):
+        """Test in_moon with datetime list returns array."""
+        # Mock the evaluate method to return a result with constraint_array
+        mock_result = Mock()
+        mock_result.constraint_array = np.array([True, False])
+        mock_evaluate.return_value = mock_result
+
+        result = constraint_with_ephem.in_moon(45.0, 30.0, time_list)
+
+        assert isinstance(result, np.ndarray)
+
+    @patch("rust_ephem.MoonConstraint.evaluate")
+    def test_in_moon_with_time_object_returns_length_2(
+        self, mock_evaluate, constraint_with_ephem, time_list
+    ):
+        """Test in_moon with datetime list returns array of length 2."""
+        # Mock the evaluate method to return a result with constraint_array
+        mock_result = Mock()
+        mock_result.constraint_array = np.array([True, False])
+        mock_evaluate.return_value = mock_result
+
+        result = constraint_with_ephem.in_moon(45.0, 30.0, time_list)
+
+        assert len(result) == 2
+
+    @patch("rust_ephem.EclipseConstraint.evaluate")
+    def test_in_eclipse_with_time_object_returns_array(
+        self, mock_evaluate, constraint_with_ephem, time_list
+    ):
+        """Test in_eclipse with datetime list returns array."""
+        # Mock the evaluate method to return a result with constraint_array
+        mock_result = Mock()
+        mock_result.constraint_array = np.array([True, False])
+        mock_evaluate.return_value = mock_result
+
+        result = constraint_with_ephem.in_eclipse(45.0, 30.0, time_list)
+
+        assert isinstance(result, np.ndarray)
+
+    @patch("rust_ephem.EclipseConstraint.evaluate")
+    def test_in_eclipse_with_time_object_returns_length_2(
+        self, mock_evaluate, constraint_with_ephem, time_list
+    ):
+        """Test in_eclipse with datetime list returns array of length 2."""
+        # Mock the evaluate method to return a result with constraint_array
+        mock_result = Mock()
+        mock_result.constraint_array = np.array([True, False])
+        mock_evaluate.return_value = mock_result
+
+        result = constraint_with_ephem.in_eclipse(45.0, 30.0, time_list)
+
+        assert len(result) == 2
+
 
 class TestConstraintEdgeCases:
     """Test edge cases and additional paths."""
@@ -750,3 +890,76 @@ class TestConstraintEdgeCases:
         count = constraint.inoccult_count(45.0, 30.0, 1700000000.0)
 
         assert count == 2
+
+
+class TestInEclipseMethod:
+    """Test in_eclipse method - requires actual Ephemeris."""
+
+    def test_in_eclipse_requires_ephemeris(self):
+        """Test in_eclipse raises assertion without ephemeris."""
+        constraint = Constraint(ephem=None)
+
+        with pytest.raises(AssertionError, match="Ephemeris must be set"):
+            constraint.in_eclipse(45.0, 30.0, 1700000000.0)
+
+    @patch("rust_ephem.EclipseConstraint.in_constraint")
+    def test_in_eclipse_with_float_returns_scalar(
+        self, mock_in_constraint, constraint_with_ephem
+    ):
+        """Test in_eclipse with float time returns scalar."""
+        # Mock the in_constraint method to return True
+        mock_in_constraint.return_value = True
+
+        result = constraint_with_ephem.in_eclipse(45.0, 30.0, 1700000000.0)
+
+        # Should be scalar, not array
+        assert isinstance(result, bool)
+
+    @patch("rust_ephem.EclipseConstraint.in_constraint")
+    def test_in_eclipse_with_float_returns_true(
+        self, mock_in_constraint, constraint_with_ephem
+    ):
+        """Test in_eclipse with float time returns True."""
+        # Mock the in_constraint method to return True
+        mock_in_constraint.return_value = True
+
+        result = constraint_with_ephem.in_eclipse(45.0, 30.0, 1700000000.0)
+
+        assert result
+
+    @patch("rust_ephem.EclipseConstraint.in_constraint")
+    def test_in_eclipse_with_float_called(
+        self, mock_in_constraint, constraint_with_ephem
+    ):
+        """Test in_eclipse with float time calls constraint."""
+        # Mock the in_constraint method to return True
+        mock_in_constraint.return_value = True
+
+        _ = constraint_with_ephem.in_eclipse(45.0, 30.0, 1700000000.0)
+
+        assert mock_in_constraint.called
+
+
+class TestConstraintProperty:
+    """Test Constraint.constraint property."""
+
+    def test_constraint_property_sets_constraint_cache(self, constraint):
+        """Test that accessing constraint property sets _constraint_cache."""
+        _ = constraint.constraint
+        assert constraint._constraint_cache is not None
+
+
+class TestConstraintInSun:
+    """Test Constraint in_sun method behavior."""
+
+    @patch("rust_ephem.SunConstraint.in_constraint")
+    def test_in_sun_calls_underlying_constraint(
+        self, mock_in_constraint, constraint_with_ephem
+    ):
+        """Test that in_sun calls the underlying SunConstraint."""
+        mock_in_constraint.return_value = True
+
+        result = constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0)
+
+        assert result is True
+        mock_in_constraint.assert_called_once()

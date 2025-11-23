@@ -82,3 +82,52 @@ def test_fault_management_multiple_cycles_accumulate(base_config):
     assert stats["yellow_seconds"] == pytest.approx(120.0)
     assert stats["red_seconds"] == 0.0
     assert not acs.in_safe_mode
+
+
+def test_fault_management_above_direction_threshold():
+    """Test fault management with 'above' direction threshold."""
+    from conops import FaultManagement
+
+    fm = FaultManagement()
+    fm.add_threshold("temperature", yellow=50.0, red=60.0, direction="above")
+
+    # Test nominal (below yellow)
+    classifications = fm.check({"temperature": 40.0}, utime=1000.0, step_size=1.0)
+    assert classifications["temperature"] == "nominal"
+
+    # Test yellow (at or above yellow, below red)
+    classifications = fm.check({"temperature": 55.0}, utime=1001.0, step_size=1.0)
+    assert classifications["temperature"] == "yellow"
+
+    # Test red (at or above red)
+    classifications = fm.check({"temperature": 65.0}, utime=1002.0, step_size=1.0)
+    assert classifications["temperature"] == "red"
+
+    # Check statistics
+    stats = fm.statistics()["temperature"]
+    assert stats["yellow_seconds"] == 1.0
+    assert stats["red_seconds"] == 1.0
+    assert stats["current"] == "red"
+
+
+def test_fault_management_unmonitored_parameter():
+    """Test that unmonitored parameters are ignored."""
+    from conops import FaultManagement
+
+    fm = FaultManagement()
+    fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
+
+    # Check with both monitored and unmonitored parameters
+    classifications = fm.check(
+        {
+            "battery_level": 0.6,  # monitored, nominal
+            "temperature": 100.0,  # unmonitored, should be ignored
+        },
+        utime=1000.0,
+        step_size=1.0,
+    )
+
+    # Only the monitored parameter should be in classifications
+    assert "battery_level" in classifications
+    assert "temperature" not in classifications
+    assert classifications["battery_level"] == "nominal"

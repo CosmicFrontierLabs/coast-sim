@@ -1,3 +1,4 @@
+from .acs import AttitudeControlSystem
 from .battery import Battery
 from .config import Config
 from .constants import DAY_SECONDS, DTOR
@@ -7,7 +8,6 @@ from .groundstation import Antenna, GroundStation, GroundStationRegistry
 from .instrument import Instrument, Payload
 from .power import PowerDraw
 from .solar_panel import SolarPanel, SolarPanelSet
-from .acs import AttitudeControlSystem
 from .spacecraft_bus import SpacecraftBus
 from .thermal import Heater
 
