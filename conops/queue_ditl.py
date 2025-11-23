@@ -176,19 +176,35 @@ class QueueDITL(DITLMixin):
             )
 
             # Fault management checks (e.g., battery level thresholds)
-            if self.config.fault_management is not None:
-                self.config.fault_management.check(
-                    values={"battery_level": self.battery.battery_level},
-                    utime=utime,
-                    step_size=self.step_size,
-                    acs=self.acs,
-                )
+            self._handle_fault_management(utime)
 
         # Make sure the last PPT of the day ends (if any)
         if self.ppst:
             self.ppst[-1].end = utime
 
         return True
+
+    def _handle_fault_management(self, utime: float) -> None:
+        """Handle fault management checks and safe mode requests."""
+        if self.config.fault_management is not None:
+            self.config.fault_management.check(
+                values={"battery_level": self.battery.battery_level},
+                utime=utime,
+                step_size=self.step_size,
+                acs=self.acs,
+            )
+            # Check if safe mode has been requested by fault management
+            if (
+                self.config.fault_management.safe_mode_requested
+                and not self.acs.in_safe_mode
+            ):
+                from .acs import ACSCommand, ACSCommandType
+
+                command = ACSCommand(
+                    command_type=ACSCommandType.ENTER_SAFE_MODE,
+                    execution_time=utime,
+                )
+                self.acs.enqueue_command(command)
 
     def _track_ppt_in_timeline(self) -> None:
         """Track the start of a new PPT in the plan timeline."""

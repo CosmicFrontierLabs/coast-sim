@@ -157,11 +157,12 @@ Safe Mode Behavior
 
 When ``safe_mode_on_red`` is ``true`` (default), any parameter reaching RED state will:
 
-1. **Enqueue safe mode command**: An ``ENTER_SAFE_MODE`` ACS command is queued
-2. **Irreversible operation**: Safe mode cannot be exited once entered
-3. **Sun pointing**: Spacecraft points solar panels at Sun for maximum power
-4. **Command queue cleared**: All pending commands are discarded
-5. **Emergency power**: System operates in minimal power configuration
+1. **Set flag**: The ``safe_mode_requested`` flag is set to ``True``
+2. **DITL checks flag**: The QueueDITL loop detects the flag and enqueues an ``ENTER_SAFE_MODE`` command
+3. **Irreversible operation**: Safe mode cannot be exited once entered
+4. **Sun pointing**: Spacecraft points solar panels at Sun for maximum power
+5. **Command queue cleared**: All pending commands are discarded
+6. **Emergency power**: System operates in minimal power configuration
 
 Example Configuration File
 ---------------------------

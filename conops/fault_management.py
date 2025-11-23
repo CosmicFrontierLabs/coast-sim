@@ -56,10 +56,11 @@ Threshold Directions:
 
 Safe Mode Behavior:
     When safe_mode_on_red=True (default), any parameter reaching RED state will:
-    1. Enqueue an ACSCommand to enter safe mode
-    2. Safe mode is irreversible once entered
-    3. Spacecraft points solar panels at Sun for maximum power generation
-    4. All queued commands are cleared
+    1. Set the safe_mode_requested flag to True
+    2. The DITL loop checks this flag and enqueues the ENTER_SAFE_MODE command
+    3. Safe mode is irreversible once entered
+    4. Spacecraft points solar panels at Sun for maximum power generation
+    5. All queued commands are cleared
 """
 
 from __future__ import annotations
@@ -118,6 +119,7 @@ class FaultManagement(BaseModel):
     thresholds: dict[str, FaultThreshold] = Field(default_factory=dict)
     states: dict[str, FaultState] = Field(default_factory=dict)
     safe_mode_on_red: bool = True  # Global policy: enter safe mode for any RED
+    safe_mode_requested: bool = False  # Flag set when safe mode should be triggered
 
     def ensure_state(self, name: str) -> FaultState:
         if name not in self.states:
@@ -156,21 +158,10 @@ class FaultManagement(BaseModel):
             elif state == "red":
                 st.red_seconds += step_size
             st.current = state
-            # Safe mode trigger
-            if (
-                state == "red"
-                and self.safe_mode_on_red
-                and acs is not None
-                and not acs.in_safe_mode
-            ):
-                # Enqueue a safe mode command directly (avoid wrapper)
-                from .acs import ACSCommand, ACSCommandType  # local import
-
-                command = ACSCommand(
-                    command_type=ACSCommandType.ENTER_SAFE_MODE,
-                    execution_time=utime,
-                )
-                acs.enqueue_command(command)
+            # Set safe mode flag when RED condition detected
+            if state == "red" and self.safe_mode_on_red:
+                if acs is None or not acs.in_safe_mode:
+                    self.safe_mode_requested = True
 
         return classifications
 

@@ -75,15 +75,11 @@ def test_fault_management_red_triggers_safe_mode(base_config):
         step_size=60.0,
         acs=acs,
     )
-    # Process queued safe mode command by invoking pointing (which advances ACS state)
-    # Replace solar_panel with mock providing optimal_charging_pointing
-    acs.solar_panel = Mock()
-    acs.solar_panel.optimal_charging_pointing.return_value = (0.0, 0.0)
-    acs.pointing(2000.0)
+    # Verify safe mode flag was set
+    assert fm.safe_mode_requested
     stats = fm.statistics()["battery_level"]
     assert stats["current"] == "red"
     assert stats["red_seconds"] == pytest.approx(60.0)
-    assert acs.in_safe_mode
 
 
 def test_fault_management_multiple_cycles_accumulate(base_config):
