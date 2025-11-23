@@ -1,4 +1,5 @@
 from .common import (
+    ACSCommandType,
     ACSMode,
     ChargeState,
     dtutcfromtimestamp,
@@ -17,7 +18,6 @@ from .config import (
     DAY_SECONDS,
     DTOR,
     ACSCommand,
-    ACSCommandType,
     Antenna,
     AttitudeControlSystem,
     Battery,

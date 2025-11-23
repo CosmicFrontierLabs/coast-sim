@@ -1,4 +1,5 @@
-from .acs_command import ACSCommand, ACSCommandType
+from ..common import ACSCommandType
+from .acs_command import ACSCommand
 from .battery import Battery
 from .config import Config
 from .constants import DAY_SECONDS, DTOR

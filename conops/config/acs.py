@@ -2,9 +2,15 @@ from typing import TYPE_CHECKING, Any
 
 import rust_ephem
 
-from ..common import ACSMode, dtutcfromtimestamp, unixtime2date, unixtime2yearday
+from ..common import (
+    ACSCommandType,
+    ACSMode,
+    dtutcfromtimestamp,
+    unixtime2date,
+    unixtime2yearday,
+)
 from ..targets import Pointing
-from .acs_command import ACSCommand, ACSCommandType
+from .acs_command import ACSCommand
 from .config import Config
 from .constants import DTOR
 from .constraint import Constraint

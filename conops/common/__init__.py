@@ -5,7 +5,7 @@ from .common import (
     unixtime2date,
     unixtime2yearday,
 )
-from .enums import ACSMode, ChargeState
+from .enums import ACSCommandType, ACSMode, ChargeState
 from .vector import (
     great_circle,
     radec2vec,
@@ -16,6 +16,7 @@ from .vector import (
 )
 
 __all__ = [
+    "ACSCommandType",
     "ACSMode",
     "ChargeState",
     "dtutcfromtimestamp",
