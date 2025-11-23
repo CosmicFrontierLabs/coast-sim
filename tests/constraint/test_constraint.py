@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pytest
 
-from conops.constraint import Constraint
+from conops import Constraint
 
 
 class TestConstraintInit:
@@ -157,11 +157,11 @@ class TestInMoonMethod:
 class TestInOccultMethod:
     """Test inoccult method logic."""
 
-    @patch("conops.constraint.Constraint.in_panel")
-    @patch("conops.constraint.Constraint.in_moon")
-    @patch("conops.constraint.Constraint.in_earth")
-    @patch("conops.constraint.Constraint.in_anti_sun")
-    @patch("conops.constraint.Constraint.in_sun")
+    @patch("conops.Constraint.in_panel")
+    @patch("conops.Constraint.in_moon")
+    @patch("conops.Constraint.in_earth")
+    @patch("conops.Constraint.in_anti_sun")
+    @patch("conops.Constraint.in_sun")
     def test_inoccult_no_violations(
         self, mock_sun, mock_antisun, mock_earth, mock_moon, mock_panel, constraint
     ):
@@ -176,11 +176,11 @@ class TestInOccultMethod:
 
         assert result is False
 
-    @patch("conops.constraint.Constraint.in_panel")
-    @patch("conops.constraint.Constraint.in_moon")
-    @patch("conops.constraint.Constraint.in_earth")
-    @patch("conops.constraint.Constraint.in_anti_sun")
-    @patch("conops.constraint.Constraint.in_sun")
+    @patch("conops.Constraint.in_panel")
+    @patch("conops.Constraint.in_moon")
+    @patch("conops.Constraint.in_earth")
+    @patch("conops.Constraint.in_anti_sun")
+    @patch("conops.Constraint.in_sun")
     def test_inoccult_sun_violation(
         self, mock_sun, mock_antisun, mock_earth, mock_moon, mock_panel, constraint
     ):
@@ -195,11 +195,11 @@ class TestInOccultMethod:
 
         assert result is True
 
-    @patch("conops.constraint.Constraint.in_panel")
-    @patch("conops.constraint.Constraint.in_moon")
-    @patch("conops.constraint.Constraint.in_earth")
-    @patch("conops.constraint.Constraint.in_anti_sun")
-    @patch("conops.constraint.Constraint.in_sun")
+    @patch("conops.Constraint.in_panel")
+    @patch("conops.Constraint.in_moon")
+    @patch("conops.Constraint.in_earth")
+    @patch("conops.Constraint.in_anti_sun")
+    @patch("conops.Constraint.in_sun")
     def test_inoccult_multiple_violations(
         self, mock_sun, mock_antisun, mock_earth, mock_moon, mock_panel, constraint
     ):
@@ -218,10 +218,10 @@ class TestInOccultMethod:
 class TestInOccultCountMethod:
     """Test inoccult_count method logic."""
 
-    @patch("conops.constraint.Constraint.in_earth")
-    @patch("conops.constraint.Constraint.in_anti_sun")
-    @patch("conops.constraint.Constraint.in_moon")
-    @patch("conops.constraint.Constraint.in_sun")
+    @patch("conops.Constraint.in_earth")
+    @patch("conops.Constraint.in_anti_sun")
+    @patch("conops.Constraint.in_moon")
+    @patch("conops.Constraint.in_sun")
     def test_inoccult_count_no_violations(
         self, mock_sun, mock_moon, mock_antisun, mock_earth, constraint
     ):
@@ -235,10 +235,10 @@ class TestInOccultCountMethod:
 
         assert count == 0
 
-    @patch("conops.constraint.Constraint.in_earth")
-    @patch("conops.constraint.Constraint.in_anti_sun")
-    @patch("conops.constraint.Constraint.in_moon")
-    @patch("conops.constraint.Constraint.in_sun")
+    @patch("conops.Constraint.in_earth")
+    @patch("conops.Constraint.in_anti_sun")
+    @patch("conops.Constraint.in_moon")
+    @patch("conops.Constraint.in_sun")
     def test_inoccult_count_sun_only(
         self, mock_sun, mock_moon, mock_antisun, mock_earth, constraint
     ):
@@ -451,10 +451,10 @@ class TestConstraintFloatTimeReturnsScalar:
         # Verify the constraint was called
         assert mock_in_constraint.called
 
-    @patch("conops.constraint.Constraint.in_earth")
-    @patch("conops.constraint.Constraint.in_anti_sun")
-    @patch("conops.constraint.Constraint.in_moon")
-    @patch("conops.constraint.Constraint.in_sun")
+    @patch("conops.Constraint.in_earth")
+    @patch("conops.Constraint.in_anti_sun")
+    @patch("conops.Constraint.in_moon")
+    @patch("conops.Constraint.in_sun")
     def test_inoccult_count_all_violations(
         self, mock_sun, mock_moon, mock_antisun, mock_earth, constraint
     ):
@@ -694,11 +694,11 @@ class TestConstraintWithTimeObjects:
 
         assert len(result) == 2
 
-    @patch("conops.constraint.Constraint.in_panel")
-    @patch("conops.constraint.Constraint.in_moon")
-    @patch("conops.constraint.Constraint.in_earth")
-    @patch("conops.constraint.Constraint.in_anti_sun")
-    @patch("conops.constraint.Constraint.in_sun")
+    @patch("conops.Constraint.in_panel")
+    @patch("conops.Constraint.in_moon")
+    @patch("conops.Constraint.in_earth")
+    @patch("conops.Constraint.in_anti_sun")
+    @patch("conops.Constraint.in_sun")
     def test_inoccult_with_time_object_returns_array(
         self,
         mock_sun,
@@ -720,11 +720,11 @@ class TestConstraintWithTimeObjects:
 
         assert isinstance(result, np.ndarray)
 
-    @patch("conops.constraint.Constraint.in_panel")
-    @patch("conops.constraint.Constraint.in_moon")
-    @patch("conops.constraint.Constraint.in_earth")
-    @patch("conops.constraint.Constraint.in_anti_sun")
-    @patch("conops.constraint.Constraint.in_sun")
+    @patch("conops.Constraint.in_panel")
+    @patch("conops.Constraint.in_moon")
+    @patch("conops.Constraint.in_earth")
+    @patch("conops.Constraint.in_anti_sun")
+    @patch("conops.Constraint.in_sun")
     def test_inoccult_with_time_object_first_element_true(
         self,
         mock_sun,
@@ -746,11 +746,11 @@ class TestConstraintWithTimeObjects:
 
         assert result[0]  # sun violation
 
-    @patch("conops.constraint.Constraint.in_panel")
-    @patch("conops.constraint.Constraint.in_moon")
-    @patch("conops.constraint.Constraint.in_earth")
-    @patch("conops.constraint.Constraint.in_anti_sun")
-    @patch("conops.constraint.Constraint.in_sun")
+    @patch("conops.Constraint.in_panel")
+    @patch("conops.Constraint.in_moon")
+    @patch("conops.Constraint.in_earth")
+    @patch("conops.Constraint.in_anti_sun")
+    @patch("conops.Constraint.in_sun")
     def test_inoccult_with_time_object_second_element_true(
         self,
         mock_sun,
@@ -776,11 +776,11 @@ class TestConstraintWithTimeObjects:
 class TestConstraintEdgeCases:
     """Test edge cases and additional paths."""
 
-    @patch("conops.constraint.Constraint.in_panel")
-    @patch("conops.constraint.Constraint.in_moon")
-    @patch("conops.constraint.Constraint.in_earth")
-    @patch("conops.constraint.Constraint.in_anti_sun")
-    @patch("conops.constraint.Constraint.in_sun")
+    @patch("conops.Constraint.in_panel")
+    @patch("conops.Constraint.in_moon")
+    @patch("conops.Constraint.in_earth")
+    @patch("conops.Constraint.in_anti_sun")
+    @patch("conops.Constraint.in_sun")
     def test_inoccult_panel_violation(
         self, mock_sun, mock_antisun, mock_earth, mock_moon, mock_panel, constraint
     ):
@@ -795,11 +795,11 @@ class TestConstraintEdgeCases:
 
         assert result is True
 
-    @patch("conops.constraint.Constraint.in_panel")
-    @patch("conops.constraint.Constraint.in_moon")
-    @patch("conops.constraint.Constraint.in_earth")
-    @patch("conops.constraint.Constraint.in_anti_sun")
-    @patch("conops.constraint.Constraint.in_sun")
+    @patch("conops.Constraint.in_panel")
+    @patch("conops.Constraint.in_moon")
+    @patch("conops.Constraint.in_earth")
+    @patch("conops.Constraint.in_anti_sun")
+    @patch("conops.Constraint.in_sun")
     def test_inoccult_antisun_violation(
         self, mock_sun, mock_antisun, mock_earth, mock_moon, mock_panel, constraint
     ):
@@ -814,11 +814,11 @@ class TestConstraintEdgeCases:
 
         assert result is True
 
-    @patch("conops.constraint.Constraint.in_panel")
-    @patch("conops.constraint.Constraint.in_moon")
-    @patch("conops.constraint.Constraint.in_earth")
-    @patch("conops.constraint.Constraint.in_anti_sun")
-    @patch("conops.constraint.Constraint.in_sun")
+    @patch("conops.Constraint.in_panel")
+    @patch("conops.Constraint.in_moon")
+    @patch("conops.Constraint.in_earth")
+    @patch("conops.Constraint.in_anti_sun")
+    @patch("conops.Constraint.in_sun")
     def test_inoccult_moon_violation(
         self, mock_sun, mock_antisun, mock_earth, mock_moon, mock_panel, constraint
     ):
@@ -833,11 +833,11 @@ class TestConstraintEdgeCases:
 
         assert result is True
 
-    @patch("conops.constraint.Constraint.in_panel")
-    @patch("conops.constraint.Constraint.in_moon")
-    @patch("conops.constraint.Constraint.in_earth")
-    @patch("conops.constraint.Constraint.in_anti_sun")
-    @patch("conops.constraint.Constraint.in_sun")
+    @patch("conops.Constraint.in_panel")
+    @patch("conops.Constraint.in_moon")
+    @patch("conops.Constraint.in_earth")
+    @patch("conops.Constraint.in_anti_sun")
+    @patch("conops.Constraint.in_sun")
     def test_inoccult_earth_violation(
         self, mock_sun, mock_antisun, mock_earth, mock_moon, mock_panel, constraint
     ):
@@ -852,10 +852,10 @@ class TestConstraintEdgeCases:
 
         assert result is True
 
-    @patch("conops.constraint.Constraint.in_earth")
-    @patch("conops.constraint.Constraint.in_anti_sun")
-    @patch("conops.constraint.Constraint.in_moon")
-    @patch("conops.constraint.Constraint.in_sun")
+    @patch("conops.Constraint.in_earth")
+    @patch("conops.Constraint.in_anti_sun")
+    @patch("conops.Constraint.in_moon")
+    @patch("conops.Constraint.in_sun")
     def test_inoccult_count_moon_only(
         self, mock_sun, mock_moon, mock_antisun, mock_earth, constraint
     ):
@@ -869,10 +869,10 @@ class TestConstraintEdgeCases:
 
         assert count == 2
 
-    @patch("conops.constraint.Constraint.in_earth")
-    @patch("conops.constraint.Constraint.in_anti_sun")
-    @patch("conops.constraint.Constraint.in_moon")
-    @patch("conops.constraint.Constraint.in_sun")
+    @patch("conops.Constraint.in_earth")
+    @patch("conops.Constraint.in_anti_sun")
+    @patch("conops.Constraint.in_moon")
+    @patch("conops.Constraint.in_sun")
     def test_inoccult_count_antisun_only(
         self, mock_sun, mock_moon, mock_antisun, mock_earth, constraint
     ):
@@ -886,10 +886,10 @@ class TestConstraintEdgeCases:
 
         assert count == 2
 
-    @patch("conops.constraint.Constraint.in_earth")
-    @patch("conops.constraint.Constraint.in_anti_sun")
-    @patch("conops.constraint.Constraint.in_moon")
-    @patch("conops.constraint.Constraint.in_sun")
+    @patch("conops.Constraint.in_earth")
+    @patch("conops.Constraint.in_anti_sun")
+    @patch("conops.Constraint.in_moon")
+    @patch("conops.Constraint.in_sun")
     def test_inoccult_count_earth_only(
         self, mock_sun, mock_moon, mock_antisun, mock_earth, constraint
     ):

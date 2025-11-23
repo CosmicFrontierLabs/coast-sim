@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from astropy.time import Time  # type: ignore[import-untyped]
 
-from conops.solar_panel import SolarPanel, SolarPanelSet
+from conops import SolarPanel, SolarPanelSet
 
 
 class TestSolarPanelSetCoverage:
@@ -195,7 +195,7 @@ class TestSolarPanelIllumination:
         with patch.object(SolarPanel, "_eclipse_constraint", mock_eclipse_constraint):
             panel = SolarPanel(gimbled=False, sidemount=True, cant_x=0.0, cant_y=0.0)
             # Mock separation to return a reasonable angle
-            with patch("conops.solar_panel.separation", return_value=np.array([45.0])):
+            with patch("conops.separation", return_value=np.array([45.0])):
                 result = panel.panel_illumination_fraction(
                     time=mock_time,
                     ephem=mock_ephem,
@@ -606,9 +606,7 @@ class TestSolarPanelIlluminationRealistic:
         mock_constraint = Mock()
         mock_constraint.in_constraint = Mock(return_value=False)
 
-        with patch(
-            "conops.solar_panel.SolarPanel._eclipse_constraint", mock_constraint
-        ):
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
             result = panel.panel_illumination_fraction(
                 time=1514764800.0,  # Unix timestamp
                 ephem=ephem,
@@ -657,9 +655,7 @@ class TestSolarPanelIlluminationRealistic:
         mock_constraint = Mock()
         mock_constraint.in_constraint = Mock(return_value=False)
 
-        with patch(
-            "conops.solar_panel.SolarPanel._eclipse_constraint", mock_constraint
-        ):
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
             result = panel.panel_illumination_fraction(
                 time=1514764800.0,
                 ephem=ephem,
@@ -707,9 +703,7 @@ class TestSolarPanelIlluminationRealistic:
         mock_constraint = Mock()
         mock_constraint.in_constraint = Mock(return_value=False)
 
-        with patch(
-            "conops.solar_panel.SolarPanel._eclipse_constraint", mock_constraint
-        ):
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
             result = panel.panel_illumination_fraction(
                 time=1514764800.0,
                 ephem=ephem,
@@ -757,9 +751,7 @@ class TestSolarPanelIlluminationRealistic:
         mock_constraint = Mock()
         mock_constraint.in_constraint = Mock(return_value=False)
 
-        with patch(
-            "conops.solar_panel.SolarPanel._eclipse_constraint", mock_constraint
-        ):
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
             result = panel.panel_illumination_fraction(
                 time=1514764800.0,
                 ephem=ephem,
@@ -799,9 +791,7 @@ class TestSolarPanelIlluminationRealistic:
         mock_constraint = Mock()
         mock_constraint.in_constraint = Mock(return_value=True)
 
-        with patch(
-            "conops.solar_panel.SolarPanel._eclipse_constraint", mock_constraint
-        ):
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
             result = panel.panel_illumination_fraction(
                 time=1514764800.0,
                 ephem=ephem,
@@ -849,9 +839,7 @@ class TestSolarPanelIlluminationRealistic:
         mock_constraint = Mock()
         mock_constraint.in_constraint = Mock(return_value=False)
 
-        with patch(
-            "conops.solar_panel.SolarPanel._eclipse_constraint", mock_constraint
-        ):
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
             result = panel.panel_illumination_fraction(
                 time=1514764800.0,
                 ephem=ephem,
@@ -900,9 +888,7 @@ class TestSolarPanelIlluminationRealistic:
         mock_constraint = Mock()
         mock_constraint.in_constraint = Mock(return_value=False)
 
-        with patch(
-            "conops.solar_panel.SolarPanel._eclipse_constraint", mock_constraint
-        ):
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
             result = panel.panel_illumination_fraction(
                 time=1514764800.0,
                 ephem=ephem,
@@ -950,9 +936,7 @@ class TestSolarPanelIlluminationRealistic:
         mock_constraint = Mock()
         mock_constraint.in_constraint = Mock(return_value=False)
 
-        with patch(
-            "conops.solar_panel.SolarPanel._eclipse_constraint", mock_constraint
-        ):
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
             result = panel.panel_illumination_fraction(
                 time=1514764800.0,
                 ephem=ephem,
@@ -1017,9 +1001,7 @@ class TestSolarPanelPowerGenerationRealistic:
         mock_constraint = Mock()
         mock_constraint.in_constraint = Mock(return_value=False)
 
-        with patch(
-            "conops.solar_panel.SolarPanel._eclipse_constraint", mock_constraint
-        ):
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
             result = panel_set.power(
                 time=1514764800.0,
                 ephem=ephem,
@@ -1070,9 +1052,7 @@ class TestSolarPanelPowerGenerationRealistic:
         mock_constraint = Mock()
         mock_constraint.in_constraint = Mock(return_value=False)
 
-        with patch(
-            "conops.solar_panel.SolarPanel._eclipse_constraint", mock_constraint
-        ):
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
             result = panel_set.power(
                 time=1514764800.0,
                 ephem=ephem,
@@ -1124,9 +1104,7 @@ class TestSolarPanelPowerGenerationRealistic:
         mock_constraint = Mock()
         mock_constraint.in_constraint = Mock(return_value=True)
 
-        with patch(
-            "conops.solar_panel.SolarPanel._eclipse_constraint", mock_constraint
-        ):
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
             result = panel_set.power(
                 time=1514764800.0,
                 ephem=ephem,
@@ -1184,9 +1162,7 @@ class TestSolarPanelPowerGenerationRealistic:
         mock_constraint = Mock()
         mock_constraint.in_constraint = Mock(return_value=False)
 
-        with patch(
-            "conops.solar_panel.SolarPanel._eclipse_constraint", mock_constraint
-        ):
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
             result = panel_set.power(
                 time=1514764800.0,
                 ephem=ephem,
@@ -1246,9 +1222,7 @@ class TestSolarPanelPowerGenerationRealistic:
         mock_constraint = Mock()
         mock_constraint.in_constraint = Mock(return_value=False)
 
-        with patch(
-            "conops.solar_panel.SolarPanel._eclipse_constraint", mock_constraint
-        ):
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
             result = panel_set.power(
                 time=1514764800.0,
                 ephem=ephem,
@@ -1304,9 +1278,7 @@ class TestSolarPanelPowerGenerationRealistic:
         mock_constraint = Mock()
         mock_constraint.in_constraint = Mock(return_value=False)
 
-        with patch(
-            "conops.solar_panel.SolarPanel._eclipse_constraint", mock_constraint
-        ):
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
             result = panel_set.power(
                 time=1514764800.0,
                 ephem=ephem,
@@ -1360,9 +1332,7 @@ class TestSolarPanelPowerGenerationRealistic:
         mock_constraint = Mock()
         mock_constraint.in_constraint = Mock(return_value=False)
 
-        with patch(
-            "conops.solar_panel.SolarPanel._eclipse_constraint", mock_constraint
-        ):
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
             result = panel_set.power(
                 time=1514764800.0,
                 ephem=ephem,
@@ -1414,9 +1384,7 @@ class TestSolarPanelPowerGenerationRealistic:
         mock_constraint = Mock()
         mock_constraint.in_constraint = Mock(return_value=False)
 
-        with patch(
-            "conops.solar_panel.SolarPanel._eclipse_constraint", mock_constraint
-        ):
+        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
             result = panel_set.power(
                 time=1514764800.0,
                 ephem=ephem,

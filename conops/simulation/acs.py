@@ -2,14 +2,10 @@ from typing import Any
 
 import rust_ephem
 
-from .acs_command import ACSCommand, ACSCommandType
-from .common import ACSMode, dtutcfromtimestamp, unixtime2date, unixtime2yearday
-from .config import Config
-from .constants import DTOR
-from .constraint import Constraint
-from .passes import Pass, PassTimes
+from ..common import ACSMode, dtutcfromtimestamp, unixtime2date, unixtime2yearday
+from ..config import DTOR, ACSCommand, ACSCommandType, Config, Constraint
+from .passes import Pass
 from .pointing import Pointing
-from .roll import optimum_roll
 from .slew import Slew
 
 
@@ -65,6 +61,8 @@ class ACS:
         # Configuration
         assert self.constraint.ephem is not None, "Ephemeris must be set in Constraint"
         self.ephem = self.constraint.ephem
+        from ..simulation.passes import PassTimes
+
         self.passrequests = PassTimes(constraint=self.constraint, config=config)
         self.currentpass: Pass | None = None
         self.solar_panel = config.solar_panel
@@ -405,6 +403,8 @@ class ACS:
         # Calculate roll angle
         # FIXME: Rolls should be pre-calculated, as this is computationally expensive
         if False:
+            from ..simulation.roll import optimum_roll
+
             self.roll = optimum_roll(
                 self.ra * DTOR,
                 self.dec * DTOR,

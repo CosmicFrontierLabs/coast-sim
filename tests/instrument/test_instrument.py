@@ -1,8 +1,6 @@
 from math import isclose
 
-from conops.instrument import Instrument, Payload
-from conops.power import PowerDraw
-from conops.thermal import Heater
+from conops import Heater, Instrument, Payload, PowerDraw
 
 
 class TestInstrument:

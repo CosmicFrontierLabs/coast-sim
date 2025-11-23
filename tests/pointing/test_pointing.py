@@ -1,4 +1,4 @@
-from conops.pointing import Pointing
+from conops import Pointing
 
 # Assuming DummyConstraint is defined elsewhere or imported; if not, define it here or import it.
 # For this example, I'll assume it's available.

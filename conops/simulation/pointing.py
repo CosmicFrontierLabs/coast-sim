@@ -1,9 +1,8 @@
 import numpy as np
 
-from .common import unixtime2date
-from .constraint import Constraint
+from ..common import unixtime2date
+from ..config import AttitudeControlSystem, Constraint
 from .ppst import PlanEntry
-from .spacecraft_bus import AttitudeControlSystem
 
 
 class Pointing(PlanEntry):

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conops.pointing import Pointing
+from conops import Pointing
 
 
 class DummyACSConfig:

@@ -8,8 +8,6 @@ EARTH_OCCULT = 20
 SUN_OCCULT = 50
 ANTISUN_OCCULT = 180
 MOON_OCCULT = 20
-LOW_DEC_LIMIT = -90
-HIGH_DEC_LIMIT = +90
 
 # Figure out the
 PANEL_CONSTRAINT = 45  # Above 90 degrees means panel is not illuminated

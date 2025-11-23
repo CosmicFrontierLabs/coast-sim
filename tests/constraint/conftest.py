@@ -6,7 +6,7 @@ from unittest.mock import Mock
 import pytest
 from astropy.time import Time  # type: ignore[import-untyped]
 
-from conops.constraint import Constraint
+from conops import Constraint
 
 
 @pytest.fixture

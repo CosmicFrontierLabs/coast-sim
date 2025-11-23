@@ -5,8 +5,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pytest
 
-from conops.common import ACSMode
-from conops.ditl import DITL
+from conops import DITL, ACSMode
 
 
 class DummyEphemeris:
@@ -90,8 +89,8 @@ def mock_config_detailed():
 def ditl(mock_config_detailed, mock_ephem):
     """Create a DITL instance with mocked dependencies."""
     with (
-        patch("conops.ditl_mixin.PassTimes") as mock_passtimes,
-        patch("conops.ditl_mixin.ACS") as mock_acs_class,
+        patch("conops.PassTimes") as mock_passtimes,
+        patch("conops.ACS") as mock_acs_class,
     ):
         # Mock PassTimes
         mock_pt = Mock()

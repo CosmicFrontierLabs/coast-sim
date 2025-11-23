@@ -6,8 +6,7 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from conops.pointing import Pointing
-from conops.target_queue import Queue
+from conops import Pointing, Queue
 
 
 @pytest.fixture

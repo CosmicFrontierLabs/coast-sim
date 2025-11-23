@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from astropy.time import Time  # type: ignore[import-untyped]
 
-from conops.solar_panel import SolarPanel, SolarPanelSet
+from conops import SolarPanel, SolarPanelSet
 
 
 # Fixtures for mock ephemeris

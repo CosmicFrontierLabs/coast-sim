@@ -1,7 +1,7 @@
 import numpy as np
 from shapely import Point, Polygon
 
-from .common import dtutcfromtimestamp
+from ..common import dtutcfromtimestamp
 
 
 class SAA:

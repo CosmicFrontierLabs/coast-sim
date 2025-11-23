@@ -4,8 +4,7 @@ import numpy as np
 import rust_ephem
 from pydantic import BaseModel, Field
 
-from .common import dtutcfromtimestamp
-from .vector import separation
+from ..common import dtutcfromtimestamp, separation
 
 
 def get_slice_indices(

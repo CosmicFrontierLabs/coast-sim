@@ -6,7 +6,7 @@ import rust_ephem
 from pydantic import BaseModel, ConfigDict, Field
 from rust_ephem.constraints import ConstraintConfig
 
-from .common import dtutcfromtimestamp
+from ..common import dtutcfromtimestamp
 from .constants import (
     ANTISUN_OCCULT,
     EARTH_OCCULT,

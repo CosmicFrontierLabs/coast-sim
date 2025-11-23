@@ -1,6 +1,6 @@
 import pytest
 
-from conops.solar_panel import SolarPanel
+from conops import SolarPanel
 
 
 class TestDefaultSolarPanelSet:

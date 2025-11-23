@@ -5,11 +5,14 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pytest
 
-from conops.battery import Battery
-from conops.constraint import Constraint
-from conops.emergency_charging import EmergencyCharging
-from conops.queue_ditl import QueueDITL
-from conops.solar_panel import SolarPanel, SolarPanelSet
+from conops import (
+    Battery,
+    Constraint,
+    EmergencyCharging,
+    QueueDITL,
+    SolarPanel,
+    SolarPanelSet,
+)
 
 
 @pytest.fixture
@@ -105,7 +108,7 @@ def queue_ditl(mock_config):
         self.config = config
 
     with patch(
-        "conops.queue_ditl.DITLMixin.__init__",
+        "conops.DITLMixin.__init__",
         side_effect=mock_ditl_init,
         autospec=False,
     ):

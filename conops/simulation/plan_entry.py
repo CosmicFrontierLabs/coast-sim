@@ -3,11 +3,9 @@ from __future__ import annotations
 import numpy as np
 import rust_ephem
 
-from .common import givename, unixtime2date
-from .constraint import Constraint
+from ..common import givename, roll_over_angle, unixtime2date
+from ..config import AttitudeControlSystem, Constraint
 from .saa import SAA
-from .spacecraft_bus import AttitudeControlSystem
-from .vector import roll_over_angle
 
 
 class PlanEntry:

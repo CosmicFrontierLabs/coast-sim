@@ -5,15 +5,17 @@ import sys
 from datetime import datetime
 from unittest.mock import Mock
 
-from conops.battery import Battery
-from conops.common import ACSMode
-from conops.config import Config
-from conops.constraint import Constraint
-from conops.ditl_mixin import DITLMixin
-from conops.groundstation import GroundStationRegistry
-from conops.instrument import Payload
-from conops.solar_panel import SolarPanelSet
-from conops.spacecraft_bus import SpacecraftBus
+from conops import (
+    ACSMode,
+    Battery,
+    Config,
+    Constraint,
+    DITLMixin,
+    GroundStationRegistry,
+    Payload,
+    SolarPanelSet,
+    SpacecraftBus,
+)
 
 
 class MockDITL(DITLMixin):
@@ -129,7 +131,7 @@ def test_print_statistics_with_queue():
     ditl.dec = [45.0]
 
     # Add a mock queue
-    from conops.target_queue import Queue
+    from conops import Queue
 
     ditl.queue = Queue()
 

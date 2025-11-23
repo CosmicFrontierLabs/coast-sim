@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 import matplotlib
 import matplotlib.pyplot as plt
 
-from conops.ditl_mixin import DITLMixin
+from conops import DITLMixin
 
 """Unit tests for DITLMixin."""
 
@@ -14,9 +14,9 @@ matplotlib.use("Agg")
 def test_init_sets_defaults_and_uses_passes_and_acs(mock_config):
     """DITLMixin.__init__ should set up default attributes and use PassTimes and ACS."""
     with (
-        patch("conops.ditl_mixin.PassTimes") as mock_pass_class,
-        patch("conops.ditl_mixin.ACS") as mock_acs_class,
-        patch("conops.ditl_mixin.Plan") as mock_plan_class,
+        patch("conops.simulation.ditl_mixin.PassTimes") as mock_pass_class,
+        patch("conops.simulation.ditl_mixin.ACS") as mock_acs_class,
+        patch("conops.simulation.ditl_mixin.Plan") as mock_plan_class,
     ):
         # Set return values for patched classes
         mock_pass_inst = Mock()
@@ -57,9 +57,9 @@ def test_init_sets_defaults_and_uses_passes_and_acs(mock_config):
 def test_plot_creates_subplots_and_battery_line(mock_config):
     """Plot should create 7 subplots and include a dashed battery horizontal line."""
     with (
-        patch("conops.ditl_mixin.PassTimes") as mock_pass_class,
-        patch("conops.ditl_mixin.ACS") as mock_acs_class,
-        patch("conops.ditl_mixin.Plan") as mock_plan_class,
+        patch("conops.simulation.ditl_mixin.PassTimes") as mock_pass_class,
+        patch("conops.simulation.ditl_mixin.ACS") as mock_acs_class,
+        patch("conops.simulation.ditl_mixin.Plan") as mock_plan_class,
     ):
         # Create mock PassTimes and ACS instances
         mock_pass_class.return_value = Mock()

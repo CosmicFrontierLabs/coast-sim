@@ -1,9 +1,11 @@
 from enum import Enum, auto
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict
 
-from .passes import Pass
-from .slew import Slew
+if TYPE_CHECKING:
+    from ..simulation.passes import Pass
+    from ..simulation.slew import Slew
 
 
 class ACSCommandType(Enum):
@@ -22,7 +24,7 @@ class ACSCommand(BaseModel):
 
     command_type: ACSCommandType
     execution_time: float
-    slew: Slew | Pass | None = None
+    slew: "Slew | Pass | None" = None
     ra: float | None = None
     dec: float | None = None
     obsid: int | None = None

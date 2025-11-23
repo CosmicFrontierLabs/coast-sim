@@ -5,8 +5,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pytest
 
-from conops.common import ACSMode
-from conops.ditl import DITL, DITLs
+from conops import DITL, ACSMode, DITLs
 
 
 class TestDITLInit:
@@ -15,8 +14,8 @@ class TestDITLInit:
     def test_init_with_config(self, mock_config):
         """Test DITL initialization with a valid config."""
         with (
-            patch("conops.ditl_mixin.PassTimes"),
-            patch("conops.ditl_mixin.ACS"),
+            patch("conops.PassTimes"),
+            patch("conops.ACS"),
         ):
             ditl = DITL(config=mock_config)
             assert ditl.config == mock_config
@@ -29,8 +28,8 @@ class TestDITLInit:
     def test_init_without_config_raises_assertion(self):
         """Test that DITL initialization without config raises assertion error."""
         with (
-            patch("conops.ditl_mixin.PassTimes"),
-            patch("conops.ditl_mixin.ACS"),
+            patch("conops.PassTimes"),
+            patch("conops.ACS"),
         ):
             with pytest.raises(AttributeError):
                 DITL(config=None)

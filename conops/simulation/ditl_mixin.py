@@ -4,8 +4,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import rust_ephem
 
+from ..config import Config
 from .acs import ACS
-from .config import Config
 from .passes import PassTimes
 from .plan_entry import PlanEntry
 from .ppst import Plan
@@ -141,7 +141,7 @@ class DITLMixin:
         """
         from collections import Counter
 
-        from .common import ACSMode
+        from ..common import ACSMode
 
         # Basic simulation info
         print("=" * 70)
@@ -237,7 +237,7 @@ class DITLMixin:
 
         # Charge state statistics
         if hasattr(self, "charge_state") and self.charge_state:
-            from .common import ChargeState
+            from ..common import ChargeState
 
             print("\nBattery Charging State Distribution:")
             charge_state_counts = Counter(self.charge_state)

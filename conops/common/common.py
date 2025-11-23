@@ -1,32 +1,12 @@
 import os
 import time
 from datetime import datetime, timezone
-from enum import Enum
 
 import numpy as np
 
 # Make sure we are working in UTC times
 os.environ["TZ"] = "UTC"
 time.tzset()
-
-
-class ACSMode(int, Enum):
-    """Spacecraft ACS Modes"""
-
-    SCIENCE = 0
-    SLEWING = 1
-    SAA = 2
-    PASS = 3
-    CHARGING = 4
-    SAFE = 5
-
-
-class ChargeState(int, Enum):
-    """Battery Charging States"""
-
-    NOT_CHARGING = 0
-    CHARGING = 1
-    TRICKLE = 2
 
 
 def givename(ra, dec, stem=""):
@@ -50,8 +30,8 @@ def givename(ra, dec, stem=""):
 
 def unixtime2date(utime):
     """Converts Unix time to date string of format YYYY-DDD-HH:MM:SS"""
-    lt = time.localtime(utime)
-    return "%4d-%03d-%02d:%02d:%02d" % (lt[0], lt[7], lt[3], lt[4], lt[5])
+    dt = datetime.fromtimestamp(utime, tz=timezone.utc)
+    return f"{dt.year:04d}-{dt.timetuple().tm_yday:03d}-{dt.hour:02d}:{dt.minute:02d}:{dt.second:02d}"
 
 
 def ics_date_conv(date):
@@ -64,9 +44,9 @@ def ics_date_conv(date):
 
 
 def unixtime2yearday(utime):
-    """Converts Unix time to date string of format YYYY-DDD-HH:MM:SS"""
-    lt = time.localtime(utime)
-    return lt[0], lt[7]
+    """Converts Unix time to year and day of year"""
+    dt = datetime.fromtimestamp(utime, tz=timezone.utc)
+    return dt.year, dt.timetuple().tm_yday
 
 
 def dtutcfromtimestamp(timestamp: float) -> datetime:

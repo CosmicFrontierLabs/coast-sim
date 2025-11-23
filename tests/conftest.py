@@ -16,3 +16,46 @@ def mock_ephem():
     ephem.sun = [Mock(ra=Mock(deg=0.0), dec=Mock(deg=0.0))]
     ephem.index.return_value = 0
     return ephem
+
+
+@pytest.fixture
+def base_constraint():
+    """Create a basic constraint fixture."""
+    from conops import Constraint
+
+    return Constraint()
+
+
+@pytest.fixture
+def payload_constraint():
+    """Create a payload constraint fixture."""
+    from conops import Constraint
+
+    return Constraint()
+
+
+@pytest.fixture
+def config_with_payload_constraint(base_constraint, payload_constraint):
+    """Create a config with payload constraint."""
+    from conops import (
+        Battery,
+        Config,
+        FaultManagement,
+        GroundStationRegistry,
+        Payload,
+        SolarPanelSet,
+        SpacecraftBus,
+    )
+
+    config = Config(
+        name="Test Config",
+        spacecraft_bus=SpacecraftBus(),
+        solar_panel=SolarPanelSet(),
+        payload=Payload(),
+        battery=Battery(),
+        constraint=base_constraint,
+        ground_stations=GroundStationRegistry(),
+        fault_management=FaultManagement(),
+    )
+    config.payload_constraint = payload_constraint
+    return config

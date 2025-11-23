@@ -1,7 +1,7 @@
-from .common import dtutcfromtimestamp, np
-from .constants import DTOR
-from .solar_panel import SolarPanelSet
-from .vector import rotvec, scbodyvector
+import numpy as np
+
+from ..common import dtutcfromtimestamp, rotvec, scbodyvector
+from ..config import DTOR, SolarPanelSet
 
 """Roll computation helpers."""
 

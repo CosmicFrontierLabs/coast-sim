@@ -2,13 +2,15 @@
 
 from unittest.mock import Mock
 
-from conops.battery import Battery
-from conops.config import Config
-from conops.constraint import Constraint
-from conops.groundstation import GroundStationRegistry
-from conops.instrument import Payload
-from conops.solar_panel import SolarPanelSet
-from conops.spacecraft_bus import SpacecraftBus
+from conops import (
+    Battery,
+    Config,
+    Constraint,
+    GroundStationRegistry,
+    Payload,
+    SolarPanelSet,
+    SpacecraftBus,
+)
 
 
 class TestConfig:

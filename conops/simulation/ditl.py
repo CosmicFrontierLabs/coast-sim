@@ -1,6 +1,6 @@
 import numpy as np
 
-from .config import Config  # type: ignore[attr-defined]
+from ..config import Config  # type: ignore[attr-defined]
 from .ditl_mixin import DITLMixin
 
 

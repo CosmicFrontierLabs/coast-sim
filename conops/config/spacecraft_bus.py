@@ -1,10 +1,10 @@
 import numpy as np
 from pydantic import BaseModel
 
+from ..common import great_circle, separation
 from .constants import DTOR
 from .power import PowerDraw
 from .thermal import Heater
-from .vector import great_circle, separation
 
 
 class AttitudeControlSystem(BaseModel):

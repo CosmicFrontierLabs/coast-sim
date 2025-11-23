@@ -2,7 +2,7 @@ from math import isclose
 
 import pytest
 
-from conops.battery import Battery
+from conops import Battery
 
 """Unit tests for conops.battery.Battery"""
 

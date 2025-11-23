@@ -4,8 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from conops.plan_entry import PlanEntry
-from conops.ppst import Plan, TargetList
+from conops import Plan, PlanEntry, TargetList
 
 
 @pytest.fixture

@@ -4,9 +4,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from conops.acs import ACS
-from conops.constraint import Constraint
-from conops.spacecraft_bus import AttitudeControlSystem, SpacecraftBus
+from conops import ACS, AttitudeControlSystem, Constraint, SpacecraftBus
 
 
 class DummyEphemeris:
@@ -70,7 +68,7 @@ def mock_config(mock_ephem):
 @pytest.fixture
 def acs(mock_constraint, mock_config):
     """Create an ACS instance with mocked dependencies."""
-    with patch("conops.acs.PassTimes") as mock_passtimes:
+    with patch("conops.simulation.passes.PassTimes") as mock_passtimes:
         mock_pt = Mock()
         mock_pt.passes = []
         mock_pt.next_pass = Mock(return_value=None)

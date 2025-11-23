@@ -3,7 +3,7 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from conops.plan_entry import PlanEntry
+from conops import PlanEntry
 
 
 class MockSAA:

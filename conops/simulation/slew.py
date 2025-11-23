@@ -3,10 +3,8 @@ from typing import Any
 import numpy as np
 import rust_ephem
 
-from .common import unixtime2date
-from .constraint import Constraint
-from .spacecraft_bus import AttitudeControlSystem
-from .vector import roll_over_angle
+from ..common import roll_over_angle, unixtime2date
+from ..config import AttitudeControlSystem, Constraint
 
 
 class Slew:

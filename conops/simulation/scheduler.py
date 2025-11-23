@@ -3,9 +3,8 @@ from typing import cast
 import numpy as np
 import rust_ephem
 
-from .common import dtutcfromtimestamp
-from .config import Config
-from .constraint import Constraint
+from ..common import dtutcfromtimestamp
+from ..config import Config, Constraint
 from .ppst import Plan, PlanEntry, TargetList
 from .saa import SAA
 

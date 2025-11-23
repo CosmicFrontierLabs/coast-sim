@@ -6,10 +6,13 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pytest
 
-from conops.constraint import Constraint
-from conops.ephemeris import compute_tle_ephemeris
-from conops.groundstation import GroundStationRegistry
-from conops.passes import Pass, PassTimes
+from conops import (
+    Constraint,
+    GroundStationRegistry,
+    Pass,
+    PassTimes,
+    compute_tle_ephemeris,
+)
 
 
 class TestPassInitialization:
@@ -877,7 +880,7 @@ class TestPassTimesGetIntegration:
         # Import needed modules
         from datetime import datetime, timezone
 
-        from conops.ephemeris import compute_tle_ephemeris
+        from conops import compute_tle_ephemeris
 
         # Create ephemeris for a short time period
         begin = datetime(2025, 8, 15, 0, 0, 0, tzinfo=timezone.utc)

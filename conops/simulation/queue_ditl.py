@@ -5,9 +5,8 @@ from typing import Any
 import numpy as np
 import rust_ephem
 
-from .acs import ACSCommand, ACSCommandType
-from .common import ACSMode, unixtime2date
-from .config import Config  # type: ignore[attr-defined]
+from ..common import ACSMode, unixtime2date
+from ..config import ACSCommand, ACSCommandType, Config
 from .ditl_mixin import DITLMixin
 from .emergency_charging import EmergencyCharging
 from .pointing import Pointing

@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 from unittest.mock import Mock
 
-from conops.ephemeris import (
+from conops import (
     compute_tle_ephemeris,
 )
 
@@ -17,7 +17,7 @@ class TestComputeTleEphemeris:
         mock_instance = Mock()
         mock_tleephem_class.return_value = mock_instance
         monkeypatch.setattr(
-            "conops.ephemeris.rust_ephem.TLEEphemeris", mock_tleephem_class
+            "conops.config.ephemeris.rust_ephem.TLEEphemeris", mock_tleephem_class
         )
 
         # Use naive datetimes
@@ -44,7 +44,7 @@ class TestComputeTleEphemeris:
         mock_instance = Mock()
         mock_tleephem_class.return_value = mock_instance
         monkeypatch.setattr(
-            "conops.ephemeris.rust_ephem.TLEEphemeris", mock_tleephem_class
+            "conops.config.ephemeris.rust_ephem.TLEEphemeris", mock_tleephem_class
         )
 
         # Use timezone-aware datetimes
@@ -70,7 +70,7 @@ class TestComputeTleEphemeris:
         mock_instance = Mock()
         mock_tleephem_class.return_value = mock_instance
         monkeypatch.setattr(
-            "conops.ephemeris.rust_ephem.TLEEphemeris", mock_tleephem_class
+            "conops.config.ephemeris.rust_ephem.TLEEphemeris", mock_tleephem_class
         )
 
         begin = datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)

@@ -7,9 +7,7 @@ import numpy as np
 import pytest
 from astropy.time import Time  # type: ignore[import-untyped]
 
-from conops import DumbScheduler
-from conops.constraint import Constraint
-from conops.saa import SAA
+from conops import SAA, Constraint, DumbScheduler
 
 
 class SimpleTarget:

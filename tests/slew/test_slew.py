@@ -5,7 +5,7 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from conops.slew import Slew
+from conops import Slew
 
 
 class TestSlewInit:

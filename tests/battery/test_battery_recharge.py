@@ -6,12 +6,15 @@ import numpy as np
 import pytest
 from astropy.coordinates import angular_separation  # type: ignore[import-untyped]
 
-from conops.battery import Battery
-from conops.common import ACSMode
-from conops.emergency_charging import EmergencyCharging
-from conops.pointing import Pointing
-from conops.queue_ditl import QueueDITL
-from conops.solar_panel import SolarPanel, SolarPanelSet
+from conops import (
+    ACSMode,
+    Battery,
+    EmergencyCharging,
+    Pointing,
+    QueueDITL,
+    SolarPanel,
+    SolarPanelSet,
+)
 
 
 class TestBattery:
@@ -789,7 +792,7 @@ class TestQueueDITLEmergencyCharging:
             self.config = config
 
         with patch(
-            "conops.queue_ditl.DITLMixin.__init__",
+            "conops.DITLMixin.__init__",
             side_effect=mock_ditl_init,
             autospec=False,
         ):

@@ -3,7 +3,7 @@ from typing import Any
 import numpy as np
 import rust_ephem
 
-from .common import unixtime2date
+from ..common import unixtime2date
 from .pointing import Pointing
 
 
@@ -107,3 +107,6 @@ class Queue:
         """
         for target in self.targets:
             target.reset()
+
+
+TargetQueue = Queue

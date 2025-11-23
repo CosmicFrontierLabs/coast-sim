@@ -1,6 +1,6 @@
 from pydantic import BaseModel, model_validator
 
-from .common import ChargeState
+from ..common import ChargeState
 
 
 class Battery(BaseModel):

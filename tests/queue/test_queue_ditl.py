@@ -5,10 +5,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pytest
 
-from conops.acs import ACSCommandType
-from conops.common import ACSMode
-from conops.passes import Pass
-from conops.queue_ditl import QueueDITL
+from conops import ACSCommandType, ACSMode, Pass, QueueDITL
 
 
 class TestQueueDITLInitialization:
@@ -16,9 +13,9 @@ class TestQueueDITLInitialization:
 
     def test_initialization_ppts_defaults(self, mock_config):
         with (
-            patch("conops.queue_ditl.Queue"),
-            patch("conops.ditl_mixin.PassTimes"),
-            patch("conops.ditl_mixin.ACS"),
+            patch("conops.Queue"),
+            patch("conops.PassTimes"),
+            patch("conops.ACS"),
         ):
             ditl = QueueDITL(config=mock_config)
             assert ditl.ppt is None
@@ -26,9 +23,9 @@ class TestQueueDITLInitialization:
 
     def test_initialization_pointing_lists_empty(self, mock_config):
         with (
-            patch("conops.queue_ditl.Queue"),
-            patch("conops.ditl_mixin.PassTimes"),
-            patch("conops.ditl_mixin.ACS"),
+            patch("conops.Queue"),
+            patch("conops.PassTimes"),
+            patch("conops.ACS"),
         ):
             ditl = QueueDITL(config=mock_config)
             assert ditl.ra == []
@@ -39,9 +36,9 @@ class TestQueueDITLInitialization:
 
     def test_initialization_power_lists_empty_and_ppst(self, mock_config):
         with (
-            patch("conops.queue_ditl.Queue"),
-            patch("conops.ditl_mixin.PassTimes"),
-            patch("conops.ditl_mixin.ACS"),
+            patch("conops.Queue"),
+            patch("conops.PassTimes"),
+            patch("conops.ACS"),
         ):
             ditl = QueueDITL(config=mock_config)
             assert ditl.panel == []
@@ -52,9 +49,9 @@ class TestQueueDITLInitialization:
 
     def test_initialization_stores_config_subsystems(self, mock_config):
         with (
-            patch("conops.queue_ditl.Queue"),
-            patch("conops.ditl_mixin.PassTimes"),
-            patch("conops.ditl_mixin.ACS"),
+            patch("conops.Queue"),
+            patch("conops.PassTimes"),
+            patch("conops.ACS"),
         ):
             ditl = QueueDITL(config=mock_config)
             assert ditl.constraint is mock_config.constraint
@@ -177,8 +174,7 @@ class TestDetermineMode:
     """Test mode determination now handled by ACS.get_mode() - these tests use real ACS instance."""
 
     def test_determine_mode_slewing(self, mock_config, mock_ephem):
-        from conops.acs import ACS
-        from conops.constraint import Constraint
+        from conops import ACS, Constraint
 
         constraint = Constraint(ephem=None)
         constraint.ephem = mock_ephem
@@ -193,9 +189,7 @@ class TestDetermineMode:
         assert mode == ACSMode.SLEWING
 
     def test_determine_mode_pass(self, mock_config, mock_ephem):
-        from conops.acs import ACS
-        from conops.constraint import Constraint
-        from conops.passes import Pass
+        from conops import ACS, Constraint, Pass
 
         constraint = Constraint(ephem=None)
         constraint.ephem = mock_ephem
@@ -213,8 +207,7 @@ class TestDetermineMode:
         assert mode == ACSMode.PASS
 
     def test_determine_mode_saa(self, mock_config, mock_ephem):
-        from conops.acs import ACS
-        from conops.constraint import Constraint
+        from conops import ACS, Constraint
 
         constraint = Constraint(ephem=None)
         constraint.ephem = mock_ephem
@@ -228,8 +221,7 @@ class TestDetermineMode:
         assert mode == ACSMode.SAA
 
     def test_determine_mode_charging(self, mock_config, mock_ephem, monkeypatch):
-        from conops.acs import ACS
-        from conops.constraint import Constraint
+        from conops import ACS, Constraint
 
         constraint = Mock(spec=Constraint)
         constraint.ephem = mock_ephem
@@ -249,8 +241,7 @@ class TestDetermineMode:
         assert mode == ACSMode.CHARGING
 
     def test_determine_mode_science(self, mock_config, mock_ephem):
-        from conops.acs import ACS
-        from conops.constraint import Constraint
+        from conops import ACS, Constraint
 
         constraint = Constraint(ephem=None)
         constraint.ephem = mock_ephem
@@ -481,8 +472,8 @@ class TestFetchNewPPT:
         mock_ppt.obsid = 1001
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
         with (
-            patch("conops.pointing.Pointing.visibility") as mock_vis,
-            patch("conops.pointing.Pointing.next_vis") as mock_next_vis,
+            patch("conops.Pointing.visibility") as mock_vis,
+            patch("conops.Pointing.next_vis") as mock_next_vis,
         ):
             mock_vis.return_value = 1
             mock_next_vis.return_value = 1000.0
@@ -498,8 +489,8 @@ class TestFetchNewPPT:
         mock_ppt.obsid = 1001
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
         with (
-            patch("conops.pointing.Pointing.visibility") as mock_vis,
-            patch("conops.pointing.Pointing.next_vis") as mock_next_vis,
+            patch("conops.Pointing.visibility") as mock_vis,
+            patch("conops.Pointing.next_vis") as mock_next_vis,
         ):
             mock_vis.return_value = 1
             mock_next_vis.return_value = 1000.0
@@ -519,8 +510,8 @@ class TestFetchNewPPT:
         mock_ppt.obsid = 1001
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
         with (
-            patch("conops.pointing.Pointing.visibility") as mock_vis,
-            patch("conops.pointing.Pointing.next_vis") as mock_next_vis,
+            patch("conops.Pointing.visibility") as mock_vis,
+            patch("conops.Pointing.next_vis") as mock_next_vis,
         ):
             mock_vis.return_value = 1
             mock_next_vis.return_value = 1000.0
@@ -786,7 +777,7 @@ class TestCalcMethod:
 
         queue_ditl.queue.get = Mock(side_effect=[mock_ppt] + [None] * 100)
 
-        with patch("conops.pointing.Pointing.visibility") as mock_vis:
+        with patch("conops.Pointing.visibility") as mock_vis:
             mock_vis.return_value = 1
             queue_ditl.calc()
 
@@ -866,7 +857,7 @@ class TestCalcMethod:
         mock_ppt.end = 1543708800
         mock_ppt.done = False
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
-        with patch("conops.pointing.Pointing.visibility") as mock_vis:
+        with patch("conops.Pointing.visibility") as mock_vis:
             mock_vis.return_value = 1
             queue_ditl.calc()
         if queue_ditl.ppst:

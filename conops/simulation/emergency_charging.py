@@ -4,11 +4,9 @@ import numpy as np
 import rust_ephem
 from astropy.coordinates import angular_separation  # type: ignore[import-untyped]
 
-from .common import unixtime2date
-from .constraint import Constraint
+from ..common import unixtime2date
+from ..config import AttitudeControlSystem, Constraint, SolarPanelSet
 from .pointing import Pointing
-from .solar_panel import SolarPanelSet
-from .spacecraft_bus import AttitudeControlSystem
 
 
 class EmergencyCharging:

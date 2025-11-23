@@ -5,12 +5,9 @@ import numpy as np
 import rust_ephem  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field
 
-from .common import ics_date_conv, unixtime2date
-from .config import Config
-from .constraint import Constraint
-from .groundstation import GroundStationRegistry
+from ..common import ics_date_conv, roll_over_angle, unixtime2date
+from ..config import Config, Constraint, GroundStationRegistry
 from .slew import Slew
-from .vector import roll_over_angle
 
 
 class Pass(BaseModel):

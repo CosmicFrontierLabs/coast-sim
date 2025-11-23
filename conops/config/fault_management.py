@@ -186,6 +186,6 @@ class FaultManagement(BaseModel):
 
 # Lazy import for type checking to avoid circular import
 try:  # pragma: no cover
-    from .acs import ACS  # noqa: F401
+    from ..simulation.acs import ACS  # noqa: F401
 except Exception:  # pragma: no cover
     pass

@@ -4,7 +4,7 @@ from unittest.mock import Mock
 
 import numpy as np
 
-from conops.roll import optimum_roll, optimum_roll_sidemount
+from conops import optimum_roll, optimum_roll_sidemount
 
 
 class TestOptimumRoll:
