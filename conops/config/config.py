@@ -29,14 +29,17 @@ class Config(BaseModel):
         """Initialize default fault thresholds if none provided.
 
         Currently sets up a battery_level threshold using the battery
-        max_depth_of_discharge as YELLOW and (max_depth_of_discharge - 0.1)
-        as RED for demonstration. Users can override via config serialization.
+        max_depth_of_discharge as the minimum allowed charge level for YELLOW
+        and (max_depth_of_discharge + 0.1) as RED for demonstration.
+        Users can override via config serialization.
         """
         if self.fault_management is None:
             return
         # Only add battery threshold if not already present
         if "battery_level" not in self.fault_management.thresholds:
-            yellow = self.battery.max_depth_of_discharge
+            # Yellow alert at minimum allowed charge level (1.0 - max_depth_of_discharge)
+            yellow = 1.0 - self.battery.max_depth_of_discharge
+            # Red alert at 10% below the minimum allowed charge level
             red = max(yellow - 0.1, 0.0)  # Ensure non-negative
             self.fault_management.add_threshold(
                 name="battery_level", yellow=yellow, red=red, direction="below"

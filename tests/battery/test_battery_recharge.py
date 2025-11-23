@@ -32,7 +32,9 @@ class TestBattery:
         self, battery_with_dod
     ):
         """Test that battery_alert triggers when below max_depth_of_discharge."""
-        battery_with_dod.charge_level = battery_with_dod.watthour * 0.65  # 65% SOC
+        battery_with_dod.charge_level = (
+            battery_with_dod.watthour * 0.60
+        )  # 60% SOC (below 65% minimum)
         assert battery_with_dod.battery_alert is True
         assert battery_with_dod.emergency_recharge is True
 
@@ -41,8 +43,8 @@ class TestBattery:
     ):
         """Test that battery_alert continues until recharge_threshold is reached."""
         battery_with_dod_and_threshold.charge_level = (
-            battery_with_dod_and_threshold.watthour * 0.65
-        )  # Trigger alert
+            battery_with_dod_and_threshold.watthour * 0.60
+        )  # Trigger alert (below 65% minimum)
         assert battery_with_dod_and_threshold.battery_alert is True
 
         # Charge to 90% - should still be in alert
@@ -871,16 +873,16 @@ class TestBatteryRechargeScenarios:
     def test_full_discharge_recharge_cycle(self):
         """Test complete discharge and recharge cycle."""
         battery = Battery(
-            max_depth_of_discharge=0.7, recharge_threshold=0.95, watthour=560.0
+            max_depth_of_discharge=0.35, recharge_threshold=0.95, watthour=560.0
         )
 
         # Start fully charged
         assert battery.battery_level == 1.0
         assert battery.battery_alert is False
 
-        # Drain to 65% - should trigger alert
-        battery.charge_level = battery.watthour * 0.65
-        assert battery.battery_level == 0.65
+        # Drain to 60% - should trigger alert
+        battery.charge_level = battery.watthour * 0.60
+        assert battery.battery_level == 0.60
         assert battery.battery_alert is True
         assert battery.emergency_recharge is True
 
@@ -904,17 +906,17 @@ class TestBatteryRechargeScenarios:
 
     def test_multiple_charge_discharge_cycles(self):
         """Test multiple emergency recharge cycles."""
-        battery = Battery(max_depth_of_discharge=0.7, recharge_threshold=0.95)
+        battery = Battery(max_depth_of_discharge=0.35, recharge_threshold=0.95)
 
         # First cycle
-        battery.charge_level = battery.watthour * 0.65
+        battery.charge_level = battery.watthour * 0.60
         assert battery.battery_alert is True
 
         battery.charge_level = battery.watthour * 0.95
         assert battery.battery_alert is False
 
         # Second cycle
-        battery.charge_level = battery.watthour * 0.60
+        battery.charge_level = battery.watthour * 0.55
         assert battery.battery_alert is True
 
         battery.charge_level = battery.watthour * 0.95

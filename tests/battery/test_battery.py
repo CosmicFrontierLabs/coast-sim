@@ -85,8 +85,9 @@ class TestBatteryAlerts:
 
     def test_battery_level_below_max_depth_of_discharge(self, default_battery):
         b = default_battery
-        b.charge_level = b.watthour * 0.6
-        assert b.battery_level < b.max_depth_of_discharge
+        b.charge_level = b.watthour * 0.2  # 20% charge level (below 70% minimum)
+        min_allowed_charge = 1.0 - b.max_depth_of_discharge  # 0.7
+        assert b.battery_level < min_allowed_charge
 
     def test_battery_alert_true_when_below_max_depth_of_discharge(
         self, default_battery

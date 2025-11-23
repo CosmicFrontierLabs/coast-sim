@@ -30,13 +30,13 @@ def battery_with_custom_threshold():
 @pytest.fixture
 def battery_with_dod():
     """Fixture for a Battery instance with max depth of discharge."""
-    return Battery(max_depth_of_discharge=0.7)
+    return Battery(max_depth_of_discharge=0.35)  # Allows discharge to 65% charge level
 
 
 @pytest.fixture
 def battery_with_dod_and_threshold():
     """Fixture for a Battery instance with both max depth of discharge and recharge threshold."""
-    return Battery(max_depth_of_discharge=0.7, recharge_threshold=0.95)
+    return Battery(max_depth_of_discharge=0.35, recharge_threshold=0.95)
 
 
 @pytest.fixture

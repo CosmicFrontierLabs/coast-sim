@@ -88,7 +88,9 @@ class DITLMixin:
         ax = plt.subplot(714)
         ax.plot(timehours, self.batterylevel)
         ax.axhline(
-            y=self.config.battery.max_depth_of_discharge, color="r", linestyle="--"
+            y=1.0 - self.config.battery.max_depth_of_discharge,
+            color="r",
+            linestyle="--",
         )
         ax.xaxis.set_visible(False)
         ax.set_ylim(0, 1)

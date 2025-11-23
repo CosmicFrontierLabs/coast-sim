@@ -15,7 +15,7 @@ class Battery(BaseModel):
     voltage: float = 28  # Volts
     watthour: float = 560  # 20 * 28
     emergency_recharge: bool = False
-    max_depth_of_discharge: float = 0.7  # 70% depth of discharge
+    max_depth_of_discharge: float = 0.3  # Maximum allowed depth of discharge (30%)
     recharge_threshold: float = (
         0.95  # Threshold at which emergency recharge ends (95% SOC)
     )
@@ -55,8 +55,11 @@ class Battery(BaseModel):
     @property
     def battery_alert(self):
         """Is the battery in an alert status caused by discharge"""
-        # Depth of dischange > 30%, start an emergency recharge state
-        if self.battery_level < self.max_depth_of_discharge:
+        # Calculate minimum allowed charge level from max depth of discharge
+        min_charge_level = 1.0 - self.max_depth_of_discharge
+
+        # Depth of discharge > max_depth_of_discharge, start an emergency recharge state
+        if self.battery_level < min_charge_level:
             self.emergency_recharge = True
             return True
         # We're in emergency recharge right now - continue until recharge_threshold

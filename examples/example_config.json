@@ -70,7 +70,7 @@
         "voltage": 28.0,
         "watthour": 1000.0,
         "emergency_recharge": false,
-        "max_depth_of_discharge": 0.5,
+        "max_depth_of_discharge": 0.4,
         "recharge_threshold": 0.95,
         "charge_level": 1000.0
     },
