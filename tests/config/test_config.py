@@ -99,7 +99,7 @@ class TestConfig:
         """Test init_fault_management_defaults adds battery_level threshold if not present."""
         fault_management = FaultManagement()
         battery = Mock(spec=Battery)
-        battery.max_depth_of_discharge = 0.8
+        battery.max_depth_of_discharge = 0.2
         config = Config(
             spacecraft_bus=Mock(spec=SpacecraftBus),
             solar_panel=Mock(spec=SolarPanelSet),
