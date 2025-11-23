@@ -80,6 +80,7 @@ def mock_ephemeris():
     ephem.index = mock_index
     ephem.ephindex = mock_ephindex
     ephem.ephtime = mock_ephtime
+    ephem.step_size = 60  # seconds
 
     return ephem
 

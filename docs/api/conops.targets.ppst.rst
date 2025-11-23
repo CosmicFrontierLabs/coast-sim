@@ -1,7 +1,7 @@
-conops.ditl_mixin
-=================
+conops.targets.ppst
+===================
 
-.. automodule:: conops.ditl_mixin
+.. automodule:: conops.targets.ppst
    :members:
    :undoc-members:
    :show-inheritance:

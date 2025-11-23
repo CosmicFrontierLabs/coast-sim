@@ -32,6 +32,10 @@ class DumbScheduler:
         self.step_size = self.ephem.step_size
         self.issurvey = False
         self.config: Config | None = None  # optional: can be set externally
+        self.gimbled = False  # Default: not gimbled
+        self.sidemount = False  # Default: not side-mounted
+        self.suncons = self.constraint.sun_constraint.min_angle
+        self.antisuncons = self.constraint.anti_sun_constraint.max_angle
 
     def _init_saa(self) -> None:
         if self.saa is None:

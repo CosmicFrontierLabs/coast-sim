@@ -1,7 +1,7 @@
-conops.ppst
-===========
+conops.ditl.ditl
+==================
 
-.. automodule:: conops.ppst
+.. automodule:: conops.ditl.ditl
    :members:
    :undoc-members:
    :show-inheritance:
