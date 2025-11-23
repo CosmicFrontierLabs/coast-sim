@@ -1,3 +1,67 @@
+"""Fault Management System for Spacecraft Operations.
+
+This module provides an extensible fault monitoring and response system that:
+- Monitors multiple parameters against configurable yellow/red thresholds
+- Tracks time spent in each fault state (nominal, yellow, red)
+- Automatically triggers safe mode on RED conditions
+- Supports both "below" and "above" threshold directions
+
+Configuration Example (JSON):
+    {
+        "fault_management": {
+            "thresholds": {
+                "battery_level": {
+                    "name": "battery_level",
+                    "yellow": 0.5,
+                    "red": 0.4,
+                    "direction": "below"
+                },
+                "temperature": {
+                    "name": "temperature",
+                    "yellow": 50.0,
+                    "red": 60.0,
+                    "direction": "above"
+                }
+            },
+            "states": {},
+            "safe_mode_on_red": true
+        }
+    }
+
+Usage Example (Python):
+    from conops.fault_management import FaultManagement
+
+    # Create fault management system
+    fm = FaultManagement()
+
+    # Add thresholds programmatically
+    fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
+    fm.add_threshold("temperature", yellow=50.0, red=60.0, direction="above")
+
+    # Check parameters each simulation cycle
+    classifications = fm.check(
+        values={"battery_level": 0.45, "temperature": 55.0},
+        utime=current_time,
+        step_size=1.0,
+        acs=spacecraft_acs
+    )
+
+    # Get accumulated statistics
+    stats = fm.statistics()
+    # Returns: {"battery_level": {"yellow_seconds": 120.0, "red_seconds": 0.0, "current": "yellow"}, ...}
+
+Threshold Directions:
+    - "below": Fault triggered when value <= threshold (e.g., battery_level)
+    - "above": Fault triggered when value >= threshold (e.g., temperature, power_draw)
+
+Safe Mode Behavior:
+    When safe_mode_on_red=True (default), any parameter reaching RED state will:
+    1. Enqueue an ACSCommand to enter safe mode
+    2. Safe mode is irreversible once entered
+    3. Spacecraft points solar panels at Sun for maximum power generation
+    4. All queued commands are cleared
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

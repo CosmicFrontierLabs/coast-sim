@@ -36,6 +36,7 @@ Spacecraft Components
    conops.battery
    conops.solar_panel
    conops.instrument
+   conops.fault_management
 
 Orbit and Pointing
 ------------------
