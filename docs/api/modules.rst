@@ -11,7 +11,10 @@ Core Modules
 
    conops.config
    conops.ditl
-   conops.queue_ditl
+   conops.ditl.ditl
+   conops.ditl.ditl_mixin
+   conops.ditl.queue_ditl
+   conops.simulation
 
 Scheduling and Planning
 -----------------------
@@ -19,11 +22,14 @@ Scheduling and Planning
 .. toctree::
    :maxdepth: 2
 
-   conops.scheduler
-   conops.queue_scheduler
-   conops.ppst
-   conops.plan_entry
-   conops.target_queue
+   conops.schedulers
+   conops.schedulers.scheduler
+   conops.schedulers.queue_scheduler
+   conops.targets
+   conops.targets.pointing
+   conops.targets.ppst
+   conops.targets.plan_entry
+   conops.targets.target_queue
 
 Spacecraft Components
 ---------------------
@@ -31,12 +37,9 @@ Spacecraft Components
 .. toctree::
    :maxdepth: 2
 
-   conops.spacecraft_bus
-   conops.acs
    conops.battery
    conops.solar_panel
    conops.instrument
-   conops.fault_management
 
 Orbit and Pointing
 ------------------
@@ -45,9 +48,7 @@ Orbit and Pointing
    :maxdepth: 2
 
    conops.ephemeris
-   conops.pointing
    conops.slew
-   conops.roll
    conops.vector
 
 Constraints and Environment
@@ -77,4 +78,3 @@ Utilities
 
    conops.common
    conops.constants
-   conops.ditl_mixin

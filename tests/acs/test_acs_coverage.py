@@ -2,10 +2,7 @@
 
 from unittest.mock import Mock, patch
 
-from conops.acs import ACSCommand, ACSCommandType
-from conops.common import ACSMode
-from conops.passes import Pass
-from conops.slew import Slew
+from conops import ACSCommand, ACSCommandType, ACSMode, Pass, Slew
 
 
 class TestExecuteCommandCoverage:
@@ -1043,13 +1040,13 @@ class TestBatteryChargingMethods:
         with (
             patch.object(acs, "enqueue_command") as mock_enqueue_command,
             patch(
-                "conops.pointing.Pointing.visibility",
+                "conops.Pointing.visibility",
                 new=lambda self, *args, **kwargs: (
                     setattr(self, "windows", [[1514764800.0, 1514764900.0]]),
                     0,
                 )[-1],
             ),
-            patch("conops.pointing.Pointing.next_vis", return_value=1514764800.0),
+            patch("conops.Pointing.next_vis", return_value=1514764800.0),
         ):
             acs.config.spacecraft_bus.attitude_control.predict_slew.return_value = (
                 0.0,
@@ -1078,13 +1075,13 @@ class TestBatteryChargingMethods:
         with (
             patch.object(acs, "enqueue_command"),
             patch(
-                "conops.pointing.Pointing.visibility",
+                "conops.Pointing.visibility",
                 new=lambda self, *args, **kwargs: (
                     setattr(self, "windows", [[1514764800.0, 1514764900.0]]),
                     0,
                 )[-1],
             ),
-            patch("conops.pointing.Pointing.next_vis", return_value=1514764800.0),
+            patch("conops.Pointing.next_vis", return_value=1514764800.0),
         ):
             acs.config.spacecraft_bus.attitude_control.predict_slew.return_value = (
                 0.0,
@@ -1117,13 +1114,13 @@ class TestBatteryChargingMethods:
         with (
             patch.object(acs, "enqueue_command") as mock_enqueue_command,
             patch(
-                "conops.pointing.Pointing.visibility",
+                "conops.Pointing.visibility",
                 new=lambda self, *args, **kwargs: (
                     setattr(self, "windows", [[1514764800.0, 1514764900.0]]),
                     0,
                 )[-1],
             ),
-            patch("conops.pointing.Pointing.next_vis", return_value=1514764800.0),
+            patch("conops.Pointing.next_vis", return_value=1514764800.0),
         ):
             acs.config.spacecraft_bus.attitude_control.predict_slew.return_value = (
                 0.0,

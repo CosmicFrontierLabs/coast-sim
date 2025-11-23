@@ -11,9 +11,8 @@ Here's a simple example of running a Day-In-The-Life (DITL) simulation:
 .. code-block:: python
 
    from datetime import datetime, timedelta
-   from conops.config import Config
-   from conops.queue_ditl import QueueDITL
-   from conops.ephemeris import compute_tle_ephemeris
+   from conops import Config, QueueDITL
+   from rust_ephem import TLEEphemeris
 
    # Load configuration
    config = Config.from_json("example_config.json")
@@ -23,7 +22,7 @@ Here's a simple example of running a Day-In-The-Life (DITL) simulation:
    end = begin + timedelta(days=1)
 
    # Compute orbit ephemeris
-   ephemeris = compute_tle_ephemeris("example.tle", begin, end)
+   ephemeris = TLEEphemeris(tle="example.tle", begin=begin, end=end)
 
    # Run DITL simulation
    ditl = QueueDITL(config, ephemeris, begin, end)
@@ -78,12 +77,12 @@ Compute spacecraft orbit:
 
 .. code-block:: python
 
-   from conops.ephemeris import compute_tle_ephemeris
+   from rust_ephem import TLEEphemeris
    from datetime import datetime, timedelta
 
    begin = datetime(2025, 11, 1)
    end = begin + timedelta(days=1)
-   ephemeris = compute_tle_ephemeris("spacecraft.tle", begin, end)
+   ephemeris = TLEEphemeris(tle="spacecraft.tle", begin=begin, end=end)
 
 Pointing
 ~~~~~~~~
@@ -92,7 +91,7 @@ Define observation targets:
 
 .. code-block:: python
 
-   from conops.pointing import Pointing
+   from conops import Pointing
 
    target = Pointing(ra=180.0, dec=45.0, roll=0.0)
 
@@ -103,7 +102,7 @@ Manage observation targets:
 
 .. code-block:: python
 
-   from conops.queue_scheduler import Queue
+   from conops import Queue
 
    queue = Queue()
    queue.add_target(target, priority=10, duration=300)
@@ -119,6 +118,27 @@ Apply observational constraints:
 
    sun_constraint = SunConstraint(min_angle=45.0)
    moon_constraint = MoonConstraint(min_angle=30.0)
+
+Module Structure
+----------------
+
+COASTSim is organized into several key modules:
+
+* `conops.common`: Shared utilities, enums (ACSMode, ChargeState, ACSCommandType), and common functions
+* `conops.config`: Configuration classes for spacecraft components (battery, solar panels, instruments, etc.)
+* `conops.targets`: Target management classes (Pointing, Queue, Plan, PlanEntry)
+* `conops.schedulers`: Scheduling algorithms (DumbScheduler, DumbQueueScheduler)
+* `conops.simulation`: Core simulation components (ACS, DITL classes, constraints, etc.)
+* `conops.ditl`: Day-In-The-Life simulation classes (DITL, DITLMixin, QueueDITL)
+
+All classes are available directly from the ``conops`` package:
+
+.. code-block:: python
+
+   from conops import (
+       Config, ACS, DITL, QueueDITL, Pointing, Queue,
+       DumbScheduler, ACSMode, ACSCommandType
+   )
 
 Next Steps
 ----------

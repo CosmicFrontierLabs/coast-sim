@@ -2,8 +2,7 @@
 
 import pytest
 
-from conops.instrument import Instrument, Payload
-from conops.power import PowerDraw
+from conops import Instrument, Payload, PowerDraw
 
 
 # fixtures for single instrument and power draws

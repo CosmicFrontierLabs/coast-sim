@@ -1,6 +1,6 @@
 import pytest
 
-from conops.acs import ACS
+from conops import ACS
 
 
 def test_fault_management_adds_default_battery_threshold(base_config):

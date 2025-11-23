@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-from conops.target_queue import Queue
+from conops import Queue
 
 
 class TestQueueInitAndAppend:

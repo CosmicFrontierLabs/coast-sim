@@ -7,9 +7,7 @@ import numpy as np
 import pytest
 from astropy.time import Time  # type: ignore[import-untyped]
 
-from conops import DumbScheduler
-from conops.constraint import Constraint
-from conops.saa import SAA
+from conops import SAA, Constraint, DumbScheduler
 
 
 class SimpleTarget:
@@ -82,6 +80,7 @@ def mock_ephemeris():
     ephem.index = mock_index
     ephem.ephindex = mock_ephindex
     ephem.ephtime = mock_ephtime
+    ephem.step_size = 60  # seconds
 
     return ephem
 

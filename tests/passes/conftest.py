@@ -6,9 +6,7 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from conops.config import Config
-from conops.constraint import Constraint
-from conops.passes import Pass
+from conops import Config, Constraint, Pass
 
 
 class MockEphemeris:

@@ -6,8 +6,7 @@ import numpy as np
 import pytest
 from astropy.time import Time  # type: ignore[import-untyped]
 
-from conops.plan_entry import PlanEntry
-from conops.scheduler import DumbScheduler
+from conops import DumbScheduler, PlanEntry
 
 
 class TestDumbSchedulerInit:

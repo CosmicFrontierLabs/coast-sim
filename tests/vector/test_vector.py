@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from conops.vector import (
+from conops import (
     great_circle,
     radec2vec,
     roll_over_angle,

@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from conops.saa import SAA
+from conops import SAA
 
 
 class DummyEphem:

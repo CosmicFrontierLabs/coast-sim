@@ -2,7 +2,7 @@
 
 import pytest
 
-from conops.groundstation import GroundStation, GroundStationRegistry
+from conops import GroundStation, GroundStationRegistry
 
 
 @pytest.fixture

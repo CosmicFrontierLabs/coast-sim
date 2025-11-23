@@ -2,8 +2,7 @@
 
 from unittest.mock import Mock
 
-from conops.acs import ACSCommand, ACSCommandType
-from conops.common import ACSMode
+from conops import ACSCommand, ACSCommandType, ACSMode
 
 
 class TestSafeModeInitialization:

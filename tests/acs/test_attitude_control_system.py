@@ -1,6 +1,6 @@
 import math
 
-from conops.spacecraft_bus import AttitudeControlSystem
+from conops import AttitudeControlSystem
 
 
 class TestAttitudeControlSystem:

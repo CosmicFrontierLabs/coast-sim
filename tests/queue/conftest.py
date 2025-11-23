@@ -7,9 +7,7 @@ import numpy as np
 import pytest
 from astropy.time import Time  # type: ignore[import-untyped]
 
-from conops.constants import DAY_SECONDS
-from conops.queue_ditl import QueueDITL
-from conops.queue_scheduler import DumbQueueScheduler
+from conops import DAY_SECONDS, DumbQueueScheduler, QueueDITL
 
 
 class DummyEphemeris:
@@ -84,9 +82,9 @@ def mock_config():
 def queue_ditl(mock_config, mock_ephem):
     """Create a QueueDITL instance with mocked dependencies."""
     with (
-        patch("conops.queue_ditl.Queue") as mock_queue_class,
-        patch("conops.ditl_mixin.PassTimes") as mock_passtimes,
-        patch("conops.ditl_mixin.ACS") as mock_acs_class,
+        patch("conops.Queue") as mock_queue_class,
+        patch("conops.PassTimes") as mock_passtimes,
+        patch("conops.ACS") as mock_acs_class,
     ):
         # Mock PassTimes
         mock_pt = Mock()

@@ -1,6 +1,6 @@
 """Tests for conops.common module."""
 
-from conops.common import (
+from conops import (
     ACSMode,
     givename,
     ics_date_conv,

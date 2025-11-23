@@ -2,7 +2,7 @@
 
 from unittest.mock import Mock
 
-from conops.plan_entry import PlanEntry
+from conops import PlanEntry
 
 
 class TestTargetList:

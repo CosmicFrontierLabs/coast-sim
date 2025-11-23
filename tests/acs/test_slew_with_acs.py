@@ -1,5 +1,4 @@
-from conops.slew import Slew
-from conops.spacecraft_bus import AttitudeControlSystem
+from conops import AttitudeControlSystem, Slew
 
 
 class DummyConstraint:

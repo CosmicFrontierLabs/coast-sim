@@ -1,5 +1,4 @@
-from conops.power import PowerDraw
-from conops.thermal import Heater
+from conops import Heater, PowerDraw
 
 """Unit tests for conops.thermal.Heater"""
 

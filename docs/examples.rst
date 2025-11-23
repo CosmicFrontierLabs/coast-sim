@@ -61,8 +61,7 @@ This approach is ideal for rapid prototyping and testing different configuration
 
 .. code-block:: python
 
-   from conops.config import Config
-   from conops.queue_ditl import QueueDITL
+   from conops import Config, QueueDITL
 
    # Load everything from configuration
    config = Config.from_json("example_config.json")

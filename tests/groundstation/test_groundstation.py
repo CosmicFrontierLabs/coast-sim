@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from conops.groundstation import Antenna, GroundStation
+from conops import Antenna, GroundStation
 
 
 class TestAntenna:

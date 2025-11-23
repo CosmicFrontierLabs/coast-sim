@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from conops.spacecraft_bus import AttitudeControlSystem, PowerDraw, SpacecraftBus
+from conops import AttitudeControlSystem, PowerDraw, SpacecraftBus
 
 
 class TestPowerDraw:
@@ -382,7 +382,7 @@ class TestSpacecraftBusEclipse:
 
     def test_bus_with_heater_eclipse_sunlight(self):
         """Test bus power with heater in sunlight."""
-        from conops.thermal import Heater
+        from conops import Heater
 
         bus = SpacecraftBus(
             name="Test Bus",
@@ -398,7 +398,7 @@ class TestSpacecraftBusEclipse:
 
     def test_bus_with_heater_eclipse_eclipse(self):
         """Test bus power with heater in eclipse."""
-        from conops.thermal import Heater
+        from conops import Heater
 
         bus = SpacecraftBus(
             name="Test Bus",
@@ -438,7 +438,7 @@ class TestSpacecraftBusEclipse:
 
     def test_bus_full_eclipse_configuration_nominal_sunlight(self):
         """Test bus with both base and heater eclipse power in nominal sunlight."""
-        from conops.thermal import Heater
+        from conops import Heater
 
         bus = SpacecraftBus(
             name="Science Bus",
@@ -464,7 +464,7 @@ class TestSpacecraftBusEclipse:
 
     def test_bus_full_eclipse_configuration_nominal_eclipse(self):
         """Test bus with both base and heater eclipse power in nominal eclipse."""
-        from conops.thermal import Heater
+        from conops import Heater
 
         bus = SpacecraftBus(
             name="Science Bus",
@@ -490,7 +490,7 @@ class TestSpacecraftBusEclipse:
 
     def test_bus_full_eclipse_configuration_mode_2_sunlight(self):
         """Test bus with both base and heater eclipse power in mode 2 sunlight."""
-        from conops.thermal import Heater
+        from conops import Heater
 
         bus = SpacecraftBus(
             name="Science Bus",
@@ -516,7 +516,7 @@ class TestSpacecraftBusEclipse:
 
     def test_bus_full_eclipse_configuration_mode_2_eclipse(self):
         """Test bus with both base and heater eclipse power in mode 2 eclipse."""
-        from conops.thermal import Heater
+        from conops import Heater
 
         bus = SpacecraftBus(
             name="Science Bus",
@@ -560,7 +560,7 @@ class TestSpacecraftBusEclipse:
 
     def test_bus_eclipse_backward_compatible(self):
         """Test that not passing in_eclipse works (defaults to False)."""
-        from conops.thermal import Heater
+        from conops import Heater
 
         bus = SpacecraftBus(
             power_draw=PowerDraw(nominal_power=150.0, eclipse_power=200.0),

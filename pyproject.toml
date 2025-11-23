@@ -25,7 +25,6 @@ requires-python = ">=3.10"
 
 dependencies = [
     "astropy>=6",
-    "astroquery>=0.4",
     "ipympl>=0.9.7",
     "jupyter>=1.1.1",
     "matplotlib>=3.10",
@@ -43,13 +42,11 @@ dependencies = [
 dev = [
     "mypy>=1.15",
     "pre-commit>=4.2",
-    "pytest-cov>=7",
     "ruff>=0.11",
     "types-pytz>=2025.2.0.20250326",
     "types-shapely>=2.1.0.20250418",
-    "pytest>=8",
-    "pytest-cov>=7",
 ]
+test = ["pytest>=8", "pytest-cov>=7"]
 docs = [
     "sphinx>=7.0",
     "sphinx-rtd-theme>=2.0",

@@ -4,9 +4,7 @@ from unittest.mock import Mock
 
 from astropy.time import Time  # type: ignore[import-untyped]
 
-from conops.constants import DAY_SECONDS
-from conops.ppst import Plan
-from conops.queue_scheduler import DumbQueueScheduler
+from conops import DAY_SECONDS, DumbQueueScheduler, Plan
 
 
 class TestDumbQueueSchedulerInit:

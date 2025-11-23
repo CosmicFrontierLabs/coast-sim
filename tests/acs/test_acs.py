@@ -4,8 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from conops.acs import ACS
-from conops.common import ACSMode
+from conops import ACS, ACSMode
 
 
 class DummyEphemeris:

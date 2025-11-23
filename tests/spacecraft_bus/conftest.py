@@ -2,7 +2,7 @@
 
 import pytest
 
-from conops.spacecraft_bus import AttitudeControlSystem, PowerDraw, SpacecraftBus
+from conops import AttitudeControlSystem, PowerDraw, SpacecraftBus
 
 
 @pytest.fixture
