@@ -169,7 +169,7 @@ Example Configuration File
 
 A complete example configuration with fault management is available in:
 
-``examples/example_config_with_fault_management.json``
+``examples/example_config.json``
 
 This demonstrates monitoring of:
 
