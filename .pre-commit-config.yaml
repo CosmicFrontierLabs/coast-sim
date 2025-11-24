@@ -52,7 +52,7 @@ repos:
         entry: sphinx-build
         language: system
         files: ^docs/|^docs/.*\.(rst|md|py)$|^docs/conf\.py$
-
+        pass_filenames: false
         args: [
             "-M", # Run sphinx in make mode, so we can use -D flag later
             # Note: -M requires next 3 args to be builder, source, output
