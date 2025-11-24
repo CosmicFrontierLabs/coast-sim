@@ -1,9 +1,9 @@
 """ACS mode analysis and visualization utilities."""
 
+from collections import Counter
 from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
-from collections import Counter
 
 if TYPE_CHECKING:
     from ..ditl.ditl_mixin import DITLMixin

@@ -83,7 +83,7 @@ class DITLMixin:
 
     def plot(self) -> None:
         """Plot DITL timeline.
-        
+
         .. deprecated::
             Use :func:`conops.visualization.plot_ditl_telemetry` instead.
             This method is maintained for backward compatibility.
