@@ -372,7 +372,7 @@ class QueueDITL(DITLMixin):
     def _handle_pass_mode(self, utime: float) -> None:
         """Handle spacecraft behavior during ground station passes."""
         # Terminate any active observations during passes
-        self._terminate_ppt(utime)
+        self._terminate_science_ppt_for_pass(utime)
         if self.charging_ppt is not None:
             self._terminate_charging_ppt(utime)
 
@@ -419,40 +419,44 @@ class QueueDITL(DITLMixin):
         assert self.ppt is not None
 
         if self.constraint.inoccult(self.ppt.ra, self.ppt.dec, utime):
-            self._terminate_ppt_due_to_constraint(utime)
+            constraint_name = self._get_constraint_name(
+                self.ppt.ra, self.ppt.dec, utime
+            )
+            self._terminate_ppt(
+                utime,
+                reason=f"Target {constraint_name} constrained, ending observation",
+            )
         elif self.ppt.exptime is None or self.ppt.exptime <= 0:
-            self._terminate_ppt_exposure_complete(utime)
+            self._terminate_ppt(
+                utime, reason="Exposure complete, ending observation", mark_done=True
+            )
         elif utime >= self.ppt.end:
-            self._terminate_ppt_timeout(utime)
+            self._terminate_ppt(utime, reason="Time window elapsed, ending observation")
 
-    def _terminate_ppt_due_to_constraint(self, utime: float) -> None:
-        """Terminate PPT because target is constrained."""
+    def _terminate_ppt(
+        self, utime: float, reason: str, mark_done: bool = False
+    ) -> None:
+        """Terminate the current PPT.
+
+        Parameters
+        ----------
+        utime : float
+            Current time
+        reason : str
+            Reason for termination (for logging)
+        mark_done : bool
+            Whether to mark the PPT as done
+        """
         assert self.ppt is not None
-        constraint_name = self._get_constraint_name(self.ppt.ra, self.ppt.dec, utime)
-        print(
-            f"{unixtime2date(utime)} Target {constraint_name} constrained, ending observation"
-        )
-        # Update ppst timeline with actual end time
-        if len(self.ppst) > 0:
-            self.ppst[-1].end = utime
-        self.ppt = None
+        print(f"{unixtime2date(utime)} {reason}")
 
-    def _terminate_ppt_exposure_complete(self, utime: float) -> None:
-        """Terminate PPT because exposure is complete."""
-        assert self.ppt is not None
-        print(f"{unixtime2date(utime)} Exposure complete, ending observation")
         # Update ppst timeline with actual end time
         if len(self.ppst) > 0:
             self.ppst[-1].end = utime
-        self.ppt.done = True
-        self.ppt = None
 
-    def _terminate_ppt_timeout(self, utime: float) -> None:
-        """Terminate PPT because time window elapsed."""
-        print(f"{unixtime2date(utime)} Time window elapsed, ending observation")
-        # Update ppst timeline with actual end time
-        if len(self.ppst) > 0:
-            self.ppst[-1].end = utime
+        if mark_done:
+            self.ppt.done = True
+
         self.ppt = None
 
     def _get_constraint_name(self, ra: float, dec: float, utime: float) -> str:
@@ -627,8 +631,8 @@ class QueueDITL(DITLMixin):
         self.batterylevel.append(self.battery.battery_level)
         self.charge_state.append(self.battery.charge_state)
 
-    def _terminate_ppt(self, utime: float) -> None:
-        """Terminate the current science PPT if active."""
+    def _terminate_science_ppt_for_pass(self, utime: float) -> None:
+        """Terminate the current science PPT during ground station pass."""
         if self.ppt is not None and self.ppt != self.charging_ppt:
             # Update ppst timeline with actual end time
             if len(self.ppst) > 0:
