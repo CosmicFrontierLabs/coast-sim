@@ -1,7 +1,7 @@
-conops.targets.ppst
+conops.targets.plan
 ===================
 
-.. automodule:: conops.targets.ppst
+.. automodule:: conops.targets.plan
    :members:
    :undoc-members:
    :show-inheritance:

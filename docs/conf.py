@@ -112,7 +112,7 @@ autodoc_default_options = {
 }
 
 # Mock imports for packages that might not be available during doc build
-autodoc_mock_imports = []
+autodoc_mock_imports: list = []
 
 # -- MyST-Parser configuration -----------------------------------------------
 myst_enable_extensions = [

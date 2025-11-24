@@ -53,9 +53,9 @@ class TestDITLCalc:
         result = ditl.calc()
         assert result is False
 
-    def test_calc_without_ppst_returns_false(self, ditl):
-        """Test that calc returns False when ppst (plan) is not loaded."""
-        ditl.ppst = None
+    def test_calc_without_plan_returns_false(self, ditl):
+        """Test that calc returns False when plan is not loaded."""
+        ditl.plan = None
         result = ditl.calc()
         assert result is False
 

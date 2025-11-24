@@ -1,4 +1,4 @@
-"""Tests for conops.ppst module."""
+"""Tests for conops.plan module."""
 
 from unittest.mock import Mock
 

@@ -34,7 +34,7 @@ class TestQueueDITLInitialization:
             assert ditl.mode == []
             assert ditl.obsid == []
 
-    def test_initialization_power_lists_empty_and_ppst(self, mock_config):
+    def test_initialization_power_lists_empty_and_plan(self, mock_config):
         with (
             patch("conops.Queue"),
             patch("conops.PassTimes"),
@@ -45,7 +45,7 @@ class TestQueueDITLInitialization:
             assert ditl.batterylevel == []
             assert ditl.power == []
             assert ditl.panel_power == []
-            assert len(ditl.ppst) == 0
+            assert len(ditl.plan) == 0
 
     def test_initialization_stores_config_subsystems(self, mock_config):
         with (
@@ -760,7 +760,7 @@ class TestCalcMethod:
         queue_ditl.calc()
         assert queue_ditl.acs.ephem is queue_ditl.ephem
 
-    def test_calc_tracks_ppt_in_ppst(self, queue_ditl):
+    def test_calc_tracks_ppt_in_plan(self, queue_ditl):
         queue_ditl.year = 2018
         queue_ditl.day = 331
         queue_ditl.length = 1
@@ -774,6 +774,9 @@ class TestCalcMethod:
         mock_ppt.begin = 1543622400
         mock_ppt.end = 1543629600
         mock_ppt.done = False
+        mock_ppt.copy = Mock(return_value=Mock())
+        mock_ppt.copy.return_value.begin = 1543622400
+        mock_ppt.copy.return_value.end = 1543629600
 
         queue_ditl.queue.get = Mock(side_effect=[mock_ppt] + [None] * 100)
 
@@ -781,7 +784,7 @@ class TestCalcMethod:
             mock_vis.return_value = 1
             queue_ditl.calc()
 
-        assert len(queue_ditl.ppst) > 0
+        assert len(queue_ditl.plan) > 0
 
     def test_calc_handles_pass_mode_result_true(self, queue_ditl):
         queue_ditl.year = 2018
@@ -811,6 +814,11 @@ class TestCalcMethod:
         mock_charging.ra = 100.0
         mock_charging.dec = 50.0
         mock_charging.obsid = 999001
+        mock_charging.begin = 1543622400
+        mock_charging.end = 1543622400 + 86400
+        mock_charging.copy = Mock(return_value=Mock())
+        mock_charging.copy.return_value.begin = 1543622400
+        mock_charging.copy.return_value.end = 1543622400 + 86400
         queue_ditl.emergency_charging.should_initiate_charging = Mock(return_value=True)
         queue_ditl.emergency_charging.initiate_emergency_charging = Mock(
             return_value=mock_charging
@@ -830,6 +838,11 @@ class TestCalcMethod:
         mock_charging.ra = 100.0
         mock_charging.dec = 50.0
         mock_charging.obsid = 999001
+        mock_charging.begin = 1543622400
+        mock_charging.end = 1543622400 + 86400
+        mock_charging.copy = Mock(return_value=Mock())
+        mock_charging.copy.return_value.begin = 1543622400
+        mock_charging.copy.return_value.end = 1543622400 + 86400
         queue_ditl.emergency_charging.should_initiate_charging = Mock(return_value=True)
         queue_ditl.emergency_charging.initiate_emergency_charging = Mock(
             return_value=mock_charging
@@ -856,12 +869,15 @@ class TestCalcMethod:
         mock_ppt.begin = 1543622400
         mock_ppt.end = 1543708800
         mock_ppt.done = False
+        mock_ppt.copy = Mock(return_value=Mock())
+        mock_ppt.copy.return_value.begin = 1543622400
+        mock_ppt.copy.return_value.end = 1543708800
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
         with patch("conops.Pointing.visibility") as mock_vis:
             mock_vis.return_value = 1
             queue_ditl.calc()
-        if queue_ditl.ppst:
-            assert queue_ditl.ppst[-1].end > 0
+        if queue_ditl.plan:
+            assert queue_ditl.plan[-1].end > 0
 
 
 class TestGetConstraintName:

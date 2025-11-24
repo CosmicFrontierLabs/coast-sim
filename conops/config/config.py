@@ -7,6 +7,7 @@ from .constraint import Constraint
 from .fault_management import FaultManagement
 from .groundstation import GroundStationRegistry
 from .instrument import Payload
+from .observation_categories import ObservationCategories
 from .solar_panel import SolarPanelSet
 from .spacecraft_bus import SpacecraftBus
 
@@ -24,6 +25,9 @@ class Config(BaseModel):
     constraint: Constraint
     ground_stations: GroundStationRegistry
     fault_management: FaultManagement | None = None
+    observation_categories: ObservationCategories = (
+        ObservationCategories.default_categories()
+    )
 
     def init_fault_management_defaults(self) -> None:
         """Initialize default fault thresholds if none provided.

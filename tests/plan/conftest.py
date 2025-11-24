@@ -1,4 +1,4 @@
-"""Test fixtures for ppst subsystem tests."""
+"""Test fixtures for plan subsystem tests."""
 
 from unittest.mock import Mock
 

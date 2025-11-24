@@ -15,7 +15,7 @@ class DumbQueueScheduler:
         length: int = 1,
     ):
         self.queue = queue if queue is not None else Queue()
-        self.ppst = plan if plan is not None else Plan()
+        self.plan = plan if plan is not None else Plan()
         self.year = year
         self.day = day
         self.length = length
@@ -28,7 +28,7 @@ class DumbQueueScheduler:
             Plan: the scheduled plan
         """
         # Reset plan for this scheduling run
-        self.ppst = Plan()
+        self.plan = Plan()
 
         elapsed = 0.0
         last_ra = 0.0
@@ -55,6 +55,6 @@ class DumbQueueScheduler:
             last_ra = item.ra
             last_dec = item.dec
             item.done = True
-            self.ppst.extend([item])
+            self.plan.extend([item])
 
-        return self.ppst
+        return self.plan

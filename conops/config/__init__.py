@@ -6,6 +6,7 @@ from .constraint import Constraint
 from .fault_management import FaultManagement, FaultState, FaultThreshold
 from .groundstation import Antenna, GroundStation, GroundStationRegistry
 from .instrument import Instrument, Payload
+from .observation_categories import ObservationCategories, ObservationCategory
 from .power import PowerDraw
 from .solar_panel import SolarPanel, SolarPanelSet
 from .spacecraft_bus import SpacecraftBus
@@ -22,6 +23,8 @@ __all__ = [
     "GroundStation",
     "GroundStationRegistry",
     "Instrument",
+    "ObservationCategories",
+    "ObservationCategory",
     "Payload",
     "PowerDraw",
     "SolarPanel",

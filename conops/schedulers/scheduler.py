@@ -24,7 +24,7 @@ class DumbScheduler:
         if self.ephem is None:
             raise ValueError("Constraint.ephem must be set")
 
-        self.ppst: Plan = Plan()
+        self.plan: Plan = Plan()
         self.scheduled: list[int] = []
         self.days = days
         self.saa: SAA | None = None  # will be created lazily
@@ -71,9 +71,9 @@ class DumbScheduler:
                 current_time = ephem_utime[i]
 
                 # Determine slew time based on prior plan entry (if any)
-                if self.ppst and len(self.ppst) > 0:
+                if self.plan and len(self.plan) > 0:
                     try:
-                        last_entry = self.ppst[-1]
+                        last_entry = self.plan[-1]
                         task.calc_slewtime(last_entry.ra, last_entry.dec)
                         slewtime = task.slewtime
                     except Exception:
@@ -174,9 +174,9 @@ class DumbScheduler:
             ppt.name = selected_target.name
 
             self.scheduled.append(selected_target.targetid)
-            self.ppst.extend([ppt])
+            self.plan.extend([ppt])
 
             # Move to next index for scheduling after this observation
             i = self.ephem.index(dtutcfromtimestamp(ppt.end))
 
-        print(f"Scheduled {len(self.ppst)} targets")
+        print(f"Scheduled {len(self.plan)} targets")

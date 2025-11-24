@@ -46,9 +46,9 @@ class TestDumbSchedulerInit:
         scheduler = DumbScheduler(constraint=mock_constraint)
         assert scheduler.days == 1
 
-    def test_init_default_ppst_empty(self, mock_constraint):
+    def test_init_default_plan_empty(self, mock_constraint):
         scheduler = DumbScheduler(constraint=mock_constraint)
-        assert len(scheduler.ppst) == 0
+        assert len(scheduler.plan) == 0
 
     def test_init_default_scheduled_empty(self, mock_constraint):
         scheduler = DumbScheduler(constraint=mock_constraint)
@@ -107,11 +107,11 @@ class TestDumbSchedulerSAA:
 class TestDumbSchedulerScheduling:
     """Test the core scheduling algorithm."""
 
-    def test_schedule_creates_ppst(self, scheduler, sample_targets):
+    def test_schedule_creates_plan(self, scheduler, sample_targets):
         for target in sample_targets:
             scheduler.targlist.add_target(target)
         scheduler.schedule()
-        assert len(scheduler.ppst) > 0
+        assert len(scheduler.plan) > 0
 
     def test_schedule_records_scheduled_ids(self, scheduler, sample_targets):
         for target in sample_targets:
@@ -119,9 +119,9 @@ class TestDumbSchedulerScheduling:
         scheduler.schedule()
         assert len(scheduler.scheduled) > 0
 
-    def test_schedule_empty_list_ppst_empty(self, scheduler, simple_target_factory):
+    def test_schedule_empty_list_plan_empty(self, scheduler, simple_target_factory):
         scheduler.schedule()
-        assert len(scheduler.ppst) == 0
+        assert len(scheduler.plan) == 0
 
     def test_schedule_empty_list_scheduled_empty(
         self, scheduler, simple_target_factory
@@ -141,7 +141,7 @@ class TestDumbSchedulerScheduling:
         target = simple_target_factory(1, 45.0, 30.0, 600)
         scheduler.targlist.add_target(target)
         scheduler.schedule()
-        assert len(scheduler.ppst) == 1
+        assert len(scheduler.plan) == 1
 
     def test_single_target_scheduled_id(self, scheduler, simple_target_factory):
         target = simple_target_factory(1, 45.0, 30.0, 600)
@@ -159,37 +159,37 @@ class TestDumbSchedulerScheduling:
         for target in targets:
             scheduler.targlist.add_target(target)
         scheduler.schedule()
-        assert len(scheduler.ppst) >= 1
+        assert len(scheduler.plan) >= 1
 
     def test_plan_entry_creation_has_plan_entries(self, scheduler, sample_targets):
         for target in sample_targets:
             scheduler.targlist.add_target(target)
         scheduler.schedule()
-        assert all(isinstance(ppt, PlanEntry) for ppt in scheduler.ppst.entries)
+        assert all(isinstance(ppt, PlanEntry) for ppt in scheduler.plan.entries)
 
     def test_plan_entry_creation_has_ra_attribute(self, scheduler, sample_targets):
         for target in sample_targets:
             scheduler.targlist.add_target(target)
         scheduler.schedule()
-        assert all(hasattr(ppt, "ra") for ppt in scheduler.ppst.entries)
+        assert all(hasattr(ppt, "ra") for ppt in scheduler.plan.entries)
 
     def test_plan_entry_creation_has_dec_attribute(self, scheduler, sample_targets):
         for target in sample_targets:
             scheduler.targlist.add_target(target)
         scheduler.schedule()
-        assert all(hasattr(ppt, "dec") for ppt in scheduler.ppst.entries)
+        assert all(hasattr(ppt, "dec") for ppt in scheduler.plan.entries)
 
     def test_plan_entry_creation_has_begin_attribute(self, scheduler, sample_targets):
         for target in sample_targets:
             scheduler.targlist.add_target(target)
         scheduler.schedule()
-        assert all(hasattr(ppt, "begin") for ppt in scheduler.ppst.entries)
+        assert all(hasattr(ppt, "begin") for ppt in scheduler.plan.entries)
 
     def test_plan_entry_creation_has_end_attribute(self, scheduler, sample_targets):
         for target in sample_targets:
             scheduler.targlist.add_target(target)
         scheduler.schedule()
-        assert all(hasattr(ppt, "end") for ppt in scheduler.ppst.entries)
+        assert all(hasattr(ppt, "end") for ppt in scheduler.plan.entries)
 
     def test_plan_entry_creation_has_slewtime_attribute(
         self, scheduler, sample_targets
@@ -197,7 +197,7 @@ class TestDumbSchedulerScheduling:
         for target in sample_targets:
             scheduler.targlist.add_target(target)
         scheduler.schedule()
-        assert all(hasattr(ppt, "slewtime") for ppt in scheduler.ppst.entries)
+        assert all(hasattr(ppt, "slewtime") for ppt in scheduler.plan.entries)
 
     def test_plan_entry_attributes_count_nonzero(
         self, scheduler, simple_target_factory
@@ -205,34 +205,34 @@ class TestDumbSchedulerScheduling:
         target = simple_target_factory(42, 45.0, 30.0, 600, "Test")
         scheduler.targlist.add_target(target)
         scheduler.schedule()
-        assert len(scheduler.ppst) > 0
+        assert len(scheduler.plan) > 0
 
     def test_plan_entry_attribute_ra(self, scheduler, simple_target_factory):
         target = simple_target_factory(42, 45.0, 30.0, 600, "Test")
         scheduler.targlist.add_target(target)
         scheduler.schedule()
-        ppt = scheduler.ppst[0]
+        ppt = scheduler.plan[0]
         assert ppt.ra == 45.0
 
     def test_plan_entry_attribute_dec(self, scheduler, simple_target_factory):
         target = simple_target_factory(42, 45.0, 30.0, 600, "Test")
         scheduler.targlist.add_target(target)
         scheduler.schedule()
-        ppt = scheduler.ppst[0]
+        ppt = scheduler.plan[0]
         assert ppt.dec == 30.0
 
     def test_plan_entry_attribute_obsid(self, scheduler, simple_target_factory):
         target = simple_target_factory(42, 45.0, 30.0, 600, "Test")
         scheduler.targlist.add_target(target)
         scheduler.schedule()
-        ppt = scheduler.ppst[0]
+        ppt = scheduler.plan[0]
         assert ppt.obsid == 42
 
     def test_plan_entry_attribute_name(self, scheduler, simple_target_factory):
         target = simple_target_factory(42, 45.0, 30.0, 600, "Test")
         scheduler.targlist.add_target(target)
         scheduler.schedule()
-        ppt = scheduler.ppst[0]
+        ppt = scheduler.plan[0]
         assert ppt.name == "Test"
 
     def test_slew_time_calculation_first_target_value(
@@ -241,7 +241,7 @@ class TestDumbSchedulerScheduling:
         target = simple_target_factory(1, 45.0, 30.0, 600)
         scheduler.targlist.add_target(target)
         scheduler.schedule()
-        ppt = scheduler.ppst[0]
+        ppt = scheduler.plan[0]
         assert ppt.slewtime == 180  # Default slew time
 
     def test_target_exptime_reduced_after_scheduling_value(
@@ -289,7 +289,7 @@ class TestDumbSchedulerScheduling:
         scheduler.targlist.add_target(target)
         scheduler.days = 1
         scheduler.schedule()
-        for ppt in scheduler.ppst.entries:
+        for ppt in scheduler.plan.entries:
             assert ppt.begin >= scheduler.ephem.utime[0]
 
     def test_scheduling_respects_time_window_begin_within_day(
@@ -299,7 +299,7 @@ class TestDumbSchedulerScheduling:
         scheduler.targlist.add_target(target)
         scheduler.days = 1
         scheduler.schedule()
-        for ppt in scheduler.ppst.entries:
+        for ppt in scheduler.plan.entries:
             assert ppt.begin < scheduler.ephem.utime[0] + 86400
 
 
@@ -310,21 +310,21 @@ class TestDumbSchedulerPlanEntry:
         target = simple_target_factory(1, 45.0, 30.0, 600)
         scheduler.targlist.add_target(target)
         scheduler.schedule()
-        ppt = scheduler.ppst[0]
+        ppt = scheduler.plan[0]
         assert ppt.begin is not None
 
     def test_plan_entry_end_not_none(self, scheduler, simple_target_factory):
         target = simple_target_factory(1, 45.0, 30.0, 600)
         scheduler.targlist.add_target(target)
         scheduler.schedule()
-        ppt = scheduler.ppst[0]
+        ppt = scheduler.plan[0]
         assert ppt.end is not None
 
     def test_plan_entry_end_after_begin(self, scheduler, simple_target_factory):
         target = simple_target_factory(1, 45.0, 30.0, 600)
         scheduler.targlist.add_target(target)
         scheduler.schedule()
-        ppt = scheduler.ppst[0]
+        ppt = scheduler.plan[0]
         if isinstance(ppt.end, Time):
             assert ppt.end.unix > ppt.begin
         else:
@@ -334,14 +334,14 @@ class TestDumbSchedulerPlanEntry:
         target = simple_target_factory(1, 45.0, 30.0, 600)
         scheduler.targlist.add_target(target)
         scheduler.schedule()
-        ppt = scheduler.ppst[0]
+        ppt = scheduler.plan[0]
         assert ppt.saa is scheduler.saa
 
     def test_plan_entry_constraint_reference(self, scheduler, simple_target_factory):
         target = simple_target_factory(1, 45.0, 30.0, 600)
         scheduler.targlist.add_target(target)
         scheduler.schedule()
-        ppt = scheduler.ppst[0]
+        ppt = scheduler.plan[0]
         assert ppt.constraint is scheduler.constraint
 
 
@@ -373,7 +373,7 @@ class TestDumbSchedulerConstraints:
         target = simple_target_factory(1, 45.0, 30.0, 600)
         scheduler.targlist.add_target(target)
         scheduler.schedule()
-        assert len(scheduler.ppst) > 0
+        assert len(scheduler.plan) > 0
 
     def test_constraint_with_all_times_invalid_not_scheduled(
         self, scheduler, simple_target_factory
@@ -384,7 +384,7 @@ class TestDumbSchedulerConstraints:
         target = simple_target_factory(1, 45.0, 30.0, 600)
         scheduler.targlist.add_target(target)
         scheduler.schedule()
-        assert len(scheduler.ppst) == 0
+        assert len(scheduler.plan) == 0
 
 
 class TestDumbSchedulerProperties:
@@ -465,7 +465,7 @@ class TestDumbSchedulerIntegration:
         for target in sample_targets:
             scheduler.targlist.add_target(target)
         scheduler.schedule()
-        assert len(scheduler.ppst) >= 0
+        assert len(scheduler.plan) >= 0
 
     def test_full_scheduling_workflow_scheduled_nonnegative(
         self, scheduler, sample_targets
@@ -514,5 +514,5 @@ class TestDumbSchedulerIntegration:
         scheduler.targlist.add_target(target)
         scheduler.schedule()
         total_scheduled = len(scheduler.scheduled)
-        total_entries = len(scheduler.ppst)
+        total_entries = len(scheduler.plan)
         assert total_scheduled == total_entries
