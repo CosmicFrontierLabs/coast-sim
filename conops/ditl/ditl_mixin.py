@@ -455,11 +455,20 @@ class DITLMixin:
         Returns:
             Pass object if currently in a pass, None otherwise.
         """
-        if not hasattr(self, "executed_passes") or self.executed_passes is None:
-            return None
-        for pass_obj in self.executed_passes.passes:
-            if pass_obj.in_pass(utime):
-                return pass_obj
+        # Check in ACS passrequests (scheduled passes)
+        if hasattr(self, "acs") and hasattr(self.acs, "passrequests"):
+            if self.acs.passrequests.passes:
+                for pass_obj in self.acs.passrequests.passes:
+                    if pass_obj.in_pass(utime):
+                        return pass_obj
+        
+        # Fallback to executed_passes for backwards compatibility
+        if hasattr(self, "executed_passes") and self.executed_passes is not None:
+            if self.executed_passes.passes:
+                for pass_obj in self.executed_passes.passes:
+                    if pass_obj.in_pass(utime):
+                        return pass_obj
+        
         return None
 
     def _process_data_management(
