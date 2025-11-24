@@ -16,6 +16,7 @@ def plot_ditl_timeline(
     figsize=(10, 6),
     orbit_period=5762.0,
     show_orbit_numbers=True,
+    show_saa=False,
     save_path=None,
     font_family="Helvetica",
     font_size=11,
@@ -42,6 +43,8 @@ def plot_ditl_timeline(
         Orbital period in seconds for orbit number display (default: 5762.0).
     show_orbit_numbers : bool, optional
         Whether to show orbit numbers at the top (default: True).
+    show_saa : bool, optional
+        Whether to show SAA passages (default: True).
     save_path : str, optional
         If provided, save the figure to this path (default: None).
     font_family : str, optional
@@ -82,6 +85,42 @@ def plot_ditl_timeline(
     else:
         duration_hours = 24.0
 
+    # Define timeline rows with labels and spacing
+    # Each row has: (label, data_extractor, plot_params)
+    bar_height = 0.15
+    row_spacing = 0.25  # Space between row centers
+
+    # Build the timeline rows dynamically
+    timeline_rows = []
+
+    # Always include these rows
+    timeline_rows.append(("Observations", None, None))
+    timeline_rows.append(("Slewing", None, None))
+    timeline_rows.append(("Charging", None, None))
+
+    # Conditionally include SAA
+    if show_saa:
+        timeline_rows.append(("SAA", None, None))
+
+    # Always include these rows
+    timeline_rows.append(("Eclipse", None, None))
+    timeline_rows.append(("Ground Contact", None, None))
+
+    # Calculate y-positions for data rows (starting from 0 and going down)
+    num_data_rows = len(timeline_rows)
+    data_y_positions = [-(i * row_spacing) for i in range(num_data_rows)]
+
+    # If showing orbit numbers, shift everything down and add orbit at top
+    if show_orbit_numbers:
+        orbit_y_position = data_y_positions[0] + row_spacing
+        data_y_positions = [orbit_y_position] + data_y_positions
+        timeline_rows.insert(0, ("Orbit", None, None))
+    else:
+        orbit_y_position = None
+
+    # Create mapping of row names to y-positions
+    row_positions = dict(zip([row[0] for row in timeline_rows], data_y_positions))
+
     # Draw orbit numbers if requested
     if show_orbit_numbers:
         num_orbits = int(duration_hours * 3600 / orbit_period) + 1
@@ -94,7 +133,7 @@ def plot_ditl_timeline(
             orbit_width = orbit_period / 3600
             ax.broken_barh(
                 [[orbit_start, orbit_width]],
-                (0.6, 0.15),
+                (orbit_y_position, bar_height),
                 facecolors=barcol,
                 edgecolor="black",
                 lw=1,
@@ -103,7 +142,7 @@ def plot_ditl_timeline(
 
             ax.text(
                 (i + 0.5) * orbit_period / 3600,
-                0.675,
+                orbit_y_position + bar_height / 2,
                 f"{i + 1}",
                 horizontalalignment="center",
                 verticalalignment="center",
@@ -111,6 +150,42 @@ def plot_ditl_timeline(
                 fontsize=font_size - 2,
                 zorder=2,
             )
+
+    # Define timeline rows with labels and spacing
+    # Each row has: (label, data_extractor, plot_params)
+    bar_height = 0.15
+    row_spacing = 0.25  # Space between row centers
+
+    # Build the timeline rows dynamically
+    timeline_rows = []
+
+    # Always include these rows
+    timeline_rows.append(("Observations", None, None))
+    timeline_rows.append(("Slewing", None, None))
+    timeline_rows.append(("Charging", None, None))
+
+    # Conditionally include SAA
+    if show_saa:
+        timeline_rows.append(("SAA", None, None))
+
+    # Always include these rows
+    timeline_rows.append(("Eclipse", None, None))
+    timeline_rows.append(("Ground Contact", None, None))
+
+    # Calculate y-positions for data rows (starting from 0 and going down)
+    num_data_rows = len(timeline_rows)
+    data_y_positions = [-(i * row_spacing) for i in range(num_data_rows)]
+
+    # If showing orbit numbers, shift everything down and add orbit at top
+    if show_orbit_numbers:
+        orbit_y_position = data_y_positions[0] + row_spacing
+        data_y_positions = [orbit_y_position] + data_y_positions
+        timeline_rows.insert(0, ("Orbit", None, None))
+    else:
+        orbit_y_position = None
+
+    # Create mapping of row names to y-positions
+    row_positions = dict(zip([row[0] for row in timeline_rows], data_y_positions))
 
     # Extract observation segments from ppst by obsid ranges
     observations_by_type = _extract_observations(ditl, t_start, offset_hours)
@@ -125,6 +200,7 @@ def plot_ditl_timeline(
         "Charging": "yellow",  # 90000-100000
     }
 
+    obs_y_pos = row_positions["Observations"]
     labels_shown = set()
     for obs_type, segments in observations_by_type.items():
         if segments and obs_type != "Charging":
@@ -132,67 +208,76 @@ def plot_ditl_timeline(
             if label not in labels_shown:
                 ax.broken_barh(
                     segments,
-                    (0.5, 0.15),
+                    (obs_y_pos, bar_height),
                     facecolors=colors.get(obs_type, "gray"),
                     label=label,
                 )
                 labels_shown.add(label)
             else:
                 ax.broken_barh(
-                    segments, (0.5, 0.15), facecolors=colors.get(obs_type, "gray")
+                    segments,
+                    (obs_y_pos, bar_height),
+                    facecolors=colors.get(obs_type, "gray"),
                 )
 
     # Extract and plot slews
     slew_segments = _extract_slews(ditl, t_start, offset_hours)
     if slew_segments:
+        slew_y_pos = row_positions["Slewing"]
         ax.broken_barh(
-            slew_segments, (0.25, 0.15), facecolor="tab:grey", label="Slew and Settle"
+            slew_segments,
+            (slew_y_pos, bar_height),
+            facecolor="tab:grey",
+            label="Slew and Settle",
         )
 
     # Extract and plot charging mode
     charging_segments = _extract_charging_mode(ditl, t_start, offset_hours)
     if charging_segments:
+        charging_y_pos = row_positions["Charging"]
         ax.broken_barh(
-            charging_segments, (0.1, 0.15), facecolor="gold", label="Battery Charging"
+            charging_segments,
+            (charging_y_pos, bar_height),
+            facecolor="gold",
+            label="Battery Charging",
         )
 
-    # Extract and plot SAA passages
-    saa_segments = _extract_saa_passages(ditl, t_start, offset_hours)
-    if saa_segments:
-        ax.broken_barh(saa_segments, (-0.1, 0.15), facecolor="tab:red", label="SAA")
+    # Extract and plot SAA passages (if enabled)
+    if show_saa:
+        saa_segments = _extract_saa_passages(ditl, t_start, offset_hours)
+        if saa_segments:
+            saa_y_pos = row_positions["SAA"]
+            ax.broken_barh(
+                saa_segments, (saa_y_pos, bar_height), facecolor="tab:red", label="SAA"
+            )
 
     # Extract and plot eclipses
     eclipse_segments = _extract_eclipses(ditl, t_start, offset_hours)
     if eclipse_segments:
+        eclipse_y_pos = row_positions["Eclipse"]
         ax.broken_barh(
-            eclipse_segments, (-0.3, 0.15), facecolor="black", label="Eclipse"
+            eclipse_segments,
+            (eclipse_y_pos, bar_height),
+            facecolor="black",
+            label="Eclipse",
         )
 
     # Extract and plot ground station passes
     gs_segments = _extract_ground_passes(ditl, t_start, offset_hours)
     if gs_segments:
+        gs_y_pos = row_positions["Ground Contact"]
         ax.broken_barh(
             gs_segments,
-            (-0.5, 0.15),
+            (gs_y_pos, bar_height),
             facecolor="white",
             edgecolor="black",
             lw=0.5,
             label="Ground Contact",
         )
 
-    # Set up axes
-    y_labels = [
-        "Observations",
-        "Slewing",
-        "Charging",
-        "SAA",
-        "Eclipse",
-        "Ground Contact",
-    ]
-    y_ticks = [0.575, 0.325, 0.175, -0.025, -0.225, -0.425]
-    if show_orbit_numbers:
-        y_labels.insert(0, "Orbit")
-        y_ticks.insert(0, 0.7)
+    # Set up axes with labels and tick positions
+    y_labels = [row[0] for row in timeline_rows]
+    y_ticks = data_y_positions
 
     ax.set_yticks(y_ticks, labels=y_labels, **hfont)
     ax.yaxis.grid(True, zorder=0)
