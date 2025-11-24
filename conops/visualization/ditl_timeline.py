@@ -280,30 +280,10 @@ def _extract_observations(ditl, t_start, offset_hours):
         "Charging": [],  # 90000-100000
     }
 
-    for i, ppt in enumerate(ditl.ppst):
-        # Calculate observation start
+    for ppt in ditl.ppst:
+        # Calculate observation start and duration
         obs_start = (ppt.begin + ppt.slewtime - t_start) / 3600 - offset_hours
-
-        # Calculate observation end - need to handle unrealistic end times
-        # If end time is way in the future (more than 1 day ahead of begin),
-        # use the next PPT's begin time or simulation end
-        max_reasonable_duration = 86400  # 1 day in seconds
-        if ppt.end and (ppt.end - ppt.begin) < max_reasonable_duration:
-            # Normal end time
-            obs_end_time = ppt.end
-        else:
-            # Use next PPT's begin time or a reasonable default
-            if i + 1 < len(ditl.ppst):
-                obs_end_time = ditl.ppst[i + 1].begin
-            else:
-                # Last observation - use simulation end
-                obs_end_time = (
-                    ditl.utime[-1]
-                    if hasattr(ditl, "utime") and ditl.utime
-                    else ppt.begin + 3600
-                )
-
-        obs_duration = (obs_end_time - (ppt.begin + ppt.slewtime)) / 3600
+        obs_duration = (ppt.end - (ppt.begin + ppt.slewtime)) / 3600
 
         # Skip if no duration or negative duration
         if obs_duration <= 0:
