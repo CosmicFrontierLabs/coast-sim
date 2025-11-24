@@ -254,14 +254,6 @@ class QueueDITL(DITLMixin):
         self, utime: float, lastra: float, lastdec: float, mode: ACSMode
     ) -> tuple[float, float]:
         """Handle science mode operations: charging, observations, and target acquisition."""
-        # Check if we're at a charging pointing during eclipse (mode=SCIENCE but ppt=charging_ppt)
-        # This happens when eclipse causes charging mode to revert to science mode
-        if self.ppt == self.charging_ppt and self.charging_ppt is not None:
-            # We're pointed at a charging location but in SCIENCE mode (likely eclipse)
-            # Clear charging PPT and fetch a new science target
-            self.charging_ppt = None
-            self.ppt = None
-
         # Check for battery alert and initiate emergency charging if needed
         if self._should_initiate_charging(utime):
             lastra, lastdec = self._initiate_charging(utime, lastra, lastdec)
