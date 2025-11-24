@@ -309,7 +309,6 @@ def _extract_observations(ditl, t_start, offset_hours, categories=None):
         if obs_duration <= 0:
             continue
 
-    for ppt in ditl.plan:
         # Skip if duration looks unrealistic (> 24 hours suggests placeholder end time wasn't updated)
         if obs_duration > 24:
             continue
