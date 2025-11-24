@@ -86,7 +86,6 @@ def plot_ditl_timeline(
         duration_hours = 24.0
 
     # Define timeline rows with labels and spacing
-    # Each row has: (label, data_extractor, plot_params)
     bar_height = 0.15
     row_spacing = 0.25  # Space between row centers
 
@@ -125,10 +124,7 @@ def plot_ditl_timeline(
     if show_orbit_numbers:
         num_orbits = int(duration_hours * 3600 / orbit_period) + 1
         for i in range(num_orbits):
-            if i % 2 == 1:
-                barcol = "grey"
-            else:
-                barcol = "white"
+            barcol = "grey" if i % 2 == 1 else "white"
             orbit_start = i * orbit_period / 3600
             orbit_width = orbit_period / 3600
             ax.broken_barh(
@@ -150,42 +146,6 @@ def plot_ditl_timeline(
                 fontsize=font_size - 2,
                 zorder=2,
             )
-
-    # Define timeline rows with labels and spacing
-    # Each row has: (label, data_extractor, plot_params)
-    bar_height = 0.15
-    row_spacing = 0.25  # Space between row centers
-
-    # Build the timeline rows dynamically
-    timeline_rows = []
-
-    # Always include these rows
-    timeline_rows.append(("Observations", None, None))
-    timeline_rows.append(("Slewing", None, None))
-    timeline_rows.append(("Charging", None, None))
-
-    # Conditionally include SAA
-    if show_saa:
-        timeline_rows.append(("SAA", None, None))
-
-    # Always include these rows
-    timeline_rows.append(("Eclipse", None, None))
-    timeline_rows.append(("Ground Contact", None, None))
-
-    # Calculate y-positions for data rows (starting from 0 and going down)
-    num_data_rows = len(timeline_rows)
-    data_y_positions = [-(i * row_spacing) for i in range(num_data_rows)]
-
-    # If showing orbit numbers, shift everything down and add orbit at top
-    if show_orbit_numbers:
-        orbit_y_position = data_y_positions[0] + row_spacing
-        data_y_positions = [orbit_y_position] + data_y_positions
-        timeline_rows.insert(0, ("Orbit", None, None))
-    else:
-        orbit_y_position = None
-
-    # Create mapping of row names to y-positions
-    row_positions = dict(zip([row[0] for row in timeline_rows], data_y_positions))
 
     # Extract observation segments from ppst by obsid ranges
     observations_by_type = _extract_observations(ditl, t_start, offset_hours)
