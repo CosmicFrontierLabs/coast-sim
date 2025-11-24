@@ -187,7 +187,9 @@ class TestOnboardRecorder:
     def test_threshold_validation(self):
         """Test that red threshold must be >= yellow threshold."""
         # This should raise a validation error
-        with pytest.raises(ValueError, match="red_threshold must be >= yellow_threshold"):
+        with pytest.raises(
+            ValueError, match="red_threshold must be >= yellow_threshold"
+        ):
             OnboardRecorder(yellow_threshold=0.8, red_threshold=0.6)
 
     def test_current_volume_capped_at_capacity(self):
@@ -219,7 +221,9 @@ class TestDataManagementScenarios:
 
     def test_recorder_overflow_scenario(self):
         """Test scenario where recorder fills up."""
-        recorder = OnboardRecorder(capacity_gb=32.0, yellow_threshold=0.7, red_threshold=0.9)
+        recorder = OnboardRecorder(
+            capacity_gb=32.0, yellow_threshold=0.7, red_threshold=0.9
+        )
 
         # Generate data continuously
         for i in range(20):

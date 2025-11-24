@@ -159,9 +159,9 @@ Configure and simulate onboard data storage, generation, and downlink:
 .. code-block:: python
 
    from conops.config import (
-       DataGeneration, 
-       Instrument, 
-       Payload, 
+       DataGeneration,
+       Instrument,
+       Payload,
        OnboardRecorder,
        Antenna,
        GroundStation
@@ -219,24 +219,24 @@ Configure and simulate onboard data storage, generation, and downlink:
    import matplotlib.pyplot as plt
 
    plt.figure(figsize=(12, 8))
-   
+
    # Plot recorder fill level
    plt.subplot(3, 1, 1)
    plt.plot(ditl.utime, ditl.recorder_fill_fraction)
    plt.ylabel('Recorder Fill Fraction')
    plt.title('Onboard Data Recorder Status')
-   
+
    # Plot data generation
    plt.subplot(3, 1, 2)
    plt.plot(ditl.utime, ditl.data_generated_gb)
    plt.ylabel('Data Generated (Gb)')
-   
+
    # Plot data downlink
    plt.subplot(3, 1, 3)
    plt.plot(ditl.utime, ditl.data_downlinked_gb)
    plt.ylabel('Data Downlinked (Gb)')
    plt.xlabel('Time')
-   
+
    plt.tight_layout()
    plt.show()
 

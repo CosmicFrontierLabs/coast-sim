@@ -56,7 +56,7 @@ is full, additional data generation is lost (simulating data that cannot be stor
 
    # Add data to recorder
    data_stored = recorder.add_data(10.5)  # Returns amount actually stored
-   
+
    # Check current state
    print(f"Current volume: {recorder.current_volume_gb} Gb")
    print(f"Fill fraction: {recorder.get_fill_fraction()}")
@@ -107,7 +107,7 @@ data streams.
 
    # Camera generating 0.5 Gbps continuously
    camera_data = DataGeneration(rate_gbps=0.5)
-   
+
    camera = Instrument(
        name="High-Resolution Camera",
        data_generation=camera_data
@@ -126,7 +126,7 @@ This is appropriate for instruments that capture discrete snapshots or measureme
 
    # Spectrometer generating 5 Gb per observation
    spec_data = DataGeneration(per_observation_gb=5.0)
-   
+
    spectrometer = Instrument(
        name="X-ray Spectrometer",
        data_generation=spec_data
@@ -146,10 +146,10 @@ across all instruments:
    from conops.config import Payload
 
    payload = Payload(payload=[camera, spectrometer])
-   
+
    # Get total data rate across all instruments
    total_rate = payload.total_data_rate_gbps()  # 0.5 Gbps from camera
-   
+
    # Calculate total data generated over a period
    total_data = payload.data_generated(60)  # Camera: 30 Gb + Spec: 5 Gb = 35 Gb
 
@@ -299,7 +299,7 @@ Configuration
    from conops.config import FaultManagement
 
    fault_mgmt = FaultManagement()
-   
+
    config = Config(
        # ... other config ...
        recorder=recorder,
@@ -343,17 +343,17 @@ Determine the minimum recorder capacity needed for your mission:
 
    # Run simulation with different recorder sizes
    capacities = [32, 64, 128, 256]  # Gigabits
-   
+
    for capacity in capacities:
        recorder = OnboardRecorder(capacity_gb=capacity)
        config.recorder = recorder
-       
+
        ditl = DITL(config=config)
        ditl.calc()
-       
+
        max_fill = max(ditl.recorder_fill_fraction)
        print(f"Capacity: {capacity} Gb, Max Fill: {max_fill:.1%}")
-       
+
        if max_fill < 0.9:
            print(f"✓ {capacity} Gb is sufficient")
            break
@@ -368,15 +368,15 @@ Determine how many ground station passes are needed:
    # Track cumulative data
    cumulative_generated = 0
    cumulative_downlinked = 0
-   
+
    for i in range(len(ditl.utime)):
        cumulative_generated += ditl.data_generated_gb[i]
        cumulative_downlinked += ditl.data_downlinked_gb[i]
-   
+
    print(f"Total data generated: {cumulative_generated:.1f} Gb")
    print(f"Total data downlinked: {cumulative_downlinked:.1f} Gb")
    print(f"Net accumulation: {cumulative_generated - cumulative_downlinked:.1f} Gb")
-   
+
    # Calculate required passes
    passes = len([p for p in ditl.executed_passes.passes])
    print(f"Ground station passes: {passes}")
@@ -393,7 +393,7 @@ Balance science observations with data downlink availability:
    for i, fill in enumerate(ditl.recorder_fill_fraction):
        if fill >= 1.0:
            full_periods.append(ditl.utime[i])
-   
+
    if full_periods:
        print(f"WARNING: Recorder full for {len(full_periods)} timesteps")
        print("Consider:")
@@ -406,32 +406,32 @@ Best Practices
 --------------
 
 1. **Start with Conservative Estimates**
-   
+
    Begin with generous recorder capacity and downlink capabilities, then optimize
    based on simulation results.
 
 2. **Monitor Alert Levels**
-   
+
    Pay attention to yellow and red alerts during simulation. Persistent red alerts
    indicate insufficient downlink capability or excessive data generation.
 
 3. **Account for Growth**
-   
+
    Size your recorder with margin for:
-   
+
    * Mission lifetime degradation
    * Potential instrument mode additions
    * Missed passes due to weather or station outages
 
 4. **Balance Generation and Downlink**
-   
+
    The ideal scenario maintains recorder fill between 30-70%, providing buffer
    for both data accumulation and unexpected gaps in downlink opportunities.
 
 5. **Validate with Different Scenarios**
-   
+
    Test your configuration with:
-   
+
    * Best case: All passes succeed
    * Worst case: 20-30% of passes fail
    * Realistic case: Mix of successful and failed passes

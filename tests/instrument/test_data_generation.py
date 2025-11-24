@@ -106,7 +106,9 @@ class TestPayloadDataGeneration:
         instruments = [
             Instrument(name="Camera1", data_generation=DataGeneration(rate_gbps=0.1)),
             Instrument(name="Camera2", data_generation=DataGeneration(rate_gbps=0.15)),
-            Instrument(name="Spectrometer", data_generation=DataGeneration(rate_gbps=0.05)),
+            Instrument(
+                name="Spectrometer", data_generation=DataGeneration(rate_gbps=0.05)
+            ),
         ]
         payload = Payload(payload=instruments)
 
@@ -150,9 +152,7 @@ class TestPayloadDataGeneration:
     def test_payload_data_generated_mixed(self):
         """Test data generation with mixed rate and per-observation instruments."""
         instruments = [
-            Instrument(
-                name="Camera", data_generation=DataGeneration(rate_gbps=0.1)
-            ),
+            Instrument(name="Camera", data_generation=DataGeneration(rate_gbps=0.1)),
             Instrument(
                 name="Spectrometer",
                 data_generation=DataGeneration(per_observation_gb=2.0),
