@@ -123,8 +123,8 @@ class ObservationCategories(BaseModel):
             - Survey: 10000-20000 (green)
             - GRB: 1000000-2000000 (orange)
             - TOO: 30000-40000 (red)
-            - Charging: 90000-100000 (yellow)
-            - Default: Calibration (gray)
+            - Charging: 999000-1000000 (gold)
+            - Default: Other (purple)
         """
         return cls(
             categories=[
