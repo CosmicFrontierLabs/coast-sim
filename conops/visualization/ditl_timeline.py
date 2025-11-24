@@ -276,8 +276,9 @@ def plot_ditl_timeline(
         )
 
     # Set up axes with labels and tick positions
+    # Y-ticks should be at the center of each bar for the grid lines to cut through
     y_labels = [row[0] for row in timeline_rows]
-    y_ticks = data_y_positions
+    y_ticks = [pos + bar_height / 2 for pos in data_y_positions]
 
     ax.set_yticks(y_ticks, labels=y_labels, **hfont)
     ax.yaxis.grid(True, zorder=0)
