@@ -19,10 +19,6 @@ class PlanEntry:
     ephem: rust_ephem.TLEEphemeris | None
     constraint: Constraint | None
     merit: float
-
-    suncons: float
-    sidemount: bool
-    gimbled: bool
     saa: bool
 
     def __init__(

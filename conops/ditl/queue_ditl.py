@@ -208,12 +208,21 @@ class QueueDITL(DITLMixin):
         if self.ppt is not None and (
             len(self.ppst) == 0 or self.ppt.begin != self.ppst[-1].begin
         ):
-            self.ppst.append(copy.copy(self.ppt))
+            self.ppst.append(self.ppt.copy())
 
     def _close_ppt_timeline_if_needed(self, utime: float) -> None:
-        """Close the last PPT segment in timeline if no active observation."""
+        """Close the last PPT segment in timeline if no active observation.
+
+        This is a safety net to ensure ppst timeline is closed if ppt becomes None
+        and the end time hasn't been set yet (e.g., has placeholder value).
+        """
         if self.ppt is None and len(self.ppst) > 0:
-            self.ppst[-1].end = utime
+            last_entry = self.ppst[-1]
+            # Check if end time looks like a placeholder (much larger than begin + reasonable duration)
+            # Science observations: end was set to 1,000,000 seconds
+            # Charging: end was set to 86,400 seconds
+            if last_entry.end > last_entry.begin + 86400:
+                self.ppst[-1].end = utime
 
     def _handle_mode_operations(
         self, mode: ACSMode, utime: float, lastra: float, lastdec: float
@@ -423,18 +432,27 @@ class QueueDITL(DITLMixin):
         print(
             f"{unixtime2date(utime)} Target {constraint_name} constrained, ending observation"
         )
+        # Update ppst timeline with actual end time
+        if len(self.ppst) > 0:
+            self.ppst[-1].end = utime
         self.ppt = None
 
     def _terminate_ppt_exposure_complete(self, utime: float) -> None:
         """Terminate PPT because exposure is complete."""
         assert self.ppt is not None
         print(f"{unixtime2date(utime)} Exposure complete, ending observation")
+        # Update ppst timeline with actual end time
+        if len(self.ppst) > 0:
+            self.ppst[-1].end = utime
         self.ppt.done = True
         self.ppt = None
 
     def _terminate_ppt_timeout(self, utime: float) -> None:
         """Terminate PPT because time window elapsed."""
         print(f"{unixtime2date(utime)} Time window elapsed, ending observation")
+        # Update ppst timeline with actual end time
+        if len(self.ppst) > 0:
+            self.ppst[-1].end = utime
         self.ppt = None
 
     def _get_constraint_name(self, ra: float, dec: float, utime: float) -> str:
@@ -612,6 +630,9 @@ class QueueDITL(DITLMixin):
     def _terminate_ppt(self, utime: float) -> None:
         """Terminate the current science PPT if active."""
         if self.ppt is not None and self.ppt != self.charging_ppt:
+            # Update ppst timeline with actual end time
+            if len(self.ppst) > 0:
+                self.ppst[-1].end = utime
             self.ppt.end = utime
             self.ppt.done = True
             self.ppt = None
@@ -619,6 +640,9 @@ class QueueDITL(DITLMixin):
     def _terminate_charging_ppt(self, utime: float) -> None:
         """Terminate the current charging PPT if active."""
         if self.charging_ppt is not None:
+            # Update ppst timeline with actual end time
+            if len(self.ppst) > 0:
+                self.ppst[-1].end = utime
             self.charging_ppt.end = utime
             self.charging_ppt.done = True
             self.charging_ppt = None
