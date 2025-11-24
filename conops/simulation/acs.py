@@ -698,6 +698,11 @@ class ACS:
         """
         print("Ending battery charge")
 
+        # Clear the charging slew state immediately so _is_in_charging_mode returns False
+        # This prevents staying in CHARGING mode while slewing back to science
+        if self.last_slew is not None and self.last_slew.obstype == "CHARGE":
+            self.last_slew = None
+
         # Return to the previous science PPT if one exists
         if self.last_ppt is not None:
             print(
