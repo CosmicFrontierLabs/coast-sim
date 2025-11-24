@@ -29,11 +29,11 @@ class TestDataGeneration:
     def test_data_generated_rate_based(self):
         """Test data generation calculation with rate-based mode."""
         data_gen = DataGeneration(rate_gbps=0.1)
-        
+
         # 60 seconds at 0.1 Gbps
         data = data_gen.data_generated(60)
         assert data == 6.0
-        
+
         # 120 seconds at 0.1 Gbps
         data = data_gen.data_generated(120)
         assert data == 12.0
@@ -41,18 +41,18 @@ class TestDataGeneration:
     def test_data_generated_per_observation(self):
         """Test data generation with per-observation mode."""
         data_gen = DataGeneration(per_observation_gb=5.0)
-        
+
         # Should return fixed amount regardless of duration
         data = data_gen.data_generated(60)
         assert data == 5.0
-        
+
         data = data_gen.data_generated(120)
         assert data == 5.0
 
     def test_data_generated_per_observation_takes_precedence(self):
         """Test that per_observation_gb takes precedence over rate_gbps."""
         data_gen = DataGeneration(rate_gbps=0.1, per_observation_gb=5.0)
-        
+
         # Should use per_observation_gb, not rate_gbps
         data = data_gen.data_generated(60)
         assert data == 5.0
@@ -60,7 +60,7 @@ class TestDataGeneration:
     def test_data_generated_zero(self):
         """Test data generation with no configuration."""
         data_gen = DataGeneration()
-        
+
         data = data_gen.data_generated(60)
         assert data == 0.0
 
@@ -78,7 +78,7 @@ class TestInstrumentWithDataGeneration:
         """Test instrument with rate-based data generation."""
         data_gen = DataGeneration(rate_gbps=0.05)
         instrument = Instrument(name="Camera", data_generation=data_gen)
-        
+
         assert instrument.data_generation.rate_gbps == 0.05
         data = instrument.data_generation.data_generated(60)
         assert data == 3.0
@@ -87,7 +87,7 @@ class TestInstrumentWithDataGeneration:
         """Test instrument with per-observation data generation."""
         data_gen = DataGeneration(per_observation_gb=2.5)
         instrument = Instrument(name="Spectrometer", data_generation=data_gen)
-        
+
         data = instrument.data_generation.data_generated(60)
         assert data == 2.5
 
@@ -109,7 +109,7 @@ class TestPayloadDataGeneration:
             Instrument(name="Spectrometer", data_generation=DataGeneration(rate_gbps=0.05)),
         ]
         payload = Payload(payload=instruments)
-        
+
         total_rate = payload.total_data_rate_gbps()
         assert total_rate == pytest.approx(0.3, rel=1e-6)
 
@@ -120,7 +120,7 @@ class TestPayloadDataGeneration:
             Instrument(name="Camera2", data_generation=DataGeneration(rate_gbps=0.2)),
         ]
         payload = Payload(payload=instruments)
-        
+
         # 60 seconds at 0.3 Gbps total
         data = payload.data_generated(60)
         assert data == pytest.approx(18.0, rel=1e-6)
@@ -138,11 +138,11 @@ class TestPayloadDataGeneration:
             ),
         ]
         payload = Payload(payload=instruments)
-        
+
         # Should return sum of per-observation amounts
         data = payload.data_generated(60)
         assert data == 8.0
-        
+
         # Should be same regardless of duration
         data = payload.data_generated(120)
         assert data == 8.0
@@ -159,7 +159,7 @@ class TestPayloadDataGeneration:
             ),
         ]
         payload = Payload(payload=instruments)
-        
+
         # 60 seconds: Camera generates 6.0 Gb, Spectrometer generates 2.0 Gb
         data = payload.data_generated(60)
         assert data == pytest.approx(8.0, rel=1e-6)
@@ -175,7 +175,7 @@ class TestPayloadDataGeneration:
             ),
         ]
         payload = Payload(payload=instruments)
-        
+
         # 60 seconds: Camera generates 6.0 Gb, Spectrometer generates 1.0 Gb
         data = payload.data_generated(60)
         assert data == pytest.approx(7.0, rel=1e-6)
@@ -192,7 +192,7 @@ class TestDataGenerationScenarios:
             data_generation=DataGeneration(rate_gbps=1.0),  # 1 Gbps
         )
         payload = Payload(payload=[camera])
-        
+
         # 10 minute observation
         data = payload.data_generated(600)
         assert data == 600.0  # 600 Gb in 10 minutes
@@ -211,7 +211,7 @@ class TestDataGenerationScenarios:
             ),
         ]
         payload = Payload(payload=instruments)
-        
+
         # 1 hour of data collection
         data = payload.data_generated(3600)
         assert data == pytest.approx(5.4, rel=1e-6)  # 5.4 Gb in 1 hour
@@ -224,7 +224,7 @@ class TestDataGenerationScenarios:
             data_generation=DataGeneration(per_observation_gb=0.5),
         )
         payload = Payload(payload=[camera])
-        
+
         # Each observation generates fixed amount
         data = payload.data_generated(1)  # Duration doesn't matter
         assert data == 0.5
