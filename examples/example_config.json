@@ -60,7 +60,11 @@
                     "eclipse_power": null,
                     "eclipse_power_mode": {}
                 },
-                "heater": null
+                "heater": null,
+                "data_generation": {
+                    "rate_gbps": 0.0001953125,
+                    "per_observation_gb": 0.0
+                }
             }
         ]
     },
@@ -118,7 +122,7 @@
                         "S"
                     ],
                     "gain_db": null,
-                    "max_data_rate_mbps": null,
+                    "max_data_rate_mbps": 100.0,
                     "simultaneous_links": 1
                 }
             },
@@ -135,7 +139,7 @@
                         "S"
                     ],
                     "gain_db": null,
-                    "max_data_rate_mbps": null,
+                    "max_data_rate_mbps": 150.0,
                     "simultaneous_links": 1
                 }
             },
@@ -152,7 +156,7 @@
                         "S"
                     ],
                     "gain_db": null,
-                    "max_data_rate_mbps": null,
+                    "max_data_rate_mbps": 150.0,
                     "simultaneous_links": 1
                 }
             },
@@ -169,11 +173,18 @@
                         "S"
                     ],
                     "gain_db": null,
-                    "max_data_rate_mbps": null,
+                    "max_data_rate_mbps": 100.0,
                     "simultaneous_links": 1
                 }
             }
         ]
+    },
+    "recorder": {
+        "name": "Default Recorder",
+        "capacity_gb": 64.0,
+        "current_volume_gb": 0.0,
+        "yellow_threshold": 0.7,
+        "red_threshold": 0.9
     },
     "fault_management": {
         "thresholds": {
@@ -187,5 +198,41 @@
         "states": {},
         "safe_mode_on_red": true,
         "safe_mode_requested": false
+    },
+    "observation_categories": {
+        "categories": [
+            {
+                "name": "GO",
+                "obsid_min": 20000,
+                "obsid_max": 30000,
+                "color": "tab:blue"
+            },
+            {
+                "name": "Survey",
+                "obsid_min": 10000,
+                "obsid_max": 20000,
+                "color": "tab:green"
+            },
+            {
+                "name": "GRB",
+                "obsid_min": 1000000,
+                "obsid_max": 2000000,
+                "color": "tab:orange"
+            },
+            {
+                "name": "TOO",
+                "obsid_min": 30000,
+                "obsid_max": 40000,
+                "color": "tab:red"
+            },
+            {
+                "name": "Charging",
+                "obsid_min": 999000,
+                "obsid_max": 1000000,
+                "color": "gold"
+            }
+        ],
+        "default_name": "Other",
+        "default_color": "tab:purple"
     }
 }
