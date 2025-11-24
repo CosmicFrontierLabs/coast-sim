@@ -25,37 +25,18 @@ class QueueDITL(DITLMixin):
     separate Plan first.
     """
 
-    ppt: Pointing | None
+    # QueueDITL-specific type definitions (types defined in DITLMixin are inherited)
+    ppt: Pointing | None  # Override to use Pointing instead of PlanEntry
     charging_ppt: Pointing | None
     emergency_charging: EmergencyCharging
-    ra: list[float]
-    dec: list[float]
-    roll: list[float]
-    mode: list[int]
-    panel: list[float]
-    power: list[float]
-    panel_power: list[float]
-    batterylevel: list[float]
-    obsid: list[int]
-    recorder_volume_gb: list[float]
-    recorder_fill_fraction: list[float]
-    recorder_alert: list[int]
-    data_generated_gb: list[float]
-    data_downlinked_gb: list[float]
-    plan: Plan
-    utime: list[float]
-    ephem: rust_ephem.TLEEphemeris
+    utime: list[float]  # Override to specify float instead of generic list
+    ephem: rust_ephem.TLEEphemeris  # Override to make non-optional
 
     def __init__(self, config: Config) -> None:
         DITLMixin.__init__(self, config=config)
-        # Initialize subsystems from config
-        self.constraint = self.config.constraint
-        self.battery = self.config.battery
-        self.spacecraft_bus = self.config.spacecraft_bus
-        self.payload = self.config.payload
-        self.recorder = self.config.recorder
+        # Subsystems are initialized by the mixin's _init_subsystems()
 
-        # Current target
+        # Current target (already set in mixin but repeated for clarity)
         self.ppt = None
 
         # Pointing history
@@ -200,46 +181,22 @@ class QueueDITL(DITLMixin):
 
     def _handle_data_management(self, utime: float, mode: ACSMode) -> None:
         """Handle data generation during observations and downlink during passes."""
-        data_generated = 0.0
-        data_downlinked = 0.0
+        # Use the mixin method to process data generation and downlink
+        data_generated, data_downlinked = self._process_data_management(
+            utime, mode, self.step_size
+        )
 
-        # Generate data during SCIENCE mode
-        if mode == ACSMode.SCIENCE:
-            data_generated = self.payload.data_generated(self.step_size)
-            self.recorder.add_data(data_generated)
+        # Record data telemetry (cumulative values)
+        prev_generated = self.data_generated_gb[-1] if self.data_generated_gb else 0.0
+        prev_downlinked = (
+            self.data_downlinked_gb[-1] if self.data_downlinked_gb else 0.0
+        )
 
-        # Downlink data during PASS mode
-        if mode == ACSMode.PASS:
-            current_pass = self._find_current_pass(utime)
-            if current_pass is not None:
-                station = self.config.ground_stations.get(current_pass.station)
-                if station.antenna.max_data_rate_mbps is not None:
-                    downlink_rate_gbps = station.antenna.max_data_rate_mbps / 1000.0
-                    data_to_downlink = downlink_rate_gbps * self.step_size
-                    data_downlinked = self.recorder.remove_data(data_to_downlink)
-
-        # Record data telemetry
         self.recorder_volume_gb.append(self.recorder.current_volume_gb)
         self.recorder_fill_fraction.append(self.recorder.get_fill_fraction())
         self.recorder_alert.append(self.recorder.get_alert_level())
-        self.data_generated_gb.append(data_generated)
-        self.data_downlinked_gb.append(data_downlinked)
-
-    def _find_current_pass(self, utime: float):
-        """Find the current pass at the given time.
-
-        Args:
-            utime: Unix timestamp to check.
-
-        Returns:
-            Pass object if currently in a pass, None otherwise.
-        """
-        if not hasattr(self, "executed_passes") or self.executed_passes is None:
-            return None
-        for pass_obj in self.executed_passes.passes:
-            if pass_obj.in_pass(utime):
-                return pass_obj
-        return None
+        self.data_generated_gb.append(prev_generated + data_generated)
+        self.data_downlinked_gb.append(prev_downlinked + data_downlinked)
 
     def _handle_fault_management(self, utime: float) -> None:
         """Handle fault management checks and safe mode requests."""

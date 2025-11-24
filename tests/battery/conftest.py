@@ -104,8 +104,9 @@ def queue_ditl(mock_config):
     """Create a QueueDITL instance with mocked dependencies."""
 
     def mock_ditl_init(self, config=None):
-        """Mock DITLMixin.__init__ that sets config."""
+        """Mock DITLMixin.__init__ that sets config and calls _init_subsystems."""
         self.config = config
+        self._init_subsystems()
 
     with patch(
         "conops.DITLMixin.__init__",
@@ -113,7 +114,6 @@ def queue_ditl(mock_config):
         autospec=False,
     ):
         ditl = QueueDITL(config=mock_config)
-        ditl.constraint = mock_config.constraint
 
         # Mock ephemeris
         ditl.ephem = Mock()

@@ -790,8 +790,9 @@ class TestQueueDITLEmergencyCharging:
         """Test that QueueDITL initializes charging-related variables."""
 
         def mock_ditl_init(self, config=None):
-            """Mock DITLMixin.__init__ that sets config."""
+            """Mock DITLMixin.__init__ that sets config and calls _init_subsystems."""
             self.config = config
+            self._init_subsystems()
 
         with patch(
             "conops.DITLMixin.__init__",

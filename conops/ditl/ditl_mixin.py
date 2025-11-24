@@ -28,6 +28,12 @@ class DITLMixin:
     # Subsystem power tracking
     power_bus: list[float]
     power_payload: list[float]
+    # Data recorder tracking
+    recorder_volume_gb: list[float]
+    recorder_fill_fraction: list[float]
+    recorder_alert: list[int]
+    data_generated_gb: list[float]
+    data_downlinked_gb: list[float]
 
     def __init__(self, config: Config) -> None:
         # Defining telemetry data points
@@ -63,6 +69,17 @@ class DITLMixin:
 
         # Current target
         self.ppt = None
+
+        # Initialize common subsystems (can be overridden by subclasses)
+        self._init_subsystems()
+
+    def _init_subsystems(self) -> None:
+        """Initialize subsystems from config. Can be overridden by subclasses."""
+        self.constraint = self.config.constraint
+        self.battery = self.config.battery
+        self.spacecraft_bus = self.config.spacecraft_bus
+        self.payload = self.config.payload
+        self.recorder = self.config.recorder
 
     def plot(self) -> None:
         """Plot DITL timeline"""
@@ -208,7 +225,7 @@ class DITLMixin:
             print(f"Total Pointing Updates: {len(self.ra)}")
             print(f"RA Range: {min(self.ra):.2f}° to {max(self.ra):.2f}°")
             print(f"Dec Range: {min(self.dec):.2f}° to {max(self.dec):.2f}°")
-            if self.roll:
+            if hasattr(self, "roll") and self.roll:
                 print(f"Roll Range: {min(self.roll):.2f}° to {max(self.roll):.2f}°")
 
         # Battery statistics
@@ -259,7 +276,7 @@ class DITLMixin:
                     f"{state_name:<20} {count:<10} {percentage:>6.2f}%      {time_hours:>10.2f}"
                 )
 
-        if self.power:
+        if hasattr(self, "power") and self.power:
             print("\nPower Consumption:")
             print(f"  Average: {np.mean(self.power):.2f} W")
             print(f"  Peak: {max(self.power):.2f} W")
@@ -284,7 +301,7 @@ class DITLMixin:
                 print(f"    Bus Peak: {max(self.power_bus):.2f} W")
                 print(f"    Payload Peak: {max(self.power_payload):.2f} W")
 
-        if self.panel_power:
+        if hasattr(self, "panel_power") and self.panel_power:
             print("\nSolar Panel Generation:")
             print(f"  Average: {np.mean(self.panel_power):.2f} W")
             print(f"  Peak: {max(self.panel_power):.2f} W")
@@ -294,7 +311,7 @@ class DITLMixin:
             print(f"  Total Consumed: {total_consumed:.2f} Wh")
             print(f"  Net Energy: {total_generated - total_consumed:.2f} Wh")
 
-        if self.panel:
+        if hasattr(self, "panel") and self.panel:
             print("\nSolar Panel Illumination:")
             avg_illumination = np.mean(self.panel) * 100
             print(f"  Average: {avg_illumination:.1f}%")
@@ -302,6 +319,95 @@ class DITLMixin:
             print(
                 f"  Eclipse Time: {eclipse_steps * self.step_size / 3600:.2f} hours ({eclipse_steps / len(self.panel) * 100:.1f}%)"
             )
+
+        # Data Management statistics
+        if (
+            hasattr(self, "recorder_volume_gb")
+            and self.recorder_volume_gb
+            and self.config.recorder is not None
+        ):
+            print("\n" + "-" * 70)
+            print("DATA MANAGEMENT STATISTICS")
+            print("-" * 70)
+            print(f"Recorder Capacity: {self.config.recorder.capacity_gb:.2f} GB")
+            print(f"Initial Volume: {self.recorder_volume_gb[0]:.2f} GB")
+            print(f"Final Volume: {self.recorder_volume_gb[-1]:.2f} GB")
+            print(f"Peak Volume: {max(self.recorder_volume_gb):.2f} GB")
+
+            if self.recorder_fill_fraction:
+                print("\nFill Level:")
+                print(f"  Initial: {self.recorder_fill_fraction[0] * 100:.1f}%")
+                print(f"  Final: {self.recorder_fill_fraction[-1] * 100:.1f}%")
+                print(f"  Peak: {max(self.recorder_fill_fraction) * 100:.1f}%")
+                print(f"  Average: {np.mean(self.recorder_fill_fraction) * 100:.1f}%")
+
+            if self.data_generated_gb:
+                total_generated = (
+                    self.data_generated_gb[-1] if self.data_generated_gb else 0
+                )
+                print(f"\nData Generated: {total_generated:.2f} GB")
+
+                # Calculate generation rate
+                duration_hours = (self.end - self.begin).total_seconds() / 3600
+                if duration_hours > 0:
+                    avg_rate = total_generated / duration_hours
+                    print(
+                        f"  Average Rate: {avg_rate:.3f} GB/hour ({avg_rate * 1000:.2f} Mbps)"
+                    )
+
+            if self.data_downlinked_gb:
+                total_downlinked = (
+                    self.data_downlinked_gb[-1] if self.data_downlinked_gb else 0
+                )
+                print(f"\nData Downlinked: {total_downlinked:.2f} GB")
+
+                # Calculate downlink efficiency
+                if hasattr(self, "data_generated_gb") and self.data_generated_gb:
+                    total_generated = self.data_generated_gb[-1]
+                    if total_generated > 0:
+                        efficiency = (total_downlinked / total_generated) * 100
+                        print(f"  Downlink Efficiency: {efficiency:.1f}%")
+
+                # Calculate downlink rate
+                duration_hours = (self.end - self.begin).total_seconds() / 3600
+                if duration_hours > 0:
+                    avg_rate = total_downlinked / duration_hours
+                    print(
+                        f"  Average Rate: {avg_rate:.3f} GB/hour ({avg_rate * 1000:.2f} Mbps)"
+                    )
+
+            # Recorder alert statistics
+            if hasattr(self, "recorder_alert") and self.recorder_alert:
+                from collections import Counter
+
+                alert_counts = Counter(self.recorder_alert)
+                print("\nRecorder Alerts:")
+                print(
+                    f"  Yellow Threshold: {self.config.recorder.yellow_threshold * 100:.0f}%"
+                )
+                print(
+                    f"  Red Threshold: {self.config.recorder.red_threshold * 100:.0f}%"
+                )
+
+                yellow_count = alert_counts.get("yellow", 0)
+                red_count = alert_counts.get("red", 0)
+                total_steps = len(self.recorder_alert)
+
+                if yellow_count > 0:
+                    yellow_time = yellow_count * self.step_size / 3600
+                    print(
+                        f"  Yellow Alerts: {yellow_count} steps ({yellow_time:.2f} hours, {yellow_count / total_steps * 100:.1f}%)"
+                    )
+                else:
+                    print("  Yellow Alerts: None")
+
+                if red_count > 0:
+                    red_time = red_count * self.step_size / 3600
+                    print(
+                        f"  Red Alerts: {red_count} steps ({red_time:.2f} hours, {red_count / total_steps * 100:.1f}%)"
+                    )
+                else:
+                    print("  Red Alerts: None")
 
         # Queue statistics (if available)
         if hasattr(self, "queue"):
@@ -339,3 +445,55 @@ class DITLMixin:
             print(f"Total Pass Time: {total_pass_time:.2f} hours")
 
         print("\n" + "=" * 70)
+
+    def _find_current_pass(self, utime: float):
+        """Find the current pass at the given time.
+
+        Args:
+            utime: Unix timestamp to check.
+
+        Returns:
+            Pass object if currently in a pass, None otherwise.
+        """
+        if not hasattr(self, "executed_passes") or self.executed_passes is None:
+            return None
+        for pass_obj in self.executed_passes.passes:
+            if pass_obj.in_pass(utime):
+                return pass_obj
+        return None
+
+    def _process_data_management(
+        self, utime: float, mode, step_size: int
+    ) -> tuple[float, float]:
+        """Process data generation and downlink for a single timestep.
+
+        Args:
+            utime: Unix timestamp for current timestep.
+            mode: Current ACS mode.
+            step_size: Time step in seconds.
+
+        Returns:
+            Tuple of (data_generated, data_downlinked) in GB for this timestep.
+        """
+        from ..common.enums import ACSMode
+
+        data_generated = 0.0
+        data_downlinked = 0.0
+
+        # Generate data during SCIENCE mode
+        if mode == ACSMode.SCIENCE:
+            data_generated = self.payload.data_generated(step_size)
+            self.recorder.add_data(data_generated)
+
+        # Downlink data during PASS mode
+        if mode == ACSMode.PASS:
+            current_pass = self._find_current_pass(utime)
+            if current_pass is not None:
+                station = self.config.ground_stations.get(current_pass.station)
+                if station.antenna.max_data_rate_mbps is not None:
+                    # Convert Mbps to GB per step: Mbps * seconds / 1000 / 8 = GB
+                    megabits_per_step = station.antenna.max_data_rate_mbps * step_size
+                    data_to_downlink = megabits_per_step / 1000.0 / 8.0  # Convert to GB
+                    data_downlinked = self.recorder.remove_data(data_to_downlink)
+
+        return data_generated, data_downlinked

@@ -61,13 +61,8 @@ class DITL(DITLMixin):
             All subsystems are extracted from the provided config for direct access.
         """
         DITLMixin.__init__(self, config=config)
-        # Initialize subsystems from config
-        self.constraint = self.config.constraint
-        self.battery = self.config.battery
-        self.spacecraft_bus = self.config.spacecraft_bus
-        self.payload = self.config.payload
+        # DITL also needs solar_panel
         self.solar_panel = self.config.solar_panel
-        self.recorder = self.config.recorder
 
     def calc(self) -> bool:
         """Execute Day In The Life simulation.
@@ -196,54 +191,21 @@ class DITL(DITLMixin):
             self.obsid[i] = obsid
 
             # Data management: generate and downlink data
-            data_generated = 0.0
-            data_downlinked = 0.0
+            data_generated, data_downlinked = self._process_data_management(
+                self.utime[i], mode, self.step_size
+            )
 
-            # Generate data during SCIENCE mode
-            from ..common.enums import ACSMode
+            # Record data telemetry (cumulative values)
+            prev_generated = self.data_generated_gb[i - 1] if i > 0 else 0.0
+            prev_downlinked = self.data_downlinked_gb[i - 1] if i > 0 else 0.0
 
-            if mode == ACSMode.SCIENCE:
-                # Generate data based on payload configuration
-                data_generated = self.payload.data_generated(self.step_size)
-                self.recorder.add_data(data_generated)
-
-            # Downlink data during PASS mode
-            if mode == ACSMode.PASS:
-                # Find which ground station we're passing
-                current_pass = self._find_current_pass(self.utime[i])
-                if current_pass is not None:
-                    # Get the antenna data rate from the ground station
-                    station = self.config.ground_stations.get(current_pass.station)
-                    if station.antenna.max_data_rate_mbps is not None:
-                        # Convert Mbps to Gbps and calculate data downlinked in this step
-                        downlink_rate_gbps = station.antenna.max_data_rate_mbps / 1000.0
-                        data_to_downlink = downlink_rate_gbps * self.step_size
-                        data_downlinked = self.recorder.remove_data(data_to_downlink)
-
-            # Record data telemetry
             self.recorder_volume_gb[i] = self.recorder.current_volume_gb
             self.recorder_fill_fraction[i] = self.recorder.get_fill_fraction()
             self.recorder_alert[i] = self.recorder.get_alert_level()
-            self.data_generated_gb[i] = data_generated
-            self.data_downlinked_gb[i] = data_downlinked
+            self.data_generated_gb[i] = prev_generated + data_generated
+            self.data_downlinked_gb[i] = prev_downlinked + data_downlinked
 
         return True
-
-    def _find_current_pass(self, utime: float):
-        """Find the current pass at the given time.
-
-        Args:
-            utime: Unix timestamp to check.
-
-        Returns:
-            Pass object if currently in a pass, None otherwise.
-        """
-        if not hasattr(self, "executed_passes") or self.executed_passes is None:
-            return None
-        for pass_obj in self.executed_passes.passes:
-            if pass_obj.in_pass(utime):
-                return pass_obj
-        return None
 
 
 class DITLs:
