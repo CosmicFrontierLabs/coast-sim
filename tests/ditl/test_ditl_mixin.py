@@ -82,8 +82,10 @@ def test_plot_creates_subplots_and_battery_line(mock_config):
         # Ensure no figures are open
         plt.close("all")
 
-        # Call plot(), should not raise
-        ditl.plot()
+        # Mock plt.show to prevent the warning
+        with patch("matplotlib.pyplot.show"):
+            # Call plot(), should not raise
+            ditl.plot()
 
         fig = plt.gcf()
         # There should be 7 axes (subplots)

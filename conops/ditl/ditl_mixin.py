@@ -82,67 +82,16 @@ class DITLMixin:
         self.recorder = self.config.recorder
 
     def plot(self) -> None:
-        """Plot DITL timeline"""
-        timehours = (np.array(self.utime) - self.utime[0]) / 3600
+        """Plot DITL timeline.
+        
+        .. deprecated::
+            Use :func:`conops.visualization.plot_ditl_telemetry` instead.
+            This method is maintained for backward compatibility.
+        """
+        from ..visualization import plot_ditl_telemetry
 
-        _ = plt.figure(figsize=(10, 8))
-        ax = plt.subplot(711)
-        plt.plot(timehours, self.ra)
-        ax.xaxis.set_visible(False)
-        plt.ylabel("RA")
-        ax.set_title(f"Timeline for DITL Simulation: {self.config.name}")
-
-        ax = plt.subplot(712)
-        ax.plot(timehours, self.dec)
-        ax.xaxis.set_visible(False)
-
-        plt.ylabel("Dec")
-        ax = plt.subplot(713)
-        ax.plot(timehours, self.mode)
-        ax.xaxis.set_visible(False)
-
-        plt.ylabel("Mode")
-        ax = plt.subplot(714)
-        ax.plot(timehours, self.batterylevel)
-        ax.axhline(
-            y=1.0 - self.config.battery.max_depth_of_discharge,
-            color="r",
-            linestyle="--",
-        )
-        ax.xaxis.set_visible(False)
-        ax.set_ylim(0, 1)
-        ax.set_ylabel("Batt. charge")
-
-        ax = plt.subplot(715)
-        ax.plot(timehours, self.panel)
-        ax.xaxis.set_visible(False)
-        ax.set_ylim(0, 1)
-        ax.set_ylabel("Panel Ill.")
-
-        ax = plt.subplot(716)
-        # Check if subsystem power data is available
-        if (
-            hasattr(self, "power_bus")
-            and hasattr(self, "power_payload")
-            and self.power_bus
-            and self.power_payload
-        ):
-            # Line plot showing power breakdown
-            ax.plot(timehours, self.power_bus, label="Bus", alpha=0.8)
-            ax.plot(timehours, self.power_payload, label="Payload", alpha=0.8)
-            ax.plot(timehours, self.power, label="Total", linewidth=2, alpha=0.9)
-            ax.legend(loc="upper right", fontsize="small")
-        else:
-            # Fall back to total power only
-            ax.plot(timehours, self.power, label="Total")
-        ax.set_ylim(0, max(self.power) * 1.1)
-        ax.set_ylabel("Power (W)")
-        ax.xaxis.set_visible(False)
-
-        ax = plt.subplot(717)
-        ax.plot(timehours, self.obsid)
-        ax.set_ylabel("ObsID")
-        ax.set_xlabel("Time (hour of day)")
+        plot_ditl_telemetry(self)
+        plt.show()
 
     def print_statistics(self) -> None:
         """Print comprehensive statistics about the DITL simulation.
