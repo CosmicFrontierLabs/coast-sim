@@ -37,6 +37,11 @@ class QueueDITL(DITLMixin):
     panel_power: list[float]
     batterylevel: list[float]
     obsid: list[int]
+    recorder_volume_gb: list[float]
+    recorder_fill_fraction: list[float]
+    recorder_alert: list[int]
+    data_generated_gb: list[float]
+    data_downlinked_gb: list[float]
     plan: Plan
     utime: list[float]
     ephem: rust_ephem.TLEEphemeris
@@ -48,6 +53,7 @@ class QueueDITL(DITLMixin):
         self.battery = self.config.battery
         self.spacecraft_bus = self.config.spacecraft_bus
         self.payload = self.config.payload
+        self.recorder = self.config.recorder
 
         # Current target
         self.ppt = None
@@ -69,6 +75,12 @@ class QueueDITL(DITLMixin):
         # Subsystem power tracking
         self.power_bus = list()
         self.power_payload = list()
+        # Data recorder tracking
+        self.recorder_volume_gb = list()
+        self.recorder_fill_fraction = list()
+        self.recorder_alert = list()
+        self.data_generated_gb = list()
+        self.data_downlinked_gb = list()
         # Target Queue
         self.queue = Queue()
 
@@ -174,6 +186,9 @@ class QueueDITL(DITLMixin):
                 i, utime, ra, dec, mode, in_eclipse=self.acs.in_eclipse
             )
 
+            # Handle data generation and downlink
+            self._handle_data_management(utime, mode)
+
             # Fault management checks (e.g., battery level thresholds)
             self._handle_fault_management(utime)
 
@@ -183,11 +198,57 @@ class QueueDITL(DITLMixin):
 
         return True
 
+    def _handle_data_management(self, utime: float, mode: ACSMode) -> None:
+        """Handle data generation during observations and downlink during passes."""
+        data_generated = 0.0
+        data_downlinked = 0.0
+
+        # Generate data during SCIENCE mode
+        if mode == ACSMode.SCIENCE:
+            data_generated = self.payload.data_generated(self.step_size)
+            self.recorder.add_data(data_generated)
+
+        # Downlink data during PASS mode
+        if mode == ACSMode.PASS:
+            current_pass = self._find_current_pass(utime)
+            if current_pass is not None:
+                station = self.config.ground_stations.get(current_pass.station)
+                if station.antenna.max_data_rate_mbps is not None:
+                    downlink_rate_gbps = station.antenna.max_data_rate_mbps / 1000.0
+                    data_to_downlink = downlink_rate_gbps * self.step_size
+                    data_downlinked = self.recorder.remove_data(data_to_downlink)
+
+        # Record data telemetry
+        self.recorder_volume_gb.append(self.recorder.current_volume_gb)
+        self.recorder_fill_fraction.append(self.recorder.get_fill_fraction())
+        self.recorder_alert.append(self.recorder.get_alert_level())
+        self.data_generated_gb.append(data_generated)
+        self.data_downlinked_gb.append(data_downlinked)
+
+    def _find_current_pass(self, utime: float):
+        """Find the current pass at the given time.
+
+        Args:
+            utime: Unix timestamp to check.
+
+        Returns:
+            Pass object if currently in a pass, None otherwise.
+        """
+        if not hasattr(self, "executed_passes") or self.executed_passes is None:
+            return None
+        for pass_obj in self.executed_passes.passes:
+            if pass_obj.in_pass(utime):
+                return pass_obj
+        return None
+
     def _handle_fault_management(self, utime: float) -> None:
         """Handle fault management checks and safe mode requests."""
         if self.config.fault_management is not None:
             self.config.fault_management.check(
-                values={"battery_level": self.battery.battery_level},
+                values={
+                    "battery_level": self.battery.battery_level,
+                    "recorder_fill_fraction": self.recorder.get_fill_fraction(),
+                },
                 utime=utime,
                 step_size=self.step_size,
                 acs=self.acs,
