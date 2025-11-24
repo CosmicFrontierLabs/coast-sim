@@ -5,9 +5,10 @@ from .constants import DAY_SECONDS, DTOR
 from .constraint import Constraint
 from .fault_management import FaultManagement, FaultState, FaultThreshold
 from .groundstation import Antenna, GroundStation, GroundStationRegistry
-from .instrument import Instrument, Payload
+from .instrument import DataGeneration, Instrument, Payload
 from .observation_categories import ObservationCategories, ObservationCategory
 from .power import PowerDraw
+from .recorder import OnboardRecorder
 from .solar_panel import SolarPanel, SolarPanelSet
 from .spacecraft_bus import SpacecraftBus
 from .thermal import Heater
@@ -17,6 +18,7 @@ __all__ = [
     "Battery",
     "Config",
     "Constraint",
+    "DataGeneration",
     "FaultManagement",
     "FaultThreshold",
     "FaultState",
@@ -25,6 +27,7 @@ __all__ = [
     "Instrument",
     "ObservationCategories",
     "ObservationCategory",
+    "OnboardRecorder",
     "Payload",
     "PowerDraw",
     "SolarPanel",

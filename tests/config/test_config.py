@@ -133,8 +133,13 @@ class TestConfig:
             fault_management=fault_management,
         )
         config.init_fault_management_defaults()
-        # Should still only have the one threshold we added
-        assert len(fault_management.thresholds) == 1
+        # Should have battery_level (that we added) and recorder_fill_fraction (added by init)
+        assert len(fault_management.thresholds) == 2
+        assert "battery_level" in fault_management.thresholds
+        assert "recorder_fill_fraction" in fault_management.thresholds
+        # Battery level should have our custom values, not defaults
+        assert fault_management.thresholds["battery_level"].yellow == 0.5
+        assert fault_management.thresholds["battery_level"].red == 0.4
 
     def test_from_json_file(self, tmp_path):
         """Test loading Config from JSON file."""

@@ -9,7 +9,7 @@ class DITL(DITLMixin):
 
     Simulates a single day of spacecraft operations by executing a pre-planned
     observing schedule  and tracking spacecraft state including power usage,
-    battery levels, and pointing angles.
+    battery levels, pointing angles, and data management.
 
     Inherits from DITLMixin which provides shared initialization and plotting
     functionality for DITL simulations.
@@ -20,6 +20,7 @@ class DITL(DITLMixin):
         spacecraft_bus (SpacecraftBus): Spacecraft bus configuration and power draw.
         payload (Payload): Instrument configuration and power draw.
         solar_panel (SolarPanelSet): Solar panel configuration and power generation.
+        recorder (OnboardRecorder): Onboard data storage device.
         ephem (Ephemeris): Ephemeris data for position and illumination calculations.
         plan (Plan): Pre-planned pointing schedule to execute.
         acs (ACS): Attitude Control System for pointing and slew calculations.
@@ -36,6 +37,11 @@ class DITL(DITLMixin):
         batterylevel (np.ndarray): Battery state of charge at each timestep.
         batteryalert (np.ndarray): Battery alert status at each timestep.
         obsid (np.ndarray): Observation ID at each timestep.
+        recorder_volume_gb (np.ndarray): Recorder data volume in Gb at each timestep.
+        recorder_fill_fraction (np.ndarray): Recorder fill fraction (0-1) at each timestep.
+        recorder_alert (np.ndarray): Recorder alert level (0/1/2) at each timestep.
+        data_generated_gb (np.ndarray): Data generated in Gb at each timestep.
+        data_downlinked_gb (np.ndarray): Data downlinked in Gb at each timestep.
     """
 
     def __init__(self, config: Config) -> None:
@@ -61,6 +67,7 @@ class DITL(DITLMixin):
         self.spacecraft_bus = self.config.spacecraft_bus
         self.payload = self.config.payload
         self.solar_panel = self.config.solar_panel
+        self.recorder = self.config.recorder
 
     def calc(self) -> bool:
         """Execute Day In The Life simulation.
@@ -130,6 +137,12 @@ class DITL(DITLMixin):
         # Subsystem power tracking
         self.power_bus = np.zeros(simlen).tolist()
         self.power_payload = np.zeros(simlen).tolist()
+        # Data recorder tracking
+        self.recorder_volume_gb = np.zeros(simlen).tolist()
+        self.recorder_fill_fraction = np.zeros(simlen).tolist()
+        self.recorder_alert = np.zeros(simlen).astype(int).tolist()
+        self.data_generated_gb = np.zeros(simlen).tolist()
+        self.data_downlinked_gb = np.zeros(simlen).tolist()
 
         # Set up initial target in ACS
         self.ppt = self.plan.which_ppt(self.utime[0])
@@ -182,7 +195,55 @@ class DITL(DITLMixin):
             self.charge_state[i] = self.battery.charge_state
             self.obsid[i] = obsid
 
+            # Data management: generate and downlink data
+            data_generated = 0.0
+            data_downlinked = 0.0
+
+            # Generate data during SCIENCE mode
+            from ..common.enums import ACSMode
+
+            if mode == ACSMode.SCIENCE:
+                # Generate data based on payload configuration
+                data_generated = self.payload.data_generated(self.step_size)
+                self.recorder.add_data(data_generated)
+
+            # Downlink data during PASS mode
+            if mode == ACSMode.PASS:
+                # Find which ground station we're passing
+                current_pass = self._find_current_pass(self.utime[i])
+                if current_pass is not None:
+                    # Get the antenna data rate from the ground station
+                    station = self.config.ground_stations.get(current_pass.station)
+                    if station.antenna.max_data_rate_mbps is not None:
+                        # Convert Mbps to Gbps and calculate data downlinked in this step
+                        downlink_rate_gbps = station.antenna.max_data_rate_mbps / 1000.0
+                        data_to_downlink = downlink_rate_gbps * self.step_size
+                        data_downlinked = self.recorder.remove_data(data_to_downlink)
+
+            # Record data telemetry
+            self.recorder_volume_gb[i] = self.recorder.current_volume_gb
+            self.recorder_fill_fraction[i] = self.recorder.get_fill_fraction()
+            self.recorder_alert[i] = self.recorder.get_alert_level()
+            self.data_generated_gb[i] = data_generated
+            self.data_downlinked_gb[i] = data_downlinked
+
         return True
+
+    def _find_current_pass(self, utime: float):
+        """Find the current pass at the given time.
+
+        Args:
+            utime: Unix timestamp to check.
+
+        Returns:
+            Pass object if currently in a pass, None otherwise.
+        """
+        if not hasattr(self, "executed_passes") or self.executed_passes is None:
+            return None
+        for pass_obj in self.executed_passes.passes:
+            if pass_obj.in_pass(utime):
+                return pass_obj
+        return None
 
 
 class DITLs:

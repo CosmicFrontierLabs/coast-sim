@@ -8,6 +8,7 @@ from .fault_management import FaultManagement
 from .groundstation import GroundStationRegistry
 from .instrument import Payload
 from .observation_categories import ObservationCategories
+from .recorder import OnboardRecorder
 from .solar_panel import SolarPanelSet
 from .spacecraft_bus import SpacecraftBus
 
@@ -24,6 +25,7 @@ class Config(BaseModel):
     battery: Battery
     constraint: Constraint
     ground_stations: GroundStationRegistry
+    recorder: OnboardRecorder = OnboardRecorder()
     fault_management: FaultManagement | None = None
     observation_categories: ObservationCategories = (
         ObservationCategories.default_categories()
@@ -35,6 +37,8 @@ class Config(BaseModel):
         Currently sets up a battery_level threshold using the battery
         max_depth_of_discharge as the minimum allowed charge level for YELLOW
         and (max_depth_of_discharge + 0.1) as RED for demonstration.
+        Also sets up recorder_fill_fraction threshold using the recorder's
+        yellow and red thresholds.
         Users can override via config serialization.
         """
         if self.fault_management is None:
@@ -47,6 +51,15 @@ class Config(BaseModel):
             red = max(yellow - 0.1, 0.0)  # Ensure non-negative
             self.fault_management.add_threshold(
                 name="battery_level", yellow=yellow, red=red, direction="below"
+            )
+        # Add recorder threshold if not already present
+        if "recorder_fill_fraction" not in self.fault_management.thresholds:
+            # Use recorder's built-in thresholds
+            self.fault_management.add_threshold(
+                name="recorder_fill_fraction",
+                yellow=self.recorder.yellow_threshold,
+                red=self.recorder.red_threshold,
+                direction="above",
             )
 
     @classmethod
