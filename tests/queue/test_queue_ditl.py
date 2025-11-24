@@ -774,6 +774,9 @@ class TestCalcMethod:
         mock_ppt.begin = 1543622400
         mock_ppt.end = 1543629600
         mock_ppt.done = False
+        mock_ppt.copy = Mock(return_value=Mock())
+        mock_ppt.copy.return_value.begin = 1543622400
+        mock_ppt.copy.return_value.end = 1543629600
 
         queue_ditl.queue.get = Mock(side_effect=[mock_ppt] + [None] * 100)
 
@@ -811,6 +814,11 @@ class TestCalcMethod:
         mock_charging.ra = 100.0
         mock_charging.dec = 50.0
         mock_charging.obsid = 999001
+        mock_charging.begin = 1543622400
+        mock_charging.end = 1543622400 + 86400
+        mock_charging.copy = Mock(return_value=Mock())
+        mock_charging.copy.return_value.begin = 1543622400
+        mock_charging.copy.return_value.end = 1543622400 + 86400
         queue_ditl.emergency_charging.should_initiate_charging = Mock(return_value=True)
         queue_ditl.emergency_charging.initiate_emergency_charging = Mock(
             return_value=mock_charging
@@ -830,6 +838,11 @@ class TestCalcMethod:
         mock_charging.ra = 100.0
         mock_charging.dec = 50.0
         mock_charging.obsid = 999001
+        mock_charging.begin = 1543622400
+        mock_charging.end = 1543622400 + 86400
+        mock_charging.copy = Mock(return_value=Mock())
+        mock_charging.copy.return_value.begin = 1543622400
+        mock_charging.copy.return_value.end = 1543622400 + 86400
         queue_ditl.emergency_charging.should_initiate_charging = Mock(return_value=True)
         queue_ditl.emergency_charging.initiate_emergency_charging = Mock(
             return_value=mock_charging
@@ -856,6 +869,9 @@ class TestCalcMethod:
         mock_ppt.begin = 1543622400
         mock_ppt.end = 1543708800
         mock_ppt.done = False
+        mock_ppt.copy = Mock(return_value=Mock())
+        mock_ppt.copy.return_value.begin = 1543622400
+        mock_ppt.copy.return_value.end = 1543708800
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
         with patch("conops.Pointing.visibility") as mock_vis:
             mock_vis.return_value = 1
