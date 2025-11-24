@@ -208,6 +208,14 @@ class QueueDITL(DITLMixin):
         if self.ppt is not None and (
             len(self.ppst) == 0 or self.ppt.begin != self.ppst[-1].begin
         ):
+            # Before adding new PPT, close the previous one if it has placeholder end time
+            if len(self.ppst) > 0:
+                last_entry = self.ppst[-1]
+                # Check if end time looks like a placeholder
+                if last_entry.end > last_entry.begin + 86400:
+                    # Set end to the begin time of new PPT (no gap between entries)
+                    self.ppst[-1].end = self.ppt.begin
+
             self.ppst.append(self.ppt.copy())
 
     def _close_ppt_timeline_if_needed(self, utime: float) -> None:

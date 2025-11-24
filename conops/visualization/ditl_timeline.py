@@ -309,6 +309,10 @@ def _extract_observations(ditl, t_start, offset_hours, categories=None):
         if obs_duration <= 0:
             continue
 
+        # Skip if duration looks unrealistic (> 24 hours suggests placeholder end time wasn't updated)
+        if obs_duration > 24:
+            continue
+
         # Categorize by obsid using configuration
         category = categories.get_category(ppt.obsid)
         observations[category.name].append((obs_start, obs_duration))

@@ -141,9 +141,9 @@ class ObservationCategories(BaseModel):
                     name="TOO", obsid_min=30000, obsid_max=40000, color="tab:red"
                 ),
                 ObservationCategory(
-                    name="Charging", obsid_min=90000, obsid_max=100000, color="gold"
+                    name="Charging", obsid_min=999000, obsid_max=1000000, color="gold"
                 ),
             ],
-            default_name="Calibration",
-            default_color="tab:gray",
+            default_name="Other",
+            default_color="tab:purple",
         )
