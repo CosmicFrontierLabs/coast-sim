@@ -523,3 +523,5 @@ def annotate_slew_distances(
                     fontsize=font_size,
                     fontname=font_family,
                 )
+
+    return ax

@@ -278,10 +278,10 @@ class DITLMixin:
             print("\n" + "-" * 70)
             print("DATA MANAGEMENT STATISTICS")
             print("-" * 70)
-            print(f"Recorder Capacity: {self.config.recorder.capacity_gb:.2f} GB")
-            print(f"Initial Volume: {self.recorder_volume_gb[0]:.2f} GB")
-            print(f"Final Volume: {self.recorder_volume_gb[-1]:.2f} GB")
-            print(f"Peak Volume: {max(self.recorder_volume_gb):.2f} GB")
+            print(f"Recorder Capacity: {self.config.recorder.capacity_gb:.2f} Gb")
+            print(f"Initial Volume: {self.recorder_volume_gb[0]:.2f} Gb")
+            print(f"Final Volume: {self.recorder_volume_gb[-1]:.2f} Gb")
+            print(f"Peak Volume: {max(self.recorder_volume_gb):.2f} Gb")
 
             if self.recorder_fill_fraction:
                 print("\nFill Level:")
@@ -294,21 +294,21 @@ class DITLMixin:
                 total_generated = (
                     self.data_generated_gb[-1] if self.data_generated_gb else 0
                 )
-                print(f"\nData Generated: {total_generated:.2f} GB")
+                print(f"\nData Generated: {total_generated:.2f} Gb")
 
                 # Calculate generation rate
                 duration_hours = (self.end - self.begin).total_seconds() / 3600
                 if duration_hours > 0:
                     avg_rate = total_generated / duration_hours
                     print(
-                        f"  Average Rate: {avg_rate:.3f} GB/hour ({avg_rate * 1000:.2f} Mbps)"
+                        f"  Average Rate: {avg_rate:.3f} Gb/hour ({avg_rate * 1000:.2f} Mbps)"
                     )
 
             if self.data_downlinked_gb:
                 total_downlinked = (
                     self.data_downlinked_gb[-1] if self.data_downlinked_gb else 0
                 )
-                print(f"\nData Downlinked: {total_downlinked:.2f} GB")
+                print(f"\nData Downlinked: {total_downlinked:.2f} Gb")
 
                 # Calculate downlink efficiency
                 if hasattr(self, "data_generated_gb") and self.data_generated_gb:
@@ -322,7 +322,7 @@ class DITLMixin:
                 if duration_hours > 0:
                     avg_rate = total_downlinked / duration_hours
                     print(
-                        f"  Average Rate: {avg_rate:.3f} GB/hour ({avg_rate * 1000:.2f} Mbps)"
+                        f"  Average Rate: {avg_rate:.3f} Gb/hour ({avg_rate * 1000:.2f} Mbps)"
                     )
 
             # Recorder alert statistics
@@ -431,7 +431,7 @@ class DITLMixin:
             step_size: Time step in seconds.
 
         Returns:
-            Tuple of (data_generated, data_downlinked) in GB for this timestep.
+            Tuple of (data_generated, data_downlinked) in Gb for this timestep.
         """
         from ..common.enums import ACSMode
 
@@ -449,9 +449,9 @@ class DITLMixin:
             if current_pass is not None:
                 station = self.config.ground_stations.get(current_pass.station)
                 if station.antenna.max_data_rate_mbps is not None:
-                    # Convert Mbps to GB per step: Mbps * seconds / 1000 / 8 = GB
+                    # Convert Mbps to Gb per step: Mbps * seconds / 1000 / 8 = Gb
                     megabits_per_step = station.antenna.max_data_rate_mbps * step_size
-                    data_to_downlink = megabits_per_step / 1000.0 / 8.0  # Convert to GB
+                    data_to_downlink = megabits_per_step / 1000.0 / 8.0  # Convert to Gb
                     data_downlinked = self.recorder.remove_data(data_to_downlink)
 
         return data_generated, data_downlinked

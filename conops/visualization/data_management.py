@@ -41,16 +41,16 @@ def plot_data_management_telemetry(
     # Convert unix timestamps to datetime objects
     times = [datetime.fromtimestamp(t) for t in ditl.utime]
 
-    # Plot 1: Recorder Volume (GB)
+    # Plot 1: Recorder Volume (Gb)
     axes[0].plot(times, ditl.recorder_volume_gb, "b-", linewidth=2)
-    axes[0].set_ylabel("Volume (GB)", fontsize=10)
+    axes[0].set_ylabel("Volume (Gb)", fontsize=10)
     axes[0].set_title("Onboard Recorder Data Volume", fontsize=12, fontweight="bold")
     axes[0].grid(True, alpha=0.3)
     axes[0].axhline(
         y=ditl.config.recorder.capacity_gb,
         color="r",
         linestyle="--",
-        label=f"Capacity ({ditl.config.recorder.capacity_gb} GB)",
+        label=f"Capacity ({ditl.config.recorder.capacity_gb} Gb)",
     )
     axes[0].legend()
 
@@ -73,15 +73,15 @@ def plot_data_management_telemetry(
     axes[1].grid(True, alpha=0.3)
     axes[1].legend()
 
-    # Plot 3: Cumulative Data Generated (GB)
+    # Plot 3: Cumulative Data Generated (Gb)
     axes[2].plot(times, ditl.data_generated_gb, "m-", linewidth=2)
-    axes[2].set_ylabel("Data Generated (GB)", fontsize=10)
+    axes[2].set_ylabel("Data Generated (Gb)", fontsize=10)
     axes[2].set_title("Cumulative Data Generated", fontsize=12, fontweight="bold")
     axes[2].grid(True, alpha=0.3)
 
-    # Plot 4: Cumulative Data Downlinked (GB)
+    # Plot 4: Cumulative Data Downlinked (Gb)
     axes[3].plot(times, ditl.data_downlinked_gb, "c-", linewidth=2)
-    axes[3].set_ylabel("Data Downlinked (GB)", fontsize=10)
+    axes[3].set_ylabel("Data Downlinked (Gb)", fontsize=10)
     axes[3].set_title("Cumulative Data Downlinked", fontsize=12, fontweight="bold")
     axes[3].grid(True, alpha=0.3)
 
@@ -120,11 +120,11 @@ def _print_data_management_summary(ditl):
     print("\n" + "=" * 70)
     print("DATA MANAGEMENT SUMMARY")
     print("=" * 70)
-    print(f"Total Data Generated:    {total_generated:.2f} GB")
-    print(f"Total Data Downlinked:   {total_downlinked:.2f} GB")
-    print(f"Final Recorder Volume:   {final_volume:.2f} GB")
+    print(f"Total Data Generated:    {total_generated:.2f} Gb")
+    print(f"Total Data Downlinked:   {total_downlinked:.2f} Gb")
+    print(f"Final Recorder Volume:   {final_volume:.2f} Gb")
     print(f"Max Fill Fraction:       {max_fill:.1%}")
-    print(f"Recorder Capacity:       {ditl.config.recorder.capacity_gb:.2f} GB")
+    print(f"Recorder Capacity:       {ditl.config.recorder.capacity_gb:.2f} Gb")
 
     if total_generated > 0:
         downlink_efficiency = (total_downlinked / total_generated) * 100
