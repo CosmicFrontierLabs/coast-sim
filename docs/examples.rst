@@ -151,6 +151,103 @@ Test different scheduling algorithms:
 * Target visibility windows
 * Constraint satisfaction
 
+Data Management
+~~~~~~~~~~~~~~~
+
+Configure and simulate onboard data storage, generation, and downlink:
+
+.. code-block:: python
+
+   from conops.config import (
+       DataGeneration, 
+       Instrument, 
+       Payload, 
+       OnboardRecorder,
+       Antenna,
+       GroundStation
+   )
+
+   # Configure instruments with data generation
+   camera = Instrument(
+       name="High-Res Camera",
+       power_draw=PowerDraw(nominal_power=100),
+       data_generation=DataGeneration(rate_gbps=0.5)  # 0.5 Gbps continuous
+   )
+
+   spectrometer = Instrument(
+       name="Spectrometer",
+       power_draw=PowerDraw(nominal_power=50),
+       data_generation=DataGeneration(per_observation_gb=2.0)  # 2 Gb per obs
+   )
+
+   payload = Payload(payload=[camera, spectrometer])
+
+   # Configure onboard data recorder
+   recorder = OnboardRecorder(
+       name="Solid State Recorder",
+       capacity_gb=128.0,  # 128 Gigabits capacity
+       yellow_threshold=0.7,  # 70% full warning
+       red_threshold=0.9  # 90% full critical
+   )
+
+   # Configure ground station with downlink capability
+   station = GroundStation(
+       code="GND",
+       name="Ground Station",
+       latitude_deg=35.0,
+       longitude_deg=-106.0,
+       antenna=Antenna(
+           bands=["X"],
+           max_data_rate_mbps=100.0  # 100 Mbps downlink
+       )
+   )
+
+   # Add to configuration
+   config = Config(
+       spacecraft_bus=spacecraft_bus,
+       payload=payload,
+       recorder=recorder,
+       ground_stations=GroundStationRegistry(stations=[station]),
+       # ... other config
+   )
+
+   # Run simulation - data automatically generated and downlinked
+   ditl = DITL(config=config)
+   ditl.calc()
+
+   # Analyze data management
+   import matplotlib.pyplot as plt
+
+   plt.figure(figsize=(12, 8))
+   
+   # Plot recorder fill level
+   plt.subplot(3, 1, 1)
+   plt.plot(ditl.utime, ditl.recorder_fill_fraction)
+   plt.ylabel('Recorder Fill Fraction')
+   plt.title('Onboard Data Recorder Status')
+   
+   # Plot data generation
+   plt.subplot(3, 1, 2)
+   plt.plot(ditl.utime, ditl.data_generated_gb)
+   plt.ylabel('Data Generated (Gb)')
+   
+   # Plot data downlink
+   plt.subplot(3, 1, 3)
+   plt.plot(ditl.utime, ditl.data_downlinked_gb)
+   plt.ylabel('Data Downlinked (Gb)')
+   plt.xlabel('Time')
+   
+   plt.tight_layout()
+   plt.show()
+
+Key features:
+
+* **Rate-based generation**: Instruments generate data continuously at specified Gbps
+* **Per-observation generation**: Instruments generate fixed data amount per observation
+* **Recorder management**: Automatic capacity limiting and alert thresholds
+* **Downlink simulation**: Data automatically downlinked during ground station passes
+* **Alert integration**: Recorder fill level monitored by fault management system
+
 Creating Your Own Examples
 ---------------------------
 

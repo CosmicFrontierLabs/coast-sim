@@ -40,6 +40,7 @@ Spacecraft Components
    conops.battery
    conops.solar_panel
    conops.instrument
+   conops.recorder
 
 Orbit and Pointing
 ------------------
