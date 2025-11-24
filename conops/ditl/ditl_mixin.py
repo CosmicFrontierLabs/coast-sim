@@ -22,7 +22,7 @@ class DITLMixin:
     batterylevel: list[float]
     charge_state: list[int]
     obsid: list[int]
-    ppst: Plan
+    plan: Plan
     utime: list
     ephem: rust_ephem.TLEEphemeris | None
     # Subsystem power tracking
@@ -48,7 +48,7 @@ class DITLMixin:
         self.step_size = 60  # seconds
         self.ustart = 0.0  # Calculate these
         self.uend = 0.0  # later
-        self.ppst = Plan()
+        self.plan = Plan()
         self.saa = None
         self.passes = PassTimes(constraint=self.config.constraint, config=config)
         self.executed_passes = PassTimes(

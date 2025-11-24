@@ -8,8 +8,8 @@ class DITL(DITLMixin):
     """Day In The Life (DITL) simulation class.
 
     Simulates a single day of spacecraft operations by executing a pre-planned
-    observing schedule (PPST - Pointing Plan and Scheduling Tool) and tracking
-    spacecraft state including power usage, battery levels, and pointing angles.
+    observing schedule  and tracking spacecraft state including power usage,
+    battery levels, and pointing angles.
 
     Inherits from DITLMixin which provides shared initialization and plotting
     functionality for DITL simulations.
@@ -21,7 +21,7 @@ class DITL(DITLMixin):
         payload (Payload): Instrument configuration and power draw.
         solar_panel (SolarPanelSet): Solar panel configuration and power generation.
         ephem (Ephemeris): Ephemeris data for position and illumination calculations.
-        ppst (Plan): Pre-planned pointing schedule to execute.
+        plan (Plan): Pre-planned pointing schedule to execute.
         acs (ACS): Attitude Control System for pointing and slew calculations.
         begin (datetime): Start time for simulation (default: Nov 27, 2018 00:00:00 UTC).
         end (datetime): End time for simulation (default: Nov 28, 2018 00:00:00 UTC).
@@ -93,13 +93,13 @@ class DITL(DITLMixin):
             - end: End datetime (timezone-aware)
             - step_size: Time step in seconds
             - ephem: Must be loaded before calling calc()
-            - ppst: Must be loaded before calling calc()
+            - plan: Must be loaded before calling calc()
         """
         # A few sanity checks before we start
         if self.ephem is None:
             print("ERROR: No ephemeris loaded")
             return False
-        if self.ppst is None:
+        if self.plan is None:
             print("ERROR: No Plan loaded")
             return False
 
@@ -132,7 +132,7 @@ class DITL(DITLMixin):
         self.power_payload = np.zeros(simlen).tolist()
 
         # Set up initial target in ACS
-        self.ppt = self.ppst.which_ppt(self.utime[0])
+        self.ppt = self.plan.which_ppt(self.utime[0])
         if self.ppt is not None:
             self.acs._enqueue_slew(
                 self.ppt.ra,

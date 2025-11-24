@@ -34,7 +34,7 @@ class TestQueueDITLInitialization:
             assert ditl.mode == []
             assert ditl.obsid == []
 
-    def test_initialization_power_lists_empty_and_ppst(self, mock_config):
+    def test_initialization_power_lists_empty_and_plan(self, mock_config):
         with (
             patch("conops.Queue"),
             patch("conops.PassTimes"),
@@ -45,7 +45,7 @@ class TestQueueDITLInitialization:
             assert ditl.batterylevel == []
             assert ditl.power == []
             assert ditl.panel_power == []
-            assert len(ditl.ppst) == 0
+            assert len(ditl.plan) == 0
 
     def test_initialization_stores_config_subsystems(self, mock_config):
         with (
@@ -760,7 +760,7 @@ class TestCalcMethod:
         queue_ditl.calc()
         assert queue_ditl.acs.ephem is queue_ditl.ephem
 
-    def test_calc_tracks_ppt_in_ppst(self, queue_ditl):
+    def test_calc_tracks_ppt_in_plan(self, queue_ditl):
         queue_ditl.year = 2018
         queue_ditl.day = 331
         queue_ditl.length = 1
@@ -784,7 +784,7 @@ class TestCalcMethod:
             mock_vis.return_value = 1
             queue_ditl.calc()
 
-        assert len(queue_ditl.ppst) > 0
+        assert len(queue_ditl.plan) > 0
 
     def test_calc_handles_pass_mode_result_true(self, queue_ditl):
         queue_ditl.year = 2018
@@ -876,8 +876,8 @@ class TestCalcMethod:
         with patch("conops.Pointing.visibility") as mock_vis:
             mock_vis.return_value = 1
             queue_ditl.calc()
-        if queue_ditl.ppst:
-            assert queue_ditl.ppst[-1].end > 0
+        if queue_ditl.plan:
+            assert queue_ditl.plan[-1].end > 0
 
 
 class TestGetConstraintName:

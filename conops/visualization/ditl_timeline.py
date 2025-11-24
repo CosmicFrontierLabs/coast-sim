@@ -76,10 +76,10 @@ def plot_ditl_timeline(
     hfont = {"fontname": font_family, "fontsize": font_size}
 
     # Extract simulation start time
-    if not ditl.ppst or len(ditl.ppst) == 0:
+    if not ditl.plan or len(ditl.plan) == 0:
         raise ValueError("DITL simulation has no pointings. Run calc() first.")
 
-    t_start = ditl.ppst[0].begin
+    t_start = ditl.plan[0].begin
 
     # Create figure
     fig = plt.figure(figsize=figsize)
@@ -153,7 +153,7 @@ def plot_ditl_timeline(
                 zorder=2,
             )
 
-    # Extract observation segments from ppst by obsid ranges
+    # Extract observation segments from plan by obsid ranges
     # Get observation categories from config if not provided
     if observation_categories is None:
         if hasattr(ditl, "config") and hasattr(ditl.config, "observation_categories"):
@@ -300,7 +300,7 @@ def _extract_observations(ditl, t_start, offset_hours, categories=None):
     # Initialize observation dict with all category names
     observations = {name: [] for name in categories.get_all_category_names()}
 
-    for ppt in ditl.ppst:
+    for ppt in ditl.plan:
         # Calculate observation start and duration
         obs_start = (ppt.begin + ppt.slewtime - t_start) / 3600 - offset_hours
         obs_duration = (ppt.end - (ppt.begin + ppt.slewtime)) / 3600
@@ -309,6 +309,7 @@ def _extract_observations(ditl, t_start, offset_hours, categories=None):
         if obs_duration <= 0:
             continue
 
+    for ppt in ditl.plan:
         # Skip if duration looks unrealistic (> 24 hours suggests placeholder end time wasn't updated)
         if obs_duration > 24:
             continue
@@ -321,9 +322,9 @@ def _extract_observations(ditl, t_start, offset_hours, categories=None):
 
 
 def _extract_slews(ditl, t_start, offset_hours):
-    """Extract slew segments from ppst."""
+    """Extract slew segments from plan."""
     slew_segments = []
-    for ppt in ditl.ppst:
+    for ppt in ditl.plan:
         if ppt.slewtime > 0:
             slew_start = (ppt.begin - t_start) / 3600 - offset_hours
             slew_duration = ppt.slewtime / 3600
@@ -481,7 +482,7 @@ def annotate_slew_distances(
     offset_hours : float
         Time offset in hours.
     slew_indices : list of int
-        Indices in ditl.ppst of slews to annotate.
+        Indices in ditl.plan of slews to annotate.
     font_family : str, optional
         Font family for annotation text.
     font_size : int, optional
@@ -490,8 +491,8 @@ def annotate_slew_distances(
     connectionstyle = "angle,angleA=0,angleB=90,rad=0"
 
     for idx in slew_indices:
-        if idx < len(ditl.ppst):
-            ppt = ditl.ppst[idx]
+        if idx < len(ditl.plan):
+            ppt = ditl.plan[idx]
             if ppt.slewtime > 0 and hasattr(ppt, "slewdist"):
                 slew_start = (ppt.begin - t_start) / 3600 - offset_hours
 

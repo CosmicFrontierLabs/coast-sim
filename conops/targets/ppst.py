@@ -15,8 +15,8 @@ class TargetList:
     def __iter__(self):
         return iter(self.targets)
 
-    def add_target(self, ppst_entry: PlanEntry) -> None:
-        self.targets.append(ppst_entry)
+    def add_target(self, plan_entry: PlanEntry) -> None:
+        self.targets.append(plan_entry)
 
     def __len__(self):
         return len(self.targets)

@@ -37,7 +37,7 @@ class QueueDITL(DITLMixin):
     panel_power: list[float]
     batterylevel: list[float]
     obsid: list[int]
-    ppst: Plan
+    plan: Plan
     utime: list[float]
     ephem: rust_ephem.TLEEphemeris
 
@@ -58,7 +58,7 @@ class QueueDITL(DITLMixin):
         self.roll = list()
         self.mode = list()
         self.obsid = list()
-        self.ppst = Plan()
+        self.plan = Plan()
 
         # Power and battery history
         self.panel = list()
@@ -178,8 +178,8 @@ class QueueDITL(DITLMixin):
             self._handle_fault_management(utime)
 
         # Make sure the last PPT of the day ends (if any)
-        if self.ppst:
-            self.ppst[-1].end = utime
+        if self.plan:
+            self.plan[-1].end = utime
 
         return True
 
@@ -206,31 +206,31 @@ class QueueDITL(DITLMixin):
     def _track_ppt_in_timeline(self) -> None:
         """Track the start of a new PPT in the plan timeline."""
         if self.ppt is not None and (
-            len(self.ppst) == 0 or self.ppt.begin != self.ppst[-1].begin
+            len(self.plan) == 0 or self.ppt.begin != self.plan[-1].begin
         ):
             # Before adding new PPT, close the previous one if it has placeholder end time
-            if len(self.ppst) > 0:
-                last_entry = self.ppst[-1]
+            if len(self.plan) > 0:
+                last_entry = self.plan[-1]
                 # Check if end time looks like a placeholder (>= 86400 seconds from begin)
                 # Charging PPTs use exactly 86400, science obs use larger values
                 if last_entry.end >= last_entry.begin + 86400:
                     # Set end to the begin time of new PPT (no gap between entries)
-                    self.ppst[-1].end = self.ppt.begin
+                    self.plan[-1].end = self.ppt.begin
 
-            self.ppst.append(self.ppt.copy())
+            self.plan.append(self.ppt.copy())
 
     def _close_ppt_timeline_if_needed(self, utime: float) -> None:
         """Close the last PPT segment in timeline if no active observation.
 
-        This is a safety net to ensure ppst timeline is closed if ppt becomes None
+        This is a safety net to ensure plan timeline is closed if ppt becomes None
         and the end time hasn't been set yet (e.g., has placeholder value).
         """
-        if self.ppt is None and len(self.ppst) > 0:
-            last_entry = self.ppst[-1]
+        if self.ppt is None and len(self.plan) > 0:
+            last_entry = self.plan[-1]
             # Check if end time looks like a placeholder (>= 86400 seconds from begin)
             # Charging PPTs use exactly 86400, science obs use larger values
             if last_entry.end >= last_entry.begin + 86400:
-                self.ppst[-1].end = utime
+                self.plan[-1].end = utime
 
     def _handle_mode_operations(
         self, mode: ACSMode, utime: float, lastra: float, lastdec: float
@@ -450,9 +450,9 @@ class QueueDITL(DITLMixin):
         assert self.ppt is not None
         print(f"{unixtime2date(utime)} {reason}")
 
-        # Update ppst timeline with actual end time
-        if len(self.ppst) > 0:
-            self.ppst[-1].end = utime
+        # Update plan timeline with actual end time
+        if len(self.plan) > 0:
+            self.plan[-1].end = utime
 
         if mark_done:
             self.ppt.done = True
@@ -634,9 +634,9 @@ class QueueDITL(DITLMixin):
     def _terminate_science_ppt_for_pass(self, utime: float) -> None:
         """Terminate the current science PPT during ground station pass."""
         if self.ppt is not None and self.ppt != self.charging_ppt:
-            # Update ppst timeline with actual end time
-            if len(self.ppst) > 0:
-                self.ppst[-1].end = utime
+            # Update plan timeline with actual end time
+            if len(self.plan) > 0:
+                self.plan[-1].end = utime
             self.ppt.end = utime
             self.ppt.done = True
             self.ppt = None
@@ -644,9 +644,9 @@ class QueueDITL(DITLMixin):
     def _terminate_charging_ppt(self, utime: float) -> None:
         """Terminate the current charging PPT if active."""
         if self.charging_ppt is not None:
-            # Update ppst timeline with actual end time
-            if len(self.ppst) > 0:
-                self.ppst[-1].end = utime
+            # Update plan timeline with actual end time
+            if len(self.plan) > 0:
+                self.plan[-1].end = utime
             self.charging_ppt.end = utime
             self.charging_ppt.done = True
             self.charging_ppt = None

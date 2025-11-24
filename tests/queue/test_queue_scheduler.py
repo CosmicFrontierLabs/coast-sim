@@ -14,7 +14,7 @@ class TestDumbQueueSchedulerInit:
         """Test initialization with default parameters."""
         scheduler = DumbQueueScheduler()
         assert scheduler.queue is not None
-        assert scheduler.ppst is not None
+        assert scheduler.plan is not None
         assert scheduler.year == 2021
         assert scheduler.day == 4
         assert scheduler.length == 1
@@ -26,7 +26,7 @@ class TestDumbQueueSchedulerInit:
             queue=mock_queue, plan=plan, year=2022, day=100, length=2
         )
         assert scheduler.queue is mock_queue
-        assert scheduler.ppst is plan
+        assert scheduler.plan is plan
         assert scheduler.year == 2022
         assert scheduler.day == 100
         assert scheduler.length == 2
@@ -34,7 +34,7 @@ class TestDumbQueueSchedulerInit:
     def test_init_creates_empty_plan(self):
         """Test that init creates empty plan if not provided."""
         scheduler = DumbQueueScheduler()
-        assert len(scheduler.ppst) == 0
+        assert len(scheduler.plan) == 0
 
     def test_init_creates_empty_queue(self):
         """Test that init creates empty queue if not provided."""
@@ -53,8 +53,8 @@ class TestDumbQueueSchedulerSchedule:
 
     def test_schedule_resets_plan_on_run(self, scheduler):
         """Test that schedule resets the plan each run."""
-        scheduler.ppst.extend([Mock()])  # Add dummy entry
-        assert len(scheduler.ppst) > 0
+        scheduler.plan.extend([Mock()])  # Add dummy entry
+        assert len(scheduler.plan) > 0
 
         result = scheduler.schedule()
         # Plan should be reset after schedule
@@ -385,7 +385,7 @@ class TestDumbQueueSchedulerIntegration:
 class TestDumbQueueSchedulerStateManagement:
     """Test state management and plan reuse."""
 
-    def test_ppst_reset_between_runs(self, scheduler, mock_pointing):
+    def test_plan_reset_between_runs(self, scheduler, mock_pointing):
         """Test that plan is reset between scheduling runs."""
         target = mock_pointing(targetid=1, ra=45.0, dec=30.0, merit=100)
         target.begin = scheduler.ustart

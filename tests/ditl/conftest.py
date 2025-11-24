@@ -113,8 +113,8 @@ def ditl(mock_config_detailed, mock_ephem):
         ditl = DITL(config=mock_config_detailed)
         ditl.ephem = mock_ephem
         ditl.acs = mock_acs
-        ditl.ppst = Mock()
-        ditl.ppst.which_ppt = Mock(
+        ditl.plan = Mock()
+        ditl.plan.which_ppt = Mock(
             return_value=Mock(ra=0.0, dec=0.0, obsid=1, obstype="science")
         )
 

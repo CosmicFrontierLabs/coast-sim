@@ -30,7 +30,7 @@ class ACS:
 
     ephem: rust_ephem.TLEEphemeris
     slew_dists: list[float]
-    last_ppst: Pass | Slew | Pointing | None
+    last_plan: Pass | Slew | Pointing | None
     ra: float
     dec: float
     roll: float
