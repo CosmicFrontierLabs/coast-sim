@@ -8,6 +8,7 @@ eclipses, and ground station passes.
 import matplotlib.pyplot as plt
 
 from ..common import ACSMode
+from ..config import ObservationCategories
 
 
 def plot_ditl_timeline(
@@ -20,6 +21,7 @@ def plot_ditl_timeline(
     save_path=None,
     font_family="Helvetica",
     font_size=11,
+    observation_categories=None,
 ):
     """Plot a DITL timeline showing spacecraft operations.
 
@@ -51,6 +53,10 @@ def plot_ditl_timeline(
         Font family to use for text (default: 'Helvetica').
     font_size : int, optional
         Base font size for labels (default: 11).
+    observation_categories : ObservationCategories, optional
+        Configuration for categorizing observations by target ID ranges.
+        If None, attempts to use ditl.config.observation_categories, then
+        falls back to default categories.
 
     Returns
     -------
@@ -148,28 +154,31 @@ def plot_ditl_timeline(
             )
 
     # Extract observation segments from ppst by obsid ranges
-    observations_by_type = _extract_observations(ditl, t_start, offset_hours)
+    # Get observation categories from config if not provided
+    if observation_categories is None:
+        if hasattr(ditl, "config") and hasattr(ditl.config, "observation_categories"):
+            observation_categories = ditl.config.observation_categories
+    # If still None, default will be used in _extract_observations
 
-    # Plot observations by type
-    colors = {
-        "GO": "tab:green",  # 20000-30000
-        "Survey": "tab:blue",  # 10000-20000
-        "GRB": "tab:orange",  # 1000000-2000000
-        "TOO": "tab:red",  # 30000-40000
-        "Calibration": "purple",  # others
-        "Charging": "yellow",  # 90000-100000
-    }
+    observations_by_type = _extract_observations(
+        ditl, t_start, offset_hours, observation_categories
+    )
+
+    # Get color mapping from categories configuration
+    if observation_categories is None:
+        observation_categories = ObservationCategories.default_categories()
 
     obs_y_pos = row_positions["Observations"]
     labels_shown = set()
     for obs_type, segments in observations_by_type.items():
         if segments and obs_type != "Charging":
+            color = observation_categories.get_category_color(obs_type)
             label = f"{obs_type} Target" if obs_type != "Calibration" else obs_type
             if label not in labels_shown:
                 ax.broken_barh(
                     segments,
                     (obs_y_pos, bar_height),
-                    facecolors=colors.get(obs_type, "gray"),
+                    facecolors=color,
                     label=label,
                 )
                 labels_shown.add(label)
@@ -177,7 +186,7 @@ def plot_ditl_timeline(
                 ax.broken_barh(
                     segments,
                     (obs_y_pos, bar_height),
-                    facecolors=colors.get(obs_type, "gray"),
+                    facecolors=color,
                 )
 
     # Extract and plot slews
@@ -195,10 +204,11 @@ def plot_ditl_timeline(
     charging_segments = _extract_charging_mode(ditl, t_start, offset_hours)
     if charging_segments:
         charging_y_pos = row_positions["Charging"]
+        charging_color = observation_categories.get_category_color("Charging")
         ax.broken_barh(
             charging_segments,
             (charging_y_pos, bar_height),
-            facecolor="gold",
+            facecolor=charging_color,
             label="Battery Charging",
         )
 
@@ -269,16 +279,26 @@ def plot_ditl_timeline(
     return fig, ax
 
 
-def _extract_observations(ditl, t_start, offset_hours):
-    """Extract observation segments grouped by type based on obsid."""
-    observations = {
-        "GO": [],  # 20000-30000
-        "Survey": [],  # 10000-20000
-        "GRB": [],  # 1000000-2000000
-        "TOO": [],  # 30000-40000
-        "Calibration": [],
-        "Charging": [],  # 90000-100000
-    }
+def _extract_observations(ditl, t_start, offset_hours, categories=None):
+    """Extract observation segments grouped by type based on obsid.
+
+    Parameters
+    ----------
+    ditl : QueueDITL or DITL
+        The DITL simulation object.
+    t_start : float
+        Simulation start time in seconds.
+    offset_hours : float
+        Time offset in hours.
+    categories : ObservationCategories, optional
+        Configuration for observation categories. If None, uses default categories.
+    """
+    # Use provided categories or default
+    if categories is None:
+        categories = ObservationCategories.default_categories()
+
+    # Initialize observation dict with all category names
+    observations = {name: [] for name in categories.get_all_category_names()}
 
     for ppt in ditl.ppst:
         # Calculate observation start and duration
@@ -289,19 +309,9 @@ def _extract_observations(ditl, t_start, offset_hours):
         if obs_duration <= 0:
             continue
 
-        # Categorize by obsid
-        if 20000 <= ppt.obsid < 30000:
-            observations["GO"].append((obs_start, obs_duration))
-        elif 10000 <= ppt.obsid < 20000:
-            observations["Survey"].append((obs_start, obs_duration))
-        elif 1000000 <= ppt.obsid < 2000000:
-            observations["GRB"].append((obs_start, obs_duration))
-        elif 30000 <= ppt.obsid < 40000:
-            observations["TOO"].append((obs_start, obs_duration))
-        elif 90000 <= ppt.obsid < 100000:
-            observations["Charging"].append((obs_start, obs_duration))
-        else:
-            observations["Calibration"].append((obs_start, obs_duration))
+        # Categorize by obsid using configuration
+        category = categories.get_category(ppt.obsid)
+        observations[category.name].append((obs_start, obs_duration))
 
     return observations
 
