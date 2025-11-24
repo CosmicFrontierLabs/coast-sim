@@ -27,7 +27,7 @@ Scheduling and Planning
    conops.schedulers.queue_scheduler
    conops.targets
    conops.targets.pointing
-   conops.targets.ppst
+   conops.targets.plan
    conops.targets.plan_entry
    conops.targets.target_queue
 

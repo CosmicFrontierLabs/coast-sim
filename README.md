@@ -132,7 +132,7 @@ Target observation queue management and intelligent scheduling algorithms (DumbS
 
 ### Targets (`conops.targets`)
 
-Target management classes including Pointing, Queue, Plan, PlanEntry, and PPST for observation planning.
+Target management classes including Pointing, Queue, Plan, PlanEntry, and Plan for observation planning.
 
 ### Simulation (`conops.simulation`)
 
@@ -174,7 +174,7 @@ conops/
 ├── targets/                 # Target management and planning
 │   ├── __init__.py
 │   ├── pointing.py
-│   ├── ppst.py
+│   ├── plan.py
 │   ├── plan_entry.py
 │   └── target_queue.py
 └── simulation/              # Core simulation components
