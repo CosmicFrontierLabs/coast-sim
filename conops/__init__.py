@@ -64,9 +64,14 @@ from .targets import (
     TargetList,
     TargetQueue,
 )
+from .visualization import (
+    annotate_slew_distances,
+    plot_ditl_timeline,
+)
 
 __all__ = [
     "angular_separation",
+    "annotate_slew_distances",
     "ACS",
     "ACSCommand",
     "ACSCommandType",
@@ -102,6 +107,7 @@ __all__ = [
     "PassTimes",
     "Plan",
     "PlanEntry",
+    "plot_ditl_timeline",
     "Pointing",
     "PowerDraw",
     "Queue",
