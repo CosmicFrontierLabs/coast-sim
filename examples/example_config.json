@@ -27,6 +27,10 @@
                 "eclipse_power": 50.0,
                 "eclipse_power_mode": {}
             }
+        },
+        "data_generation": {
+            "rate_gbps": 0.0,
+            "per_observation_gb": 0.0
         }
     },
     "solar_panel": {
