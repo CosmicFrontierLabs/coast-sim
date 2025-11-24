@@ -389,8 +389,8 @@ class DITLMixin:
                     f"  Red Threshold: {self.config.recorder.red_threshold * 100:.0f}%"
                 )
 
-                yellow_count = alert_counts.get("yellow", 0)
-                red_count = alert_counts.get("red", 0)
+                yellow_count = alert_counts.get(1, 0)  # 1 = yellow alert
+                red_count = alert_counts.get(2, 0)  # 2 = red alert
                 total_steps = len(self.recorder_alert)
 
                 if yellow_count > 0:
