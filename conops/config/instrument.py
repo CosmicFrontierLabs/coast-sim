@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 
-from .data_management import DataGeneration
+from .data_generator import DataGeneration
 from .spacecraft_bus import PowerDraw
 from .thermal import Heater
 

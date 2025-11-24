@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 
 from .acs import AttitudeControlSystem
-from .data_management import DataGeneration
+from .data_generator import DataGeneration
 from .power import PowerDraw
 from .thermal import Heater
 
