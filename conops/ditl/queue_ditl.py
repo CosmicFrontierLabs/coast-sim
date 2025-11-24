@@ -211,8 +211,9 @@ class QueueDITL(DITLMixin):
             # Before adding new PPT, close the previous one if it has placeholder end time
             if len(self.ppst) > 0:
                 last_entry = self.ppst[-1]
-                # Check if end time looks like a placeholder
-                if last_entry.end > last_entry.begin + 86400:
+                # Check if end time looks like a placeholder (>= 86400 seconds from begin)
+                # Charging PPTs use exactly 86400, science obs use larger values
+                if last_entry.end >= last_entry.begin + 86400:
                     # Set end to the begin time of new PPT (no gap between entries)
                     self.ppst[-1].end = self.ppt.begin
 
@@ -226,10 +227,9 @@ class QueueDITL(DITLMixin):
         """
         if self.ppt is None and len(self.ppst) > 0:
             last_entry = self.ppst[-1]
-            # Check if end time looks like a placeholder (much larger than begin + reasonable duration)
-            # Science observations: end was set to 1,000,000 seconds
-            # Charging: end was set to 86,400 seconds
-            if last_entry.end > last_entry.begin + 86400:
+            # Check if end time looks like a placeholder (>= 86400 seconds from begin)
+            # Charging PPTs use exactly 86400, science obs use larger values
+            if last_entry.end >= last_entry.begin + 86400:
                 self.ppst[-1].end = utime
 
     def _handle_mode_operations(
