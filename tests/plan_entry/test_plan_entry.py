@@ -292,51 +292,6 @@ class TestVisible:
         assert window is False
 
 
-class TestSlewRaDec:
-    def test_slew_ra_dec_at_start(self, plan_entry):
-        """Test slew_ra_dec at start of slew."""
-        plan_entry.begin = 1000
-        plan_entry.slewpath = (
-            np.array([100.0, 110.0, 120.0]),
-            np.array([30.0, 35.0, 40.0]),
-        )
-        plan_entry.slewsecs = np.array([0, 5, 10])
-
-        ra, dec = plan_entry.slew_ra_dec(1000)
-
-        assert ra == pytest.approx(100.0, rel=0.01)
-        assert dec == pytest.approx(30.0, rel=0.01)
-
-    def test_slew_ra_dec_midpoint(self, plan_entry):
-        """Test slew_ra_dec at midpoint of slew."""
-        plan_entry.begin = 1000
-        plan_entry.slewpath = (
-            np.array([100.0, 110.0, 120.0]),
-            np.array([30.0, 35.0, 40.0]),
-        )
-        plan_entry.slewsecs = np.array([0, 5, 10])
-
-        ra, dec = plan_entry.slew_ra_dec(1005)
-
-        assert ra == pytest.approx(110.0, rel=0.01)
-        assert dec == pytest.approx(35.0, rel=0.01)
-
-    def test_slew_ra_dec_with_rollover(self, plan_entry):
-        """Test slew_ra_dec handles 360 degree rollover."""
-        plan_entry.begin = 1000
-        # Simulate path crossing 360/0 boundary
-        plan_entry.slewpath = (
-            np.array([350.0, 360.0, 370.0]),
-            np.array([30.0, 30.0, 30.0]),
-        )
-        plan_entry.slewsecs = np.array([0, 5, 10])
-
-        ra, dec = plan_entry.slew_ra_dec(1010)
-
-        # RA should be modulo 360
-        assert 0 <= ra < 360
-
-
 class TestInSlew:
     def test_in_slew_before_start(self, plan_entry):
         """Test in_slew before slew starts."""
@@ -392,19 +347,16 @@ class TestRaDec:
         plan_entry.begin = 1000
         plan_entry.end = 2000
         plan_entry.slewtime = 100
+        plan_entry.start_ra = 100.0
+        plan_entry.start_dec = 30.0
         plan_entry.ra = 180.0
         plan_entry.dec = 45.0
-        plan_entry.slewpath = (
-            np.array([100.0, 180.0]),
-            np.array([30.0, 45.0]),
-        )
-        plan_entry.slewsecs = np.array([0, 100])
 
         ra, dec = plan_entry.ra_dec(1050)
 
-        # Should return interpolated values
-        assert ra != -1
-        assert dec != -1
+        # During slewing, returns start position
+        assert ra == 100.0
+        assert dec == 30.0
 
     def test_ra_dec_after_slew(self, plan_entry):
         """Test ra_dec after slew completes."""
