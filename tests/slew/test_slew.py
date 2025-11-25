@@ -127,7 +127,7 @@ class TestRaDec:
 class TestSlewRaDec:
     """Test slew_ra_dec method."""
 
-    def test_slew_ra_dec_legacy_returns_ra_float(self, slew, acs_config):
+    def test_slew_ra_dec_returns_ra_float(self, slew, acs_config):
         acs_config.s_of_t = Mock(return_value=0.0)
         acs_config.motion_time = Mock(return_value=100.0)
         slew.startra = 45.0
@@ -137,12 +137,11 @@ class TestSlewRaDec:
         slew.slewstart = 1700000000.0
         slew.slewend = 1700000100.0
         slew.slewpath = (np.array([45.0, 90.0]), np.array([30.0, 60.0]))
-        slew.slewsecs = np.array([0.0, 100.0])
-        slew.slewdist = 0
+        slew.slewdist = 50.0  # Use modern path
         ra, dec = slew.slew_ra_dec(1700000000.0)
         assert isinstance(ra, (float, np.floating))
 
-    def test_slew_ra_dec_legacy_returns_dec_float(self, slew, acs_config):
+    def test_slew_ra_dec_returns_dec_float(self, slew, acs_config):
         acs_config.s_of_t = Mock(return_value=0.0)
         acs_config.motion_time = Mock(return_value=100.0)
         slew.startra = 45.0
@@ -152,12 +151,11 @@ class TestSlewRaDec:
         slew.slewstart = 1700000000.0
         slew.slewend = 1700000100.0
         slew.slewpath = (np.array([45.0, 90.0]), np.array([30.0, 60.0]))
-        slew.slewsecs = np.array([0.0, 100.0])
-        slew.slewdist = 0
+        slew.slewdist = 50.0  # Use modern path
         ra, dec = slew.slew_ra_dec(1700000000.0)
         assert isinstance(dec, (float, np.floating))
 
-    def test_slew_ra_dec_legacy_ra_in_range(self, slew, acs_config):
+    def test_slew_ra_dec_ra_in_range(self, slew, acs_config):
         acs_config.s_of_t = Mock(return_value=0.0)
         acs_config.motion_time = Mock(return_value=100.0)
         slew.startra = 45.0
@@ -167,12 +165,11 @@ class TestSlewRaDec:
         slew.slewstart = 1700000000.0
         slew.slewend = 1700000100.0
         slew.slewpath = (np.array([45.0, 90.0]), np.array([30.0, 60.0]))
-        slew.slewsecs = np.array([0.0, 100.0])
-        slew.slewdist = 0
+        slew.slewdist = 50.0  # Use modern path
         ra, dec = slew.slew_ra_dec(1700000000.0)
         assert 0 <= ra < 360
 
-    def test_slew_ra_dec_legacy_dec_in_range(self, slew, acs_config):
+    def test_slew_ra_dec_dec_in_range(self, slew, acs_config):
         acs_config.s_of_t = Mock(return_value=0.0)
         acs_config.motion_time = Mock(return_value=100.0)
         slew.startra = 45.0
@@ -182,8 +179,7 @@ class TestSlewRaDec:
         slew.slewstart = 1700000000.0
         slew.slewend = 1700000100.0
         slew.slewpath = (np.array([45.0, 90.0]), np.array([30.0, 60.0]))
-        slew.slewsecs = np.array([0.0, 100.0])
-        slew.slewdist = 0
+        slew.slewdist = 50.0  # Use modern path
         ra, dec = slew.slew_ra_dec(1700000000.0)
         assert -90 <= dec <= 90
 
@@ -200,6 +196,42 @@ class TestSlewRaDec:
         slew.slewstart = 1700000000.0
         ra, dec = slew.slew_ra_dec(1700000000.0)
         assert dec == 30.0
+
+    def test_slew_ra_dec_interpolation_mid_slew(self, slew, acs_config):
+        acs_config.s_of_t = Mock(return_value=25.0)  # Halfway through motion
+        acs_config.motion_time = Mock(return_value=100.0)
+        slew.startra = 45.0
+        slew.startdec = 30.0
+        slew.endra = 90.0
+        slew.enddec = 60.0
+        slew.slewstart = 1700000000.0
+        slew.slewend = 1700000100.0
+        slew.slewpath = (np.array([45.0, 90.0]), np.array([30.0, 60.0]))
+        slew.slewdist = 50.0  # Use modern path
+        # Call at 50 seconds into the slew to trigger interpolation
+        ra, dec = slew.slew_ra_dec(1700000050.0)
+        assert isinstance(ra, (float, np.floating))
+        assert isinstance(dec, (float, np.floating))
+        # Should be interpolated value between start and end
+        assert 45.0 <= ra <= 90.0
+        assert 30.0 <= dec <= 60.0
+
+    def test_slew_ra_dec_modern_path_small_n(self, slew, acs_config):
+        acs_config.s_of_t = Mock(return_value=0.0)
+        acs_config.motion_time = Mock(return_value=100.0)
+        slew.startra = 45.0
+        slew.startdec = 30.0
+        slew.endra = 90.0
+        slew.enddec = 60.0
+        slew.slewstart = 1700000000.0
+        slew.slewend = 1700000100.0
+        # Path with only 1 point to trigger n <= 1 case
+        slew.slewpath = (np.array([67.5]), np.array([45.0]))
+        slew.slewdist = 50.0  # > 0 to use modern path
+        # Call during slew to trigger modern path
+        ra, dec = slew.slew_ra_dec(1700000050.0)
+        assert ra == 67.5
+        assert dec == 45.0
 
     def test_slew_ra_dec_acs_returns_ra_float(self, slew, acs_config):
         acs_config.motion_time = Mock(return_value=100.0)

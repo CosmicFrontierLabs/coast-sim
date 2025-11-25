@@ -103,6 +103,44 @@ class TestPlotDitlTimeline:
         # Clean up
         plt.close(fig)
 
+    def test_plot_ditl_timeline_with_safe_mode(self):
+        """Test plot_ditl_timeline includes safe mode in the timeline."""
+        from unittest.mock import Mock
+
+        from conops.common import ACSMode
+
+        # Create mock DITL with safe mode data
+        mock_ditl = Mock()
+        mock_ditl.config = Mock()
+        mock_ditl.config.observation_categories = None
+        mock_ditl.constraint = Mock()
+        mock_ditl.constraint.in_eclipse = Mock(return_value=False)
+        mock_ditl.acs = Mock()
+        mock_ditl.acs.passrequests = Mock()
+        mock_ditl.acs.passrequests.passes = []
+
+        # Create a simple plan
+        mock_plan_entry = Mock()
+        mock_plan_entry.begin = 0.0
+        mock_plan_entry.end = 3600.0
+        mock_plan_entry.obsid = 10000
+        mock_plan_entry.slewtime = 0.0
+        mock_ditl.plan = [mock_plan_entry]
+
+        # Add timeline data with safe mode
+        mock_ditl.utime = [0, 1800, 3600]  # 0, 0.5, 1 hour
+        mock_ditl.mode = [ACSMode.SCIENCE, ACSMode.SAFE, ACSMode.SCIENCE]
+
+        fig, ax = plot_ditl_timeline(mock_ditl)
+
+        assert fig is not None
+        # Check that "Safe Mode" is in the y-axis labels
+        y_labels = [t.get_text() for t in ax.get_yticklabels()]
+        assert "Safe Mode" in y_labels
+
+        # Clean up
+        plt.close(fig)
+
     def test_plot_ditl_timeline_empty_plan_raises_error(self):
         """Test plot_ditl_timeline raises error with empty plan."""
         from unittest.mock import Mock

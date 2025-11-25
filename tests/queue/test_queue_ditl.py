@@ -470,14 +470,10 @@ class TestFetchNewPPT:
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.obsid = 1001
+        mock_ppt.next_vis = Mock(return_value=1000.0)
+        mock_ppt.ssmax = 3600.0
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
-        with (
-            patch("conops.Pointing.visibility") as mock_vis,
-            patch("conops.Pointing.next_vis") as mock_next_vis,
-        ):
-            mock_vis.return_value = 1
-            mock_next_vis.return_value = 1000.0
-            lastra, lastdec = queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+        lastra, lastdec = queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
         assert queue_ditl.ppt is mock_ppt
         assert lastra == 45.0
         assert lastdec == 30.0
@@ -487,14 +483,10 @@ class TestFetchNewPPT:
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.obsid = 1001
+        mock_ppt.next_vis = Mock(return_value=1000.0)
+        mock_ppt.ssmax = 3600.0
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
-        with (
-            patch("conops.Pointing.visibility") as mock_vis,
-            patch("conops.Pointing.next_vis") as mock_next_vis,
-        ):
-            mock_vis.return_value = 1
-            mock_next_vis.return_value = 1000.0
-            _ = queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+        _ = queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
         queue_ditl.acs.enqueue_command.assert_called_once()
         call_args = queue_ditl.acs.enqueue_command.call_args
         command = call_args[0][0]
@@ -508,14 +500,10 @@ class TestFetchNewPPT:
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.obsid = 1001
+        mock_ppt.next_vis = Mock(return_value=1000.0)
+        mock_ppt.ssmax = 3600.0
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
-        with (
-            patch("conops.Pointing.visibility") as mock_vis,
-            patch("conops.Pointing.next_vis") as mock_next_vis,
-        ):
-            mock_vis.return_value = 1
-            mock_next_vis.return_value = 1000.0
-            _ = queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+        _ = queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
         captured = capsys.readouterr()
         assert "Fetching new PPT from Queue" in captured.out
 
@@ -774,15 +762,14 @@ class TestCalcMethod:
         mock_ppt.begin = 1543622400
         mock_ppt.end = 1543629600
         mock_ppt.done = False
+        mock_ppt.next_vis = Mock(return_value=1543276800.0)
+        mock_ppt.ssmax = 3600.0
         mock_ppt.copy = Mock(return_value=Mock())
         mock_ppt.copy.return_value.begin = 1543622400
         mock_ppt.copy.return_value.end = 1543629600
 
         queue_ditl.queue.get = Mock(side_effect=[mock_ppt] + [None] * 100)
-
-        with patch("conops.Pointing.visibility") as mock_vis:
-            mock_vis.return_value = 1
-            queue_ditl.calc()
+        queue_ditl.calc()
 
         assert len(queue_ditl.plan) > 0
 
@@ -869,15 +856,237 @@ class TestCalcMethod:
         mock_ppt.begin = 1543622400
         mock_ppt.end = 1543708800
         mock_ppt.done = False
+        mock_ppt.next_vis = Mock(return_value=1543276800.0)
+        mock_ppt.ssmax = 3600.0
         mock_ppt.copy = Mock(return_value=Mock())
         mock_ppt.copy.return_value.begin = 1543622400
         mock_ppt.copy.return_value.end = 1543708800
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
-        with patch("conops.Pointing.visibility") as mock_vis:
-            mock_vis.return_value = 1
-            queue_ditl.calc()
+        queue_ditl.calc()
         if queue_ditl.plan:
             assert queue_ditl.plan[-1].end > 0
+
+    def test_calc_handles_naive_datetimes(self, queue_ditl):
+        """Test calc method handles naive datetimes by making them UTC."""
+        from datetime import datetime
+
+        # Set naive datetimes
+        queue_ditl.begin = datetime(2018, 11, 27, 0, 0, 0)  # naive
+        queue_ditl.end = datetime(2018, 11, 27, 1, 0, 0)  # naive
+
+        queue_ditl.year = 2018
+        queue_ditl.day = 331
+        queue_ditl.length = 1
+        queue_ditl.step_size = 3600
+
+        # Should not raise an exception and should make datetimes timezone-aware
+        result = queue_ditl.calc()
+        assert result is True
+        assert queue_ditl.begin.tzinfo is not None
+        assert queue_ditl.end.tzinfo is not None
+
+    def test_calc_handles_safe_mode_request(self, queue_ditl):
+        """Test calc method handles safe mode requests."""
+        # Set up safe mode request
+        queue_ditl.config.fault_management.safe_mode_requested = True
+        queue_ditl.acs.in_safe_mode = False
+
+        queue_ditl.year = 2018
+        queue_ditl.day = 331
+        queue_ditl.length = 1
+        queue_ditl.step_size = 3600
+
+        result = queue_ditl.calc()
+        assert result is True
+
+        # Check that safe mode command was enqueued
+        queue_ditl.acs.enqueue_command.assert_called()
+        call_args = queue_ditl.acs.enqueue_command.call_args
+        command = call_args[0][0]
+        assert command.command_type == ACSCommandType.ENTER_SAFE_MODE
+
+    def test_track_ppt_in_timeline_closes_placeholder_end_times(self, queue_ditl):
+        """Test _track_ppt_in_timeline closes PPTs with placeholder end times."""
+        from conops.targets import PlanEntry
+
+        # Create a mock PPT with placeholder end time
+        mock_previous_ppt = Mock(spec=PlanEntry)
+        mock_previous_ppt.begin = 1000.0
+        mock_previous_ppt.end = 1000.0 + 86400 + 100  # Placeholder end time
+        mock_previous_ppt.copy = Mock(return_value=mock_previous_ppt)
+
+        # Create current PPT
+        mock_current_ppt = Mock(spec=PlanEntry)
+        mock_current_ppt.begin = 2000.0
+        mock_current_ppt.end = 3000.0
+        mock_current_ppt.copy = Mock(return_value=mock_current_ppt)
+
+        # Set up plan with previous PPT
+        queue_ditl.plan = [mock_previous_ppt]
+        queue_ditl.ppt = mock_current_ppt
+
+        # Call the method
+        queue_ditl._track_ppt_in_timeline()
+
+        # Check that the previous PPT's end time was updated
+        assert (
+            mock_previous_ppt.end == 2000.0
+        )  # Should be set to current PPT begin time
+        assert len(queue_ditl.plan) == 2  # Should have both PPTs now
+
+    def test_close_ppt_timeline_if_needed_closes_when_ppt_none(self, queue_ditl):
+        """Test _close_ppt_timeline_if_needed closes PPT when ppt is None."""
+        from conops.targets import PlanEntry
+
+        # Create a mock PPT with placeholder end time
+        mock_ppt = Mock(spec=PlanEntry)
+        mock_ppt.begin = 1000.0
+        mock_ppt.end = 1000.0 + 86400 + 100  # Placeholder end time
+
+        # Set up plan with the PPT and set current ppt to None
+        queue_ditl.plan = [mock_ppt]
+        queue_ditl.ppt = None
+
+        # Call the method
+        queue_ditl._close_ppt_timeline_if_needed(2000.0)
+
+        # Check that the PPT's end time was updated
+        assert mock_ppt.end == 2000.0
+
+    def test_terminate_ppt_marks_done_when_requested(self, queue_ditl):
+        """Test _terminate_ppt sets done flag when mark_done=True."""
+        from conops.targets import PlanEntry
+
+        # Create a mock PPT
+        mock_ppt = Mock(spec=PlanEntry)
+        mock_ppt.begin = 1000.0
+        mock_ppt.end = 2000.0
+
+        # Set up the PPT
+        queue_ditl.plan = [mock_ppt]
+        queue_ditl.ppt = mock_ppt
+
+        # Call terminate with mark_done=True
+        queue_ditl._terminate_ppt(1500.0, reason="Test termination", mark_done=True)
+
+        # Check that done was set to True
+        assert mock_ppt.done is True
+        assert mock_ppt.end == 1500.0
+        assert queue_ditl.ppt is None
+
+    def test_fetch_ppt_delays_for_current_slew(self, queue_ditl, capsys):
+        """Test _fetch_new_ppt delays slew when current slew is in progress."""
+        from conops.simulation.slew import Slew
+
+        # Create mock PPT
+        mock_ppt = Mock()
+        mock_ppt.ra = 45.0
+        mock_ppt.dec = 30.0
+        mock_ppt.obsid = 1001
+        mock_ppt.next_vis = Mock(return_value=1000.0)
+        mock_ppt.ssmax = 3600.0
+        queue_ditl.queue.get = Mock(return_value=mock_ppt)
+
+        # Create a mock current slew that's still slewing
+        mock_current_slew = Mock(spec=Slew)
+        mock_current_slew.is_slewing = Mock(return_value=True)
+        mock_current_slew.slewstart = 900.0
+        mock_current_slew.slewtime = 200.0
+        queue_ditl.acs.last_slew = mock_current_slew
+        lastra, lastdec = queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        # Check that the command was enqueued with delayed execution time
+        queue_ditl.acs.enqueue_command.assert_called_once()
+        call_args = queue_ditl.acs.enqueue_command.call_args
+        command = call_args[0][0]
+        # Execution time should be delayed to current_slew.slewstart + slewtime = 1100.0
+        assert command.execution_time == 1100.0
+
+        # Check that the delay message was printed
+        captured = capsys.readouterr()
+        assert "delaying next slew until" in captured.out
+
+    def test_fetch_ppt_delays_for_visibility(self, queue_ditl, capsys):
+        """Test _fetch_new_ppt delays slew when target visibility requires it."""
+        # Create mock PPT
+        mock_ppt = Mock()
+        mock_ppt.ra = 45.0
+        mock_ppt.dec = 30.0
+        mock_ppt.obsid = 1001
+        # Set next_vis to a time after the current time (1000.0)
+        mock_ppt.next_vis = Mock(return_value=1200.0)
+        mock_ppt.ssmax = 3600.0
+        queue_ditl.queue.get = Mock(return_value=mock_ppt)
+        lastra, lastdec = queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        # Check that the command was enqueued with delayed execution time
+        queue_ditl.acs.enqueue_command.assert_called_once()
+        call_args = queue_ditl.acs.enqueue_command.call_args
+        command = call_args[0][0]
+        # Execution time should be delayed to visibility time (1200.0)
+        assert command.execution_time == 1200.0
+
+        # Check that the visibility delay message was printed
+        captured = capsys.readouterr()
+        assert "Slew delayed by" in captured.out
+
+    def test_terminate_science_ppt_for_pass_sets_done_flag(self, queue_ditl):
+        """Test _terminate_science_ppt_for_pass sets done flag."""
+        from conops.targets import PlanEntry
+
+        # Create a mock PPT
+        mock_ppt = Mock(spec=PlanEntry)
+        mock_ppt.begin = 1000.0
+        mock_ppt.end = 2000.0
+
+        # Set up the PPT
+        queue_ditl.plan = [mock_ppt]
+        queue_ditl.ppt = mock_ppt
+
+        # Call the method
+        queue_ditl._terminate_science_ppt_for_pass(1500.0)
+
+        # Check that done was set to True and other updates happened
+        assert mock_ppt.done is True
+        assert mock_ppt.end == 1500.0
+        assert queue_ditl.ppt is None
+
+    def test_terminate_charging_ppt_sets_done_flag(self, queue_ditl):
+        """Test _terminate_charging_ppt sets done flag."""
+        from conops.targets import PlanEntry
+
+        # Create a mock charging PPT
+        mock_charging_ppt = Mock(spec=PlanEntry)
+        mock_charging_ppt.begin = 1000.0
+        mock_charging_ppt.end = 2000.0
+
+        # Set up the charging PPT
+        queue_ditl.plan = [mock_charging_ppt]
+        queue_ditl.charging_ppt = mock_charging_ppt
+
+        # Call the method
+        queue_ditl._terminate_charging_ppt(1500.0)
+
+        # Check that done was set to True and other updates happened
+        assert mock_charging_ppt.done is True
+        assert mock_charging_ppt.end == 1500.0
+        assert queue_ditl.charging_ppt is None
+
+    def test_setup_simulation_timing_fails_with_invalid_ephemeris_range(
+        self, queue_ditl, capsys
+    ):
+        """Test _setup_simulation_timing fails when ephemeris doesn't cover date range."""
+        from datetime import datetime, timezone
+
+        # Set begin/end times that are not in the ephemeris
+        queue_ditl.begin = datetime(2025, 1, 1, tzinfo=timezone.utc)  # Far future date
+        queue_ditl.end = datetime(2025, 1, 2, tzinfo=timezone.utc)
+
+        result = queue_ditl._setup_simulation_timing()
+
+        assert result is False
+        captured = capsys.readouterr()
+        assert "ERROR: Ephemeris not valid for date range" in captured.out
 
 
 class TestGetConstraintName:
@@ -1241,3 +1450,105 @@ class TestCheckAndManagePasses:
         queue_ditl.acs.last_ppt = Mock(obsid=0xBEEF)
         queue_ditl._check_and_manage_passes(utime, ra, dec)
         assert pass_obj.obsid == 0xBEEF
+
+
+class TestGetACSQueueStatus:
+    """Test get_acs_queue_status method."""
+
+    def test_get_acs_queue_status_empty_queue(self, queue_ditl):
+        queue_ditl.acs.command_queue = []
+        queue_ditl.acs.current_slew = None
+        queue_ditl.acs.acsmode = ACSMode.SCIENCE
+        status = queue_ditl.get_acs_queue_status()
+        expected = {
+            "queue_size": 0,
+            "pending_commands": [],
+            "current_slew": None,
+            "acs_mode": "SCIENCE",
+        }
+        assert status == expected
+
+    def test_get_acs_queue_status_with_pending_commands(self, queue_ditl):
+        mock_cmd1 = Mock()
+        mock_cmd1.command_type.name = "SLEW_TO_TARGET"
+        mock_cmd1.execution_time = 1000.0
+        mock_cmd2 = Mock()
+        mock_cmd2.command_type.name = "START_PASS"
+        mock_cmd2.execution_time = 2000.0
+        queue_ditl.acs.command_queue = [mock_cmd1, mock_cmd2]
+        queue_ditl.acs.current_slew = None
+        queue_ditl.acs.acsmode = ACSMode.PASS
+        with patch("conops.ditl.queue_ditl.unixtime2date") as mock_unixtime2date:
+            mock_unixtime2date.side_effect = [
+                "2023-01-01 00:00:00",
+                "2023-01-01 00:33:20",
+            ]
+            status = queue_ditl.get_acs_queue_status()
+        expected = {
+            "queue_size": 2,
+            "pending_commands": [
+                {
+                    "type": "SLEW_TO_TARGET",
+                    "execution_time": 1000.0,
+                    "time_formatted": "2023-01-01 00:00:00",
+                },
+                {
+                    "type": "START_PASS",
+                    "execution_time": 2000.0,
+                    "time_formatted": "2023-01-01 00:33:20",
+                },
+            ],
+            "current_slew": None,
+            "acs_mode": "PASS",
+        }
+        assert status == expected
+
+    def test_get_acs_queue_status_with_current_slew(self, queue_ditl):
+        queue_ditl.acs.command_queue = []
+        mock_slew = Mock()
+        mock_slew.__class__.__name__ = "Slew"
+        queue_ditl.acs.current_slew = mock_slew
+        queue_ditl.acs.acsmode = ACSMode.SLEWING
+        status = queue_ditl.get_acs_queue_status()
+        expected = {
+            "queue_size": 0,
+            "pending_commands": [],
+            "current_slew": "Slew",
+            "acs_mode": "SLEWING",
+        }
+        assert status == expected
+
+    def test_get_acs_queue_status_different_modes(self, queue_ditl):
+        queue_ditl.acs.command_queue = []
+        queue_ditl.acs.current_slew = None
+        for mode in [ACSMode.SCIENCE, ACSMode.CHARGING, ACSMode.SAA]:
+            queue_ditl.acs.acsmode = mode
+            status = queue_ditl.get_acs_queue_status()
+            assert status["acs_mode"] == mode.name
+
+    def test_get_acs_queue_status_mixed_state(self, queue_ditl):
+        mock_cmd = Mock()
+        mock_cmd.command_type.name = "END_PASS"
+        mock_cmd.execution_time = 1500.0
+        queue_ditl.acs.command_queue = [mock_cmd]
+        mock_slew = Mock()
+        mock_slew.__class__.__name__ = "Pass"
+        queue_ditl.acs.current_slew = mock_slew
+        queue_ditl.acs.acsmode = ACSMode.PASS
+        with patch(
+            "conops.ditl.queue_ditl.unixtime2date", return_value="2023-01-01 00:25:00"
+        ):
+            status = queue_ditl.get_acs_queue_status()
+        expected = {
+            "queue_size": 1,
+            "pending_commands": [
+                {
+                    "type": "END_PASS",
+                    "execution_time": 1500.0,
+                    "time_formatted": "2023-01-01 00:25:00",
+                }
+            ],
+            "current_slew": "Pass",
+            "acs_mode": "PASS",
+        }
+        assert status == expected

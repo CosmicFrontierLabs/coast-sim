@@ -87,3 +87,44 @@ class TestGroundStationRegistry:
 
     def test_schedule_probability_for_returns_float(self, default_registry):
         assert isinstance(default_registry.schedule_probability_for("SGS"), float)
+
+    def test_get_nonexistent_code_raises_keyerror(self, groundstation_registry):
+        with pytest.raises(KeyError):
+            groundstation_registry.get("NONEXISTENT")
+
+    def test_add_new_station_increases_length(
+        self, groundstation_registry, sample_groundstation
+    ):
+        initial_length = len(groundstation_registry.stations)
+        groundstation_registry.add(sample_groundstation)
+        assert len(groundstation_registry.stations) == initial_length + 1
+
+    def test_add_existing_code_replaces_station(
+        self, groundstation_registry, sample_groundstation
+    ):
+        groundstation_registry.add(sample_groundstation)
+        original_name = sample_groundstation.name
+        updated_station = GroundStation(
+            code=sample_groundstation.code,
+            name="Updated Name",
+            latitude_deg=sample_groundstation.latitude_deg,
+            longitude_deg=sample_groundstation.longitude_deg,
+        )
+        groundstation_registry.add(updated_station)
+        retrieved = groundstation_registry.get(sample_groundstation.code)
+        assert retrieved.name == "Updated Name"
+        assert retrieved.name != original_name
+
+    def test_add_existing_code_does_not_increase_length(
+        self, groundstation_registry, sample_groundstation
+    ):
+        groundstation_registry.add(sample_groundstation)
+        initial_length = len(groundstation_registry.stations)
+        updated_station = GroundStation(
+            code=sample_groundstation.code,
+            name="Another Name",
+            latitude_deg=sample_groundstation.latitude_deg,
+            longitude_deg=sample_groundstation.longitude_deg,
+        )
+        groundstation_registry.add(updated_station)
+        assert len(groundstation_registry.stations) == initial_length
