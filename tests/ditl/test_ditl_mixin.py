@@ -2,7 +2,6 @@ from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
 import matplotlib
-import matplotlib.pyplot as plt
 
 from conops import DITLMixin
 
@@ -37,17 +36,17 @@ class TestDITLMixin:
         ditl, _, _ = ditl_instance
         assert ditl.ephem is None
 
-    def test_init_uses_passes(self, ditl_instance, mock_pass_inst):
+    def test_init_uses_passes(self, ditl_instance):
         """DITLMixin.__init__ should use PassTimes."""
         ditl, mock_pass_inst, _ = ditl_instance
         assert ditl.passes is mock_pass_inst
 
-    def test_init_sets_executed_passes(self, ditl_instance, mock_pass_inst):
+    def test_init_sets_executed_passes(self, ditl_instance):
         """DITLMixin.__init__ should set executed_passes."""
         ditl, mock_pass_inst, _ = ditl_instance
         assert ditl.executed_passes is mock_pass_inst
 
-    def test_init_uses_acs(self, ditl_instance, mock_acs_inst):
+    def test_init_uses_acs(self, ditl_instance):
         """DITLMixin.__init__ should use ACS."""
         ditl, _, mock_acs_inst = ditl_instance
         assert ditl.acs is mock_acs_inst
@@ -76,168 +75,74 @@ class TestDITLMixin:
         ditl, _, _ = ditl_instance
         assert ditl.ppt is None
 
-    def test_plot_creates_seven_subplots(self, populated_ditl):
+    def test_plot_creates_seven_subplots(self, plot_figure):
         """Plot should create 7 subplots."""
-        ditl = populated_ditl
-        plt.close("all")
-        with patch("matplotlib.pyplot.show"):
-            ditl.plot()
-        fig = plt.gcf()
+        fig = plot_figure
         assert len(fig.axes) == 7
-        plt.close("all")
 
-    def test_plot_sets_title_with_config_name(self, populated_ditl, mock_config):
+    def test_plot_sets_title_with_config_name(self, plot_figure, mock_config):
         """Plot should set title with config name."""
-        ditl = populated_ditl
-        plt.close("all")
-        with patch("matplotlib.pyplot.show"):
-            ditl.plot()
-        fig = plt.gcf()
+        fig = plot_figure
         assert (
             fig.axes[0].get_title()
             == f"Timeline for DITL Simulation: {mock_config.name}"
         )
-        plt.close("all")
 
-    def test_plot_battery_axis_has_dashed_horizontal_line(self, populated_ditl):
+    def test_plot_battery_axis_has_dashed_horizontal_line(self, plot_figure):
         """Plot battery axis should have dashed horizontal line."""
-        ditl = populated_ditl
-        plt.close("all")
-        with patch("matplotlib.pyplot.show"):
-            ditl.plot()
-        fig = plt.gcf()
+        fig = plot_figure
         batt_ax = fig.axes[3]
         has_dashed_hline = any(line.get_linestyle() == "--" for line in batt_ax.lines)
         assert has_dashed_hline
-        plt.close("all")
 
-    def test_plot_last_axis_has_xlabel_time_in_hours(self, populated_ditl):
+    def test_plot_last_axis_has_xlabel_time_in_hours(self, plot_figure):
         """Plot last axis should have xlabel time in hours."""
-        ditl = populated_ditl
-        plt.close("all")
-        with patch("matplotlib.pyplot.show"):
-            ditl.plot()
-        fig = plt.gcf()
+        fig = plot_figure
         assert fig.axes[-1].get_xlabel() == "Time (hour of day)"
-        plt.close("all")
 
     def test_print_statistics_includes_ditl_simulation_statistics(
-        self, comprehensive_ditl
+        self, statistics_output
     ):
         """print_statistics should include DITL SIMULATION STATISTICS."""
-        ditl = comprehensive_ditl
-        import io
-        from contextlib import redirect_stdout
+        assert "DITL SIMULATION STATISTICS" in statistics_output
 
-        f = io.StringIO()
-        with redirect_stdout(f):
-            ditl.print_statistics()
-        output = f.getvalue()
-        assert "DITL SIMULATION STATISTICS" in output
-
-    def test_print_statistics_includes_mode_distribution(self, comprehensive_ditl):
+    def test_print_statistics_includes_mode_distribution(self, statistics_output):
         """print_statistics should include MODE DISTRIBUTION."""
-        ditl = comprehensive_ditl
-        import io
-        from contextlib import redirect_stdout
+        assert "MODE DISTRIBUTION" in statistics_output
 
-        f = io.StringIO()
-        with redirect_stdout(f):
-            ditl.print_statistics()
-        output = f.getvalue()
-        assert "MODE DISTRIBUTION" in output
-
-    def test_print_statistics_includes_observation_statistics(self, comprehensive_ditl):
+    def test_print_statistics_includes_observation_statistics(self, statistics_output):
         """print_statistics should include OBSERVATION STATISTICS."""
-        ditl = comprehensive_ditl
-        import io
-        from contextlib import redirect_stdout
+        assert "OBSERVATION STATISTICS" in statistics_output
 
-        f = io.StringIO()
-        with redirect_stdout(f):
-            ditl.print_statistics()
-        output = f.getvalue()
-        assert "OBSERVATION STATISTICS" in output
-
-    def test_print_statistics_includes_pointing_statistics(self, comprehensive_ditl):
+    def test_print_statistics_includes_pointing_statistics(self, statistics_output):
         """print_statistics should include POINTING STATISTICS."""
-        ditl = comprehensive_ditl
-        import io
-        from contextlib import redirect_stdout
-
-        f = io.StringIO()
-        with redirect_stdout(f):
-            ditl.print_statistics()
-        output = f.getvalue()
-        assert "POINTING STATISTICS" in output
+        assert "POINTING STATISTICS" in statistics_output
 
     def test_print_statistics_includes_power_and_battery_statistics(
-        self, comprehensive_ditl
+        self, statistics_output
     ):
         """print_statistics should include POWER AND BATTERY STATISTICS."""
-        ditl = comprehensive_ditl
-        import io
-        from contextlib import redirect_stdout
-
-        f = io.StringIO()
-        with redirect_stdout(f):
-            ditl.print_statistics()
-        output = f.getvalue()
-        assert "POWER AND BATTERY STATISTICS" in output
+        assert "POWER AND BATTERY STATISTICS" in statistics_output
 
     def test_print_statistics_includes_data_management_statistics(
-        self, comprehensive_ditl
+        self, statistics_output
     ):
         """print_statistics should include DATA MANAGEMENT STATISTICS."""
-        ditl = comprehensive_ditl
-        import io
-        from contextlib import redirect_stdout
+        assert "DATA MANAGEMENT STATISTICS" in statistics_output
 
-        f = io.StringIO()
-        with redirect_stdout(f):
-            ditl.print_statistics()
-        output = f.getvalue()
-        assert "DATA MANAGEMENT STATISTICS" in output
-
-    def test_print_statistics_includes_target_queue_statistics(
-        self, comprehensive_ditl
-    ):
+    def test_print_statistics_includes_target_queue_statistics(self, statistics_output):
         """print_statistics should include TARGET QUEUE STATISTICS."""
-        ditl = comprehensive_ditl
-        import io
-        from contextlib import redirect_stdout
+        assert "TARGET QUEUE STATISTICS" in statistics_output
 
-        f = io.StringIO()
-        with redirect_stdout(f):
-            ditl.print_statistics()
-        output = f.getvalue()
-        assert "TARGET QUEUE STATISTICS" in output
-
-    def test_print_statistics_includes_acs_command_statistics(self, comprehensive_ditl):
+    def test_print_statistics_includes_acs_command_statistics(self, statistics_output):
         """print_statistics should include ACS COMMAND STATISTICS."""
-        ditl = comprehensive_ditl
-        import io
-        from contextlib import redirect_stdout
-
-        f = io.StringIO()
-        with redirect_stdout(f):
-            ditl.print_statistics()
-        output = f.getvalue()
-        assert "ACS COMMAND STATISTICS" in output
+        assert "ACS COMMAND STATISTICS" in statistics_output
 
     def test_print_statistics_includes_ground_station_pass_statistics(
-        self, comprehensive_ditl
+        self, statistics_output
     ):
         """print_statistics should include GROUND STATION PASS STATISTICS."""
-        ditl = comprehensive_ditl
-        import io
-        from contextlib import redirect_stdout
-
-        f = io.StringIO()
-        with redirect_stdout(f):
-            ditl.print_statistics()
-        output = f.getvalue()
-        assert "GROUND STATION PASS STATISTICS" in output
+        assert "GROUND STATION PASS STATISTICS" in statistics_output
 
     def test_find_current_pass_returns_none_with_no_passes(self, ditl_instance):
         """_find_current_pass should return None with no passes."""
@@ -276,6 +181,7 @@ class TestDITLMixin:
         ditl.acs = Mock()
         ditl.acs.passrequests = Mock()
         ditl.acs.passrequests.passes = [mock_pass]
+        ditl.executed_passes.passes = []
         assert ditl._find_current_pass(1000.0) is None
 
     def test_find_current_pass_fallback_to_executed_passes(self, ditl_instance):
@@ -289,127 +195,69 @@ class TestDITLMixin:
         result = ditl._find_current_pass(1000.0)
         assert result is mock_pass
 
-    def test_process_data_management_science_mode_data_gen(self, ditl_instance):
+    def test_process_data_management_science_mode_data_gen(
+        self, ditl_with_payload_and_recorder
+    ):
         """_process_data_management in SCIENCE mode should generate data."""
-        ditl, _, _ = ditl_instance
-        ditl.payload = Mock()
-        ditl.payload.data_generated.return_value = 0.1
-        ditl.recorder = Mock()
-        ditl.recorder.add_data.return_value = None
-        ditl.recorder.remove_data.return_value = 0.05
+        ditl = ditl_with_payload_and_recorder
         from conops.common.enums import ACSMode
 
         data_gen, data_dl = ditl._process_data_management(1000.0, ACSMode.SCIENCE, 60)
         assert data_gen == 0.1
 
-    def test_process_data_management_science_mode_data_dl_zero(self, ditl_instance):
+    def test_process_data_management_science_mode_data_dl_zero(
+        self, ditl_with_payload_and_recorder
+    ):
         """_process_data_management in SCIENCE mode should have zero data downlink."""
-        ditl, _, _ = ditl_instance
-        ditl.payload = Mock()
-        ditl.payload.data_generated.return_value = 0.1
-        ditl.recorder = Mock()
-        ditl.recorder.add_data.return_value = None
-        ditl.recorder.remove_data.return_value = 0.05
+        ditl = ditl_with_payload_and_recorder
         from conops.common.enums import ACSMode
 
         data_gen, data_dl = ditl._process_data_management(1000.0, ACSMode.SCIENCE, 60)
         assert data_dl == 0.0
 
     def test_process_data_management_science_mode_calls_data_generated(
-        self, ditl_instance
+        self, ditl_with_payload_and_recorder
     ):
         """_process_data_management in SCIENCE mode should call data_generated."""
-        ditl, _, _ = ditl_instance
-        ditl.payload = Mock()
-        ditl.payload.data_generated.return_value = 0.1
-        ditl.recorder = Mock()
-        ditl.recorder.add_data.return_value = None
-        ditl.recorder.remove_data.return_value = 0.05
+        ditl = ditl_with_payload_and_recorder
         from conops.common.enums import ACSMode
 
         ditl._process_data_management(1000.0, ACSMode.SCIENCE, 60)
         ditl.payload.data_generated.assert_called_with(60)
 
-    def test_process_data_management_science_mode_calls_add_data(self, ditl_instance):
+    def test_process_data_management_science_mode_calls_add_data(
+        self, ditl_with_payload_and_recorder
+    ):
         """_process_data_management in SCIENCE mode should call add_data."""
-        ditl, _, _ = ditl_instance
-        ditl.payload = Mock()
-        ditl.payload.data_generated.return_value = 0.1
-        ditl.recorder = Mock()
-        ditl.recorder.add_data.return_value = None
-        ditl.recorder.remove_data.return_value = 0.05
+        ditl = ditl_with_payload_and_recorder
         from conops.common.enums import ACSMode
 
         ditl._process_data_management(1000.0, ACSMode.SCIENCE, 60)
         ditl.recorder.add_data.assert_called_with(0.1)
 
     def test_process_data_management_pass_mode_data_gen_zero(
-        self, ditl_instance, mock_config
+        self, ditl_with_pass_setup
     ):
         """_process_data_management in PASS mode should have zero data generation."""
-        ditl, _, _ = ditl_instance
-        ditl.payload = Mock()
-        ditl.payload.data_generated.return_value = 0.1
-        ditl.recorder = Mock()
-        ditl.recorder.add_data.return_value = None
-        ditl.recorder.remove_data.return_value = 0.05
-        mock_pass = Mock()
-        mock_pass.in_pass.return_value = True
-        mock_pass.station = "station1"
-        ditl.acs = Mock()
-        ditl.acs.passrequests = Mock()
-        ditl.acs.passrequests.passes = [mock_pass]
-        mock_station = Mock()
-        mock_station.antenna.max_data_rate_mbps = 100.0
-        ditl.config.ground_stations = {"station1": mock_station}
+        ditl = ditl_with_pass_setup
         from conops.common.enums import ACSMode
 
         data_gen, data_dl = ditl._process_data_management(1000.0, ACSMode.PASS, 60)
         assert data_gen == 0.0
 
-    def test_process_data_management_pass_mode_data_dl(
-        self, ditl_instance, mock_config
-    ):
+    def test_process_data_management_pass_mode_data_dl(self, ditl_with_pass_setup):
         """_process_data_management in PASS mode should downlink data."""
-        ditl, _, _ = ditl_instance
-        ditl.payload = Mock()
-        ditl.payload.data_generated.return_value = 0.1
-        ditl.recorder = Mock()
-        ditl.recorder.add_data.return_value = None
-        ditl.recorder.remove_data.return_value = 0.05
-        mock_pass = Mock()
-        mock_pass.in_pass.return_value = True
-        mock_pass.station = "station1"
-        ditl.acs = Mock()
-        ditl.acs.passrequests = Mock()
-        ditl.acs.passrequests.passes = [mock_pass]
-        mock_station = Mock()
-        mock_station.antenna.max_data_rate_mbps = 100.0
-        ditl.config.ground_stations = {"station1": mock_station}
+        ditl = ditl_with_pass_setup
         from conops.common.enums import ACSMode
 
         data_gen, data_dl = ditl._process_data_management(1000.0, ACSMode.PASS, 60)
         assert data_dl == 0.05
 
     def test_process_data_management_pass_mode_calls_remove_data(
-        self, ditl_instance, mock_config
+        self, ditl_with_pass_setup
     ):
         """_process_data_management in PASS mode should call remove_data."""
-        ditl, _, _ = ditl_instance
-        ditl.payload = Mock()
-        ditl.payload.data_generated.return_value = 0.1
-        ditl.recorder = Mock()
-        ditl.recorder.add_data.return_value = None
-        ditl.recorder.remove_data.return_value = 0.05
-        mock_pass = Mock()
-        mock_pass.in_pass.return_value = True
-        mock_pass.station = "station1"
-        ditl.acs = Mock()
-        ditl.acs.passrequests = Mock()
-        ditl.acs.passrequests.passes = [mock_pass]
-        mock_station = Mock()
-        mock_station.antenna.max_data_rate_mbps = 100.0
-        ditl.config.ground_stations = {"station1": mock_station}
+        ditl = ditl_with_pass_setup
         from conops.common.enums import ACSMode
 
         ditl._process_data_management(1000.0, ACSMode.PASS, 60)

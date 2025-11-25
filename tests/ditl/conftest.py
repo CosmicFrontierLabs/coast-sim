@@ -4,6 +4,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
+from matplotlib import pyplot as plt
 
 from conops import DITL, ACSMode
 from conops.ditl.ditl_mixin import DITLMixin
@@ -132,7 +133,19 @@ def ditl(mock_config_detailed, mock_ephem):
 
 
 @pytest.fixture
-def ditl_instance(mock_config):
+def mock_pass_inst():
+    """Mock PassTimes instance."""
+    return Mock()
+
+
+@pytest.fixture
+def mock_acs_inst():
+    """Mock ACS instance."""
+    return Mock()
+
+
+@pytest.fixture
+def ditl_instance(mock_config, mock_pass_inst, mock_acs_inst):
     """Fixture to create a DITLMixin instance with mocked dependencies."""
     with (
         patch("conops.ditl.ditl_mixin.PassTimes") as mock_pass_class,
@@ -140,9 +153,7 @@ def ditl_instance(mock_config):
         patch("conops.ditl.ditl_mixin.Plan") as mock_plan_class,
     ):
         # Set return values for patched classes
-        mock_pass_inst = Mock()
         mock_pass_class.return_value = mock_pass_inst
-        mock_acs_inst = Mock()
         mock_acs_class.return_value = mock_acs_inst
         mock_plan_class.return_value = Mock()
 
@@ -234,4 +245,60 @@ def comprehensive_ditl(ditl_instance, mock_config):
     ditl.executed_passes = Mock()
     ditl.executed_passes.passes = [mock_pass]
 
+    return ditl
+
+
+@pytest.fixture
+def statistics_output(comprehensive_ditl):
+    """Fixture to capture output of print_statistics."""
+    import io
+    from contextlib import redirect_stdout
+
+    f = io.StringIO()
+    with redirect_stdout(f):
+        comprehensive_ditl.print_statistics()
+    return f.getvalue()
+
+
+@pytest.fixture
+def plot_figure(populated_ditl):
+    """Fixture to create and yield the plot figure."""
+    plt.close("all")
+    with patch("matplotlib.pyplot.show"):
+        populated_ditl.plot()
+    fig = plt.gcf()
+    yield fig
+    plt.close("all")
+
+
+@pytest.fixture
+def ditl_with_payload_and_recorder(ditl_instance):
+    """Fixture to set up ditl with payload and recorder mocks."""
+    ditl, _, _ = ditl_instance
+    ditl.payload = Mock()
+    ditl.payload.data_generated.return_value = 0.1
+    ditl.recorder = Mock()
+    ditl.recorder.add_data.return_value = None
+    ditl.recorder.remove_data.return_value = 0.05
+    return ditl
+
+
+@pytest.fixture
+def ditl_with_pass_setup(ditl_instance, mock_config):
+    """Fixture to set up ditl with pass-related mocks."""
+    ditl, _, _ = ditl_instance
+    ditl.payload = Mock()
+    ditl.payload.data_generated.return_value = 0.1
+    ditl.recorder = Mock()
+    ditl.recorder.add_data.return_value = None
+    ditl.recorder.remove_data.return_value = 0.05
+    mock_pass = Mock()
+    mock_pass.in_pass.return_value = True
+    mock_pass.station = "station1"
+    ditl.acs = Mock()
+    ditl.acs.passrequests = Mock()
+    ditl.acs.passrequests.passes = [mock_pass]
+    mock_station = Mock()
+    mock_station.antenna.max_data_rate_mbps = 100.0
+    ditl.config.ground_stations = {"station1": mock_station}
     return ditl
