@@ -470,14 +470,10 @@ class TestFetchNewPPT:
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.obsid = 1001
+        mock_ppt.next_vis = Mock(return_value=1000.0)
+        mock_ppt.ssmax = 3600.0
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
-        with (
-            patch("conops.Pointing.visibility") as mock_vis,
-            patch("conops.Pointing.next_vis") as mock_next_vis,
-        ):
-            mock_vis.return_value = 1
-            mock_next_vis.return_value = 1000.0
-            lastra, lastdec = queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+        lastra, lastdec = queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
         assert queue_ditl.ppt is mock_ppt
         assert lastra == 45.0
         assert lastdec == 30.0
@@ -487,14 +483,10 @@ class TestFetchNewPPT:
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.obsid = 1001
+        mock_ppt.next_vis = Mock(return_value=1000.0)
+        mock_ppt.ssmax = 3600.0
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
-        with (
-            patch("conops.Pointing.visibility") as mock_vis,
-            patch("conops.Pointing.next_vis") as mock_next_vis,
-        ):
-            mock_vis.return_value = 1
-            mock_next_vis.return_value = 1000.0
-            _ = queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+        _ = queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
         queue_ditl.acs.enqueue_command.assert_called_once()
         call_args = queue_ditl.acs.enqueue_command.call_args
         command = call_args[0][0]
@@ -508,14 +500,10 @@ class TestFetchNewPPT:
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.obsid = 1001
+        mock_ppt.next_vis = Mock(return_value=1000.0)
+        mock_ppt.ssmax = 3600.0
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
-        with (
-            patch("conops.Pointing.visibility") as mock_vis,
-            patch("conops.Pointing.next_vis") as mock_next_vis,
-        ):
-            mock_vis.return_value = 1
-            mock_next_vis.return_value = 1000.0
-            _ = queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+        _ = queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
         captured = capsys.readouterr()
         assert "Fetching new PPT from Queue" in captured.out
 
@@ -774,15 +762,14 @@ class TestCalcMethod:
         mock_ppt.begin = 1543622400
         mock_ppt.end = 1543629600
         mock_ppt.done = False
+        mock_ppt.next_vis = Mock(return_value=1543276800.0)
+        mock_ppt.ssmax = 3600.0
         mock_ppt.copy = Mock(return_value=Mock())
         mock_ppt.copy.return_value.begin = 1543622400
         mock_ppt.copy.return_value.end = 1543629600
 
         queue_ditl.queue.get = Mock(side_effect=[mock_ppt] + [None] * 100)
-
-        with patch("conops.Pointing.visibility") as mock_vis:
-            mock_vis.return_value = 1
-            queue_ditl.calc()
+        queue_ditl.calc()
 
         assert len(queue_ditl.plan) > 0
 
@@ -869,13 +856,13 @@ class TestCalcMethod:
         mock_ppt.begin = 1543622400
         mock_ppt.end = 1543708800
         mock_ppt.done = False
+        mock_ppt.next_vis = Mock(return_value=1543276800.0)
+        mock_ppt.ssmax = 3600.0
         mock_ppt.copy = Mock(return_value=Mock())
         mock_ppt.copy.return_value.begin = 1543622400
         mock_ppt.copy.return_value.end = 1543708800
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
-        with patch("conops.Pointing.visibility") as mock_vis:
-            mock_vis.return_value = 1
-            queue_ditl.calc()
+        queue_ditl.calc()
         if queue_ditl.plan:
             assert queue_ditl.plan[-1].end > 0
 
@@ -996,6 +983,8 @@ class TestCalcMethod:
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.obsid = 1001
+        mock_ppt.next_vis = Mock(return_value=1000.0)
+        mock_ppt.ssmax = 3600.0
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
 
         # Create a mock current slew that's still slewing
@@ -1004,14 +993,7 @@ class TestCalcMethod:
         mock_current_slew.slewstart = 900.0
         mock_current_slew.slewtime = 200.0
         queue_ditl.acs.last_slew = mock_current_slew
-
-        with (
-            patch("conops.Pointing.visibility") as mock_vis,
-            patch("conops.Pointing.next_vis") as mock_next_vis,
-        ):
-            mock_vis.return_value = 1
-            mock_next_vis.return_value = 1000.0
-            lastra, lastdec = queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+        lastra, lastdec = queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
 
         # Check that the command was enqueued with delayed execution time
         queue_ditl.acs.enqueue_command.assert_called_once()
@@ -1031,16 +1013,11 @@ class TestCalcMethod:
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.obsid = 1001
+        # Set next_vis to a time after the current time (1000.0)
+        mock_ppt.next_vis = Mock(return_value=1200.0)
+        mock_ppt.ssmax = 3600.0
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
-
-        with (
-            patch("conops.Pointing.visibility") as mock_vis,
-            patch("conops.Pointing.next_vis") as mock_next_vis,
-        ):
-            mock_vis.return_value = 1
-            # Set next_vis to a time after the current time (1000.0)
-            mock_next_vis.return_value = 1200.0
-            lastra, lastdec = queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+        lastra, lastdec = queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
 
         # Check that the command was enqueued with delayed execution time
         queue_ditl.acs.enqueue_command.assert_called_once()
