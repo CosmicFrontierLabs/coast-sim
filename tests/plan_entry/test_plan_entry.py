@@ -356,9 +356,9 @@ class TestRaDec:
         plan_entry.slewsecs = np.array([0, 100])
         ra, dec = plan_entry.ra_dec(1050)
 
-        # During slewing, returns start position
-        assert ra != -1
-        assert dec != -1
+        # Should interpolate halfway
+        assert ra == 140
+        assert dec == 37.5
 
     def test_ra_dec_after_slew(self, plan_entry):
         """Test ra_dec after slew completes."""
