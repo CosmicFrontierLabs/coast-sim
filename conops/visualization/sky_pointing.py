@@ -618,16 +618,17 @@ class SkyPointingController:
         self.ax.grid(True, alpha=0.3)
 
         # Labels
-        self.ax.set_xlabel("Right Ascension (deg)", fontsize=12)
-        self.ax.set_ylabel("Declination (deg)", fontsize=12)
+        self.ax.set_xlabel("Right Ascension (deg)", fontsize=10, fontfamily="Helvetica")
+        self.ax.set_ylabel("Declination (deg)", fontsize=10, fontfamily="Helvetica")
 
         # Title with time
         dt = dtutcfromtimestamp(utime)
         time_str = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
         self.ax.set_title(
             f"Spacecraft Pointing at {time_str}",
-            fontsize=14,
+            fontsize=12,
             fontweight="bold",
+            fontfamily="Helvetica",
             pad=20,
         )
 
@@ -671,15 +672,24 @@ class SkyPointingController:
             all_labels,
             loc="upper left",
             bbox_to_anchor=(1.02, 1),
-            fontsize=9,
+            fontsize=8,
             title="ACS Modes",
+            prop={"family": "Helvetica"},
         )
 
         # Set RA tick labels (mollweide uses radians internally)
         # RA=0 is on the left at -180°
         ra_ticks = np.deg2rad(np.array([-180, -120, -60, 0, 60, 120, 180]))
         self.ax.set_xticks(ra_ticks)
-        self.ax.set_xticklabels(["0°", "60°", "120°", "180°", "240°", "300°", "360°"])
+        self.ax.set_xticklabels(
+            ["0°", "60°", "120°", "180°", "240°", "300°", "360°"],
+            fontsize=9,
+            fontfamily="Helvetica",
+        )
+        # Set y-axis tick labels
+        self.ax.tick_params(axis="y", labelsize=9)
+        for label in self.ax.get_yticklabels():
+            label.set_fontfamily("Helvetica")
 
 
 def save_sky_pointing_frames(
