@@ -418,6 +418,7 @@ class QueueDITL(DITLMixin, DITLStats):
     def _manage_ppt_lifecycle(self, utime: float, mode: ACSMode) -> None:
         """Manage the lifecycle of the current pointing (PPT)."""
         if self.ppt is None or self.ppt == self.charging_ppt:
+            print(f"{self.ppt} == {self.charging_ppt}")
             return
 
         # Decrement exposure time when actively observing
@@ -515,21 +516,11 @@ class QueueDITL(DITLMixin, DITLStats):
             slew.obstype = "PPT"
             slew.obsid = self.ppt.obsid
 
-            # Set up target observation request and check visibility
-            target_request = Pointing(
-                constraint=self.constraint,
-                acs_config=self.config.spacecraft_bus.attitude_control,
-            )
-            target_request.ra = slew.endra
-            target_request.dec = slew.enddec
-            target_request.obsid = slew.obsid
-            target_request.isat = slew.obstype != "PPT"
-
-            target_request.visibility()
-            slew.at = target_request
+            # Use the PPT from the queue which already has visibility calculated
+            slew.at = self.ppt
 
             # Check if target is visible
-            visstart = target_request.next_vis(utime)
+            visstart = self.ppt.next_vis(utime)
             if not visstart and slew.obstype == "PPT":
                 print(f"{unixtime2date(utime)} Slew rejected - target not visible")
                 return lastra, lastdec
@@ -564,6 +555,11 @@ class QueueDITL(DITLMixin, DITLStats):
             slew.slewstart = execution_time
             slew.calc_slewtime()
             self.acs.slew_dists.append(slew.slewdist)
+
+            # Update PPT timing based on slew
+            self.ppt.begin = int(execution_time)
+            # Update PPT end time to ensure it has enough time for slew + max observation
+            self.ppt.end = int(execution_time + slew.slewtime + self.ppt.ssmax)
 
             # Enqueue the slew command
             command = ACSCommand(

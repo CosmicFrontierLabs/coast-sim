@@ -85,8 +85,6 @@ class Pointing(PlanEntry):
     def __str__(self):
         return f"{unixtime2date(self.begin)} {self.name} ({self.targetid}) RA={self.ra:.4f}, Dec={self.dec:4f}, Roll={self.roll:.1f}, Merit={self.merit}"
 
-    # Do not maintain a separate 'fom' attribute. Use `merit` throughout.
-
     @property
     def exptime(self) -> int | None:
         return self._exptime
