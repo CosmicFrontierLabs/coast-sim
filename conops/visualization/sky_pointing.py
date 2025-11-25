@@ -12,6 +12,16 @@ from matplotlib.widgets import Button, Slider
 
 from ..common import dtutcfromtimestamp
 
+# ACS mode color mapping
+MODE_COLORS = {
+    "SCIENCE": "green",
+    "SLEWING": "orange",
+    "SAA": "purple",
+    "PASS": "cyan",
+    "CHARGING": "yellow",
+    "SAFE": "red",
+}
+
 
 def plot_sky_pointing(
     ditl,
@@ -336,7 +346,7 @@ class SkyPointingController:
             alpha=0.6,
             edgecolors="black",
             linewidths=0.5,
-            label="Scheduled Obs",
+            label="Targets",
             zorder=2,
         )
 
@@ -536,7 +546,7 @@ class SkyPointingController:
                 marker="s",
                 zorder=1,
                 edgecolors="none",
-                label=f"{name} Constraint",
+                label=f"{name} Cons.",
             )
 
         # Mark celestial body position
@@ -570,17 +580,8 @@ class SkyPointingController:
         ra_plot = ra - 180
 
         # Color based on ACS mode
-        mode_colors = {
-            "SCIENCE": "green",
-            "SLEWING": "orange",
-            "SAA": "purple",
-            "PASS": "cyan",
-            "CHARGING": "yellow",
-            "SAFE": "red",
-        }
-
         mode_name = mode.name if hasattr(mode, "name") else str(mode)
-        color = mode_colors.get(mode_name, "red")
+        color = MODE_COLORS.get(mode_name, "red")
 
         # Plot with distinctive marker
         self.ax.plot(
@@ -591,7 +592,7 @@ class SkyPointingController:
             markerfacecolor=color,
             markeredgecolor="white",
             markeredgewidth=2,
-            label=f"Current Pointing ({mode_name})",
+            label="Pointing",
             zorder=5,
         )
 
@@ -639,15 +640,6 @@ class SkyPointingController:
         # Add ACS mode color legend entries
         from matplotlib.lines import Line2D
 
-        mode_colors = {
-            "SCIENCE": "green",
-            "SLEWING": "orange",
-            "SAA": "purple",
-            "PASS": "cyan",
-            "CHARGING": "yellow",
-            "SAFE": "red",
-        }
-
         # Add separator and ACS mode entries
         mode_handles = [
             Line2D(
@@ -659,9 +651,9 @@ class SkyPointingController:
                 markersize=10,
                 markeredgecolor="white",
                 markeredgewidth=1,
-                label=f"{mode}",
+                label=f"{mode.lower().capitalize()}",
             )
-            for mode, color in mode_colors.items()
+            for mode, color in MODE_COLORS.items()
         ]
 
         all_handles = list(by_label.values()) + mode_handles
