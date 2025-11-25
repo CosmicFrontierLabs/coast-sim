@@ -74,9 +74,7 @@ def plot_acs_mode_distribution(ditl: "DITLMixin", figsize=(10, 8), config=None):
     # Create pie chart
     fig, ax = plt.subplots(figsize=figsize)
     # Compute colors for each wedge based on config.mode_colors (fallback to Matplotlib defaults)
-    mode_colors_map = (
-        config.mode_colors if isinstance(config, VisualizationConfig) else {}
-    )
+    mode_colors_map = config.mode_colors
     wedge_colors = [mode_colors_map.get(label.upper(), None) for label in labels]
 
     pie_res = ax.pie(
