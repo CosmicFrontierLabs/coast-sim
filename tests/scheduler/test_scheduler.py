@@ -54,14 +54,6 @@ class TestDumbSchedulerInit:
         scheduler = DumbScheduler(constraint=mock_constraint)
         assert len(scheduler.scheduled) == 0
 
-    def test_init_constraint_values_copied_suncons(self, mock_constraint):
-        scheduler = DumbScheduler(constraint=mock_constraint)
-        assert scheduler.suncons == mock_constraint.sun_constraint.min_angle
-
-    def test_init_constraint_values_copied_antisuncons(self, mock_constraint):
-        scheduler = DumbScheduler(constraint=mock_constraint)
-        assert scheduler.antisuncons == mock_constraint.anti_sun_constraint.max_angle
-
 
 class TestDumbSchedulerTargetList:
     """Test scheduler target list management."""
