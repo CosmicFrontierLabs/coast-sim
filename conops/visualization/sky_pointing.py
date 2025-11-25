@@ -457,13 +457,10 @@ class SkyPointingController:
             dec_rad = np.radians(dec)
             earth_dec_rad = np.radians(earth_dec)
 
-            cos_value = (
-                np.sin(earth_dec_rad) * np.sin(dec_rad)
-                + np.cos(earth_dec_rad) * np.cos(dec_rad) * np.cos(delta_ra)
-            )
-            angular_dist = np.degrees(
-                np.arccos(np.clip(cos_value, -1.0, 1.0))
-            )
+            cos_value = np.sin(earth_dec_rad) * np.sin(dec_rad) + np.cos(
+                earth_dec_rad
+            ) * np.cos(dec_rad) * np.cos(delta_ra)
+            angular_dist = np.degrees(np.arccos(np.clip(cos_value, -1.0, 1.0)))
 
             if angular_dist <= earth_angular_radius:
                 earth_disk_points.append((ra, dec))
@@ -801,3 +798,194 @@ def save_sky_pointing_frames(
     plt.close(fig)
     print(f"Saved {len(saved_files)} frames to {output_dir}")
     return saved_files
+
+
+def save_sky_pointing_movie(
+    ditl,
+    output_file,
+    fps=10,
+    figsize=(14, 8),
+    n_grid_points=50,
+    frame_interval=1,
+    dpi=100,
+    codec="h264",
+    bitrate=1800,
+    config=None,
+    show_progress=True,
+):
+    """Export the entire DITL sky pointing visualization as a movie.
+
+    Creates an animated movie showing how spacecraft pointing and constraints
+    evolve throughout the entire DITL simulation.
+
+    Parameters
+    ----------
+    ditl : DITL or QueueDITL
+        The DITL simulation object with completed simulation data.
+    output_file : str
+        Output filename for the movie. Extension determines format:
+        - '.mp4' for MP4 video (requires ffmpeg)
+        - '.gif' for animated GIF (requires pillow)
+        - '.avi' for AVI video (requires ffmpeg)
+    fps : float, optional
+        Frames per second in the output movie (default: 10).
+        Lower values create slower playback, higher values faster playback.
+    figsize : tuple, optional
+        Figure size as (width, height) in inches (default: (14, 8)).
+    n_grid_points : int, optional
+        Number of grid points per axis for constraint region calculation
+        (default: 50). Lower values render faster but with less detail.
+    frame_interval : int, optional
+        Use every Nth time step from the DITL (default: 1 = use all frames).
+        Higher values create shorter movies with faster playback.
+    dpi : int, optional
+        Resolution in dots per inch (default: 100).
+        Higher values create larger, higher quality files.
+    codec : str, optional
+        Video codec for MP4/AVI output (default: 'h264').
+        Other options: 'mpeg4', 'libx264', etc.
+    bitrate : int, optional
+        Video bitrate in kbps (default: 1800).
+        Higher values create better quality but larger files.
+    config : Config, optional
+        Configuration object containing visualization settings. If None,
+        uses ditl.config.visualization if available.
+    show_progress : bool, optional
+        Whether to show a progress bar using tqdm (default: True).
+
+    Returns
+    -------
+    str
+        Path to the saved movie file.
+
+    Raises
+    ------
+    ValueError
+        If output format is not supported or required codecs are not available.
+    RuntimeError
+        If movie encoding fails.
+
+    Examples
+    --------
+    >>> # Create MP4 movie at 15 fps
+    >>> save_sky_pointing_movie(ditl, "pointing.mp4", fps=15)
+
+    >>> # Create animated GIF (slower, larger file)
+    >>> save_sky_pointing_movie(ditl, "pointing.gif", fps=5)
+
+    >>> # Fast preview with reduced detail
+    >>> save_sky_pointing_movie(
+    ...     ditl, "preview.mp4",
+    ...     fps=20, frame_interval=5, n_grid_points=30
+    ... )
+
+    >>> # Disable progress bar for automated scripts
+    >>> save_sky_pointing_movie(ditl, "pointing.mp4", show_progress=False)
+
+    Notes
+    -----
+    - MP4 and AVI formats require ffmpeg to be installed on your system
+    - GIF format requires the pillow library
+    - Frame rate (fps) controls playback speed, not simulation time
+    - frame_interval controls which simulation time steps are included
+    - Lower n_grid_points speeds up rendering but reduces visual quality
+    - The movie shows the same view as plot_sky_pointing() but automated
+    - Progress bar requires tqdm library
+    """
+    from matplotlib.animation import FFMpegWriter, PillowWriter
+
+    # Try to import tqdm, fall back to no progress bar if unavailable
+    if show_progress:
+        try:
+            from tqdm import tqdm
+        except ImportError:
+            show_progress = False
+            print("Note: tqdm not available, progress bar disabled")
+
+    # Validate inputs
+    if not hasattr(ditl, "plan") or len(ditl.plan) == 0:
+        raise ValueError("DITL simulation has no pointings. Run calc() first.")
+    if not hasattr(ditl, "utime") or len(ditl.utime) == 0:
+        raise ValueError("DITL has no time data. Run calc() first.")
+
+    # Determine file format and writer
+    file_ext = os.path.splitext(output_file)[1].lower()
+    if file_ext == ".gif":
+        writer_class = PillowWriter
+        writer_kwargs = {"fps": fps}
+    elif file_ext in [".mp4", ".avi"]:
+        writer_class = FFMpegWriter
+        writer_kwargs = {
+            "fps": fps,
+            "codec": codec,
+            "bitrate": bitrate,
+        }
+    else:
+        raise ValueError(
+            f"Unsupported output format: {file_ext}. Use .mp4, .avi, or .gif"
+        )
+
+    # Get visualization config
+    if config is None:
+        if (
+            hasattr(ditl, "config")
+            and hasattr(ditl.config, "visualization")
+            and isinstance(ditl.config.visualization, VisualizationConfig)
+        ):
+            config = ditl.config.visualization
+        else:
+            config = VisualizationConfig()
+
+    # Create figure without controls
+    fig, ax = plt.subplots(figsize=figsize, subplot_kw={"projection": "mollweide"})
+
+    # Create controller for updates
+    controller = SkyPointingController(
+        ditl=ditl,
+        fig=fig,
+        ax=ax,
+        n_grid_points=n_grid_points,
+        time_step_seconds=ditl.step_size,
+        constraint_alpha=0.3,
+        config=config,
+    )
+
+    # Select time steps to animate
+    time_indices = list(range(0, len(ditl.utime), frame_interval))
+    total_frames = len(time_indices)
+
+    print(f"Creating movie with {total_frames} frames at {fps} fps...")
+    print(f"Movie duration: {total_frames / fps:.1f} seconds")
+    print(f"Output: {output_file}")
+
+    # Set up the writer
+    writer = writer_class(**writer_kwargs)
+
+    try:
+        with writer.saving(fig, output_file, dpi=dpi):
+            # Create iterator with optional progress bar
+            if show_progress:
+                iterator = tqdm(
+                    enumerate(time_indices),
+                    total=total_frames,
+                    desc="Rendering frames",
+                    unit="frame",
+                    ncols=80,
+                )
+            else:
+                iterator = enumerate(time_indices)
+
+            for frame_num, idx in iterator:
+                utime = ditl.utime[idx]
+                controller.update_plot(utime)
+
+                # Save this frame
+                writer.grab_frame()
+
+        plt.close(fig)
+        print(f"\nSuccessfully saved movie to {output_file}")
+        return output_file
+
+    except Exception as e:
+        plt.close(fig)
+        raise RuntimeError(f"Failed to create movie: {e}") from e
