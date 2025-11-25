@@ -39,31 +39,32 @@ def mock_ditl():
     ditl.config = config
 
     # Add minimal telemetry data
-    ditl.utime = [0, 3600, 7200, 10800]  # 4 time points: 0, 1, 2, 3 hours
-    ditl.ra = [0.0, 10.0, 20.0, 30.0]
-    ditl.dec = [0.0, 5.0, 10.0, 15.0]
+    ditl.utime = [0, 3600, 7200, 10800, 14400]  # 5 time points: 0, 1, 2, 3, 4 hours
+    ditl.ra = [0.0, 10.0, 20.0, 30.0, 40.0]
+    ditl.dec = [0.0, 5.0, 10.0, 15.0, 20.0]
     ditl.mode = [
-        ACSMode.SCIENCE.value,
-        ACSMode.SLEWING.value,
-        ACSMode.SLEWING.value,
-        ACSMode.SCIENCE.value,
+        ACSMode.SCIENCE,  # 0
+        ACSMode.SAA,  # 1 - SAA passage
+        ACSMode.CHARGING,  # 2 - enter charging
+        ACSMode.SCIENCE,  # 3 - exit charging
+        ACSMode.CHARGING,  # 4 - enter charging again, end with charging
     ]
-    ditl.obsid = [0, 10000, 10001, 0]  # Mix of survey observations and slews
-    ditl.panel = [0.8, 0.9, 0.7, 0.6]  # Solar panel illumination
-    ditl.power = [150.0, 200.0, 180.0, 160.0]  # Power consumption
-    ditl.batterylevel = [0.8, 0.85, 0.82, 0.78]  # Battery levels
-    ditl.charge_state = [1, 1, 1, 0]  # Charging states
+    ditl.obsid = [0, 10000, 10001, 0, 10002]  # Mix of survey observations and slews
+    ditl.panel = [0.8, 0.9, 0.7, 0.6, 0.5]  # Solar panel illumination
+    ditl.power = [150.0, 200.0, 180.0, 160.0, 140.0]  # Power consumption
+    ditl.batterylevel = [0.8, 0.85, 0.82, 0.78, 0.75]  # Battery levels
+    ditl.charge_state = [1, 1, 1, 0, 1]  # Charging states
 
     # Subsystem power breakdown
-    ditl.power_bus = [50.0, 60.0, 55.0, 52.0]
-    ditl.power_payload = [100.0, 140.0, 125.0, 108.0]
+    ditl.power_bus = [50.0, 60.0, 55.0, 52.0, 48.0]
+    ditl.power_payload = [100.0, 140.0, 125.0, 108.0, 92.0]
 
     # Data management telemetry
-    ditl.recorder_volume_gb = [0.0, 0.5, 1.2, 1.8]
-    ditl.recorder_fill_fraction = [0.0, 0.05, 0.12, 0.18]
-    ditl.recorder_alert = [0, 0, 0, 1]
-    ditl.data_generated_gb = [0.0, 0.5, 1.2, 1.8]
-    ditl.data_downlinked_gb = [0.0, 0.3, 0.8, 1.4]
+    ditl.recorder_volume_gb = [0.0, 0.5, 1.2, 1.8, 2.0]
+    ditl.recorder_fill_fraction = [0.0, 0.05, 0.12, 0.18, 0.2]
+    ditl.recorder_alert = [0, 0, 0, 1, 2]
+    ditl.data_generated_gb = [0.0, 0.5, 1.2, 1.8, 2.5]
+    ditl.data_downlinked_gb = [0.0, 0.3, 0.8, 1.4, 2.0]
 
     return ditl
 
@@ -77,6 +78,7 @@ def mock_ditl_with_ephem(mock_ditl):
     mock_ditl.passes = Mock()
     mock_ditl.executed_passes = Mock()
     mock_ditl.acs = Mock()  # Add ACS mock
+    mock_ditl.constraint = Mock()  # Add constraint mock
 
     # Mock the SAA data
     mock_ditl.saa.times = np.array([3600, 7200])  # SAA passages at 1 and 2 hours
@@ -86,8 +88,19 @@ def mock_ditl_with_ephem(mock_ditl):
     mock_ditl.passes.times = np.array([1800, 5400])  # Ground station passes
     mock_ditl.passes.durations = np.array([300, 300])  # 5 minutes each
 
-    # Mock ACS data - set passrequests to None to avoid iteration
-    mock_ditl.acs.passrequests = None
+    # Mock ACS data - set passrequests to have passes for ground station testing
+    mock_pass = Mock()
+    mock_pass.begin = 1800.0
+    mock_pass.length = 300.0
+    mock_ditl.acs.passrequests = Mock()
+    mock_ditl.acs.passrequests.passes = [mock_pass]
+
+    # Mock constraint with in_eclipse method that returns True for some points
+    def mock_in_eclipse(ra, dec, time):
+        # Return True for multiple points to cover enter/exit and extending
+        return time in [7200, 14400]  # utime[2] and utime[4]
+
+    mock_ditl.constraint.in_eclipse = mock_in_eclipse
 
     # Add a mock plan with some entries for timeline plotting
     mock_plan_entry1 = Mock()
@@ -102,6 +115,25 @@ def mock_ditl_with_ephem(mock_ditl):
     mock_plan_entry2.obsid = 0  # Slew
     mock_plan_entry2.slewtime = 120.0
 
-    mock_ditl.plan = [mock_plan_entry1, mock_plan_entry2]
+    # Add a plan entry with zero or negative duration to cover edge cases
+    mock_plan_entry3 = Mock()
+    mock_plan_entry3.begin = 3600.0
+    mock_plan_entry3.end = 3600.0  # Same as begin + slewtime, so duration = 0
+    mock_plan_entry3.obsid = 10001
+    mock_plan_entry3.slewtime = 0.0
+
+    # Add a plan entry with very long duration (> 24 hours) to cover unrealistic duration check
+    mock_plan_entry4 = Mock()
+    mock_plan_entry4.begin = 7200.0
+    mock_plan_entry4.end = 7200.0 + 25 * 3600  # 25 hours later
+    mock_plan_entry4.obsid = 10002
+    mock_plan_entry4.slewtime = 0.0
+
+    mock_ditl.plan = [
+        mock_plan_entry1,
+        mock_plan_entry2,
+        mock_plan_entry3,
+        mock_plan_entry4,
+    ]
 
     return mock_ditl

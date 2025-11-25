@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from conops import DITL, ACSMode
+from conops.ditl.ditl_mixin import DITLMixin
 
 
 class DummyEphemeris:
@@ -128,3 +129,109 @@ def ditl(mock_config_detailed, mock_ephem):
         )
 
         return ditl
+
+
+@pytest.fixture
+def ditl_instance(mock_config):
+    """Fixture to create a DITLMixin instance with mocked dependencies."""
+    with (
+        patch("conops.ditl.ditl_mixin.PassTimes") as mock_pass_class,
+        patch("conops.ditl.ditl_mixin.ACS") as mock_acs_class,
+        patch("conops.ditl.ditl_mixin.Plan") as mock_plan_class,
+    ):
+        # Set return values for patched classes
+        mock_pass_inst = Mock()
+        mock_pass_class.return_value = mock_pass_inst
+        mock_acs_inst = Mock()
+        mock_acs_class.return_value = mock_acs_inst
+        mock_plan_class.return_value = Mock()
+
+        ditl = DITLMixin(config=mock_config)
+        return ditl, mock_pass_inst, mock_acs_inst
+
+
+@pytest.fixture
+def populated_ditl(ditl_instance):
+    """Fixture to populate DITLMixin with sample data for plotting."""
+    ditl, _, _ = ditl_instance
+    # Populate data arrays of same length
+    base_time = 1514764800.0
+    ditl.utime = [base_time + i * 60 for i in range(4)]
+    ditl.ra = [1.0, 2.0, 3.0, 4.0]
+    ditl.dec = [0.5, 0.6, 0.7, 0.8]
+    ditl.mode = [0, 1, 2, 3]
+    ditl.batterylevel = [0.2, 0.3, 0.4, 0.5]
+    ditl.panel = [0.1, 0.2, 0.3, 0.4]
+    ditl.power = [5.0, 6.0, 7.0, 8.0]
+    ditl.obsid = [0, 1, 2, 3]
+    return ditl
+
+
+@pytest.fixture
+def comprehensive_ditl(ditl_instance, mock_config):
+    """Fixture to populate DITLMixin with comprehensive data for statistics."""
+    ditl, _, _ = ditl_instance
+    # Mock battery capacity
+    mock_config.battery.watthour = 100.0
+    mock_config.battery.max_depth_of_discharge = 0.1
+
+    # Mock recorder capacity
+    mock_config.recorder.capacity_gb = 100.0
+    mock_config.recorder.yellow_threshold = 0.8
+    mock_config.recorder.red_threshold = 0.95
+
+    # Populate comprehensive telemetry data
+    base_time = 1514764800.0  # 2018-01-01 00:00:00 UTC
+    ditl.utime = [base_time + i * 60 for i in range(10)]
+    ditl.mode = [0, 1, 2, 0, 1, 2, 0, 1, 2, 0]  # Mix of modes
+    ditl.obsid = [0, 10000, 10001, 0, 10002, 10003, 0, 10004, 10005, 0]
+    ditl.ra = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+    ditl.dec = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4]
+    ditl.roll = [10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 19.0]
+    ditl.batterylevel = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.8, 0.7]
+    ditl.charge_state = [0, 1, 1, 0, 1, 1, 0, 1, 1, 0]
+    ditl.power = [5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0]
+    ditl.power_bus = [2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5]
+    ditl.power_payload = [3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5]
+    ditl.panel_power = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+    ditl.panel = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+
+    # Data management
+    ditl.recorder_volume_gb = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5]
+    ditl.recorder_fill_fraction = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+    ditl.recorder_alert = [0, 0, 0, 1, 1, 1, 2, 2, 2, 2]
+    ditl.data_generated_gb = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+    ditl.data_downlinked_gb = [
+        0.0,
+        0.05,
+        0.1,
+        0.15,
+        0.2,
+        0.25,
+        0.3,
+        0.35,
+        0.4,
+        0.45,
+    ]
+
+    # Mock queue and ACS commands for statistics
+    ditl.queue = Mock()
+    ditl.queue.targets = [Mock(done=True), Mock(done=False), Mock(done=True)]
+
+    ditl.acs = Mock()
+    mock_cmd1 = Mock()
+    mock_cmd1.command_type = Mock()
+    mock_cmd1.command_type.name = "SLEW"
+    mock_cmd2 = Mock()
+    mock_cmd2.command_type = Mock()
+    mock_cmd2.command_type.name = "OBSERVE"
+    ditl.acs.commands = [mock_cmd1, mock_cmd2, mock_cmd1]
+
+    # Mock executed passes
+    mock_pass = Mock()
+    mock_pass.begin = base_time + 120
+    mock_pass.end = base_time + 240
+    ditl.executed_passes = Mock()
+    ditl.executed_passes.passes = [mock_pass]
+
+    return ditl

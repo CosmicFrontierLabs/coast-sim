@@ -3,6 +3,7 @@
 from unittest.mock import Mock
 
 import matplotlib.pyplot as plt
+import pytest
 
 from conops.visualization.ditl_timeline import (
     annotate_slew_distances,
@@ -93,13 +94,69 @@ class TestPlotDitlTimeline:
         # Clean up
         plt.close(fig)
 
+    def test_plot_ditl_timeline_show_saa(self, mock_ditl_with_ephem):
+        """Test plot_ditl_timeline with SAA passages shown."""
+        fig, ax = plot_ditl_timeline(mock_ditl_with_ephem, show_saa=True)
+
+        assert fig is not None
+
+        # Clean up
+        plt.close(fig)
+
+    def test_plot_ditl_timeline_empty_plan_raises_error(self):
+        """Test plot_ditl_timeline raises error with empty plan."""
+        from unittest.mock import Mock
+
+        mock_ditl = Mock()
+        mock_ditl.plan = []
+
+        with pytest.raises(ValueError, match="DITL simulation has no pointings"):
+            plot_ditl_timeline(mock_ditl)
+
+    def test_plot_ditl_timeline_empty_utime_uses_default_duration(self):
+        """Test plot_ditl_timeline uses default duration when utime is empty."""
+        from unittest.mock import Mock
+
+        mock_ditl = Mock()
+        mock_ditl.plan = [Mock()]
+        mock_ditl.plan[0].begin = 0.0
+        mock_ditl.plan[0].end = 1800.0
+        mock_ditl.plan[0].obsid = 10000
+        mock_ditl.plan[0].slewtime = 0.0
+        mock_ditl.config = Mock()
+        mock_ditl.config.observation_categories = None
+        mock_ditl.utime = []  # Empty utime
+        mock_ditl.ra = []
+        mock_ditl.dec = []
+        mock_ditl.mode = []
+        mock_ditl.obsid = []
+        mock_ditl.panel = []
+        mock_ditl.power = []
+        mock_ditl.batterylevel = []
+        mock_ditl.charge_state = []
+        mock_ditl.power_bus = []
+        mock_ditl.power_payload = []
+        mock_ditl.constraint = Mock()
+        mock_ditl.constraint.in_eclipse = Mock(return_value=False)
+        mock_ditl.acs = Mock()
+        mock_ditl.acs.passrequests = Mock()
+        mock_ditl.acs.passrequests.passes = []
+
+        fig, ax = plot_ditl_timeline(mock_ditl)
+
+        assert fig is not None
+
+        # Clean up
+        plt.close(fig)
+
 
 class TestAnnotateSlewDistances:
     """Test annotate_slew_distances function."""
 
     def test_annotate_slew_distances_basic(self, mock_ditl_with_ephem):
         """Test basic annotate_slew_distances functionality."""
-        fig, ax = plt.subplots()
+        fig = plt.figure()
+        ax = plt.axes([0.1, 0.1, 0.8, 0.8])
 
         # Mock the required parameters
         t_start = 0.0
@@ -124,7 +181,8 @@ class TestAnnotateSlewDistances:
 
     def test_annotate_slew_distances_empty_indices(self, mock_ditl_with_ephem):
         """Test annotate_slew_distances with empty slew indices."""
-        fig, ax = plt.subplots()
+        fig = plt.figure()
+        ax = plt.axes([0.1, 0.1, 0.8, 0.8])
 
         t_start = 0.0
         offset_hours = 0.0
@@ -143,7 +201,8 @@ class TestAnnotateSlewDistances:
 
     def test_annotate_slew_distances_multiple_slews(self, mock_ditl_with_ephem):
         """Test annotate_slew_distances with multiple slews."""
-        fig, ax = plt.subplots()
+        fig = plt.figure()
+        ax = plt.axes([0.1, 0.1, 0.8, 0.8])
 
         t_start = 0.0
         offset_hours = 0.0
