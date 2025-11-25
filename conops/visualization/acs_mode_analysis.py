@@ -4,6 +4,7 @@ from collections import Counter
 from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
+from matplotlib.font_manager import FontProperties
 
 from ..config.visualization import VisualizationConfig
 
@@ -50,6 +51,7 @@ def plot_acs_mode_distribution(ditl: "DITLMixin", figsize=(10, 8), config=None):
     font_family = config.font_family
     title_font_size = config.title_font_size
     label_font_size = config.label_font_size
+    title_prop = FontProperties(family=font_family, size=title_font_size, weight="bold")
 
     # Convert mode values to names
     from ..common import ACSMode
@@ -71,9 +73,16 @@ def plot_acs_mode_distribution(ditl: "DITLMixin", figsize=(10, 8), config=None):
 
     # Create pie chart
     fig, ax = plt.subplots(figsize=figsize)
+    # Compute colors for each wedge based on config.mode_colors (fallback to Matplotlib defaults)
+    mode_colors_map = (
+        config.mode_colors if isinstance(config, VisualizationConfig) else {}
+    )
+    wedge_colors = [mode_colors_map.get(label.upper(), None) for label in labels]
+
     pie_res = ax.pie(
         sizes,
         labels=labels,
+        colors=wedge_colors if any(c is not None for c in wedge_colors) else None,
         autopct="%1.1f%%",
         startangle=140,
         textprops={"fontsize": label_font_size, "fontfamily": font_family},
@@ -82,11 +91,7 @@ def plot_acs_mode_distribution(ditl: "DITLMixin", figsize=(10, 8), config=None):
     # Be defensive: ensure we always have wedges, texts, and autotexts variables
     autotexts = pie_res[2] if len(pie_res) > 2 else []
     ax.set_title(
-        "Percentage of Time Spent in Each ACS Mode",
-        fontsize=title_font_size,
-        fontweight="bold",
-        fontfamily=font_family,
-        pad=20,
+        "Percentage of Time Spent in Each ACS Mode", fontproperties=title_prop, pad=20
     )
     ax.axis("equal")  # Equal aspect ratio ensures pie is a circle
 

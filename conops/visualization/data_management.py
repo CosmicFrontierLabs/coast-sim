@@ -3,6 +3,7 @@
 from datetime import datetime
 
 import matplotlib.pyplot as plt
+from matplotlib.font_manager import FontProperties
 
 from ..config.visualization import VisualizationConfig
 
@@ -54,6 +55,8 @@ def plot_data_management_telemetry(
     # Set default font settings
     font_family = config.font_family
     title_font_size = config.title_font_size
+    # Create a FontProperties object for titles to ensure font family and size are applied
+    title_prop = FontProperties(family=font_family, size=title_font_size, weight="bold")
     label_font_size = config.label_font_size
     tick_font_size = config.tick_font_size
 
@@ -66,12 +69,7 @@ def plot_data_management_telemetry(
     # Plot 1: Recorder Volume (Gb)
     axes[0].plot(times, ditl.recorder_volume_gb, "b-", linewidth=2)
     axes[0].set_ylabel("Volume (Gb)", fontsize=label_font_size, fontfamily=font_family)
-    axes[0].set_title(
-        "Onboard Recorder Data Volume",
-        fontsize=title_font_size,
-        fontweight="bold",
-        fontfamily=font_family,
-    )
+    axes[0].set_title("Onboard Recorder Data Volume", fontproperties=title_prop)
     axes[0].grid(True, alpha=0.3)
     axes[0].axhline(
         y=ditl.config.recorder.capacity_gb,
@@ -79,7 +77,7 @@ def plot_data_management_telemetry(
         linestyle="--",
         label=f"Capacity ({ditl.config.recorder.capacity_gb} Gb)",
     )
-    axes[0].legend(prop={"family": font_family, "size": label_font_size})
+    axes[0].legend(prop={"family": font_family, "size": config.legend_font_size})
 
     # Plot 2: Recorder Fill Fraction
     axes[1].plot(times, ditl.recorder_fill_fraction, "g-", linewidth=2)
@@ -98,26 +96,16 @@ def plot_data_management_telemetry(
     axes[1].set_ylabel(
         "Fill Fraction", fontsize=label_font_size, fontfamily=font_family
     )
-    axes[1].set_title(
-        "Recorder Fill Level",
-        fontsize=title_font_size,
-        fontweight="bold",
-        fontfamily=font_family,
-    )
+    axes[1].set_title("Recorder Fill Level", fontproperties=title_prop)
     axes[1].grid(True, alpha=0.3)
-    axes[1].legend(prop={"family": font_family, "size": label_font_size})
+    axes[1].legend(prop={"family": font_family, "size": config.legend_font_size})
 
     # Plot 3: Cumulative Data Generated (Gb)
     axes[2].plot(times, ditl.data_generated_gb, "m-", linewidth=2)
     axes[2].set_ylabel(
         "Data Generated (Gb)", fontsize=label_font_size, fontfamily=font_family
     )
-    axes[2].set_title(
-        "Cumulative Data Generated",
-        fontsize=title_font_size,
-        fontweight="bold",
-        fontfamily=font_family,
-    )
+    axes[2].set_title("Cumulative Data Generated", fontproperties=title_prop)
     axes[2].grid(True, alpha=0.3)
 
     # Plot 4: Cumulative Data Downlinked (Gb)
@@ -125,12 +113,7 @@ def plot_data_management_telemetry(
     axes[3].set_ylabel(
         "Data Downlinked (Gb)", fontsize=label_font_size, fontfamily=font_family
     )
-    axes[3].set_title(
-        "Cumulative Data Downlinked",
-        fontsize=title_font_size,
-        fontweight="bold",
-        fontfamily=font_family,
-    )
+    axes[3].set_title("Cumulative Data Downlinked", fontproperties=title_prop)
     axes[3].grid(True, alpha=0.3)
 
     # Plot 5: Recorder Alert Timeline
@@ -142,12 +125,7 @@ def plot_data_management_telemetry(
     axes[4].set_yticklabels(["None", "Yellow", "Red"])
     axes[4].set_ylabel("Alert Level", fontsize=label_font_size, fontfamily=font_family)
     axes[4].set_xlabel("Time", fontsize=label_font_size, fontfamily=font_family)
-    axes[4].set_title(
-        "Recorder Alert Timeline",
-        fontsize=title_font_size,
-        fontweight="bold",
-        fontfamily=font_family,
-    )
+    axes[4].set_title("Recorder Alert Timeline", fontproperties=title_prop)
     axes[4].grid(True, alpha=0.3)
 
     # Set tick font sizes

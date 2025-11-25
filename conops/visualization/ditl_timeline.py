@@ -306,7 +306,7 @@ def plot_ditl_timeline(
         ncol=4,
         fancybox=True,
         shadow=False,
-        fontsize=font_size,
+        fontsize=config.legend_font_size if config else font_size,
         prop={"family": font_family},
     )
 

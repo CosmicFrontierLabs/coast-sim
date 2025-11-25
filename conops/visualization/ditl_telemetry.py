@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.font_manager import FontProperties
 
 from ..config.visualization import VisualizationConfig
 
@@ -56,6 +57,7 @@ def plot_ditl_telemetry(ditl: "DITLMixin", figsize=(10, 8), config=None):
     title_font_size = config.title_font_size
     label_font_size = config.label_font_size
     tick_font_size = config.tick_font_size
+    title_prop = FontProperties(family=font_family, size=title_font_size, weight="bold")
 
     timehours = (np.array(ditl.utime) - ditl.utime[0]) / 3600
 
@@ -68,10 +70,7 @@ def plot_ditl_telemetry(ditl: "DITLMixin", figsize=(10, 8), config=None):
     ax.xaxis.set_visible(False)
     plt.ylabel("RA", fontsize=label_font_size, fontfamily=font_family)
     ax.set_title(
-        f"Timeline for DITL Simulation: {ditl.config.name}",
-        fontsize=title_font_size,
-        fontweight="bold",
-        fontfamily=font_family,
+        f"Timeline for DITL Simulation: {ditl.config.name}", fontproperties=title_prop
     )
 
     ax = plt.subplot(712)
@@ -119,7 +118,9 @@ def plot_ditl_telemetry(ditl: "DITLMixin", figsize=(10, 8), config=None):
         ax.plot(timehours, ditl.power_payload, label="Payload", alpha=0.8)
         ax.plot(timehours, ditl.power, label="Total", linewidth=2, alpha=0.9)
         ax.legend(
-            loc="upper right", fontsize=tick_font_size, prop={"family": font_family}
+            loc="upper right",
+            fontsize=config.legend_font_size,
+            prop={"family": font_family},
         )
     else:
         # Fall back to total power only
