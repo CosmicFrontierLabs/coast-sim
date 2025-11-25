@@ -11,16 +11,7 @@ import numpy as np
 from matplotlib.widgets import Button, Slider
 
 from ..common import dtutcfromtimestamp
-
-# ACS mode color mapping
-MODE_COLORS = {
-    "SCIENCE": "green",
-    "SLEWING": "orange",
-    "SAA": "purple",
-    "PASS": "cyan",
-    "CHARGING": "yellow",
-    "SAFE": "red",
-}
+from ..config.visualization import VisualizationConfig
 
 
 def plot_sky_pointing(
@@ -30,6 +21,7 @@ def plot_sky_pointing(
     show_controls=True,
     time_step_seconds=None,
     constraint_alpha=0.3,
+    config=None,
 ):
     """Plot spacecraft pointing on a mollweide sky map with constraints.
 
@@ -54,6 +46,8 @@ def plot_sky_pointing(
         Time step in seconds for controls. If None, uses ditl.step_size (default: None).
     constraint_alpha : float, optional
         Alpha transparency for constraint regions (default: 0.3).
+    config : Config, optional
+        Configuration object containing visualization settings. If None, uses ditl.config.visualization if available.
 
     Returns
     -------
@@ -61,11 +55,11 @@ def plot_sky_pointing(
         The created figure.
     ax : matplotlib.axes.Axes
         The axes containing the sky map.
-    controller : SkyPointingController or None
-        The interactive controller object if show_controls=True, else None.
-
-    Examples
-    --------
+        if not isinstance(config, VisualizationConfig):
+            if hasattr(ditl, 'config') and hasattr(ditl.config, 'visualization') and isinstance(ditl.config.visualization, VisualizationConfig):
+                config = ditl.config.visualization
+            else:
+                config = VisualizationConfig()
     >>> from conops import DITL
     >>> ditl = DITL(config)
     >>> ditl.calc()
@@ -91,6 +85,17 @@ def plot_sky_pointing(
     if time_step_seconds is None:
         time_step_seconds = ditl.step_size
 
+    # Get visualization config
+    if config is None:
+        if (
+            hasattr(ditl, "config")
+            and hasattr(ditl.config, "visualization")
+            and isinstance(ditl.config.visualization, VisualizationConfig)
+        ):
+            config = ditl.config.visualization
+        else:
+            config = VisualizationConfig()
+
     # Create the visualization
     if show_controls:
         fig = plt.figure(figsize=figsize)
@@ -109,6 +114,7 @@ def plot_sky_pointing(
         n_grid_points=n_grid_points,
         time_step_seconds=time_step_seconds,
         constraint_alpha=constraint_alpha,
+        config=config,
     )
 
     # Initial plot
@@ -132,6 +138,7 @@ class SkyPointingController:
         n_grid_points=100,
         time_step_seconds=60,
         constraint_alpha=0.3,
+        config=None,
     ):
         """Initialize the controller.
 
@@ -149,6 +156,8 @@ class SkyPointingController:
             Time step for controls in seconds.
         constraint_alpha : float
             Alpha transparency for constraint regions.
+        config : VisualizationConfig, optional
+            Visualization configuration settings.
         """
         self.ditl = ditl
         self.fig = fig
@@ -156,6 +165,7 @@ class SkyPointingController:
         self.n_grid_points = n_grid_points
         self.time_step_seconds = time_step_seconds
         self.constraint_alpha = constraint_alpha
+        self.config = config
 
         # State
         self.current_time_idx = 0
@@ -581,7 +591,19 @@ class SkyPointingController:
 
         # Color based on ACS mode
         mode_name = mode.name if hasattr(mode, "name") else str(mode)
-        color = MODE_COLORS.get(mode_name, "red")
+        mode_colors = (
+            self.config.mode_colors
+            if self.config
+            else {
+                "SCIENCE": "green",
+                "SLEWING": "orange",
+                "SAA": "purple",
+                "PASS": "cyan",
+                "CHARGING": "yellow",
+                "SAFE": "red",
+            }
+        )
+        color = mode_colors.get(mode_name, "red")
 
         # Plot with distinctive marker
         self.ax.plot(
@@ -640,6 +662,19 @@ class SkyPointingController:
         # Add ACS mode color legend entries
         from matplotlib.lines import Line2D
 
+        mode_colors = (
+            self.config.mode_colors
+            if self.config
+            else {
+                "SCIENCE": "green",
+                "SLEWING": "orange",
+                "SAA": "purple",
+                "PASS": "cyan",
+                "CHARGING": "yellow",
+                "SAFE": "red",
+            }
+        )
+
         # Add separator and ACS mode entries
         mode_handles = [
             Line2D(
@@ -653,7 +688,7 @@ class SkyPointingController:
                 markeredgewidth=1,
                 label=f"{mode.lower().capitalize()}",
             )
-            for mode, color in MODE_COLORS.items()
+            for mode, color in mode_colors.items()
         ]
 
         all_handles = list(by_label.values()) + mode_handles
@@ -685,7 +720,7 @@ class SkyPointingController:
 
 
 def save_sky_pointing_frames(
-    ditl, output_dir, figsize=(14, 8), n_grid_points=50, frame_interval=1
+    ditl, output_dir, figsize=(14, 8), n_grid_points=50, frame_interval=1, config=None
 ):
     """Save individual frames of the sky pointing visualization.
 
@@ -703,6 +738,8 @@ def save_sky_pointing_frames(
         Grid resolution for constraints.
     frame_interval : int
         Save every Nth time step (default: 1 = save all).
+    config : Config, optional
+        Configuration object containing visualization settings.
 
     Returns
     -------
@@ -717,6 +754,7 @@ def save_sky_pointing_frames(
         figsize=figsize,
         n_grid_points=n_grid_points,
         show_controls=False,
+        config=config,
     )
 
     controller = SkyPointingController(
@@ -726,6 +764,7 @@ def save_sky_pointing_frames(
         n_grid_points=n_grid_points,
         time_step_seconds=ditl.step_size,
         constraint_alpha=0.3,
+        config=config,
     )
 
     saved_files = []

@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 
 from ..common import ACSMode
 from ..config import ObservationCategories
+from ..config.visualization import VisualizationConfig
 
 
 def plot_ditl_timeline(
@@ -19,9 +20,10 @@ def plot_ditl_timeline(
     show_orbit_numbers=True,
     show_saa=False,
     save_path=None,
-    font_family="Helvetica",
-    font_size=11,
+    font_family=None,
+    font_size=None,
     observation_categories=None,
+    config=None,
 ):
     """Plot a DITL timeline showing spacecraft operations.
 
@@ -51,13 +53,15 @@ def plot_ditl_timeline(
     save_path : str, optional
         If provided, save the figure to this path (default: None).
     font_family : str, optional
-        Font family to use for text (default: 'Helvetica').
+        Font family to use for text. If None, uses config.font_family (default: 'Helvetica').
     font_size : int, optional
-        Base font size for labels (default: 11).
+        Base font size for labels. If None, uses config.label_font_size (default: 11).
     observation_categories : ObservationCategories, optional
         Configuration for categorizing observations by target ID ranges.
         If None, attempts to use ditl.config.observation_categories, then
         falls back to default categories.
+    config : VisualizationConfig, optional
+        Visualization configuration settings. If None, uses ditl.config.visualization if available.
 
     Returns
     -------
@@ -74,6 +78,25 @@ def plot_ditl_timeline(
     >>> fig, ax = plot_ditl_timeline(ditl, save_path='ditl_timeline.pdf')
     >>> plt.show()
     """
+    # Resolve config
+    if config is None:
+        # Resolve config: if the provided config is not a VisualizationConfig instance,
+        # then try to use ditl.config.visualization if it's a VisualizationConfig, else use defaults.
+        if not isinstance(config, VisualizationConfig):
+            if (
+                hasattr(ditl, "config")
+                and hasattr(ditl.config, "visualization")
+                and isinstance(ditl.config.visualization, VisualizationConfig)
+            ):
+                config = ditl.config.visualization
+            else:
+                config = VisualizationConfig()
+    # Set default font settings
+    if font_family is None:
+        font_family = config.font_family
+    if font_size is None:
+        font_size = config.label_font_size
+
     hfont = {"fontname": font_family, "fontsize": font_size}
 
     # Extract simulation start time

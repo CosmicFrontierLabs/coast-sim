@@ -25,6 +25,7 @@ def mock_ditl():
     # Pointing data
     ditl.ra = np.random.uniform(0, 360, 100)
     ditl.dec = np.random.uniform(-60, 60, 100)
+    ditl.mode = [1] * 100  # Mock ACS mode data
 
     # Plan with scheduled observations
     ditl.plan = []
@@ -59,6 +60,7 @@ def mock_ditl():
     earth_mock.ra = Mock(deg=270.0)
     earth_mock.dec = Mock(deg=-15.0)
     ephem.earth = [earth_mock]
+    ephem.earth_radius_deg = [10.0]  # Mock earth angular radius
 
     ditl.constraint.ephem = ephem
 
@@ -134,6 +136,7 @@ class TestPlotSkyPointing:
         mock_fig = Mock()
         mock_ax = Mock()
         mock_ax.get_legend_handles_labels.return_value = ([], [])
+        mock_ax.get_yticklabels.return_value = []
         mock_plt.subplots.return_value = (mock_fig, mock_ax)
 
         fig, ax, controller = plot_sky_pointing(
@@ -400,7 +403,7 @@ class TestPlotElements:
             ax=mock_ax,
         )
 
-        controller._plot_current_pointing(45.0, 30.0)
+        controller._plot_current_pointing(45.0, 30.0, 1)
 
         # Should call plot to draw the pointing marker
         assert mock_ax.plot.called

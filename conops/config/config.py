@@ -11,6 +11,7 @@ from .observation_categories import ObservationCategories
 from .recorder import OnboardRecorder
 from .solar_panel import SolarPanelSet
 from .spacecraft_bus import SpacecraftBus
+from .visualization import VisualizationConfig
 
 
 class Config(BaseModel):
@@ -30,6 +31,7 @@ class Config(BaseModel):
     observation_categories: ObservationCategories = (
         ObservationCategories.default_categories()
     )
+    visualization: VisualizationConfig = VisualizationConfig()
 
     def init_fault_management_defaults(self) -> None:
         """Initialize default fault thresholds if none provided.
