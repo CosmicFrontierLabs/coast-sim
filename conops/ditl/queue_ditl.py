@@ -417,8 +417,20 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _manage_ppt_lifecycle(self, utime: float, mode: ACSMode) -> None:
         """Manage the lifecycle of the current pointing (PPT)."""
-        if self.ppt is None or self.ppt == self.charging_ppt:
-            print(f"{self.ppt} == {self.charging_ppt}")
+        if self.ppt is None:
+            return
+
+        # Handle charging PPT constraint checks (regardless of mode)
+        if self.ppt == self.charging_ppt:
+            # Check constraints for charging PPT even if mode hasn't transitioned yet
+            if self.constraint.inoccult(self.ppt.ra, self.ppt.dec, utime):
+                constraint_name = self._get_constraint_name(
+                    self.ppt.ra, self.ppt.dec, utime
+                )
+                print(
+                    f"{unixtime2date(utime)} Charging PPT {constraint_name} constrained, terminating"
+                )
+                self._terminate_emergency_charging("constraint", utime)
             return
 
         # Decrement exposure time when actively observing
@@ -478,6 +490,7 @@ class QueueDITL(DITLMixin, DITLStats):
             self.ppt.done = True
 
         self.ppt = None
+        self.acs.last_slew = None
 
     def _get_constraint_name(self, ra: float, dec: float, utime: float) -> str:
         """Determine which constraint is violated."""
@@ -665,6 +678,7 @@ class QueueDITL(DITLMixin, DITLStats):
             self.charging_ppt.end = utime
             self.charging_ppt.done = True
             self.charging_ppt = None
+            self.acs.last_slew = None
 
     def _terminate_emergency_charging(self, reason: str, utime: float) -> None:
         """Terminate emergency charging and log the reason."""
