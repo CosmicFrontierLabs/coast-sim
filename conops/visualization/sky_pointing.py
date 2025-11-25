@@ -272,6 +272,9 @@ class SkyPointingController:
         # Plot constraint regions
         self._plot_constraint_regions(utime)
 
+        # Plot Earth physical disk
+        self._plot_earth_disk(utime)
+
         # Plot current pointing
         self._plot_current_pointing(current_ra, current_dec, current_mode)
 
@@ -299,8 +302,8 @@ class SkyPointingController:
             ra = ppt.ra
             dec = ppt.dec
 
-            # Convert RA from 0-360 to -180 to 180 for mollweide
-            ra_plot = ra if ra <= 180 else ra - 360
+            # Convert RA from 0-360 to -180 to 180 for mollweide, with RA=0 on left
+            ra_plot = ra - 180
 
             ras.append(np.deg2rad(ra_plot))
             decs.append(np.deg2rad(dec))
@@ -388,6 +391,79 @@ class SkyPointingController:
                 body_dec,
             )
 
+    def _plot_earth_disk(self, utime):
+        """Plot the physical extent of Earth as seen from the spacecraft.
+
+        Parameters
+        ----------
+        utime : float
+            Unix timestamp for Earth position calculation.
+        """
+        dt = dtutcfromtimestamp(utime)
+        ephem = self.ditl.constraint.ephem
+        idx = ephem.index(dt)
+
+        # Get Earth position and angular radius
+        earth_ra = ephem.earth[idx].ra.deg
+        earth_dec = ephem.earth[idx].dec.deg
+        earth_angular_radius = ephem.earth_radius_deg[idx]
+
+        # Use the same grid sampling approach as constraints
+        # Linear declination sampling
+        dec_samples = np.linspace(-90, 90, self.n_grid_points)
+
+        # For each declination, calculate how many RA samples we need
+        # based on cos(dec) for even visual density in Mollweide projection
+        cos_factors = np.cos(np.radians(dec_samples))
+        n_ra_array = np.maximum(8, (self.n_grid_points * 2 * cos_factors).astype(int))
+
+        ra_flat = np.concatenate(
+            [np.linspace(0, 360, n, endpoint=False) for n in n_ra_array]
+        )
+        dec_flat = np.concatenate(
+            [np.full(n, dec) for n, dec in zip(n_ra_array, dec_samples)]
+        )
+
+        # Check which points are inside the Earth disk
+        earth_disk_points = []
+        for ra, dec in zip(ra_flat, dec_flat):
+            # Calculate angular distance from Earth center
+            # Using spherical distance formula
+            delta_ra = np.radians(ra - earth_ra)
+            dec_rad = np.radians(dec)
+            earth_dec_rad = np.radians(earth_dec)
+
+            angular_dist = np.degrees(
+                np.arccos(
+                    np.sin(earth_dec_rad) * np.sin(dec_rad)
+                    + np.cos(earth_dec_rad) * np.cos(dec_rad) * np.cos(delta_ra)
+                )
+            )
+
+            if angular_dist <= earth_angular_radius:
+                earth_disk_points.append((ra, dec))
+
+        # Plot Earth disk points
+        if earth_disk_points:
+            points = np.array(earth_disk_points)
+            ra_vals = points[:, 0]
+            dec_vals = points[:, 1]
+
+            # Convert so RA=0 appears on the left
+            ra_plot = ra_vals - 180
+
+            self.ax.scatter(
+                np.deg2rad(ra_plot),
+                np.deg2rad(dec_vals),
+                s=20,
+                c="darkblue",
+                alpha=0.8,
+                marker="s",
+                edgecolors="none",
+                label="Earth Disk",
+                zorder=2.5,
+            )
+
     def _plot_single_constraint(
         self, name, constraint_func, color, utime, ra_grid, dec_grid, body_ra, body_dec
     ):
@@ -447,8 +523,8 @@ class SkyPointingController:
             dec_vals = points[:, 1]
 
             # For Mollweide projection: RA range is -180 to 180
-            # Plot points in their natural position
-            ra_plot = np.where(ra_vals <= 180, ra_vals, ra_vals - 360)
+            # Convert so RA=0 appears on the left
+            ra_plot = ra_vals - 180
 
             # Plot main points
             self.ax.scatter(
@@ -465,7 +541,7 @@ class SkyPointingController:
 
         # Mark celestial body position
         if body_ra is not None and body_dec is not None:
-            ra_plot = body_ra if body_ra <= 180 else body_ra - 360
+            ra_plot = body_ra - 180
             self.ax.plot(
                 np.deg2rad(ra_plot),
                 np.deg2rad(body_dec),
@@ -490,8 +566,8 @@ class SkyPointingController:
         mode : ACSMode
             Current ACS mode.
         """
-        # Convert RA for plotting
-        ra_plot = ra if ra <= 180 else ra - 360
+        # Convert RA for plotting (RA=0 on left)
+        ra_plot = ra - 180
 
         # Color based on ACS mode
         mode_colors = {
@@ -600,11 +676,10 @@ class SkyPointingController:
         )
 
         # Set RA tick labels (mollweide uses radians internally)
+        # RA=0 is on the left at -180°
         ra_ticks = np.deg2rad(np.array([-180, -120, -60, 0, 60, 120, 180]))
         self.ax.set_xticks(ra_ticks)
-        self.ax.set_xticklabels(
-            ["180°", "240°", "300°", "0°/360°", "60°", "120°", "180°"]
-        )
+        self.ax.set_xticklabels(["0°", "60°", "120°", "180°", "240°", "300°", "360°"])
 
 
 def save_sky_pointing_frames(
