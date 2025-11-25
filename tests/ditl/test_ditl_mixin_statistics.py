@@ -11,6 +11,7 @@ from conops import (
     Config,
     Constraint,
     DITLMixin,
+    DITLStats,
     GroundStationRegistry,
     Payload,
     SolarPanelSet,
@@ -18,7 +19,7 @@ from conops import (
 )
 
 
-class MockDITL(DITLMixin):
+class MockDITL(DITLMixin, DITLStats):
     """Mock DITL class for testing."""
 
     def __init__(self, config: Config) -> None:

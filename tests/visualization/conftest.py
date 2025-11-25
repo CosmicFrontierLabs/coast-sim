@@ -45,7 +45,7 @@ def mock_ditl():
     ditl.mode = [
         ACSMode.SCIENCE,  # 0
         ACSMode.SAA,  # 1 - SAA passage
-        ACSMode.CHARGING,  # 2 - enter charging
+        ACSMode.SLEWING,  # 2 - slewing
         ACSMode.SCIENCE,  # 3 - exit charging
         ACSMode.CHARGING,  # 4 - enter charging again, end with charging
     ]

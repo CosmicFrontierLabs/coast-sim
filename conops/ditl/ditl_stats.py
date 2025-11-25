@@ -12,7 +12,7 @@ class DITLStats:
     config: Config
     begin: datetime
     end: datetime
-    step_size: float
+    step_size: int
     utime: list[float]
     mode: list[int]
     ra: list[float]

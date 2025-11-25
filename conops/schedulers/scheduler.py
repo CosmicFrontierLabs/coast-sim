@@ -34,8 +34,6 @@ class DumbScheduler:
         self.config: Config | None = None  # optional: can be set externally
         self.gimbled = False  # Default: not gimbled
         self.sidemount = False  # Default: not side-mounted
-        self.suncons = self.constraint.sun_constraint.min_angle
-        self.antisuncons = self.constraint.anti_sun_constraint.max_angle
 
     def _init_saa(self) -> None:
         if self.saa is None:
@@ -168,8 +166,6 @@ class DumbScheduler:
             ppt.obsid = selected_target.targetid
             assert self.saa is not None
             ppt.saa = self.saa
-            ppt.sidemount = self.sidemount
-            ppt.gimbled = self.gimbled
             ppt.merit = selected_target.merit
             ppt.name = selected_target.name
 
