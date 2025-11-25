@@ -13,9 +13,10 @@ from ..simulation.emergency_charging import EmergencyCharging
 from ..simulation.slew import Slew
 from ..targets import Plan, Pointing, Queue
 from .ditl_mixin import DITLMixin
+from .ditl_stats import DITLStats
 
 
-class QueueDITL(DITLMixin):
+class QueueDITL(DITLMixin, DITLStats):
     """
     Class to run a Day In The Life (DITL) simulation based on a target
     Queue. Rather than creating a observing plan and then running it, this

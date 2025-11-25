@@ -39,6 +39,7 @@ from .ditl import (
     DITL,
     DITLMixin,
     DITLs,
+    DITLStats,
     QueueDITL,
 )
 from .schedulers import (
@@ -126,6 +127,7 @@ __all__ = [
     "TargetQueue",
     "unixtime2date",
     "unixtime2yearday",
+    "DITLStats",
 ]
 
 # Resolve forward references in Pydantic models

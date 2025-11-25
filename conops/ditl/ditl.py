@@ -2,9 +2,10 @@ import numpy as np
 
 from ..config import Config  # type: ignore[attr-defined]
 from .ditl_mixin import DITLMixin
+from .ditl_stats import DITLStats
 
 
-class DITL(DITLMixin):
+class DITL(DITLMixin, DITLStats):
     """Day In The Life (DITL) simulation class.
 
     Simulates a single day of spacecraft operations by executing a pre-planned

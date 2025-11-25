@@ -181,7 +181,23 @@ def populated_ditl(ditl_instance):
 @pytest.fixture
 def comprehensive_ditl(ditl_instance, mock_config):
     """Fixture to populate DITLMixin with comprehensive data for statistics."""
-    ditl, _, _ = ditl_instance
+    from conops.ditl.ditl_stats import DITLStats
+
+    # Create a class that inherits from both mixins
+    class TestDITLWithStats(DITLMixin, DITLStats):
+        pass
+
+    ditl = TestDITLWithStats(config=mock_config)
+    # Copy the initialized attributes from the ditl_instance
+    original_ditl, _, _ = ditl_instance
+    ditl.passes = original_ditl.passes
+    ditl.acs = original_ditl.acs
+    ditl.plan = original_ditl.plan
+    ditl.executed_passes = original_ditl.executed_passes
+    ditl.begin = original_ditl.begin
+    ditl.end = original_ditl.end
+    ditl.step_size = original_ditl.step_size
+
     # Mock battery capacity
     mock_config.battery.watthour = 100.0
     mock_config.battery.max_depth_of_discharge = 0.1
