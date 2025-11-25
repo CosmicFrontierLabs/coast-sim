@@ -368,17 +368,21 @@ class ACS:
         ):
             execution_time = self.last_slew.slewstart + self.last_slew.slewtime
             print(
-                "%s: Slewing - delaying next slew until %s",
-                unixtime2date(utime),
-                unixtime2date(execution_time),
+                "%s: Slewing - delaying next slew until %s"
+                % (
+                    unixtime2date(utime),
+                    unixtime2date(execution_time),
+                )
             )
 
         # Wait for target visibility if constrained
         if visstart > execution_time and slew.obstype == "PPT":
             print(
-                "%s: Slew delayed by %.1fs",
-                unixtime2date(utime),
-                visstart - execution_time,
+                "%s: Slew delayed by %.1fs"
+                % (
+                    unixtime2date(utime),
+                    visstart - execution_time,
+                )
             )
             execution_time = visstart
 
@@ -525,14 +529,16 @@ class ACS:
             assert self.last_slew.at is not None
             print(
                 "%s: CONSTRAINT: RA=%s Dec=%s obsid=%s Moon=%s Sun=%s Earth=%s Panel=%s"
-                % unixtime2date(utime),
-                self.last_slew.at.ra,
-                self.last_slew.at.dec,
-                self.last_slew.obsid,
-                self.last_slew.at.in_moon(utime),
-                self.last_slew.at.in_sun(utime),
-                self.last_slew.at.in_earth(utime),
-                self.last_slew.at.in_panel(utime),
+                % (
+                    unixtime2date(utime),
+                    self.last_slew.at.ra,
+                    self.last_slew.at.dec,
+                    self.last_slew.obsid,
+                    self.last_slew.at.in_moon(utime),
+                    self.last_slew.at.in_sun(utime),
+                    self.last_slew.at.in_earth(utime),
+                    self.last_slew.at.in_panel(utime),
+                )
             )
             # Note: acsmode remains SCIENCE - the DITL will decide if charging is needed
 
