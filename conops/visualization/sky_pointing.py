@@ -56,11 +56,6 @@ def plot_sky_pointing(
         The created figure.
     ax : matplotlib.axes.Axes
         The axes containing the sky map.
-        if not isinstance(config, VisualizationConfig):
-            if hasattr(ditl, 'config') and hasattr(ditl.config, 'visualization') and isinstance(ditl.config.visualization, VisualizationConfig):
-                config = ditl.config.visualization
-            else:
-                config = VisualizationConfig()
 
     Examples
     --------
