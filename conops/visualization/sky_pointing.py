@@ -61,6 +61,9 @@ def plot_sky_pointing(
                 config = ditl.config.visualization
             else:
                 config = VisualizationConfig()
+
+    Examples
+    --------
     >>> from conops import DITL
     >>> ditl = DITL(config)
     >>> ditl.calc()
