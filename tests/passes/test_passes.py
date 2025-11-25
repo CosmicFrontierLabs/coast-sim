@@ -200,15 +200,8 @@ class TestPassProperties:
         p.pre_slew = None
         assert p.slewpath is None
 
-    def test_slewsecs_property(self, basic_pass):
-        """Test slewsecs property."""
-        secs = np.array([0, 10, 20, 30])
-        basic_pass.pre_slew.slewsecs = secs
-        np.testing.assert_array_equal(basic_pass.slewsecs, secs)
-
     def test_slewsecs_property_no_attribute(self, basic_pass):
-        """Test slewsecs property when pre_slew doesn't have slewsecs."""
-        del basic_pass.pre_slew.slewsecs
+        """Test slewsecs property - always returns empty array in modern implementation."""
         result = basic_pass.slewsecs
         assert isinstance(result, np.ndarray)
         assert len(result) == 0
