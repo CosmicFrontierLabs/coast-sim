@@ -72,3 +72,15 @@ class TestPlotAcsModeDistribution:
 
         # Clean up
         plt.close(fig)
+
+    def test_plot_acs_mode_distribution_title_font_from_config(self, mock_ditl):
+        """Test that the plot title uses the font family from VisualizationConfig."""
+        from conops.config.visualization import VisualizationConfig
+
+        viz_config = VisualizationConfig(font_family="Courier")
+        fig, ax = plot_acs_mode_distribution(mock_ditl, config=viz_config)
+        # Get the font family applied to title font properties
+        family = ax.title.get_fontproperties().get_family()
+        assert isinstance(family, (list, tuple))
+        assert "Courier" in family or family == ["Courier"]
+        plt.close(fig)

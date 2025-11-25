@@ -12,6 +12,7 @@ from .recorder import OnboardRecorder
 from .solar_panel import SolarPanel, SolarPanelSet
 from .spacecraft_bus import SpacecraftBus
 from .thermal import Heater
+from .visualization import VisualizationConfig
 
 __all__ = [
     "Antenna",
@@ -35,6 +36,7 @@ __all__ = [
     "AttitudeControlSystem",
     "SpacecraftBus",
     "Heater",
+    "VisualizationConfig",
     "DAY_SECONDS",
     "DTOR",
 ]

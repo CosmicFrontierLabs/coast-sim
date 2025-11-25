@@ -15,6 +15,7 @@ optimize observation schedules, and validate operational constraints before laun
    installation
    quickstart
    examples
+   visualization
    data_management
    fault_management
    api/modules

@@ -4,12 +4,15 @@ from collections import Counter
 from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
+from matplotlib.font_manager import FontProperties
+
+from ..config.visualization import VisualizationConfig
 
 if TYPE_CHECKING:
     from ..ditl.ditl_mixin import DITLMixin
 
 
-def plot_acs_mode_distribution(ditl: "DITLMixin", figsize=(10, 8)):
+def plot_acs_mode_distribution(ditl: "DITLMixin", figsize=(10, 8), config=None):
     """Plot a pie chart showing the distribution of time spent in each ACS mode.
 
     Creates a pie chart displaying the percentage of time spent in different
@@ -19,6 +22,7 @@ def plot_acs_mode_distribution(ditl: "DITLMixin", figsize=(10, 8)):
     Args:
         ditl: DITLMixin instance containing simulation telemetry data.
         figsize: Tuple of (width, height) for the figure size. Default: (10, 8)
+        config: VisualizationConfig object. If None, uses ditl.config.visualization if available.
 
     Returns:
         tuple: (fig, ax) - The matplotlib figure and axes objects.
@@ -31,6 +35,24 @@ def plot_acs_mode_distribution(ditl: "DITLMixin", figsize=(10, 8)):
         >>> fig, ax = plot_acs_mode_distribution(ditl)
         >>> plt.show()
     """
+    # Resolve config: if the provided config is not a VisualizationConfig instance,
+    # then try to use ditl.config.visualization if it's a VisualizationConfig, else use defaults.
+    if not isinstance(config, VisualizationConfig):
+        if (
+            hasattr(ditl, "config")
+            and hasattr(ditl.config, "visualization")
+            and isinstance(ditl.config.visualization, VisualizationConfig)
+        ):
+            config = ditl.config.visualization
+        else:
+            config = VisualizationConfig()
+
+    # Set default font settings
+    font_family = config.font_family
+    title_font_size = config.title_font_size
+    label_font_size = config.label_font_size
+    title_prop = FontProperties(family=font_family, size=title_font_size, weight="bold")
+
     # Convert mode values to names
     from ..common import ACSMode
 
@@ -51,8 +73,29 @@ def plot_acs_mode_distribution(ditl: "DITLMixin", figsize=(10, 8)):
 
     # Create pie chart
     fig, ax = plt.subplots(figsize=figsize)
-    ax.pie(sizes, labels=labels, autopct="%1.1f%%", startangle=140)
-    ax.set_title("Percentage of Time Spent in Each ACS Mode")
+    # Compute colors for each wedge based on config.mode_colors (fallback to Matplotlib defaults)
+    mode_colors_map = config.mode_colors
+    wedge_colors = [mode_colors_map.get(label.upper(), None) for label in labels]
+
+    pie_res = ax.pie(
+        sizes,
+        labels=labels,
+        colors=wedge_colors if any(c is not None for c in wedge_colors) else None,
+        autopct="%1.1f%%",
+        startangle=140,
+        textprops={"fontsize": label_font_size, "fontfamily": font_family},
+    )
+    # matplotlib's pie() can return 2 or 3 values depending on whether autopct is set/used.
+    # Be defensive: ensure we always have wedges, texts, and autotexts variables
+    autotexts = pie_res[2] if len(pie_res) > 2 else []
+    ax.set_title(
+        "Percentage of Time Spent in Each ACS Mode", fontproperties=title_prop, pad=20
+    )
     ax.axis("equal")  # Equal aspect ratio ensures pie is a circle
+
+    # Set font for autotexts (percentage labels), if present
+    for autotext in autotexts:
+        autotext.set_fontsize(label_font_size)
+        autotext.set_fontfamily(font_family)
 
     return fig, ax

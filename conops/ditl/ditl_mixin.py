@@ -89,7 +89,7 @@ class DITLMixin:
         """
         from ..visualization import plot_ditl_telemetry
 
-        plot_ditl_telemetry(self)
+        plot_ditl_telemetry(self, config=getattr(self.config, "visualization", None))
         plt.show()
 
     def _find_current_pass(self, utime: float):

@@ -108,12 +108,16 @@ def mock_ditl_with_ephem(mock_ditl):
     mock_plan_entry1.end = 1800.0
     mock_plan_entry1.obsid = 10000
     mock_plan_entry1.slewtime = 0.0  # No slew for first observation
+    mock_plan_entry1.ra = 45.0  # Add RA for sky pointing
+    mock_plan_entry1.dec = 30.0  # Add Dec for sky pointing
 
     mock_plan_entry2 = Mock()
     mock_plan_entry2.begin = 1800.0
     mock_plan_entry2.end = 3600.0
     mock_plan_entry2.obsid = 0  # Slew
     mock_plan_entry2.slewtime = 120.0
+    mock_plan_entry2.ra = 90.0
+    mock_plan_entry2.dec = -15.0
 
     # Add a plan entry with zero or negative duration to cover edge cases
     mock_plan_entry3 = Mock()
@@ -121,6 +125,8 @@ def mock_ditl_with_ephem(mock_ditl):
     mock_plan_entry3.end = 3600.0  # Same as begin + slewtime, so duration = 0
     mock_plan_entry3.obsid = 10001
     mock_plan_entry3.slewtime = 0.0
+    mock_plan_entry3.ra = 135.0
+    mock_plan_entry3.dec = 45.0
 
     # Add a plan entry with very long duration (> 24 hours) to cover unrealistic duration check
     mock_plan_entry4 = Mock()
@@ -128,6 +134,8 @@ def mock_ditl_with_ephem(mock_ditl):
     mock_plan_entry4.end = 7200.0 + 25 * 3600  # 25 hours later
     mock_plan_entry4.obsid = 10002
     mock_plan_entry4.slewtime = 0.0
+    mock_plan_entry4.ra = 180.0
+    mock_plan_entry4.dec = -30.0
 
     mock_ditl.plan = [
         mock_plan_entry1,

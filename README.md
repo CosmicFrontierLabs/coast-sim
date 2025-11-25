@@ -116,6 +116,53 @@ cd examples
 jupyter notebook
 ```
 
+## Visualization
+
+COASTSim includes a set of plotting utilities to visualize DITL simulations and telemetry. Each visualization function accepts an optional `config` parameter. If omitted, the plots will use `ditl.config.visualization` if present, or reasonable defaults defined by `VisualizationConfig`.
+
+Key plotting utilities are in the `conops.visualization` module:
+
+- `plot_ditl_telemetry()` — show RA, Dec, ACS mode, battery, power, and ObsIDs in a multi-panel timeline
+- `plot_data_management_telemetry()` — recorder volume/fill fractions, cumulative data generated/downlinked, and alert timelines
+- `plot_acs_mode_distribution()` — pie chart of time spent in each ACS mode; supports custom mode colors
+- `plot_ditl_timeline()` — full timeline view with orbit numbers, observations, slews, SAA, and eclipses
+- `plot_sky_pointing()` — interactive mollweide sky projection showing current pointing, patterns, and constraints
+
+### How to customize fonts and colors
+
+Custom visualization settings are controlled via the `VisualizationConfig` Pydantic model (`conops.config.visualization`). Important fields include:
+
+- `font_family` (str): font used for titles, labels, and legends (default: `Helvetica`)
+- `title_font_size`, `label_font_size`, `legend_font_size`, `tick_font_size` (int)
+- `mode_colors` (dict[str, str]): color mapping for ACS modes used in plots such as `plot_acs_mode_distribution`
+
+### Example — customizing fonts and colors
+
+```python
+from conops import Config, QueueDITL
+from conops.visualization import plot_ditl_telemetry, plot_acs_mode_distribution
+from datetime import datetime, timedelta
+from rust_ephem import TLEEphemeris
+
+cfg = Config.from_json_file("examples/example_config.json")
+cfg.visualization.font_family = "Helvetica"
+cfg.visualization.title_font_size = 14
+cfg.visualization.mode_colors["SAA"] = "#800080"  # purple
+
+begin = datetime.utcnow()
+end = begin + timedelta(days=1)
+ephem = TLEEphemeris(tle="examples/example.tle", begin=begin, end=end)
+ditl = QueueDITL(config=cfg)
+ditl.ephem = ephem
+ditl.calc()
+
+# Render using the resolved visualization config
+fig, axes = plot_ditl_telemetry(ditl)
+fig2, ax2 = plot_acs_mode_distribution(ditl, config=cfg.visualization)
+```
+
+Tip: Set `cfg.visualization` to keep consistent fonts and colors across every plot end-to-end. Note that the requested font must be installed on your system; Matplotlib may fallback to another font (e.g., DejaVu Sans or Arial) if the requested family isn't available. To guarantee a specific font, use a `FontProperties` object with the font file path.
+
 ## Core Components
 
 ### Configuration (`conops.config`)
