@@ -524,8 +524,8 @@ class ACS:
         ):
             assert self.last_slew.at is not None
             print(
-                "%s: CONSTRAINT: RA=%s Dec=%s obsid=%s Moon=%s Sun=%s Earth=%s Panel=%s",
-                unixtime2date(utime),
+                "%s: CONSTRAINT: RA=%s Dec=%s obsid=%s Moon=%s Sun=%s Earth=%s Panel=%s"
+                % unixtime2date(utime),
                 self.last_slew.at.ra,
                 self.last_slew.at.dec,
                 self.last_slew.obsid,
