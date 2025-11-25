@@ -29,6 +29,7 @@ def plot_ditl_timeline(
     - Orbit numbers (optional)
     - Science observations (color-coded by obsid range)
     - Slews and settling time
+    - Safe mode periods
     - SAA passages
     - Eclipses
     - Ground station passes
@@ -102,6 +103,7 @@ def plot_ditl_timeline(
     timeline_rows.append(("Observations", None, None))
     timeline_rows.append(("Slewing", None, None))
     timeline_rows.append(("Charging", None, None))
+    timeline_rows.append(("Safe Mode", None, None))
 
     # Conditionally include SAA
     if show_saa:
@@ -212,13 +214,27 @@ def plot_ditl_timeline(
             label="Battery Charging",
         )
 
+    # Extract and plot safe mode
+    safe_segments = _extract_safe_mode(ditl, t_start, offset_hours)
+    if safe_segments:
+        safe_y_pos = row_positions["Safe Mode"]
+        ax.broken_barh(
+            safe_segments,
+            (safe_y_pos, bar_height),
+            facecolor="tab:red",
+            label="Safe Mode",
+        )
+
     # Extract and plot SAA passages (if enabled)
     if show_saa:
         saa_segments = _extract_saa_passages(ditl, t_start, offset_hours)
         if saa_segments:
             saa_y_pos = row_positions["SAA"]
             ax.broken_barh(
-                saa_segments, (saa_y_pos, bar_height), facecolor="tab:red", label="SAA"
+                saa_segments,
+                (saa_y_pos, bar_height),
+                facecolor="tab:orange",
+                label="SAA",
             )
 
     # Extract and plot eclipses
@@ -367,6 +383,42 @@ def _extract_charging_mode(ditl, t_start, offset_hours):
         charging_segments.append((charging_start, charging_duration))
 
     return charging_segments
+
+
+def _extract_safe_mode(ditl, t_start, offset_hours):
+    """Extract safe mode periods from mode timeline."""
+    if not hasattr(ditl, "mode") or not hasattr(ditl, "utime"):
+        return []
+
+    safe_segments = []
+    in_safe = False
+    safe_start = 0
+
+    for i, mode_val in enumerate(ditl.mode):
+        # Check if in SAFE mode (mode value = 5)
+        if isinstance(mode_val, ACSMode):
+            is_safe = mode_val == ACSMode.SAFE
+        else:
+            is_safe = mode_val == ACSMode.SAFE.value
+
+        time_hours = (ditl.utime[i] - t_start) / 3600 - offset_hours
+
+        if is_safe and not in_safe:
+            # Entering safe mode
+            in_safe = True
+            safe_start = time_hours
+        elif not is_safe and in_safe:
+            # Exiting safe mode
+            in_safe = False
+            safe_duration = time_hours - safe_start
+            safe_segments.append((safe_start, safe_duration))
+
+    # Handle safe mode extending to end of simulation
+    if in_safe:
+        safe_duration = (ditl.utime[-1] - t_start) / 3600 - offset_hours - safe_start
+        safe_segments.append((safe_start, safe_duration))
+
+    return safe_segments
 
 
 def _extract_saa_passages(ditl, t_start, offset_hours):
