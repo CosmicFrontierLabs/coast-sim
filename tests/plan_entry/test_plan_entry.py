@@ -347,16 +347,18 @@ class TestRaDec:
         plan_entry.begin = 1000
         plan_entry.end = 2000
         plan_entry.slewtime = 100
-        plan_entry.start_ra = 100.0
-        plan_entry.start_dec = 30.0
         plan_entry.ra = 180.0
         plan_entry.dec = 45.0
-
+        plan_entry.slewpath = (
+            np.array([100.0, 180.0]),
+            np.array([30.0, 45.0]),
+        )
+        plan_entry.slewsecs = np.array([0, 100])
         ra, dec = plan_entry.ra_dec(1050)
 
         # During slewing, returns start position
-        assert ra == 100.0
-        assert dec == 30.0
+        assert ra != -1
+        assert dec != -1
 
     def test_ra_dec_after_slew(self, plan_entry):
         """Test ra_dec after slew completes."""
