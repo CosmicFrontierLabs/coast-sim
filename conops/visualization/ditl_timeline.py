@@ -202,17 +202,16 @@ def plot_ditl_timeline(
             label="Slew and Settle",
         )
 
-    # Extract and plot charging mode
-    charging_segments = _extract_charging_mode(ditl, t_start, offset_hours)
-    if charging_segments:
-        charging_y_pos = row_positions["Charging"]
-        charging_color = observation_categories.get_category_color("Charging")
-        ax.broken_barh(
-            charging_segments,
-            (charging_y_pos, bar_height),
-            facecolor=charging_color,
-            label="Battery Charging",
-        )
+    # Extract and plot charging mode observations
+    segments = observations_by_type.get("Charging", [])
+    charging_y_pos = row_positions["Charging"]
+    charging_color = observation_categories.get_category_color("Charging")
+    ax.broken_barh(
+        segments,
+        (charging_y_pos, bar_height),
+        facecolors=charging_color,
+        label="Battery Charging",
+    )
 
     # Extract and plot safe mode
     safe_segments = _extract_safe_mode(ditl, t_start, offset_hours)
@@ -345,44 +344,6 @@ def _extract_slews(ditl, t_start, offset_hours):
             slew_duration = ppt.slewtime / 3600
             slew_segments.append((slew_start, slew_duration))
     return slew_segments
-
-
-def _extract_charging_mode(ditl, t_start, offset_hours):
-    """Extract battery charging periods from mode timeline."""
-    if not hasattr(ditl, "mode") or not hasattr(ditl, "utime"):
-        return []
-
-    charging_segments = []
-    in_charging = False
-    charging_start = 0
-
-    for i, mode_val in enumerate(ditl.mode):
-        # Check if in CHARGING mode (mode value = 2)
-        if isinstance(mode_val, ACSMode):
-            is_charging = mode_val == ACSMode.CHARGING
-        else:
-            is_charging = mode_val == ACSMode.CHARGING.value
-
-        time_hours = (ditl.utime[i] - t_start) / 3600 - offset_hours
-
-        if is_charging and not in_charging:
-            # Entering charging mode
-            in_charging = True
-            charging_start = time_hours
-        elif not is_charging and in_charging:
-            # Exiting charging mode
-            in_charging = False
-            charging_duration = time_hours - charging_start
-            charging_segments.append((charging_start, charging_duration))
-
-    # Handle charging extending to end of simulation
-    if in_charging:
-        charging_duration = (
-            (ditl.utime[-1] - t_start) / 3600 - offset_hours - charging_start
-        )
-        charging_segments.append((charging_start, charging_duration))
-
-    return charging_segments
 
 
 def _extract_safe_mode(ditl, t_start, offset_hours):
