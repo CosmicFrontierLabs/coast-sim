@@ -1,8 +1,9 @@
 import numpy as np
+import numpy.typing as npt
 from pyproj import Geod  # type: ignore[import-untyped]
 
 
-def radec2vec(ra, dec):
+def radec2vec(ra: float, dec: float) -> npt.NDArray:
     """Convert RA/Dec angle (in radians) to a vector"""
 
     v1 = np.cos(dec) * np.cos(ra)
@@ -12,7 +13,9 @@ def radec2vec(ra, dec):
     return np.array([v1, v2, v3])
 
 
-def scbodyvector(ra, dec, roll, eciarr):
+def scbodyvector(
+    ra: float, dec: float, roll: float, eciarr: npt.NDArray
+) -> npt.NDArray:
     """For a given RA,Dec and Roll, and vector, return that vector that in
     the spacecraft body coordinate system"""
 
@@ -52,7 +55,7 @@ def rotvec(n: int, a: float, v: np.ndarray) -> np.ndarray:
     return v * c + np.cross(k, v) * s + k * (np.dot(k, v)) * (1 - c)
 
 
-def separation(one, two):
+def separation(one: npt.NDArray | list[float], two: npt.NDArray | list[float]) -> float:
     """Calculate the angular distance between two RA,Dec values.
     Both Ra/Dec values are given as an array of form [ra,dec] where
     RA and Dec are in radians. Form of function mimics pyephem library
@@ -68,7 +71,7 @@ def separation(one, two):
     return np.arccos(np.dot(onevec, twovec))
 
 
-def angular_separation(ra1, dec1, ra2, dec2):
+def angular_separation(ra1: float, dec1: float, ra2: float, dec2: float) -> float:
     """Calculate the angular distance between two RA,Dec values in degrees."""
     ra1_rad = np.deg2rad(ra1)
     dec1_rad = np.deg2rad(dec1)
@@ -79,7 +82,9 @@ def angular_separation(ra1, dec1, ra2, dec2):
     return np.rad2deg(sep_rad)
 
 
-def great_circle(ra1, dec1, ra2, dec2, npts=100):
+def great_circle(
+    ra1: float, dec1: float, ra2: float, dec2: float, npts: int = 100
+) -> tuple[np.ndarray, np.ndarray]:
     """Return Great Circle Path between two coordinates"""
     g = Geod(ellps="sphere")
 
@@ -95,12 +100,12 @@ def great_circle(ra1, dec1, ra2, dec2, npts=100):
     return ras, decs
 
 
-def roll_over_angle(angles):
+def roll_over_angle(angles: npt.NDArray | list[float]) -> npt.NDArray:
     """Make a list of angles that include a roll over (e.g. 359.9 - 0.1) into a smooth distribution"""
     outangles = list()
-    last = -1
-    flip = 0
-    diff = 0
+    last = -1.0
+    flip = 0.0
+    diff = 0.0
 
     for i in range(len(angles)):
         if last != -1:
@@ -114,3 +119,11 @@ def roll_over_angle(angles):
         outangles.append(raf)
 
     return np.array(outangles)
+
+
+def vec2radec(v: npt.NDArray | list[float]) -> npt.NDArray:
+    """Convert a vector to Ra/Dec (in radians)"""
+    norm = np.linalg.norm(v, axis=0)
+    dec = np.arcsin(v[2] / norm)
+    ra = np.arctan2(v[1], v[0])
+    return np.array([ra, dec])

@@ -186,17 +186,19 @@ class Pass(BaseModel):
             return self.pass_ra_dec(utime)
 
     def pass_ra_dec(self, utime: float) -> tuple[float | None, float | None]:
-        """Return the RA/Dec of the Spacecraft during a groundstation pass"""
-        if self.in_pass(utime):
-            ras = roll_over_angle(self.ra)  # Deal with RA roll-overs, 360 -> 0
-            ra = (
-                np.interp(utime, self.utime, ras) % 360
-            )  # so "interp" doesn't do some crazy thing
-            dec = np.interp(utime, self.utime, self.dec)
-        else:
-            # print("PASS OVER _ GET OVER IT")
-            ra = np.interp(utime, self.utime, self.ra)
-            dec = np.interp(utime, self.utime, self.dec)
+        """Return the RA/Dec of the Spacecraft during a groundstation pass.
+
+        Uses roll_over_angle to handle RA discontinuity at 360->0 boundary,
+        ensuring smooth interpolation across the boundary.
+        """
+        # Handle empty tracking profile
+        if not self.utime or not self.ra or not self.dec:
+            return self.gsstartra, self.gsstartdec
+
+        # Always use roll_over_angle to handle 360->0 discontinuity
+        ras = roll_over_angle(self.ra)
+        ra = np.interp(utime, self.utime, ras) % 360
+        dec = np.interp(utime, self.utime, self.dec)
         return ra, dec
 
     def time_to_slew(self, utime: float) -> bool:
@@ -291,12 +293,6 @@ class Pass(BaseModel):
         # Record slew start
         self.slewstart = utime
         return True
-
-
-# Spacecraft Groundstations
-# Ghana (5.74 deg N, 0.30 deg W) and
-# the backup is
-# Mwulire, Rwanda (1.96 deg S, 30.39 deg E).
 
 
 class PassTimes:
