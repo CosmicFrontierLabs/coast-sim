@@ -15,6 +15,33 @@ from ..common import dtutcfromtimestamp
 from ..config.visualization import VisualizationConfig
 
 
+def _get_visualization_config(ditl, config=None):
+    """Get visualization configuration, with fallback to defaults.
+
+    Parameters
+    ----------
+    ditl : DITL or QueueDITL
+        The DITL simulation object.
+    config : VisualizationConfig, optional
+        Explicit config to use. If None, tries to get from ditl.config.visualization.
+
+    Returns
+    -------
+    VisualizationConfig
+        The configuration object to use.
+    """
+    if config is None:
+        if (
+            hasattr(ditl, "config")
+            and hasattr(ditl.config, "visualization")
+            and isinstance(ditl.config.visualization, VisualizationConfig)
+        ):
+            config = ditl.config.visualization
+        else:
+            config = VisualizationConfig()
+    return config
+
+
 def plot_sky_pointing(
     ditl,
     figsize=(14, 8),
@@ -87,15 +114,7 @@ def plot_sky_pointing(
         time_step_seconds = ditl.step_size
 
     # Get visualization config
-    if config is None:
-        if (
-            hasattr(ditl, "config")
-            and hasattr(ditl.config, "visualization")
-            and isinstance(ditl.config.visualization, VisualizationConfig)
-        ):
-            config = ditl.config.visualization
-        else:
-            config = VisualizationConfig()
+    config = _get_visualization_config(ditl, config)
 
     # Create the visualization
     if show_controls:
@@ -324,7 +343,7 @@ class SkyPointingController:
             dec = ppt.dec
 
             # Convert RA from 0-360 to -180 to 180 for mollweide, with RA=0 on left
-            ra_plot = ra - 180
+            ra_plot = self._convert_ra_for_plotting(np.array([ra]))[0]
 
             ras.append(np.deg2rad(ra_plot))
             decs.append(np.deg2rad(dec))
@@ -429,21 +448,8 @@ class SkyPointingController:
         earth_dec = ephem.earth[idx].dec.deg
         earth_angular_radius = ephem.earth_radius_deg[idx]
 
-        # Use the same grid sampling approach as constraints
-        # Linear declination sampling
-        dec_samples = np.linspace(-90, 90, self.n_grid_points)
-
-        # For each declination, calculate how many RA samples we need
-        # based on cos(dec) for even visual density in Mollweide projection
-        cos_factors = np.cos(np.radians(dec_samples))
-        n_ra_array = np.maximum(8, (self.n_grid_points * 2 * cos_factors).astype(int))
-
-        ra_flat = np.concatenate(
-            [np.linspace(0, 360, n, endpoint=False) for n in n_ra_array]
-        )
-        dec_flat = np.concatenate(
-            [np.full(n, dec) for n, dec in zip(n_ra_array, dec_samples)]
-        )
+        # Get sky grid points
+        ra_flat, dec_flat = self._create_sky_grid(self.n_grid_points)
 
         # Check which points are inside the Earth disk
         earth_disk_points = []
@@ -468,20 +474,102 @@ class SkyPointingController:
             ra_vals = points[:, 0]
             dec_vals = points[:, 1]
 
-            # Convert so RA=0 appears on the left
-            ra_plot = ra_vals - 180
-
-            self.ax.scatter(
-                np.deg2rad(ra_plot),
-                np.deg2rad(dec_vals),
-                s=20,
-                c="darkblue",
-                alpha=0.8,
-                marker="s",
-                edgecolors="none",
-                label="Earth Disk",
-                zorder=2.5,
+            self._plot_points_on_sky(
+                ra_vals, dec_vals, "darkblue", alpha=0.8, label="Earth Disk", zorder=2.5
             )
+
+    def _create_sky_grid(self, n_points):
+        """Create a grid of RA/Dec points optimized for Mollweide projection.
+
+        Parameters
+        ----------
+        n_points : int
+            Number of points per axis for the grid.
+
+        Returns
+        -------
+        ra_flat : array
+            Flattened RA coordinates (0-360 degrees).
+        dec_flat : array
+            Flattened Dec coordinates (-90-90 degrees).
+        """
+        # Linear declination sampling
+        dec_samples = np.linspace(-90, 90, n_points)
+
+        # For each declination, calculate how many RA samples we need
+        # based on cos(dec) for even visual density in Mollweide projection
+        cos_factors = np.cos(np.radians(dec_samples))
+        n_ra_array = np.maximum(8, (n_points * 2 * cos_factors).astype(int))
+
+        ra_flat = np.concatenate(
+            [np.linspace(0, 360, n, endpoint=False) for n in n_ra_array]
+        )
+        dec_flat = np.concatenate(
+            [np.full(n, dec) for n, dec in zip(n_ra_array, dec_samples)]
+        )
+
+        return ra_flat, dec_flat
+
+    def _convert_ra_for_plotting(self, ra_vals):
+        """Convert RA coordinates for Mollweide projection plotting.
+
+        Parameters
+        ----------
+        ra_vals : array
+            RA values in degrees (0-360).
+
+        Returns
+        -------
+        array
+            RA values converted for plotting (-180 to 180).
+        """
+        return ra_vals - 180
+
+    def _plot_points_on_sky(
+        self,
+        ra_vals,
+        dec_vals,
+        color,
+        alpha=0.3,
+        size=20,
+        marker="s",
+        label=None,
+        zorder=1,
+    ):
+        """Plot points on the sky map.
+
+        Parameters
+        ----------
+        ra_vals : array
+            RA coordinates in degrees (0-360).
+        dec_vals : array
+            Dec coordinates in degrees (-90-90).
+        color : str
+            Color for the points.
+        alpha : float, optional
+            Transparency (default: 0.3).
+        size : int, optional
+            Point size (default: 20).
+        marker : str, optional
+            Marker style (default: "s" for square).
+        label : str, optional
+            Legend label.
+        zorder : float, optional
+            Z-order for layering (default: 1).
+        """
+        ra_plot = self._convert_ra_for_plotting(ra_vals)
+
+        self.ax.scatter(
+            np.deg2rad(ra_plot),
+            np.deg2rad(dec_vals),
+            s=size,
+            c=color,
+            alpha=alpha,
+            marker=marker,
+            edgecolors="none",
+            label=label,
+            zorder=zorder,
+        )
 
     def _plot_single_constraint(
         self, name, constraint_func, color, utime, ra_grid, dec_grid, body_ra, body_dec
@@ -507,25 +595,8 @@ class SkyPointingController:
         body_dec : float or None
             Dec of celestial body (for marker).
         """
-        # Sample uniformly in Mollweide projection space for even point density
-        # The Mollweide projection compresses RA (longitude) near the poles
-        # We need fewer RA samples at high declinations to maintain even visual density
-
-        # Linear declination sampling is fine
-        dec_samples = np.linspace(-90, 90, self.n_grid_points)
-
-        # For each declination, calculate how many RA samples we need
-        # based on cos(dec) - this accounts for the convergence of longitude lines
-        # Create the sky grid points, sampling RA density by cos(dec)
-        cos_factors = np.cos(np.radians(dec_samples))
-        n_ra_array = np.maximum(8, (self.n_grid_points * 2 * cos_factors).astype(int))
-
-        ra_flat = np.concatenate(
-            [np.linspace(0, 360, n, endpoint=False) for n in n_ra_array]
-        )
-        dec_flat = np.concatenate(
-            [np.full(n, dec) for n, dec in zip(n_ra_array, dec_samples)]
-        )
+        # Get sky grid points
+        ra_flat, dec_flat = self._create_sky_grid(self.n_grid_points)
 
         constrained_points = []
         for ra, dec in zip(ra_flat, dec_flat):
@@ -536,32 +607,24 @@ class SkyPointingController:
                 print(f"ERROR: Constraint check failed for RA={ra}, Dec={dec}: {e}")
                 continue
 
-        # Plot constrained region, handling RA wrapping at boundaries
+        # Plot constrained region
         if constrained_points:
             points = np.array(constrained_points)
             ra_vals = points[:, 0]
             dec_vals = points[:, 1]
 
-            # For Mollweide projection: RA range is -180 to 180
-            # Convert so RA=0 appears on the left
-            ra_plot = ra_vals - 180
-
-            # Plot main points
-            self.ax.scatter(
-                np.deg2rad(ra_plot),
-                np.deg2rad(dec_vals),
-                s=20,
-                c=color,
+            self._plot_points_on_sky(
+                ra_vals,
+                dec_vals,
+                color,
                 alpha=self.constraint_alpha,
-                marker="s",
-                zorder=1,
-                edgecolors="none",
                 label=f"{name} Cons.",
+                zorder=1,
             )
 
         # Mark celestial body position
         if body_ra is not None and body_dec is not None:
-            ra_plot = body_ra - 180
+            ra_plot = self._convert_ra_for_plotting(np.array([body_ra]))
             self.ax.plot(
                 np.deg2rad(ra_plot),
                 np.deg2rad(body_dec),
@@ -587,7 +650,7 @@ class SkyPointingController:
             Current ACS mode.
         """
         # Convert RA for plotting (RA=0 on left)
-        ra_plot = ra - 180
+        ra_plot = self._convert_ra_for_plotting(np.array([ra]))[0]
 
         # Color based on ACS mode
         mode_name = mode.name if hasattr(mode, "name") else str(mode)
@@ -923,15 +986,7 @@ def save_sky_pointing_movie(
         )
 
     # Get visualization config
-    if config is None:
-        if (
-            hasattr(ditl, "config")
-            and hasattr(ditl.config, "visualization")
-            and isinstance(ditl.config.visualization, VisualizationConfig)
-        ):
-            config = ditl.config.visualization
-        else:
-            config = VisualizationConfig()
+    config = _get_visualization_config(ditl, config)
 
     # Create figure without controls
     fig, ax = plt.subplots(figsize=figsize, subplot_kw={"projection": "mollweide"})
