@@ -327,58 +327,138 @@ class SkyPointingController:
 
     def _find_time_index(self, utime):
         """Find the index in utime array closest to the given time."""
-        return np.argmin(np.abs(np.array(self.ditl.utime) - utime))
+        idx = np.argmin(np.abs(np.array(self.ditl.utime) - utime))
+        # Ensure index is within bounds for all arrays
+        max_idx = (
+            min(
+                len(self.ditl.utime),
+                len(self.ditl.ra),
+                len(self.ditl.dec),
+                len(self.ditl.mode),
+            )
+            - 1
+        )
+        return min(idx, max_idx)
 
     def _plot_scheduled_observations(self):
         """Plot all scheduled observations as markers."""
         if len(self.ditl.plan) == 0:
             return
 
-        ras = []
-        decs = []
-        colors = []
-        sizes = []
+        # Cache the observation data since it doesn't change between frames
+        if not hasattr(self, "_cached_observations"):
+            ras = []
+            decs = []
+            colors = []
+            sizes = []
 
-        for ppt in self.ditl.plan:
-            ra = ppt.ra
-            dec = ppt.dec
+            for ppt in self.ditl.plan:
+                ra = ppt.ra
+                dec = ppt.dec
 
-            # Convert RA from 0-360 to -180 to 180 for mollweide, with RA=0 on left
-            ra_plot = self._convert_ra_for_plotting(np.array([ra]))[0]
+                # Convert RA from 0-360 to -180 to 180 for mollweide, with RA=0 on left
+                ra_plot = self._convert_ra_for_plotting(np.array([ra]))[0]
 
-            ras.append(np.deg2rad(ra_plot))
-            decs.append(np.deg2rad(dec))
+                ras.append(np.deg2rad(ra_plot))
+                decs.append(np.deg2rad(dec))
 
-            # Color by observation type or ID
-            if hasattr(ppt, "obsid"):
-                # Use obsid to determine color
-                if ppt.obsid >= 1000000:
-                    colors.append("red")  # TOO/GRB
-                    sizes.append(100)
-                elif ppt.obsid >= 20000:
-                    colors.append("orange")  # High priority
-                    sizes.append(60)
-                elif ppt.obsid >= 10000:
-                    colors.append("yellow")  # Survey
-                    sizes.append(40)
+                # Color by observation type or ID
+                if hasattr(ppt, "obsid"):
+                    # Use obsid to determine color
+                    if ppt.obsid >= 1000000:
+                        colors.append("red")  # TOO/GRB
+                        sizes.append(100)
+                    elif ppt.obsid >= 20000:
+                        colors.append("orange")  # High priority
+                        sizes.append(60)
+                    elif ppt.obsid >= 10000:
+                        colors.append("yellow")  # Survey
+                        sizes.append(40)
+                    else:
+                        colors.append("lightblue")  # Standard
+                        sizes.append(40)
                 else:
-                    colors.append("lightblue")  # Standard
+                    colors.append("lightblue")
                     sizes.append(40)
-            else:
-                colors.append("lightblue")
-                sizes.append(40)
 
-        # Scatter plot
+            self._cached_observations = {
+                "ras": ras,
+                "decs": decs,
+                "colors": colors,
+                "sizes": sizes,
+            }
+
+        # Scatter plot using cached data
         self.ax.scatter(
-            ras,
-            decs,
-            s=sizes,
-            c=colors,
+            self._cached_observations["ras"],
+            self._cached_observations["decs"],
+            s=self._cached_observations["sizes"],
+            c=self._cached_observations["colors"],
             alpha=0.6,
             edgecolors="black",
             linewidths=0.5,
             label="Targets",
             zorder=2,
+        )
+
+    def _precompute_constraints(self, time_indices=None):
+        """Pre-compute constraint masks for all time steps using evaluate_batch.
+
+        This evaluates all constraints for the entire DITL in a single batch operation
+        for much better performance during movie rendering.
+
+        Parameters
+        ----------
+        time_indices : array-like, optional
+            Indices of time steps to pre-compute. If None, uses all time steps.
+        """
+        if time_indices is None:
+            time_indices = np.arange(len(self.ditl.utime))
+
+        # Get sky grid points (same for all times)
+        ra_flat, dec_flat = self._create_sky_grid(self.n_grid_points)
+        n_points = len(ra_flat)
+
+        # Convert times to datetime objects for rust_ephem
+        times = [dtutcfromtimestamp(self.ditl.utime[idx]) for idx in time_indices]
+        n_times = len(times)
+
+        print(
+            f"Pre-computing constraints for {n_times} time steps with {n_points} grid points..."
+        )
+
+        # Pre-compute all constraint types
+        constraint_cache = {}
+
+        constraint_types = [
+            ("sun", self.ditl.config.constraint.sun_constraint),
+            ("moon", self.ditl.config.constraint.moon_constraint),
+            ("earth", self.ditl.config.constraint.earth_constraint),
+            ("anti_sun", self.ditl.config.constraint.anti_sun_constraint),
+            ("panel", self.ditl.config.constraint.panel_constraint),
+        ]
+
+        for name, constraint_func in constraint_types:
+            # Batch evaluation with datetime array
+            result = constraint_func.evaluate_batch(
+                ephemeris=self.ditl.ephem,
+                target_ras=ra_flat,
+                target_decs=dec_flat,
+                times=times,  # Pass entire array of datetime objects
+            )
+            # Result shape is (n_points, n_times) from rust_ephem
+            constraint_cache[name] = result
+
+        # Store cache
+        self._constraint_cache = {
+            "ra_grid": ra_flat,
+            "dec_grid": dec_flat,
+            "time_indices": time_indices,
+            "constraints": constraint_cache,
+        }
+
+        print(
+            f"Constraint pre-computation complete. Cached {len(constraint_types)} constraint types."
         )
 
     def _plot_constraint_regions(self, utime):
@@ -467,31 +547,30 @@ class SkyPointingController:
         earth_dec = ephem.earth[idx].dec.deg
         earth_angular_radius = ephem.earth_radius_deg[idx]
 
-        # Get sky grid points
-        ra_flat, dec_flat = self._create_sky_grid(self.n_grid_points)
+        # Get sky grid points (use cached if available)
+        if hasattr(self, "_constraint_cache"):
+            ra_flat = self._constraint_cache["ra_grid"]
+            dec_flat = self._constraint_cache["dec_grid"]
+        else:
+            ra_flat, dec_flat = self._create_sky_grid(self.n_grid_points)
 
-        # Check which points are inside the Earth disk
-        earth_disk_points = []
-        for ra, dec in zip(ra_flat, dec_flat):
-            # Calculate angular distance from Earth center
-            # Using spherical distance formula
-            delta_ra = np.radians(ra - earth_ra)
-            dec_rad = np.radians(dec)
-            earth_dec_rad = np.radians(earth_dec)
+        # Vectorized calculation of angular distances from Earth center
+        delta_ra = np.radians(ra_flat - earth_ra)
+        dec_rad = np.radians(dec_flat)
+        earth_dec_rad = np.radians(earth_dec)
 
-            cos_value = np.sin(earth_dec_rad) * np.sin(dec_rad) + np.cos(
-                earth_dec_rad
-            ) * np.cos(dec_rad) * np.cos(delta_ra)
-            angular_dist = np.degrees(np.arccos(np.clip(cos_value, -1.0, 1.0)))
+        cos_value = np.sin(earth_dec_rad) * np.sin(dec_rad) + np.cos(
+            earth_dec_rad
+        ) * np.cos(dec_rad) * np.cos(delta_ra)
+        angular_dist = np.degrees(np.arccos(np.clip(cos_value, -1.0, 1.0)))
 
-            if angular_dist <= earth_angular_radius:
-                earth_disk_points.append((ra, dec))
+        # Find points inside the Earth disk
+        inside_earth = angular_dist <= earth_angular_radius
 
         # Plot Earth disk points
-        if earth_disk_points:
-            points = np.array(earth_disk_points)
-            ra_vals = points[:, 0]
-            dec_vals = points[:, 1]
+        if inside_earth.any():
+            ra_vals = ra_flat[inside_earth]
+            dec_vals = dec_flat[inside_earth]
 
             self._plot_points_on_sky(
                 ra_vals, dec_vals, "darkblue", alpha=0.8, label="Earth Disk", zorder=2.5
@@ -620,6 +699,74 @@ class SkyPointingController:
         body_dec : float or None
             Dec of celestial body (for marker).
         """
+        # Check if we have pre-computed constraints
+        if (
+            hasattr(self, "_constraint_cache")
+            and name.lower() in self._constraint_cache["constraints"]
+        ):
+            cache = self._constraint_cache
+
+            # Verify cache consistency
+            current_ra_flat, current_dec_flat = self._create_sky_grid(
+                self.n_grid_points
+            )
+            if len(cache["ra_grid"]) == len(current_ra_flat) and len(
+                cache["dec_grid"]
+            ) == len(current_dec_flat):
+                # Use pre-computed constraints
+                ra_flat = cache["ra_grid"]
+                dec_flat = cache["dec_grid"]
+
+                # Find time index in cache
+                time_idx = self._find_time_index(utime)
+                cache_time_idx = np.where(cache["time_indices"] == time_idx)[0]
+                if (
+                    len(cache_time_idx) > 0
+                    and cache_time_idx[0] < cache["constraints"][name.lower()].shape[1]
+                ):
+                    cache_time_idx = cache_time_idx[0]
+                    # Cache shape is (n_points, n_times), so index with [:, time_idx]
+                    constrained_coords = cache["constraints"][name.lower()][
+                        :, cache_time_idx
+                    ]
+
+                    # Ensure constrained_coords is a boolean array
+                    constrained_coords = np.asarray(constrained_coords, dtype=bool)
+
+                    # Plot constrained region
+                    if constrained_coords.any():
+                        points = np.column_stack(
+                            (ra_flat[constrained_coords], dec_flat[constrained_coords])
+                        )
+
+                        ra_vals = points[:, 0]
+                        dec_vals = points[:, 1]
+
+                        self._plot_points_on_sky(
+                            ra_vals,
+                            dec_vals,
+                            color,
+                            alpha=self.constraint_alpha,
+                            label=f"{name} Cons.",
+                            zorder=1,
+                        )
+
+                    # Mark celestial body position
+                    if body_ra is not None and body_dec is not None:
+                        ra_plot = self._convert_ra_for_plotting(np.array([body_ra]))
+                        self.ax.plot(
+                            np.deg2rad(ra_plot),
+                            np.deg2rad(body_dec),
+                            marker="o",
+                            markersize=8,
+                            markeredgecolor="black",
+                            markerfacecolor=color,
+                            markeredgewidth=2,
+                            zorder=3,
+                        )
+                    return
+
+        # Fall back to real-time evaluation if no cache available
         # Get sky grid points
         ra_flat, dec_flat = self._create_sky_grid(self.n_grid_points)
 
@@ -1031,6 +1178,9 @@ def save_sky_pointing_movie(
     # Select time steps to animate
     time_indices = list(range(0, len(ditl.utime), frame_interval))
     total_frames = len(time_indices)
+
+    # Pre-compute constraints for all time steps to be rendered
+    controller._precompute_constraints(time_indices)
 
     print(f"Creating movie with {total_frames} frames at {fps} fps...")
     print(f"Movie duration: {total_frames / fps:.1f} seconds")
