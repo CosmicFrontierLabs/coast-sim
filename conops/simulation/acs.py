@@ -202,7 +202,12 @@ class ACS:
 
     def _adjust_slew_to_current_pointing(self, slew: Slew | Pass) -> None:
         """Adjust slew start position to current spacecraft pointing."""
-        if isinstance(slew, Slew) and self._should_adjust_slew_start(slew):
+        if (
+            isinstance(slew, Slew)
+            and slew.startra != self.ra
+            and self.ra != 0
+            and self.dec != 0
+        ):
             print(
                 f"{unixtime2date(slew.slewstart)}: Adjusting slew start: startRA={slew.startra}->{self.ra} startDec={slew.startdec}->{self.dec}"
             )
@@ -212,10 +217,6 @@ class ACS:
             print(
                 f"{unixtime2date(slew.slewstart)}: Slew time calculated to be {slew.slewtime} seconds."
             )
-
-    def _should_adjust_slew_start(self, slew: Slew) -> bool:
-        """Check if slew start position should be adjusted to current pointing."""
-        return slew.startra != self.ra and self.ra != 0 and self.dec != 0
 
     def _is_science_pointing(self, slew: Slew | Pass) -> bool:
         """Check if slew represents a science pointing (not a pass)."""
@@ -229,20 +230,6 @@ class ACS:
         print(
             f"{unixtime2date(utime)}: Pass over - returning to last PPT {getattr(self.last_ppt, 'obsid', 'unknown')}"
         )
-
-        # Note: In queue-driven mode, we don't need to slew back to last_ppt
-        # because the queue scheduler will fetch a new target.
-        # Returning to the old PPT would create a zero-distance slew if we're
-        # already pointing there, causing interpolation issues.
-        # Legacy DITL (not queue-driven) may expect this behavior, so we leave
-        # the code here commented for reference:
-        # if self.last_ppt is not None and isinstance(self.last_ppt, Slew):
-        #     self.add_slew(
-        #         self.last_ppt.endra,
-        #         self.last_ppt.enddec,
-        #         self.last_ppt.obsid,
-        #         utime,
-        #     )
 
     def _enqueue_slew(
         self, ra: float, dec: float, obsid: int, utime: float, obstype: str = "PPT"
