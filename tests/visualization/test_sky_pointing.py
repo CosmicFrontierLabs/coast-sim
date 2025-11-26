@@ -71,6 +71,44 @@ def mock_ditl():
     ditl.constraint.in_anti_sun = Mock(return_value=False)
     ditl.constraint.in_panel = Mock(return_value=False)
 
+    # Mock config with constraint objects
+    config = Mock()
+    constraint_config = Mock()
+
+    # Mock constraint objects with evaluate_batch method
+    sun_constraint = Mock()
+    sun_constraint.evaluate_batch = Mock(
+        return_value=np.array([[False, False, False]]).T
+    )
+    constraint_config.sun_constraint = sun_constraint
+
+    moon_constraint = Mock()
+    moon_constraint.evaluate_batch = Mock(
+        return_value=np.array([[False, False, False]]).T
+    )
+    constraint_config.moon_constraint = moon_constraint
+
+    earth_constraint = Mock()
+    earth_constraint.evaluate_batch = Mock(
+        return_value=np.array([[False, False, False]]).T
+    )
+    constraint_config.earth_constraint = earth_constraint
+
+    anti_sun_constraint = Mock()
+    anti_sun_constraint.evaluate_batch = Mock(
+        return_value=np.array([[False, False, False]]).T
+    )
+    constraint_config.anti_sun_constraint = anti_sun_constraint
+
+    panel_constraint = Mock()
+    panel_constraint.evaluate_batch = Mock(
+        return_value=np.array([[False, False, False]]).T
+    )
+    constraint_config.panel_constraint = panel_constraint
+
+    config.constraint = constraint_config
+    ditl.config = config
+
     return ditl
 
 
