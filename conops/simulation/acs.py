@@ -109,34 +109,34 @@ class ACS:
         """Process all commands scheduled for execution at or before current time."""
         while self.command_queue and self.command_queue[0].execution_time <= utime:
             command = self.command_queue.pop(0)
-            self._execute_command(command, utime)
+            print(
+                f"{unixtime2date(utime)}: Executing {command.command_type.name} command."
+            )
+
+            # Dispatch to appropriate handler based on command type
+            handlers = {
+                ACSCommandType.SLEW_TO_TARGET: lambda: self._handle_slew_command(
+                    command, utime
+                ),
+                ACSCommandType.START_PASS: lambda: self._handle_pass_start_command(
+                    command, utime
+                ),
+                ACSCommandType.END_PASS: lambda: self._end_pass(utime),
+                ACSCommandType.START_BATTERY_CHARGE: lambda: self._start_battery_charge(
+                    command, utime
+                ),
+                ACSCommandType.END_BATTERY_CHARGE: lambda: self._end_battery_charge(
+                    utime
+                ),
+                ACSCommandType.ENTER_SAFE_MODE: lambda: self._handle_safe_mode_command(
+                    utime
+                ),
+            }
+
+            handler = handlers.get(command.command_type)
+            if handler:
+                handler()
             self.executed_commands.append(command)
-
-    def _execute_command(self, command: ACSCommand, utime: float) -> None:
-        """Execute a single command from the queue."""
-        print(f"{unixtime2date(utime)}: Executing {command.command_type.name} command.")
-
-        # Dispatch to appropriate handler based on command type
-        handlers = {
-            ACSCommandType.SLEW_TO_TARGET: lambda: self._handle_slew_command(
-                command, utime
-            ),
-            ACSCommandType.START_PASS: lambda: self._handle_pass_start_command(
-                command, utime
-            ),
-            ACSCommandType.END_PASS: lambda: self._end_pass(utime),
-            ACSCommandType.START_BATTERY_CHARGE: lambda: self._start_battery_charge(
-                command, utime
-            ),
-            ACSCommandType.END_BATTERY_CHARGE: lambda: self._end_battery_charge(utime),
-            ACSCommandType.ENTER_SAFE_MODE: lambda: self._handle_safe_mode_command(
-                utime
-            ),
-        }
-
-        handler = handlers.get(command.command_type)
-        if handler:
-            handler()
 
     def _handle_slew_command(self, command: ACSCommand, utime: float) -> None:
         """Handle SLEW_TO_TARGET command."""
@@ -183,40 +183,32 @@ class ACS:
     def _start_slew(self, slew: Slew | Pass, utime: float) -> None:
         """Start executing a slew or pass.
 
-        Use original slew object (no shallow copies) to preserve timing fields like
-        slewstart that are required for interpolation (t = utime - slewstart).
+        The ACS always drives the spacecraft from its current position. When a slew
+        command is executed, we set the start position to the current ACS pointing
+        and recalculate the slew profile. This ensures continuous motion without
+        teleportation, regardless of when commands were originally scheduled.
+
+        For Pass objects, this updates the pre_slew's start position via the
+        startra/startdec property delegation.
         """
-        self._adjust_slew_to_current_pointing(slew)
+        # Always start slew from current spacecraft position - ACS drives the spacecraft
+        slew.startra = self.ra
+        slew.startdec = self.dec
+        slew.slewstart = utime
+        slew.calc_slewtime()
+
+        print(
+            f"{unixtime2date(utime)}: Starting slew from RA={self.ra:.2f} Dec={self.dec:.2f} "
+            f"to RA={slew.endra:.2f} Dec={slew.enddec:.2f} (duration: {slew.slewtime:.1f}s)"
+        )
 
         self.current_slew = slew
-        self.last_slew = slew  # keep reference, avoid copy losing slewstart
+        self.last_slew = slew
 
         # Update last_ppt if this is a science pointing
         if self._is_science_pointing(slew):
             assert isinstance(slew, Slew), "Slew expected for science pointing"
             self.last_ppt = slew
-
-        print(
-            f"{unixtime2date(utime)}: Started slew to RA={slew.endra} Dec={slew.enddec}"
-        )
-
-    def _adjust_slew_to_current_pointing(self, slew: Slew | Pass) -> None:
-        """Adjust slew start position to current spacecraft pointing."""
-        if (
-            isinstance(slew, Slew)
-            and slew.startra != self.ra
-            and self.ra != 0
-            and self.dec != 0
-        ):
-            print(
-                f"{unixtime2date(slew.slewstart)}: Adjusting slew start: startRA={slew.startra}->{self.ra} startDec={slew.startdec}->{self.dec}"
-            )
-            slew.startra = self.ra
-            slew.startdec = self.dec
-            slew.calc_slewtime()
-            print(
-                f"{unixtime2date(slew.slewstart)}: Slew time calculated to be {slew.slewtime} seconds."
-            )
 
     def _is_science_pointing(self, slew: Slew | Pass) -> bool:
         """Check if slew represents a science pointing (not a pass)."""

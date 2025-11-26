@@ -144,6 +144,15 @@ class Pass(BaseModel):
             return None
         return self.slewstart + self.slewtime
 
+    def calc_slewtime(self) -> float | None:
+        """Calculate slew time by delegating to pre_slew.
+
+        Returns the calculated slew time, or None if pre_slew is not set.
+        """
+        if self.pre_slew is None:
+            return None
+        return self.pre_slew.calc_slewtime()
+
     def is_slewing(self, utime: float) -> bool:
         """Return True if we are in the pre-pass slew phase at utime."""
         if self.slewstart is None or self.slewend is None:
