@@ -765,6 +765,7 @@ class SkyPointingController:
                             markerfacecolor=color,
                             markeredgewidth=2,
                             zorder=3,
+                            label=name,
                         )
                     return
 
@@ -776,8 +777,8 @@ class SkyPointingController:
             ephemeris=self.ditl.ephem,
             target_ras=ra_flat,
             target_decs=dec_flat,
-            times=dtutcfromtimestamp(utime),
-        ).T[0]
+            times=[dtutcfromtimestamp(utime)],
+        )[:, 0]
 
         # Plot constrained region
         if constrained_coords.any():
