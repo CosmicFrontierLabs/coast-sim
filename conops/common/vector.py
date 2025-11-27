@@ -121,9 +121,19 @@ def roll_over_angle(angles: npt.NDArray | list[float]) -> npt.NDArray:
     return np.array(outangles)
 
 
-def vec2radec(v: npt.NDArray | list[float]) -> npt.NDArray:
-    """Convert a vector to Ra/Dec (in radians)"""
-    norm = np.linalg.norm(v, axis=0)
+def vec2radec(v: npt.NDArray[np.float64]) -> npt.NDArray:
+    """Convert a vector to Ra/Dec (in radians).
+
+    RA is always returned in [0, 2π).
+    """
+    # Normalize once
+    norm = np.sqrt(v[0] ** 2 + v[1] ** 2 + v[2] ** 2)
+
+    # Dec from z component
     dec = np.arcsin(v[2] / norm)
-    ra = np.arctan2(v[1], v[0])
+
+    # RA from x,y using arctan2 (handles all quadrants correctly)
+    # arctan2 returns [-π, π], so add 2π and mod to get [0, 2π)
+    ra = np.arctan2(v[1], v[0]) % (2 * np.pi)
+
     return np.array([ra, dec])

@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 from conops.common.vector import vec2radec
 
-from ..common import ics_date_conv, roll_over_angle, unixtime2date
+from ..common import ics_date_conv, unixtime2date
 from ..config import Config, Constraint, GroundStationRegistry
 from .slew import Slew
 
@@ -197,11 +197,8 @@ class Pass(BaseModel):
         if not self.utime or not self.ra or not self.dec:
             return self.gsstartra, self.gsstartdec
 
-        # Always use roll_over_angle to handle 360->0 discontinuity
-        ras = roll_over_angle(self.ra)
-        ra = np.interp(utime, self.utime, ras) % 360
-        dec = np.interp(utime, self.utime, self.dec)
-        return ra, dec
+        idx = np.searchsorted(self.utime, utime)
+        return self.ra[idx - 1], self.dec[idx - 1]
 
     def time_to_slew(self, utime: float) -> bool:
         """Determine whether to begin slewing for this pass.
@@ -227,7 +224,7 @@ class Pass(BaseModel):
         self.pre_slew.endra = self.endra
         self.pre_slew.enddec = self.enddec
 
-        # asserts for mypy mostly
+        # mostly asserts for mypy, mostly.
         assert self.startra is not None, "Start ra must be set"
         assert self.startdec is not None, "Start dec must be set"
         assert self.begin is not None, "Pass begin time must be set"
@@ -266,31 +263,22 @@ class Pass(BaseModel):
                 # Excessive lateness: abort pass
                 self.possible = False
                 print(
-                    "%s: Slew start late by %.1fs (> %.1fs grace). Abandoning pass %s.",
-                    unixtime2date(utime),
-                    self.slewlate,
-                    self._slew_grace,
-                    self.station,
+                    f"{unixtime2date(utime)}: Slew start late by {self.slewlate:.1f}s (> {self._slew_grace:.1f}s grace). Abandoning pass {self.station}."
                 )
                 return False
             else:
                 print(
-                    "%s: Slew starting late by %.1fs (grace %.1fs).",
-                    unixtime2date(utime),
-                    self.slewlate,
-                    self._slew_grace,
+                    f"{unixtime2date(utime)}: Slew starting late by {self.slewlate:.1f}s (grace {self._slew_grace:.1f}s)."
                 )
         else:
             # Early or exactly on time
             self.slewlate = now_delta  # negative or zero
             if now_delta < 0:
                 print(
-                    "%s: Slew starting early by %.1fs.",
-                    unixtime2date(utime),
-                    -now_delta,
+                    f"{unixtime2date(utime)}: Slew starting early by {-now_delta:.1f}s."
                 )
             else:
-                print("%s: Slew starting exactly on time.", unixtime2date(utime))
+                print(f"{unixtime2date(utime)}: Slew starting exactly on time.")
 
         # Record slew start
         self.slewstart = utime
@@ -397,6 +385,10 @@ class PassTimes:
                 )
             )
 
+            # Validate RA values are within [0, 360)
+            if np.any(sat_ra < 0) or np.any(sat_ra >= 360):
+                raise ValueError("Calculated satellite RA out of bounds [0, 360)")
+
             # Fast vectorized approach: compute Earth limb constraint directly
             # The Earth limb constraint checks if the angle from the observer to the target
             # passes through Earth (i.e., target is below the horizon + min_angle)
@@ -480,10 +472,11 @@ class PassTimes:
                         )
 
                         # Record the path during the pass
-                        for i in range(start_idx, end_idx):
-                            gspass.utime.append(timestamp_unix[startindex + i])
-                            gspass.ra.append(sat_ra[i])
-                            gspass.dec.append(sat_dec[i])
+                        gspass.utime = timestamp_unix[
+                            startindex + start_idx : startindex + end_idx
+                        ].tolist()
+                        gspass.ra = sat_ra[start_idx:end_idx].tolist()
+                        gspass.dec = sat_dec[start_idx:end_idx].tolist()
 
                         self.passes.append(gspass)
 
