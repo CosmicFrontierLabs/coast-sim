@@ -5,6 +5,8 @@ import numpy as np
 import rust_ephem  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field
 
+from conops.common.vector import vec2radec
+
 from ..common import ics_date_conv, roll_over_angle, unixtime2date
 from ..config import Config, Constraint, GroundStationRegistry
 from .slew import Slew
@@ -367,9 +369,6 @@ class PassTimes:
         num_steps = int(86400 * length / self.ephem.step_size)
         endindex = min(startindex + num_steps, len(timestamp_unix))
 
-        # Get spacecraft positions for the time range (vectorized)
-        sc_pos_all = self.ephem.gcrs_pv.position[startindex:endindex]  # Shape: (N, 3)
-
         # Get timestamps as datetime objects for GroundEphemeris
         timestamps = self.ephem.timestamp[startindex:endindex]
         begin_time = timestamps[0]
@@ -388,53 +387,42 @@ class PassTimes:
                 step_size=self.ephem.step_size,
             )
 
-            # Get ground station positions in GCRS (vectorized)
-            gs_pos_all = gs_ephem.gcrs_pv.position  # Shape: (N, 3)
-
-            # Compute vectors from GS to SC in GCRS (vectorized)
-            gs_to_sc_gcrs = sc_pos_all - gs_pos_all  # Shape: (N, 3)
-
-            # For accurate elevation angles, we need to work in ITRS (Earth-fixed) frame
-            # and convert to topocentric East-North-Up coordinates
-            sc_itrs_all = self.ephem.itrs_pv.position[startindex:endindex]
-            gs_itrs_all = gs_ephem.itrs_pv.position
-
-            # Vector from GS to SC in ITRS frame
-            gs_to_sc_itrs = sc_itrs_all - gs_itrs_all  # Shape: (N, 3)
-
-            # Rotation matrix from ITRS to topocentric ENU (East-North-Up) frame
-            lat_rad = np.radians(station.latitude_deg)
-            lon_rad = np.radians(station.longitude_deg)
-
-            sin_lat = np.sin(lat_rad)
-            cos_lat = np.cos(lat_rad)
-            sin_lon = np.sin(lon_rad)
-            cos_lon = np.cos(lon_rad)
-
-            # ENU rotation matrix (constant for this ground station)
-            r_enu = np.array(
-                [
-                    [-sin_lon, cos_lon, 0],
-                    [-sin_lat * cos_lon, -sin_lat * sin_lon, cos_lat],
-                    [cos_lat * cos_lon, cos_lat * sin_lon, sin_lat],
-                ]
+            sat_ra, sat_dec = np.degrees(
+                vec2radec(
+                    (
+                        self.ephem.gcrs_pv.position[startindex:endindex]
+                        - gs_ephem.gcrs_pv.position
+                    ).T
+                )
             )
 
-            # Transform all GS-to-SC vectors to ENU frame (vectorized matrix multiplication)
-            gs_to_sc_enu = (r_enu @ gs_to_sc_itrs.T).T  # Shape: (N, 3)
+            # Fast vectorized approach: compute Earth limb constraint directly
+            # The Earth limb constraint checks if the angle from the observer to the target
+            # passes through Earth (i.e., target is below the horizon + min_angle)
 
-            # In ENU frame: East=x, North=y, Up=z
-            # Elevation = arctan(Up / sqrt(East^2 + North^2))
-            horizontal_dist = np.sqrt(gs_to_sc_enu[:, 0] ** 2 + gs_to_sc_enu[:, 1] ** 2)
-            elevations = np.degrees(np.arctan2(gs_to_sc_enu[:, 2], horizontal_dist))
+            # Get ground station position in GCRS
+            gs_pos = gs_ephem.gcrs_pv.position  # Shape: (N, 3)
 
-            # Compute RA/Dec for SC-to-GS pointing (vectorized)
-            # We want the vector from SC to GS (opposite direction) in GCRS
-            sc_to_gs = -gs_to_sc_gcrs
-            ra_all = np.arctan2(sc_to_gs[:, 1], sc_to_gs[:, 0])
-            dec_all = np.arcsin(sc_to_gs[:, 2] / np.linalg.norm(sc_to_gs, axis=1))
-            ra_all_deg = np.degrees(ra_all)
-            dec_all_deg = np.degrees(dec_all)
+            # Vector from ground station to satellite (target direction)
+            gs_to_sat = (
+                self.ephem.gcrs_pv.position[startindex:endindex] - gs_pos
+            )  # Shape: (N, 3)
+
+            # Normalize to get unit vector toward satellite
+            gs_to_sat_dist = np.linalg.norm(gs_to_sat, axis=1, keepdims=True)
+            gs_to_sat_unit = gs_to_sat / gs_to_sat_dist
+
+            # Vector from Earth center to ground station
+            earth_to_gs = gs_pos  # GCRS origin is Earth center
+            earth_to_gs_dist = np.linalg.norm(earth_to_gs, axis=1, keepdims=True)
+            earth_to_gs_unit = earth_to_gs / earth_to_gs_dist
+
+            # Angle between "up" (away from Earth center) and target direction
+            # cos(angle) = dot(earth_to_gs_unit, gs_to_sat_unit)
+            cos_angle = np.sum(earth_to_gs_unit * gs_to_sat_unit, axis=1)
+            elevation_angle = np.degrees(
+                np.arcsin(cos_angle)
+            )  # Elevation above local horizon
 
             # Find passes using elevation threshold
             min_elev = (
@@ -443,16 +431,19 @@ class PassTimes:
                 else self.minelev
             )
 
-            # Detect pass boundaries
-            above_threshold = elevations > min_elev
-            pass_starts = np.where(np.diff(above_threshold.astype(int)) == 1)[0] + 1
-            pass_ends = np.where(np.diff(above_threshold.astype(int)) == -1)[0] + 1
+            # Target is visible if elevation > min_elev
+            is_visible = elevation_angle > min_elev
+
+            # Find pass boundaries by detecting transitions
+            transitions = np.diff(is_visible.astype(int))
+            pass_starts = np.where(transitions == 1)[0] + 1
+            pass_ends = np.where(transitions == -1)[0] + 1
 
             # Handle edge cases
-            if above_threshold[0]:
+            if is_visible[0]:
                 pass_starts = np.concatenate([[0], pass_starts])
-            if above_threshold[-1]:
-                pass_ends = np.concatenate([pass_ends, [len(above_threshold)]])
+            if is_visible[-1]:
+                pass_ends = np.concatenate([pass_ends, [len(is_visible)]])
 
             # Create Pass objects
             for start_idx, end_idx in zip(pass_starts, pass_ends):
@@ -478,18 +469,18 @@ class PassTimes:
                             acs_config=self.config.spacecraft_bus.attitude_control,
                             station=station.code,
                             begin=passstart,
-                            gsstartra=ra_all_deg[start_idx],
-                            gsstartdec=dec_all_deg[start_idx],
-                            gsendra=ra_all_deg[end_idx - 1],
-                            gsenddec=dec_all_deg[end_idx - 1],
+                            gsstartra=sat_ra[start_idx],
+                            gsstartdec=sat_dec[start_idx],
+                            gsendra=sat_ra[end_idx - 1],
+                            gsenddec=sat_dec[end_idx - 1],
                             length=passlen,
                         )
 
                         # Record the path during the pass
                         for i in range(start_idx, end_idx):
                             gspass.utime.append(timestamp_unix[startindex + i])
-                            gspass.ra.append(ra_all_deg[i])
-                            gspass.dec.append(dec_all_deg[i])
+                            gspass.ra.append(sat_ra[i])
+                            gspass.dec.append(sat_dec[i])
 
                         self.passes.append(gspass)
 

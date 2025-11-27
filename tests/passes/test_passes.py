@@ -593,13 +593,14 @@ class TestPassEdgeCases:
     """Test edge cases and error conditions."""
 
     def test_pass_with_empty_pointing_profile(self, basic_pass):
-        """Test Pass with empty ra/dec lists raises ValueError."""
+        """Test Pass with empty ra/dec lists returns fallback pointing."""
         basic_pass.utime = []
         basic_pass.ra = []
         basic_pass.dec = []
-        # Should raise ValueError from np.interp with empty arrays
-        with pytest.raises(ValueError, match="array of sample points is empty"):
-            basic_pass.pass_ra_dec(1514764900.0)
+        # With empty profile, pass_ra_dec returns gsstartra/gsstartdec as fallback
+        ra, dec = basic_pass.pass_ra_dec(1514764900.0)
+        assert ra == basic_pass.gsstartra
+        assert dec == basic_pass.gsstartdec
 
     def test_pass_obsid_default_value(self, mock_constraint, mock_acs_config):
         """Test Pass obsid has correct default value."""
