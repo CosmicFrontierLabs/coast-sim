@@ -359,6 +359,37 @@ class QueueDITL(DITLMixin, DITLStats):
     def _check_and_manage_passes(self, utime: float, ra: float, dec: float) -> None:
         """Check pass timing and send appropriate commands to ACS."""
 
+        # Check to see if it's time to slew to the next pass
+        # Note that if we're already in PASS or SLEWING mode, we skip this,
+        # because you can't slew to a pass while already in a pass or slewing.
+        if self.acs.acsmode not in (ACSMode.PASS, ACSMode.SLEWING):
+            next_pass = self.acs.passrequests.next_pass(utime)
+
+            if next_pass is None:
+                return
+            print(f"Next pass at {unixtime2date(next_pass.begin)}")
+            if next_pass.time_to_slew(utime=utime, ra=ra, dec=dec):
+                # If it's time to slew, enqueue the slew command
+                print(f"{unixtime2date(utime)} Slewing for pass to {next_pass.station}")
+
+                # Create slew object for the pass
+                slew = Slew(
+                    constraint=self.constraint,
+                    acs_config=self.config.spacecraft_bus.attitude_control,
+                )
+
+                slew.startra = ra
+                slew.startdec = dec
+                slew.endra = next_pass.gsstartra
+                slew.enddec = next_pass.gsstartdec
+                command = ACSCommand(
+                    command_type=ACSCommandType.SLEW_TO_TARGET,
+                    execution_time=utime,
+                    slew=slew,
+                )
+                self.acs.enqueue_command(command)
+                return
+
         # Check what actions are needed for passes
         pass_actions = self.acs.passrequests.check_pass_timing(
             utime, ra, dec, self.step_size
@@ -383,7 +414,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 print(f"{unixtime2date(utime)} Pass start: {pass_obj.station}")
                 command = ACSCommand(
                     command_type=ACSCommandType.START_PASS,
-                    execution_time=pass_obj.slewrequired,
+                    execution_time=pass_obj.begin,
                     slew=copy.copy(pass_obj),
                 )
                 self.acs.enqueue_command(command)

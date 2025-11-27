@@ -12,6 +12,7 @@ from ..common import (
 from ..config import Config
 from ..config.constants import DTOR
 from ..config.constraint import Constraint
+from ..simulation.passes import PassTimes
 from ..targets import Pointing
 from .acs_command import ACSCommand
 from .passes import Pass
@@ -30,7 +31,6 @@ class ACS:
 
     ephem: rust_ephem.TLEEphemeris
     slew_dists: list[float]
-    last_plan: Pass | Slew | Pointing | None
     ra: float
     dec: float
     roll: float
@@ -38,9 +38,9 @@ class ACS:
     acsmode: ACSMode
     command_queue: list[ACSCommand]
     executed_commands: list[ACSCommand]
-    current_slew: Slew | Pass | None
+    current_slew: Slew | None
     last_ppt: Slew | None
-    last_slew: Slew | Pass | None
+    last_slew: Slew | None
     in_eclipse: bool
 
     def __init__(self, constraint: Constraint, config: Config) -> None:
@@ -49,9 +49,25 @@ class ACS:
         self.constraint = constraint
         self.config = config
 
+        # Configuration
+        assert self.constraint.ephem is not None, "Ephemeris must be set in Constraint"
+        self.ephem = self.constraint.ephem
+
+        # Initial pointing derived from ephemeris (opposite Earth vector)
+        self.ra = (180 + self.ephem.earth[0].ra.deg) % 360
+        self.dec = -self.ephem.earth[0].dec.deg
+        # Set up initial last_slew pointing (this would have been the
+        # last slew to execute before the current DITL), so didn't
+        # happen in our simulation, but defines a realistic boundary
+        # condition for our simulation.
+        self.last_slew = Slew(
+            constraint=self.constraint,
+            acs_config=self.config.spacecraft_bus.attitude_control,
+        )
+        self.last_slew.endra = self.ra
+        self.last_slew.enddec = self.dec
+
         # Current state
-        self.ra = 0.0
-        self.dec = 0.0
         self.roll = 0.0
         self.obstype = "PPT"
         self.acsmode = ACSMode.SCIENCE  # Start in science/pointing mode
@@ -65,15 +81,9 @@ class ACS:
         # Current and historical state
         self.current_slew = None
         self.last_ppt = None
-        self.last_slew = None
-
-        # Configuration
-        assert self.constraint.ephem is not None, "Ephemeris must be set in Constraint"
-        self.ephem = self.constraint.ephem
-        from ..simulation.passes import PassTimes
 
         self.passrequests = PassTimes(constraint=self.constraint, config=config)
-        self.currentpass: Pass | None = None
+        self.current_pass: Pass | None = None
         self.solar_panel = config.solar_panel
         self.slew_dists: list[float] = []
         self.saa = None
@@ -118,9 +128,7 @@ class ACS:
                 ACSCommandType.SLEW_TO_TARGET: lambda: self._handle_slew_command(
                     command, utime
                 ),
-                ACSCommandType.START_PASS: lambda: self._handle_pass_start_command(
-                    command, utime
-                ),
+                ACSCommandType.START_PASS: lambda: self._start_pass(command, utime),
                 ACSCommandType.END_PASS: lambda: self._end_pass(utime),
                 ACSCommandType.START_BATTERY_CHARGE: lambda: self._start_battery_charge(
                     command, utime
@@ -143,11 +151,29 @@ class ACS:
         if command.slew is not None:
             self._start_slew(command.slew, utime)
 
-    def _handle_pass_start_command(self, command: ACSCommand, utime: float) -> None:
-        """Handle START_PASS command."""
-        if command.slew is not None and isinstance(command.slew, Pass):
-            self._start_slew(command.slew, utime)
+    # Handle Ground Station Pass Commands
+    def _start_pass(self, command: ACSCommand, utime: float) -> None:
+        """Handle START_PASS command to command the start of a groundstation pass."""
+        # Fetch the current pass from pass requests
+        self.current_pass = self.passrequests.current_pass(utime)
+        if self.current_pass is None:
+            print(f"{unixtime2date(utime)}: No active pass found to start.")
+            return
+        self.acsmode = ACSMode.PASS
+        print(
+            f"{unixtime2date(utime)}: Starting pass over groundstation {self.current_pass.station}."
+        )
 
+    def _end_pass(self, utime: float) -> None:
+        """Handle the END_PASS command to command the end of a groundstation pass."""
+        self.current_pass = None
+        self.acsmode = ACSMode.SCIENCE
+
+        print(
+            f"{unixtime2date(utime)}: Pass over - returning to last PPT {getattr(self.last_ppt, 'obsid', 'unknown')}"
+        )
+
+    # Handle Safe Mode Command
     def _handle_safe_mode_command(self, utime: float) -> None:
         """Handle ENTER_SAFE_MODE command.
 
@@ -180,16 +206,13 @@ class ACS:
         # Enqueue slew to safe pointing with a special obsid
         self._enqueue_slew(safe_ra, safe_dec, obsid=-999, utime=utime, obstype="SAFE")
 
-    def _start_slew(self, slew: Slew | Pass, utime: float) -> None:
-        """Start executing a slew or pass.
+    def _start_slew(self, slew: Slew, utime: float) -> None:
+        """Start executing a slew.
 
         The ACS always drives the spacecraft from its current position. When a slew
         command is executed, we set the start position to the current ACS pointing
         and recalculate the slew profile. This ensures continuous motion without
         teleportation, regardless of when commands were originally scheduled.
-
-        For Pass objects, this updates the pre_slew's start position via the
-        startra/startdec property delegation.
         """
         # Always start slew from current spacecraft position - ACS drives the spacecraft
         slew.startra = self.ra
@@ -207,21 +230,11 @@ class ACS:
 
         # Update last_ppt if this is a science pointing
         if self._is_science_pointing(slew):
-            assert isinstance(slew, Slew), "Slew expected for science pointing"
             self.last_ppt = slew
 
-    def _is_science_pointing(self, slew: Slew | Pass) -> bool:
+    def _is_science_pointing(self, slew: Slew) -> bool:
         """Check if slew represents a science pointing (not a pass)."""
         return slew.obstype == "PPT" and isinstance(slew, Slew)
-
-    def _end_pass(self, utime: float) -> None:
-        """Handle the end of a groundstation pass."""
-        self.currentpass = None
-        self.acsmode = ACSMode.SCIENCE
-
-        print(
-            f"{unixtime2date(utime)}: Pass over - returning to last PPT {getattr(self.last_ppt, 'obsid', 'unknown')}"
-        )
 
     def _enqueue_slew(
         self, ra: float, dec: float, obsid: int, utime: float, obstype: str = "PPT"
@@ -310,17 +323,6 @@ class ACS:
             slew.startra = self.ra
             slew.startdec = self.dec
             return False
-
-        # First slew – ensure we have an initial spacecraft pointing different from target
-        if self.ra == 0.0 and self.dec == 0.0:
-            # Establish initial pointing at Earth center from ephemeris
-            try:
-                index = self.ephem.index(dtutcfromtimestamp(utime))
-                self.ra = self.ephem.earth[index].ra.deg
-                self.dec = self.ephem.earth[index].dec.deg
-            except Exception:
-                # Fallback: keep zeros if ephem lookup fails
-                pass
 
         slew.startra = self.ra
         slew.startdec = self.dec
@@ -478,17 +480,11 @@ class ACS:
 
     def _is_in_pass_dwell(self, utime: float) -> bool:
         """Check if spacecraft is in pass dwell phase (stationary during groundstation contact)."""
-        if not isinstance(self.current_slew, Pass):
+        if self.current_pass is None:
             return False
-
-        pass_slew = self.current_slew
-        return (
-            pass_slew.slewend is not None
-            and pass_slew.length is not None
-            and pass_slew.obstype == "GSP"
-            and utime >= pass_slew.slewend
-            and utime < pass_slew.begin + pass_slew.length
-        )
+        if self.current_pass.in_pass(utime):
+            return True
+        return False
 
     def _update_mode(self, utime: float) -> None:
         """Update ACS mode based on current slew/pass state."""
@@ -526,15 +522,13 @@ class ACS:
         # Safe mode overrides all other pointing
         if self.in_safe_mode:
             self._calculate_safe_mode_pointing(utime)
-        elif self.last_slew is None:
-            # Assume spacecraft is pointing at Earth as initial position
-            index = self.ephem.index(dtutcfromtimestamp(utime))
-            self.ra, self.dec = (
-                self.ephem.earth[index].ra.deg,
-                self.ephem.earth[index].dec.deg,
-            )
-        else:
+        elif self.current_pass is not None:
+            self.ra, self.dec = self.current_pass.ra_dec(utime)  # type: ignore[assignment]
+        elif self.last_slew is not None:
             self.ra, self.dec = self.last_slew.ra_dec(utime)  # type: ignore[assignment]
+        else:
+            # If there's no slew or pass, maintain current pointing
+            pass
 
     def _calculate_safe_mode_pointing(self, utime: float) -> None:
         """Calculate safe mode pointing - point solar panels at the Sun.

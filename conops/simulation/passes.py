@@ -2,22 +2,19 @@ import time
 from typing import Any
 
 import numpy as np
-import rust_ephem  # type: ignore[import-untyped]
+import rust_ephem
 from pydantic import BaseModel, Field
 
 from conops.common.vector import vec2radec
 
 from ..common import ics_date_conv, unixtime2date
 from ..config import Config, Constraint, GroundStationRegistry
-from .slew import Slew
 
 
 class Pass(BaseModel):
-    """A groundstation pass consisting of a pre-pass slew (composition) and the dwell phase.
+    """A groundstation pass consisting of the dwell phase.
 
-    Composition replaces inheritance from `Slew` for clearer semantics: a pass *contains* a
-    slew rather than *is* a slew. The helper `pre_slew` computes the maneuver required before
-    the contact begins.
+    The pass contains pointing profile information for ground station contacts.
     """
 
     model_config = {"arbitrary_types_allowed": True}
@@ -26,7 +23,6 @@ class Pass(BaseModel):
     ephem: rust_ephem.TLEEphemeris | None = None
     constraint: Constraint | None = None
     acs_config: Any | None = None  # AttitudeControlSystem, avoiding circular import
-    pre_slew: Slew | None = None
 
     # Pass metadata
     station: str
@@ -50,85 +46,7 @@ class Pass(BaseModel):
     # Scheduling / status
     slewrequired: float = 0.0
     slewlate: float = 0.0
-    possible: bool = True
     obsid: int = 0xFFFF
-
-    # Internal caching for slew prediction
-    _cached_slew_inputs: tuple[float, float, float, float] | None = None
-    _slew_grace: float | None = None  # computed from ephemeris step size
-
-    def model_post_init(self, __context) -> None:
-        """Initialize dependent objects after Pydantic validation."""
-        if self.constraint is not None and self.pre_slew is None:
-            # Create the pre-pass slew with provided acs_config
-            self.pre_slew = Slew(self.constraint, acs_config=self.acs_config)
-        if self.pre_slew is not None and self.ephem is None:
-            self.ephem = self.pre_slew.ephem
-
-    # Expose selected slew attributes via properties for external code expecting them
-    @property
-    def startra(self) -> float | None:  # current pointing at slew start
-        if self.pre_slew is None:
-            return None
-        return self.pre_slew.startra
-
-    @startra.setter
-    def startra(self, value: float):
-        if self.pre_slew is None:
-            return
-        self.pre_slew.startra = value
-
-    @property
-    def startdec(self):
-        return self.pre_slew.startdec
-
-    @startdec.setter
-    def startdec(self, value: float):
-        if self.pre_slew is None:
-            return
-        self.pre_slew.startdec = value
-
-    @property
-    def endra(self) -> float:  # end of slew == start of pass
-        return self.gsstartra
-
-    @property
-    def enddec(self) -> float:
-        return self.gsstartdec
-
-    @property
-    def slewtime(self) -> float | None:
-        if self.pre_slew is None:
-            return None
-        return self.pre_slew.slewtime
-
-    @property
-    def slewstart(self) -> float | None:
-        if self.pre_slew is None:
-            return None
-        return self.pre_slew.slewstart
-
-    @slewstart.setter
-    def slewstart(self, value: float):
-        if self.pre_slew is None:
-            return
-        self.pre_slew.slewstart = value
-
-    @property
-    def slewdist(self) -> float:
-        if self.pre_slew is None:
-            return 0.0
-        return self.pre_slew.slewdist
-
-    @property
-    def slewpath(self) -> np.ndarray | None:
-        if self.pre_slew is None:
-            return None
-        return self.pre_slew.slewpath
-
-    @property
-    def slewsecs(self) -> np.ndarray:
-        return getattr(self.pre_slew, "slewsecs", np.array([]))
 
     @property
     def end(self) -> float:
@@ -139,30 +57,8 @@ class Pass(BaseModel):
         """Return string of details on the pass"""
         return f"{unixtime2date(self.begin):18s}  {self.station:3s}  {self.length / 60.0:4.1f} mins"  #  {self.time_to_pass():12s}"
 
-    @property
-    def slewend(self) -> float | None:
-        """End time of the slew maneuver preceding the pass."""
-        if self.slewstart is None or self.slewtime is None:
-            return None
-        return self.slewstart + self.slewtime
-
-    def calc_slewtime(self) -> float | None:
-        """Calculate slew time by delegating to pre_slew.
-
-        Returns the calculated slew time, or None if pre_slew is not set.
-        """
-        if self.pre_slew is None:
-            return None
-        return self.pre_slew.calc_slewtime()
-
-    def is_slewing(self, utime: float) -> bool:
-        """Return True if we are in the pre-pass slew phase at utime."""
-        if self.slewstart is None or self.slewend is None:
-            return False
-        return self.slewstart <= utime < self.slewend
-
     def in_pass(self, utime: float) -> bool:
-        if utime >= self.begin and utime <= self.end and self.possible:
+        if utime >= self.begin and utime <= self.end:
             return True
         else:
             return False
@@ -181,108 +77,61 @@ class Pass(BaseModel):
 
     def ra_dec(self, utime: float) -> tuple[float | None, float | None]:
         if utime < self.begin:
-            if self.pre_slew is None:
-                return None, None
-            return self.pre_slew.slew_ra_dec(utime)
+            return None, None
         else:
             return self.pass_ra_dec(utime)
 
     def pass_ra_dec(self, utime: float) -> tuple[float | None, float | None]:
-        """Return the RA/Dec of the Spacecraft during a groundstation pass.
+        """Return the RA/Dec of the Spacecraft during a groundstation pass."""
+        if not self.in_pass(utime):
+            return None, None
 
-        Uses roll_over_angle to handle RA discontinuity at 360->0 boundary,
-        ensuring smooth interpolation across the boundary.
-        """
-        # Handle empty tracking profile
-        if not self.utime or not self.ra or not self.dec:
-            return self.gsstartra, self.gsstartdec
-
+        # Find the closest time index
         idx = np.searchsorted(self.utime, utime)
         return self.ra[idx - 1], self.dec[idx - 1]
 
-    def time_to_slew(self, utime: float) -> bool:
+    def time_to_slew(self, utime: float, ra: float, dec: float) -> bool:
         """Determine whether to begin slewing for this pass.
 
-        Returns True when slew should start now, False otherwise. Applies a small grace
-        window (ephemeris step size) allowing a slightly late start without abandoning
-        the pass. Abandons only if lateness exceeds the grace.
+        Calculates the slew time between current RA/Dec and the appropriate pointing of the pass.
+        If on time, slews to pass start. If late, slews to where the pass currently is.
+        Returns True when the pass time minus slew time is less than 60 seconds away.
         """
-        if not self.possible:
-            return False
 
-        # Ensure pointing inputs are sensible (avoid computing slew from zeros unless intentional)
-        if (
-            (self.startra == 0 or self.startra is None)
-            and (self.startdec == 0 or self.startdec is None)
-            and (self.endra != 0 or self.enddec != 0)
-        ):
-            # Current pointing unknown -> cannot decide yet
-            return False
+        assert self.ephem is not None, "Ephemeris must be set for Pass class"
 
-        # Update end target of slew (start-of-pass pointing)
-        assert self.pre_slew is not None, "Pre-slew must be initialized"
-        self.pre_slew.endra = self.endra
-        self.pre_slew.enddec = self.enddec
-
-        # mostly asserts for mypy, mostly.
-        assert self.startra is not None, "Start ra must be set"
-        assert self.startdec is not None, "Start dec must be set"
-        assert self.begin is not None, "Pass begin time must be set"
-        assert self.endra is not None, "End ra must be set"
-        assert self.enddec is not None, "End dec must be set"
-        assert self.slewtime is not None, "Slew time must be set"
-
-        # Cache & predict only when inputs change
-        inputs = (self.startra, self.startdec, self.endra, self.enddec)
-        if inputs != self._cached_slew_inputs:
-            self.pre_slew.calc_slewtime()
-            self._cached_slew_inputs = inputs
-            # Recompute grace window (one ephemeris time step)
-            if self.ephem is not None:
-                # Compute step_size from timestamp difference
-                self._slew_grace = float(
-                    self.ephem.timestamp[1].timestamp()
-                    - self.ephem.timestamp[0].timestamp()
-                )
-            else:
-                # Fallback to 0 to preserve previous strict behavior
-                self._slew_grace = 0.0
-
-        self.slewrequired = self.begin - self.slewtime
-        now_delta = utime - self.slewrequired
-
-        # Start when within one step before required time
-        if now_delta < -(self._slew_grace or 0):
-            # Too early
-            return False
-
-        # Lateness evaluation
-        if now_delta > 0:
-            self.slewlate = now_delta
-            if self._slew_grace is not None and self.slewlate > self._slew_grace:
-                # Excessive lateness: abort pass
-                self.possible = False
-                print(
-                    f"{unixtime2date(utime)}: Slew start late by {self.slewlate:.1f}s (> {self._slew_grace:.1f}s grace). Abandoning pass {self.station}."
-                )
+        # Determine target pointing: if we're late, target where pass currently is
+        if utime >= self.begin:
+            # We're late - target current pass position
+            target_ra, target_dec = self.pass_ra_dec(utime)
+            if target_ra is None or target_dec is None:
                 return False
-            else:
-                print(
-                    f"{unixtime2date(utime)}: Slew starting late by {self.slewlate:.1f}s (grace {self._slew_grace:.1f}s)."
-                )
         else:
-            # Early or exactly on time
-            self.slewlate = now_delta  # negative or zero
-            if now_delta < 0:
-                print(
-                    f"{unixtime2date(utime)}: Slew starting early by {-now_delta:.1f}s."
-                )
-            else:
-                print(f"{unixtime2date(utime)}: Slew starting exactly on time.")
+            # On time - target pass start
+            if not self.ra or not self.dec:
+                return False
+            target_ra, target_dec = self.ra[0], self.dec[0]
 
-        # Record slew start
-        self.slewstart = utime
-        return True
+        # Using ACS config, calculate slew time
+        if self.acs_config is not None:
+            slewdist, _ = self.acs_config.predict_slew(
+                startra=ra,
+                startdec=dec,
+                endra=target_ra,
+                enddec=target_dec,
+            )
+            slewtime = self.acs_config.slew_time(slewdist)
+        else:
+            raise ValueError("ACS config must be set to calculate slew time")
+        # Determine if we need to start slewing now
+        time_until_slew = (self.begin - slewtime) - utime
+        print(
+            f"Time until slew for pass at {unixtime2date(self.begin)} is {time_until_slew:.1f} sec"
+        )
+        if time_until_slew <= self.ephem.step_size * 2:
+            return True
+        else:
+            return False
 
 
 class PassTimes:
@@ -329,6 +178,13 @@ class PassTimes:
     def next_pass(self, utime: float) -> Pass | None:
         for gspass in self.passes:
             if utime < gspass.begin:
+                return gspass
+        return None
+
+    def current_pass(self, utime: float) -> Pass | None:
+        """Get the current active pass being tracked."""
+        for gspass in self.passes:
+            if gspass.in_pass(utime):
                 return gspass
         return None
 
@@ -483,16 +339,9 @@ class PassTimes:
         # Order the passes by time
         self.passes.sort(key=lambda x: x.begin, reverse=False)
 
-    def get_current_pass(self) -> Pass | None:
-        """Get the current active pass being tracked."""
-        # Handle legacy PassTimes objects that don't have _current_pass
-        if not hasattr(self, "_current_pass"):
-            self._current_pass = None
-        return self._current_pass
-
     def check_pass_timing(
         self, utime: float, current_ra: float, current_dec: float, step_size: float
-    ) -> dict[str, Any]:
+    ) -> dict[str, None | bool | Pass]:
         """Check pass timing and return actions needed.
 
         Returns dict with:
@@ -504,10 +353,9 @@ class PassTimes:
         if not hasattr(self, "_current_pass"):
             self._current_pass = None
 
-        result: dict[str, Any] = {
+        result: dict[str, None | bool | Pass] = {
             "start_pass": None,
             "end_pass": False,
-            "updated_pass": None,
         }
 
         # Check if current pass has ended
@@ -521,25 +369,5 @@ class PassTimes:
             next_pass = self.next_pass(utime)
             if next_pass is not None:
                 self._current_pass = next_pass
-
-        # Update pass timing and check if it should start
-        if self._current_pass is not None:
-            # Update pass timing with current spacecraft position
-            if (
-                current_ra != 0 or current_dec != 0
-            ) and self._current_pass.slewtime is not None:
-                self._current_pass.startra = current_ra
-                self._current_pass.startdec = current_dec
-
-                self._current_pass.slewrequired = (
-                    self._current_pass.begin - self._current_pass.slewtime - step_size
-                )
-
-            result["updated_pass"] = self._current_pass
-
-            # Check if it's time to start the pass
-            time_to_pass = self._current_pass.slewrequired - utime
-            if 0 < time_to_pass <= step_size:
-                result["start_pass"] = self._current_pass
 
         return result

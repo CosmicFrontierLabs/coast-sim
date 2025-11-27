@@ -5,7 +5,6 @@ from pydantic import BaseModel, ConfigDict
 from ..common import ACSCommandType
 
 if TYPE_CHECKING:
-    from .passes import Pass
     from .slew import Slew
 
 
@@ -14,7 +13,7 @@ class ACSCommand(BaseModel):
 
     command_type: ACSCommandType
     execution_time: float
-    slew: "Slew | Pass | None" = None
+    slew: "Slew | None" = None
     ra: float | None = None
     dec: float | None = None
     obsid: int | None = None

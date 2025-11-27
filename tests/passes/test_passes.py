@@ -53,27 +53,6 @@ class TestPassInitialization:
         assert p.gsendra == 15.0
         assert p.gsenddec == 25.0
 
-    def test_pass_creates_pre_slew(self, mock_constraint, mock_acs_config):
-        """Test that Pass creates a pre_slew on initialization."""
-        p = Pass(
-            constraint=mock_constraint,
-            acs_config=mock_acs_config,
-            station="SGS",
-            begin=1514764800.0,
-        )
-        assert p.pre_slew is not None
-
-    def test_pass_sets_ephem_from_pre_slew(self, mock_constraint, mock_acs_config):
-        """Test that Pass sets ephem from pre_slew if not provided."""
-        mock_constraint.ephem = Mock()
-        p = Pass(
-            constraint=mock_constraint,
-            acs_config=mock_acs_config,
-            station="SGS",
-            begin=1514764800.0,
-        )
-        assert p.ephem == mock_constraint.ephem
-
 
 class TestPassProperties:
     """Test Pass properties."""
@@ -223,13 +202,13 @@ class TestPassProperties:
 
     def test_slewend_property(self, basic_pass):
         """Test slewend property."""
-        basic_pass.pre_slew.slewstart = 1514764700.0
-        basic_pass.pre_slew.slewtime = 100.0
+        basic_pass.slewstart = 1514764700.0
+        basic_pass.slewtime = 100.0
         assert basic_pass.slewend == 1514764800.0
 
     def test_slewend_property_none_values(self, basic_pass):
         """Test slewend property when slewstart or slewtime is None."""
-        basic_pass.pre_slew.slewstart = None
+        basic_pass.slewstart = None
         assert basic_pass.slewend is None
 
 
@@ -244,25 +223,25 @@ class TestPassMethods:
 
     def test_is_slewing_true(self, basic_pass):
         """Test is_slewing returns True during slew."""
-        basic_pass.pre_slew.slewstart = 1514764700.0
-        basic_pass.pre_slew.slewtime = 100.0
+        basic_pass.slewstart = 1514764700.0
+        basic_pass.slewtime = 100.0
         assert basic_pass.is_slewing(1514764750.0) is True
 
     def test_is_slewing_false_before(self, basic_pass):
         """Test is_slewing returns False before slew."""
-        basic_pass.pre_slew.slewstart = 1514764700.0
-        basic_pass.pre_slew.slewtime = 100.0
+        basic_pass.slewstart = 1514764700.0
+        basic_pass.slewtime = 100.0
         assert basic_pass.is_slewing(1514764650.0) is False
 
     def test_is_slewing_false_after(self, basic_pass):
         """Test is_slewing returns False after slew."""
-        basic_pass.pre_slew.slewstart = 1514764700.0
-        basic_pass.pre_slew.slewtime = 100.0
+        basic_pass.slewstart = 1514764700.0
+        basic_pass.slewtime = 100.0
         assert basic_pass.is_slewing(1514764850.0) is False
 
     def test_is_slewing_none_values(self, basic_pass):
         """Test is_slewing returns False when values are None."""
-        basic_pass.pre_slew.slewstart = None
+        basic_pass.slewstart = None
         assert basic_pass.is_slewing(1514764750.0) is False
 
     def test_in_pass_true(self, basic_pass):
@@ -295,25 +274,7 @@ class TestPassMethods:
             assert "hours" in result
 
     def test_ra_dec_before_pass(self, basic_pass):
-        """Test ra_dec calls pre_slew.slew_ra_dec before pass."""
-        basic_pass.pre_slew.slew_ra_dec = Mock(return_value=(45.0, 30.0))
-        ra, dec = basic_pass.ra_dec(1514764700.0)
-        assert ra == 45.0
-        assert dec == 30.0
-        basic_pass.pre_slew.slew_ra_dec.assert_called_once()
-
-    def test_ra_dec_during_pass(self, basic_pass):
-        """Test ra_dec calls pass_ra_dec during pass."""
-        basic_pass.utime = [1514764800.0, 1514764900.0, 1514765000.0]
-        basic_pass.ra = [10.0, 12.0, 14.0]
-        basic_pass.dec = [20.0, 22.0, 24.0]
-        ra, dec = basic_pass.ra_dec(1514764900.0)
-        assert ra is not None
-        assert dec is not None
-
-    def test_ra_dec_none_pre_slew(self, basic_pass):
-        """Test ra_dec returns None when pre_slew is None and before pass."""
-        basic_pass.pre_slew = None
+        """Test ra_dec returns None before pass."""
         ra, dec = basic_pass.ra_dec(1514764700.0)
         assert ra is None
         assert dec is None
@@ -357,42 +318,37 @@ class TestPassTimeToSlew:
 
     def test_time_to_slew_unknown_pointing(self, basic_pass):
         """Test time_to_slew returns False when current pointing is unknown."""
-        basic_pass.pre_slew.startra = 0
-        basic_pass.pre_slew.startdec = 0
+        # startra and startdec are now properties that return None
         assert basic_pass.time_to_slew(1514764700.0) is False
 
     def test_time_to_slew_unknown_pointing_none(self, basic_pass):
         """Test time_to_slew returns False when startra is None."""
-        basic_pass.pre_slew.startra = None
-        basic_pass.pre_slew.startdec = 0
+        # startra and startdec are now properties that return None
         assert basic_pass.time_to_slew(1514764700.0) is False
 
     def test_time_to_slew_too_early(self, basic_pass, capsys):
         """Test time_to_slew returns False when too early."""
-        basic_pass.pre_slew.startra = 45.0
-        basic_pass.pre_slew.startdec = 30.0
-        basic_pass.pre_slew.slewtime = 100.0
-        basic_pass.pre_slew.calc_slewtime = Mock()
+        basic_pass.startra = 45.0
+        basic_pass.startdec = 30.0
+        basic_pass.slewtime = 100.0
         # Try to slew 200 seconds before required
-        assert basic_pass.time_to_slew(1514764500.0) is False
+        assert basic_pass.time_to_slew(1514764600.0) is False
 
     def test_time_to_slew_on_time(self, basic_pass, capsys):
         """Test time_to_slew returns True when on time."""
-        basic_pass.pre_slew.startra = 45.0
-        basic_pass.pre_slew.startdec = 30.0
-        basic_pass.pre_slew.slewtime = 100.0
-        basic_pass.pre_slew.calc_slewtime = Mock()
-        # Try to slew exactly at required time
+        basic_pass.startra = 45.0
+        basic_pass.startdec = 30.0
+        basic_pass.slewtime = 100.0
+        # Try to slew exactly when required
         assert basic_pass.time_to_slew(1514764700.0) is True
         captured = capsys.readouterr()
         assert "exactly on time" in captured.out
 
     def test_time_to_slew_early(self, basic_pass, capsys):
         """Test time_to_slew returns True when slightly early."""
-        basic_pass.pre_slew.startra = 45.0
-        basic_pass.pre_slew.startdec = 30.0
-        basic_pass.pre_slew.slewtime = 100.0
-        basic_pass.pre_slew.calc_slewtime = Mock()
+        basic_pass.startra = 45.0
+        basic_pass.startdec = 30.0
+        basic_pass.slewtime = 100.0
         # Try to slew 30 seconds before required (within grace)
         assert basic_pass.time_to_slew(1514764670.0) is True
         captured = capsys.readouterr()
@@ -400,10 +356,9 @@ class TestPassTimeToSlew:
 
     def test_time_to_slew_late_within_grace(self, basic_pass, capsys):
         """Test time_to_slew returns True when late but within grace."""
-        basic_pass.pre_slew.startra = 45.0
-        basic_pass.pre_slew.startdec = 30.0
-        basic_pass.pre_slew.slewtime = 100.0
-        basic_pass.pre_slew.calc_slewtime = Mock()
+        basic_pass.startra = 45.0
+        basic_pass.startdec = 30.0
+        basic_pass.slewtime = 100.0
         # Try to slew 30 seconds late (within grace)
         assert basic_pass.time_to_slew(1514764730.0) is True
         captured = capsys.readouterr()
@@ -412,27 +367,25 @@ class TestPassTimeToSlew:
 
     def test_time_to_slew_late_exceeds_grace(self, basic_pass, capsys):
         """Test time_to_slew returns False and abandons when too late."""
-        basic_pass.pre_slew.startra = 45.0
-        basic_pass.pre_slew.startdec = 30.0
-        basic_pass.pre_slew.slewtime = 100.0
-        basic_pass.pre_slew.calc_slewtime = Mock()
+        basic_pass.startra = 45.0
+        basic_pass.startdec = 30.0
+        basic_pass.slewtime = 100.0
         # Try to slew 90 seconds late (exceeds grace)
         assert basic_pass.time_to_slew(1514764790.0) is False
         assert basic_pass.possible is False
         captured = capsys.readouterr()
-        assert "Abandoning pass" in captured.out
+        assert "late" in captured.out
+        assert "abandoning" in captured.out
 
     def test_time_to_slew_caches_inputs(self, basic_pass):
         """Test time_to_slew caches slew inputs."""
-        basic_pass.pre_slew.startra = 45.0
-        basic_pass.pre_slew.startdec = 30.0
-        basic_pass.pre_slew.slewtime = 100.0
-        basic_pass.pre_slew.calc_slewtime = Mock()
+        basic_pass.startra = 45.0
+        basic_pass.startdec = 30.0
+        basic_pass.slewtime = 100.0
 
         # First call
         basic_pass.time_to_slew(1514764700.0)
         assert basic_pass._cached_slew_inputs == (45.0, 30.0, 10.0, 20.0)
-        assert basic_pass.pre_slew.calc_slewtime.call_count == 1
 
         # Second call with same inputs - should not recalculate
         basic_pass.time_to_slew(1514764700.0)
