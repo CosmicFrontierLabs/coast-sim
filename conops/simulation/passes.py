@@ -387,6 +387,7 @@ class PassTimes:
                 step_size=self.ephem.step_size,
             )
 
+            # Calculate satellite RA/Dec as seen from ground station
             sat_ra, sat_dec = np.degrees(
                 vec2radec(
                     (
@@ -420,9 +421,9 @@ class PassTimes:
             # Angle between "up" (away from Earth center) and target direction
             # cos(angle) = dot(earth_to_gs_unit, gs_to_sat_unit)
             cos_angle = np.sum(earth_to_gs_unit * gs_to_sat_unit, axis=1)
-            elevation_angle = np.degrees(
-                np.arcsin(cos_angle)
-            )  # Elevation above local horizon
+
+            # Calculate elevation above local horizon
+            elevation_angle = np.degrees(np.arcsin(cos_angle))
 
             # Find passes using elevation threshold
             min_elev = (
@@ -456,6 +457,7 @@ class PassTimes:
                 passend = timestamp_unix[global_end_idx]
                 passlen = passend - passstart
 
+                # Only consider passes that meet minimum length
                 if passlen >= self.minlen:
                     # Combine global and station-specific schedule probabilities
                     combined_prob = self.schedule_chance * getattr(
@@ -463,6 +465,7 @@ class PassTimes:
                     )
                     rand_val = np.random.random()
                     if rand_val <= combined_prob:
+                        # Schedule this pass if the dice roll allows it
                         gspass = Pass(
                             constraint=self.constraint,
                             ephem=self.ephem,
