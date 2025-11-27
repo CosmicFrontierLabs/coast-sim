@@ -97,7 +97,6 @@ class Pass(BaseModel):
         If on time, slews to pass start. If late, slews to where the pass currently is.
         Returns True when the pass time minus slew time is less than 60 seconds away.
         """
-
         assert self.ephem is not None, "Ephemeris must be set for Pass class"
 
         # Determine target pointing: if we're late, target where pass currently is
@@ -142,8 +141,6 @@ class PassTimes:
     ephem: rust_ephem.TLEEphemeris
     ground_stations: GroundStationRegistry
     config: Config
-
-    _current_pass: Pass | None
 
     def __init__(
         self,
@@ -338,36 +335,3 @@ class PassTimes:
 
         # Order the passes by time
         self.passes.sort(key=lambda x: x.begin, reverse=False)
-
-    def check_pass_timing(
-        self, utime: float, current_ra: float, current_dec: float, step_size: float
-    ) -> dict[str, None | bool | Pass]:
-        """Check pass timing and return actions needed.
-
-        Returns dict with:
-            - 'start_pass': Pass object if a pass should start now
-            - 'end_pass': True if current pass has ended
-            - 'updated_pass': Pass object with updated timing
-        """
-        # Ensure _current_pass exists (for legacy objects)
-        if not hasattr(self, "_current_pass"):
-            self._current_pass = None
-
-        result: dict[str, None | bool | Pass] = {
-            "start_pass": None,
-            "end_pass": False,
-        }
-
-        # Check if current pass has ended
-        if self._current_pass is not None and utime > self._current_pass.end:
-            result["end_pass"] = True
-            self._current_pass = None
-            return result
-
-        # Look for next pass if none is scheduled
-        if self._current_pass is None:
-            next_pass = self.next_pass(utime)
-            if next_pass is not None:
-                self._current_pass = next_pass
-
-        return result
