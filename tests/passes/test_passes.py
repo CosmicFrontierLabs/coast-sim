@@ -424,3 +424,216 @@ class TestPassTimesGetIntegration:
         # With a 12-hour period and low thresholds, we should get at least one pass
         # (This may be 0 if geometry doesn't work out, which is okay for coverage)
         assert len(passtimes.passes) >= 0
+
+
+class TestPassTimesCurrent:
+    """Tests for PassTimes.current_pass method."""
+
+    def test_current_pass_returns_active_pass(self, mock_constraint, mock_config):
+        """Should return the first pass whose in_pass returns True."""
+        pt = PassTimes(constraint=mock_constraint, config=mock_config)
+
+        p1 = Mock()
+        p1.in_pass.return_value = False
+        p2 = Mock()
+        p2.in_pass.return_value = True
+        p3 = Mock()
+        p3.in_pass.return_value = False
+
+        pt.passes = [p1, p2, p3]
+        assert pt.current_pass(1234.0) is p2
+
+    def test_current_pass_none_when_no_active(self, mock_constraint, mock_config):
+        """Should return None when no passes are active."""
+        pt = PassTimes(constraint=mock_constraint, config=mock_config)
+
+        p1 = Mock()
+        p1.in_pass.return_value = False
+        p2 = Mock()
+        p2.in_pass.return_value = False
+
+        pt.passes = [p1, p2]
+        assert pt.current_pass(1234.0) is None
+
+    def test_current_pass_empty_list_returns_none(self, mock_constraint, mock_config):
+        """Should return None if no passes are present."""
+        pt = PassTimes(constraint=mock_constraint, config=mock_config)
+        pt.passes = []
+        assert pt.current_pass(1234.0) is None
+
+    def test_current_pass_prefers_first_matching(self, mock_constraint, mock_config):
+        """If multiple passes report active, the first in the list should be returned."""
+        pt = PassTimes(constraint=mock_constraint, config=mock_config)
+
+        p1 = Mock()
+        p1.in_pass.return_value = True
+        p2 = Mock()
+        p2.in_pass.return_value = True
+
+        pt.passes = [p1, p2]
+        assert pt.current_pass(1234.0) is p1
+
+    def test_current_pass_with_real_pass_objects(
+        self, mock_constraint, mock_config, mock_acs_config
+    ):
+        """Integration-style test using real Pass objects and time ranges."""
+        pt = PassTimes(constraint=mock_constraint, config=mock_config)
+
+        p1 = Pass(
+            constraint=mock_constraint,
+            acs_config=mock_acs_config,
+            station="A",
+            begin=1000.0,
+            length=200.0,
+        )
+        p2 = Pass(
+            constraint=mock_constraint,
+            acs_config=mock_acs_config,
+            station="B",
+            begin=1500.0,
+            length=200.0,
+        )
+
+        pt.passes = [p1, p2]
+
+        # 1100 is inside p1
+        assert pt.current_pass(1100.0) is p1
+        # 1600 is inside p2
+        assert pt.current_pass(1600.0) is p2
+        # 900 is before any pass
+        assert pt.current_pass(900.0) is None
+
+    def test_current_pass_raises_if_pass_in_pass_list_has_no_length(
+        self, mock_constraint, mock_config, mock_acs_config
+    ):
+        """If a Pass has no length, in_pass() raises; current_pass should propagate AssertionError."""
+        pt = PassTimes(constraint=mock_constraint, config=mock_config)
+
+        bad_pass = Pass(
+            constraint=mock_constraint,
+            acs_config=mock_acs_config,
+            station="BAD",
+            begin=2000.0,
+            length=None,
+        )
+
+        pt.passes = [bad_pass]
+        with pytest.raises(AssertionError, match="Pass length must be set"):
+            pt.current_pass(2000.0)
+
+
+def test_time_to_slew_within_ephem_step_buffer_returns_true(
+    mock_constraint, mock_ephem, mock_acs_config
+):
+    """time_to_slew should return True when time_until_slew is within ephem.step_size*2 buffer."""
+    # Create a simple ACS mock with controllable slew prediction/time
+    acs = Mock()
+    acs.predict_slew.return_value = (
+        0.1,
+        None,
+    )  # slewdist not used beyond passing through
+    acs.slew_time.return_value = 100.0  # 100 seconds slew time
+
+    # Use a small real TLE ephemeris instance to satisfy pydantic validation
+    begin = datetime(2025, 8, 15, 0, 0, 0, tzinfo=timezone.utc)
+    end = datetime(2025, 8, 15, 0, 15, 0, tzinfo=timezone.utc)
+    tle_path = "examples/example.tle"
+    ephem = TLEEphemeris(tle=tle_path, begin=begin, end=end, step_size=60)
+
+    p = Pass(
+        constraint=mock_constraint,
+        ephem=ephem,
+        acs_config=acs,
+        station="SGS",
+        begin=1514764800.0,
+        length=600.0,
+    )
+    # Provide a start profile so the "on time" branch has data to use
+    p.utime = [1514764800.0, 1514764860.0]
+    p.ra = [10.0, 12.0]
+    p.dec = [20.0, 22.0]
+
+    # utime = 1514764600 (200s before begin). With slew_time=100 -> time_until_slew = 100 <= 120 (buffer)
+    result = p.time_to_slew(1514764600.0, ra=0.0, dec=0.0)
+    assert result is True
+
+
+def test_time_to_slew_outside_ephem_step_buffer_returns_false(
+    mock_constraint, mock_ephem, mock_acs_config
+):
+    """time_to_slew should return False when time_until_slew is outside the ephem.step_size*2 buffer."""
+    acs = Mock()
+    acs.predict_slew.return_value = (0.1, None)
+    acs.slew_time.return_value = (
+        50.0  # smaller slewtime -> time_until_slew becomes larger than buffer
+    )
+
+    # Use a small real TLE ephemeris instance to satisfy pydantic validation
+    begin = datetime(2025, 8, 15, 0, 0, 0, tzinfo=timezone.utc)
+    end = datetime(2025, 8, 15, 0, 15, 0, tzinfo=timezone.utc)
+    tle_path = "examples/example.tle"
+    ephem = TLEEphemeris(tle=tle_path, begin=begin, end=end, step_size=60)
+
+    p = Pass(
+        constraint=mock_constraint,
+        ephem=ephem,
+        acs_config=acs,
+        station="SGS",
+        begin=1514764800.0,
+        length=600.0,
+    )
+    p.utime = [1514764800.0, 1514764860.0]
+    p.ra = [10.0, 12.0]
+    p.dec = [20.0, 22.0]
+
+    # utime same as previous; with slew_time=50 -> time_until_slew = 150 > 120 (buffer)
+    result = p.time_to_slew(1514764600.0, ra=0.0, dec=0.0)
+    assert result is False
+
+
+def test_time_to_slew_raises_value_error_when_no_acs_config(
+    mock_constraint, mock_ephem
+):
+    """time_to_slew should raise ValueError when no ACS config is provided."""
+    # Use a small real ephemeris to satisfy pydantic validation
+    begin = datetime(2025, 8, 15, 0, 0, 0, tzinfo=timezone.utc)
+    end = datetime(2025, 8, 15, 0, 15, 0, tzinfo=timezone.utc)
+    tle_path = "examples/example.tle"
+    ephem_obj = TLEEphemeris(tle=tle_path, begin=begin, end=end, step_size=60)
+
+    p = Pass(
+        constraint=mock_constraint,
+        ephem=ephem_obj,
+        acs_config=None,
+        station="SGS",
+        begin=1514764800.0,
+        length=600.0,
+    )
+    # Provide profile so we don't exit earlier
+    p.utime = [1514764800.0, 1514764860.0]
+    p.ra = [10.0, 12.0]
+    p.dec = [20.0, 22.0]
+
+    with pytest.raises(ValueError, match="ACS config must be set"):
+        p.time_to_slew(1514764700.0, ra=0.0, dec=0.0)
+
+
+def test_time_to_slew_raises_assertion_if_no_ephemeris(
+    mock_constraint, mock_acs_config
+):
+    """time_to_slew should assert if ephemeris is missing."""
+    p = Pass(
+        constraint=mock_constraint,
+        ephem=None,
+        acs_config=mock_acs_config,
+        station="SGS",
+        begin=1514764800.0,
+        length=600.0,
+    )
+    # Provide a simple profile so code proceeds past profile checks
+    p.utime = [1514764800.0, 1514764860.0]
+    p.ra = [10.0, 12.0]
+    p.dec = [20.0, 22.0]
+
+    with pytest.raises(AssertionError, match="Ephemeris must be set for Pass class"):
+        p.time_to_slew(1514764700.0, ra=0.0, dec=0.0)
