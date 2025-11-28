@@ -131,8 +131,8 @@ class TestPassMethods:
         basic_pass.utime = three_step_utime
         basic_pass.ra = [10.0, 12.0, 14.0]
         basic_pass.dec = [20.0, 22.0, 24.0]
-        # ra_dec uses searchsorted and returns [idx - 1], so
-        # at time 1514764900.0 (exact match), it returns index 1 - 1 = 0
+        # ra_dec uses searchsorted and returns [idx] directly, so
+        # at time 1514764900.0 (exact match), it returns index 1
         ra, dec = basic_pass.ra_dec(1514764900.0)
         assert ra == 12.0
         assert dec == 22.0
