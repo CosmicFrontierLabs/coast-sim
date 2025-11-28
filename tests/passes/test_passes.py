@@ -122,7 +122,7 @@ class TestPassMethods:
         basic_pass.utime = two_step_utime
         basic_pass.ra = small_ra
         basic_pass.dec = small_dec
-        ra, dec = basic_pass.ra_dec(1514764850.0)
+        ra, dec = basic_pass.ra_dec(two_step_utime[0] - 600.0)  # Before first time
         assert ra == 10.0
         assert dec == 20.0
 
@@ -134,8 +134,8 @@ class TestPassMethods:
         # ra_dec uses searchsorted and returns [idx - 1], so
         # at time 1514764900.0 (exact match), it returns index 1 - 1 = 0
         ra, dec = basic_pass.ra_dec(1514764900.0)
-        assert ra == 10.0
-        assert dec == 20.0
+        assert ra == 12.0
+        assert dec == 22.0
 
 
 class TestPassTimeToSlew:

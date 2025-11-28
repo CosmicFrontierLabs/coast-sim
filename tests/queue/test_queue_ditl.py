@@ -469,10 +469,8 @@ class TestFetchNewPPT:
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ssmax = 3600.0
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
-        lastra, lastdec = queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+        queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
         assert queue_ditl.ppt is mock_ppt
-        assert lastra == 45.0
-        assert lastdec == 30.0
 
     def test_fetch_ppt_enqueues_slew_command(self, queue_ditl, capsys):
         mock_ppt = Mock()
@@ -505,10 +503,8 @@ class TestFetchNewPPT:
 
     def test_fetch_ppt_none_available(self, queue_ditl, capsys):
         queue_ditl.queue.get = Mock(return_value=None)
-        lastra, lastdec = queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+        queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
         assert queue_ditl.ppt is None
-        assert lastra == 10.0
-        assert lastdec == 20.0
         captured = capsys.readouterr()
         assert "No targets available from Queue" in captured.out
 
@@ -989,7 +985,7 @@ class TestCalcMethod:
         mock_current_slew.slewstart = 900.0
         mock_current_slew.slewtime = 200.0
         queue_ditl.acs.last_slew = mock_current_slew
-        lastra, lastdec = queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+        queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
 
         # Check that the command was enqueued with delayed execution time
         queue_ditl.acs.enqueue_command.assert_called_once()
@@ -1013,7 +1009,7 @@ class TestCalcMethod:
         mock_ppt.next_vis = Mock(return_value=1200.0)
         mock_ppt.ssmax = 3600.0
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
-        lastra, lastdec = queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+        queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
 
         # Check that the command was enqueued with delayed execution time
         queue_ditl.acs.enqueue_command.assert_called_once()
