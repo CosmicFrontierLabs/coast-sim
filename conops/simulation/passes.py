@@ -118,9 +118,9 @@ class Pass(BaseModel):
             raise ValueError("ACS config must be set to calculate slew time")
         # Determine if we need to start slewing now
         time_until_slew = (self.begin - slewtime) - utime
-        print(
-            f"Time until slew for pass at {unixtime2date(self.begin)} is {time_until_slew:.1f} sec"
-        )
+
+        # If we are within 2 ephem steps of needing to slew, return True
+        # FIXME: Is this buffer necessary?
         if time_until_slew <= self.ephem.step_size * 2:
             return True
         else:

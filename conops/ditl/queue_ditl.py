@@ -358,12 +358,6 @@ class QueueDITL(DITLMixin, DITLStats):
     def _check_and_manage_passes(self, utime: float, ra: float, dec: float) -> None:
         """Check pass timing and send appropriate commands to ACS."""
 
-        print(
-            "QueueDITL._check_and_manage_passes:",
-            self.acs.acsmode,
-            self.acs.passrequests.current_pass(utime),
-        )
-
         # Check if we're in a pass, if yes, command ACS to start the pass
         current_pass = self.acs.passrequests.current_pass(utime)
         if current_pass is not None and self.acs.acsmode != ACSMode.PASS:
