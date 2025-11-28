@@ -5,6 +5,7 @@ from unittest.mock import Mock
 
 import numpy as np
 import pytest
+from rust_ephem import TLEEphemeris
 
 from conops import Config, Constraint, Pass
 
@@ -77,7 +78,7 @@ def mock_config(mock_acs_config):
 
 
 @pytest.fixture
-def basic_pass(mock_constraint, mock_ephem, mock_acs_config):
+def basic_pass_mock(mock_constraint, mock_ephem, mock_acs_config):
     """Create a basic Pass instance."""
     p = Pass(
         constraint=mock_constraint,
@@ -98,3 +99,91 @@ def basic_pass(mock_constraint, mock_ephem, mock_acs_config):
 @pytest.fixture
 def mock_ephemeris_100():
     return MockEphemeris(step_size=60.0, num_points=100)
+
+
+@pytest.fixture
+def base_begin():
+    return 1514764800.0
+
+
+@pytest.fixture
+def default_length():
+    return 480.0
+
+
+@pytest.fixture
+def two_step_utime():
+    return [1514764800.0, 1514764900.0]
+
+
+@pytest.fixture
+def three_step_utime():
+    return [1514764800.0, 1514764900.0, 1514765000.0]
+
+
+@pytest.fixture
+def small_ra():
+    return [10.0, 12.0]
+
+
+@pytest.fixture
+def small_dec():
+    return [20.0, 22.0]
+
+
+@pytest.fixture
+def start_ra():
+    return [15.0, 16.0]
+
+
+@pytest.fixture
+def start_dec():
+    return [25.0, 26.0]
+
+
+@pytest.fixture
+def tle_path():
+    return "examples/example.tle"
+
+
+@pytest.fixture
+def create_ephem(tle_path):
+    def _create(begin, end, step_size=60):
+        return TLEEphemeris(tle=tle_path, begin=begin, end=end, step_size=step_size)
+
+    return _create
+
+
+@pytest.fixture
+def acs_mock():
+    acs = Mock()
+    acs.predict_slew.return_value = (0.1, None)
+    acs.slew_time.return_value = 100.0
+    return acs
+
+
+@pytest.fixture
+def basic_pass_factory(mock_constraint, mock_acs_config):
+    def _create(
+        station="SGS",
+        begin=1514764800.0,
+        length=480.0,
+    ):
+        return Pass(
+            constraint=mock_constraint,
+            acs_config=mock_acs_config,
+            station=station,
+            begin=begin,
+            length=length,
+            gsstartra=10.0,
+            gsstartdec=20.0,
+            gsendra=15.0,
+            gsenddec=25.0,
+        )
+
+    return _create
+
+
+@pytest.fixture
+def basic_pass(basic_pass_factory):
+    return basic_pass_factory()
