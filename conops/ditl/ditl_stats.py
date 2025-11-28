@@ -3,7 +3,7 @@ from datetime import datetime
 
 import numpy as np
 
-from conops.config.config import Config
+from ..config.config import Config
 
 
 class DITLStats:

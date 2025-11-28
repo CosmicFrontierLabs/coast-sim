@@ -5,9 +5,8 @@ import numpy as np
 import rust_ephem
 from pydantic import BaseModel, Field
 
-from conops.common.vector import vec2radec
-
 from ..common import ics_date_conv, unixtime2date
+from ..common.vector import vec2radec
 from ..config import Config, Constraint, GroundStationRegistry
 
 
