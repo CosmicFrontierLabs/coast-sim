@@ -16,9 +16,10 @@ class DummyEphemeris:
     def __init__(self):
         from datetime import datetime, timezone
 
-        self.step_size = 1.0
-        # Cover 2018 day 331 (Nov 27) for 2 days
-        unix_times = np.arange(1543276800, 1543449600, 60)
+        self.step_size = 3600
+        # Cover 2018 day 331 (Nov 27) for 1 days - but use larger timestep (3600s instead of 60s)
+        # to reduce Mock object creation: 1 days @ 3600-second steps = 24 timesteps instead of 1440
+        unix_times = np.arange(1543276800, 1543446000, 3600)
         self.timestamp = [
             datetime.fromtimestamp(t, tz=timezone.utc) for t in unix_times
         ]
