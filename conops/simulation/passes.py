@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from ..common import ics_date_conv, unixtime2date
 from ..common.vector import vec2radec
 from ..config import Config, Constraint, GroundStationRegistry
+from ..config.communications import CommunicationsSystem
 
 
 class Pass(BaseModel):
@@ -22,6 +23,9 @@ class Pass(BaseModel):
     ephem: rust_ephem.TLEEphemeris | None = None
     constraint: Constraint | None = None
     acs_config: Any | None = None  # AttitudeControlSystem, avoiding circular import
+    comms_config: CommunicationsSystem | None = (
+        None  # Communications system configuration
+    )
 
     # Pass metadata
     station: str
@@ -85,6 +89,105 @@ class Pass(BaseModel):
         if idx >= len(self.utime):
             return self.ra[-1], self.dec[-1]
         return self.ra[idx], self.dec[idx]
+
+    def pointing_error(
+        self,
+        spacecraft_ra: float,
+        spacecraft_dec: float,
+        target_ra: float,
+        target_dec: float,
+    ) -> float:
+        """Calculate pointing error between spacecraft pointing and target.
+
+        Args:
+            spacecraft_ra: Current spacecraft RA (degrees)
+            spacecraft_dec: Current spacecraft Dec (degrees)
+            target_ra: Target RA (degrees)
+            target_dec: Target Dec (degrees)
+
+        Returns:
+            Angular separation in degrees
+        """
+        # Convert to radians
+        from ..common import separation
+        from ..config.constants import DTOR
+
+        return (
+            separation(
+                [spacecraft_ra * DTOR, spacecraft_dec * DTOR],
+                [target_ra * DTOR, target_dec * DTOR],
+            )
+            / DTOR
+        )
+
+    def can_communicate(
+        self, spacecraft_ra: float, spacecraft_dec: float, utime: float | None = None
+    ) -> bool:
+        """Check if communication is possible given spacecraft pointing.
+
+        Args:
+            spacecraft_ra: Current spacecraft RA (degrees)
+            spacecraft_dec: Current spacecraft Dec (degrees)
+            utime: Time during pass (optional, uses begin if None)
+
+        Returns:
+            True if communication is possible, False otherwise
+        """
+        if self.comms_config is None:
+            # No comms config, assume communication is always possible
+            return True
+
+        # Determine target pointing for this time
+        if utime is None:
+            utime = self.begin
+
+        target_ra, target_dec = self.ra_dec(utime)
+        if target_ra is None or target_dec is None:
+            return False
+
+        # Calculate pointing error
+        error = self.pointing_error(
+            spacecraft_ra, spacecraft_dec, target_ra, target_dec
+        )
+
+        # Check if within acceptable range
+        return self.comms_config.can_communicate(error)
+
+    def get_data_rate(self, band: str, direction: str = "downlink") -> float:
+        """Get data rate for this pass in the specified band.
+
+        Args:
+            band: Frequency band (e.g., "S", "X", "Ka")
+            direction: "downlink" or "uplink"
+
+        Returns:
+            Data rate in Mbps, or 0.0 if band not supported
+        """
+        if self.comms_config is None:
+            return 0.0
+
+        if direction.lower() == "downlink":
+            return self.comms_config.get_downlink_rate(band)
+        elif direction.lower() == "uplink":
+            return self.comms_config.get_uplink_rate(band)
+        else:
+            return 0.0
+
+    def calculate_data_volume(self, band: str, direction: str = "downlink") -> float:
+        """Calculate total data volume for this pass.
+
+        Args:
+            band: Frequency band (e.g., "S", "X", "Ka")
+            direction: "downlink" or "uplink"
+
+        Returns:
+            Data volume in Megabits
+        """
+        if self.length is None or self.comms_config is None:
+            return 0.0
+
+        rate_mbps = self.get_data_rate(band, direction)
+        return rate_mbps * self.length  # Mbps * seconds = Megabits
 
     def time_to_slew(self, utime: float, ra: float, dec: float) -> bool:
         """Determine whether to begin slewing for this pass.
@@ -307,6 +410,7 @@ class PassTimes:
                             constraint=self.constraint,
                             ephem=self.ephem,
                             acs_config=self.config.spacecraft_bus.attitude_control,
+                            comms_config=self.config.spacecraft_bus.communications,
                             station=station.code,
                             begin=passstart,
                             gsstartra=sat_ra[start_idx],

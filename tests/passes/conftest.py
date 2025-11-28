@@ -73,6 +73,9 @@ def mock_config(mock_acs_config):
     config = Mock(spec=Config)
     config.spacecraft_bus = Mock()
     config.spacecraft_bus.attitude_control = mock_acs_config
+    config.spacecraft_bus.communications = (
+        None  # No comms by default for backward compatibility
+    )
     config.ground_stations = None  # Will use default
     return config
 
