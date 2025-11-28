@@ -124,10 +124,6 @@ class QueueDITL(DITLMixin, DITLStats):
         if self.acs.ephem is None:
             self.acs.ephem = self.ephem
 
-        # Set initial last pointing
-        lastra = 0.0
-        lastdec = 0.0
-
         # Set up timing and schedule passes
         if not self._setup_simulation_timing():
             return False
@@ -153,7 +149,7 @@ class QueueDITL(DITLMixin, DITLStats):
             self._check_and_manage_passes(utime, ra, dec)
 
             # Handle spacecraft operations based on current mode
-            lastra, lastdec = self._handle_mode_operations(mode, utime, ra, dec)
+            self._handle_mode_operations(mode, utime, ra, dec)
 
             # Close PPT timeline segment if no active observation
             self._close_ppt_timeline_if_needed(utime)
@@ -250,39 +246,31 @@ class QueueDITL(DITLMixin, DITLStats):
                 self.plan[-1].end = utime
 
     def _handle_mode_operations(
-        self, mode: ACSMode, utime: float, lastra: float, lastdec: float
-    ) -> tuple[float, float]:
-        """Handle spacecraft operations based on current mode.
-
-        Returns:
-            Updated (lastra, lastdec) tuple
-        """
+        self, mode: ACSMode, utime: float, ra: float, dec: float
+    ) -> None:
+        """Handle spacecraft operations based on current mode."""
         if mode == ACSMode.PASS:
             self._handle_pass_mode(utime)
         elif mode == ACSMode.CHARGING:
             self._handle_charging_mode(utime)
         else:
             # Science or SAA modes: handle observations and battery management
-            lastra, lastdec = self._handle_science_mode(utime, lastra, lastdec, mode)
-
-        return lastra, lastdec
+            self._handle_science_mode(utime, ra, dec, mode)
 
     def _handle_science_mode(
-        self, utime: float, lastra: float, lastdec: float, mode: ACSMode
-    ) -> tuple[float, float]:
+        self, utime: float, ra: float, dec: float, mode: ACSMode
+    ) -> None:
         """Handle science mode operations: charging, observations, and target acquisition."""
         # Check for battery alert and initiate emergency charging if needed
         if self._should_initiate_charging(utime):
-            lastra, lastdec = self._initiate_charging(utime, lastra, lastdec)
+            self._initiate_charging(utime, ra, dec)
 
         # Manage current science PPT lifecycle
         self._manage_ppt_lifecycle(utime, mode)
 
         # Fetch new PPT if none is active
         if self.ppt is None:
-            lastra, lastdec = self._fetch_new_ppt(utime, lastra, lastdec)
-
-        return lastra, lastdec
+            self._fetch_new_ppt(utime, ra, dec)
 
     def _should_initiate_charging(self, utime: float) -> bool:
         """Check if emergency charging should be initiated."""
@@ -293,12 +281,10 @@ class QueueDITL(DITLMixin, DITLStats):
             )
         )
 
-    def _initiate_charging(
-        self, utime: float, lastra: float, lastdec: float
-    ) -> tuple[float, float]:
+    def _initiate_charging(self, utime: float, ra: float, dec: float) -> None:
         """Initiate emergency charging by creating charging PPT and sending command to ACS."""
         self.charging_ppt = self.emergency_charging.initiate_emergency_charging(
-            utime, self.ephem, lastra, lastdec, self.ppt
+            utime, self.ephem, ra, dec, self.ppt
         )
 
         # If charging PPT created successfully, send command to ACS and replace current PPT
@@ -311,11 +297,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 obsid=self.charging_ppt.obsid,
             )
             self.acs.enqueue_command(command)
-            lastra = self.charging_ppt.ra
-            lastdec = self.charging_ppt.dec
             self.ppt = self.charging_ppt
-
-        return lastra, lastdec
 
     def _setup_simulation_timing(self) -> bool:
         """Set up timing aspect of simulation."""
@@ -531,15 +513,13 @@ class QueueDITL(DITLMixin, DITLStats):
             return "Panel"
         return "Unknown"
 
-    def _fetch_new_ppt(
-        self, utime: float, lastra: float, lastdec: float
-    ) -> tuple[float, float]:
+    def _fetch_new_ppt(self, utime: float, ra: float, dec: float) -> None:
         """Fetch a new pointing target from the queue and enqueue slew command."""
         print(
-            f"{unixtime2date(utime)} Fetching new PPT from Queue (last RA/Dec {lastra:.2f}/{lastdec:.2f})"
+            f"{unixtime2date(utime)} Fetching new PPT from Queue (last RA/Dec {ra:.2f}/{dec:.2f})"
         )
 
-        self.ppt = self.queue.get(lastra, lastdec, utime)
+        self.ppt = self.queue.get(ra, dec, utime)
 
         if self.ppt is not None:
             print(f"{unixtime2date(utime)} Fetched PPT: {self.ppt}")
@@ -563,7 +543,7 @@ class QueueDITL(DITLMixin, DITLStats):
             visstart = self.ppt.next_vis(utime)
             if not visstart and slew.obstype == "PPT":
                 print(f"{unixtime2date(utime)} Slew rejected - target not visible")
-                return lastra, lastdec
+                return
 
             # Initialize slew start positions from current ACS pointing
             slew.startra = self.acs.ra
@@ -610,10 +590,10 @@ class QueueDITL(DITLMixin, DITLStats):
             self.acs.enqueue_command(command)
 
             # Return the new target coordinates
-            return self.ppt.ra, self.ppt.dec
+            return
         else:
             print(f"{unixtime2date(utime)} No targets available from Queue")
-            return lastra, lastdec
+            return
 
     def _record_pointing_data(
         self, ra: float, dec: float, roll: float, obsid: int, mode: ACSMode

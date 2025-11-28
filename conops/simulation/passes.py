@@ -81,7 +81,10 @@ class Pass(BaseModel):
 
         # Find the closest time index
         idx = np.searchsorted(self.utime, utime)
-        return self.ra[idx - 1], self.dec[idx - 1]
+        # searchsorted will return length if utime is beyond the end
+        if idx >= len(self.utime):
+            return self.ra[-1], self.dec[-1]
+        return self.ra[idx], self.dec[idx]
 
     def time_to_slew(self, utime: float, ra: float, dec: float) -> bool:
         """Determine whether to begin slewing for this pass.
