@@ -232,10 +232,6 @@ class PassTimes:
                 )
             )
 
-            # Validate RA values are within [0, 360)
-            if np.any(sat_ra < 0) or np.any(sat_ra >= 360):
-                raise ValueError("Calculated satellite RA out of bounds [0, 360)")
-
             # Fast vectorized approach: compute Earth limb constraint directly
             # The Earth limb constraint checks if the angle from the observer to the target
             # passes through Earth (i.e., target is below the horizon + min_angle)
