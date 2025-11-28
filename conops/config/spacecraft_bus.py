@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 
 from .acs import AttitudeControlSystem
+from .communications import CommunicationsSystem
 from .data_generator import DataGeneration
 from .power import PowerDraw
 from .thermal import Heater
@@ -10,6 +11,7 @@ class SpacecraftBus(BaseModel):
     name: str = "Default Bus"
     power_draw: PowerDraw = PowerDraw()
     attitude_control: AttitudeControlSystem = AttitudeControlSystem()
+    communications: CommunicationsSystem | None = None
     heater: Heater | None = None
     data_generation: DataGeneration = DataGeneration()
 

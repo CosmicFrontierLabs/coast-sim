@@ -10,6 +10,7 @@ Core Modules
    :maxdepth: 2
 
    conops.config
+   conops.config.communications
    conops.ditl
    conops.ditl.ditl
    conops.ditl.ditl_mixin

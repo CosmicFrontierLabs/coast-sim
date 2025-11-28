@@ -1,5 +1,12 @@
 from .acs import AttitudeControlSystem
 from .battery import Battery
+from .communications import (
+    AntennaPointing,
+    AntennaType,
+    BandCapability,
+    CommunicationsSystem,
+    Polarization,
+)
 from .config import Config
 from .constants import DAY_SECONDS, DTOR
 from .constraint import Constraint
@@ -22,7 +29,12 @@ from .visualization import VisualizationConfig
 
 __all__ = [
     "Antenna",
+    "AntennaPointing",
+    "AntennaType",
+    "AttitudeControlSystem",
+    "BandCapability",
     "Battery",
+    "CommunicationsSystem",
     "Config",
     "Constraint",
     "DataGeneration",
@@ -33,17 +45,17 @@ __all__ = [
     "FaultState",
     "GroundStation",
     "GroundStationRegistry",
+    "Heater",
     "Instrument",
     "ObservationCategories",
     "ObservationCategory",
     "OnboardRecorder",
     "Payload",
+    "Polarization",
     "PowerDraw",
     "SolarPanel",
     "SolarPanelSet",
-    "AttitudeControlSystem",
     "SpacecraftBus",
-    "Heater",
     "VisualizationConfig",
     "DAY_SECONDS",
     "DTOR",
