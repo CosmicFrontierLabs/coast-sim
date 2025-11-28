@@ -19,6 +19,18 @@ from conops import (
 )
 
 
+class DummyEphemeris:
+    """Minimal mock ephemeris for testing."""
+
+    def __init__(self):
+        self.step_size = 1.0
+        self.earth = [Mock(ra=Mock(deg=0.0), dec=Mock(deg=0.0))]
+        self.sun = [Mock(ra=Mock(deg=45.0), dec=Mock(deg=23.5))]
+
+    def index(self, time):
+        return 0
+
+
 class MockDITL(DITLMixin, DITLStats):
     """Mock DITL class for testing."""
 
@@ -40,13 +52,19 @@ class MockDITL(DITLMixin, DITLStats):
 def create_test_config():
     """Create a minimal test config."""
     spacecraft_bus = Mock(spec=SpacecraftBus)
+    spacecraft_bus.attitude_control = Mock()
+    spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))
+    spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
+
     solar_panel = Mock(spec=SolarPanelSet)
+    solar_panel.optimal_charging_pointing = Mock(return_value=(45.0, 23.5))
+
     payload = Mock(spec=Payload)
     battery = Mock(spec=Battery)
     battery.capacity = 100.0
     battery.max_depth_of_discharge = 0.3
     constraint = Mock(spec=Constraint)
-    constraint.ephem = Mock()  # Mock ephemeris to satisfy PassTimes
+    constraint.ephem = DummyEphemeris()  # Use DummyEphemeris instead of Mock
     ground_stations = Mock(spec=GroundStationRegistry)
 
     config = Config(

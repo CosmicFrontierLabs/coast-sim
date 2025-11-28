@@ -11,19 +11,15 @@ from conops import DITL, ACSMode, DITLs
 class TestDITLInit:
     """Test DITL initialization."""
 
-    def test_init_with_config(self, mock_config):
+    def test_init_with_config(self, mock_config_detailed):
         """Test DITL initialization with a valid config."""
-        with (
-            patch("conops.PassTimes"),
-            patch("conops.ACS"),
-        ):
-            ditl = DITL(config=mock_config)
-            assert ditl.config == mock_config
-            assert ditl.constraint == mock_config.constraint
-            assert ditl.battery == mock_config.battery
-            assert ditl.spacecraft_bus == mock_config.spacecraft_bus
-            assert ditl.payload == mock_config.payload
-            assert ditl.solar_panel == mock_config.solar_panel
+        ditl = DITL(config=mock_config_detailed)
+        assert ditl.config == mock_config_detailed
+        assert ditl.constraint == mock_config_detailed.constraint
+        assert ditl.battery == mock_config_detailed.battery
+        assert ditl.spacecraft_bus == mock_config_detailed.spacecraft_bus
+        assert ditl.payload == mock_config_detailed.payload
+        assert ditl.solar_panel == mock_config_detailed.solar_panel
 
     def test_init_without_config_raises_assertion(self):
         """Test that DITL initialization without config raises assertion error."""

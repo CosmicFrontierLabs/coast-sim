@@ -24,14 +24,14 @@ class TestACSInitialization:
     def test_acs_initialization(self, acs, mock_constraint):
         """Test that ACS initializes with correct defaults."""
         assert acs.constraint is mock_constraint
-        assert acs.ra == 0.0
+        assert acs.ra == 180.0  # Earth-opposite nadir pointing
         assert acs.dec == 0.0
         assert acs.roll == 0.0
         assert acs.obstype == "PPT"
-        assert acs.last_slew is None
+        assert acs.last_slew is not None  # Initialized with boundary condition slew
         assert acs.last_ppt is None
         assert acs.acsmode == 0
-        assert acs.currentpass is None
+        assert acs.current_pass is None
         assert acs.slew_dists == []
 
     def test_acs_requires_constraint(self, mock_config):
@@ -74,15 +74,15 @@ class TestACSAttributes:
 
     def test_last_slew_attribute(self, acs):
         """Test last_slew attribute."""
-        assert acs.last_slew is None
+        assert acs.last_slew is not None  # Initialized with boundary condition slew
 
     def test_last_ppt_attribute(self, acs):
         """Test last_ppt attribute."""
         assert acs.last_ppt is None
 
-    def test_currentpass_attribute(self, acs):
-        """Test currentpass attribute."""
-        assert acs.currentpass is None
+    def test_current_pass_attribute(self, acs):
+        """Test current_pass attribute."""
+        assert acs.current_pass is None
 
 
 class TestACSStateManagement:
@@ -119,7 +119,7 @@ class TestACSStateManagement:
 
     def test_ra_dec_updates(self, acs):
         """Test that RA/Dec can be updated."""
-        assert acs.ra == 0.0
+        assert acs.ra == 180.0  # Earth-opposite nadir pointing
         assert acs.dec == 0.0
         acs.ra = 45.0
         acs.dec = 30.0

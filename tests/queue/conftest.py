@@ -22,6 +22,9 @@ class DummyEphemeris:
             base_time + timedelta(seconds=i * 3600)
             for i in range(48)  # 2 days worth
         ]
+        # Add earth and sun attributes for ACS initialization
+        self.earth = [Mock(ra=Mock(deg=0.0), dec=Mock(deg=0.0)) for _ in range(48)]
+        self.sun = [Mock(ra=Mock(deg=45.0), dec=Mock(deg=23.5)) for _ in range(48)]
 
     def index(self, time):
         """Mock index method."""
@@ -71,6 +74,11 @@ def mock_config():
     # Mock payload
     config.payload = Mock()
     config.payload.power = Mock(return_value=30.0)
+
+    # Mock solar panel
+    config.solar_panel = Mock()
+    config.solar_panel.optimal_charging_pointing = Mock(return_value=(45.0, 23.5))
+    config.solar_panel.illumination_and_power = Mock(return_value=(0.5, 100.0))
 
     # Mock ground stations
     config.ground_stations = Mock()

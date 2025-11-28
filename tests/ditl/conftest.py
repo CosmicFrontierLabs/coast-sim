@@ -23,6 +23,9 @@ class DummyEphemeris:
             datetime.fromtimestamp(t, tz=timezone.utc) for t in unix_times
         ]
         self.utime = unix_times
+        # Add earth and sun attributes for ACS initialization
+        self.earth = [Mock(ra=Mock(deg=0.0), dec=Mock(deg=0.0)) for _ in unix_times]
+        self.sun = [Mock(ra=Mock(deg=45.0), dec=Mock(deg=23.5)) for _ in unix_times]
 
     def index(self, time):
         """Mock index method."""
@@ -36,6 +39,7 @@ def mock_config():
     cfg.name = "test"
     cfg.constraint = Mock()
     cfg.constraint.ephem = Mock()  # DITLMixin asserts this is not None
+    cfg.constraint.ephem.earth = [Mock(ra=Mock(deg=0.0), dec=Mock(deg=0.0))]
     cfg.battery = Mock()
     cfg.battery.max_depth_of_discharge = 0.5
     return cfg
@@ -70,6 +74,9 @@ def mock_config_detailed():
     # Mock spacecraft bus
     config.spacecraft_bus = Mock()
     config.spacecraft_bus.power = Mock(return_value=50.0)
+    config.spacecraft_bus.attitude_control = Mock()
+    config.spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))
+    config.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
 
     # Mock payload
     config.payload = Mock()
@@ -89,6 +96,7 @@ def mock_config_detailed():
     config.solar_panel.power = Mock(return_value=100.0)
     config.solar_panel.panel_illumination_fraction = Mock(return_value=0.5)
     config.solar_panel.illumination_and_power = Mock(return_value=(0.5, 100.0))
+    config.solar_panel.optimal_charging_pointing = Mock(return_value=(45.0, 23.5))
 
     # Mock ground stations
     config.ground_stations = Mock()

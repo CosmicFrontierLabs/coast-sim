@@ -79,7 +79,7 @@ def mock_config(mock_acs_config):
 @pytest.fixture
 def basic_pass(mock_constraint, mock_ephem, mock_acs_config):
     """Create a basic Pass instance."""
-    return Pass(
+    p = Pass(
         constraint=mock_constraint,
         acs_config=mock_acs_config,
         station="SGS",
@@ -90,6 +90,9 @@ def basic_pass(mock_constraint, mock_ephem, mock_acs_config):
         gsendra=15.0,
         gsenddec=25.0,
     )
+    # Ensure ephem is set (from constraint)
+    p.ephem = mock_constraint.ephem
+    return p
 
 
 @pytest.fixture

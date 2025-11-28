@@ -15,13 +15,13 @@ class TestExecuteCommandCoverage:
         mock_ppt.enddec = 30.0
         mock_ppt.obsid = 100
         acs.last_ppt = mock_ppt
-        acs.currentpass = Mock(spec=Pass)
+        acs.current_pass = Mock(spec=Pass)
         acs.acsmode = ACSMode.PASS
 
         # Directly call _end_pass
         acs._end_pass(1514764800.0)
         # Verify currentpass is cleared and mode is set to SCIENCE
-        assert acs.currentpass is None
+        assert acs.current_pass is None
         assert acs.acsmode == ACSMode.SCIENCE
 
     def test_end_pass_clears_currentpass(self, acs):
@@ -30,11 +30,11 @@ class TestExecuteCommandCoverage:
         mock_ppt.enddec = 30.0
         mock_ppt.obsid = 100
         acs.last_ppt = mock_ppt
-        acs.currentpass = Mock(spec=Pass)
+        acs.current_pass = Mock(spec=Pass)
         acs.acsmode = ACSMode.PASS
 
         acs._end_pass(1514764800.0)
-        assert acs.currentpass is None
+        assert acs.current_pass is None
         assert acs.acsmode == ACSMode.SCIENCE
 
     def test_end_pass_sets_mode_science(self, acs):
@@ -43,7 +43,7 @@ class TestExecuteCommandCoverage:
         mock_ppt.enddec = 30.0
         mock_ppt.obsid = 100
         acs.last_ppt = mock_ppt
-        acs.currentpass = Mock(spec=Pass)
+        acs.current_pass = Mock(spec=Pass)
         acs.acsmode = ACSMode.PASS
 
         acs._end_pass(1514764800.0)
@@ -51,15 +51,15 @@ class TestExecuteCommandCoverage:
 
     def test_end_pass_no_last_ppt_clears_currentpass(self, acs):
         acs.last_ppt = None
-        acs.currentpass = Mock(spec=Pass)
+        acs.current_pass = Mock(spec=Pass)
         acs.acsmode = ACSMode.PASS
 
         acs._end_pass(1514764800.0)
-        assert acs.currentpass is None
+        assert acs.current_pass is None
 
     def test_end_pass_no_last_ppt_sets_mode_science(self, acs):
         acs.last_ppt = None
-        acs.currentpass = Mock(spec=Pass)
+        acs.current_pass = Mock(spec=Pass)
         acs.acsmode = ACSMode.PASS
 
         acs._end_pass(1514764800.0)
@@ -95,7 +95,7 @@ class TestExecuteCommandCoverage:
         )
 
         with patch.object(acs, "_start_slew") as mock_start_slew:
-            acs._handle_pass_start_command(command, 1514764800.0)
+            acs._start_pass(command, 1514764800.0)
             mock_start_slew.assert_not_called()
 
     def test_execute_start_pass_non_pass_slew_does_not_start(self, acs):
@@ -107,7 +107,7 @@ class TestExecuteCommandCoverage:
         )
 
         with patch.object(acs, "_start_slew") as mock_start_slew:
-            acs._handle_pass_start_command(command, 1514764800.0)
+            acs._start_pass(command, 1514764800.0)
             mock_start_slew.assert_not_called()
 
 
@@ -330,7 +330,7 @@ class TestEndPassCoverage:
         mock_ppt.obsid = 100
         acs.last_ppt = mock_ppt
 
-        acs.currentpass = Mock(spec=Pass)
+        acs.current_pass = Mock(spec=Pass)
         acs.acsmode = ACSMode.PASS
 
         with patch.object(
@@ -346,12 +346,12 @@ class TestEndPassCoverage:
         mock_ppt.obsid = 100
         acs.last_ppt = mock_ppt
 
-        acs.currentpass = Mock(spec=Pass)
+        acs.current_pass = Mock(spec=Pass)
         acs.acsmode = ACSMode.PASS
 
         with patch.object(acs, "enqueue_command", return_value=True):
             acs._end_pass(1514764800.0)
-            assert acs.currentpass is None
+            assert acs.current_pass is None
 
     def test_end_pass_sets_mode_science_on_end(self, acs):
         mock_ppt = Mock(spec=Slew)
@@ -360,7 +360,7 @@ class TestEndPassCoverage:
         mock_ppt.obsid = 100
         acs.last_ppt = mock_ppt
 
-        acs.currentpass = Mock(spec=Pass)
+        acs.current_pass = Mock(spec=Pass)
         acs.acsmode = ACSMode.PASS
 
         with patch.object(acs, "enqueue_command", return_value=True):
@@ -369,15 +369,15 @@ class TestEndPassCoverage:
 
     def test_end_pass_with_no_last_ppt_clears_currentpass(self, acs):
         acs.last_ppt = None
-        acs.currentpass = Mock(spec=Pass)
+        acs.current_pass = Mock(spec=Pass)
         acs.acsmode = ACSMode.PASS
 
         acs._end_pass(1514764800.0)
-        assert acs.currentpass is None
+        assert acs.current_pass is None
 
     def test_end_pass_with_no_last_ppt_sets_mode_science(self, acs):
         acs.last_ppt = None
-        acs.currentpass = Mock(spec=Pass)
+        acs.current_pass = Mock(spec=Pass)
         acs.acsmode = ACSMode.PASS
 
         acs._end_pass(1514764800.0)
@@ -385,7 +385,7 @@ class TestEndPassCoverage:
 
     def test_end_pass_no_last_ppt_does_not_enqueue_slew(self, acs):
         acs.last_ppt = None
-        acs.currentpass = Mock(spec=Pass)
+        acs.current_pass = Mock(spec=Pass)
         acs.acsmode = ACSMode.PASS
 
         acs._end_pass(1514764800.0)
@@ -577,25 +577,26 @@ class TestExecuteCommandLogging:
         acs._handle_slew_command(command1, 1514764800.0)
         assert acs.current_slew == mock_slew
 
-    def test_handle_pass_start_command_executes(self, acs):
-        mock_pass = Mock(spec=Pass)
-        mock_pass.startra = 0.0
-        mock_pass.startdec = 0.0
-        mock_pass.endra = 45.0
-        mock_pass.enddec = 30.0
-        mock_pass.obstype = "GSP"
-        mock_pass.slewstart = 1514764800.0
-        mock_pass.slewtime = 60.0
-        mock_pass.calc_slewtime = Mock()
+    def test_start_pass_executes(self, acs):
+        mock_slew = Mock(spec=Slew)
+        mock_slew.startra = 0.0
+        mock_slew.startdec = 0.0
+        mock_slew.endra = 45.0
+        mock_slew.enddec = 30.0
+        mock_slew.obstype = "GSP"
+        mock_slew.slewstart = 1514764800.0
+        mock_slew.slewtime = 60.0
+        mock_slew.calc_slewtime = Mock()
         command2 = ACSCommand(
             command_type=ACSCommandType.START_PASS,
             execution_time=1514764800.0,
-            slew=mock_pass,
+            slew=mock_slew,
         )
 
         # Test that command executes without error
-        acs._handle_pass_start_command(command2, 1514764800.0)
-        assert acs.current_slew == mock_pass
+        acs._start_pass(command2, 1514764800.0)
+        # _start_pass sets current_pass, not current_slew
+        assert acs.acsmode == ACSMode.PASS
 
 
 class TestGetModeCharging:

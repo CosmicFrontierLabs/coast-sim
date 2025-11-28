@@ -9,20 +9,9 @@ from conops import ACSMode, Pass, Pointing, Slew
 class TestAddSlew:
     """Test enqueue_command method."""
 
-    @patch("conops.simulation.acs.Slew")
     @patch("conops.simulation.acs.Pointing")
-    def test_enqueue_command_basic(self, mock_too, mock_slew_class, acs):
+    def test_enqueue_command_basic(self, mock_too, acs):
         """Test basic slew addition."""
-        # Setup mock slew
-        mock_slew = Mock(spec=Slew)
-        mock_slew.endra = 45.0
-        mock_slew.enddec = 30.0
-        mock_slew.obstype = "PPT"
-        mock_slew.obsid = 100
-        mock_slew.startra = 45.0
-        mock_slew.startdec = 30.0
-        mock_slew_class.return_value = mock_slew
-
         # Setup mock Pointing
         mock_at = Mock(spec=Pointing)
         mock_at.next_vis = Mock(return_value=1514764800.0)  # Visibility available now
@@ -30,38 +19,18 @@ class TestAddSlew:
         mock_at.visibility = Mock()
         mock_too.return_value = mock_at
 
-        # Mock slew calculations
-        mock_slew.calc_slewtime = Mock()
-        mock_slew.slewdist = 45.0
-        mock_slew.is_slewing = Mock(return_value=False)
-
         result = acs._enqueue_slew(45.0, 30.0, 100, 1514764800.0, "PPT")
         assert result is True
         assert len(acs.command_queue) == 1
-        assert acs.command_queue[-1].slew.slewdist == 45.0
 
-    @patch("conops.simulation.acs.Slew")
     @patch("conops.simulation.acs.Pointing")
-    def test_enqueue_command_different_obstype(self, mock_too, mock_slew_class, acs):
+    def test_enqueue_command_different_obstype(self, mock_too, acs):
         """Test adding slew with different obstype."""
-        mock_slew = Mock(spec=Slew)
-        mock_slew.endra = 45.0
-        mock_slew.enddec = 30.0
-        mock_slew.obstype = "GSP"
-        mock_slew.obsid = 100
-        mock_slew.startra = 45.0
-        mock_slew.startdec = 30.0
-        mock_slew_class.return_value = mock_slew
-
         mock_at = Mock(spec=Pointing)
         mock_at.next_vis = Mock(return_value=1514764800.0)
         mock_at.windows = []
         mock_at.visibility = Mock()
         mock_too.return_value = mock_at
-
-        mock_slew.calc_slewtime = Mock()
-        mock_slew.slewdist = 45.0
-        mock_slew.is_slewing = Mock(return_value=False)
 
         result = acs._enqueue_slew(45.0, 30.0, 100, 1514764800.0, "GSP")
         assert result is True
@@ -316,7 +285,7 @@ class TestPointing:
         assert ra == 0.0  # Earth RA from mock
         assert dec == 0.0  # Earth Dec from mock
         assert roll == 0.0
-        assert obsid == 1
+        assert obsid == 0  # Default obsid when no slew is active
 
     @patch("conops.optimum_roll")
     def test_pointing_slew_start_adjustment(self, mock_roll, acs):
@@ -404,7 +373,10 @@ class TestPointing:
 
         ra, dec, roll, obsid = acs.pointing(1514765000.0)  # Within pass
 
-        assert acs.acsmode == ACSMode.PASS
+        # Check that we're using the pass pointing
+        assert obsid == 200  # Should use pass obsid
+        assert ra == 45.0
+        assert dec == 30.0
 
     @patch("conops.optimum_roll")
     def test_pointing_with_constraint_violation(self, mock_roll, acs, mock_constraint):
