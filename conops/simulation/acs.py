@@ -522,10 +522,15 @@ class ACS:
         # Safe mode overrides all other pointing
         if self.in_safe_mode:
             self._calculate_safe_mode_pointing(utime)
+            print("ACS._calculate_pointing:", self.ra, self.dec, "SAFE MODE")
+        # If we are in a groundstations pass
         elif self.current_pass is not None:
             self.ra, self.dec = self.current_pass.ra_dec(utime)  # type: ignore[assignment]
+            print("ACS._calculate_pointing:", self.ra, self.dec, "PASS")
+        # If we are actively slewing
         elif self.last_slew is not None:
             self.ra, self.dec = self.last_slew.ra_dec(utime)  # type: ignore[assignment]
+            print("ACS._calculate_pointing:", self.ra, self.dec, "SLEWING")
         else:
             # If there's no slew or pass, maintain current pointing
             pass

@@ -76,15 +76,9 @@ class Pass(BaseModel):
         return timetopassstring
 
     def ra_dec(self, utime: float) -> tuple[float | None, float | None]:
-        if utime < self.begin:
-            return None, None
-        else:
-            return self.pass_ra_dec(utime)
-
-    def pass_ra_dec(self, utime: float) -> tuple[float | None, float | None]:
-        """Return the RA/Dec of the Spacecraft during a groundstation pass."""
-        if not self.in_pass(utime):
-            return None, None
+        """Return the RA/Dec of the Spacecraft during a groundstation pass.
+        Note: If utime is outside the pass, returns the earliest or latest
+        RA/Dec in the pass."""
 
         # Find the closest time index
         idx = np.searchsorted(self.utime, utime)
@@ -102,7 +96,7 @@ class Pass(BaseModel):
         # Determine target pointing: if we're late, target where pass currently is
         if utime >= self.begin:
             # We're late - target current pass position
-            target_ra, target_dec = self.pass_ra_dec(utime)
+            target_ra, target_dec = self.ra_dec(utime)
             if target_ra is None or target_dec is None:
                 return False
         else:
