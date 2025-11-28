@@ -6,9 +6,9 @@ import rust_ephem
 from pydantic import BaseModel, Field
 
 from ..common import ics_date_conv, unixtime2date
-from ..common.vector import vec2radec
+from ..common.vector import radec2vec, rotvec, vec2radec
 from ..config import Config, Constraint, GroundStationRegistry
-from ..config.communications import CommunicationsSystem
+from ..config.communications import AntennaType, CommunicationsSystem
 
 
 class Pass(BaseModel):
@@ -89,6 +89,44 @@ class Pass(BaseModel):
         if idx >= len(self.utime):
             return self.ra[-1], self.dec[-1]
         return self.ra[idx], self.dec[idx]
+
+    @staticmethod
+    def apply_antenna_offset(
+        ra: float, dec: float, azimuth_deg: float, elevation_deg: float
+    ) -> tuple[float, float]:
+        """Apply antenna pointing offset to RA/Dec.
+
+        For a fixed antenna pointing at (azimuth, elevation) in the spacecraft body frame,
+        calculate the adjusted RA/Dec that the antenna actually points toward.
+
+        Args:
+            ra: Original right ascension (degrees)
+            dec: Original declination (degrees)
+            azimuth_deg: Antenna azimuth offset (degrees, 0=forward, 90=right)
+            elevation_deg: Antenna elevation offset (degrees, 0=horizon, 90=zenith, -90=nadir)
+
+        Returns:
+            Tuple of (adjusted_ra, adjusted_dec) in degrees
+        """
+        from ..config.constants import DTOR
+
+        # Convert RA/Dec to unit vector
+        sat_vec = radec2vec(ra * DTOR, dec * DTOR)
+
+        # Apply rotation for azimuth (rotation around Z-axis/north pole)
+        # Positive azimuth rotates right (east)
+        # rotvec parameters: (axis_number, angle, vector) where axis: 1=x, 2=y, 3=z
+        rotated = rotvec(3, azimuth_deg * DTOR, sat_vec)
+
+        # Apply rotation for elevation (rotation around east-west axis = Y)
+        # Positive elevation points up from horizon toward zenith
+        # Negative elevation points down toward nadir
+        rotated = rotvec(2, -elevation_deg * DTOR, rotated)
+
+        # Convert back to RA/Dec
+        adjusted_ra, adjusted_dec = np.degrees(vec2radec(rotated))
+
+        return adjusted_ra, adjusted_dec
 
     def pointing_error(
         self,
@@ -426,6 +464,41 @@ class PassTimes:
                         ].tolist()
                         gspass.ra = sat_ra[start_idx:end_idx].tolist()
                         gspass.dec = sat_dec[start_idx:end_idx].tolist()
+
+                        # Apply antenna pointing offset for fixed antennas
+                        if (
+                            gspass.comms_config is not None
+                            and gspass.comms_config.antenna_pointing.antenna_type
+                            == AntennaType.FIXED
+                        ):
+                            antenna = gspass.comms_config.antenna_pointing
+                            # Adjust start/end pointing
+                            gspass.gsstartra, gspass.gsstartdec = (
+                                Pass.apply_antenna_offset(
+                                    gspass.gsstartra,
+                                    gspass.gsstartdec,
+                                    antenna.fixed_azimuth_deg,
+                                    antenna.fixed_elevation_deg,
+                                )
+                            )
+                            gspass.gsendra, gspass.gsenddec = Pass.apply_antenna_offset(
+                                gspass.gsendra,
+                                gspass.gsenddec,
+                                antenna.fixed_azimuth_deg,
+                                antenna.fixed_elevation_deg,
+                            )
+                            # Adjust full pointing profile
+                            adjusted_pointing = [
+                                Pass.apply_antenna_offset(
+                                    ra_val,
+                                    dec_val,
+                                    antenna.fixed_azimuth_deg,
+                                    antenna.fixed_elevation_deg,
+                                )
+                                for ra_val, dec_val in zip(gspass.ra, gspass.dec)
+                            ]
+                            gspass.ra = [pt[0] for pt in adjusted_pointing]
+                            gspass.dec = [pt[1] for pt in adjusted_pointing]
 
                         self.passes.append(gspass)
 
