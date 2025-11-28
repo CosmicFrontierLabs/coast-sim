@@ -3,8 +3,6 @@ from __future__ import annotations
 import numpy as np
 import rust_ephem
 
-from conops.simulation.saa import SAA
-
 from ..common import givename, roll_over_angle, unixtime2date
 from ..config import AttitudeControlSystem, Constraint
 from ..simulation.saa import SAA
