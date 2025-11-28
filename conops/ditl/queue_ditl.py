@@ -148,7 +148,6 @@ class QueueDITL(DITLMixin, DITLStats):
             # Get current pointing and mode from ACS
             ra, dec, roll, obsid = self.acs.pointing(utime)
             mode = self.acs.get_mode(utime)
-            print(f"{unixtime2date(utime)}, RA: {ra}, Dec: {dec}, Mode: {mode.name}")
 
             # Check pass timing and manage passes
             self._check_and_manage_passes(utime, ra, dec)
@@ -389,9 +388,11 @@ class QueueDITL(DITLMixin, DITLStats):
         if self.acs.acsmode not in (ACSMode.PASS, ACSMode.SLEWING):
             next_pass = self.acs.passrequests.next_pass(utime)
 
+            # If there's no next pass, nothing to do
             if next_pass is None:
                 return
-            print(f"Next pass at {unixtime2date(next_pass.begin)}")
+
+            # Check if it's time to start slewing for the next pass
             if next_pass.time_to_slew(utime=utime, ra=ra, dec=dec):
                 # If it's time to slew, enqueue the slew command
                 print(f"{unixtime2date(utime)} Slewing for pass to {next_pass.station}")

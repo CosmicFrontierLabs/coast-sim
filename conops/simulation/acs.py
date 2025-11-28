@@ -502,19 +502,30 @@ class ACS:
             )
         ):
             assert self.last_slew.at is not None
-            print(
-                "%s: CONSTRAINT: RA=%s Dec=%s obsid=%s Moon=%s Sun=%s Earth=%s Panel=%s"
-                % (
-                    unixtime2date(utime),
-                    self.last_slew.at.ra,
-                    self.last_slew.at.dec,
-                    self.last_slew.obsid,
-                    self.last_slew.at.in_moon(utime),
-                    self.last_slew.at.in_sun(utime),
-                    self.last_slew.at.in_earth(utime),
-                    self.last_slew.at.in_panel(utime),
+
+            # Collect only the true constraints
+            true_constraints = []
+            if self.last_slew.at.in_moon(utime):
+                true_constraints.append("Moon")
+            if self.last_slew.at.in_sun(utime):
+                true_constraints.append("Sun")
+            if self.last_slew.at.in_earth(utime):
+                true_constraints.append("Earth")
+            if self.last_slew.at.in_panel(utime):
+                true_constraints.append("Panel")
+
+            # Print only if there are true constraints
+            if true_constraints:
+                print(
+                    "%s: CONSTRAINT: RA=%s Dec=%s obsid=%s %s"
+                    % (
+                        unixtime2date(utime),
+                        self.last_slew.at.ra,
+                        self.last_slew.at.dec,
+                        self.last_slew.obsid,
+                        " ".join(true_constraints),
+                    )
                 )
-            )
             # Note: acsmode remains SCIENCE - the DITL will decide if charging is needed
 
     def _calculate_pointing(self, utime: float) -> None:
