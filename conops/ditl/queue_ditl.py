@@ -1,4 +1,3 @@
-import copy
 from datetime import timezone
 from typing import Any
 
@@ -155,7 +154,7 @@ class QueueDITL(DITLMixin, DITLStats):
             self._check_and_manage_passes(utime, ra, dec)
 
             # Handle spacecraft operations based on current mode
-            lastra, lastdec = self._handle_mode_operations(mode, utime, lastra, lastdec)
+            lastra, lastdec = self._handle_mode_operations(mode, utime, ra, dec)
 
             # Close PPT timeline segment if no active observation
             self._close_ppt_timeline_if_needed(utime)
@@ -359,7 +358,11 @@ class QueueDITL(DITLMixin, DITLStats):
     def _check_and_manage_passes(self, utime: float, ra: float, dec: float) -> None:
         """Check pass timing and send appropriate commands to ACS."""
 
-        print(self.acs.acsmode, self.acs.passrequests.current_pass(utime))
+        print(
+            "QueueDITL._check_and_manage_passes:",
+            self.acs.acsmode,
+            self.acs.passrequests.current_pass(utime),
+        )
 
         # Check if we're in a pass, if yes, command ACS to start the pass
         current_pass = self.acs.passrequests.current_pass(utime)
@@ -368,7 +371,20 @@ class QueueDITL(DITLMixin, DITLStats):
             command = ACSCommand(
                 command_type=ACSCommandType.START_PASS,
                 execution_time=utime,
-                slew=copy.copy(current_pass),
+            )
+            self.acs.enqueue_command(command)
+            return
+
+        # Check if a pass just ended, if yes, command ACS to end the pass.
+        # FIXME: This works but isn't super clean.
+        if (
+            self.acs.passrequests.current_pass(utime - self.ephem.step_size)
+            and current_pass is None
+        ):
+            print(f"{unixtime2date(utime)} Pass ended, commanding ACS to end pass")
+            command = ACSCommand(
+                command_type=ACSCommandType.END_PASS,
+                execution_time=utime,
             )
             self.acs.enqueue_command(command)
             return
