@@ -21,10 +21,10 @@
         "heater": {
             "name": "Bus Heaters",
             "power_draw": {
-                "nominal_power": 125.0,
+                "nominal_power": 25.0,
                 "peak_power": 300.0,
                 "power_mode": {},
-                "eclipse_power": 150.0,
+                "eclipse_power": 75.0,
                 "eclipse_power_mode": {}
             }
         },

@@ -29,28 +29,30 @@ Add the ``fault_management`` section to your spacecraft configuration:
 
    {
        "fault_management": {
-           "thresholds": {
-               "battery_level": {
+           "thresholds": [
+               {
                    "name": "battery_level",
                    "yellow": 0.5,
                    "red": 0.4,
                    "direction": "below"
                },
-               "temperature": {
+               {
                    "name": "temperature",
                    "yellow": 50.0,
                    "red": 60.0,
                    "direction": "above"
                },
-               "power_draw": {
+               {
                    "name": "power_draw",
                    "yellow": 450.0,
                    "red": 500.0,
                    "direction": "above"
                }
-           },
+           ],
+           "red_limit_constraints": [],
            "states": {},
-           "safe_mode_on_red": true
+           "safe_mode_on_red": true,
+           "events": []
        }
    }
 
@@ -78,16 +80,16 @@ Red limit constraints can be added to the JSON configuration:
 
    {
        "fault_management": {
-           "thresholds": {
-               "battery_level": {
+           "thresholds": [
+               {
                    "name": "battery_level",
                    "yellow": 0.5,
                    "red": 0.4,
                    "direction": "below"
                }
-           },
-           "red_limit_constraints": {
-               "spacecraft_sun_limit": {
+           ],
+           "red_limit_constraints": [
+               {
                    "name": "spacecraft_sun_limit",
                    "constraint": {
                        "type": "sun",
@@ -96,7 +98,7 @@ Red limit constraints can be added to the JSON configuration:
                    "time_threshold_seconds": 300.0,
                    "description": "Spacecraft must not point within 30° of Sun for more than 5 minutes"
                },
-               "spacecraft_earth_limit": {
+               {
                    "name": "spacecraft_earth_limit",
                    "constraint": {
                        "type": "earth_limb",
@@ -105,9 +107,10 @@ Red limit constraints can be added to the JSON configuration:
                    "time_threshold_seconds": 600.0,
                    "description": "Spacecraft must not point within 10° of Earth limb for more than 10 minutes"
                }
-           },
+           ],
            "states": {},
-           "safe_mode_on_red": true
+           "safe_mode_on_red": true,
+           "events": []
        }
    }
 
@@ -135,9 +138,12 @@ Creating Fault Management
    fm = FaultManagement()
 
    # Add thresholds programmatically
-   fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
-   fm.add_threshold("temperature", yellow=50.0, red=60.0, direction="above")
-   fm.add_threshold("power_draw", yellow=450.0, red=500.0, direction="above")
+    fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
+    fm.add_threshold("temperature", yellow=50.0, red=60.0, direction="above")
+    fm.add_threshold("power_draw", yellow=450.0, red=500.0, direction="above")
+
+    # Thresholds are stored as a list; find one by name:
+    battery_thresh = next(t for t in fm.thresholds if t.name == "battery_level")
 
 Adding Red Limit Constraints
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -245,13 +251,12 @@ To separate threshold-based and constraint-based statistics:
    # Get red limit constraint stats
    constraint_stats = {
        name: data for name, data in stats.items()
-       if name in fm.red_limit_constraints
+       if any(c.name == name for c in fm.red_limit_constraints)
    }
 
-   # Get threshold-based stats
    threshold_stats = {
        name: data for name, data in stats.items()
-       if name in fm.thresholds
+       if any(t.name == name for t in fm.thresholds)
    }
 
 Integration with QueueDITL
@@ -323,6 +328,36 @@ The red limit example demonstrates spacecraft health and safety constraints:
 
 * **spacecraft_sun_limit**: 30° exclusion zone, 5 minute threshold (thermal protection)
 * **spacecraft_earth_limit**: 10° exclusion zone, 10 minute threshold (stray light protection)
+
+Event Log
+---------
+
+All significant fault management transitions are recorded in an in-memory ``events`` list on ``FaultManagement``.
+
+``FaultEvent`` fields:
+
+* ``utime`` – Unix timestamp (float)
+* ``event_type`` – One of ``threshold_transition``, ``constraint_violation``, ``safe_mode_trigger``
+* ``name`` – Threshold / constraint name
+* ``cause`` – Human-readable description
+* ``metadata`` – Optional contextual dict (subset of keys; may include current value, thresholds, RA/Dec, violation durations)
+
+Example:
+
+.. code-block:: python
+
+    # After running fm.check(...)
+    for evt in fm.events:
+         print(evt)  # Uses concise __str__ representation
+
+Filtering events:
+
+.. code-block:: python
+
+    safe_mode_events = [e for e in fm.events if e.event_type == "safe_mode_trigger"]
+    sun_constraint_events = [e for e in fm.events if e.name == "spacecraft_sun_limit"]
+
+The event log is append-only for the duration of a simulation; clear with ``fm.events.clear()`` if needed between runs.
 
 Adding Custom Parameters
 ------------------------
