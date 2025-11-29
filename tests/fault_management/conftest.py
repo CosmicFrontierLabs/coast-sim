@@ -1,8 +1,10 @@
 """Test fixtures for fault management subsystem tests."""
 
+from datetime import datetime, timezone
 from unittest.mock import Mock
 
 import pytest
+import rust_ephem
 
 from conops import (
     Battery,
@@ -14,6 +16,7 @@ from conops import (
     SolarPanelSet,
     SpacecraftBus,
 )
+from conops.config.fault_management import FaultConstraint
 
 
 class DummyBattery:
@@ -75,3 +78,64 @@ def base_config():
     )
     cfg.init_fault_management_defaults()
     return cfg
+
+
+# Fixtures for common data used across tests
+@pytest.fixture
+def ephem():
+    return rust_ephem.TLEEphemeris(
+        tle="examples/example.tle",
+        begin=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        end=datetime(2025, 1, 2, tzinfo=timezone.utc),
+        step_size=60,
+    )
+
+
+@pytest.fixture
+def fm():
+    return FaultManagement()
+
+
+@pytest.fixture
+def fm_safe():
+    return FaultManagement(safe_mode_on_red=True)
+
+
+@pytest.fixture
+def constraint_sun_30():
+    return rust_ephem.SunConstraint(min_angle=30.0)
+
+
+@pytest.fixture
+def constraint_sun_90():
+    return rust_ephem.SunConstraint(min_angle=90.0)
+
+
+@pytest.fixture
+def constraint_earth_10():
+    return rust_ephem.EarthLimbConstraint(min_angle=10.0)
+
+
+@pytest.fixture
+def constraint_moon_5():
+    return rust_ephem.MoonConstraint(min_angle=5.0)
+
+
+@pytest.fixture
+def fault_constraint():
+    return FaultConstraint(
+        name="test_sun_limit",
+        constraint=rust_ephem.SunConstraint(min_angle=30.0),
+        time_threshold_seconds=300.0,
+        description="Test sun constraint",
+    )
+
+
+@pytest.fixture
+def fault_monitor_constraint():
+    return FaultConstraint(
+        name="test_monitor",
+        constraint=rust_ephem.MoonConstraint(min_angle=5.0),
+        time_threshold_seconds=None,
+        description="Monitoring only",
+    )

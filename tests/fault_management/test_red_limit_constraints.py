@@ -1,13 +1,8 @@
 """Tests for spacecraft-level red limit constraints in fault management system."""
 
-from datetime import datetime, timezone
-
 import pytest
-import rust_ephem
 
 from conops.config.fault_management import (
-    FaultConstraint,
-    FaultManagement,
     FaultState,
 )
 
@@ -15,45 +10,23 @@ from conops.config.fault_management import (
 class TestFaultConstraint:
     """Test FaultConstraint model."""
 
-    def _make_constraint(self):
-        return FaultConstraint(
-            name="test_sun_limit",
-            constraint=rust_ephem.SunConstraint(min_angle=30.0),
-            time_threshold_seconds=300.0,
-            description="Test sun constraint",
-        )
+    def test_fault_constraint_has_name(self, fault_constraint):
+        assert fault_constraint.name == "test_sun_limit"
 
-    def test_fault_constraint_has_name(self):
-        constraint = self._make_constraint()
-        assert constraint.name == "test_sun_limit"
+    def test_fault_constraint_has_time_threshold(self, fault_constraint):
+        assert fault_constraint.time_threshold_seconds == 300.0
 
-    def test_fault_constraint_has_time_threshold(self):
-        constraint = self._make_constraint()
-        assert constraint.time_threshold_seconds == 300.0
+    def test_fault_constraint_has_description(self, fault_constraint):
+        assert fault_constraint.description == "Test sun constraint"
 
-    def test_fault_constraint_has_description(self):
-        constraint = self._make_constraint()
-        assert constraint.description == "Test sun constraint"
+    def test_fault_constraint_has_constraint_object(self, fault_constraint):
+        assert fault_constraint.constraint is not None
 
-    def test_fault_constraint_has_constraint_object(self):
-        constraint = self._make_constraint()
-        assert constraint.constraint is not None
+    def test_fault_constraint_monitor_has_name(self, fault_monitor_constraint):
+        assert fault_monitor_constraint.name == "test_monitor"
 
-    def _make_monitor_constraint(self):
-        return FaultConstraint(
-            name="test_monitor",
-            constraint=rust_ephem.MoonConstraint(min_angle=5.0),
-            time_threshold_seconds=None,
-            description="Monitoring only",
-        )
-
-    def test_fault_constraint_monitor_has_name(self):
-        constraint = self._make_monitor_constraint()
-        assert constraint.name == "test_monitor"
-
-    def test_fault_constraint_monitor_no_threshold(self):
-        constraint = self._make_monitor_constraint()
-        assert constraint.time_threshold_seconds is None
+    def test_fault_constraint_monitor_no_threshold(self, fault_monitor_constraint):
+        assert fault_monitor_constraint.time_threshold_seconds is None
 
 
 class TestFaultState:
@@ -125,90 +98,85 @@ class TestFaultState:
 class TestFaultManagementRedLimits:
     """Test FaultManagement integration with red limit constraints."""
 
-    def test_add_red_limit_constraint_entry_exists(self):
-        fm = FaultManagement()
+    def test_add_red_limit_constraint_entry_exists(self, fm, constraint_sun_30):
         fm.add_red_limit_constraint(
             name="sun_limit",
-            constraint=rust_ephem.SunConstraint(min_angle=30.0),
+            constraint=constraint_sun_30,
             time_threshold_seconds=300.0,
             description="Sun constraint",
         )
         assert "sun_limit" in fm.red_limit_constraints
 
-    def test_add_red_limit_constraint_name_correct(self):
-        fm = FaultManagement()
+    def test_add_red_limit_constraint_name_correct(self, fm, constraint_sun_30):
         fm.add_red_limit_constraint(
             name="sun_limit",
-            constraint=rust_ephem.SunConstraint(min_angle=30.0),
+            constraint=constraint_sun_30,
             time_threshold_seconds=300.0,
             description="Sun constraint",
         )
         assert fm.red_limit_constraints["sun_limit"].name == "sun_limit"
 
-    def test_add_red_limit_constraint_time_threshold(self):
-        fm = FaultManagement()
+    def test_add_red_limit_constraint_time_threshold(self, fm, constraint_sun_30):
         fm.add_red_limit_constraint(
             name="sun_limit",
-            constraint=rust_ephem.SunConstraint(min_angle=30.0),
+            constraint=constraint_sun_30,
             time_threshold_seconds=300.0,
             description="Sun constraint",
         )
         assert fm.red_limit_constraints["sun_limit"].time_threshold_seconds == 300.0
 
-    def test_add_multiple_red_limit_constraints_count(self):
-        fm = FaultManagement()
+    def test_add_multiple_red_limit_constraints_count(
+        self, fm, constraint_sun_30, constraint_earth_10
+    ):
         fm.add_red_limit_constraint(
             name="sun_limit",
-            constraint=rust_ephem.SunConstraint(min_angle=30.0),
+            constraint=constraint_sun_30,
             time_threshold_seconds=300.0,
         )
         fm.add_red_limit_constraint(
             name="earth_limit",
-            constraint=rust_ephem.EarthLimbConstraint(min_angle=10.0),
+            constraint=constraint_earth_10,
             time_threshold_seconds=600.0,
         )
         assert len(fm.red_limit_constraints) == 2
 
-    def test_add_multiple_red_limit_constraints_contains_sun(self):
-        fm = FaultManagement()
+    def test_add_multiple_red_limit_constraints_contains_sun(
+        self, fm, constraint_sun_30, constraint_earth_10
+    ):
         fm.add_red_limit_constraint(
             name="sun_limit",
-            constraint=rust_ephem.SunConstraint(min_angle=30.0),
+            constraint=constraint_sun_30,
             time_threshold_seconds=300.0,
         )
         fm.add_red_limit_constraint(
             name="earth_limit",
-            constraint=rust_ephem.EarthLimbConstraint(min_angle=10.0),
+            constraint=constraint_earth_10,
             time_threshold_seconds=600.0,
         )
         assert "sun_limit" in fm.red_limit_constraints
 
-    def test_add_multiple_red_limit_constraints_contains_earth(self):
-        fm = FaultManagement()
+    def test_add_multiple_red_limit_constraints_contains_earth(
+        self, fm, constraint_sun_30, constraint_earth_10
+    ):
         fm.add_red_limit_constraint(
             name="sun_limit",
-            constraint=rust_ephem.SunConstraint(min_angle=30.0),
+            constraint=constraint_sun_30,
             time_threshold_seconds=300.0,
         )
         fm.add_red_limit_constraint(
             name="earth_limit",
-            constraint=rust_ephem.EarthLimbConstraint(min_angle=10.0),
+            constraint=constraint_earth_10,
             time_threshold_seconds=600.0,
         )
         assert "earth_limit" in fm.red_limit_constraints
 
-    def test_check_red_limit_constraints_creates_states(self):
-        fm = FaultManagement()
+    def test_check_red_limit_constraints_creates_states(
+        self, fm, ephem, constraint_sun_30
+    ):
         fm.add_red_limit_constraint(
             name="sun_limit",
-            constraint=rust_ephem.SunConstraint(min_angle=30.0),
+            constraint=constraint_sun_30,
             time_threshold_seconds=300.0,
-        )
-        ephem = rust_ephem.TLEEphemeris(
-            tle="examples/example.tle",
-            begin=datetime(2025, 1, 1, tzinfo=timezone.utc),
-            end=datetime(2025, 1, 2, tzinfo=timezone.utc),
-            step_size=60,
         )
         fm.check(
             values={},
@@ -220,11 +188,10 @@ class TestFaultManagementRedLimits:
         )
         assert "sun_limit" in fm.states
 
-    def test_red_limit_statistics_contains_constraint(self):
-        fm = FaultManagement()
+    def test_red_limit_statistics_contains_constraint(self, fm, constraint_sun_30):
         fm.add_red_limit_constraint(
             name="test_constraint",
-            constraint=rust_ephem.SunConstraint(min_angle=30.0),
+            constraint=constraint_sun_30,
             time_threshold_seconds=300.0,
         )
         fm.states["test_constraint"] = FaultState(
@@ -235,11 +202,10 @@ class TestFaultManagementRedLimits:
         stats = fm.statistics()
         assert "test_constraint" in stats
 
-    def test_red_limit_statistics_in_violation_true(self):
-        fm = FaultManagement()
+    def test_red_limit_statistics_in_violation_true(self, fm, constraint_sun_30):
         fm.add_red_limit_constraint(
             name="test_constraint",
-            constraint=rust_ephem.SunConstraint(min_angle=30.0),
+            constraint=constraint_sun_30,
             time_threshold_seconds=300.0,
         )
         fm.states["test_constraint"] = FaultState(
@@ -250,11 +216,10 @@ class TestFaultManagementRedLimits:
         stats = fm.statistics()
         assert stats["test_constraint"]["in_violation"] is True
 
-    def test_red_limit_statistics_red_seconds(self):
-        fm = FaultManagement()
+    def test_red_limit_statistics_red_seconds(self, fm, constraint_sun_30):
         fm.add_red_limit_constraint(
             name="test_constraint",
-            constraint=rust_ephem.SunConstraint(min_angle=30.0),
+            constraint=constraint_sun_30,
             time_threshold_seconds=300.0,
         )
         fm.states["test_constraint"] = FaultState(
@@ -265,11 +230,12 @@ class TestFaultManagementRedLimits:
         stats = fm.statistics()
         assert stats["test_constraint"]["red_seconds"] == 150.0
 
-    def test_red_limit_statistics_continuous_violation_seconds(self):
-        fm = FaultManagement()
+    def test_red_limit_statistics_continuous_violation_seconds(
+        self, fm, constraint_sun_30
+    ):
         fm.add_red_limit_constraint(
             name="test_constraint",
-            constraint=rust_ephem.SunConstraint(min_angle=30.0),
+            constraint=constraint_sun_30,
             time_threshold_seconds=300.0,
         )
         fm.states["test_constraint"] = FaultState(
@@ -280,18 +246,14 @@ class TestFaultManagementRedLimits:
         stats = fm.statistics()
         assert stats["test_constraint"]["continuous_violation_seconds"] == 100.0
 
-    def test_safe_mode_not_triggered_below_threshold_state(self):
-        fm = FaultManagement(safe_mode_on_red=True)
+    def test_safe_mode_not_triggered_below_threshold_state(
+        self, fm_safe, ephem, constraint_sun_90
+    ):
+        fm = fm_safe
         fm.add_red_limit_constraint(
             name="sun_limit",
-            constraint=rust_ephem.SunConstraint(min_angle=90.0),
+            constraint=constraint_sun_90,
             time_threshold_seconds=300.0,
-        )
-        ephem = rust_ephem.TLEEphemeris(
-            tle="examples/example.tle",
-            begin=datetime(2025, 1, 1, tzinfo=timezone.utc),
-            end=datetime(2025, 1, 2, tzinfo=timezone.utc),
-            step_size=60,
         )
         for i in range(4):  # 4 * 60 = 240 seconds < 300 second threshold
             fm.check(
@@ -304,8 +266,7 @@ class TestFaultManagementRedLimits:
             )
         assert fm.safe_mode_requested is False
 
-    def test_continuous_violation_resets_on_recovery_total_stays(self):
-        fm = FaultManagement()
+    def test_continuous_violation_resets_on_recovery_total_stays(self, fm):
         fm.states["test"] = FaultState(
             in_violation=False,
             red_seconds=500.0,
@@ -316,8 +277,7 @@ class TestFaultManagementRedLimits:
             state.continuous_violation_seconds = 0.0
         assert state.red_seconds == 500.0
 
-    def test_continuous_violation_resets_on_recovery_continuous_zero(self):
-        fm = FaultManagement()
+    def test_continuous_violation_resets_on_recovery_continuous_zero(self, fm):
         fm.states["test"] = FaultState(
             in_violation=False,
             red_seconds=500.0,
@@ -333,19 +293,13 @@ class TestFaultConstraintIntegration:
     """Integration tests for red limit constraints in simulation context."""
 
     def test_constraint_with_no_time_threshold_never_triggers_safe_mode_accumulates(
-        self,
+        self, fm_safe, constraint_sun_90, ephem
     ):
-        fm = FaultManagement(safe_mode_on_red=True)
+        fm = fm_safe
         fm.add_red_limit_constraint(
             name="monitor_only",
-            constraint=rust_ephem.SunConstraint(min_angle=90.0),
+            constraint=constraint_sun_90,
             time_threshold_seconds=None,
-        )
-        ephem = rust_ephem.TLEEphemeris(
-            tle="examples/example.tle",
-            begin=datetime(2025, 1, 1, tzinfo=timezone.utc),
-            end=datetime(2025, 1, 2, tzinfo=timezone.utc),
-            step_size=60,
         )
         for i in range(20):
             fm.check(
@@ -359,19 +313,13 @@ class TestFaultConstraintIntegration:
         assert fm.states["monitor_only"].red_seconds > 0
 
     def test_constraint_with_no_time_threshold_never_triggers_safe_mode_not_requested(
-        self,
+        self, fm_safe, constraint_sun_90, ephem
     ):
-        fm = FaultManagement(safe_mode_on_red=True)
+        fm = fm_safe
         fm.add_red_limit_constraint(
             name="monitor_only",
-            constraint=rust_ephem.SunConstraint(min_angle=90.0),
+            constraint=constraint_sun_90,
             time_threshold_seconds=None,
-        )
-        ephem = rust_ephem.TLEEphemeris(
-            tle="examples/example.tle",
-            begin=datetime(2025, 1, 1, tzinfo=timezone.utc),
-            end=datetime(2025, 1, 2, tzinfo=timezone.utc),
-            step_size=60,
         )
         for i in range(20):
             fm.check(
@@ -384,12 +332,11 @@ class TestFaultConstraintIntegration:
             )
         assert fm.safe_mode_requested is False
 
-    def test_mixed_regular_fault_classification_is_yellow(self):
-        fm = FaultManagement(safe_mode_on_red=True)
+    def test_mixed_regular_fault_classification_is_yellow(self, fm, constraint_sun_30):
         fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
         fm.add_red_limit_constraint(
             name="sun_limit",
-            constraint=rust_ephem.SunConstraint(min_angle=30.0),
+            constraint=constraint_sun_30,
             time_threshold_seconds=300.0,
         )
         classifications = fm.check(
@@ -397,23 +344,23 @@ class TestFaultConstraintIntegration:
         )
         assert classifications["battery_level"] == "yellow"
 
-    def test_mixed_regular_fault_does_not_trigger_safe_mode_on_yellow(self):
-        fm = FaultManagement(safe_mode_on_red=True)
+    def test_mixed_regular_fault_does_not_trigger_safe_mode_on_yellow(
+        self, fm, constraint_sun_30
+    ):
         fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
         fm.add_red_limit_constraint(
             name="sun_limit",
-            constraint=rust_ephem.SunConstraint(min_angle=30.0),
+            constraint=constraint_sun_30,
             time_threshold_seconds=300.0,
         )
         fm.check(values={"battery_level": 0.45}, utime=1000.0, step_size=60.0)
         assert fm.safe_mode_requested is False
 
-    def test_mixed_regular_fault_triggers_safe_mode_on_red(self):
-        fm = FaultManagement(safe_mode_on_red=True)
+    def test_mixed_regular_fault_triggers_safe_mode_on_red(self, fm, constraint_sun_30):
         fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
         fm.add_red_limit_constraint(
             name="sun_limit",
-            constraint=rust_ephem.SunConstraint(min_angle=30.0),
+            constraint=constraint_sun_30,
             time_threshold_seconds=300.0,
         )
         fm.check(values={"battery_level": 0.35}, utime=1060.0, step_size=60.0)
