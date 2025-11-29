@@ -165,8 +165,8 @@ class QueueDITL(DITLMixin, DITLStats):
             # Handle data generation and downlink
             self._handle_data_management(utime, mode)
 
-            # Fault management checks (e.g., battery level thresholds, red limit constraints)
-            self._handle_fault_management(utime, ra, dec)
+            # Fault management checks (e.g., battery level thresholds)
+            self._handle_fault_management(utime)
 
         # Make sure the last PPT of the day ends (if any)
         if self.plan:
@@ -193,10 +193,9 @@ class QueueDITL(DITLMixin, DITLStats):
         self.data_generated_gb.append(prev_generated + data_generated)
         self.data_downlinked_gb.append(prev_downlinked + data_downlinked)
 
-    def _handle_fault_management(self, utime: float, ra: float, dec: float) -> None:
+    def _handle_fault_management(self, utime: float) -> None:
         """Handle fault management checks and safe mode requests."""
         if self.config.fault_management is not None:
-            # Check both regular fault thresholds and spacecraft-level red limit constraints
             self.config.fault_management.check(
                 values={
                     "battery_level": self.battery.battery_level,
@@ -205,11 +204,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 utime=utime,
                 step_size=self.step_size,
                 acs=self.acs,
-                ephem=self.ephem,
-                ra=ra,
-                dec=dec,
             )
-
             # Check if safe mode has been requested by fault management
             if (
                 self.config.fault_management.safe_mode_requested

@@ -3,12 +3,7 @@ from .battery import Battery
 from .config import Config
 from .constants import DAY_SECONDS, DTOR
 from .constraint import Constraint
-from .fault_management import (
-    FaultConstraint,
-    FaultManagement,
-    FaultState,
-    FaultThreshold,
-)
+from .fault_management import FaultEvent, FaultManagement, FaultState, FaultThreshold
 from .groundstation import Antenna, GroundStation, GroundStationRegistry
 from .instrument import DataGeneration, Instrument, Payload
 from .observation_categories import ObservationCategories, ObservationCategory
@@ -25,9 +20,9 @@ __all__ = [
     "Config",
     "Constraint",
     "DataGeneration",
+    "FaultEvent",
     "FaultManagement",
     "FaultThreshold",
-    "FaultConstraint",
     "FaultState",
     "GroundStation",
     "GroundStationRegistry",

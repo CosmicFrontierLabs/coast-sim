@@ -66,11 +66,31 @@ Safe Mode Behavior:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from pydantic import BaseModel, Field
 from rust_ephem.constraints import ConstraintConfig
 
 from conops.common.common import dtutcfromtimestamp
+
+
+@dataclass
+class FaultEvent:
+    """Records a single fault management event.
+
+    Attributes:
+        utime: Unix timestamp when the event occurred
+        event_type: Type of event (threshold_transition, constraint_violation, safe_mode_trigger)
+        name: Name of the parameter or constraint that triggered the event
+        cause: Human-readable description of what happened
+        metadata: Optional additional data (e.g., current values, thresholds, durations)
+    """
+
+    utime: float
+    event_type: str
+    name: str
+    cause: str
+    metadata: dict[str, Any] | None = None
 
 
 @dataclass
@@ -171,6 +191,9 @@ class FaultManagement(BaseModel):
     states: dict[str, FaultState] = Field(default_factory=dict)
     safe_mode_on_red: bool = True  # Global policy: enter safe mode for any RED
     safe_mode_requested: bool = False  # Flag set when safe mode should be triggered
+    events: list[FaultEvent] = Field(
+        default_factory=list
+    )  # Event log with timestamps and causes
 
     def ensure_state(self, name: str) -> FaultState:
         if name not in self.states:
@@ -211,6 +234,27 @@ class FaultManagement(BaseModel):
             state = thresh.classify(val)
             classifications[name] = state
             st = self.ensure_state(name)
+
+            # Log state transitions
+            previous_state = st.current
+            if previous_state != state:
+                self.events.append(
+                    FaultEvent(
+                        utime=utime,
+                        event_type="threshold_transition",
+                        name=name,
+                        cause=f"Transitioned from {previous_state} to {state}",
+                        metadata={
+                            "previous_state": previous_state,
+                            "new_state": state,
+                            "value": val,
+                            "yellow_threshold": thresh.yellow,
+                            "red_threshold": thresh.red,
+                            "direction": thresh.direction,
+                        },
+                    )
+                )
+
             # Accumulate time
             if state == "yellow":
                 st.yellow_seconds += step_size
@@ -221,6 +265,19 @@ class FaultManagement(BaseModel):
             if state == "red" and self.safe_mode_on_red:
                 if acs is None or not acs.in_safe_mode:
                     self.safe_mode_requested = True
+                    self.events.append(
+                        FaultEvent(
+                            utime=utime,
+                            event_type="safe_mode_trigger",
+                            name=name,
+                            cause=f"RED threshold exceeded for {name}",
+                            metadata={
+                                "value": val,
+                                "red_threshold": thresh.red,
+                                "direction": thresh.direction,
+                            },
+                        )
+                    )
 
         # Check spacecraft-level red limit constraints if ephemeris and pointing provided
         if (
@@ -241,9 +298,30 @@ class FaultManagement(BaseModel):
                     ephemeris=ephem, target_ra=ra, target_dec=dec, time=dt
                 )
 
+                # Log constraint violation events
+                previous_violation_state = fault_state.in_violation
                 fault_state.in_violation = in_violation
 
                 if in_violation:
+                    # Log new violation
+                    if not previous_violation_state:
+                        self.events.append(
+                            FaultEvent(
+                                utime=utime,
+                                event_type="constraint_violation",
+                                name=name,
+                                cause=f"Entered constraint violation for {name}",
+                                metadata={
+                                    "constraint_type": type(
+                                        red_limit.constraint
+                                    ).__name__,
+                                    "ra": ra,
+                                    "dec": dec,
+                                    "description": red_limit.description,
+                                },
+                            )
+                        )
+
                     # Accumulate violation time
                     fault_state.current = "red"
                     fault_state.red_seconds += step_size
@@ -258,7 +336,42 @@ class FaultManagement(BaseModel):
                         # Trigger safe mode
                         if acs is None or not acs.in_safe_mode:
                             self.safe_mode_requested = True
+                            self.events.append(
+                                FaultEvent(
+                                    utime=utime,
+                                    event_type="safe_mode_trigger",
+                                    name=name,
+                                    cause="Constraint violation exceeded time threshold",
+                                    metadata={
+                                        "constraint_type": type(
+                                            red_limit.constraint
+                                        ).__name__,
+                                        "continuous_violation_seconds": fault_state.continuous_violation_seconds,
+                                        "time_threshold_seconds": red_limit.time_threshold_seconds,
+                                        "ra": ra,
+                                        "dec": dec,
+                                    },
+                                )
+                            )
                 else:
+                    # Log violation cleared
+                    if previous_violation_state:
+                        self.events.append(
+                            FaultEvent(
+                                utime=utime,
+                                event_type="constraint_violation",
+                                name=name,
+                                cause=f"Cleared constraint violation for {name}",
+                                metadata={
+                                    "constraint_type": type(
+                                        red_limit.constraint
+                                    ).__name__,
+                                    "total_violation_seconds": fault_state.continuous_violation_seconds,
+                                    "ra": ra,
+                                    "dec": dec,
+                                },
+                            )
+                        )
                     # Reset continuous violation counter when constraint is satisfied
                     fault_state.continuous_violation_seconds = 0.0
 
