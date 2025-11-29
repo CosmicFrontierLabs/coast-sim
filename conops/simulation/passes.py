@@ -6,9 +6,10 @@ import rust_ephem
 from pydantic import BaseModel, Field
 
 from ..common import ics_date_conv, unixtime2date
-from ..common.vector import radec2vec, rotvec, vec2radec
+from ..common.vector import radec2vec, rotvec, separation, vec2radec
 from ..config import Config, Constraint, GroundStationRegistry
 from ..config.communications import AntennaType, CommunicationsSystem
+from ..config.constants import DTOR
 
 
 class Pass(BaseModel):
@@ -108,7 +109,6 @@ class Pass(BaseModel):
         Returns:
             Tuple of (adjusted_ra, adjusted_dec) in degrees
         """
-        from ..config.constants import DTOR
 
         # Convert RA/Dec to unit vector
         sat_vec = radec2vec(ra * DTOR, dec * DTOR)
@@ -147,8 +147,6 @@ class Pass(BaseModel):
             Angular separation in degrees
         """
         # Convert to radians
-        from ..common import separation
-        from ..config.constants import DTOR
 
         return (
             separation(
