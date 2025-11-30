@@ -1,29 +1,21 @@
 import pytest
 from pydantic import ValidationError
 
-from conops import Antenna, GroundStation
+from conops import GroundStation
 
 
-class TestAntenna:
+class TestGroundStationAntennaFields:
     def test_default_bands_empty(self):
-        a = Antenna()
-        assert a.bands == []
+        gs = GroundStation(code="X", name="X", latitude_deg=0.0, longitude_deg=0.0)
+        assert gs.bands == []
 
     def test_default_gain_db_none(self):
-        a = Antenna()
-        assert a.gain_db is None
+        gs = GroundStation(code="X", name="X", latitude_deg=0.0, longitude_deg=0.0)
+        assert gs.gain_db is None
 
-    def test_default_max_data_rate_mbps_none(self):
-        a = Antenna()
-        assert a.max_data_rate_mbps is None
-
-    def test_default_simultaneous_links_one(self):
-        a = Antenna()
-        assert a.simultaneous_links == 1
-
-    def test_simultaneous_links_zero_raises_validation_error(self):
-        with pytest.raises(ValidationError):
-            Antenna(simultaneous_links=0)
+    def test_default_overall_max_downlink_none(self):
+        gs = GroundStation(code="X", name="X", latitude_deg=0.0, longitude_deg=0.0)
+        assert gs.get_overall_max_downlink() is None
 
 
 class TestGroundStation:

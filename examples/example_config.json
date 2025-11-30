@@ -18,6 +18,7 @@
             "slew_accuracy": 0.01,
             "settle_time": 10.0
         },
+        "communications": null,
         "heater": {
             "name": "Bus Heaters",
             "power_draw": {
@@ -145,14 +146,14 @@
                 "elevation_m": 0.0,
                 "min_elevation_deg": 10.0,
                 "schedule_probability": 0.7,
-                "antenna": {
-                    "bands": [
-                        "S"
-                    ],
-                    "gain_db": null,
-                    "max_data_rate_mbps": 100.0,
-                    "simultaneous_links": 1
-                }
+                "bands": [
+                    {
+                        "band": "S",
+                        "uplink_rate_mbps": 2.0,
+                        "downlink_rate_mbps": 10.0
+                    }
+                ],
+                "gain_db": null
             },
             {
                 "code": "SPO",
@@ -162,14 +163,14 @@
                 "elevation_m": 2835.0,
                 "min_elevation_deg": 10.0,
                 "schedule_probability": 0.2,
-                "antenna": {
-                    "bands": [
-                        "S"
-                    ],
-                    "gain_db": null,
-                    "max_data_rate_mbps": 150.0,
-                    "simultaneous_links": 1
-                }
+                "bands": [
+                    {
+                        "band": "S",
+                        "uplink_rate_mbps": 2.0,
+                        "downlink_rate_mbps": 10.0
+                    }
+                ],
+                "gain_db": null
             },
             {
                 "code": "NPO",
@@ -179,14 +180,14 @@
                 "elevation_m": 0.0,
                 "min_elevation_deg": 10.0,
                 "schedule_probability": 0.2,
-                "antenna": {
-                    "bands": [
-                        "S"
-                    ],
-                    "gain_db": null,
-                    "max_data_rate_mbps": 150.0,
-                    "simultaneous_links": 1
-                }
+                "bands": [
+                    {
+                        "band": "S",
+                        "uplink_rate_mbps": 2.0,
+                        "downlink_rate_mbps": 10.0
+                    }
+                ],
+                "gain_db": null
             },
             {
                 "code": "PVG",
@@ -196,14 +197,14 @@
                 "elevation_m": 0.0,
                 "min_elevation_deg": 10.0,
                 "schedule_probability": 0.5,
-                "antenna": {
-                    "bands": [
-                        "S"
-                    ],
-                    "gain_db": null,
-                    "max_data_rate_mbps": 100.0,
-                    "simultaneous_links": 1
-                }
+                "bands": [
+                    {
+                        "band": "S",
+                        "uplink_rate_mbps": 2.0,
+                        "downlink_rate_mbps": 10.0
+                    }
+                ],
+                "gain_db": null
             }
         ]
     },
@@ -243,7 +244,7 @@
                         }
                     ]
                 },
-                "time_threshold_seconds": 2.0,
+                "time_threshold_seconds": 120.0,
                 "description": "Spacecraft must avoid pointing too close to the Sun for extended periods."
             }
         ],

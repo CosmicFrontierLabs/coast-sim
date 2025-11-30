@@ -3,7 +3,7 @@
 import pytest
 
 from conops.config import (
-    Antenna,
+    BandCapability,
     Battery,
     Config,
     Constraint,
@@ -47,10 +47,7 @@ class TestDataManagementIntegration:
                 name="Test Station",
                 latitude_deg=0.0,
                 longitude_deg=0.0,
-                antenna=Antenna(
-                    bands=["X"],
-                    max_data_rate_mbps=100.0,  # 100 Mbps = 0.1 Gbps
-                ),
+                bands=[BandCapability(band="X", downlink_rate_mbps=100.0)],
             )
         )
 
@@ -83,7 +80,7 @@ class TestDataManagementIntegration:
         """Test that ground station has downlink rate configured."""
         config = config_with_data_generation
         station = config.ground_stations.get("TST")
-        assert station.antenna.max_data_rate_mbps == 100.0
+        assert station.get_downlink_rate("X") == 100.0
 
     def test_recorder_operations_in_config(self):
         """Test recorder operations work with config."""

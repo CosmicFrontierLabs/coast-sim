@@ -6,8 +6,10 @@ import rust_ephem
 from pydantic import BaseModel, Field
 
 from ..common import ics_date_conv, unixtime2date
-from ..common.vector import vec2radec
+from ..common.vector import radec2vec, rotvec, separation, vec2radec
 from ..config import Config, Constraint, GroundStationRegistry
+from ..config.communications import AntennaType, CommunicationsSystem
+from ..config.constants import DTOR
 
 
 class Pass(BaseModel):
@@ -22,6 +24,9 @@ class Pass(BaseModel):
     ephem: rust_ephem.TLEEphemeris | None = None
     constraint: Constraint | None = None
     acs_config: Any | None = None  # AttitudeControlSystem, avoiding circular import
+    comms_config: CommunicationsSystem | None = (
+        None  # Communications system configuration
+    )
 
     # Pass metadata
     station: str
@@ -85,6 +90,140 @@ class Pass(BaseModel):
         if idx >= len(self.utime):
             return self.ra[-1], self.dec[-1]
         return self.ra[idx], self.dec[idx]
+
+    @staticmethod
+    def apply_antenna_offset(
+        ra: float, dec: float, azimuth_deg: float, elevation_deg: float
+    ) -> tuple[float, float]:
+        """Apply antenna pointing offset to RA/Dec.
+
+        For a fixed antenna pointing at (azimuth, elevation) in the spacecraft body frame,
+        calculate the adjusted RA/Dec that the antenna actually points toward.
+
+        Args:
+            ra: Original right ascension (degrees)
+            dec: Original declination (degrees)
+            azimuth_deg: Antenna azimuth offset (degrees, 0=forward, 90=right)
+            elevation_deg: Antenna elevation offset (degrees, 0=horizon, 90=zenith, -90=nadir)
+
+        Returns:
+            Tuple of (adjusted_ra, adjusted_dec) in degrees
+        """
+
+        # Convert RA/Dec to unit vector
+        sat_vec = radec2vec(ra * DTOR, dec * DTOR)
+
+        # Apply rotation for azimuth (rotation around Z-axis/north pole)
+        # Positive azimuth rotates right (east)
+        # rotvec parameters: (axis_number, angle, vector) where axis: 1=x, 2=y, 3=z
+        rotated = rotvec(3, azimuth_deg * DTOR, sat_vec)
+
+        # Apply rotation for elevation (rotation around east-west axis = Y)
+        # Positive elevation points up from horizon toward zenith
+        # Negative elevation points down toward nadir
+        rotated = rotvec(2, -elevation_deg * DTOR, rotated)
+
+        # Convert back to RA/Dec
+        adjusted_ra, adjusted_dec = np.degrees(vec2radec(rotated))
+
+        return adjusted_ra, adjusted_dec
+
+    def pointing_error(
+        self,
+        spacecraft_ra: float,
+        spacecraft_dec: float,
+        target_ra: float,
+        target_dec: float,
+    ) -> float:
+        """Calculate pointing error between spacecraft pointing and target.
+
+        Args:
+            spacecraft_ra: Current spacecraft RA (degrees)
+            spacecraft_dec: Current spacecraft Dec (degrees)
+            target_ra: Target RA (degrees)
+            target_dec: Target Dec (degrees)
+
+        Returns:
+            Angular separation in degrees
+        """
+        # Convert to radians
+
+        return (
+            separation(
+                [spacecraft_ra * DTOR, spacecraft_dec * DTOR],
+                [target_ra * DTOR, target_dec * DTOR],
+            )
+            / DTOR
+        )
+
+    def can_communicate(
+        self, spacecraft_ra: float, spacecraft_dec: float, utime: float | None = None
+    ) -> bool:
+        """Check if communication is possible given spacecraft pointing.
+
+        Args:
+            spacecraft_ra: Current spacecraft RA (degrees)
+            spacecraft_dec: Current spacecraft Dec (degrees)
+            utime: Time during pass (optional, uses begin if None)
+
+        Returns:
+            True if communication is possible, False otherwise
+        """
+        if self.comms_config is None:
+            # No comms config, assume communication is always possible
+            return True
+
+        # Determine target pointing for this time
+        if utime is None:
+            utime = self.begin
+
+        target_ra, target_dec = self.ra_dec(utime)
+        if target_ra is None or target_dec is None:
+            return False
+
+        # Calculate pointing error
+        error = self.pointing_error(
+            spacecraft_ra, spacecraft_dec, target_ra, target_dec
+        )
+
+        # Check if within acceptable range
+        return self.comms_config.can_communicate(error)
+
+    def get_data_rate(self, band: str, direction: str = "downlink") -> float:
+        """Get data rate for this pass in the specified band.
+
+        Args:
+            band: Frequency band (e.g., "S", "X", "Ka")
+            direction: "downlink" or "uplink"
+
+        Returns:
+            Data rate in Mbps, or 0.0 if band not supported
+        """
+        if self.comms_config is None:
+            return 0.0
+
+        if direction.lower() == "downlink":
+            return self.comms_config.get_downlink_rate(band)
+        elif direction.lower() == "uplink":
+            return self.comms_config.get_uplink_rate(band)
+        else:
+            return 0.0
+
+    def calculate_data_volume(self, band: str, direction: str = "downlink") -> float:
+        """Calculate total data volume for this pass.
+
+        Args:
+            band: Frequency band (e.g., "S", "X", "Ka")
+            direction: "downlink" or "uplink"
+
+        Returns:
+            Data volume in Megabits
+        """
+        if self.length is None or self.comms_config is None:
+            return 0.0
+
+        rate_mbps = self.get_data_rate(band, direction)
+        return rate_mbps * self.length  # Mbps * seconds = Megabits
 
     def time_to_slew(self, utime: float, ra: float, dec: float) -> bool:
         """Determine whether to begin slewing for this pass.
@@ -307,6 +446,7 @@ class PassTimes:
                             constraint=self.constraint,
                             ephem=self.ephem,
                             acs_config=self.config.spacecraft_bus.attitude_control,
+                            comms_config=self.config.spacecraft_bus.communications,
                             station=station.code,
                             begin=passstart,
                             gsstartra=sat_ra[start_idx],
@@ -322,6 +462,41 @@ class PassTimes:
                         ].tolist()
                         gspass.ra = sat_ra[start_idx:end_idx].tolist()
                         gspass.dec = sat_dec[start_idx:end_idx].tolist()
+
+                        # Apply antenna pointing offset for fixed antennas
+                        if (
+                            gspass.comms_config is not None
+                            and gspass.comms_config.antenna_pointing.antenna_type
+                            == AntennaType.FIXED
+                        ):
+                            antenna = gspass.comms_config.antenna_pointing
+                            # Adjust start/end pointing
+                            gspass.gsstartra, gspass.gsstartdec = (
+                                Pass.apply_antenna_offset(
+                                    gspass.gsstartra,
+                                    gspass.gsstartdec,
+                                    antenna.fixed_azimuth_deg,
+                                    antenna.fixed_elevation_deg,
+                                )
+                            )
+                            gspass.gsendra, gspass.gsenddec = Pass.apply_antenna_offset(
+                                gspass.gsendra,
+                                gspass.gsenddec,
+                                antenna.fixed_azimuth_deg,
+                                antenna.fixed_elevation_deg,
+                            )
+                            # Adjust full pointing profile
+                            adjusted_pointing = [
+                                Pass.apply_antenna_offset(
+                                    ra_val,
+                                    dec_val,
+                                    antenna.fixed_azimuth_deg,
+                                    antenna.fixed_elevation_deg,
+                                )
+                                for ra_val, dec_val in zip(gspass.ra, gspass.dec)
+                            ]
+                            gspass.ra = [pt[0] for pt in adjusted_pointing]
+                            gspass.dec = [pt[1] for pt in adjusted_pointing]
 
                         self.passes.append(gspass)
 

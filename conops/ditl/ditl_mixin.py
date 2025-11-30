@@ -145,10 +145,51 @@ class DITLMixin:
             current_pass = self._find_current_pass(utime)
             if current_pass is not None:
                 station = self.config.ground_stations.get(current_pass.station)
-                if station.antenna.max_data_rate_mbps is not None:
+
+                # Determine actual data rate based on both ground station and spacecraft capabilities
+                effective_rate_mbps = self._get_effective_data_rate(
+                    station, current_pass
+                )
+
+                if effective_rate_mbps is not None and effective_rate_mbps > 0:
                     # Convert Mbps to Gb per step: Mbps * seconds / 1000 / 8 = Gb
-                    megabits_per_step = station.antenna.max_data_rate_mbps * step_size
+                    megabits_per_step = effective_rate_mbps * step_size
                     data_to_downlink = megabits_per_step / 1000.0 / 8.0  # Convert to Gb
                     data_downlinked = self.recorder.remove_data(data_to_downlink)
 
         return data_generated, data_downlinked
+
+    def _get_effective_data_rate(self, station, current_pass) -> float | None:
+        """Calculate effective downlink data rate based on ground station and spacecraft capabilities.
+
+        The effective rate is, per band, min(GS downlink rate, SC downlink rate);
+        we take the maximum of this across all common bands.
+
+        Args:
+            station: GroundStation object with antenna capabilities
+            current_pass: Pass object with communications configuration
+
+        Returns:
+            Effective data rate in Mbps, or None if no compatible bands/rates
+        """
+        # If pass has no comms config, use GS overall maximum across bands
+        if current_pass.comms_config is None:
+            return station.get_overall_max_downlink()
+
+        # If GS has no per-band capabilities, no defined rate
+        gs_bands = set(station.supported_bands()) if station.bands else set()
+        if not gs_bands:
+            # No bands defined on ground station
+            return None
+
+        # Compute effective rate per common band
+        best_effective = 0.0
+        for band in gs_bands:
+            gs_rate = station.get_downlink_rate(band) or 0.0
+            sc_rate = current_pass.comms_config.get_downlink_rate(band) or 0.0
+            if gs_rate > 0.0 and sc_rate > 0.0:
+                effective = min(gs_rate, sc_rate)
+                if effective > best_effective:
+                    best_effective = effective
+
+        return best_effective if best_effective > 0.0 else None

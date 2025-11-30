@@ -18,7 +18,6 @@ from .common import (
 from .config import (
     DAY_SECONDS,
     DTOR,
-    Antenna,
     AttitudeControlSystem,
     Battery,
     Config,
@@ -76,7 +75,6 @@ __all__ = [
     "ACS",
     "ACSCommand",
     "ACSCommandType",
-    "Antenna",
     "ACSMode",
     "AttitudeControlSystem",
     "Battery",
