@@ -13,6 +13,9 @@ Core Modules
    conops.config.communications
    conops.ditl
    conops.ditl.ditl
+   conops.ditl.ditl_event
+   conops.ditl.ditl_log
+   conops.ditl.ditl_log_store
    conops.ditl.ditl_mixin
    conops.ditl.queue_ditl
    conops.simulation

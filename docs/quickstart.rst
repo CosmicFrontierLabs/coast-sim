@@ -3,7 +3,6 @@ Quick Start Guide
 
 This guide will help you get started with COASTSim quickly.
 
-Basic DITL Simulation
 ---------------------
 
 Here's a simple example of running a Day-In-The-Life (DITL) simulation:
@@ -31,9 +30,30 @@ Here's a simple example of running a Day-In-The-Life (DITL) simulation:
    # Analyze results
    ditl.plot()
    ditl.print_statistics()
+Logging DITL Events
+-------------------
+
+DITL simulations now log structured events internally instead of printing.
+Access the log via ``ditl.log``:
+
+.. code-block:: python
+
+     # Inspect events collected during the run
+     for event in ditl.log:
+             print(event.timestamp, event.event_type, event.description)
+
+     # Persist logs for many runs using the standard library (optional)
+     from conops.ditl import DITLLogStore
+     store = DITLLogStore("ditl_logs.sqlite")
+     ditl.log.run_id = "my-run-001"
+     ditl.log.store = store
+     # Events are persisted as they are logged; you can also bulk flush
+     ditl.log.flush_to_store()
+
+     # Later, query events by run
+     events = store.fetch_events("my-run-001", event_type="PASS")
 
 Configuration-Based Approach
------------------------------
 
 Create a JSON configuration file defining your spacecraft parameters:
 

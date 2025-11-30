@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 
 from ..common import ACSMode
 from .ditl_event import DITLEvent
+from .ditl_log_store import DITLLogStore
 
 
 class DITLLog(BaseModel):
@@ -12,10 +13,16 @@ class DITLLog(BaseModel):
 
     Attributes:
         events: List of DITLEvent objects logged during simulation
+        run_id: Optional identifier for this DITL run; used by stores
+        store: Optional persistent store to which events are appended
     """
 
     events: list[DITLEvent] = Field(
         default_factory=list, description="List of logged events"
+    )
+    run_id: str | None = Field(default=None, description="Unique ID for this DITL run")
+    store: DITLLogStore | None = Field(
+        default=None, description="Optional persistent store"
     )
 
     def log_event(
@@ -50,6 +57,13 @@ class DITLLog(BaseModel):
             acs_mode=acs_mode,
         )
         self.events.append(event)
+        # If a store is configured with a run_id, persist as we go
+        if self.store is not None and self.run_id is not None:
+            try:
+                self.store.add_event(self.run_id, event)
+            except Exception:
+                # Non-fatal: keep in-memory log even if persistence fails
+                pass
 
     def print_log(self) -> None:
         """Print the DITL event log to stdout."""
@@ -71,3 +85,15 @@ class DITLLog(BaseModel):
     def __getitem__(self, index: int) -> DITLEvent:
         """Get event by index."""
         return self.events[index]
+
+    def flush_to_store(self) -> None:
+        """Persist all current events to the configured store, if any.
+
+        Safe to call multiple times; duplicates will accumulate if called
+        repeatedly without store-level deduplication.
+        """
+        if self.store is not None and self.run_id is not None and self.events:
+            try:
+                self.store.add_events(self.run_id, self.events)
+            except Exception:
+                pass

@@ -68,6 +68,20 @@ Example:
    fig, axes = plot_ditl_telemetry(ditl)
    fig2, ax2 = plot_acs_mode_distribution(ditl, config=cfg.visualization)
 
+Working with DITL Logs
+----------------------
+
+All timeline and telemetry visualizations can be driven from the structured
+event log ``ditl.log``. For batch processing across many runs, persist logs
+with ``DITLLogStore`` and load events by ``run_id``:
+
+.. code-block:: python
+
+   from conops.ditl import DITLLogStore
+   store = DITLLogStore("ditl_logs.sqlite")
+   events = store.fetch_events("my-run-001")
+   # feed events to your visualization pipeline as needed
+
 Fonts and fallbacks
 -------------------
 
