@@ -33,6 +33,16 @@ class DITLLogStore(BaseModel):
         self._conn.execute("PRAGMA synchronous=NORMAL;")
         self._create_schema()
 
+    def __enter__(self) -> "DITLLogStore":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def close(self) -> None:
+        if hasattr(self, "_conn") and self._conn:
+            self._conn.close()
+            self._conn = None
     def _create_schema(self) -> None:
         cur = self._conn.cursor()
         cur.execute(
