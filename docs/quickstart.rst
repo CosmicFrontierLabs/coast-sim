@@ -53,6 +53,7 @@ Access the log via ``ditl.log``:
    # Later, query events by run
    events = store.fetch_events("my-run-001", event_type="PASS")
 
+     store.close()
 Configuration-Based Approach
 
 Create a JSON configuration file defining your spacecraft parameters:
