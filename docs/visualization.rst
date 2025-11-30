@@ -81,6 +81,7 @@ with ``DITLLogStore`` and load events by ``run_id``:
    store = DITLLogStore("ditl_logs.sqlite")
    events = store.fetch_events("my-run-001")
    # feed events to your visualization pipeline as needed
+   store.close()
 
 Fonts and fallbacks
 -------------------
