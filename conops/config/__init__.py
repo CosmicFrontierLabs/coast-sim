@@ -17,7 +17,7 @@ from .fault_management import (
     FaultState,
     FaultThreshold,
 )
-from .groundstation import Antenna, GroundStation, GroundStationRegistry
+from .groundstation import GroundStation, GroundStationRegistry
 from .instrument import DataGeneration, Instrument, Payload
 from .observation_categories import ObservationCategories, ObservationCategory
 from .power import PowerDraw
@@ -28,7 +28,6 @@ from .thermal import Heater
 from .visualization import VisualizationConfig
 
 __all__ = [
-    "Antenna",
     "AntennaPointing",
     "AntennaType",
     "AttitudeControlSystem",

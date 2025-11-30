@@ -25,8 +25,9 @@ class TestBandCapability:
         """Test default values for band capability."""
         band = BandCapability(band="S")
         assert band.band == "S"
-        assert band.uplink_rate_mbps == 0.0
-        assert band.downlink_rate_mbps == 0.0
+        # Defaults now auto-populate for known bands
+        assert band.uplink_rate_mbps == 2.0
+        assert band.downlink_rate_mbps == 10.0
 
     def test_band_capability_validation(self):
         """Test validation of band capability values."""

@@ -325,9 +325,8 @@ def ditl_with_pass_setup(ditl_instance, mock_config):
     ditl.acs.passrequests = Mock()
     ditl.acs.passrequests.passes = [mock_pass]
     mock_station = Mock()
-    mock_station.antenna = Mock()
-    mock_station.antenna.max_data_rate_mbps = 100.0
-    mock_station.antenna.bands = []  # Empty bands list (assumes compatible)
+    # New per-band API: when no spacecraft comms, use GS overall max
+    mock_station.get_overall_max_downlink.return_value = 100.0
     ditl.config.ground_stations = Mock()
     ditl.config.ground_stations.get = Mock(return_value=mock_station)
     return ditl

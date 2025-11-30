@@ -3,7 +3,7 @@
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class AntennaType(str, Enum):
@@ -34,6 +34,38 @@ class BandCapability(BaseModel):
     downlink_rate_mbps: float = Field(
         default=0.0, description="Downlink data rate in Mbps", ge=0.0
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _apply_standard_band_defaults(cls, data):
+        """Fill in standard per-band defaults when rates are not provided.
+
+        Only applies when `uplink_rate_mbps` and/or `downlink_rate_mbps` are
+        not passed in the input data. Custom-provided values are preserved.
+        """
+        if isinstance(data, dict):
+            band = data.get("band")
+            defaults = {
+                "S": {"uplink": 2.0, "downlink": 10.0},
+                "X": {"uplink": 10.0, "downlink": 150.0},
+                "Ka": {"uplink": 20.0, "downlink": 300.0},
+                "Ku": {"uplink": 5.0, "downlink": 50.0},
+                "L": {"uplink": 0.5, "downlink": 1.0},
+                "C": {"uplink": 2.0, "downlink": 20.0},
+                "K": {"uplink": 15.0, "downlink": 200.0},
+            }
+            if band in defaults:
+                if (
+                    "uplink_rate_mbps" not in data
+                    or data.get("uplink_rate_mbps") is None
+                ):
+                    data["uplink_rate_mbps"] = defaults[band]["uplink"]
+                if (
+                    "downlink_rate_mbps" not in data
+                    or data.get("downlink_rate_mbps") is None
+                ):
+                    data["downlink_rate_mbps"] = defaults[band]["downlink"]
+        return data
 
 
 class AntennaPointing(BaseModel):

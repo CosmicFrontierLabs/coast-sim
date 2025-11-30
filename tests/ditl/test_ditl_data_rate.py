@@ -11,7 +11,6 @@ from conops.config import (
     Constraint,
     GroundStation,
 )
-from conops.config.groundstation import Antenna
 from conops.simulation import Pass
 
 
@@ -22,11 +21,11 @@ class MockDITL:
         pass
 
     def _get_effective_data_rate(self, station, current_pass) -> float | None:
-        """Calculate effective downlink data rate based on ground station and spacecraft capabilities.
+        """Calculate effective downlink data rate based on GS and spacecraft per-band capabilities.
 
-        The effective rate is the minimum of:
-        1. Ground station antenna max data rate
-        2. Spacecraft communications system downlink rate for common bands
+        For each common band, take min(GS downlink rate, SC downlink rate) and
+        return the maximum of these across all common bands. If no spacecraft
+        comms config is provided, return the GS overall maximum downlink.
 
         Args:
             station: GroundStation object with antenna capabilities
@@ -35,35 +34,25 @@ class MockDITL:
         Returns:
             Effective data rate in Mbps, or None if no compatible bands/rates
         """
-        # If no ground station data rate specified, return None
-        if station.antenna.max_data_rate_mbps is None:
-            return None
+        gs_bands = set(station.supported_bands()) if station.bands else set()
 
-        gs_rate = station.antenna.max_data_rate_mbps
-
-        # If pass has no comms config, use ground station rate only
+        # If no spacecraft comms config, fall back to GS overall capability
         if current_pass.comms_config is None:
-            return gs_rate
+            return station.get_overall_max_downlink()
 
-        # Find common bands between ground station and spacecraft
-        gs_bands = set(station.antenna.bands) if station.antenna.bands else set()
         if not gs_bands:
-            # No bands specified on ground station - assume compatible
-            return gs_rate
-
-        # Find maximum spacecraft downlink rate for common bands
-        max_spacecraft_rate = 0.0
-        for band in gs_bands:
-            sc_rate = current_pass.comms_config.get_downlink_rate(band)
-            if sc_rate > max_spacecraft_rate:
-                max_spacecraft_rate = sc_rate
-
-        # If no common bands have non-zero rates, return None
-        if max_spacecraft_rate == 0.0:
+            # No GS bands defined -> no common bands known
             return None
 
-        # Return minimum of ground station and spacecraft rates
-        return min(gs_rate, max_spacecraft_rate)
+        best = 0.0
+        for band in gs_bands:
+            gs_rate = station.get_downlink_rate(band) or 0.0
+            sc_rate = current_pass.comms_config.get_downlink_rate(band) or 0.0
+            if gs_rate > 0.0 and sc_rate > 0.0:
+                eff = min(gs_rate, sc_rate)
+                if eff > best:
+                    best = eff
+        return best if best > 0.0 else None
 
 
 class TestEffectiveDataRate:
@@ -97,7 +86,10 @@ class TestEffectiveDataRate:
             name="Test Station",
             latitude_deg=0.0,
             longitude_deg=0.0,
-            antenna=Antenna(bands=["X"], max_data_rate_mbps=None),
+            # Explicitly set 0.0 to indicate GS has no X-band downlink capability
+            bands=[
+                BandCapability(band="X", uplink_rate_mbps=0.0, downlink_rate_mbps=0.0)
+            ],
         )
 
         comms = CommunicationsSystem(
@@ -130,7 +122,7 @@ class TestEffectiveDataRate:
             name="Test Station",
             latitude_deg=0.0,
             longitude_deg=0.0,
-            antenna=Antenna(bands=["X"], max_data_rate_mbps=100.0),
+            bands=[BandCapability(band="X", downlink_rate_mbps=100.0)],
         )
 
         begin = datetime(2025, 8, 15, 12, 0, 0, tzinfo=timezone.utc)
@@ -149,7 +141,7 @@ class TestEffectiveDataRate:
         )
 
         rate = mock_ditl._get_effective_data_rate(station, pass_obj)
-        assert rate == 100.0  # Use ground station rate
+        assert rate == 100.0  # Use GS overall max across bands
 
     def test_ground_station_lower_rate(self, mock_ditl, constraint, ephem):
         """Test when ground station has lower rate than spacecraft."""
@@ -158,7 +150,7 @@ class TestEffectiveDataRate:
             name="Test Station",
             latitude_deg=0.0,
             longitude_deg=0.0,
-            antenna=Antenna(bands=["X"], max_data_rate_mbps=50.0),
+            bands=[BandCapability(band="X", downlink_rate_mbps=50.0)],
         )
 
         comms = CommunicationsSystem(
@@ -191,7 +183,7 @@ class TestEffectiveDataRate:
             name="Test Station",
             latitude_deg=0.0,
             longitude_deg=0.0,
-            antenna=Antenna(bands=["X"], max_data_rate_mbps=200.0),
+            bands=[BandCapability(band="X", downlink_rate_mbps=200.0)],
         )
 
         comms = CommunicationsSystem(
@@ -224,7 +216,7 @@ class TestEffectiveDataRate:
             name="Test Station",
             latitude_deg=0.0,
             longitude_deg=0.0,
-            antenna=Antenna(bands=["S"], max_data_rate_mbps=100.0),
+            bands=[BandCapability(band="S", downlink_rate_mbps=100.0)],
         )
 
         comms = CommunicationsSystem(
@@ -260,7 +252,11 @@ class TestEffectiveDataRate:
             name="Test Station",
             latitude_deg=0.0,
             longitude_deg=0.0,
-            antenna=Antenna(bands=["S", "X", "Ka"], max_data_rate_mbps=200.0),
+            bands=[
+                BandCapability(band="S"),
+                BandCapability(band="X", downlink_rate_mbps=200.0),
+                BandCapability(band="Ka", downlink_rate_mbps=200.0),
+            ],
         )
 
         comms = CommunicationsSystem(
@@ -288,7 +284,7 @@ class TestEffectiveDataRate:
         )
 
         rate = mock_ditl._get_effective_data_rate(station, pass_obj)
-        # Max spacecraft rate for common bands is 300 (Ka), but GS limited to 200
+        # Per-band mins: X=min(200,150)=150, Ka=min(200,300)=200 -> best 200
         assert rate == 200.0
 
     def test_ground_station_no_bands_specified(self, mock_ditl, constraint, ephem):
@@ -298,7 +294,7 @@ class TestEffectiveDataRate:
             name="Test Station",
             latitude_deg=0.0,
             longitude_deg=0.0,
-            antenna=Antenna(bands=[], max_data_rate_mbps=100.0),
+            bands=[],
         )
 
         comms = CommunicationsSystem(
@@ -322,7 +318,7 @@ class TestEffectiveDataRate:
         )
 
         rate = mock_ditl._get_effective_data_rate(station, pass_obj)
-        assert rate == 100.0  # Assumes compatible, uses GS rate
+        assert rate is None  # No GS bands defined -> no compatible rate
 
     def test_spacecraft_zero_rate_for_common_band(self, mock_ditl, constraint, ephem):
         """Test when spacecraft has zero rate for common band."""
@@ -331,7 +327,7 @@ class TestEffectiveDataRate:
             name="Test Station",
             latitude_deg=0.0,
             longitude_deg=0.0,
-            antenna=Antenna(bands=["X"], max_data_rate_mbps=100.0),
+            bands=[BandCapability(band="X", downlink_rate_mbps=100.0)],
         )
 
         comms = CommunicationsSystem(

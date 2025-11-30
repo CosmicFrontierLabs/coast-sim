@@ -162,9 +162,8 @@ class DITLMixin:
     def _get_effective_data_rate(self, station, current_pass) -> float | None:
         """Calculate effective downlink data rate based on ground station and spacecraft capabilities.
 
-        The effective rate is the minimum of:
-        1. Ground station antenna max data rate
-        2. Spacecraft communications system downlink rate for common bands
+        The effective rate is, per band, min(GS downlink rate, SC downlink rate);
+        we take the maximum of this across all common bands.
 
         Args:
             station: GroundStation object with antenna capabilities
@@ -173,32 +172,24 @@ class DITLMixin:
         Returns:
             Effective data rate in Mbps, or None if no compatible bands/rates
         """
-        # If no ground station data rate specified, return None
-        if station.antenna.max_data_rate_mbps is None:
-            return None
-
-        gs_rate = station.antenna.max_data_rate_mbps
-
-        # If pass has no comms config, use ground station rate only
+        # If pass has no comms config, use GS overall maximum across bands
         if current_pass.comms_config is None:
-            return gs_rate
+            return station.get_overall_max_downlink()
 
-        # Find common bands between ground station and spacecraft
-        gs_bands = set(station.antenna.bands) if station.antenna.bands else set()
+        # If GS has no per-band capabilities, no defined rate
+        gs_bands = set(station.supported_bands()) if station.bands else set()
         if not gs_bands:
-            # No bands specified on ground station - assume compatible
-            return gs_rate
-
-        # Find maximum spacecraft downlink rate for common bands
-        max_spacecraft_rate = 0.0
-        for band in gs_bands:
-            sc_rate = current_pass.comms_config.get_downlink_rate(band)
-            if sc_rate > max_spacecraft_rate:
-                max_spacecraft_rate = sc_rate
-
-        # If no common bands have non-zero rates, return None
-        if max_spacecraft_rate == 0.0:
+            # No bands defined on ground station
             return None
 
-        # Return minimum of ground station and spacecraft rates
-        return min(gs_rate, max_spacecraft_rate)
+        # Compute effective rate per common band
+        best_effective = 0.0
+        for band in gs_bands:
+            gs_rate = station.get_downlink_rate(band) or 0.0
+            sc_rate = current_pass.comms_config.get_downlink_rate(band) or 0.0
+            if gs_rate > 0.0 and sc_rate > 0.0:
+                effective = min(gs_rate, sc_rate)
+                if effective > best_effective:
+                    best_effective = effective
+
+        return best_effective if best_effective > 0.0 else None

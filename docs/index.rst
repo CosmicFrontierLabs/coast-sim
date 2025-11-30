@@ -16,6 +16,8 @@ optimize observation schedules, and validate operational constraints before laun
    quickstart
    examples
    visualization
+   sky_pointing_visualization
+   communications
    data_management
    fault_management
    api/modules

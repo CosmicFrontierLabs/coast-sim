@@ -68,51 +68,6 @@ Example:
    fig, axes = plot_ditl_telemetry(ditl)
    fig2, ax2 = plot_acs_mode_distribution(ditl, config=cfg.visualization)
 
-Movie Export
-------------
-
-You can export sky pointing visualizations as animated movies showing how the spacecraft
-pointing and constraints evolve throughout the DITL simulation. The `save_sky_pointing_movie()`
-function supports multiple output formats:
-
-.. code-block:: python
-
-   from conops.visualization import save_sky_pointing_movie
-
-   # Export as MP4 video (requires ffmpeg)
-   save_sky_pointing_movie(
-       ditl,
-       "pointing.mp4",
-       fps=15,  # frames per second
-       frame_interval=5,  # use every 5th time step
-       n_grid_points=30,  # constraint grid resolution
-       dpi=100  # output resolution
-   )
-
-   # Export as animated GIF (requires pillow)
-   save_sky_pointing_movie(
-       ditl,
-       "pointing.gif",
-       fps=5,
-       frame_interval=10
-   )
-
-**Parameters:**
-
-- `fps` — frames per second in output movie (controls playback speed)
-- `frame_interval` — use every Nth time step (1 = use all frames)
-- `n_grid_points` — grid resolution for constraint regions (lower = faster rendering)
-- `dpi` — output resolution (higher = larger file size, better quality)
-- `codec` — video codec for MP4/AVI (e.g., 'h264', 'mpeg4')
-- `bitrate` — video bitrate in kbps (higher = better quality, larger file)
-- `show_progress` — whether to display a progress bar using tqdm (default: True)
-
-**Requirements:**
-
-- MP4 and AVI formats require ffmpeg to be installed on your system
-- GIF format requires the pillow library (usually bundled with matplotlib)
-- Progress bar requires the tqdm library (optional, will fall back gracefully if not available)
-
 Fonts and fallbacks
 -------------------
 
