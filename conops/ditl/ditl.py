@@ -1,6 +1,7 @@
 import numpy as np
 
 from ..config import Config  # type: ignore[attr-defined]
+from .ditl_log import DITLLog
 from .ditl_mixin import DITLMixin
 from .ditl_stats import DITLStats
 
@@ -64,6 +65,8 @@ class DITL(DITLMixin, DITLStats):
         DITLMixin.__init__(self, config=config)
         # DITL also needs solar_panel
         self.solar_panel = self.config.solar_panel
+        # Event log
+        self.log = DITLLog()
 
     def calc(self) -> bool:
         """Execute Day In The Life simulation.
@@ -100,10 +103,18 @@ class DITL(DITLMixin, DITLStats):
         """
         # A few sanity checks before we start
         if self.ephem is None:
-            print("ERROR: No ephemeris loaded")
+            self.log.log_event(
+                utime=self.begin.timestamp(),
+                event_type="ERROR",
+                description="ERROR: No ephemeris loaded",
+            )
             return False
         if self.plan is None:
-            print("ERROR: No Plan loaded")
+            self.log.log_event(
+                utime=self.begin.timestamp(),
+                event_type="ERROR",
+                description="ERROR: No Plan loaded",
+            )
             return False
 
         # Set up ACS ephemeris if not already set
@@ -115,7 +126,11 @@ class DITL(DITLMixin, DITLStats):
         self.uend = self.end.timestamp()
         ephem_utime = [dt.timestamp() for dt in self.ephem.timestamp]
         if self.ustart not in ephem_utime or self.uend not in ephem_utime:
-            print("ERROR: Ephemeris not valid for date range")
+            self.log.log_event(
+                utime=self.ustart,
+                event_type="ERROR",
+                description="ERROR: Ephemeris not valid for date range",
+            )
             return False
         self.utime = np.arange(self.ustart, self.uend, self.step_size).tolist()
 

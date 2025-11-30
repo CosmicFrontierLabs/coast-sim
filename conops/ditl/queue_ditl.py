@@ -11,6 +11,7 @@ from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
 from ..simulation.slew import Slew
 from ..targets import Plan, Pointing, Queue
+from .ditl_log import DITLLog
 from .ditl_mixin import DITLMixin
 from .ditl_stats import DITLStats
 
@@ -64,6 +65,9 @@ class QueueDITL(DITLMixin, DITLStats):
         self.data_downlinked_gb = list()
         # Target Queue
         self.queue = Queue()
+
+        # Event log
+        self.log = DITLLog()
 
         # Initialize emergency charging manager (will be fully set up after ACS is available)
         self.charging_ppt = None
@@ -312,7 +316,11 @@ class QueueDITL(DITLMixin, DITLStats):
             self.begin not in self.ephem.timestamp
             or self.end not in self.ephem.timestamp
         ):
-            print("ERROR: Ephemeris not valid for date range")
+            self.log.log_event(
+                utime=self.ustart,
+                event_type="ERROR",
+                description="ERROR: Ephemeris not valid for date range",
+            )
             return False
 
         self.utime = (
@@ -326,7 +334,11 @@ class QueueDITL(DITLMixin, DITLStats):
             self.acs.passrequests.passes is None
             or len(self.acs.passrequests.passes) == 0
         ):
-            print("Scheduling groundstation passes...")
+            self.log.log_event(
+                utime=self.ustart,
+                event_type="INFO",
+                description="Scheduling groundstation passes...",
+            )
             # Extract year and day-of-year from begin datetime
             year = self.begin.year
             day = self.begin.timetuple().tm_yday
@@ -335,9 +347,17 @@ class QueueDITL(DITLMixin, DITLStats):
             self.acs.passrequests.get(year, day, length)
             if self.acs.passrequests.passes:
                 for p in self.acs.passrequests.passes:
-                    print(f"Scheduled pass: {p}")
+                    self.log.log_event(
+                        utime=self.ustart,
+                        event_type="PASS",
+                        description=f"Scheduled pass: {p}",
+                    )
             else:
-                print("No groundstation passes scheduled.")
+                self.log.log_event(
+                    utime=self.ustart,
+                    event_type="INFO",
+                    description="No groundstation passes scheduled.",
+                )
 
     def _check_and_manage_passes(self, utime: float, ra: float, dec: float) -> None:
         """Check pass timing and send appropriate commands to ACS."""
@@ -345,7 +365,12 @@ class QueueDITL(DITLMixin, DITLStats):
         # Check if we're in a pass, if yes, command ACS to start the pass
         current_pass = self.acs.passrequests.current_pass(utime)
         if current_pass is not None and self.acs.acsmode != ACSMode.PASS:
-            print(f"{unixtime2date(utime)} In pass, commanding ACS to start pass")
+            self.log.log_event(
+                utime=utime,
+                event_type="PASS",
+                description="In pass, commanding ACS to start pass",
+                acs_mode=self.acs.acsmode,
+            )
             command = ACSCommand(
                 command_type=ACSCommandType.START_PASS,
                 execution_time=utime,
@@ -359,7 +384,12 @@ class QueueDITL(DITLMixin, DITLStats):
             self.acs.passrequests.current_pass(utime - self.ephem.step_size)
             and current_pass is None
         ):
-            print(f"{unixtime2date(utime)} Pass ended, commanding ACS to end pass")
+            self.log.log_event(
+                utime=utime,
+                event_type="PASS",
+                description="Pass ended, commanding ACS to end pass",
+                acs_mode=self.acs.acsmode,
+            )
             command = ACSCommand(
                 command_type=ACSCommandType.END_PASS,
                 execution_time=utime,
@@ -380,7 +410,12 @@ class QueueDITL(DITLMixin, DITLStats):
             # Check if it's time to start slewing for the next pass
             if next_pass.time_to_slew(utime=utime, ra=ra, dec=dec):
                 # If it's time to slew, enqueue the slew command
-                print(f"{unixtime2date(utime)} Slewing for pass to {next_pass.station}")
+                self.log.log_event(
+                    utime=utime,
+                    event_type="SLEW",
+                    description=f"Slewing for pass to {next_pass.station}",
+                    acs_mode=self.acs.acsmode,
+                )
 
                 # Create slew object for the pass
                 slew = Slew(
@@ -439,8 +474,12 @@ class QueueDITL(DITLMixin, DITLStats):
                 constraint_name = self._get_constraint_name(
                     self.ppt.ra, self.ppt.dec, utime
                 )
-                print(
-                    f"{unixtime2date(utime)} Charging PPT {constraint_name} constrained, terminating"
+                self.log.log_event(
+                    utime=utime,
+                    event_type="CHARGING",
+                    description=f"Charging PPT {constraint_name} constrained, terminating",
+                    obsid=self.ppt.obsid,
+                    acs_mode=self.acs.acsmode,
                 )
                 self._terminate_emergency_charging("constraint", utime)
             return
@@ -492,7 +531,13 @@ class QueueDITL(DITLMixin, DITLStats):
             Whether to mark the PPT as done
         """
         assert self.ppt is not None
-        print(f"{unixtime2date(utime)} {reason}")
+        self.log.log_event(
+            utime=utime,
+            event_type="OBSERVATION",
+            description=reason,
+            obsid=self.ppt.obsid,
+            acs_mode=self.acs.acsmode,
+        )
 
         # Update plan timeline with actual end time
         if len(self.plan) > 0:
@@ -518,14 +563,23 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _fetch_new_ppt(self, utime: float, ra: float, dec: float) -> None:
         """Fetch a new pointing target from the queue and enqueue slew command."""
-        print(
-            f"{unixtime2date(utime)} Fetching new PPT from Queue (last RA/Dec {ra:.2f}/{dec:.2f})"
+        self.log.log_event(
+            utime=utime,
+            event_type="QUEUE",
+            description=f"Fetching new PPT from Queue (last RA/Dec {ra:.2f}/{dec:.2f})",
+            acs_mode=self.acs.acsmode,
         )
 
         self.ppt = self.queue.get(ra, dec, utime)
 
         if self.ppt is not None:
-            print(f"{unixtime2date(utime)} Fetched PPT: {self.ppt}")
+            self.log.log_event(
+                utime=utime,
+                event_type="QUEUE",
+                description=f"Fetched PPT: {self.ppt}",
+                obsid=self.ppt.obsid,
+                acs_mode=self.acs.acsmode,
+            )
 
             # Create and configure a Slew object
             slew = Slew(
@@ -545,7 +599,13 @@ class QueueDITL(DITLMixin, DITLStats):
             # Check if target is visible
             visstart = self.ppt.next_vis(utime)
             if not visstart and slew.obstype == "PPT":
-                print(f"{unixtime2date(utime)} Slew rejected - target not visible")
+                self.log.log_event(
+                    utime=utime,
+                    event_type="SLEW",
+                    description="Slew rejected - target not visible",
+                    obsid=self.ppt.obsid,
+                    acs_mode=self.acs.acsmode,
+                )
                 return
 
             # Initialize slew start positions from current ACS pointing
@@ -564,14 +624,22 @@ class QueueDITL(DITLMixin, DITLStats):
                 execution_time = (
                     self.acs.last_slew.slewstart + self.acs.last_slew.slewtime
                 )
-                print(
-                    f"{unixtime2date(utime)} Slewing - delaying next slew until {unixtime2date(execution_time)}"
+                self.log.log_event(
+                    utime=utime,
+                    event_type="SLEW",
+                    description=f"Slewing - delaying next slew until {unixtime2date(execution_time)}",
+                    obsid=self.ppt.obsid,
+                    acs_mode=self.acs.acsmode,
                 )
 
             # Wait for target visibility if constrained
             if visstart and visstart > execution_time and slew.obstype == "PPT":
-                print(
-                    f"{unixtime2date(utime)} Slew delayed by {visstart - execution_time:.1f}s"
+                self.log.log_event(
+                    utime=utime,
+                    event_type="SLEW",
+                    description=f"Slew delayed by {visstart - execution_time:.1f}s",
+                    obsid=self.ppt.obsid,
+                    acs_mode=self.acs.acsmode,
                 )
                 execution_time = visstart
 
@@ -595,7 +663,12 @@ class QueueDITL(DITLMixin, DITLStats):
             # Return the new target coordinates
             return
         else:
-            print(f"{unixtime2date(utime)} No targets available from Queue")
+            self.log.log_event(
+                utime=utime,
+                event_type="QUEUE",
+                description="No targets available from Queue",
+                acs_mode=self.acs.acsmode,
+            )
             return
 
     def _record_pointing_data(
@@ -699,7 +772,13 @@ class QueueDITL(DITLMixin, DITLStats):
             "eclipse": "Entered eclipse, terminating emergency charging and suppressing restarts until sunlight",
         }
         message = termination_messages.get(reason, f"Unknown reason: {reason}")
-        print(f"{unixtime2date(utime)} {message}")
+        self.log.log_event(
+            utime=utime,
+            event_type="CHARGING",
+            description=message,
+            obsid=self.charging_ppt.obsid if self.charging_ppt else None,
+            acs_mode=self.acs.acsmode,
+        )
 
         # Clean up charging state - send END_BATTERY_CHARGE command to ACS
         command = ACSCommand(
