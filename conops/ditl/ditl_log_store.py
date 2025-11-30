@@ -8,23 +8,25 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterable
-from dataclasses import dataclass
 from pathlib import Path
+
+from pydantic import BaseModel, Field, PrivateAttr
 
 from .ditl_event import DITLEvent
 
 
-@dataclass
-class DITLLogStore:
+class DITLLogStore(BaseModel):
     """SQLite-backed store for DITL logs.
 
     The store schema is simple and optimized for querying by run and time.
     """
 
-    db_path: Path
+    db_path: Path = Field(default_factory=lambda: Path("ditl_logs.sqlite"))
+    _conn: sqlite3.Connection = PrivateAttr()
 
-    def __init__(self, db_path: str | Path = "ditl_logs.sqlite") -> None:
-        self.db_path = Path(db_path)
+    def __init__(self, db_path: str | Path = "ditl_logs.sqlite") -> None:  # type: ignore[override]
+        # Allow convenient construction with str | Path while remaining a Pydantic model
+        super().__init__(db_path=Path(db_path))
         self._conn = sqlite3.connect(self.db_path)
         # Improve concurrent read/write characteristics
         self._conn.execute("PRAGMA journal_mode=WAL;")
