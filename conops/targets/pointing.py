@@ -50,10 +50,6 @@ class Pointing(PlanEntry):
         self.ss_min = ss_min  # seconds
         self.ss_max = ss_max  # seconds
 
-    def is_visible(self, utime):
-        """Is a target visible at this time"""
-        return not self.constraint.inoccult(self.ra, self.dec, utime)
-
     def in_sun(self, utime):
         """Is this target in Sun constraint?"""
         return self.constraint.in_sun(self.ra, self.dec, utime)

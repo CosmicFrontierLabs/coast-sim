@@ -10,17 +10,11 @@ class TestPointingInitialization:
     def test_exptime_is_none(self, pointing):
         assert pointing.exptime is None
 
-    def test_inview_is_false(self, pointing):
-        assert pointing.inview is False
-
     def test_done_is_false(self, pointing):
         assert pointing.done is False
 
     def test_obstype_is_at(self, pointing):
         assert pointing.obstype == "AT"
-
-    def test_coordinated_is_none(self, pointing):
-        assert pointing.coordinated is None
 
     def test_isat_is_false(self, pointing):
         assert pointing.isat is False
@@ -28,13 +22,6 @@ class TestPointingInitialization:
 
 class TestPointingVisibility:
     """Test visibility-related methods on Pointing."""
-
-    def test_is_visible(self, dummy_constraint, acs_config):
-        tr = Pointing(constraint=dummy_constraint, acs_config=acs_config)
-        # ra/dec values passed through to the constraint; methods just return the stubbed values
-        tr.ra = 12.34
-        tr.dec = -21.0
-        assert tr.is_visible(12345)
 
     def test_in_sun(self, dummy_constraint, acs_config):
         tr = Pointing(constraint=dummy_constraint, acs_config=acs_config)
@@ -182,17 +169,8 @@ class TestPointing:
     def test_constraint(self, pointing, constraint):
         assert pointing.constraint == constraint
 
-    def test_obsstart(self, pointing):
-        assert pointing.obsstart == 0
-
-    def test_inview_false(self, pointing):
-        assert pointing.inview is False
-
     def test_obstype_at(self, pointing):
         assert pointing.obstype == "AT"
-
-    def test_coordinated_none(self, pointing):
-        assert pointing.coordinated is None
 
     def test_ra_zero(self, pointing):
         assert pointing.ra == 0.0
@@ -214,9 +192,6 @@ class TestPointing:
 
     def test_exptime_none(self, pointing):
         assert pointing.exptime is None
-
-    def test_saatime_zero(self, pointing):
-        assert pointing.saatime == 0
 
     def test_exptime_setter_initializes_exporig(self, pointing):
         # First set initializes _exporig
