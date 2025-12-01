@@ -670,7 +670,7 @@ class QueueDITL(DITLMixin, DITLStats):
             # Update PPT timing based on slew
             self.ppt.begin = int(execution_time)
             # Update PPT end time to ensure it has enough time for slew + max observation
-            self.ppt.end = int(execution_time + slew.slewtime + self.ppt.ssmax)
+            self.ppt.end = int(execution_time + slew.slewtime + self.ppt.ss_max)
 
             # Enqueue the slew command
             command = ACSCommand(

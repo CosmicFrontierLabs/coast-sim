@@ -100,7 +100,7 @@ class Queue:
             target.slewtime = target.calc_slewtime(ra, dec)
 
             # Calculate observation window
-            endtime = utime + target.slewtime + target.ssmin
+            endtime = utime + target.slewtime + target.ss_min
 
             # Use timestamp for the end-of-ephemeris bound
             last_unix = self.ephem.timestamp[-1].timestamp()
@@ -112,7 +112,7 @@ class Queue:
             # Check if target is visible for full observation
             if target.visible(utime, endtime):
                 target.begin = int(utime)
-                target.end = int(utime + target.slewtime + target.ssmax)
+                target.end = int(utime + target.slewtime + target.ss_max)
                 return target
 
         return None

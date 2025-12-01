@@ -89,7 +89,7 @@ class TestDumbQueueSchedulerSchedule:
     def test_schedule_with_single_target_returns_at_least_one_entry(
         self, scheduler, make_target, queue_get_from_list
     ):
-        target = make_target(targetid=1, ra=45.0, dec=30.0, merit=100, ssmin=300)
+        target = make_target(targetid=1, ra=45.0, dec=30.0, merit=100, ss_min=300)
         target.begin = int(scheduler.ustart)
         target.end = int(scheduler.ustart + 600)  # 10 minutes
 
@@ -125,7 +125,7 @@ class TestDumbQueueSchedulerSchedule:
     def test_schedule_respects_time_window(
         self, scheduler, make_target, queue_get_from_list
     ):
-        target = make_target(targetid=1, ra=45.0, dec=30.0, merit=100, ssmin=300)
+        target = make_target(targetid=1, ra=45.0, dec=30.0, merit=100, ss_min=300)
 
         queue_get_from_list(scheduler, [target])
         target.begin = scheduler.ustart

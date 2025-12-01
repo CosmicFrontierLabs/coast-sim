@@ -50,8 +50,8 @@ class PlanEntry:
         self.obstype = "PPT"
         self.slewpath = False
         self.slewdist = False
-        self.ssmin = 1000
-        self.ssmax = 1e6
+        self.ss_min = 1000
+        self.ss_max = 1e6
         self.constraint = constraint
 
     def copy(self):

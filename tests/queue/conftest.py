@@ -165,16 +165,16 @@ class MockPointing:
         ra=45.0,
         dec=30.0,
         merit=100.0,
-        ssmin=300,
-        ssmax=600,
+        ss_min=300,
+        ss_max=600,
         name="",
     ):
         self.targetid = targetid
         self.ra = ra
         self.dec = dec
         self.merit = merit
-        self.ssmin = ssmin  # Minimum exposure time
-        self.ssmax = ssmax  # Maximum exposure time
+        self.ss_min = ss_min  # Minimum exposure time
+        self.ss_max = ss_max  # Maximum exposure time
         self.name = name or f"Target_{targetid}"
         self.done = False
         self.roll = 0.0
@@ -201,9 +201,9 @@ def mock_queue(mock_ephemeris):
     queue.targets = []
 
     # Add sample targets
-    target1 = MockPointing(targetid=1, ra=45.0, dec=30.0, merit=100, ssmin=300)
-    target2 = MockPointing(targetid=2, ra=90.0, dec=-45.0, merit=90, ssmin=300)
-    target3 = MockPointing(targetid=3, ra=180.0, dec=60.0, merit=80, ssmin=300)
+    target1 = MockPointing(targetid=1, ra=45.0, dec=30.0, merit=100, ss_min=300)
+    target2 = MockPointing(targetid=2, ra=90.0, dec=-45.0, merit=90, ss_min=300)
+    target3 = MockPointing(targetid=3, ra=180.0, dec=60.0, merit=80, ss_min=300)
 
     queue.targets = [target1, target2, target3]
     queue.__len__ = Mock(return_value=len(queue.targets))
@@ -214,9 +214,9 @@ def mock_queue(mock_ephemeris):
         for target in queue.targets:
             if not target.done and target.merit > 0:
                 target.calc_slewtime(ra, dec)
-                if target.visible(utime, utime + target.slewtime + target.ssmax):
+                if target.visible(utime, utime + target.slewtime + target.ss_max):
                     target.begin = int(utime)
-                    target.end = int(utime + target.slewtime + target.ssmax)
+                    target.end = int(utime + target.slewtime + target.ss_max)
                     return target
         return None
 
@@ -247,14 +247,14 @@ def scheduler(mock_queue, mock_ephemeris):
 def mock_pointing():
     """Fixture to create a mock pointing object."""
 
-    def _mock_pointing(targetid, ra, dec, merit, ssmin=None):
+    def _mock_pointing(targetid, ra, dec, merit, ss_min=None):
         pointing = Mock()
         pointing.targetid = targetid
         pointing.ra = ra
         pointing.dec = dec
         pointing.merit = merit
-        if ssmin is not None:
-            pointing.ssmin = ssmin
+        if ss_min is not None:
+            pointing.ss_min = ss_min
         pointing.done = False
         return pointing
 
@@ -265,8 +265,8 @@ def mock_pointing():
 def make_target(mock_pointing):
     """Return a factory to create targets quickly."""
 
-    def _make(targetid=1, ra=45.0, dec=30.0, merit=100, ssmin=300):
-        t = mock_pointing(targetid=targetid, ra=ra, dec=dec, merit=merit, ssmin=ssmin)
+    def _make(targetid=1, ra=45.0, dec=30.0, merit=100, ss_min=300):
+        t = mock_pointing(targetid=targetid, ra=ra, dec=dec, merit=merit, ss_min=ss_min)
         t.done = False
         return t
 
@@ -283,7 +283,7 @@ def make_targets(make_target):
             ra = (start_ra + i * 45) % 360
             dec = -45 + i * 30
             targets.append(
-                make_target(targetid=i + 1, ra=ra, dec=dec, merit=100 - i, ssmin=300)
+                make_target(targetid=i + 1, ra=ra, dec=dec, merit=100 - i, ss_min=300)
             )
         return targets
 
