@@ -17,7 +17,7 @@ class PlanEntry:
     begin: float
     end: float
     windows: list[list[float]]
-    ephem: rust_ephem.TLEEphemeris | None
+    ephem: rust_ephem.Ephemeris | None
     constraint: Constraint | None
     merit: float
     saa: SAA | None

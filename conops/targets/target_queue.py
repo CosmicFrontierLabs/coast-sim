@@ -1,27 +1,27 @@
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 import rust_ephem
 
 from ..common import unixtime2date
+from ..ditl.ditl_log import DITLLog
 from . import Pointing
-
-if TYPE_CHECKING:
-    from ..ditl.ditl_log import DITLLog
 
 
 class Queue:
     """Target Queue class, contains a list of targets for Spacecraft to observe."""
 
     targets: list[Pointing]
-    ephem: rust_ephem.TLEEphemeris | None
+    ephem: rust_ephem.Ephemeris | None
     utime: float | None
     gs: Any
-    log: "DITLLog | None"
+    log: DITLLog | None
 
-    def __init__(self, log: "DITLLog | None" = None):
+    def __init__(
+        self, ephem: rust_ephem.Ephemeris | None = None, log: DITLLog | None = None
+    ):
         self.targets = []
-        self.ephem = None
+        self.ephem = ephem
         self.utime = None
         self.gs = None
         self.log = log

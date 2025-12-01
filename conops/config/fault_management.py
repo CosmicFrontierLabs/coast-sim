@@ -232,7 +232,7 @@ class FaultManagement(BaseModel):
         utime: float,
         step_size: float,
         acs: ACS | None = None,
-        ephem: TLEEphemeris | None = None,  # type: ignore # noqa: F821
+        ephem: Ephemeris | None = None,  # type: ignore # noqa: F821
         ra: float | None = None,
         dec: float | None = None,
     ) -> dict[str, str]:

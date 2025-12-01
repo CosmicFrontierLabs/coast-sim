@@ -1,6 +1,6 @@
 [project]
 authors = [
-    { name = "Jamie A. Kennea", email = "jak51@psu.edu" }, # Optional
+    { name = "Jamie A. Kennea", email = "jamie@cosmicfrontier.org" }, # Optional
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -12,16 +12,19 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: 3 :: Only",
 ]
 description = "COASTSim: ConOps Astronomical Space Telescope Simulator" # Optional
 dynamic = ["version"]
 maintainers = [
-    { name = "Jamie A. Kennea", email = "jak51@psu.edu" }, # Optional
+    { name = "Jamie A. Kennea", email = "jamie@cosmicfrontier.org" }, # Optional
 ]
 name = "coast-sim" # Required
 readme = "README.md" # Optional
 requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
 
 dependencies = [
     "astropy>=6",
@@ -32,7 +35,7 @@ dependencies = [
     "pydantic>=2.12",
     "pyproj>=3.7.0",
     "pytz>=2025.2",
-    "rust-ephem>=0.1.9",
+    "rust-ephem>=0.1.10",
     "shapely>=2",
     "tqdm>=4.67",
 ]

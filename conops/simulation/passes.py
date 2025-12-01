@@ -21,7 +21,7 @@ class Pass(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
     # Core dependencies
-    ephem: rust_ephem.TLEEphemeris | None = None
+    ephem: rust_ephem.Ephemeris | None = None
     constraint: Constraint | None = None
     acs_config: Any | None = None  # AttitudeControlSystem, avoiding circular import
     comms_config: CommunicationsSystem | None = (
@@ -273,7 +273,7 @@ class PassTimes:
 
     passes: list[Pass]
     constraint: Constraint
-    ephem: rust_ephem.TLEEphemeris
+    ephem: rust_ephem.Ephemeris
     ground_stations: GroundStationRegistry
     config: Config
 

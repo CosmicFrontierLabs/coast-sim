@@ -1,5 +1,5 @@
-from ..common import ics_date_conv
-from ..config import DAY_SECONDS
+from datetime import datetime
+
 from ..targets import Plan, Queue
 
 
@@ -8,18 +8,16 @@ class DumbQueueScheduler:
 
     def __init__(
         self,
-        queue: Queue | None = None,
+        queue: Queue,
+        begin: datetime | None = None,
+        end: datetime | None = None,
         plan: Plan | None = None,
-        year: int = 2021,
-        day: int = 4,
-        length: int = 1,
     ):
-        self.queue = queue if queue is not None else Queue()
+        self.queue = queue
         self.plan = plan if plan is not None else Plan()
-        self.year = year
-        self.day = day
-        self.length = length
-        self.ustart = 0
+        self.begin = begin
+        self.end = end
+        self.ustart = begin.timestamp() if begin is not None else None
 
     def schedule(self) -> Plan:
         """Generate a Plan over the configured start/time window.
@@ -27,6 +25,11 @@ class DumbQueueScheduler:
         Returns:
             Plan: the scheduled plan
         """
+
+        assert self.begin is not None and self.end is not None, (
+            "Begin and end times must be set for scheduling."
+        )
+
         # Reset plan for this scheduling run
         self.plan = Plan()
 
@@ -34,8 +37,8 @@ class DumbQueueScheduler:
         last_ra = 0.0
         last_dec = 0.0
 
-        self.ustart = ics_date_conv(f"{self.year}-{self.day:03}-00:00:00")
-        end_time = self.ustart + self.length * DAY_SECONDS
+        self.ustart = self.begin.timestamp()
+        end_time = self.end.timestamp()
 
         while True:
             utime = self.ustart + elapsed

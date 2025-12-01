@@ -32,7 +32,7 @@ class ACS:
     current pointing state.
     """
 
-    ephem: rust_ephem.TLEEphemeris
+    ephem: rust_ephem.Ephemeris
     slew_dists: list[float]
     ra: float
     dec: float

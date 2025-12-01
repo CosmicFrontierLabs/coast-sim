@@ -11,7 +11,7 @@ class Slew:
     """Class defines a Spacecraft Slew. Calculates slew time and slew
     path (currently great circle only from simplicity)"""
 
-    ephem: rust_ephem.TLEEphemeris | None
+    ephem: rust_ephem.Ephemeris | None
     constraint: Constraint | None
     slewstart: float
     slewend: float

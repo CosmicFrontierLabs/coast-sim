@@ -31,7 +31,7 @@ class QueueDITL(DITLMixin, DITLStats):
     charging_ppt: Pointing | None
     emergency_charging: EmergencyCharging
     utime: list[float]  # Override to specify float instead of generic list
-    ephem: rust_ephem.TLEEphemeris  # Override to make non-optional
+    ephem: rust_ephem.Ephemeris  # Override to make non-optional
     _queue: Queue
 
     @property
@@ -82,7 +82,7 @@ class QueueDITL(DITLMixin, DITLStats):
         self.log = DITLLog()
 
         # Target Queue (pass log for silent operation)
-        self.queue = Queue(log=self.log)
+        self.queue = Queue(log=self.log, ephem=self.ephem)
 
         # Wire log into ACS so it can log events (if ACS exists)
         if hasattr(self, "acs"):
@@ -331,7 +331,7 @@ class QueueDITL(DITLMixin, DITLStats):
         self.ustart = self.begin.timestamp()
         self.uend = self.end.timestamp()
         # Check that the start/end times fall within the ephemeris
-        # TLEEphemeris uses timestamp attribute which is a list of datetime objects
+        # Ephemeris uses timestamp attribute which is a list of datetime objects
         if (
             self.begin not in self.ephem.timestamp
             or self.end not in self.ephem.timestamp

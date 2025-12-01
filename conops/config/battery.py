@@ -62,13 +62,13 @@ class Battery(BaseModel):
         if self.battery_level < min_charge_level:
             self.emergency_recharge = True
             return True
-        # We're in emergency recharge right now - continue until recharge_threshold
-        elif self.battery_level < self.recharge_threshold and self.emergency_recharge:
+
+        # Alert is True when battery level is below recharge threshold
+        if self.battery_level < self.recharge_threshold:
+            self.emergency_recharge = True
             return True
-        elif self.battery_level >= self.recharge_threshold and self.emergency_recharge:
-            self.emergency_recharge = False
-            return False
         else:
+            self.emergency_recharge = False
             return False
 
     def charge(self, power, period):

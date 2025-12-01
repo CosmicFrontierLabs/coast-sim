@@ -46,7 +46,7 @@ class Constraint(BaseModel):
         & ~rust_ephem.EclipseConstraint()
     )
 
-    ephem: rust_ephem.TLEEphemeris | None = Field(default=None, exclude=True)
+    ephem: rust_ephem.Ephemeris | None = Field(default=None, exclude=True)
 
     bestroll: float = Field(default=0.0, exclude=True)
     bestpointing: np.ndarray = Field(

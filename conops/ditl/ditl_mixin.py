@@ -23,7 +23,7 @@ class DITLMixin:
     obsid: list[int]
     plan: Plan
     utime: list
-    ephem: rust_ephem.TLEEphemeris | None
+    ephem: rust_ephem.Ephemeris | None
     # Subsystem power tracking
     power_bus: list[float]
     power_payload: list[float]

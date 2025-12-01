@@ -27,7 +27,7 @@ class DumbScheduler:
 
         self.mintime = 5 * 60  # seconds (5 minutes)
         self.constraint = constraint
-        self.ephem: rust_ephem.TLEEphemeris = self.constraint.ephem  # type: ignore[assignment]
+        self.ephem: rust_ephem.Ephemeris = self.constraint.ephem  # type: ignore[assignment]
         if self.ephem is None:
             raise ValueError("Constraint.ephem must be set")
 
