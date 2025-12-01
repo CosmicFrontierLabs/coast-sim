@@ -24,15 +24,13 @@ class Pointing(PlanEntry):
         name: str = "FakeTarget",
         merit: float = 100.0,
         exptime: int | None = None,
+        ss_min: int = 300,
+        ss_max: int = 86400,
     ):
         PlanEntry.__init__(self, constraint=constraint, acs_config=acs_config)
         assert self.constraint == constraint, "Constraint not properly set in Pointing"
-        self.obsstart = 0
-        self.exposure = 0
-        self.inview = False
         self.done = False
         self.obstype = "AT"
-        self.coordinated = None
         self.isat = False
         self.ra = ra
         self.dec = dec
@@ -47,11 +45,10 @@ class Pointing(PlanEntry):
         self.merit = merit
         self._exptime: int | None = exptime
         self._exporig: int | None = exptime
-        self.gs = None
-        self.ssmin = 300
-        self.ssmax = 1e6
         self._done = False
-        self.saatime = 0
+        # Snapshot min/max size
+        self.ss_min = ss_min  # seconds
+        self.ss_max = ss_max  # seconds
 
     def is_visible(self, utime):
         """Is a target visible at this time"""
