@@ -317,8 +317,8 @@ class EmergencyCharging:
         sun_ra: float,
         sun_dec: float,
         utime: float,
-        current_ra: float = 0.0,
-        current_dec: float = 0.0,
+        current_ra: float | None = None,
+        current_dec: float | None = None,
     ) -> tuple[float | None, float | None]:
         """
         Find a valid pointing for side-mounted solar panels.
@@ -400,6 +400,15 @@ class EmergencyCharging:
         for candidate_ra, candidate_dec in candidates:
             if self.constraint.inoccult(candidate_ra, candidate_dec, utime):
                 continue  # Skip constrained pointings
+
+            # If no current position provided, return first valid pointing
+            if current_ra is None or current_dec is None:
+                self._log_or_print(
+                    utime,
+                    "CHARGING",
+                    f"Found side-mount charging pointing at RA={candidate_ra:.2f}, Dec={candidate_dec:.2f} (90° from Sun at RA={sun_ra:.2f}, Dec={sun_dec:.2f})",
+                )
+                return candidate_ra, candidate_dec
 
             # Calculate slew distance
             slew = angular_separation(
