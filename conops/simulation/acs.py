@@ -355,10 +355,10 @@ class ACS:
         target = Pointing(
             constraint=self.constraint,
             acs_config=self.config.spacecraft_bus.attitude_control,
+            ra=slew.endra,
+            dec=slew.enddec,
+            obsid=slew.obsid,
         )
-        target.ra = slew.endra
-        target.dec = slew.enddec
-        target.obsid = slew.obsid
         target.isat = slew.obstype != "PPT"
 
         year, day = unixtime2yearday(utime)

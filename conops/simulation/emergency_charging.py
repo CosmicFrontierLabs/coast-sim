@@ -458,15 +458,18 @@ class EmergencyCharging:
         Returns:
             Configured Pointing object
         """
-        charging_ppt = Pointing(constraint=self.constraint, acs_config=self.acs_config)
-        charging_ppt.ra = ra
-        charging_ppt.dec = dec
-        charging_ppt.name = f"EMERGENCY_CHARGE_{self.next_charging_obsid}"
-        charging_ppt.obsid = self.next_charging_obsid
+        charging_ppt = Pointing(
+            constraint=self.constraint,
+            acs_config=self.acs_config,
+            ra=ra,
+            dec=dec,
+            name=f"EMERGENCY_CHARGE_{self.next_charging_obsid}",
+            obsid=self.next_charging_obsid,
+            exptime=86400,
+        )
         self.next_charging_obsid += 1
         charging_ppt.begin = int(utime)
         charging_ppt.end = int(utime + 86400)  # Set far end time
-        charging_ppt.exptime = 86400  # Large exptime, will be manually terminated
         charging_ppt.done = False
 
         return charging_ppt

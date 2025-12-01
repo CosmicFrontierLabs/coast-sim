@@ -18,6 +18,12 @@ class Pointing(PlanEntry):
         self,
         constraint: Constraint | None = None,
         acs_config: AttitudeControlSystem | None = None,
+        ra: float = 0.0,
+        dec: float = 0.0,
+        obsid: int = 0,
+        name: str = "FakeTarget",
+        merit: float = 100.0,
+        exptime: int | None = None,
     ):
         PlanEntry.__init__(self, constraint=constraint, acs_config=acs_config)
         assert self.constraint == constraint, "Constraint not properly set in Pointing"
@@ -28,18 +34,19 @@ class Pointing(PlanEntry):
         self.obstype = "AT"
         self.coordinated = None
         self.isat = False
-        self.ra = 0.0
-        self.dec = 0.0
-        self.targetid = 0
-        self.name = "FakeTarget"
+        self.ra = ra
+        self.dec = dec
+        self.targetid = obsid
+        self.obsid = obsid
+        self.name = name
         # ``fom`` is maintained as a legacy alias for ``merit`` for
         # backwards compatibility (e.g. tests and older code). The
         # canonical field we use internally is ``merit`` which can be
         # recomputed each scheduling iteration by ``Queue.meritsort``.
-        self.fom = 100.0
-        self.merit = 100.0
-        self._exptime: int | None = None
-        self._exporig: int | None = None
+        self.fom = merit
+        self.merit = merit
+        self._exptime: int | None = exptime
+        self._exporig: int | None = exptime
         self.gs = None
         self.ssmin = 300
         self.ssmax = 1e6
