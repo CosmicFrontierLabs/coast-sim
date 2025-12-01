@@ -1,7 +1,9 @@
 """Unit tests for the DumbQueueScheduler class."""
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock
 
+import pytest  # type: ignore[import-untyped]
 from astropy.time import Time  # type: ignore[import-untyped]
 
 from conops import DAY_SECONDS, DumbQueueScheduler, Plan
@@ -10,85 +12,96 @@ from conops import DAY_SECONDS, DumbQueueScheduler, Plan
 class TestDumbQueueSchedulerInit:
     """Test DumbQueueScheduler initialization."""
 
-    def test_init_with_defaults(self):
-        """Test initialization with default parameters."""
-        scheduler = DumbQueueScheduler()
+    def test_init_default_queue_not_none(self, mock_queue):
+        scheduler = DumbQueueScheduler(queue=mock_queue)
         assert scheduler.queue is not None
-        assert scheduler.plan is not None
-        assert scheduler.year == 2021
-        assert scheduler.day == 4
-        assert scheduler.length == 1
 
-    def test_init_with_custom_parameters(self, mock_queue):
-        """Test initialization with custom parameters."""
+    def test_init_default_plan_not_none(self, mock_queue):
+        scheduler = DumbQueueScheduler(queue=mock_queue)
+        assert scheduler.plan is not None
+
+    def test_init_default_begin_value(self, mock_queue):
+        scheduler = DumbQueueScheduler(queue=mock_queue)
+        assert scheduler.begin is None
+
+    def test_init_default_end_value(self, mock_queue):
+        scheduler = DumbQueueScheduler(queue=mock_queue)
+        assert scheduler.end is None
+
+    def test_init_with_custom_parameter_queue(
+        self, mock_queue, scheduler_2022_100_len2
+    ):
+        assert scheduler_2022_100_len2.queue is mock_queue
+
+    def test_init_with_custom_parameter_plan(self, mock_queue):
         plan = Plan()
         scheduler = DumbQueueScheduler(
-            queue=mock_queue, plan=plan, year=2022, day=100, length=2
+            queue=mock_queue,
+            plan=plan,
+            begin=datetime(2022, 4, 10),
+            end=datetime(2022, 4, 11),
         )
-        assert scheduler.queue is mock_queue
         assert scheduler.plan is plan
-        assert scheduler.year == 2022
-        assert scheduler.day == 100
-        assert scheduler.length == 2
+
+    def test_init_with_custom_parameter_begin(self, mock_queue):
+        plan = Plan()
+        begin = datetime(2022, 4, 10, tzinfo=timezone.utc)
+        end = begin + timedelta(days=2)
+        scheduler = DumbQueueScheduler(
+            queue=mock_queue, plan=plan, begin=begin, end=end
+        )
+        assert scheduler.begin == begin
+
+    def test_init_with_custom_parameter_end(self, mock_queue):
+        plan = Plan()
+        begin = datetime(2022, 4, 10, tzinfo=timezone.utc)
+        end = begin + timedelta(days=2)
+        scheduler = DumbQueueScheduler(
+            queue=mock_queue, plan=plan, begin=begin, end=end
+        )
+        assert scheduler.end == end
 
     def test_init_creates_empty_plan(self):
-        """Test that init creates empty plan if not provided."""
-        scheduler = DumbQueueScheduler()
+        scheduler = DumbQueueScheduler(queue=Mock())
         assert len(scheduler.plan) == 0
 
-    def test_init_creates_empty_queue(self):
-        """Test that init creates empty queue if not provided."""
-        scheduler = DumbQueueScheduler()
+    def test_init_creates_empty_queue_not_none(self):
+        scheduler = DumbQueueScheduler(queue=Mock())
         assert scheduler.queue is not None
-        assert len(scheduler.queue) == 0
 
 
 class TestDumbQueueSchedulerSchedule:
     """Test the schedule method."""
 
     def test_schedule_returns_plan(self, scheduler):
-        """Test that schedule returns a Plan object."""
         result = scheduler.schedule()
         assert isinstance(result, Plan)
 
-    def test_schedule_resets_plan_on_run(self, scheduler):
-        """Test that schedule resets the plan each run."""
+    def test_schedule_precondition_plan_nonempty(self, scheduler):
         scheduler.plan.extend([Mock()])  # Add dummy entry
         assert len(scheduler.plan) > 0
 
+    def test_schedule_returns_plan_when_prepopulated(self, scheduler):
+        scheduler.plan.extend([Mock()])  # Add dummy entry
         result = scheduler.schedule()
-        # Plan should be reset after schedule
         assert isinstance(result, Plan)
 
-    def test_schedule_with_single_target(self, scheduler, mock_queue, mock_pointing):
-        """Test scheduling with a single target."""
-        # Set up mock to return one target then None
-        target = mock_pointing(targetid=1, ra=45.0, dec=30.0, merit=100, ssmin=300)
+    def test_schedule_with_single_target_returns_at_least_one_entry(
+        self, scheduler, make_target, queue_get_from_list
+    ):
+        target = make_target(targetid=1, ra=45.0, dec=30.0, merit=100, ssmin=300)
         target.begin = int(scheduler.ustart)
         target.end = int(scheduler.ustart + 600)  # 10 minutes
 
-        call_count = [0]
-
-        def mock_get_single(ra, dec, utime):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                return target
-            return None
-
-        scheduler.queue.get = mock_get_single
+        queue_get_from_list(scheduler, [target])
 
         result = scheduler.schedule()
         assert len(result) >= 1
 
-    def test_schedule_with_multiple_targets(self, scheduler, mock_pointing):
-        """Test scheduling with multiple targets."""
-        targets = [
-            mock_pointing(targetid=1, ra=45.0, dec=30.0, merit=100, ssmin=300),
-            mock_pointing(targetid=2, ra=90.0, dec=-45.0, merit=90, ssmin=300),
-            mock_pointing(targetid=3, ra=180.0, dec=60.0, merit=80, ssmin=300),
-        ]
-
-        # Set different begin/end times for each
+    def test_schedule_with_multiple_targets_returns_at_least_one_entry(
+        self, scheduler, make_targets, queue_get_from_list
+    ):
+        targets = make_targets(count=3)
         targets[0].begin = scheduler.ustart
         targets[0].end = scheduler.ustart + 600
 
@@ -98,37 +111,26 @@ class TestDumbQueueSchedulerSchedule:
         targets[2].begin = scheduler.ustart + 1200
         targets[2].end = scheduler.ustart + 1800
 
-        call_count = [0]
-
-        def mock_get_multi(ra, dec, utime):
-            if call_count[0] < len(targets):
-                result = targets[call_count[0]]
-                result.done = False
-                call_count[0] += 1
-                return result
-            return None
-
-        scheduler.queue.get = mock_get_multi
+        queue_get_from_list(scheduler, targets)
 
         result = scheduler.schedule()
         assert len(result) >= 1
 
     def test_schedule_stops_when_queue_empty(self, scheduler):
-        """Test that scheduling stops when queue returns None."""
         scheduler.queue.get = Mock(return_value=None)
 
         scheduler.schedule()
         scheduler.queue.get.assert_called()
 
-    def test_schedule_respects_time_window(self, scheduler, mock_pointing):
-        """Test that scheduler respects the time window."""
-        target = mock_pointing(targetid=1, ra=45.0, dec=30.0, merit=100, ssmin=300)
+    def test_schedule_respects_time_window(
+        self, scheduler, make_target, queue_get_from_list
+    ):
+        target = make_target(targetid=1, ra=45.0, dec=30.0, merit=100, ssmin=300)
 
-        scheduler.queue.get = Mock(return_value=target)
+        queue_get_from_list(scheduler, [target])
         target.begin = scheduler.ustart
         target.end = scheduler.ustart + DAY_SECONDS * 2  # Beyond window
 
-        # Should still complete without error
         result = scheduler.schedule()
         assert isinstance(result, Plan)
 
@@ -137,311 +139,277 @@ class TestDumbQueueSchedulerStartTime:
     """Test start time calculation."""
 
     def test_ustart_calculation(self, scheduler):
-        """Test that ustart is calculated correctly."""
         scheduler.schedule()
-        # ustart should be set after schedule call
         assert scheduler.ustart > 0
 
-    def test_different_year_day_combinations(self):
-        """Test scheduling with different year/day combinations."""
-        for year in [2020, 2021, 2022]:
-            for day in [1, 100, 365]:
-                scheduler = DumbQueueScheduler(year=year, day=day, length=1)
-                scheduler.queue.get = Mock(return_value=None)
-                scheduler.schedule()
-                assert scheduler.ustart > 0
-
-    def test_multi_day_scheduling(self):
-        """Test scheduling over multiple days."""
-        scheduler = DumbQueueScheduler(year=2021, day=4, length=3)
+    @pytest.mark.parametrize(
+        "begin_date",
+        [
+            datetime(2020, 1, 1, tzinfo=timezone.utc),
+            datetime(2021, 4, 10, tzinfo=timezone.utc),
+            datetime(2022, 12, 31, tzinfo=timezone.utc),
+        ],
+    )
+    def test_different_begin_dates_set_ustart(self, begin_date):
+        end = begin_date + timedelta(days=1)
+        scheduler = DumbQueueScheduler(queue=Mock(), begin=begin_date, end=end)
         scheduler.queue.get = Mock(return_value=None)
         scheduler.schedule()
-        # Should not raise any errors
-        assert scheduler.length == 3
+        assert scheduler.ustart > 0
+
+    def test_multi_day_scheduling_end_preserved(self):
+        begin = datetime(2021, 1, 4, tzinfo=timezone.utc)
+        end = begin + timedelta(days=3)
+        scheduler = DumbQueueScheduler(queue=Mock(), begin=begin, end=end)
+        scheduler.queue.get = Mock(return_value=None)
+        scheduler.schedule()
+        assert scheduler.end == end
 
 
 class TestDumbQueueSchedulerTargetProcessing:
     """Test target processing during scheduling."""
 
-    def test_target_marked_done_after_scheduling(self, scheduler, mock_pointing):
-        """Test that targets are marked as done after scheduling."""
-        target = mock_pointing(targetid=1, ra=45.0, dec=30.0, merit=100)
+    def test_target_marked_done_after_scheduling(
+        self, scheduler, make_target, queue_get_from_list
+    ):
+        target = make_target(targetid=1, ra=45.0, dec=30.0, merit=100)
         target.begin = scheduler.ustart
         target.end = scheduler.ustart + 600
         target.done = False
 
-        call_count = [0]
-
-        def mock_get(ra, dec, utime):
-            if call_count[0] == 0:
-                call_count[0] += 1
-                return target
-            return None
-
-        scheduler.queue.get = mock_get
+        queue_get_from_list(scheduler, [target])
 
         _ = scheduler.schedule()
         assert target.done is True
 
-    def test_target_position_updated_during_scheduling(self, scheduler, mock_pointing):
-        """Test that last position is updated correctly."""
-        target1 = mock_pointing(targetid=1, ra=45.0, dec=30.0, merit=100)
-        target2 = mock_pointing(targetid=2, ra=90.0, dec=-45.0, merit=90)
+    def test_target_position_updated_during_scheduling_adds_entries(
+        self, scheduler, make_targets, queue_get_from_list
+    ):
+        targets = make_targets(count=2)
 
-        target1.begin = scheduler.ustart
-        target1.end = scheduler.ustart + 600
+        targets[0].begin = scheduler.ustart
+        targets[0].end = scheduler.ustart + 600
 
-        target2.begin = scheduler.ustart + 600
-        target2.end = scheduler.ustart + 1200
+        targets[1].begin = scheduler.ustart + 600
+        targets[1].end = scheduler.ustart + 1200
 
-        targets = [target1, target2]
-        call_count = [0]
-
-        def mock_get(ra, dec, utime):
-            if call_count[0] < len(targets):
-                result = targets[call_count[0]]
-                call_count[0] += 1
-                return result
-            return None
-
-        scheduler.queue.get = mock_get
+        queue_get_from_list(scheduler, targets)
         result = scheduler.schedule()
 
-        # Multiple targets should be scheduled
         assert len(result) >= 1
 
 
 class TestDumbQueueSchedulerEdgeCases:
     """Test edge cases and error handling."""
 
-    def test_zero_duration_target(self, scheduler, mock_pointing):
-        """Test handling of zero-duration targets."""
-        target = mock_pointing(targetid=1, ra=45.0, dec=30.0, merit=100)
+    def test_zero_duration_target_returns_plan(
+        self, scheduler, make_target, queue_get_from_list
+    ):
+        target = make_target(targetid=1, ra=45.0, dec=30.0, merit=100)
         target.begin = scheduler.ustart
         target.end = scheduler.ustart  # Zero duration
 
-        scheduler.queue.get = Mock(return_value=target)
+        queue_get_from_list(scheduler, [target])
 
-        scheduler.schedule()
-
-    def test_negative_duration_target(self, scheduler, mock_pointing):
-        """Test handling of negative-duration targets."""
-        target = mock_pointing(targetid=1, ra=45.0, dec=30.0, merit=100)
-        target.begin = scheduler.ustart
-        target.end = scheduler.ustart - 100  # Negative duration
-
-        scheduler.queue.get = Mock(return_value=target)
-
-        scheduler.schedule()
-
-    def test_very_long_scheduling_window(self, scheduler, mock_pointing):
-        """Test scheduling with very long time window."""
-        scheduler.length = 365  # Full year
-
-        target = mock_pointing(targetid=1, ra=45.0, dec=30.0, merit=100)
-        target.begin = scheduler.ustart
-        target.end = scheduler.ustart + 600
-
-        scheduler.queue.get = Mock(return_value=target)
-        # Should complete without error
         result = scheduler.schedule()
         assert isinstance(result, Plan)
 
-    def test_many_targets_in_queue(self, scheduler, mock_pointing):
-        """Test scheduling with many targets."""
-        targets = [
-            mock_pointing(
-                targetid=i,
-                ra=(i * 10) % 360,
-                dec=(i - 50) % 90 - 45,
-                merit=100 - i,
-                ssmin=300,
-            )
-            for i in range(50)
-        ]
+    def test_negative_duration_target_returns_plan(
+        self, scheduler, make_target, queue_get_from_list
+    ):
+        target = make_target(targetid=1, ra=45.0, dec=30.0, merit=100)
+        target.begin = scheduler.ustart
+        target.end = scheduler.ustart - 100  # Negative duration
 
-        # Set durations for all
+        queue_get_from_list(scheduler, [target])
+
+        result = scheduler.schedule()
+        assert isinstance(result, Plan)
+
+    def test_very_long_scheduling_window(
+        self, scheduler, make_target, queue_get_from_list
+    ):
+        # Extend the scheduling window to a full year
+        scheduler.end = scheduler.begin + timedelta(days=365)
+
+        target = make_target(targetid=1, ra=45.0, dec=30.0, merit=100)
+        target.begin = scheduler.ustart
+        target.end = scheduler.ustart + 600
+
+        queue_get_from_list(scheduler, [target])
+        result = scheduler.schedule()
+        assert isinstance(result, Plan)
+
+    def test_many_targets_in_queue_returns_plan(
+        self, scheduler, make_targets, queue_get_from_list
+    ):
+        targets = make_targets(count=50)
+
         for i, target in enumerate(targets):
             target.begin = scheduler.ustart + i * 1000
             target.end = scheduler.ustart + (i + 1) * 1000
 
-        call_count = [0]
-
-        def mock_get_many(ra, dec, utime):
-            if call_count[0] < len(targets):
-                result = targets[call_count[0]]
-                call_count[0] += 1
-                return result
-            return None
-
-        scheduler.queue.get = mock_get_many
-
+        queue_get_from_list(scheduler, targets)
         result = scheduler.schedule()
-        # Should handle many targets
         assert isinstance(result, Plan)
 
 
 class TestDumbQueueSchedulerIntegration:
     """Integration tests."""
 
-    def test_full_scheduling_workflow(self, scheduler, mock_pointing):
-        """Test complete scheduling workflow."""
-        # Need to initialize ustart first
+    def test_full_scheduling_workflow_returns_plan(
+        self, scheduler, make_targets, queue_get_from_list
+    ):
         scheduler.ustart = Time("2021-01-04 00:00:00", scale="utc").unix
 
-        # Create real targets
-        targets = [
-            mock_pointing(targetid=1, ra=45.0, dec=30.0, merit=100),
-            mock_pointing(targetid=2, ra=90.0, dec=-45.0, merit=90),
-        ]
+        targets = make_targets(count=2)
 
         for i, target in enumerate(targets):
             target.begin = scheduler.ustart + i * 1000
             target.end = scheduler.ustart + (i + 1) * 1000
 
-        call_count = [0]
-
-        def mock_get_workflow(ra, dec, utime):
-            if call_count[0] < len(targets):
-                result = targets[call_count[0]]
-                call_count[0] += 1
-                return result
-            return None
-
-        scheduler.queue.get = mock_get_workflow
-
-        # Run scheduling
+        queue_get_from_list(scheduler, targets)
         result = scheduler.schedule()
+        assert isinstance(result, Plan)
 
-        # Verify results
-        assert len(result) >= 0
-        for entry in result.entries:
-            assert entry.begin >= scheduler.ustart
-            assert entry.end <= scheduler.ustart + scheduler.length * DAY_SECONDS
+    def test_full_scheduling_workflow_all_entries_begin_after_ustart(
+        self, scheduler, make_targets, queue_get_from_list
+    ):
+        scheduler.ustart = Time("2021-01-04 00:00:00", scale="utc").unix
 
-    def test_scheduling_with_position_tracking(self, scheduler, mock_pointing):
-        """Test that position is correctly tracked across targets."""
-        target1 = mock_pointing(targetid=1, ra=45.0, dec=30.0, merit=100)
-        target2 = mock_pointing(targetid=2, ra=90.0, dec=-45.0, merit=90)
-        target3 = mock_pointing(targetid=3, ra=180.0, dec=60.0, merit=80)
-
-        targets = [target1, target2, target3]
+        targets = make_targets(count=2)
 
         for i, target in enumerate(targets):
             target.begin = scheduler.ustart + i * 1000
             target.end = scheduler.ustart + (i + 1) * 1000
 
-        call_count = [0]
-        positions = []
+        queue_get_from_list(scheduler, targets)
+        result = scheduler.schedule()
+        assert all(entry.begin >= scheduler.ustart for entry in result.entries)
 
-        def mock_get_track(ra, dec, utime):
-            positions.append((ra, dec))
-            if call_count[0] < len(targets):
-                result = targets[call_count[0]]
-                call_count[0] += 1
-                return result
-            return None
+    def test_full_scheduling_workflow_all_entries_end_within_window(
+        self, scheduler, make_targets, queue_get_from_list
+    ):
+        scheduler.ustart = Time("2021-01-04 00:00:00", scale="utc").unix
 
-        scheduler.queue.get = mock_get_track
+        targets = make_targets(count=2)
 
+        for i, target in enumerate(targets):
+            target.begin = scheduler.ustart + i * 1000
+            target.end = scheduler.ustart + (i + 1) * 1000
+
+        queue_get_from_list(scheduler, targets)
+        result = scheduler.schedule()
+        window_end = scheduler.end.timestamp()
+        assert all(entry.end <= window_end for entry in result.entries)
+
+    def test_scheduling_with_position_tracking_records_positions(
+        self, scheduler, make_targets, queue_get_from_list
+    ):
+        targets = make_targets(count=3)
+
+        for i, target in enumerate(targets):
+            target.begin = scheduler.ustart + i * 1000
+            target.end = scheduler.ustart + (i + 1) * 1000
+
+        positions = queue_get_from_list(scheduler, targets, track_positions=True)
         _ = scheduler.schedule()
-
-        # Should have tracked positions
         assert len(positions) >= 1
-        # First position should be (0, 0) - default start
+
+    def test_scheduling_with_position_tracking_initial_position(
+        self, scheduler, make_targets, queue_get_from_list
+    ):
+        targets = make_targets(count=3)
+
+        for i, target in enumerate(targets):
+            target.begin = scheduler.ustart + i * 1000
+            target.end = scheduler.ustart + (i + 1) * 1000
+
+        positions = queue_get_from_list(scheduler, targets, track_positions=True)
+        _ = scheduler.schedule()
         assert positions[0] == (0.0, 0.0)
 
-    def test_plan_entries_in_sequence(self, scheduler, mock_pointing):
-        """Test that plan entries are in time sequence."""
-        targets = [
-            mock_pointing(targetid=1, ra=45.0, dec=30.0, merit=100),
-            mock_pointing(targetid=2, ra=90.0, dec=-45.0, merit=90),
-            mock_pointing(targetid=3, ra=180.0, dec=60.0, merit=80),
-        ]
+    def test_plan_entries_in_sequence_type(
+        self, scheduler, make_targets, queue_get_from_list
+    ):
+        targets = make_targets(count=3)
 
         base_time = scheduler.ustart
         for i, target in enumerate(targets):
             target.begin = base_time + i * 1000
             target.end = base_time + (i + 1) * 1000
 
-        call_count = [0]
-
-        def mock_get_seq(ra, dec, utime):
-            if call_count[0] < len(targets):
-                result = targets[call_count[0]]
-                call_count[0] += 1
-                return result
-            return None
-
-        scheduler.queue.get = mock_get_seq
+        queue_get_from_list(scheduler, targets)
         plan = scheduler.schedule()
 
-        # Check that entries are in sequence
         assert isinstance(plan, Plan)
-        for i in range(len(plan.entries) - 1):
-            assert plan.entries[i].end <= plan.entries[i + 1].begin
+
+    def test_plan_entries_in_time_sequence(
+        self, scheduler, make_targets, queue_get_from_list
+    ):
+        targets = make_targets(count=3)
+
+        base_time = scheduler.ustart
+        for i, target in enumerate(targets):
+            target.begin = base_time + i * 1000
+            target.end = base_time + (i + 1) * 1000
+
+        queue_get_from_list(scheduler, targets)
+        plan = scheduler.schedule()
+
+        assert all(
+            plan.entries[i].end <= plan.entries[i + 1].begin
+            for i in range(max(0, len(plan.entries) - 1))
+        )
 
 
 class TestDumbQueueSchedulerStateManagement:
     """Test state management and plan reuse."""
 
-    def test_plan_reset_between_runs(self, scheduler, mock_pointing):
-        """Test that plan is reset between scheduling runs."""
-        target = mock_pointing(targetid=1, ra=45.0, dec=30.0, merit=100)
+    def test_plan_reset_between_runs_independent_plans(
+        self, scheduler, make_target, queue_get_from_list
+    ):
+        target = make_target(targetid=1, ra=45.0, dec=30.0, merit=100)
         target.begin = scheduler.ustart
         target.end = scheduler.ustart + 600
 
-        call_count = [0]
-
-        def mock_get_reset(ra, dec, utime):
-            if call_count[0] < 2:
-                call_count[0] += 1
-                return target
-            return None
-
-        scheduler.queue.get = mock_get_reset
-
-        # First run
+        queue_get_from_list(scheduler, [target])
         plan1 = scheduler.schedule()
 
-        # Second run
-        call_count[0] = 0
+        # Ensure a fresh plan will be returned on a new run
+        # Reuse the queue behavior by re-attaching the same target
+        plan2_targets = [target]
+        queue_get_from_list(scheduler, plan2_targets)
         plan2 = scheduler.schedule()
 
-        # Plans should be independent
         assert plan1 is not plan2
 
-    def test_scheduler_parameters_preserved(self, scheduler):
-        """Test that scheduler parameters are preserved."""
-        original_year = scheduler.year
-        original_day = scheduler.day
-        original_length = scheduler.length
-
+    def test_scheduler_parameters_preserved_begin(self, scheduler):
+        original_begin = scheduler.begin
         scheduler.queue.get = Mock(return_value=None)
         scheduler.schedule()
+        assert scheduler.begin == original_begin
 
-        assert scheduler.year == original_year
-        assert scheduler.day == original_day
-        assert scheduler.length == original_length
+    def test_scheduler_parameters_preserved_end(self, scheduler):
+        original_end = scheduler.end
+        scheduler.queue.get = Mock(return_value=None)
+        scheduler.schedule()
+        assert scheduler.end == original_end
 
 
 class TestDumbQueueSchedulerConfiguration:
     """Test configuration options."""
 
-    def test_year_parameter(self):
-        """Test year parameter configuration."""
-        for year in [2000, 2021, 2050]:
-            scheduler = DumbQueueScheduler(year=year, day=1, length=1)
-            assert scheduler.year == year
+    @pytest.mark.parametrize("begin_year", [2000, 2021, 2050])
+    def test_begin_parameter(self, begin_year):
+        begin = datetime(begin_year, 1, 1, tzinfo=timezone.utc)
+        end = begin + timedelta(days=1)
+        scheduler = DumbQueueScheduler(queue=Mock(), begin=begin, end=end)
+        assert scheduler.begin == begin
 
-    def test_day_parameter(self):
-        """Test day parameter configuration."""
-        for day in [1, 100, 365]:
-            scheduler = DumbQueueScheduler(year=2021, day=day, length=1)
-            assert scheduler.day == day
-
-    def test_length_parameter(self):
-        """Test length parameter configuration."""
-        for length in [1, 5, 30]:
-            scheduler = DumbQueueScheduler(year=2021, day=1, length=length)
-            assert scheduler.length == length
+    @pytest.mark.parametrize("end_year", [2000, 2021, 2050])
+    def test_end_parameter(self, end_year):
+        begin = datetime(2021, 1, 1, tzinfo=timezone.utc)
+        end = datetime(end_year, 1, 2, tzinfo=timezone.utc)
+        scheduler = DumbQueueScheduler(queue=Mock(), begin=begin, end=end)
+        assert scheduler.end == end

@@ -68,14 +68,6 @@ def mock_acs_config():
 
 
 @pytest.fixture
-def mock_ephem():
-    """Create a mock ephemeris."""
-    ephem = Mock()
-    ephem.index.return_value = 0
-    return ephem
-
-
-@pytest.fixture
 def emergency_charging(mock_constraint, mock_solar_panel, mock_acs_config):
     """Create an EmergencyCharging instance."""
     return EmergencyCharging(
@@ -106,6 +98,7 @@ def queue_ditl(mock_config):
     def mock_ditl_init(self, config=None):
         """Mock DITLMixin.__init__ that sets config and calls _init_subsystems."""
         self.config = config
+        self.ephem = Mock()  # Mock ephem
         self._init_subsystems()
 
     with patch(
@@ -170,3 +163,24 @@ def batt_20wh():
 def batt_1wh():
     """Create a battery with 1 watthour capacity."""
     return Battery(amphour=1, voltage=1, watthour=1)
+
+
+# Common fixtures pulled out for reuse across many tests
+@pytest.fixture
+def utime():
+    return 1700000000.0
+
+
+@pytest.fixture
+def mock_ephem():
+    """A default ephem object with sun at RA=180, Dec=0."""
+    ephem = Mock()
+    ephem.index = Mock(return_value=0)
+    sun_coord = Mock()
+    sun_coord.ra = Mock()
+    sun_coord.dec = Mock()
+    sun_coord.ra.deg = 180.0
+    sun_coord.dec.deg = 0.0
+    ephem.sun = [sun_coord]
+    ephem.in_eclipse = Mock(return_value=False)
+    return ephem

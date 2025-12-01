@@ -8,6 +8,7 @@ import pytest
 from astropy.time import Time  # type: ignore[import-untyped]
 
 from conops import DAY_SECONDS, DumbQueueScheduler, QueueDITL
+from conops.targets.plan import Plan
 
 
 class DummyEphemeris:
@@ -233,8 +234,12 @@ def mock_queue(mock_ephemeris):
 @pytest.fixture
 def scheduler(mock_queue, mock_ephemeris):
     """Create a DumbQueueScheduler instance."""
-    scheduler = DumbQueueScheduler(queue=mock_queue, year=2021, day=4, length=1)
+    begin = datetime(2021, 1, 4, tzinfo=timezone.utc)
+    end = begin + timedelta(days=1)
+    scheduler = DumbQueueScheduler(queue=mock_queue, begin=begin, end=end)
     scheduler.queue.ephem = mock_ephemeris
+    # Override get to return None for basic tests
+    scheduler.queue.get = Mock(return_value=None)
     return scheduler
 
 
@@ -254,3 +259,68 @@ def mock_pointing():
         return pointing
 
     return _mock_pointing
+
+
+@pytest.fixture
+def make_target(mock_pointing):
+    """Return a factory to create targets quickly."""
+
+    def _make(targetid=1, ra=45.0, dec=30.0, merit=100, ssmin=300):
+        t = mock_pointing(targetid=targetid, ra=ra, dec=dec, merit=merit, ssmin=ssmin)
+        t.done = False
+        return t
+
+    return _make
+
+
+@pytest.fixture
+def make_targets(make_target):
+    """Return a factory to create a list of targets."""
+
+    def _make_many(count=3, start_ra=45.0):
+        targets = []
+        for i in range(count):
+            ra = (start_ra + i * 45) % 360
+            dec = -45 + i * 30
+            targets.append(
+                make_target(targetid=i + 1, ra=ra, dec=dec, merit=100 - i, ssmin=300)
+            )
+        return targets
+
+    return _make_many
+
+
+@pytest.fixture
+def queue_get_from_list():
+    """
+    Fixture returning a helper to set scheduler.queue.get to pop entries
+    from a provided list. Returns the recorded positions list if tracking
+    is enabled.
+    """
+
+    def _set_queue_get(scheduler, targets, track_positions=False):
+        call_count = {"count": 0}
+        positions = []
+
+        def getter(ra, dec, utime):
+            if track_positions:
+                positions.append((ra, dec))
+            if call_count["count"] < len(targets):
+                res = targets[call_count["count"]]
+                res.done = False
+                call_count["count"] += 1
+                return res
+            return None
+
+        scheduler.queue.get = getter
+        return positions
+
+    return _set_queue_get
+
+
+@pytest.fixture
+def scheduler_2022_100_len2(mock_queue):
+    plan = Plan()
+    begin = datetime(2022, 4, 10, tzinfo=timezone.utc)
+    end = begin + timedelta(days=2)
+    return DumbQueueScheduler(queue=mock_queue, plan=plan, begin=begin, end=end)
