@@ -14,7 +14,7 @@ class Queue:
     """Target Queue class, contains a list of targets for Spacecraft to observe."""
 
     targets: list[Pointing]
-    ephem: rust_ephem.TLEEphemeris
+    ephem: rust_ephem.TLEEphemeris | None
     utime: float | None
     gs: Any
     log: "DITLLog | None"
@@ -73,6 +73,9 @@ class Queue:
         Returns:
             Next target to observe, or None if no suitable target found.
         """
+        assert self.ephem is not None, (
+            "Ephemeris must be set in TargetQueue before get()"
+        )
         self.utime = utime
         self.meritsort(ra, dec)
 

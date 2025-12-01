@@ -129,7 +129,7 @@ class DumbScheduler:
             if not found:
                 if self.log is not None:
                     self.log.log_event(
-                        time=ephem_utime[i],
+                        utime=ephem_utime[i],
                         event_type="SCHEDULER",
                         description=f"WARNING: No target found at time index {i} (utime={ephem_utime[i]}); stopping scheduling",
                         obsid=None,
@@ -194,7 +194,9 @@ class DumbScheduler:
 
         if self.log is not None:
             self.log.log_event(
-                time=self.ephem.times[0] if len(self.ephem.times) > 0 else 0.0,
+                utime=self.ephem.timestamp[0].timestamp()
+                if len(self.ephem.timestamp) > 0
+                else 0.0,
                 event_type="SCHEDULER",
                 description=f"Scheduled {len(self.plan)} targets",
                 obsid=None,
