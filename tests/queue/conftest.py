@@ -114,6 +114,10 @@ def queue_ditl(mock_config, mock_ephem):
         mock_acs.passrequests = mock_pt
         mock_acs.slew_dists = []
         mock_acs.last_slew = None
+        # Set acsmode to a real ACSMode enum value for logging
+        from conops import ACSMode
+
+        mock_acs.acsmode = ACSMode.SCIENCE
         # Mock the helper methods used in _fetch_new_ppt
         mock_target_request = Mock()
         mock_target_request.next_vis = Mock(return_value=1000.0)

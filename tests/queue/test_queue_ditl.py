@@ -137,8 +137,12 @@ class TestScheduleGroundstationPasses:
         queue_ditl.day = 331
         queue_ditl.length = 1
         queue_ditl._schedule_groundstation_passes()
-        captured = capsys.readouterr()
-        assert "Scheduling groundstation passes..." in captured.out
+        # Check the log instead of print output
+        assert len(queue_ditl.log) > 0
+        assert any(
+            "Scheduling groundstation passes" in event.description
+            for event in queue_ditl.log
+        )
 
     def test_schedule_passes_already_scheduled_no_get(self, queue_ditl):
         mock_pass = Mock()
@@ -164,10 +168,12 @@ class TestScheduleGroundstationPasses:
 
         queue_ditl.acs.passrequests.get.side_effect = populate_passes
         queue_ditl._schedule_groundstation_passes()
-        captured = capsys.readouterr()
-        assert "Scheduling groundstation passes..." in captured.out
-        assert "Scheduled pass: Pass 1" in captured.out
-        assert "Scheduled pass: Pass 2" in captured.out
+        # Check the log instead of print output
+        assert len(queue_ditl.log) > 0
+        log_text = "\n".join(event.description for event in queue_ditl.log)
+        assert "Scheduling groundstation passes" in log_text
+        assert "Pass 1" in log_text
+        assert "Pass 2" in log_text
 
 
 class TestDetermineMode:
@@ -318,6 +324,7 @@ class TestHandleChargingMode:
         mock_charging = Mock()
         mock_charging.end = 0
         mock_charging.done = False
+        mock_charging.obsid = 999001  # Add obsid attribute
         queue_ditl.charging_ppt = mock_charging
         queue_ditl._handle_charging_mode(1000.0)
         assert mock_charging.end == 1000.0
@@ -328,6 +335,7 @@ class TestHandleChargingMode:
         mock_charging = Mock()
         mock_charging.end = 0
         mock_charging.done = False
+        mock_charging.obsid = 999001  # Add obsid attribute
         queue_ditl.charging_ppt = mock_charging
         queue_ditl._handle_charging_mode(1000.0)
         assert mock_charging.done is True
@@ -340,11 +348,13 @@ class TestHandleChargingMode:
         mock_charging = Mock()
         mock_charging.end = 0
         mock_charging.done = False
+        mock_charging.obsid = 999001  # Add obsid attribute
         queue_ditl.charging_ppt = mock_charging
         queue_ditl._handle_charging_mode(1000.0)
         assert queue_ditl.charging_ppt is None
-        captured = capsys.readouterr()
-        assert "Battery recharged" in captured.out
+        # Check the log instead of print output
+        log_text = "\n".join(event.description for event in queue_ditl.log)
+        assert "Battery recharged" in log_text
 
     def test_charging_ends_when_constrained_end_and_done_set(self, queue_ditl, capsys):
         queue_ditl.battery.battery_alert = True
@@ -353,26 +363,30 @@ class TestHandleChargingMode:
         mock_charging.dec = 20.0
         mock_charging.end = 0
         mock_charging.done = False
+        mock_charging.obsid = 999001  # Add obsid attribute
         queue_ditl.charging_ppt = mock_charging
         queue_ditl.constraint.inoccult = Mock(return_value=True)
         queue_ditl._handle_charging_mode(1000.0)
         assert mock_charging.end == 1000.0
         assert mock_charging.done is True
         assert queue_ditl.charging_ppt is None
-        captured = capsys.readouterr()
-        assert "Charging pointing constrained" in captured.out
+        # Check the log instead of print output
+        log_text = "\n".join(event.description for event in queue_ditl.log)
+        assert "Charging pointing constrained" in log_text
 
     def test_charging_ends_in_eclipse_clears_charging(self, queue_ditl, capsys):
         queue_ditl.battery.battery_alert = True
         mock_charging = Mock()
         mock_charging.ra = 10.0
         mock_charging.dec = 20.0
+        mock_charging.obsid = 999001  # Add obsid attribute
         queue_ditl.charging_ppt = mock_charging
         queue_ditl.emergency_charging._is_in_sunlight = Mock(return_value=False)
         queue_ditl._handle_charging_mode(1000.0)
         assert queue_ditl.charging_ppt is None
-        captured = capsys.readouterr()
-        assert "Entered eclipse" in captured.out
+        # Check the log instead of print output
+        log_text = "\n".join(event.description for event in queue_ditl.log)
+        assert "Entered eclipse" in log_text
 
     def test_charging_continues(self, queue_ditl):
         queue_ditl.battery.battery_alert = True
@@ -418,6 +432,7 @@ class TestManagePPTLifecycle:
         mock_ppt.ra = 10.0
         mock_ppt.dec = 20.0
         mock_ppt.end = 2000.0
+        mock_ppt.obsid = 1001  # Add obsid attribute
         queue_ditl.ppt = mock_ppt
         queue_ditl.charging_ppt = None
         queue_ditl.constraint.inoccult = Mock(return_value=True)
@@ -431,6 +446,7 @@ class TestManagePPTLifecycle:
         mock_ppt.dec = 20.0
         mock_ppt.end = 2000.0
         mock_ppt.done = False
+        mock_ppt.obsid = 1001  # Add obsid attribute
         queue_ditl.ppt = mock_ppt
         queue_ditl.charging_ppt = None
         queue_ditl.step_size = 60
@@ -444,6 +460,7 @@ class TestManagePPTLifecycle:
         mock_ppt.ra = 10.0
         mock_ppt.dec = 20.0
         mock_ppt.end = 500.0
+        mock_ppt.obsid = 1001  # Add obsid attribute
         queue_ditl.ppt = mock_ppt
         queue_ditl.charging_ppt = None
         queue_ditl._manage_ppt_lifecycle(1000.0, ACSMode.SCIENCE)
@@ -498,15 +515,17 @@ class TestFetchNewPPT:
         mock_ppt.ssmax = 3600.0
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
         _ = queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
-        captured = capsys.readouterr()
-        assert "Fetching new PPT from Queue" in captured.out
+        # Check the log instead of print output
+        log_text = "\n".join(event.description for event in queue_ditl.log)
+        assert "Fetching new PPT from Queue" in log_text
 
     def test_fetch_ppt_none_available(self, queue_ditl, capsys):
         queue_ditl.queue.get = Mock(return_value=None)
         queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
         assert queue_ditl.ppt is None
-        captured = capsys.readouterr()
-        assert "No targets available from Queue" in captured.out
+        # Check the log instead of print output
+        log_text = "\n".join(event.description for event in queue_ditl.log)
+        assert "No targets available from Queue" in log_text
 
 
 class TestRecordSpacecraftState:
@@ -953,6 +972,7 @@ class TestCalcMethod:
         mock_ppt = Mock(spec=PlanEntry)
         mock_ppt.begin = 1000.0
         mock_ppt.end = 2000.0
+        mock_ppt.obsid = 1001  # Add obsid attribute
 
         # Set up the PPT
         queue_ditl.plan = [mock_ppt]
@@ -994,9 +1014,9 @@ class TestCalcMethod:
         # Execution time should be delayed to current_slew.slewstart + slewtime = 1100.0
         assert command.execution_time == 1100.0
 
-        # Check that the delay message was printed
-        captured = capsys.readouterr()
-        assert "delaying next slew until" in captured.out
+        # Check that the delay message was logged
+        log_text = "\n".join(event.description for event in queue_ditl.log)
+        assert "delaying next slew until" in log_text
 
     def test_fetch_ppt_delays_for_visibility(self, queue_ditl, capsys):
         """Test _fetch_new_ppt delays slew when target visibility requires it."""
@@ -1018,9 +1038,9 @@ class TestCalcMethod:
         # Execution time should be delayed to visibility time (1200.0)
         assert command.execution_time == 1200.0
 
-        # Check that the visibility delay message was printed
-        captured = capsys.readouterr()
-        assert "Slew delayed by" in captured.out
+        # Check that the visibility delay message was logged
+        log_text = "\n".join(event.description for event in queue_ditl.log)
+        assert "Slew delayed by" in log_text
 
     def test_terminate_science_ppt_for_pass_sets_done_flag(self, queue_ditl):
         """Test _terminate_science_ppt_for_pass sets done flag."""
@@ -1077,8 +1097,12 @@ class TestCalcMethod:
         result = queue_ditl._setup_simulation_timing()
 
         assert result is False
-        captured = capsys.readouterr()
-        assert "ERROR: Ephemeris not valid for date range" in captured.out
+        # Check the log instead of print output
+        assert len(queue_ditl.log) > 0
+        assert any(
+            "ERROR: Ephemeris not valid for date range" in event.description
+            for event in queue_ditl.log
+        )
 
 
 class TestGetConstraintName:
