@@ -96,7 +96,7 @@ class Pointing(PlanEntry):
         return self._done
 
     @done.setter
-    def done(self, v) -> None:
+    def done(self, v: bool) -> None:
         self._done = v
 
     def reset(self) -> None:
