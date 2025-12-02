@@ -4,6 +4,7 @@ import numpy as np
 import rust_ephem
 
 from ..common import unixtime2date
+from ..config import AttitudeControlSystem, Constraint
 from ..ditl.ditl_log import DITLLog
 from . import Pointing
 
@@ -16,15 +17,23 @@ class Queue:
     utime: float | None
     gs: Any
     log: DITLLog | None
+    constraint: Constraint | None
+    acs_config: AttitudeControlSystem | None
 
     def __init__(
-        self, ephem: rust_ephem.Ephemeris | None = None, log: DITLLog | None = None
+        self,
+        ephem: rust_ephem.Ephemeris | None = None,
+        log: DITLLog | None = None,
+        constraint: Constraint | None = None,
+        acs_config: AttitudeControlSystem | None = None,
     ):
         self.targets = []
         self.ephem = ephem
         self.utime = None
         self.gs = None
         self.log = log
+        self.constraint = constraint
+        self.acs_config = acs_config
 
     def __getitem__(self, number: int) -> Pointing:
         return self.targets[number]
@@ -34,6 +43,46 @@ class Queue:
 
     def append(self, target: Pointing) -> None:
         self.targets.append(target)
+
+    def add(
+        self,
+        ra: float = 0.0,
+        dec: float = 0.0,
+        obsid: int = 0,
+        name: str = "FakeTarget",
+        merit: float = 100.0,
+        exptime: int | None = None,
+        ss_min: int = 300,
+        ss_max: int = 86400,
+    ) -> None:
+        """Add a pointing target to the queue.
+
+        Creates a new Pointing object with the specified parameters and adds it to the queue.
+
+        Args:
+            ra: Right ascension in degrees
+            dec: Declination in degrees
+            obsid: Observation ID
+            name: Target name
+            merit: Merit value for scheduling priority
+            exptime: Exposure time in seconds
+            ss_min: Minimum snapshot size in seconds
+            ss_max: Maximum snapshot size in seconds
+        """
+        pointing = Pointing(
+            constraint=self.constraint,
+            acs_config=self.acs_config,
+            ra=ra,
+            dec=dec,
+            obsid=obsid,
+            name=name,
+            merit=merit,
+            exptime=exptime,
+            ss_min=ss_min,
+            ss_max=ss_max,
+        )
+        pointing.visibility()
+        self.targets.append(pointing)
 
     def meritsort(self, ra: float, dec: float) -> None:
         """Sort target queue by merit based on visibility, type, and trigger recency."""

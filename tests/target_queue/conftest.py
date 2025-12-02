@@ -61,7 +61,14 @@ def mock_targets(mock_target):
 @pytest.fixture
 def queue_instance(mock_targets):
     """Fixture for a Queue instance."""
-    queue = Queue()
+    from unittest.mock import Mock
+
+    from conops.config import AttitudeControlSystem, Constraint
+
+    mock_constraint = Mock(spec=Constraint)
+    mock_acs_config = Mock(spec=AttitudeControlSystem)
+
+    queue = Queue(constraint=mock_constraint, acs_config=mock_acs_config)
     for target in mock_targets:
         queue.append(target)
     queue.ephem = Mock()

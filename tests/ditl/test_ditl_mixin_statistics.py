@@ -150,9 +150,14 @@ def test_print_statistics_with_queue():
     ditl.dec = [45.0]
 
     # Add a mock queue
-    from conops import Queue
+    from unittest.mock import Mock
 
-    ditl.queue = Queue()
+    from conops import Queue
+    from conops.config import AttitudeControlSystem, Constraint
+
+    mock_constraint = Mock(spec=Constraint)
+    mock_acs_config = Mock(spec=AttitudeControlSystem)
+    ditl.queue = Queue(constraint=mock_constraint, acs_config=mock_acs_config)
 
     # Capture stdout
     captured_output = io.StringIO()

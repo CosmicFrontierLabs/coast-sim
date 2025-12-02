@@ -102,7 +102,12 @@ class QueueDITL(DITLMixin, DITLStats):
         if queue is not None:
             self.queue = queue
         else:
-            self.queue = Queue(log=self.log, ephem=self.ephem)
+            self.queue = Queue(
+                log=self.log,
+                ephem=self.ephem,
+                constraint=self.constraint,
+                acs_config=self.config.spacecraft_bus.attitude_control,
+            )
 
         # Wire log into ACS so it can log events (if ACS exists)
         if hasattr(self, "acs"):

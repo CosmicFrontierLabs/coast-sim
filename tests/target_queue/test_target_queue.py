@@ -1,32 +1,45 @@
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from conops import Queue
+from conops.config import AttitudeControlSystem, Constraint
 
 
 class TestQueueInitAndAppend:
     def test_queue_init_targets_empty(self):
-        queue = Queue()
+        mock_constraint = Mock(spec=Constraint)
+        mock_acs_config = Mock(spec=AttitudeControlSystem)
+        queue = Queue(constraint=mock_constraint, acs_config=mock_acs_config)
         assert queue.targets == []
 
     def test_queue_init_ephem_none(self):
-        queue = Queue()
+        mock_constraint = Mock(spec=Constraint)
+        mock_acs_config = Mock(spec=AttitudeControlSystem)
+        queue = Queue(constraint=mock_constraint, acs_config=mock_acs_config)
         assert queue.ephem is None
 
     def test_queue_init_utime_none(self):
-        queue = Queue()
+        mock_constraint = Mock(spec=Constraint)
+        mock_acs_config = Mock(spec=AttitudeControlSystem)
+        queue = Queue(constraint=mock_constraint, acs_config=mock_acs_config)
         assert queue.utime is None
 
     def test_queue_init_gs_none(self):
-        queue = Queue()
+        mock_constraint = Mock(spec=Constraint)
+        mock_acs_config = Mock(spec=AttitudeControlSystem)
+        queue = Queue(constraint=mock_constraint, acs_config=mock_acs_config)
         assert queue.gs is None
 
     def test_queue_append_len(self, mock_target):
-        queue = Queue()
+        mock_constraint = Mock(spec=Constraint)
+        mock_acs_config = Mock(spec=AttitudeControlSystem)
+        queue = Queue(constraint=mock_constraint, acs_config=mock_acs_config)
         queue.append(mock_target)
         assert len(queue.targets) == 1
 
     def test_queue_append_target_equals(self, mock_target):
-        queue = Queue()
+        mock_constraint = Mock(spec=Constraint)
+        mock_acs_config = Mock(spec=AttitudeControlSystem)
+        queue = Queue(constraint=mock_constraint, acs_config=mock_acs_config)
         queue.append(mock_target)
         assert queue.targets[0] == mock_target
 
