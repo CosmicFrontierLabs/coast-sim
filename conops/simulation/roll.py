@@ -1,4 +1,5 @@
 import numpy as np
+import rust_ephem
 
 from ..common import dtutcfromtimestamp, rotvec, scbodyvector
 from ..config import DTOR, SolarPanelSet
@@ -6,7 +7,13 @@ from ..config import DTOR, SolarPanelSet
 """Roll computation helpers."""
 
 
-def optimum_roll(ra, dec, utime, ephem, solar_panel: SolarPanelSet | None = None):
+def optimum_roll(
+    ra: float,
+    dec: float,
+    utime: float,
+    ephem: rust_ephem.Ephemeris,
+    solar_panel: SolarPanelSet | None = None,
+) -> float:
     """Calculate the optimum roll angle (degrees in [0,360)).
 
     - If `solar_panel` is None: return closed-form optimum that minimizes the Sun's
@@ -90,7 +97,9 @@ def optimum_roll(ra, dec, utime, ephem, solar_panel: SolarPanelSet | None = None
     return float(deg[best_idx])
 
 
-def optimum_roll_sidemount(ra, dec, utime, ephem):
+def optimum_roll_sidemount(
+    ra: float, dec: float, utime: float, ephem: rust_ephem.Ephemeris
+) -> float:
     """Calculate the optimum Roll angle (in degrees) for a given Ra, Dec
     and Unix Time"""
     # Analytic optimum: choose roll that minimizes the Z-component of the
@@ -100,7 +109,7 @@ def optimum_roll_sidemount(ra, dec, utime, ephem):
 
     # Fetch ephemeris index and Sun vector
     index = ephem.index(dtutcfromtimestamp(utime))
-    sunvec = ephem.sunvec[index]
+    sunvec = ephem.sun[index].cartesian.xyz.to_value("km")  # km
 
     # Sun vector in body coordinates for roll=0
     s_body_0 = scbodyvector(ra, dec, 0.0, sunvec)

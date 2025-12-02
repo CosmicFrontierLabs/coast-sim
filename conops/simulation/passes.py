@@ -26,7 +26,7 @@ class Pass(BaseModel):
     # Pass metadata
     station: str
     begin: float
-    length: float | None = None
+    length: float
 
     # What type of observation is this, a Ground Station Pass (GSP)
     obstype: str = "GSP"
@@ -52,7 +52,7 @@ class Pass(BaseModel):
         assert self.length is not None, "Pass length must be set"
         return self.begin + self.length
 
-    def __str__(self):
+    def __str__(self) -> str:
         """Return string of details on the pass"""
         return f"{unixtime2date(self.begin):18s}  {self.station:3s}  {self.length / 60.0:4.1f} mins"  #  {self.time_to_pass():12s}"
 

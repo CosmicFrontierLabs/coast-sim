@@ -14,6 +14,7 @@ from ..config.constants import DTOR
 from ..simulation.passes import PassTimes
 from ..targets import Pointing
 from .acs_command import ACSCommand
+from .emergency_charging import EmergencyCharging
 from .passes import Pass
 from .slew import Slew
 
@@ -707,11 +708,11 @@ class ACS:
     def initiate_emergency_charging(
         self,
         utime: float,
-        ephem,
-        emergency_charging,
+        ephem: rust_ephem.Ephemeris,
+        emergency_charging: EmergencyCharging,
         lastra: float,
         lastdec: float,
-        current_ppt,
+        current_ppt: Pointing | None,
     ) -> tuple[float, float, Any]:
         """Initiate emergency charging by creating charging PPT and enqueuing charge command.
 
