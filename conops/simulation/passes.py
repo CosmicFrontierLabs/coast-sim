@@ -194,6 +194,7 @@ class Pass(BaseModel):
         Returns:
             Data rate in Mbps, or 0.0 if band not supported
         """
+        assert self.config is not None, "Config must be set for Pass class"
         if self.config.spacecraft_bus.communications is None:
             return 0.0
 
@@ -214,6 +215,7 @@ class Pass(BaseModel):
         Returns:
             Data volume in Megabits
         """
+        assert self.config is not None, "Config must be set for Pass class"
         if self.length is None or self.config.spacecraft_bus.communications is None:
             return 0.0
 
@@ -228,6 +230,7 @@ class Pass(BaseModel):
         Returns True when the pass time minus slew time is less than 60 seconds away.
         """
         assert self.ephem is not None, "Ephemeris must be set for Pass class"
+        assert self.config is not None, "Config must be set for Pass class"
 
         # Determine target pointing: if we're late, target where pass currently is
         if utime >= self.begin:
@@ -460,7 +463,8 @@ class PassTimes:
 
                         # Apply antenna pointing offset for fixed antennas
                         if (
-                            gspass.config.spacecraft_bus.communications is not None
+                            gspass.config is not None
+                            and gspass.config.spacecraft_bus.communications is not None
                             and gspass.config.spacecraft_bus.communications.antenna_pointing.antenna_type
                             == AntennaType.FIXED
                         ):

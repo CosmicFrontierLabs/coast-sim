@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 
 from ..common import unixtime2date
 from ..common.vector import angular_separation
-from ..config import AttitudeControlSystem, Config, Constraint, SolarPanelSet
+from ..config import Config
 from ..targets import Pointing
 
 
@@ -50,9 +50,6 @@ class EmergencyCharging:
     def __init__(
         self,
         config: Config | None = None,
-        constraint: Constraint | None = None,
-        solar_panel: SolarPanelSet | None = None,
-        acs_config: AttitudeControlSystem | None = None,
         starting_obsid: int = 999000,
         max_slew_deg: float | None = None,
         sidemount: bool = False,
@@ -70,17 +67,12 @@ class EmergencyCharging:
             max_slew_deg: Maximum slew distance in degrees from current pointing (default: None = no limit)
         """
         # Handle both old and new parameter styles for backward compatibility
-        if config is not None:
-            self.config = config
-            self.constraint = config.constraint
-            self.solar_panel = config.solar_panel
-            self.acs_config = config.spacecraft_bus.attitude_control
-        else:
-            # Legacy parameters
-            self.config = None
-            self.constraint = constraint
-            self.solar_panel = solar_panel
-            self.acs_config = acs_config
+
+        assert config is not None, "Config must be set for Pass class"
+        self.config = config
+        self.constraint = config.constraint
+        self.solar_panel = config.solar_panel
+        self.acs_config = config.spacecraft_bus.attitude_control
 
         self.next_charging_obsid = starting_obsid
         self.current_charging_ppt: Pointing | None = None
