@@ -1,5 +1,3 @@
-from datetime import datetime, timezone
-
 import matplotlib.pyplot as plt
 import rust_ephem
 
@@ -34,22 +32,31 @@ class DITLMixin:
     data_generated_gb: list[float]
     data_downlinked_gb: list[float]
 
-    def __init__(self, config: MissionConfig) -> None:
-        # Defining telemetry data points
+    def __init__(
+        self, config: MissionConfig, ephem: rust_ephem.Ephemeris | None = None
+    ) -> None:
+        # Initialize mixin
         self.config = config
+
+        # Set ephemeris if provided
+        if ephem is not None:
+            self.ephem = ephem
+            self.config.constraint.ephem = ephem
+        else:
+            assert config.constraint.ephem is not None, (
+                "Ephemeris must be set in Config Constraint"
+            )
+            self.ephem = config.constraint.ephem
+
         self.ra = []
         self.dec = []
         self.utime = []
         self.mode = []
         self.obsid = []
-        self.ephem = None
+        self.ephem = ephem
         # Defining when the model is run
-        self.begin = datetime(
-            2018, 11, 27, 0, 0, 0, tzinfo=timezone.utc
-        )  # Default: Nov 27, 2018 (day 331)
-        self.end = datetime(
-            2018, 11, 28, 0, 0, 0, tzinfo=timezone.utc
-        )  # Default: 1 day later
+        self.begin = None
+        self.end = None
         self.step_size = 60  # seconds
         self.ustart = 0.0  # Calculate these
         self.uend = 0.0  # later

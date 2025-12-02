@@ -65,10 +65,21 @@ def separation(one: npt.NDArray | list[float], two: npt.NDArray | list[float]) -
     twovec = radec2vec(two[0], two[1])
 
     # Flatten vectors to ensure they're 1D for dot product
-    onevec = np.atleast_1d(onevec).flatten()
-    twovec = np.atleast_1d(twovec).flatten()
+    onevec = np.atleast_1d(onevec).flatten().astype(float)
+    twovec = np.atleast_1d(twovec).flatten().astype(float)
 
-    return np.arccos(np.dot(onevec, twovec))
+    # Normalize and handle degenerate zero-length vectors
+    n1 = np.linalg.norm(onevec)
+    n2 = np.linalg.norm(twovec)
+    if n1 < 1e-15 or n2 < 1e-15:
+        # If either vector is effectively zero-length, treat separation as zero
+        return 0.0
+
+    # Compute cosine of the angle and clip to [-1, 1] to avoid rounding errors producing NaN
+    cosang = np.dot(onevec / n1, twovec / n2)
+    cosang = np.clip(cosang, -1.0, 1.0)
+
+    return np.arccos(cosang)
 
 
 def angular_separation(ra1: float, dec1: float, ra2: float, dec2: float) -> float:

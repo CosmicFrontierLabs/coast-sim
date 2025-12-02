@@ -22,14 +22,16 @@ class MissionConfig(BaseModel):
     """
 
     name: str = "Default Config"
-    spacecraft_bus: SpacecraftBus
-    solar_panel: SolarPanelSet
-    payload: Payload
-    battery: Battery
-    constraint: Constraint
-    ground_stations: GroundStationRegistry
-    recorder: OnboardRecorder = OnboardRecorder()
-    fault_management: FaultManagement | None = None
+    spacecraft_bus: SpacecraftBus = Field(default_factory=SpacecraftBus)
+    solar_panel: SolarPanelSet = Field(default_factory=SolarPanelSet)
+    payload: Payload = Field(default_factory=Payload)
+    battery: Battery = Field(default_factory=Battery)
+    constraint: Constraint = Field(default_factory=Constraint)
+    ground_stations: GroundStationRegistry = Field(
+        default_factory=GroundStationRegistry
+    )
+    recorder: OnboardRecorder = Field(default_factory=OnboardRecorder)
+    fault_management: FaultManagement = Field(default_factory=FaultManagement)
     observation_categories: ObservationCategories = (
         ObservationCategories.default_categories()
     )

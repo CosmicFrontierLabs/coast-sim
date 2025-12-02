@@ -10,7 +10,7 @@ class PowerDraw(BaseModel):
     specified for eclipse conditions (e.g., heaters drawing more power in eclipse).
     """
 
-    nominal_power: float = 200
+    nominal_power: float = 50  # Watts
     peak_power: float = 300
     power_mode: dict[int, float] = {}
     eclipse_power: float | None = None

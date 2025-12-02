@@ -9,8 +9,8 @@ from ..ditl.ditl_log import DITLLog
 from . import Pointing
 
 
-class Queue:
-    """Target Queue class, contains a list of targets for Spacecraft to observe."""
+class TargetQueue:
+    """TargetQueue class, contains a list of targets for Spacecraft to observe."""
 
     targets: list[Pointing]
     ephem: rust_ephem.Ephemeris | None
@@ -181,4 +181,4 @@ class Queue:
             target.reset()
 
 
-TargetQueue = Queue
+Queue = TargetQueue

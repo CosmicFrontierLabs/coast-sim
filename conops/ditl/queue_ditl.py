@@ -32,20 +32,7 @@ class QueueDITL(DITLMixin, DITLStats):
     emergency_charging: EmergencyCharging
     utime: list[float]  # Override to specify float instead of generic list
     ephem: rust_ephem.Ephemeris  # Override to make non-optional
-    _queue: Queue
-
-    @property
-    def queue(self) -> Queue:
-        """Get the target queue."""
-        return self._queue
-
-    @queue.setter
-    def queue(self, value: Queue) -> None:
-        """Set the target queue and wire the log into it."""
-        self._queue = value
-        # Wire log into queue if it exists
-        if hasattr(self, "log") and self.log is not None:
-            self._queue.log = self.log
+    queue: Queue
 
     def __init__(
         self,
@@ -55,8 +42,8 @@ class QueueDITL(DITLMixin, DITLStats):
         end: datetime | None = None,
         queue: Queue | None = None,
     ) -> None:
-        DITLMixin.__init__(self, config=config)
-        # Subsystems are initialized by the mixin's _init_subsystems()
+        # Initialize mixin
+        DITLMixin.__init__(self, config=config, ephem=ephem)
 
         # Override begin/end if provided
         if begin is not None:
@@ -64,9 +51,11 @@ class QueueDITL(DITLMixin, DITLStats):
         if end is not None:
             self.end = end
 
-        # Set ephemeris if provided
-        if ephem is not None:
-            self.ephem = ephem
+        # If begin/end are None, set them to the start and end of the ephemeris
+        if self.begin is None:
+            self.begin = self.ephem.timestamp[0]
+        if self.end is None:
+            self.end = self.ephem.timestamp[-1]
 
         # Current target (already set in mixin but repeated for clarity)
         self.ppt = None
@@ -101,6 +90,8 @@ class QueueDITL(DITLMixin, DITLStats):
         # Target Queue (use provided queue or create default)
         if queue is not None:
             self.queue = queue
+            if self.queue.log is None:
+                self.queue.log = self.log
         else:
             self.queue = Queue(
                 config=self.config,
@@ -358,12 +349,7 @@ class QueueDITL(DITLMixin, DITLStats):
             self.begin not in self.ephem.timestamp
             or self.end not in self.ephem.timestamp
         ):
-            self.log.log_event(
-                utime=self.ustart,
-                event_type="ERROR",
-                description="ERROR: Ephemeris not valid for date range",
-            )
-            return False
+            raise ValueError("ERROR: Ephemeris does not cover simulation date range")
 
         self.utime = (
             np.arange(self.ustart, self.uend, self.step_size).astype(float).tolist()

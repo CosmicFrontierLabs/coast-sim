@@ -148,16 +148,9 @@ class Slew:
 
         # Handle invalid distances
         if np.isnan(distance) or distance < 0:
-            print(
-                "WARNING: Invalid slew distance: %s (start=%s,%s end=%s,%s)",
-                distance,
-                self.startra,
-                self.startdec,
-                self.endra,
-                self.enddec,
+            raise ValueError(
+                f"Invalid slew distance: {distance} (start={self.startra},{self.startdec} end={self.endra},{self.enddec})"
             )
-            distance = 0.0
-            self.slewdist = 0.0
 
         # Calculate slew time using AttitudeControlSystem
         self.slewtime = round(self.acs_config.slew_time(distance))

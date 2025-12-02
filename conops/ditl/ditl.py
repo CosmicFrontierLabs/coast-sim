@@ -26,8 +26,8 @@ class DITL(DITLMixin, DITLStats):
         ephem (Ephemeris): Ephemeris data for position and illumination calculations.
         plan (Plan): Pre-planned pointing schedule to execute.
         acs (ACS): Attitude Control System for pointing and slew calculations.
-        begin (datetime): Start time for simulation (default: Nov 27, 2018 00:00:00 UTC).
-        end (datetime): End time for simulation (default: Nov 28, 2018 00:00:00 UTC).
+        begin (datetime): Start time for simulation (default: None).
+        end (datetime): End time for simulation (default: None).
         step_size (int): Time step in seconds (default: 60).
 
     Telemetry Arrays (populated during calc()):
@@ -106,19 +106,10 @@ class DITL(DITLMixin, DITLStats):
         """
         # A few sanity checks before we start
         if self.ephem is None:
-            self.log.log_event(
-                utime=self.begin.timestamp(),
-                event_type="ERROR",
-                description="ERROR: No ephemeris loaded",
-            )
-            return False
+            raise ValueError("ERROR: No ephemeris loaded")
+
         if self.plan is None:
-            self.log.log_event(
-                utime=self.begin.timestamp(),
-                event_type="ERROR",
-                description="ERROR: No Plan loaded",
-            )
-            return False
+            raise ValueError("ERROR: No plan loaded")
 
         # Set up ACS ephemeris if not already set
         if self.acs.ephem is None:
@@ -129,12 +120,8 @@ class DITL(DITLMixin, DITLStats):
         self.uend = self.end.timestamp()
         ephem_utime = [dt.timestamp() for dt in self.ephem.timestamp]
         if self.ustart not in ephem_utime or self.uend not in ephem_utime:
-            self.log.log_event(
-                utime=self.ustart,
-                event_type="ERROR",
-                description="ERROR: Ephemeris not valid for date range",
-            )
-            return False
+            raise ValueError("ERROR: Ephemeris does not cover simulation date range")
+
         self.utime = np.arange(self.ustart, self.uend, self.step_size).tolist()
 
         # Set up simulation telemetry arrays
