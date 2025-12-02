@@ -55,8 +55,6 @@ class DITLMixin:
         self.obsid = []
         self.ephem = ephem
         # Defining when the model is run
-        self.begin = None
-        self.end = None
         self.step_size = 60  # seconds
         self.ustart = 0.0  # Calculate these
         self.uend = 0.0  # later

@@ -45,16 +45,14 @@ class QueueDITL(DITLMixin, DITLStats):
         # Initialize mixin
         DITLMixin.__init__(self, config=config, ephem=ephem)
 
-        # Override begin/end if provided
+        # Override begin/end if provided, else use limits of ephemeris
         if begin is not None:
             self.begin = begin
+        else:
+            self.begin = self.ephem.timestamp[0]
         if end is not None:
             self.end = end
-
-        # If begin/end are None, set them to the start and end of the ephemeris
-        if self.begin is None:
-            self.begin = self.ephem.timestamp[0]
-        if self.end is None:
+        else:
             self.end = self.ephem.timestamp[-1]
 
         # Current target (already set in mixin but repeated for clarity)
