@@ -210,9 +210,9 @@ Add the recorder to your spacecraft configuration:
 
 .. code-block:: python
 
-   from conops.config import Config
+   from conops.config import MissionConfig
 
-   config = Config(
+   config = MissionConfig(
        name="Science Mission",
        spacecraft_bus=spacecraft_bus,
        solar_panel=solar_panel,
@@ -300,7 +300,7 @@ Configuration
 
    fault_mgmt = FaultManagement()
 
-   config = Config(
+   config = MissionConfig(
        # ... other config ...
        recorder=recorder,
        fault_management=fault_mgmt

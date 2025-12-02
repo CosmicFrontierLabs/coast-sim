@@ -10,11 +10,11 @@ Here's a simple example of running a Day-In-The-Life (DITL) simulation:
 .. code-block:: python
 
    from datetime import datetime, timedelta
-   from conops import Config, QueueDITL
+   from conops import MissionConfig, QueueDITL
    from rust_ephem import TLEEphemeris
 
    # Load configuration
-   config = Config.from_json("example_config.json")
+   config = MissionConfig.from_json("example_config.json")
 
    # Set simulation period
    begin = datetime(2025, 11, 1)
@@ -103,9 +103,9 @@ Then load and use it:
 
 .. code-block:: python
 
-   from conops.config import Config
+   from conops.config import MissionConfig
 
-   config = Config.from_json("my_spacecraft_config.json")
+   config = MissionConfig.from_json("my_spacecraft_config.json")
 
 Key Components
 --------------
@@ -176,7 +176,7 @@ All classes are available directly from the ``conops`` package:
 .. code-block:: python
 
    from conops import (
-       Config, ACS, DITL, QueueDITL, Pointing, Queue,
+       MissionConfig, ACS, DITL, QueueDITL, Pointing, Queue,
        DumbScheduler, ACSMode, ACSCommandType
    )
 

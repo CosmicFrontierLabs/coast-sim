@@ -61,10 +61,10 @@ This approach is ideal for rapid prototyping and testing different configuration
 
 .. code-block:: python
 
-   from conops import Config, QueueDITL
+   from conops import MissionConfig, QueueDITL
 
    # Load everything from configuration
-   config = Config.from_json("example_config.json")
+   config = MissionConfig.from_json("example_config.json")
 
    # Run simulation
    ditl = QueueDITL(config, ephemeris, begin, end)
@@ -203,7 +203,7 @@ Configure and simulate onboard data storage, generation, and downlink:
    )
 
    # Add to configuration
-   config = Config(
+   config = MissionConfig(
        spacecraft_bus=spacecraft_bus,
        payload=payload,
        recorder=recorder,

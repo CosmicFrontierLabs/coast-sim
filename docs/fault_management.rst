@@ -266,11 +266,11 @@ The fault management system is automatically integrated into the ``QueueDITL`` s
 
 .. code-block:: python
 
-   from conops.config import Config
+   from conops.config import MissionConfig
    from conops.queue_ditl import QueueDITL
 
    # Load config with fault_management section
-   config = Config.from_json("config_with_fault_management.json")
+   config = MissionConfig.from_json("config_with_fault_management.json")
 
    # Initialize defaults (adds battery_level threshold if not present)
    config.init_fault_management_defaults()

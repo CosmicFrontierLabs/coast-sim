@@ -44,13 +44,13 @@ Example:
 
 .. code-block:: python
 
-   from conops import Config, QueueDITL
+   from conops import MissionConfig, QueueDITL
    from conops.visualization import plot_ditl_telemetry, plot_acs_mode_distribution
    from conops.config.visualization import VisualizationConfig
    from rust_ephem import TLEEphemeris
    from datetime import datetime, timedelta
 
-   cfg = Config.from_json_file("examples/example_config.json")
+   cfg = MissionConfig.from_json_file("examples/example_config.json")
 
    # Customize visual style
    cfg.visualization.font_family = "Helvetica"

@@ -99,8 +99,8 @@ Main configuration class for the communications system.
 Configuration Examples
 ----------------------
 
-Python Configuration
-^^^^^^^^^^^^^^^^^^^^
+Python Mission Configuration
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. code-block:: python
 

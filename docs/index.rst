@@ -45,12 +45,12 @@ Quick Example
 .. code-block:: python
 
    from datetime import datetime, timedelta
-   from conops.config import Config
+   from conops.config import MissionConfig
    from conops.queue_ditl import QueueDITL
    from conops.ephemeris import compute_tle_ephemeris
 
    # Load configuration
-   config = Config.from_json("example_config.json")
+   config = MissionConfig.from_json("example_config.json")
 
    # Set simulation period
    begin = datetime(2025, 11, 1)

@@ -23,12 +23,12 @@ Quick Start
 
 .. code-block:: python
 
-   from conops import DITL, Config
+   from conops import DITL, MissionConfig
    from conops.visualization import plot_sky_pointing
    import matplotlib.pyplot as plt
 
    # Load configuration and create DITL
-   config = Config.from_json('config.json')
+   config = MissionConfig.from_json('config.json')
    ditl = DITL(config)
 
    # Run simulation
@@ -287,7 +287,7 @@ Run ``ditl.calc()`` before calling ``plot_sky_pointing()``
 
 **ValueError: "DITL constraint has no ephemeris set"**
 
-Ensure your Config has ephemeris data loaded
+Ensure your MissionConfig has ephemeris data loaded
 
 **Slow rendering**
 
