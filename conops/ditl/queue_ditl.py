@@ -6,7 +6,7 @@ import rust_ephem
 
 from ..common import ACSMode, unixtime2date
 from ..common.enums import ACSCommandType
-from ..config import Config
+from ..config import MissionConfig
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
 from ..simulation.slew import Slew
@@ -49,7 +49,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def __init__(
         self,
-        config: Config,
+        config: MissionConfig,
         ephem: rust_ephem.Ephemeris | None = None,
         begin: datetime | None = None,
         end: datetime | None = None,
@@ -511,7 +511,7 @@ class QueueDITL(DITLMixin, DITLStats):
         # Handle charging PPT constraint checks (regardless of mode)
         if self.ppt == self.charging_ppt:
             # Check constraints for charging PPT even if mode hasn't transitioned yet
-            if self.constraint.inoccult(self.ppt.ra, self.ppt.dec, utime):
+            if self.constraint.in_constraint(self.ppt.ra, self.ppt.dec, utime):
                 constraint_name = self._get_constraint_name(
                     self.ppt.ra, self.ppt.dec, utime
                 )
@@ -542,7 +542,7 @@ class QueueDITL(DITLMixin, DITLStats):
         """Check if PPT should terminate due to constraints, completion, or timeout."""
         assert self.ppt is not None
 
-        if self.constraint.inoccult(self.ppt.ra, self.ppt.dec, utime):
+        if self.constraint.in_constraint(self.ppt.ra, self.ppt.dec, utime):
             constraint_name = self._get_constraint_name(
                 self.ppt.ra, self.ppt.dec, utime
             )

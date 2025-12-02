@@ -33,7 +33,7 @@ def mock_constraint(mock_ephem):
     constraint.ephem = mock_ephem
     constraint.panel_constraint = Mock()
     constraint.panel_constraint.solar_panel = Mock()
-    constraint.inoccult = Mock(return_value=False)
+    constraint.in_constraint = Mock(return_value=False)
     constraint.in_eclipse = Mock(return_value=False)
     return constraint
 

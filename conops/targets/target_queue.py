@@ -4,7 +4,7 @@ import numpy as np
 import rust_ephem
 
 from ..common import unixtime2date
-from ..config import AttitudeControlSystem, Config, Constraint
+from ..config import AttitudeControlSystem, Constraint, MissionConfig
 from ..ditl.ditl_log import DITLLog
 from . import Pointing
 
@@ -19,11 +19,11 @@ class Queue:
     log: DITLLog | None
     constraint: Constraint | None
     acs_config: AttitudeControlSystem | None
-    config: Config | None
+    config: MissionConfig | None
 
     def __init__(
         self,
-        config: Config | None = None,
+        config: MissionConfig | None = None,
         ephem: rust_ephem.Ephemeris | None = None,
         log: DITLLog | None = None,
     ):

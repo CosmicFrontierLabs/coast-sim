@@ -369,7 +369,7 @@ class TestHandleChargingMode:
         mock_charging.done = False
         mock_charging.obsid = 999001  # Add obsid attribute
         queue_ditl.charging_ppt = mock_charging
-        queue_ditl.constraint.inoccult = Mock(return_value=True)
+        queue_ditl.constraint.in_constraint = Mock(return_value=True)
         queue_ditl._handle_charging_mode(1000.0)
         assert mock_charging.end == 1000.0
         assert mock_charging.done is True
@@ -439,7 +439,7 @@ class TestManagePPTLifecycle:
         mock_ppt.obsid = 1001  # Add obsid attribute
         queue_ditl.ppt = mock_ppt
         queue_ditl.charging_ppt = None
-        queue_ditl.constraint.inoccult = Mock(return_value=True)
+        queue_ditl.constraint.in_constraint = Mock(return_value=True)
         queue_ditl._manage_ppt_lifecycle(1000.0, ACSMode.SCIENCE)
         assert queue_ditl.ppt is None
 

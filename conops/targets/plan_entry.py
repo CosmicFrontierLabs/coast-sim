@@ -4,7 +4,7 @@ import numpy as np
 import rust_ephem
 
 from ..common import givename, roll_over_angle, unixtime2date
-from ..config import Config, Constraint
+from ..config import Constraint, MissionConfig
 from ..simulation.saa import SAA
 
 
@@ -24,7 +24,7 @@ class PlanEntry:
 
     def __init__(
         self,
-        config: Config | None = None,
+        config: MissionConfig | None = None,
     ) -> None:
         # Extract config parameters from Config object
         if config is None:

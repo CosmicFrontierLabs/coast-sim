@@ -6,13 +6,13 @@ import matplotlib.pyplot as plt
 import pytest
 
 from conops.common.enums import ACSMode
-from conops.config import Config
+from conops.config import MissionConfig
 from conops.ditl.ditl_mixin import DITLMixin
 
 
 @pytest.fixture
 def mock_config():
-    cfg = Mock(spec=Config)
+    cfg = Mock(spec=MissionConfig)
     # constraint with ephem required for ACS init
     # Build a minimal ephem with earth[0].ra.deg and dec.deg
     ra = Mock()

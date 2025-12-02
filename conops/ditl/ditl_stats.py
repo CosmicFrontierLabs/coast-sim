@@ -3,13 +3,13 @@ from datetime import datetime
 
 import numpy as np
 
-from ..config.config import Config
+from ..config.config import MissionConfig
 
 
 class DITLStats:
     """Mixin class providing statistics printing functionality for DITL simulations."""
 
-    config: Config
+    config: MissionConfig
     begin: datetime
     end: datetime
     step_size: int

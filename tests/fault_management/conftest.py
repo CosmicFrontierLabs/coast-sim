@@ -8,10 +8,10 @@ import rust_ephem
 
 from conops import (
     Battery,
-    Config,
     Constraint,
     FaultManagement,
     GroundStationRegistry,
+    MissionConfig,
     Payload,
     SolarPanelSet,
     SpacecraftBus,
@@ -67,7 +67,7 @@ def base_config():
     constraint.in_eclipse = Mock(return_value=False)
     ground_stations = Mock(spec=GroundStationRegistry)
     fm = FaultManagement()
-    cfg = Config(
+    cfg = MissionConfig(
         spacecraft_bus=spacecraft_bus,
         solar_panel=solar_panel,
         payload=payload,

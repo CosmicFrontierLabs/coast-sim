@@ -6,11 +6,11 @@ from unittest.mock import Mock
 from conops import (
     ACSMode,
     Battery,
-    Config,
     Constraint,
     DITLMixin,
     DITLStats,
     GroundStationRegistry,
+    MissionConfig,
     Payload,
     Queue,
     SolarPanelSet,
@@ -33,7 +33,7 @@ class DummyEphemeris:
 class MockDITL(DITLMixin, DITLStats):
     """Mock DITL class for testing."""
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: MissionConfig) -> None:
         super().__init__(config)
         # Initialize required lists
         self.ra = []
@@ -66,7 +66,7 @@ def create_test_config():
     constraint.ephem = DummyEphemeris()  # Use DummyEphemeris instead of Mock
     ground_stations = Mock(spec=GroundStationRegistry)
 
-    config = Config(
+    config = MissionConfig(
         name="Test Spacecraft",
         spacecraft_bus=spacecraft_bus,
         solar_panel=solar_panel,

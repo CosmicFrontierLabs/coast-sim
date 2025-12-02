@@ -6,9 +6,9 @@ import pytest
 
 from conops import (
     Battery,
-    Config,
     Constraint,
     GroundStationRegistry,
+    MissionConfig,
     Payload,
     SolarPanelSet,
     SpacecraftBus,
@@ -26,7 +26,7 @@ def minimal_config():
     ground_stations = Mock(spec=GroundStationRegistry)
     fault_management = None
 
-    config = Config(
+    config = MissionConfig(
         name=name,
         spacecraft_bus=spacecraft_bus,
         solar_panel=solar_panel,

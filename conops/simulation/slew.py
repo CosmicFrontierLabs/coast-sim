@@ -4,7 +4,7 @@ import numpy as np
 import rust_ephem
 
 from ..common import roll_over_angle, unixtime2date
-from ..config import AttitudeControlSystem, Config, Constraint
+from ..config import AttitudeControlSystem, Constraint, MissionConfig
 
 
 class Slew:
@@ -31,7 +31,7 @@ class Slew:
 
     def __init__(
         self,
-        config: Config | None = None,
+        config: MissionConfig | None = None,
         constraint: Constraint | None = None,
         acs_config: AttitudeControlSystem | None = None,
     ):

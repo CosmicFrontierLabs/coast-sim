@@ -4,7 +4,7 @@ import numpy as np
 import rust_ephem
 
 from ..common import dtutcfromtimestamp
-from ..config import Config
+from ..config import MissionConfig
 from ..simulation.saa import SAA
 from ..targets import Plan, PlanEntry, TargetList
 
@@ -20,7 +20,7 @@ class DumbScheduler:
     """
 
     def __init__(
-        self, config: Config, days: int = 1, log: "DITLLog | None" = None
+        self, config: MissionConfig, days: int = 1, log: "DITLLog | None" = None
     ) -> None:
         if config is None:
             raise ValueError("Config must be provided to DumbScheduler")
@@ -38,7 +38,7 @@ class DumbScheduler:
         self.targlist: TargetList = TargetList()
         self.step_size = self.ephem.step_size
         self.issurvey = False
-        self.config: Config | None = None  # optional: can be set externally
+        self.config: MissionConfig | None = None  # optional: can be set externally
         self.gimbled = False  # Default: not gimbled
         self.sidemount = False  # Default: not side-mounted
         self.log = log  # Optional log for event recording
@@ -98,7 +98,7 @@ class DumbScheduler:
 
                 # Evaluate constraints at each timestep in the observation window
                 utime_window = self.ephem.timestamp[begin_idx:end_idx]
-                in_occult = self.constraint.inoccult(
+                in_occult = self.constraint.in_constraint(
                     ra=task.ra,
                     dec=task.dec,
                     utime=utime_window,

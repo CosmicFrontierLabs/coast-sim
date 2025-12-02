@@ -1,7 +1,7 @@
 import numpy as np
 
 from ..common import unixtime2date
-from ..config import Config
+from ..config import MissionConfig
 from .plan_entry import PlanEntry
 
 
@@ -16,7 +16,7 @@ class Pointing(PlanEntry):
 
     def __init__(
         self,
-        config: Config | None = None,
+        config: MissionConfig | None = None,
         ra: float = 0.0,
         dec: float = 0.0,
         obsid: int = 0,

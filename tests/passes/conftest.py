@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from rust_ephem import TLEEphemeris
 
-from conops import Config, Constraint, Pass
+from conops import Constraint, MissionConfig, Pass
 from conops.config import (
     AttitudeControlSystem,
     Battery,
@@ -97,7 +97,7 @@ def mock_config(mock_constraint, mock_acs_config):
     battery = Battery(capacity_wh=1000, max_depth_of_discharge=0.8)
     solar_panel = SolarPanelSet(panels=[])
 
-    config = Config(
+    config = MissionConfig(
         spacecraft_bus=spacecraft_bus,
         solar_panel=solar_panel,
         payload=payload,

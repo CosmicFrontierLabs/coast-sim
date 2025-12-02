@@ -1,6 +1,6 @@
 import numpy as np
 
-from ..config import Config  # type: ignore[attr-defined]
+from ..config import MissionConfig
 from .ditl_log import DITLLog
 from .ditl_mixin import DITLMixin
 from .ditl_stats import DITLStats
@@ -46,7 +46,7 @@ class DITL(DITLMixin, DITLStats):
         data_downlinked_gb (np.ndarray): Data downlinked in Gb at each timestep.
     """
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: MissionConfig) -> None:
         """Initialize DITL with spacecraft configuration.
 
         Args:
@@ -55,7 +55,7 @@ class DITL(DITLMixin, DITLStats):
                 ground_stations). Must not be None.
 
         Raises:
-            AssertionError: If config is None. Config must be provided as it contains
+            AssertionError: If config is None. MissionConfig must be provided as it contains
                 all necessary spacecraft subsystems and constraints.
 
         Note:

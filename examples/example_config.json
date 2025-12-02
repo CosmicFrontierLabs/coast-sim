@@ -222,6 +222,12 @@
                 "yellow": 0.6,
                 "red": 0.5,
                 "direction": "below"
+            },
+            {
+                "name": "recorder_fill_fraction",
+                "yellow": 0.7,
+                "red": 0.9,
+                "direction": "above"
             }
         ],
         "red_limit_constraints": [
@@ -288,37 +294,5 @@
         ],
         "default_name": "Other",
         "default_color": "tab:purple"
-    },
-    "visualization": {
-        "mode_colors": {
-            "SCIENCE": "green",
-            "SLEWING": "orange",
-            "SAA": "purple",
-            "PASS": "cyan",
-            "CHARGING": "yellow",
-            "SAFE": "red"
-        },
-        "font_family": "Helvetica",
-        "title_font_size": 12,
-        "label_font_size": 10,
-        "legend_font_size": 8,
-        "tick_font_size": 9,
-        "figsize": [
-            14,
-            8
-        ],
-        "n_grid_points": 100,
-        "constraint_alpha": 0.3,
-        "time_step_seconds": 60.0,
-        "timeline_figsize": [
-            12,
-            5
-        ],
-        "timeline_font_size": 11,
-        "orbit_period_seconds": 5762.0,
-        "data_telemetry_figsize": [
-            12,
-            10
-        ]
     }
 }

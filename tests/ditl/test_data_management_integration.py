@@ -5,12 +5,12 @@ import pytest
 from conops.config import (
     BandCapability,
     Battery,
-    Config,
     Constraint,
     DataGeneration,
     GroundStation,
     GroundStationRegistry,
     Instrument,
+    MissionConfig,
     OnboardRecorder,
     Payload,
     SolarPanelSet,
@@ -52,7 +52,7 @@ class TestDataManagementIntegration:
         )
 
         # Create minimal config
-        config = Config(
+        config = MissionConfig(
             name="Test Config with Data",
             spacecraft_bus=SpacecraftBus(),
             solar_panel=SolarPanelSet(),
@@ -86,7 +86,7 @@ class TestDataManagementIntegration:
         """Test recorder operations work with config."""
         recorder = OnboardRecorder(capacity_gb=50.0)
 
-        config = Config(
+        config = MissionConfig(
             name="Test Config",
             spacecraft_bus=SpacecraftBus(),
             solar_panel=SolarPanelSet(),

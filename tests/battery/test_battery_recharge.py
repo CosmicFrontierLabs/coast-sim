@@ -258,7 +258,7 @@ class TestEmergencyCharging:
             emergency_charging.constraint, "in_eclipse", lambda ra, dec, time: False
         )
         monkeypatch.setattr(
-            emergency_charging.constraint, "inoccult", lambda ra, dec, time: False
+            emergency_charging.constraint, "in_constraint", lambda ra, dec, time: False
         )
         ppt = emergency_charging.create_charging_pointing(utime, mock_ephem)
         assert ppt is not None
@@ -327,10 +327,10 @@ class TestEmergencyCharging:
     def test_create_charging_pointing_constraint_violation_returns_alternative_ra(
         self, emergency_charging, mock_ephem, monkeypatch, utime
     ):
-        def mock_inoccult(ra, dec, utime, hardonly=True):
+        def mock_in_constraint(ra, dec, utime, hardonly=True):
             return ra == 180.0
 
-        emergency_charging.constraint.inoccult = mock_inoccult
+        emergency_charging.constraint.in_constraint = mock_in_constraint
 
         def mock_illumination(time, ra, dec, ephem):
             if ra == 210.0:
@@ -352,7 +352,7 @@ class TestEmergencyCharging:
     def test_create_charging_pointing_no_valid_pointing_returns_none_and_no_current(
         self, emergency_charging, mock_ephem, monkeypatch, utime
     ):
-        emergency_charging.constraint.inoccult = Mock(return_value=True)
+        emergency_charging.constraint.in_constraint = Mock(return_value=True)
         monkeypatch.setattr(
             emergency_charging.constraint, "in_eclipse", lambda ra, dec, time: False
         )
@@ -414,7 +414,7 @@ class TestEmergencyCharging:
         sun_ra = 180.0
         sun_dec = 0.0
         utime = 1700000000.0
-        emergency_charging.constraint.inoccult = Mock(return_value=False)
+        emergency_charging.constraint.in_constraint = Mock(return_value=False)
         ra, dec = self._helper_find_valid_pointing_sidemount(
             emergency_charging, sun_ra, sun_dec, utime
         )
@@ -426,7 +426,7 @@ class TestEmergencyCharging:
         sun_ra = 180.0
         sun_dec = 0.0
         utime = 1700000000.0
-        emergency_charging.constraint.inoccult = Mock(return_value=False)
+        emergency_charging.constraint.in_constraint = Mock(return_value=False)
         ra, dec = self._helper_find_valid_pointing_sidemount(
             emergency_charging, sun_ra, sun_dec, utime
         )
@@ -438,7 +438,7 @@ class TestEmergencyCharging:
         sun_ra = 180.0
         sun_dec = 0.0
         utime = 1700000000.0
-        emergency_charging.constraint.inoccult = Mock(return_value=False)
+        emergency_charging.constraint.in_constraint = Mock(return_value=False)
         ra, dec = self._helper_find_valid_pointing_sidemount(
             emergency_charging, sun_ra, sun_dec, utime
         )
@@ -471,10 +471,10 @@ class TestEmergencyCharging:
         sun_dec = 45.0
         utime = 1700000000.0
 
-        def mock_inoccult(ra, dec, utime, hardonly=True):
+        def mock_in_constraint(ra, dec, utime, hardonly=True):
             return ra <= 180.0
 
-        emergency_charging.constraint.inoccult = mock_inoccult
+        emergency_charging.constraint.in_constraint = mock_in_constraint
         ra, dec = emergency_charging._find_valid_pointing_sidemount(
             sun_ra, sun_dec, utime
         )
@@ -487,10 +487,10 @@ class TestEmergencyCharging:
         sun_dec = 45.0
         utime = 1700000000.0
 
-        def mock_inoccult(ra, dec, utime, hardonly=True):
+        def mock_in_constraint(ra, dec, utime, hardonly=True):
             return ra <= 180.0
 
-        emergency_charging.constraint.inoccult = mock_inoccult
+        emergency_charging.constraint.in_constraint = mock_in_constraint
         ra, dec = emergency_charging._find_valid_pointing_sidemount(
             sun_ra, sun_dec, utime
         )
@@ -503,10 +503,10 @@ class TestEmergencyCharging:
         sun_dec = 45.0
         utime = 1700000000.0
 
-        def mock_inoccult(ra, dec, utime, hardonly=True):
+        def mock_in_constraint(ra, dec, utime, hardonly=True):
             return ra <= 180.0
 
-        emergency_charging.constraint.inoccult = mock_inoccult
+        emergency_charging.constraint.in_constraint = mock_in_constraint
         ra, dec = emergency_charging._find_valid_pointing_sidemount(
             sun_ra, sun_dec, utime
         )
@@ -519,10 +519,10 @@ class TestEmergencyCharging:
         sun_dec = 45.0
         utime = 1700000000.0
 
-        def mock_inoccult(ra, dec, utime, hardonly=True):
+        def mock_in_constraint(ra, dec, utime, hardonly=True):
             return ra <= 180.0
 
-        emergency_charging.constraint.inoccult = mock_inoccult
+        emergency_charging.constraint.in_constraint = mock_in_constraint
         ra, dec = emergency_charging._find_valid_pointing_sidemount(
             sun_ra, sun_dec, utime
         )
@@ -554,7 +554,7 @@ class TestEmergencyCharging:
         sun_ra = 0.0
         sun_dec = 0.0
         utime = 1700000000.0
-        emergency_charging.constraint.inoccult = Mock(return_value=True)
+        emergency_charging.constraint.in_constraint = Mock(return_value=True)
         ra, dec = emergency_charging._find_valid_pointing_sidemount(
             sun_ra, sun_dec, utime
         )
@@ -566,7 +566,7 @@ class TestEmergencyCharging:
         sun_ra = 0.0
         sun_dec = 0.0
         utime = 1700000000.0
-        emergency_charging.constraint.inoccult = Mock(return_value=True)
+        emergency_charging.constraint.in_constraint = Mock(return_value=True)
         ra, dec = emergency_charging._find_valid_pointing_sidemount(
             sun_ra, sun_dec, utime
         )
@@ -578,7 +578,7 @@ class TestEmergencyCharging:
         sun_ra = 0.0
         sun_dec = 85.0
         utime = 1700000000.0
-        emergency_charging.constraint.inoccult = Mock(return_value=False)
+        emergency_charging.constraint.in_constraint = Mock(return_value=False)
         ra, dec = emergency_charging._find_valid_pointing_sidemount(
             sun_ra, sun_dec, utime
         )
@@ -590,7 +590,7 @@ class TestEmergencyCharging:
         sun_ra = 0.0
         sun_dec = 85.0
         utime = 1700000000.0
-        emergency_charging.constraint.inoccult = Mock(return_value=False)
+        emergency_charging.constraint.in_constraint = Mock(return_value=False)
         ra, dec = emergency_charging._find_valid_pointing_sidemount(
             sun_ra, sun_dec, utime
         )
@@ -602,7 +602,7 @@ class TestEmergencyCharging:
         sun_ra = 0.0
         sun_dec = 85.0
         utime = 1700000000.0
-        emergency_charging.constraint.inoccult = Mock(return_value=False)
+        emergency_charging.constraint.in_constraint = Mock(return_value=False)
         ra, dec = emergency_charging._find_valid_pointing_sidemount(
             sun_ra, sun_dec, utime
         )
@@ -644,7 +644,7 @@ class TestEmergencyCharging:
             "optimal_charging_pointing",
             Mock(return_value=(100.0, 0.0)),
         )
-        mock_config.constraint.inoccult = Mock(return_value=False)
+        mock_config.constraint.in_constraint = Mock(return_value=False)
 
         def mock_illumination(time, ra, dec, ephem):
             if abs(ra) < 60 or ra > 300:
@@ -734,7 +734,7 @@ class TestEmergencyCharging:
         mock_config,
     ):
         utime = 1700000000.0
-        mock_config.constraint.inoccult = Mock(return_value=False)
+        mock_config.constraint.in_constraint = Mock(return_value=False)
 
         def mock_illumination(time, ra, dec, ephem):
             ra_rad = np.radians(ra)
@@ -781,7 +781,7 @@ class TestEmergencyCharging:
         sun_ra = 90.0
         sun_dec = 0.0
         utime = 1700000000.0
-        mock_config.constraint.inoccult = Mock(return_value=False)
+        mock_config.constraint.in_constraint = Mock(return_value=False)
 
         def mock_illumination(time, ra, dec, ephem):
             ra_rad = np.radians(ra)
@@ -829,10 +829,10 @@ class TestEmergencyCharging:
         optimal_dec = 0.0
         utime = 1700000000.0
 
-        def mock_inoccult(ra, dec, utime_inner, hardonly=True):
+        def mock_in_constraint(ra, dec, utime_inner, hardonly=True):
             return abs(ra - optimal_ra) < 1e-6 and abs(dec - optimal_dec) < 1e-6
 
-        mock_config.constraint.inoccult = mock_inoccult
+        mock_config.constraint.in_constraint = mock_in_constraint
         object.__setattr__(
             mock_config.solar_panel,
             "optimal_charging_pointing",
@@ -877,7 +877,7 @@ class TestEmergencyCharging:
     ):
         utime = 1700000000.0
         optimal_ra, optimal_dec = 140.0, -10.0
-        mock_config.constraint.inoccult = Mock(return_value=False)
+        mock_config.constraint.in_constraint = Mock(return_value=False)
         object.__setattr__(
             mock_config.solar_panel,
             "optimal_charging_pointing",
@@ -921,7 +921,7 @@ class TestEmergencyCharging:
     ):
         utime = 1700000000.0
         optimal_ra, optimal_dec = 180.0, 0.0
-        mock_config.constraint.inoccult = Mock(return_value=False)
+        mock_config.constraint.in_constraint = Mock(return_value=False)
         object.__setattr__(
             mock_config.solar_panel,
             "optimal_charging_pointing",
@@ -944,7 +944,7 @@ class TestEmergencyCharging:
     ):
         utime = 1700000000.0
         optimal_ra, optimal_dec = 180.0, 0.0
-        mock_config.constraint.inoccult = Mock(return_value=False)
+        mock_config.constraint.in_constraint = Mock(return_value=False)
         object.__setattr__(
             mock_config.solar_panel,
             "optimal_charging_pointing",
@@ -967,7 +967,7 @@ class TestEmergencyCharging:
     ):
         utime = 1700000000.0
         optimal_ra, optimal_dec = 180.0, 0.0
-        mock_config.constraint.inoccult = Mock(return_value=False)
+        mock_config.constraint.in_constraint = Mock(return_value=False)
         object.__setattr__(
             mock_config.solar_panel,
             "optimal_charging_pointing",

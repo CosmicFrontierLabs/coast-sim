@@ -10,10 +10,10 @@ from conops.config import (
     BandCapability,
     Battery,
     CommunicationsSystem,
-    Config,
     Constraint,
     GroundStation,
     GroundStationRegistry,
+    MissionConfig,
     Payload,
     SolarPanelSet,
     SpacecraftBus,
@@ -113,7 +113,7 @@ class TestEffectiveDataRate:
         spacecraft_bus = SpacecraftBus(
             attitude_control=AttitudeControlSystem(), communications=comms
         )
-        config = Config(
+        config = MissionConfig(
             spacecraft_bus=spacecraft_bus,
             solar_panel=SolarPanelSet(panels=[]),
             payload=Payload(instruments=[]),
@@ -150,7 +150,7 @@ class TestEffectiveDataRate:
         spacecraft_bus = SpacecraftBus(
             attitude_control=AttitudeControlSystem(), communications=None
         )
-        config = Config(
+        config = MissionConfig(
             spacecraft_bus=spacecraft_bus,
             solar_panel=SolarPanelSet(panels=[]),
             payload=Payload(instruments=[]),
@@ -192,7 +192,7 @@ class TestEffectiveDataRate:
         spacecraft_bus = SpacecraftBus(
             attitude_control=AttitudeControlSystem(), communications=comms
         )
-        config = Config(
+        config = MissionConfig(
             spacecraft_bus=spacecraft_bus,
             solar_panel=SolarPanelSet(panels=[]),
             payload=Payload(instruments=[]),
@@ -234,7 +234,7 @@ class TestEffectiveDataRate:
         spacecraft_bus = SpacecraftBus(
             attitude_control=AttitudeControlSystem(), communications=comms
         )
-        config = Config(
+        config = MissionConfig(
             spacecraft_bus=spacecraft_bus,
             solar_panel=SolarPanelSet(panels=[]),
             payload=Payload(instruments=[]),
@@ -279,7 +279,7 @@ class TestEffectiveDataRate:
         spacecraft_bus = SpacecraftBus(
             attitude_control=AttitudeControlSystem(), communications=comms
         )
-        config = Config(
+        config = MissionConfig(
             spacecraft_bus=spacecraft_bus,
             solar_panel=SolarPanelSet(panels=[]),
             payload=Payload(instruments=[]),
@@ -329,7 +329,7 @@ class TestEffectiveDataRate:
         spacecraft_bus = SpacecraftBus(
             attitude_control=AttitudeControlSystem(), communications=comms
         )
-        config = Config(
+        config = MissionConfig(
             spacecraft_bus=spacecraft_bus,
             solar_panel=SolarPanelSet(panels=[]),
             payload=Payload(instruments=[]),
@@ -372,7 +372,7 @@ class TestEffectiveDataRate:
         spacecraft_bus = SpacecraftBus(
             attitude_control=AttitudeControlSystem(), communications=comms
         )
-        config = Config(
+        config = MissionConfig(
             spacecraft_bus=spacecraft_bus,
             solar_panel=SolarPanelSet(panels=[]),
             payload=Payload(instruments=[]),
@@ -416,7 +416,7 @@ class TestEffectiveDataRate:
         spacecraft_bus = SpacecraftBus(
             attitude_control=AttitudeControlSystem(), communications=comms
         )
-        config = Config(
+        config = MissionConfig(
             spacecraft_bus=spacecraft_bus,
             solar_panel=SolarPanelSet(panels=[]),
             payload=Payload(instruments=[]),

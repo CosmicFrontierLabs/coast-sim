@@ -9,7 +9,7 @@ from ..common import (
     unixtime2date,
     unixtime2yearday,
 )
-from ..config import Config
+from ..config import MissionConfig
 from ..config.constants import DTOR
 from ..simulation.passes import PassTimes
 from ..targets import Pointing
@@ -45,12 +45,12 @@ class ACS:
     last_slew: Slew | None
     in_eclipse: bool
 
-    def __init__(self, config: Config, log: "DITLLog | None" = None) -> None:
+    def __init__(self, config: MissionConfig, log: "DITLLog | None" = None) -> None:
         """Initialize the Attitude Control System.
 
         Args:
             constraint: Constraint object with ephemeris.
-            config: Configuration object.
+            config: MissionConfiguration object.
             log: Optional DITLLog for event logging. If None, prints to stdout.
         """
         assert config.constraint is not None, "Constraint must be provided to ACS"
@@ -553,7 +553,7 @@ class ACS:
             and self.last_slew.at is not None
             and not isinstance(self.last_slew.at, bool)
             and self.last_slew.obstype == "PPT"
-            and self.constraint.inoccult(
+            and self.constraint.in_constraint(
                 self.last_slew.at.ra, self.last_slew.at.dec, utime
             )
         ):

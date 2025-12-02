@@ -177,7 +177,7 @@ class Constraint(BaseModel):
         )
         return result.constraint_array
 
-    def inoccult(
+    def in_constraint(
         self, ra: float, dec: float, utime: float | Iterable[datetime]
     ) -> bool | np.ndarray:
         """For a given time is a RA/Dec in occult?"""
@@ -207,7 +207,7 @@ class Constraint(BaseModel):
             in_anti_sun = self.in_anti_sun(ra, dec, utime)
             return in_sun | in_anti_sun | in_earth | in_moon | in_panel
 
-    def inoccult_count(self, ra, dec, utime):
+    def in_constraint_count(self, ra, dec, utime):
         count = 0
         if self.in_sun(ra, dec, utime):
             count += 2

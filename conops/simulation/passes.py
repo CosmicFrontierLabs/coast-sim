@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 from ..common import ics_date_conv, unixtime2date
 from ..common.vector import radec2vec, rotvec, separation, vec2radec
-from ..config import Config, Constraint, GroundStationRegistry
+from ..config import Constraint, GroundStationRegistry, MissionConfig
 from ..config.communications import AntennaType
 from ..config.constants import DTOR
 
@@ -21,7 +21,7 @@ class Pass(BaseModel):
 
     # Core dependencies
     ephem: rust_ephem.Ephemeris | None = None
-    config: Config | None = None
+    config: MissionConfig | None = None
 
     # Pass metadata
     station: str
@@ -273,11 +273,11 @@ class PassTimes:
     constraint: Constraint
     ephem: rust_ephem.Ephemeris
     ground_stations: GroundStationRegistry
-    config: Config
+    config: MissionConfig
 
     def __init__(
         self,
-        config: Config,
+        config: MissionConfig,
     ):
         self.constraint = config.constraint
         assert self.constraint is not None, "Constraint must be set for PassTimes class"

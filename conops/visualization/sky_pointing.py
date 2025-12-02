@@ -75,7 +75,7 @@ def plot_sky_pointing(
         Time step in seconds for controls. If None, uses ditl.step_size (default: None).
     constraint_alpha : float, optional
         Alpha transparency for constraint regions (default: 0.3).
-    config : Config, optional
+    config : MissionConfig, optional
         Configuration object containing visualization settings. If None, uses ditl.config.visualization if available.
 
     Returns
@@ -989,7 +989,7 @@ def save_sky_pointing_frames(
         Grid resolution for constraints.
     frame_interval : int
         Save every Nth time step (default: 1 = save all).
-    config : Config, optional
+    config : MissionConfig, optional
         Configuration object containing visualization settings.
 
     Returns
@@ -1083,7 +1083,7 @@ def save_sky_pointing_movie(
     bitrate : int, optional
         Video bitrate in kbps (default: 1800).
         Higher values create better quality but larger files.
-    config : Config, optional
+    config : MissionConfig, optional
         Configuration object containing visualization settings. If None,
         uses ditl.config.visualization if available.
     show_progress : bool, optional

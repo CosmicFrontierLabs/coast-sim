@@ -62,7 +62,7 @@ def mock_config_detailed():
     config.constraint.ephem = DummyEphemeris()
     config.constraint.panel_constraint = Mock()
     config.constraint.panel_constraint.solar_panel = Mock()
-    config.constraint.inoccult = Mock(return_value=False)
+    config.constraint.in_constraint = Mock(return_value=False)
 
     # Mock battery
     config.battery = Mock()

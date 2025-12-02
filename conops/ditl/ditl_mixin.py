@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import matplotlib.pyplot as plt
 import rust_ephem
 
-from ..config import Config
+from ..config import MissionConfig
 from ..simulation.acs import ACS
 from ..simulation.passes import PassTimes
 from ..targets import Plan, PlanEntry
@@ -34,7 +34,7 @@ class DITLMixin:
     data_generated_gb: list[float]
     data_downlinked_gb: list[float]
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: MissionConfig) -> None:
         # Defining telemetry data points
         self.config = config
         self.ra = []

@@ -7,7 +7,7 @@ from .communications import (
     CommunicationsSystem,
     Polarization,
 )
-from .config import Config
+from .config import MissionConfig
 from .constants import DAY_SECONDS, DTOR
 from .constraint import Constraint
 from .fault_management import (
@@ -34,7 +34,7 @@ __all__ = [
     "BandCapability",
     "Battery",
     "CommunicationsSystem",
-    "Config",
+    "MissionConfig",
     "Constraint",
     "DataGeneration",
     "FaultConstraint",

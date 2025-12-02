@@ -12,8 +12,8 @@ from conops import SAA, DumbScheduler
 from conops.config import (
     AttitudeControlSystem,
     Battery,
-    Config,
     GroundStationRegistry,
+    MissionConfig,
     Payload,
     SolarPanel,
     SolarPanelSet,
@@ -112,7 +112,7 @@ class MockConstraint(RealConstraint):
     # Allow assigning methods/attributes at runtime in tests (monkeypatching)
     model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
 
-    def inoccult(self, ra, dec, utime, hardonly=True):
+    def in_constraint(self, ra, dec, utime, hardonly=True):
         # If utime is an iterable (list/np.ndarray or something with __len__),
         # return a numpy boolean array matching its length to mimic the real
         # Constraint behavior.
@@ -158,13 +158,13 @@ def mock_config(mock_ephemeris, mock_constraint):
     battery = Battery(capacity_wh=1000, max_depth_of_discharge=0.8)
     solar_panel = SolarPanelSet(panels=[SolarPanel(sidemount=False)])
 
-    # Use the mock_constraint fixture so inoccult returns arrays when
+    # Use the mock_constraint fixture so in_constraint returns arrays when
     # utime is an iterable. Assign the ephemeris that was created for
     # the test so other components can rely on it.
     constraint = mock_constraint
     constraint.ephem = mock_ephemeris
 
-    config = Config(
+    config = MissionConfig(
         spacecraft_bus=spacecraft_bus,
         solar_panel=solar_panel,
         payload=payload,
@@ -182,7 +182,7 @@ def scheduler(mock_config, mock_saa):
     scheduler.saa = mock_saa
     scheduler.config = mock_config  # Set the config for PlanEntry creation
     # Ensure the scheduler uses the mock_constraint that returns arrays
-    # from inoccult so the scheduling logic can iterate over the
+    # from in_constraint so the scheduling logic can iterate over the
     # result without encountering scalar returns.
     scheduler.constraint = mock_config.constraint
     return scheduler

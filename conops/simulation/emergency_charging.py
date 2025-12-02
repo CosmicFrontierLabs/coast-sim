@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 
 from ..common import unixtime2date
 from ..common.vector import angular_separation
-from ..config import Config
+from ..config import MissionConfig
 from ..targets import Pointing
 
 
@@ -49,7 +49,7 @@ class EmergencyCharging:
 
     def __init__(
         self,
-        config: Config | None = None,
+        config: MissionConfig | None = None,
         starting_obsid: int = 999000,
         max_slew_deg: float | None = None,
         sidemount: bool = False,
@@ -59,7 +59,7 @@ class EmergencyCharging:
         Initialize emergency charging manager.
 
         Args:
-            config: Config object containing all spacecraft configuration
+            config: MissionConfig object containing all spacecraft configuration
 
             starting_obsid: Starting obsid for charging observations (default: 999000)
             max_slew_deg: Maximum slew distance in degrees from current pointing (default: None = no limit)
@@ -220,7 +220,7 @@ class EmergencyCharging:
             Tuple of (ra, dec) if valid pointing found, or (None, None) if not
         """
         # Validate optimal pointing
-        if not self.constraint.inoccult(optimal_ra, optimal_dec, utime):
+        if not self.constraint.in_constraint(optimal_ra, optimal_dec, utime):
             # Check if within slew limit
             if self.max_slew_deg is not None:
                 slew = angular_separation(
@@ -280,7 +280,7 @@ class EmergencyCharging:
         # Evaluate each candidate
         for alt_ra, alt_dec in candidates:
             # Check if this pointing violates constraints
-            if self.constraint.inoccult(alt_ra, alt_dec, utime):
+            if self.constraint.in_constraint(alt_ra, alt_dec, utime):
                 continue  # Skip constrained pointings
 
             # Check slew distance if limit is set
@@ -400,7 +400,7 @@ class EmergencyCharging:
         best_slew = float("inf")
 
         for candidate_ra, candidate_dec in candidates:
-            if self.constraint.inoccult(candidate_ra, candidate_dec, utime):
+            if self.constraint.in_constraint(candidate_ra, candidate_dec, utime):
                 continue  # Skip constrained pointings
 
             # If no current position provided, return first valid pointing
@@ -507,7 +507,7 @@ class EmergencyCharging:
             return "battery_recharged"
 
         # Constraint violation (e.g., occultation)
-        if self.constraint.inoccult(
+        if self.constraint.in_constraint(
             self.current_charging_ppt.ra, self.current_charging_ppt.dec, utime
         ):
             return "constraint"

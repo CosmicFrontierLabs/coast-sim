@@ -7,9 +7,9 @@ import pytest
 
 from conops import (
     Battery,
-    Config,
     Constraint,
     EmergencyCharging,
+    MissionConfig,
     QueueDITL,
     SolarPanel,
     SolarPanelSet,
@@ -50,7 +50,7 @@ def battery_with_dod_and_threshold():
 def mock_constraint():
     """Create a mock constraint."""
     constraint = Mock(spec=Constraint)
-    constraint.inoccult = Mock(return_value=False)
+    constraint.in_constraint = Mock(return_value=False)
     constraint.ephem = Mock()  # Add ephem for Pointing initialization
     # Add panel_constraint with solar_panel for EmergencyCharging initialization
     constraint.panel_constraint = Mock()
@@ -99,10 +99,10 @@ def mock_config(mock_ephem):
 
     constraint = Mock(spec=Constraint)
     constraint.ephem = mock_ephem
-    constraint.inoccult = Mock(return_value=False)
+    constraint.in_constraint = Mock(return_value=False)
     constraint.in_eclipse = Mock(return_value=False)
 
-    config = Config(
+    config = MissionConfig(
         spacecraft_bus=spacecraft_bus,
         solar_panel=solar_panel,
         payload=payload,

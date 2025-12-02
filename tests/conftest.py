@@ -39,15 +39,15 @@ def config_with_payload_constraint(base_constraint, payload_constraint):
     """Create a config with payload constraint."""
     from conops import (
         Battery,
-        Config,
         FaultManagement,
         GroundStationRegistry,
+        MissionConfig,
         Payload,
         SolarPanelSet,
         SpacecraftBus,
     )
 
-    config = Config(
+    config = MissionConfig(
         name="Test Config",
         spacecraft_bus=SpacecraftBus(),
         solar_panel=SolarPanelSet(),

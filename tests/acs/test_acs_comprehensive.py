@@ -397,7 +397,7 @@ class TestPointing:
         mock_slew.at.in_panel = Mock(return_value=False)
 
         acs.last_slew = mock_slew
-        acs.constraint.inoccult = Mock(return_value=True)
+        acs.constraint.in_constraint = Mock(return_value=True)
 
         ra, dec, roll, obsid = acs.pointing(1514764800.0)
 
@@ -419,7 +419,7 @@ class TestPointing:
         mock_slew.at = None  # No at attribute
 
         acs.last_slew = mock_slew
-        acs.constraint.inoccult = Mock(return_value=False)
+        acs.constraint.in_constraint = Mock(return_value=False)
 
         ra, dec, roll, obsid = acs.pointing(1514764800.0)
 

@@ -87,34 +87,6 @@ class TestPointingNextVis:
         assert pointing.next_vis(10.0) == 15.0
 
 
-class TestPointingExposure:
-    """Test exposure calculation with and without SAA."""
-
-    # def test_exposure_calculation_without_saa(self):
-    #     c = DummyConstraint(step_size=1)
-    #     tr = Pointing(constraint=c, acs_config=DummyACSConfig())
-    #     tr.begin = 0.0
-    #     tr.end = 10.0
-    #     tr.slewtime = 2.0
-    #     tr.saa = None  # force saatime to 0 in else branch
-    #     exposure = tr.exposure
-    #     assert exposure == pytest.approx(8.0)
-
-    # def test_exposure_calculation_with_saa(self):
-    #     c = DummyConstraint(step_size=1)
-    #     tr = Pointing(constraint=c, acs_config=DummyACSConfig())
-    #     tr.begin = 0.0
-    #     tr.end = 10.0
-    #     tr.slewtime = 2.0
-    #     # insaa returns 1 for all steps from 2..9 inclusive => 8 steps
-    #     tr.saa = DummySAA(value=1)
-    #     exposure = tr.exposure
-    #     # end - begin - slewtime - saatime => 10 - 0 - 2 - 8 = 0
-    #     assert exposure == pytest.approx(0.0)
-    #     # saatime should be recorded
-    #     assert tr.saatime == pytest.approx(8.0)
-
-
 class TestPointingStringRepresentation:
     """Test string representation of Pointing."""
 
