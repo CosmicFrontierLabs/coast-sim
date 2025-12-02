@@ -136,10 +136,8 @@ def queue_ditl(mock_config, mock_ephem):
         mock_queue.get = Mock(return_value=None)
         mock_queue_class.return_value = mock_queue
 
-        ditl = QueueDITL(config=mock_config)
-        ditl.ephem = mock_ephem
+        ditl = QueueDITL(config=mock_config, ephem=mock_ephem, queue=mock_queue)
         ditl.acs = mock_acs
-        ditl.queue = mock_queue
 
         return ditl
 

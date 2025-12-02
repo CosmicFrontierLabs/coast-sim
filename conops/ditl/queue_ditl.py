@@ -1,4 +1,4 @@
-from datetime import timezone
+from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
@@ -47,9 +47,26 @@ class QueueDITL(DITLMixin, DITLStats):
         if hasattr(self, "log") and self.log is not None:
             self._queue.log = self.log
 
-    def __init__(self, config: Config) -> None:
+    def __init__(
+        self,
+        config: Config,
+        ephem: rust_ephem.Ephemeris | None = None,
+        begin: datetime | None = None,
+        end: datetime | None = None,
+        queue: Queue | None = None,
+    ) -> None:
         DITLMixin.__init__(self, config=config)
         # Subsystems are initialized by the mixin's _init_subsystems()
+
+        # Override begin/end if provided
+        if begin is not None:
+            self.begin = begin
+        if end is not None:
+            self.end = end
+
+        # Set ephemeris if provided
+        if ephem is not None:
+            self.ephem = ephem
 
         # Current target (already set in mixin but repeated for clarity)
         self.ppt = None
@@ -81,8 +98,11 @@ class QueueDITL(DITLMixin, DITLStats):
         # Event log
         self.log = DITLLog()
 
-        # Target Queue (pass log for silent operation)
-        self.queue = Queue(log=self.log, ephem=self.ephem)
+        # Target Queue (use provided queue or create default)
+        if queue is not None:
+            self.queue = queue
+        else:
+            self.queue = Queue(log=self.log, ephem=self.ephem)
 
         # Wire log into ACS so it can log events (if ACS exists)
         if hasattr(self, "acs"):
