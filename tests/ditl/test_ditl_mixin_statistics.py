@@ -1,7 +1,5 @@
-"""Tests for DITLMixin.print_statistics method."""
+"""Tests for DITLMixin.print_statistics method, refactored into a test class."""
 
-import io
-import sys
 from datetime import datetime
 from unittest.mock import Mock
 
@@ -14,9 +12,11 @@ from conops import (
     DITLStats,
     GroundStationRegistry,
     Payload,
+    Queue,
     SolarPanelSet,
     SpacecraftBus,
 )
+from conops.config import AttitudeControlSystem
 
 
 class DummyEphemeris:
@@ -79,126 +79,115 @@ def create_test_config():
     return config
 
 
-def test_print_statistics_basic():
-    """Test that print_statistics runs without errors on basic data."""
-    config = create_test_config()
+class TestDITLPrintStatistics:
+    """Test class for DITLMixin.print_statistics."""
 
-    # Create mock DITL
-    ditl = MockDITL(config)
+    def setup_method(self, method):
+        self.config = create_test_config()
 
-    # Set up basic simulation parameters
-    ditl.begin = datetime(2025, 11, 1, 0, 0, 0)
-    ditl.end = datetime(2025, 11, 1, 1, 0, 0)
-    ditl.step_size = 60
+    def populate_sample_data(self, ditl: MockDITL):
+        """Populate the DITL instance with a representative dataset."""
+        ditl.begin = datetime(2025, 11, 1, 0, 0, 0)
+        ditl.end = datetime(2025, 11, 1, 1, 0, 0)
+        ditl.step_size = 60
 
-    # Add some sample data
-    for i in range(60):
-        ditl.utime.append(i * 60)
-        ditl.ra.append(180.0 + i * 0.1)
-        ditl.dec.append(45.0 + i * 0.05)
-        ditl.roll.append(0.0)
-        ditl.mode.append(ACSMode.SCIENCE if i % 5 != 0 else ACSMode.SLEWING)
-        ditl.panel.append(0.8 if i % 10 < 8 else 0.0)  # Simulate eclipse
-        ditl.power.append(50.0 + i * 0.5)
-        ditl.panel_power.append(80.0 if i % 10 < 8 else 0.0)
-        ditl.batterylevel.append(0.8 - i * 0.001)
-        ditl.obsid.append(1000 + (i // 10))
+        for i in range(60):
+            ditl.utime.append(i * 60)
+            ditl.ra.append(180.0 + i * 0.1)
+            ditl.dec.append(45.0 + i * 0.05)
+            ditl.roll.append(0.0)
+            ditl.mode.append(ACSMode.SCIENCE if i % 5 != 0 else ACSMode.SLEWING)
+            ditl.panel.append(0.8 if i % 10 < 8 else 0.0)  # Simulate eclipse
+            ditl.power.append(50.0 + i * 0.5)
+            ditl.panel_power.append(80.0 if i % 10 < 8 else 0.0)
+            ditl.batterylevel.append(0.8 - i * 0.001)
+            ditl.obsid.append(1000 + (i // 10))
 
-    # Capture stdout
-    captured_output = io.StringIO()
-    sys.stdout = captured_output
+    def _get_basic_output(self, capsys):
+        ditl = MockDITL(self.config)
+        self.populate_sample_data(ditl)
+        ditl.print_statistics()
+        return capsys.readouterr().out
 
-    # Call print_statistics
-    ditl.print_statistics()
+    def _get_empty_output(self, capsys):
+        ditl = MockDITL(self.config)
+        ditl.begin = datetime(2025, 11, 1, 0, 0, 0)
+        ditl.end = datetime(2025, 11, 1, 1, 0, 0)
+        ditl.step_size = 60
+        ditl.print_statistics()
+        return capsys.readouterr().out
 
-    # Reset stdout
-    sys.stdout = sys.__stdout__
+    def _get_queue_output(self, capsys):
+        ditl = MockDITL(self.config)
+        ditl.begin = datetime(2025, 11, 1, 0, 0, 0)
+        ditl.end = datetime(2025, 11, 1, 1, 0, 0)
+        ditl.step_size = 60
 
-    # Get the output
-    output = captured_output.getvalue()
+        # Add minimal data
+        ditl.utime = [0]
+        ditl.mode = [ACSMode.SCIENCE]
+        ditl.obsid = [1000]
+        ditl.batterylevel = [0.8]
+        ditl.ra = [180.0]
+        ditl.dec = [45.0]
 
-    # Verify key sections are present
-    assert "DITL SIMULATION STATISTICS" in output
-    assert "Configuration: Test Spacecraft" in output
-    assert "MODE DISTRIBUTION" in output
-    assert "OBSERVATION STATISTICS" in output
-    assert "POINTING STATISTICS" in output
-    assert "POWER AND BATTERY STATISTICS" in output
-    assert "Battery Capacity: 100.00 Wh" in output
-    assert "SCIENCE" in output
-    assert "SLEWING" in output
+        # Add a mock queue
+        mock_constraint = Mock(spec=Constraint)
+        mock_acs_config = Mock(spec=AttitudeControlSystem)
+        ditl.queue = Queue(constraint=mock_constraint, acs_config=mock_acs_config)
 
+        ditl.print_statistics()
+        return capsys.readouterr().out
 
-def test_print_statistics_with_queue():
-    """Test that print_statistics handles queue information."""
-    config = create_test_config()
+    # Basic output tests — one assertion per test
+    def test_print_statistics_basic_contains_ditl_simulation_statistics(self, capsys):
+        output = self._get_basic_output(capsys)
+        assert "DITL SIMULATION STATISTICS" in output
 
-    # Create mock DITL
-    ditl = MockDITL(config)
+    def test_print_statistics_basic_contains_configuration(self, capsys):
+        output = self._get_basic_output(capsys)
+        assert "Configuration: Test Spacecraft" in output
 
-    # Set up basic simulation parameters
-    ditl.begin = datetime(2025, 11, 1, 0, 0, 0)
-    ditl.end = datetime(2025, 11, 1, 1, 0, 0)
-    ditl.step_size = 60
+    def test_print_statistics_basic_contains_mode_distribution(self, capsys):
+        output = self._get_basic_output(capsys)
+        assert "MODE DISTRIBUTION" in output
 
-    # Add minimal data
-    ditl.utime = [0]
-    ditl.mode = [ACSMode.SCIENCE]
-    ditl.obsid = [1000]
-    ditl.batterylevel = [0.8]
-    ditl.ra = [180.0]
-    ditl.dec = [45.0]
+    def test_print_statistics_basic_contains_observation_statistics(self, capsys):
+        output = self._get_basic_output(capsys)
+        assert "OBSERVATION STATISTICS" in output
 
-    # Add a mock queue
-    from unittest.mock import Mock
+    def test_print_statistics_basic_contains_pointing_statistics(self, capsys):
+        output = self._get_basic_output(capsys)
+        assert "POINTING STATISTICS" in output
 
-    from conops import Queue
-    from conops.config import AttitudeControlSystem, Constraint
+    def test_print_statistics_basic_contains_power_and_battery_statistics(self, capsys):
+        output = self._get_basic_output(capsys)
+        assert "POWER AND BATTERY STATISTICS" in output
 
-    mock_constraint = Mock(spec=Constraint)
-    mock_acs_config = Mock(spec=AttitudeControlSystem)
-    ditl.queue = Queue(constraint=mock_constraint, acs_config=mock_acs_config)
+    def test_print_statistics_basic_contains_battery_capacity(self, capsys):
+        output = self._get_basic_output(capsys)
+        assert "Battery Capacity: 100.00 Wh" in output
 
-    # Capture stdout
-    captured_output = io.StringIO()
-    sys.stdout = captured_output
+    def test_print_statistics_basic_contains_science_mode(self, capsys):
+        output = self._get_basic_output(capsys)
+        assert "SCIENCE" in output
 
-    # Call print_statistics
-    ditl.print_statistics()
+    def test_print_statistics_basic_contains_slewing_mode(self, capsys):
+        output = self._get_basic_output(capsys)
+        assert "SLEWING" in output
 
-    # Reset stdout
-    sys.stdout = sys.__stdout__
+    # Queue test remains a single assertion
+    def test_print_statistics_with_queue_contains_target_queue_statistics(self, capsys):
+        output = self._get_queue_output(capsys)
+        assert "TARGET QUEUE STATISTICS" in output
 
-    # Get the output
-    output = captured_output.getvalue()
+    # Empty data tests — one assertion per test
+    def test_print_statistics_empty_data_contains_ditl_simulation_statistics(
+        self, capsys
+    ):
+        output = self._get_empty_output(capsys)
+        assert "DITL SIMULATION STATISTICS" in output
 
-    # Verify queue section is present
-    assert "TARGET QUEUE STATISTICS" in output
-
-
-def test_print_statistics_empty_data():
-    """Test that print_statistics handles empty data gracefully."""
-    config = create_test_config()
-
-    # Create mock DITL with empty data
-    ditl = MockDITL(config)
-    ditl.begin = datetime(2025, 11, 1, 0, 0, 0)
-    ditl.end = datetime(2025, 11, 1, 1, 0, 0)
-    ditl.step_size = 60
-
-    # Capture stdout
-    captured_output = io.StringIO()
-    sys.stdout = captured_output
-
-    # Call print_statistics - should not raise any errors
-    ditl.print_statistics()
-
-    # Reset stdout
-    sys.stdout = sys.__stdout__
-
-    # Get the output
-    output = captured_output.getvalue()
-
-    # Verify basic header is present even with empty data
-    assert "DITL SIMULATION STATISTICS" in output
-    assert "Configuration: Test Spacecraft" in output
+    def test_print_statistics_empty_data_contains_configuration(self, capsys):
+        output = self._get_empty_output(capsys)
+        assert "Configuration: Test Spacecraft" in output
