@@ -36,14 +36,14 @@ class EmergencyCharging:
         This minimizes slew time and energy expenditure during emergency charging.
 
     Example:
-        # Without slew limit
-        ec = EmergencyCharging(constraint, solar_panel, starting_obsid=999000)
+        # Without slew limit (new API — pass the full Config object)
+        ec = EmergencyCharging(config=config, starting_obsid=999000)
 
         # With 45° slew limit
         ec = EmergencyCharging(
-            constraint, solar_panel,
+            config=config,
             starting_obsid=999000,
-            max_slew_deg=45.0
+            max_slew_deg=45.0,
         )
     """
 
