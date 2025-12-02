@@ -481,8 +481,7 @@ class EmergencyCharging:
             )
         else:
             charging_ppt = Pointing(
-                constraint=self.constraint,
-                acs_config=self.acs_config,
+                config=self.config,
                 ra=ra,
                 dec=dec,
                 name=f"EMERGENCY_CHARGE_{self.next_charging_obsid}",

@@ -26,19 +26,13 @@ class Queue:
         config: Config | None = None,
         ephem: rust_ephem.Ephemeris | None = None,
         log: DITLLog | None = None,
-        constraint: Constraint | None = None,
-        acs_config: AttitudeControlSystem | None = None,
     ):
-        # Handle both old and new parameter styles for backward compatibility
-        if config is not None:
-            self.config = config
-            self.constraint = config.constraint
-            self.acs_config = config.spacecraft_bus.attitude_control
-        else:
-            # Legacy parameters
-            self.config = None
-            self.constraint = constraint
-            self.acs_config = acs_config
+        # Extract config parameters from Config object
+        if config is None:
+            raise ValueError("Config must be provided to TargetQueue")
+        self.config = config
+        self.constraint = config.constraint
+        self.acs_config = config.spacecraft_bus.attitude_control
 
         self.targets = []
         self.ephem = ephem
@@ -80,31 +74,18 @@ class Queue:
             ss_min: Minimum snapshot size in seconds
             ss_max: Maximum snapshot size in seconds
         """
-        if self.config is not None:
-            pointing = Pointing(
-                config=self.config,
-                ra=ra,
-                dec=dec,
-                obsid=obsid,
-                name=name,
-                merit=merit,
-                exptime=exptime,
-                ss_min=ss_min,
-                ss_max=ss_max,
-            )
-        else:
-            pointing = Pointing(
-                constraint=self.constraint,
-                acs_config=self.acs_config,
-                ra=ra,
-                dec=dec,
-                obsid=obsid,
-                name=name,
-                merit=merit,
-                exptime=exptime,
-                ss_min=ss_min,
-                ss_max=ss_max,
-            )
+
+        pointing = Pointing(
+            config=self.config,
+            ra=ra,
+            dec=dec,
+            obsid=obsid,
+            name=name,
+            merit=merit,
+            exptime=exptime,
+            ss_min=ss_min,
+            ss_max=ss_max,
+        )
         pointing.visibility()
         self.targets.append(pointing)
 

@@ -4,7 +4,7 @@ import numpy as np
 import rust_ephem
 
 from ..common import givename, roll_over_angle, unixtime2date
-from ..config import AttitudeControlSystem, Config, Constraint
+from ..config import Config, Constraint
 from ..simulation.saa import SAA
 
 
@@ -25,21 +25,16 @@ class PlanEntry:
     def __init__(
         self,
         config: Config | None = None,
-        constraint: Constraint | None = None,
-        acs_config: AttitudeControlSystem | None = None,
     ) -> None:
-        # Handle both old and new parameter styles for backward compatibility
-        if config is not None:
-            self.constraint = config.constraint
-            self.acs_config = config.spacecraft_bus.attitude_control
-        else:
-            # Legacy parameters
-            self.constraint = constraint
-            self.acs_config = acs_config
+        # Extract config parameters from Config object
+        if config is None:
+            raise ValueError("Config must be provided to PlanEntry")
+        self.constraint = config.constraint
+        self.acs_config = config.spacecraft_bus.attitude_control
 
-        assert self.constraint is not None, "Constraint must be set for Pass class"
+        assert self.constraint is not None, "Constraint must be set for PlanEntry class"
         self.ephem = self.constraint.ephem
-        assert self.ephem is not None, "Ephemeris must be set for Pass class"
+        assert self.ephem is not None, "Ephemeris must be set for PlanEntry class"
         assert self.acs_config is not None, "ACS config must be set for PlanEntry class"
         self.name = ""
         # self.targetid = 0
@@ -60,7 +55,6 @@ class PlanEntry:
         self.slewdist = False
         self.ss_min = 1000
         self.ss_max = 1e6
-        self.constraint = constraint
 
     def copy(self):
         """Create a copy of this class"""

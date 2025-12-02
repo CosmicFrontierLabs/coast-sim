@@ -4,7 +4,7 @@ import numpy as np
 import rust_ephem
 
 from ..common import dtutcfromtimestamp
-from ..config import Config, Constraint
+from ..config import Config
 from ..simulation.saa import SAA
 from ..targets import Plan, PlanEntry, TargetList
 
@@ -20,13 +20,13 @@ class DumbScheduler:
     """
 
     def __init__(
-        self, constraint: Constraint, days: int = 1, log: "DITLLog | None" = None
+        self, config: Config, days: int = 1, log: "DITLLog | None" = None
     ) -> None:
-        if constraint is None:
-            raise ValueError("Constraint must be provided to DumbScheduler")
+        if config is None:
+            raise ValueError("Config must be provided to DumbScheduler")
 
         self.mintime = 5 * 60  # seconds (5 minutes)
-        self.constraint = constraint
+        self.constraint = config.constraint
         self.ephem: rust_ephem.Ephemeris = self.constraint.ephem  # type: ignore[assignment]
         if self.ephem is None:
             raise ValueError("Constraint.ephem must be set")
@@ -143,14 +143,7 @@ class DumbScheduler:
 
             # Create and populate the plan entry
             assert selected_target is not None
-            ppt = PlanEntry(
-                constraint=self.constraint,
-                acs_config=(
-                    self.config.spacecraft_bus.attitude_control
-                    if self.config is not None
-                    else None
-                ),
-            )
+            ppt = PlanEntry(config=self.config)
 
             ppt.ephem = self.ephem
             # keep entry angles in units that other code expects (note: original used target.ra)

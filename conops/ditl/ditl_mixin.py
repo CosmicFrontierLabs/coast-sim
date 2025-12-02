@@ -55,10 +55,8 @@ class DITLMixin:
         self.uend = 0.0  # later
         self.plan = Plan()
         self.saa = None
-        self.passes = PassTimes(constraint=self.config.constraint, config=config)
-        self.executed_passes = PassTimes(
-            constraint=self.config.constraint, config=config
-        )
+        self.passes = PassTimes(config=config)
+        self.executed_passes = PassTimes(config=config)
 
         # Set up event based ACS
         assert self.config.constraint.ephem is not None, (
@@ -66,7 +64,7 @@ class DITLMixin:
         )
         # Note: log will be set by subclass (DITL/QueueDITL) before use
         # For now, create ACS without log (will be set later)
-        self.acs = ACS(constraint=self.config.constraint, config=self.config, log=None)
+        self.acs = ACS(config=self.config, log=None)
 
         # Current target
         self.ppt = None

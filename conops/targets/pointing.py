@@ -1,7 +1,7 @@
 import numpy as np
 
 from ..common import unixtime2date
-from ..config import AttitudeControlSystem, Config, Constraint
+from ..config import Config
 from .plan_entry import PlanEntry
 
 
@@ -17,8 +17,6 @@ class Pointing(PlanEntry):
     def __init__(
         self,
         config: Config | None = None,
-        constraint: Constraint | None = None,
-        acs_config: AttitudeControlSystem | None = None,
         ra: float = 0.0,
         dec: float = 0.0,
         obsid: int = 0,
@@ -29,12 +27,13 @@ class Pointing(PlanEntry):
         ss_max: int = 86400,
     ):
         # Handle both old and new parameter styles for backward compatibility
-        if config is not None:
-            constraint = config.constraint
-            acs_config = config.spacecraft_bus.attitude_control
+        if config is None:
+            raise ValueError("Config must be provided to Pointing")
 
-        PlanEntry.__init__(self, constraint=constraint, acs_config=acs_config)
-        assert self.constraint == constraint, "Constraint not properly set in Pointing"
+        PlanEntry.__init__(self, config=config)
+        assert self.constraint == config.constraint, (
+            "Constraint not properly set in Pointing"
+        )
         self.done = False
         self.obstype = "AT"
         self.isat = False

@@ -1,5 +1,4 @@
 import time
-from typing import Any
 
 import numpy as np
 import rust_ephem
@@ -8,7 +7,7 @@ from pydantic import BaseModel, Field
 from ..common import ics_date_conv, unixtime2date
 from ..common.vector import radec2vec, rotvec, separation, vec2radec
 from ..config import Config, Constraint, GroundStationRegistry
-from ..config.communications import AntennaType, CommunicationsSystem
+from ..config.communications import AntennaType
 from ..config.constants import DTOR
 
 
@@ -22,11 +21,7 @@ class Pass(BaseModel):
 
     # Core dependencies
     ephem: rust_ephem.Ephemeris | None = None
-    constraint: Constraint | None = None
-    acs_config: Any | None = None  # AttitudeControlSystem, avoiding circular import
-    comms_config: CommunicationsSystem | None = (
-        None  # Communications system configuration
-    )
+    config: Config | None = None
 
     # Pass metadata
     station: str
@@ -169,7 +164,7 @@ class Pass(BaseModel):
         Returns:
             True if communication is possible, False otherwise
         """
-        if self.comms_config is None:
+        if self.config is None or self.config.spacecraft_bus.communications is None:
             # No comms config, assume communication is always possible
             return True
 
@@ -187,7 +182,7 @@ class Pass(BaseModel):
         )
 
         # Check if within acceptable range
-        return self.comms_config.can_communicate(error)
+        return self.config.spacecraft_bus.communications.can_communicate(error)
 
     def get_data_rate(self, band: str, direction: str = "downlink") -> float:
         """Get data rate for this pass in the specified band.
@@ -199,13 +194,13 @@ class Pass(BaseModel):
         Returns:
             Data rate in Mbps, or 0.0 if band not supported
         """
-        if self.comms_config is None:
+        if self.config.spacecraft_bus.communications is None:
             return 0.0
 
         if direction.lower() == "downlink":
-            return self.comms_config.get_downlink_rate(band)
+            return self.config.spacecraft_bus.communications.get_downlink_rate(band)
         elif direction.lower() == "uplink":
-            return self.comms_config.get_uplink_rate(band)
+            return self.config.spacecraft_bus.communications.get_uplink_rate(band)
         else:
             return 0.0
 
@@ -219,7 +214,7 @@ class Pass(BaseModel):
         Returns:
             Data volume in Megabits
         """
-        if self.length is None or self.comms_config is None:
+        if self.length is None or self.config.spacecraft_bus.communications is None:
             return 0.0
 
         rate_mbps = self.get_data_rate(band, direction)
@@ -247,14 +242,14 @@ class Pass(BaseModel):
             target_ra, target_dec = self.ra[0], self.dec[0]
 
         # Using ACS config, calculate slew time
-        if self.acs_config is not None:
-            slewdist, _ = self.acs_config.predict_slew(
+        if self.config.spacecraft_bus.attitude_control is not None:
+            slewdist, _ = self.config.spacecraft_bus.attitude_control.predict_slew(
                 startra=ra,
                 startdec=dec,
                 endra=target_ra,
                 enddec=target_dec,
             )
-            slewtime = self.acs_config.slew_time(slewdist)
+            slewtime = self.config.spacecraft_bus.attitude_control.slew_time(slewdist)
         else:
             raise ValueError("ACS config must be set to calculate slew time")
         # Determine if we need to start slewing now
@@ -279,11 +274,13 @@ class PassTimes:
 
     def __init__(
         self,
-        constraint: Constraint,
         config: Config,
     ):
-        self.constraint = constraint
-        assert self.constraint.ephem is not None, "Ephemeris must be set for Pass class"
+        self.constraint = config.constraint
+        assert self.constraint is not None, "Constraint must be set for PassTimes class"
+        assert self.constraint.ephem is not None, (
+            "Ephemeris must be set for PassTimes class"
+        )
         self.ephem = self.constraint.ephem
 
         self.config = config
@@ -443,10 +440,8 @@ class PassTimes:
                     if rand_val <= combined_prob:
                         # Schedule this pass if the dice roll allows it
                         gspass = Pass(
-                            constraint=self.constraint,
+                            config=self.config,
                             ephem=self.ephem,
-                            acs_config=self.config.spacecraft_bus.attitude_control,
-                            comms_config=self.config.spacecraft_bus.communications,
                             station=station.code,
                             begin=passstart,
                             gsstartra=sat_ra[start_idx],
@@ -465,11 +460,11 @@ class PassTimes:
 
                         # Apply antenna pointing offset for fixed antennas
                         if (
-                            gspass.comms_config is not None
-                            and gspass.comms_config.antenna_pointing.antenna_type
+                            gspass.config.spacecraft_bus.communications is not None
+                            and gspass.config.spacecraft_bus.communications.antenna_pointing.antenna_type
                             == AntennaType.FIXED
                         ):
-                            antenna = gspass.comms_config.antenna_pointing
+                            antenna = gspass.config.spacecraft_bus.communications.antenna_pointing
                             # Adjust start/end pointing
                             gspass.gsstartra, gspass.gsstartdec = (
                                 Pass.apply_antenna_offset(

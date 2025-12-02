@@ -11,7 +11,6 @@ from ..common import (
 )
 from ..config import Config
 from ..config.constants import DTOR
-from ..config.constraint import Constraint
 from ..simulation.passes import PassTimes
 from ..targets import Pointing
 from .acs_command import ACSCommand
@@ -46,9 +45,7 @@ class ACS:
     last_slew: Slew | None
     in_eclipse: bool
 
-    def __init__(
-        self, constraint: Constraint, config: Config, log: "DITLLog | None" = None
-    ) -> None:
+    def __init__(self, config: Config, log: "DITLLog | None" = None) -> None:
         """Initialize the Attitude Control System.
 
         Args:
@@ -56,8 +53,8 @@ class ACS:
             config: Configuration object.
             log: Optional DITLLog for event logging. If None, prints to stdout.
         """
-        assert constraint is not None, "Constraint must be provided to ACS"
-        self.constraint = constraint
+        assert config.constraint is not None, "Constraint must be provided to ACS"
+        self.constraint = config.constraint
         self.config = config
         self.log = log
 
@@ -93,7 +90,7 @@ class ACS:
         self.current_slew = None
         self.last_ppt = None
 
-        self.passrequests = PassTimes(constraint=self.constraint, config=config)
+        self.passrequests = PassTimes(config=config)
         self.current_pass: Pass | None = None
         self.solar_panel = config.solar_panel
         self.slew_dists: list[float] = []
