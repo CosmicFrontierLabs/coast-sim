@@ -15,6 +15,7 @@ class Pointing(PlanEntry):
     obsid: int
     name: str
     merit: float
+    isat: bool
 
     def __init__(
         self,
