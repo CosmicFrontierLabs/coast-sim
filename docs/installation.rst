@@ -9,12 +9,11 @@ Requirements
 
 Key dependencies include:
 
-* ``astropy`` - Astronomical calculations and coordinate systems
+* ``rust-ephem`` - Efficient ephemeris calculations
 * ``numpy`` - Numerical computations
 * ``matplotlib`` - Visualization
-* ``pyephem`` / ``rust-ephem`` - Efficient ephemeris calculations
 * ``pydantic`` - Configuration validation
-* ``shapely`` - Geometric operations
+* ``shapely`` / ``pyproj`` - Geometric operations
 
 From Source
 -----------

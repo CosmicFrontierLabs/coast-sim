@@ -43,7 +43,7 @@ extensions = [
 ]
 
 # Enable autosummary to generate stub pages
-autosummary_generate = True
+autosummary_generate = False
 
 # Napoleon settings for Google and NumPy style docstrings
 napoleon_google_docstring = True
@@ -83,6 +83,9 @@ master_doc = "index"
 html_theme = "sphinx_rtd_theme"
 html_static_path = ["_static"]
 
+# Logo
+html_logo = "_static/coast-sim-logo.png"
+
 # Theme options
 html_theme_options = {
     "navigation_depth": 4,
@@ -90,6 +93,7 @@ html_theme_options = {
     "sticky_navigation": True,
     "includehidden": True,
     "titles_only": False,
+    "logo_only": False,
 }
 
 # -- Options for intersphinx extension ---------------------------------------
@@ -109,14 +113,35 @@ autodoc_default_options = {
     "special-members": "__init__",
     "undoc-members": True,
     "exclude-members": "__weakref__",
+    "imported-members": False,
+    "inherited-members": False,
 }
 
 # Mock imports for packages that might not be available during doc build
-autodoc_mock_imports: list = []
+autodoc_mock_imports: list = [
+    "conops.battery",
+    "conops.constraint",
+    "conops.constants",
+    "conops.emergency_charging",
+    "conops.ephemeris",
+    "conops.groundstation",
+    "conops.passes",
+    "conops.saa",
+    "conops.slew",
+    "conops.solar_panel",
+    "conops.vector",
+]
 
 # -- MyST-Parser configuration -----------------------------------------------
 myst_enable_extensions = [
     "colon_fence",
     "deflist",
     "html_image",
+]
+
+# Suppress warnings from matplotlib docstrings and unknown roles
+suppress_warnings = [
+    "ref.python",
+    "ref.doc",
+    "ref.role",
 ]

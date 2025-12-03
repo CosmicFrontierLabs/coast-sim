@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/_static/coast-sim-logo.png" alt="COASTSim Logo" width="400">
+</p>
+
 # COASTSim: ConOps Astronomical Space Telescope Simulator
 
 A Python module for simulating Concept of Operations (ConOps) for space telescopes and astronomical spacecraft missions.
