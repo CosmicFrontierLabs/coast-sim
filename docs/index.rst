@@ -14,6 +14,7 @@ optimize observation schedules, and validate operational constraints before laun
 
    installation
    quickstart
+   configuration
    examples
    visualization
    sky_pointing_visualization
