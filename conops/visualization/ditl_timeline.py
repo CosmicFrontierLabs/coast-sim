@@ -143,41 +143,41 @@ def plot_ditl_timeline(
     num_data_rows = len(timeline_rows)
     data_y_positions = [-(i * row_spacing) for i in range(num_data_rows)]
 
+    # Create mapping of row names to y-positions
+    row_positions = dict(zip([row[0] for row in timeline_rows], data_y_positions))
+
     # If showing orbit numbers, shift everything down and add orbit at top
     if show_orbit_numbers:
         orbit_y_position = data_y_positions[0] + row_spacing
         data_y_positions = [orbit_y_position] + data_y_positions
         timeline_rows.insert(0, ("Orbit", None, None))
 
-        # Create mapping of row names to y-positions
-        row_positions = dict(zip([row[0] for row in timeline_rows], data_y_positions))
-
         # Draw orbit numbers if requested
-        if show_orbit_numbers:
-            num_orbits = int(duration_hours * 3600 / orbit_period) + 1
-            for i in range(num_orbits):
-                barcol = "grey" if i % 2 == 1 else "white"
-                orbit_start = i * orbit_period / 3600
-                orbit_width = orbit_period / 3600
-                ax.broken_barh(
-                    [(orbit_start, orbit_width)],
-                    (orbit_y_position, bar_height),
-                    facecolors=barcol,
-                    edgecolor="black",
-                    lw=1,
-                    linestyle="-",
-                )
 
-                ax.text(
-                    (i + 0.5) * orbit_period / 3600,
-                    orbit_y_position + bar_height / 2,
-                    f"{i + 1}",
-                    horizontalalignment="center",
-                    verticalalignment="center",
-                    fontname=font_family,
-                    fontsize=font_size - 2,
-                    zorder=2,
-                )
+        num_orbits = int(duration_hours * 3600 / orbit_period) + 1
+        for i in range(num_orbits):
+            barcol = "grey" if i % 2 == 1 else "white"
+            orbit_start = i * orbit_period / 3600
+            orbit_width = orbit_period / 3600
+            ax.broken_barh(
+                [(orbit_start, orbit_width)],
+                (orbit_y_position, bar_height),
+                facecolors=barcol,
+                edgecolor="black",
+                lw=1,
+                linestyle="-",
+            )
+
+            ax.text(
+                (i + 0.5) * orbit_period / 3600,
+                orbit_y_position + bar_height / 2,
+                f"{i + 1}",
+                horizontalalignment="center",
+                verticalalignment="center",
+                fontname=font_family,
+                fontsize=font_size - 2,
+                zorder=2,
+            )
 
     # Extract observation segments from plan by obsid ranges
     # Get observation categories from config if not provided
