@@ -8,6 +8,9 @@ sphinx:
   # Path to your Sphinx configuration file.
   configuration: docs/conf.py
 
+python:
+  install:
+    - requirements: docs/requirements.txt
 
 # Set the OS, Python version, and other tools you might need
 build:
