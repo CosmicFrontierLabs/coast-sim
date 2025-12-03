@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Self
-
 from pydantic import BaseModel, Field, model_validator
 
 from .battery import Battery
@@ -40,7 +38,7 @@ class MissionConfig(BaseModel):
     )
 
     @model_validator(mode="after")
-    def init_fault_management_defaults(self) -> Self:
+    def init_fault_management_defaults(self) -> MissionConfig:
         """Initialize default fault thresholds if none provided.
 
         Currently sets up a battery_level threshold using the battery
