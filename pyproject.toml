@@ -26,10 +26,9 @@ readme = "README.md" # Optional
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 
+
 dependencies = [
     "astropy>=6",
-    "ipympl>=0.9.7",
-    "jupyter>=1.1.1",
     "matplotlib>=3.10",
     "numpy>=2",
     "pydantic>=2.12",
@@ -40,8 +39,20 @@ dependencies = [
     "tqdm>=4.67",
 ]
 
+
+[project.urls]
+Documentation = "https://coastsim.readthedocs.io/en/latest/"
+Homepage = "https://github.com/CosmicFrontierLabs/coast-sim/"
+Source = "https://github.com/CosmicFrontierLabs/coast-sim/"
+
+
 # Packages required only for local developement environments
 [project.optional-dependencies]
+jupyter = [
+    "ipympl>=0.9.7",
+    "jupyter>=1.1.1",
+    "ipywidgets>=8.0",
+]
 dev = [
     "mypy>=1.15",
     "pre-commit>=4.2",
