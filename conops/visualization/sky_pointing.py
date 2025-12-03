@@ -10,9 +10,10 @@ from typing import TYPE_CHECKING, Any, Optional
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
+import rust_ephem
+import rust_ephem.constraints
 from matplotlib.font_manager import FontProperties
 from matplotlib.widgets import Button, Slider
-from rust_ephem import ConstraintConfig
 
 from ..common import dtutcfromtimestamp
 from ..config.visualization import VisualizationConfig
@@ -157,6 +158,8 @@ def plot_sky_pointing(
 
 class SkyPointingController:
     """Controller for interactive sky pointing visualization."""
+
+    _constraint_cache: dict[str, Any]
 
     def __init__(
         self,
@@ -453,15 +456,15 @@ class SkyPointingController:
             # Batch evaluation with datetime array
             result = constraint_func.in_constraint_batch(
                 ephemeris=self.ditl.ephem,
-                target_ras=list(ra_flat),
-                target_decs=list(dec_flat),
+                target_ras=list(ra_flat),  # type: ignore
+                target_decs=list(dec_flat),  # type: ignore
                 times=times,  # Pass entire array of datetime objects
             )
             # Result shape is (n_points, n_times) from rust_ephem
             constraint_cache[name] = result
 
         # Store cache
-        self._constraint_cache: dict[str, npt.NDArray | dict] = {
+        self._constraint_cache = {
             "ra_grid": ra_flat,
             "dec_grid": dec_flat,
             "time_indices": time_indices,
@@ -689,7 +692,7 @@ class SkyPointingController:
     def _plot_single_constraint(
         self,
         name: str,
-        constraint_func: ConstraintConfig,
+        constraint_func: rust_ephem.constraints.ConstraintConfig,
         color: str,
         utime: float,
         body_ra: float | None,
@@ -788,10 +791,10 @@ class SkyPointingController:
         # Get sky grid points
         ra_flat, dec_flat = self._create_sky_grid(self.n_grid_points)
 
-        constrained_coords = constraint_func.in_constraint_batch(
+        constrained_coords = constraint_func.in_constraint_batch(  # type: ignore
             ephemeris=self.ditl.ephem,
-            target_ras=ra_flat,
-            target_decs=dec_flat,
+            target_ras=ra_flat,  # type: ignore
+            target_decs=dec_flat,  # type: ignore
             times=[dtutcfromtimestamp(utime)],
         )[:, 0]
 
@@ -1166,11 +1169,12 @@ def save_sky_pointing_movie(
 
     # Determine file format and writer
     file_ext = os.path.splitext(output_file)[1].lower()
+    writer_kwargs: dict[str, Any]
     if file_ext == ".gif":
-        writer_class = PillowWriter
+        writer_class = PillowWriter  # type: ignore
         writer_kwargs = {"fps": fps}
     elif file_ext in [".mp4", ".avi"]:
-        writer_class = FFMpegWriter
+        writer_class = FFMpegWriter  # type: ignore
         writer_kwargs = {
             "fps": fps,
             "codec": codec,
@@ -1210,13 +1214,13 @@ def save_sky_pointing_movie(
     print(f"Output: {output_file}")
 
     # Set up the writer
-    writer = writer_class(**writer_kwargs)
+    writer = writer_class(**writer_kwargs)  # type: ignore
 
     try:
         with writer.saving(fig, output_file, dpi=dpi):
             # Create iterator with optional progress bar
             if show_progress:
-                iterator = tqdm(
+                iterator = tqdm(  # type: ignore
                     enumerate(time_indices),
                     total=total_frames,
                     desc="Rendering frames",
@@ -1224,9 +1228,9 @@ def save_sky_pointing_movie(
                     ncols=80,
                 )
             else:
-                iterator = enumerate(time_indices)
+                iterator = enumerate(time_indices)  # type: ignore
 
-            for frame_num, idx in iterator:
+            for frame_num, idx in iterator:  # type: ignore
                 utime = ditl.utime[idx]
                 controller.update_plot(utime)
 
