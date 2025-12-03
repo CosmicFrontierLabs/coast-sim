@@ -35,7 +35,7 @@ dependencies = [
     "pydantic>=2.12",
     "pyproj>=3.7.0",
     "pytz>=2025.2",
-    "rust-ephem>=0.1.10",
+    "rust-ephem>=0.1.11",
     "shapely>=2",
     "tqdm>=4.67",
 ]
