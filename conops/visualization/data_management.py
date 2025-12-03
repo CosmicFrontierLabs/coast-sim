@@ -146,7 +146,7 @@ def plot_data_management_telemetry(
     return fig, axes
 
 
-def _print_data_management_summary(ditl):
+def _print_data_management_summary(ditl: QueueDITL | DITL) -> None:
     """Print summary statistics for data management.
 
     Args:
