@@ -32,8 +32,7 @@ Here's a simple example of running a Day-In-The-Life (DITL) simulation:
         tle="examples/example.tle",
     )
 
-
-    # ## Step 4: Create DITL and Add Observations
+    # Create DITL object
     ditl = QueueDITL(config=config, ephem=ephemeris)
 
     # Add 1000 random observations to the observation queue
@@ -223,7 +222,9 @@ These can then be added to MissionConfig:
 operations (AND, OR, NOT) to create complex constraint conditions. For example
 if we only want to avoid pointing close to the Sun when it's daytime, we can
 do:
+
 .. code-block:: python
+
    from conops.config import MissionConfig, Constraint
    from rust_ephem import SunConstraint, MoonConstraint, EclipseConstraint
 

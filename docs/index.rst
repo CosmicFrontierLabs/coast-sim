@@ -22,6 +22,7 @@ optimize observation schedules, and validate operational constraints before laun
    fault_management
    api/modules
    contributing
+   README
 
 Features
 --------

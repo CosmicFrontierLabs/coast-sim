@@ -190,7 +190,6 @@ class EmergencyCharging:
         Returns:
             True if in sunlight, False if in eclipse
         """
-        # Use astropy Time for indexing real ephemeris implementations
         return not self.constraint.in_eclipse(ra=0, dec=0, time=utime)
 
     def _find_valid_pointing(

@@ -35,7 +35,7 @@ class DITL(DITLMixin, DITLStats):
         end (datetime): End time for simulation (default: None).
         step_size (int): Time step in seconds (default: 60).
 
-    Telemetry Arrays (populated during calc()):
+    Telemetry Arrays (populated during `calc()`):
         ra (np.ndarray): Right ascension at each timestep.
         dec (np.ndarray): Declination at each timestep.
         mode (np.ndarray): ACS mode at each timestep.
