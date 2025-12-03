@@ -47,26 +47,49 @@ Quick Example
 .. code-block:: python
 
    from datetime import datetime, timedelta
-   from conops.config import MissionConfig
-   from conops.queue_ditl import QueueDITL
-   from conops.ephemeris import compute_tle_ephemeris
+   from matplotlib import pyplot as plt
+   import numpy as np
+   from rust_ephem import TLEEphemeris
 
-   # Load configuration
-   config = MissionConfig.from_json("example_config.json")
+   from conops import MissionConfig, QueueDITL
+   from conops.visualization import plot_ditl_timeline, plot_sky_pointing
+
+   # Load configuration - use the default MissionConfig for this example
+   config = MissionConfig()
 
    # Set simulation period
    begin = datetime(2025, 11, 1)
    end = begin + timedelta(days=1)
 
    # Compute orbit ephemeris
-   ephemeris = compute_tle_ephemeris("example.tle", begin, end)
+   ephemeris = TLEEphemeris(
+      begin=begin,
+      end=end,
+      step_size=60,
+      tle="examples/example.tle",
+   )
+
+   # Create DITL object
+   ditl = QueueDITL(config=config, ephem=ephemeris)
+
+   # Add 1000 random observations to the observation queue
+   for i in range(1000):
+      ditl.queue.add(
+         ra=np.random.uniform(0, 360),
+         dec=np.random.uniform(-90, 90),
+         exptime=1000,
+         obsid=10000 + i,
+      )
+
 
    # Run DITL simulation
-   ditl = QueueDITL(config, ephemeris, begin, end)
-   ditl.run()
+   ditl.calc()
 
-   # Analyze results
-   ditl.plot()
+   # Analyze results visually and statistically
+   _ = plot_sky_pointing(ditl, figsize=(10, 5))
+   plt.show()
+   _ = plot_ditl_timeline(ditl, figsize=(8, 6))
+   plt.show()
    ditl.print_statistics()
 
 Indices and tables

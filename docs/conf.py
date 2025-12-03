@@ -83,6 +83,9 @@ master_doc = "index"
 html_theme = "sphinx_rtd_theme"
 html_static_path = ["_static"]
 
+# Logo
+html_logo = "_static/coast-sim-logo.jpg"
+
 # Theme options
 html_theme_options = {
     "navigation_depth": 4,
@@ -90,6 +93,7 @@ html_theme_options = {
     "sticky_navigation": True,
     "includehidden": True,
     "titles_only": False,
+    "logo_only": False,
 }
 
 # -- Options for intersphinx extension ---------------------------------------
