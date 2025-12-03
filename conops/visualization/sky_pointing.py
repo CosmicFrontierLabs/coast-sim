@@ -456,8 +456,8 @@ class SkyPointingController:
             # Batch evaluation with datetime array
             result = constraint_func.in_constraint_batch(
                 ephemeris=self.ditl.ephem,
-                target_ras=list(ra_flat),  # type: ignore
-                target_decs=list(dec_flat),  # type: ignore
+                target_ras=list(ra_flat),
+                target_decs=list(dec_flat),
                 times=times,  # Pass entire array of datetime objects
             )
             # Result shape is (n_points, n_times) from rust_ephem
@@ -791,10 +791,10 @@ class SkyPointingController:
         # Get sky grid points
         ra_flat, dec_flat = self._create_sky_grid(self.n_grid_points)
 
-        constrained_coords = constraint_func.in_constraint_batch(  # type: ignore
+        constrained_coords = constraint_func.in_constraint_batch(
             ephemeris=self.ditl.ephem,
-            target_ras=ra_flat,  # type: ignore
-            target_decs=dec_flat,  # type: ignore
+            target_ras=ra_flat.tolist(),
+            target_decs=dec_flat.tolist(),
             times=[dtutcfromtimestamp(utime)],
         )[:, 0]
 
@@ -1170,11 +1170,12 @@ def save_sky_pointing_movie(
     # Determine file format and writer
     file_ext = os.path.splitext(output_file)[1].lower()
     writer_kwargs: dict[str, Any]
+    writer_class: Any
     if file_ext == ".gif":
-        writer_class = PillowWriter  # type: ignore
+        writer_class = PillowWriter
         writer_kwargs = {"fps": fps}
     elif file_ext in [".mp4", ".avi"]:
-        writer_class = FFMpegWriter  # type: ignore
+        writer_class = FFMpegWriter
         writer_kwargs = {
             "fps": fps,
             "codec": codec,
@@ -1214,13 +1215,14 @@ def save_sky_pointing_movie(
     print(f"Output: {output_file}")
 
     # Set up the writer
-    writer = writer_class(**writer_kwargs)  # type: ignore
+    writer = writer_class(**writer_kwargs)
 
     try:
         with writer.saving(fig, output_file, dpi=dpi):
             # Create iterator with optional progress bar
+            iterator: Any
             if show_progress:
-                iterator = tqdm(  # type: ignore
+                iterator = tqdm(
                     enumerate(time_indices),
                     total=total_frames,
                     desc="Rendering frames",
@@ -1228,9 +1230,9 @@ def save_sky_pointing_movie(
                     ncols=80,
                 )
             else:
-                iterator = enumerate(time_indices)  # type: ignore
+                iterator = enumerate(time_indices)
 
-            for frame_num, idx in iterator:  # type: ignore
+            for frame_num, idx in iterator:
                 utime = ditl.utime[idx]
                 controller.update_plot(utime)
 
