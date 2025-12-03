@@ -84,7 +84,7 @@ html_theme = "sphinx_rtd_theme"
 html_static_path = ["_static"]
 
 # Logo
-html_logo = "_static/coast-sim-logo.jpg"
+html_logo = "_static/coast-sim-logo.png"
 
 # Theme options
 html_theme_options = {
