@@ -2,7 +2,8 @@ conops.schedulers.scheduler
 ============================
 
 .. automodule:: conops.schedulers.scheduler
-   :members:
+   :members: DumbScheduler
    :undoc-members:
    :show-inheritance:
    :special-members: __init__
+   :no-index:

@@ -1,7 +1,8 @@
-conops.ditl.ditl_event
+conops.ditl.ditl\_event
 =======================
 
 .. automodule:: conops.ditl.ditl_event
-   :members:
+   :members: DITLEvent
    :undoc-members:
    :show-inheritance:
+   :no-index:

@@ -10,15 +10,26 @@ Core Modules
    :maxdepth: 2
 
    conops.config
+   conops.config.acs
    conops.config.communications
+   conops.config.data_generator
+   conops.config.fault_management
+   conops.config.observation_categories
+   conops.config.power
+   conops.config.spacecraft_bus
+   conops.config.thermal
    conops.ditl
    conops.ditl.ditl
    conops.ditl.ditl_event
    conops.ditl.ditl_log
    conops.ditl.ditl_log_store
    conops.ditl.ditl_mixin
+   conops.ditl.ditl_stats
    conops.ditl.queue_ditl
    conops.simulation
+   conops.simulation.acs
+   conops.simulation.acs_command
+   conops.simulation.roll
 
 Scheduling and Planning
 -----------------------
@@ -82,4 +93,13 @@ Utilities
    :maxdepth: 2
 
    conops.common
+   conops.common.enums
    conops.constants
+
+Visualization
+-------------
+
+.. toctree::
+   :maxdepth: 2
+
+   conops.visualization
