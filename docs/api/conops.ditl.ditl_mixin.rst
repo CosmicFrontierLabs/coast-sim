@@ -1,8 +1,9 @@
-conops.ditl.ditl_mixin
+conops.ditl.ditl\_mixin
 =========================
 
 .. automodule:: conops.ditl.ditl_mixin
-   :members:
+   :members: DITLMixin
    :undoc-members:
    :show-inheritance:
    :special-members: __init__
+   :no-index:
