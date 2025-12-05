@@ -323,3 +323,263 @@ def scheduler_2022_100_len2(mock_queue):
     begin = datetime(2022, 4, 10, tzinfo=timezone.utc)
     end = begin + timedelta(days=2)
     return DumbQueueScheduler(queue=mock_queue, plan=plan, begin=begin, end=end)
+
+
+# TOO-related fixtures for reducing test code duplication
+
+
+@pytest.fixture
+def standard_too_params():
+    """Standard TOO parameters used in many tests."""
+    return {
+        "obsid": 1000001,
+        "ra": 180.0,
+        "dec": 45.0,
+        "merit": 10000.0,
+        "exptime": 3600,
+        "name": "Test TOO",
+    }
+
+
+@pytest.fixture
+def submitted_too(queue_ditl, standard_too_params):
+    """A QueueDITL instance with a standard TOO already submitted."""
+    return queue_ditl.submit_too(**standard_too_params)
+
+
+@pytest.fixture
+def low_merit_current_ppt(queue_ditl):
+    """Create a current pointing object with low merit for TOO interrupt tests."""
+    from conops import Pointing
+
+    ppt = Pointing(
+        config=queue_ditl.config,
+        ra=0.0,
+        dec=0.0,
+        obsid=1,
+        name="Current obs",
+        merit=100.0,  # Lower merit than typical TOO
+        exptime=1800,
+    )
+    queue_ditl.ppt = ppt
+    return ppt
+
+
+@pytest.fixture
+def mock_pointing_visibility():
+    """Mock patch for Pointing.visibility method."""
+    with patch("conops.targets.pointing.Pointing.visibility") as mock_visibility:
+        mock_visibility.return_value = None  # visibility() just populates windows
+        yield mock_visibility
+
+
+@pytest.fixture
+def mock_pointing_visible():
+    """Mock patch for Pointing.visible method."""
+    with patch("conops.targets.pointing.Pointing.visible") as mock_visible:
+        mock_visible.return_value = True  # Default to visible
+        yield mock_visible
+
+
+@pytest.fixture
+def mock_terminate_ppt():
+    """Mock patch for QueueDITL._terminate_ppt method."""
+    with patch("conops.QueueDITL._terminate_ppt") as mock_terminate:
+        yield mock_terminate
+
+
+@pytest.fixture
+def mock_fetch_new_ppt():
+    """Mock patch for QueueDITL._fetch_new_ppt method."""
+    with patch("conops.QueueDITL._fetch_new_ppt") as mock_fetch:
+        yield mock_fetch
+
+
+@pytest.fixture
+def basic_too_request():
+    """Create a basic TOORequest object with standard parameters."""
+    from conops.ditl import TOORequest
+
+    return TOORequest(
+        obsid=1000001,
+        ra=180.0,
+        dec=45.0,
+        merit=10000.0,
+        exptime=3600,
+        name="GRB 250101A",
+    )
+
+
+@pytest.fixture
+def custom_too_request():
+    """Create a TOORequest object with custom submit_time and executed=True."""
+    from conops.ditl import TOORequest
+
+    return TOORequest(
+        obsid=1000002,
+        ra=90.0,
+        dec=-30.0,
+        merit=5000.0,
+        exptime=1800,
+        name="Test TOO",
+        submit_time=1234567890.0,
+        executed=True,
+    )
+
+
+@pytest.fixture
+def unix_timestamp_too(queue_ditl):
+    """A QueueDITL instance with a TOO submitted using Unix timestamp."""
+    submit_time = 1640995200.0  # 2022-01-01 00:00:00 UTC
+    return queue_ditl.submit_too(
+        obsid=1000002,
+        ra=90.0,
+        dec=-30.0,
+        merit=5000.0,
+        exptime=1800,
+        name="Scheduled TOO",
+        submit_time=submit_time,
+    )
+
+
+@pytest.fixture
+def mock_too_interrupt_success(
+    mock_pointing_visibility,
+    mock_pointing_visible,
+    mock_terminate_ppt,
+    mock_fetch_new_ppt,
+):
+    """Combined mock setup for successful TOO interrupt tests."""
+    mock_pointing_visibility.return_value = None  # visibility() just populates windows
+    mock_pointing_visible.return_value = True  # Target is visible
+    return {
+        "visibility": mock_pointing_visibility,
+        "visible": mock_pointing_visible,
+        "terminate": mock_terminate_ppt,
+        "fetch": mock_fetch_new_ppt,
+    }
+
+
+@pytest.fixture
+def mock_too_interrupt_no_current_obs(
+    mock_pointing_visibility, mock_pointing_visible, mock_fetch_new_ppt
+):
+    """Combined mock setup for TOO interrupt tests with no current observation."""
+    mock_pointing_visibility.return_value = None  # visibility() just populates windows
+    mock_pointing_visible.return_value = True  # Target is visible
+    return {
+        "visibility": mock_pointing_visibility,
+        "visible": mock_pointing_visible,
+        "fetch": mock_fetch_new_ppt,
+    }
+
+
+@pytest.fixture
+def queue_ditl_no_queue_log(mock_config, mock_ephem):
+    """Create a QueueDITL instance with a queue that has no log initially."""
+    with (
+        patch("conops.Queue") as mock_queue_class,
+        patch("conops.PassTimes") as mock_passtimes,
+        patch("conops.ACS") as mock_acs_class,
+    ):
+        # Mock PassTimes
+        mock_pt = Mock()
+        mock_pt.passes = []
+        mock_pt.get = Mock()
+        mock_pt.check_pass_timing = Mock(
+            return_value={"start_pass": None, "end_pass": False, "updated_pass": None}
+        )
+        mock_passtimes.return_value = mock_pt
+
+        # Mock ACS
+        mock_acs = Mock()
+        mock_acs.ephem = mock_ephem
+        mock_acs.slewing = False
+        mock_acs.inpass = False
+        mock_acs.saa = None
+        mock_acs.pointing = Mock(return_value=(0.0, 0.0, 0.0, 0))
+        mock_acs.enqueue_command = Mock()
+        mock_acs.passrequests = mock_pt
+        mock_acs.slew_dists = []
+        mock_acs.last_slew = None
+        # Set acsmode to a real ACSMode enum value for logging
+        from conops import ACSMode
+
+        mock_acs.acsmode = ACSMode.SCIENCE
+        # Mock the helper methods used in _fetch_new_ppt
+        mock_target_request = Mock()
+        mock_target_request.next_vis = Mock(return_value=1000.0)
+        mock_acs._create_target_request = Mock(return_value=mock_target_request)
+        mock_acs._initialize_slew_positions = Mock(return_value=True)
+        mock_acs._is_slew_valid = Mock(return_value=True)
+        mock_acs._calculate_slew_timing = Mock(return_value=1000.0)
+        mock_acs_class.return_value = mock_acs
+
+        # Mock solar panel in config (not ACS)
+        mock_config.solar_panel.illumination_and_power = Mock(return_value=(0.5, 100.0))
+
+        # Mock Queue with no log initially
+        mock_queue = Mock()
+        mock_queue.get = Mock(return_value=None)
+        mock_queue.log = None  # Explicitly set log to None
+        mock_queue_class.return_value = mock_queue
+
+        ditl = QueueDITL(config=mock_config, ephem=mock_ephem, queue=mock_queue)
+        ditl.acs = mock_acs
+
+        return ditl
+
+
+@pytest.fixture
+def queue_ditl_acs_no_ephem(mock_config, mock_ephem):
+    """Create a QueueDITL instance where ACS initially has no ephem."""
+    with (
+        patch("conops.Queue") as mock_queue_class,
+        patch("conops.PassTimes") as mock_passtimes,
+        patch("conops.ACS") as mock_acs_class,
+    ):
+        # Mock PassTimes
+        mock_pt = Mock()
+        mock_pt.passes = []
+        mock_pt.get = Mock()
+        mock_pt.check_pass_timing = Mock(
+            return_value={"start_pass": None, "end_pass": False, "updated_pass": None}
+        )
+        mock_passtimes.return_value = mock_pt
+
+        # Mock ACS with no ephem initially
+        mock_acs = Mock()
+        mock_acs.ephem = None  # ACS has no ephem initially
+        mock_acs.slewing = False
+        mock_acs.inpass = False
+        mock_acs.saa = None
+        mock_acs.pointing = Mock(return_value=(0.0, 0.0, 0.0, 0))
+        mock_acs.enqueue_command = Mock()
+        mock_acs.passrequests = mock_pt
+        mock_acs.slew_dists = []
+        mock_acs.last_slew = None
+        # Set acsmode to a real ACSMode enum value for logging
+        from conops import ACSMode
+
+        mock_acs.acsmode = ACSMode.SCIENCE
+        # Mock the helper methods used in _fetch_new_ppt
+        mock_target_request = Mock()
+        mock_target_request.next_vis = Mock(return_value=1000.0)
+        mock_acs._create_target_request = Mock(return_value=mock_target_request)
+        mock_acs._initialize_slew_positions = Mock(return_value=True)
+        mock_acs._is_slew_valid = Mock(return_value=True)
+        mock_acs._calculate_slew_timing = Mock(return_value=1000.0)
+        mock_acs_class.return_value = mock_acs
+
+        # Mock solar panel in config (not ACS)
+        mock_config.solar_panel.illumination_and_power = Mock(return_value=(0.5, 100.0))
+
+        # Mock Queue
+        mock_queue = Mock()
+        mock_queue.get = Mock(return_value=None)
+        mock_queue_class.return_value = mock_queue
+
+        ditl = QueueDITL(config=mock_config, ephem=mock_ephem, queue=mock_queue)
+        ditl.acs = mock_acs
+
+        return ditl
