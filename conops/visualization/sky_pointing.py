@@ -7,6 +7,7 @@ of the sky with scheduled observations and constraint regions.
 import os
 from typing import TYPE_CHECKING, Any, Optional
 
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
@@ -19,6 +20,7 @@ from matplotlib.patches import Circle
 from matplotlib.widgets import Button, Slider
 
 from ..common import dtutcfromtimestamp
+from ..config.observation_categories import ObservationCategories
 from ..config.visualization import VisualizationConfig
 
 if TYPE_CHECKING:
@@ -54,6 +56,33 @@ def _get_visualization_config(
     return config
 
 
+def _lighten_color(color: str, factor: float = 0.5) -> str:
+    """Lighten a color by blending with white.
+
+    Parameters
+    ----------
+    color : str
+        The color to lighten (hex, name, or RGB tuple).
+    factor : float
+        Lightening factor (0.0 = original color, 1.0 = white).
+
+    Returns
+    -------
+    str
+        The lightened color as hex string.
+    """
+    # Convert to RGB
+    rgb = mcolors.to_rgb(color)
+    # Blend with white
+    r, g, b = rgb
+    lightened = (
+        (1 - factor) * r + factor * 1.0,
+        (1 - factor) * g + factor * 1.0,
+        (1 - factor) * b + factor * 1.0,
+    )
+    return mcolors.to_hex(lightened)
+
+
 def plot_sky_pointing(
     ditl: "DITL | QueueDITL",
     figsize: tuple[float, float] = (14, 8),
@@ -62,6 +91,7 @@ def plot_sky_pointing(
     time_step_seconds: float | None = None,
     constraint_alpha: float = 0.3,
     config: VisualizationConfig | None = None,
+    observation_categories: ObservationCategories | None = None,
 ) -> tuple[Figure, Axes, Optional["SkyPointingController"]]:
     """Plot spacecraft pointing on a mollweide sky map with constraints.
 
@@ -88,6 +118,8 @@ def plot_sky_pointing(
         Alpha transparency for constraint regions (default: 0.3).
     config : MissionConfig, optional
         Configuration object containing visualization settings. If None, uses ditl.config.visualization if available.
+    observation_categories : ObservationCategories, optional
+        Configuration for observation category colors. If None, uses ditl.config.observation_categories if available, otherwise defaults.
 
     Returns
     -------
@@ -128,6 +160,13 @@ def plot_sky_pointing(
     # Get visualization config
     config = _get_visualization_config(ditl, config)
 
+    # Get observation categories
+    if observation_categories is None:
+        if hasattr(ditl, "config") and hasattr(ditl.config, "observation_categories"):
+            observation_categories = ditl.config.observation_categories
+    if observation_categories is None:
+        observation_categories = ObservationCategories.default_categories()
+
     # Create the visualization
     if show_controls:
         fig = plt.figure(figsize=figsize)
@@ -147,6 +186,7 @@ def plot_sky_pointing(
         time_step_seconds=time_step_seconds,
         constraint_alpha=constraint_alpha,
         config=config,
+        observation_categories=observation_categories,
     )
 
     # Initial plot
@@ -173,6 +213,7 @@ class SkyPointingController:
         time_step_seconds: float = 60,
         constraint_alpha: float = 0.3,
         config: VisualizationConfig | None = None,
+        observation_categories: "ObservationCategories | None" = None,
     ) -> None:
         """Initialize the controller.
 
@@ -192,6 +233,8 @@ class SkyPointingController:
             Alpha transparency for constraint regions.
         config : VisualizationConfig, optional
             Visualization configuration settings.
+        observation_categories : ObservationCategories, optional
+            Observation categories for color coding.
         """
         self.ditl: "DITL | QueueDITL" = ditl
         self.fig: Figure = fig
@@ -200,6 +243,9 @@ class SkyPointingController:
         self.time_step_seconds: float = time_step_seconds
         self.constraint_alpha: float = constraint_alpha
         self.config: VisualizationConfig | None = config
+        self.observation_categories: "ObservationCategories | None" = (
+            observation_categories
+        )
 
         # State
         self.current_time_idx: int = 0
@@ -211,6 +257,9 @@ class SkyPointingController:
         self.current_pointing_marker: Any | None = None
         self.scheduled_obs_scatter: Any | None = None
         self.title_text: Any | None = None
+
+        # Track categories present in current plot
+        self.current_plot_categories: dict[str, str] = {}  # category_name -> color
 
         # Control widgets
         self.slider: Slider
@@ -362,7 +411,6 @@ class SkyPointingController:
         if not hasattr(self, "_cached_observations"):
             ras: list[float] = []
             decs: list[float] = []
-            colors: list[str] = []
             sizes: list[int] = []
 
             for ppt in self.ditl.plan:
@@ -375,44 +423,78 @@ class SkyPointingController:
                 ras.append(np.deg2rad(ra_plot))
                 decs.append(np.deg2rad(dec))
 
-                # Color by observation type or ID
+                # Size by observation type or ID
                 if hasattr(ppt, "obsid"):
-                    # Use obsid to determine color
+                    # Use obsid to determine size
                     if ppt.obsid >= 1000000:
-                        colors.append("red")  # TOO/GRB
                         sizes.append(100)
                     elif ppt.obsid >= 20000:
-                        colors.append("orange")  # High priority
                         sizes.append(60)
                     elif ppt.obsid >= 10000:
-                        colors.append("yellow")  # Survey
                         sizes.append(40)
                     else:
-                        colors.append("lightblue")  # Standard
                         sizes.append(40)
                 else:
-                    colors.append("lightblue")
                     sizes.append(40)
 
-            self._cached_observations: dict[
-                str, list[float] | list[str] | list[int]
-            ] = {
+            self._cached_observations: dict[str, list[float] | list[int]] = {
                 "ras": ras,
                 "decs": decs,
-                "colors": colors,
                 "sizes": sizes,
             }
 
-        # Scatter plot using cached data
+        # Calculate colors dynamically based on current active target
+        colors: list[str] = []
+        self.current_plot_categories = {}  # Reset for this plot
+
+        for ppt in self.ditl.plan:
+            # Get base color from observation categories
+            base_color = "tab:blue"  # Default fallback
+            category_name = "Other"  # Default category name
+            try:
+                if self.observation_categories is not None and hasattr(ppt, "obsid"):
+                    category = self.observation_categories.get_category(ppt.obsid)
+                    if hasattr(category, "color") and isinstance(category.color, str):
+                        base_color = category.color
+                        category_name = category.name
+                    else:
+                        base_color = "tab:blue"  # Simple fallback color
+                else:
+                    base_color = "tab:blue"  # Simple fallback color
+            except (AttributeError, TypeError):
+                # If anything goes wrong with observation_categories, use simple fallback
+                base_color = "tab:blue"  # Simple fallback color
+
+            # Use full color for active target, lightened color for others
+            if (
+                hasattr(self.ditl, "ppt")
+                and self.ditl.ppt is not None
+                and ppt == self.ditl.ppt
+            ):
+                final_color = base_color  # Full color for active target
+                self.current_plot_categories[category_name] = (
+                    base_color  # Track active category with full color
+                )
+            else:
+                final_color = _lighten_color(
+                    base_color
+                )  # Lightened color for inactive targets
+                # Track inactive category with lightened color (only if not already tracked with full color)
+                if category_name not in self.current_plot_categories:
+                    self.current_plot_categories[category_name] = final_color
+
+            colors.append(final_color)
+
+        # Scatter plot using cached data and dynamic colors
+        # Don't add a generic "Targets" label since we'll add specific category labels to legend
         self.ax.scatter(
             self._cached_observations["ras"],
             self._cached_observations["decs"],
             s=self._cached_observations["sizes"],
-            c=self._cached_observations["colors"],
+            c=colors,
             alpha=0.6,
             edgecolors="black",
             linewidths=0.5,
-            label="Targets",
             zorder=2,
             rasterized=True,  # Rasterize for faster rendering
         )
@@ -945,7 +1027,7 @@ class SkyPointingController:
             }
         )
 
-        # Add separator and ACS mode entries
+        # Add ACS mode entries
         mode_handles = [
             Line2D(
                 [0],
@@ -961,16 +1043,38 @@ class SkyPointingController:
             for mode, color in mode_colors.items()
         ]
 
-        all_handles = list(by_label.values()) + mode_handles
-        all_labels = list(by_label.keys()) + [h.get_label() for h in mode_handles]
+        # Add observation category entries for categories present in current plot
+        category_handles = []
+        for category_name, color in self.current_plot_categories.items():
+            category_handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="w",
+                    markerfacecolor=color,
+                    markersize=8,
+                    markeredgecolor="black",
+                    markeredgewidth=0.5,
+                    label=category_name,
+                )
+            )
+
+        all_handles = list(by_label.values()) + mode_handles + category_handles
+
+        # Create legend with both ACS modes and observation categories
+        legend_labels = (
+            list(by_label.keys())
+            + [f"Mode: {h.get_label()}" for h in mode_handles]
+            + [h.get_label() for h in category_handles]
+        )
 
         self.ax.legend(
             all_handles,
-            all_labels,
+            legend_labels,
             loc="upper left",
             bbox_to_anchor=(1.02, 1),
             fontsize=self.config.legend_font_size if self.config else 8,
-            title="ACS Modes",
             prop={"family": font_family},
         )
 
