@@ -21,6 +21,7 @@ optimize observation schedules, and validate operational constraints before laun
    communications
    data_management
    fault_management
+   target_of_opportunity
    api/modules
    contributing
    README
