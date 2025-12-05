@@ -1,3 +1,4 @@
+import numpy as np
 from pydantic import BaseModel
 
 from ..common import great_circle, separation
@@ -79,7 +80,7 @@ class AttitudeControlSystem(BaseModel):
 
     def slew_time(self, angle_deg: float) -> float:
         """Total slew time (motion + settle) using bang-bang control."""
-        if angle_deg <= 0:
+        if angle_deg <= 0 or np.isnan(angle_deg):
             return 0.0
         return self.motion_time(angle_deg) + self.settle_time
 
