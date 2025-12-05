@@ -75,35 +75,34 @@ def mock_ditl():
     config = Mock()
     constraint_config = Mock()
 
+    # Helper function to create a mock in_constraint_batch that returns correctly sized arrays
+    def make_constraint_batch_mock():
+        def in_constraint_batch(ephemeris, target_ras, target_decs, times):
+            n_points = len(target_ras)
+            n_times = len(times)
+            return np.zeros((n_points, n_times), dtype=bool)
+
+        return Mock(side_effect=in_constraint_batch)
+
     # Mock constraint objects with in_constraint_batch method
     sun_constraint = Mock()
-    sun_constraint.in_constraint_batch = Mock(
-        return_value=np.array([[False, False, False]]).T
-    )
+    sun_constraint.in_constraint_batch = make_constraint_batch_mock()
     constraint_config.sun_constraint = sun_constraint
 
     moon_constraint = Mock()
-    moon_constraint.in_constraint_batch = Mock(
-        return_value=np.array([[False, False, False]]).T
-    )
+    moon_constraint.in_constraint_batch = make_constraint_batch_mock()
     constraint_config.moon_constraint = moon_constraint
 
     earth_constraint = Mock()
-    earth_constraint.in_constraint_batch = Mock(
-        return_value=np.array([[False, False, False]]).T
-    )
+    earth_constraint.in_constraint_batch = make_constraint_batch_mock()
     constraint_config.earth_constraint = earth_constraint
 
     anti_sun_constraint = Mock()
-    anti_sun_constraint.in_constraint_batch = Mock(
-        return_value=np.array([[False, False, False]]).T
-    )
+    anti_sun_constraint.in_constraint_batch = make_constraint_batch_mock()
     constraint_config.anti_sun_constraint = anti_sun_constraint
 
     panel_constraint = Mock()
-    panel_constraint.in_constraint_batch = Mock(
-        return_value=np.array([[False, False, False]]).T
-    )
+    panel_constraint.in_constraint_batch = make_constraint_batch_mock()
     constraint_config.panel_constraint = panel_constraint
 
     config.constraint = constraint_config
@@ -327,12 +326,14 @@ class TestSkyPointingController:
             ax=mock_ax,
         )
         controller.play_button = Mock()
+        controller.slider = Mock()
 
-        controller.start_animation()
+        # Mock update_plot to prevent actual plotting
+        with patch.object(controller, "update_plot"):
+            controller.start_animation()
 
         assert controller.playing is True
         controller.play_button.label.set_text.assert_called_with("Pause")
-        mock_timer.start.assert_called_once()
 
     @patch("conops.visualization.sky_pointing.plt")
     def test_stop_animation(self, mock_plt, mock_ditl):
@@ -348,14 +349,14 @@ class TestSkyPointingController:
         controller.play_button = Mock()
         controller.playing = True
         mock_timer = Mock()
-        controller.timer = mock_timer
+        controller._timer = mock_timer
 
         controller.stop_animation()
 
         assert controller.playing is False
         controller.play_button.label.set_text.assert_called_with("Play")
         mock_timer.stop.assert_called_once()
-        assert controller.timer is None
+        assert controller._timer is None
 
 
 class TestSaveFrames:

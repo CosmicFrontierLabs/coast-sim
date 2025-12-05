@@ -250,7 +250,7 @@ class SkyPointingController:
         # State
         self.current_time_idx: int = 0
         self.playing: bool = False
-        self.timer: Any | None = None
+        self._timer: Any | None = None
 
         # Plot elements (will be created in update_plot)
         self.constraint_patches: dict[str, Any] = {}
@@ -329,29 +329,40 @@ class SkyPointingController:
         """Start playing through time steps."""
         self.playing = True
         self.play_button.label.set_text("Pause")
-        # Use matplotlib's animation timer
-        self.timer = self.fig.canvas.new_timer(interval=100)  # 100ms between frames
-        self.timer.add_callback(self.animation_step)
-        self.timer.start()
+        self._animation_step()
+
+    def _animation_step(self) -> None:
+        """Execute one animation step and schedule the next."""
+        if not self.playing:
+            return
+
+        if self.current_time_idx < len(self.ditl.utime) - 1:
+            self.current_time_idx += 1
+            self.slider.set_val(self.current_time_idx)
+            self.update_plot(self.ditl.utime[self.current_time_idx])
+
+            # Schedule next step using the figure's timer
+            if self.playing:
+                self._timer = self.fig.canvas.new_timer(interval=100)
+                self._timer.single_shot = True
+                self._timer.add_callback(self._animation_step)
+                self._timer.start()
+        else:
+            # Reached the end
+            self.stop_animation()
 
     def stop_animation(self) -> None:
         """Stop playing animation."""
         self.playing = False
         if self.play_button is not None:
             self.play_button.label.set_text("Play")
-        if self.timer is not None:
-            self.timer.stop()
-            self.timer = None
-
-    def animation_step(self) -> None:
-        """Advance to next time step during animation."""
-        if self.current_time_idx < len(self.ditl.utime) - 1:
-            self.current_time_idx += 1
-            self.slider.set_val(self.current_time_idx)
-            self.update_plot(self.ditl.utime[self.current_time_idx])
-        else:
-            # Reached the end
-            self.stop_animation()
+        if hasattr(self, "_timer") and self._timer is not None:
+            try:
+                self._timer.stop()
+            except (AttributeError, RuntimeError):
+                pass
+            self._timer = None
+        self.fig.canvas.draw_idle()
 
     def update_plot(self, utime: float) -> None:
         """Update the plot for a given time.
@@ -513,8 +524,14 @@ class SkyPointingController:
         if time_indices is None:
             time_indices = np.arange(len(self.ditl.utime))
 
-        # Get sky grid points (same for all times)
-        ra_flat, dec_flat = self._create_sky_grid(self.n_grid_points)
+        # Grid dimensions for pcolormesh (use 2x n_grid_points for RA due to 360 degree range)
+        n_ra = self.n_grid_points * 2
+        n_dec = self.n_grid_points
+
+        # Get regular sky grid points for pcolormesh
+        ra_grid_rad, dec_grid_rad, ra_flat, dec_flat = self._create_regular_sky_grid(
+            n_ra, n_dec
+        )
         n_points = len(ra_flat)
 
         # Convert times to datetime objects for rust_ephem
@@ -550,10 +567,13 @@ class SkyPointingController:
             # Result shape is (n_points, n_times) from rust_ephem
             constraint_cache[name] = result
 
-        # Store cache
+        # Store cache with grid info for pcolormesh
         self._constraint_cache = {
             "ra_grid": ra_flat,
             "dec_grid": dec_flat,
+            "ra_grid_rad": ra_grid_rad,
+            "dec_grid_rad": dec_grid_rad,
+            "grid_shape": (n_ra, n_dec),
             "time_indices": time_indices,
             "constraints": constraint_cache,
         }
@@ -634,7 +654,7 @@ class SkyPointingController:
             )
 
     def _plot_earth_disk(self, utime: float) -> None:
-        """Plot the physical extent of Earth as seen from the spacecraft.
+        """Plot the physical extent of Earth as seen from the spacecraft using pcolormesh.
 
         Parameters
         ----------
@@ -651,12 +671,23 @@ class SkyPointingController:
         earth_dec = ephem.earth[idx].dec.deg
         earth_angular_radius = ephem.earth_radius_deg[idx]
 
-        # Get sky grid points (use cached if available)
-        if hasattr(self, "_constraint_cache"):
+        # Grid dimensions for pcolormesh
+        n_ra = self.n_grid_points * 2
+        n_dec = self.n_grid_points
+
+        # Get regular grid for contourf
+        if (
+            hasattr(self, "_constraint_cache")
+            and self._constraint_cache.get("grid_shape") == (n_ra, n_dec)
+        ):
             ra_flat = self._constraint_cache["ra_grid"]
             dec_flat: npt.NDArray[np.float64] = self._constraint_cache["dec_grid"]
+            ra_grid_rad = self._constraint_cache["ra_grid_rad"]
+            dec_grid_rad = self._constraint_cache["dec_grid_rad"]
         else:
-            ra_flat, dec_flat = self._create_sky_grid(self.n_grid_points)
+            ra_grid_rad, dec_grid_rad, ra_flat, dec_flat = self._create_regular_sky_grid(
+                n_ra, n_dec
+            )
 
         # Vectorized calculation of angular distances from Earth center
         delta_ra = np.radians(ra_flat - earth_ra)
@@ -671,13 +702,29 @@ class SkyPointingController:
         # Find points inside the Earth disk
         inside_earth = angular_dist <= earth_angular_radius
 
-        # Plot Earth disk points
-        if inside_earth.any():
-            ra_vals = ra_flat[inside_earth]
-            dec_vals = dec_flat[inside_earth]
+        # Reshape to 2D grid for contourf
+        inside_earth_2d = inside_earth.reshape((n_dec, n_ra)).astype(float)
 
-            self._plot_points_on_sky(
-                ra_vals, dec_vals, "darkblue", alpha=0.8, label="Earth Disk", zorder=2.5
+        # Plot Earth disk using contourf for smooth, solid appearance
+        if inside_earth_2d.any():
+            self.ax.contourf(
+                ra_grid_rad,
+                dec_grid_rad,
+                inside_earth_2d,
+                levels=[0.5, 1.5],  # Single level to create solid fill
+                colors=[mcolors.to_rgba("darkblue", 0.8)],
+                zorder=2.5,
+            )
+
+            # Add a proxy artist for the legend (use plot with marker for compatibility with Mollweide)
+            self.ax.plot(
+                [], [],
+                marker="s",
+                markersize=10,
+                markerfacecolor=mcolors.to_rgba("darkblue", 0.8),
+                markeredgecolor="none",
+                linestyle="none",
+                label="Earth Disk",
             )
 
     def _create_sky_grid(
@@ -713,6 +760,55 @@ class SkyPointingController:
         )
 
         return ra_flat, dec_flat
+
+    def _create_regular_sky_grid(
+        self, n_ra: int, n_dec: int
+    ) -> tuple[
+        npt.NDArray[np.float64],
+        npt.NDArray[np.float64],
+        npt.NDArray[np.float64],
+        npt.NDArray[np.float64],
+    ]:
+        """Create a regular rectangular grid for contourf plotting.
+
+        Parameters
+        ----------
+        n_ra : int
+            Number of RA points.
+        n_dec : int
+            Number of Dec points.
+
+        Returns
+        -------
+        ra_grid_rad : array
+            2D RA grid in radians for plotting (n_dec, n_ra).
+        dec_grid_rad : array
+            2D Dec grid in radians for plotting (n_dec, n_ra).
+        ra_flat : array
+            Flattened RA coordinates at grid points (0-360 degrees).
+        dec_flat : array
+            Flattened Dec coordinates at grid points (-90-90 degrees).
+        """
+        # Create grid coordinates
+        # Use slightly smaller range for Dec to avoid numerical issues at poles with Mollweide projection
+        ra_coords = np.linspace(0, 360, n_ra, endpoint=False)
+        dec_coords = np.linspace(-89.5, 89.5, n_dec)
+
+        # Create 2D meshgrid
+        ra_grid, dec_grid = np.meshgrid(ra_coords, dec_coords)
+
+        # Convert RA for plotting (-180 to 180)
+        ra_grid_plot = ra_grid - 180
+
+        # Convert to radians for mollweide projection
+        ra_grid_rad = np.deg2rad(ra_grid_plot)
+        dec_grid_rad = np.deg2rad(dec_grid)
+
+        # Create flattened coordinates for constraint evaluation
+        ra_flat = ra_grid.flatten()
+        dec_flat = dec_grid.flatten()
+
+        return ra_grid_rad, dec_grid_rad, ra_flat, dec_flat
 
     def _convert_ra_for_plotting(self, ra_vals: np.ndarray) -> np.ndarray:
         """Convert RA coordinates for Mollweide projection plotting.
@@ -785,7 +881,7 @@ class SkyPointingController:
         body_ra: float | None,
         body_dec: float | None,
     ) -> None:
-        """Plot a single constraint region.
+        """Plot a single constraint region using pcolormesh for smooth appearance.
 
         Parameters
         ----------
@@ -797,110 +893,77 @@ class SkyPointingController:
             Color for the constraint region.
         utime : float
             Unix timestamp.
-        ra_grid : array
-            RA values to check.
-        dec_grid : array
-            Dec values to check.
         body_ra : float or None
             RA of celestial body (for marker).
         body_dec : float or None
             Dec of celestial body (for marker).
         """
-        # Check if we have pre-computed constraints
+        # Grid dimensions for pcolormesh (use 2x n_grid_points for RA due to 360 degree range)
+        n_ra = self.n_grid_points * 2
+        n_dec = self.n_grid_points
+
+        # Check if we have pre-computed constraints with matching grid
+        use_cache = False
         if (
             hasattr(self, "_constraint_cache")
             and name.lower() in self._constraint_cache["constraints"]
+            and self._constraint_cache.get("grid_shape") == (n_ra, n_dec)
         ):
             cache = self._constraint_cache
+            # Find time index in cache
+            time_idx = self._find_time_index(utime)
+            cache_time_idx = np.where(cache["time_indices"] == time_idx)[0]
+            if (
+                len(cache_time_idx) > 0
+                and cache_time_idx[0] < cache["constraints"][name.lower()].shape[1]
+            ):
+                use_cache = True
+                cache_time_idx = cache_time_idx[0]
+                # Cache shape is (n_points, n_times), so index with [:, time_idx]
+                constrained_flat = cache["constraints"][name.lower()][
+                    :, cache_time_idx
+                ]
+                constrained_flat = np.asarray(constrained_flat, dtype=bool)
+                ra_grid_rad = cache["ra_grid_rad"]
+                dec_grid_rad = cache["dec_grid_rad"]
 
-            # Verify cache consistency
-            current_ra_flat, current_dec_flat = self._create_sky_grid(
-                self.n_grid_points
-            )
-            if len(cache["ra_grid"]) == len(current_ra_flat) and len(
-                cache["dec_grid"]
-            ) == len(current_dec_flat):
-                # Use pre-computed constraints
-                ra_flat = cache["ra_grid"]
-                dec_flat = cache["dec_grid"]
-
-                # Find time index in cache
-                time_idx = self._find_time_index(utime)
-                cache_time_idx = np.where(cache["time_indices"] == time_idx)[0]
-                if (
-                    len(cache_time_idx) > 0
-                    and cache_time_idx[0] < cache["constraints"][name.lower()].shape[1]
-                ):
-                    cache_time_idx = cache_time_idx[0]
-                    # Cache shape is (n_points, n_times), so index with [:, time_idx]
-                    constrained_coords = cache["constraints"][name.lower()][
-                        :, cache_time_idx
-                    ]
-
-                    # Ensure constrained_coords is a boolean array
-                    constrained_coords = np.asarray(constrained_coords, dtype=bool)
-
-                    # Plot constrained region
-                    if constrained_coords.any():
-                        points = np.column_stack(
-                            (ra_flat[constrained_coords], dec_flat[constrained_coords])
-                        )
-
-                        ra_vals = points[:, 0]
-                        dec_vals = points[:, 1]
-
-                        self._plot_points_on_sky(
-                            ra_vals,
-                            dec_vals,
-                            color,
-                            alpha=self.constraint_alpha,
-                            label=f"{name} Cons.",
-                            zorder=1,
-                        )
-
-                    # Mark celestial body position
-                    if body_ra is not None and body_dec is not None:
-                        ra_plot = self._convert_ra_for_plotting(np.array([body_ra]))
-                        self.ax.plot(
-                            np.deg2rad(ra_plot),
-                            np.deg2rad(body_dec),
-                            marker="o",
-                            markersize=8,
-                            markeredgecolor="black",
-                            markerfacecolor=color,
-                            markeredgewidth=2,
-                            zorder=3,
-                            label=name,
-                        )
-                    return
-
-        # Fall back to real-time evaluation if no cache available
-        # Get sky grid points
-        ra_flat, dec_flat = self._create_sky_grid(self.n_grid_points)
-
-        constrained_coords = constraint_func.in_constraint_batch(
-            ephemeris=self.ditl.ephem,
-            target_ras=ra_flat.tolist(),
-            target_decs=dec_flat.tolist(),
-            times=[dtutcfromtimestamp(utime)],
-        )[:, 0]
-
-        # Plot constrained region
-        if constrained_coords.any():
-            points = np.column_stack(
-                (ra_flat[constrained_coords], dec_flat[constrained_coords])
+        if not use_cache:
+            # Fall back to real-time evaluation
+            ra_grid_rad, dec_grid_rad, ra_flat, dec_flat = self._create_regular_sky_grid(
+                n_ra, n_dec
             )
 
-            ra_vals = points[:, 0]
-            dec_vals = points[:, 1]
+            constrained_flat = constraint_func.in_constraint_batch(
+                ephemeris=self.ditl.ephem,
+                target_ras=ra_flat.tolist(),
+                target_decs=dec_flat.tolist(),
+                times=[dtutcfromtimestamp(utime)],
+            )[:, 0]
 
-            self._plot_points_on_sky(
-                ra_vals,
-                dec_vals,
-                color,
-                alpha=self.constraint_alpha,
-                label=f"{name} Cons.",
+        # Reshape constraint mask to 2D grid for contourf
+        constrained_2d = constrained_flat.reshape((n_dec, n_ra)).astype(float)
+
+        # Only plot if there are constrained regions
+        if constrained_2d.any():
+            # Plot using contourf for smooth, solid filled regions
+            self.ax.contourf(
+                ra_grid_rad,
+                dec_grid_rad,
+                constrained_2d,
+                levels=[0.5, 1.5],  # Single level to create solid fill
+                colors=[mcolors.to_rgba(color, self.constraint_alpha)],
                 zorder=1,
+            )
+
+            # Add a proxy artist for the legend (use plot with marker for compatibility with Mollweide)
+            self.ax.plot(
+                [], [],
+                marker="s",
+                markersize=10,
+                markerfacecolor=mcolors.to_rgba(color, self.constraint_alpha),
+                markeredgecolor="none",
+                linestyle="none",
+                label=f"{name} Cons.",
             )
 
         # Mark celestial body position
