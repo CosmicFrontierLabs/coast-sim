@@ -1,9 +1,6 @@
 """Tests for DITLMixin.print_statistics method, refactored into a test class."""
 
 from datetime import datetime
-from unittest.mock import Mock
-
-from conftest import DummyEphemeris
 
 from conops import (
     ACSMode,
@@ -38,8 +35,25 @@ class MockDITL(DITLMixin, DITLStats):
         self.utime = []
 
 
-def create_test_config():
+def create_test_config(ephem=None):
     """Create a minimal test config."""
+    if ephem is None:
+        # Create a simple mock ephemeris
+        import datetime
+        from unittest.mock import Mock
+
+        ephem = Mock()
+        ephem.step_size = 60
+        start_time = 1543276800  # 2018-11-27 00:00:00 UTC
+        unix_times = [start_time + i * 60 for i in range(5)]
+        ephem.timestamp = [
+            datetime.datetime.fromtimestamp(float(t), tz=datetime.timezone.utc)
+            for t in unix_times
+        ]
+        ephem.utime = unix_times
+        ephem.earth = [Mock(ra=Mock(deg=0.0), dec=Mock(deg=0.0)) for _ in unix_times]
+        ephem.sun = [Mock(ra=Mock(deg=45.0), dec=Mock(deg=23.5)) for _ in unix_times]
+
     spacecraft_bus = Mock(spec=SpacecraftBus)
     spacecraft_bus.attitude_control = Mock()
     spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))
@@ -53,7 +67,7 @@ def create_test_config():
     battery.capacity = 100.0
     battery.max_depth_of_discharge = 0.3
     constraint = Mock(spec=Constraint)
-    constraint.ephem = DummyEphemeris()  # Use DummyEphemeris instead of Mock
+    constraint.ephem = ephem
     ground_stations = Mock(spec=GroundStationRegistry)
 
     config = MissionConfig(
