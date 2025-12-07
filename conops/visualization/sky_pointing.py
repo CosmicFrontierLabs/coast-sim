@@ -56,6 +56,62 @@ def _get_visualization_config(
     return config
 
 
+def _gaussian_smooth(
+    data: npt.NDArray[np.float64], sigma: float, wrap_ra: bool = True
+) -> npt.NDArray[np.float64]:
+    """Apply Gaussian smoothing to a 2D array for smooth constraint edges.
+
+    Uses a separable 1D convolution approach for efficiency. This is a pure
+    numpy implementation to avoid scipy dependency.
+
+    Parameters
+    ----------
+    data : ndarray
+        2D array to smooth (shape: dec x ra).
+    sigma : float
+        Standard deviation of the Gaussian kernel.
+    wrap_ra : bool
+        Whether to wrap RA axis (for 360-degree continuity).
+
+    Returns
+    -------
+    ndarray
+        Smoothed 2D array.
+    """
+    if sigma <= 0:
+        return data
+
+    # Create 1D Gaussian kernel
+    kernel_size = int(6 * sigma + 1)  # Cover 3 sigma on each side
+    if kernel_size % 2 == 0:
+        kernel_size += 1
+    x = np.arange(kernel_size) - kernel_size // 2
+    kernel = np.exp(-0.5 * (x / sigma) ** 2)
+    kernel = kernel / kernel.sum()
+
+    # Convolve along RA axis (axis=1) with wrapping
+    if wrap_ra:
+        # Pad with wrapped values for continuity at 0/360
+        pad_width = kernel_size // 2
+        padded = np.concatenate(
+            [data[:, -pad_width:], data, data[:, :pad_width]], axis=1
+        )
+        smoothed = np.apply_along_axis(
+            lambda m: np.convolve(m, kernel, mode="valid"), axis=1, arr=padded
+        )
+    else:
+        smoothed = np.apply_along_axis(
+            lambda m: np.convolve(m, kernel, mode="same"), axis=1, arr=data
+        )
+
+    # Convolve along Dec axis (axis=0) - no wrapping needed
+    smoothed = np.apply_along_axis(
+        lambda m: np.convolve(m, kernel, mode="same"), axis=0, arr=smoothed
+    )
+
+    return smoothed
+
+
 def _lighten_color(color: str, factor: float = 0.5) -> str:
     """Lighten a color by blending with white.
 
@@ -676,17 +732,16 @@ class SkyPointingController:
         n_dec = self.n_grid_points
 
         # Get regular grid for contourf
-        if (
-            hasattr(self, "_constraint_cache")
-            and self._constraint_cache.get("grid_shape") == (n_ra, n_dec)
-        ):
+        if hasattr(self, "_constraint_cache") and self._constraint_cache.get(
+            "grid_shape"
+        ) == (n_ra, n_dec):
             ra_flat = self._constraint_cache["ra_grid"]
             dec_flat: npt.NDArray[np.float64] = self._constraint_cache["dec_grid"]
             ra_grid_rad = self._constraint_cache["ra_grid_rad"]
             dec_grid_rad = self._constraint_cache["dec_grid_rad"]
         else:
-            ra_grid_rad, dec_grid_rad, ra_flat, dec_flat = self._create_regular_sky_grid(
-                n_ra, n_dec
+            ra_grid_rad, dec_grid_rad, ra_flat, dec_flat = (
+                self._create_regular_sky_grid(n_ra, n_dec)
             )
 
         # Vectorized calculation of angular distances from Earth center
@@ -707,18 +762,24 @@ class SkyPointingController:
 
         # Plot Earth disk using contourf for smooth, solid appearance
         if inside_earth_2d.any():
+            # Apply Gaussian smoothing for smooth edges
+            sigma = max(1.0, self.n_grid_points / 50)
+            smoothed = _gaussian_smooth(inside_earth_2d, sigma=sigma)
+
             self.ax.contourf(
                 ra_grid_rad,
                 dec_grid_rad,
-                inside_earth_2d,
-                levels=[0.5, 1.5],  # Single level to create solid fill
+                smoothed,
+                levels=[0.5, 1.0],  # Threshold at 0.5 for smooth boundary
                 colors=[mcolors.to_rgba("darkblue", 0.8)],
                 zorder=2.5,
+                antialiased=True,
             )
 
             # Add a proxy artist for the legend (use plot with marker for compatibility with Mollweide)
             self.ax.plot(
-                [], [],
+                [],
+                [],
                 marker="s",
                 markersize=10,
                 markerfacecolor=mcolors.to_rgba("darkblue", 0.8),
@@ -920,17 +981,15 @@ class SkyPointingController:
                 use_cache = True
                 cache_time_idx = cache_time_idx[0]
                 # Cache shape is (n_points, n_times), so index with [:, time_idx]
-                constrained_flat = cache["constraints"][name.lower()][
-                    :, cache_time_idx
-                ]
+                constrained_flat = cache["constraints"][name.lower()][:, cache_time_idx]
                 constrained_flat = np.asarray(constrained_flat, dtype=bool)
                 ra_grid_rad = cache["ra_grid_rad"]
                 dec_grid_rad = cache["dec_grid_rad"]
 
         if not use_cache:
             # Fall back to real-time evaluation
-            ra_grid_rad, dec_grid_rad, ra_flat, dec_flat = self._create_regular_sky_grid(
-                n_ra, n_dec
+            ra_grid_rad, dec_grid_rad, ra_flat, dec_flat = (
+                self._create_regular_sky_grid(n_ra, n_dec)
             )
 
             constrained_flat = constraint_func.in_constraint_batch(
@@ -945,19 +1004,26 @@ class SkyPointingController:
 
         # Only plot if there are constrained regions
         if constrained_2d.any():
-            # Plot using contourf for smooth, solid filled regions
+            # Apply Gaussian smoothing for smooth edges
+            # sigma controls smoothness: higher = smoother edges
+            sigma = max(1.0, self.n_grid_points / 50)
+            smoothed = _gaussian_smooth(constrained_2d, sigma=sigma)
+
+            # Plot using contourf with smooth edges
             self.ax.contourf(
                 ra_grid_rad,
                 dec_grid_rad,
-                constrained_2d,
-                levels=[0.5, 1.5],  # Single level to create solid fill
+                smoothed,
+                levels=[0.5, 1.0],  # Threshold at 0.5 for smooth boundary
                 colors=[mcolors.to_rgba(color, self.constraint_alpha)],
                 zorder=1,
+                antialiased=True,
             )
 
             # Add a proxy artist for the legend (use plot with marker for compatibility with Mollweide)
             self.ax.plot(
-                [], [],
+                [],
+                [],
                 marker="s",
                 markersize=10,
                 markerfacecolor=mcolors.to_rgba(color, self.constraint_alpha),
