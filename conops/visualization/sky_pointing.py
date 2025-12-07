@@ -776,6 +776,17 @@ class SkyPointingController:
                 antialiased=True,
             )
 
+            # Draw hard contour line at the edge for clear boundary
+            self.ax.contour(
+                ra_grid_rad,
+                dec_grid_rad,
+                smoothed,
+                levels=[0.5],
+                colors=["darkblue"],
+                linewidths=1.5,
+                zorder=2.6,
+            )
+
             # Add a proxy artist for the legend (use plot with marker for compatibility with Mollweide)
             self.ax.plot(
                 [],
@@ -1018,6 +1029,17 @@ class SkyPointingController:
                 colors=[mcolors.to_rgba(color, self.constraint_alpha)],
                 zorder=1,
                 antialiased=True,
+            )
+
+            # Draw hard contour line at the edge for clear boundary
+            self.ax.contour(
+                ra_grid_rad,
+                dec_grid_rad,
+                smoothed,
+                levels=[0.5],
+                colors=[color],
+                linewidths=1.0,
+                zorder=1.1,
             )
 
             # Add a proxy artist for the legend (use plot with marker for compatibility with Mollweide)
