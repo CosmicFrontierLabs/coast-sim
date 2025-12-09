@@ -762,7 +762,7 @@ class SkyPointingController:
 
         # Plot Earth disk using contourf for smooth, solid appearance
         if inside_earth_2d.any():
-            # Apply Gaussian smoothing for smooth edges
+            # Apply Gaussian smoothing for smooth filled region appearance
             sigma = max(1.0, self.n_grid_points / 50)
             smoothed = _gaussian_smooth(inside_earth_2d, sigma=sigma)
 
@@ -776,11 +776,13 @@ class SkyPointingController:
                 antialiased=True,
             )
 
-            # Draw hard contour line at the edge for clear boundary
+            # Draw hard contour line at the TRUE edge using original binary mask
+            # Apply minimal smoothing just for anti-aliasing the line
+            edge_smoothed = _gaussian_smooth(inside_earth_2d, sigma=0.8)
             self.ax.contour(
                 ra_grid_rad,
                 dec_grid_rad,
-                smoothed,
+                edge_smoothed,
                 levels=[0.5],
                 colors=["darkblue"],
                 linewidths=1.5,
@@ -1015,7 +1017,7 @@ class SkyPointingController:
 
         # Only plot if there are constrained regions
         if constrained_2d.any():
-            # Apply Gaussian smoothing for smooth edges
+            # Apply Gaussian smoothing for smooth filled region appearance
             # sigma controls smoothness: higher = smoother edges
             sigma = max(1.0, self.n_grid_points / 50)
             smoothed = _gaussian_smooth(constrained_2d, sigma=sigma)
@@ -1031,11 +1033,13 @@ class SkyPointingController:
                 antialiased=True,
             )
 
-            # Draw hard contour line at the edge for clear boundary
+            # Draw hard contour line at the TRUE edge using original binary mask
+            # Apply minimal smoothing just for anti-aliasing the line
+            edge_smoothed = _gaussian_smooth(constrained_2d, sigma=0.8)
             self.ax.contour(
                 ra_grid_rad,
                 dec_grid_rad,
-                smoothed,
+                edge_smoothed,
                 levels=[0.5],
                 colors=[color],
                 linewidths=1.0,
