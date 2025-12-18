@@ -66,7 +66,7 @@ Safe Mode Behavior:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel, Field
 from rust_ephem.constraints import ConstraintConfig
@@ -320,8 +320,11 @@ class FaultManagement(BaseModel):
 
                 # Check if currently in constraint violation
                 # Note: in_constraint returns True when constraint is VIOLATED
-                in_violation = red_limit.constraint.in_constraint(
-                    ephemeris=ephem, target_ra=ra, target_dec=dec, time=dt
+                in_violation = cast(
+                    bool,
+                    red_limit.constraint.in_constraint(
+                        ephemeris=ephem, target_ra=ra, target_dec=dec, time=dt
+                    ),
                 )
 
                 # Log constraint violation events

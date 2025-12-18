@@ -1,3 +1,5 @@
+from typing import cast
+
 import numpy as np
 import rust_ephem
 from pydantic import BaseModel, ConfigDict, Field
@@ -68,16 +70,22 @@ class Constraint(BaseModel):
         assert self.ephem is not None, "Ephemeris must be set to use in_sun method"
 
         dt = dtutcfromtimestamp(time)
-        return self.sun_constraint.in_constraint(
-            ephemeris=self.ephem, target_ra=ra, target_dec=dec, time=dt
+        return cast(
+            bool,
+            self.sun_constraint.in_constraint(
+                ephemeris=self.ephem, target_ra=ra, target_dec=dec, time=dt
+            ),
         )
 
     def in_panel(self, ra: float, dec: float, time: float) -> bool:
         assert self.ephem is not None, "Ephemeris must be set to use in_panel method"
 
         dt = dtutcfromtimestamp(time)
-        return self.panel_constraint.in_constraint(
-            ephemeris=self.ephem, target_ra=ra, target_dec=dec, time=dt
+        return cast(
+            bool,
+            self.panel_constraint.in_constraint(
+                ephemeris=self.ephem, target_ra=ra, target_dec=dec, time=dt
+            ),
         )
 
     def in_anti_sun(self, ra: float, dec: float, time: float) -> bool:
@@ -85,8 +93,11 @@ class Constraint(BaseModel):
 
         # Convert time to datetime for rust-ephem
         dt = dtutcfromtimestamp(time)
-        return self.anti_sun_constraint.in_constraint(
-            ephemeris=self.ephem, target_ra=ra, target_dec=dec, time=dt
+        return cast(
+            bool,
+            self.anti_sun_constraint.in_constraint(
+                ephemeris=self.ephem, target_ra=ra, target_dec=dec, time=dt
+            ),
         )
         # Assume it's an iterable of datetime objects
 
@@ -95,8 +106,11 @@ class Constraint(BaseModel):
 
         # Convert time to datetime for rust-ephem
         dt = dtutcfromtimestamp(time)
-        return self.earth_constraint.in_constraint(
-            ephemeris=self.ephem, target_ra=ra, target_dec=dec, time=dt
+        return cast(
+            bool,
+            self.earth_constraint.in_constraint(
+                ephemeris=self.ephem, target_ra=ra, target_dec=dec, time=dt
+            ),
         )
 
     def in_eclipse(self, ra: float, dec: float, time: float) -> bool:
@@ -105,8 +119,11 @@ class Constraint(BaseModel):
         # Convert time to datetime for rust-ephem
 
         dt = dtutcfromtimestamp(time)
-        return rust_ephem.EclipseConstraint().in_constraint(
-            ephemeris=self.ephem, target_ra=ra, target_dec=dec, time=dt
+        return cast(
+            bool,
+            rust_ephem.EclipseConstraint().in_constraint(
+                ephemeris=self.ephem, target_ra=ra, target_dec=dec, time=dt
+            ),
         )
 
     def in_moon(self, ra: float, dec: float, time: float) -> bool:
@@ -115,8 +132,11 @@ class Constraint(BaseModel):
         # Convert time to datetime for rust-ephem
 
         dt = dtutcfromtimestamp(time)
-        return self.moon_constraint.in_constraint(
-            ephemeris=self.ephem, target_ra=ra, target_dec=dec, time=dt
+        return cast(
+            bool,
+            self.moon_constraint.in_constraint(
+                ephemeris=self.ephem, target_ra=ra, target_dec=dec, time=dt
+            ),
         )
 
     def in_constraint(self, ra: float, dec: float, utime: float) -> bool:

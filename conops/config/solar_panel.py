@@ -109,7 +109,7 @@ class SolarPanel(BaseModel):
             result = self._eclipse_constraint.evaluate(
                 ephemeris=ephem, target_ra=0.0, target_dec=0.0, times=time
             )
-            not_in_eclipse = ~result.constraint_array
+            not_in_eclipse = ~np.array(result.constraint_array)
 
         # Gimbled panels: always point at sun when not in eclipse
         if self.gimbled:
