@@ -623,7 +623,7 @@ class SkyPointingController:
             # Result shape is (n_points, n_times) from rust_ephem
             constraint_cache[name] = result
 
-        # Store cache with grid info for pcolormesh
+        # Store cache with grid info for contourf
         self._constraint_cache = {
             "ra_grid": ra_flat,
             "dec_grid": dec_flat,
