@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/_static/coast-sim-logo.png" alt="COASTSim Logo" width="400">
+  <img src="https://raw.githubusercontent.com/CosmicFrontierLabs/coast-sim/main/docs/_static/coast-sim-logo.png" alt="COASTSim Logo" width="400">
 </p>
 
 # COASTSim: ConOps Astronomical Space Telescope Simulator

@@ -44,6 +44,7 @@ dependencies = [
 Documentation = "https://coastsim.readthedocs.io/en/latest/"
 Homepage = "https://github.com/CosmicFrontierLabs/coast-sim/"
 Source = "https://github.com/CosmicFrontierLabs/coast-sim/"
+Changelog = "https://github.com/CosmicFrontierLabs/coast-sim/blob/main/CHANGELOG.md"
 
 
 # Packages required only for local developement environments
