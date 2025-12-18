@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.1.1...v0.1.2) (2025-12-18)
+
+
+### Bug Fixes
+
+* image in PyPI ([#59](https://github.com/CosmicFrontierLabs/coast-sim/issues/59)) ([022a853](https://github.com/CosmicFrontierLabs/coast-sim/commit/022a853299a755f3fc866a66cb9dd5c2dd506377))
+
 ## [0.1.1](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.1.0...v0.1.1) (2025-12-18)
 
 
