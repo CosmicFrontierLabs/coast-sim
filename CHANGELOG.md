@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.1.0...v0.1.1) (2025-12-18)
+
+
+### Bug Fixes
+
+* issues with namespace and build errors ([#56](https://github.com/CosmicFrontierLabs/coast-sim/issues/56)) ([8a89a10](https://github.com/CosmicFrontierLabs/coast-sim/commit/8a89a10b0585c4551c5b4a1c5b1507ef29108f7b))
+* **visualization:** improve skyplot ([#58](https://github.com/CosmicFrontierLabs/coast-sim/issues/58)) ([080952a](https://github.com/CosmicFrontierLabs/coast-sim/commit/080952a570501e8a343c08e02627c0148e2e5a2f))
+
 ## 0.1.0 (2025-12-18)
 
 
