@@ -710,7 +710,7 @@ class SkyPointingController:
             )
 
     def _plot_earth_disk(self, utime: float) -> None:
-        """Plot the physical extent of Earth as seen from the spacecraft using pcolormesh.
+        """Plot the physical extent of Earth as seen from the spacecraft using a filled contour (``contourf``).
 
         Parameters
         ----------
