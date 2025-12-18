@@ -24,7 +24,7 @@ maintainers = [
 name = "coast-sim" # Required
 readme = "README.md" # Optional
 requires-python = ">=3.10"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
 
 
 dependencies = [
@@ -74,8 +74,8 @@ requires = ["setuptools", "setuptools_scm"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-# Specify the Python module or package to include
-packages = ["conops"]
+# Automatically discover all packages and subpackages
+packages = { find = {} }
 
 [tool.setuptools_scm]
 # Use Git tags to determine the version
