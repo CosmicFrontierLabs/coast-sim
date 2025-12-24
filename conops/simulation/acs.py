@@ -321,8 +321,17 @@ class ACS:
             # Use first wheel for legacy/simple behavior
             wheel = self.reaction_wheels[0]
             moi = self.config.spacecraft_bus.attitude_control.spacecraft_moi
+            # spacecraft_moi may be a tuple (Ixx,Iyy,Izz); use scalar approx (mean)
+            try:
+                if isinstance(moi, (list, tuple)):
+                    moi_val = float(sum(moi) / len(moi))
+                else:
+                    moi_val = float(moi)
+            except Exception:
+                # Fallback: unknown type (e.g., Mock) — let ReactionWheel handle defensively
+                moi_val = moi
             # compute theoretical accel from wheel torque
-            accel_from_wheel = wheel.accel_limit_deg(moi)
+            accel_from_wheel = wheel.accel_limit_deg(moi_val)
             # effective accel is limited by both ACS and wheel
             try:
                 acs_accel = float(getattr(self.acs_config, "slew_acceleration", float("inf")))
@@ -340,7 +349,7 @@ class ACS:
             # accel (deg/s^2) -> rad/s^2
             from math import pi
 
-            requested_torque = (accel_override * (pi / 180.0)) * moi
+            requested_torque = (accel_override * (pi / 180.0)) * (moi_val if isinstance(moi_val, (int, float)) else 0.0)
             adjusted_torque = wheel.reserve_impulse(requested_torque, tentative_motion)
             if adjusted_torque != requested_torque and tentative_motion > 0:
                 # scale accel accordingly
