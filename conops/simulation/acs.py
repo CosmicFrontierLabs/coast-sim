@@ -16,6 +16,7 @@ from .acs_command import ACSCommand
 from .emergency_charging import EmergencyCharging
 from .passes import Pass
 from .slew import Slew
+from .reaction_wheel import ReactionWheel
 
 if TYPE_CHECKING:
     from ..ditl.ditl_log import DITLLog
@@ -96,6 +97,41 @@ class ACS:
         self.solar_panel = config.solar_panel
         self.slew_dists: list[float] = []
         self.saa = None
+        # Reaction wheel instances (optional)
+        acs_cfg = self.config.spacecraft_bus.attitude_control
+        # store ACS config for use by Slew and other helpers
+        self.acs_config = acs_cfg
+        self.reaction_wheels = []
+        # Only enable legacy single-wheel when wheel_enabled is explicitly True
+        if getattr(acs_cfg, "wheel_enabled", False) is True:
+            # legacy single-wheel support
+            self.reaction_wheels.append(
+                ReactionWheel(
+                    max_torque=acs_cfg.wheel_max_torque,
+                    max_momentum=acs_cfg.wheel_max_momentum,
+                    orientation=(1.0, 0.0, 0.0),
+                    name="wheel0",
+                )
+            )
+        # Multi-wheel config - be defensive: tests may supply a Mock for acs_cfg.wheels
+        wheels_val = getattr(acs_cfg, "wheels", None)
+        wheels_iter = []
+        if wheels_val:
+            try:
+                # Attempt to iterate; if it's a Mock or non-iterable, fall back to empty
+                wheels_iter = list(wheels_val)
+            except TypeError:
+                wheels_iter = []
+
+        for i, w in enumerate(wheels_iter):
+            # expect dict with keys: orientation [x,y,z], max_torque, max_momentum
+            orient = tuple(w.get("orientation", (1.0, 0.0, 0.0)))
+            mt = float(w.get("max_torque", acs_cfg.wheel_max_torque or 0.0))
+            mm = float(w.get("max_momentum", acs_cfg.wheel_max_momentum or 0.0))
+            name = w.get("name", f"wheel{i}")
+            self.reaction_wheels.append(
+                ReactionWheel(max_torque=mt, max_momentum=mm, orientation=orient, name=name)
+            )
 
     def _log_or_print(self, utime: float, event_type: str, description: str) -> None:
         """Log an event to DITLLog if available, otherwise print to stdout.
@@ -278,6 +314,40 @@ class ACS:
         slew.startra = self.ra
         slew.startdec = self.dec
         slew.slewstart = utime
+        # If reaction wheel present, compute an accel override based on torque limits
+        accel_override = None
+        vmax_override = None
+        if self.reaction_wheels:
+            # Use first wheel for legacy/simple behavior
+            wheel = self.reaction_wheels[0]
+            moi = self.config.spacecraft_bus.attitude_control.spacecraft_moi
+            # compute theoretical accel from wheel torque
+            accel_from_wheel = wheel.accel_limit_deg(moi)
+            # effective accel is limited by both ACS and wheel
+            try:
+                acs_accel = float(getattr(self.acs_config, "slew_acceleration", float("inf")))
+            except Exception:
+                acs_accel = float("inf")
+            accel_override = min(acs_accel, accel_from_wheel)
+            # Reserve impulse against wheel momentum capacity using a rough estimate
+            # Use motion_time computed with a tentative accel to estimate impulse
+            # motion_time may not be available on mocked config; guard call
+            try:
+                tentative_motion = self.acs_config.motion_time(slew.slewdist, accel=accel_override)
+            except Exception:
+                tentative_motion = 0.0
+            # Requested torque in N*m corresponding to accel_override
+            # accel (deg/s^2) -> rad/s^2
+            from math import pi
+
+            requested_torque = (accel_override * (pi / 180.0)) * moi
+            adjusted_torque = wheel.reserve_impulse(requested_torque, tentative_motion)
+            if adjusted_torque != requested_torque and tentative_motion > 0:
+                # scale accel accordingly
+                accel_override = (adjusted_torque / moi) * (180.0 / pi)
+        # apply overrides to slew and calc time
+        slew._accel_override = accel_override
+        slew._vmax_override = vmax_override
         slew.calc_slewtime()
 
         self._log_or_print(
