@@ -16,7 +16,29 @@
             "slew_acceleration": 0.01,
             "max_slew_rate": 0.3,
             "slew_accuracy": 0.01,
-            "settle_time": 10.0
+            "settle_time": 10.0,
+            "wheel_enabled": true,
+            "wheels": [
+                {
+                    "name": "wheel_x",
+                    "orientation": [1.0, 0.0, 0.0],
+                    "max_torque": 0.1,
+                    "max_momentum": 10.0
+                },
+                {
+                    "name": "wheel_y",
+                    "orientation": [0.0, 1.0, 0.0],
+                    "max_torque": 0.1,
+                    "max_momentum": 10.0
+                },
+                {
+                    "name": "wheel_z",
+                    "orientation": [0.0, 0.0, 1.0],
+                    "max_torque": 0.05,
+                    "max_momentum": 5.0
+                }
+            ],
+            "spacecraft_moi": [5.0, 5.0, 5.0]
         },
         "communications": null,
         "heater": {
