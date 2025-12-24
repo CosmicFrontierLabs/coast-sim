@@ -132,7 +132,13 @@ The :class:`~conops.config.SpacecraftBus` defines the spacecraft bus subsystems.
            slew_acceleration=0.01,  # deg/s² - angular acceleration
            max_slew_rate=0.3,       # deg/s - maximum slew rate
            slew_accuracy=0.01,      # deg - pointing accuracy
-           settle_time=10.0,        # seconds - time to settle after slew
+            settle_time=10.0,        # seconds - time to settle after slew
+            # Reaction wheel settings (optional) - configure via JSON
+            wheel_enabled=False,     # enable reaction-wheel-limited dynamics
+            wheels=[],               # list of wheel dicts: {name, orientation, max_torque, max_momentum}
+            wheel_max_torque=0.0,    # legacy single-wheel torque (N*m)
+            wheel_max_momentum=0.0,  # legacy single-wheel momentum (N*m*s)
+            spacecraft_moi=(5.0, 5.0, 5.0),  # kg*m^2 - per-axis MOI (Ixx, Iyy, Izz)
        ),
        heater=Heater(
            name="Bus Heaters",
