@@ -541,6 +541,8 @@ class ACS:
         self._check_constraints(utime)
 
         # Calculate current RA/Dec pointing
+        # Also update runtime-coupled wheel momentum while slewing
+        self._update_wheel_momentum(utime)
         self._calculate_pointing(utime)
 
         # Calculate roll angle
@@ -724,6 +726,84 @@ class ACS:
             # After slew completes or for continuous tracking, maintain optimal pointing
             self.ra = target_ra
             self.dec = target_dec
+
+    def _update_wheel_momentum(self, utime: float) -> None:
+        """Update reaction wheel stored momentum during active slews.
+
+        This method is called from `pointing()` before calculating pointing.
+        It computes the torque that the wheel must supply to realize the
+        current `slew._accel_override` and applies that torque over the
+        elapsed time since the last update, clamping to wheel capabilities
+        and updating the effective accel if the wheel cannot supply full torque.
+        """
+        # track last update time
+        if not hasattr(self, "_last_pointing_time") or self._last_pointing_time is None:
+            self._last_pointing_time = utime
+            return
+
+        dt = utime - self._last_pointing_time
+        if dt <= 0:
+            self._last_pointing_time = utime
+            return
+
+        # Only update when actively slewing and we have wheels
+        if self.current_slew is None or not self.current_slew.is_slewing(utime):
+            self._last_pointing_time = utime
+            return
+
+        if not self.reaction_wheels:
+            self._last_pointing_time = utime
+            return
+
+        wheel = self.reaction_wheels[0]
+
+        # Determine current accel request (deg/s^2)
+        accel_req = getattr(self.current_slew, "_accel_override", None)
+        if accel_req is None or accel_req <= 0:
+            self._last_pointing_time = utime
+            return
+
+        # Derive scalar moi approximation
+        moi = self.config.spacecraft_bus.attitude_control.spacecraft_moi
+        try:
+            if isinstance(moi, (list, tuple)):
+                moi_val = float(sum(moi) / len(moi))
+            else:
+                moi_val = float(moi)
+        except Exception:
+            moi_val = None
+
+        from math import pi
+
+        # Compute requested torque (N*m) = accel (rad/s^2) * moi
+        if moi_val is None:
+            requested_torque = 0.0
+        else:
+            requested_torque = (accel_req * (pi / 180.0)) * moi_val
+
+        # Determine how much torque wheel can actually apply over this dt
+        # available impulse (N*m*s)
+        available = max(0.0, wheel.max_momentum - abs(wheel.current_momentum))
+        # Maximum torque that could be supplied for duration dt without exceeding momentum
+        max_torque_by_momentum = available / dt if dt > 0 else 0.0
+
+        # Limit to wheel's peak torque capability
+        allowed_torque = min(abs(requested_torque), wheel.max_torque, max_torque_by_momentum)
+        # restore sign
+        allowed_torque = allowed_torque if requested_torque >= 0 else -allowed_torque
+
+        # Apply torque to wheel (wheel gains stored momentum; spacecraft receives opposite)
+        wheel.apply_torque(allowed_torque, dt)
+
+        # If we couldn't supply full torque, reduce accel_override to reflect capability
+        if abs(allowed_torque) < abs(requested_torque) and moi_val and moi_val > 0:
+            new_accel = (allowed_torque / moi_val) * (180.0 / pi)
+            # update both current_slew and last_slew override so future calculations use lowered accel
+            self.current_slew._accel_override = new_accel
+            if self.last_slew is self.current_slew:
+                self.last_slew._accel_override = new_accel
+
+        self._last_pointing_time = utime
 
     def request_pass(self, gspass: Pass) -> None:
         """Request a groundstation pass."""
