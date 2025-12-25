@@ -26,6 +26,19 @@ class AttitudeControlSystem(BaseModel):
     wheels: list[dict] = []
     # Spacecraft rotational inertia per principal axis (Ixx, Iyy, Izz) in kg*m^2
     spacecraft_moi: tuple[float, float, float] = (5.0, 5.0, 5.0)
+    # Magnetorquer definitions (optional) for finite momentum unloading
+    magnetorquers: list[dict] = []
+    magnetorquer_bfield_T: float = 3e-5  # representative LEO field magnitude (Tesla)
+    # Disturbance modeling inputs (drag/SRP/gg/magnetic)
+    cp_offset_body: tuple[float, float, float] = (0.0, 0.0, 0.0)  # CoP minus CoM (m) in body frame
+    residual_magnetic_moment: tuple[float, float, float] = (0.0, 0.0, 0.0)  # A*m^2 in body frame
+    drag_area_m2: float = 0.0  # effective drag cross-section (m^2)
+    drag_coeff: float = 2.2  # ballistic drag coefficient
+    solar_area_m2: float = 0.0  # illuminated area for solar pressure (m^2)
+    solar_reflectivity: float = 1.0  # 1 = fully absorbing/reflective factor
+    use_msis_density: bool = False  # if True, attempt to use pymsis/nrlmsise-00 for density
+    # Disturbance torque in body frame (N*m), applied continuously
+    disturbance_torque_body: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
     def motion_time(self, angle_deg: float, accel: float | None = None, vmax: float | None = None) -> float:
         """Time to complete the motion (excluding settle) under bang-bang control."""

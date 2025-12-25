@@ -16,9 +16,9 @@ def test_example_config_contains_wheels_and_moi():
     # Wheel flag enabled in example
     assert acs.wheel_enabled is True
 
-    # Wheels list present and has three entries
+    # Wheels list present and has four entries
     assert isinstance(acs.wheels, list)
-    assert len(acs.wheels) == 3
+    assert len(acs.wheels) == 4
 
     # Each wheel should have expected keys
     for w in acs.wheels:

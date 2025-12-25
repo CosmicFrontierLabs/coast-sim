@@ -29,6 +29,7 @@ class ACSCommandType(Enum):
     START_BATTERY_CHARGE = auto()
     END_BATTERY_CHARGE = auto()
     ENTER_SAFE_MODE = auto()
+    DESAT = auto()
 
 
 class AntennaType(str, Enum):
