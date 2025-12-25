@@ -154,7 +154,9 @@ class Slew:
         # Calculate slew time using AttitudeControlSystem
         # Use any accel/vmax overrides when computing slew time (e.g. wheel-limited)
         self.slewtime = round(
-            self.acs_config.slew_time(distance, accel=self._accel_override, vmax=self._vmax_override)
+            self.acs_config.slew_time(
+                distance, accel=self._accel_override, vmax=self._vmax_override
+            )
         )
 
         self.slewend = self.slewstart + self.slewtime
@@ -185,8 +187,12 @@ class Slew:
             d0 = np.deg2rad(dec0)
             r1 = np.deg2rad(ra1)
             d1 = np.deg2rad(dec1)
-            v0 = np.array([np.cos(d0) * np.cos(r0), np.cos(d0) * np.sin(r0), np.sin(d0)])
-            v1 = np.array([np.cos(d1) * np.cos(r1), np.cos(d1) * np.sin(r1), np.sin(d1)])
+            v0 = np.array(
+                [np.cos(d0) * np.cos(r0), np.cos(d0) * np.sin(r0), np.sin(d0)]
+            )
+            v1 = np.array(
+                [np.cos(d1) * np.cos(r1), np.cos(d1) * np.sin(r1), np.sin(d1)]
+            )
             axis = np.cross(v0, v1)
             nrm = np.linalg.norm(axis)
             if nrm <= 1e-12:

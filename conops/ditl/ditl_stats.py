@@ -184,7 +184,9 @@ class DITLStats:
             print(f"  Desat events: {getattr(self, 'desat_event_count', 0)}")
             print(f"  Desat requests: {getattr(self, 'desat_request_count', 0)}")
             print(f"  Time in desat: {desat_hours:.2f} hr")
-            print(f"  Slews rejected (headroom): {getattr(self, 'headroom_rejects', 0)}")
+            print(
+                f"  Slews rejected (headroom): {getattr(self, 'headroom_rejects', 0)}"
+            )
 
         if hasattr(self, "power") and self.power:
             print("\nPower Consumption:")

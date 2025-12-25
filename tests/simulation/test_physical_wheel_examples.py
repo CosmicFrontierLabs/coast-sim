@@ -3,22 +3,21 @@ from conops.simulation.reaction_wheel import ReactionWheel
 
 def test_angular_momentum_conservation_simple():
     """Applying internal wheel torque should produce equal and opposite spacecraft impulse."""
-    I = 5.0  # spacecraft moment of inertia (kg*m^2)
     rw = ReactionWheel(max_torque=0.2, max_momentum=10.0)
     rw.current_momentum = 0.0
 
-    T = 0.05  # N*m applied to wheel
+    torque = 0.05  # N*m applied to wheel
     dt = 10.0  # seconds
 
-    # Apply torque to wheel (this increases wheel stored momentum by T*dt)
-    rw.apply_torque(T, dt)
+    # Apply torque to wheel (this increases wheel stored momentum by torque*dt)
+    rw.apply_torque(torque, dt)
 
-    L_wheel = rw.current_momentum
-    # Spacecraft receives equal-and-opposite impulse: delta_L = -T * dt
-    L_spacecraft = -T * dt
+    momentum_wheel = rw.current_momentum
+    # Spacecraft receives equal-and-opposite impulse: delta_L = -torque * dt
+    momentum_spacecraft = -torque * dt
 
     # Total angular momentum should be conserved (close to zero)
-    assert abs((L_wheel + L_spacecraft)) < 1e-9
+    assert abs(momentum_wheel + momentum_spacecraft) < 1e-9
 
 
 def test_max_momentum_storage_clamps():

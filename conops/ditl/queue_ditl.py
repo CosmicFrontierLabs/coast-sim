@@ -450,11 +450,13 @@ class QueueDITL(DITLMixin, DITLStats):
             # Record disturbance torques (magnitudes) if available
             if hasattr(self.acs, "_last_disturbance_components"):
                 comps = self.acs._last_disturbance_components or {}
-                def _safe(val):
+
+                def _safe(val: Any) -> float:
                     try:
                         return float(val)
                     except Exception:
                         return 0.0
+
                 self.disturbance_total.append(_safe(comps.get("total", 0.0)))
                 self.disturbance_gg.append(_safe(comps.get("gg", 0.0)))
                 self.disturbance_drag.append(_safe(comps.get("drag", 0.0)))
@@ -1141,6 +1143,8 @@ class QueueDITL(DITLMixin, DITLStats):
 
     @staticmethod
     def _safe_float(val: float | int | None) -> float:
+        if val is None:
+            return 0.0
         try:
             return float(val)
         except Exception:
