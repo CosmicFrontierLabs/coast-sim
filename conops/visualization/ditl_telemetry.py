@@ -8,8 +8,8 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.font_manager import FontProperties
 
+from ..common import ACSCommandType, ACSMode
 from ..config.visualization import VisualizationConfig
-from ..common import ACSMode, ACSCommandType
 
 if TYPE_CHECKING:
     from ..ditl.ditl_mixin import DITLMixin
@@ -71,9 +71,16 @@ def plot_ditl_telemetry(
     def _is_sequence(val: object) -> bool:
         return isinstance(val, (list, tuple, np.ndarray))
 
-    wm = getattr(ditl, "wheel_momentum_fraction", None)
-    wt = getattr(ditl, "wheel_torque_fraction", None)
-    has_wheel = _is_sequence(wm) and _is_sequence(wt) and len(wm) > 0 and len(wt) > 0
+    wm_raw = getattr(ditl, "wheel_momentum_fraction", None)
+    wt_raw = getattr(ditl, "wheel_torque_fraction", None)
+    wm_seq = wm_raw if _is_sequence(wm_raw) else None
+    wt_seq = wt_raw if _is_sequence(wt_raw) else None
+    has_wheel = (
+        wm_seq is not None
+        and wt_seq is not None
+        and len(wm_seq) > 0
+        and len(wt_seq) > 0
+    )
     n_panels = 8 if has_wheel else 7
     fig = plt.figure(figsize=figsize)
     axes = []
@@ -100,7 +107,11 @@ def plot_ditl_telemetry(
     plt.ylabel("Mode", fontsize=label_font_size, fontfamily=font_family)
     mode_ticks = [m.value for m in ACSMode]
     ax.set_yticks(mode_ticks)
-    ax.set_yticklabels([m.name.title() for m in ACSMode], fontsize=tick_font_size, fontfamily=font_family)
+    ax.set_yticklabels(
+        [m.name.title() for m in ACSMode],
+        fontsize=tick_font_size,
+        fontfamily=font_family,
+    )
 
     ax = plt.subplot(n_panels * 100 + 14)
     axes.append(ax)
@@ -149,8 +160,10 @@ def plot_ditl_telemetry(
     if has_wheel:
         ax = plt.subplot(n_panels * 100 + 17)
         axes.append(ax)
-        ax.plot(timehours, ditl.wheel_momentum_fraction, label="Momentum", alpha=0.8)
-        ax.plot(timehours, ditl.wheel_torque_fraction, label="Torque", alpha=0.8)
+        momentum_series = wm_seq if wm_seq is not None else ditl.wheel_momentum_fraction
+        torque_series = wt_seq if wt_seq is not None else ditl.wheel_torque_fraction
+        ax.plot(timehours, momentum_series, label="Momentum", alpha=0.8)
+        ax.plot(timehours, torque_series, label="Torque", alpha=0.8)
         # Highlight desat windows (if ACS command history is available)
         desat_spans = []
         if hasattr(ditl, "acs") and hasattr(ditl.acs, "executed_commands"):
@@ -162,7 +175,7 @@ def plot_ditl_telemetry(
                     desat_spans.append((start, end))
         # Merge overlapping spans for cleaner visualization
         desat_spans = sorted(desat_spans, key=lambda x: x[0])
-        merged_spans = []
+        merged_spans: list[list[float]] = []
         for span in desat_spans:
             if not merged_spans or span[0] > merged_spans[-1][1]:
                 merged_spans.append(list(span))
@@ -180,17 +193,19 @@ def plot_ditl_telemetry(
             sat_times = [t for t, s in zip(timehours, ditl.wheel_saturation) if s]
             sat_vals = [1.0] * len(sat_times)
             if sat_times:
-                ax.scatter(sat_times, sat_vals, color="r", marker="x", label="Saturated")
+                ax.scatter(
+                    sat_times, sat_vals, color="r", marker="x", label="Saturated"
+                )
         # Deduplicate legend labels
         handles, labels = ax.get_legend_handles_labels()
         seen = {}
         dedup_handles = []
         dedup_labels = []
-        for h, l in zip(handles, labels):
-            if l not in seen:
-                seen[l] = True
-                dedup_handles.append(h)
-                dedup_labels.append(l)
+        for handle, label in zip(handles, labels):
+            if label not in seen:
+                seen[label] = True
+                dedup_handles.append(handle)
+                dedup_labels.append(label)
         if dedup_handles:
             ax.legend(
                 dedup_handles,
@@ -200,7 +215,9 @@ def plot_ditl_telemetry(
                 prop={"family": font_family},
             )
         ax.set_ylim(0, 1.05)
-        ax.set_ylabel("Wheel\n(resource)", fontsize=label_font_size, fontfamily=font_family)
+        ax.set_ylabel(
+            "Wheel\n(resource)", fontsize=label_font_size, fontfamily=font_family
+        )
         ax.xaxis.set_visible(False)
 
     ax = plt.subplot(n_panels * 100 + (17 if not has_wheel else 18))

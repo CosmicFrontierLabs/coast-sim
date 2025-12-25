@@ -266,7 +266,7 @@ class SAA:
         self.long = self.ephem.long[i]  # type: ignore[attr-defined]
         self.lat = self.ephem.lat[i]  # type: ignore[attr-defined]
 
-        return self.saapoly.contains(Point(self.long, self.lat))
+        return bool(self.saapoly.contains(Point(self.long, self.lat)))
 
     def calc(self) -> None:
         """

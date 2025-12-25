@@ -1,7 +1,5 @@
 from unittest.mock import Mock
 
-import pytest
-
 from conops.simulation.reaction_wheel import ReactionWheel
 
 

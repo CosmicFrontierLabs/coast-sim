@@ -1,11 +1,19 @@
 from __future__ import annotations
 
-from math import pi
-from typing import Optional
 import logging
+from math import pi
+from typing import Any
 
 # module logger for optional debug tracing
 logger = logging.getLogger(__name__)
+
+
+def _to_float(val: Any, default: float = 0.0) -> float:
+    """Safely coerce a value to float with a default fallback."""
+    try:
+        return float(val)
+    except Exception:
+        return default
 
 
 class ReactionWheel:
@@ -27,19 +35,15 @@ class ReactionWheel:
         current_momentum: float = 0.0,
         name: str | None = None,
     ) -> None:
-        def _to_float(val, default=0.0):
-            try:
-                return float(val)
-            except Exception:
-                return default
-
         # store raw values for debugging; coerce to floats for math use
         self.max_torque_raw = max_torque
         self.max_momentum_raw = max_momentum
         self.max_torque = _to_float(max_torque)
         self.max_momentum = _to_float(max_momentum)
         # Wheel orientation as unit vector in spacecraft body frame
-        self.orientation = tuple(orientation) if orientation is not None else (1.0, 0.0, 0.0)
+        self.orientation = (
+            tuple(orientation) if orientation is not None else (1.0, 0.0, 0.0)
+        )
         self.current_momentum = _to_float(current_momentum)
         self.name = name or "wheel"
 
@@ -66,7 +70,9 @@ class ReactionWheel:
         capacity when integrating torque over time (impulse = torque * time).
         """
         if self.max_momentum <= 0 or motion_time <= 0:
-            return min(self.max_torque, abs(requested_torque)) * (1 if requested_torque >= 0 else -1)
+            return min(self.max_torque, abs(requested_torque)) * (
+                1 if requested_torque >= 0 else -1
+            )
 
         available = self.max_momentum - abs(self.current_momentum)
         if available <= 0:
@@ -90,7 +96,7 @@ class ReactionWheel:
         try:
             logger.debug(
                 "ReactionWheel.apply_torque: name=%s torque=%s dt=%s before_m=%s max_m=%s",
-                getattr(self, 'name', 'wheel'),
+                getattr(self, "name", "wheel"),
                 torque,
                 dt,
                 self.current_momentum,
@@ -110,7 +116,7 @@ class ReactionWheel:
         try:
             logger.debug(
                 "ReactionWheel.apply_torque: name=%s after_m=%s",
-                getattr(self, 'name', 'wheel'),
+                getattr(self, "name", "wheel"),
                 self.current_momentum,
             )
         except Exception:

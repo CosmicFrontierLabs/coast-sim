@@ -53,8 +53,18 @@ def test_multi_wheel_parsing_creates_wheels():
     cfg.constraint.ephem = DummyEphem()
     acs_cfg = cfg.spacecraft_bus.attitude_control
     acs_cfg.wheels = [
-        {"orientation": [1.0, 0.0, 0.0], "max_torque": 0.1, "max_momentum": 1.0, "name": "w0"},
-        {"orientation": [0.0, 1.0, 0.0], "max_torque": 0.1, "max_momentum": 1.0, "name": "w1"},
+        {
+            "orientation": [1.0, 0.0, 0.0],
+            "max_torque": 0.1,
+            "max_momentum": 1.0,
+            "name": "w0",
+        },
+        {
+            "orientation": [0.0, 1.0, 0.0],
+            "max_torque": 0.1,
+            "max_momentum": 1.0,
+            "name": "w1",
+        },
     ]
     acs = ACS(config=cfg, log=None)
     assert len(acs.reaction_wheels) == 2
