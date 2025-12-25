@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from math import pi
 from typing import Optional
+import logging
+
+# module logger for optional debug tracing
+logger = logging.getLogger(__name__)
 
 
 class ReactionWheel:
@@ -83,9 +87,31 @@ class ReactionWheel:
         Note: in reality sign convention depends on direction; we treat positive
         torque as increasing stored momentum magnitude.
         """
+        try:
+            logger.debug(
+                "ReactionWheel.apply_torque: name=%s torque=%s dt=%s before_m=%s max_m=%s",
+                getattr(self, 'name', 'wheel'),
+                torque,
+                dt,
+                self.current_momentum,
+                self.max_momentum,
+            )
+        except Exception:
+            pass
+
         self.current_momentum += torque * dt
+
         # clamp to capacity
         if self.current_momentum > self.max_momentum:
             self.current_momentum = self.max_momentum
         if self.current_momentum < -self.max_momentum:
             self.current_momentum = -self.max_momentum
+
+        try:
+            logger.debug(
+                "ReactionWheel.apply_torque: name=%s after_m=%s",
+                getattr(self, 'name', 'wheel'),
+                self.current_momentum,
+            )
+        except Exception:
+            pass

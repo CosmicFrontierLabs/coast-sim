@@ -1,320 +1,348 @@
 {
-    "name": "Example Spacecraft Configuration",
-    "spacecraft_bus": {
-        "name": "Example Spacecraft Bus",
-        "power_draw": {
-            "nominal_power": 50.0,
-            "peak_power": 300.0,
-            "power_mode": {
-                "0": 70.0,
-                "1": 100.0
-            },
-            "eclipse_power": null,
-            "eclipse_power_mode": {}
+  "name": "Example Spacecraft Configuration",
+  "spacecraft_bus": {
+    "name": "Example Spacecraft Bus",
+    "power_draw": {
+      "nominal_power": 50.0,
+      "peak_power": 300.0,
+      "power_mode": {
+        "0": 70.0,
+        "1": 100.0
+      },
+      "eclipse_power": null,
+      "eclipse_power_mode": {}
+    },
+    "attitude_control": {
+      "slew_acceleration": 0.01,
+      "max_slew_rate": 0.3,
+      "slew_accuracy": 0.01,
+      "settle_time": 10.0,
+      "wheel_enabled": true,
+      "wheels": [
+        {
+          "name": "wheel_1",
+          "orientation": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "max_torque": 0.1,
+          "max_momentum": 1.0
         },
-        "attitude_control": {
-            "slew_acceleration": 0.01,
-            "max_slew_rate": 0.3,
-            "slew_accuracy": 0.01,
-            "settle_time": 10.0,
-            "wheel_enabled": true,
-            "wheels": [
-                {
-                    "name": "wheel_x",
-                    "orientation": [1.0, 0.0, 0.0],
-                    "max_torque": 0.1,
-                    "max_momentum": 10.0
-                },
-                {
-                    "name": "wheel_y",
-                    "orientation": [0.0, 1.0, 0.0],
-                    "max_torque": 0.1,
-                    "max_momentum": 10.0
-                },
-                {
-                    "name": "wheel_z",
-                    "orientation": [0.0, 0.0, 1.0],
-                    "max_torque": 0.05,
-                    "max_momentum": 5.0
-                }
-            ],
-            "spacecraft_moi": [5.0, 5.0, 5.0]
+        {
+          "name": "wheel_2",
+          "orientation": [
+            1.0,
+            -1.0,
+            -1.0
+          ],
+          "max_torque": 0.1,
+          "max_momentum": 1.0
         },
-        "communications": null,
-        "heater": {
-            "name": "Bus Heaters",
-            "power_draw": {
-                "nominal_power": 25.0,
-                "peak_power": 300.0,
-                "power_mode": {},
-                "eclipse_power": 75.0,
-                "eclipse_power_mode": {}
-            }
+        {
+          "name": "wheel_3",
+          "orientation": [
+            -1.0,
+            1.0,
+            -1.0
+          ],
+          "max_torque": 0.1,
+          "max_momentum": 1.0
         },
-        "data_generation": {
-            "rate_gbps": 0.0,
-            "per_observation_gb": 0.0
+        {
+          "name": "wheel_4",
+          "orientation": [
+            -1.0,
+            -1.0,
+            1.0
+          ],
+          "max_torque": 0.1,
+          "max_momentum": 1.0
         }
+      ],
+      "spacecraft_moi": [
+        45.0,
+        45.0,
+        45.0
+      ],
+      "wheel_max_torque": 0.0,
+      "wheel_max_momentum": 0.0
     },
-    "solar_panel": {
-        "name": "Default Solar Panel",
-        "panels": [
-            {
-                "name": "Example Solar Panel",
-                "gimbled": false,
-                "sidemount": true,
-                "cant_x": 0.0,
-                "cant_y": 0.0,
-                "azimuth_deg": 0.0,
-                "max_power": 474.21,
-                "conversion_efficiency": 0.94
-            }
-        ],
-        "conversion_efficiency": 0.95
+    "communications": null,
+    "heater": {
+      "name": "Bus Heaters",
+      "power_draw": {
+        "nominal_power": 25.0,
+        "peak_power": 300.0,
+        "power_mode": {},
+        "eclipse_power": 75.0,
+        "eclipse_power_mode": {}
+      }
     },
-    "payload": {
-        "payload": [
-            {
-                "name": "Optical Imager",
-                "power_draw": {
-                    "nominal_power": 50.0,
-                    "peak_power": 300.0,
-                    "power_mode": {
-                        "0": 200.0,
-                        "1": 50.0,
-                        "2": 50.0
-                    },
-                    "eclipse_power": null,
-                    "eclipse_power_mode": {}
-                },
-                "heater": null,
-                "data_generation": {
-                    "rate_gbps": 0.0001953125,
-                    "per_observation_gb": 0.0
-                }
-            }
-        ]
-    },
-    "battery": {
-        "name": "Default Battery",
-        "amphour": 20.0,
-        "voltage": 28.0,
-        "watthour": 1000.0,
-        "emergency_recharge": false,
-        "max_depth_of_discharge": 0.4,
-        "recharge_threshold": 0.95,
-        "charge_level": 1000.0
-    },
-    "constraint": {
-        "sun_constraint": {
-            "type": "and",
-            "constraints": [
-                {
-                    "type": "sun",
-                    "min_angle": 90.0,
-                    "max_angle": null
-                },
-                {
-                    "type": "not",
-                    "constraint": {
-                        "type": "eclipse",
-                        "umbra_only": true
-                    }
-                }
-            ]
-        },
-        "anti_sun_constraint": {
-            "type": "sun",
-            "min_angle": 0.0,
-            "max_angle": 180.0
-        },
-        "moon_constraint": {
-            "type": "moon",
-            "min_angle": 20.0,
-            "max_angle": null
-        },
-        "earth_constraint": {
-            "type": "earth_limb",
-            "min_angle": 20.0,
-            "max_angle": null,
-            "include_refraction": false,
-            "horizon_dip": false
-        },
-        "panel_constraint": {
-            "type": "and",
-            "constraints": [
-                {
-                    "type": "sun",
-                    "min_angle": 45.0,
-                    "max_angle": 135.0
-                },
-                {
-                    "type": "not",
-                    "constraint": {
-                        "type": "eclipse",
-                        "umbra_only": true
-                    }
-                }
-            ]
-        }
-    },
-    "ground_stations": {
-        "stations": [
-            {
-                "code": "NBO",
-                "name": "Nairobi",
-                "latitude_deg": -1.2921,
-                "longitude_deg": 36.8219,
-                "elevation_m": 0.0,
-                "min_elevation_deg": 10.0,
-                "schedule_probability": 0.7,
-                "bands": [
-                    {
-                        "band": "S",
-                        "uplink_rate_mbps": 2.0,
-                        "downlink_rate_mbps": 10.0
-                    }
-                ],
-                "gain_db": null
-            },
-            {
-                "code": "SPO",
-                "name": "South Pole",
-                "latitude_deg": -90.0,
-                "longitude_deg": 0.0,
-                "elevation_m": 2835.0,
-                "min_elevation_deg": 10.0,
-                "schedule_probability": 0.2,
-                "bands": [
-                    {
-                        "band": "S",
-                        "uplink_rate_mbps": 2.0,
-                        "downlink_rate_mbps": 10.0
-                    }
-                ],
-                "gain_db": null
-            },
-            {
-                "code": "NPO",
-                "name": "North Pole",
-                "latitude_deg": 90.0,
-                "longitude_deg": 0.0,
-                "elevation_m": 0.0,
-                "min_elevation_deg": 10.0,
-                "schedule_probability": 0.2,
-                "bands": [
-                    {
-                        "band": "S",
-                        "uplink_rate_mbps": 2.0,
-                        "downlink_rate_mbps": 10.0
-                    }
-                ],
-                "gain_db": null
-            },
-            {
-                "code": "PVG",
-                "name": "Punta Veija",
-                "latitude_deg": 8.7832,
-                "longitude_deg": -71.2325,
-                "elevation_m": 0.0,
-                "min_elevation_deg": 10.0,
-                "schedule_probability": 0.5,
-                "bands": [
-                    {
-                        "band": "S",
-                        "uplink_rate_mbps": 2.0,
-                        "downlink_rate_mbps": 10.0
-                    }
-                ],
-                "gain_db": null
-            }
-        ]
-    },
-    "recorder": {
-        "name": "Default Recorder",
-        "capacity_gb": 64.0,
-        "current_volume_gb": 0.0,
-        "yellow_threshold": 0.7,
-        "red_threshold": 0.9
-    },
-    "fault_management": {
-        "thresholds": [
-            {
-                "name": "battery_level",
-                "yellow": 0.6,
-                "red": 0.5,
-                "direction": "below"
-            },
-            {
-                "name": "recorder_fill_fraction",
-                "yellow": 0.7,
-                "red": 0.9,
-                "direction": "above"
-            }
-        ],
-        "red_limit_constraints": [
-            {
-                "name": "Sun Avoidance",
-                "constraint": {
-                    "type": "and",
-                    "constraints": [
-                        {
-                            "type": "sun",
-                            "min_angle": 20.0,
-                            "max_angle": null
-                        },
-                        {
-                            "type": "not",
-                            "constraint": {
-                                "type": "eclipse",
-                                "umbra_only": true
-                            }
-                        }
-                    ]
-                },
-                "time_threshold_seconds": 120.0,
-                "description": "Spacecraft must avoid pointing too close to the Sun for extended periods."
-            }
-        ],
-        "states": {},
-        "safe_mode_on_red": true,
-        "safe_mode_requested": false,
-        "events": []
-    },
-    "observation_categories": {
-        "categories": [
-            {
-                "name": "GO",
-                "obsid_min": 20000,
-                "obsid_max": 30000,
-                "color": "tab:blue"
-            },
-            {
-                "name": "Survey",
-                "obsid_min": 10000,
-                "obsid_max": 20000,
-                "color": "tab:green"
-            },
-            {
-                "name": "GRB",
-                "obsid_min": 1000000,
-                "obsid_max": 2000000,
-                "color": "tab:orange"
-            },
-            {
-                "name": "TOO",
-                "obsid_min": 30000,
-                "obsid_max": 40000,
-                "color": "tab:red"
-            },
-            {
-                "name": "Charging",
-                "obsid_min": 999000,
-                "obsid_max": 1000000,
-                "color": "gold"
-            }
-        ],
-        "default_name": "Other",
-        "default_color": "tab:purple"
+    "data_generation": {
+      "rate_gbps": 0.0,
+      "per_observation_gb": 0.0
     }
+  },
+  "solar_panel": {
+    "name": "Default Solar Panel",
+    "panels": [
+      {
+        "name": "Example Solar Panel",
+        "gimbled": false,
+        "sidemount": true,
+        "cant_x": 0.0,
+        "cant_y": 0.0,
+        "azimuth_deg": 0.0,
+        "max_power": 474.21,
+        "conversion_efficiency": 0.94
+      }
+    ],
+    "conversion_efficiency": 0.95
+  },
+  "payload": {
+    "payload": [
+      {
+        "name": "Optical Imager",
+        "power_draw": {
+          "nominal_power": 50.0,
+          "peak_power": 300.0,
+          "power_mode": {
+            "0": 200.0,
+            "1": 50.0,
+            "2": 50.0
+          },
+          "eclipse_power": null,
+          "eclipse_power_mode": {}
+        },
+        "heater": null,
+        "data_generation": {
+          "rate_gbps": 0.0001953125,
+          "per_observation_gb": 0.0
+        }
+      }
+    ]
+  },
+  "battery": {
+    "name": "Default Battery",
+    "amphour": 20.0,
+    "voltage": 28.0,
+    "watthour": 1000.0,
+    "emergency_recharge": false,
+    "max_depth_of_discharge": 0.4,
+    "recharge_threshold": 0.95,
+    "charge_level": 1000.0
+  },
+  "constraint": {
+    "sun_constraint": {
+      "type": "and",
+      "constraints": [
+        {
+          "type": "sun",
+          "min_angle": 90.0,
+          "max_angle": null
+        },
+        {
+          "type": "not",
+          "constraint": {
+            "type": "eclipse",
+            "umbra_only": true
+          }
+        }
+      ]
+    },
+    "anti_sun_constraint": {
+      "type": "sun",
+      "min_angle": 0.0,
+      "max_angle": 180.0
+    },
+    "moon_constraint": {
+      "type": "moon",
+      "min_angle": 20.0,
+      "max_angle": null
+    },
+    "earth_constraint": {
+      "type": "earth_limb",
+      "min_angle": 20.0,
+      "max_angle": null,
+      "include_refraction": false,
+      "horizon_dip": false
+    },
+    "panel_constraint": {
+      "type": "and",
+      "constraints": [
+        {
+          "type": "sun",
+          "min_angle": 45.0,
+          "max_angle": 135.0
+        },
+        {
+          "type": "not",
+          "constraint": {
+            "type": "eclipse",
+            "umbra_only": true
+          }
+        }
+      ]
+    }
+  },
+  "ground_stations": {
+    "stations": [
+      {
+        "code": "NBO",
+        "name": "Nairobi",
+        "latitude_deg": -1.2921,
+        "longitude_deg": 36.8219,
+        "elevation_m": 0.0,
+        "min_elevation_deg": 10.0,
+        "schedule_probability": 0.7,
+        "bands": [
+          {
+            "band": "S",
+            "uplink_rate_mbps": 2.0,
+            "downlink_rate_mbps": 10.0
+          }
+        ],
+        "gain_db": null
+      },
+      {
+        "code": "SPO",
+        "name": "South Pole",
+        "latitude_deg": -90.0,
+        "longitude_deg": 0.0,
+        "elevation_m": 2835.0,
+        "min_elevation_deg": 10.0,
+        "schedule_probability": 0.2,
+        "bands": [
+          {
+            "band": "S",
+            "uplink_rate_mbps": 2.0,
+            "downlink_rate_mbps": 10.0
+          }
+        ],
+        "gain_db": null
+      },
+      {
+        "code": "NPO",
+        "name": "North Pole",
+        "latitude_deg": 90.0,
+        "longitude_deg": 0.0,
+        "elevation_m": 0.0,
+        "min_elevation_deg": 10.0,
+        "schedule_probability": 0.2,
+        "bands": [
+          {
+            "band": "S",
+            "uplink_rate_mbps": 2.0,
+            "downlink_rate_mbps": 10.0
+          }
+        ],
+        "gain_db": null
+      },
+      {
+        "code": "PVG",
+        "name": "Punta Veija",
+        "latitude_deg": 8.7832,
+        "longitude_deg": -71.2325,
+        "elevation_m": 0.0,
+        "min_elevation_deg": 10.0,
+        "schedule_probability": 0.5,
+        "bands": [
+          {
+            "band": "S",
+            "uplink_rate_mbps": 2.0,
+            "downlink_rate_mbps": 10.0
+          }
+        ],
+        "gain_db": null
+      }
+    ]
+  },
+  "recorder": {
+    "name": "Default Recorder",
+    "capacity_gb": 64.0,
+    "current_volume_gb": 0.0,
+    "yellow_threshold": 0.7,
+    "red_threshold": 0.9
+  },
+  "fault_management": {
+    "thresholds": [
+      {
+        "name": "battery_level",
+        "yellow": 0.6,
+        "red": 0.5,
+        "direction": "below"
+      },
+      {
+        "name": "recorder_fill_fraction",
+        "yellow": 0.7,
+        "red": 0.9,
+        "direction": "above"
+      }
+    ],
+    "red_limit_constraints": [
+      {
+        "name": "Sun Avoidance",
+        "constraint": {
+          "type": "and",
+          "constraints": [
+            {
+              "type": "sun",
+              "min_angle": 20.0,
+              "max_angle": null
+            },
+            {
+              "type": "not",
+              "constraint": {
+                "type": "eclipse",
+                "umbra_only": true
+              }
+            }
+          ]
+        },
+        "time_threshold_seconds": 120.0,
+        "description": "Spacecraft must avoid pointing too close to the Sun for extended periods."
+      }
+    ],
+    "states": {},
+    "safe_mode_on_red": true,
+    "safe_mode_requested": false,
+    "events": []
+  },
+  "observation_categories": {
+    "categories": [
+      {
+        "name": "GO",
+        "obsid_min": 20000,
+        "obsid_max": 30000,
+        "color": "tab:blue"
+      },
+      {
+        "name": "Survey",
+        "obsid_min": 10000,
+        "obsid_max": 20000,
+        "color": "tab:green"
+      },
+      {
+        "name": "GRB",
+        "obsid_min": 1000000,
+        "obsid_max": 2000000,
+        "color": "tab:orange"
+      },
+      {
+        "name": "TOO",
+        "obsid_min": 30000,
+        "obsid_max": 40000,
+        "color": "tab:red"
+      },
+      {
+        "name": "Charging",
+        "obsid_min": 999000,
+        "obsid_max": 1000000,
+        "color": "gold"
+      }
+    ],
+    "default_name": "Other",
+    "default_color": "tab:purple"
+  }
 }

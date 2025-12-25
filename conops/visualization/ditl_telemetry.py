@@ -9,6 +9,7 @@ from matplotlib.figure import Figure
 from matplotlib.font_manager import FontProperties
 
 from ..config.visualization import VisualizationConfig
+from ..common import ACSMode, ACSCommandType
 
 if TYPE_CHECKING:
     from ..ditl.ditl_mixin import DITLMixin
@@ -67,10 +68,17 @@ def plot_ditl_telemetry(
 
     timehours = (np.array(ditl.utime) - ditl.utime[0]) / 3600
 
+    def _is_sequence(val: object) -> bool:
+        return isinstance(val, (list, tuple, np.ndarray))
+
+    wm = getattr(ditl, "wheel_momentum_fraction", None)
+    wt = getattr(ditl, "wheel_torque_fraction", None)
+    has_wheel = _is_sequence(wm) and _is_sequence(wt) and len(wm) > 0 and len(wt) > 0
+    n_panels = 8 if has_wheel else 7
     fig = plt.figure(figsize=figsize)
     axes = []
 
-    ax = plt.subplot(711)
+    ax = plt.subplot(n_panels * 100 + 11)
     axes.append(ax)
     plt.plot(timehours, ditl.ra)
     ax.xaxis.set_visible(False)
@@ -79,19 +87,22 @@ def plot_ditl_telemetry(
         f"Timeline for DITL Simulation: {ditl.config.name}", fontproperties=title_prop
     )
 
-    ax = plt.subplot(712)
+    ax = plt.subplot(n_panels * 100 + 12)
     axes.append(ax)
     ax.plot(timehours, ditl.dec)
     ax.xaxis.set_visible(False)
     plt.ylabel("Dec", fontsize=label_font_size, fontfamily=font_family)
 
-    ax = plt.subplot(713)
+    ax = plt.subplot(n_panels * 100 + 13)
     axes.append(ax)
     ax.plot(timehours, ditl.mode)
     ax.xaxis.set_visible(False)
     plt.ylabel("Mode", fontsize=label_font_size, fontfamily=font_family)
+    mode_ticks = [m.value for m in ACSMode]
+    ax.set_yticks(mode_ticks)
+    ax.set_yticklabels([m.name.title() for m in ACSMode], fontsize=tick_font_size, fontfamily=font_family)
 
-    ax = plt.subplot(714)
+    ax = plt.subplot(n_panels * 100 + 14)
     axes.append(ax)
     ax.plot(timehours, ditl.batterylevel)
     ax.axhline(
@@ -103,14 +114,14 @@ def plot_ditl_telemetry(
     ax.set_ylim(0, 1)
     ax.set_ylabel("Batt. charge", fontsize=label_font_size, fontfamily=font_family)
 
-    ax = plt.subplot(715)
+    ax = plt.subplot(n_panels * 100 + 15)
     axes.append(ax)
     ax.plot(timehours, ditl.panel)
     ax.xaxis.set_visible(False)
     ax.set_ylim(0, 1)
     ax.set_ylabel("Panel Ill.", fontsize=label_font_size, fontfamily=font_family)
 
-    ax = plt.subplot(716)
+    ax = plt.subplot(n_panels * 100 + 16)
     axes.append(ax)
     # Check if subsystem power data is available
     if (
@@ -135,7 +146,64 @@ def plot_ditl_telemetry(
     ax.set_ylabel("Power (W)", fontsize=label_font_size, fontfamily=font_family)
     ax.xaxis.set_visible(False)
 
-    ax = plt.subplot(717)
+    if has_wheel:
+        ax = plt.subplot(n_panels * 100 + 17)
+        axes.append(ax)
+        ax.plot(timehours, ditl.wheel_momentum_fraction, label="Momentum", alpha=0.8)
+        ax.plot(timehours, ditl.wheel_torque_fraction, label="Torque", alpha=0.8)
+        # Highlight desat windows (if ACS command history is available)
+        desat_spans = []
+        if hasattr(ditl, "acs") and hasattr(ditl.acs, "executed_commands"):
+            for cmd in getattr(ditl.acs, "executed_commands", []):
+                if getattr(cmd, "command_type", None) == ACSCommandType.DESAT:
+                    start = float(getattr(cmd, "execution_time", timehours[0] * 3600))
+                    duration = float(getattr(cmd, "duration", 0.0) or 0.0)
+                    end = start + duration
+                    desat_spans.append((start, end))
+        # Merge overlapping spans for cleaner visualization
+        desat_spans = sorted(desat_spans, key=lambda x: x[0])
+        merged_spans = []
+        for span in desat_spans:
+            if not merged_spans or span[0] > merged_spans[-1][1]:
+                merged_spans.append(list(span))
+            else:
+                merged_spans[-1][1] = max(merged_spans[-1][1], span[1])
+        for start, end in merged_spans:
+            ax.axvspan(
+                (start - ditl.utime[0]) / 3600.0,
+                (end - ditl.utime[0]) / 3600.0,
+                color="gray",
+                alpha=0.2,
+                label="Desat",
+            )
+        if hasattr(ditl, "wheel_saturation") and ditl.wheel_saturation:
+            sat_times = [t for t, s in zip(timehours, ditl.wheel_saturation) if s]
+            sat_vals = [1.0] * len(sat_times)
+            if sat_times:
+                ax.scatter(sat_times, sat_vals, color="r", marker="x", label="Saturated")
+        # Deduplicate legend labels
+        handles, labels = ax.get_legend_handles_labels()
+        seen = {}
+        dedup_handles = []
+        dedup_labels = []
+        for h, l in zip(handles, labels):
+            if l not in seen:
+                seen[l] = True
+                dedup_handles.append(h)
+                dedup_labels.append(l)
+        if dedup_handles:
+            ax.legend(
+                dedup_handles,
+                dedup_labels,
+                loc="upper right",
+                fontsize=config.legend_font_size,
+                prop={"family": font_family},
+            )
+        ax.set_ylim(0, 1.05)
+        ax.set_ylabel("Wheel\n(resource)", fontsize=label_font_size, fontfamily=font_family)
+        ax.xaxis.set_visible(False)
+
+    ax = plt.subplot(n_panels * 100 + (17 if not has_wheel else 18))
     axes.append(ax)
     ax.plot(timehours, ditl.obsid)
     ax.set_ylabel("ObsID", fontsize=label_font_size, fontfamily=font_family)
