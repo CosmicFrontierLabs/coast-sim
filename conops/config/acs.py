@@ -1,3 +1,5 @@
+from typing import Any
+
 import numpy as np
 from pydantic import BaseModel
 
@@ -23,24 +25,36 @@ class AttitudeControlSystem(BaseModel):
     wheel_max_torque: float = 0.0  # N*m - maximum torque a wheel assembly can apply
     wheel_max_momentum: float = 0.0  # N*m*s - wheel momentum storage capacity
     # Multi-wheel definition: list of wheels with orientation and per-wheel params
-    wheels: list[dict] = []
+    wheels: list[dict[str, Any]] = []
     # Spacecraft rotational inertia per principal axis (Ixx, Iyy, Izz) in kg*m^2
     spacecraft_moi: tuple[float, float, float] = (5.0, 5.0, 5.0)
     # Magnetorquer definitions (optional) for finite momentum unloading
-    magnetorquers: list[dict] = []
+    magnetorquers: list[dict[str, Any]] = []
     magnetorquer_bfield_T: float = 3e-5  # representative LEO field magnitude (Tesla)
     # Disturbance modeling inputs (drag/SRP/gg/magnetic)
-    cp_offset_body: tuple[float, float, float] = (0.0, 0.0, 0.0)  # CoP minus CoM (m) in body frame
-    residual_magnetic_moment: tuple[float, float, float] = (0.0, 0.0, 0.0)  # A*m^2 in body frame
+    cp_offset_body: tuple[float, float, float] = (
+        0.0,
+        0.0,
+        0.0,
+    )  # CoP minus CoM (m) in body frame
+    residual_magnetic_moment: tuple[float, float, float] = (
+        0.0,
+        0.0,
+        0.0,
+    )  # A*m^2 in body frame
     drag_area_m2: float = 0.0  # effective drag cross-section (m^2)
     drag_coeff: float = 2.2  # ballistic drag coefficient
     solar_area_m2: float = 0.0  # illuminated area for solar pressure (m^2)
     solar_reflectivity: float = 1.0  # 1 = fully absorbing/reflective factor
-    use_msis_density: bool = False  # if True, attempt to use pymsis/nrlmsise-00 for density
+    use_msis_density: bool = (
+        False  # if True, attempt to use pymsis/nrlmsise-00 for density
+    )
     # Disturbance torque in body frame (N*m), applied continuously
     disturbance_torque_body: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
-    def motion_time(self, angle_deg: float, accel: float | None = None, vmax: float | None = None) -> float:
+    def motion_time(
+        self, angle_deg: float, accel: float | None = None, vmax: float | None = None
+    ) -> float:
         """Time to complete the motion (excluding settle) under bang-bang control."""
         if angle_deg <= 0:
             return 0.0
@@ -59,7 +73,13 @@ class AttitudeControlSystem(BaseModel):
         t_cruise = d_cruise / vmax
         return float(2 * t_accel + t_cruise)
 
-    def s_of_t(self, angle_deg: float, t: float, accel: float | None = None, vmax: float | None = None) -> float:
+    def s_of_t(
+        self,
+        angle_deg: float,
+        t: float,
+        accel: float | None = None,
+        vmax: float | None = None,
+    ) -> float:
         """Distance traveled (deg) along the slew after t seconds under bang-bang control.
 
         Clamps to [0, angle_deg] and ignores settle time (i.e., assumes t is measured
@@ -100,7 +120,9 @@ class AttitudeControlSystem(BaseModel):
             s = d_accel + d_cruise + vmax * t_dec - 0.5 * a * t_dec**2
         return float(max(0.0, min(angle_deg, s)))
 
-    def slew_time(self, angle_deg: float, accel: float | None = None, vmax: float | None = None) -> float:
+    def slew_time(
+        self, angle_deg: float, accel: float | None = None, vmax: float | None = None
+    ) -> float:
         """Total slew time (motion + settle) using bang-bang control."""
         if angle_deg <= 0 or np.isnan(angle_deg):
             return 0.0

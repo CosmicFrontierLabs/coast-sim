@@ -40,7 +40,9 @@ class TestDesatCommand:
 class TestHeadroomGate:
     """Slew enqueue should request desat when wheels lack headroom."""
 
-    def test_enqueue_slew_triggers_desat_when_headroom_insufficient(self, acs, monkeypatch):
+    def test_enqueue_slew_triggers_desat_when_headroom_insufficient(
+        self, acs, monkeypatch
+    ):
         # Add a wheel with no capability
         acs.reaction_wheels = [ReactionWheel(max_torque=0.0, max_momentum=0.0)]
 
