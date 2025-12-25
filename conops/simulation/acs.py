@@ -115,6 +115,10 @@ class ACS:
         self._desat_active = False
         self._desat_end = 0.0
         self._desat_use_mtq = False
+        # Allow some configurable buffer below absolute wheel momentum capacity for allocation
+        # Keep some buffer below absolute capacity so we avoid hard saturation;
+        # adjust in tests/notebooks if needed for what-if sweeps.
+        self._wheel_mom_margin = 0.9
         # Only enable legacy single-wheel when wheel_enabled is explicitly True
         if getattr(acs_cfg, "wheel_enabled", False) is True:
             # legacy single-wheel support
@@ -804,7 +808,7 @@ class ACS:
             acs_accel,
             requested_vmax,
             i_axis,
-            margin=0.9,
+            margin=self._wheel_mom_margin,
             utime=utime_val,
         ):
             self._log_or_print(
@@ -1169,7 +1173,7 @@ class ACS:
 
         # Clamp per-wheel torques by peak torque and by available momentum capacity over dt
         taus_allowed = np.zeros_like(taus)
-        mom_margin = 0.9  # keep buffer so we don't hit hard saturation mid-slew
+        mom_margin = getattr(self, "_wheel_mom_margin", 0.99)
         for i, w in enumerate(self.reaction_wheels):
             mt = float(getattr(w, "max_torque", 0.0))
             curr_m = float(getattr(w, "current_momentum", 0.0))
