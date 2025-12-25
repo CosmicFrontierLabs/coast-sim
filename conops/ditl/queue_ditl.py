@@ -372,6 +372,19 @@ class QueueDITL(DITLMixin, DITLStats):
         if self.acs.ephem is None:
             self.acs.ephem = self.ephem
 
+        # If safe mode already requested, enqueue immediately and exit
+        if (
+            getattr(self.config.fault_management, "safe_mode_requested", False)
+            and not self.acs.in_safe_mode
+        ):
+            safe_cmd = ACSCommand(
+                command_type=ACSCommandType.ENTER_SAFE_MODE,
+                execution_time=self.begin.timestamp(),
+            )
+            self.acs.enqueue_command(safe_cmd)
+            self.config.fault_management.safe_mode_requested = False
+            return True
+
         # Set up timing and schedule passes
         if not self._setup_simulation_timing():
             return False
@@ -392,6 +405,20 @@ class QueueDITL(DITLMixin, DITLStats):
             # Get current pointing and mode from ACS
             ra, dec, roll, obsid = self.acs.pointing(utime)
             mode = self.acs.get_mode(utime)
+
+            # If safe mode requested, prioritize it and skip other ops this step
+            if (
+                getattr(self.config.fault_management, "safe_mode_requested", False)
+                and not self.acs.in_safe_mode
+            ):
+                safe_cmd = ACSCommand(
+                    command_type=ACSCommandType.ENTER_SAFE_MODE,
+                    execution_time=utime,
+                )
+                self.acs.enqueue_command(safe_cmd)
+                # Prevent duplicate requests
+                self.config.fault_management.safe_mode_requested = False
+                continue
 
             # Check pass timing and manage passes
             self._check_and_manage_passes(utime, ra, dec)
@@ -414,6 +441,32 @@ class QueueDITL(DITLMixin, DITLStats):
                 i, utime, ra, dec, mode, in_eclipse=self.acs.in_eclipse
             )
 
+            # Record reaction wheel resource usage
+            self._record_wheel_resource(utime)
+            self._maybe_request_desat(utime)
+            # Track desat active time
+            if getattr(self.acs, "_desat_active", False):
+                self.desat_time_steps += 1
+            # Record disturbance torques (magnitudes) if available
+            if hasattr(self.acs, "_last_disturbance_components"):
+                comps = self.acs._last_disturbance_components or {}
+                def _safe(val):
+                    try:
+                        return float(val)
+                    except Exception:
+                        return 0.0
+                self.disturbance_total.append(_safe(comps.get("total", 0.0)))
+                self.disturbance_gg.append(_safe(comps.get("gg", 0.0)))
+                self.disturbance_drag.append(_safe(comps.get("drag", 0.0)))
+                self.disturbance_srp.append(_safe(comps.get("srp", 0.0)))
+                self.disturbance_mag.append(_safe(comps.get("mag", 0.0)))
+            else:
+                self.disturbance_total.append(0.0)
+                self.disturbance_gg.append(0.0)
+                self.disturbance_drag.append(0.0)
+                self.disturbance_srp.append(0.0)
+                self.disturbance_mag.append(0.0)
+
             # Handle data generation and downlink
             self._handle_data_management(utime, mode)
 
@@ -423,6 +476,14 @@ class QueueDITL(DITLMixin, DITLStats):
         # Make sure the last PPT of the day ends (if any)
         if self.plan:
             self.plan[-1].end = utime
+
+        # Capture ACS momentum management counters
+        if hasattr(self.acs, "desat_events"):
+            self.desat_event_count = self.acs.desat_events
+        if hasattr(self.acs, "desat_requests"):
+            self.desat_request_count = self.acs.desat_requests
+        if hasattr(self.acs, "headroom_rejects"):
+            self.headroom_rejects = self.acs.headroom_rejects
 
         return True
 
@@ -591,7 +652,8 @@ class QueueDITL(DITLMixin, DITLStats):
             year = self.begin.year
             day = self.begin.timetuple().tm_yday
             # Calculate length in days from begin/end
-            length = int((self.end - self.begin).total_seconds() / 86400)
+            # Use at least 1 day to avoid empty pass windows on short sims
+            length = max(1, int((self.end - self.begin).total_seconds() / 86400))
             self.acs.passrequests.get(year, day, length)
             if self.acs.passrequests.passes:
                 for p in self.acs.passrequests.passes:
@@ -1059,6 +1121,51 @@ class QueueDITL(DITLMixin, DITLStats):
         self.battery.charge(generated_power, self.step_size)
         self.batterylevel.append(self.battery.battery_level)
         self.charge_state.append(self.battery.charge_state)
+
+    def _record_wheel_resource(self, utime: float) -> None:
+        """Record aggregated reaction wheel torque/momentum usage."""
+        if not hasattr(self.acs, "wheel_snapshot"):
+            self.wheel_momentum_fraction.append(0.0)
+            self.wheel_torque_fraction.append(0.0)
+            self.wheel_saturation.append(0)
+            return
+
+        snapshot = self.acs.wheel_snapshot()
+        self.wheel_momentum_fraction.append(
+            self._safe_float(snapshot.get("max_momentum_fraction", 0.0))
+        )
+        self.wheel_torque_fraction.append(
+            self._safe_float(snapshot.get("max_torque_fraction", 0.0))
+        )
+        self.wheel_saturation.append(1 if bool(snapshot.get("saturated")) else 0)
+
+    @staticmethod
+    def _safe_float(val: float | int | None) -> float:
+        try:
+            return float(val)
+        except Exception:
+            return 0.0
+
+    def _maybe_request_desat(self, utime: float) -> None:
+        """Trigger a desaturation when wheels have been saturated for several steps."""
+        if len(self.wheel_saturation) < 3:
+            return
+
+        if self.acs._desat_active:
+            return
+
+        # Require 3 consecutive saturated steps and a cooldown between desats
+        if all(s == 1 for s in self.wheel_saturation[-3:]):
+            if utime - getattr(self, "_last_desat_request", 0.0) < 600:
+                return
+            self.log.log_event(
+                utime=utime,
+                event_type="DESAT",
+                description="Reaction wheels saturated, requesting desat",
+                acs_mode=self.acs.acsmode,
+            )
+            self.acs.request_desat(utime)
+            self._last_desat_request = utime
 
     def _terminate_science_ppt_for_pass(self, utime: float) -> None:
         """Terminate the current science PPT during ground station pass."""

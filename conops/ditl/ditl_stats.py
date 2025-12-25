@@ -25,6 +25,9 @@ class DITLStats:
     recorder_fill_fraction: list[float]
     data_generated_gb: list[float]
     data_downlinked_gb: list[float]
+    wheel_momentum_fraction: list[float]
+    wheel_torque_fraction: list[float]
+    wheel_saturation: list[int]
 
     def print_statistics(self) -> None:
         """Print comprehensive statistics about the DITL simulation.
@@ -155,6 +158,33 @@ class DITLStats:
                 print(
                     f"{state_name:<20} {count:<10} {percentage:>6.2f}%      {time_hours:>10.2f}"
                 )
+
+        # Reaction wheel resource statistics
+        if hasattr(self, "wheel_momentum_fraction") and self.wheel_momentum_fraction:
+            print("\nReaction Wheel Resource Usage:")
+            print(
+                f"  Max momentum fraction: {max(self.wheel_momentum_fraction) * 100:.1f}%"
+            )
+            print(
+                f"  Avg momentum fraction: {np.mean(self.wheel_momentum_fraction) * 100:.1f}%"
+            )
+            print(
+                f"  Max torque fraction: {max(self.wheel_torque_fraction) * 100:.1f}%"
+            )
+            sat_steps = sum(1 for s in getattr(self, "wheel_saturation", []) if s)
+            if sat_steps:
+                sat_hours = sat_steps * self.step_size / 3600
+                print(f"  Saturation events: {sat_steps} steps ({sat_hours:.2f} hr)")
+            else:
+                print("  Saturation events: none")
+        # Desat / headroom stats
+        if hasattr(self, "desat_event_count"):
+            desat_hours = (getattr(self, "desat_time_steps", 0) * self.step_size) / 3600
+            print("\nMomentum Management:")
+            print(f"  Desat events: {getattr(self, 'desat_event_count', 0)}")
+            print(f"  Desat requests: {getattr(self, 'desat_request_count', 0)}")
+            print(f"  Time in desat: {desat_hours:.2f} hr")
+            print(f"  Slews rejected (headroom): {getattr(self, 'headroom_rejects', 0)}")
 
         if hasattr(self, "power") and self.power:
             print("\nPower Consumption:")

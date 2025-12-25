@@ -39,6 +39,21 @@ class DITLMixin:
     recorder_alert: list[int]
     data_generated_gb: list[float]
     data_downlinked_gb: list[float]
+    # Reaction wheel resource tracking
+    wheel_momentum_fraction: list[float]
+    wheel_torque_fraction: list[float]
+    wheel_saturation: list[int]
+    # Disturbance torque tracking (magnitudes)
+    disturbance_total: list[float]
+    disturbance_gg: list[float]
+    disturbance_drag: list[float]
+    disturbance_srp: list[float]
+    disturbance_mag: list[float]
+    # Momentum management stats
+    desat_time_steps: int
+    desat_event_count: int
+    desat_request_count: int
+    headroom_rejects: int
 
     def __init__(
         self,
@@ -98,6 +113,23 @@ class DITLMixin:
 
         # Initialize common subsystems (can be overridden by subclasses)
         self._init_subsystems()
+
+        # Reaction wheel resource tracking (aggregated across wheels)
+        self.wheel_momentum_fraction = []
+        self.wheel_torque_fraction = []
+        self.wheel_saturation = []
+        self._last_desat_request = 0.0
+        # Disturbance torque tracking
+        self.disturbance_total = []
+        self.disturbance_gg = []
+        self.disturbance_drag = []
+        self.disturbance_srp = []
+        self.disturbance_mag = []
+        # Momentum management stats
+        self.desat_time_steps = 0
+        self.desat_event_count = 0
+        self.desat_request_count = 0
+        self.headroom_rejects = 0
 
     def _init_subsystems(self) -> None:
         """Initialize subsystems from config. Can be overridden by subclasses."""

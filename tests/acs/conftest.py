@@ -64,12 +64,30 @@ def mock_config(mock_ephem, mock_constraint):
     )
     config.solar_panel = solar_panel_mock
 
+    # Use a mocked ACS config (spec'd to AttitudeControlSystem) so tests can override
     config.spacecraft_bus = Mock()
-    config.spacecraft_bus.attitude_control = Mock()
-    # Mock predict_slew to return distance and path
-    config.spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))
-    # Mock slew_time to return a reasonable slew duration
-    config.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
+    template_cfg = AttitudeControlSystem(
+        slew_acceleration=1.0,
+        max_slew_rate=0.5,
+        settle_time=90.0,
+        wheel_enabled=True,
+        wheel_max_torque=0.05,
+        wheel_max_momentum=0.1,
+    )
+    acs_cfg = Mock(spec=AttitudeControlSystem)
+    acs_cfg.slew_acceleration = template_cfg.slew_acceleration
+    acs_cfg.max_slew_rate = template_cfg.max_slew_rate
+    acs_cfg.settle_time = template_cfg.settle_time
+    acs_cfg.wheel_enabled = False  # default: no wheels; tests can add as needed
+    acs_cfg.wheel_max_torque = template_cfg.wheel_max_torque
+    acs_cfg.wheel_max_momentum = template_cfg.wheel_max_momentum
+    acs_cfg.wheels = []
+    acs_cfg.spacecraft_moi = template_cfg.spacecraft_moi
+    acs_cfg.predict_slew = Mock(return_value=(45.0, []))
+    acs_cfg.slew_time = Mock(return_value=100.0)
+    acs_cfg.motion_time = template_cfg.motion_time
+    acs_cfg.s_of_t = template_cfg.s_of_t
+    config.spacecraft_bus.attitude_control = acs_cfg
     return config
 
 

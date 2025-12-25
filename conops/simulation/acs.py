@@ -1,6 +1,8 @@
 from typing import TYPE_CHECKING, Any
 
 import rust_ephem
+import numpy as np
+import logging
 
 from ..common import (
     ACSCommandType,
@@ -102,6 +104,15 @@ class ACS:
         # store ACS config for use by Slew and other helpers
         self.acs_config = acs_cfg
         self.reaction_wheels = []
+        self.magnetorquers = []
+        self._last_wheel_snapshot: dict[str, Any] | None = None
+        # Momentum management stats
+        self.headroom_rejects = 0
+        self.desat_requests = 0
+        self.desat_events = 0
+        self._desat_active = False
+        self._desat_end = 0.0
+        self._desat_use_mtq = False
         # Only enable legacy single-wheel when wheel_enabled is explicitly True
         if getattr(acs_cfg, "wheel_enabled", False) is True:
             # legacy single-wheel support
@@ -132,6 +143,63 @@ class ACS:
             self.reaction_wheels.append(
                 ReactionWheel(max_torque=mt, max_momentum=mm, orientation=orient, name=name)
             )
+
+        # Magnetorquers (optional) for finite desat
+        mtq_iter_raw = getattr(acs_cfg, "magnetorquers", None)
+        mtq_iter = []
+        if mtq_iter_raw:
+            try:
+                mtq_iter = list(mtq_iter_raw)
+            except TypeError:
+                mtq_iter = []
+        for i, m in enumerate(mtq_iter):
+            try:
+                orient = tuple(m.get("orientation", (1.0, 0.0, 0.0)))
+            except Exception:
+                orient = (1.0, 0.0, 0.0)
+            dipole = float(m.get("dipole_strength", 0.0))
+            power = float(m.get("power_draw", 0.0))
+            name = m.get("name", f"mtq{i}")
+            self.magnetorquers.append(
+                {"orientation": orient, "dipole": dipole, "power_draw": power, "name": name}
+            )
+        try:
+            self._magnetorquer_bfield = float(getattr(acs_cfg, "magnetorquer_bfield_T", 3e-5))
+        except Exception:
+            self._magnetorquer_bfield = 3e-5
+        try:
+            self._cp_offset = np.array(
+                getattr(acs_cfg, "cp_offset_body", (0.0, 0.0, 0.0)), dtype=float
+            )
+        except Exception:
+            self._cp_offset = np.zeros(3, dtype=float)
+        try:
+            self._residual_moment = np.array(
+                getattr(acs_cfg, "residual_magnetic_moment", (0.0, 0.0, 0.0)),
+                dtype=float,
+            )
+        except Exception:
+            self._residual_moment = np.zeros(3, dtype=float)
+        try:
+            self._drag_area = float(getattr(acs_cfg, "drag_area_m2", 0.0))
+            self._drag_coeff = float(getattr(acs_cfg, "drag_coeff", 2.2))
+        except Exception:
+            self._drag_area = 0.0
+            self._drag_coeff = 2.2
+        try:
+            self._solar_area = float(getattr(acs_cfg, "solar_area_m2", 0.0))
+            self._solar_reflectivity = float(getattr(acs_cfg, "solar_reflectivity", 1.0))
+        except Exception:
+            self._solar_area = 0.0
+            self._solar_reflectivity = 1.0
+        try:
+            self._use_msis = bool(getattr(acs_cfg, "use_msis_density", False))
+        except Exception:
+            self._use_msis = False
+
+        # module logger for optional debug tracing
+        self._logger = logging.getLogger(__name__)
+        self._last_disturbance_components = {"total": 0.0, "gg": 0.0, "drag": 0.0, "srp": 0.0, "mag": 0.0}
 
     def _log_or_print(self, utime: float, event_type: str, description: str) -> None:
         """Log an event to DITLLog if available, otherwise print to stdout.
@@ -212,6 +280,7 @@ class ACS:
                 ACSCommandType.ENTER_SAFE_MODE: lambda: self._handle_safe_mode_command(
                     utime
                 ),
+                ACSCommandType.DESAT: lambda: self._start_desat(command, utime),
             }
 
             handler = handlers.get(command.command_type)
@@ -302,6 +371,52 @@ class ACS:
         # Enqueue slew to safe pointing with a special obsid
         self._enqueue_slew(safe_ra, safe_dec, obsid=-999, utime=utime, obstype="SAFE")
 
+    def _start_desat(self, command: ACSCommand, utime: float) -> None:
+        """Start a reaction wheel desaturation/unloading period."""
+        duration = float(command.duration or 300.0)
+        # Do not start desat during SCIENCE dwell; defer until later
+        try:
+            current_mode = self.get_mode(utime)
+        except Exception:
+            current_mode = self.acsmode
+        if current_mode == ACSMode.SCIENCE and not self._is_actively_slewing(utime):
+            delay = getattr(self.ephem, "step_size", 1) or 1
+            command.execution_time = utime + delay
+            self._log_or_print(
+                utime,
+                "DESAT",
+                f"{unixtime2date(utime)}: DESAT deferred in SCIENCE mode, rescheduled to {unixtime2date(command.execution_time)}",
+            )
+            self.enqueue_command(command)
+            return
+
+        self._desat_active = True
+        self._desat_end = utime + duration
+        self._desat_use_mtq = bool(self.magnetorquers)
+        if not self._desat_use_mtq:
+            # legacy instant unload
+            for w in self.reaction_wheels:
+                try:
+                    w.current_momentum = 0.0
+                except Exception:
+                    continue
+            self._log_or_print(
+                utime,
+                "DESAT",
+                f"{unixtime2date(utime)}: Starting desat for {duration:.0f}s (wheels reset)",
+            )
+        else:
+            self._log_or_print(
+                utime,
+                "DESAT",
+                f"{unixtime2date(utime)}: Starting desat for {duration:.0f}s using magnetorquers",
+            )
+        self.desat_events += 1
+        # Drop any other queued DESAT commands now that one is active
+        self.command_queue = [
+            c for c in self.command_queue if getattr(c, "command_type", None) != ACSCommandType.DESAT
+        ]
+
     def _start_slew(self, slew: Slew, utime: float) -> None:
         """Start executing a slew.
 
@@ -318,42 +433,21 @@ class ACS:
         accel_override = None
         vmax_override = None
         if self.reaction_wheels:
-            # Use first wheel for legacy/simple behavior
-            wheel = self.reaction_wheels[0]
-            moi = self.config.spacecraft_bus.attitude_control.spacecraft_moi
-            # spacecraft_moi may be a tuple (Ixx,Iyy,Izz); use scalar approx (mean)
+            # Use aggregate wheel capability along slew rotation axis
+            axis = np.array(getattr(slew, "rotation_axis", (0.0, 0.0, 1.0)), dtype=float)
+            # motion time estimate using current accel config
             try:
-                if isinstance(moi, (list, tuple)):
-                    moi_val = float(sum(moi) / len(moi))
-                else:
-                    moi_val = float(moi)
+                motion_time_est = float(self.acs_config.motion_time(slew.slewdist))
             except Exception:
-                # Fallback: unknown type (e.g., Mock) — let ReactionWheel handle defensively
-                moi_val = moi
-            # compute theoretical accel from wheel torque
-            accel_from_wheel = wheel.accel_limit_deg(moi_val)
-            # effective accel is limited by both ACS and wheel
-            try:
-                acs_accel = float(getattr(self.acs_config, "slew_acceleration", float("inf")))
-            except Exception:
-                acs_accel = float("inf")
-            accel_override = min(acs_accel, accel_from_wheel)
-            # Reserve impulse against wheel momentum capacity using a rough estimate
-            # Use motion_time computed with a tentative accel to estimate impulse
-            # motion_time may not be available on mocked config; guard call
-            try:
-                tentative_motion = self.acs_config.motion_time(slew.slewdist, accel=accel_override)
-            except Exception:
-                tentative_motion = 0.0
-            # Requested torque in N*m corresponding to accel_override
-            # accel (deg/s^2) -> rad/s^2
-            from math import pi
-
-            requested_torque = (accel_override * (pi / 180.0)) * (moi_val if isinstance(moi_val, (int, float)) else 0.0)
-            adjusted_torque = wheel.reserve_impulse(requested_torque, tentative_motion)
-            if adjusted_torque != requested_torque and tentative_motion > 0:
-                # scale accel accordingly
-                accel_override = (adjusted_torque / moi) * (180.0 / pi)
+                motion_time_est = 0.0
+            achievable_accel = self._axis_accel_limit(axis, motion_time_est)
+            if achievable_accel > 0:
+                # Derive accel directly from wheel capability (not a fixed external parameter)
+                accel_override = achievable_accel
+            # Derive a max rate limit from wheel momentum capacity along axis
+            vmax_limit = self._axis_rate_limit(axis)
+            if vmax_limit > 0:
+                vmax_override = vmax_limit
         # apply overrides to slew and calc time
         slew._accel_override = accel_override
         slew._vmax_override = vmax_override
@@ -385,6 +479,18 @@ class ACS:
         This is a private helper method used internally by ACS for creating slew
         commands during battery charging operations.
         """
+        # Do not accept new slews while a desat is active or scheduled
+        if self._desat_active or any(
+            getattr(cmd, "command_type", None) == ACSCommandType.DESAT
+            for cmd in self.command_queue
+        ):
+            self._log_or_print(
+                utime,
+                "SLEW",
+                f"{unixtime2date(utime)}: Slew rejected - desat in progress/queued",
+            )
+            return False
+
         # Create slew object
         slew = Slew(
             config=self.config,
@@ -401,6 +507,7 @@ class ACS:
             # Initialize slew positions without target
             is_first_slew = self._initialize_slew_positions(slew, utime)
             slew.at = None  # No visibility constraint in safe mode
+            self._compute_slew_distance(slew)
             execution_time = utime  # Execute immediately
         else:
             # Set up target observation request and check visibility
@@ -409,6 +516,19 @@ class ACS:
 
             visstart = target_request.next_vis(utime)
             is_first_slew = self._initialize_slew_positions(slew, utime)
+            self._compute_slew_distance(slew)
+
+            # Validate wheel headroom before committing the slew
+            if not self._has_wheel_headroom(slew, utime):
+                self._log_or_print(
+                    utime,
+                    "SLEW",
+                    f"{unixtime2date(utime)}: Slew rejected - insufficient wheel momentum/torque headroom",
+                )
+                self.headroom_rejects += 1
+                # Request desat to free momentum and avoid deadlock
+                self.request_desat(utime)
+                return False
 
             # Validate slew is possible
             if not self._is_slew_valid(visstart, slew.obstype, utime):
@@ -486,6 +606,19 @@ class ACS:
         """Calculate when the slew should start, accounting for current slew and constraints."""
         execution_time = utime
 
+        # If desat is active, delay slews until desat completes
+        if self._desat_active and self._desat_end > execution_time:
+            execution_time = self._desat_end
+            self._log_or_print(
+                utime,
+                "SLEW",
+                "%s: Desat active - delaying slew until %s"
+                % (
+                    unixtime2date(utime),
+                    unixtime2date(execution_time),
+                ),
+            )
+
         # Wait for current slew to finish if in progress
         if (
             not is_first_slew
@@ -517,6 +650,146 @@ class ACS:
             execution_time = visstart
 
         return execution_time
+
+    def _compute_slew_distance(self, slew: Slew) -> float:
+        """Ensure slew distance/path are populated and return distance (deg)."""
+        try:
+            slew.predict_slew()
+        except Exception:
+            return 0.0
+        return float(getattr(slew, "slewdist", 0.0) or 0.0)
+
+    def _has_wheel_headroom(self, slew: Slew, utime: float | None = None) -> bool:
+        """Check if reaction wheels have torque/momentum headroom for this slew."""
+        if not self.reaction_wheels:
+            return True
+
+        # If already heavily loaded, request desat before any new slew
+        max_frac = 0.0
+        for w in self.reaction_wheels:
+            mm = float(getattr(w, "max_momentum", 0.0))
+            cm = float(getattr(w, "current_momentum", 0.0))
+            if mm > 0:
+                max_frac = max(max_frac, abs(cm) / mm)
+        # Lower threshold to be more proactive
+        if max_frac >= 0.6:
+            if utime is None:
+                utime = 0.0
+            self._log_or_print(
+                utime,
+                "SLEW",
+                f"{unixtime2date(utime)}: Slew rejected - wheels already at {max_frac:.2f} fraction, requesting desat",
+            )
+            self.request_desat(utime)
+            return False
+
+        dist = float(getattr(slew, "slewdist", 0.0) or 0.0)
+        if dist <= 0:
+            return True
+
+        # Requested accel from ACS config
+        try:
+            acs_accel = float(getattr(self.acs_config, "slew_acceleration", 0.0))
+        except Exception:
+            acs_accel = 0.0
+
+        if acs_accel <= 0:
+            return True
+
+        # Compute requested vmax for this slew (triangular vs trapezoidal)
+        try:
+            max_rate_req = float(getattr(self.acs_config, "max_slew_rate", float("inf")))
+        except Exception:
+            max_rate_req = float("inf")
+        from math import sqrt
+
+        # Triangular profile peak rate if max_rate is high enough
+        triangular_vmax = sqrt(max(0.0, acs_accel * dist))
+        requested_vmax = min(max_rate_req, triangular_vmax if max_rate_req > 0 else triangular_vmax)
+
+        # Estimate available accel along slew axis using all wheels
+        axis = np.array(getattr(slew, "rotation_axis", (0.0, 0.0, 1.0)), dtype=float)
+        try:
+            motion_time = float(self.acs_config.motion_time(dist))
+        except Exception:
+            motion_time = 0.0
+        achievable_accel = self._axis_accel_limit(axis, motion_time)
+        if achievable_accel + 1e-6 < acs_accel:
+            return False
+
+        # Also ensure momentum headroom allows the required peak rate
+        rate_limit = self._axis_rate_limit(axis)
+        # Require generous margin so we desat well before hitting the absolute limit
+        margin = 0.5
+        if rate_limit * margin + 1e-6 < requested_vmax:
+            return False
+
+        # Direct momentum headroom check along slew axis (predict required peak H)
+        # Compute inertia about axis
+        moi_cfg = self.config.spacecraft_bus.attitude_control.spacecraft_moi
+        try:
+            if isinstance(moi_cfg, (list, tuple)):
+                arr = np.array(moi_cfg, dtype=float)
+                if arr.shape == (3, 3):
+                    I_mat = arr
+                elif arr.shape == (3,):
+                    I_mat = np.diag(arr)
+                else:
+                    val = float(np.mean(arr))
+                    I_mat = np.diag([val, val, val])
+            else:
+                val = float(moi_cfg)
+                I_mat = np.diag([val, val, val])
+        except Exception:
+            I_mat = np.diag([1.0, 1.0, 1.0])
+
+        I_axis = float(axis.dot(I_mat.dot(axis)))
+        from math import pi
+
+        required_axis_h = requested_vmax * (pi / 180.0) * I_axis
+
+        total_axis_headroom = 0.0
+        for w in self.reaction_wheels:
+            try:
+                v = np.array(w.orientation, dtype=float)
+            except Exception:
+                v = np.array([1.0, 0.0, 0.0])
+            vn = np.linalg.norm(v)
+            if vn > 0:
+                v = v / vn
+            proj = abs(np.dot(v, axis))
+            max_mom = float(getattr(w, "max_momentum", 0.0))
+            curr_mom = float(getattr(w, "current_momentum", 0.0))
+            headroom = max(0.0, max_mom - abs(curr_mom))
+            total_axis_headroom += proj * headroom
+
+        # Use the smaller of the two (projection can over/under-estimate vs rate_limit-derived)
+        headroom_axis_h = min(
+            total_axis_headroom, rate_limit * I_axis * (pi / 180.0)
+        )
+
+        if headroom_axis_h * margin + 1e-9 < required_axis_h:
+            return False
+
+        # Predict per-wheel peak momentum during the slew (accel phase)
+        if not self._predict_wheel_peak_momentum(
+            slew,
+            axis,
+            acs_accel,
+            requested_vmax,
+            I_axis,
+            margin=0.9,
+        ):
+            if utime is None:
+                utime = 0.0
+            self._log_or_print(
+                utime,
+                "SLEW",
+                f"{unixtime2date(utime)}: Slew rejected - wheel peak momentum would exceed capacity",
+            )
+            return False
+
+        return True
 
     def pointing(self, utime: float) -> tuple[float, float, float, int]:
         """
@@ -573,6 +846,13 @@ class ACS:
         # Safe mode takes absolute priority - once entered, cannot be exited
         if self.in_safe_mode:
             return ACSMode.SAFE
+
+        # Desat holds the spacecraft busy; treat as slewing/maintenance
+        if self._desat_active:
+            if utime >= self._desat_end:
+                self._desat_active = False
+            else:
+                return ACSMode.SLEWING
 
         # Check if actively slewing
         if self._is_actively_slewing(utime):
@@ -739,16 +1019,48 @@ class ACS:
         # track last update time
         if not hasattr(self, "_last_pointing_time") or self._last_pointing_time is None:
             self._last_pointing_time = utime
+            if self.reaction_wheels:
+                self._build_wheel_snapshot(utime, None, None)
             return
 
         dt = utime - self._last_pointing_time
         if dt <= 0:
             self._last_pointing_time = utime
+            if self.reaction_wheels:
+                self._build_wheel_snapshot(utime, None, None)
             return
+
+        # Apply magnetorquer desat bleed even when not actively slewing
+        if self._desat_active and self._desat_use_mtq:
+            self._apply_magnetorquer_desat(dt, utime)
 
         # Only update when actively slewing and we have wheels
         if self.current_slew is None or not self.current_slew.is_slewing(utime):
+            handled_pass = False
+            # If in a ground pass, treat continuous tracking as a small slew for wheel accounting
+            if (
+                self.current_pass is not None
+                and self.reaction_wheels
+                and not self._desat_active
+                and dt > 0
+            ):
+                handled_pass = self._apply_pass_wheel_update(dt, utime)
+
+            # Proactively request desat if momentum is high while idle
+            if self.reaction_wheels and not self._desat_active:
+                max_frac = 0.0
+                for w in self.reaction_wheels:
+                    mm = float(getattr(w, "max_momentum", 0.0))
+                    cm = float(getattr(w, "current_momentum", 0.0))
+                    if mm > 0:
+                        max_frac = max(max_frac, abs(cm) / mm)
+                if max_frac >= 0.9:
+                    self.request_desat(utime)
             self._last_pointing_time = utime
+            if self.reaction_wheels:
+                # If pass tracking handled, snapshot was already built inside helper
+                if not handled_pass:
+                    self._build_wheel_snapshot(utime, None, None)
             return
 
         if not self.reaction_wheels:
@@ -764,46 +1076,860 @@ class ACS:
             return
 
         # Derive scalar moi approximation
-        moi = self.config.spacecraft_bus.attitude_control.spacecraft_moi
+        # Build inertia matrix from config. Support scalar, diagonal (Ixx,Iyy,Izz) or full 3x3.
+        moi_cfg = self.config.spacecraft_bus.attitude_control.spacecraft_moi
         try:
-            if isinstance(moi, (list, tuple)):
-                moi_val = float(sum(moi) / len(moi))
+            if isinstance(moi_cfg, (list, tuple)):
+                # If nested list-like -> treat as full matrix
+                if len(moi_cfg) == 3 and any(isinstance(x, (list, tuple)) for x in moi_cfg):
+                    I_mat = np.array(moi_cfg, dtype=float)
+                elif len(moi_cfg) == 3:
+                    I_mat = np.diag([float(x) for x in moi_cfg])
+                else:
+                    # fallback to scalar conversion
+                    val = float(sum(moi_cfg) / len(moi_cfg))
+                    I_mat = np.diag([val, val, val])
             else:
-                moi_val = float(moi)
+                val = float(moi_cfg)
+                I_mat = np.diag([val, val, val])
         except Exception:
-            moi_val = None
+            # if anything fails, fallback to scalar 1.0 inertia
+            I_mat = np.diag([1.0, 1.0, 1.0])
 
         from math import pi
 
-        # Compute requested torque (N*m) = accel (rad/s^2) * moi
-        if moi_val is None:
-            requested_torque = 0.0
+        # rotation axis (unit) provided by Slew.predict_slew; default to +Z
+        axis = np.array(getattr(self.current_slew, 'rotation_axis', (0.0, 0.0, 1.0)), dtype=float)
+        a_nrm = np.linalg.norm(axis)
+        if a_nrm <= 0:
+            axis = np.array([0.0, 0.0, 1.0])
         else:
-            requested_torque = (accel_req * (pi / 180.0)) * moi_val
+            axis = axis / a_nrm
 
-        # Determine how much torque wheel can actually apply over this dt
-        # available impulse (N*m*s)
-        available = max(0.0, wheel.max_momentum - abs(wheel.current_momentum))
-        # Maximum torque that could be supplied for duration dt without exceeding momentum
-        max_torque_by_momentum = available / dt if dt > 0 else 0.0
+        # Effective moment of inertia about the rotation axis: I_axis = axis^T * I * axis
+        I_axis = float(axis.dot(I_mat.dot(axis)))
 
-        # Limit to wheel's peak torque capability
-        allowed_torque = min(abs(requested_torque), wheel.max_torque, max_torque_by_momentum)
-        # restore sign
-        allowed_torque = allowed_torque if requested_torque >= 0 else -allowed_torque
+        # Compute requested scalar torque (N*m) about that axis
+        requested_torque = (accel_req * (pi / 180.0)) * I_axis
 
-        # Apply torque to wheel (wheel gains stored momentum; spacecraft receives opposite)
-        wheel.apply_torque(allowed_torque, dt)
+        # Desired spacecraft torque vector (3D), including disturbance rejection
+        T_desired = axis * requested_torque
+        T_desired = T_desired - self._compute_disturbance_torque(utime)
 
-        # If we couldn't supply full torque, reduce accel_override to reflect capability
-        if abs(allowed_torque) < abs(requested_torque) and moi_val and moi_val > 0:
-            new_accel = (allowed_torque / moi_val) * (180.0 / pi)
-            # update both current_slew and last_slew override so future calculations use lowered accel
+        # Build wheel orientation matrix E (3 x N), columns are wheel axis unit vectors
+        E_cols = []
+        for w in self.reaction_wheels:
+            try:
+                v = np.array(w.orientation, dtype=float)
+            except Exception:
+                v = np.array([1.0, 0.0, 0.0])
+            vn = np.linalg.norm(v)
+            if vn <= 0:
+                v = np.array([1.0, 0.0, 0.0])
+            else:
+                v = v / vn
+            E_cols.append(v)
+        E = np.column_stack(E_cols) if E_cols else np.zeros((3, 0))
+
+        # Solve least-squares for wheel torques (scalar per wheel) that produce T_desired
+        try:
+            taus, *_ = np.linalg.lstsq(E, T_desired, rcond=None)
+        except Exception:
+            # fallback: assign all torque to first wheel only (legacy behavior)
+            taus = np.zeros((len(self.reaction_wheels),), dtype=float)
+            if len(taus) > 0:
+                taus[0] = float(np.linalg.norm(T_desired))
+
+        # Clamp per-wheel torques by peak torque and by available momentum capacity over dt
+        taus_allowed = np.zeros_like(taus)
+        mom_margin = 0.9  # keep buffer so we don't hit hard saturation mid-slew
+        for i, w in enumerate(self.reaction_wheels):
+            mt = float(getattr(w, 'max_torque', 0.0))
+            curr_m = float(getattr(w, "current_momentum", 0.0))
+            avail = max(0.0, (w.max_momentum * mom_margin) - abs(curr_m))
+            max_by_mom = avail / dt if dt > 0 else 0.0
+            # If torque would reduce stored momentum magnitude, don't limit by momentum headroom
+            if curr_m != 0 and (taus[i] * curr_m) < 0:
+                limit = mt
+            else:
+                limit = min(mt, max_by_mom)
+            taus_allowed[i] = np.sign(taus[i]) * min(abs(taus[i]), limit)
+
+        # Compute actual produced torque vector
+        T_actual = E.dot(taus_allowed) if E.size else np.zeros(3)
+
+        # Debug trace
+        try:
+            self._logger.debug(
+                "_update_wheel_momentum: utime=%s dt=%s accel_req=%s requested_torque=%s T_desired=%s T_actual=%s",
+                utime,
+                dt,
+                accel_req,
+                requested_torque,
+                T_desired.tolist() if hasattr(T_desired, 'tolist') else T_desired,
+                T_actual.tolist() if hasattr(T_actual, 'tolist') else T_actual,
+            )
+        except Exception:
+            pass
+
+        # Apply per-wheel torques (wheel stores scalar momentum along its axis)
+        for i, w in enumerate(self.reaction_wheels):
+            w.apply_torque(float(taus_allowed[i]), dt)
+
+        # If we couldn't supply full torque, reduce accel_override magnitude accordingly
+        achieved_scalar = float(np.dot(T_actual, axis))
+        if abs(achieved_scalar) < abs(requested_torque) and I_axis > 0:
+            new_accel = (achieved_scalar / I_axis) * (180.0 / pi)
             self.current_slew._accel_override = new_accel
             if self.last_slew is self.current_slew:
                 self.last_slew._accel_override = new_accel
 
+        # Capture wheel snapshot for telemetry/resource tracking
+        self._build_wheel_snapshot(utime, taus, taus_allowed)
+
         self._last_pointing_time = utime
+
+    def _apply_magnetorquer_desat(self, dt: float, utime: float) -> None:
+        """Bleed wheel momentum using magnetorquers during desat."""
+        if not self.magnetorquers or dt <= 0:
+            return
+
+        # Build total torque vector from magnetorquers using m x B in body frame
+        B_body, Bmag = self._local_bfield_vector(utime)
+        T_mtq = np.zeros(3, dtype=float)
+        for m in self.magnetorquers:
+            try:
+                v = np.array(m.get("orientation", (1.0, 0.0, 0.0)), dtype=float)
+            except Exception:
+                v = np.array([1.0, 0.0, 0.0])
+            vn = np.linalg.norm(v)
+            if vn <= 0:
+                v = np.array([1.0, 0.0, 0.0])
+            else:
+                v = v / vn
+            dipole = float(m.get("dipole", 0.0))
+            m_vec = v * dipole  # A*m^2 in body frame
+            T_mtq += np.cross(m_vec, B_body)
+
+        if not self.reaction_wheels:
+            return
+
+        # Project MTQ torque onto each wheel axis and bleed momentum toward zero
+        for w in self.reaction_wheels:
+            try:
+                axis = np.array(w.orientation, dtype=float)
+            except Exception:
+                axis = np.array([1.0, 0.0, 0.0])
+            an = np.linalg.norm(axis)
+            if an <= 0:
+                axis = np.array([1.0, 0.0, 0.0])
+            else:
+                axis = axis / an
+            tau_w = float(np.dot(T_mtq, axis))
+            if tau_w == 0:
+                continue
+            dm = tau_w * dt
+            mom = float(getattr(w, "current_momentum", 0.0))
+            if mom > 0:
+                mom = max(0.0, mom - abs(dm))
+            else:
+                mom = min(0.0, mom + abs(dm))
+            w.current_momentum = mom
+
+        # End desat early if all wheels are near zero momentum
+        if all(abs(getattr(w, "current_momentum", 0.0)) < 1e-3 for w in self.reaction_wheels):
+            self._desat_active = False
+            self._desat_use_mtq = False
+            self._log_or_print(utime, "DESAT", f"{unixtime2date(utime)}: Magnetorquer desat complete")
+
+    def _axis_accel_limit(self, axis: np.ndarray, motion_time: float) -> float:
+        """Compute maximum achievable accel (deg/s^2) about a rotation axis using all wheels."""
+        if not self.reaction_wheels:
+            return float("inf")
+
+        # Normalize axis
+        try:
+            axis = np.array(axis, dtype=float)
+            nrm = np.linalg.norm(axis)
+            if nrm <= 0:
+                axis = np.array([0.0, 0.0, 1.0])
+            else:
+                axis = axis / nrm
+        except Exception:
+            axis = np.array([0.0, 0.0, 1.0])
+
+        # Inertia about axis
+        moi_cfg = self.config.spacecraft_bus.attitude_control.spacecraft_moi
+        try:
+            if isinstance(moi_cfg, (list, tuple)):
+                arr = np.array(moi_cfg, dtype=float)
+                if arr.shape == (3, 3):
+                    I_mat = arr
+                elif arr.shape == (3,):
+                    I_mat = np.diag(arr)
+                else:
+                    val = float(np.mean(arr))
+                    I_mat = np.diag([val, val, val])
+            else:
+                val = float(moi_cfg)
+                I_mat = np.diag([val, val, val])
+        except Exception:
+            I_mat = np.diag([1.0, 1.0, 1.0])
+
+        I_axis = float(axis.dot(I_mat.dot(axis)))
+        if I_axis <= 0:
+            return 0.0
+
+        # Build wheel orientation matrix
+        cols = []
+        max_torques = []
+        max_moms = []
+        curr_moms = []
+        for w in self.reaction_wheels:
+            try:
+                v = np.array(w.orientation, dtype=float)
+            except Exception:
+                v = np.array([1.0, 0.0, 0.0])
+            vn = np.linalg.norm(v)
+            if vn <= 0:
+                v = np.array([1.0, 0.0, 0.0])
+            else:
+                v = v / vn
+            cols.append(v)
+            max_torques.append(float(getattr(w, "max_torque", 0.0)))
+            max_moms.append(float(getattr(w, "max_momentum", 0.0)))
+            curr_moms.append(float(getattr(w, "current_momentum", 0.0)))
+
+        E = np.column_stack(cols) if cols else np.zeros((3, 0))
+        if E.size == 0:
+            return 0.0
+
+        # Desired unit torque along axis
+        try:
+            taus_unit, *_ = np.linalg.lstsq(E, axis, rcond=None)
+        except Exception:
+            return 0.0
+
+        # Determine scaling limited by per-wheel torque and momentum over motion_time
+        scales = []
+        for tau_coeff, mt, mm, cm in zip(taus_unit, max_torques, max_moms, curr_moms):
+            if abs(tau_coeff) < 1e-9:
+                continue
+            torque_cap = mt
+            if motion_time and motion_time > 0 and mm > 0:
+                avail = max(0.0, mm - abs(cm))
+                torque_cap = min(torque_cap, avail / motion_time)
+            if torque_cap <= 0:
+                scales.append(0.0)
+            else:
+                scales.append(torque_cap / abs(tau_coeff))
+
+        if not scales:
+            return 0.0
+
+        torque_along_axis = min(scales)
+        # Convert to accel (deg/s^2)
+        from math import pi
+
+        return (torque_along_axis / I_axis) * (180.0 / pi)
+
+    def _axis_rate_limit(self, axis: np.ndarray) -> float:
+        """Estimate max angular rate (deg/s) about an axis based on wheel momentum capacity."""
+        if not self.reaction_wheels:
+            return float("inf")
+
+        # Normalize axis
+        try:
+            axis = np.array(axis, dtype=float)
+            nrm = np.linalg.norm(axis)
+            if nrm <= 0:
+                axis = np.array([0.0, 0.0, 1.0])
+            else:
+                axis = axis / nrm
+        except Exception:
+            axis = np.array([0.0, 0.0, 1.0])
+
+        # Inertia about axis
+        moi_cfg = self.config.spacecraft_bus.attitude_control.spacecraft_moi
+        try:
+            if isinstance(moi_cfg, (list, tuple)):
+                arr = np.array(moi_cfg, dtype=float)
+                if arr.shape == (3, 3):
+                    I_mat = arr
+                elif arr.shape == (3,):
+                    I_mat = np.diag(arr)
+                else:
+                    val = float(np.mean(arr))
+                    I_mat = np.diag([val, val, val])
+            else:
+                val = float(moi_cfg)
+                I_mat = np.diag([val, val, val])
+        except Exception:
+            I_mat = np.diag([1.0, 1.0, 1.0])
+
+        I_axis = float(axis.dot(I_mat.dot(axis)))
+        if I_axis <= 0:
+            return float("inf")
+
+        # Project wheel momentum capacity onto axis
+        total_axis_mom = 0.0
+        for w in self.reaction_wheels:
+            try:
+                v = np.array(w.orientation, dtype=float)
+            except Exception:
+                v = np.array([1.0, 0.0, 0.0])
+            vn = np.linalg.norm(v)
+            if vn > 0:
+                v = v / vn
+            proj = abs(np.dot(v, axis))
+            max_mom = float(getattr(w, "max_momentum", 0.0))
+            curr_mom = float(getattr(w, "current_momentum", 0.0))
+            headroom = max(0.0, max_mom - abs(curr_mom))
+            total_axis_mom += proj * headroom
+
+        if total_axis_mom <= 0:
+            return float("inf")
+
+        # omega = H / I; convert to deg/s
+        from math import pi
+
+        return (total_axis_mom / I_axis) * (180.0 / pi)
+
+    def _build_wheel_snapshot(
+        self, utime: float, taus_cmd: Any | None, taus_allowed: Any | None
+    ) -> None:
+        """Capture per-wheel torque/momentum state for resource tracking."""
+        wheels: list[dict[str, Any]] = []
+        max_m_frac = 0.0
+        max_t_frac = 0.0
+        saturated = False
+
+        for i, w in enumerate(self.reaction_wheels):
+            max_mom = float(getattr(w, "max_momentum", 0.0))
+            max_torque = float(getattr(w, "max_torque", 0.0))
+            momentum = float(getattr(w, "current_momentum", 0.0))
+            m_frac = abs(momentum) / max_mom if max_mom > 0 else 0.0
+
+            cmd = float(taus_cmd[i]) if taus_cmd is not None else 0.0
+            allowed = float(taus_allowed[i]) if taus_allowed is not None else cmd
+            t_frac = abs(allowed) / max_torque if max_torque > 0 else 0.0
+
+            max_m_frac = max(max_m_frac, m_frac)
+            max_t_frac = max(max_t_frac, t_frac)
+            # Saturated only if momentum near capacity
+            if max_mom > 0 and abs(momentum) >= 0.99 * max_mom:
+                saturated = True
+
+            wheels.append(
+                {
+                    "name": getattr(w, "name", f"wheel{i}"),
+                    "momentum": momentum,
+                    "max_momentum": max_mom,
+                    "momentum_fraction": m_frac,
+                    "torque_command": cmd,
+                    "torque_applied": allowed,
+                    "max_torque": max_torque,
+                }
+            )
+
+        self._last_wheel_snapshot = {
+            "utime": utime,
+            "wheels": wheels,
+            "max_momentum_fraction": max_m_frac,
+            "max_torque_fraction": max_t_frac,
+            "saturated": saturated,
+        }
+
+    def wheel_snapshot(self) -> dict[str, Any]:
+        """Return the latest reaction wheel resource snapshot."""
+        if self._last_wheel_snapshot is None:
+            self._build_wheel_snapshot(getattr(self, "_last_pointing_time", 0.0), None, None)
+        return self._last_wheel_snapshot or {
+            "utime": getattr(self, "_last_pointing_time", 0.0),
+            "wheels": [],
+            "max_momentum_fraction": 0.0,
+            "max_torque_fraction": 0.0,
+            "saturated": False,
+        }
+
+    def _local_bfield_vector(self, utime: float) -> tuple[np.ndarray, float]:
+        """Estimate local magnetic field vector in body frame.
+
+        Uses a simple dipole model aligned with Earth's spin axis. Falls back to
+        configured constant magnitude if ephemeris data is unavailable.
+        """
+        # Default constant field in inertial frame
+        B_const = np.array([0.0, 0.0, self._magnetorquer_bfield], dtype=float)
+
+        try:
+            idx = self.ephem.index(dtutcfromtimestamp(utime))
+        except Exception:
+            return B_const, float(np.linalg.norm(B_const))
+
+        # Get lat/long/alt if available
+        try:
+            lat_deg = float(self.ephem.lat[idx])  # type: ignore[attr-defined]
+            lon_deg = float(self.ephem.long[idx])  # type: ignore[attr-defined]
+        except Exception:
+            lat_deg = 0.0
+            lon_deg = 0.0
+        try:
+            alt_m = float(getattr(self.ephem, "alt", [0])[idx])  # type: ignore[attr-defined]
+        except Exception:
+            # derive from position magnitude if possible
+            try:
+                pos = np.array(self.ephem.gcrs_pv.position[idx])  # type: ignore[attr-defined]
+                rmag = np.linalg.norm(pos)
+                # infer units: if rmag < 1e7 assume meters; else meters anyway
+                if rmag < 1e5:
+                    rmag *= 1000.0
+                alt_m = max(0.0, rmag - 6378e3)
+            except Exception:
+                alt_m = 500e3  # assume LEO if unknown
+
+        lat = np.deg2rad(lat_deg)
+        lon = np.deg2rad(lon_deg)
+
+        # Dipole magnitude scaling with altitude
+        RE = 6378e3
+        r = RE + max(0.0, alt_m)
+        # Equatorial field ~3.12e-5 T at surface
+        B0 = 3.12e-5
+        scale = (RE / r) ** 3
+
+        # Dipole aligned with +Z (spin axis)
+        # Components in spherical coords: B_r, B_theta; convert to ECEF
+        Br = -2 * B0 * scale * np.sin(lat)
+        Btheta = -B0 * scale * np.cos(lat)
+        r_hat = np.array([np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)])
+        theta_hat = np.array([-np.sin(lat) * np.cos(lon), -np.sin(lat) * np.sin(lon), np.cos(lat)])
+        B_ecef = Br * r_hat + Btheta * theta_hat
+
+        # Transform inertial/ECEF to body frame using current pointing
+        B_body = self._inertial_to_body(B_ecef)
+
+        return B_body, float(np.linalg.norm(B_body))
+
+    def _inertial_to_body(self, vec: np.ndarray) -> np.ndarray:
+        """Rotate inertial vector into body frame assuming Z points at current RA/Dec."""
+        try:
+            ra_b = float(self.ra)
+            dec_b = float(self.dec)
+            ra_r = np.deg2rad(ra_b)
+            dec_r = np.deg2rad(dec_b)
+            z_b = np.array(
+                [np.cos(dec_r) * np.cos(ra_r), np.cos(dec_r) * np.sin(ra_r), np.sin(dec_r)]
+            )
+            x_candidate = np.array([1.0, 0.0, 0.0])
+            x_b = x_candidate - np.dot(x_candidate, z_b) * z_b
+            if np.linalg.norm(x_b) < 1e-6:
+                x_candidate = np.array([0.0, 1.0, 0.0])
+                x_b = x_candidate - np.dot(x_candidate, z_b) * z_b
+            x_b = x_b / np.linalg.norm(x_b)
+            y_b = np.cross(z_b, x_b)
+            y_b = y_b / np.linalg.norm(y_b)
+            R_ib = np.vstack([x_b, y_b, z_b])
+            return R_ib.dot(vec)
+        except Exception:
+            return vec
+
+    def _compute_disturbance_torque(self, utime: float) -> np.ndarray:
+        """Compute aggregate disturbance torque in body frame."""
+        torque = np.zeros(3, dtype=float)
+        # Build inertia matrix
+        moi_cfg = self.config.spacecraft_bus.attitude_control.spacecraft_moi
+        try:
+            if isinstance(moi_cfg, (list, tuple)):
+                arr = np.array(moi_cfg, dtype=float)
+                if arr.shape == (3, 3):
+                    I_mat = arr
+                elif arr.shape == (3,):
+                    I_mat = np.diag(arr)
+                else:
+                    val = float(np.mean(arr))
+                    I_mat = np.diag([val, val, val])
+            else:
+                val = float(moi_cfg)
+                I_mat = np.diag([val, val, val])
+        except Exception:
+            I_mat = np.diag([1.0, 1.0, 1.0])
+
+        # Get position/velocity inertial
+        r_vec = None
+        v_vec = None
+        try:
+            idx = self.ephem.index(dtutcfromtimestamp(utime))
+            r_vec = np.array(self.ephem.gcrs_pv.position[idx])  # type: ignore[attr-defined]
+            v_vec = np.array(self.ephem.gcrs_pv.velocity[idx])  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+        # Normalize units to meters/seconds if possible
+        def _normalize(vec: np.ndarray) -> np.ndarray:
+            n = np.linalg.norm(vec)
+            if n == 0:
+                return vec
+            # If magnitude looks like km-scale (~7000), convert to m
+            if n < 1e6:
+                return vec * 1000.0
+            return vec
+
+        if r_vec is not None:
+            r_vec = _normalize(r_vec)
+        if v_vec is not None:
+            v_vec = _normalize(v_vec)
+
+        gg_mag = drag_mag = srp_mag = mag_mag = 0.0
+
+        # Gravity gradient torque: 3 * mu / r^3 * (r_hat x (I * r_hat))
+        if r_vec is not None:
+            r_body = self._inertial_to_body(r_vec)
+            r_norm = np.linalg.norm(r_body)
+            if r_norm > 0:
+                r_hat = r_body / r_norm
+                mu = 3.986004418e14  # m^3/s^2
+                torque_gg = 3 * mu / (r_norm**3) * np.cross(r_hat, I_mat.dot(r_hat))
+                torque += torque_gg
+                gg_mag = float(np.linalg.norm(torque_gg))
+
+        # Aerodynamic torque (simple drag model)
+        lat_deg = lon_deg = None
+        try:
+            idx_latlon = self.ephem.index(dtutcfromtimestamp(utime))
+            lat_deg = float(self.ephem.lat[idx_latlon])  # type: ignore[attr-defined]
+            lon_deg = float(self.ephem.long[idx_latlon])  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+        if self._drag_area > 0 and v_vec is not None:
+            v_body = self._inertial_to_body(v_vec)
+            v_mag = np.linalg.norm(v_body)
+            if v_mag > 0 and r_vec is not None:
+                alt = max(0.0, np.linalg.norm(r_vec) - 6378e3)
+                rho = self._atmospheric_density(utime, alt, lat_deg, lon_deg)
+            q = 0.5 * rho * v_mag * v_mag
+            v_hat = v_body / v_mag
+            F_drag = -q * self._drag_coeff * self._drag_area * v_hat
+            torque_drag = np.cross(self._cp_offset, F_drag)
+            torque += torque_drag
+            drag_mag = float(np.linalg.norm(torque_drag))
+
+        # Solar pressure torque
+        if self._solar_area > 0 and not getattr(self, "in_eclipse", False):
+            try:
+                idx = self.ephem.index(dtutcfromtimestamp(utime))
+                sun_vec = np.array(self.ephem.sun[idx].cartesian.xyz.to_value())  # type: ignore[attr-defined]
+                # Heuristic: if sun vector looks like km-scale (|r| < 1e9), convert to meters
+                if np.linalg.norm(sun_vec) < 1e9:
+                    sun_vec = sun_vec * 1000.0
+                if r_vec is not None:
+                    r_sc = r_vec
+                else:
+                    r_sc = np.zeros(3, dtype=float)
+                r_sun = sun_vec - r_sc
+                r_sun_mag = np.linalg.norm(r_sun)
+                if r_sun_mag > 0:
+                    AU = 1.495978707e11
+                    P0 = 4.56e-6  # N/m^2 at 1 AU
+                    scale = (AU / r_sun_mag) ** 2
+                    r_sun_body = self._inertial_to_body(r_sun)
+                    sun_hat = r_sun_body / np.linalg.norm(r_sun_body)
+                    F_srp = P0 * scale * self._solar_area * self._solar_reflectivity * sun_hat
+                    torque_srp = np.cross(self._cp_offset, F_srp)
+                    torque += torque_srp
+                    srp_mag = float(np.linalg.norm(torque_srp))
+            except Exception:
+                pass
+
+        # Magnetic torque from residual moment
+        if np.linalg.norm(self._residual_moment) > 0:
+            B_body, _ = self._local_bfield_vector(utime)
+            torque_mag = np.cross(self._residual_moment, B_body)
+            torque += torque_mag
+            mag_mag = float(np.linalg.norm(torque_mag))
+
+        # Store last components for telemetry
+        self._last_disturbance_components = {
+            "total": float(np.linalg.norm(torque)),
+            "gg": gg_mag,
+            "drag": drag_mag,
+            "srp": srp_mag,
+            "mag": mag_mag,
+        }
+
+        return torque
+
+    def _atmospheric_density(
+        self, utime: float, alt_m: float, lat_deg: float | None, lon_deg: float | None
+    ) -> float:
+        """Lookup/interpolate atmospheric density (kg/m^3) vs altitude.
+
+        If use_msis_density is enabled and pymsis is available, falls back to MSIS.
+        """
+        # Try MSIS if requested
+        if self._use_msis:
+            try:
+                from pymsis import msise00
+                from datetime import datetime as _dt
+
+                date = _dt.utcfromtimestamp(utime)
+                dates = np.array([date])
+                alts = np.array([max(0.0, alt_m / 1000.0)])  # km
+                lats = np.array([lat_deg if lat_deg is not None else 0.0])
+                lons = np.array([lon_deg if lon_deg is not None else 0.0])
+                f107 = np.array([150.0])
+                f107a = np.array([150.0])
+                ap = np.array([[4.0] * 7])
+                dens = msise00.run(dates, alts, lats, lons, f107, f107a, ap)
+                # Output shape (time, alt, lat, lon, species); total mass density at species index -1 or 5
+                rho = float(dens[0, 0, 0, 0, -1]) * 1000.0  # convert g/cm^3 to kg/m^3
+                if rho > 0:
+                    return rho
+            except Exception:
+                pass
+
+        table = [
+            (0, 1.225),
+            (25, 3.9e-2),
+            (50, 1.0e-3),
+            (75, 3.2e-5),
+            (100, 5.6e-7),
+            (125, 3.3e-9),
+            (150, 9.7e-11),
+            (175, 1.7e-12),
+            (200, 2.5e-13),
+            (250, 5.0e-14),
+            (300, 9.7e-15),
+            (350, 2.5e-15),
+            (400, 4.0e-16),
+            (450, 8.7e-17),
+            (500, 1.9e-17),
+            (600, 4.5e-18),
+            (700, 8.0e-19),
+            (800, 1.8e-19),
+            (900, 4.0e-20),
+            (1000, 1.0e-20),
+        ]
+        alt_km = max(0.0, alt_m / 1000.0)
+        if alt_km <= table[0][0]:
+            return table[0][1]
+        for i in range(1, len(table)):
+            if alt_km <= table[i][0]:
+                alt0, rho0 = table[i - 1]
+                alt1, rho1 = table[i]
+                frac = (alt_km - alt0) / (alt1 - alt0)
+                return float(rho0 * np.exp(np.log(rho1 / rho0) * frac))
+        return table[-1][1]
+
+    def _predict_wheel_peak_momentum(
+        self,
+        slew: Slew,
+        axis: np.ndarray,
+        acs_accel_deg: float,
+        requested_vmax_deg: float,
+        I_axis: float,
+        margin: float = 0.9,
+    ) -> bool:
+        """Predict per-wheel peak momentum during the slew accel phase.
+
+        Returns False if any wheel would exceed its max momentum (with margin) or torque.
+        """
+        if not self.reaction_wheels:
+            return True
+        try:
+            axis = np.array(axis, dtype=float)
+            nrm = np.linalg.norm(axis)
+            if nrm <= 0:
+                axis = np.array([0.0, 0.0, 1.0])
+            else:
+                axis = axis / nrm
+        except Exception:
+            axis = np.array([0.0, 0.0, 1.0])
+
+        dist = float(getattr(slew, "slewdist", 0.0) or 0.0)
+        if dist <= 0 or acs_accel_deg <= 0:
+            return True
+
+        accel = acs_accel_deg
+        max_rate = requested_vmax_deg if requested_vmax_deg > 0 else float("inf")
+
+        # Determine profile times (triangular vs trapezoidal) using deg units
+        from math import sqrt
+
+        triangular_vmax = sqrt(max(0.0, accel * dist))
+        if triangular_vmax <= max_rate:
+            t_acc = triangular_vmax / accel
+        else:
+            t_acc = max_rate / accel
+        if t_acc <= 0:
+            return True
+
+        # Build wheel orientation matrix E
+        cols = []
+        max_torques = []
+        max_moms = []
+        curr_moms = []
+        for w in self.reaction_wheels:
+            try:
+                v = np.array(w.orientation, dtype=float)
+            except Exception:
+                v = np.array([1.0, 0.0, 0.0])
+            vn = np.linalg.norm(v)
+            if vn > 0:
+                v = v / vn
+            cols.append(v)
+            max_torques.append(float(getattr(w, "max_torque", 0.0)))
+            max_moms.append(float(getattr(w, "max_momentum", 0.0)))
+            curr_moms.append(float(getattr(w, "current_momentum", 0.0)))
+
+        E = np.column_stack(cols) if cols else np.zeros((3, 0))
+        if E.size == 0:
+            return True
+
+        # Desired torque vector during accel (countering disturbance)
+        from math import pi
+
+        requested_torque = (accel * (pi / 180.0)) * I_axis
+        T_desired = axis * requested_torque
+        T_desired = T_desired - self._compute_disturbance_torque(utime)
+
+        try:
+            taus, *_ = np.linalg.lstsq(E, T_desired, rcond=None)
+        except Exception:
+            return False
+
+        for tau_i, mt, mm, cm in zip(taus, max_torques, max_moms, curr_moms):
+            if mt > 0 and abs(tau_i) > mt + 1e-9:
+                return False
+            if mm <= 0:
+                continue
+            peak_mom = abs(cm) + abs(tau_i) * t_acc
+            if peak_mom > mm * margin:
+                return False
+
+        return True
+
+    def _apply_pass_wheel_update(self, dt: float, utime: float) -> bool:
+        """Approximate wheel loading during continuous ground pass tracking."""
+        try:
+            target_ra, target_dec = self.current_pass.ra_dec(utime)  # type: ignore[attr-defined]
+        except Exception:
+            return False
+
+        # Compute great-circle distance between current pointing and target (deg)
+        try:
+            ra0 = float(self.ra)
+            dec0 = float(self.dec)
+            ra1 = float(target_ra)
+            dec1 = float(target_dec)
+            r0 = np.deg2rad(ra0)
+            d0 = np.deg2rad(dec0)
+            r1 = np.deg2rad(ra1)
+            d1 = np.deg2rad(dec1)
+            cosc = np.sin(d0) * np.sin(d1) + np.cos(d0) * np.cos(d1) * np.cos(r1 - r0)
+            cosc = np.clip(cosc, -1.0, 1.0)
+            dist_rad = float(np.arccos(cosc))
+            dist_deg = dist_rad * (180.0 / np.pi)
+        except Exception:
+            dist_deg = 0.0
+
+        if dist_deg <= 0 or dt <= 0:
+            self._build_wheel_snapshot(utime, None, None)
+            return True
+
+        # Approximate accel needed to traverse dist in dt with triangular profile: a = 2*s/t^2
+        accel_req = (2.0 * dist_deg) / (dt * dt)
+
+        # Estimate rotation axis from endpoints
+        try:
+            v0 = np.array(
+                [np.cos(d0) * np.cos(r0), np.cos(d0) * np.sin(r0), np.sin(d0)],
+                dtype=float,
+            )
+            v1 = np.array(
+                [np.cos(d1) * np.cos(r1), np.cos(d1) * np.sin(r1), np.sin(d1)],
+                dtype=float,
+            )
+            axis = np.cross(v0, v1)
+            nrm = np.linalg.norm(axis)
+            if nrm <= 1e-12:
+                axis = np.array([0.0, 0.0, 1.0])
+            else:
+                axis = axis / nrm
+        except Exception:
+            axis = np.array([0.0, 0.0, 1.0])
+
+        # Use existing wheel update logic with this synthetic accel
+        # Build inertia matrix
+        moi_cfg = self.config.spacecraft_bus.attitude_control.spacecraft_moi
+        try:
+            if isinstance(moi_cfg, (list, tuple)):
+                arr = np.array(moi_cfg, dtype=float)
+                if arr.shape == (3, 3):
+                    I_mat = arr
+                elif arr.shape == (3,):
+                    I_mat = np.diag(arr)
+                else:
+                    val = float(np.mean(arr))
+                    I_mat = np.diag([val, val, val])
+            else:
+                val = float(moi_cfg)
+                I_mat = np.diag([val, val, val])
+        except Exception:
+            I_mat = np.diag([1.0, 1.0, 1.0])
+
+        I_axis = float(axis.dot(I_mat.dot(axis)))
+        if I_axis <= 0:
+            self._build_wheel_snapshot(utime, None, None)
+            return True
+
+        from math import pi
+
+        requested_torque = (accel_req * (pi / 180.0)) * I_axis
+        T_desired = axis * requested_torque
+        T_desired = T_desired - self._compute_disturbance_torque(utime)
+
+        # Build wheel orientation matrix
+        E_cols = []
+        for w in self.reaction_wheels:
+            try:
+                v = np.array(w.orientation, dtype=float)
+            except Exception:
+                v = np.array([1.0, 0.0, 0.0])
+            vn = np.linalg.norm(v)
+            if vn <= 0:
+                v = np.array([1.0, 0.0, 0.0])
+            else:
+                v = v / vn
+            E_cols.append(v)
+        E = np.column_stack(E_cols) if E_cols else np.zeros((3, 0))
+
+        try:
+            taus, *_ = np.linalg.lstsq(E, T_desired, rcond=None)
+        except Exception:
+            taus = np.zeros((len(self.reaction_wheels),), dtype=float)
+            if len(taus) > 0:
+                taus[0] = float(np.linalg.norm(T_desired))
+
+        # Clamp per-wheel torques by headroom and torque
+        taus_allowed = np.zeros_like(taus)
+        mom_margin = 0.9
+        for i, w in enumerate(self.reaction_wheels):
+            mt = float(getattr(w, "max_torque", 0.0))
+            curr_m = float(getattr(w, "current_momentum", 0.0))
+            avail = max(0.0, (w.max_momentum * mom_margin) - abs(curr_m))
+            max_by_mom = avail / dt if dt > 0 else 0.0
+            if curr_m != 0 and (taus[i] * curr_m) < 0:
+                limit = mt
+            else:
+                limit = min(mt, max_by_mom)
+            taus_allowed[i] = np.sign(taus[i]) * min(abs(taus[i]), limit)
+
+        for i, w in enumerate(self.reaction_wheels):
+            w.apply_torque(float(taus_allowed[i]), dt)
+
+        self._build_wheel_snapshot(utime, taus, taus_allowed)
+        return True
 
     def request_pass(self, gspass: Pass) -> None:
         """Request a groundstation pass."""
@@ -875,6 +2001,33 @@ class ACS:
             utime,
             "SAFE",
             f"{unixtime2date(utime)}: Safe mode entry requested - this is irreversible",
+        )
+
+    def request_desat(self, utime: float, duration: float | None = None) -> None:
+        """Request a reaction wheel desaturation period."""
+        # If a desat is active or already queued, do nothing
+        if self._desat_active:
+            return
+        if any(
+            getattr(cmd, "command_type", None) == ACSCommandType.DESAT
+            for cmd in self.command_queue
+        ):
+            return
+        dur = float(duration or 300.0)
+        # Start as soon as requested (even if slewing)
+        start_time = utime
+
+        command = ACSCommand(
+            command_type=ACSCommandType.DESAT,
+            execution_time=start_time,
+            duration=dur,
+        )
+        self.enqueue_command(command)
+        self.desat_requests += 1
+        self._log_or_print(
+            start_time,
+            "DESAT",
+            f"{unixtime2date(start_time)}: Desat requested for {dur:.0f}s",
         )
 
     def initiate_emergency_charging(
