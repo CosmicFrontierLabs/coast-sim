@@ -92,6 +92,7 @@ class QueueDITL(DITLMixin, DITLStats):
         # Subsystem power tracking
         self.power_bus = list()
         self.power_payload = list()
+        self.mtq_power: list[float] = []
         # Data recorder tracking
         self.recorder_volume_gb = list()
         self.recorder_fill_fraction = list()
@@ -462,12 +463,23 @@ class QueueDITL(DITLMixin, DITLStats):
                 self.disturbance_drag.append(_safe(comps.get("drag", 0.0)))
                 self.disturbance_srp.append(_safe(comps.get("srp", 0.0)))
                 self.disturbance_mag.append(_safe(comps.get("mag", 0.0)))
+                vec = comps.get("vector", (0.0, 0.0, 0.0))
+                if isinstance(vec, (list, tuple)) and len(vec) == 3:
+                    try:
+                        self.disturbance_vec.append(
+                            (float(vec[0]), float(vec[1]), float(vec[2]))
+                        )
+                    except Exception:
+                        self.disturbance_vec.append((0.0, 0.0, 0.0))
+                else:
+                    self.disturbance_vec.append((0.0, 0.0, 0.0))
             else:
                 self.disturbance_total.append(0.0)
                 self.disturbance_gg.append(0.0)
                 self.disturbance_drag.append(0.0)
                 self.disturbance_srp.append(0.0)
                 self.disturbance_mag.append(0.0)
+                self.disturbance_vec.append((0.0, 0.0, 0.0))
 
             # Handle data generation and downlink
             self._handle_data_management(utime, mode)
@@ -1089,11 +1101,12 @@ class QueueDITL(DITLMixin, DITLStats):
         self.panel_power.append(panel_power)
 
         # Calculate power consumption by subsystem
-        bus_power, payload_power, total_power = self._calculate_power_consumption(
-            mode=mode, in_eclipse=in_eclipse
+        bus_power, payload_power, total_power, mtq_power = (
+            self._calculate_power_consumption(mode=mode, in_eclipse=in_eclipse)
         )
         self.power_bus.append(bus_power)
         self.power_payload.append(payload_power)
+        self.mtq_power.append(mtq_power)
         self.power.append(total_power)
 
         # Update battery state
@@ -1114,16 +1127,17 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _calculate_power_consumption(
         self, mode: ACSMode, in_eclipse: bool
-    ) -> tuple[float, float, float]:
+    ) -> tuple[float, float, float, float]:
         """Calculate total spacecraft power consumption broken down by subsystem.
 
         Returns:
-            Tuple of (bus_power, payload_power, total_power) in watts
+            Tuple of (bus_power, payload_power, total_power, mtq_power) in watts
         """
         bus_power = self.spacecraft_bus.power(mode=mode, in_eclipse=in_eclipse)
         payload_power = self.payload.power(mode=mode, in_eclipse=in_eclipse)
-        total_power = bus_power + payload_power
-        return bus_power, payload_power, total_power
+        mtq_power = float(getattr(self.acs, "mtq_power_w", 0.0))
+        total_power = bus_power + payload_power + mtq_power
+        return bus_power, payload_power, total_power, mtq_power
 
     def _update_battery_state(
         self, consumed_power: float, generated_power: float
@@ -1138,6 +1152,7 @@ class QueueDITL(DITLMixin, DITLStats):
         """Record aggregated reaction wheel torque/momentum usage."""
         if not hasattr(self.acs, "wheel_snapshot"):
             self.wheel_momentum_fraction.append(0.0)
+            self.wheel_momentum_fraction_raw.append(0.0)
             self.wheel_torque_fraction.append(0.0)
             self.wheel_saturation.append(0)
             return
@@ -1146,10 +1161,43 @@ class QueueDITL(DITLMixin, DITLStats):
         self.wheel_momentum_fraction.append(
             self._safe_float(snapshot.get("max_momentum_fraction", 0.0))
         )
+        self.wheel_momentum_fraction_raw.append(
+            self._safe_float(snapshot.get("max_momentum_fraction_raw", 0.0))
+        )
         self.wheel_torque_fraction.append(
             self._safe_float(snapshot.get("max_torque_fraction", 0.0))
         )
         self.wheel_saturation.append(1 if bool(snapshot.get("saturated")) else 0)
+        self.wheel_torque_actual_mag.append(
+            self._safe_float(snapshot.get("t_actual_mag", 0.0))
+        )
+        self.hold_torque_target_mag.append(
+            self._safe_float(snapshot.get("hold_torque_target_mag", 0.0))
+        )
+        self.hold_torque_actual_mag.append(
+            self._safe_float(snapshot.get("hold_torque_actual_mag", 0.0))
+        )
+        self.mtq_proj_max.append(self._safe_float(snapshot.get("mtq_proj_max", 0.0)))
+        self.mtq_torque_mag.append(
+            self._safe_float(snapshot.get("mtq_torque_mag", 0.0))
+        )
+        # Track per-wheel raw maxima across the run
+        for w in snapshot.get("wheels", []):
+            name = str(w.get("name", ""))
+            if not name:
+                continue
+            # Store signed momentum time series
+            hist = self.wheel_momentum_history.setdefault(name, [])
+            hist.append(self._safe_float(w.get("momentum", 0.0)))
+            # Store applied torque time series
+            thist = self.wheel_torque_history.setdefault(name, [])
+            thist.append(self._safe_float(w.get("torque_applied", 0.0)))
+            frac = self._safe_float(
+                w.get("momentum_fraction_raw", w.get("momentum_fraction", 0.0))
+            )
+            prev = self.wheel_per_wheel_max_raw.get(name, 0.0)
+            if frac > prev:
+                self.wheel_per_wheel_max_raw[name] = frac
 
     @staticmethod
     def _safe_float(val: float | int | None) -> float:
@@ -1165,12 +1213,16 @@ class QueueDITL(DITLMixin, DITLStats):
         if len(self.wheel_saturation) < 3:
             return
 
+        # If magnetorquers exist, we continuously bleed when not in SCIENCE; skip command-based desat
+        if getattr(self.acs, "magnetorquers", None):
+            return
+
         if self.acs._desat_active:
             return
 
-        # Require 3 consecutive saturated steps and a cooldown between desats
-        if all(s == 1 for s in self.wheel_saturation[-3:]):
-            if utime - getattr(self, "_last_desat_request", 0.0) < 600:
+        # Require sustained saturation and a cooldown between desats
+        if all(s == 1 for s in self.wheel_saturation[-5:]):
+            if utime - getattr(self, "_last_desat_request", 0.0) < 1800:
                 return
             self.log.log_event(
                 utime=utime,

@@ -115,9 +115,25 @@ class DITLMixin:
         self._init_subsystems()
 
         # Reaction wheel resource tracking (aggregated across wheels)
-        self.wheel_momentum_fraction = []
-        self.wheel_torque_fraction = []
-        self.wheel_saturation = []
+        self.wheel_momentum_fraction: list[float] = []
+        self.wheel_momentum_fraction_raw: list[float] = []
+        self.wheel_torque_fraction: list[float] = []
+        self.wheel_saturation: list[int] = []
+        # Diagnostics: torque magnitudes and MTQ projection
+        self.wheel_torque_actual_mag: list[float] = []
+        self.mtq_proj_max: list[float] = []
+        self.mtq_torque_mag: list[float] = []
+        # Hold-mode torque diagnostics
+        self.hold_torque_target_mag: list[float] = []
+        self.hold_torque_actual_mag: list[float] = []
+        # Per-wheel max momentum (raw) tracked over the run
+        self.wheel_per_wheel_max_raw: dict[str, float] = {}
+        # Per-wheel momentum history (signed Nms) for diagnostics
+        self.wheel_momentum_history: dict[str, list[float]] = {}
+        # Per-wheel torque history (applied torque, N*m) for diagnostics
+        self.wheel_torque_history: dict[str, list[float]] = {}
+        # Magnetorquer power draw (W) per step
+        self.mtq_power: list[float] = []
         self._last_desat_request = 0.0
         # Disturbance torque tracking
         self.disturbance_total = []
@@ -125,6 +141,7 @@ class DITLMixin:
         self.disturbance_drag = []
         self.disturbance_srp = []
         self.disturbance_mag = []
+        self.disturbance_vec: list[tuple[float, float, float]] = []
         # Momentum management stats
         self.desat_time_steps = 0
         self.desat_event_count = 0

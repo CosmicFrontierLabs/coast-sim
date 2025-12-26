@@ -26,8 +26,11 @@ class DITLStats:
     data_generated_gb: list[float]
     data_downlinked_gb: list[float]
     wheel_momentum_fraction: list[float]
+    wheel_momentum_fraction_raw: list[float]
     wheel_torque_fraction: list[float]
     wheel_saturation: list[int]
+    wheel_per_wheel_max_raw: dict[str, float]
+    mtq_power: list[float]
 
     def print_statistics(self) -> None:
         """Print comprehensive statistics about the DITL simulation.
@@ -165,6 +168,14 @@ class DITLStats:
             print(
                 f"  Max momentum fraction: {max(self.wheel_momentum_fraction) * 100:.1f}%"
             )
+            if (
+                hasattr(self, "wheel_momentum_fraction_raw")
+                and self.wheel_momentum_fraction_raw
+            ):
+                print(
+                    "  Max momentum fraction (raw): "
+                    f"{max(self.wheel_momentum_fraction_raw) * 100:.1f}%"
+                )
             print(
                 f"  Avg momentum fraction: {np.mean(self.wheel_momentum_fraction) * 100:.1f}%"
             )
@@ -177,6 +188,15 @@ class DITLStats:
                 print(f"  Saturation events: {sat_steps} steps ({sat_hours:.2f} hr)")
             else:
                 print("  Saturation events: none")
+            if (
+                hasattr(self, "wheel_per_wheel_max_raw")
+                and self.wheel_per_wheel_max_raw
+            ):
+                print("  Max per-wheel momentum (raw):")
+                for name, frac in sorted(
+                    self.wheel_per_wheel_max_raw.items(), key=lambda x: x[0]
+                ):
+                    print(f"    {name}: {frac * 100:.1f}%")
         # Desat / headroom stats
         if hasattr(self, "desat_event_count"):
             desat_hours = (getattr(self, "desat_time_steps", 0) * self.step_size) / 3600
@@ -195,6 +215,11 @@ class DITLStats:
             print(f"  Minimum: {min(self.power):.2f} W")
 
             # Subsystem power breakdown if available
+            if hasattr(self, "mtq_power") and self.mtq_power:
+                print(
+                    "  MTQ power avg/peak: "
+                    f"{np.mean(self.mtq_power):.2f} W / {max(self.mtq_power):.2f} W"
+                )
             if (
                 hasattr(self, "power_bus")
                 and hasattr(self, "power_payload")
