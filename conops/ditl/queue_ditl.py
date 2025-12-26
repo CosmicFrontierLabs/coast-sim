@@ -819,6 +819,10 @@ class QueueDITL(DITLMixin, DITLStats):
         """Check if PPT should terminate due to constraints, completion, or timeout."""
         assert self.ppt is not None
 
+        # Enforce minimum snapshot dwell unless constrained
+        elapsed = utime - float(getattr(self.ppt, "begin", utime))
+        min_dwell = float(getattr(self.ppt, "ss_min", 0.0) or 0.0)
+
         if self.constraint.in_constraint(self.ppt.ra, self.ppt.dec, utime):
             constraint_name = self._get_constraint_name(
                 self.ppt.ra, self.ppt.dec, utime
@@ -828,11 +832,17 @@ class QueueDITL(DITLMixin, DITLStats):
                 reason=f"Target {constraint_name} constrained, ending observation",
             )
         elif self.ppt.exptime is None or self.ppt.exptime <= 0:
-            self._terminate_ppt(
-                utime, reason="Exposure complete, ending observation", mark_done=True
-            )
+            if elapsed >= min_dwell:
+                self._terminate_ppt(
+                    utime,
+                    reason="Exposure complete, ending observation",
+                    mark_done=True,
+                )
         elif utime >= self.ppt.end:
-            self._terminate_ppt(utime, reason="Time window elapsed, ending observation")
+            if elapsed >= min_dwell:
+                self._terminate_ppt(
+                    utime, reason="Time window elapsed, ending observation"
+                )
 
     def _terminate_ppt(
         self, utime: float, reason: str, mark_done: bool = False
