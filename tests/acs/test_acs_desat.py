@@ -56,5 +56,4 @@ class TestHeadroomGate:
         # Attempt to enqueue a slew; should be rejected and desat requested
         result = acs._enqueue_slew(ra=10.0, dec=5.0, obsid=1, utime=0.0, obstype="PPT")
         assert result is False
-        assert acs.command_queue  # desat request enqueued
-        assert acs.command_queue[0].command_type == ACSCommandType.DESAT
+        assert not acs.command_queue  # desat request is not enqueued when MTQs bleed
