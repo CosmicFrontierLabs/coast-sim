@@ -832,8 +832,15 @@ class QueueDITL(DITLMixin, DITLStats):
         assert self.ppt is not None
 
         # Enforce minimum snapshot dwell unless constrained
-        elapsed = utime - float(getattr(self.ppt, "begin", utime))
-        min_dwell = float(getattr(self.ppt, "ss_min", 0.0) or 0.0)
+        try:
+            begin = float(getattr(self.ppt, "begin", utime))
+        except (TypeError, ValueError):
+            begin = utime
+        elapsed = utime - begin
+        try:
+            min_dwell = float(getattr(self.ppt, "ss_min", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            min_dwell = 0.0
 
         if self.constraint.in_constraint(self.ppt.ra, self.ppt.dec, utime):
             constraint_name = self._get_constraint_name(
@@ -1135,7 +1142,10 @@ class QueueDITL(DITLMixin, DITLStats):
         """
         bus_power = self.spacecraft_bus.power(mode=mode, in_eclipse=in_eclipse)
         payload_power = self.payload.power(mode=mode, in_eclipse=in_eclipse)
-        mtq_power = float(getattr(self.acs, "mtq_power_w", 0.0))
+        try:
+            mtq_power = float(getattr(self.acs, "mtq_power_w", 0.0))
+        except (TypeError, ValueError):
+            mtq_power = 0.0
         total_power = bus_power + payload_power + mtq_power
         return bus_power, payload_power, total_power, mtq_power
 
@@ -1182,7 +1192,10 @@ class QueueDITL(DITLMixin, DITLStats):
             self._safe_float(snapshot.get("mtq_torque_mag", 0.0))
         )
         # Track per-wheel raw maxima across the run
-        for w in snapshot.get("wheels", []):
+        wheels = snapshot.get("wheels", [])
+        if not isinstance(wheels, (list, tuple)):
+            wheels = []
+        for w in wheels:
             name = str(w.get("name", ""))
             if not name:
                 continue
