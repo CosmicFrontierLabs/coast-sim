@@ -71,6 +71,7 @@ def mock_config():
     config.spacecraft_bus = Mock()
     config.spacecraft_bus.power = Mock(return_value=50.0)
     config.spacecraft_bus.attitude_control = Mock()
+    config.slew_distance_weight = 0.0
     config.spacecraft_bus.attitude_control.predict_slew = Mock(
         return_value=(10.0, [])
     )  # Return (distance, path)
@@ -122,6 +123,8 @@ def queue_ditl(mock_config, mock_ephem):
         mock_acs.slewing = False
         mock_acs.inpass = False
         mock_acs.saa = None
+        mock_acs.ra = 0.0
+        mock_acs.dec = 0.0
         mock_acs.pointing = Mock(return_value=(0.0, 0.0, 0.0, 0))
         mock_acs.enqueue_command = Mock()
         mock_acs.passrequests = mock_pt

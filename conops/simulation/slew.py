@@ -176,31 +176,24 @@ class Slew:
         # Use the great-circle endpoints to form unit vectors and take their
         # cross-product. This axis is used by ACS to project requested
         # scalar accelerations/torques into a 3D torque vector for wheel mapping.
-        try:
-            # start vector
-            ra0 = float(self.startra)
-            dec0 = float(self.startdec)
-            ra1 = float(self.endra)
-            dec1 = float(self.enddec)
-            # convert to radians
-            r0 = np.deg2rad(ra0)
-            d0 = np.deg2rad(dec0)
-            r1 = np.deg2rad(ra1)
-            d1 = np.deg2rad(dec1)
-            v0 = np.array(
-                [np.cos(d0) * np.cos(r0), np.cos(d0) * np.sin(r0), np.sin(d0)]
+        # start vector
+        ra0 = float(self.startra)
+        dec0 = float(self.startdec)
+        ra1 = float(self.endra)
+        dec1 = float(self.enddec)
+        # convert to radians
+        r0 = np.deg2rad(ra0)
+        d0 = np.deg2rad(dec0)
+        r1 = np.deg2rad(ra1)
+        d1 = np.deg2rad(dec1)
+        v0 = np.array([np.cos(d0) * np.cos(r0), np.cos(d0) * np.sin(r0), np.sin(d0)])
+        v1 = np.array([np.cos(d1) * np.cos(r1), np.cos(d1) * np.sin(r1), np.sin(d1)])
+        axis = np.cross(v0, v1)
+        nrm = np.linalg.norm(axis)
+        if nrm <= 1e-12:
+            raise ValueError(
+                f"Degenerate slew axis for start/end ({self.startra}, {self.startdec}) "
+                f"-> ({self.endra}, {self.enddec})"
             )
-            v1 = np.array(
-                [np.cos(d1) * np.cos(r1), np.cos(d1) * np.sin(r1), np.sin(d1)]
-            )
-            axis = np.cross(v0, v1)
-            nrm = np.linalg.norm(axis)
-            if nrm <= 1e-12:
-                # fallback to body z-axis
-                axis = np.array([0.0, 0.0, 1.0])
-            else:
-                axis = axis / nrm
-            self.rotation_axis = (float(axis[0]), float(axis[1]), float(axis[2]))
-        except Exception:
-            # If anything goes wrong, default to +Z
-            self.rotation_axis = (0.0, 0.0, 1.0)
+        axis = axis / nrm
+        self.rotation_axis = (float(axis[0]), float(axis[1]), float(axis[2]))

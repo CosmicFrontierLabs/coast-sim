@@ -2586,3 +2586,29 @@ class TestQueueDITLCoverage:
 
             # Verify that enqueue_command was NOT called (slew rejected)
             mock_acs.enqueue_command.assert_not_called()
+
+
+class TestMaybeRequestDesat:
+    """Test desat scheduling behavior with MTQs."""
+
+    def test_mtq_bleed_in_science_skips_desat(self, queue_ditl):
+        queue_ditl.wheel_saturation = [1, 1, 1, 1, 1]
+        queue_ditl._last_desat_request = 0.0
+        queue_ditl.acs._desat_active = False
+        queue_ditl.acs.magnetorquers = [{"orientation": (1.0, 0.0, 0.0)}]
+        queue_ditl.acs._mtq_bleed_in_science = True
+        queue_ditl.acs.request_desat = Mock()
+
+        queue_ditl._maybe_request_desat(1000.0)
+        queue_ditl.acs.request_desat.assert_not_called()
+
+    def test_mtq_no_science_bleed_allows_desat(self, queue_ditl):
+        queue_ditl.wheel_saturation = [1, 1, 1, 1, 1]
+        queue_ditl._last_desat_request = -9999.0
+        queue_ditl.acs._desat_active = False
+        queue_ditl.acs.magnetorquers = [{"orientation": (1.0, 0.0, 0.0)}]
+        queue_ditl.acs._mtq_bleed_in_science = False
+        queue_ditl.acs.request_desat = Mock()
+
+        queue_ditl._maybe_request_desat(1000.0)
+        queue_ditl.acs.request_desat.assert_called_once()

@@ -1138,7 +1138,9 @@ class QueueDITL(DITLMixin, DITLStats):
         """Calculate total spacecraft power consumption broken down by subsystem.
 
         Returns:
-            Tuple of (bus_power, payload_power, total_power, mtq_power) in watts
+            Tuple of (bus_power, payload_power, total_power, mtq_power) in watts.
+            MTQ power reflects ACS telemetry and may be non-zero in SCIENCE when
+            mtq_bleed_in_science is enabled.
         """
         bus_power = self.spacecraft_bus.power(mode=mode, in_eclipse=in_eclipse)
         payload_power = self.payload.power(mode=mode, in_eclipse=in_eclipse)
@@ -1168,29 +1170,17 @@ class QueueDITL(DITLMixin, DITLStats):
             return
 
         snapshot = self.acs.wheel_snapshot()
-        self.wheel_momentum_fraction.append(
-            self._safe_float(snapshot.get("max_momentum_fraction", 0.0))
-        )
+        self.wheel_momentum_fraction.append(snapshot.get("max_momentum_fraction", 0.0))
         self.wheel_momentum_fraction_raw.append(
-            self._safe_float(snapshot.get("max_momentum_fraction_raw", 0.0))
+            snapshot.get("max_momentum_fraction_raw", 0.0)
         )
-        self.wheel_torque_fraction.append(
-            self._safe_float(snapshot.get("max_torque_fraction", 0.0))
-        )
+        self.wheel_torque_fraction.append(snapshot.get("max_torque_fraction", 0.0))
         self.wheel_saturation.append(1 if bool(snapshot.get("saturated")) else 0)
-        self.wheel_torque_actual_mag.append(
-            self._safe_float(snapshot.get("t_actual_mag", 0.0))
-        )
-        self.hold_torque_target_mag.append(
-            self._safe_float(snapshot.get("hold_torque_target_mag", 0.0))
-        )
-        self.hold_torque_actual_mag.append(
-            self._safe_float(snapshot.get("hold_torque_actual_mag", 0.0))
-        )
-        self.mtq_proj_max.append(self._safe_float(snapshot.get("mtq_proj_max", 0.0)))
-        self.mtq_torque_mag.append(
-            self._safe_float(snapshot.get("mtq_torque_mag", 0.0))
-        )
+        self.wheel_torque_actual_mag.append(snapshot.get("t_actual_mag", 0.0))
+        self.hold_torque_target_mag.append(snapshot.get("hold_torque_target_mag", 0.0))
+        self.hold_torque_actual_mag.append(snapshot.get("hold_torque_actual_mag", 0.0))
+        self.mtq_proj_max.append(snapshot.get("mtq_proj_max", 0.0))
+        self.mtq_torque_mag.append(snapshot.get("mtq_torque_mag", 0.0))
         # Track per-wheel raw maxima across the run
         wheels = snapshot.get("wheels", [])
         if not isinstance(wheels, (list, tuple)):
@@ -1201,10 +1191,10 @@ class QueueDITL(DITLMixin, DITLStats):
                 continue
             # Store signed momentum time series
             hist = self.wheel_momentum_history.setdefault(name, [])
-            hist.append(self._safe_float(w.get("momentum", 0.0)))
+            hist.append(w.get("momentum", 0.0))
             # Store applied torque time series
             thist = self.wheel_torque_history.setdefault(name, [])
-            thist.append(self._safe_float(w.get("torque_applied", 0.0)))
+            thist.append(w.get("torque_applied", 0.0))
             frac = self._safe_float(
                 w.get("momentum_fraction_raw", w.get("momentum_fraction", 0.0))
             )
@@ -1226,8 +1216,10 @@ class QueueDITL(DITLMixin, DITLStats):
         if len(self.wheel_saturation) < 3:
             return
 
-        # If magnetorquers exist, we continuously bleed when not in SCIENCE; skip command-based desat
-        if getattr(self.acs, "magnetorquers", None):
+        # If MTQ bleed is enabled in SCIENCE, skip command-based desat
+        if getattr(self.acs, "magnetorquers", None) and getattr(
+            self.acs, "_mtq_bleed_in_science", False
+        ):
             return
 
         if self.acs._desat_active:

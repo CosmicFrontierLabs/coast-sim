@@ -16,6 +16,7 @@ from ..config import MissionConfig
 from ..config.constants import DTOR
 from ..simulation.passes import PassTimes
 from .acs_command import ACSCommand
+from .disturbance import DisturbanceConfig, DisturbanceModel
 from .emergency_charging import EmergencyCharging
 from .passes import Pass
 from .reaction_wheel import ReactionWheel
@@ -115,6 +116,7 @@ class ACS:
         self._desat_active = False
         self._desat_end = 0.0
         self._desat_use_mtq = False
+        self._mtq_bleed_in_science = False
         self._last_desat_request: float = 0.0
         self._last_desat_end: float = 0.0
         self.mtq_power_w: float = 0.0
@@ -179,6 +181,9 @@ class ACS:
                     "name": name,
                 }
             )
+        self._mtq_bleed_in_science = bool(
+            getattr(acs_cfg, "mtq_bleed_in_science", False)
+        )
         try:
             self._magnetorquer_bfield = float(
                 getattr(acs_cfg, "magnetorquer_bfield_T", 3e-5)
@@ -222,6 +227,22 @@ class ACS:
             self._msis_f107 = 200.0
             self._msis_f107a = 180.0
             self._msis_ap = 12.0
+        self.disturbance_model = DisturbanceModel(
+            self.ephem,
+            DisturbanceConfig(
+                magnetorquer_bfield_T=self._magnetorquer_bfield,
+                cp_offset_body=tuple(self._cp_offset.tolist()),
+                residual_magnetic_moment=tuple(self._residual_moment.tolist()),
+                drag_area_m2=self._drag_area,
+                drag_coeff=self._drag_coeff,
+                solar_area_m2=self._solar_area,
+                solar_reflectivity=self._solar_reflectivity,
+                use_msis_density=self._use_msis,
+                msis_f107=self._msis_f107,
+                msis_f107a=self._msis_f107a,
+                msis_ap=self._msis_ap,
+            ),
+        )
 
         # module logger for optional debug tracing
         self._logger = logging.getLogger(__name__)
@@ -1077,7 +1098,7 @@ class ACS:
         if self.magnetorquers:
             if self._desat_active and self._desat_use_mtq:
                 self._apply_magnetorquer_desat(dt, utime)
-            elif self.acsmode != ACSMode.SCIENCE:
+            elif self.acsmode != ACSMode.SCIENCE or self._mtq_bleed_in_science:
                 self._apply_magnetorquer_desat(dt, utime)
             else:
                 self.mtq_power_w = 0.0
@@ -1167,72 +1188,11 @@ class ACS:
         T_desired = axis * requested_torque
         T_desired = T_desired - self._compute_disturbance_torque(utime)
 
-        # Build wheel orientation matrix E (3 x N), columns are wheel axis unit vectors
-        E_cols = []
-        for w in self.reaction_wheels:
-            try:
-                v = np.array(w.orientation, dtype=float)
-            except Exception:
-                v = np.array([1.0, 0.0, 0.0])
-            vn = np.linalg.norm(v)
-            if vn <= 0:
-                v = np.array([1.0, 0.0, 0.0])
-            else:
-                v = v / vn
-            E_cols.append(v)
-        E = np.column_stack(E_cols) if E_cols else np.zeros((3, 0))
-
-        # Solve least-squares for wheel torques (scalar per wheel) that produce T_desired.
-        # Add a null-space bias term to reduce wheel momentum offsets over a slew.
-        try:
-            taus, *_ = np.linalg.lstsq(E, T_desired, rcond=None)
-            # Null-space bias: drive wheel momentum toward zero without changing net torque.
-            try:
-                E_pinv = np.linalg.pinv(E)
-                n = E.shape[1]
-                null_proj = np.eye(n) - (E_pinv @ E)
-                h_vec = np.array(
-                    [
-                        float(getattr(w, "current_momentum", 0.0))
-                        for w in self.reaction_wheels
-                    ],
-                    dtype=float,
-                )
-                bias_gain = 0.1  # small kinematic bias to reduce slew offsets
-                taus = taus + null_proj.dot(-bias_gain * h_vec)
-            except Exception:
-                pass
-        except Exception:
-            # fallback: assign all torque to first wheel only (legacy behavior)
-            taus = np.zeros((len(self.reaction_wheels),), dtype=float)
-            if len(taus) > 0:
-                taus[0] = float(np.linalg.norm(T_desired))
-
-        # Clamp per-wheel torques by peak torque and by available momentum capacity over dt
-        taus_allowed = np.zeros_like(taus)
-        mom_margin = getattr(self, "_wheel_mom_margin", 0.99)
-        for i, w in enumerate(self.reaction_wheels):
-            mt = float(getattr(w, "max_torque", 0.0))
-            curr_m = float(getattr(w, "current_momentum", 0.0))
-            avail = max(0.0, (w.max_momentum * mom_margin) - abs(curr_m))
-            max_by_mom = avail / dt if dt > 0 else 0.0
-            # If torque would reduce stored momentum magnitude, don't limit by momentum headroom
-            if curr_m != 0 and (taus[i] * curr_m) < 0:
-                limit = mt
-            else:
-                limit = min(mt, max_by_mom)
-            allowed = np.sign(taus[i]) * min(abs(taus[i]), limit)
-            taus_allowed[i] = allowed
-            if abs(allowed) + 1e-9 < abs(taus[i]):
-                self._slew_clamped = True
-
-        # Compute actual produced torque vector
-        T_actual = E.dot(taus_allowed) if E.size else np.zeros(3)
-        # Track magnitude for diagnostics
-        try:
-            self._last_t_actual_mag = float(np.linalg.norm(T_actual))
-        except Exception:
-            self._last_t_actual_mag = 0.0
+        taus, taus_allowed, T_actual, clamped = self._allocate_wheel_torques(
+            T_desired, dt, use_weights=False, bias_gain=0.1
+        )
+        if clamped:
+            self._slew_clamped = True
 
         # Debug trace
         try:
@@ -1271,7 +1231,9 @@ class ACS:
             return
 
         # Build total torque vector from magnetorquers using m x B in body frame
-        B_body, Bmag = self._local_bfield_vector(utime)
+        B_body, Bmag = self.disturbance_model.local_bfield_vector(
+            utime, self.ra, self.dec
+        )
         T_mtq = np.zeros(3, dtype=float)
         total_power = 0.0
         for m in self.magnetorquers:
@@ -1381,7 +1343,33 @@ class ACS:
             return
 
         T_desired = -disturbance_torque
-        E_cols = []
+        taus, taus_allowed, T_actual, _ = self._allocate_wheel_torques(
+            T_desired, dt, use_weights=True
+        )
+        self._last_hold_torque_target_mag = float(np.linalg.norm(T_desired))
+        self._last_hold_torque_actual_mag = float(np.linalg.norm(T_actual))
+
+        for i, w in enumerate(self.reaction_wheels):
+            w.apply_torque(float(taus_allowed[i]), dt)
+
+        self._build_wheel_snapshot(utime, taus, taus_allowed)
+
+    def _allocate_wheel_torques(
+        self,
+        t_desired: np.ndarray,
+        dt: float,
+        use_weights: bool = False,
+        bias_gain: float = 0.0,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, bool]:
+        """Solve wheel torques for a desired body torque and apply headroom clamps."""
+        if not self.reaction_wheels or dt <= 0:
+            return np.zeros(0), np.zeros(0), np.zeros(3), False
+
+        # Build wheel orientation matrix E (3 x N), columns are wheel axis unit vectors
+        E_cols: list[np.ndarray] = []
+        curr_moms: list[float] = []
+        max_moms: list[float] = []
+        max_torques: list[float] = []
         for w in self.reaction_wheels:
             try:
                 v = np.array(w.orientation, dtype=float)
@@ -1393,63 +1381,73 @@ class ACS:
             else:
                 v = v / vn
             E_cols.append(v)
+            curr_moms.append(float(getattr(w, "current_momentum", 0.0)))
+            max_moms.append(float(getattr(w, "max_momentum", 0.0)))
+            max_torques.append(float(getattr(w, "max_torque", 0.0)))
+
         E = np.column_stack(E_cols) if E_cols else np.zeros((3, 0))
-
         if E.size == 0:
-            self._last_t_actual_mag = 0.0
-            self._last_hold_torque_target_mag = 0.0
-            self._last_hold_torque_actual_mag = 0.0
-            self._build_wheel_snapshot(utime, None, None)
-            return
+            return np.zeros(0), np.zeros(0), np.zeros(3), False
 
-        # Weighted regularized solve to reduce momentum drift during hold.
-        # Penalize using wheels with higher stored momentum to keep net H stable.
+        # Solve least-squares for wheel torques (scalar per wheel) that produce t_desired.
         try:
-            weights = []
-            for w in self.reaction_wheels:
-                max_m = float(getattr(w, "max_momentum", 0.0))
-                curr_m = float(getattr(w, "current_momentum", 0.0))
-                frac = abs(curr_m) / max_m if max_m > 0 else 0.0
-                weights.append(1.0 + 4.0 * frac * frac)
-            W = np.diag(weights)
-            lam = 1e-2
-            cols = E.shape[1]
-            reg = np.sqrt(lam) * W
-            A = np.vstack([E, reg])
-            b = np.concatenate([T_desired, np.zeros(cols, dtype=float)])
-            taus, *_ = np.linalg.lstsq(A, b, rcond=None)
+            if use_weights:
+                # Penalize wheels with higher stored momentum to spread load.
+                weights = []
+                for max_m, curr_m in zip(max_moms, curr_moms):
+                    frac = abs(curr_m) / max_m if max_m > 0 else 0.0
+                    weights.append(1.0 + 4.0 * frac * frac)
+                W = np.diag(weights)
+                lam = 1e-2
+                cols = E.shape[1]
+                reg = np.sqrt(lam) * W
+                A = np.vstack([E, reg])
+                b = np.concatenate([t_desired, np.zeros(cols, dtype=float)])
+                taus, *_ = np.linalg.lstsq(A, b, rcond=None)
+            else:
+                taus, *_ = np.linalg.lstsq(E, t_desired, rcond=None)
         except Exception:
+            # fallback: assign all torque to first wheel only (legacy behavior)
             taus = np.zeros((len(self.reaction_wheels),), dtype=float)
+            if len(taus) > 0:
+                taus[0] = float(np.linalg.norm(t_desired))
 
+        # Null-space bias: drive wheel momentum toward zero without changing net torque.
+        if bias_gain > 0.0:
+            try:
+                E_pinv = np.linalg.pinv(E)
+                n = E.shape[1]
+                null_proj = np.eye(n) - (E_pinv @ E)
+                h_vec = np.array(curr_moms, dtype=float)
+                taus = taus + null_proj.dot(-bias_gain * h_vec)
+            except Exception:
+                pass
+
+        # Clamp per-wheel torques by peak torque and momentum headroom over dt
         taus_allowed = np.zeros_like(taus)
+        clamped = False
         mom_margin = getattr(self, "_wheel_mom_margin", 0.99)
-        for i, w in enumerate(self.reaction_wheels):
-            mt = float(getattr(w, "max_torque", 0.0))
-            curr_m = float(getattr(w, "current_momentum", 0.0))
-            avail = max(0.0, (w.max_momentum * mom_margin) - abs(curr_m))
+        for i, (mt, mm, cm) in enumerate(zip(max_torques, max_moms, curr_moms)):
+            avail = max(0.0, (mm * mom_margin) - abs(cm))
             max_by_mom = avail / dt if dt > 0 else 0.0
-            if curr_m != 0 and (taus[i] * curr_m) < 0:
+            # If torque would reduce stored momentum magnitude, don't limit by momentum headroom
+            if cm != 0 and (taus[i] * cm) < 0:
                 limit = mt
             else:
                 limit = min(mt, max_by_mom)
-            taus_allowed[i] = np.sign(taus[i]) * min(abs(taus[i]), limit)
+            allowed = np.sign(taus[i]) * min(abs(taus[i]), limit)
+            taus_allowed[i] = allowed
+            if abs(allowed) + 1e-9 < abs(taus[i]):
+                clamped = True
 
+        # Compute actual produced torque vector
         T_actual = E.dot(taus_allowed) if E.size else np.zeros(3)
         try:
             self._last_t_actual_mag = float(np.linalg.norm(T_actual))
         except Exception:
             self._last_t_actual_mag = 0.0
-        try:
-            self._last_hold_torque_target_mag = float(np.linalg.norm(T_desired))
-            self._last_hold_torque_actual_mag = float(np.linalg.norm(T_actual))
-        except Exception:
-            self._last_hold_torque_target_mag = 0.0
-            self._last_hold_torque_actual_mag = 0.0
 
-        for i, w in enumerate(self.reaction_wheels):
-            w.apply_torque(float(taus_allowed[i]), dt)
-
-        self._build_wheel_snapshot(utime, taus, taus_allowed)
+        return taus, taus_allowed, T_actual, clamped
 
     def _axis_accel_limit(self, axis: np.ndarray, motion_time: float) -> float:
         """Compute maximum achievable accel (deg/s^2) about a rotation axis using all wheels."""
@@ -1608,12 +1606,20 @@ class ACS:
         self, utime: float, taus_cmd: Any | None, taus_allowed: Any | None
     ) -> None:
         """Capture per-wheel torque/momentum state for resource tracking."""
+
+        def _snap_float(val: Any) -> float:
+            try:
+                return float(val)
+            except Exception:
+                return 0.0
+
         # Clear cached diagnostics when not actively slewing (unless in a pass update)
         try:
             if self.current_slew is None or not self.current_slew.is_slewing(utime):
                 if self.current_pass is None:
                     self._last_t_actual_mag = 0.0
-            if self.acsmode == ACSMode.SCIENCE:
+            # Only zero MTQ telemetry when SCIENCE bleed is disabled.
+            if self.acsmode == ACSMode.SCIENCE and not self._mtq_bleed_in_science:
                 self._last_mtq_proj_max = 0.0
                 self._last_mtq_torque_mag = 0.0
                 self.mtq_power_w = 0.0
@@ -1627,15 +1633,15 @@ class ACS:
         saturated = False
 
         for i, w in enumerate(self.reaction_wheels):
-            max_mom = float(getattr(w, "max_momentum", 0.0))
-            max_torque = float(getattr(w, "max_torque", 0.0))
-            momentum = float(getattr(w, "current_momentum", 0.0))
+            max_mom = _snap_float(getattr(w, "max_momentum", 0.0))
+            max_torque = _snap_float(getattr(w, "max_torque", 0.0))
+            momentum = _snap_float(getattr(w, "current_momentum", 0.0))
             m_frac = abs(momentum) / max_mom if max_mom > 0 else 0.0
             # Raw fraction is the actual abs(momentum)/capacity (clamped to 1.0 for reporting)
             m_frac_raw = min(1.0, m_frac)
 
-            cmd = float(taus_cmd[i]) if taus_cmd is not None else 0.0
-            allowed = float(taus_allowed[i]) if taus_allowed is not None else cmd
+            cmd = _snap_float(taus_cmd[i]) if taus_cmd is not None else 0.0
+            allowed = _snap_float(taus_allowed[i]) if taus_allowed is not None else cmd
             t_frac = abs(allowed) / max_torque if max_torque > 0 else 0.0
 
             max_m_frac = max(max_m_frac, m_frac)
@@ -1659,21 +1665,22 @@ class ACS:
             )
 
         self._last_wheel_snapshot = {
-            "utime": utime,
+            "utime": _snap_float(utime),
             "wheels": wheels,
-            "max_momentum_fraction": max_m_frac,
-            "max_momentum_fraction_raw": max_m_frac_raw,
-            "max_torque_fraction": max_t_frac,
+            "max_momentum_fraction": _snap_float(max_m_frac),
+            "max_momentum_fraction_raw": _snap_float(max_m_frac_raw),
+            "max_torque_fraction": _snap_float(max_t_frac),
             "saturated": saturated,
-            "t_actual_mag": float(getattr(self, "_last_t_actual_mag", 0.0)),
-            "hold_torque_target_mag": float(
+            "t_actual_mag": _snap_float(getattr(self, "_last_t_actual_mag", 0.0)),
+            "hold_torque_target_mag": _snap_float(
                 getattr(self, "_last_hold_torque_target_mag", 0.0)
             ),
-            "hold_torque_actual_mag": float(
+            "hold_torque_actual_mag": _snap_float(
                 getattr(self, "_last_hold_torque_actual_mag", 0.0)
             ),
-            "mtq_proj_max": float(getattr(self, "_last_mtq_proj_max", 0.0)),
-            "mtq_torque_mag": float(getattr(self, "_last_mtq_torque_mag", 0.0)),
+            "mtq_proj_max": _snap_float(getattr(self, "_last_mtq_proj_max", 0.0)),
+            "mtq_torque_mag": _snap_float(getattr(self, "_last_mtq_torque_mag", 0.0)),
+            "mtq_power_w": _snap_float(getattr(self, "mtq_power_w", 0.0)),
         }
 
     def wheel_snapshot(self) -> dict[str, Any]:
@@ -1693,292 +1700,17 @@ class ACS:
             "hold_torque_actual_mag": 0.0,
         }
 
-    def _local_bfield_vector(self, utime: float) -> tuple[np.ndarray, float]:
-        """Estimate local magnetic field vector in body frame.
-
-        Uses a simple dipole model aligned with Earth's spin axis. Falls back to
-        configured constant magnitude if ephemeris data is unavailable.
-        """
-        # Default constant field in inertial frame
-        B_const = np.array([0.0, 0.0, self._magnetorquer_bfield], dtype=float)
-
-        try:
-            idx = self.ephem.index(dtutcfromtimestamp(utime))
-        except Exception:
-            return B_const, float(np.linalg.norm(B_const))
-
-        # Get lat/long/alt if available
-        # Prefer rust_ephem latitude/longitude_deg if present; otherwise fall back to zeros
-        try:
-            lat_deg = float(getattr(self.ephem, "latitude_deg", [0.0])[idx])
-            lon_deg = float(getattr(self.ephem, "longitude_deg", [0.0])[idx])
-        except Exception:
-            lat_deg = 0.0
-            lon_deg = 0.0
-
-        # Altitude: derive from gcrs position magnitude if available (units: km)
-        try:
-            pos = np.array(self.ephem.gcrs_pv.position[idx], dtype=float)
-            rmag = float(np.linalg.norm(pos))
-            if rmag < 1e5:
-                rmag *= 1000.0  # treat as km -> m if small
-            alt_m = float(max(0.0, rmag - 6378e3))
-        except Exception:
-            alt_m = 500e3  # assume LEO if unknown
-
-        lat = np.deg2rad(lat_deg)
-        lon = np.deg2rad(lon_deg)
-
-        # Dipole magnitude scaling with altitude
-        RE = 6378e3
-        r = float(RE + max(0.0, alt_m))
-        # Equatorial field ~3.12e-5 T at surface
-        B0 = 3.12e-5
-        scale = (RE / r) ** 3
-
-        # Dipole aligned with +Z (spin axis)
-        # Components in spherical coords: B_r, B_theta; convert to ECEF
-        Br = -2 * B0 * scale * np.sin(lat)
-        Btheta = -B0 * scale * np.cos(lat)
-        r_hat = np.array(
-            [np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)]
-        )
-        theta_hat = np.array(
-            [-np.sin(lat) * np.cos(lon), -np.sin(lat) * np.sin(lon), np.cos(lat)]
-        )
-        B_ecef = Br * r_hat + Btheta * theta_hat
-
-        # Transform inertial/ECEF to body frame using current pointing
-        B_body = self._inertial_to_body(B_ecef)
-
-        return B_body, float(np.linalg.norm(B_body))
-
-    def _inertial_to_body(self, vec: np.ndarray) -> np.ndarray:
-        """Rotate inertial vector into body frame assuming Z points at current RA/Dec."""
-        vec_arr = np.array(vec, dtype=float)
-        try:
-            ra_b = float(self.ra)
-            dec_b = float(self.dec)
-            ra_r = np.deg2rad(ra_b)
-            dec_r = np.deg2rad(dec_b)
-            z_b = np.array(
-                [
-                    np.cos(dec_r) * np.cos(ra_r),
-                    np.cos(dec_r) * np.sin(ra_r),
-                    np.sin(dec_r),
-                ]
-            )
-            x_candidate = np.array([1.0, 0.0, 0.0])
-            x_b = x_candidate - np.dot(x_candidate, z_b) * z_b
-            if np.linalg.norm(x_b) < 1e-6:
-                x_candidate = np.array([0.0, 1.0, 0.0])
-                x_b = x_candidate - np.dot(x_candidate, z_b) * z_b
-            x_b = x_b / np.linalg.norm(x_b)
-            y_b = np.cross(z_b, x_b)
-            y_b = y_b / np.linalg.norm(y_b)
-            R_ib = np.vstack([x_b, y_b, z_b])
-            return np.asarray(R_ib.dot(vec_arr), dtype=float)
-        except Exception:
-            return vec_arr
-
     def _compute_disturbance_torque(self, utime: float) -> np.ndarray:
         """Compute aggregate disturbance torque in body frame."""
-        torque = np.zeros(3, dtype=float)
-        # Build inertia matrix
-        moi_cfg = self.config.spacecraft_bus.attitude_control.spacecraft_moi
-        try:
-            if isinstance(moi_cfg, (list, tuple)):
-                arr = np.array(moi_cfg, dtype=float)
-                if arr.shape == (3, 3):
-                    I_mat = arr
-                elif arr.shape == (3,):
-                    I_mat = np.diag(arr)
-                else:
-                    val = float(np.mean(arr))
-                    I_mat = np.diag([val, val, val])
-            else:
-                val = float(moi_cfg)
-                I_mat = np.diag([val, val, val])
-        except Exception:
-            I_mat = np.diag([1.0, 1.0, 1.0])
-
-        # Get position/velocity inertial
-        r_vec = None
-        v_vec = None
-        try:
-            idx = self.ephem.index(dtutcfromtimestamp(utime))
-            r_vec = np.array(self.ephem.gcrs_pv.position[idx])
-            v_vec = np.array(self.ephem.gcrs_pv.velocity[idx])
-        except Exception:
-            pass
-
-        # Normalize units to meters/seconds if possible
-        def _normalize(vec: np.ndarray) -> np.ndarray:
-            n = np.linalg.norm(vec)
-            if n == 0:
-                return vec
-            # If magnitude looks like km-scale (~7000), convert to m
-            if n < 1e6:
-                return vec * 1000.0
-            return vec
-
-        if r_vec is not None:
-            r_vec = _normalize(r_vec)
-        if v_vec is not None:
-            v_vec = _normalize(v_vec)
-
-        gg_mag = drag_mag = srp_mag = mag_mag = 0.0
-
-        # Gravity gradient torque: 3 * mu / r^3 * (r_hat x (I * r_hat))
-        if r_vec is not None:
-            r_body = self._inertial_to_body(r_vec)
-            r_norm = np.linalg.norm(r_body)
-            if r_norm > 0:
-                r_hat = r_body / r_norm
-                mu = 3.986004418e14  # m^3/s^2
-                torque_gg = 3 * mu / (r_norm**3) * np.cross(r_hat, I_mat.dot(r_hat))
-                torque += torque_gg
-                gg_mag = float(np.linalg.norm(torque_gg))
-
-        # Aerodynamic torque (simple drag model)
-        lat_deg = lon_deg = None
-        try:
-            idx_latlon = self.ephem.index(dtutcfromtimestamp(utime))
-            lat_deg = float(self.ephem.lat[idx_latlon])  # type: ignore[attr-defined]
-            lon_deg = float(self.ephem.long[idx_latlon])  # type: ignore[attr-defined]
-        except Exception:
-            pass
-
-        if self._drag_area > 0 and v_vec is not None:
-            v_body = self._inertial_to_body(v_vec)
-            v_mag = np.linalg.norm(v_body)
-            if v_mag > 0 and r_vec is not None:
-                alt = float(max(0.0, float(np.linalg.norm(r_vec)) - 6378e3))
-                lat_use = float(lat_deg) if lat_deg is not None else 0.0
-                lon_use = float(lon_deg) if lon_deg is not None else 0.0
-                rho = self._atmospheric_density(utime, alt, lat_use, lon_use)
-            q = 0.5 * rho * v_mag * v_mag
-            v_hat = v_body / v_mag
-            F_drag = -q * self._drag_coeff * self._drag_area * v_hat
-            torque_drag = np.cross(self._cp_offset, F_drag)
-            torque += torque_drag
-            drag_mag = float(np.linalg.norm(torque_drag))
-
-        # Solar pressure torque
-        if self._solar_area > 0 and not getattr(self, "in_eclipse", False):
-            try:
-                idx = self.ephem.index(dtutcfromtimestamp(utime))
-                sun_vec = np.array(self.ephem.sun[idx].cartesian.xyz.to_value())
-                # Heuristic: if sun vector looks like km-scale (|r| < 1e9), convert to meters
-                if np.linalg.norm(sun_vec) < 1e9:
-                    sun_vec = sun_vec * 1000.0
-                if r_vec is not None:
-                    r_sc = r_vec
-                else:
-                    r_sc = np.zeros(3, dtype=float)
-                r_sun = sun_vec - r_sc
-                r_sun_mag = np.linalg.norm(r_sun)
-                if r_sun_mag > 0:
-                    AU = 1.495978707e11
-                    P0 = 4.56e-6  # N/m^2 at 1 AU
-                    scale = (AU / r_sun_mag) ** 2
-                    r_sun_body = self._inertial_to_body(r_sun)
-                    sun_hat = r_sun_body / np.linalg.norm(r_sun_body)
-                    F_srp = (
-                        P0
-                        * scale
-                        * self._solar_area
-                        * self._solar_reflectivity
-                        * sun_hat
-                    )
-                    torque_srp = np.cross(self._cp_offset, F_srp)
-                    torque += torque_srp
-                    srp_mag = float(np.linalg.norm(torque_srp))
-            except Exception:
-                pass
-
-        # Magnetic torque from residual moment
-        if np.linalg.norm(self._residual_moment) > 0:
-            B_body, _ = self._local_bfield_vector(utime)
-            torque_mag = np.cross(self._residual_moment, B_body)
-            torque += torque_mag
-            mag_mag = float(np.linalg.norm(torque_mag))
-
-        # Store last components for telemetry
-        self._last_disturbance_components = {
-            "total": float(np.linalg.norm(torque)),
-            "gg": gg_mag,
-            "drag": drag_mag,
-            "srp": srp_mag,
-            "mag": mag_mag,
-            "vector": torque.tolist(),
-        }
-
+        torque, components = self.disturbance_model.compute(
+            utime=utime,
+            ra_deg=self.ra,
+            dec_deg=self.dec,
+            in_eclipse=bool(getattr(self, "in_eclipse", False)),
+            moi_cfg=self.config.spacecraft_bus.attitude_control.spacecraft_moi,
+        )
+        self._last_disturbance_components = components
         return torque
-
-    def _atmospheric_density(
-        self, utime: float, alt_m: float, lat_deg: float | None, lon_deg: float | None
-    ) -> float:
-        """Lookup/interpolate atmospheric density (kg/m^3) vs altitude.
-
-        If use_msis_density is enabled and pymsis is available, falls back to MSIS.
-        """
-        # Try MSIS if requested
-        if self._use_msis:
-            try:
-                from datetime import datetime as _dt
-
-                from pymsis import msise00  # type: ignore[import-untyped]
-
-                date = _dt.utcfromtimestamp(utime)
-                dates = np.array([date])
-                alts = np.array([max(0.0, alt_m / 1000.0)])  # km
-                lats = np.array([lat_deg if lat_deg is not None else 0.0])
-                lons = np.array([lon_deg if lon_deg is not None else 0.0])
-                f107 = np.array([self._msis_f107])
-                f107a = np.array([self._msis_f107a])
-                ap = np.array([[self._msis_ap] * 7])
-                dens = msise00.run(dates, alts, lats, lons, f107, f107a, ap)
-                # Output shape (time, alt, lat, lon, species); total mass density at species index -1 or 5
-                # pymsis returns kg/m^3, so do not scale
-                rho = float(dens[0, 0, 0, 0, -1])
-                if rho > 0:
-                    return rho
-            except Exception:
-                pass
-
-        table = [
-            (0, 1.225),
-            (25, 3.9e-2),
-            (50, 1.0e-3),
-            (75, 3.2e-5),
-            (100, 5.6e-7),
-            (125, 3.3e-9),
-            (150, 9.7e-11),
-            (175, 1.7e-12),
-            (200, 2.5e-13),
-            (250, 5.0e-14),
-            (300, 9.7e-15),
-            (350, 2.5e-15),
-            (400, 4.0e-16),
-            (450, 8.7e-17),
-            (500, 1.9e-17),
-            (600, 4.5e-18),
-            (700, 8.0e-19),
-            (800, 1.8e-19),
-            (900, 4.0e-20),
-            (1000, 1.0e-20),
-        ]
-        alt_km = max(0.0, alt_m / 1000.0)
-        if alt_km <= table[0][0]:
-            return table[0][1]
-        for i in range(1, len(table)):
-            if alt_km <= table[i][0]:
-                alt0, rho0 = table[i - 1]
-                alt1, rho1 = table[i]
-                frac = (alt_km - alt0) / (alt1 - alt0)
-                return float(rho0 * np.exp(np.log(rho1 / rho0) * frac))
-        return table[-1][1]
 
     def _predict_wheel_peak_momentum(
         self,
@@ -2154,65 +1886,11 @@ class ACS:
         T_desired = axis * requested_torque
         T_desired = T_desired - self._compute_disturbance_torque(utime)
 
-        # Build wheel orientation matrix
-        E_cols = []
-        for w in self.reaction_wheels:
-            try:
-                v = np.array(w.orientation, dtype=float)
-            except Exception:
-                v = np.array([1.0, 0.0, 0.0])
-            vn = np.linalg.norm(v)
-            if vn <= 0:
-                v = np.array([1.0, 0.0, 0.0])
-            else:
-                v = v / vn
-            E_cols.append(v)
-        E = np.column_stack(E_cols) if E_cols else np.zeros((3, 0))
-
-        try:
-            # Regularized solve to discourage a single wheel from carrying all torque.
-            # Penalize wheels with higher stored momentum to spread PASS tracking load.
-            weights = []
-            for w in self.reaction_wheels:
-                max_m = float(getattr(w, "max_momentum", 0.0))
-                curr_m = float(getattr(w, "current_momentum", 0.0))
-                frac = abs(curr_m) / max_m if max_m > 0 else 0.0
-                weights.append(1.0 + 4.0 * frac * frac)
-            W = np.diag(weights)
-            lam = 1e-2
-            cols = E.shape[1]
-            reg = np.sqrt(lam) * W
-            A = np.vstack([E, reg])
-            b = np.concatenate([T_desired, np.zeros(cols, dtype=float)])
-            taus, *_ = np.linalg.lstsq(A, b, rcond=None)
-        except Exception:
-            taus = np.zeros((len(self.reaction_wheels),), dtype=float)
-            if len(taus) > 0:
-                taus[0] = float(np.linalg.norm(T_desired))
-
-        # Clamp per-wheel torques by headroom and torque
-        taus_allowed = np.zeros_like(taus)
-        mom_margin = 0.9
-        for i, w in enumerate(self.reaction_wheels):
-            mt = float(getattr(w, "max_torque", 0.0))
-            curr_m = float(getattr(w, "current_momentum", 0.0))
-            avail = max(0.0, (w.max_momentum * mom_margin) - abs(curr_m))
-            max_by_mom = avail / dt if dt > 0 else 0.0
-            if curr_m != 0 and (taus[i] * curr_m) < 0:
-                limit = mt
-            else:
-                limit = min(mt, max_by_mom)
-            taus_allowed[i] = np.sign(taus[i]) * min(abs(taus[i]), limit)
-
+        taus, taus_allowed, _, _ = self._allocate_wheel_torques(
+            T_desired, dt, use_weights=True
+        )
         for i, w in enumerate(self.reaction_wheels):
             w.apply_torque(float(taus_allowed[i]), dt)
-
-        # Track actual torque magnitude for telemetry
-        try:
-            T_actual = E.dot(taus_allowed) if E.size else np.zeros(3)
-            self._last_t_actual_mag = float(np.linalg.norm(T_actual))
-        except Exception:
-            self._last_t_actual_mag = 0.0
 
         self._build_wheel_snapshot(utime, taus, taus_allowed)
         return True

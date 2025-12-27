@@ -31,6 +31,8 @@ class AttitudeControlSystem(BaseModel):
     # Magnetorquer definitions (optional) for finite momentum unloading
     magnetorquers: list[dict[str, Any]] = []
     magnetorquer_bfield_T: float = 3e-5  # representative LEO field magnitude (Tesla)
+    # If True, allow MTQ bleed during SCIENCE; default keeps MTQs off in SCIENCE
+    mtq_bleed_in_science: bool = False
     # Disturbance modeling inputs (drag/SRP/gg/magnetic)
     cp_offset_body: tuple[float, float, float] = (
         0.0,
