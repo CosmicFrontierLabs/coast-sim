@@ -40,12 +40,7 @@ class TargetQueue:
         self.gs = None
         self.log = log
         # Optional weight to penalize long slews when selecting next target
-        try:
-            self.slew_distance_weight = float(
-                getattr(config, "slew_distance_weight", 0.0)
-            )
-        except Exception:
-            self.slew_distance_weight = 0.0
+        self.slew_distance_weight = float(getattr(config, "slew_distance_weight", 0.0))
 
     def __getitem__(self, number: int) -> Pointing:
         return self.targets[number]

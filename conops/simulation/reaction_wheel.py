@@ -8,12 +8,12 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-def _to_float(val: Any, default: float = 0.0) -> float:
-    """Safely coerce a value to float with a default fallback."""
+def _to_float(val: Any) -> float:
+    """Coerce a value to float or raise if it is not numeric."""
     try:
         return float(val)
     except Exception:
-        return default
+        raise ValueError(f"Expected numeric value, got {val!r}") from None
 
 
 class ReactionWheel:

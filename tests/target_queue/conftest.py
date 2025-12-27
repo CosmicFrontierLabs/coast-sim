@@ -64,7 +64,8 @@ def mock_config():
     config = Mock()
     config.constraint = Mock()
     config.spacecraft_bus = Mock()
-    config.attitude_control = Mock()
+    config.spacecraft_bus.attitude_control = Mock()
+    config.slew_distance_weight = 0.0
     return config
 
 
