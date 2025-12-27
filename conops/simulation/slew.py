@@ -61,6 +61,10 @@ class Slew:
         self.slewtime = 0
         self.slewdist = 0
 
+        # Optional overrides for dynamics (deg/s^2, deg/s)
+        self._accel_override: float | None = None
+        self._vmax_override: float | None = None
+
         self.obstype = "PPT"
         self.obsid = 0
         self.mode = 0
@@ -106,9 +110,13 @@ class Slew:
             return ra, dec
 
         total_dist = float(self.slewdist)
-        motion_time = self.acs_config.motion_time(total_dist)
+        motion_time = self.acs_config.motion_time(
+            total_dist, accel=self._accel_override, vmax=self._vmax_override
+        )
         tau = max(0.0, min(float(t), motion_time))
-        s = self.acs_config.s_of_t(total_dist, tau)
+        s = self.acs_config.s_of_t(
+            total_dist, tau, accel=self._accel_override, vmax=self._vmax_override
+        )
         f = 0.0 if total_dist == 0 else max(0.0, min(1.0, s / total_dist))
 
         # Interpolate along the great-circle path using fraction f
@@ -144,7 +152,12 @@ class Slew:
             )
 
         # Calculate slew time using AttitudeControlSystem
-        self.slewtime = round(self.acs_config.slew_time(distance))
+        # Use any accel/vmax overrides when computing slew time (e.g. wheel-limited)
+        self.slewtime = round(
+            self.acs_config.slew_time(
+                distance, accel=self._accel_override, vmax=self._vmax_override
+            )
+        )
 
         self.slewend = self.slewstart + self.slewtime
         return self.slewtime
@@ -155,3 +168,29 @@ class Slew:
         self.slewdist, self.slewpath = self.acs_config.predict_slew(
             self.startra, self.startdec, self.endra, self.enddec, steps=20
         )
+
+        # Estimate an approximate rotation axis for this slew in body frame.
+        # Use the great-circle endpoints to form unit vectors and take their
+        # cross-product. This axis is used by ACS to project requested
+        # scalar accelerations/torques into a 3D torque vector for wheel mapping.
+        # start vector
+        ra0 = float(self.startra)
+        dec0 = float(self.startdec)
+        ra1 = float(self.endra)
+        dec1 = float(self.enddec)
+        # convert to radians
+        r0 = np.deg2rad(ra0)
+        d0 = np.deg2rad(dec0)
+        r1 = np.deg2rad(ra1)
+        d1 = np.deg2rad(dec1)
+        v0 = np.array([np.cos(d0) * np.cos(r0), np.cos(d0) * np.sin(r0), np.sin(d0)])
+        v1 = np.array([np.cos(d1) * np.cos(r1), np.cos(d1) * np.sin(r1), np.sin(d1)])
+        axis = np.cross(v0, v1)
+        nrm = np.linalg.norm(axis)
+        if nrm <= 1e-12:
+            raise ValueError(
+                f"Degenerate slew axis for start/end ({self.startra}, {self.startdec}) "
+                f"-> ({self.endra}, {self.enddec})"
+            )
+        axis = axis / nrm
+        self.rotation_axis = (float(axis[0]), float(axis[1]), float(axis[2]))
