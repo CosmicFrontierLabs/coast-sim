@@ -1240,6 +1240,20 @@ class ACS:
         self._update_wheel_momentum(utime)
         self._calculate_pointing(utime)
 
+        # Calculate roll angle
+        # TODO: Enable when roll optimization is needed; currently disabled for performance
+        if False:
+            from ..config.constants import DTOR
+            from ..simulation.roll import optimum_roll
+
+            self.roll = optimum_roll(
+                self.ra * DTOR,
+                self.dec * DTOR,
+                utime,
+                self.ephem,
+                self.solar_panel,
+            )
+
         # Return current pointing
         if self.last_slew is not None:
             return self.ra, self.dec, self.roll, self.last_slew.obsid
