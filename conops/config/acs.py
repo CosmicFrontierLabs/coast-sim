@@ -47,7 +47,9 @@ class AttitudeControlSystem(BaseModel):
     drag_area_m2: float = 0.0  # effective drag cross-section (m^2)
     drag_coeff: float = 2.2  # ballistic drag coefficient
     solar_area_m2: float = 0.0  # illuminated area for solar pressure (m^2)
-    solar_reflectivity: float = 1.0  # 1 = fully absorbing/reflective factor
+    solar_reflectivity: float = (
+        1.0  # momentum factor (1+r): 1.0=absorbing, 2.0=reflective
+    )
     use_msis_density: bool = (
         False  # if True, attempt to use pymsis/nrlmsise-00 for density
     )

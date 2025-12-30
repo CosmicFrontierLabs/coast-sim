@@ -284,8 +284,11 @@ class DisturbanceModel:
                     scale = (self.AU_M / r_sun_mag) ** 2
                     r_sun_body = self._inertial_to_body(r_sun, ra_deg, dec_deg)
                     sun_hat = r_sun_body / np.linalg.norm(r_sun_body)
+                    # SRP force pushes away from sun (negative sun_hat direction)
+                    # solar_reflectivity is (1 + r) where r is surface reflectivity:
+                    #   1.0 = absorbing surface, 2.0 = perfectly reflective
                     f_srp = (
-                        self.SRP_P0
+                        -self.SRP_P0
                         * scale
                         * self.cfg.solar_area_m2
                         * self.cfg.solar_reflectivity
