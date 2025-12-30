@@ -13,8 +13,8 @@ class DummyEphem:
         from datetime import datetime, timezone
 
         self.utime = np.array(utime)
-        self.long = np.array(longs)
-        self.lat = np.array(lats)
+        self.longitude_deg = np.array(longs)
+        self.latitude_deg = np.array(lats)
         # Add timestamp as list of datetime objects for helper functions
         self.timestamp = [datetime.fromtimestamp(t, tz=timezone.utc) for t in utime]
 

@@ -71,3 +71,6 @@ Thumbs.db
 # Distribution / packaging
 *.whl
 conops/_version.py
+
+# Claude Code
+CLAUDE.md

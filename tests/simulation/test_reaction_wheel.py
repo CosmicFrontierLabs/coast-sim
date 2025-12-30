@@ -25,3 +25,33 @@ def test_accel_with_mock_moi_returns_inf_when_torque_positive():
     mock_moi = Mock()
     val = rw.accel_limit_deg(mock_moi)
     assert val == float("inf")
+
+
+def test_power_draw_idle():
+    """Test that idle power is returned when no torque applied."""
+    rw = ReactionWheel(
+        max_torque=0.1, max_momentum=1.0, idle_power_w=10.0, torque_power_coeff=100.0
+    )
+    # No torque applied yet
+    assert rw.power_draw() == 10.0
+
+
+def test_power_draw_with_torque():
+    """Test power draw includes torque-dependent component."""
+    rw = ReactionWheel(
+        max_torque=0.1, max_momentum=1.0, idle_power_w=10.0, torque_power_coeff=100.0
+    )
+    # Apply 0.05 N*m torque
+    rw.apply_torque(0.05, dt=1.0)
+    # Power = idle + coeff * |torque| = 10 + 100 * 0.05 = 15 W
+    assert rw.power_draw() == 15.0
+
+
+def test_power_draw_negative_torque():
+    """Test power draw uses absolute torque value."""
+    rw = ReactionWheel(
+        max_torque=0.1, max_momentum=1.0, idle_power_w=5.0, torque_power_coeff=50.0
+    )
+    rw.apply_torque(-0.02, dt=1.0)
+    # Power = 5 + 50 * 0.02 = 6 W
+    assert rw.power_draw() == 6.0
