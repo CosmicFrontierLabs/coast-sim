@@ -11,17 +11,7 @@ def test_science_holds_pointing_without_active_slew(acs, mock_config):
     acs.dec = 20.0
     acs.in_safe_mode = False
     acs.current_pass = None
-
-    slew = Slew(config=mock_config)
-    slew.startra = 10.0
-    slew.startdec = 20.0
-    slew.endra = 30.0
-    slew.enddec = 40.0
-    slew.slewstart = 0.0
-    slew.slewtime = 1.0
-    slew.slewend = 1.0
-
-    acs.last_slew = slew
+    acs.last_slew = None
 
     acs._calculate_pointing(utime=10.0)
 

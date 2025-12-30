@@ -182,6 +182,7 @@ class TestStartSlewCoverage:
         mock_pass.slewstart = 1514764800.0
         mock_pass.slewtime = 60.0
         mock_pass.calc_slewtime = Mock()
+        mock_pass.predict_slew = Mock()
 
         acs._start_slew(mock_pass, 1514764800.0)
         assert mock_pass.startra == 10.0
@@ -200,6 +201,7 @@ class TestStartSlewCoverage:
         mock_pass.slewstart = 1514764800.0
         mock_pass.slewtime = 60.0
         mock_pass.calc_slewtime = Mock()
+        mock_pass.predict_slew = Mock()
 
         acs._start_slew(mock_pass, 1514764800.0)
         assert mock_pass.startdec == 20.0
@@ -218,6 +220,7 @@ class TestStartSlewCoverage:
         mock_pass.slewstart = 1514764800.0
         mock_pass.slewtime = 60.0
         mock_pass.calc_slewtime = Mock()
+        mock_pass.predict_slew = Mock()
 
         acs._start_slew(mock_pass, 1514764800.0)
         mock_pass.calc_slewtime.assert_called_once()
