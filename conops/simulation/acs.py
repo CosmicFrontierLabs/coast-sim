@@ -269,6 +269,15 @@ class ACS:
             None  # Slew to verify on completion
         )
 
+        # Spacecraft body angular momentum (3-vector in body frame, N·m·s)
+        # Conservation law: H_total = H_wheels + H_body; dH_total/dt = τ_external
+        # When wheels apply torque, H_body changes by opposite sign (Newton's 3rd law)
+        self.spacecraft_body_momentum = np.zeros(3, dtype=float)
+        # Track cumulative external impulse for conservation validation
+        self._cumulative_external_impulse = np.zeros(3, dtype=float)
+        # Initial total momentum (set after first wheel update)
+        self._initial_total_momentum: np.ndarray | None = None
+
     def _log_or_print(self, utime: float, event_type: str, description: str) -> None:
         """Log an event to DITLLog if available, otherwise print to stdout.
 
@@ -367,6 +376,142 @@ class ACS:
             except Exception:
                 continue
         return headroom
+
+    def _get_total_system_momentum(self) -> np.ndarray:
+        """Compute total angular momentum of the system (wheels + body).
+
+        Returns:
+            H_total = H_wheels + H_body as a 3D numpy array in N·m·s.
+        """
+        return self._get_total_wheel_momentum() + self.spacecraft_body_momentum
+
+    def _apply_wheel_torques_conserving(
+        self, taus_allowed: np.ndarray, dt: float
+    ) -> np.ndarray:
+        """Apply wheel torques while conserving total angular momentum.
+
+        When wheels apply torque τ for time dt:
+        - Wheel momentum changes by +τ*dt (along wheel axis)
+        - Spacecraft body momentum changes by -τ*dt (Newton's 3rd law reaction)
+
+        Args:
+            taus_allowed: Per-wheel torques (N·m), one per wheel
+            dt: Time step (seconds)
+
+        Returns:
+            Total torque vector applied to spacecraft body (3D, N·m)
+        """
+        if dt <= 0:
+            return np.zeros(3, dtype=float)
+
+        total_torque_on_body = np.zeros(3, dtype=float)
+
+        for i, w in enumerate(self.reaction_wheels):
+            tau = float(taus_allowed[i])
+            if tau == 0:
+                continue
+
+            # Get wheel axis (normalized)
+            try:
+                axis = np.array(w.orientation, dtype=float)
+                nrm = np.linalg.norm(axis)
+                if nrm > 0:
+                    axis = axis / nrm
+                else:
+                    axis = np.array([1.0, 0.0, 0.0])
+            except Exception:
+                axis = np.array([1.0, 0.0, 0.0])
+
+            # Apply torque to wheel (updates wheel momentum)
+            w.apply_torque(tau, dt)
+
+            # Reaction torque on spacecraft body (Newton's 3rd law)
+            # Wheel torque on spacecraft = -τ (opposite to wheel acceleration)
+            torque_on_body = -tau * axis
+            total_torque_on_body += torque_on_body
+
+        # Update spacecraft body momentum: ΔH_body = τ_body * dt
+        self.spacecraft_body_momentum += total_torque_on_body * dt
+
+        return total_torque_on_body
+
+    def _apply_external_torque(
+        self, external_torque: np.ndarray, dt: float, source: str = "external"
+    ) -> None:
+        """Apply external torque to the system (changes total momentum).
+
+        External torques (disturbances, magnetorquers) change total system
+        momentum. They act on the spacecraft body, not the wheels.
+
+        Args:
+            external_torque: Torque vector in body frame (N·m)
+            dt: Time step (seconds)
+            source: Description for logging (e.g., "disturbance", "MTQ")
+        """
+        if dt <= 0:
+            return
+
+        impulse = external_torque * dt
+        self.spacecraft_body_momentum += impulse
+        self._cumulative_external_impulse += impulse
+
+        # Debug logging
+        try:
+            self._logger.debug(
+                "External torque (%s): τ=[%.4e, %.4e, %.4e] N·m, "
+                "ΔH=[%.4e, %.4e, %.4e] N·m·s, H_body=[%.4e, %.4e, %.4e]",
+                source,
+                external_torque[0],
+                external_torque[1],
+                external_torque[2],
+                impulse[0],
+                impulse[1],
+                impulse[2],
+                self.spacecraft_body_momentum[0],
+                self.spacecraft_body_momentum[1],
+                self.spacecraft_body_momentum[2],
+            )
+        except Exception:
+            pass
+
+    def _check_momentum_conservation(self, utime: float) -> bool:
+        """Verify momentum conservation: H_total - H_initial = ∫τ_external dt.
+
+        Returns:
+            True if conservation is satisfied within tolerance, False otherwise.
+        """
+        if self._initial_total_momentum is None:
+            # Initialize on first call
+            self._initial_total_momentum = self._get_total_system_momentum().copy()
+            return True
+
+        H_current = self._get_total_system_momentum()
+        H_expected = self._initial_total_momentum + self._cumulative_external_impulse
+        error = H_current - H_expected
+        error_mag = float(np.linalg.norm(error))
+
+        # Tolerance: fraction of current momentum magnitude or absolute minimum
+        H_mag = float(np.linalg.norm(H_current))
+        tolerance = max(self._momentum_tolerance * H_mag, 1e-6)
+
+        if error_mag > tolerance:
+            self._logger.warning(
+                "Momentum conservation violation at t=%.1f: "
+                "error=[%.4e, %.4e, %.4e] N·m·s (mag=%.4e, tol=%.4e)",
+                utime,
+                error[0],
+                error[1],
+                error[2],
+                error_mag,
+                tolerance,
+            )
+            return False
+
+        return True
+
+    def get_body_momentum_magnitude(self) -> float:
+        """Return magnitude of spacecraft body momentum (should be ~0 when settled)."""
+        return float(np.linalg.norm(self.spacecraft_body_momentum))
 
     def _compute_slew_peak_momentum(self, slew: "Slew") -> tuple[float, np.ndarray]:
         """Compute peak angular momentum required for a slew.
@@ -1653,9 +1798,12 @@ class ACS:
         # Compute requested scalar torque (N*m) about that axis
         requested_torque = (accel_req * (pi / 180.0)) * i_axis
 
+        # Compute disturbance torque (external)
+        disturbance = self._compute_disturbance_torque(utime)
+
         # Desired spacecraft torque vector (3D), including disturbance rejection
         T_desired = axis * requested_torque
-        T_desired = T_desired - self._compute_disturbance_torque(utime)
+        T_desired = T_desired - disturbance
 
         taus, taus_allowed, T_actual, clamped = self._allocate_wheel_torques(
             T_desired, dt, use_weights=False, bias_gain=0.1
@@ -1677,9 +1825,11 @@ class ACS:
         except Exception:
             pass
 
-        # Apply per-wheel torques (wheel stores scalar momentum along its axis)
-        for i, w in enumerate(self.reaction_wheels):
-            w.apply_torque(float(taus_allowed[i]), dt)
+        # Apply external disturbance torque (changes total system momentum)
+        self._apply_external_torque(disturbance, dt, source="disturbance")
+
+        # Apply wheel torques with momentum conservation (internal exchange)
+        self._apply_wheel_torques_conserving(taus_allowed, dt)
 
         # If we couldn't supply full torque, reduce accel_override magnitude accordingly
         achieved_scalar = float(np.dot(T_actual, axis))
@@ -1696,10 +1846,27 @@ class ACS:
         # Capture wheel snapshot for telemetry/resource tracking
         self._build_wheel_snapshot(utime, taus, taus_allowed)
 
+        # Periodic conservation check (every ~10 updates to avoid overhead)
+        if not hasattr(self, "_conservation_check_counter"):
+            self._conservation_check_counter = 0
+        self._conservation_check_counter += 1
+        if self._conservation_check_counter >= 10:
+            self._check_momentum_conservation(utime)
+            self._conservation_check_counter = 0
+
         self._last_pointing_time = utime
 
     def _apply_magnetorquer_desat(self, dt: float, utime: float) -> None:
-        """Bleed wheel momentum using magnetorquers during desat."""
+        """Bleed wheel momentum using magnetorquers during desat.
+
+        Physics: MTQ applies external torque τ_mtq = m × B to the spacecraft.
+        This external torque changes total system momentum. During desaturation,
+        the wheels slow down to release their excess momentum to the environment
+        via the magnetic field interaction.
+
+        Momentum conservation: dH_total/dt = τ_mtq (external)
+        The wheel momentum change equals the external impulse (body stays settled).
+        """
         if not self.magnetorquers or dt <= 0:
             return
 
@@ -1728,8 +1895,14 @@ class ACS:
         if not self.reaction_wheels:
             return
 
+        # Track MTQ as external torque for momentum conservation
+        # This external torque changes total system momentum
+        self._cumulative_external_impulse += T_mtq * dt
+
         # Project MTQ torque onto each wheel axis and bleed momentum toward zero
+        # The wheel momentum change absorbs the external impulse (body stays settled)
         max_proj = 0.0
+        actual_impulse = np.zeros(3, dtype=float)
         for w in self.reaction_wheels:
             try:
                 axis = np.array(w.orientation, dtype=float)
@@ -1746,14 +1919,16 @@ class ACS:
                 continue
             dm = tau_w * dt
             mom = float(getattr(w, "current_momentum", 0.0))
-            # Apply physics: external torque reduces wheel momentum by tau_w * dt
-            # (wheel releases momentum when external torque opposes its direction)
+            # Wheel releases momentum when external torque opposes its direction
             new_mom = mom - dm
             # Clamp to prevent overshoot past zero during desaturation
             if mom > 0:
                 new_mom = max(0.0, new_mom)
             elif mom < 0:
                 new_mom = min(0.0, new_mom)
+            # Track actual momentum change for conservation
+            actual_dm = mom - new_mom
+            actual_impulse += actual_dm * axis
             w.current_momentum = new_mom
 
         # Track instantaneous MTQ power draw (W)
@@ -1765,7 +1940,20 @@ class ACS:
             self._last_mtq_proj_max = 0.0
             self._last_mtq_torque_mag = 0.0
 
-        # Do not end desat early; run full duration
+        # Debug logging for MTQ desat
+        try:
+            self._logger.debug(
+                "MTQ desat: τ_mtq=[%.4e, %.4e, %.4e] N·m, "
+                "ΔH_wheel=[%.4e, %.4e, %.4e] N·m·s",
+                T_mtq[0],
+                T_mtq[1],
+                T_mtq[2],
+                -actual_impulse[0],
+                -actual_impulse[1],
+                -actual_impulse[2],
+            )
+        except Exception:
+            pass
 
     def _slew_accel_profile(self, slew: Slew, utime: float) -> float:
         """Return signed slew acceleration (deg/s^2) at utime for bang-bang profile.
@@ -1819,6 +2007,10 @@ class ACS:
         if not self.reaction_wheels or dt <= 0:
             return
 
+        # Apply external disturbance torque (changes total system momentum)
+        self._apply_external_torque(disturbance_torque, dt, source="disturbance")
+
+        # Wheels apply torque to counter disturbance (internal momentum exchange)
         T_desired = -disturbance_torque
         taus, taus_allowed, T_actual, _ = self._allocate_wheel_torques(
             T_desired, dt, use_weights=True
@@ -1826,8 +2018,8 @@ class ACS:
         self._last_hold_torque_target_mag = float(np.linalg.norm(T_desired))
         self._last_hold_torque_actual_mag = float(np.linalg.norm(T_actual))
 
-        for i, w in enumerate(self.reaction_wheels):
-            w.apply_torque(float(taus_allowed[i]), dt)
+        # Apply wheel torques with momentum conservation
+        self._apply_wheel_torques_conserving(taus_allowed, dt)
 
         self._build_wheel_snapshot(utime, taus, taus_allowed)
 
@@ -2279,9 +2471,12 @@ class ACS:
 
         from math import pi
 
+        # Compute disturbance torque (external)
+        disturbance = self._compute_disturbance_torque(utime)
+
         requested_torque = (accel_req * (pi / 180.0)) * i_axis
         T_desired = axis * requested_torque
-        T_desired = T_desired - self._compute_disturbance_torque(utime)
+        T_desired = T_desired - disturbance
 
         taus, taus_allowed, t_actual, _ = self._allocate_wheel_torques(
             T_desired, dt, use_weights=True
@@ -2294,8 +2489,12 @@ class ACS:
             self._last_pass_rate_deg_s = 0.0
             self._last_pass_torque_target_mag = 0.0
             self._last_pass_torque_actual_mag = 0.0
-        for i, w in enumerate(self.reaction_wheels):
-            w.apply_torque(float(taus_allowed[i]), dt)
+
+        # Apply external disturbance torque (changes total system momentum)
+        self._apply_external_torque(disturbance, dt, source="disturbance")
+
+        # Apply wheel torques with momentum conservation
+        self._apply_wheel_torques_conserving(taus_allowed, dt)
 
         self._build_wheel_snapshot(utime, taus, taus_allowed)
         return True
