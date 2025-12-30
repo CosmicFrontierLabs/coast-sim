@@ -382,9 +382,16 @@ class ACS:
         if accel_deg <= 0:
             return 0.0, axis
 
+        # Get max slew rate (use override if available)
+        vmax_override = getattr(slew, "_vmax_override", None)
+        if vmax_override is not None and vmax_override > 0:
+            max_rate_deg = float(vmax_override)
+        else:
+            max_rate_deg = float(getattr(self.acs_config, "max_slew_rate", 1.0))
+
         # Delegate to WheelDynamics
         h_peak = self.wheel_dynamics.compute_slew_peak_momentum(
-            angle_deg, axis, accel_deg
+            angle_deg, axis, accel_deg, max_rate_deg
         )
         return h_peak, axis
 

@@ -323,10 +323,19 @@ class TestPeakMomentumCalculation:
     """Tests for slew peak momentum estimation."""
 
     def test_compute_peak_momentum_scales_with_angle(self):
-        """Larger slew angles produce larger peak momentum."""
+        """Larger slew angles produce larger peak momentum (triangular profile).
+
+        Note: This test uses a high max_slew_rate to ensure both slews remain
+        in the triangular profile regime (not vmax-limited). With default
+        max_slew_rate=0.25 deg/s, both slews would hit the vmax cap and produce
+        identical peak momentum.
+        """
         cfg = MissionConfig()
         cfg.constraint.ephem = DummyEphem()
         cfg.spacecraft_bus.attitude_control.spacecraft_moi = (10.0, 10.0, 10.0)
+        # Use high vmax to keep slews in triangular profile
+        # omega_peak(90deg) = sqrt(90 * 0.5) = 6.71 deg/s, so need vmax > 6.71
+        cfg.spacecraft_bus.attitude_control.max_slew_rate = 10.0
         acs = ACS(config=cfg, log=None)
 
         slew_small = Slew(config=cfg)
@@ -343,6 +352,44 @@ class TestPeakMomentumCalculation:
         h_large, _ = acs._compute_slew_peak_momentum(slew_large)
 
         assert h_large > h_small
+
+    def test_compute_peak_momentum_capped_by_max_slew_rate(self):
+        """Peak momentum is capped when max_slew_rate limits angular velocity.
+
+        For trapezoidal slew profiles, omega_peak = min(sqrt(angle*accel), vmax).
+        When vmax is the limiting factor, slews of different angles produce the
+        same peak momentum.
+        """
+        from math import pi
+
+        cfg = MissionConfig()
+        cfg.constraint.ephem = DummyEphem()
+        cfg.spacecraft_bus.attitude_control.spacecraft_moi = (10.0, 10.0, 10.0)
+        # Low vmax so both slews hit the cap
+        # omega_peak(10deg) = sqrt(10 * 0.5) = 2.24 deg/s > 0.5 deg/s
+        cfg.spacecraft_bus.attitude_control.max_slew_rate = 0.5
+        acs = ACS(config=cfg, log=None)
+
+        slew_small = Slew(config=cfg)
+        slew_small.slewdist = 10.0
+        slew_small.rotation_axis = (0.0, 0.0, 1.0)
+        slew_small._accel_override = 0.5
+
+        slew_large = Slew(config=cfg)
+        slew_large.slewdist = 90.0
+        slew_large.rotation_axis = (0.0, 0.0, 1.0)
+        slew_large._accel_override = 0.5
+
+        h_small, _ = acs._compute_slew_peak_momentum(slew_small)
+        h_large, _ = acs._compute_slew_peak_momentum(slew_large)
+
+        # Both should be capped at the same value: I * vmax_rad
+        moi = 10.0
+        vmax_rad = 0.5 * (pi / 180.0)
+        expected_peak = moi * vmax_rad
+
+        assert h_small == h_large  # Both capped at same value
+        assert abs(h_small - expected_peak) < 1e-10  # Correct value
 
     def test_compute_peak_momentum_scales_with_inertia(self):
         """Larger inertia produces larger peak momentum."""
