@@ -20,6 +20,8 @@ def _add_test_wheels(acs, max_torque=1.0, max_momentum=10.0):
                 name=f"rw{i}",
             )
         )
+    # Sync with WheelDynamics
+    acs.wheel_dynamics.wheels = acs.reaction_wheels
 
 
 def test_update_wheel_momentum_first_call_sets_time(acs):
@@ -132,6 +134,7 @@ def test_slew_torque_updates_wheel_momentum_consistently(acs, monkeypatch):
 def test_slew_headroom_clamp_respects_margin(acs, monkeypatch):
     _add_test_wheels(acs, max_torque=10.0, max_momentum=0.5)
     acs._wheel_mom_margin = 0.1
+    acs.wheel_dynamics._momentum_margin = 0.1  # Sync margin
     for w in acs.reaction_wheels:
         w.current_momentum = w.max_momentum * 0.095
 
@@ -159,6 +162,7 @@ def test_slew_headroom_clamp_respects_margin(acs, monkeypatch):
 def test_hold_headroom_clamp_respects_margin(acs):
     _add_test_wheels(acs, max_torque=10.0, max_momentum=0.5)
     acs._wheel_mom_margin = 0.1
+    acs.wheel_dynamics._momentum_margin = 0.1  # Sync margin
     for w in acs.reaction_wheels:
         w.current_momentum = w.max_momentum * 0.095
 

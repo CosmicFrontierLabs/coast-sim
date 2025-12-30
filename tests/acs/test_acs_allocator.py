@@ -14,7 +14,8 @@ def test_allocate_wheel_torques_clamps_by_margin(acs):
             current_momentum=0.9,
         )
     ]
-    acs._wheel_mom_margin = 0.95
+    acs.wheel_dynamics.wheels = acs.reaction_wheels  # Keep in sync
+    acs.wheel_dynamics._momentum_margin = 0.95
 
     taus, taus_allowed, _, clamped = acs._allocate_wheel_torques(
         np.array([0.2, 0.0, 0.0]), dt=1.0
@@ -46,6 +47,7 @@ def test_allocate_wheel_torques_weighting_prefers_low_momentum(acs):
             name="rw_low",
         ),
     ]
+    acs.wheel_dynamics.wheels = acs.reaction_wheels  # Keep in sync
 
     taus, taus_allowed, _, _ = acs._allocate_wheel_torques(
         np.array([1.0, 0.0, 0.0]), dt=1.0, use_weights=True
@@ -63,7 +65,8 @@ def test_pass_wheel_update_respects_momentum_margin(acs):
         name="rw_x",
     )
     acs.reaction_wheels = [wheel]
-    acs._wheel_mom_margin = 0.95
+    acs.wheel_dynamics.wheels = acs.reaction_wheels  # Keep in sync
+    acs.wheel_dynamics._momentum_margin = 0.95
     acs._compute_disturbance_torque = Mock(return_value=np.zeros(3))
 
     acs.ra = 90.0

@@ -46,6 +46,7 @@ def test_pass_tracking_torque_matches_inertia(acs):
     acs.ra = 0.0
     acs.dec = 0.0
     acs.reaction_wheels = _make_orthogonal_wheels()
+    acs.wheel_dynamics.wheels = acs.reaction_wheels  # Keep in sync
     acs._compute_disturbance_torque = lambda _ut: np.zeros(3)
     acs.config.spacecraft_bus.attitude_control.spacecraft_moi = (10.0, 10.0, 10.0)
     acs.current_pass = DummyPass(1.0, 0.0)
@@ -61,6 +62,7 @@ def test_pass_tracking_updates_wheel_momentum_axis(acs):
     acs.ra = 0.0
     acs.dec = 0.0
     acs.reaction_wheels = _make_orthogonal_wheels()
+    acs.wheel_dynamics.wheels = acs.reaction_wheels  # Keep in sync
     acs._compute_disturbance_torque = lambda _ut: np.zeros(3)
     acs.config.spacecraft_bus.attitude_control.spacecraft_moi = (10.0, 10.0, 10.0)
     acs.current_pass = DummyPass(1.0, 0.0)
@@ -79,6 +81,7 @@ def test_pass_tracking_no_change_when_no_motion(acs):
     acs.ra = 0.0
     acs.dec = 0.0
     acs.reaction_wheels = _make_orthogonal_wheels()
+    acs.wheel_dynamics.wheels = acs.reaction_wheels  # Keep in sync
     acs._compute_disturbance_torque = lambda _ut: np.zeros(3)
     acs.config.spacecraft_bus.attitude_control.spacecraft_moi = (10.0, 10.0, 10.0)
     acs.current_pass = DummyPass(0.0, 0.0)
@@ -95,6 +98,7 @@ def test_pass_tracking_momentum_delta_matches_torque(acs):
     acs.ra = 0.0
     acs.dec = 0.0
     acs.reaction_wheels = _make_orthogonal_wheels()
+    acs.wheel_dynamics.wheels = acs.reaction_wheels  # Keep in sync
     acs._compute_disturbance_torque = lambda _ut: np.zeros(3)
     acs.config.spacecraft_bus.attitude_control.spacecraft_moi = (10.0, 10.0, 10.0)
     acs.current_pass = DummyPass(1.0, 0.0)
@@ -115,6 +119,7 @@ def test_pass_tracking_torque_uses_rate_delta(acs):
     acs.ra = 0.0
     acs.dec = 0.0
     acs.reaction_wheels = _make_orthogonal_wheels()
+    acs.wheel_dynamics.wheels = acs.reaction_wheels  # Keep in sync
     acs._compute_disturbance_torque = lambda _ut: np.zeros(3)
     acs.config.spacecraft_bus.attitude_control.spacecraft_moi = (10.0, 10.0, 10.0)
     acs.current_pass = DummyPass(1.0, 0.0)

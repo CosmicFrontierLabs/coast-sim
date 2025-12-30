@@ -17,6 +17,9 @@ def test_mtq_bleed_in_science_toggle(acs):
     acs.magnetorquers = [
         {"orientation": (1.0, 0.0, 0.0), "dipole": 32.0, "power_draw": 5.0}
     ]
+    # Sync with WheelDynamics
+    acs.wheel_dynamics.wheels = acs.reaction_wheels
+    acs.wheel_dynamics.magnetorquers = acs.magnetorquers
     acs.acsmode = ACSMode.SCIENCE
     acs._desat_active = False
     acs._desat_use_mtq = True
