@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -7,6 +8,8 @@ import numpy as np
 
 from ..common import dtutcfromtimestamp
 from .msis_adapter import MsisAdapter, MsisConfig
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -23,6 +26,8 @@ class DisturbanceConfig:
     msis_f107a: float = 180.0
     msis_ap: float = 12.0
     msis_density_scale: float = 1.0
+    # Ephemeris position/velocity units: "m", "km", or "auto" (detect from magnitude)
+    ephemeris_units: str = "auto"
 
 
 class DisturbanceModel:
@@ -90,6 +95,60 @@ class DisturbanceModel:
         except Exception:
             return np.diag([1.0, 1.0, 1.0])
 
+    def _to_meters(self, vec: np.ndarray, vec_type: str) -> np.ndarray:
+        """Convert position/velocity vector to meters.
+
+        Args:
+            vec: Position or velocity vector
+            vec_type: "position" or "velocity" for context in warnings
+
+        Uses cfg.ephemeris_units:
+            - "m": Already in meters, no conversion
+            - "km": Multiply by 1000
+            - "auto": Detect based on physical plausibility
+        """
+        units = self.cfg.ephemeris_units.lower()
+        mag = float(np.linalg.norm(vec))
+
+        if mag == 0:
+            return vec
+
+        if units == "m":
+            return vec
+        elif units == "km":
+            return vec * 1000.0
+        else:  # "auto"
+            # Use physical constraints to detect units
+            if vec_type == "position":
+                # Earth radius is ~6378 km = 6.378e6 m
+                # LEO: 6678-7078 km, GEO: ~42164 km, lunar: ~384400 km
+                # If magnitude < 1e5, assume km (plausible for any Earth orbit in km)
+                # If magnitude > 1e5, assume meters (LEO in meters is ~6.7e6)
+                if mag < 1e5:
+                    _logger.debug(
+                        "Auto-detected %s units as km (mag=%.2e < 1e5), converting to m",
+                        vec_type,
+                        mag,
+                    )
+                    return vec * 1000.0
+                # Validate result is plausible (> Earth radius, < lunar distance * 2)
+                if mag < self.RE_M * 0.9:
+                    _logger.warning(
+                        "Position magnitude %.2e m is below Earth radius - check units",
+                        mag,
+                    )
+            else:  # velocity
+                # LEO velocity: ~7.5 km/s = 7500 m/s
+                # If < 100, assume km/s; otherwise assume m/s
+                if mag < 100:
+                    _logger.debug(
+                        "Auto-detected %s units as km/s (mag=%.2e < 100), converting to m/s",
+                        vec_type,
+                        mag,
+                    )
+                    return vec * 1000.0
+            return vec
+
     def local_bfield_vector(
         self, utime: float, ra_deg: float, dec_deg: float
     ) -> tuple[np.ndarray, float]:
@@ -146,7 +205,23 @@ class DisturbanceModel:
     def atmospheric_density(
         self, utime: float, alt_m: float, lat_deg: float | None, lon_deg: float | None
     ) -> float:
-        """Lookup/interpolate atmospheric density (kg/m^3) vs altitude."""
+        """Lookup/interpolate atmospheric density (kg/m^3) vs altitude.
+
+        For altitudes > 400 km, accuracy degrades significantly without MSIS.
+        For altitudes > 1000 km, returns conservative minimum value.
+        """
+        alt_km = alt_m / 1000.0
+        if alt_km > 1000 and not self.cfg.use_msis_density:
+            _logger.debug(
+                "Altitude %.0f km exceeds density table range; using minimum value",
+                alt_km,
+            )
+        elif alt_km > 400 and not self.cfg.use_msis_density:
+            _logger.debug(
+                "Altitude %.0f km > 400 km; density estimate may be inaccurate without MSIS",
+                alt_km,
+            )
+
         rho_table = self._table_density(alt_m)
         lat_use = float(lat_deg) if lat_deg is not None else 0.0
         lon_use = float(lon_deg) if lon_deg is not None else 0.0
@@ -157,6 +232,24 @@ class DisturbanceModel:
 
     @staticmethod
     def _table_density(alt_m: float) -> float:
+        """Lookup atmospheric density from altitude table.
+
+        Uses exponential interpolation between table points based on
+        US Standard Atmosphere 1976 approximate values.
+
+        Note: This table is most accurate for altitudes 0-400 km.
+        Above 400 km, solar activity significantly affects density.
+        Above 1000 km, returns constant 1e-20 kg/m³ (conservative minimum).
+
+        For high-fidelity applications above 400 km, enable MSIS density
+        model via use_msis_density=True in DisturbanceConfig.
+
+        Args:
+            alt_m: Altitude in meters
+
+        Returns:
+            Atmospheric density in kg/m³
+        """
         table = [
             (0, 1.225),
             (25, 3.9e-2),
@@ -211,18 +304,11 @@ class DisturbanceModel:
         except Exception:
             pass
 
-        def _normalize(vec: np.ndarray) -> np.ndarray:
-            n = np.linalg.norm(vec)
-            if n == 0:
-                return vec
-            if n < 1e6:
-                return vec * 1000.0
-            return vec
-
+        # Convert position/velocity to meters based on configured units
         if r_vec is not None:
-            r_vec = _normalize(r_vec)
+            r_vec = self._to_meters(r_vec, "position")
         if v_vec is not None:
-            v_vec = _normalize(v_vec)
+            v_vec = self._to_meters(v_vec, "velocity")
 
         gg_mag = drag_mag = srp_mag = mag_mag = 0.0
 
@@ -275,7 +361,10 @@ class DisturbanceModel:
             try:
                 idx = self.ephem.index(dtutcfromtimestamp(utime))
                 sun_vec = np.array(self.ephem.sun[idx].cartesian.xyz.to_value())
-                if np.linalg.norm(sun_vec) < 1e9:
+                # Sun distance is ~1 AU = 1.496e11 m = 1.496e8 km
+                # If magnitude < 1e9, assume km; otherwise assume meters
+                sun_mag = float(np.linalg.norm(sun_vec))
+                if sun_mag > 0 and sun_mag < 1e9:
                     sun_vec = sun_vec * 1000.0
                 r_sc = r_vec if r_vec is not None else np.zeros(3, dtype=float)
                 r_sun = sun_vec - r_sc

@@ -59,6 +59,8 @@ class AttitudeControlSystem(BaseModel):
     msis_density_scale: float = 1.0  # optional multiplier for MSIS density
     # Disturbance torque in body frame (N*m), applied continuously
     disturbance_torque_body: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    # If True, raise ValueError when wheel config has rank < 3 (not fully controllable)
+    strict_wheel_validation: bool = False
 
     def motion_time(
         self, angle_deg: float, accel: float | None = None, vmax: float | None = None
