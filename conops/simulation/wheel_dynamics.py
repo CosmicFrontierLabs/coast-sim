@@ -399,6 +399,16 @@ class WheelDynamics:
             dm = tau_w * dt
             mom = float(getattr(w, "current_momentum", 0.0))
 
+            # Only apply MTQ if it would REDUCE momentum magnitude.
+            # MTQ reduces momentum when dm has same sign as mom:
+            #   mom > 0, dm > 0: new_mom = mom - dm < mom (reduces)
+            #   mom < 0, dm < 0: new_mom = mom - dm > mom (reduces magnitude)
+            # If signs differ, MTQ would INCREASE momentum - skip this wheel.
+            if mom == 0.0:
+                continue  # No momentum to bleed
+            if (mom > 0 and dm <= 0) or (mom < 0 and dm >= 0):
+                continue  # Would increase momentum, skip
+
             # Wheel releases momentum when external torque opposes its direction
             new_mom = mom - dm
 
