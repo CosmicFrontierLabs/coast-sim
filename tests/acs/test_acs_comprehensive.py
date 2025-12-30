@@ -350,9 +350,12 @@ class TestPointing:
         mock_pass.obstype = "GSP"
         mock_pass.obsid = 200
         mock_pass.ra_dec = Mock(return_value=(45.0, 30.0))
+        mock_pass.endra = 45.0
+        mock_pass.enddec = 30.0
 
         acs.last_slew = mock_pass
         acs.current_slew = mock_pass
+        acs.current_pass = mock_pass  # Required for PASS mode
 
         ra, dec, roll, obsid = acs.pointing(1514764800.0)
 
@@ -372,9 +375,12 @@ class TestPointing:
         mock_pass.begin = 1514764800.0
         mock_pass.length = 600.0
         mock_pass.ra_dec = Mock(return_value=(45.0, 30.0))
+        mock_pass.endra = 45.0
+        mock_pass.enddec = 30.0
 
         acs.last_slew = mock_pass
         acs.current_slew = mock_pass
+        acs.current_pass = mock_pass  # Required for PASS mode
 
         ra, dec, roll, obsid = acs.pointing(1514765000.0)  # Within pass
 
@@ -393,6 +399,8 @@ class TestPointing:
         mock_slew.obstype = "PPT"
         mock_slew.obsid = 100
         mock_slew.ra_dec = Mock(return_value=(45.0, 30.0))
+        mock_slew.endra = 45.0
+        mock_slew.enddec = 30.0
         mock_slew.at = Mock(spec=Pointing)
         mock_slew.at.ra = 45.0
         mock_slew.at.dec = 30.0
@@ -421,6 +429,8 @@ class TestPointing:
         mock_slew.obstype = "PPT"
         mock_slew.obsid = 100
         mock_slew.ra_dec = Mock(return_value=(45.0, 30.0))
+        mock_slew.endra = 45.0
+        mock_slew.enddec = 30.0
         mock_slew.at = None  # No at attribute
 
         acs.last_slew = mock_slew
@@ -445,6 +455,8 @@ class TestPointing:
         mock_pass.begin = 1514764800.0
         mock_pass.length = 600.0
         mock_pass.ra_dec = Mock(return_value=(45.0, 30.0))
+        mock_pass.endra = 45.0
+        mock_pass.enddec = 30.0
         mock_pass.at = None
 
         acs.last_slew = mock_pass

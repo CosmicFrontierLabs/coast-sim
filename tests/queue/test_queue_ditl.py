@@ -717,6 +717,7 @@ def test_record_wheel_resource_alignment(queue_ditl):
     queue_ditl._record_wheel_resource(100.0)
     queue_ditl._record_wheel_resource(110.0)
 
+    # Note: mtq_power is recorded in _record_power_data, not _record_wheel_resource
     lengths = [
         len(queue_ditl.wheel_momentum_fraction),
         len(queue_ditl.wheel_momentum_fraction_raw),
@@ -729,7 +730,6 @@ def test_record_wheel_resource_alignment(queue_ditl):
         len(queue_ditl.pass_torque_actual_mag),
         len(queue_ditl.mtq_proj_max),
         len(queue_ditl.mtq_torque_mag),
-        len(queue_ditl.mtq_power),
         len(queue_ditl.wheel_saturation),
     ]
     assert all(length == lengths[0] for length in lengths)

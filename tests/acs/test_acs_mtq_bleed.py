@@ -1,3 +1,7 @@
+from unittest.mock import Mock
+
+import numpy as np
+
 from conops import ACSMode
 from conops.simulation.reaction_wheel import ReactionWheel
 
@@ -18,10 +22,18 @@ def test_mtq_bleed_in_science_toggle(acs):
     acs._desat_use_mtq = True
     acs._last_pointing_time = 100.0
 
-    acs._mtq_bleed_in_science = False
+    # Mock disturbance model for MTQ calculations
+    acs.disturbance_model = Mock()
+    acs.disturbance_model.local_bfield_vector = Mock(
+        return_value=(np.array([0.0, 0.0, 3e-5]), 3e-5)
+    )
+    acs.disturbance_model.compute = Mock(return_value=(np.zeros(3), {}))
+
+    # Set via acs_config since _update_wheel_momentum reads from there
+    acs.acs_config.mtq_bleed_in_science = False
     acs._update_wheel_momentum(101.0)
     assert acs.mtq_power_w == 0.0
 
-    acs._mtq_bleed_in_science = True
+    acs.acs_config.mtq_bleed_in_science = True
     acs._update_wheel_momentum(102.0)
     assert acs.mtq_power_w > 0.0
