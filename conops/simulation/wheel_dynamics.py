@@ -438,16 +438,20 @@ class WheelDynamics:
         slew_distance_deg: float,
         rotation_axis: np.ndarray,
         accel_deg_s2: float,
+        max_rate_deg_s: float | None = None,
     ) -> float:
         """Compute peak angular momentum required for a slew.
 
         For a bang-bang slew profile, peak angular velocity occurs at midpoint.
-        Peak momentum H_peak = I * ω_peak where ω_peak = sqrt(angle * accel).
+        For triangular profile: ω_peak = sqrt(angle * accel).
+        For trapezoidal profile (when max_rate is limiting): ω_peak = max_rate.
 
         Args:
             slew_distance_deg: Slew distance in degrees.
             rotation_axis: Unit vector for rotation axis.
             accel_deg_s2: Angular acceleration in deg/s².
+            max_rate_deg_s: Maximum slew rate in deg/s. If provided, caps the
+                peak angular velocity (trapezoidal profile).
 
         Returns:
             Peak momentum magnitude (N·m·s).
@@ -472,6 +476,11 @@ class WheelDynamics:
         accel_rad = accel_deg_s2 * (pi / 180.0)
         omega_peak = sqrt(angle_rad * accel_rad)
 
+        # Cap at max slew rate if provided (trapezoidal profile)
+        if max_rate_deg_s is not None and max_rate_deg_s > 0:
+            max_rate_rad = max_rate_deg_s * (pi / 180.0)
+            omega_peak = min(omega_peak, max_rate_rad)
+
         return i_axis * omega_peak
 
     def check_slew_momentum_budget(
@@ -481,6 +490,7 @@ class WheelDynamics:
         accel_deg_s2: float,
         slew_time_s: float,
         disturbance_torque_mag: float = 0.0,
+        max_rate_deg_s: float | None = None,
     ) -> tuple[bool, str]:
         """Check if wheels have sufficient momentum headroom for a slew.
 
@@ -490,6 +500,7 @@ class WheelDynamics:
             accel_deg_s2: Angular acceleration in deg/s².
             slew_time_s: Estimated slew duration (seconds).
             disturbance_torque_mag: Estimated disturbance torque magnitude (N·m).
+            max_rate_deg_s: Maximum slew rate in deg/s (for trapezoidal profile).
 
         Returns:
             Tuple of (feasible, message).
@@ -499,7 +510,7 @@ class WheelDynamics:
 
         # Compute peak momentum needed
         h_peak = self.compute_slew_peak_momentum(
-            slew_distance_deg, rotation_axis, accel_deg_s2
+            slew_distance_deg, rotation_axis, accel_deg_s2, max_rate_deg_s
         )
         if h_peak <= 0:
             return True, "Zero momentum slew"
