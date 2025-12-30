@@ -256,6 +256,19 @@ class ACS:
             "mag": 0.0,
         }
 
+        # Momentum bookkeeping for physics validation
+        self._momentum_warnings: list[str] = []  # Accumulated warnings
+        self._slew_momentum_at_start: np.ndarray | None = None  # H_wheels at slew start
+        self._slew_expected_delta_H: np.ndarray | None = (
+            None  # Expected ΔH for current slew
+        )
+        self._momentum_tolerance = 0.1  # Fractional tolerance for momentum consistency
+        self._budget_margin = 0.85  # Require 85% of peak momentum as headroom
+        self._was_slewing = False  # Track slew state transitions
+        self._last_slew_for_verification: Slew | None = (
+            None  # Slew to verify on completion
+        )
+
     def _log_or_print(self, utime: float, event_type: str, description: str) -> None:
         """Log an event to DITLLog if available, otherwise print to stdout.
 
@@ -297,6 +310,290 @@ class ACS:
             return np.array(val, dtype=float)
         except (TypeError, ValueError):
             return default.copy()
+
+    # -------------------------------------------------------------------------
+    # Momentum Bookkeeping Methods
+    # -------------------------------------------------------------------------
+
+    def _get_total_wheel_momentum(self) -> np.ndarray:
+        """Compute total wheel angular momentum vector in body frame.
+
+        Returns:
+            H_wheels = Σ (wheel_i.current_momentum * wheel_i.axis)
+            as a 3D numpy array in N·m·s.
+        """
+        H_total = np.zeros(3, dtype=float)
+        for w in self.reaction_wheels:
+            try:
+                axis = np.array(w.orientation, dtype=float)
+                nrm = np.linalg.norm(axis)
+                if nrm > 0:
+                    axis = axis / nrm
+                mom = float(getattr(w, "current_momentum", 0.0))
+                H_total += mom * axis
+            except Exception:
+                continue
+        return H_total
+
+    def _get_wheel_headroom_along_axis(self, axis: np.ndarray) -> float:
+        """Compute available momentum headroom projected onto an axis.
+
+        Args:
+            axis: Unit vector representing the rotation axis.
+
+        Returns:
+            Total available momentum headroom (N·m·s) along the axis,
+            accounting for current wheel momentum and the safety margin.
+        """
+        axis = np.array(axis, dtype=float)
+        nrm = np.linalg.norm(axis)
+        if nrm <= 0:
+            return 0.0
+        axis = axis / nrm
+
+        headroom = 0.0
+        for w in self.reaction_wheels:
+            try:
+                w_axis = np.array(w.orientation, dtype=float)
+                w_nrm = np.linalg.norm(w_axis)
+                if w_nrm > 0:
+                    w_axis = w_axis / w_nrm
+                proj = abs(np.dot(w_axis, axis))
+                max_mom = (
+                    float(getattr(w, "max_momentum", 0.0)) * self._wheel_mom_margin
+                )
+                curr_mom = abs(float(getattr(w, "current_momentum", 0.0)))
+                headroom += proj * max(0.0, max_mom - curr_mom)
+            except Exception:
+                continue
+        return headroom
+
+    def _compute_slew_peak_momentum(self, slew: "Slew") -> tuple[float, np.ndarray]:
+        """Compute peak angular momentum required for a slew.
+
+        For a bang-bang slew profile, peak angular velocity occurs at the midpoint.
+        Peak momentum H_peak = I * ω_peak where ω_peak = sqrt(angle * accel).
+
+        Args:
+            slew: The slew object with geometry and profile parameters.
+
+        Returns:
+            Tuple of (peak_momentum_magnitude, rotation_axis).
+            Peak momentum is in N·m·s, axis is a unit vector.
+        """
+        from math import pi, sqrt
+
+        # Get rotation axis
+        axis = np.array(getattr(slew, "rotation_axis", (0.0, 0.0, 1.0)), dtype=float)
+        nrm = np.linalg.norm(axis)
+        if nrm <= 0:
+            axis = np.array([0.0, 0.0, 1.0])
+        else:
+            axis = axis / nrm
+
+        # Get slew parameters
+        angle_deg = float(getattr(slew, "slewdist", 0.0))
+        if angle_deg <= 0:
+            return 0.0, axis
+
+        # Get acceleration (use override if available)
+        accel_override = getattr(slew, "_accel_override", None)
+        if accel_override is not None:
+            accel_deg = float(accel_override)
+        else:
+            accel_deg = float(getattr(self.acs_config, "slew_acceleration", 0.5))
+        if accel_deg <= 0:
+            return 0.0, axis
+
+        # Get MOI along axis
+        moi_cfg = self.config.spacecraft_bus.attitude_control.spacecraft_moi
+        try:
+            if isinstance(moi_cfg, (list, tuple)):
+                arr = np.array(moi_cfg, dtype=float)
+                if arr.shape == (3, 3):
+                    I_mat = arr
+                elif arr.shape == (3,):
+                    I_mat = np.diag(arr)
+                else:
+                    val = float(np.mean(arr))
+                    I_mat = np.diag([val, val, val])
+            else:
+                val = float(moi_cfg)
+                I_mat = np.diag([val, val, val])
+        except Exception:
+            I_mat = np.diag([1.0, 1.0, 1.0])
+
+        i_axis = float(axis.dot(I_mat.dot(axis)))
+        if i_axis <= 0:
+            return 0.0, axis
+
+        # Peak rate for triangular profile: ω_peak = sqrt(angle * accel)
+        # For trapezoidal, it's capped at max_rate, but we use triangular as upper bound
+        angle_rad = angle_deg * (pi / 180.0)
+        accel_rad = accel_deg * (pi / 180.0)
+        omega_peak = sqrt(angle_rad * accel_rad)
+
+        # Peak momentum magnitude
+        H_peak = i_axis * omega_peak
+
+        return H_peak, axis
+
+    def _check_slew_momentum_budget(
+        self, slew: "Slew", utime: float
+    ) -> tuple[bool, str]:
+        """Check if wheels have sufficient momentum headroom for a slew.
+
+        This is a pre-slew feasibility check that verifies the wheels can
+        accommodate the peak momentum required during the slew, including
+        a safety margin and estimated disturbance accumulation.
+
+        Args:
+            slew: The slew to check.
+            utime: Current time (for disturbance estimation).
+
+        Returns:
+            Tuple of (feasible, message). If not feasible, message explains why.
+        """
+        if not self.reaction_wheels:
+            return True, "No wheels configured"
+
+        # Compute peak momentum needed
+        H_peak, axis = self._compute_slew_peak_momentum(slew)
+        if H_peak <= 0:
+            return True, "Zero momentum slew"
+
+        # Get current headroom along slew axis
+        headroom = self._get_wheel_headroom_along_axis(axis)
+
+        # Estimate disturbance momentum accumulation over slew time
+        slew_time = float(getattr(slew, "slewtime", 0.0))
+        if slew_time <= 0:
+            slew_time = 60.0  # Default estimate
+
+        # Get disturbance torque magnitude (rough estimate)
+        try:
+            dist_torque = self._compute_disturbance_torque(utime)
+            dist_mag = float(np.linalg.norm(dist_torque))
+        except Exception:
+            dist_mag = 1e-6  # Default small disturbance
+
+        # Disturbance momentum over slew duration
+        H_disturbance = dist_mag * slew_time
+
+        # Total momentum needed with margin
+        H_required = (H_peak + H_disturbance) / self._budget_margin
+
+        if headroom >= H_required:
+            return True, (
+                f"Budget OK: need {H_required:.4f} N·m·s, have {headroom:.4f} N·m·s"
+            )
+        else:
+            deficit = H_required - headroom
+            return False, (
+                f"Insufficient momentum budget: need {H_required:.4f} N·m·s "
+                f"(peak={H_peak:.4f}, disturbance={H_disturbance:.4f}), "
+                f"have {headroom:.4f} N·m·s (deficit={deficit:.4f})"
+            )
+
+    def _record_slew_start_momentum(self, slew: "Slew") -> None:
+        """Record wheel momentum state at the start of a slew for later validation."""
+        self._slew_momentum_at_start = self._get_total_wheel_momentum()
+
+        # Compute expected momentum change for this slew
+        # For a complete slew, net momentum change should equal
+        # the momentum absorbed to stop at the end position
+        H_peak, axis = self._compute_slew_peak_momentum(slew)
+        # For a bang-bang profile, the slew accelerates then decelerates
+        # Net wheel momentum change = I * (ω_final - ω_initial) = 0 for a slew
+        # But wheels accumulate disturbance rejection, so we track the peak
+        self._slew_expected_delta_H = axis * 0.0  # Net should be ~zero for ideal slew
+
+    def _verify_slew_end_momentum(self, slew: "Slew", utime: float) -> None:
+        """Verify momentum consistency at the end of a slew.
+
+        Compares actual wheel momentum change against expected and logs
+        warnings if they diverge significantly.
+        """
+        if self._slew_momentum_at_start is None:
+            return
+
+        H_end = self._get_total_wheel_momentum()
+        H_start = self._slew_momentum_at_start
+        delta_H = H_end - H_start
+
+        # For an ideal slew with perfect disturbance rejection,
+        # net momentum change should be small (only disturbance accumulation)
+        slew_time = float(getattr(slew, "slewtime", 60.0))
+
+        # Expected disturbance accumulation
+        try:
+            dist_torque = self._compute_disturbance_torque(utime)
+            expected_dist_H = float(np.linalg.norm(dist_torque)) * slew_time
+        except Exception:
+            expected_dist_H = 0.0
+
+        # Actual momentum change magnitude
+        actual_delta_H = float(np.linalg.norm(delta_H))
+
+        # Check if momentum change is reasonable
+        # Allow for disturbance accumulation plus some tolerance
+        tolerance = max(expected_dist_H * 2, 0.01)  # At least 0.01 N·m·s tolerance
+
+        if actual_delta_H > tolerance:
+            # Get peak momentum for context
+            H_peak, _ = self._compute_slew_peak_momentum(slew)
+            warning = (
+                f"Momentum consistency warning at t={utime:.1f}: "
+                f"ΔH_wheels={actual_delta_H:.4f} N·m·s (expected ~{expected_dist_H:.4f}), "
+                f"slew peak was {H_peak:.4f} N·m·s"
+            )
+            self._momentum_warnings.append(warning)
+            self._logger.warning(warning)
+
+        # Clear state
+        self._slew_momentum_at_start = None
+        self._slew_expected_delta_H = None
+
+    def get_momentum_warnings(self) -> list[str]:
+        """Return list of momentum consistency warnings accumulated during simulation."""
+        return self._momentum_warnings.copy()
+
+    def clear_momentum_warnings(self) -> None:
+        """Clear accumulated momentum warnings."""
+        self._momentum_warnings.clear()
+
+    def get_momentum_summary(self) -> dict[str, Any]:
+        """Return a summary of current momentum state for diagnostics.
+
+        Returns:
+            Dictionary with wheel momentum vector, per-wheel details, and headroom.
+        """
+        H_total = self._get_total_wheel_momentum()
+        wheels = []
+        for w in self.reaction_wheels:
+            try:
+                wheels.append(
+                    {
+                        "name": getattr(w, "name", "wheel"),
+                        "momentum": float(getattr(w, "current_momentum", 0.0)),
+                        "max_momentum": float(getattr(w, "max_momentum", 0.0)),
+                        "fraction": abs(float(getattr(w, "current_momentum", 0.0)))
+                        / max(float(getattr(w, "max_momentum", 1.0)), 1e-9),
+                    }
+                )
+            except Exception:
+                continue
+
+        return {
+            "total_momentum_vector": H_total.tolist(),
+            "total_momentum_magnitude": float(np.linalg.norm(H_total)),
+            "wheels": wheels,
+            "num_warnings": len(self._momentum_warnings),
+        }
+
+    # -------------------------------------------------------------------------
+    # End Momentum Bookkeeping Methods
+    # -------------------------------------------------------------------------
 
     def _validate_wheel_configuration(self) -> None:
         """Validate that wheel orientations form a controllable configuration.
@@ -629,6 +926,23 @@ class ACS:
         slew._vmax_override = vmax_override
         slew.calc_slewtime()
 
+        # Pre-slew momentum budget check (for non-SAFE slews with wheels)
+        if self.reaction_wheels and slew.obstype != "SAFE":
+            budget_ok, budget_msg = self._check_slew_momentum_budget(slew, utime)
+            if not budget_ok:
+                self._log_or_print(
+                    utime,
+                    "SLEW",
+                    f"{unixtime2date(utime)}: Slew rejected - {budget_msg}",
+                )
+                self._momentum_warnings.append(
+                    f"Slew rejected at t={utime:.1f}: {budget_msg}"
+                )
+                self.request_desat(utime)
+                return False
+            else:
+                self._logger.debug("Slew momentum budget: %s", budget_msg)
+
         self._log_or_print(
             utime,
             "SLEW",
@@ -641,6 +955,11 @@ class ACS:
 
         # Reset clamp flag for this slew
         self._slew_clamped = False
+
+        # Record momentum state at slew start for bookkeeping
+        if self.reaction_wheels:
+            self._record_slew_start_momentum(slew)
+            self._last_slew_for_verification = slew
 
         # Update last_ppt if this is a science pointing
         if self._is_science_pointing(slew):
@@ -1279,8 +1598,19 @@ class ACS:
                 self._apply_magnetorquer_desat(dt, utime)
             else:
                 self.mtq_power_w = 0.0
+        # Check if a slew just completed (was slewing, now not)
+        is_slewing = self.current_slew is not None and self.current_slew.is_slewing(
+            utime
+        )
+        if self._was_slewing and not is_slewing:
+            # Slew just completed - verify momentum consistency
+            if self._last_slew_for_verification is not None:
+                self._verify_slew_end_momentum(self._last_slew_for_verification, utime)
+                self._last_slew_for_verification = None
+        self._was_slewing = is_slewing
+
         # Only update when actively slewing and we have wheels
-        if self.current_slew is None or not self.current_slew.is_slewing(utime):
+        if self.current_slew is None or not is_slewing:
             handled_pass = False
             # If in a ground pass, treat continuous tracking as a small slew for wheel accounting
             if (
