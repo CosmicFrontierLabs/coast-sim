@@ -81,6 +81,7 @@ class WheelDynamics:
 
         # Slew momentum tracking
         self._slew_momentum_at_start: np.ndarray | None = None
+        self._slew_external_impulse_at_start: np.ndarray | None = None
         self._slew_expected_delta_h: np.ndarray | None = None
 
         # MTQ state tracking
@@ -229,7 +230,7 @@ class WheelDynamics:
         if dt <= 0:
             return np.zeros(3, dtype=float)
 
-        total_torque_on_body = np.zeros(3, dtype=float)
+        total_impulse_on_body = np.zeros(3, dtype=float)
 
         for i, w in enumerate(self.wheels):
             tau = float(taus_allowed[i])
@@ -248,16 +249,19 @@ class WheelDynamics:
                 axis = np.array([1.0, 0.0, 0.0])
 
             # Apply torque to wheel (updates wheel momentum)
-            w.apply_torque(tau, dt)
+            # Returns actual momentum change (may be less if wheel saturated)
+            actual_delta_h = w.apply_torque(tau, dt)
 
-            # Reaction torque on spacecraft body (Newton's 3rd law)
-            torque_on_body = -tau * axis
-            total_torque_on_body += torque_on_body
+            # Reaction impulse on spacecraft body (Newton's 3rd law)
+            # Use actual momentum change, not requested, to conserve total momentum
+            impulse_on_body = -actual_delta_h * axis
+            total_impulse_on_body += impulse_on_body
 
-        # Update spacecraft body momentum: ΔH_body = τ_body * dt
-        self.body_momentum += total_torque_on_body * dt
+        # Update spacecraft body momentum with actual impulse
+        self.body_momentum += total_impulse_on_body
 
-        return total_torque_on_body
+        # Return equivalent average torque for compatibility
+        return total_impulse_on_body / dt if dt > 0 else np.zeros(3, dtype=float)
 
     def apply_external_torque(
         self, external_torque: np.ndarray, dt: float, source: str = "external"
@@ -371,9 +375,6 @@ class WheelDynamics:
             self.mtq_power_w = total_power
             return total_power
 
-        # Track MTQ as external torque for momentum conservation
-        self._cumulative_external_impulse += t_mtq * dt
-
         # Project MTQ torque onto each wheel axis and bleed momentum toward zero
         max_proj = 0.0
         actual_impulse = np.zeros(3, dtype=float)
@@ -407,10 +408,16 @@ class WheelDynamics:
             elif mom < 0:
                 new_mom = min(0.0, new_mom)
 
-            # Track actual momentum change
+            # Track actual momentum change (momentum leaving the wheel)
             actual_dm = mom - new_mom
             actual_impulse += actual_dm * axis
             w.current_momentum = new_mom
+
+        # The actual wheel momentum change is the momentum transferred out of the
+        # system via MTQ. Track this as external impulse for conservation.
+        # Note: actual_impulse is the momentum LEAVING the wheels (positive when
+        # wheels slow down), so this represents momentum dumped to environment.
+        self._cumulative_external_impulse -= actual_impulse
 
         self.mtq_power_w = total_power
         self._last_mtq_proj_max = float(max_proj)
@@ -418,10 +425,13 @@ class WheelDynamics:
 
         _logger.debug(
             "MTQ desat: τ_mtq=[%.4e, %.4e, %.4e] N·m, "
-            "ΔH_wheel=[%.4e, %.4e, %.4e] N·m·s",
+            "ΔH_wheel=[%.4e, %.4e, %.4e] N·m·s, ext_impulse=[%.4e, %.4e, %.4e]",
             t_mtq[0],
             t_mtq[1],
             t_mtq[2],
+            -actual_impulse[0],
+            -actual_impulse[1],
+            -actual_impulse[2],
             -actual_impulse[0],
             -actual_impulse[1],
             -actual_impulse[2],
@@ -547,6 +557,7 @@ class WheelDynamics:
     def record_slew_start(self) -> None:
         """Record wheel momentum state at the start of a slew."""
         self._slew_momentum_at_start = self.get_total_wheel_momentum().copy()
+        self._slew_external_impulse_at_start = self._cumulative_external_impulse.copy()
 
     # -------------------------------------------------------------------------
     # Conservation Validation

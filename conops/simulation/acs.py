@@ -257,6 +257,8 @@ class ACS:
         # Slew state tracking (still needed for operational logic)
         self._was_slewing = False
         self._last_slew_for_verification: Slew | None = None
+        # Track cumulative velocity during slew to prevent overshoot from timestep discretization
+        self._slew_velocity_integral: float = 0.0
 
         # Momentum warnings (operational tracking, not physics)
         self._momentum_warnings: list[str] = []
@@ -452,48 +454,57 @@ class ACS:
     def _verify_slew_end_momentum(self, slew: "Slew", utime: float) -> None:
         """Verify momentum consistency at the end of a slew.
 
-        Compares actual wheel momentum change against expected and logs
-        warnings if they diverge significantly.
+        Compares actual wheel momentum change against expected external impulse
+        (disturbances + MTQ bleeding) accumulated during the slew.
         """
-        # Get slew start momentum from WheelDynamics
+        # Get slew start state from WheelDynamics
         h_start = self.wheel_dynamics._slew_momentum_at_start
+        impulse_start = self.wheel_dynamics._slew_external_impulse_at_start
         if h_start is None:
             return
 
         h_end = self.wheel_dynamics.get_total_wheel_momentum()
+        impulse_end = self.wheel_dynamics._cumulative_external_impulse
         delta_h = h_end - h_start
 
-        # For an ideal slew with perfect disturbance rejection,
-        # net momentum change should be small (only disturbance accumulation)
-        slew_time = float(getattr(slew, "slewtime", 60.0))
-
-        # Expected disturbance accumulation
-        try:
-            dist_torque = self._compute_disturbance_torque(utime)
-            expected_dist_h = float(np.linalg.norm(dist_torque)) * slew_time
-        except Exception:
-            expected_dist_h = 0.0
+        # Expected momentum change = external impulse accumulated during slew
+        # This includes both disturbances and MTQ bleeding (both are external torques)
+        if impulse_start is not None:
+            expected_delta = impulse_end - impulse_start
+            expected_h = float(np.linalg.norm(expected_delta))
+        else:
+            # Fallback to instantaneous disturbance estimate
+            slew_time = float(getattr(slew, "slewtime", 60.0))
+            try:
+                dist_torque = self._compute_disturbance_torque(utime)
+                expected_h = float(np.linalg.norm(dist_torque)) * slew_time
+            except Exception:
+                expected_h = 0.0
 
         # Actual momentum change magnitude
         actual_delta_h = float(np.linalg.norm(delta_h))
 
-        # Check if momentum change is reasonable
-        # Allow for disturbance accumulation plus some tolerance
-        tolerance = max(expected_dist_h * 2, 0.01)  # At least 0.01 N·m·s tolerance
+        # Check if momentum change is consistent with external impulse
+        # Allow tolerance for numerical precision and any untracked effects
+        tolerance = max(expected_h * 0.5, 0.1)  # 50% margin or at least 0.1 N·m·s
 
-        if actual_delta_h > tolerance:
+        # The discrepancy is the difference between actual and expected
+        discrepancy = abs(actual_delta_h - expected_h)
+
+        if discrepancy > tolerance:
             # Get peak momentum for context
             h_peak, _ = self._compute_slew_peak_momentum(slew)
             warning = (
                 f"Momentum consistency warning at t={utime:.1f}: "
-                f"ΔH_wheels={actual_delta_h:.4f} N·m·s (expected ~{expected_dist_h:.4f}), "
-                f"slew peak was {h_peak:.4f} N·m·s"
+                f"ΔH_wheels={actual_delta_h:.4f} N·m·s vs expected external impulse {expected_h:.4f} N·m·s "
+                f"(discrepancy={discrepancy:.4f}), slew peak was {h_peak:.4f} N·m·s"
             )
             self._momentum_warnings.append(warning)
             self._logger.warning(warning)
 
         # Clear slew tracking state in WheelDynamics
         self.wheel_dynamics._slew_momentum_at_start = None
+        self.wheel_dynamics._slew_external_impulse_at_start = None
 
     def get_momentum_warnings(self) -> list[str]:
         """Return list of momentum consistency warnings accumulated during simulation."""
@@ -1503,12 +1514,54 @@ class ACS:
                 self._apply_magnetorquer_desat(dt, utime)
             else:
                 self.mtq_power_w = 0.0
-        # Check if a slew just completed (was slewing, now not)
+        # Check slew state transitions
         is_slewing = self.current_slew is not None and self.current_slew.is_slewing(
             utime
         )
+        if not self._was_slewing and is_slewing:
+            # Slew just started - reset velocity tracking and record actual start momentum
+            self._slew_velocity_integral = 0.0
+            # Record momentum NOW, not when command was executed
+            if self.reaction_wheels:
+                self.wheel_dynamics.record_slew_start()
         if self._was_slewing and not is_slewing:
-            # Slew just completed - verify momentum consistency
+            # Slew just completed - apply final velocity correction before verification
+            # This handles the case where is_slewing turns False before the final decel step
+            if (
+                self.reaction_wheels
+                and self._slew_velocity_integral > 1e-9
+                and dt > 0
+                and self.last_slew is not None
+            ):
+                from math import pi
+
+                # Apply final decel impulse to zero out remaining velocity
+                final_accel = -self._slew_velocity_integral / dt
+                self._slew_velocity_integral = 0.0
+
+                # Get slew axis from last_slew
+                axis = np.array(
+                    getattr(self.last_slew, "rotation_axis", (0.0, 0.0, 1.0)),
+                    dtype=float,
+                )
+                a_nrm = np.linalg.norm(axis)
+                if a_nrm > 0:
+                    axis = axis / a_nrm
+
+                # Compute torque for final decel
+                moi_cfg = self.config.spacecraft_bus.attitude_control.spacecraft_moi
+                I_mat = DisturbanceModel._build_inertia(moi_cfg)
+                i_axis = float(axis.dot(I_mat.dot(axis)))
+                final_torque = (final_accel * (pi / 180.0)) * i_axis
+                T_final = axis * final_torque
+
+                # Allocate and apply
+                taus, taus_allowed, T_actual, _ = self._allocate_wheel_torques(
+                    T_final, dt, use_weights=False, bias_gain=0.0
+                )
+                self._apply_wheel_torques_conserving(taus_allowed, dt)
+
+            # Verify momentum consistency
             if self._last_slew_for_verification is not None:
                 self._verify_slew_end_momentum(self._last_slew_for_verification, utime)
                 self._last_slew_for_verification = None
@@ -1549,6 +1602,40 @@ class ACS:
 
         # Determine current accel request (deg/s^2)
         accel_req = self._slew_accel_profile(self.current_slew, utime)
+
+        # Track velocity and handle timestep discretization asymmetry.
+        # With coarse timesteps (e.g., 10s), accel and decel phases may have different
+        # step counts due to boundary conditions. We track cumulative velocity and:
+        # 1. Cap deceleration to not overshoot zero
+        # 2. Apply residual decel when profile returns 0 AND we're past motion phase
+        #    (not during cruise, which also has accel_req=0)
+        if accel_req == 0.0 and self._slew_velocity_integral > 1e-9 and dt > 0:
+            # Check if we're past motion phase (in settle) vs in cruise
+            # Only apply velocity correction in settle phase, not cruise
+            dist = float(getattr(self.current_slew, "slewdist", 0.0) or 0.0)
+            a = getattr(self.current_slew, "_accel_override", None)
+            if a is None or a <= 0:
+                a = float(self.acs_config.slew_acceleration)
+            vmax = getattr(self.current_slew, "_vmax_override", None)
+            if vmax is None or vmax <= 0:
+                vmax = float(self.acs_config.max_slew_rate)
+            motion_time = float(self.acs_config.motion_time(dist, accel=a, vmax=vmax))
+            t_rel = float(utime - getattr(self.current_slew, "slewstart", 0.0))
+
+            if t_rel >= motion_time:
+                # Past motion phase (in settle) - apply corrective decel
+                accel_req = -self._slew_velocity_integral / dt
+            # else: in cruise phase - don't modify accel_req, maintain constant velocity
+        elif accel_req < 0:
+            # Decelerating - cap so we don't overshoot zero velocity
+            max_decel = self._slew_velocity_integral / dt if dt > 0 else 0.0
+            if abs(accel_req) > max_decel:
+                accel_req = -max_decel
+        self._slew_velocity_integral += accel_req * dt
+        # Clamp to zero to avoid floating point drift
+        if abs(self._slew_velocity_integral) < 1e-12:
+            self._slew_velocity_integral = 0.0
+
         if accel_req == 0.0:
             # During settle/hold portion of a slew, reject disturbances like a hold
             self._apply_hold_wheel_torque(disturbance_torque, dt, utime)
