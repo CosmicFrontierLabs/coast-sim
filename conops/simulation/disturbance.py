@@ -4,9 +4,9 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from pymsis import calculate  # type: ignore[import-untyped]
 
 from ..common import dtutcfromtimestamp
+from .msis_adapter import MsisAdapter, MsisConfig
 
 
 @dataclass
@@ -22,6 +22,7 @@ class DisturbanceConfig:
     msis_f107: float = 200.0
     msis_f107a: float = 180.0
     msis_ap: float = 12.0
+    msis_density_scale: float = 1.0
 
 
 class DisturbanceModel:
@@ -36,6 +37,15 @@ class DisturbanceModel:
     def __init__(self, ephem: Any, cfg: DisturbanceConfig) -> None:
         self.ephem = ephem
         self.cfg = cfg
+        self._msis = MsisAdapter(
+            MsisConfig(
+                use_msis_density=cfg.use_msis_density,
+                msis_f107=cfg.msis_f107,
+                msis_f107a=cfg.msis_f107a,
+                msis_ap=cfg.msis_ap,
+                msis_density_scale=cfg.msis_density_scale,
+            )
+        )
 
     @staticmethod
     def _inertial_to_body(vec: np.ndarray, ra_deg: float, dec_deg: float) -> np.ndarray:
@@ -90,13 +100,14 @@ class DisturbanceModel:
         except Exception:
             return b_const, float(np.linalg.norm(b_const))
 
+        lat_deg = lon_deg = None
         try:
             lat_deg = float(getattr(self.ephem, "latitude_deg", [0.0])[idx])
             lon_deg = float(getattr(self.ephem, "longitude_deg", [0.0])[idx])
         except Exception:
-            lat_deg = 0.0
-            lon_deg = 0.0
+            pass
 
+        pos = None
         try:
             pos = np.array(self.ephem.gcrs_pv.position[idx], dtype=float)
             rmag = float(np.linalg.norm(pos))
@@ -106,8 +117,17 @@ class DisturbanceModel:
         except Exception:
             alt_m = 500e3
 
-        lat = np.deg2rad(lat_deg)
-        lon = np.deg2rad(lon_deg)
+        if (lat_deg is None or lon_deg is None) and pos is not None:
+            try:
+                x, y, z = pos
+                lon_deg = float(np.rad2deg(np.arctan2(y, x)))
+                lat_deg = float(np.rad2deg(np.arctan2(z, np.sqrt(x * x + y * y))))
+            except Exception:
+                lat_deg = lat_deg if lat_deg is not None else 0.0
+                lon_deg = lon_deg if lon_deg is not None else 0.0
+
+        lat = np.deg2rad(lat_deg if lat_deg is not None else 0.0)
+        lon = np.deg2rad(lon_deg if lon_deg is not None else 0.0)
         r = float(self.RE_M + max(0.0, alt_m))
         scale = (self.RE_M / r) ** 3
 
@@ -127,29 +147,16 @@ class DisturbanceModel:
         self, utime: float, alt_m: float, lat_deg: float | None, lon_deg: float | None
     ) -> float:
         """Lookup/interpolate atmospheric density (kg/m^3) vs altitude."""
-        if self.cfg.use_msis_density:
-            date = dtutcfromtimestamp(utime)
-            dates = np.array([date])
-            alts = np.array([max(0.0, alt_m / 1000.0)])
-            lats = np.array([lat_deg if lat_deg is not None else 0.0])
-            lons = np.array([lon_deg if lon_deg is not None else 0.0])
-            f107 = np.array([self.cfg.msis_f107])
-            f107a = np.array([self.cfg.msis_f107a])
-            ap = np.array([[self.cfg.msis_ap] * 7])
-            dens = calculate(
-                dates,
-                lons,
-                lats,
-                alts,
-                f107s=f107,
-                f107as=f107a,
-                aps=ap,
-                version="00",
-            )
-            rho = float(dens[0, 0, 0, 0, -1])
-            if rho > 0:
-                return rho
+        rho_table = self._table_density(alt_m)
+        lat_use = float(lat_deg) if lat_deg is not None else 0.0
+        lon_use = float(lon_deg) if lon_deg is not None else 0.0
+        rho_msis = self._msis.density(utime, alt_m, lat_use, lon_use, rho_table)
+        if rho_msis is not None:
+            return rho_msis
+        return rho_table
 
+    @staticmethod
+    def _table_density(alt_m: float) -> float:
         table = [
             (0, 1.225),
             (25, 3.9e-2),
@@ -240,6 +247,14 @@ class DisturbanceModel:
                 lon_deg = float(lon_seq[idx_latlon])
         except Exception:
             pass
+        if (lat_deg is None or lon_deg is None) and r_vec is not None:
+            try:
+                x, y, z = r_vec
+                lon_deg = float(np.rad2deg(np.arctan2(y, x)))
+                lat_deg = float(np.rad2deg(np.arctan2(z, np.sqrt(x * x + y * y))))
+            except Exception:
+                lat_deg = lat_deg if lat_deg is not None else 0.0
+                lon_deg = lon_deg if lon_deg is not None else 0.0
 
         if self.cfg.drag_area_m2 > 0 and v_vec is not None:
             v_body = self._inertial_to_body(v_vec, ra_deg, dec_deg)

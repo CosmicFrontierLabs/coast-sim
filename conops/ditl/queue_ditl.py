@@ -1108,12 +1108,13 @@ class QueueDITL(DITLMixin, DITLStats):
         self.panel_power.append(panel_power)
 
         # Calculate power consumption by subsystem
-        bus_power, payload_power, total_power, mtq_power = (
+        bus_power, payload_power, total_power, mtq_power, wheel_power = (
             self._calculate_power_consumption(mode=mode, in_eclipse=in_eclipse)
         )
         self.power_bus.append(bus_power)
         self.power_payload.append(payload_power)
         self.mtq_power.append(mtq_power)
+        self.wheel_power.append(wheel_power)
         self.power.append(total_power)
 
         # Update battery state
@@ -1134,13 +1135,14 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _calculate_power_consumption(
         self, mode: ACSMode, in_eclipse: bool
-    ) -> tuple[float, float, float, float]:
+    ) -> tuple[float, float, float, float, float]:
         """Calculate total spacecraft power consumption broken down by subsystem.
 
         Returns:
-            Tuple of (bus_power, payload_power, total_power, mtq_power) in watts.
-            MTQ power reflects ACS telemetry and may be non-zero in SCIENCE when
-            mtq_bleed_in_science is enabled.
+            Tuple of (bus_power, payload_power, total_power, mtq_power, wheel_power)
+            in watts. MTQ power reflects ACS telemetry and may be non-zero in SCIENCE
+            when mtq_bleed_in_science is enabled. Wheel power includes idle and
+            torque-dependent consumption from all reaction wheels.
         """
         bus_power = self.spacecraft_bus.power(mode=mode, in_eclipse=in_eclipse)
         payload_power = self.payload.power(mode=mode, in_eclipse=in_eclipse)
@@ -1148,8 +1150,12 @@ class QueueDITL(DITLMixin, DITLStats):
             mtq_power = float(getattr(self.acs, "mtq_power_w", 0.0))
         except (TypeError, ValueError):
             mtq_power = 0.0
-        total_power = bus_power + payload_power + mtq_power
-        return bus_power, payload_power, total_power, mtq_power
+        try:
+            wheel_power = float(getattr(self.acs, "wheel_power_w", 0.0))
+        except (TypeError, ValueError):
+            wheel_power = 0.0
+        total_power = bus_power + payload_power + mtq_power + wheel_power
+        return bus_power, payload_power, total_power, mtq_power, wheel_power
 
     def _update_battery_state(
         self, consumed_power: float, generated_power: float
@@ -1167,40 +1173,66 @@ class QueueDITL(DITLMixin, DITLStats):
             self.wheel_momentum_fraction_raw.append(0.0)
             self.wheel_torque_fraction.append(0.0)
             self.wheel_saturation.append(0)
+            self.wheel_torque_actual_mag.append(0.0)
+            self.hold_torque_target_mag.append(0.0)
+            self.hold_torque_actual_mag.append(0.0)
+            self.pass_tracking_rate_deg_s.append(0.0)
+            self.pass_torque_target_mag.append(0.0)
+            self.pass_torque_actual_mag.append(0.0)
+            self.mtq_proj_max.append(0.0)
+            self.mtq_torque_mag.append(0.0)
             return
 
         snapshot = self.acs.wheel_snapshot()
-        self.wheel_momentum_fraction.append(snapshot.get("max_momentum_fraction", 0.0))
-        self.wheel_momentum_fraction_raw.append(
-            snapshot.get("max_momentum_fraction_raw", 0.0)
+        # Handle both real WheelTelemetrySnapshot and Mock objects
+        self.wheel_momentum_fraction.append(
+            getattr(snapshot, "max_momentum_fraction", 0.0)
         )
-        self.wheel_torque_fraction.append(snapshot.get("max_torque_fraction", 0.0))
-        self.wheel_saturation.append(1 if bool(snapshot.get("saturated")) else 0)
-        self.wheel_torque_actual_mag.append(snapshot.get("t_actual_mag", 0.0))
-        self.hold_torque_target_mag.append(snapshot.get("hold_torque_target_mag", 0.0))
-        self.hold_torque_actual_mag.append(snapshot.get("hold_torque_actual_mag", 0.0))
-        self.mtq_proj_max.append(snapshot.get("mtq_proj_max", 0.0))
-        self.mtq_torque_mag.append(snapshot.get("mtq_torque_mag", 0.0))
+        self.wheel_momentum_fraction_raw.append(
+            getattr(snapshot, "max_momentum_fraction_raw", 0.0)
+        )
+        self.wheel_torque_fraction.append(getattr(snapshot, "max_torque_fraction", 0.0))
+        self.wheel_saturation.append(1 if getattr(snapshot, "saturated", False) else 0)
+        self.wheel_torque_actual_mag.append(getattr(snapshot, "t_actual_mag", 0.0))
+        self.hold_torque_target_mag.append(
+            getattr(snapshot, "hold_torque_target_mag", 0.0)
+        )
+        self.hold_torque_actual_mag.append(
+            getattr(snapshot, "hold_torque_actual_mag", 0.0)
+        )
+        self.pass_tracking_rate_deg_s.append(
+            getattr(snapshot, "pass_tracking_rate_deg_s", 0.0)
+        )
+        self.pass_torque_target_mag.append(
+            getattr(snapshot, "pass_torque_target_mag", 0.0)
+        )
+        self.pass_torque_actual_mag.append(
+            getattr(snapshot, "pass_torque_actual_mag", 0.0)
+        )
+        self.mtq_proj_max.append(getattr(snapshot, "mtq_proj_max", 0.0))
+        self.mtq_torque_mag.append(getattr(snapshot, "mtq_torque_mag", 0.0))
         # Track per-wheel raw maxima across the run
-        wheels = snapshot.get("wheels", [])
-        if not isinstance(wheels, (list, tuple)):
-            wheels = []
-        for w in wheels:
-            name = str(w.get("name", ""))
-            if not name:
-                continue
-            # Store signed momentum time series
-            hist = self.wheel_momentum_history.setdefault(name, [])
-            hist.append(w.get("momentum", 0.0))
-            # Store applied torque time series
-            thist = self.wheel_torque_history.setdefault(name, [])
-            thist.append(w.get("torque_applied", 0.0))
-            frac = self._safe_float(
-                w.get("momentum_fraction_raw", w.get("momentum_fraction", 0.0))
-            )
-            prev = self.wheel_per_wheel_max_raw.get(name, 0.0)
-            if frac > prev:
-                self.wheel_per_wheel_max_raw[name] = frac
+        wheels = getattr(snapshot, "wheels", None)
+        if wheels is None or not hasattr(wheels, "__iter__"):
+            return
+        try:
+            for w in wheels:
+                name = getattr(w, "name", None)
+                if not name:
+                    continue
+                # Store signed momentum time series
+                hist = self.wheel_momentum_history.setdefault(name, [])
+                hist.append(getattr(w, "momentum", 0.0))
+                # Store applied torque time series
+                thist = self.wheel_torque_history.setdefault(name, [])
+                thist.append(getattr(w, "torque_applied", 0.0))
+                frac = getattr(w, "momentum_fraction_raw", 0.0)
+                prev = self.wheel_per_wheel_max_raw.get(name, 0.0)
+                if frac > prev:
+                    self.wheel_per_wheel_max_raw[name] = frac
+        except TypeError:
+            # wheels is not iterable (e.g., Mock object)
+            pass
 
     @staticmethod
     def _safe_float(val: float | int | None) -> float:

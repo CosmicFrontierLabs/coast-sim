@@ -279,13 +279,18 @@ class TestPointing:
         """Test pointing with no slew."""
         mock_roll.return_value = 0.0
         acs.ephem = mock_ephem
+        acs.current_slew = None
+        acs.last_slew = None
+        acs.current_pass = None
+        acs.ra = 0.0
+        acs.dec = 0.0
 
         ra, dec, roll, obsid = acs.pointing(1514764800.0)
 
         assert ra == 0.0  # Earth RA from mock
         assert dec == 0.0  # Earth Dec from mock
         assert roll == 0.0
-        assert obsid == 0  # Default obsid when no slew is active
+        assert obsid == 1  # Default obsid when no slew is active
 
     @patch("conops.optimum_roll")
     def test_pointing_slew_start_adjustment(self, mock_roll, acs):

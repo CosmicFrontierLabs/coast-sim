@@ -252,6 +252,17 @@ class TestPredictSlew:
         slew.predict_slew()
         assert np.allclose(slew.slewpath[1], dec_path)
 
+    def test_predict_slew_zero_distance_sets_default_axis(self, slew, acs_config):
+        acs_config.predict_slew = Mock(return_value=(0.0, ([0.0] * 20, [0.0] * 20)))
+        slew.startra = 10.0
+        slew.startdec = -5.0
+        slew.endra = 10.0
+        slew.enddec = -5.0
+
+        slew.predict_slew()
+
+        assert slew.rotation_axis == (0.0, 0.0, 1.0)
+
 
 class TestSlewPathResolution:
     """Tests demonstrating why 100 steps is better than 20 for slew paths.

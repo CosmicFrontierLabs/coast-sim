@@ -68,3 +68,86 @@ def test_multi_wheel_parsing_creates_wheels():
     ]
     acs = ACS(config=cfg, log=None)
     assert len(acs.reaction_wheels) == 2
+
+
+def test_wheel_config_validation_full_rank():
+    """Test that a proper 3-axis wheel config has rank 3."""
+    cfg = MissionConfig()
+    cfg.constraint.ephem = DummyEphem()
+    acs_cfg = cfg.spacecraft_bus.attitude_control
+    acs_cfg.wheels = [
+        {"orientation": [1.0, 0.0, 0.0], "max_torque": 0.1, "max_momentum": 1.0},
+        {"orientation": [0.0, 1.0, 0.0], "max_torque": 0.1, "max_momentum": 1.0},
+        {"orientation": [0.0, 0.0, 1.0], "max_torque": 0.1, "max_momentum": 1.0},
+    ]
+    acs = ACS(config=cfg, log=None)
+    assert acs._wheel_config_rank == 3
+    assert acs._wheel_config_n_wheels == 3
+
+
+def test_wheel_config_validation_parallel_wheels_rank_deficient():
+    """Test that parallel wheels result in rank < 3."""
+    cfg = MissionConfig()
+    cfg.constraint.ephem = DummyEphem()
+    acs_cfg = cfg.spacecraft_bus.attitude_control
+    # Two wheels along X axis, one along Y - no Z-axis control
+    acs_cfg.wheels = [
+        {"orientation": [1.0, 0.0, 0.0], "max_torque": 0.1, "max_momentum": 1.0},
+        {"orientation": [1.0, 0.0, 0.0], "max_torque": 0.1, "max_momentum": 1.0},
+        {"orientation": [0.0, 1.0, 0.0], "max_torque": 0.1, "max_momentum": 1.0},
+    ]
+    acs = ACS(config=cfg, log=None)
+    assert acs._wheel_config_rank == 2  # Only 2 independent axes
+    assert acs._wheel_config_n_wheels == 3
+
+
+def test_wheel_config_validation_single_wheel():
+    """Test that single wheel logs a warning (under-actuated)."""
+    cfg = MissionConfig()
+    cfg.constraint.ephem = DummyEphem()
+    acs_cfg = cfg.spacecraft_bus.attitude_control
+    acs_cfg.wheel_enabled = True
+    acs_cfg.wheel_max_torque = 0.1
+    acs_cfg.wheel_max_momentum = 1.0
+    acs = ACS(config=cfg, log=None)
+    assert acs._wheel_config_n_wheels == 1
+    assert acs._wheel_config_rank == 1
+
+
+def test_wheel_config_four_wheel_redundant():
+    """Test that a 4-wheel pyramid config has rank 3 and good conditioning."""
+    cfg = MissionConfig()
+    cfg.constraint.ephem = DummyEphem()
+    acs_cfg = cfg.spacecraft_bus.attitude_control
+    # Classic pyramid configuration (4 wheels, redundant)
+    import math
+
+    theta = math.radians(54.74)  # angle from vertical for pyramid
+    acs_cfg.wheels = [
+        {
+            "orientation": [math.sin(theta), 0.0, math.cos(theta)],
+            "max_torque": 0.1,
+            "max_momentum": 1.0,
+        },
+        {
+            "orientation": [0.0, math.sin(theta), math.cos(theta)],
+            "max_torque": 0.1,
+            "max_momentum": 1.0,
+        },
+        {
+            "orientation": [-math.sin(theta), 0.0, math.cos(theta)],
+            "max_torque": 0.1,
+            "max_momentum": 1.0,
+        },
+        {
+            "orientation": [0.0, -math.sin(theta), math.cos(theta)],
+            "max_torque": 0.1,
+            "max_momentum": 1.0,
+        },
+    ]
+    acs = ACS(config=cfg, log=None)
+    assert acs._wheel_config_rank == 3
+    assert acs._wheel_config_n_wheels == 4
+    # Should be well-conditioned
+    assert hasattr(acs, "_wheel_config_condition")
+    assert acs._wheel_config_condition < 10  # Well-conditioned

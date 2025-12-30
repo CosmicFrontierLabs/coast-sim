@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from conops import ACSCommandType, ACSMode, Pass, QueueDITL
+from conops.simulation.telemetry import WheelReading, WheelTelemetrySnapshot
 
 
 class TestQueueDITLInitialization:
@@ -638,6 +639,100 @@ class TestFetchNewPPT:
         assert queue_ditl.ppt is mock_ppt
         # Command should be enqueued
         queue_ditl.acs.enqueue_command.assert_called_once()
+
+
+def test_record_wheel_resource_accepts_dataclass_snapshot(queue_ditl):
+    snapshot = WheelTelemetrySnapshot(
+        utime=123.0,
+        wheels=[
+            WheelReading(
+                name="rw1",
+                momentum=0.1,
+                max_momentum=1.0,
+                momentum_fraction=0.1,
+                momentum_fraction_raw=0.1,
+                torque_command=0.0,
+                torque_applied=0.0,
+                max_torque=0.2,
+            )
+        ],
+        max_momentum_fraction=0.1,
+        max_momentum_fraction_raw=0.1,
+        max_torque_fraction=0.0,
+        saturated=False,
+        t_actual_mag=0.0,
+        hold_torque_target_mag=0.0,
+        hold_torque_actual_mag=0.0,
+        pass_tracking_rate_deg_s=0.0,
+        pass_torque_target_mag=0.0,
+        pass_torque_actual_mag=0.0,
+        mtq_proj_max=0.0,
+        mtq_torque_mag=0.0,
+        mtq_power_w=0.0,
+    )
+    queue_ditl.acs.wheel_snapshot = lambda: snapshot
+
+    queue_ditl._record_wheel_resource(123.0)
+
+    assert queue_ditl.wheel_momentum_fraction[-1] == 0.1
+    assert queue_ditl.wheel_momentum_fraction_raw[-1] == 0.1
+    assert queue_ditl.wheel_torque_fraction[-1] == 0.0
+    assert queue_ditl.wheel_saturation[-1] == 0
+    assert queue_ditl.pass_tracking_rate_deg_s[-1] == 0.0
+    assert queue_ditl.pass_torque_target_mag[-1] == 0.0
+    assert queue_ditl.pass_torque_actual_mag[-1] == 0.0
+
+
+def test_record_wheel_resource_alignment(queue_ditl):
+    snapshot = WheelTelemetrySnapshot(
+        utime=100.0,
+        wheels=[
+            WheelReading(
+                name="rw1",
+                momentum=0.1,
+                max_momentum=1.0,
+                momentum_fraction=0.1,
+                momentum_fraction_raw=0.1,
+                torque_command=0.0,
+                torque_applied=0.0,
+                max_torque=0.2,
+            )
+        ],
+        max_momentum_fraction=0.1,
+        max_momentum_fraction_raw=0.1,
+        max_torque_fraction=0.0,
+        saturated=False,
+        t_actual_mag=0.0,
+        hold_torque_target_mag=0.0,
+        hold_torque_actual_mag=0.0,
+        pass_tracking_rate_deg_s=0.0,
+        pass_torque_target_mag=0.0,
+        pass_torque_actual_mag=0.0,
+        mtq_proj_max=0.0,
+        mtq_torque_mag=0.0,
+        mtq_power_w=0.0,
+    )
+    queue_ditl.acs.wheel_snapshot = lambda: snapshot
+
+    queue_ditl._record_wheel_resource(100.0)
+    queue_ditl._record_wheel_resource(110.0)
+
+    lengths = [
+        len(queue_ditl.wheel_momentum_fraction),
+        len(queue_ditl.wheel_momentum_fraction_raw),
+        len(queue_ditl.wheel_torque_fraction),
+        len(queue_ditl.wheel_torque_actual_mag),
+        len(queue_ditl.hold_torque_target_mag),
+        len(queue_ditl.hold_torque_actual_mag),
+        len(queue_ditl.pass_tracking_rate_deg_s),
+        len(queue_ditl.pass_torque_target_mag),
+        len(queue_ditl.pass_torque_actual_mag),
+        len(queue_ditl.mtq_proj_max),
+        len(queue_ditl.mtq_torque_mag),
+        len(queue_ditl.mtq_power),
+        len(queue_ditl.wheel_saturation),
+    ]
+    assert all(length == lengths[0] for length in lengths)
 
 
 class TestRecordSpacecraftState:

@@ -191,9 +191,8 @@ class Slew:
         axis = np.cross(v0, v1)
         nrm = np.linalg.norm(axis)
         if nrm <= 1e-12:
-            raise ValueError(
-                f"Degenerate slew axis for start/end ({self.startra}, {self.startdec}) "
-                f"-> ({self.endra}, {self.enddec})"
-            )
+            # No slew (or nearly no slew): leave a stable default axis and return.
+            self.rotation_axis = (0.0, 0.0, 1.0)
+            return
         axis = axis / nrm
         self.rotation_axis = (float(axis[0]), float(axis[1]), float(axis[2]))

@@ -25,6 +25,7 @@ class ReactionWheel:
     - When a planned slew is executed, `reserve_impulse` can be used to
       estimate whether the wheel has enough headroom; it will return an
       adjusted torque if necessary.
+    - Tracks power consumption based on idle power plus torque-dependent draw.
     """
 
     def __init__(
@@ -34,6 +35,8 @@ class ReactionWheel:
         orientation: tuple[float, float, float] | None = None,
         current_momentum: float = 0.0,
         name: str | None = None,
+        idle_power_w: float = 5.0,
+        torque_power_coeff: float = 50.0,
     ) -> None:
         # store raw values for debugging; coerce to floats for math use
         self.max_torque_raw = max_torque
@@ -46,6 +49,12 @@ class ReactionWheel:
         )
         self.current_momentum = _to_float(current_momentum)
         self.name = name or "wheel"
+        # Power model parameters
+        self.idle_power_w = _to_float(
+            idle_power_w
+        )  # Watts when spinning but not torquing
+        self.torque_power_coeff = _to_float(torque_power_coeff)  # W per N*m of torque
+        self.last_torque_applied = 0.0  # Track last applied torque for power calc
 
     def accel_limit_deg(self, moi: float) -> float:
         """Return maximum spacecraft angular acceleration (deg/s^2)
@@ -106,6 +115,7 @@ class ReactionWheel:
             pass
 
         self.current_momentum += torque * dt
+        self.last_torque_applied = torque  # Track for power calculation
 
         # clamp to capacity
         if self.current_momentum > self.max_momentum:
@@ -121,3 +131,14 @@ class ReactionWheel:
             )
         except Exception:
             pass
+
+    def power_draw(self) -> float:
+        """Return current power draw in Watts.
+
+        Power model: P = idle_power + torque_power_coeff * |last_torque|
+        This is a simplified model; real wheels have complex power profiles
+        depending on speed, temperature, and torque direction.
+        """
+        return self.idle_power_w + self.torque_power_coeff * abs(
+            self.last_torque_applied
+        )

@@ -54,6 +54,7 @@ class AttitudeControlSystem(BaseModel):
     msis_f107: float = 200.0  # solar flux (sfu), higher default for active cycle
     msis_f107a: float = 180.0  # 81-day average
     msis_ap: float = 12.0  # geomagnetic index (Ap), quiet-to-moderate
+    msis_density_scale: float = 1.0  # optional multiplier for MSIS density
     # Disturbance torque in body frame (N*m), applied continuously
     disturbance_torque_body: tuple[float, float, float] = (0.0, 0.0, 0.0)
 

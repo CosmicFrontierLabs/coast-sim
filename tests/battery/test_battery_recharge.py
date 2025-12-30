@@ -397,6 +397,24 @@ class TestEmergencyCharging:
         assert ppt is None
         assert emergency_charging.current_charging_ppt is None
 
+    def test_initiate_emergency_charging_no_pointing_does_not_terminate(
+        self, emergency_charging, mock_ephem, monkeypatch, utime
+    ):
+        current_ppt = Mock(spec=Pointing)
+        current_ppt.done = False
+        current_ppt.end = None
+        monkeypatch.setattr(
+            emergency_charging, "create_charging_pointing", Mock(return_value=None)
+        )
+
+        ppt = emergency_charging.initiate_emergency_charging(
+            utime, mock_ephem, 0.0, 0.0, current_ppt
+        )
+
+        assert ppt is None
+        assert current_ppt.done is False
+        assert current_ppt.end is None
+
     def test_clear_current_charging_resets_current_ppt(
         self, emergency_charging, mock_ephem, monkeypatch, utime
     ):

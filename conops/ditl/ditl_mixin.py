@@ -126,6 +126,10 @@ class DITLMixin:
         # Hold-mode torque diagnostics
         self.hold_torque_target_mag: list[float] = []
         self.hold_torque_actual_mag: list[float] = []
+        # Pass-mode tracking diagnostics
+        self.pass_tracking_rate_deg_s: list[float] = []
+        self.pass_torque_target_mag: list[float] = []
+        self.pass_torque_actual_mag: list[float] = []
         # Per-wheel max momentum (raw) tracked over the run
         self.wheel_per_wheel_max_raw: dict[str, float] = {}
         # Per-wheel momentum history (signed Nms) for diagnostics
@@ -134,6 +138,8 @@ class DITLMixin:
         self.wheel_torque_history: dict[str, list[float]] = {}
         # Magnetorquer power draw (W) per step
         self.mtq_power: list[float] = []
+        # Reaction wheel power draw (W) per step
+        self.wheel_power: list[float] = []
         self._last_desat_request = 0.0
         # Disturbance torque tracking
         self.disturbance_total = []
