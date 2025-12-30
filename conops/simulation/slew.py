@@ -1,3 +1,4 @@
+import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -5,6 +6,8 @@ import rust_ephem
 
 from ..common import roll_over_angle, unixtime2date
 from ..config import AttitudeControlSystem, Constraint, MissionConfig
+
+_logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..targets.pointing import Pointing
@@ -191,7 +194,19 @@ class Slew:
         axis = np.cross(v0, v1)
         nrm = np.linalg.norm(axis)
         if nrm <= 1e-12:
-            # No slew (or nearly no slew): leave a stable default axis and return.
+            # Near-zero or near-antipodal slew: rotation axis is undefined
+            if self.slewdist < 0.01:
+                _logger.debug(
+                    "Slew distance %.6f deg is near-zero; using default Z rotation axis",
+                    self.slewdist,
+                )
+            else:
+                # Large distance but small cross product = near-antipodal (180 deg)
+                _logger.warning(
+                    "Slew of %.1f deg has undefined rotation axis (antipodal points); "
+                    "using default Z axis. Consider breaking into two slews.",
+                    self.slewdist,
+                )
             self.rotation_axis = (0.0, 0.0, 1.0)
             return
         axis = axis / nrm

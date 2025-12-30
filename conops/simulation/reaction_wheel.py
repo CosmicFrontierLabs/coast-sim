@@ -114,14 +114,34 @@ class ReactionWheel:
         except Exception:
             pass
 
-        self.current_momentum += torque * dt
+        new_momentum = self.current_momentum + torque * dt
         self.last_torque_applied = torque  # Track for power calculation
 
-        # clamp to capacity
-        if self.current_momentum > self.max_momentum:
+        # Clamp to capacity and log if saturation occurs
+        if new_momentum > self.max_momentum:
+            dropped = new_momentum - self.max_momentum
+            logger.debug(
+                "Wheel %s saturated at +max: requested %.4f, clamped to %.4f "
+                "(dropped %.4f N*m*s)",
+                self.name,
+                new_momentum,
+                self.max_momentum,
+                dropped,
+            )
             self.current_momentum = self.max_momentum
-        if self.current_momentum < -self.max_momentum:
+        elif new_momentum < -self.max_momentum:
+            dropped = -self.max_momentum - new_momentum
+            logger.debug(
+                "Wheel %s saturated at -max: requested %.4f, clamped to %.4f "
+                "(dropped %.4f N*m*s)",
+                self.name,
+                new_momentum,
+                -self.max_momentum,
+                dropped,
+            )
             self.current_momentum = -self.max_momentum
+        else:
+            self.current_momentum = new_momentum
 
         try:
             logger.debug(

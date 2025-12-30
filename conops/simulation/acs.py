@@ -407,22 +407,7 @@ class ACS:
 
         # Get MOI along axis
         moi_cfg = self.config.spacecraft_bus.attitude_control.spacecraft_moi
-        try:
-            if isinstance(moi_cfg, (list, tuple)):
-                arr = np.array(moi_cfg, dtype=float)
-                if arr.shape == (3, 3):
-                    I_mat = arr
-                elif arr.shape == (3,):
-                    I_mat = np.diag(arr)
-                else:
-                    val = float(np.mean(arr))
-                    I_mat = np.diag([val, val, val])
-            else:
-                val = float(moi_cfg)
-                I_mat = np.diag([val, val, val])
-        except Exception:
-            I_mat = np.diag([1.0, 1.0, 1.0])
-
+        I_mat = DisturbanceModel._build_inertia(moi_cfg)
         i_axis = float(axis.dot(I_mat.dot(axis)))
         if i_axis <= 0:
             return 0.0, axis
@@ -634,19 +619,30 @@ class ACS:
         self._wheel_config_rank = rank
         self._wheel_config_n_wheels = n_wheels
 
-        # Log warnings for problematic configurations
+        # Check for strict validation mode
+        strict = getattr(
+            self.config.spacecraft_bus.attitude_control,
+            "strict_wheel_validation",
+            False,
+        )
+
+        # Log warnings or raise errors for problematic configurations
         if n_wheels < 3:
-            _logger.warning(
-                "ACS: Only %d reaction wheel(s) configured; full 3-axis control "
-                "requires at least 3 wheels with linearly independent axes.",
-                n_wheels,
+            msg = (
+                f"ACS: Only {n_wheels} reaction wheel(s) configured; full 3-axis "
+                "control requires at least 3 wheels with linearly independent axes."
             )
+            if strict and n_wheels > 0:
+                raise ValueError(msg)
+            _logger.warning(msg)
         elif rank < 3:
-            _logger.warning(
-                "ACS: Wheel orientation matrix has rank %d < 3; spacecraft may not "
-                "have full 3-axis controllability. Check wheel orientations.",
-                rank,
+            msg = (
+                f"ACS: Wheel orientation matrix has rank {rank} < 3; spacecraft "
+                "does not have full 3-axis controllability. Check wheel orientations."
             )
+            if strict:
+                raise ValueError(msg)
+            _logger.warning(msg)
 
         # Check for nearly-singular configuration (condition number)
         if rank >= min(3, n_wheels):
@@ -1254,22 +1250,7 @@ class ACS:
         # Direct momentum headroom check along slew axis (predict required peak H)
         # Compute inertia about axis
         moi_cfg = self.config.spacecraft_bus.attitude_control.spacecraft_moi
-        try:
-            if isinstance(moi_cfg, (list, tuple)):
-                arr = np.array(moi_cfg, dtype=float)
-                if arr.shape == (3, 3):
-                    I_mat = arr
-                elif arr.shape == (3,):
-                    I_mat = np.diag(arr)
-                else:
-                    val = float(np.mean(arr))
-                    I_mat = np.diag([val, val, val])
-            else:
-                val = float(moi_cfg)
-                I_mat = np.diag([val, val, val])
-        except Exception:
-            I_mat = np.diag([1.0, 1.0, 1.0])
-
+        I_mat = DisturbanceModel._build_inertia(moi_cfg)
         i_axis = float(axis.dot(I_mat.dot(axis)))
         from math import pi
 
@@ -1650,28 +1631,9 @@ class ACS:
             self._last_pointing_time = utime
             return
 
-        # Derive scalar moi approximation
-        # Build inertia matrix from config. Support scalar, diagonal (Ixx,Iyy,Izz) or full 3x3.
+        # Build inertia matrix from config
         moi_cfg = self.config.spacecraft_bus.attitude_control.spacecraft_moi
-        try:
-            if isinstance(moi_cfg, (list, tuple)):
-                # If nested list-like -> treat as full matrix
-                if len(moi_cfg) == 3 and any(
-                    isinstance(x, (list, tuple)) for x in moi_cfg
-                ):
-                    I_mat = np.array(moi_cfg, dtype=float)
-                elif len(moi_cfg) == 3:
-                    I_mat = np.diag([float(x) for x in moi_cfg])
-                else:
-                    # fallback to scalar conversion
-                    val = float(sum(moi_cfg) / len(moi_cfg))
-                    I_mat = np.diag([val, val, val])
-            else:
-                val = float(moi_cfg)
-                I_mat = np.diag([val, val, val])
-        except Exception:
-            # if anything fails, fallback to scalar 1.0 inertia
-            I_mat = np.diag([1.0, 1.0, 1.0])
+        I_mat = DisturbanceModel._build_inertia(moi_cfg)
 
         from math import pi
 
@@ -1910,22 +1872,7 @@ class ACS:
 
         # Inertia about axis
         moi_cfg = self.config.spacecraft_bus.attitude_control.spacecraft_moi
-        try:
-            if isinstance(moi_cfg, (list, tuple)):
-                arr = np.array(moi_cfg, dtype=float)
-                if arr.shape == (3, 3):
-                    I_mat = arr
-                elif arr.shape == (3,):
-                    I_mat = np.diag(arr)
-                else:
-                    val = float(np.mean(arr))
-                    I_mat = np.diag([val, val, val])
-            else:
-                val = float(moi_cfg)
-                I_mat = np.diag([val, val, val])
-        except Exception:
-            I_mat = np.diag([1.0, 1.0, 1.0])
-
+        I_mat = DisturbanceModel._build_inertia(moi_cfg)
         i_axis = float(axis.dot(I_mat.dot(axis)))
         if i_axis <= 0:
             return 0.0
@@ -2001,22 +1948,7 @@ class ACS:
 
         # Inertia about axis
         moi_cfg = self.config.spacecraft_bus.attitude_control.spacecraft_moi
-        try:
-            if isinstance(moi_cfg, (list, tuple)):
-                arr = np.array(moi_cfg, dtype=float)
-                if arr.shape == (3, 3):
-                    I_mat = arr
-                elif arr.shape == (3,):
-                    I_mat = np.diag(arr)
-                else:
-                    val = float(np.mean(arr))
-                    I_mat = np.diag([val, val, val])
-            else:
-                val = float(moi_cfg)
-                I_mat = np.diag([val, val, val])
-        except Exception:
-            I_mat = np.diag([1.0, 1.0, 1.0])
-
+        I_mat = DisturbanceModel._build_inertia(moi_cfg)
         i_axis = float(axis.dot(I_mat.dot(axis)))
         if i_axis <= 0:
             return 0.0  # Invalid inertia means no slew capability
@@ -2339,22 +2271,7 @@ class ACS:
         # Use existing wheel update logic with this synthetic accel
         # Build inertia matrix
         moi_cfg = self.config.spacecraft_bus.attitude_control.spacecraft_moi
-        try:
-            if isinstance(moi_cfg, (list, tuple)):
-                arr = np.array(moi_cfg, dtype=float)
-                if arr.shape == (3, 3):
-                    I_mat = arr
-                elif arr.shape == (3,):
-                    I_mat = np.diag(arr)
-                else:
-                    val = float(np.mean(arr))
-                    I_mat = np.diag([val, val, val])
-            else:
-                val = float(moi_cfg)
-                I_mat = np.diag([val, val, val])
-        except Exception:
-            I_mat = np.diag([1.0, 1.0, 1.0])
-
+        I_mat = DisturbanceModel._build_inertia(moi_cfg)
         i_axis = float(axis.dot(I_mat.dot(axis)))
         if i_axis <= 0:
             self._build_wheel_snapshot(utime, None, None)
