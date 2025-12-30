@@ -1443,11 +1443,15 @@ class ACS:
                 continue
             dm = tau_w * dt
             mom = float(getattr(w, "current_momentum", 0.0))
+            # Apply physics: external torque reduces wheel momentum by tau_w * dt
+            # (wheel releases momentum when external torque opposes its direction)
+            new_mom = mom - dm
+            # Clamp to prevent overshoot past zero during desaturation
             if mom > 0:
-                mom = max(0.0, mom - abs(dm))
-            else:
-                mom = min(0.0, mom + abs(dm))
-            w.current_momentum = mom
+                new_mom = max(0.0, new_mom)
+            elif mom < 0:
+                new_mom = min(0.0, new_mom)
+            w.current_momentum = new_mom
 
         # Track instantaneous MTQ power draw (W)
         self.mtq_power_w = total_power
@@ -1550,7 +1554,7 @@ class ACS:
     def _axis_accel_limit(self, axis: np.ndarray, motion_time: float) -> float:
         """Compute maximum achievable accel (deg/s^2) about a rotation axis using all wheels."""
         if not self.reaction_wheels:
-            return float("inf")
+            return 0.0  # No wheels means no slew capability
 
         # Normalize axis
         try:
@@ -1641,7 +1645,7 @@ class ACS:
     def _axis_rate_limit(self, axis: np.ndarray) -> float:
         """Estimate max angular rate (deg/s) about an axis based on wheel momentum capacity."""
         if not self.reaction_wheels:
-            return float("inf")
+            return 0.0  # No wheels means no slew capability
 
         # Normalize axis
         try:
@@ -1674,7 +1678,7 @@ class ACS:
 
         i_axis = float(axis.dot(I_mat.dot(axis)))
         if i_axis <= 0:
-            return float("inf")
+            return 0.0  # Invalid inertia means no slew capability
 
         # Project wheel momentum capacity onto axis
         total_axis_mom = 0.0
@@ -1693,7 +1697,7 @@ class ACS:
             total_axis_mom += proj * headroom
 
         if total_axis_mom <= 0:
-            return float("inf")
+            return 0.0  # No momentum headroom means no slew capability
 
         # omega = H / I; convert to deg/s
         from math import pi
