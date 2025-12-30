@@ -29,6 +29,55 @@ class DisturbanceConfig:
     # Ephemeris position/velocity units: "m", "km", or "auto" (detect from magnitude)
     ephemeris_units: str = "auto"
 
+    @classmethod
+    def from_acs_config(cls, acs_cfg: Any) -> DisturbanceConfig:
+        """Create DisturbanceConfig from an ACS config object with safe defaults.
+
+        Args:
+            acs_cfg: ACS configuration object (e.g., AttitudeControlSystem).
+
+        Returns:
+            DisturbanceConfig with values parsed from acs_cfg.
+        """
+
+        def safe_float(attr: str, default: float) -> float:
+            try:
+                val = getattr(acs_cfg, attr, default)
+                return float(val) if val is not None else default
+            except (TypeError, ValueError):
+                return default
+
+        def safe_vec3(
+            attr: str, default: tuple[float, float, float]
+        ) -> tuple[float, float, float]:
+            try:
+                val = getattr(acs_cfg, attr, None)
+                if val is None:
+                    return default
+                arr = np.array(val, dtype=float)
+                if len(arr) >= 3:
+                    return (float(arr[0]), float(arr[1]), float(arr[2]))
+                return default
+            except (TypeError, ValueError):
+                return default
+
+        return cls(
+            magnetorquer_bfield_T=safe_float("magnetorquer_bfield_T", 3e-5),
+            cp_offset_body=safe_vec3("cp_offset_body", (0.0, 0.0, 0.0)),
+            residual_magnetic_moment=safe_vec3(
+                "residual_magnetic_moment", (0.0, 0.0, 0.0)
+            ),
+            drag_area_m2=safe_float("drag_area_m2", 0.0),
+            drag_coeff=safe_float("drag_coeff", 2.2),
+            solar_area_m2=safe_float("solar_area_m2", 0.0),
+            solar_reflectivity=safe_float("solar_reflectivity", 1.0),
+            use_msis_density=bool(getattr(acs_cfg, "use_msis_density", False)),
+            msis_f107=safe_float("msis_f107", 200.0),
+            msis_f107a=safe_float("msis_f107a", 180.0),
+            msis_ap=safe_float("msis_ap", 12.0),
+            msis_density_scale=safe_float("msis_density_scale", 1.0),
+        )
+
 
 class DisturbanceModel:
     """Centralized disturbance torque model (GG/drag/SRP/mag + MSIS handling)."""

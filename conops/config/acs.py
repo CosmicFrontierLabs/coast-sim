@@ -7,6 +7,32 @@ from ..common import great_circle, separation
 from .constants import DTOR
 
 
+class WheelSpec(BaseModel):
+    """Specification for a single reaction wheel.
+
+    Defines orientation, torque/momentum limits, and power characteristics.
+    """
+
+    orientation: tuple[float, float, float] = (1.0, 0.0, 0.0)
+    max_torque: float = 0.0  # N*m
+    max_momentum: float = 0.0  # N*m*s
+    name: str = ""
+    idle_power_w: float = 5.0  # Watts when spinning but not applying torque
+    torque_power_coeff: float = 50.0  # Additional power per N*m of torque
+
+
+class MagnetorquerSpec(BaseModel):
+    """Specification for a single magnetorquer.
+
+    Defines orientation, dipole strength, and power characteristics.
+    """
+
+    orientation: tuple[float, float, float] = (1.0, 0.0, 0.0)
+    dipole_strength: float = 0.0  # A*m^2
+    power_draw: float = 0.0  # Watts when active
+    name: str = ""
+
+
 class AttitudeControlSystem(BaseModel):
     """
     Attitude Control System (ACS) configuration parameters.
@@ -25,11 +51,11 @@ class AttitudeControlSystem(BaseModel):
     wheel_max_torque: float = 0.0  # N*m - maximum torque a wheel assembly can apply
     wheel_max_momentum: float = 0.0  # N*m*s - wheel momentum storage capacity
     # Multi-wheel definition: list of wheels with orientation and per-wheel params
-    wheels: list[dict[str, Any]] = []
+    wheels: list[WheelSpec | dict[str, Any]] = []
     # Spacecraft rotational inertia per principal axis (Ixx, Iyy, Izz) in kg*m^2
     spacecraft_moi: tuple[float, float, float] = (5.0, 5.0, 5.0)
     # Magnetorquer definitions (optional) for finite momentum unloading
-    magnetorquers: list[dict[str, Any]] = []
+    magnetorquers: list[MagnetorquerSpec | dict[str, Any]] = []
     magnetorquer_bfield_T: float = 3e-5  # representative LEO field magnitude (Tesla)
     # If True, allow MTQ bleed during SCIENCE; default keeps MTQs off in SCIENCE
     mtq_bleed_in_science: bool = False

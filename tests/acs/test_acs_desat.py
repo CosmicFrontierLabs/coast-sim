@@ -37,6 +37,54 @@ class TestDesatCommand:
         assert acs.get_mode(200.0) == ACSMode.SCIENCE
 
 
+class TestCheckCurrentLoad:
+    """Tests for _check_current_load() momentum threshold check."""
+
+    def _setup_wheels(self, acs, wheels):
+        """Helper to sync reaction_wheels and wheel_dynamics.wheels."""
+        acs.reaction_wheels = wheels
+        acs.wheel_dynamics.wheels = wheels
+
+    def test_no_wheels_returns_true(self, acs):
+        """Without reaction wheels, load check always passes."""
+        self._setup_wheels(acs, [])
+        assert acs._check_current_load(utime=0.0) is True
+
+    def test_below_threshold_returns_true(self, acs):
+        """Wheels below 60% capacity should pass the load check."""
+        wheel = ReactionWheel(max_torque=0.1, max_momentum=1.0)
+        wheel.current_momentum = 0.59  # 59% < 60%
+        self._setup_wheels(acs, [wheel])
+        assert acs._check_current_load(utime=0.0) is True
+
+    def test_at_threshold_returns_false_and_requests_desat(self, acs):
+        """Wheels at 60% capacity should fail and request desat."""
+        wheel = ReactionWheel(max_torque=0.1, max_momentum=1.0)
+        wheel.current_momentum = 0.60  # exactly 60%
+        self._setup_wheels(acs, [wheel])
+        # Ensure no magnetorquers (request_desat skips if MTQs exist)
+        acs.magnetorquers = []
+        # Use utime past the desat cooldown period (1800s)
+        utime = 2000.0
+        initial_desat_requests = acs.desat_requests
+
+        result = acs._check_current_load(utime=utime)
+
+        assert result is False
+        # Verify desat was requested
+        assert acs.desat_requests == initial_desat_requests + 1
+
+    def test_above_threshold_returns_false(self, acs):
+        """Wheels above 60% capacity should fail."""
+        wheel = ReactionWheel(max_torque=0.1, max_momentum=1.0)
+        wheel.current_momentum = 0.80  # 80% > 60%
+        self._setup_wheels(acs, [wheel])
+
+        result = acs._check_current_load(utime=0.0)
+
+        assert result is False
+
+
 class TestHeadroomGate:
     """Slew enqueue should request desat when wheels lack headroom."""
 

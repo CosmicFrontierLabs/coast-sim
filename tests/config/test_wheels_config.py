@@ -20,12 +20,12 @@ def test_example_config_contains_wheels_and_moi():
     assert isinstance(acs.wheels, list)
     assert len(acs.wheels) == 4
 
-    # Each wheel should have expected keys
+    # Each wheel should have expected attributes (WheelSpec model)
     for w in acs.wheels:
-        assert "name" in w
-        assert "orientation" in w
-        assert "max_torque" in w
-        assert "max_momentum" in w
+        assert hasattr(w, "name")
+        assert hasattr(w, "orientation")
+        assert hasattr(w, "max_torque")
+        assert hasattr(w, "max_momentum")
 
     # spacecraft_moi parsed as sequence of three values
     moi = acs.spacecraft_moi
