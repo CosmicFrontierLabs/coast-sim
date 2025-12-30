@@ -162,7 +162,10 @@ class TestMomentumConservation:
         acs._apply_external_torque(np.array([0, 0, 0.03]), 3.0, source="test3")
 
         expected = np.array([0.01, 0.04, 0.09])
-        assert np.allclose(acs._cumulative_external_impulse, expected, atol=1e-10)
+        # Access via WheelDynamics
+        assert np.allclose(
+            acs.wheel_dynamics._cumulative_external_impulse, expected, atol=1e-10
+        )
 
     def test_conservation_check_passes_when_valid(self):
         """Conservation check passes when momentum is conserved."""
@@ -232,11 +235,12 @@ class TestMomentumBookkeepingIntegration:
         dt = 60.0
         utime = 60.0
 
-        initial_ext = acs._cumulative_external_impulse.copy()
+        # Access via WheelDynamics
+        initial_ext = acs.wheel_dynamics._cumulative_external_impulse.copy()
         acs._apply_hold_wheel_torque(disturbance, dt, utime)
 
         # External impulse should have increased by disturbance * dt
-        delta_ext = acs._cumulative_external_impulse - initial_ext
+        delta_ext = acs.wheel_dynamics._cumulative_external_impulse - initial_ext
         assert np.allclose(delta_ext, disturbance * dt, atol=1e-10)
 
     def test_wheel_headroom_along_axis(self):

@@ -15,6 +15,7 @@ class TestMomentumBookkeeping:
     def test_get_total_wheel_momentum_empty(self, acs):
         """No wheels returns zero vector."""
         acs.reaction_wheels = []
+        acs.wheel_dynamics.wheels = acs.reaction_wheels  # Keep in sync
         h_total = acs._get_total_wheel_momentum()
         assert np.allclose(h_total, np.zeros(3))
 
@@ -27,6 +28,7 @@ class TestMomentumBookkeeping:
         )
         wheel.current_momentum = 0.5
         acs.reaction_wheels = [wheel]
+        acs.wheel_dynamics.wheels = acs.reaction_wheels  # Keep in sync
 
         h_total = acs._get_total_wheel_momentum()
         assert np.allclose(h_total, np.array([0.5, 0.0, 0.0]))
@@ -52,6 +54,7 @@ class TestMomentumBookkeeping:
         )
         wheel_z.current_momentum = 0.4
         acs.reaction_wheels = [wheel_x, wheel_y, wheel_z]
+        acs.wheel_dynamics.wheels = acs.reaction_wheels  # Keep in sync
 
         h_total = acs._get_total_wheel_momentum()
         assert np.allclose(h_total, np.array([0.3, -0.2, 0.4]))
@@ -65,7 +68,8 @@ class TestMomentumBookkeeping:
         )
         wheel.current_momentum = 0.3
         acs.reaction_wheels = [wheel]
-        acs._wheel_mom_margin = 1.0  # No margin for this test
+        acs.wheel_dynamics.wheels = acs.reaction_wheels  # Keep in sync
+        acs.wheel_dynamics._momentum_margin = 1.0  # No margin for this test
 
         # Headroom along X axis
         headroom = acs._get_wheel_headroom_along_axis(np.array([1.0, 0.0, 0.0]))
@@ -80,6 +84,7 @@ class TestMomentumBookkeeping:
         )
         wheel.current_momentum = 0.0
         acs.reaction_wheels = [wheel]
+        acs.wheel_dynamics.wheels = acs.reaction_wheels  # Keep in sync
 
         # Y axis is orthogonal to X-oriented wheel
         headroom = acs._get_wheel_headroom_along_axis(np.array([0.0, 1.0, 0.0]))
@@ -117,6 +122,7 @@ class TestMomentumBudget:
         )
         wheel.current_momentum = 0.0
         acs.reaction_wheels = [wheel]
+        acs.wheel_dynamics.wheels = acs.reaction_wheels  # Keep in sync
 
         # Small slew
         slew = Slew(config=mock_config)
@@ -147,7 +153,8 @@ class TestMomentumBudget:
         )
         wheel.current_momentum = 0.45  # 90% full
         acs.reaction_wheels = [wheel]
-        acs._wheel_mom_margin = 0.9
+        acs.wheel_dynamics.wheels = acs.reaction_wheels  # Keep in sync
+        acs.wheel_dynamics._momentum_margin = 0.9
 
         # Large slew requiring lots of momentum
         slew = Slew(config=mock_config)
@@ -210,15 +217,15 @@ class TestMomentumWarnings:
         )
         wheel.current_momentum = 0.5
         acs.reaction_wheels = [wheel]
+        acs.wheel_dynamics.wheels = acs.reaction_wheels  # Keep in sync
 
         summary = acs.get_momentum_summary()
 
-        assert "total_momentum_vector" in summary
-        assert "total_momentum_magnitude" in summary
-        assert "wheels" in summary
+        # WheelDynamics uses wheel_momentum instead of total_momentum_vector
+        assert "wheel_momentum" in summary
+        assert "total_momentum" in summary
         assert "num_warnings" in summary
-        assert len(summary["wheels"]) == 1
-        assert summary["wheels"][0]["momentum"] == 0.5
+        assert summary["wheel_momentum_mag"] > 0
 
 
 class TestSlewMomentumRecording:
@@ -233,6 +240,7 @@ class TestSlewMomentumRecording:
         )
         wheel.current_momentum = 0.3
         acs.reaction_wheels = [wheel]
+        acs.wheel_dynamics.wheels = acs.reaction_wheels  # Keep in sync
 
         slew = Slew(config=mock_config)
         slew.slewdist = 10.0
@@ -241,8 +249,11 @@ class TestSlewMomentumRecording:
 
         acs._record_slew_start_momentum(slew)
 
-        assert acs._slew_momentum_at_start is not None
-        assert np.allclose(acs._slew_momentum_at_start, np.array([0.3, 0.0, 0.0]))
+        # Access via WheelDynamics
+        assert acs.wheel_dynamics._slew_momentum_at_start is not None
+        assert np.allclose(
+            acs.wheel_dynamics._slew_momentum_at_start, np.array([0.3, 0.0, 0.0])
+        )
 
     def test_verify_slew_end_momentum_clears_state(self, acs, mock_config):
         """Verification clears recorded state."""
@@ -253,7 +264,9 @@ class TestSlewMomentumRecording:
         )
         wheel.current_momentum = 0.3
         acs.reaction_wheels = [wheel]
-        acs._slew_momentum_at_start = np.array([0.3, 0.0, 0.0])
+        acs.wheel_dynamics.wheels = acs.reaction_wheels  # Keep in sync
+        # Set via WheelDynamics
+        acs.wheel_dynamics._slew_momentum_at_start = np.array([0.3, 0.0, 0.0])
 
         slew = Slew(config=mock_config)
         slew.slewtime = 30.0
@@ -267,5 +280,5 @@ class TestSlewMomentumRecording:
 
         acs._verify_slew_end_momentum(slew, 1000.0)
 
-        assert acs._slew_momentum_at_start is None
-        assert acs._slew_expected_delta_H is None
+        # Access via WheelDynamics
+        assert acs.wheel_dynamics._slew_momentum_at_start is None

@@ -22,7 +22,7 @@ from .passes import Pass
 from .reaction_wheel import ReactionWheel
 from .slew import Slew
 from .telemetry import WheelReading, WheelTelemetrySnapshot
-from .torque_allocator import allocate_wheel_torques
+from .wheel_dynamics import WheelDynamics
 
 _logger = logging.getLogger(__name__)
 
@@ -256,27 +256,27 @@ class ACS:
             "mag": 0.0,
         }
 
-        # Momentum bookkeeping for physics validation
-        self._momentum_warnings: list[str] = []  # Accumulated warnings
-        self._slew_momentum_at_start: np.ndarray | None = None  # H_wheels at slew start
-        self._slew_expected_delta_H: np.ndarray | None = (
-            None  # Expected ΔH for current slew
-        )
-        self._momentum_tolerance = 0.1  # Fractional tolerance for momentum consistency
-        self._budget_margin = 0.85  # Require 85% of peak momentum as headroom
-        self._was_slewing = False  # Track slew state transitions
-        self._last_slew_for_verification: Slew | None = (
-            None  # Slew to verify on completion
+        # Build inertia matrix for WheelDynamics
+        moi_cfg = acs_cfg.spacecraft_moi
+        inertia_matrix = DisturbanceModel._build_inertia(moi_cfg)
+
+        # Create WheelDynamics subsystem for momentum/torque management
+        self.wheel_dynamics = WheelDynamics(
+            wheels=self.reaction_wheels,
+            inertia_matrix=inertia_matrix,
+            magnetorquers=self.magnetorquers,
+            disturbance_model=self.disturbance_model,
+            momentum_margin=self._wheel_mom_margin,
+            budget_margin=0.85,
+            conservation_tolerance=0.1,
         )
 
-        # Spacecraft body angular momentum (3-vector in body frame, N·m·s)
-        # Conservation law: H_total = H_wheels + H_body; dH_total/dt = τ_external
-        # When wheels apply torque, H_body changes by opposite sign (Newton's 3rd law)
-        self.spacecraft_body_momentum = np.zeros(3, dtype=float)
-        # Track cumulative external impulse for conservation validation
-        self._cumulative_external_impulse = np.zeros(3, dtype=float)
-        # Initial total momentum (set after first wheel update)
-        self._initial_total_momentum: np.ndarray | None = None
+        # Slew state tracking (still needed for operational logic)
+        self._was_slewing = False
+        self._last_slew_for_verification: Slew | None = None
+
+        # Momentum warnings (operational tracking, not physics)
+        self._momentum_warnings: list[str] = []
 
     def _log_or_print(self, utime: float, event_type: str, description: str) -> None:
         """Log an event to DITLLog if available, otherwise print to stdout.
@@ -321,203 +321,60 @@ class ACS:
             return default.copy()
 
     # -------------------------------------------------------------------------
-    # Momentum Bookkeeping Methods
+    # Backward Compatibility Properties (delegate to WheelDynamics)
+    # -------------------------------------------------------------------------
+
+    @property
+    def spacecraft_body_momentum(self) -> np.ndarray:
+        """Spacecraft body momentum (delegates to WheelDynamics)."""
+        return self.wheel_dynamics.body_momentum
+
+    @spacecraft_body_momentum.setter
+    def spacecraft_body_momentum(self, value: np.ndarray) -> None:
+        """Set spacecraft body momentum (delegates to WheelDynamics)."""
+        self.wheel_dynamics.body_momentum = np.array(value, dtype=float)
+
+    # -------------------------------------------------------------------------
+    # Momentum Bookkeeping Methods (delegate to WheelDynamics)
     # -------------------------------------------------------------------------
 
     def _get_total_wheel_momentum(self) -> np.ndarray:
-        """Compute total wheel angular momentum vector in body frame.
-
-        Returns:
-            H_wheels = Σ (wheel_i.current_momentum * wheel_i.axis)
-            as a 3D numpy array in N·m·s.
-        """
-        H_total = np.zeros(3, dtype=float)
-        for w in self.reaction_wheels:
-            try:
-                axis = np.array(w.orientation, dtype=float)
-                nrm = np.linalg.norm(axis)
-                if nrm > 0:
-                    axis = axis / nrm
-                mom = float(getattr(w, "current_momentum", 0.0))
-                H_total += mom * axis
-            except Exception:
-                continue
-        return H_total
+        """Compute total wheel angular momentum vector in body frame."""
+        return self.wheel_dynamics.get_total_wheel_momentum()
 
     def _get_wheel_headroom_along_axis(self, axis: np.ndarray) -> float:
-        """Compute available momentum headroom projected onto an axis.
-
-        Args:
-            axis: Unit vector representing the rotation axis.
-
-        Returns:
-            Total available momentum headroom (N·m·s) along the axis,
-            accounting for current wheel momentum and the safety margin.
-        """
-        axis = np.array(axis, dtype=float)
-        nrm = np.linalg.norm(axis)
-        if nrm <= 0:
-            return 0.0
-        axis = axis / nrm
-
-        headroom = 0.0
-        for w in self.reaction_wheels:
-            try:
-                w_axis = np.array(w.orientation, dtype=float)
-                w_nrm = np.linalg.norm(w_axis)
-                if w_nrm > 0:
-                    w_axis = w_axis / w_nrm
-                proj = abs(np.dot(w_axis, axis))
-                max_mom = (
-                    float(getattr(w, "max_momentum", 0.0)) * self._wheel_mom_margin
-                )
-                curr_mom = abs(float(getattr(w, "current_momentum", 0.0)))
-                headroom += proj * max(0.0, max_mom - curr_mom)
-            except Exception:
-                continue
-        return headroom
+        """Compute available momentum headroom projected onto an axis."""
+        return self.wheel_dynamics.get_headroom_along_axis(axis)
 
     def _get_total_system_momentum(self) -> np.ndarray:
-        """Compute total angular momentum of the system (wheels + body).
-
-        Returns:
-            H_total = H_wheels + H_body as a 3D numpy array in N·m·s.
-        """
-        return self._get_total_wheel_momentum() + self.spacecraft_body_momentum
+        """Compute total angular momentum of the system (wheels + body)."""
+        return self.wheel_dynamics.get_total_system_momentum()
 
     def _apply_wheel_torques_conserving(
         self, taus_allowed: np.ndarray, dt: float
     ) -> np.ndarray:
-        """Apply wheel torques while conserving total angular momentum.
-
-        When wheels apply torque τ for time dt:
-        - Wheel momentum changes by +τ*dt (along wheel axis)
-        - Spacecraft body momentum changes by -τ*dt (Newton's 3rd law reaction)
-
-        Args:
-            taus_allowed: Per-wheel torques (N·m), one per wheel
-            dt: Time step (seconds)
-
-        Returns:
-            Total torque vector applied to spacecraft body (3D, N·m)
-        """
-        if dt <= 0:
-            return np.zeros(3, dtype=float)
-
-        total_torque_on_body = np.zeros(3, dtype=float)
-
-        for i, w in enumerate(self.reaction_wheels):
-            tau = float(taus_allowed[i])
-            if tau == 0:
-                continue
-
-            # Get wheel axis (normalized)
-            try:
-                axis = np.array(w.orientation, dtype=float)
-                nrm = np.linalg.norm(axis)
-                if nrm > 0:
-                    axis = axis / nrm
-                else:
-                    axis = np.array([1.0, 0.0, 0.0])
-            except Exception:
-                axis = np.array([1.0, 0.0, 0.0])
-
-            # Apply torque to wheel (updates wheel momentum)
-            w.apply_torque(tau, dt)
-
-            # Reaction torque on spacecraft body (Newton's 3rd law)
-            # Wheel torque on spacecraft = -τ (opposite to wheel acceleration)
-            torque_on_body = -tau * axis
-            total_torque_on_body += torque_on_body
-
-        # Update spacecraft body momentum: ΔH_body = τ_body * dt
-        self.spacecraft_body_momentum += total_torque_on_body * dt
-
-        return total_torque_on_body
+        """Apply wheel torques while conserving total angular momentum."""
+        return self.wheel_dynamics.apply_wheel_torques(taus_allowed, dt)
 
     def _apply_external_torque(
         self, external_torque: np.ndarray, dt: float, source: str = "external"
     ) -> None:
-        """Apply external torque to the system (changes total momentum).
-
-        External torques (disturbances, magnetorquers) change total system
-        momentum. They act on the spacecraft body, not the wheels.
-
-        Args:
-            external_torque: Torque vector in body frame (N·m)
-            dt: Time step (seconds)
-            source: Description for logging (e.g., "disturbance", "MTQ")
-        """
-        if dt <= 0:
-            return
-
-        impulse = external_torque * dt
-        self.spacecraft_body_momentum += impulse
-        self._cumulative_external_impulse += impulse
-
-        # Debug logging
-        try:
-            self._logger.debug(
-                "External torque (%s): τ=[%.4e, %.4e, %.4e] N·m, "
-                "ΔH=[%.4e, %.4e, %.4e] N·m·s, H_body=[%.4e, %.4e, %.4e]",
-                source,
-                external_torque[0],
-                external_torque[1],
-                external_torque[2],
-                impulse[0],
-                impulse[1],
-                impulse[2],
-                self.spacecraft_body_momentum[0],
-                self.spacecraft_body_momentum[1],
-                self.spacecraft_body_momentum[2],
-            )
-        except Exception:
-            pass
+        """Apply external torque to the system (changes total momentum)."""
+        self.wheel_dynamics.apply_external_torque(external_torque, dt, source)
 
     def _check_momentum_conservation(self, utime: float) -> bool:
-        """Verify momentum conservation: H_total - H_initial = ∫τ_external dt.
-
-        Returns:
-            True if conservation is satisfied within tolerance, False otherwise.
-        """
-        if self._initial_total_momentum is None:
-            # Initialize on first call
-            self._initial_total_momentum = self._get_total_system_momentum().copy()
-            return True
-
-        H_current = self._get_total_system_momentum()
-        H_expected = self._initial_total_momentum + self._cumulative_external_impulse
-        error = H_current - H_expected
-        error_mag = float(np.linalg.norm(error))
-
-        # Tolerance: fraction of current momentum magnitude or absolute minimum
-        H_mag = float(np.linalg.norm(H_current))
-        tolerance = max(self._momentum_tolerance * H_mag, 1e-6)
-
-        if error_mag > tolerance:
-            self._logger.warning(
-                "Momentum conservation violation at t=%.1f: "
-                "error=[%.4e, %.4e, %.4e] N·m·s (mag=%.4e, tol=%.4e)",
-                utime,
-                error[0],
-                error[1],
-                error[2],
-                error_mag,
-                tolerance,
-            )
-            return False
-
-        return True
+        """Verify momentum conservation."""
+        return self.wheel_dynamics.check_conservation(utime)
 
     def get_body_momentum_magnitude(self) -> float:
-        """Return magnitude of spacecraft body momentum (should be ~0 when settled)."""
-        return float(np.linalg.norm(self.spacecraft_body_momentum))
+        """Return magnitude of spacecraft body momentum."""
+        return self.wheel_dynamics.get_body_momentum_magnitude()
 
     def _compute_slew_peak_momentum(self, slew: "Slew") -> tuple[float, np.ndarray]:
         """Compute peak angular momentum required for a slew.
 
         For a bang-bang slew profile, peak angular velocity occurs at the midpoint.
-        Peak momentum H_peak = I * ω_peak where ω_peak = sqrt(angle * accel).
+        Delegates to WheelDynamics for the physics computation.
 
         Args:
             slew: The slew object with geometry and profile parameters.
@@ -526,8 +383,6 @@ class ACS:
             Tuple of (peak_momentum_magnitude, rotation_axis).
             Peak momentum is in N·m·s, axis is a unit vector.
         """
-        from math import pi, sqrt
-
         # Get rotation axis
         axis = np.array(getattr(slew, "rotation_axis", (0.0, 0.0, 1.0)), dtype=float)
         nrm = np.linalg.norm(axis)
@@ -550,23 +405,11 @@ class ACS:
         if accel_deg <= 0:
             return 0.0, axis
 
-        # Get MOI along axis
-        moi_cfg = self.config.spacecraft_bus.attitude_control.spacecraft_moi
-        I_mat = DisturbanceModel._build_inertia(moi_cfg)
-        i_axis = float(axis.dot(I_mat.dot(axis)))
-        if i_axis <= 0:
-            return 0.0, axis
-
-        # Peak rate for triangular profile: ω_peak = sqrt(angle * accel)
-        # For trapezoidal, it's capped at max_rate, but we use triangular as upper bound
-        angle_rad = angle_deg * (pi / 180.0)
-        accel_rad = accel_deg * (pi / 180.0)
-        omega_peak = sqrt(angle_rad * accel_rad)
-
-        # Peak momentum magnitude
-        H_peak = i_axis * omega_peak
-
-        return H_peak, axis
+        # Delegate to WheelDynamics
+        h_peak = self.wheel_dynamics.compute_slew_peak_momentum(
+            angle_deg, axis, accel_deg
+        )
+        return h_peak, axis
 
     def _check_slew_momentum_budget(
         self, slew: "Slew", utime: float
@@ -587,15 +430,20 @@ class ACS:
         if not self.reaction_wheels:
             return True, "No wheels configured"
 
-        # Compute peak momentum needed
-        H_peak, axis = self._compute_slew_peak_momentum(slew)
-        if H_peak <= 0:
-            return True, "Zero momentum slew"
+        # Get slew parameters
+        axis = np.array(getattr(slew, "rotation_axis", (0.0, 0.0, 1.0)), dtype=float)
+        nrm = np.linalg.norm(axis)
+        if nrm > 0:
+            axis = axis / nrm
 
-        # Get current headroom along slew axis
-        headroom = self._get_wheel_headroom_along_axis(axis)
+        angle_deg = float(getattr(slew, "slewdist", 0.0))
 
-        # Estimate disturbance momentum accumulation over slew time
+        accel_override = getattr(slew, "_accel_override", None)
+        if accel_override is not None:
+            accel_deg = float(accel_override)
+        else:
+            accel_deg = float(getattr(self.acs_config, "slew_acceleration", 0.5))
+
         slew_time = float(getattr(slew, "slewtime", 0.0))
         if slew_time <= 0:
             slew_time = 60.0  # Default estimate
@@ -607,36 +455,15 @@ class ACS:
         except Exception:
             dist_mag = 1e-6  # Default small disturbance
 
-        # Disturbance momentum over slew duration
-        H_disturbance = dist_mag * slew_time
-
-        # Total momentum needed with margin
-        H_required = (H_peak + H_disturbance) / self._budget_margin
-
-        if headroom >= H_required:
-            return True, (
-                f"Budget OK: need {H_required:.4f} N·m·s, have {headroom:.4f} N·m·s"
-            )
-        else:
-            deficit = H_required - headroom
-            return False, (
-                f"Insufficient momentum budget: need {H_required:.4f} N·m·s "
-                f"(peak={H_peak:.4f}, disturbance={H_disturbance:.4f}), "
-                f"have {headroom:.4f} N·m·s (deficit={deficit:.4f})"
-            )
+        # Delegate to WheelDynamics
+        return self.wheel_dynamics.check_slew_momentum_budget(
+            angle_deg, axis, accel_deg, slew_time, dist_mag
+        )
 
     def _record_slew_start_momentum(self, slew: "Slew") -> None:
         """Record wheel momentum state at the start of a slew for later validation."""
-        self._slew_momentum_at_start = self._get_total_wheel_momentum()
-
-        # Compute expected momentum change for this slew
-        # For a complete slew, net momentum change should equal
-        # the momentum absorbed to stop at the end position
-        H_peak, axis = self._compute_slew_peak_momentum(slew)
-        # For a bang-bang profile, the slew accelerates then decelerates
-        # Net wheel momentum change = I * (ω_final - ω_initial) = 0 for a slew
-        # But wheels accumulate disturbance rejection, so we track the peak
-        self._slew_expected_delta_H = axis * 0.0  # Net should be ~zero for ideal slew
+        # Delegate to WheelDynamics for momentum tracking
+        self.wheel_dynamics.record_slew_start()
 
     def _verify_slew_end_momentum(self, slew: "Slew", utime: float) -> None:
         """Verify momentum consistency at the end of a slew.
@@ -644,12 +471,13 @@ class ACS:
         Compares actual wheel momentum change against expected and logs
         warnings if they diverge significantly.
         """
-        if self._slew_momentum_at_start is None:
+        # Get slew start momentum from WheelDynamics
+        h_start = self.wheel_dynamics._slew_momentum_at_start
+        if h_start is None:
             return
 
-        H_end = self._get_total_wheel_momentum()
-        H_start = self._slew_momentum_at_start
-        delta_H = H_end - H_start
+        h_end = self.wheel_dynamics.get_total_wheel_momentum()
+        delta_h = h_end - h_start
 
         # For an ideal slew with perfect disturbance rejection,
         # net momentum change should be small (only disturbance accumulation)
@@ -658,31 +486,30 @@ class ACS:
         # Expected disturbance accumulation
         try:
             dist_torque = self._compute_disturbance_torque(utime)
-            expected_dist_H = float(np.linalg.norm(dist_torque)) * slew_time
+            expected_dist_h = float(np.linalg.norm(dist_torque)) * slew_time
         except Exception:
-            expected_dist_H = 0.0
+            expected_dist_h = 0.0
 
         # Actual momentum change magnitude
-        actual_delta_H = float(np.linalg.norm(delta_H))
+        actual_delta_h = float(np.linalg.norm(delta_h))
 
         # Check if momentum change is reasonable
         # Allow for disturbance accumulation plus some tolerance
-        tolerance = max(expected_dist_H * 2, 0.01)  # At least 0.01 N·m·s tolerance
+        tolerance = max(expected_dist_h * 2, 0.01)  # At least 0.01 N·m·s tolerance
 
-        if actual_delta_H > tolerance:
+        if actual_delta_h > tolerance:
             # Get peak momentum for context
-            H_peak, _ = self._compute_slew_peak_momentum(slew)
+            h_peak, _ = self._compute_slew_peak_momentum(slew)
             warning = (
                 f"Momentum consistency warning at t={utime:.1f}: "
-                f"ΔH_wheels={actual_delta_H:.4f} N·m·s (expected ~{expected_dist_H:.4f}), "
-                f"slew peak was {H_peak:.4f} N·m·s"
+                f"ΔH_wheels={actual_delta_h:.4f} N·m·s (expected ~{expected_dist_h:.4f}), "
+                f"slew peak was {h_peak:.4f} N·m·s"
             )
             self._momentum_warnings.append(warning)
             self._logger.warning(warning)
 
-        # Clear state
-        self._slew_momentum_at_start = None
-        self._slew_expected_delta_H = None
+        # Clear slew tracking state in WheelDynamics
+        self.wheel_dynamics._slew_momentum_at_start = None
 
     def get_momentum_warnings(self) -> list[str]:
         """Return list of momentum consistency warnings accumulated during simulation."""
@@ -698,28 +525,11 @@ class ACS:
         Returns:
             Dictionary with wheel momentum vector, per-wheel details, and headroom.
         """
-        H_total = self._get_total_wheel_momentum()
-        wheels = []
-        for w in self.reaction_wheels:
-            try:
-                wheels.append(
-                    {
-                        "name": getattr(w, "name", "wheel"),
-                        "momentum": float(getattr(w, "current_momentum", 0.0)),
-                        "max_momentum": float(getattr(w, "max_momentum", 0.0)),
-                        "fraction": abs(float(getattr(w, "current_momentum", 0.0)))
-                        / max(float(getattr(w, "max_momentum", 1.0)), 1e-9),
-                    }
-                )
-            except Exception:
-                continue
-
-        return {
-            "total_momentum_vector": H_total.tolist(),
-            "total_momentum_magnitude": float(np.linalg.norm(H_total)),
-            "wheels": wheels,
-            "num_warnings": len(self._momentum_warnings),
-        }
+        # Get physics summary from WheelDynamics
+        summary = self.wheel_dynamics.get_momentum_summary()
+        # Add ACS-specific operational data
+        summary["num_warnings"] = len(self._momentum_warnings)
+        return summary
 
     # -------------------------------------------------------------------------
     # End Momentum Bookkeeping Methods
@@ -1859,101 +1669,21 @@ class ACS:
     def _apply_magnetorquer_desat(self, dt: float, utime: float) -> None:
         """Bleed wheel momentum using magnetorquers during desat.
 
-        Physics: MTQ applies external torque τ_mtq = m × B to the spacecraft.
-        This external torque changes total system momentum. During desaturation,
-        the wheels slow down to release their excess momentum to the environment
-        via the magnetic field interaction.
-
-        Momentum conservation: dH_total/dt = τ_mtq (external)
-        The wheel momentum change equals the external impulse (body stays settled).
+        Delegates the physics to WheelDynamics. This method computes the local
+        magnetic field and passes it to WheelDynamics for momentum bleeding.
         """
         if not self.magnetorquers or dt <= 0:
             return
 
-        # Build total torque vector from magnetorquers using m x B in body frame
-        B_body, Bmag = self.disturbance_model.local_bfield_vector(
-            utime, self.ra, self.dec
-        )
-        T_mtq = np.zeros(3, dtype=float)
-        total_power = 0.0
-        for m in self.magnetorquers:
-            try:
-                v = np.array(m.get("orientation", (1.0, 0.0, 0.0)), dtype=float)
-            except Exception:
-                v = np.array([1.0, 0.0, 0.0])
-            vn = np.linalg.norm(v)
-            if vn <= 0:
-                v = np.array([1.0, 0.0, 0.0])
-            else:
-                v = v / vn
-            # Support both legacy "dipole" and the user-facing "dipole_strength"
-            dipole = float(m.get("dipole_strength", m.get("dipole", 0.0)))
-            m_vec = v * dipole  # A*m^2 in body frame
-            T_mtq += np.cross(m_vec, B_body)
-            total_power += float(m.get("power_draw", 0.0))
+        # Get local magnetic field in body frame
+        b_body, _ = self.disturbance_model.local_bfield_vector(utime, self.ra, self.dec)
 
-        if not self.reaction_wheels:
-            return
+        # Delegate to WheelDynamics for the physics
+        self.mtq_power_w = self.wheel_dynamics.apply_magnetorquer_desat(b_body, dt)
 
-        # Track MTQ as external torque for momentum conservation
-        # This external torque changes total system momentum
-        self._cumulative_external_impulse += T_mtq * dt
-
-        # Project MTQ torque onto each wheel axis and bleed momentum toward zero
-        # The wheel momentum change absorbs the external impulse (body stays settled)
-        max_proj = 0.0
-        actual_impulse = np.zeros(3, dtype=float)
-        for w in self.reaction_wheels:
-            try:
-                axis = np.array(w.orientation, dtype=float)
-            except Exception:
-                axis = np.array([1.0, 0.0, 0.0])
-            an = np.linalg.norm(axis)
-            if an <= 0:
-                axis = np.array([1.0, 0.0, 0.0])
-            else:
-                axis = axis / an
-            tau_w = float(np.dot(T_mtq, axis))
-            max_proj = max(max_proj, abs(tau_w))
-            if tau_w == 0:
-                continue
-            dm = tau_w * dt
-            mom = float(getattr(w, "current_momentum", 0.0))
-            # Wheel releases momentum when external torque opposes its direction
-            new_mom = mom - dm
-            # Clamp to prevent overshoot past zero during desaturation
-            if mom > 0:
-                new_mom = max(0.0, new_mom)
-            elif mom < 0:
-                new_mom = min(0.0, new_mom)
-            # Track actual momentum change for conservation
-            actual_dm = mom - new_mom
-            actual_impulse += actual_dm * axis
-            w.current_momentum = new_mom
-
-        # Track instantaneous MTQ power draw (W)
-        self.mtq_power_w = total_power
-        try:
-            self._last_mtq_proj_max = float(max_proj)
-            self._last_mtq_torque_mag = float(np.linalg.norm(T_mtq))
-        except Exception:
-            self._last_mtq_proj_max = 0.0
-            self._last_mtq_torque_mag = 0.0
-
-        # Debug logging for MTQ desat
-        try:
-            self._logger.debug(
-                "MTQ desat: τ_mtq=[%.4e, %.4e, %.4e] N·m, "
-                "ΔH_wheel=[%.4e, %.4e, %.4e] N·m·s",
-                T_mtq[0],
-                T_mtq[1],
-                T_mtq[2],
-                -actual_impulse[0],
-                -actual_impulse[1],
-                -actual_impulse[2],
-            )
-        except Exception:
-            pass
+        # Copy diagnostic values from WheelDynamics for telemetry
+        self._last_mtq_proj_max = self.wheel_dynamics._last_mtq_proj_max
+        self._last_mtq_torque_mag = self.wheel_dynamics._last_mtq_torque_mag
 
     def _slew_accel_profile(self, slew: Slew, utime: float) -> float:
         """Return signed slew acceleration (deg/s^2) at utime for bang-bang profile.
@@ -2031,13 +1761,12 @@ class ACS:
         bias_gain: float = 0.0,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, bool]:
         """Solve wheel torques for a desired body torque and apply headroom clamps."""
-        taus, taus_allowed, t_actual, clamped = allocate_wheel_torques(
-            self.reaction_wheels,
+        # Delegate to WheelDynamics
+        taus, taus_allowed, t_actual, clamped = self.wheel_dynamics.allocate_torques(
             t_desired,
             dt,
             use_weights=use_weights,
             bias_gain=bias_gain,
-            mom_margin=getattr(self, "_wheel_mom_margin", 0.99),
         )
         try:
             self._last_t_actual_mag = float(np.linalg.norm(t_actual))
@@ -2210,8 +1939,16 @@ class ACS:
             # Raw fraction is the actual abs(momentum)/capacity (clamped to 1.0 for reporting)
             m_frac_raw = min(1.0, m_frac)
 
-            cmd = _snap_float(taus_cmd[i]) if taus_cmd is not None else 0.0
-            allowed = _snap_float(taus_allowed[i]) if taus_allowed is not None else cmd
+            cmd = (
+                _snap_float(taus_cmd[i])
+                if taus_cmd is not None and len(taus_cmd) > i
+                else 0.0
+            )
+            allowed = (
+                _snap_float(taus_allowed[i])
+                if taus_allowed is not None and len(taus_allowed) > i
+                else cmd
+            )
             t_frac = abs(allowed) / max_torque if max_torque > 0 else 0.0
 
             max_m_frac = max(max_m_frac, m_frac)
