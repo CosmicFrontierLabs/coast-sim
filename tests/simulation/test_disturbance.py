@@ -52,29 +52,33 @@ class TestAtmosphericDensity:
         cfg = DisturbanceConfig()
         model = DisturbanceModel(ephem, cfg)
 
+        # New table: (400, 3.725e-12, 59.4)
         rho = model._table_density(400e3)
-        assert rho == pytest.approx(4.0e-16, rel=0.1)
+        assert rho == pytest.approx(3.725e-12, rel=0.1)
 
     def test_density_interpolation(self):
-        """Density between table points uses log interpolation."""
+        """Density between table points uses exponential model."""
         ephem = MockEphemeris()
         cfg = DisturbanceConfig()
         model = DisturbanceModel(ephem, cfg)
 
-        # 450 km is between 400 km (4.0e-16) and 500 km (1.9e-17)
-        # Log interpolation: rho = rho0 * exp(log(rho1/rho0) * frac)
+        # 450 km uses band (450, 1.585e-12, 62.2)
+        # At exactly 450 km: rho = 1.585e-12 * exp(0) = 1.585e-12
         rho = model._table_density(450e3)
-        # Should be between the two values
-        assert 1.9e-17 < rho < 4.0e-16
+        assert rho == pytest.approx(1.585e-12, rel=0.1)
 
     def test_density_above_table_max(self):
-        """Density above 1000 km returns minimum table value."""
+        """Density above 1000 km extrapolates with final scale height."""
         ephem = MockEphemeris()
         cfg = DisturbanceConfig()
         model = DisturbanceModel(ephem, cfg)
 
+        # Uses (1000, 3.019e-15, 268.0): rho = 3.019e-15 * exp(-(1500-1000)/268)
         rho = model._table_density(1500e3)
-        assert rho == pytest.approx(1.0e-20)
+        import numpy as np
+
+        expected = 3.019e-15 * np.exp(-500 / 268.0)
+        assert rho == pytest.approx(expected, rel=0.01)
 
     def test_density_decreases_with_altitude(self):
         """Density should monotonically decrease with altitude."""
