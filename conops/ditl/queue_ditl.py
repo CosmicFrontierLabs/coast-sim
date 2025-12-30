@@ -396,6 +396,14 @@ class QueueDITL(DITLMixin, DITLStats):
         # Set up simulation length from begin/end datetimes
         simlen = int((self.end - self.begin).total_seconds() / self.step_size)
 
+        # Initialize momentum conservation tracking at TRUE start (before any physics)
+        if hasattr(self.acs, "wheel_dynamics") and self.acs.wheel_dynamics is not None:
+            self.acs.wheel_dynamics.reset_conservation_tracking()
+            # Record initial state explicitly (all zeros if starting fresh)
+            self.acs.wheel_dynamics._initial_total_momentum = (
+                self.acs.wheel_dynamics.get_total_system_momentum().copy()
+            )
+
         # DITL loop
         for i in range(simlen):
             utime = self.ustart + i * self.step_size

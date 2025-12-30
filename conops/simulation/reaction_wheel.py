@@ -97,10 +97,15 @@ class ReactionWheel:
             adjusted = self.max_torque if adjusted >= 0 else -self.max_torque
         return adjusted
 
-    def apply_torque(self, torque: float, dt: float) -> None:
+    def apply_torque(self, torque: float, dt: float) -> float:
         """Apply torque for duration dt, updating stored wheel momentum.
+
         Note: in reality sign convention depends on direction; we treat positive
         torque as increasing stored momentum magnitude.
+
+        Returns:
+            Actual momentum change (N·m·s). May be less than torque*dt if
+            the wheel saturates.
         """
         try:
             logger.debug(
@@ -114,6 +119,7 @@ class ReactionWheel:
         except Exception:
             pass
 
+        old_momentum = self.current_momentum
         new_momentum = self.current_momentum + torque * dt
         self.last_torque_applied = torque  # Track for power calculation
 
@@ -143,14 +149,20 @@ class ReactionWheel:
         else:
             self.current_momentum = new_momentum
 
+        # Return actual momentum change (may be less than requested if saturated)
+        actual_delta = self.current_momentum - old_momentum
+
         try:
             logger.debug(
-                "ReactionWheel.apply_torque: name=%s after_m=%s",
+                "ReactionWheel.apply_torque: name=%s after_m=%s actual_delta=%s",
                 getattr(self, "name", "wheel"),
                 self.current_momentum,
+                actual_delta,
             )
         except Exception:
             pass
+
+        return actual_delta
 
     def power_draw(self) -> float:
         """Return current power draw in Watts.
