@@ -143,7 +143,12 @@ class TestDITLADCSMomentumWarnings:
 
     @pytest.fixture
     def short_ditl_setup(self):
-        """Create a short DITL run (1 hour) for quick debugging."""
+        """Create a short DITL run (1 hour) for quick debugging.
+
+        Note: This 1-hour window (00:00-01:00) has no ground station passes visible.
+        The first passes occur ~7-8 hours into the day. Use notebook_ditl_setup for
+        testing with ground station passes.
+        """
         # Skip if TLE file not available
         if not TLE_PATH.exists():
             pytest.skip(f"TLE file not found: {TLE_PATH}")
@@ -197,6 +202,11 @@ class TestDITLADCSMomentumWarnings:
 
         cfg = make_ditl_adcs_config(ephem)
         cfg.constraint.ephem = ephem
+
+        # Guarantee ground station passes are scheduled (bypass random filtering)
+        if cfg.ground_stations is not None:
+            for station in cfg.ground_stations.stations:
+                station.schedule_probability = 1.0
 
         # Exact notebook target setup
         np.random.seed(43)
@@ -540,6 +550,141 @@ class TestDITLADCSMomentumWarnings:
         slew_frac = np.mean(mode_arr == ACSMode.SLEWING)
         if slew_frac > 0.5:
             print(f"  [!] Slewing {slew_frac * 100:.0f}% of time - high maneuver load")
+
+    def test_pass_tracking_rate(self, notebook_ditl_setup):
+        """Verify spacecraft body rate matches required ground station tracking rate during passes."""
+        ditl, cfg = notebook_ditl_setup
+
+        # Run simulation
+        ditl.calc()
+
+        # Check we have passes
+        passes = ditl.acs.passrequests.passes
+        assert len(passes) > 0, (
+            "No passes scheduled - test requires ground station passes"
+        )
+
+        mode_arr = np.array(ditl.mode)
+        ra_arr = np.array(ditl.ra)
+        dec_arr = np.array(ditl.dec)
+        utime_arr = np.array(ditl.utime)
+        dt = ditl.step_size
+
+        print(f"\n{'=' * 60}")
+        print("GROUND STATION TRACKING RATE VERIFICATION")
+        print(f"{'=' * 60}")
+        print(f"Number of passes: {len(passes)}")
+
+        # Analyze each pass
+        for pass_idx, gspass in enumerate(passes):
+            print(f"\n--- Pass {pass_idx + 1}: {gspass.station} ---")
+            print(
+                f"  Time: {gspass.begin} to {gspass.end} ({gspass.length / 60:.1f} min)"
+            )
+
+            # Find timesteps during this pass
+            pass_mask = (utime_arr >= gspass.begin) & (utime_arr <= gspass.end)
+            pass_mask &= mode_arr == ACSMode.PASS
+
+            if not pass_mask.any():
+                print("  WARNING: No PASS mode timesteps found during this pass window")
+                continue
+
+            pass_indices = np.where(pass_mask)[0]
+            print(f"  Pass mode timesteps: {len(pass_indices)}")
+
+            # Compute actual tracking rates from DITL pointing
+            actual_rates = []
+            required_rates = []
+            rate_errors = []
+
+            for i in range(1, len(pass_indices)):
+                idx = pass_indices[i]
+                idx_prev = pass_indices[i - 1]
+
+                # Skip if not consecutive timesteps
+                if idx != idx_prev + 1:
+                    continue
+
+                # Actual pointing change
+                ra0, dec0 = ra_arr[idx_prev], dec_arr[idx_prev]
+                ra1, dec1 = ra_arr[idx], dec_arr[idx]
+
+                # Compute angular distance (same formula as ACS uses)
+                r0, d0 = np.deg2rad(ra0), np.deg2rad(dec0)
+                r1, d1 = np.deg2rad(ra1), np.deg2rad(dec1)
+                cosc = np.sin(d0) * np.sin(d1) + np.cos(d0) * np.cos(d1) * np.cos(
+                    r1 - r0
+                )
+                cosc = np.clip(cosc, -1.0, 1.0)
+                actual_dist_deg = np.rad2deg(np.arccos(cosc))
+                actual_rate = actual_dist_deg / dt  # deg/s
+
+                # Required pointing from Pass object
+                t = utime_arr[idx]
+                t_prev = utime_arr[idx_prev]
+                req_ra0, req_dec0 = gspass.ra_dec(t_prev)
+                req_ra1, req_dec1 = gspass.ra_dec(t)
+
+                if req_ra0 is None or req_ra1 is None:
+                    continue
+
+                # Compute required angular distance
+                r0, d0 = np.deg2rad(req_ra0), np.deg2rad(req_dec0)
+                r1, d1 = np.deg2rad(req_ra1), np.deg2rad(req_dec1)
+                cosc = np.sin(d0) * np.sin(d1) + np.cos(d0) * np.cos(d1) * np.cos(
+                    r1 - r0
+                )
+                cosc = np.clip(cosc, -1.0, 1.0)
+                req_dist_deg = np.rad2deg(np.arccos(cosc))
+                required_rate = req_dist_deg / dt  # deg/s
+
+                actual_rates.append(actual_rate)
+                required_rates.append(required_rate)
+                rate_errors.append(abs(actual_rate - required_rate))
+
+            if not actual_rates:
+                print("  WARNING: No valid rate samples computed")
+                continue
+
+            actual_rates = np.array(actual_rates)
+            required_rates = np.array(required_rates)
+            rate_errors = np.array(rate_errors)
+
+            print("\n  Tracking Rate Statistics:")
+            print(
+                f"    Required rate: mean={required_rates.mean():.4f} deg/s, max={required_rates.max():.4f} deg/s"
+            )
+            print(
+                f"    Actual rate:   mean={actual_rates.mean():.4f} deg/s, max={actual_rates.max():.4f} deg/s"
+            )
+            print(
+                f"    Rate error:    mean={rate_errors.mean():.6f} deg/s, max={rate_errors.max():.6f} deg/s"
+            )
+
+            # Verify actual rate matches required rate within tolerance
+            # Tolerance: 0.01 deg/s (about 36 arcsec/s)
+            rate_tolerance = 0.01  # deg/s
+            max_error = rate_errors.max()
+            mean_error = rate_errors.mean()
+
+            print(f"\n  Verification (tolerance={rate_tolerance} deg/s):")
+            print(
+                f"    Max error:  {max_error:.6f} deg/s - {'PASS' if max_error < rate_tolerance else 'FAIL'}"
+            )
+            print(
+                f"    Mean error: {mean_error:.6f} deg/s - {'PASS' if mean_error < rate_tolerance else 'FAIL'}"
+            )
+
+            # Assert tracking is accurate
+            assert max_error < rate_tolerance, (
+                f"Pass {pass_idx + 1} ({gspass.station}): tracking rate error {max_error:.6f} deg/s "
+                f"exceeds tolerance {rate_tolerance} deg/s"
+            )
+
+        print(f"\n{'=' * 60}")
+        print("ALL PASSES VERIFIED - Tracking rates match required rates")
+        print(f"{'=' * 60}")
 
 
 def test_single_slew_momentum_detail():
