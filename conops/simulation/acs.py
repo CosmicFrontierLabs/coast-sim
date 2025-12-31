@@ -180,6 +180,14 @@ class ACS:
         # Validate wheel configuration for controllability
         self._validate_wheel_configuration()
 
+        # Validate that configured caps are achievable with wheel specs
+        if hasattr(acs_cfg, "validate_wheel_capabilities"):
+            try:
+                for warning in acs_cfg.validate_wheel_capabilities():
+                    print(f"ACS WARNING: {warning}")
+            except TypeError:
+                pass  # Mock objects in tests may not be iterable
+
         # Magnetorquers (optional) for finite desat
         mtq_iter_raw = getattr(acs_cfg, "magnetorquers", None)
         mtq_iter: list[Any] = []

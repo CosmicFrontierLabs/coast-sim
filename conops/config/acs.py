@@ -244,3 +244,135 @@ class AttitudeControlSystem(BaseModel):
         )
         slewpath = great_circle(startra, startdec, endra, enddec, steps)
         return slewdist, slewpath
+
+    def validate_wheel_capabilities(self) -> list[str]:
+        """Validate that configured slew caps are achievable with wheel specs.
+
+        Computes achievable acceleration and rate from wheel physics and compares
+        against any configured operational caps. Returns warnings if caps exceed
+        what the wheels can physically deliver.
+
+        Returns:
+            List of warning messages (empty if all caps are achievable)
+        """
+        warnings: list[str] = []
+
+        # Get configured caps
+        accel_cap = self.get_accel_cap()
+        rate_cap = self.max_slew_rate
+
+        # If no caps configured, nothing to validate
+        if accel_cap is None and rate_cap is None:
+            return warnings
+
+        # Build wheel list from either multi-wheel config or legacy params
+        wheel_specs: list[tuple[np.ndarray, float, float]] = []  # (orientation, τ, H)
+
+        if self.wheels:
+            for w in self.wheels:
+                if isinstance(w, dict):
+                    orient = np.array(w.get("orientation", [1, 0, 0]), dtype=float)
+                    torque = float(w.get("max_torque", 0.0))
+                    momentum = float(w.get("max_momentum", 0.0))
+                else:
+                    orient = np.array(w.orientation, dtype=float)
+                    torque = w.max_torque
+                    momentum = w.max_momentum
+                norm = np.linalg.norm(orient)
+                if norm > 1e-9:
+                    orient = orient / norm
+                wheel_specs.append((orient, torque, momentum))
+        elif self.wheel_max_torque > 0 or self.wheel_max_momentum > 0:
+            # Legacy single-wheel config - assume 3-axis orthogonal
+            for axis in [(1, 0, 0), (0, 1, 0), (0, 0, 1)]:
+                wheel_specs.append(
+                    (
+                        np.array(axis, dtype=float),
+                        self.wheel_max_torque,
+                        self.wheel_max_momentum,
+                    )
+                )
+
+        if not wheel_specs:
+            if accel_cap is not None or rate_cap is not None:
+                warnings.append(
+                    "Slew caps configured but no wheels defined - "
+                    "caps cannot be validated"
+                )
+            return warnings
+
+        # Get MOI for each principal axis
+        moi = np.array(self.spacecraft_moi, dtype=float)
+
+        # Compute achievable accel and rate for each principal axis
+        principal_axes = [
+            np.array([1, 0, 0], dtype=float),
+            np.array([0, 1, 0], dtype=float),
+            np.array([0, 0, 1], dtype=float),
+        ]
+        axis_names = ["X", "Y", "Z"]
+
+        # Track per-axis capabilities
+        accel_by_axis: dict[str, float] = {}
+        rate_by_axis: dict[str, float] = {}
+
+        for i, (principal_axis, name) in enumerate(zip(principal_axes, axis_names)):
+            # Moment of inertia about this axis
+            i_axis = float(moi[i])
+            if i_axis <= 0:
+                continue
+
+            # Sum torque and momentum contributions from all wheels
+            total_torque = 0.0
+            total_momentum = 0.0
+            for orient, torque, momentum in wheel_specs:
+                proj = abs(float(np.dot(orient, principal_axis)))
+                total_torque += torque * proj
+                total_momentum += momentum * proj
+
+            # Achievable acceleration: α = τ / I (rad/s²) -> deg/s²
+            if total_torque > 0:
+                accel_rad = total_torque / i_axis
+                accel_by_axis[name] = accel_rad * (180.0 / np.pi)
+
+            # Achievable rate: ω = H / I (rad/s) -> deg/s
+            if total_momentum > 0:
+                rate_rad = total_momentum / i_axis
+                rate_by_axis[name] = rate_rad * (180.0 / np.pi)
+
+        # Find minimum values and all axes that achieve them
+        min_accel = min(accel_by_axis.values()) if accel_by_axis else float("inf")
+        min_rate = min(rate_by_axis.values()) if rate_by_axis else float("inf")
+
+        # Use small tolerance for floating point comparison
+        tol = 1e-9
+        limiting_axes_accel = [
+            name for name, val in accel_by_axis.items() if abs(val - min_accel) < tol
+        ]
+        limiting_axes_rate = [
+            name for name, val in rate_by_axis.items() if abs(val - min_rate) < tol
+        ]
+
+        def format_axes(axes: list[str]) -> str:
+            if len(axes) == 1:
+                return f"{axes[0]}-axis"
+            return "/".join(axes) + "-axes"
+
+        # Compare caps against achievable values
+        if accel_cap is not None and min_accel < float("inf"):
+            if accel_cap > min_accel:
+                warnings.append(
+                    f"max_slew_accel={accel_cap:.3f} deg/s² exceeds wheel capability "
+                    f"of {min_accel:.3f} deg/s² (limited by {format_axes(limiting_axes_accel)}). "
+                    f"Slews will use {min_accel:.3f} deg/s²."
+                )
+
+        if rate_cap is not None and min_rate < float("inf"):
+            if rate_cap > min_rate:
+                warnings.append(
+                    f"max_slew_rate={rate_cap:.3f} deg/s exceeds wheel capability "
+                    f"of {min_rate:.3f} deg/s (limited by {format_axes(limiting_axes_rate)}). "
+                    f"Slews will use {min_rate:.3f} deg/s."
+                )
+
+        return warnings
