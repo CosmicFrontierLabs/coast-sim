@@ -37,14 +37,25 @@ class AttitudeControlSystem(BaseModel):
     """
     Attitude Control System (ACS) configuration parameters.
 
-    Defines slew performance characteristics including acceleration,
-    maximum slew rate, accuracy, and settling time.
+    Slew performance is derived from wheel physics (torque, momentum, MOI).
+    Optional rate/acceleration caps can be set for operational constraints
+    (e.g., star tracker blur limits, thermal constraints).
     """
 
-    slew_acceleration: float = 0.5  # deg/s^2 - maximum angular acceleration
-    max_slew_rate: float = 0.25  # deg/s (15 deg/min)
+    # Optional operational caps (None = no limit, use full wheel capability)
+    # These are UPPER BOUNDS, not targets - actual performance is derived from physics
+    max_slew_rate: float | None = (
+        None  # deg/s - operational cap (e.g., star tracker limit)
+    )
+    max_slew_accel: float | None = (
+        None  # deg/s^2 - operational cap (e.g., power budget)
+    )
+
+    # Legacy parameter names (deprecated, mapped to new names for compatibility)
+    slew_acceleration: float | None = None  # DEPRECATED: use max_slew_accel
+    settle_time: float = 0.0  # DEPRECATED: no longer used, slew ends when motion ends
+
     slew_accuracy: float = 0.01  # deg - pointing accuracy after slew
-    settle_time: float = 120.0  # seconds - time to settle after slew
     # Simple reaction wheel support (optional)
     wheel_enabled: bool = False
     # Legacy single-wheel params (kept for compatibility)
@@ -88,17 +99,36 @@ class AttitudeControlSystem(BaseModel):
     # If True, raise ValueError when wheel config has rank < 3 (not fully controllable)
     strict_wheel_validation: bool = False
 
+    def get_accel_cap(self) -> float | None:
+        """Get the effective acceleration cap (handles legacy parameter name)."""
+        # Prefer new name, fall back to legacy
+        if self.max_slew_accel is not None:
+            return self.max_slew_accel
+        return self.slew_acceleration
+
     def motion_time(
         self, angle_deg: float, accel: float | None = None, vmax: float | None = None
     ) -> float:
-        """Time to complete the motion (excluding settle) under bang-bang control."""
+        """Time to complete the motion under bang-bang control.
+
+        Args:
+            angle_deg: Slew distance in degrees
+            accel: Acceleration in deg/s² (required for physics-derived slews)
+            vmax: Max rate in deg/s (required for physics-derived slews)
+
+        Returns:
+            Motion time in seconds (0 if inputs invalid)
+        """
         if angle_deg <= 0:
             return 0.0
-        a = float(self.slew_acceleration if accel is None else accel)
-        vmax = float(self.max_slew_rate if vmax is None else vmax)
-        if a <= 0 or vmax <= 0:
+        # Use provided values or fall back to caps (for legacy compatibility)
+        a = accel if accel is not None else self.get_accel_cap()
+        v = vmax if vmax is not None else self.max_slew_rate
+        if a is None or v is None or a <= 0 or v <= 0:
             return 0.0
-        t_accel = vmax / a
+        a = float(a)
+        v = float(v)
+        t_accel = v / a
         d_accel = 0.5 * a * t_accel**2
         if 2 * d_accel >= angle_deg:
             # Triangular profile
@@ -106,7 +136,7 @@ class AttitudeControlSystem(BaseModel):
             return float(2 * t_peak)
         # Trapezoidal profile
         d_cruise = angle_deg - 2 * d_accel
-        t_cruise = d_cruise / vmax
+        t_cruise = d_cruise / v
         return float(2 * t_accel + t_cruise)
 
     def s_of_t(
@@ -118,18 +148,30 @@ class AttitudeControlSystem(BaseModel):
     ) -> float:
         """Distance traveled (deg) along the slew after t seconds under bang-bang control.
 
-        Clamps to [0, angle_deg] and ignores settle time (i.e., assumes t is measured
-        from slew start; after motion is done, returns full angle).
+        Args:
+            angle_deg: Total slew distance in degrees
+            t: Time since slew start in seconds
+            accel: Acceleration in deg/s² (required for physics-derived slews)
+            vmax: Max rate in deg/s (required for physics-derived slews)
+
+        Returns:
+            Distance traveled in degrees, clamped to [0, angle_deg]
         """
         if angle_deg <= 0 or t <= 0:
             return 0.0
-        a = float(self.slew_acceleration if accel is None else accel)
-        vmax = float(self.max_slew_rate if vmax is None else vmax)
-        if a <= 0 or vmax <= 0:
-            return min(max(0.0, t * vmax), angle_deg)  # best-effort fallback
+        # Use provided values or fall back to caps (for legacy compatibility)
+        a = accel if accel is not None else self.get_accel_cap()
+        v = vmax if vmax is not None else self.max_slew_rate
+        if a is None or v is None or a <= 0 or v <= 0:
+            # Fallback: constant rate if we have vmax
+            if v is not None and v > 0:
+                return min(max(0.0, t * v), angle_deg)
+            return 0.0
+        a = float(a)
+        v = float(v)
 
         # Determine profile
-        t_accel = vmax / a
+        t_accel = v / a
         d_accel = 0.5 * a * t_accel**2
         if 2 * d_accel >= angle_deg:
             # Triangular
@@ -144,25 +186,37 @@ class AttitudeControlSystem(BaseModel):
 
         # Trapezoidal
         d_cruise = angle_deg - 2 * d_accel
-        t_cruise = d_cruise / vmax
+        t_cruise = d_cruise / v
         motion_time = 2 * t_accel + t_cruise
         tau = max(0.0, min(float(t), motion_time))
         if tau <= t_accel:
             s = 0.5 * a * tau**2
         elif tau <= t_accel + t_cruise:
-            s = d_accel + vmax * (tau - t_accel)
+            s = d_accel + v * (tau - t_accel)
         else:
             t_dec = tau - (t_accel + t_cruise)
-            s = d_accel + d_cruise + vmax * t_dec - 0.5 * a * t_dec**2
+            s = d_accel + d_cruise + v * t_dec - 0.5 * a * t_dec**2
         return float(max(0.0, min(angle_deg, s)))
 
     def slew_time(
         self, angle_deg: float, accel: float | None = None, vmax: float | None = None
     ) -> float:
-        """Total slew time (motion + settle) using bang-bang control."""
+        """Total slew time using bang-bang control.
+
+        Note: settle_time is deprecated and no longer added. Slew ends when motion ends.
+        The wheels naturally hold attitude after the slew completes.
+
+        Args:
+            angle_deg: Slew distance in degrees
+            accel: Acceleration in deg/s² (required for physics-derived slews)
+            vmax: Max rate in deg/s (required for physics-derived slews)
+
+        Returns:
+            Slew time in seconds
+        """
         if angle_deg <= 0 or np.isnan(angle_deg):
             return 0.0
-        return self.motion_time(angle_deg, accel=accel, vmax=vmax) + self.settle_time
+        return self.motion_time(angle_deg, accel=accel, vmax=vmax)
 
     def predict_slew(
         self,

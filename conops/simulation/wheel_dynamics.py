@@ -707,6 +707,116 @@ class WheelDynamics:
         omega_rad = headroom / i_axis
         return omega_rad * (180.0 / pi)
 
+    def compute_slew_params(
+        self,
+        axis: np.ndarray,
+        distance_deg: float,
+        accel_cap: float | None = None,
+        rate_cap: float | None = None,
+    ) -> tuple[float, float, float]:
+        """Compute physics-derived slew parameters for a given axis and distance.
+
+        This is the primary interface for determining slew timing. It derives
+        acceleration and rate from wheel capabilities, then applies optional
+        operational caps.
+
+        Args:
+            axis: Rotation axis (will be normalized)
+            distance_deg: Slew distance in degrees
+            accel_cap: Optional acceleration cap in deg/s² (operational limit)
+            rate_cap: Optional rate cap in deg/s (operational limit)
+
+        Returns:
+            Tuple of (accel, rate, motion_time) where:
+                accel: Effective acceleration in deg/s²
+                rate: Effective max rate in deg/s
+                motion_time: Slew duration in seconds
+        """
+        if distance_deg <= 0:
+            return 0.0, 0.0, 0.0
+
+        # Get physics-derived limits from wheel capabilities
+        # Use a conservative estimate of motion time for momentum-limited accel
+        # Start with triangular profile estimate, refine if needed
+        physics_accel = self.get_axis_accel_limit(axis, distance_deg)
+        physics_rate = self.get_axis_rate_limit(axis)
+
+        if physics_accel <= 0 or physics_rate <= 0:
+            return 0.0, 0.0, 0.0
+
+        # Apply optional operational caps
+        if accel_cap is not None and accel_cap > 0:
+            accel = min(physics_accel, accel_cap)
+        else:
+            accel = physics_accel
+
+        if rate_cap is not None and rate_cap > 0:
+            rate = min(physics_rate, rate_cap)
+        else:
+            rate = physics_rate
+
+        # Compute motion time using bang-bang profile
+        # Triangular profile if we can't reach max rate
+        t_accel = rate / accel
+        d_accel = 0.5 * accel * t_accel**2
+
+        if 2 * d_accel >= distance_deg:
+            # Triangular profile - peak rate is sqrt(accel * distance)
+            t_peak = (distance_deg / accel) ** 0.5
+            motion_time = 2 * t_peak
+            # Actual peak rate for this profile
+            rate = accel * t_peak
+        else:
+            # Trapezoidal profile
+            d_cruise = distance_deg - 2 * d_accel
+            t_cruise = d_cruise / rate
+            motion_time = 2 * t_accel + t_cruise
+
+        return float(accel), float(rate), float(motion_time)
+
+    def can_execute_slew(
+        self,
+        axis: np.ndarray,
+        distance_deg: float,
+        accel_cap: float | None = None,
+        rate_cap: float | None = None,
+    ) -> tuple[bool, str]:
+        """Check if a slew can be executed with current wheel state.
+
+        Args:
+            axis: Rotation axis
+            distance_deg: Slew distance in degrees
+            accel_cap: Optional acceleration cap
+            rate_cap: Optional rate cap
+
+        Returns:
+            Tuple of (can_execute, reason) where reason explains any failure.
+        """
+        if distance_deg <= 0:
+            return True, "No slew needed"
+
+        accel, rate, motion_time = self.compute_slew_params(
+            axis, distance_deg, accel_cap, rate_cap
+        )
+
+        if accel <= 0:
+            return False, "Insufficient torque capacity for slew axis"
+        if rate <= 0:
+            return False, "Insufficient momentum headroom for slew"
+
+        # Check if we have enough momentum headroom for the peak rate
+        i_axis = self.get_inertia_about_axis(axis)
+        required_h = rate * (pi / 180.0) * i_axis
+        available_h = self.get_headroom_along_axis(axis)
+
+        if required_h > available_h * 1.1:  # 10% margin
+            return (
+                False,
+                f"Peak momentum {required_h:.3f} exceeds headroom {available_h:.3f}",
+            )
+
+        return True, "OK"
+
     # -------------------------------------------------------------------------
     # Telemetry
     # -------------------------------------------------------------------------
