@@ -77,7 +77,10 @@ def mock_config(mock_ephem, mock_constraint):
     acs_cfg = Mock(spec=AttitudeControlSystem)
     acs_cfg.slew_acceleration = template_cfg.slew_acceleration
     acs_cfg.max_slew_rate = template_cfg.max_slew_rate
+    acs_cfg.max_slew_accel = template_cfg.max_slew_accel
     acs_cfg.settle_time = template_cfg.settle_time
+    # Add get_accel_cap method that returns the actual acceleration value
+    acs_cfg.get_accel_cap = Mock(return_value=template_cfg.get_accel_cap())
     acs_cfg.wheel_enabled = False  # default: no wheels; tests can add as needed
     acs_cfg.wheel_max_torque = template_cfg.wheel_max_torque
     acs_cfg.wheel_max_momentum = template_cfg.wheel_max_momentum

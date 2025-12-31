@@ -62,20 +62,23 @@ class TestAttitudeControlSystem:
     """Tests for AttitudeControlSystem class."""
 
     def test_initialization_defaults_slew_acceleration(self, default_acs):
-        """Test ACS initializes with default slew_acceleration."""
-        assert default_acs.slew_acceleration == 0.5
+        """Test ACS initializes with default slew_acceleration (None = physics-derived)."""
+        # slew_acceleration is now None by default - values derived from wheel physics
+        assert default_acs.slew_acceleration is None
 
     def test_initialization_defaults_max_slew_rate(self, default_acs):
-        """Test ACS initializes with default max_slew_rate."""
-        assert default_acs.max_slew_rate == 0.25
+        """Test ACS initializes with default max_slew_rate (None = physics-derived)."""
+        # max_slew_rate is now None by default - values derived from wheel physics
+        assert default_acs.max_slew_rate is None
 
     def test_initialization_defaults_slew_accuracy(self, default_acs):
         """Test ACS initializes with default slew_accuracy."""
         assert default_acs.slew_accuracy == 0.01
 
     def test_initialization_defaults_settle_time(self, default_acs):
-        """Test ACS initializes with default settle_time."""
-        assert default_acs.settle_time == 120.0
+        """Test ACS initializes with default settle_time (deprecated, now 0)."""
+        # settle_time is deprecated and defaults to 0 - slew ends when motion ends
+        assert default_acs.settle_time == 0.0
 
     def test_initialization_custom_slew_acceleration(self, custom_acs):
         """Test ACS initializes with custom slew_acceleration."""
@@ -218,12 +221,13 @@ class TestAttitudeControlSystem:
         assert abs(s - angle) < 1e-6
 
     def test_slew_time(self):
-        """Test slew_time includes motion time and settle time."""
-        acs = AttitudeControlSystem(slew_acceleration=0.5, settle_time=60.0)
+        """Test slew_time equals motion time (settle_time no longer added)."""
+        # settle_time is deprecated - slew_time now equals motion_time
+        acs = AttitudeControlSystem(slew_acceleration=0.5, max_slew_rate=0.5)
         angle = 10.0
         motion_time = acs.motion_time(angle)
         total_time = acs.slew_time(angle)
-        assert abs(total_time - (motion_time + 60.0)) < 1e-6
+        assert abs(total_time - motion_time) < 1e-6
 
     def test_slew_time_zero_angle(self, default_acs):
         """Test slew_time returns 0 for zero angle."""
