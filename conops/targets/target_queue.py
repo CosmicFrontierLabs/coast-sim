@@ -151,6 +151,10 @@ class TargetQueue:
             print(msg)
         # Check each candidate target
         for target in targets:
+            # Skip targets with remaining exposure less than minimum snapshot
+            if target.exptime is not None and target.exptime < target.ss_min:
+                continue
+
             target.slewtime = target.calc_slewtime(ra, dec)
 
             # Calculate observation window

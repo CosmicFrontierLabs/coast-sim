@@ -15,6 +15,7 @@ def mock_target():
     target = Mock(spec=Pointing)
     target.merit = 100
     target.done = False
+    target.exptime = 1000
     target.ss_min = 60
     target.ss_max = 120
     target.slewtime = 10
@@ -38,6 +39,7 @@ def mock_targets(mock_target):
         t = Mock(spec=Pointing)
         t.merit = 100 - i * 10
         t.done = False
+        t.exptime = 1000
         t.ss_min = 60
         t.ss_max = 120
         t.slewtime = 10
