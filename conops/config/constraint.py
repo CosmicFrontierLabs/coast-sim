@@ -1,8 +1,9 @@
+from functools import lru_cache
 from typing import cast
 
 import numpy as np
 import rust_ephem
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from rust_ephem.constraints import ConstraintConfig
 
 from ..common import dtutcfromtimestamp
@@ -14,10 +15,47 @@ from .constants import (
     SUN_OCCULT,
 )
 
+# Cache precision for constraint results.
+# RA/Dec rounded to 0.01 deg (~36 arcsec) - small vs typical constraint zones (10+ deg)
+# Time rounded to 1 second - constraint geometry changes slowly
+_RA_DEC_PRECISION = 2  # decimal places
+_TIME_PRECISION = 0  # round to nearest second
+
+# Integer-based rounding multipliers for faster key generation
+_RA_DEC_ROUNDER = 10**_RA_DEC_PRECISION
+_TIME_ROUNDER = 10**_TIME_PRECISION
+
+
+@lru_cache(maxsize=65536)
+def _round_constraint_key(
+    constraint_type: str, ra: float, dec: float, utime: float
+) -> tuple[str, float, float, float]:
+    """Generate a cache key with rounded values using integer math.
+
+    This module-level function is memoized with lru_cache to avoid redundant
+    rounding calculations. Integer multiplication/division is faster than
+    Python's round() function.
+    """
+    return (
+        constraint_type,
+        int(ra * _RA_DEC_ROUNDER) / _RA_DEC_ROUNDER,
+        int(dec * _RA_DEC_ROUNDER) / _RA_DEC_ROUNDER,
+        int(utime * _TIME_ROUNDER) / _TIME_ROUNDER if _TIME_ROUNDER > 1 else int(utime),
+    )
+
 
 class Constraint(BaseModel):
-    """
-    Class to calculate Spacecraft constraints.
+    """Class to calculate Spacecraft constraints.
+
+    Constraint checks are cached to avoid redundant computations when the same
+    (ra, dec, time) is checked multiple times. Cache keys are rounded to avoid
+    floating-point mismatches (RA/Dec to 0.01 deg, time to 1 second).
+
+    The cache grows during a simulation run. For a 12-hour DITL with 50 targets:
+    - ~60K cache entries
+    - ~5MB memory (rough estimate)
+
+    Call clear_cache() to reset between independent runs if memory is a concern.
     """
 
     # FIXME: Constraint types should be more general
@@ -52,7 +90,68 @@ class Constraint(BaseModel):
         default_factory=lambda: np.array([-1, -1, -1]), exclude=True
     )
 
+    # Per-timestep constraint result cache: {(constraint_type, ra, dec, time): bool}
+    _cache: dict[tuple[str, float, float, float], bool] = PrivateAttr(
+        default_factory=dict
+    )
+    _cache_hits: int = PrivateAttr(default=0)
+    _cache_misses: int = PrivateAttr(default=0)
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    def _cache_key(
+        self, constraint_type: str, ra: float, dec: float, utime: float
+    ) -> tuple[str, float, float, float]:
+        """Generate a cache key with rounded values to avoid floating-point mismatches."""
+        return _round_constraint_key(constraint_type, ra, dec, utime)
+
+    def _cached_check(
+        self,
+        constraint_type: str,
+        ra: float,
+        dec: float,
+        utime: float,
+        check_fn: ConstraintConfig,
+    ) -> bool:
+        """Check cache first, compute and store if miss.
+
+        Args:
+            constraint_type: Key prefix for cache (e.g., "sun", "earth")
+            ra: Right ascension in degrees
+            dec: Declination in degrees
+            utime: Unix timestamp
+            check_fn: Constraint object with in_constraint() method
+
+        Returns:
+            True if constraint is violated, False otherwise
+        """
+        key = self._cache_key(constraint_type, ra, dec, utime)
+        if key in self._cache:
+            self._cache_hits += 1
+            return self._cache[key]
+
+        # Cache miss - compute result (caller has already asserted ephem is not None)
+        self._cache_misses += 1
+        dt = dtutcfromtimestamp(utime)
+        result = cast(
+            bool,
+            check_fn.in_constraint(
+                ephemeris=cast(rust_ephem.Ephemeris, self.ephem),
+                target_ra=ra,
+                target_dec=dec,
+                time=dt,
+            ),
+        )
+        self._cache[key] = result
+        return result
+
+    def clear_cache(self) -> None:
+        """Clear the constraint result cache. Call at step boundaries."""
+        self._cache.clear()
+
+    def cache_stats(self) -> tuple[int, int]:
+        """Return (hits, misses) for cache performance monitoring."""
+        return (self._cache_hits, self._cache_misses)
 
     @property
     def constraint(self) -> ConstraintConfig:
@@ -68,76 +167,30 @@ class Constraint(BaseModel):
 
     def in_sun(self, ra: float, dec: float, time: float) -> bool:
         assert self.ephem is not None, "Ephemeris must be set to use in_sun method"
-
-        dt = dtutcfromtimestamp(time)
-        return cast(
-            bool,
-            self.sun_constraint.in_constraint(
-                ephemeris=self.ephem, target_ra=ra, target_dec=dec, time=dt
-            ),
-        )
+        return self._cached_check("sun", ra, dec, time, self.sun_constraint)
 
     def in_panel(self, ra: float, dec: float, time: float) -> bool:
         assert self.ephem is not None, "Ephemeris must be set to use in_panel method"
-
-        dt = dtutcfromtimestamp(time)
-        return cast(
-            bool,
-            self.panel_constraint.in_constraint(
-                ephemeris=self.ephem, target_ra=ra, target_dec=dec, time=dt
-            ),
-        )
+        return self._cached_check("panel", ra, dec, time, self.panel_constraint)
 
     def in_anti_sun(self, ra: float, dec: float, time: float) -> bool:
         assert self.ephem is not None, "Ephemeris must be set to use in_anti_sun method"
-
-        # Convert time to datetime for rust-ephem
-        dt = dtutcfromtimestamp(time)
-        return cast(
-            bool,
-            self.anti_sun_constraint.in_constraint(
-                ephemeris=self.ephem, target_ra=ra, target_dec=dec, time=dt
-            ),
-        )
-        # Assume it's an iterable of datetime objects
+        return self._cached_check("anti_sun", ra, dec, time, self.anti_sun_constraint)
 
     def in_earth(self, ra: float, dec: float, time: float) -> bool:
         assert self.ephem is not None, "Ephemeris must be set to use in_earth method"
-
-        # Convert time to datetime for rust-ephem
-        dt = dtutcfromtimestamp(time)
-        return cast(
-            bool,
-            self.earth_constraint.in_constraint(
-                ephemeris=self.ephem, target_ra=ra, target_dec=dec, time=dt
-            ),
-        )
+        return self._cached_check("earth", ra, dec, time, self.earth_constraint)
 
     def in_eclipse(self, ra: float, dec: float, time: float) -> bool:
         assert self.ephem is not None, "Ephemeris must be set to use in_eclipse method"
-
-        # Convert time to datetime for rust-ephem
-
-        dt = dtutcfromtimestamp(time)
-        return cast(
-            bool,
-            rust_ephem.EclipseConstraint().in_constraint(
-                ephemeris=self.ephem, target_ra=ra, target_dec=dec, time=dt
-            ),
-        )
+        # Eclipse constraint is special - create once and cache
+        if not hasattr(self, "_eclipse_constraint"):
+            self._eclipse_constraint = rust_ephem.EclipseConstraint()
+        return self._cached_check("eclipse", ra, dec, time, self._eclipse_constraint)
 
     def in_moon(self, ra: float, dec: float, time: float) -> bool:
         assert self.ephem is not None, "Ephemeris must be set to use in_moon method"
-
-        # Convert time to datetime for rust-ephem
-
-        dt = dtutcfromtimestamp(time)
-        return cast(
-            bool,
-            self.moon_constraint.in_constraint(
-                ephemeris=self.ephem, target_ra=ra, target_dec=dec, time=dt
-            ),
-        )
+        return self._cached_check("moon", ra, dec, time, self.moon_constraint)
 
     def in_constraint(self, ra: float, dec: float, utime: float) -> bool:
         """For a given time is a RA/Dec in occult?"""

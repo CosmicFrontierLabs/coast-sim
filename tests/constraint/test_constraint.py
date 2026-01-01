@@ -933,3 +933,116 @@ class TestConstraintInSun:
 
         assert result is True
         mock_in_constraint.assert_called_once()
+
+
+class TestConstraintCaching:
+    """Test constraint result caching functionality."""
+
+    def test_cache_stats_initial_zeros(self, constraint):
+        """Test that cache stats start at zero."""
+        hits, misses = constraint.cache_stats()
+        assert hits == 0
+        assert misses == 0
+
+    @patch("rust_ephem.SunConstraint.in_constraint")
+    def test_cache_miss_increments_counter(
+        self, mock_in_constraint, constraint_with_ephem
+    ):
+        """Test that cache miss increments the miss counter."""
+        mock_in_constraint.return_value = True
+
+        constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0)
+
+        hits, misses = constraint_with_ephem.cache_stats()
+        assert hits == 0
+        assert misses == 1
+
+    @patch("rust_ephem.SunConstraint.in_constraint")
+    def test_cache_hit_increments_counter(
+        self, mock_in_constraint, constraint_with_ephem
+    ):
+        """Test that cache hit increments the hit counter."""
+        mock_in_constraint.return_value = True
+
+        # First call - cache miss
+        constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0)
+        # Second call - cache hit
+        constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0)
+
+        hits, misses = constraint_with_ephem.cache_stats()
+        assert hits == 1
+        assert misses == 1
+
+    @patch("rust_ephem.SunConstraint.in_constraint")
+    def test_cache_returns_same_result(self, mock_in_constraint, constraint_with_ephem):
+        """Test that cached result matches original result."""
+        mock_in_constraint.return_value = True
+
+        result1 = constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0)
+        result2 = constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0)
+
+        assert result1 is True
+        assert result2 is True
+        # Should only call underlying constraint once
+        mock_in_constraint.assert_called_once()
+
+    @patch("rust_ephem.SunConstraint.in_constraint")
+    def test_clear_cache_resets(self, mock_in_constraint, constraint_with_ephem):
+        """Test that clear_cache clears the cache."""
+        mock_in_constraint.return_value = True
+
+        constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0)
+        assert len(constraint_with_ephem._cache) == 1
+
+        constraint_with_ephem.clear_cache()
+        assert len(constraint_with_ephem._cache) == 0
+
+    @patch("rust_ephem.SunConstraint.in_constraint")
+    def test_different_times_different_cache_entries(
+        self, mock_in_constraint, constraint_with_ephem
+    ):
+        """Test that different times create different cache entries."""
+        mock_in_constraint.return_value = True
+
+        constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0)
+        constraint_with_ephem.in_sun(45.0, 30.0, 1700000100.0)
+
+        hits, misses = constraint_with_ephem.cache_stats()
+        assert hits == 0
+        assert misses == 2
+
+    @patch("rust_ephem.SunConstraint.in_constraint")
+    @patch("rust_ephem.EarthLimbConstraint.in_constraint")
+    def test_different_constraint_types_cached_separately(
+        self, mock_earth, mock_sun, constraint_with_ephem
+    ):
+        """Test that different constraint types have separate cache entries."""
+        mock_sun.return_value = True
+        mock_earth.return_value = False
+
+        # Check sun and earth at same position/time
+        sun_result = constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0)
+        earth_result = constraint_with_ephem.in_earth(45.0, 30.0, 1700000000.0)
+
+        assert sun_result is True
+        assert earth_result is False
+        # Both should be cache misses
+        hits, misses = constraint_with_ephem.cache_stats()
+        assert hits == 0
+        assert misses == 2
+
+    @patch("rust_ephem.SunConstraint.in_constraint")
+    def test_cache_key_rounding_prevents_float_misses(
+        self, mock_in_constraint, constraint_with_ephem
+    ):
+        """Test that small floating point differences hit the cache."""
+        mock_in_constraint.return_value = True
+
+        # Very slightly different RA values that should round to same key
+        # Both round to 45.00 (2 decimal places)
+        constraint_with_ephem.in_sun(45.001, 30.0, 1700000000.0)
+        constraint_with_ephem.in_sun(45.004, 30.0, 1700000000.0)
+
+        hits, misses = constraint_with_ephem.cache_stats()
+        assert hits == 1  # Second call should hit cache
+        assert misses == 1
