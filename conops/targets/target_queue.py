@@ -40,7 +40,7 @@ class TargetQueue:
         self.gs = None
         self.log = log
         # Optional weight to penalize long slews when selecting next target
-        self.slew_distance_weight = float(getattr(config, "slew_distance_weight", 0.0))
+        self.slew_distance_weight = config.targets.slew_distance_weight
 
     def __getitem__(self, number: int) -> Pointing:
         return self.targets[number]
@@ -176,6 +176,10 @@ class TargetQueue:
             if target.visible(utime, endtime):
                 target.begin = int(utime)
                 target.end = int(utime + target.slewtime + target.ss_max)
+                # If no slew weighting, return first visible target (fast path)
+                if self.slew_distance_weight == 0.0:
+                    return target
+                # Otherwise, score all visible targets and pick best
                 slewdist = getattr(target, "slewdist", 0.0)
                 score = target.merit - self.slew_distance_weight * slewdist
                 if score > best_score:

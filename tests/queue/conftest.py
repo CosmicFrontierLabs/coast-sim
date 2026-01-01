@@ -85,8 +85,9 @@ def mock_config():
     # Mock ground stations
     config.ground_stations = Mock()
 
-    # Optional scheduling parameters
-    config.slew_distance_weight = 0.0
+    # Optional scheduling parameters (via TargetConfig)
+    config.targets = Mock()
+    config.targets.slew_distance_weight = 0.0
 
     return config
 

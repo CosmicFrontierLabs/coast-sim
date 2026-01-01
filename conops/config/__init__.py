@@ -23,6 +23,7 @@ from .power import PowerDraw
 from .recorder import OnboardRecorder
 from .solar_panel import SolarPanel, SolarPanelSet
 from .spacecraft_bus import SpacecraftBus
+from .targets import TargetConfig
 from .thermal import Heater
 from .visualization import VisualizationConfig
 
@@ -52,6 +53,7 @@ __all__ = [
     "SolarPanel",
     "SolarPanelSet",
     "SpacecraftBus",
+    "TargetConfig",
     "VisualizationConfig",
     "DAY_SECONDS",
     "DTOR",
