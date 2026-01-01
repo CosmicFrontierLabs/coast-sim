@@ -36,6 +36,12 @@ class MissionConfig(BaseModel):
     visualization: VisualizationConfig = Field(
         default_factory=VisualizationConfig, exclude=True
     )
+    slew_distance_weight: float = Field(
+        default=0.0,
+        description="Weight to penalize long slews when selecting next target. "
+        "Score = merit - slew_distance_weight * slew_distance. "
+        "Set to 0.0 to disable (default).",
+    )
 
     @model_validator(mode="after")
     def init_fault_management_defaults(self) -> MissionConfig:

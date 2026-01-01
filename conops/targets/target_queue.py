@@ -39,6 +39,8 @@ class TargetQueue:
         self.utime = 0.0
         self.gs = None
         self.log = log
+        # Optional weight to penalize long slews when selecting next target
+        self.slew_distance_weight = float(getattr(config, "slew_distance_weight", 0.0))
 
     def __getitem__(self, number: int) -> Pointing:
         return self.targets[number]
@@ -149,6 +151,9 @@ class TargetQueue:
             )
         else:
             print(msg)
+        best_target = None
+        best_score = -np.inf
+
         # Check each candidate target
         for target in targets:
             # Skip targets with remaining exposure less than minimum snapshot
@@ -171,9 +176,13 @@ class TargetQueue:
             if target.visible(utime, endtime):
                 target.begin = int(utime)
                 target.end = int(utime + target.slewtime + target.ss_max)
-                return target
+                slewdist = getattr(target, "slewdist", 0.0)
+                score = target.merit - self.slew_distance_weight * slewdist
+                if score > best_score:
+                    best_score = score
+                    best_target = target
 
-        return None
+        return best_target
 
     def reset(self) -> None:
         """Reset queue by resetting target status.
