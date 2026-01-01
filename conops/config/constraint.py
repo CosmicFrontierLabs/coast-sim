@@ -1,3 +1,4 @@
+from functools import lru_cache
 from typing import cast
 
 import numpy as np
@@ -19,6 +20,28 @@ from .constants import (
 # Time rounded to 1 second - constraint geometry changes slowly
 _RA_DEC_PRECISION = 2  # decimal places
 _TIME_PRECISION = 0  # round to nearest second
+
+# Integer-based rounding multipliers for faster key generation
+_RA_DEC_ROUNDER = 10**_RA_DEC_PRECISION
+_TIME_ROUNDER = 10**_TIME_PRECISION
+
+
+@lru_cache(maxsize=65536)
+def _round_constraint_key(
+    constraint_type: str, ra: float, dec: float, utime: float
+) -> tuple[str, float, float, float]:
+    """Generate a cache key with rounded values using integer math.
+
+    This module-level function is memoized with lru_cache to avoid redundant
+    rounding calculations. Integer multiplication/division is faster than
+    Python's round() function.
+    """
+    return (
+        constraint_type,
+        int(ra * _RA_DEC_ROUNDER) / _RA_DEC_ROUNDER,
+        int(dec * _RA_DEC_ROUNDER) / _RA_DEC_ROUNDER,
+        int(utime * _TIME_ROUNDER) / _TIME_ROUNDER if _TIME_ROUNDER > 1 else int(utime),
+    )
 
 
 class Constraint(BaseModel):
@@ -80,12 +103,7 @@ class Constraint(BaseModel):
         self, constraint_type: str, ra: float, dec: float, utime: float
     ) -> tuple[str, float, float, float]:
         """Generate a cache key with rounded values to avoid floating-point mismatches."""
-        return (
-            constraint_type,
-            round(ra, _RA_DEC_PRECISION),
-            round(dec, _RA_DEC_PRECISION),
-            round(utime, _TIME_PRECISION),
-        )
+        return _round_constraint_key(constraint_type, ra, dec, utime)
 
     def _cached_check(
         self,
