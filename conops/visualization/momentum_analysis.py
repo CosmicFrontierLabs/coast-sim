@@ -16,14 +16,15 @@ if TYPE_CHECKING:
 
 def plot_ditl_momentum(
     ditl: "DITLMixin",
-    figsize: tuple[float, float] = (14, 14),
+    figsize: tuple[float, float] = (14, 16),
     config: VisualizationConfig | None = None,
 ) -> tuple[Figure, list[Axes]]:
     """Plot momentum conservation analysis for a DITL simulation.
 
-    Creates a 7-panel figure showing:
+    Creates an 8-panel figure showing:
     - Per-wheel momentum over time
     - Wheel fill fraction (saturation indicator)
+    - Body slew rate (angular velocity from pointing changes)
     - External disturbance torques breakdown (log scale)
     - Instantaneous torques (disturbance vs MTQ bleed)
     - Cumulative impulse (momentum budget)
@@ -32,7 +33,7 @@ def plot_ditl_momentum(
 
     Args:
         ditl: DITLMixin instance containing simulation telemetry data.
-        figsize: Tuple of (width, height) for the figure size. Default: (14, 14)
+        figsize: Tuple of (width, height) for the figure size. Default: (14, 16)
         config: VisualizationConfig object. If None, uses ditl.config.visualization
             if available.
 
@@ -87,6 +88,22 @@ def plot_ditl_momentum(
     dist_srp = np.array(getattr(ditl, "disturbance_srp", []), dtype=float)
     dist_mag = np.array(getattr(ditl, "disturbance_mag", []), dtype=float)
 
+    # Compute body slew rate from RA/Dec changes
+    ra_arr = np.array(getattr(ditl, "ra", []), dtype=float)
+    dec_arr = np.array(getattr(ditl, "dec", []), dtype=float)
+    body_rate = np.zeros(len(hours))
+    if len(ra_arr) == len(hours) and len(dec_arr) == len(hours) and dt > 0:
+        ra_rad = np.deg2rad(ra_arr)
+        dec_rad = np.deg2rad(dec_arr)
+        for i in range(1, len(hours)):
+            # Great-circle distance between consecutive pointings
+            r0, d0 = ra_rad[i - 1], dec_rad[i - 1]
+            r1, d1 = ra_rad[i], dec_rad[i]
+            cosc = np.sin(d0) * np.sin(d1) + np.cos(d0) * np.cos(d1) * np.cos(r1 - r0)
+            cosc = np.clip(cosc, -1.0, 1.0)
+            dist_deg = np.rad2deg(np.arccos(cosc))
+            body_rate[i] = dist_deg / dt  # deg/s
+
     # Compute cumulative impulse
     if dist_torque.size == len(hours):
         dist_impulse_cum = np.cumsum(dist_torque) * dt
@@ -102,8 +119,8 @@ def plot_ditl_momentum(
     if hasattr(ditl, "acs") and hasattr(ditl.acs, "get_momentum_warnings"):
         n_warnings = len(ditl.acs.get_momentum_warnings())
 
-    # Create figure with 7 panels
-    fig, axes_arr = plt.subplots(7, 1, figsize=figsize, sharex=True)
+    # Create figure with 8 panels
+    fig, axes_arr = plt.subplots(8, 1, figsize=figsize, sharex=True)
     axes: list[Axes] = list(axes_arr)
 
     # Panel 1: Per-wheel momentum
@@ -166,8 +183,52 @@ def plot_ditl_momentum(
     ax.set_ylabel("Wheel Fill\n(%)", fontsize=label_font_size, fontfamily=font_family)
     ax.grid(True, alpha=0.3)
 
-    # Panel 3: External disturbance torques breakdown (log scale)
+    # Panel 3: Body slew rate
     ax = axes[2]
+    if body_rate.size == len(hours):
+        # Color by mode
+        ax.plot(hours, body_rate, "k-", linewidth=0.3, alpha=0.5, label="Body rate")
+        # Highlight pass tracking rate
+        pass_mask = mode == ACSMode.PASS
+        if np.any(pass_mask):
+            ax.scatter(
+                hours[pass_mask],
+                body_rate[pass_mask],
+                c="purple",
+                s=2,
+                alpha=0.8,
+                label="Pass tracking",
+                zorder=5,
+            )
+        # Highlight slewing
+        slew_mask = mode == ACSMode.SLEWING
+        if np.any(slew_mask):
+            ax.scatter(
+                hours[slew_mask],
+                body_rate[slew_mask],
+                c="blue",
+                s=1,
+                alpha=0.5,
+                label="Slewing",
+                zorder=4,
+            )
+        ax.legend(loc="upper right", fontsize=legend_font_size)
+    else:
+        ax.text(
+            0.5,
+            0.5,
+            "No pointing data available",
+            transform=ax.transAxes,
+            ha="center",
+            fontsize=label_font_size,
+        )
+    ax.set_ylabel(
+        "Body Rate\n(deg/s)", fontsize=label_font_size, fontfamily=font_family
+    )
+    ax.grid(True, alpha=0.3)
+
+    # Panel 4: External disturbance torques breakdown (log scale)
+    ax = axes[3]
     has_disturbance_data = (
         dist_torque.size == len(hours)
         and dist_gg.size == len(hours)
@@ -198,8 +259,8 @@ def plot_ditl_momentum(
     )
     ax.grid(True, alpha=0.2)
 
-    # Panel 4: Instantaneous torques (total disturbance vs MTQ)
-    ax = axes[3]
+    # Panel 5: Instantaneous torques (total disturbance vs MTQ)
+    ax = axes[4]
     if dist_torque.size == len(hours) and mtq_torque.size == len(hours):
         ax.plot(
             hours,
@@ -225,8 +286,8 @@ def plot_ditl_momentum(
     ax.set_ylabel("Torque\n(mNm)", fontsize=label_font_size, fontfamily=font_family)
     ax.grid(True, alpha=0.3)
 
-    # Panel 5: Cumulative impulse (momentum budget)
-    ax = axes[4]
+    # Panel 6: Cumulative impulse (momentum budget)
+    ax = axes[5]
     ax.plot(hours, dist_impulse_cum, "r-", linewidth=1, label="Cumulative disturbance")
     ax.plot(hours, mtq_impulse_cum, "b-", linewidth=1, label="Cumulative MTQ bleed")
     ax.plot(
@@ -242,8 +303,8 @@ def plot_ditl_momentum(
     ax.legend(loc="upper left", fontsize=legend_font_size)
     ax.grid(True, alpha=0.3)
 
-    # Panel 6: Conservation check
-    ax = axes[5]
+    # Panel 7: Conservation check
+    ax = axes[6]
     if wheel_frac_raw.size == len(hours):
         # Estimate wheel momentum from fill fraction
         max_mom = 1.0
@@ -272,8 +333,8 @@ def plot_ditl_momentum(
     ax.set_ylabel("Momentum\n(Nms)", fontsize=label_font_size, fontfamily=font_family)
     ax.grid(True, alpha=0.3)
 
-    # Panel 7: Mode timeline (color-coded)
-    ax = axes[6]
+    # Panel 8: Mode timeline (color-coded)
+    ax = axes[7]
     mode_colors = {
         ACSMode.SCIENCE.value: "green",
         ACSMode.SLEWING.value: "blue",
