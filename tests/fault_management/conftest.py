@@ -40,6 +40,11 @@ class DummyEphemeris:
         self.step_size = 1.0
         self.earth = [Mock(ra=Mock(deg=0.0), dec=Mock(deg=0.0))]
         self.sun = [Mock(ra=Mock(deg=45.0), dec=Mock(deg=23.5))]
+        # New direct array access (rust-ephem 0.3.0+)
+        self.earth_ra_deg = [0.0]
+        self.earth_dec_deg = [0.0]
+        self.sun_ra_deg = [45.0]
+        self.sun_dec_deg = [23.5]
 
     def index(self, time):
         return 0

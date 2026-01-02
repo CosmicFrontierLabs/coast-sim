@@ -120,8 +120,8 @@ class SolarPanel(BaseModel):
 
         # Non-gimbled panels: compute illumination based on cant, azimuth, and pointing
         # Calculate sun angle using vector separation (expects radians)
-        sun_ra_rad = np.deg2rad(ephem.sun[i].ra.deg)
-        sun_dec_rad = np.deg2rad(ephem.sun[i].dec.deg)
+        sun_ra_rad = np.deg2rad(ephem.sun_ra_deg[i])
+        sun_dec_rad = np.deg2rad(ephem.sun_dec_deg[i])
         target_ra_rad = np.deg2rad(ra)
         target_dec_rad = np.deg2rad(dec)
 
@@ -464,9 +464,9 @@ class SolarPanelSet(BaseModel):
             # In eclipse - no illumination for any panel
             return (0.0, 0.0) if scalar else (np.array([0.0]), np.array([0.0]))
 
-        # Get sun position ONCE (this was the 89.8% bottleneck!)
-        sun_ra_deg = ephem.sun[idx].ra.deg
-        sun_dec_deg = ephem.sun[idx].dec.deg
+        # Get sun position from pre-computed arrays (no SkyCoord overhead)
+        sun_ra_deg = ephem.sun_ra_deg[idx]
+        sun_dec_deg = ephem.sun_dec_deg[idx]
 
         # Compute sun angle (same for all panels at this pointing)
         sun_ra_rad = np.deg2rad(sun_ra_deg)
@@ -548,10 +548,10 @@ class SolarPanelSet(BaseModel):
         Returns:
             tuple: (ra, dec) in degrees for optimal charging pointing
         """
-        # Get sun position
+        # Get sun position from pre-computed arrays
         index = ephem.index(dtutcfromtimestamp(time))
-        sun_ra = ephem.sun[index].ra.deg
-        sun_dec = ephem.sun[index].dec.deg
+        sun_ra = ephem.sun_ra_deg[index]
+        sun_dec = ephem.sun_dec_deg[index]
 
         if self.sidemount:
             # For side-mounted panels, point perpendicular to sun (90 degrees away)

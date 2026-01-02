@@ -22,6 +22,8 @@ def mock_ephemeris():
 
     # Sun position (mock SkyCoord objects)
     sun_mocks = []
+    sun_ra_deg_list = []
+    sun_dec_deg_list = []
     for i in range(10):
         sun_mock = Mock()
         sun_mock.ra = Mock()
@@ -30,7 +32,12 @@ def mock_ephemeris():
         sun_mock.dec.deg = 30.0 - i * 1.0  # Varying Dec
         sun_mock.separation = Mock(return_value=Mock(deg=45.0))
         sun_mocks.append(sun_mock)
+        sun_ra_deg_list.append(90.0 + i * 2.0)
+        sun_dec_deg_list.append(30.0 - i * 1.0)
     ephem.sun = np.array(sun_mocks)
+    # New direct array access (rust-ephem 0.3.0+)
+    ephem.sun_ra_deg = np.array(sun_ra_deg_list)
+    ephem.sun_dec_deg = np.array(sun_dec_deg_list)
 
     # Earth position
     earth_mocks = []

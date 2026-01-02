@@ -204,5 +204,8 @@ def mock_ephem():
     sun_coord.ra.deg = 180.0
     sun_coord.dec.deg = 0.0
     ephem.sun = [sun_coord]
+    # New direct array access (rust-ephem 0.3.0+)
+    ephem.sun_ra_deg = [180.0]
+    ephem.sun_dec_deg = [0.0]
     ephem.in_eclipse = Mock(return_value=False)
     return ephem

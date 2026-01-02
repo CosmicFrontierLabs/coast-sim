@@ -161,6 +161,8 @@ class TestSolarPanel:
         mock_sun_coord.ra.deg = 45.0
         mock_sun_coord.dec.deg = 10.0
         mock_ephem.sun = [mock_sun_coord]
+        mock_ephem.sun_ra_deg = [45.0]
+        mock_ephem.sun_dec_deg = [10.0]
         utime = 1700000000.0
         ra, dec = panel.optimal_charging_pointing(utime, mock_ephem)
         assert ra == (45.0 + 90.0) % 360.0
@@ -174,6 +176,8 @@ class TestSolarPanel:
         mock_sun_coord.ra.deg = 45.0
         mock_sun_coord.dec.deg = 10.0
         mock_ephem.sun = [mock_sun_coord]
+        mock_ephem.sun_ra_deg = [45.0]
+        mock_ephem.sun_dec_deg = [10.0]
         utime = 1700000000.0
         ra, dec = panel.optimal_charging_pointing(utime, mock_ephem)
         assert dec == 10.0
@@ -187,6 +191,8 @@ class TestSolarPanel:
         mock_sun_coord.ra.deg = 120.0
         mock_sun_coord.dec.deg = -15.0
         mock_ephem.sun = [mock_sun_coord]
+        mock_ephem.sun_ra_deg = [120.0]
+        mock_ephem.sun_dec_deg = [-15.0]
         utime = 1700000000.0
         ra, dec = panel.optimal_charging_pointing(utime, mock_ephem)
         assert ra == 120.0
@@ -200,6 +206,8 @@ class TestSolarPanel:
         mock_sun_coord.ra.deg = 120.0
         mock_sun_coord.dec.deg = -15.0
         mock_ephem.sun = [mock_sun_coord]
+        mock_ephem.sun_ra_deg = [120.0]
+        mock_ephem.sun_dec_deg = [-15.0]
         utime = 1700000000.0
         ra, dec = panel.optimal_charging_pointing(utime, mock_ephem)
         assert dec == -15.0
@@ -213,6 +221,8 @@ class TestSolarPanel:
         mock_sun_coord.ra.deg = 350.0
         mock_sun_coord.dec.deg = 0.0
         mock_ephem.sun = [mock_sun_coord]
+        mock_ephem.sun_ra_deg = [350.0]
+        mock_ephem.sun_dec_deg = [0.0]
         utime = 1700000000.0
         ra, dec = panel.optimal_charging_pointing(utime, mock_ephem)
         assert ra == 80.0

@@ -652,13 +652,13 @@ class SkyPointingController:
         assert ephem is not None, "Ephemeris must be set for constraint calculations."
         idx = ephem.index(dt)
 
-        # Get celestial body positions
-        sun_ra = ephem.sun[idx].ra.deg
-        sun_dec = ephem.sun[idx].dec.deg
-        moon_ra = ephem.moon[idx].ra.deg
-        moon_dec = ephem.moon[idx].dec.deg
-        earth_ra = ephem.earth[idx].ra.deg
-        earth_dec = ephem.earth[idx].dec.deg
+        # Get celestial body positions from pre-computed arrays
+        sun_ra = ephem.sun_ra_deg[idx]
+        sun_dec = ephem.sun_dec_deg[idx]
+        moon_ra = ephem.moon_ra_deg[idx]
+        moon_dec = ephem.moon_dec_deg[idx]
+        earth_ra = ephem.earth_ra_deg[idx]
+        earth_dec = ephem.earth_dec_deg[idx]
 
         # Check each constraint type and plot regions
         constraint_types = [
@@ -722,9 +722,9 @@ class SkyPointingController:
         ephem = self.ditl.ephem
         idx = ephem.index(dt)
 
-        # Get Earth position and angular radius
-        earth_ra = ephem.earth[idx].ra.deg
-        earth_dec = ephem.earth[idx].dec.deg
+        # Get Earth position and angular radius from pre-computed arrays
+        earth_ra = ephem.earth_ra_deg[idx]
+        earth_dec = ephem.earth_dec_deg[idx]
         earth_angular_radius = ephem.earth_radius_deg[idx]
 
         # Grid dimensions for pcolormesh

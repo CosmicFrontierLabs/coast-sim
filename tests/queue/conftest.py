@@ -24,9 +24,14 @@ class DummyEphemeris:
             base_time + timedelta(seconds=i * 3600)
             for i in range(25)  # 24 hours + 1 for end time
         ]
-        # Add earth and sun attributes for ACS initialization
+        # Add earth and sun attributes for ACS initialization (legacy SkyCoord style)
         self.earth = [Mock(ra=Mock(deg=0.0), dec=Mock(deg=0.0)) for _ in range(25)]
         self.sun = [Mock(ra=Mock(deg=45.0), dec=Mock(deg=23.5)) for _ in range(25)]
+        # New direct array access (rust-ephem 0.3.0+)
+        self.earth_ra_deg = [0.0] * 25
+        self.earth_dec_deg = [0.0] * 25
+        self.sun_ra_deg = [45.0] * 25
+        self.sun_dec_deg = [23.5] * 25
 
     def index(self, time):
         """Mock index method."""

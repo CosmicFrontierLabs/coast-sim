@@ -64,8 +64,8 @@ class ACS:
         self.ephem = self.constraint.ephem
 
         # Initial pointing derived from ephemeris (opposite Earth vector)
-        self.ra = (180 + self.ephem.earth[0].ra.deg) % 360
-        self.dec = -self.ephem.earth[0].dec.deg
+        self.ra = (180 + self.ephem.earth_ra_deg[0]) % 360
+        self.dec = -self.ephem.earth_dec_deg[0]
         # Set up initial last_slew pointing (this would have been the
         # last slew to execute before the current DITL), so didn't
         # happen in our simulation, but defines a realistic boundary
@@ -244,8 +244,8 @@ class ACS:
         else:
             # Fallback: point directly at Sun if no solar panel config
             index = self.ephem.index(dtutcfromtimestamp(utime))
-            safe_ra = self.ephem.sun[index].ra.deg
-            safe_dec = self.ephem.sun[index].dec.deg
+            safe_ra = self.ephem.sun_ra_deg[index]
+            safe_dec = self.ephem.sun_dec_deg[index]
 
         self._log_or_print(
             utime,
@@ -620,8 +620,8 @@ class ACS:
             # Fallback: point directly at Sun if no solar panel config and that
             # serves you right for not having solar panels!
             index = self.ephem.index(dtutcfromtimestamp(utime))
-            target_ra = self.ephem.sun[index].ra.deg
-            target_dec = self.ephem.sun[index].dec.deg
+            target_ra = self.ephem.sun_ra_deg[index]
+            target_dec = self.ephem.sun_dec_deg[index]
 
         # If actively slewing to safe mode position, use slew interpolation
         if (
