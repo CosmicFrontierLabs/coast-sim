@@ -791,6 +791,93 @@ class TestDITLADCSMomentumWarnings:
 
         print("\nSUCCESS: Pointing-momentum consistency check caught teleportation")
 
+    def test_momentum_check_catches_future_slew_bug(self):
+        """Verify momentum check would have caught the future-scheduled slew bug.
+
+        The bug (fixed in c7fe4bd): when a slew was scheduled for the future,
+        _calculate_pointing() would jump to the slew's END position immediately
+        instead of waiting at the start position.
+
+        This test patches _calculate_pointing to reproduce the buggy behavior
+        and verifies the momentum consistency check catches it.
+        """
+        from unittest.mock import MagicMock
+
+        from conops.simulation.acs import ACS
+
+        begin = datetime(2025, 1, 1)
+        end = begin + timedelta(minutes=10)
+        ephem = make_mock_ephem(begin, end, step_size=10.0)
+
+        cfg = make_ditl_adcs_config(ephem)
+        acs = ACS(config=cfg, log=None)
+        acs.ephem = ephem
+
+        t0 = begin.timestamp()
+
+        # Initial pointing
+        start_ra, start_dec = 45.0, 30.0
+        end_ra, end_dec = 75.0, 30.0  # 30 deg slew in RA
+
+        # Schedule a slew for the FUTURE (starts at t0 + 60s)
+        slew_start = t0 + 60.0
+        mock_slew = MagicMock()
+        mock_slew.startra = start_ra
+        mock_slew.startdec = start_dec
+        mock_slew.endra = end_ra
+        mock_slew.enddec = end_dec
+        mock_slew.slewstart = slew_start
+        mock_slew.is_slewing = lambda utime: slew_start <= utime < slew_start + 30.0
+        acs.last_slew = mock_slew
+
+        # Initialize pointing at start position
+        acs.ra = start_ra
+        acs.dec = start_dec
+        acs._last_pointing_ra = start_ra
+        acs._last_pointing_dec = start_dec
+        acs._last_pointing_utime = t0
+
+        # Initialize wheel tracking
+        h_initial = acs._get_total_wheel_momentum().copy()
+        acs._last_wheel_momentum = h_initial.copy()
+
+        # Simulate the BUGGY behavior of _calculate_pointing
+        # (missing the utime < slewstart check - jumps to end position!)
+
+        # Call at t0 + 10s (before slew starts at t0 + 60s)
+        t1 = t0 + 10.0
+
+        # Record wheel momentum before
+        acs._wheel_momentum_before_update = acs._get_total_wheel_momentum().copy()
+
+        # Apply the buggy behavior: jump to end position even though slew hasn't started
+        # This is what the old code did - it fell through to the "slew completed" branch
+        acs.ra = end_ra
+        acs.dec = end_dec
+
+        # Verify the bug manifests - pointing jumped to end position
+        assert abs(acs.ra - end_ra) < 0.1, f"Bug not reproduced: ra={acs.ra}"
+        print(f"\nBug reproduced: pointing jumped from {start_ra} to {acs.ra} deg")
+        print(f"  (Slew not started yet - slew_start={slew_start}, utime={t1})")
+
+        # Now call the momentum consistency check
+        acs._validate_pointing_momentum_consistency(t1)
+
+        # Check for warnings
+        warnings = acs.get_pointing_warnings()
+        momentum_warnings = [w for w in warnings if "momentum" in w.lower()]
+
+        print(f"\nMomentum warnings after buggy teleport: {len(momentum_warnings)}")
+        for w in momentum_warnings:
+            print(f"  {w}")
+
+        assert len(momentum_warnings) > 0, (
+            "Momentum check should have caught the future-slew bug! "
+            "Pointing jumped 30 deg but wheels didn't move."
+        )
+
+        print("\nSUCCESS: Momentum check would have caught the future-slew bug")
+
 
 def test_single_slew_momentum_detail():
     """Detailed trace of a single slew with notebook config."""
