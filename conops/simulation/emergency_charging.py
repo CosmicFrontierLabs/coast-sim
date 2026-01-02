@@ -7,13 +7,18 @@ import rust_ephem
 
 from conops.config.battery import Battery
 
+from ..common import unixtime2date
+from ..common.vector import angular_separation
+from ..config import MissionConfig
+
 if TYPE_CHECKING:
     from ..ditl.ditl_log import DITLLog
     from ..targets import Pointing
 
-from ..common import unixtime2date
-from ..common.vector import angular_separation
-from ..config import MissionConfig
+# Maximum consecutive constraint failures before abandoning search.
+# If the first N candidates all fail constraints, likely all will fail
+# due to the current geometric configuration (e.g., Sun/Earth/Moon blocking).
+_MAX_CONSTRAINT_FAILURES = 15
 
 
 class EmergencyCharging:
@@ -73,6 +78,7 @@ class EmergencyCharging:
         self.constraint = config.constraint
         self.solar_panel = config.solar_panel
         self.acs_config = config.spacecraft_bus.attitude_control
+        self.battery = config.battery
 
         self.next_charging_obsid = starting_obsid
         self.current_charging_ppt: "Pointing | None" = None
@@ -296,10 +302,8 @@ class EmergencyCharging:
         candidates = [(ra, dec) for ra, dec, _ in candidate_list]
 
         # Evaluate each candidate
-        # Early exit threshold: 70% illumination is good enough for emergency charging
-        good_enough_illumination = 0.70
-        # Limit constraint checks: if first N candidates all fail, likely all will
-        max_constraint_failures = 15
+        # Early exit threshold from config (default 1.0 = require best illumination)
+        good_enough_illumination = self.battery.emergency_charging_min_illumination
         constraint_failures = 0
 
         for alt_ra, alt_dec in candidates:
@@ -308,7 +312,7 @@ class EmergencyCharging:
                 constraint_failures += 1
                 # If we've hit many failures without finding any valid candidate,
                 # the constraint geometry likely blocks all alternatives
-                if constraint_failures >= max_constraint_failures and best_ra is None:
+                if constraint_failures >= _MAX_CONSTRAINT_FAILURES and best_ra is None:
                     break
                 continue  # Skip constrained pointings
 

@@ -22,6 +22,10 @@ class Battery(BaseModel):
         0.95  # Threshold at which emergency recharge ends (95% SOC)
     )
     charge_level: float = 0  # Current charge level in watthours
+    # Illumination threshold for early exit in emergency charging search.
+    # 1.0 = require best possible illumination (original behavior)
+    # Lower values (e.g., 0.7) allow early exit once "good enough" illumination found
+    emergency_charging_min_illumination: float = 1.0
 
     @model_validator(mode="before")
     @classmethod
