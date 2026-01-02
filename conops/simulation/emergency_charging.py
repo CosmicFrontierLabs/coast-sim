@@ -220,6 +220,10 @@ class EmergencyCharging:
         Returns:
             Tuple of (ra, dec) if valid pointing found, or (None, None) if not
         """
+        # Short-circuit: if in eclipse, no pointing will provide power
+        if self.constraint.in_eclipse(ra=0, dec=0, time=utime):
+            return None, None
+
         # Validate optimal pointing
         if not self.constraint.in_constraint(optimal_ra, optimal_dec, utime):
             # Check if within slew limit
@@ -253,35 +257,59 @@ class EmergencyCharging:
         # For side-mounted panels, explore RA offsets while keeping Dec similar
         # For body-mounted panels, we need to maintain pointing near the Sun
 
-        # Generate candidate pointings:
-        # 1. RA offsets with same Dec (±30, ±60, ±90, ±120, ±150, ±180 degrees)
-        # 2. Dec offsets with same RA (±10, ±20, ±30 degrees, clamped to [-90, 90])
-        # 3. Combined RA and Dec offsets for more options
+        # Generate candidate pointings ordered by angular distance from optimal
+        # Smaller offsets first - more likely to satisfy similar constraints
+        candidates: list[tuple[float, float]] = []
 
-        candidates = []
+        # Build candidates with approximate angular distance for sorting
+        candidate_list: list[tuple[float, float, float]] = []  # (ra, dec, approx_dist)
 
-        # RA offsets only
+        # RA offsets only (Dec unchanged)
         for ra_offset in [30, -30, 60, -60, 90, -90, 120, -120, 150, -150, 180]:
             alt_ra = (optimal_ra + ra_offset) % 360.0
-            candidates.append((alt_ra, optimal_dec))
+            # Approximate angular distance (RA offset scaled by cos(dec))
+            approx_dist = abs(ra_offset) * max(
+                0.1, abs(np.cos(np.radians(optimal_dec)))
+            )
+            candidate_list.append((alt_ra, optimal_dec, approx_dist))
 
-        # Dec offsets only
+        # Dec offsets only (RA unchanged)
         for dec_offset in [10, -10, 20, -20, 30, -30]:
             alt_dec = np.clip(optimal_dec + dec_offset, -90.0, 90.0)
             if abs(alt_dec - optimal_dec) > 0.1:  # Only if actually different
-                candidates.append((optimal_ra, alt_dec))
+                candidate_list.append((optimal_ra, alt_dec, abs(dec_offset)))
 
-        # Combined offsets (smaller range to avoid too many candidates)
+        # Combined offsets
         for ra_offset in [45, -45, 90, -90, 135, -135]:
             for dec_offset in [15, -15, 30, -30]:
                 alt_ra = (optimal_ra + ra_offset) % 360.0
                 alt_dec = np.clip(optimal_dec + dec_offset, -90.0, 90.0)
-                candidates.append((alt_ra, alt_dec))
+                # Approximate angular distance
+                ra_contrib = abs(ra_offset) * max(
+                    0.1, abs(np.cos(np.radians(optimal_dec)))
+                )
+                approx_dist = (ra_contrib**2 + dec_offset**2) ** 0.5
+                candidate_list.append((alt_ra, alt_dec, approx_dist))
+
+        # Sort by angular distance and extract (ra, dec) pairs
+        candidate_list.sort(key=lambda x: x[2])
+        candidates = [(ra, dec) for ra, dec, _ in candidate_list]
 
         # Evaluate each candidate
+        # Early exit threshold: 70% illumination is good enough for emergency charging
+        good_enough_illumination = 0.70
+        # Limit constraint checks: if first N candidates all fail, likely all will
+        max_constraint_failures = 15
+        constraint_failures = 0
+
         for alt_ra, alt_dec in candidates:
             # Check if this pointing violates constraints
             if self.constraint.in_constraint(alt_ra, alt_dec, utime):
+                constraint_failures += 1
+                # If we've hit many failures without finding any valid candidate,
+                # the constraint geometry likely blocks all alternatives
+                if constraint_failures >= max_constraint_failures and best_ra is None:
+                    break
                 continue  # Skip constrained pointings
 
             # Check slew distance if limit is set
@@ -299,7 +327,16 @@ class EmergencyCharging:
             if isinstance(illumination, np.ndarray):
                 illumination = float(illumination[0])
 
-            # Keep track of the best unconstrained pointing
+            # Early exit: if illumination is good enough, use this pointing immediately
+            if illumination >= good_enough_illumination:
+                self._log_or_print(
+                    utime,
+                    "CHARGING",
+                    f"Found alternative charging pointing at RA={alt_ra:.2f}, Dec={alt_dec:.2f} with {illumination:.1%} illumination",
+                )
+                return alt_ra, alt_dec
+
+            # Keep track of the best unconstrained pointing (fallback)
             if illumination > best_illumination:
                 best_illumination = illumination
                 best_ra = alt_ra
