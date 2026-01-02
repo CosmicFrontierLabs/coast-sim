@@ -27,9 +27,16 @@ class DummyEphemeris:
             datetime.fromtimestamp(float(t), tz=timezone.utc) for t in unix_times
         ]
         self.utime = unix_times
-        # Add earth and sun attributes for ACS initialization
+        # Add earth and sun attributes for ACS initialization (legacy SkyCoord style)
         self.earth = [Mock(ra=Mock(deg=0.0), dec=Mock(deg=0.0)) for _ in unix_times]
         self.sun = [Mock(ra=Mock(deg=45.0), dec=Mock(deg=23.5)) for _ in unix_times]
+        # New direct array access (rust-ephem 0.3.0+)
+        self.earth_ra_deg = np.zeros(len(unix_times))
+        self.earth_dec_deg = np.zeros(len(unix_times))
+        self.sun_ra_deg = np.full(len(unix_times), 45.0)
+        self.sun_dec_deg = np.full(len(unix_times), 23.5)
+        self.moon_ra_deg = np.full(len(unix_times), 90.0)
+        self.moon_dec_deg = np.full(len(unix_times), 10.0)
 
     def index(self, time):
         """Mock index method."""
@@ -44,6 +51,10 @@ def mock_config():
     cfg.constraint = Mock()
     cfg.constraint.ephem = Mock()  # DITLMixin asserts this is not None
     cfg.constraint.ephem.earth = [Mock(ra=Mock(deg=0.0), dec=Mock(deg=0.0))]
+    cfg.constraint.ephem.earth_ra_deg = [0.0]
+    cfg.constraint.ephem.earth_dec_deg = [0.0]
+    cfg.constraint.ephem.sun_ra_deg = [45.0]
+    cfg.constraint.ephem.sun_dec_deg = [23.5]
     # Set timestamp to match DummyEphemeris range
     cfg.constraint.ephem.timestamp = [
         datetime.datetime(2018, 11, 27, 0, 0, 0, tzinfo=datetime.timezone.utc),

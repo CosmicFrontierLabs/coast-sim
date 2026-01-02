@@ -42,6 +42,8 @@ def create_test_config(ephem=None):
         import datetime
         from unittest.mock import Mock
 
+        import numpy as np
+
         ephem = Mock()
         ephem.step_size = 60
         start_time = 1543276800  # 2018-11-27 00:00:00 UTC
@@ -51,8 +53,17 @@ def create_test_config(ephem=None):
             for t in unix_times
         ]
         ephem.utime = unix_times
+        # Legacy SkyCoord-style access
         ephem.earth = [Mock(ra=Mock(deg=0.0), dec=Mock(deg=0.0)) for _ in unix_times]
         ephem.sun = [Mock(ra=Mock(deg=45.0), dec=Mock(deg=23.5)) for _ in unix_times]
+        # New direct array access (rust-ephem 0.3.0+)
+        ephem.earth_ra_deg = np.zeros(len(unix_times))
+        ephem.earth_dec_deg = np.zeros(len(unix_times))
+        ephem.sun_ra_deg = np.full(len(unix_times), 45.0)
+        ephem.sun_dec_deg = np.full(len(unix_times), 23.5)
+        ephem.moon_ra_deg = np.full(len(unix_times), 90.0)
+        ephem.moon_dec_deg = np.full(len(unix_times), 10.0)
+        ephem.index = Mock(return_value=0)
 
     spacecraft_bus = Mock(spec=SpacecraftBus)
     spacecraft_bus.attitude_control = Mock()

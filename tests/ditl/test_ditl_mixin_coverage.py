@@ -14,7 +14,7 @@ from conops.ditl.ditl_mixin import DITLMixin
 def mock_config():
     cfg = Mock(spec=MissionConfig)
     # constraint with ephem required for ACS init
-    # Build a minimal ephem with earth[0].ra.deg and dec.deg
+    # Build a minimal ephem with earth[0].ra.deg and dec.deg (legacy SkyCoord style)
     ra = Mock()
     ra.deg = 0.0
     dec = Mock()
@@ -34,6 +34,13 @@ def mock_config():
     sun_entry.dec = sun_dec
     ephem.sun = [sun_entry]
     ephem.index = Mock(return_value=0)
+    # New direct array access (rust-ephem 0.3.0+)
+    ephem.earth_ra_deg = [0.0]
+    ephem.earth_dec_deg = [0.0]
+    ephem.sun_ra_deg = [0.0]
+    ephem.sun_dec_deg = [0.0]
+    ephem.moon_ra_deg = [90.0]
+    ephem.moon_dec_deg = [10.0]
     # Add timestamp for DITLMixin init
     from datetime import datetime, timezone
 

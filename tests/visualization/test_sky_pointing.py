@@ -62,6 +62,14 @@ def mock_ditl():
     ephem.earth = [earth_mock]
     ephem.earth_radius_deg = [10.0]  # Mock earth angular radius
 
+    # New direct array access (rust-ephem 0.3.0+)
+    ephem.sun_ra_deg = [90.0]
+    ephem.sun_dec_deg = [23.5]
+    ephem.moon_ra_deg = [180.0]
+    ephem.moon_dec_deg = [10.0]
+    ephem.earth_ra_deg = [270.0]
+    ephem.earth_dec_deg = [-15.0]
+
     ditl.constraint.ephem = ephem
 
     # Mock constraint methods

@@ -21,9 +21,9 @@ def optimum_roll(
     - If provided: maximize weighted total power using actual panel normals, sizes,
       and efficiencies by scanning roll in 1° increments.
     """
-    # Fetch ephemeris index and Sun vector
+    # Fetch ephemeris index and Sun vector from pre-computed arrays
     index = ephem.index(dtutcfromtimestamp(utime))
-    sunvec = ephem.sun[index].cartesian.xyz.to_value("km")  # km
+    sunvec = ephem.sun_pv.position[index]  # km
 
     # Sun vector in body coordinates for roll=0
     s_body_0 = scbodyvector(ra, dec, 0.0, sunvec)
@@ -107,9 +107,9 @@ def optimum_roll_sidemount(
     # This maximizes illumination for side-mounted panels (and general canted
     # panels derived from -Z toward +X), independent of panel cant magnitude.
 
-    # Fetch ephemeris index and Sun vector
+    # Fetch ephemeris index and Sun vector from pre-computed arrays
     index = ephem.index(dtutcfromtimestamp(utime))
-    sunvec = ephem.sun[index].cartesian.xyz.to_value("km")  # km
+    sunvec = ephem.sun_pv.position[index]  # km
 
     # Sun vector in body coordinates for roll=0
     s_body_0 = scbodyvector(ra, dec, 0.0, sunvec)
