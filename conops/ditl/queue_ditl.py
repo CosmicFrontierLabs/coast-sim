@@ -396,8 +396,15 @@ class QueueDITL(DITLMixin, DITLStats):
         # Set up simulation length from begin/end datetimes
         simlen = int((self.end - self.begin).total_seconds() / self.step_size)
 
+        # Cache hasattr checks to avoid repeated lookups in hot loop
+        has_wheel_dynamics = (
+            hasattr(self.acs, "wheel_dynamics") and self.acs.wheel_dynamics is not None
+        )
+        self._has_wheel_snapshot = hasattr(self.acs, "wheel_snapshot")
+        has_disturbance_components = hasattr(self.acs, "_last_disturbance_components")
+
         # Initialize momentum conservation tracking at TRUE start (before any physics)
-        if hasattr(self.acs, "wheel_dynamics") and self.acs.wheel_dynamics is not None:
+        if has_wheel_dynamics:
             self.acs.wheel_dynamics.reset_conservation_tracking()
             # Record initial state explicitly (all zeros if starting fresh)
             self.acs.wheel_dynamics._initial_total_momentum = (
@@ -457,7 +464,7 @@ class QueueDITL(DITLMixin, DITLStats):
             if getattr(self.acs, "_desat_active", False):
                 self.desat_time_steps += 1
             # Record disturbance torques (magnitudes) if available
-            if hasattr(self.acs, "_last_disturbance_components"):
+            if has_disturbance_components:
                 comps = self.acs._last_disturbance_components or {}
 
                 def _safe(val: Any) -> float:
@@ -1181,7 +1188,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _record_wheel_resource(self, utime: float) -> None:
         """Record aggregated reaction wheel torque/momentum usage."""
-        if not hasattr(self.acs, "wheel_snapshot"):
+        if not getattr(self, "_has_wheel_snapshot", False):
             self.wheel_momentum_fraction.append(0.0)
             self.wheel_momentum_fraction_raw.append(0.0)
             self.wheel_torque_fraction.append(0.0)
