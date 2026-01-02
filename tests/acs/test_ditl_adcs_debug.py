@@ -730,6 +730,67 @@ class TestDITLADCSMomentumWarnings:
 
         print("\nSUCCESS: No pointing or momentum warnings in 12-hour DITL")
 
+    def test_pointing_momentum_consistency_catches_teleport(self):
+        """Verify pointing-momentum consistency check catches non-physical teleportation.
+
+        This test simulates the bug where pointing jumped without corresponding
+        wheel momentum changes. The consistency check should catch this.
+        """
+        from conops.simulation.acs import ACS
+
+        begin = datetime(2025, 1, 1)
+        end = begin + timedelta(minutes=5)
+        ephem = make_mock_ephem(begin, end, step_size=10.0)
+
+        cfg = make_ditl_adcs_config(ephem)
+
+        # Create ACS directly without full constraint setup
+        acs = ACS(config=cfg, log=None)
+
+        # Manually initialize wheel momentum tracking state
+        t0 = begin.timestamp()
+        initial_ra, initial_dec = 45.0, 30.0
+        acs.ra = initial_ra
+        acs.dec = initial_dec
+        acs._last_pointing_ra = initial_ra
+        acs._last_pointing_dec = initial_dec
+        acs._last_pointing_utime = t0
+
+        # Get initial wheel momentum
+        h_initial = acs._get_total_wheel_momentum().copy()
+        acs._last_wheel_momentum = h_initial.copy()
+        acs._wheel_momentum_before_update = h_initial.copy()
+
+        # Now simulate a "teleport" - change pointing by 30 deg without wheel change
+        t1 = t0 + 10.0
+        acs.ra = initial_ra + 30.0  # Jump 30 degrees in RA
+
+        # Wheel momentum stays the same (no update happened)
+        acs._wheel_momentum_before_update = h_initial.copy()
+
+        # Call the consistency check - should catch the mismatch
+        acs._validate_pointing_momentum_consistency(t1)
+
+        # Check that a warning was generated
+        warnings = acs.get_pointing_warnings()
+        momentum_warnings = [w for w in warnings if "momentum" in w.lower()]
+
+        print(f"\nPointing warnings after simulated teleport: {len(warnings)}")
+        for w in warnings:
+            print(f"  {w}")
+
+        assert len(momentum_warnings) > 0, (
+            "Expected pointing-momentum consistency check to catch teleportation, "
+            "but no warning was generated"
+        )
+
+        # Verify the warning mentions the inconsistency
+        assert any("inconsistency" in w.lower() for w in momentum_warnings), (
+            f"Warning should mention inconsistency: {momentum_warnings}"
+        )
+
+        print("\nSUCCESS: Pointing-momentum consistency check caught teleportation")
+
 
 def test_single_slew_momentum_detail():
     """Detailed trace of a single slew with notebook config."""
