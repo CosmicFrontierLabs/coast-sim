@@ -100,9 +100,6 @@ class ACS:
 
         self.passrequests = PassTimes(config=config)
         self.current_pass: Pass | None = None
-        # Track pass end position to avoid jumping back to pre-pass pointing
-        self._pass_end_ra: float | None = None
-        self._pass_end_dec: float | None = None
         self.solar_panel = config.solar_panel
         self.slew_dists: list[float] = []
         self.saa = None
@@ -846,16 +843,6 @@ class ACS:
 
     def _end_pass(self, utime: float) -> None:
         """Handle the END_PASS command to command the end of a groundstation pass."""
-        # Save the final pointing position from the pass before clearing
-        # This prevents jumping back to pre-pass pointing when no new slew is pending
-        if self.current_pass is not None:
-            try:
-                ra_dec = self.current_pass.ra_dec(utime)
-                if isinstance(ra_dec, tuple) and len(ra_dec) == 2:
-                    self._pass_end_ra, self._pass_end_dec = ra_dec
-            except (TypeError, AttributeError):
-                pass  # Mock or invalid pass object - skip saving position
-
         self.current_pass = None
         self.acsmode = ACSMode.SCIENCE
 
@@ -1573,66 +1560,16 @@ class ACS:
         # Safe mode overrides all other pointing
         if self.in_safe_mode:
             self._calculate_safe_mode_pointing(utime)
-        # If actively slewing to a pass (GSP type), use slew interpolation
-        # until the slew completes, then switch to pass tracking
-        elif (
-            self.last_slew is not None
-            and self.last_slew.is_slewing(utime)
-            and getattr(self.last_slew, "obstype", None) == "GSP"
-        ):
-            self.ra, self.dec = self.last_slew.ra_dec(utime)
-            # Clear pass end position since we're slewing to a new pass
-            self._pass_end_ra = None
-            self._pass_end_dec = None
-        # If we are in a groundstations pass, use rate-limited pass tracking
+        # If we are in a groundstations pass
         elif self.current_pass is not None:
-            pass_ra, pass_dec = self.current_pass.ra_dec(utime)
-            # ra_dec can return None if pass has no valid position at this time
-            if pass_ra is None or pass_dec is None:
-                pass  # Keep current pointing
-            # Apply rate limiting to enforce physical constraints
-            elif (
-                self._last_pointing_ra is not None
-                and self._last_pointing_dec is not None
-                and self._last_pointing_utime is not None
-            ):
-                dt = utime - self._last_pointing_utime
-                if dt > 0:
-                    # Use the wheel physics limit (not configured slew rate) for pass tracking
-                    max_rate = self._get_max_body_rate(for_pass_tracking=True)
-                    if max_rate is not None:
-                        self.ra, self.dec = self._rate_limited_pointing(
-                            self._last_pointing_ra,
-                            self._last_pointing_dec,
-                            pass_ra,
-                            pass_dec,
-                            dt,
-                            max_rate,
-                        )
-                    else:
-                        self.ra, self.dec = pass_ra, pass_dec
-                else:
-                    self.ra, self.dec = pass_ra, pass_dec
-            else:
-                # First timestep or no previous state - use target directly
-                self.ra, self.dec = pass_ra, pass_dec
-        # If we are actively slewing (non-GSP), use slew interpolation
+            self.ra, self.dec = self.current_pass.ra_dec(utime)  # type: ignore[assignment]
+        # If we are actively slewing
         elif self.last_slew is not None and self.last_slew.is_slewing(utime):
             self.ra, self.dec = self.last_slew.ra_dec(utime)
-            # Clear pass end position since a new slew has started
-            self._pass_end_ra = None
-            self._pass_end_dec = None
         # Slew scheduled but not started yet: hold at start position
         elif self.last_slew is not None and utime < self.last_slew.slewstart:
             self.ra = self.last_slew.startra
             self.dec = self.last_slew.startdec
-            # Clear pass end position since a new slew is pending
-            self._pass_end_ra = None
-            self._pass_end_dec = None
-        # If we just ended a pass and haven't started a new slew, hold at pass end
-        elif self._pass_end_ra is not None and self._pass_end_dec is not None:
-            self.ra = self._pass_end_ra
-            self.dec = self._pass_end_dec
         # Slew completed: hold at end position
         elif self.last_slew is not None:
             self.ra = self.last_slew.endra

@@ -144,9 +144,11 @@ class Pass(BaseModel):
         # Convert to radians
 
         return (
-            separation(
-                [spacecraft_ra * DTOR, spacecraft_dec * DTOR],
-                [target_ra * DTOR, target_dec * DTOR],
+            float(
+                separation(
+                    [spacecraft_ra * DTOR, spacecraft_dec * DTOR],
+                    [target_ra * DTOR, target_dec * DTOR],
+                )
             )
             / DTOR
         )
