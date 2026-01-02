@@ -265,6 +265,17 @@ class ACS:
         # Momentum warnings (operational tracking, not physics)
         self._momentum_warnings: list[str] = []
 
+        # Pointing rate validation
+        self._pointing_warnings: list[str] = []
+        self._last_pointing_ra: float | None = None
+        self._last_pointing_dec: float | None = None
+        self._last_pointing_utime: float | None = None
+        # Max physically achievable rate based on wheel torque/MoI
+        # Conservative estimate: 2 deg/s for most configurations
+        self._max_body_rate_deg_s: float = (
+            10.0  # Allow some margin for numerical errors
+        )
+
     def _log_or_print(self, utime: float, event_type: str, description: str) -> None:
         """Log an event to DITLLog if available, otherwise print to stdout.
 
@@ -498,6 +509,14 @@ class ACS:
     def clear_momentum_warnings(self) -> None:
         """Clear accumulated momentum warnings."""
         self._momentum_warnings.clear()
+
+    def get_pointing_warnings(self) -> list[str]:
+        """Return list of pointing rate warnings accumulated during simulation."""
+        return self._pointing_warnings.copy()
+
+    def clear_pointing_warnings(self) -> None:
+        """Clear accumulated pointing warnings."""
+        self._pointing_warnings.clear()
 
     def get_momentum_summary(self) -> dict[str, Any]:
         """Return a summary of current momentum state for diagnostics.
@@ -1339,13 +1358,20 @@ class ACS:
         # If we are actively slewing
         elif self.last_slew is not None and self.last_slew.is_slewing(utime):
             self.ra, self.dec = self.last_slew.ra_dec(utime)
-        # Slew completed (or no slew in progress): hold last commanded pointing.
+        # Slew scheduled but not started yet: hold at start position
+        elif self.last_slew is not None and utime < self.last_slew.slewstart:
+            self.ra = self.last_slew.startra
+            self.dec = self.last_slew.startdec
+        # Slew completed: hold at end position
         elif self.last_slew is not None:
             self.ra = self.last_slew.endra
             self.dec = self.last_slew.enddec
         else:
             # If there's no slew or pass, maintain current pointing
             pass
+
+        # Validate pointing rate is physically achievable
+        self._validate_pointing_rate(utime)
 
     def _calculate_safe_mode_pointing(self, utime: float) -> None:
         """Calculate safe mode pointing - point solar panels at the Sun.
@@ -1377,6 +1403,57 @@ class ACS:
             # After slew completes or for continuous tracking, maintain optimal pointing
             self.ra = target_ra
             self.dec = target_dec
+
+    def _validate_pointing_rate(self, utime: float) -> None:
+        """Check if pointing rate is physically achievable.
+
+        Compares current pointing to previous pointing and validates that
+        the angular rate does not exceed physical limits. Logs a warning
+        if an impossibly fast pointing change is detected.
+        """
+        if (
+            self._last_pointing_ra is None
+            or self._last_pointing_dec is None
+            or self._last_pointing_utime is None
+        ):
+            # First call - just record current pointing
+            self._last_pointing_ra = self.ra
+            self._last_pointing_dec = self.dec
+            self._last_pointing_utime = utime
+            return
+
+        dt = utime - self._last_pointing_utime
+        if dt <= 0:
+            # Same timestep or going backwards - skip check
+            self._last_pointing_ra = self.ra
+            self._last_pointing_dec = self.dec
+            self._last_pointing_utime = utime
+            return
+
+        # Compute great-circle angular distance
+        r0 = np.deg2rad(self._last_pointing_ra)
+        d0 = np.deg2rad(self._last_pointing_dec)
+        r1 = np.deg2rad(self.ra)
+        d1 = np.deg2rad(self.dec)
+        cosc = np.sin(d0) * np.sin(d1) + np.cos(d0) * np.cos(d1) * np.cos(r1 - r0)
+        cosc = np.clip(cosc, -1.0, 1.0)
+        dist_deg = float(np.rad2deg(np.arccos(cosc)))
+        rate_deg_s = dist_deg / dt
+
+        if rate_deg_s > self._max_body_rate_deg_s:
+            warning = (
+                f"Pointing rate violation at t={utime}: {rate_deg_s:.2f} deg/s "
+                f"exceeds max {self._max_body_rate_deg_s:.1f} deg/s "
+                f"(from ({self._last_pointing_ra:.2f}, {self._last_pointing_dec:.2f}) "
+                f"to ({self.ra:.2f}, {self.dec:.2f}) in {dt:.1f}s)"
+            )
+            self._pointing_warnings.append(warning)
+            print(f"Pointing consistency warning: {warning}")
+
+        # Update tracking
+        self._last_pointing_ra = self.ra
+        self._last_pointing_dec = self.dec
+        self._last_pointing_utime = utime
 
     def _update_wheel_momentum(self, utime: float) -> None:
         """Update reaction wheel stored momentum during active slews.
