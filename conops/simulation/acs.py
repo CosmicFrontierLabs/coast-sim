@@ -272,6 +272,9 @@ class ACS:
         self._last_pointing_utime: float | None = None
         # Max body rate - computed from config on first use
         self._max_body_rate_deg_s: float | None = None
+        # Wheel momentum tracking for pointing-momentum consistency check
+        self._last_wheel_momentum: np.ndarray | None = None
+        self._wheel_momentum_before_update: np.ndarray | None = None
 
     def _get_max_body_rate(self, for_pass_tracking: bool = False) -> float | None:
         """Get maximum allowable body rate in deg/s.
@@ -1222,10 +1225,17 @@ class ACS:
         # Check current constraints
         self._check_constraints(utime)
 
+        # Record wheel momentum before any updates for consistency checking
+        if self.reaction_wheels:
+            self._wheel_momentum_before_update = self._get_total_wheel_momentum().copy()
+
         # Calculate current RA/Dec pointing
         # Also update runtime-coupled wheel momentum while slewing
         self._update_wheel_momentum(utime)
         self._calculate_pointing(utime)
+
+        # Verify pointing change is consistent with wheel momentum change
+        self._validate_pointing_momentum_consistency(utime)
 
         # Calculate roll angle
         # TODO: Enable when roll optimization is needed; currently disabled for performance
@@ -1511,6 +1521,108 @@ class ACS:
         self._last_pointing_ra = self.ra
         self._last_pointing_dec = self.dec
         self._last_pointing_utime = utime
+
+    def _validate_pointing_momentum_consistency(self, utime: float) -> None:
+        """Verify pointing change is consistent with wheel momentum change.
+
+        If pointing changed significantly but wheels barely moved, this indicates
+        a non-physical "teleportation" where the pointing log is inconsistent
+        with the actual wheel dynamics.
+
+        The check computes:
+        1. Required body angular momentum for the observed pointing change
+        2. Actual wheel momentum change
+        3. Flags if they're grossly inconsistent
+        """
+        # Need wheels and previous state to check
+        if not self.reaction_wheels:
+            return
+        if self._wheel_momentum_before_update is None:
+            return
+        if self._last_wheel_momentum is None:
+            # First call - just record state
+            self._last_wheel_momentum = self._get_total_wheel_momentum().copy()
+            return
+        if (
+            self._last_pointing_ra is None
+            or self._last_pointing_dec is None
+            or self._last_pointing_utime is None
+        ):
+            self._last_wheel_momentum = self._get_total_wheel_momentum().copy()
+            return
+
+        dt = utime - self._last_pointing_utime
+        if dt <= 0:
+            self._last_wheel_momentum = self._get_total_wheel_momentum().copy()
+            return
+
+        # Compute pointing change (great-circle distance)
+        r0 = np.deg2rad(self._last_pointing_ra)
+        d0 = np.deg2rad(self._last_pointing_dec)
+        r1 = np.deg2rad(self.ra)
+        d1 = np.deg2rad(self.dec)
+        cosc = np.sin(d0) * np.sin(d1) + np.cos(d0) * np.cos(d1) * np.cos(r1 - r0)
+        cosc = np.clip(cosc, -1.0, 1.0)
+        angle_rad = float(np.arccos(cosc))
+
+        # If pointing barely changed, no check needed
+        if angle_rad < 1e-6:
+            self._last_wheel_momentum = self._get_total_wheel_momentum().copy()
+            return
+
+        # Compute wheel momentum change
+        h_wheel_after = self._get_total_wheel_momentum()
+        h_wheel_before = self._wheel_momentum_before_update
+        delta_h_wheel = float(np.linalg.norm(h_wheel_after - h_wheel_before))
+
+        # Compute expected momentum change for the pointing rotation
+        # H_body = I * omega, where omega = angle / dt
+        # For a rotation, wheels must absorb body angular momentum
+        omega_rad = angle_rad / dt
+        moi_cfg = self.acs_config.spacecraft_moi if self.acs_config else None
+        if moi_cfg is None:
+            self._last_wheel_momentum = h_wheel_after.copy()
+            return
+
+        # Use average MOI for a scalar estimate
+        moi_arr = np.array(moi_cfg, dtype=float)
+        i_avg = float(np.mean(moi_arr))
+
+        # Expected momentum magnitude for the rotation
+        # This is the peak body angular momentum during the rotation
+        expected_h_body = i_avg * omega_rad
+
+        # During an active slew, wheels absorb and return body momentum
+        # At any instant, wheel change should approximately match body momentum
+        # Allow generous tolerance (factor of 5) for:
+        # - Axis-dependent MOI variations
+        # - Bang-bang profile timing
+        # - Discrete timestep sampling
+        # - Disturbance torques
+        # The goal is to catch gross violations (teleports), not small discrepancies
+        tolerance_factor = 5.0
+
+        # If wheel momentum changed much less than required, flag it
+        # (This catches teleportation where pointing jumps but wheels don't move)
+        if (
+            expected_h_body > 0.01
+            and delta_h_wheel < expected_h_body / tolerance_factor
+        ):
+            # Only flag if this is a significant rotation (> 0.1 deg)
+            if angle_rad > 0.1 * (np.pi / 180.0):
+                rate_deg_s = angle_rad * (180.0 / np.pi) / dt
+                warning = (
+                    f"Pointing-momentum inconsistency at t={utime}: "
+                    f"pointing changed by {angle_rad * 180 / np.pi:.2f} deg "
+                    f"({rate_deg_s:.2f} deg/s) but wheel momentum only changed by "
+                    f"{delta_h_wheel:.4f} Nms (expected ~{expected_h_body:.4f} Nms). "
+                    f"This may indicate non-physical pointing behavior."
+                )
+                self._pointing_warnings.append(warning)
+                print(f"Pointing-momentum warning: {warning}")
+
+        # Update tracking
+        self._last_wheel_momentum = h_wheel_after.copy()
 
     def _update_wheel_momentum(self, utime: float) -> None:
         """Update reaction wheel stored momentum during active slews.
