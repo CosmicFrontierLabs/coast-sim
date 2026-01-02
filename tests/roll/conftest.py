@@ -14,6 +14,9 @@ def mock_ephem():
     sun_pv = Mock()
     sun_pv.position = [np.array([1000, 500, 800])]
     ephem.sun_pv = sun_pv
+    gcrs_pv = Mock()
+    gcrs_pv.position = [np.array([0.0, 0.0, 0.0])]
+    ephem.gcrs_pv = gcrs_pv
     return ephem
 
 
@@ -89,4 +92,7 @@ def mock_ephem_sidemount():
     sun_pv = Mock()
     sun_pv.position = [np.array([1000, 500, 800])]
     ephem.sun_pv = sun_pv
+    gcrs_pv = Mock()
+    gcrs_pv.position = [np.array([0.0, 0.0, 0.0])]
+    ephem.gcrs_pv = gcrs_pv
     return ephem
