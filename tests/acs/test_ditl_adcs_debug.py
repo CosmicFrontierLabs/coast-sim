@@ -692,7 +692,9 @@ class TestDITLADCSMomentumWarnings:
         This test ensures physical consistency of the simulation:
         - Pointing rate never exceeds wheel physics limits during slews
         - Pointing rate never exceeds wheel physics limits during pass tracking
-        - No momentum conservation violations
+        - Pointing changes are consistent with wheel momentum changes (bi-directional):
+          - Forward: wheel momentum returns to baseline after slews (conservation)
+          - Reverse: body rotation requires corresponding wheel momentum change
         - No wheel saturation that would violate physics
         """
         ditl, cfg = notebook_ditl_setup
