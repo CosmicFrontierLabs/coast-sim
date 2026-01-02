@@ -102,9 +102,8 @@ class DisturbanceModel:
         )
 
     @staticmethod
-    def _inertial_to_body(vec: np.ndarray, ra_deg: float, dec_deg: float) -> np.ndarray:
-        """Rotate inertial vector into body frame assuming Z points at RA/Dec."""
-        vec_arr = np.array(vec, dtype=float)
+    def _build_rotation_matrix(ra_deg: float, dec_deg: float) -> np.ndarray:
+        """Build rotation matrix from inertial to body frame for given RA/Dec."""
         try:
             ra_r = np.deg2rad(float(ra_deg))
             dec_r = np.deg2rad(float(dec_deg))
@@ -123,7 +122,29 @@ class DisturbanceModel:
             x_b = x_b / np.linalg.norm(x_b)
             y_b = np.cross(z_b, x_b)
             y_b = y_b / np.linalg.norm(y_b)
-            r_ib = np.vstack([x_b, y_b, z_b])
+            return np.vstack([x_b, y_b, z_b])
+        except Exception:
+            return np.eye(3)
+
+    @staticmethod
+    def _inertial_to_body(
+        vec: np.ndarray,
+        ra_deg: float,
+        dec_deg: float,
+        r_ib: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Rotate inertial vector into body frame assuming Z points at RA/Dec.
+
+        Args:
+            vec: Vector in inertial frame
+            ra_deg: Right ascension in degrees
+            dec_deg: Declination in degrees
+            r_ib: Optional precomputed rotation matrix for efficiency
+        """
+        vec_arr = np.array(vec, dtype=float)
+        try:
+            if r_ib is None:
+                r_ib = DisturbanceModel._build_rotation_matrix(ra_deg, dec_deg)
             return np.asarray(r_ib.dot(vec_arr), dtype=float)
         except Exception:
             return vec_arr
@@ -199,9 +220,20 @@ class DisturbanceModel:
             return vec
 
     def local_bfield_vector(
-        self, utime: float, ra_deg: float, dec_deg: float
+        self,
+        utime: float,
+        ra_deg: float,
+        dec_deg: float,
+        r_ib: np.ndarray | None = None,
     ) -> tuple[np.ndarray, float]:
-        """Estimate local magnetic field vector in body frame."""
+        """Estimate local magnetic field vector in body frame.
+
+        Args:
+            utime: Unix timestamp
+            ra_deg: Right ascension in degrees
+            dec_deg: Declination in degrees
+            r_ib: Optional precomputed rotation matrix for efficiency
+        """
         b_const = np.array([0.0, 0.0, self.cfg.magnetorquer_bfield_T], dtype=float)
         try:
             idx = self.ephem.index(dtutcfromtimestamp(utime))
@@ -248,7 +280,7 @@ class DisturbanceModel:
             [-np.sin(lat) * np.cos(lon), -np.sin(lat) * np.sin(lon), np.cos(lat)]
         )
         b_ecef = br * r_hat + btheta * theta_hat
-        b_body = self._inertial_to_body(b_ecef, ra_deg, dec_deg)
+        b_body = self._inertial_to_body(b_ecef, ra_deg, dec_deg, r_ib)
         return b_body, float(np.linalg.norm(b_body))
 
     def atmospheric_density(
@@ -366,6 +398,11 @@ class DisturbanceModel:
         torque = np.zeros(3, dtype=float)
         i_mat = self._build_inertia(moi_cfg)
 
+        # Build rotation matrix once for reuse in all coordinate transforms
+        r_ib = self._build_rotation_matrix(ra_deg, dec_deg)
+
+        # Compute ephemeris index once and reuse for all lookups
+        idx = None
         r_vec = None
         v_vec = None
         try:
@@ -384,7 +421,7 @@ class DisturbanceModel:
         gg_mag = drag_mag = srp_mag = mag_mag = 0.0
 
         if r_vec is not None:
-            r_body = self._inertial_to_body(r_vec, ra_deg, dec_deg)
+            r_body = self._inertial_to_body(r_vec, ra_deg, dec_deg, r_ib)
             r_norm = np.linalg.norm(r_body)
             if r_norm > 0:
                 r_hat = r_body / r_norm
@@ -395,15 +432,15 @@ class DisturbanceModel:
                 gg_mag = float(np.linalg.norm(torque_gg))
 
         lat_deg = lon_deg = None
-        try:
-            idx_latlon = self.ephem.index(dtutcfromtimestamp(utime))
-            lat_seq = getattr(self.ephem, "lat", None)
-            lon_seq = getattr(self.ephem, "long", None)
-            if lat_seq is not None and lon_seq is not None:
-                lat_deg = float(lat_seq[idx_latlon])
-                lon_deg = float(lon_seq[idx_latlon])
-        except Exception:
-            pass
+        if idx is not None:
+            try:
+                lat_seq = getattr(self.ephem, "lat", None)
+                lon_seq = getattr(self.ephem, "long", None)
+                if lat_seq is not None and lon_seq is not None:
+                    lat_deg = float(lat_seq[idx])
+                    lon_deg = float(lon_seq[idx])
+            except Exception:
+                pass
         if (lat_deg is None or lon_deg is None) and r_vec is not None:
             try:
                 x, y, z = r_vec
@@ -414,7 +451,7 @@ class DisturbanceModel:
                 lon_deg = lon_deg if lon_deg is not None else 0.0
 
         if self.cfg.drag_area_m2 > 0 and v_vec is not None:
-            v_body = self._inertial_to_body(v_vec, ra_deg, dec_deg)
+            v_body = self._inertial_to_body(v_vec, ra_deg, dec_deg, r_ib)
             v_mag = np.linalg.norm(v_body)
             if v_mag > 0 and r_vec is not None:
                 alt = float(max(0.0, float(np.linalg.norm(r_vec)) - self.RE_M))
@@ -428,9 +465,8 @@ class DisturbanceModel:
                 torque += torque_drag
                 drag_mag = float(np.linalg.norm(torque_drag))
 
-        if self.cfg.solar_area_m2 > 0 and not in_eclipse:
+        if self.cfg.solar_area_m2 > 0 and not in_eclipse and idx is not None:
             try:
-                idx = self.ephem.index(dtutcfromtimestamp(utime))
                 sun_vec = np.array(self.ephem.sun[idx].cartesian.xyz.to_value())
                 # Sun distance is ~1 AU = 1.496e11 m = 1.496e8 km
                 # If magnitude < 1e9, assume km; otherwise assume meters
@@ -442,7 +478,7 @@ class DisturbanceModel:
                 r_sun_mag = np.linalg.norm(r_sun)
                 if r_sun_mag > 0:
                     scale = (self.AU_M / r_sun_mag) ** 2
-                    r_sun_body = self._inertial_to_body(r_sun, ra_deg, dec_deg)
+                    r_sun_body = self._inertial_to_body(r_sun, ra_deg, dec_deg, r_ib)
                     sun_hat = r_sun_body / np.linalg.norm(r_sun_body)
                     # SRP force pushes away from sun (negative sun_hat direction)
                     # solar_reflectivity is (1 + r) where r is surface reflectivity:
@@ -461,7 +497,7 @@ class DisturbanceModel:
                 pass
 
         if np.linalg.norm(self.cfg.residual_magnetic_moment) > 0:
-            b_body, _ = self.local_bfield_vector(utime, ra_deg, dec_deg)
+            b_body, _ = self.local_bfield_vector(utime, ra_deg, dec_deg, r_ib)
             torque_mag = np.cross(self.cfg.residual_magnetic_moment, b_body)
             torque += torque_mag
             mag_mag = float(np.linalg.norm(torque_mag))
