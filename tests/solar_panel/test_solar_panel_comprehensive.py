@@ -1994,9 +1994,6 @@ class TestIlluminationAndPower:
         assert np.all(illumination == 0.0)
         assert np.all(power == 0.0)
 
-    @pytest.mark.skip(
-        reason="Array times with non-scalar indices breaks separation() - needs production fix"
-    )
     def test_illumination_and_power_with_array_times(self, mock_ephemeris):
         """Test illumination_and_power with array of times."""
         from datetime import datetime, timezone
