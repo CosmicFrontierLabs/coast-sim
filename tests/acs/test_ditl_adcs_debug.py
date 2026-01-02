@@ -686,6 +686,50 @@ class TestDITLADCSMomentumWarnings:
         print("ALL PASSES VERIFIED - Tracking rates match required rates")
         print(f"{'=' * 60}")
 
+    def test_no_pointing_or_momentum_warnings(self, notebook_ditl_setup):
+        """Verify 12-hour DITL produces zero pointing and momentum warnings.
+
+        This test ensures physical consistency of the simulation:
+        - Pointing rate never exceeds wheel physics limits during slews
+        - Pointing rate never exceeds wheel physics limits during pass tracking
+        - No momentum conservation violations
+        - No wheel saturation that would violate physics
+        """
+        ditl, cfg = notebook_ditl_setup
+
+        # Run simulation
+        ditl.calc()
+
+        # Check pointing warnings
+        pointing_warnings = ditl.acs.get_pointing_warnings()
+        if pointing_warnings:
+            print(f"\nPointing warnings ({len(pointing_warnings)}):")
+            for w in pointing_warnings[:5]:
+                print(f"  {w}")
+            if len(pointing_warnings) > 5:
+                print(f"  ... and {len(pointing_warnings) - 5} more")
+
+        assert len(pointing_warnings) == 0, (
+            f"Expected 0 pointing warnings, got {len(pointing_warnings)}. "
+            f"First: {pointing_warnings[0] if pointing_warnings else 'N/A'}"
+        )
+
+        # Check momentum warnings
+        momentum_warnings = ditl.acs.get_momentum_warnings()
+        if momentum_warnings:
+            print(f"\nMomentum warnings ({len(momentum_warnings)}):")
+            for w in momentum_warnings[:5]:
+                print(f"  {w}")
+            if len(momentum_warnings) > 5:
+                print(f"  ... and {len(momentum_warnings) - 5} more")
+
+        assert len(momentum_warnings) == 0, (
+            f"Expected 0 momentum warnings, got {len(momentum_warnings)}. "
+            f"First: {momentum_warnings[0] if momentum_warnings else 'N/A'}"
+        )
+
+        print("\nSUCCESS: No pointing or momentum warnings in 12-hour DITL")
+
 
 def test_single_slew_momentum_detail():
     """Detailed trace of a single slew with notebook config."""

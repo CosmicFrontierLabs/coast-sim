@@ -270,11 +270,56 @@ class ACS:
         self._last_pointing_ra: float | None = None
         self._last_pointing_dec: float | None = None
         self._last_pointing_utime: float | None = None
-        # Max physically achievable rate based on wheel torque/MoI
-        # Conservative estimate: 2 deg/s for most configurations
-        self._max_body_rate_deg_s: float = (
-            10.0  # Allow some margin for numerical errors
+        # Max body rate - computed from config on first use
+        self._max_body_rate_deg_s: float | None = None
+
+    def _get_max_body_rate(self, for_pass_tracking: bool = False) -> float | None:
+        """Get maximum allowable body rate in deg/s.
+
+        For commanded slews, uses configured max_slew_rate (operational cap).
+        For pass tracking, uses wheel physics limit (pass rates depend on geometry).
+        Includes a 20% margin for numerical discretization effects.
+
+        Args:
+            for_pass_tracking: If True, use wheel physics limit regardless of
+                configured max_slew_rate. Pass tracking rates are dictated by
+                orbital geometry and limited only by wheel capability.
+
+        Returns:
+            Maximum body rate in deg/s, or None if not determinable.
+        """
+        # Cache key includes pass tracking flag
+        cache_attr = (
+            "_max_pass_rate_deg_s" if for_pass_tracking else "_max_body_rate_deg_s"
         )
+        cached: float | None = getattr(self, cache_attr, None)
+        if cached is not None:
+            return cached
+
+        max_rate: float | None = None
+
+        if self.acs_config:
+            # For pass tracking, always use wheel physics (skip configured cap)
+            if not for_pass_tracking and self.acs_config.max_slew_rate:
+                max_rate = float(self.acs_config.max_slew_rate)
+
+            # Compute from wheel physics if no configured rate or for pass tracking
+            if max_rate is None:
+                _, computed_rate, _, _ = (
+                    self.acs_config.get_achievable_slew_performance()
+                )
+                if computed_rate is not None:
+                    max_rate = computed_rate
+
+        if max_rate is None:
+            return None
+
+        # Add 25% margin for numerical discretization effects.
+        # Needed to handle pole crossings where discrete timestep sampling
+        # can show higher apparent rates than the continuous motion.
+        result = max_rate * 1.25
+        setattr(self, cache_attr, result)
+        return result
 
     def _log_or_print(self, utime: float, event_type: str, description: str) -> None:
         """Log an event to DITLLog if available, otherwise print to stdout.
@@ -1440,10 +1485,22 @@ class ACS:
         dist_deg = float(np.rad2deg(np.arccos(cosc)))
         rate_deg_s = dist_deg / dt
 
-        if rate_deg_s > self._max_body_rate_deg_s:
+        # Use wheel physics limit during PASS mode (tracking rate depends on geometry)
+        # Use configured slew rate limit during other modes (commanded slews)
+        is_pass = self.acsmode == ACSMode.PASS
+        max_rate = self._get_max_body_rate(for_pass_tracking=is_pass)
+        if max_rate is None:
+            raise ValueError(
+                "Cannot validate pointing rate: max_slew_rate not configured "
+                "and cannot be computed from wheel physics. "
+                "Either set acs.max_slew_rate in config or define wheels with "
+                "max_momentum and spacecraft_moi."
+            )
+
+        if rate_deg_s > max_rate:
             warning = (
                 f"Pointing rate violation at t={utime}: {rate_deg_s:.2f} deg/s "
-                f"exceeds max {self._max_body_rate_deg_s:.1f} deg/s "
+                f"exceeds max {max_rate:.2f} deg/s "
                 f"(from ({self._last_pointing_ra:.2f}, {self._last_pointing_dec:.2f}) "
                 f"to ({self.ra:.2f}, {self.dec:.2f}) in {dt:.1f}s)"
             )
