@@ -1529,10 +1529,11 @@ class ACS:
         a non-physical "teleportation" where the pointing log is inconsistent
         with the actual wheel dynamics.
 
-        The check computes:
-        1. Required body angular momentum for the observed pointing change
-        2. Actual wheel momentum change
-        3. Flags if they're grossly inconsistent
+        The check uses proper physics:
+        1. Computes rotation axis from pointing change to get axis-specific MOI
+        2. Accounts for MTQ bleed contribution to wheel momentum change
+        3. Accounts for disturbance torque contribution
+        4. Flags if wheel momentum change can't explain the rotation
         """
         # Need wheels and previous state to check
         if not self.reaction_wheels:
@@ -1556,70 +1557,91 @@ class ACS:
             self._last_wheel_momentum = self._get_total_wheel_momentum().copy()
             return
 
-        # Compute pointing change (great-circle distance)
+        # Convert RA/Dec to unit vectors (in inertial frame, but we need rotation axis)
         r0 = np.deg2rad(self._last_pointing_ra)
         d0 = np.deg2rad(self._last_pointing_dec)
         r1 = np.deg2rad(self.ra)
         d1 = np.deg2rad(self.dec)
-        cosc = np.sin(d0) * np.sin(d1) + np.cos(d0) * np.cos(d1) * np.cos(r1 - r0)
-        cosc = np.clip(cosc, -1.0, 1.0)
-        angle_rad = float(np.arccos(cosc))
+
+        # Unit vectors for old and new pointing
+        v0 = np.array([np.cos(d0) * np.cos(r0), np.cos(d0) * np.sin(r0), np.sin(d0)])
+        v1 = np.array([np.cos(d1) * np.cos(r1), np.cos(d1) * np.sin(r1), np.sin(d1)])
+
+        # Rotation axis (cross product, normalized)
+        cross = np.cross(v0, v1)
+        cross_norm = float(np.linalg.norm(cross))
+
+        # Angle between pointings
+        dot = float(np.clip(np.dot(v0, v1), -1.0, 1.0))
+        angle_rad = float(np.arccos(dot))
 
         # If pointing barely changed, no check needed
-        if angle_rad < 1e-6:
+        if angle_rad < 1e-6 or cross_norm < 1e-9:
             self._last_wheel_momentum = self._get_total_wheel_momentum().copy()
             return
+
+        # Normalized rotation axis (in inertial frame)
+        rot_axis = cross / cross_norm
+
+        # Compute effective MOI for this rotation axis
+        # Project rotation axis onto body principal axes to get effective MOI
+        # I_eff = sum(I_i * axis_i^2) for principal axis components
+        moi_cfg = self.acs_config.spacecraft_moi if self.acs_config else None
+        if moi_cfg is None:
+            self._last_wheel_momentum = self._get_total_wheel_momentum().copy()
+            return
+
+        moi_arr = np.array(moi_cfg, dtype=float)
+        # Body axes in inertial frame would require attitude quaternion
+        # For now, use the rotation axis components directly as an approximation
+        # (assumes body frame roughly aligned with inertial for this check)
+        axis_sq = rot_axis**2
+        i_eff = float(np.sum(moi_arr * axis_sq))
+        # Fallback to average if projection gives degenerate result
+        if i_eff < 0.1 * float(np.mean(moi_arr)):
+            i_eff = float(np.mean(moi_arr))
 
         # Compute wheel momentum change
         h_wheel_after = self._get_total_wheel_momentum()
         h_wheel_before = self._wheel_momentum_before_update
         delta_h_wheel = float(np.linalg.norm(h_wheel_after - h_wheel_before))
 
-        # Compute expected momentum change for the pointing rotation
-        # H_body = I * omega, where omega = angle / dt
-        # For a rotation, wheels must absorb body angular momentum
+        # Expected body angular momentum for the rotation: H = I * omega
         omega_rad = angle_rad / dt
-        moi_cfg = self.acs_config.spacecraft_moi if self.acs_config else None
-        if moi_cfg is None:
-            self._last_wheel_momentum = h_wheel_after.copy()
-            return
+        expected_h_body = i_eff * omega_rad
 
-        # Use average MOI for a scalar estimate
-        moi_arr = np.array(moi_cfg, dtype=float)
-        i_avg = float(np.mean(moi_arr))
+        # Account for MTQ and disturbance contributions over this timestep
+        # MTQ removes momentum from wheels, disturbance adds momentum to system
+        mtq_torque = float(getattr(self, "_last_mtq_torque_mag", 0.0))
+        dist_total = self._last_disturbance_components.get("total", 0.0)
+        dist_torque = float(dist_total) if isinstance(dist_total, (int, float)) else 0.0
 
-        # Expected momentum magnitude for the rotation
-        # This is the peak body angular momentum during the rotation
-        expected_h_body = i_avg * omega_rad
+        # These torques contribute to wheel momentum budget over dt
+        # Direction is unknown so we add their magnitude as tolerance
+        external_contribution = (mtq_torque + dist_torque) * dt
 
-        # During an active slew, wheels absorb and return body momentum
-        # At any instant, wheel change should approximately match body momentum
-        # Allow generous tolerance (factor of 5) for:
-        # - Axis-dependent MOI variations
-        # - Bang-bang profile timing
-        # - Discrete timestep sampling
-        # - Disturbance torques
-        # The goal is to catch gross violations (teleports), not small discrepancies
-        tolerance_factor = 5.0
+        # Tolerance: external contributions plus 10% for numerical discretization
+        tolerance = external_contribution + 0.1 * expected_h_body
 
-        # If wheel momentum changed much less than required, flag it
-        # (This catches teleportation where pointing jumps but wheels don't move)
-        if (
-            expected_h_body > 0.01
-            and delta_h_wheel < expected_h_body / tolerance_factor
-        ):
-            # Only flag if this is a significant rotation (> 0.1 deg)
-            if angle_rad > 0.1 * (np.pi / 180.0):
-                rate_deg_s = angle_rad * (180.0 / np.pi) / dt
-                warning = (
-                    f"Pointing-momentum inconsistency at t={utime}: "
-                    f"pointing changed by {angle_rad * 180 / np.pi:.2f} deg "
-                    f"({rate_deg_s:.2f} deg/s) but wheel momentum only changed by "
-                    f"{delta_h_wheel:.4f} Nms (expected ~{expected_h_body:.4f} Nms). "
-                    f"This may indicate non-physical pointing behavior."
-                )
-                self._pointing_warnings.append(warning)
-                print(f"Pointing-momentum warning: {warning}")
+        # Minimum tolerance floor for very small rotations
+        min_tolerance = 0.001  # 1 mNms
+
+        # If wheel momentum changed much less than required (accounting for externals), flag
+        if expected_h_body > 0.01:  # Only check significant rotations
+            shortfall = expected_h_body - delta_h_wheel - tolerance
+            if shortfall > min_tolerance:
+                # Only flag if this is a significant rotation (> 0.1 deg)
+                if angle_rad > 0.1 * (np.pi / 180.0):
+                    rate_deg_s = angle_rad * (180.0 / np.pi) / dt
+                    warning = (
+                        f"Pointing-momentum inconsistency at t={utime}: "
+                        f"pointing changed by {angle_rad * 180 / np.pi:.2f} deg "
+                        f"({rate_deg_s:.2f} deg/s, I_eff={i_eff:.2f} kg·m²) "
+                        f"requiring ~{expected_h_body:.4f} Nms, but wheel Δ={delta_h_wheel:.4f} Nms "
+                        f"(external budget: MTQ={mtq_torque * dt:.4f}, dist={dist_torque * dt:.4f} Nms)"
+                    )
+                    self._pointing_warnings.append(warning)
+                    print(f"Pointing-momentum warning: {warning}")
 
         # Update tracking
         self._last_wheel_momentum = h_wheel_after.copy()
