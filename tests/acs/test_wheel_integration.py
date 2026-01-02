@@ -23,29 +23,26 @@ class DummyEphem:
         return 0
 
 
-def test_acs_adds_wheel_from_config_and_limits_slew_accel():
+def test_slew_initialized_with_accel_from_config():
     cfg = MissionConfig()
-    # enable legacy single-wheel support
     acs_cfg = cfg.spacecraft_bus.attitude_control
-    acs_cfg.wheel_enabled = True
-    acs_cfg.wheel_max_torque = 0.05
-    acs_cfg.wheel_max_momentum = 0.5
+    acs_cfg.slew_acceleration = 1.0  # Set explicit accel for test
+    acs_cfg.max_slew_rate = 2.0  # Set explicit rate for test
     # ensure ephem present for Slew/ACS
     cfg.constraint.ephem = DummyEphem()
 
-    acs = ACS(config=cfg, log=None)
-    # Create a real Slew and start it - ensure accel override is set
+    # Create a Slew - verify accel/vmax are initialized from config
     slew = Slew(config=cfg)
     slew.endra = 10.0
     slew.enddec = 0.0
-    # start slew - should compute overrides
-    acs._start_slew(slew, utime=1000.0)
-    # When a wheel is present, accel override should be set (or zero)
-    assert hasattr(slew, "_accel_override")
-    # accel override should not exceed configured ACS accel
-    orig = cfg.spacecraft_bus.attitude_control.slew_acceleration
-    if slew._accel_override is not None:
-        assert slew._accel_override <= orig
+    # The Slew is initialized with accel/vmax from config
+    assert hasattr(slew, "accel")
+    assert hasattr(slew, "vmax")
+    # accel should match configured ACS accel (from config initialization)
+    orig_accel = cfg.spacecraft_bus.attitude_control.slew_acceleration
+    orig_rate = cfg.spacecraft_bus.attitude_control.max_slew_rate
+    assert slew.accel == orig_accel, f"Expected accel={orig_accel}, got {slew.accel}"
+    assert slew.vmax == orig_rate, f"Expected vmax={orig_rate}, got {slew.vmax}"
 
 
 def test_multi_wheel_parsing_creates_wheels():
@@ -106,9 +103,10 @@ def test_wheel_config_validation_single_wheel():
     cfg = MissionConfig()
     cfg.constraint.ephem = DummyEphem()
     acs_cfg = cfg.spacecraft_bus.attitude_control
-    acs_cfg.wheel_enabled = True
-    acs_cfg.wheel_max_torque = 0.1
-    acs_cfg.wheel_max_momentum = 1.0
+    # Use explicit single wheel in wheels array
+    acs_cfg.wheels = [
+        {"orientation": [1.0, 0.0, 0.0], "max_torque": 0.1, "max_momentum": 1.0},
+    ]
     acs = ACS(config=cfg, log=None)
     assert acs._wheel_config_n_wheels == 1
     assert acs._wheel_config_rank == 1

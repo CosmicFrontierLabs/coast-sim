@@ -754,6 +754,17 @@ class QueueDITL(DITLMixin, DITLStats):
                 slew.startdec = dec
                 slew.endra = next_pass.gsstartra
                 slew.enddec = next_pass.gsstartdec
+
+                # Validate wheel capability before enqueueing
+                if not self.acs.validate_slew(slew, utime):
+                    self.log.log_event(
+                        utime=utime,
+                        event_type="SLEW",
+                        description=f"Pass slew to {next_pass.station} rejected - wheel validation failed",
+                        acs_mode=self.acs.acsmode,
+                    )
+                    return
+
                 command = ACSCommand(
                     command_type=ACSCommandType.SLEW_TO_TARGET,
                     execution_time=utime,
@@ -937,6 +948,17 @@ class QueueDITL(DITLMixin, DITLStats):
             # Initialize slew start positions from current ACS pointing
             slew.startra = self.acs.ra
             slew.startdec = self.acs.dec
+
+            # Validate wheel capability before proceeding
+            if not self.acs.validate_slew(slew, utime):
+                self.log.log_event(
+                    utime=utime,
+                    event_type="SLEW",
+                    description="Slew rejected - wheel validation failed",
+                    obsid=self.ppt.obsid,
+                    acs_mode=self.acs.acsmode,
+                )
+                return
 
             # Calculate slew timing
             execution_time = utime

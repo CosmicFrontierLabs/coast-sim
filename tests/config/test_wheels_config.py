@@ -13,8 +13,9 @@ def test_example_config_contains_wheels_and_moi():
 
     acs = cfg.spacecraft_bus.attitude_control
 
-    # Wheel flag enabled in example
-    assert acs.wheel_enabled is True
+    # Legacy wheel_enabled should be False when using wheels array
+    # (wheel_enabled=True creates a legacy single wheel with wheel_max_torque/momentum)
+    assert acs.wheel_enabled is False
 
     # Wheels list present and has four entries
     assert isinstance(acs.wheels, list)
@@ -33,12 +34,15 @@ def test_example_config_contains_wheels_and_moi():
     assert all(isinstance(x, (int, float)) for x in moi)
 
 
-def test_legacy_single_wheel_fields_present_when_used():
-    # Create minimal config with legacy fields
+def test_legacy_wheel_fields_parsed_but_ignored():
+    """Legacy wheel_enabled/wheel_max_torque/wheel_max_momentum are parsed but ignored.
+
+    Wheels are only created from the explicit 'wheels' array.
+    """
     data = {
         "spacecraft_bus": {
             "attitude_control": {
-                "wheel_enabled": True,
+                "wheel_enabled": True,  # Ignored - no legacy wheel created
                 "wheel_max_torque": 0.2,
                 "wheel_max_momentum": 2.5,
                 "spacecraft_moi": [1.0, 1.0, 1.0],
@@ -48,6 +52,9 @@ def test_legacy_single_wheel_fields_present_when_used():
     }
     cfg = MissionConfig.model_validate(data)
     acs = cfg.spacecraft_bus.attitude_control
+    # Fields are still parsed (for backwards compatibility with config files)
     assert acs.wheel_enabled is True
     assert acs.wheel_max_torque == 0.2
     assert acs.wheel_max_momentum == 2.5
+    # But no wheels array means no wheels created
+    assert acs.wheels == []

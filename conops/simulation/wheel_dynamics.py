@@ -804,15 +804,19 @@ class WheelDynamics:
         if rate <= 0:
             return False, "Insufficient momentum headroom for slew"
 
-        # Check if we have enough momentum headroom for the peak rate
+        # Check if we have enough momentum headroom for the peak rate.
+        # available_h already has _momentum_margin applied, so we apply _budget_margin
+        # on top to ensure we don't cut it too close.
         i_axis = self.get_inertia_about_axis(axis)
         required_h = rate * (pi / 180.0) * i_axis
         available_h = self.get_headroom_along_axis(axis)
+        usable_h = available_h * self._budget_margin
 
-        if required_h > available_h * 1.1:  # 10% margin
+        if required_h > usable_h:
             return (
                 False,
-                f"Peak momentum {required_h:.3f} exceeds headroom {available_h:.3f}",
+                f"Peak momentum {required_h:.3f} exceeds usable headroom {usable_h:.3f} "
+                f"(available={available_h:.3f}, budget_margin={self._budget_margin})",
             )
 
         return True, "OK"

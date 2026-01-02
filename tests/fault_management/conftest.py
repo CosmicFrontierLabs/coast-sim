@@ -57,6 +57,9 @@ def base_config():
     spacecraft_bus.attitude_control = Mock()
     spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))
     spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
+    # Slew now reads accel/vmax from config during initialization
+    spacecraft_bus.attitude_control.get_accel_cap = Mock(return_value=0.5)
+    spacecraft_bus.attitude_control.max_slew_rate = 0.25
 
     solar_panel = Mock(spec=SolarPanelSet)
     solar_panel.optimal_charging_pointing = Mock(return_value=(45.0, 23.5))
