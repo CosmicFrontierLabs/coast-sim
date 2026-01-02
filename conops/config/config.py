@@ -11,6 +11,7 @@ from .observation_categories import ObservationCategories
 from .recorder import OnboardRecorder
 from .solar_panel import SolarPanelSet
 from .spacecraft_bus import SpacecraftBus
+from .targets import TargetConfig
 from .visualization import VisualizationConfig
 
 
@@ -36,6 +37,7 @@ class MissionConfig(BaseModel):
     visualization: VisualizationConfig = Field(
         default_factory=VisualizationConfig, exclude=True
     )
+    targets: TargetConfig = Field(default_factory=TargetConfig)
 
     @model_validator(mode="after")
     def init_fault_management_defaults(self) -> MissionConfig:
