@@ -445,6 +445,10 @@ class QueueDITL(DITLMixin, DITLStats):
             # Close PPT timeline segment if no active observation
             self._close_ppt_timeline_if_needed(utime)
 
+            # Re-query mode after operations to capture any newly enqueued commands
+            # This prevents 1-step mode gaps when commands are enqueued during this step
+            mode = self.acs.get_mode(utime)
+
             # Record pointing and mode
             self._record_pointing_data(ra, dec, roll, obsid, mode)
 
@@ -700,6 +704,10 @@ class QueueDITL(DITLMixin, DITLStats):
         # Check if we're in a pass, if yes, command ACS to start the pass
         current_pass = self.acs.passrequests.current_pass(utime)
         if current_pass is not None and self.acs.acsmode != ACSMode.PASS:
+            # Don't enqueue if START_PASS is already pending (commands are processed
+            # after _check_and_manage_passes, so we'd see duplicates otherwise)
+            if self.acs._commands.has_pending_type(ACSCommandType.START_PASS):
+                return
             self.log.log_event(
                 utime=utime,
                 event_type="PASS",
@@ -719,6 +727,9 @@ class QueueDITL(DITLMixin, DITLStats):
             self.acs.passrequests.current_pass(utime - self.ephem.step_size)
             and current_pass is None
         ):
+            # Don't enqueue if END_PASS is already pending
+            if self.acs._commands.has_pending_type(ACSCommandType.END_PASS):
+                return
             self.log.log_event(
                 utime=utime,
                 event_type="PASS",
@@ -733,52 +744,61 @@ class QueueDITL(DITLMixin, DITLStats):
             return
 
         # Check to see if it's time to slew to the next pass
-        # Note that if we're already in PASS or SLEWING mode, we skip this,
-        # because you can't slew to a pass while already in a pass or slewing.
-        if self.acs.acsmode not in (ACSMode.PASS, ACSMode.SLEWING):
-            next_pass = self.acs.passrequests.next_pass(utime)
+        # Skip if already in PASS mode (already handling pass)
+        # Allow check when SLEWING - pass slews should interrupt science slews
+        if self.acs.acsmode == ACSMode.PASS:
+            return
 
-            # If there's no next pass, nothing to do
-            if next_pass is None:
-                return
+        # Check for pass slew (including when slewing to science target)
+        # Skip if we're already slewing to a pass (GSP type)
+        current_slew = self.acs.current_slew
+        if current_slew is not None and getattr(current_slew, "obstype", None) == "GSP":
+            return
 
-            # Check if it's time to start slewing for the next pass
-            if next_pass.time_to_slew(utime=utime, ra=ra, dec=dec):
-                # If it's time to slew, enqueue the slew command
+        next_pass = self.acs.passrequests.next_pass(utime)
+
+        # If there's no next pass, nothing to do
+        if next_pass is None:
+            return
+
+        # Check if it's time to start slewing for the next pass
+        if next_pass.time_to_slew(utime=utime, ra=ra, dec=dec):
+            # If it's time to slew, enqueue the slew command
+            self.log.log_event(
+                utime=utime,
+                event_type="SLEW",
+                description=f"Slewing for pass to {next_pass.station}",
+                acs_mode=self.acs.acsmode,
+            )
+
+            # Create slew object for the pass
+            slew = Slew(
+                config=self.config,
+            )
+
+            slew.startra = ra
+            slew.startdec = dec
+            slew.endra = next_pass.gsstartra
+            slew.enddec = next_pass.gsstartdec
+            slew.obstype = "GSP"  # Ground Station Pass slew
+
+            # Validate wheel capability before enqueueing
+            if not self.acs.validate_slew(slew, utime):
                 self.log.log_event(
                     utime=utime,
                     event_type="SLEW",
-                    description=f"Slewing for pass to {next_pass.station}",
+                    description=f"Pass slew to {next_pass.station} rejected - wheel validation failed",
                     acs_mode=self.acs.acsmode,
                 )
-
-                # Create slew object for the pass
-                slew = Slew(
-                    config=self.config,
-                )
-
-                slew.startra = ra
-                slew.startdec = dec
-                slew.endra = next_pass.gsstartra
-                slew.enddec = next_pass.gsstartdec
-
-                # Validate wheel capability before enqueueing
-                if not self.acs.validate_slew(slew, utime):
-                    self.log.log_event(
-                        utime=utime,
-                        event_type="SLEW",
-                        description=f"Pass slew to {next_pass.station} rejected - wheel validation failed",
-                        acs_mode=self.acs.acsmode,
-                    )
-                    return
-
-                command = ACSCommand(
-                    command_type=ACSCommandType.SLEW_TO_TARGET,
-                    execution_time=utime,
-                    slew=slew,
-                )
-                self.acs.enqueue_command(command)
                 return
+
+            command = ACSCommand(
+                command_type=ACSCommandType.SLEW_TO_TARGET,
+                execution_time=utime,
+                slew=slew,
+            )
+            self.acs.enqueue_command(command)
+            return
 
     def _handle_pass_mode(self, utime: float) -> None:
         """Handle spacecraft behavior during ground station passes."""
@@ -798,6 +818,10 @@ class QueueDITL(DITLMixin, DITLStats):
         )
         if termination_reason is not None:
             self._terminate_emergency_charging(termination_reason, utime)
+            # Immediately fetch a new PPT to avoid 1-step SCIENCE gap
+            # Get current pointing from ACS
+            ra, dec = self.acs.ra, self.acs.dec
+            self._fetch_new_ppt(utime, ra, dec)
 
     def _sync_charging_state(self) -> None:
         """Synchronize emergency_charging module state with queue state."""
@@ -1001,6 +1025,33 @@ class QueueDITL(DITLMixin, DITLStats):
             slew.slewstart = execution_time
             slew.calc_slewtime()
             self.acs.slew_dists.append(slew.slewdist)
+
+            # Check if there's enough observation time before the next pass
+            slew_end_time = slew.slewstart + slew.slewtime
+            next_pass = self.acs.passrequests.next_pass(slew_end_time)
+            if next_pass is not None:
+                # Calculate when we need to start slewing to the pass
+                # Use the pass's time_to_slew check with target position
+                time_to_pass_slew = next_pass.begin - slew_end_time
+                # Estimate slew time to pass start position
+                pass_slew_dist = self._calc_angular_distance(
+                    self.ppt.ra, self.ppt.dec, next_pass.gsstartra, next_pass.gsstartdec
+                )
+                pass_slew_time = self._estimate_slew_time(pass_slew_dist)
+
+                # Available observation time = time until pass - slew time to pass
+                available_obs_time = time_to_pass_slew - pass_slew_time
+                if available_obs_time < self.ppt.ss_min:
+                    self.log.log_event(
+                        utime=utime,
+                        event_type="QUEUE",
+                        description=f"Target {self.ppt.obsid} rejected - only {available_obs_time:.0f}s "
+                        f"available before pass (need {self.ppt.ss_min}s)",
+                        obsid=self.ppt.obsid,
+                        acs_mode=self.acs.acsmode,
+                    )
+                    self.ppt = None
+                    return
 
             # Update PPT timing based on slew
             self.ppt.begin = int(execution_time)
@@ -1264,3 +1315,48 @@ class QueueDITL(DITLMixin, DITLStats):
         self.acs.enqueue_command(command)
         self._terminate_charging_ppt(utime)
         self.emergency_charging.terminate_current_charging(utime)
+
+    def _calc_angular_distance(
+        self, ra1: float, dec1: float, ra2: float, dec2: float
+    ) -> float:
+        """Calculate angular distance between two sky positions in degrees."""
+        # Convert to radians
+        r1, d1 = np.deg2rad(ra1), np.deg2rad(dec1)
+        r2, d2 = np.deg2rad(ra2), np.deg2rad(dec2)
+
+        # Great circle distance using Vincenty formula for numerical stability
+        cos_d = np.sin(d1) * np.sin(d2) + np.cos(d1) * np.cos(d2) * np.cos(r2 - r1)
+        cos_d = np.clip(cos_d, -1.0, 1.0)
+        return float(np.rad2deg(np.arccos(cos_d)))
+
+    def _estimate_slew_time(self, distance_deg: float) -> float:
+        """Estimate slew time for a given angular distance.
+
+        Uses the ACS configuration's slew acceleration and max rate to compute
+        a bang-bang slew profile duration.
+        """
+        if distance_deg <= 0:
+            return 0.0
+
+        acs_cfg = self.config.spacecraft_bus.attitude_control
+        accel = acs_cfg.slew_acceleration  # deg/s^2
+        max_rate = acs_cfg.max_slew_rate  # deg/s
+
+        if accel is None or accel <= 0:
+            accel = 0.01  # Default fallback
+        if max_rate is None or max_rate <= 0:
+            max_rate = 0.3  # Default fallback
+
+        # Time to accelerate to max rate
+        t_accel = max_rate / accel
+        # Distance covered during acceleration phase
+        d_accel = 0.5 * accel * t_accel**2
+
+        if distance_deg <= 2 * d_accel:
+            # Triangle profile (never reaches max rate)
+            return float(2 * np.sqrt(distance_deg / accel))
+        else:
+            # Trapezoid profile (cruise phase at max rate)
+            cruise_distance = distance_deg - 2 * d_accel
+            t_cruise = cruise_distance / max_rate
+            return float(2 * t_accel + t_cruise)

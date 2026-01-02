@@ -113,6 +113,7 @@ def queue_ditl(mock_config, mock_ephem):
         mock_pt = Mock()
         mock_pt.passes = []
         mock_pt.get = Mock()
+        mock_pt.next_pass = Mock(return_value=None)  # No upcoming passes by default
         mock_pt.check_pass_timing = Mock(
             return_value={"start_pass": None, "end_pass": False, "updated_pass": None}
         )
@@ -135,6 +136,9 @@ def queue_ditl(mock_config, mock_ephem):
         from conops import ACSMode
 
         mock_acs.acsmode = ACSMode.SCIENCE
+        # Mock command queue for duplicate command prevention
+        mock_acs._commands = Mock()
+        mock_acs._commands.has_pending_type = Mock(return_value=False)
         # Mock the helper methods used in _fetch_new_ppt
         mock_target_request = Mock()
         mock_target_request.next_vis = Mock(return_value=1000.0)
@@ -501,6 +505,7 @@ def queue_ditl_no_queue_log(mock_config, mock_ephem):
         mock_pt = Mock()
         mock_pt.passes = []
         mock_pt.get = Mock()
+        mock_pt.next_pass = Mock(return_value=None)  # No upcoming passes by default
         mock_pt.check_pass_timing = Mock(
             return_value={"start_pass": None, "end_pass": False, "updated_pass": None}
         )
@@ -521,6 +526,9 @@ def queue_ditl_no_queue_log(mock_config, mock_ephem):
         from conops import ACSMode
 
         mock_acs.acsmode = ACSMode.SCIENCE
+        # Mock command queue for duplicate command prevention
+        mock_acs._commands = Mock()
+        mock_acs._commands.has_pending_type = Mock(return_value=False)
         # Mock the helper methods used in _fetch_new_ppt
         mock_target_request = Mock()
         mock_target_request.next_vis = Mock(return_value=1000.0)
@@ -557,6 +565,7 @@ def queue_ditl_acs_no_ephem(mock_config, mock_ephem):
         mock_pt = Mock()
         mock_pt.passes = []
         mock_pt.get = Mock()
+        mock_pt.next_pass = Mock(return_value=None)  # No upcoming passes by default
         mock_pt.check_pass_timing = Mock(
             return_value={"start_pass": None, "end_pass": False, "updated_pass": None}
         )
@@ -577,6 +586,9 @@ def queue_ditl_acs_no_ephem(mock_config, mock_ephem):
         from conops import ACSMode
 
         mock_acs.acsmode = ACSMode.SCIENCE
+        # Mock command queue for duplicate command prevention
+        mock_acs._commands = Mock()
+        mock_acs._commands.has_pending_type = Mock(return_value=False)
         # Mock the helper methods used in _fetch_new_ppt
         mock_target_request = Mock()
         mock_target_request.next_vis = Mock(return_value=1000.0)
