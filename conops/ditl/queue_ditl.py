@@ -1188,7 +1188,11 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _record_wheel_resource(self, utime: float) -> None:
         """Record aggregated reaction wheel torque/momentum usage."""
-        if not getattr(self, "_has_wheel_snapshot", False):
+        # Use cached value if available, otherwise check at runtime (for tests)
+        has_snapshot = getattr(self, "_has_wheel_snapshot", None)
+        if has_snapshot is None:
+            has_snapshot = hasattr(self.acs, "wheel_snapshot")
+        if not has_snapshot:
             self.wheel_momentum_fraction.append(0.0)
             self.wheel_momentum_fraction_raw.append(0.0)
             self.wheel_torque_fraction.append(0.0)
