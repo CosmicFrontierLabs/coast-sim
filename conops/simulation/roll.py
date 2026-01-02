@@ -23,7 +23,7 @@ def optimum_roll(
     """
     # Fetch ephemeris index and Sun vector from pre-computed arrays
     index = ephem.index(dtutcfromtimestamp(utime))
-    sunvec = ephem.sun_pv.position[index]  # km
+    sunvec = ephem.sun_pv.position[index] - ephem.gcrs_pv.position[index] # km
 
     # Sun vector in body coordinates for roll=0
     s_body_0 = scbodyvector(ra, dec, 0.0, sunvec)
