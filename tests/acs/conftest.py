@@ -90,6 +90,8 @@ def mock_config(mock_ephem, mock_constraint):
     acs_cfg.slew_time = Mock(return_value=100.0)
     acs_cfg.motion_time = template_cfg.motion_time
     acs_cfg.s_of_t = template_cfg.s_of_t
+    # Mock get_achievable_slew_performance to return (accel, rate, torque, inertia)
+    acs_cfg.get_achievable_slew_performance = Mock(return_value=(1.0, 0.5, 0.05, 10.0))
     config.spacecraft_bus.attitude_control = acs_cfg
     return config
 

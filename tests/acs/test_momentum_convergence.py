@@ -24,6 +24,8 @@ class DummyEphem:
     def __init__(self):
         self.earth = [DummyBody(0.0, 0.0)]
         self.sun = [DummyBody(0.0, 0.0)]
+        self.earth_ra_deg = [0.0]
+        self.earth_dec_deg = [0.0]
 
     def index(self, dt):
         return 0

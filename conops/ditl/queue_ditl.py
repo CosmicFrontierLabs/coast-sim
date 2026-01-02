@@ -704,6 +704,10 @@ class QueueDITL(DITLMixin, DITLStats):
         # Check if we're in a pass, if yes, command ACS to start the pass
         current_pass = self.acs.passrequests.current_pass(utime)
         if current_pass is not None and self.acs.acsmode != ACSMode.PASS:
+            # Don't enqueue if START_PASS is already pending (commands are processed
+            # after _check_and_manage_passes, so we'd see duplicates otherwise)
+            if self.acs._commands.has_pending_type(ACSCommandType.START_PASS):
+                return
             self.log.log_event(
                 utime=utime,
                 event_type="PASS",
@@ -723,6 +727,9 @@ class QueueDITL(DITLMixin, DITLStats):
             self.acs.passrequests.current_pass(utime - self.ephem.step_size)
             and current_pass is None
         ):
+            # Don't enqueue if END_PASS is already pending
+            if self.acs._commands.has_pending_type(ACSCommandType.END_PASS):
+                return
             self.log.log_event(
                 utime=utime,
                 event_type="PASS",
@@ -737,13 +744,18 @@ class QueueDITL(DITLMixin, DITLStats):
             return
 
         # Check to see if it's time to slew to the next pass
-        # Skip if already in PASS or SLEWING mode - can't interrupt a slew mid-motion.
-        # Pass-aware scheduling in _fetch_new_ppt prevents conflicts.
-        if self.acs.acsmode in (ACSMode.PASS, ACSMode.SLEWING):
+        # Skip if already in PASS mode (already handling pass)
+        # Allow check when SLEWING - pass slews should interrupt science slews
+        if self.acs.acsmode == ACSMode.PASS:
+            return
+
+        # Check for pass slew (including when slewing to science target)
+        # Skip if we're already slewing to a pass (GSP type)
+        current_slew = self.acs.current_slew
+        if current_slew is not None and getattr(current_slew, "obstype", None) == "GSP":
             return
 
         next_pass = self.acs.passrequests.next_pass(utime)
-
         # If there's no next pass, nothing to do
         if next_pass is None:
             return
@@ -1057,12 +1069,11 @@ class QueueDITL(DITLMixin, DITLStats):
             if next_pass is not None:
                 # Calculate when we need to start slewing to the pass
                 time_to_pass_slew = next_pass.begin - slew_end_time
-                # Estimate slew time to pass start position using existing utilities
-                pass_slew_dist = angular_separation(
+                # Estimate slew time to pass start position
+                pass_slew_dist = self._calc_angular_distance(
                     self.ppt.ra, self.ppt.dec, next_pass.gsstartra, next_pass.gsstartdec
                 )
-                acs_cfg = self.config.spacecraft_bus.attitude_control
-                pass_slew_time = acs_cfg.slew_time(pass_slew_dist)
+                pass_slew_time = self._estimate_slew_time(pass_slew_dist)
 
                 # Available observation time = time until pass - slew time to pass
                 available_obs_time = time_to_pass_slew - pass_slew_time
@@ -1340,3 +1351,48 @@ class QueueDITL(DITLMixin, DITLStats):
         self.acs.enqueue_command(command)
         self._terminate_charging_ppt(utime)
         self.emergency_charging.terminate_current_charging(utime)
+
+    def _calc_angular_distance(
+        self, ra1: float, dec1: float, ra2: float, dec2: float
+    ) -> float:
+        """Calculate angular distance between two sky positions in degrees."""
+        # Convert to radians
+        r1, d1 = np.deg2rad(ra1), np.deg2rad(dec1)
+        r2, d2 = np.deg2rad(ra2), np.deg2rad(dec2)
+
+        # Great circle distance using Vincenty formula for numerical stability
+        cos_d = np.sin(d1) * np.sin(d2) + np.cos(d1) * np.cos(d2) * np.cos(r2 - r1)
+        cos_d = np.clip(cos_d, -1.0, 1.0)
+        return float(np.rad2deg(np.arccos(cos_d)))
+
+    def _estimate_slew_time(self, distance_deg: float) -> float:
+        """Estimate slew time for a given angular distance.
+
+        Uses the ACS configuration's slew acceleration and max rate to compute
+        a bang-bang slew profile duration.
+        """
+        if distance_deg <= 0:
+            return 0.0
+
+        acs_cfg = self.config.spacecraft_bus.attitude_control
+        accel = acs_cfg.slew_acceleration  # deg/s^2
+        max_rate = acs_cfg.max_slew_rate  # deg/s
+
+        if accel is None or accel <= 0:
+            accel = 0.01  # Default fallback
+        if max_rate is None or max_rate <= 0:
+            max_rate = 0.3  # Default fallback
+
+        # Time to accelerate to max rate
+        t_accel = max_rate / accel
+        # Distance covered during acceleration phase
+        d_accel = 0.5 * accel * t_accel**2
+
+        if distance_deg <= 2 * d_accel:
+            # Triangle profile (never reaches max rate)
+            return float(2 * np.sqrt(distance_deg / accel))
+        else:
+            # Trapezoid profile (cruise phase at max rate)
+            cruise_distance = distance_deg - 2 * d_accel
+            t_cruise = cruise_distance / max_rate
+            return float(2 * t_accel + t_cruise)

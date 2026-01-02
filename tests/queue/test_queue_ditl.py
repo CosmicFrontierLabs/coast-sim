@@ -2516,6 +2516,9 @@ class TestQueueDITLCoverage:
             from conops import ACSMode
 
             mock_acs.acsmode = ACSMode.SCIENCE
+            # Mock command queue for duplicate command prevention
+            mock_acs._commands = Mock()
+            mock_acs._commands.has_pending_type = Mock(return_value=False)
             mock_acs_class.return_value = mock_acs
 
             # Mock solar panel

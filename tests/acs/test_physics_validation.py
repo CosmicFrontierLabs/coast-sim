@@ -20,6 +20,8 @@ class MockEphemeris:
         self.step_size = step_size
         self.earth = [MagicMock(ra=MagicMock(deg=0.0), dec=MagicMock(deg=0.0))]
         self.sun = [MagicMock(ra=MagicMock(deg=45.0), dec=MagicMock(deg=23.5))]
+        self.earth_ra_deg = [0.0]
+        self.earth_dec_deg = [0.0]
         self.gcrs_pv = MagicMock()
         self.gcrs_pv.position = [[7000e3, 0, 0]]
         self.gcrs_pv.velocity = [[0, 7500, 0]]

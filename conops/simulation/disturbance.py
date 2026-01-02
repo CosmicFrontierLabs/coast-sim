@@ -467,7 +467,13 @@ class DisturbanceModel:
 
         if self.cfg.solar_area_m2 > 0 and not in_eclipse and idx is not None:
             try:
-                sun_vec = np.array(self.ephem.sun[idx].cartesian.xyz.to_value())
+                # Use sun_pv.position for fast array access (rust-ephem 0.3.0+)
+                # Falls back to slower SkyCoord API if sun_pv not available
+                sun_pv = getattr(self.ephem, "sun_pv", None)
+                if sun_pv is not None:
+                    sun_vec = np.array(sun_pv.position[idx])
+                else:
+                    sun_vec = np.array(self.ephem.sun[idx].cartesian.xyz.to_value())
                 # Sun distance is ~1 AU = 1.496e11 m = 1.496e8 km
                 # If magnitude < 1e9, assume km; otherwise assume meters
                 sun_mag = float(np.linalg.norm(sun_vec))

@@ -100,6 +100,9 @@ class ACS:
 
         self.passrequests = PassTimes(config=config)
         self.current_pass: Pass | None = None
+        # Track pass end position to avoid jumping back to pre-pass pointing
+        self._pass_end_ra: float | None = None
+        self._pass_end_dec: float | None = None
         self.solar_panel = config.solar_panel
         self.slew_dists: list[float] = []
         self.saa = None
@@ -238,6 +241,9 @@ class ACS:
             "srp": 0.0,
             "mag": 0.0,
         }
+        # Per-timestep cache for disturbance torque (expensive to compute)
+        self._cached_disturbance_utime: float | None = None
+        self._cached_disturbance_torque: np.ndarray | None = None
 
         # Build inertia matrix for WheelDynamics
         moi_cfg = acs_cfg.spacecraft_moi
@@ -323,6 +329,84 @@ class ACS:
         result = max_rate * 1.25
         setattr(self, cache_attr, result)
         return result
+
+    def _rate_limited_pointing(
+        self,
+        current_ra: float,
+        current_dec: float,
+        target_ra: float,
+        target_dec: float,
+        dt: float,
+        max_rate: float,
+    ) -> tuple[float, float]:
+        """Compute rate-limited pointing toward a target.
+
+        If the required angular rate to reach target exceeds max_rate,
+        returns an intermediate point along the great circle path that
+        respects the rate limit. Otherwise returns the target directly.
+
+        Args:
+            current_ra: Current right ascension in degrees
+            current_dec: Current declination in degrees
+            target_ra: Target right ascension in degrees
+            target_dec: Target declination in degrees
+            dt: Time step in seconds
+            max_rate: Maximum angular rate in deg/s
+
+        Returns:
+            Tuple of (ra, dec) for the achievable pointing position.
+        """
+        # Convert to radians
+        r0 = np.deg2rad(current_ra)
+        d0 = np.deg2rad(current_dec)
+        r1 = np.deg2rad(target_ra)
+        d1 = np.deg2rad(target_dec)
+
+        # Compute great-circle angular distance
+        cosc = np.sin(d0) * np.sin(d1) + np.cos(d0) * np.cos(d1) * np.cos(r1 - r0)
+        cosc = np.clip(cosc, -1.0, 1.0)
+        dist_rad = np.arccos(cosc)
+        dist_deg = float(np.rad2deg(dist_rad))
+
+        # If we can reach the target within rate limit, return target
+        max_dist = max_rate * dt
+        if dist_deg <= max_dist or dist_deg < 1e-6:
+            return target_ra, target_dec
+
+        # Interpolate along great circle to rate-limited position
+        # Fraction of path we can travel
+        frac = max_dist / dist_deg
+
+        # Spherical linear interpolation (slerp)
+        sinc = np.sin(dist_rad)
+        if sinc < 1e-10:
+            # Nearly coincident points
+            return target_ra, target_dec
+
+        # Interpolation weights
+        a = np.sin((1.0 - frac) * dist_rad) / sinc
+        b = np.sin(frac * dist_rad) / sinc
+
+        # Cartesian coordinates of current and target
+        x0 = np.cos(d0) * np.cos(r0)
+        y0 = np.cos(d0) * np.sin(r0)
+        z0 = np.sin(d0)
+        x1 = np.cos(d1) * np.cos(r1)
+        y1 = np.cos(d1) * np.sin(r1)
+        z1 = np.sin(d1)
+
+        # Interpolated point
+        x = a * x0 + b * x1
+        y = a * y0 + b * y1
+        z = a * z0 + b * z1
+
+        # Convert back to ra/dec
+        new_dec = np.rad2deg(np.arcsin(np.clip(z, -1.0, 1.0)))
+        new_ra = np.rad2deg(np.arctan2(y, x))
+        if new_ra < 0:
+            new_ra += 360.0
+
+        return float(new_ra), float(new_dec)
 
     def _log_or_print(self, utime: float, event_type: str, description: str) -> None:
         """Log an event to DITLLog if available, otherwise print to stdout.
@@ -762,6 +846,16 @@ class ACS:
 
     def _end_pass(self, utime: float) -> None:
         """Handle the END_PASS command to command the end of a groundstation pass."""
+        # Save the final pointing position from the pass before clearing
+        # This prevents jumping back to pre-pass pointing when no new slew is pending
+        if self.current_pass is not None:
+            try:
+                ra_dec = self.current_pass.ra_dec(utime)
+                if isinstance(ra_dec, tuple) and len(ra_dec) == 2:
+                    self._pass_end_ra, self._pass_end_dec = ra_dec
+            except (TypeError, AttributeError):
+                pass  # Mock or invalid pass object - skip saving position
+
         self.current_pass = None
         self.acsmode = ACSMode.SCIENCE
 
@@ -873,9 +967,38 @@ class ACS:
         and recalculate the slew geometry. Slew kinematic parameters (accel, vmax)
         are set at slew creation and validated by _has_wheel_headroom().
         """
+        # Get current position - may need to compute from active slew or pass
+        # Note: self.ra/dec may be from previous step since commands are processed
+        # before _calculate_pointing in pointing()
+        current_ra, current_dec = self.ra, self.dec  # Default fallback
+
+        try:
+            if self.last_slew is not None and self.last_slew.is_slewing(utime) is True:
+                slew_pos = self.last_slew.ra_dec(utime)
+                if (
+                    isinstance(slew_pos, (tuple, list))
+                    and len(slew_pos) >= 2
+                    and slew_pos[0] is not None
+                    and slew_pos[1] is not None
+                ):
+                    current_ra, current_dec = slew_pos[0], slew_pos[1]
+            elif self.current_pass is not None:
+                # If in a pass, get current pass tracking position
+                pass_pos = self.current_pass.ra_dec(utime)
+                if (
+                    isinstance(pass_pos, (tuple, list))
+                    and len(pass_pos) >= 2
+                    and pass_pos[0] is not None
+                    and pass_pos[1] is not None
+                ):
+                    current_ra, current_dec = pass_pos[0], pass_pos[1]
+        except (TypeError, AttributeError):
+            # Handle mock objects or invalid slew/pass objects
+            pass
+
         # Always start slew from current spacecraft position - ACS drives the spacecraft
-        slew.startra = self.ra
-        slew.startdec = self.dec
+        slew.startra = current_ra
+        slew.startdec = current_dec
         slew.slewstart = utime
         # Refresh slew geometry now that start point is updated.
         slew.predict_slew()
@@ -1313,6 +1436,12 @@ class ACS:
         if self.saa is not None and self.saa.insaa(utime):
             return ACSMode.SAA
 
+        # Check for pending commands that would change mode
+        # This prevents 1-step mode gaps when commands are enqueued but not yet processed
+        pending_mode = self._check_pending_mode_change(utime)
+        if pending_mode is not None:
+            return pending_mode
+
         return ACSMode.SCIENCE
 
     def _is_actively_slewing(self, utime: float) -> bool:
@@ -1348,6 +1477,43 @@ class ACS:
         if self.current_pass.in_pass(utime):
             return True
         return False
+
+    def _check_pending_mode_change(self, utime: float) -> ACSMode | None:
+        """Check for pending commands that would change the current mode.
+
+        This method looks at the command queue for commands that are due at or before
+        the current time and would change the spacecraft mode. This prevents 1-step
+        mode gaps when commands are enqueued during one timestep but not processed
+        until the next.
+
+        Returns:
+            The mode that would result from pending commands, or None if no mode change.
+        """
+        # Check for pending slew commands
+        for cmd in self._commands.pending:
+            if cmd.execution_time > utime:
+                # Commands are time-sorted, so we can stop here
+                break
+            if cmd.command_type == ACSCommandType.SLEW_TO_TARGET:
+                # A slew is pending - check what type
+                slew = getattr(cmd, "slew", None)
+                if slew is not None:
+                    obstype = getattr(slew, "obstype", "PPT")
+                    if obstype == "CHARGE":
+                        if not self.in_eclipse:
+                            return ACSMode.CHARGING
+                        return ACSMode.SLEWING
+                    elif obstype == "GSP":
+                        return ACSMode.SLEWING  # Slewing to pass
+                return ACSMode.SLEWING
+            elif cmd.command_type == ACSCommandType.START_PASS:
+                return ACSMode.PASS
+            elif cmd.command_type == ACSCommandType.START_BATTERY_CHARGE:
+                if not self.in_eclipse:
+                    return ACSMode.CHARGING
+                return ACSMode.SLEWING
+
+        return None
 
     def _update_mode(self, utime: float) -> None:
         """Update ACS mode based on current slew/pass state."""
@@ -1407,16 +1573,66 @@ class ACS:
         # Safe mode overrides all other pointing
         if self.in_safe_mode:
             self._calculate_safe_mode_pointing(utime)
-        # If we are in a groundstations pass
+        # If actively slewing to a pass (GSP type), use slew interpolation
+        # until the slew completes, then switch to pass tracking
+        elif (
+            self.last_slew is not None
+            and self.last_slew.is_slewing(utime)
+            and getattr(self.last_slew, "obstype", None) == "GSP"
+        ):
+            self.ra, self.dec = self.last_slew.ra_dec(utime)
+            # Clear pass end position since we're slewing to a new pass
+            self._pass_end_ra = None
+            self._pass_end_dec = None
+        # If we are in a groundstations pass, use rate-limited pass tracking
         elif self.current_pass is not None:
-            self.ra, self.dec = self.current_pass.ra_dec(utime)  # type: ignore[assignment]
-        # If we are actively slewing
+            pass_ra, pass_dec = self.current_pass.ra_dec(utime)
+            # ra_dec can return None if pass has no valid position at this time
+            if pass_ra is None or pass_dec is None:
+                pass  # Keep current pointing
+            # Apply rate limiting to enforce physical constraints
+            elif (
+                self._last_pointing_ra is not None
+                and self._last_pointing_dec is not None
+                and self._last_pointing_utime is not None
+            ):
+                dt = utime - self._last_pointing_utime
+                if dt > 0:
+                    # Use the wheel physics limit (not configured slew rate) for pass tracking
+                    max_rate = self._get_max_body_rate(for_pass_tracking=True)
+                    if max_rate is not None:
+                        self.ra, self.dec = self._rate_limited_pointing(
+                            self._last_pointing_ra,
+                            self._last_pointing_dec,
+                            pass_ra,
+                            pass_dec,
+                            dt,
+                            max_rate,
+                        )
+                    else:
+                        self.ra, self.dec = pass_ra, pass_dec
+                else:
+                    self.ra, self.dec = pass_ra, pass_dec
+            else:
+                # First timestep or no previous state - use target directly
+                self.ra, self.dec = pass_ra, pass_dec
+        # If we are actively slewing (non-GSP), use slew interpolation
         elif self.last_slew is not None and self.last_slew.is_slewing(utime):
             self.ra, self.dec = self.last_slew.ra_dec(utime)
+            # Clear pass end position since a new slew has started
+            self._pass_end_ra = None
+            self._pass_end_dec = None
         # Slew scheduled but not started yet: hold at start position
         elif self.last_slew is not None and utime < self.last_slew.slewstart:
             self.ra = self.last_slew.startra
             self.dec = self.last_slew.startdec
+            # Clear pass end position since a new slew is pending
+            self._pass_end_ra = None
+            self._pass_end_dec = None
+        # If we just ended a pass and haven't started a new slew, hold at pass end
+        elif self._pass_end_ra is not None and self._pass_end_dec is not None:
+            self.ra = self._pass_end_ra
+            self.dec = self._pass_end_dec
         # Slew completed: hold at end position
         elif self.last_slew is not None:
             self.ra = self.last_slew.endra
@@ -1455,9 +1671,47 @@ class ACS:
         ):
             self.ra, self.dec = self.current_slew.ra_dec(utime)
         else:
-            # After slew completes or for continuous tracking, maintain optimal pointing
-            self.ra = target_ra
-            self.dec = target_dec
+            # After SAFE slew completes, use rate-limited tracking toward Sun/charge point
+            # If we just completed a SAFE slew, start from slew end position
+            if (
+                self.current_slew is not None
+                and self.current_slew.obstype == "SAFE"
+                and not self.current_slew.is_slewing(utime)
+            ):
+                # Use slew end position as starting point for rate limiting
+                base_ra = self.current_slew.endra
+                base_dec = self.current_slew.enddec
+                # Use slew end time as reference
+                base_time = self.current_slew.slewend
+            elif (
+                self._last_pointing_ra is not None
+                and self._last_pointing_dec is not None
+                and self._last_pointing_utime is not None
+            ):
+                base_ra = self._last_pointing_ra
+                base_dec = self._last_pointing_dec
+                base_time = self._last_pointing_utime
+            else:
+                # No reference - use target directly
+                self.ra, self.dec = target_ra, target_dec
+                return
+
+            dt = utime - base_time
+            if dt > 0:
+                max_rate = self._get_max_body_rate(for_pass_tracking=True)
+                if max_rate is not None:
+                    self.ra, self.dec = self._rate_limited_pointing(
+                        base_ra,
+                        base_dec,
+                        target_ra,
+                        target_dec,
+                        dt,
+                        max_rate,
+                    )
+                else:
+                    self.ra, self.dec = target_ra, target_dec
+            else:
+                self.ra, self.dec = target_ra, target_dec
 
     def _validate_pointing_rate(self, utime: float) -> None:
         """Check if pointing rate is physically achievable.
@@ -2145,7 +2399,19 @@ class ACS:
         return sum(w.power_draw() for w in self.reaction_wheels)
 
     def _compute_disturbance_torque(self, utime: float) -> np.ndarray:
-        """Compute aggregate disturbance torque in body frame."""
+        """Compute aggregate disturbance torque in body frame.
+
+        Results are cached per-timestep since this is called multiple times
+        per step (wheel updates, torque allocation, desat, etc.) but the
+        disturbance doesn't change within a single timestep.
+        """
+        # Return cached result if available for this timestep
+        if (
+            self._cached_disturbance_utime == utime
+            and self._cached_disturbance_torque is not None
+        ):
+            return self._cached_disturbance_torque
+
         torque, components = self.disturbance_model.compute(
             utime=utime,
             ra_deg=self.ra,
@@ -2154,6 +2420,11 @@ class ACS:
             moi_cfg=self.config.spacecraft_bus.attitude_control.spacecraft_moi,
         )
         self._last_disturbance_components = components
+
+        # Cache for subsequent calls at this timestep
+        self._cached_disturbance_utime = utime
+        self._cached_disturbance_torque = torque
+
         return torque
 
     def _predict_wheel_peak_momentum(
