@@ -22,7 +22,11 @@ def constraint(ephem):
 
 @pytest.fixture
 def acs_config():
-    return Mock()
+    acs = Mock()
+    # Slew.__init__ now calls get_accel_cap() and max_slew_rate
+    acs.get_accel_cap = Mock(return_value=0.5)
+    acs.max_slew_rate = 0.25
+    return acs
 
 
 @pytest.fixture

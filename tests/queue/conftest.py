@@ -78,6 +78,9 @@ def mock_config():
     config.spacecraft_bus.attitude_control.slew_time = Mock(
         return_value=100.0
     )  # Return slew time in seconds
+    # Slew now reads accel/vmax from config during initialization
+    config.spacecraft_bus.attitude_control.get_accel_cap = Mock(return_value=0.5)
+    config.spacecraft_bus.attitude_control.max_slew_rate = 0.25
 
     # Mock payload
     config.payload = Mock()

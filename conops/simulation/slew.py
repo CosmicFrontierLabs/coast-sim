@@ -64,9 +64,12 @@ class Slew:
         self.slewtime = 0
         self.slewdist = 0
 
-        # Optional overrides for dynamics (deg/s^2, deg/s)
-        self._accel_override: float | None = None
-        self._vmax_override: float | None = None
+        # Slew kinematic parameters (deg/s^2, deg/s)
+        # Initialized from config, may be updated by wheel dynamics validation
+        accel_cap = self.acs_config.get_accel_cap()
+        rate_cap = self.acs_config.max_slew_rate
+        self.accel: float = float(accel_cap) if accel_cap is not None else 0.5
+        self.vmax: float = float(rate_cap) if rate_cap is not None else 0.25
 
         self.obstype = "PPT"
         self.obsid = 0
@@ -114,12 +117,10 @@ class Slew:
 
         total_dist = float(self.slewdist)
         motion_time = self.acs_config.motion_time(
-            total_dist, accel=self._accel_override, vmax=self._vmax_override
+            total_dist, accel=self.accel, vmax=self.vmax
         )
         tau = max(0.0, min(float(t), motion_time))
-        s = self.acs_config.s_of_t(
-            total_dist, tau, accel=self._accel_override, vmax=self._vmax_override
-        )
+        s = self.acs_config.s_of_t(total_dist, tau, accel=self.accel, vmax=self.vmax)
         f = 0.0 if total_dist == 0 else max(0.0, min(1.0, s / total_dist))
 
         # Interpolate along the great-circle path using fraction f
@@ -155,11 +156,8 @@ class Slew:
             )
 
         # Calculate slew time using AttitudeControlSystem
-        # Use any accel/vmax overrides when computing slew time (e.g. wheel-limited)
         self.slewtime = round(
-            self.acs_config.slew_time(
-                distance, accel=self._accel_override, vmax=self._vmax_override
-            )
+            self.acs_config.slew_time(distance, accel=self.accel, vmax=self.vmax)
         )
 
         self.slewend = self.slewstart + self.slewtime

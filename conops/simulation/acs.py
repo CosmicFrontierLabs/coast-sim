@@ -126,18 +126,10 @@ class ACS:
         # Keep some buffer below absolute capacity so we avoid hard saturation;
         # adjust in tests/notebooks if needed for what-if sweeps.
         self._wheel_mom_margin = 0.9
-        # Only enable legacy single-wheel when wheel_enabled is explicitly True
-        if getattr(acs_cfg, "wheel_enabled", False) is True:
-            # legacy single-wheel support
-            self.reaction_wheels.append(
-                ReactionWheel(
-                    max_torque=acs_cfg.wheel_max_torque,
-                    max_momentum=acs_cfg.wheel_max_momentum,
-                    orientation=(1.0, 0.0, 0.0),
-                    name="wheel0",
-                )
-            )
-        # Multi-wheel config - be defensive: tests may supply a Mock for acs_cfg.wheels
+
+        # Only create wheels explicitly defined in the wheels array
+        # (legacy wheel_enabled/wheel_max_torque/wheel_max_momentum fields are ignored)
+        # Be defensive: tests may supply a Mock for acs_cfg.wheels
         wheels_val = getattr(acs_cfg, "wheels", None)
         wheels_iter: list[Any] = []
         if wheels_val:
@@ -265,6 +257,8 @@ class ACS:
         # Slew state tracking (still needed for operational logic)
         self._was_slewing = False
         self._last_slew_for_verification: Slew | None = None
+        # Track current slew to detect mid-flight replacements
+        self._last_tracked_slew: Slew | None = None
         # Track cumulative velocity during slew to prevent overshoot from timestep discretization
         self._slew_velocity_integral: float = 0.0
 
@@ -383,23 +377,10 @@ class ACS:
         if angle_deg <= 0:
             return 0.0, axis
 
-        # Get acceleration (use override if available, else config cap)
-        accel_override = getattr(slew, "_accel_override", None)
-        if accel_override is not None:
-            accel_deg = float(accel_override)
-        else:
-            cap = self.acs_config.get_accel_cap()
-            accel_deg = float(cap) if cap is not None else 0.5
-        if accel_deg <= 0:
+        accel_deg = float(slew.accel)
+        max_rate_deg = float(slew.vmax)
+        if accel_deg <= 0 or max_rate_deg <= 0:
             return 0.0, axis
-
-        # Get max slew rate (use override if available)
-        vmax_override = getattr(slew, "_vmax_override", None)
-        if vmax_override is not None and vmax_override > 0:
-            max_rate_deg = float(vmax_override)
-        else:
-            rate_cap = self.acs_config.max_slew_rate
-            max_rate_deg = float(rate_cap) if rate_cap is not None else 1.0
 
         # Delegate to WheelDynamics
         h_peak = self.wheel_dynamics.compute_slew_peak_momentum(
@@ -433,14 +414,7 @@ class ACS:
             axis = axis / nrm
 
         angle_deg = float(getattr(slew, "slewdist", 0.0))
-
-        accel_override = getattr(slew, "_accel_override", None)
-        if accel_override is not None:
-            accel_deg = float(accel_override)
-        else:
-            cap = self.acs_config.get_accel_cap()
-            accel_deg = float(cap) if cap is not None else 0.5
-
+        accel_deg = float(slew.accel)
         slew_time = float(getattr(slew, "slewtime", 0.0))
         if slew_time <= 0:
             slew_time = 60.0  # Default estimate
@@ -829,8 +803,8 @@ class ACS:
 
         The ACS always drives the spacecraft from its current position. When a slew
         command is executed, we set the start position to the current ACS pointing
-        and recalculate the slew profile. This ensures continuous motion without
-        teleportation, regardless of when commands were originally scheduled.
+        and recalculate the slew geometry. Slew kinematic parameters (accel, vmax)
+        are set at slew creation and validated by _has_wheel_headroom().
         """
         # Always start slew from current spacecraft position - ACS drives the spacecraft
         slew.startra = self.ra
@@ -838,45 +812,6 @@ class ACS:
         slew.slewstart = utime
         # Refresh slew geometry now that start point is updated.
         slew.predict_slew()
-        # If reaction wheel present, compute an accel override based on torque limits
-        accel_override = None
-        vmax_override = None
-        if self.reaction_wheels:
-            # Use aggregate wheel capability along slew rotation axis
-            axis = np.array(
-                getattr(slew, "rotation_axis", (0.0, 0.0, 1.0)), dtype=float
-            )
-            # motion time estimate using current accel config
-            try:
-                motion_time_est = float(self.acs_config.motion_time(slew.slewdist))
-            except Exception:
-                motion_time_est = 0.0
-            achievable_accel = self.wheel_dynamics.get_axis_accel_limit(
-                axis, motion_time_est
-            )
-            if achievable_accel > 0:
-                # Derive accel directly from wheel capability (not a fixed external parameter)
-                accel_override = achievable_accel
-            # Derive a max rate limit from wheel momentum capacity along axis
-            vmax_limit = self.wheel_dynamics.get_axis_rate_limit(axis)
-            if vmax_limit > 0:
-                vmax_override = vmax_limit
-            # If we're effectively unable to slew, reject at execution time.
-            min_accel = 1e-4  # deg/s^2
-            min_rate = 1e-3  # deg/s
-            if slew.obstype != "SAFE":
-                if achievable_accel <= min_accel or vmax_limit <= min_rate:
-                    self._log_or_print(
-                        utime,
-                        "SLEW",
-                        f"{unixtime2date(utime)}: Slew rejected at execution - "
-                        f"accel/rate too low (accel={achievable_accel:.3e}, rate={vmax_limit:.3e})",
-                    )
-                    self.request_desat(utime)
-                    return False
-        # apply overrides to slew and calc time
-        slew._accel_override = accel_override
-        slew._vmax_override = vmax_override
         slew.calc_slewtime()
 
         # Pre-slew momentum budget check (for non-SAFE slews with wheels)
@@ -1173,11 +1108,33 @@ class ACS:
             axis, dist, accel_cap, rate_cap
         )
 
-        # Store the physics-derived parameters on the slew for use in timing
-        slew._accel_override = accel
-        slew._vmax_override = rate
+        # Update slew with physics-derived parameters
+        slew.accel = accel
+        slew.vmax = rate
 
         return True
+
+    def validate_slew(self, slew: Slew, utime: float | None = None) -> bool:
+        """Validate a slew for wheel capability and update its kinematic parameters.
+
+        This is the public API for external callers (e.g., QueueDITL) to validate
+        slews before enqueueing. It:
+        1. Computes slew geometry (distance, rotation axis) if not already done
+        2. Validates wheel capability for the slew
+        3. Updates slew.accel and slew.vmax with physics-derived values
+
+        Args:
+            slew: The Slew object to validate. Must have start/end positions set.
+            utime: Current time for logging.
+
+        Returns:
+            True if slew is valid, False if rejected (wheels overloaded/incapable).
+        """
+        # Ensure geometry is computed
+        self._compute_slew_distance(slew)
+
+        # Validate wheel capability and update slew parameters
+        return self._has_wheel_headroom(slew, utime)
 
     def pointing(self, utime: float) -> tuple[float, float, float, int]:
         """
@@ -1472,6 +1429,15 @@ class ACS:
             # Record momentum NOW, not when command was executed
             if self.reaction_wheels:
                 self.wheel_dynamics.record_slew_start()
+            self._last_tracked_slew = self.current_slew
+        elif is_slewing and self.current_slew is not self._last_tracked_slew:
+            # Slew was replaced mid-flight (e.g., SAFE mode interrupted science slew)
+            # Record new baseline and set up verification for the new slew
+            self._last_slew_for_verification = self.current_slew
+            self._slew_velocity_integral = 0.0
+            if self.reaction_wheels:
+                self.wheel_dynamics.record_slew_start()
+            self._last_tracked_slew = self.current_slew
         if self._was_slewing and not is_slewing:
             # Slew just completed - apply final velocity correction before verification
             # This handles the case where is_slewing turns False before the final decel step
@@ -1509,10 +1475,12 @@ class ACS:
                 )
                 self._apply_wheel_torques_conserving(taus_allowed, dt)
 
-            # Verify momentum consistency
+            # Verify momentum consistency for completed slews
+            # (Interrupted slews are cleared in the replacement detection above)
             if self._last_slew_for_verification is not None:
                 self._verify_slew_end_momentum(self._last_slew_for_verification, utime)
                 self._last_slew_for_verification = None
+            self._last_tracked_slew = None
         self._was_slewing = is_slewing
 
         # Only update when actively slewing and we have wheels
@@ -1561,14 +1529,8 @@ class ACS:
             # Check if we're past motion phase vs in cruise
             # Only apply velocity correction after motion phase, not cruise
             dist = float(getattr(self.current_slew, "slewdist", 0.0) or 0.0)
-            a = getattr(self.current_slew, "_accel_override", None)
-            if a is None or a <= 0:
-                cap = self.acs_config.get_accel_cap()
-                a = float(cap) if cap is not None else 0.0
-            vmax = getattr(self.current_slew, "_vmax_override", None)
-            if vmax is None or vmax <= 0:
-                vmax = self.acs_config.max_slew_rate
-                vmax = float(vmax) if vmax is not None else 0.0
+            a = float(self.current_slew.accel)
+            vmax = float(self.current_slew.vmax)
             motion_time = float(self.acs_config.motion_time(dist, accel=a, vmax=vmax))
             t_rel = float(utime - getattr(self.current_slew, "slewstart", 0.0))
 
@@ -1647,17 +1609,21 @@ class ACS:
         # Apply wheel torques with momentum conservation (internal exchange)
         self._apply_wheel_torques_conserving(taus_allowed, dt)
 
-        # If we couldn't supply full torque, reduce accel_override magnitude accordingly
+        # Log if wheels couldn't deliver requested torque (indicates validation gap)
         achieved_scalar = float(np.dot(T_actual, axis))
-        if abs(achieved_scalar) < abs(requested_torque) and i_axis > 0:
-            # Only use a non-negative accel magnitude for slew timing.
-            if achieved_scalar <= 0:
-                new_accel = 0.0
-            else:
-                new_accel = (achieved_scalar / i_axis) * (180.0 / pi)
-            self.current_slew._accel_override = new_accel
-            if self.last_slew is self.current_slew:
-                self.last_slew._accel_override = new_accel
+        torque_shortfall = abs(requested_torque) - abs(achieved_scalar)
+        if torque_shortfall > 1e-6 and abs(requested_torque) > 1e-9:
+            shortfall_pct = 100.0 * torque_shortfall / abs(requested_torque)
+            if shortfall_pct > 5.0:  # Only log significant shortfalls
+                self._logger.warning(
+                    "Wheel torque shortfall at t=%.1f: requested=%.4f N·m, "
+                    "achieved=%.4f N·m (%.1f%% shortfall). "
+                    "Pre-validation should have caught this.",
+                    utime,
+                    requested_torque,
+                    achieved_scalar,
+                    shortfall_pct,
+                )
 
         # Capture wheel snapshot for telemetry/resource tracking
         self._build_wheel_snapshot(utime, taus, taus_allowed)
@@ -1706,14 +1672,9 @@ class ACS:
         if dist <= 0:
             return 0.0
 
-        a = getattr(slew, "_accel_override", None)
-        if a is None or a <= 0:
-            cap = self.acs_config.get_accel_cap()
-            a = float(cap) if cap is not None else 0.0
-        vmax = getattr(slew, "_vmax_override", None)
-        if vmax is None or vmax <= 0:
-            vmax = self.acs_config.max_slew_rate
-            vmax = float(vmax) if vmax is not None else 0.0
+        # Get slew kinematic parameters
+        a = float(slew.accel)
+        vmax = float(slew.vmax)
         if a <= 0 or vmax <= 0:
             return 0.0
 

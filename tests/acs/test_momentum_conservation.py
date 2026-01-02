@@ -303,8 +303,8 @@ class TestSlewMomentumSymmetry:
         slew.slewtime = motion_time
         slew.slewend = 1000.0 + motion_time
         slew.rotation_axis = (0.0, 0.0, 1.0)
-        slew._accel_override = None
-        slew._vmax_override = None
+        slew.accel = accel  # Use actual accel value
+        slew.vmax = 10.0  # High enough for triangular profile
         slew.is_slewing = lambda t: 1000.0 <= t < slew.slewend
 
         # Execute slew
@@ -378,8 +378,8 @@ class TestSlewMomentumSymmetry:
         slew.slewtime = motion_time
         slew.slewend = 1000.0 + motion_time
         slew.rotation_axis = (0.0, 0.0, 1.0)
-        slew._accel_override = None
-        slew._vmax_override = None
+        slew.accel = accel  # Use actual accel value
+        slew.vmax = 10.0  # High enough for triangular profile
         slew.is_slewing = lambda t: 1000.0 <= t < slew.slewend
 
         dt = 0.1
