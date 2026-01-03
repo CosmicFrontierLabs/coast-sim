@@ -104,6 +104,9 @@ class DisturbanceModel:
         self._cached_r_ib: np.ndarray | None = None
         self._cached_ra: float | None = None
         self._cached_dec: float | None = None
+        # Cache whether we have residual magnetic moment (avoid recomputing every call)
+        rmm = cfg.residual_magnetic_moment
+        self._has_residual_magnetic = (rmm[0] ** 2 + rmm[1] ** 2 + rmm[2] ** 2) > 0
 
     @staticmethod
     def _build_rotation_matrix(ra_deg: float, dec_deg: float) -> np.ndarray:
@@ -223,6 +226,50 @@ class DisturbanceModel:
                     return vec * 1000.0
             return vec
 
+    def _bfield_from_geodetic(
+        self,
+        alt_m: float,
+        lat_deg: float,
+        lon_deg: float,
+        ra_deg: float,
+        dec_deg: float,
+        r_ib: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, float]:
+        """Compute magnetic field from pre-computed geodetic coordinates.
+
+        This is the inner computation, avoiding duplicate ephemeris lookups.
+
+        Args:
+            alt_m: Altitude in meters
+            lat_deg: Geodetic latitude in degrees
+            lon_deg: Geodetic longitude in degrees
+            ra_deg: Right ascension in degrees (for body frame rotation)
+            dec_deg: Declination in degrees (for body frame rotation)
+            r_ib: Optional precomputed rotation matrix for efficiency
+        """
+        import math
+
+        lat = math.radians(lat_deg)
+        lon = math.radians(lon_deg)
+        r = self.RE_M + max(0.0, alt_m)
+        scale = (self.RE_M / r) ** 3
+
+        cos_lat = math.cos(lat)
+        sin_lat = math.sin(lat)
+        cos_lon = math.cos(lon)
+        sin_lon = math.sin(lon)
+
+        br = -2 * self.B0_T * scale * sin_lat
+        btheta = -self.B0_T * scale * cos_lat
+
+        # Build field vector in ECEF
+        r_hat = np.array([cos_lat * cos_lon, cos_lat * sin_lon, sin_lat])
+        theta_hat = np.array([-sin_lat * cos_lon, -sin_lat * sin_lon, cos_lat])
+        b_ecef = br * r_hat + btheta * theta_hat
+
+        b_body = self._inertial_to_body(b_ecef, ra_deg, dec_deg, r_ib)
+        return b_body, float(np.linalg.norm(b_body))
+
     def local_bfield_vector(
         self,
         utime: float,
@@ -237,6 +284,9 @@ class DisturbanceModel:
             ra_deg: Right ascension in degrees
             dec_deg: Declination in degrees
             r_ib: Optional precomputed rotation matrix for efficiency
+
+        Note: For better performance when ephemeris data is already available,
+        use _bfield_from_geodetic() directly with pre-computed coordinates.
         """
         b_const = np.array([0.0, 0.0, self.cfg.magnetorquer_bfield_T], dtype=float)
         try:
@@ -244,10 +294,11 @@ class DisturbanceModel:
         except Exception:
             return b_const, float(np.linalg.norm(b_const))
 
-        lat_deg = lon_deg = None
+        lat_deg_val: float | None = None
+        lon_deg_val: float | None = None
         try:
-            lat_deg = float(getattr(self.ephem, "latitude_deg", [0.0])[idx])
-            lon_deg = float(getattr(self.ephem, "longitude_deg", [0.0])[idx])
+            lat_deg_val = float(getattr(self.ephem, "latitude_deg", [0.0])[idx])
+            lon_deg_val = float(getattr(self.ephem, "longitude_deg", [0.0])[idx])
         except Exception:
             pass
 
@@ -261,31 +312,23 @@ class DisturbanceModel:
         except Exception:
             alt_m = 500e3
 
-        if (lat_deg is None or lon_deg is None) and pos is not None:
+        if (lat_deg_val is None or lon_deg_val is None) and pos is not None:
             try:
                 x, y, z = pos
-                lon_deg = float(np.rad2deg(np.arctan2(y, x)))
-                lat_deg = float(np.rad2deg(np.arctan2(z, np.sqrt(x * x + y * y))))
+                lon_deg_val = float(np.rad2deg(np.arctan2(y, x)))
+                lat_deg_val = float(np.rad2deg(np.arctan2(z, np.sqrt(x * x + y * y))))
             except Exception:
-                lat_deg = lat_deg if lat_deg is not None else 0.0
-                lon_deg = lon_deg if lon_deg is not None else 0.0
+                lat_deg_val = 0.0
+                lon_deg_val = 0.0
 
-        lat = np.deg2rad(lat_deg if lat_deg is not None else 0.0)
-        lon = np.deg2rad(lon_deg if lon_deg is not None else 0.0)
-        r = float(self.RE_M + max(0.0, alt_m))
-        scale = (self.RE_M / r) ** 3
+        if lat_deg_val is None:
+            lat_deg_val = 0.0
+        if lon_deg_val is None:
+            lon_deg_val = 0.0
 
-        br = -2 * self.B0_T * scale * np.sin(lat)
-        btheta = -self.B0_T * scale * np.cos(lat)
-        r_hat = np.array(
-            [np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)]
+        return self._bfield_from_geodetic(
+            alt_m, lat_deg_val, lon_deg_val, ra_deg, dec_deg, r_ib
         )
-        theta_hat = np.array(
-            [-np.sin(lat) * np.cos(lon), -np.sin(lat) * np.sin(lon), np.cos(lat)]
-        )
-        b_ecef = br * r_hat + btheta * theta_hat
-        b_body = self._inertial_to_body(b_ecef, ra_deg, dec_deg, r_ib)
-        return b_body, float(np.linalg.norm(b_body))
 
     def atmospheric_density(
         self, utime: float, alt_m: float, lat_deg: float | None, lon_deg: float | None
@@ -433,10 +476,15 @@ class DisturbanceModel:
             v_vec = self._to_meters(v_vec, "velocity")
 
         gg_mag = drag_mag = srp_mag = mag_mag = 0.0
+        alt_m: float = 0.0
+        r_vec_norm: float = 0.0
 
         if r_vec is not None:
             r_body = self._inertial_to_body(r_vec, ra_deg, dec_deg, r_ib)
             r_norm = np.linalg.norm(r_body)
+            # Compute altitude once for reuse in drag and magnetic field
+            r_vec_norm = float(np.linalg.norm(r_vec))
+            alt_m = max(0.0, r_vec_norm - self.RE_M)
             if r_norm > 0:
                 r_hat = r_body / r_norm
                 torque_gg = (
@@ -445,7 +493,8 @@ class DisturbanceModel:
                 torque += torque_gg
                 gg_mag = float(np.linalg.norm(torque_gg))
 
-        lat_deg = lon_deg = None
+        lat_deg: float | None = None
+        lon_deg: float | None = None
         if idx is not None:
             try:
                 lat_seq = getattr(self.ephem, "lat", None)
@@ -468,10 +517,9 @@ class DisturbanceModel:
             v_body = self._inertial_to_body(v_vec, ra_deg, dec_deg, r_ib)
             v_mag = np.linalg.norm(v_body)
             if v_mag > 0 and r_vec is not None:
-                alt = float(max(0.0, float(np.linalg.norm(r_vec)) - self.RE_M))
                 lat_use = float(lat_deg) if lat_deg is not None else 0.0
                 lon_use = float(lon_deg) if lon_deg is not None else 0.0
-                rho = self.atmospheric_density(utime, alt, lat_use, lon_use)
+                rho = self.atmospheric_density(utime, alt_m, lat_use, lon_use)
                 q = 0.5 * rho * v_mag * v_mag
                 v_hat = v_body / v_mag
                 f_drag = -q * self.cfg.drag_coeff * self.cfg.drag_area_m2 * v_hat
@@ -511,8 +559,12 @@ class DisturbanceModel:
             except Exception:
                 pass
 
-        if np.linalg.norm(self.cfg.residual_magnetic_moment) > 0:
-            b_body, _ = self.local_bfield_vector(utime, ra_deg, dec_deg, r_ib)
+        if self._has_residual_magnetic and r_vec is not None:
+            lat_use = float(lat_deg) if lat_deg is not None else 0.0
+            lon_use = float(lon_deg) if lon_deg is not None else 0.0
+            b_body, _ = self._bfield_from_geodetic(
+                alt_m, lat_use, lon_use, ra_deg, dec_deg, r_ib
+            )
             torque_mag = np.cross(self.cfg.residual_magnetic_moment, b_body)
             torque += torque_mag
             mag_mag = float(np.linalg.norm(torque_mag))

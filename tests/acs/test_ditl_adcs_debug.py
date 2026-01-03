@@ -60,7 +60,7 @@ def make_ditl_adcs_config(ephem: object, mtq_dipole: float = 32.0) -> MissionCon
     # Disturbance sources
     acs.cp_offset_body = (0.25, 0.0, 0.0)
     acs.residual_magnetic_moment = (0.05, 0, 0)
-    acs.drag_area_m2 = 1.3
+    acs.drag_area_m2 = 1.5
     acs.drag_coeff = 2.2
     acs.solar_area_m2 = 1.3
     acs.solar_reflectivity = 1.3
