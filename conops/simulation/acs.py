@@ -484,8 +484,11 @@ class ACS:
         self.wheel_dynamics.apply_external_torque(external_torque, dt, source)
 
     def _check_momentum_conservation(self, utime: float) -> bool:
-        """Verify momentum conservation."""
-        return self.wheel_dynamics.check_conservation(utime)
+        """Verify momentum conservation and store any warnings."""
+        passed, warning = self.wheel_dynamics.check_conservation(utime)
+        if warning is not None:
+            self._momentum_warnings.append(warning)
+        return passed
 
     def get_body_momentum_magnitude(self) -> float:
         """Return magnitude of spacecraft body momentum."""
