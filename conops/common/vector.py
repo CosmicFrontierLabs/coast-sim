@@ -124,7 +124,12 @@ def great_circle(
 def roll_over_angle(
     angles: npt.NDArray[np.float64] | list[float],
 ) -> npt.NDArray[np.float64]:
-    """Make a list of angles that include a roll over (e.g. 359.9 - 0.1) into a smooth distribution"""
+    """Make a list of angles that include a roll over (e.g. 359.9 - 0.1) into a smooth distribution.
+
+    Uses 180° threshold to ensure interpolation always takes the shortest path
+    around the circle. This is critical for slew paths that cross near the poles
+    where RA can change rapidly.
+    """
     outangles = list()
     last = -1.0
     flip = 0.0
@@ -133,10 +138,11 @@ def roll_over_angle(
     for i in range(len(angles)):
         if last != -1:
             diff = angles[i] + flip - last
-            if diff > 300:
-                flip = -360
-            elif diff < -300:
-                flip = 360
+            # Use 180° threshold to always take shortest path around circle
+            if diff > 180:
+                flip -= 360
+            elif diff < -180:
+                flip += 360
         raf = angles[i] + flip
         last = raf
         outangles.append(raf)

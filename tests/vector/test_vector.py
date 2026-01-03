@@ -143,3 +143,31 @@ class TestRollOverAngle:
         """Test roll over angle with single value."""
         result = roll_over_angle(single_angle)
         np.testing.assert_array_almost_equal(result, single_angle)
+
+    def test_roll_over_angle_large_jump_near_poles(self):
+        """Test roll over angle handles large RA jumps near celestial poles.
+
+        Near the poles, RA can legitimately change by large amounts (e.g., 285°)
+        in a short time. The function should detect this as a wrap-around and
+        take the short path (75°) rather than the long path (285°).
+
+        This test verifies the fix for pointing rate violations during polar slews.
+        """
+        # Simulate RA path near pole: starts at 350°, jumps to 75° (285° apparent change)
+        # Should be interpreted as 350° -> 360° -> 435° (75° actual change via short path)
+        angles = [350.0, 75.0]
+        result = roll_over_angle(angles)
+
+        # The difference should be ~85° (short path), not ~285° (long path)
+        diff = result[1] - result[0]
+        assert abs(diff) < 180, f"Expected short path (<180°), got {diff}°"
+
+        # More complex path: 10° -> 350° -> 330° (crossing 0° boundary)
+        angles2 = [10.0, 350.0, 330.0]
+        result2 = roll_over_angle(angles2)
+
+        # Should go 10 -> -10 -> -30 (short path), not 10 -> 350 -> 330 (long path)
+        diff1 = result2[1] - result2[0]
+        diff2 = result2[2] - result2[1]
+        assert abs(diff1) < 180, f"Expected short path for step 1, got {diff1}°"
+        assert abs(diff2) < 180, f"Expected short path for step 2, got {diff2}°"
