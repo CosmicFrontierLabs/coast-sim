@@ -152,6 +152,9 @@ class Slew:
     def predict_slew(self) -> None:
         """Calculate great circle slew distance and path using ACS configuration."""
 
+        # Use 100 steps for the path to ensure accurate interpolation.
+        # With fewer steps, linear RA/Dec interpolation between coarse points
+        # can cause apparent rates to exceed the configured max near celestial poles.
         self.slewdist, self.slewpath = self.acs_config.predict_slew(
-            self.startra, self.startdec, self.endra, self.enddec, steps=20
+            self.startra, self.startdec, self.endra, self.enddec, steps=100
         )

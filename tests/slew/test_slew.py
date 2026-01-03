@@ -224,7 +224,7 @@ class TestPredictSlew:
         slew, ra_path, dec_path = slew_predict_setup
         slew.predict_slew()
         slew.acs_config.predict_slew.assert_called_once_with(
-            45.0, 30.0, 90.0, 60.0, steps=20
+            45.0, 30.0, 90.0, 60.0, steps=100
         )
 
     def test_predict_slew_sets_slewdist(self, slew_predict_setup):
