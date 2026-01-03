@@ -29,7 +29,8 @@ def test_slew_uses_acs_config():
 
 
 def test_slew_path_and_secs_lengths():
-    acs = AttitudeControlSystem()
+    # Set explicit slew params - defaults are now None (physics-derived)
+    acs = AttitudeControlSystem(slew_acceleration=1.0, max_slew_rate=0.5)
     constraint = DummyConstraint()
     spacecraft_bus = SpacecraftBus(attitude_control=acs)
     config = MissionConfig(

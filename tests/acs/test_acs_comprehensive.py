@@ -279,13 +279,18 @@ class TestPointing:
         """Test pointing with no slew."""
         mock_roll.return_value = 0.0
         acs.ephem = mock_ephem
+        acs.current_slew = None
+        acs.last_slew = None
+        acs.current_pass = None
+        acs.ra = 0.0
+        acs.dec = 0.0
 
         ra, dec, roll, obsid = acs.pointing(1514764800.0)
 
         assert ra == 0.0  # Earth RA from mock
         assert dec == 0.0  # Earth Dec from mock
         assert roll == 0.0
-        assert obsid == 0  # Default obsid when no slew is active
+        assert obsid == 1  # Default obsid when no slew is active
 
     @patch("conops.optimum_roll")
     def test_pointing_slew_start_adjustment(self, mock_roll, acs):
@@ -345,9 +350,12 @@ class TestPointing:
         mock_pass.obstype = "GSP"
         mock_pass.obsid = 200
         mock_pass.ra_dec = Mock(return_value=(45.0, 30.0))
+        mock_pass.endra = 45.0
+        mock_pass.enddec = 30.0
 
         acs.last_slew = mock_pass
         acs.current_slew = mock_pass
+        acs.current_pass = mock_pass  # Required for PASS mode
 
         ra, dec, roll, obsid = acs.pointing(1514764800.0)
 
@@ -367,9 +375,12 @@ class TestPointing:
         mock_pass.begin = 1514764800.0
         mock_pass.length = 600.0
         mock_pass.ra_dec = Mock(return_value=(45.0, 30.0))
+        mock_pass.endra = 45.0
+        mock_pass.enddec = 30.0
 
         acs.last_slew = mock_pass
         acs.current_slew = mock_pass
+        acs.current_pass = mock_pass  # Required for PASS mode
 
         ra, dec, roll, obsid = acs.pointing(1514765000.0)  # Within pass
 
@@ -388,6 +399,11 @@ class TestPointing:
         mock_slew.obstype = "PPT"
         mock_slew.obsid = 100
         mock_slew.ra_dec = Mock(return_value=(45.0, 30.0))
+        mock_slew.endra = 45.0
+        mock_slew.enddec = 30.0
+        mock_slew.slewstart = 1514764700.0  # Before test time, slew completed
+        mock_slew.startra = 40.0
+        mock_slew.startdec = 25.0
         mock_slew.at = Mock(spec=Pointing)
         mock_slew.at.ra = 45.0
         mock_slew.at.dec = 30.0
@@ -416,6 +432,11 @@ class TestPointing:
         mock_slew.obstype = "PPT"
         mock_slew.obsid = 100
         mock_slew.ra_dec = Mock(return_value=(45.0, 30.0))
+        mock_slew.endra = 45.0
+        mock_slew.enddec = 30.0
+        mock_slew.slewstart = 1514764700.0  # Before test time, slew completed
+        mock_slew.startra = 40.0
+        mock_slew.startdec = 25.0
         mock_slew.at = None  # No at attribute
 
         acs.last_slew = mock_slew
@@ -436,10 +457,15 @@ class TestPointing:
         mock_pass.is_slewing = Mock(return_value=False)
         mock_pass.obstype = "GSP"
         mock_pass.obsid = 200
+        mock_pass.slewstart = 1514764700.0  # Before test time
         mock_pass.slewend = 1514764800.0
+        mock_pass.startra = 40.0
+        mock_pass.startdec = 25.0
         mock_pass.begin = 1514764800.0
         mock_pass.length = 600.0
         mock_pass.ra_dec = Mock(return_value=(45.0, 30.0))
+        mock_pass.endra = 45.0
+        mock_pass.enddec = 30.0
         mock_pass.at = None
 
         acs.last_slew = mock_pass

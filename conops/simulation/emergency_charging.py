@@ -174,6 +174,10 @@ class EmergencyCharging:
 
         Returns the created charging Pointing or None if not possible.
         """
+        charging_ppt = self.create_charging_pointing(utime, ephem, lastra, lastdec)
+        if charging_ppt is None:
+            return None
+
         if current_ppt is not None and not getattr(current_ppt, "done", False):
             self._log_or_print(
                 utime,
@@ -183,7 +187,7 @@ class EmergencyCharging:
             current_ppt.end = utime
             current_ppt.done = True
 
-        return self.create_charging_pointing(utime, ephem, lastra, lastdec)
+        return charging_ppt
 
     def _is_in_sunlight(self, utime: float, ephem: rust_ephem.Ephemeris) -> bool:
         """

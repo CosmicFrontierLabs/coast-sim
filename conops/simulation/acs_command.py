@@ -18,5 +18,6 @@ class ACSCommand(BaseModel):
     dec: float | None = None
     obsid: int | None = None
     obstype: str = "PPT"
+    duration: float | None = None  # used by DESAT
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
