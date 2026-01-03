@@ -809,6 +809,20 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _fetch_new_ppt(self, utime: float, ra: float, dec: float) -> None:
         """Fetch a new pointing target from the queue and enqueue slew command."""
+        # Don't issue science slews during an active pass - this prevents the
+        # teleportation bug where a slew is issued with start position from the
+        # pass tracking, but the spacecraft continues following the pass instead.
+        # When the pass ends, the stale slew would report incorrect positions.
+        current_pass = self.acs.passrequests.current_pass(utime)
+        if current_pass is not None:
+            self.log.log_event(
+                utime=utime,
+                event_type="QUEUE",
+                description="Deferring PPT fetch - pass in progress",
+                acs_mode=self.acs.acsmode,
+            )
+            return
+
         self.log.log_event(
             utime=utime,
             event_type="QUEUE",
@@ -890,6 +904,30 @@ class QueueDITL(DITLMixin, DITLStats):
 
             slew.slewstart = execution_time
             slew.calc_slewtime()
+
+            # Verify slew won't overlap with a pass - check both start and end
+            slew_end = execution_time + slew.slewtime
+            if self.acs.passrequests.current_pass(execution_time) is not None:
+                self.log.log_event(
+                    utime=utime,
+                    event_type="SLEW",
+                    description="Slew rejected - execution time falls during a pass",
+                    obsid=self.ppt.obsid,
+                    acs_mode=self.acs.acsmode,
+                )
+                self.ppt = None
+                return
+            if self.acs.passrequests.current_pass(slew_end) is not None:
+                self.log.log_event(
+                    utime=utime,
+                    event_type="SLEW",
+                    description="Slew rejected - would complete during a pass",
+                    obsid=self.ppt.obsid,
+                    acs_mode=self.acs.acsmode,
+                )
+                self.ppt = None
+                return
+
             self.acs.slew_dists.append(slew.slewdist)
 
             # Check if there's enough observation time before the next pass
