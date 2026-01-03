@@ -25,10 +25,9 @@ class MockEphemeris:
         self.long = [lon_deg]
         self.latitude_deg = [lat_deg]
         self.longitude_deg = [lon_deg]
-        # Mock sun position at 1 AU along +X
-        sun_mock = Mock()
-        sun_mock.cartesian.xyz.to_value.return_value = np.array([1.496e11, 0.0, 0.0])
-        self.sun = [sun_mock]
+        # Mock sun position at 1 AU along +X (rust-ephem 0.3.0+ sun_pv API)
+        self.sun_pv = Mock()
+        self.sun_pv.position = [np.array([1.496e11, 0.0, 0.0])]
 
     def index(self, dt):
         return 0
