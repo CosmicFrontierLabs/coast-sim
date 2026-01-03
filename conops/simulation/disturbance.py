@@ -100,6 +100,10 @@ class DisturbanceModel:
                 msis_density_scale=cfg.msis_density_scale,
             )
         )
+        # Cache rotation matrix across calls when pointing unchanged
+        self._cached_r_ib: np.ndarray | None = None
+        self._cached_ra: float | None = None
+        self._cached_dec: float | None = None
 
     @staticmethod
     def _build_rotation_matrix(ra_deg: float, dec_deg: float) -> np.ndarray:
@@ -398,8 +402,18 @@ class DisturbanceModel:
         torque = np.zeros(3, dtype=float)
         i_mat = self._build_inertia(moi_cfg)
 
-        # Build rotation matrix once for reuse in all coordinate transforms
-        r_ib = self._build_rotation_matrix(ra_deg, dec_deg)
+        # Reuse cached rotation matrix if pointing unchanged
+        if (
+            self._cached_r_ib is not None
+            and self._cached_ra == ra_deg
+            and self._cached_dec == dec_deg
+        ):
+            r_ib = self._cached_r_ib
+        else:
+            r_ib = self._build_rotation_matrix(ra_deg, dec_deg)
+            self._cached_r_ib = r_ib
+            self._cached_ra = ra_deg
+            self._cached_dec = dec_deg
 
         # Compute ephemeris index once and reuse for all lookups
         idx = None
