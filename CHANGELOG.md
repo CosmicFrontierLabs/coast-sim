@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.2.0](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.1.2...v0.2.0) (2026-01-03)
+
+
+### Features
+
+* **targets:** Add slew distance weight to target selection scoring ([#70](https://github.com/CosmicFrontierLabs/coast-sim/issues/70)) ([d74803f](https://github.com/CosmicFrontierLabs/coast-sim/commit/d74803faca89edabebe4a8639bcae6c558ec7ba9))
+
+
+### Bug Fixes
+
+* **vector:** Use 180° threshold in roll_over_angle for shortest path ([#78](https://github.com/CosmicFrontierLabs/coast-sim/issues/78)) ([536df89](https://github.com/CosmicFrontierLabs/coast-sim/commit/536df890ef36e9e2902f199a92e161b39e02ada8))
+
+
+### Performance Improvements
+
+* optimize emergency charging pointing search ([#74](https://github.com/CosmicFrontierLabs/coast-sim/issues/74)) ([7c34ef4](https://github.com/CosmicFrontierLabs/coast-sim/commit/7c34ef4550f6a521fc9a29eb448747446c35fa7b))
+* Use rust-ephem 0.3.0 direct array access for sun/moon/earth positions ([#72](https://github.com/CosmicFrontierLabs/coast-sim/issues/72)) ([73ce95a](https://github.com/CosmicFrontierLabs/coast-sim/commit/73ce95acf524782c855d968c1bc6111775bc2470))
+* Vectorize solar panel illumination calculations ([#65](https://github.com/CosmicFrontierLabs/coast-sim/issues/65)) ([b741afd](https://github.com/CosmicFrontierLabs/coast-sim/commit/b741afd63b1328021550e56943bb99d87a7fc91d))
+
 ## [0.1.2](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.1.1...v0.1.2) (2025-12-18)
 
 
