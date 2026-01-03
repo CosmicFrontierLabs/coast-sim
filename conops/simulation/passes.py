@@ -428,6 +428,8 @@ class PassTimes:
                 global_end_idx = (
                     startindex + end_idx
                 )  # end_idx is already the first point below threshold
+                # Clamp to last valid index to avoid overflow on short ephemeris windows
+                global_end_idx = min(global_end_idx, len(timestamp_unix) - 1)
 
                 passstart = timestamp_unix[global_start_idx]
                 passend = timestamp_unix[global_end_idx]

@@ -263,10 +263,10 @@ class SAA:
             raise ValueError("Ephemeris must be set before checking SAA status")
 
         i = self.ephem.index(dtutcfromtimestamp(utime))
-        self.long = self.ephem.long[i]  # type: ignore[attr-defined]
-        self.lat = self.ephem.lat[i]  # type: ignore[attr-defined]
+        self.long = self.ephem.longitude_deg[i]
+        self.lat = self.ephem.latitude_deg[i]
 
-        return self.saapoly.contains(Point(self.long, self.lat))
+        return bool(self.saapoly.contains(Point(self.long, self.lat)))
 
     def calc(self) -> None:
         """
