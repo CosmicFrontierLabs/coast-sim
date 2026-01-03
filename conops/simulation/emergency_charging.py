@@ -15,11 +15,6 @@ if TYPE_CHECKING:
     from ..ditl.ditl_log import DITLLog
     from ..targets import Pointing
 
-# Maximum consecutive constraint failures before abandoning search.
-# If the first N candidates all fail constraints, likely all will fail
-# due to the current geometric configuration (e.g., Sun/Earth/Moon blocking).
-_MAX_CONSTRAINT_FAILURES = 15
-
 
 class EmergencyCharging:
     """
@@ -301,20 +296,21 @@ class EmergencyCharging:
         candidate_list.sort(key=lambda x: x[2])
         candidates = [(ra, dec) for ra, dec, _ in candidate_list]
 
-        # Evaluate each candidate
+        # Batch-check all constraints at once
+        candidate_ras = [ra for ra, dec in candidates]
+        candidate_decs = [dec for ra, dec in candidates]
+        violations = self.constraint.in_constraint_batch(
+            candidate_ras, candidate_decs, utime
+        )
+
+        # Evaluate each candidate (skip those that violate constraints)
         # Early exit threshold from config (default 1.0 = require best illumination)
         good_enough_illumination = self.battery.emergency_charging_min_illumination
-        constraint_failures = 0
 
-        for alt_ra, alt_dec in candidates:
-            # Check if this pointing violates constraints
-            if self.constraint.in_constraint(alt_ra, alt_dec, utime):
-                constraint_failures += 1
-                # If we've hit many failures without finding any valid candidate,
-                # the constraint geometry likely blocks all alternatives
-                if constraint_failures >= _MAX_CONSTRAINT_FAILURES and best_ra is None:
-                    break
-                continue  # Skip constrained pointings
+        for i, (alt_ra, alt_dec) in enumerate(candidates):
+            # Skip constrained pointings (already batch-computed)
+            if violations is not None and violations[i]:
+                continue
 
             # Check slew distance if limit is set
             if self.max_slew_deg is not None:
@@ -436,13 +432,19 @@ class EmergencyCharging:
             if abs(sep - 90.0) < 1.0:  # Within 1 degree of 90°
                 candidates.append((candidate_ra, candidate_dec))
 
-        # Test each candidate for constraint violations
-        # If slew limit is set, find the closest valid pointing within limit
+        # Batch-check all constraints at once
+        candidate_ras = [ra for ra, dec in candidates]
+        candidate_decs = [dec for ra, dec in candidates]
+        violations = self.constraint.in_constraint_batch(
+            candidate_ras, candidate_decs, utime
+        )
+
+        # Find best valid pointing (skip constrained ones)
         best_candidate = None
         best_slew = float("inf")
 
-        for candidate_ra, candidate_dec in candidates:
-            if self.constraint.in_constraint(candidate_ra, candidate_dec, utime):
+        for i, (candidate_ra, candidate_dec) in enumerate(candidates):
+            if violations is not None and violations[i]:
                 continue  # Skip constrained pointings
 
             # If no current position provided, return first valid pointing

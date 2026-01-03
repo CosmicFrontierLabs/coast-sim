@@ -1,5 +1,6 @@
 """Unit tests for emergency battery recharge functionality."""
 
+from collections.abc import Callable
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -15,6 +16,26 @@ from conops import (
     SolarPanelSet,
     angular_separation,
 )
+
+
+def make_batch_constraint_mock(
+    scalar_fn: Callable[[float, float, float], bool],
+) -> Callable[[list[float], list[float], float], np.ndarray]:
+    """Create a batch constraint mock from a scalar constraint function.
+
+    Args:
+        scalar_fn: Function (ra, dec, utime) -> bool
+
+    Returns:
+        Function (ras, decs, utime) -> np.ndarray of bools
+    """
+
+    def batch_fn(ras: list[float], decs: list[float], utime: float) -> np.ndarray:
+        return np.array(
+            [scalar_fn(ra, dec, utime) for ra, dec in zip(ras, decs)], dtype=bool
+        )
+
+    return batch_fn
 
 
 class TestBattery:
@@ -341,6 +362,9 @@ class TestEmergencyCharging:
             return ra == 180.0
 
         emergency_charging.constraint.in_constraint = mock_in_constraint
+        emergency_charging.constraint.in_constraint_batch = make_batch_constraint_mock(
+            lambda ra, dec, utime: ra == 180.0
+        )
 
         def mock_illumination(time, ra, dec, ephem):
             if ra == 210.0:
@@ -363,6 +387,9 @@ class TestEmergencyCharging:
         self, emergency_charging, mock_ephem, monkeypatch, utime
     ):
         emergency_charging.constraint.in_constraint = Mock(return_value=True)
+        emergency_charging.constraint.in_constraint_batch = make_batch_constraint_mock(
+            lambda ra, dec, utime: True
+        )
         monkeypatch.setattr(
             emergency_charging.constraint, "in_eclipse", lambda ra, dec, time: False
         )
@@ -425,6 +452,9 @@ class TestEmergencyCharging:
         sun_dec = 0.0
         utime = 1700000000.0
         emergency_charging.constraint.in_constraint = Mock(return_value=False)
+        emergency_charging.constraint.in_constraint_batch = make_batch_constraint_mock(
+            lambda ra, dec, utime: False
+        )
         ra, dec = self._helper_find_valid_pointing_sidemount(
             emergency_charging, sun_ra, sun_dec, utime
         )
@@ -437,6 +467,9 @@ class TestEmergencyCharging:
         sun_dec = 0.0
         utime = 1700000000.0
         emergency_charging.constraint.in_constraint = Mock(return_value=False)
+        emergency_charging.constraint.in_constraint_batch = make_batch_constraint_mock(
+            lambda ra, dec, utime: False
+        )
         ra, dec = self._helper_find_valid_pointing_sidemount(
             emergency_charging, sun_ra, sun_dec, utime
         )
@@ -449,6 +482,9 @@ class TestEmergencyCharging:
         sun_dec = 0.0
         utime = 1700000000.0
         emergency_charging.constraint.in_constraint = Mock(return_value=False)
+        emergency_charging.constraint.in_constraint_batch = make_batch_constraint_mock(
+            lambda ra, dec, utime: False
+        )
         ra, dec = self._helper_find_valid_pointing_sidemount(
             emergency_charging, sun_ra, sun_dec, utime
         )
@@ -485,6 +521,9 @@ class TestEmergencyCharging:
             return ra <= 180.0
 
         emergency_charging.constraint.in_constraint = mock_in_constraint
+        emergency_charging.constraint.in_constraint_batch = make_batch_constraint_mock(
+            lambda ra, dec, utime: ra <= 180.0
+        )
         ra, dec = emergency_charging._find_valid_pointing_sidemount(
             sun_ra, sun_dec, utime
         )
@@ -501,6 +540,9 @@ class TestEmergencyCharging:
             return ra <= 180.0
 
         emergency_charging.constraint.in_constraint = mock_in_constraint
+        emergency_charging.constraint.in_constraint_batch = make_batch_constraint_mock(
+            lambda ra, dec, utime: ra <= 180.0
+        )
         ra, dec = emergency_charging._find_valid_pointing_sidemount(
             sun_ra, sun_dec, utime
         )
@@ -517,6 +559,9 @@ class TestEmergencyCharging:
             return ra <= 180.0
 
         emergency_charging.constraint.in_constraint = mock_in_constraint
+        emergency_charging.constraint.in_constraint_batch = make_batch_constraint_mock(
+            lambda ra, dec, utime: ra <= 180.0
+        )
         ra, dec = emergency_charging._find_valid_pointing_sidemount(
             sun_ra, sun_dec, utime
         )
@@ -533,6 +578,9 @@ class TestEmergencyCharging:
             return ra <= 180.0
 
         emergency_charging.constraint.in_constraint = mock_in_constraint
+        emergency_charging.constraint.in_constraint_batch = make_batch_constraint_mock(
+            lambda ra, dec, utime: ra <= 180.0
+        )
         ra, dec = emergency_charging._find_valid_pointing_sidemount(
             sun_ra, sun_dec, utime
         )
@@ -565,6 +613,9 @@ class TestEmergencyCharging:
         sun_dec = 0.0
         utime = 1700000000.0
         emergency_charging.constraint.in_constraint = Mock(return_value=True)
+        emergency_charging.constraint.in_constraint_batch = make_batch_constraint_mock(
+            lambda ra, dec, utime: True
+        )
         ra, dec = emergency_charging._find_valid_pointing_sidemount(
             sun_ra, sun_dec, utime
         )
@@ -577,6 +628,9 @@ class TestEmergencyCharging:
         sun_dec = 0.0
         utime = 1700000000.0
         emergency_charging.constraint.in_constraint = Mock(return_value=True)
+        emergency_charging.constraint.in_constraint_batch = make_batch_constraint_mock(
+            lambda ra, dec, utime: True
+        )
         ra, dec = emergency_charging._find_valid_pointing_sidemount(
             sun_ra, sun_dec, utime
         )
@@ -589,6 +643,9 @@ class TestEmergencyCharging:
         sun_dec = 85.0
         utime = 1700000000.0
         emergency_charging.constraint.in_constraint = Mock(return_value=False)
+        emergency_charging.constraint.in_constraint_batch = make_batch_constraint_mock(
+            lambda ra, dec, utime: False
+        )
         ra, dec = emergency_charging._find_valid_pointing_sidemount(
             sun_ra, sun_dec, utime
         )
@@ -601,6 +658,9 @@ class TestEmergencyCharging:
         sun_dec = 85.0
         utime = 1700000000.0
         emergency_charging.constraint.in_constraint = Mock(return_value=False)
+        emergency_charging.constraint.in_constraint_batch = make_batch_constraint_mock(
+            lambda ra, dec, utime: False
+        )
         ra, dec = emergency_charging._find_valid_pointing_sidemount(
             sun_ra, sun_dec, utime
         )
@@ -613,6 +673,9 @@ class TestEmergencyCharging:
         sun_dec = 85.0
         utime = 1700000000.0
         emergency_charging.constraint.in_constraint = Mock(return_value=False)
+        emergency_charging.constraint.in_constraint_batch = make_batch_constraint_mock(
+            lambda ra, dec, utime: False
+        )
         ra, dec = emergency_charging._find_valid_pointing_sidemount(
             sun_ra, sun_dec, utime
         )
@@ -655,6 +718,9 @@ class TestEmergencyCharging:
             Mock(return_value=(100.0, 0.0)),
         )
         mock_config.constraint.in_constraint = Mock(return_value=False)
+        mock_config.constraint.in_constraint_batch = make_batch_constraint_mock(
+            lambda ra, dec, utime: False
+        )
 
         def mock_illumination(time, ra, dec, ephem):
             if abs(ra) < 60 or ra > 300:
