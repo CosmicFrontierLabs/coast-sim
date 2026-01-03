@@ -3,14 +3,30 @@ import numpy.typing as npt
 from pyproj import Geod
 
 
-def radec2vec(ra: float, dec: float) -> npt.NDArray[np.float64]:
-    """Convert RA/Dec angle (in radians) to a vector"""
+def radec2vec(
+    ra: float | npt.NDArray[np.float64], dec: float | npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """Convert RA/Dec angle (in radians) to a unit vector.
 
-    v1 = np.cos(dec) * np.cos(ra)
-    v2 = np.cos(dec) * np.sin(ra)
-    v3 = np.sin(dec)
+    Args:
+        ra: Right ascension in radians (scalar or array)
+        dec: Declination in radians (scalar or array)
 
-    return np.array([v1, v2, v3], dtype=np.float64)
+    Returns:
+        Unit vector(s). Shape (3,) for scalar input, (n, 3) for array input.
+    """
+    ra_arr = np.atleast_1d(ra)
+    dec_arr = np.atleast_1d(dec)
+
+    v1 = np.cos(dec_arr) * np.cos(ra_arr)
+    v2 = np.cos(dec_arr) * np.sin(ra_arr)
+    v3 = np.sin(dec_arr)
+
+    result = np.stack([v1, v2, v3], axis=-1).astype(np.float64)
+    # Return shape (3,) for scalar input, (n, 3) for array input
+    if np.isscalar(ra) and np.isscalar(dec):
+        return result.flatten()
+    return result
 
 
 def scbodyvector(
@@ -65,31 +81,78 @@ def rotvec(n: int, a: float, v: npt.NDArray[np.float64]) -> npt.NDArray[np.float
 def separation(
     one: npt.NDArray[np.float64] | list[float],
     two: npt.NDArray[np.float64] | list[float],
-) -> float:
+) -> float | npt.NDArray[np.float64]:
     """Calculate the angular distance between two RA,Dec values.
-    Both Ra/Dec values are given as an array of form [ra,dec] where
-    RA and Dec are in radians. Form of function mimics pyephem library
-    version except result is simply in radians."""
 
-    onevec = radec2vec(one[0], one[1])
-    twovec = radec2vec(two[0], two[1])
+    Both Ra/Dec values are given as an array of form [ra, dec] where
+    RA and Dec are in radians. Supports both scalar and array inputs.
 
-    # Flatten vectors to ensure they're 1D for dot product
-    onevec = np.atleast_1d(onevec).flatten().astype(float)
-    twovec = np.atleast_1d(twovec).flatten().astype(float)
+    Args:
+        one: [ra, dec] in radians. ra/dec can be scalars or arrays.
+        two: [ra, dec] in radians. ra/dec can be scalars or arrays.
 
-    # Normalize and handle degenerate zero-length vectors
-    n1 = np.linalg.norm(onevec)
-    n2 = np.linalg.norm(twovec)
-    if n1 < 1e-15 or n2 < 1e-15:
-        # If either vector is effectively zero-length, treat separation as zero
-        return 0.0
+    Returns:
+        Angular separation in radians. Scalar if inputs are scalar,
+        array if either input contains arrays.
+    """
+    ra1, dec1 = one[0], one[1]
+    ra2, dec2 = two[0], two[1]
 
-    # Compute cosine of the angle and clip to [-1, 1] to avoid rounding errors producing NaN
-    cosang = np.dot(onevec / n1, twovec / n2)
+    # Check if inputs are scalar or array
+    scalar_input = (
+        np.isscalar(ra1)
+        and np.isscalar(dec1)
+        and np.isscalar(ra2)
+        and np.isscalar(dec2)
+    )
+
+    onevec = radec2vec(ra1, dec1)
+    twovec = radec2vec(ra2, dec2)
+
+    if scalar_input:
+        # Original scalar path
+        onevec = np.atleast_1d(onevec).flatten().astype(float)
+        twovec = np.atleast_1d(twovec).flatten().astype(float)
+
+        n1 = np.linalg.norm(onevec)
+        n2 = np.linalg.norm(twovec)
+        if n1 < 1e-15 or n2 < 1e-15:
+            return 0.0
+
+        cosang = np.dot(onevec / n1, twovec / n2)
+        cosang = np.clip(cosang, -1.0, 1.0)
+        return float(np.arccos(cosang))
+
+    # Vectorized path for array inputs
+    # Ensure both are 2D arrays of shape (n, 3)
+    onevec = np.atleast_2d(onevec)
+    twovec = np.atleast_2d(twovec)
+
+    # Broadcast to same shape if needed (one scalar, one array)
+    if onevec.shape[0] == 1 and twovec.shape[0] > 1:
+        onevec = np.broadcast_to(onevec, twovec.shape)
+    elif twovec.shape[0] == 1 and onevec.shape[0] > 1:
+        twovec = np.broadcast_to(twovec, onevec.shape)
+
+    # Compute norms along last axis
+    n1 = np.linalg.norm(onevec, axis=-1, keepdims=True)
+    n2 = np.linalg.norm(twovec, axis=-1, keepdims=True)
+
+    # Handle zero-length vectors
+    zero_mask = (n1.flatten() < 1e-15) | (n2.flatten() < 1e-15)
+
+    # Normalize
+    onevec_norm = np.where(n1 > 1e-15, onevec / n1, onevec)
+    twovec_norm = np.where(n2 > 1e-15, twovec / n2, twovec)
+
+    # Dot product along last axis
+    cosang = np.sum(onevec_norm * twovec_norm, axis=-1)
     cosang = np.clip(cosang, -1.0, 1.0)
 
-    return float(np.arccos(cosang))
+    result = np.arccos(cosang)
+    result = np.where(zero_mask, 0.0, result)
+
+    return result
 
 
 def angular_separation(ra1: float, dec1: float, ra2: float, dec2: float) -> float:
