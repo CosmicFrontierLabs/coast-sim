@@ -573,19 +573,21 @@ class WheelDynamics:
     # Conservation Validation
     # -------------------------------------------------------------------------
 
-    def check_conservation(self, utime: float) -> bool:
+    def check_conservation(self, utime: float) -> tuple[bool, str | None]:
         """Verify momentum conservation: H_total - H_initial = ∫τ_external dt.
 
         Args:
             utime: Current time (for logging).
 
         Returns:
-            True if conservation is satisfied within tolerance, False otherwise.
+            Tuple of (passed, warning_message). passed is True if conservation
+            is satisfied within tolerance. warning_message is None if passed,
+            otherwise contains the violation details.
         """
         if self._initial_total_momentum is None:
             # Initialize on first call
             self._initial_total_momentum = self.get_total_system_momentum().copy()
-            return True
+            return True, None
 
         h_current = self.get_total_system_momentum()
         h_expected = self._initial_total_momentum + self._cumulative_external_impulse
@@ -597,19 +599,15 @@ class WheelDynamics:
         tolerance = max(self._conservation_tolerance * h_mag, 1e-6)
 
         if error_mag > tolerance:
-            _logger.warning(
-                "Momentum conservation violation at t=%.1f: "
-                "error=[%.4e, %.4e, %.4e] N·m·s (mag=%.4e, tol=%.4e)",
-                utime,
-                error[0],
-                error[1],
-                error[2],
-                error_mag,
-                tolerance,
+            warning = (
+                f"Momentum conservation violation at t={utime:.1f}: "
+                f"error=[{error[0]:.4e}, {error[1]:.4e}, {error[2]:.4e}] N·m·s "
+                f"(mag={error_mag:.4e}, tol={tolerance:.4e})"
             )
-            return False
+            _logger.warning(warning)
+            return False, warning
 
-        return True
+        return True, None
 
     def reset_conservation_tracking(self) -> None:
         """Reset conservation tracking state (e.g., at simulation start)."""
