@@ -112,6 +112,8 @@ def queue_ditl(mock_config, mock_ephem):
         mock_pt.check_pass_timing = Mock(
             return_value={"start_pass": None, "end_pass": False, "updated_pass": None}
         )
+        mock_pt.current_pass = Mock(return_value=None)
+        mock_pt.next_pass = Mock(return_value=None)  # No upcoming passes by default
         mock_passtimes.return_value = mock_pt
 
         # Mock ACS
@@ -125,6 +127,7 @@ def queue_ditl(mock_config, mock_ephem):
         mock_acs.passrequests = mock_pt
         mock_acs.slew_dists = []
         mock_acs.last_slew = None
+        mock_acs.current_slew = None  # No active slew by default
         # Set acsmode to a real ACSMode enum value for logging
         from conops import ACSMode
 
@@ -498,6 +501,8 @@ def queue_ditl_no_queue_log(mock_config, mock_ephem):
         mock_pt.check_pass_timing = Mock(
             return_value={"start_pass": None, "end_pass": False, "updated_pass": None}
         )
+        mock_pt.current_pass = Mock(return_value=None)
+        mock_pt.next_pass = Mock(return_value=None)  # No upcoming passes by default
         mock_passtimes.return_value = mock_pt
 
         # Mock ACS
@@ -511,6 +516,7 @@ def queue_ditl_no_queue_log(mock_config, mock_ephem):
         mock_acs.passrequests = mock_pt
         mock_acs.slew_dists = []
         mock_acs.last_slew = None
+        mock_acs.current_slew = None  # No active slew by default
         # Set acsmode to a real ACSMode enum value for logging
         from conops import ACSMode
 
@@ -554,6 +560,7 @@ def queue_ditl_acs_no_ephem(mock_config, mock_ephem):
         mock_pt.check_pass_timing = Mock(
             return_value={"start_pass": None, "end_pass": False, "updated_pass": None}
         )
+        mock_pt.next_pass = Mock(return_value=None)  # No upcoming passes by default
         mock_passtimes.return_value = mock_pt
 
         # Mock ACS with no ephem initially
@@ -567,6 +574,7 @@ def queue_ditl_acs_no_ephem(mock_config, mock_ephem):
         mock_acs.passrequests = mock_pt
         mock_acs.slew_dists = []
         mock_acs.last_slew = None
+        mock_acs.current_slew = None  # No active slew by default
         # Set acsmode to a real ACSMode enum value for logging
         from conops import ACSMode
 

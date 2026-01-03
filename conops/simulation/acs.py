@@ -210,6 +210,17 @@ class ACS:
         self.current_pass = None
         self.acsmode = ACSMode.SCIENCE
 
+        # Clear any stale slew that was issued during the pass. Such slews have
+        # start positions from pass tracking that don't reflect where the
+        # spacecraft actually is now. Keeping them would cause teleportation.
+        if self.last_slew is not None and self.last_slew.slewstart < utime:
+            self._log_or_print(
+                utime,
+                "PASS",
+                f"{unixtime2date(utime)}: Clearing stale slew (started {self.last_slew.slewstart:.0f})",
+            )
+            self.last_slew = None
+
         self._log_or_print(
             utime,
             "PASS",
