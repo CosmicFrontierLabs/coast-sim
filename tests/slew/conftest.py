@@ -174,8 +174,8 @@ def slew_calc_setup_alt(slew, acs_config):
 
 @pytest.fixture
 def slew_predict_setup(slew, acs_config):
-    ra_path = np.linspace(45.0, 90.0, 20)
-    dec_path = np.linspace(30.0, 60.0, 20)
+    ra_path = np.linspace(45.0, 90.0, 100)
+    dec_path = np.linspace(30.0, 60.0, 100)
     acs_config.predict_slew = Mock(return_value=(14.142, (ra_path, dec_path)))
     slew.startra = 45.0
     slew.startdec = 30.0

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from .reaction_wheel import ReactionWheel
-from .torque_allocator import allocate_wheel_torques
+from .torque_allocator import allocate_wheel_torques, build_wheel_orientation_matrix
 
 if TYPE_CHECKING:
     from .disturbance import DisturbanceModel
@@ -59,7 +59,7 @@ class WheelDynamics:
             budget_margin: Fraction of headroom required for slew feasibility.
             conservation_tolerance: Fractional tolerance for conservation checks.
         """
-        self.wheels = wheels
+        self._wheels = wheels
         self.inertia_matrix = np.array(inertia_matrix, dtype=float)
         self.magnetorquers = magnetorquers or []
         self.disturbance_model = disturbance_model
@@ -88,6 +88,29 @@ class WheelDynamics:
         self.mtq_power_w: float = 0.0
         self._last_mtq_proj_max: float = 0.0
         self._last_mtq_torque_mag: float = 0.0
+
+        # Precompute static wheel properties for torque allocation
+        # (orientation matrix and max momentum/torque don't change during simulation)
+        self._rebuild_wheel_cache()
+
+    @property
+    def wheels(self) -> list[ReactionWheel]:
+        """Get the list of reaction wheels."""
+        return self._wheels
+
+    @wheels.setter
+    def wheels(self, value: list[ReactionWheel]) -> None:
+        """Set wheels and rebuild cached orientation matrix."""
+        self._wheels = value
+        # Rebuild cache if we've already initialized (avoid during __init__)
+        if hasattr(self, "_e_mat"):
+            self._rebuild_wheel_cache()
+
+    def _rebuild_wheel_cache(self) -> None:
+        """Rebuild cached wheel orientation matrix and static properties."""
+        self._e_mat, self._max_moms, self._max_torques = build_wheel_orientation_matrix(
+            self._wheels
+        )
 
     # -------------------------------------------------------------------------
     # Momentum State Queries
@@ -211,6 +234,9 @@ class WheelDynamics:
             use_weights=use_weights,
             bias_gain=bias_gain,
             mom_margin=self._momentum_margin,
+            e_mat=self._e_mat,
+            max_moms=self._max_moms,
+            max_torques=self._max_torques,
         )
 
     def apply_wheel_torques(self, taus_allowed: np.ndarray, dt: float) -> np.ndarray:
