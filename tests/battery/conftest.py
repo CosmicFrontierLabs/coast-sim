@@ -100,6 +100,9 @@ def mock_config(mock_ephem):
     constraint = Mock(spec=Constraint)
     constraint.ephem = mock_ephem
     constraint.in_constraint = Mock(return_value=False)
+    constraint.in_constraint_batch = Mock(
+        side_effect=lambda ras, decs, utime: np.zeros(len(ras), dtype=bool)
+    )
     constraint.in_eclipse = Mock(return_value=False)
 
     config = MissionConfig(

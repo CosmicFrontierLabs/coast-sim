@@ -210,6 +210,59 @@ class Constraint(BaseModel):
             return True
         return False
 
+    def in_constraint_batch(
+        self,
+        ras: list[float],
+        decs: list[float],
+        utime: float,
+    ) -> np.ndarray:
+        """Check constraints for multiple pointings at a single time.
+
+        Uses batch evaluation via rust_ephem's in_constraint_batch() API,
+        which is much faster than repeated scalar calls for many candidates.
+
+        Args:
+            ras: List of right ascension values in degrees
+            decs: List of declination values in degrees
+            utime: Unix timestamp
+
+        Returns:
+            Boolean array where True means constraint is violated
+        """
+        if not ras:
+            return np.zeros(0, dtype=bool)
+
+        assert self.ephem is not None, (
+            "Ephemeris must be set to use in_constraint_batch"
+        )
+
+        dt = dtutcfromtimestamp(utime)
+
+        # Check all constraint types and OR the results
+        violations: np.ndarray | None = None
+        constraint_types = [
+            self.sun_constraint,
+            self.earth_constraint,
+            self.panel_constraint,
+            self.moon_constraint,
+            self.anti_sun_constraint,
+        ]
+        for constraint_func in constraint_types:
+            result = constraint_func.in_constraint_batch(
+                ephemeris=self.ephem,
+                target_ras=ras,
+                target_decs=decs,
+                times=[dt],
+            )
+            # Result shape is (n_candidates, 1), flatten to (n_candidates,)
+            result_flat = np.asarray(result).flatten()
+            if violations is None:
+                violations = result_flat
+            else:
+                violations = violations | result_flat
+
+        return violations if violations is not None else np.zeros(len(ras), dtype=bool)
+
     def in_constraint_count(self, ra: float, dec: float, utime: float) -> int:
         count = 0
         if self.in_sun(ra, dec, utime):
