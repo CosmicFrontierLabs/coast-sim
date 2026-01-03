@@ -105,7 +105,11 @@ class AttitudeControlSystem(BaseModel):
             Tuple of (slew_distance, slew_path) where slew_path is (ra_array, dec_array)
         """
         slewdist = (
-            separation([startra * DTOR, startdec * DTOR], [endra * DTOR, enddec * DTOR])
+            float(
+                separation(
+                    [startra * DTOR, startdec * DTOR], [endra * DTOR, enddec * DTOR]
+                )
+            )
             / DTOR
         )
         slewpath = great_circle(startra, startdec, endra, enddec, steps)
