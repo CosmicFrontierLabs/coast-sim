@@ -110,7 +110,12 @@ class DisturbanceModel:
 
     @staticmethod
     def _build_rotation_matrix(ra_deg: float, dec_deg: float) -> np.ndarray:
-        """Build rotation matrix from inertial to body frame for given RA/Dec."""
+        """Build rotation matrix from inertial to body frame for given RA/Dec.
+
+        Uses celestial pole (Z-axis) as Gram-Schmidt reference, which places
+        the singularity at Dec=±90° (celestial poles) rather than at RA=0°/180°.
+        This is preferable since astronomical targets are rarely at the poles.
+        """
         try:
             ra_r = np.deg2rad(float(ra_deg))
             dec_r = np.deg2rad(float(dec_deg))
@@ -121,14 +126,16 @@ class DisturbanceModel:
                     np.sin(dec_r),
                 ]
             )
-            x_candidate = np.array([1.0, 0.0, 0.0])
-            x_b = x_candidate - np.dot(x_candidate, z_b) * z_b
-            if np.linalg.norm(x_b) < 1e-6:
-                x_candidate = np.array([0.0, 1.0, 0.0])
-                x_b = x_candidate - np.dot(x_candidate, z_b) * z_b
-            x_b = x_b / np.linalg.norm(x_b)
-            y_b = np.cross(z_b, x_b)
+            # Use celestial pole as reference (singularity at Dec=±90°)
+            pole = np.array([0.0, 0.0, 1.0])
+            y_b = pole - np.dot(pole, z_b) * z_b
+            if np.linalg.norm(y_b) < 1e-6:
+                # Fallback for polar pointing (Dec ≈ ±90°)
+                x_candidate = np.array([1.0, 0.0, 0.0])
+                y_b = np.cross(z_b, x_candidate)
             y_b = y_b / np.linalg.norm(y_b)
+            x_b = np.cross(y_b, z_b)
+            x_b = x_b / np.linalg.norm(x_b)
             return np.vstack([x_b, y_b, z_b])
         except Exception:
             return np.eye(3)

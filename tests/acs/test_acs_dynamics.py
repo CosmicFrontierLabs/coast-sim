@@ -121,13 +121,18 @@ def test_slew_torque_updates_wheel_momentum_consistently(acs, monkeypatch):
     expected_torque = (1.0 * np.pi / 180.0) * i_axis
 
     assert snapshot.t_actual_mag == pytest.approx(expected_torque, rel=1e-6)
-    # Wheel momentum is opposite to body torque (Newton's 3rd law)
-    # +x body torque → -x wheel momentum
-    assert acs.reaction_wheels[0].current_momentum == pytest.approx(
-        -expected_torque, rel=1e-6
+
+    # Verify wheel momentum goes to the correct wheel based on frame transformation.
+    # Default pointing is (RA=180°, Dec=0°). With pole-reference rotation matrix:
+    #   z_b = (-1, 0, 0), y_b = (0, 0, 1), x_b = (0, -1, 0)
+    # Inertial X-axis (1,0,0) transforms to body frame as:
+    #   R @ (1,0,0) = (0, 0, -1) = body -Z
+    # So Z-wheel should absorb momentum (positive, since body torque is in -Z direction).
+    assert acs.reaction_wheels[2].current_momentum == pytest.approx(
+        expected_torque, rel=1e-6
     )
+    assert abs(acs.reaction_wheels[0].current_momentum) < 1e-8
     assert abs(acs.reaction_wheels[1].current_momentum) < 1e-8
-    assert abs(acs.reaction_wheels[2].current_momentum) < 1e-8
 
     assert snapshot.wheels
     for reading in snapshot.wheels:

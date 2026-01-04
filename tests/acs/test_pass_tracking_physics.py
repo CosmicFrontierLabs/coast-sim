@@ -59,6 +59,14 @@ def test_pass_tracking_torque_matches_inertia(acs):
 
 
 def test_pass_tracking_updates_wheel_momentum_axis(acs):
+    """Verify that pass tracking applies torque along the correct body-frame axis.
+
+    When pointing at (RA=0, Dec=0) and tracking to (RA=1, Dec=0):
+    - The inertial-frame rotation axis is approximately the celestial pole (0, 0, 1)
+    - In body frame (where body-Z points at RA=0, Dec=0), this axis transforms
+      to body-Y (perpendicular to body-Z in the RA direction)
+    - The Y-wheel should absorb momentum, not the Z-wheel
+    """
     acs.ra = 0.0
     acs.dec = 0.0
     acs.reaction_wheels = _make_orthogonal_wheels()
@@ -70,12 +78,19 @@ def test_pass_tracking_updates_wheel_momentum_axis(acs):
     acs._apply_pass_wheel_update(dt=1.0, utime=0.0)
 
     expected_torque = (math.pi / 180.0) * 10.0
-    # Wheel momentum is opposite to body torque (Newton's 3rd law)
+
+    # Verify wheel momentum goes to the correct wheel based on frame transformation.
+    # Pointing at (RA=0°, Dec=0°). With pole-reference rotation matrix:
+    #   z_b = (1, 0, 0), y_b = (0, 0, 1), x_b = (0, 1, 0)
+    # Celestial pole (0,0,1) transforms to body frame as:
+    #   R @ (0,0,1) = (0, 1, 0) = body Y
+    # So Y-wheel should absorb momentum for RA tracking.
+    # Sign is negative: to rotate body in +Y direction, wheel spins in -Y direction.
     assert math.isclose(
-        acs.reaction_wheels[2].current_momentum, -expected_torque, rel_tol=2e-2
+        acs.reaction_wheels[1].current_momentum, -expected_torque, rel_tol=2e-2
     )
     assert math.isclose(acs.reaction_wheels[0].current_momentum, 0.0, abs_tol=1e-9)
-    assert math.isclose(acs.reaction_wheels[1].current_momentum, 0.0, abs_tol=1e-9)
+    assert math.isclose(acs.reaction_wheels[2].current_momentum, 0.0, abs_tol=1e-9)
 
 
 def test_pass_tracking_no_change_when_no_motion(acs):
@@ -117,6 +132,11 @@ def test_pass_tracking_momentum_delta_matches_torque(acs):
 
 
 def test_pass_tracking_torque_uses_rate_delta(acs):
+    """Verify pass tracking uses rate delta, not absolute rate, for torque calculation.
+
+    The pass update now uses _last_pointing_rate_rad_s for rate tracking
+    (shared with the consistency check), not a separate _last_pass_rate_deg_s.
+    """
     acs.ra = 0.0
     acs.dec = 0.0
     acs.reaction_wheels = _make_orthogonal_wheels()
@@ -124,7 +144,8 @@ def test_pass_tracking_torque_uses_rate_delta(acs):
     acs._compute_disturbance_torque = lambda _ut: np.zeros(3)
     acs.config.spacecraft_bus.attitude_control.spacecraft_moi = (10.0, 10.0, 10.0)
     acs.current_pass = DummyPass(1.0, 0.0)
-    acs._last_pass_rate_deg_s = 0.2
+    # Set previous pointing rate (now uses rad/s shared tracker)
+    acs._last_pointing_rate_rad_s = 0.2 * (math.pi / 180.0)
 
     acs._apply_pass_wheel_update(dt=1.0, utime=0.0)
 

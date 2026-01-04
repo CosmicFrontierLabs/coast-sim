@@ -278,6 +278,11 @@ class ACS:
         # Wheel momentum tracking for pointing-momentum consistency check
         self._last_wheel_momentum: np.ndarray | None = None
         self._wheel_momentum_before_update: np.ndarray | None = None
+        # Rate tracking for rate-change based consistency check
+        self._last_pointing_rate_rad_s: float = 0.0
+        # Pass transition tracking for spin-up/spin-down torques
+        self._was_in_pass: bool = False
+        self._last_pass_axis: np.ndarray = np.array([0.0, 0.0, 1.0])
 
     def _get_max_body_rate(self, for_pass_tracking: bool = False) -> float | None:
         """Get maximum allowable body rate in deg/s.
@@ -326,6 +331,30 @@ class ACS:
         result = max_rate * 1.25
         setattr(self, cache_attr, result)
         return result
+
+    def _axis_inertial_to_body(
+        self, axis_inertial: np.ndarray, ra_deg: float, dec_deg: float
+    ) -> np.ndarray:
+        """Transform a rotation axis from inertial to body frame.
+
+        The spacecraft body frame is defined such that body-Z points at (ra, dec).
+        This transformation is needed because rotation axes computed from RA/Dec
+        cross products are in inertial frame, but must be body-frame for use
+        with body inertia tensors and body-fixed reaction wheel orientations.
+
+        Args:
+            axis_inertial: Rotation axis unit vector in inertial frame.
+            ra_deg: Current pointing right ascension (degrees).
+            dec_deg: Current pointing declination (degrees).
+
+        Returns:
+            Rotation axis unit vector in body frame.
+        """
+        axis_body = DisturbanceModel._inertial_to_body(axis_inertial, ra_deg, dec_deg)
+        nrm = float(np.linalg.norm(axis_body))
+        if nrm > 0:
+            return axis_body / nrm
+        return np.array([0.0, 0.0, 1.0])
 
     def _rate_limited_pointing(
         self,
@@ -578,12 +607,18 @@ class ACS:
         """Record wheel momentum state at the start of a slew for later validation."""
         # Delegate to WheelDynamics for momentum tracking
         self.wheel_dynamics.record_slew_start()
+        # Initialize tracker for commanded wheel torques during this slew
+        self._slew_commanded_wheel_delta = np.zeros(3, dtype=float)
 
     def _verify_slew_end_momentum(self, slew: "Slew", utime: float) -> None:
         """Verify momentum consistency at the end of a slew.
 
-        Compares actual wheel momentum change against expected external impulse
-        (disturbances + MTQ bleeding) accumulated during the slew.
+        Compares actual wheel momentum change against the sum of:
+        1. External impulse (disturbances + MTQ bleeding) accumulated during slew
+        2. Commanded wheel torques tracked during the slew
+
+        This is a precise check: we know exactly what torques we commanded,
+        so any discrepancy indicates a real bug (sign error, missing torque, etc).
         """
         # Get slew start state from WheelDynamics
         h_start = self.wheel_dynamics._slew_momentum_at_start
@@ -593,46 +628,48 @@ class ACS:
 
         h_end = self.wheel_dynamics.get_total_wheel_momentum()
         impulse_end = self.wheel_dynamics._cumulative_external_impulse
-        delta_h = h_end - h_start
 
-        # Expected momentum change = external impulse accumulated during slew
-        # This includes both disturbances and MTQ bleeding (both are external torques)
+        # Actual wheel momentum change
+        actual_delta = h_end - h_start
+
+        # Expected change = external impulse + commanded wheel torques
+        # External impulse (disturbances, MTQ bleed) changes total system momentum
         if impulse_start is not None:
-            expected_delta = impulse_end - impulse_start
-            expected_h = float(np.linalg.norm(expected_delta))
+            external_delta = impulse_end - impulse_start
         else:
-            # Fallback to instantaneous disturbance estimate
-            slew_time = float(getattr(slew, "slewtime", 60.0))
-            try:
-                dist_torque = self._compute_disturbance_torque(utime)
-                expected_h = float(np.linalg.norm(dist_torque)) * slew_time
-            except Exception:
-                expected_h = 0.0
+            external_delta = np.zeros(3, dtype=float)
 
-        # Actual momentum change magnitude
-        actual_delta_h = float(np.linalg.norm(delta_h))
+        # Commanded wheel delta was tracked during the slew
+        commanded_delta = getattr(self, "_slew_commanded_wheel_delta", np.zeros(3))
 
-        # Check if momentum change is consistent with external impulse
-        # Allow tolerance for numerical precision and any untracked effects
-        tolerance = max(expected_h * 0.5, 0.1)  # 50% margin or at least 0.1 N·m·s
+        # Total expected wheel momentum change
+        expected_delta = external_delta + commanded_delta
 
-        # The discrepancy is the difference between actual and expected
-        discrepancy = abs(actual_delta_h - expected_h)
+        # Compare vectors (not just magnitudes) for precision
+        discrepancy_vec = actual_delta - expected_delta
+        discrepancy = float(np.linalg.norm(discrepancy_vec))
+
+        # Tight tolerance: just numerical precision and minor untracked effects
+        # Use 1% of commanded delta magnitude or 0.01 N·m·s floor
+        commanded_mag = float(np.linalg.norm(commanded_delta))
+        tolerance = max(0.01 * commanded_mag, 0.01)
 
         if discrepancy > tolerance:
-            # Get peak momentum for context
-            h_peak, _ = self._compute_slew_peak_momentum(slew)
+            actual_mag = float(np.linalg.norm(actual_delta))
+            expected_mag = float(np.linalg.norm(expected_delta))
             warning = (
                 f"Momentum consistency warning at t={utime:.1f}: "
-                f"ΔH_wheels={actual_delta_h:.4f} N·m·s vs expected external impulse {expected_h:.4f} N·m·s "
-                f"(discrepancy={discrepancy:.4f}), slew peak was {h_peak:.4f} N·m·s"
+                f"ΔH_actual={actual_mag:.4f} N·m·s vs ΔH_expected={expected_mag:.4f} N·m·s "
+                f"(discrepancy={discrepancy:.4f} N·m·s)"
             )
             self._momentum_warnings.append(warning)
             self._logger.warning(warning)
 
-        # Clear slew tracking state in WheelDynamics
+        # Clear slew tracking state
         self.wheel_dynamics._slew_momentum_at_start = None
         self.wheel_dynamics._slew_external_impulse_at_start = None
+        if hasattr(self, "_slew_commanded_wheel_delta"):
+            del self._slew_commanded_wheel_delta
 
     def get_momentum_warnings(self) -> list[str]:
         """Return list of momentum consistency warnings accumulated during simulation."""
@@ -1722,11 +1759,16 @@ class ACS:
         a non-physical "teleportation" where the pointing log is inconsistent
         with the actual wheel dynamics.
 
-        The check uses proper physics:
+        The check uses proper physics based on rate CHANGE, not absolute rate:
+        - For continuous motion at constant rate, Δω ≈ 0, so expected ΔH ≈ 0
+        - For acceleration/deceleration, Δω ≠ 0, so expected ΔH = I × Δω
+        - For teleportation bugs, rate jumps from 0 to large value, flagged
+
+        Steps:
         1. Computes rotation axis from pointing change to get axis-specific MOI
-        2. Accounts for MTQ bleed contribution to wheel momentum change
-        3. Accounts for disturbance torque contribution
-        4. Flags if wheel momentum change can't explain the rotation
+        2. Computes rate change from previous timestep's rate
+        3. Accounts for MTQ bleed and disturbance torque contributions
+        4. Flags if wheel momentum change can't explain the rate change
         """
         # Need wheels and previous state to check
         if not self.reaction_wheels:
@@ -1734,15 +1776,18 @@ class ACS:
         if self._wheel_momentum_before_update is None:
             return
         if self._last_wheel_momentum is None:
-            # First call - just record state
+            # First call - just record state, assume starting from rest
             self._last_wheel_momentum = self._get_total_wheel_momentum().copy()
+            self._last_pointing_rate_rad_s = 0.0
             return
         if (
             self._last_pointing_ra is None
             or self._last_pointing_dec is None
             or self._last_pointing_utime is None
         ):
+            # No previous pointing - assume starting from rest
             self._last_wheel_momentum = self._get_total_wheel_momentum().copy()
+            self._last_pointing_rate_rad_s = 0.0
             return
 
         dt = utime - self._last_pointing_utime
@@ -1768,26 +1813,34 @@ class ACS:
         dot = float(np.clip(np.dot(v0, v1), -1.0, 1.0))
         angle_rad = float(np.arccos(dot))
 
-        # If pointing barely changed, no check needed
+        # Compute current rate
+        current_rate_rad_s = angle_rad / dt
+
+        # If pointing barely changed, just update tracking state
         if angle_rad < 1e-6 or cross_norm < 1e-9:
             self._last_wheel_momentum = self._get_total_wheel_momentum().copy()
+            self._last_pointing_rate_rad_s = current_rate_rad_s
             return
 
         # Normalized rotation axis (in inertial frame)
-        rot_axis = cross / cross_norm
+        rot_axis_inertial = cross / cross_norm
 
         # Compute effective MOI for this rotation axis
-        # Project rotation axis onto body principal axes to get effective MOI
-        # I_eff = sum(I_i * axis_i^2) for principal axis components
+        # Transform axis from inertial to body frame for proper MOI calculation
         moi_cfg = self.acs_config.spacecraft_moi if self.acs_config else None
         if moi_cfg is None:
             self._last_wheel_momentum = self._get_total_wheel_momentum().copy()
             return
 
+        # Transform rotation axis to body frame to match wheel allocation frame.
+        # Use the OLD pointing (before this timestep's update) because that's the
+        # body frame in which wheel torques were applied during _update_wheel_momentum.
+        rot_axis = self._axis_inertial_to_body(
+            rot_axis_inertial, self._last_pointing_ra, self._last_pointing_dec
+        )
+
         moi_arr = np.array(moi_cfg, dtype=float)
-        # Body axes in inertial frame would require attitude quaternion
-        # For now, use the rotation axis components directly as an approximation
-        # (assumes body frame roughly aligned with inertial for this check)
+        # I_eff = sum(I_i * axis_i^2) for body-frame principal axis components
         axis_sq = rot_axis**2
         i_eff = float(np.sum(moi_arr * axis_sq))
         # Fallback to average if projection gives degenerate result
@@ -1799,9 +1852,41 @@ class ACS:
         h_wheel_before = self._wheel_momentum_before_update
         delta_h_wheel = float(np.linalg.norm(h_wheel_after - h_wheel_before))
 
-        # Expected body angular momentum for the rotation: H = I * omega
-        omega_rad = angle_rad / dt
-        expected_h_body = i_eff * omega_rad
+        # Get previous rate (0 if first check or was stationary)
+        last_rate_rad_s = getattr(self, "_last_pointing_rate_rad_s", 0.0)
+
+        # Expected wheel momentum change depends on mode:
+        # - During slews: use slew acceleration profile (matches wheel update logic)
+        # - Slew just ended: use final deceleration from velocity integral
+        # - Otherwise: use observed rate change (for pass tracking, holds)
+        is_slewing = (
+            self.current_slew is not None
+            and hasattr(self.current_slew, "is_slewing")
+            and self.current_slew.is_slewing(utime)
+        )
+        slew_just_ended = getattr(self, "_slew_just_ended", False)
+
+        if slew_just_ended and not is_slewing:
+            # Slew just ended - skip this check. The slew END handling uses velocity
+            # integral which may not match the observed rate change due to discrete vs
+            # continuous trajectory differences. Slew momentum is verified separately
+            # by _verify_slew_end_momentum.
+            self._last_wheel_momentum = self._get_total_wheel_momentum().copy()
+            self._last_pointing_rate_rad_s = current_rate_rad_s
+            return
+
+        if is_slewing and self.current_slew is not None:
+            # During slews, wheel update uses slew profile at mid-timestep
+            t_mid = utime - dt / 2
+            accel_deg_s2 = self._slew_accel_profile(self.current_slew, t_mid)
+            accel_rad_s2 = abs(accel_deg_s2) * (np.pi / 180.0)
+            # Expected momentum change = I * α * dt (torque integrated over timestep)
+            expected_delta_h = i_eff * accel_rad_s2 * dt
+        else:
+            # For pass tracking and holds: use observed rate change
+            # ΔH_body = I × Δω, and by conservation ΔH_wheels = -ΔH_body
+            rate_change_rad_s = abs(current_rate_rad_s - last_rate_rad_s)
+            expected_delta_h = i_eff * rate_change_rad_s
 
         # Account for MTQ and disturbance contributions over this timestep
         # MTQ removes momentum from wheels, disturbance adds momentum to system
@@ -1813,31 +1898,46 @@ class ACS:
         # Direction is unknown so we add their magnitude as tolerance
         external_contribution = (mtq_torque + dist_torque) * dt
 
-        # Tolerance: external contributions plus 10% for numerical discretization
-        tolerance = external_contribution + 0.1 * expected_h_body
+        # Tolerance: external contributions plus margin for numerical discretization
+        tolerance = external_contribution + 0.2 * expected_delta_h
 
-        # Minimum tolerance floor for very small rotations
+        # Minimum tolerance floor for very small rate changes
         min_tolerance = 0.001  # 1 mNms
 
         # If wheel momentum changed much less than required (accounting for externals), flag
-        if expected_h_body > 0.01:  # Only check significant rotations
-            shortfall = expected_h_body - delta_h_wheel - tolerance
+        # Only check if we expect significant momentum change
+        if expected_delta_h > 0.01:
+            shortfall = expected_delta_h - delta_h_wheel - tolerance
             if shortfall > min_tolerance:
                 # Only flag if this is a significant rotation (> 0.1 deg)
                 if angle_rad > 0.1 * (np.pi / 180.0):
-                    rate_deg_s = angle_rad * (180.0 / np.pi) / dt
-                    warning = (
-                        f"Pointing-momentum inconsistency at t={utime}: "
-                        f"pointing changed by {angle_rad * 180 / np.pi:.2f} deg "
-                        f"({rate_deg_s:.2f} deg/s, I_eff={i_eff:.2f} kg·m²) "
-                        f"requiring ~{expected_h_body:.4f} Nms, but wheel Δ={delta_h_wheel:.4f} Nms "
-                        f"(external budget: MTQ={mtq_torque * dt:.4f}, dist={dist_torque * dt:.4f} Nms)"
-                    )
+                    rate_deg_s = current_rate_rad_s * (180.0 / np.pi)
+                    if is_slewing:
+                        # For slews, report acceleration
+                        warning = (
+                            f"Pointing-momentum inconsistency at t={utime}: "
+                            f"slew accel={accel_deg_s2:.2f} deg/s² "
+                            f"(rate={rate_deg_s:.2f} deg/s, I_eff={i_eff:.2f} kg·m²) "
+                            f"requiring ΔH~{expected_delta_h:.4f} Nms, but wheel Δ={delta_h_wheel:.4f} Nms "
+                            f"(external budget: MTQ={mtq_torque * dt:.4f}, dist={dist_torque * dt:.4f} Nms)"
+                        )
+                    else:
+                        # For pass tracking/holds, report rate change
+                        rate_change_deg_s = rate_change_rad_s * (180.0 / np.pi)
+                        warning = (
+                            f"Pointing-momentum inconsistency at t={utime}: "
+                            f"rate changed by {rate_change_deg_s:.2f} deg/s "
+                            f"(from {last_rate_rad_s * 180 / np.pi:.2f} to {rate_deg_s:.2f} deg/s, "
+                            f"I_eff={i_eff:.2f} kg·m²) "
+                            f"requiring ΔH~{expected_delta_h:.4f} Nms, but wheel Δ={delta_h_wheel:.4f} Nms "
+                            f"(external budget: MTQ={mtq_torque * dt:.4f}, dist={dist_torque * dt:.4f} Nms)"
+                        )
                     self._pointing_warnings.append(warning)
                     print(f"Pointing-momentum warning: {warning}")
 
         # Update tracking
         self._last_wheel_momentum = h_wheel_after.copy()
+        self._last_pointing_rate_rad_s = current_rate_rad_s
 
     def _update_wheel_momentum(self, utime: float) -> None:
         """Update reaction wheel stored momentum during active slews.
@@ -1890,6 +1990,7 @@ class ACS:
             # Record momentum NOW, not when command was executed
             if self.reaction_wheels:
                 self.wheel_dynamics.record_slew_start()
+                self._slew_commanded_wheel_delta = np.zeros(3, dtype=float)
             self._last_tracked_slew = self.current_slew
         elif is_slewing and self.current_slew is not self._last_tracked_slew:
             # Slew was replaced mid-flight (e.g., SAFE mode interrupted science slew)
@@ -1898,8 +1999,11 @@ class ACS:
             self._slew_velocity_integral = 0.0
             if self.reaction_wheels:
                 self.wheel_dynamics.record_slew_start()
+                self._slew_commanded_wheel_delta = np.zeros(3, dtype=float)
             self._last_tracked_slew = self.current_slew
-        if self._was_slewing and not is_slewing:
+        # Track if we just finished slewing for the consistency check
+        self._slew_just_ended = self._was_slewing and not is_slewing
+        if self._slew_just_ended:
             # Slew just completed - apply final velocity correction before verification
             # This handles the case where is_slewing turns False before the final decel step
             if (
@@ -1914,14 +2018,17 @@ class ACS:
                 final_accel = -self._slew_velocity_integral / dt
                 self._slew_velocity_integral = 0.0
 
-                # Get slew axis from last_slew
-                axis = np.array(
+                # Get slew axis from last_slew (in inertial frame)
+                axis_inertial = np.array(
                     getattr(self.last_slew, "rotation_axis", (0.0, 0.0, 1.0)),
                     dtype=float,
                 )
-                a_nrm = np.linalg.norm(axis)
+                a_nrm = np.linalg.norm(axis_inertial)
                 if a_nrm > 0:
-                    axis = axis / a_nrm
+                    axis_inertial = axis_inertial / a_nrm
+
+                # Transform from inertial to body frame
+                axis = self._axis_inertial_to_body(axis_inertial, self.ra, self.dec)
 
                 # Compute torque for final decel
                 moi_cfg = self.config.spacecraft_bus.attitude_control.spacecraft_moi
@@ -1936,6 +2043,15 @@ class ACS:
                 )
                 self._apply_wheel_torques_conserving(taus_allowed, dt)
 
+                # Track this final impulse for verification
+                if hasattr(self, "_slew_commanded_wheel_delta"):
+                    wheel_delta = np.zeros(3, dtype=float)
+                    for i, w in enumerate(self.reaction_wheels):
+                        if i < len(taus_allowed):
+                            axis_w = np.array(w.orientation, dtype=float)
+                            wheel_delta += taus_allowed[i] * dt * axis_w
+                    self._slew_commanded_wheel_delta += wheel_delta
+
             # Verify momentum consistency for completed slews
             # (Interrupted slews are cleared in the replacement detection above)
             if self._last_slew_for_verification is not None:
@@ -1947,14 +2063,11 @@ class ACS:
         # Only update when actively slewing and we have wheels
         if self.current_slew is None or not is_slewing:
             handled_pass = False
-            # If in a ground pass, treat continuous tracking as a small slew for wheel accounting
-            if (
-                self.current_pass is not None
-                and self.reaction_wheels
-                and not self._desat_active
-                and dt > 0
-            ):
-                handled_pass = self._apply_pass_wheel_update(dt, utime)
+            # Handle pass tracking or pass END transition
+            if self.reaction_wheels and not self._desat_active and dt > 0:
+                # Call pass update for both active pass and pass END handling
+                if self.current_pass is not None or self._was_in_pass:
+                    handled_pass = self._apply_pass_wheel_update(dt, utime)
 
             # If holding attitude (no slew/pass), apply wheel torque to reject disturbances
             if self.reaction_wheels and not handled_pass:
@@ -1977,8 +2090,11 @@ class ACS:
             self._last_pointing_time = utime
             return
 
-        # Determine current accel request (deg/s^2)
-        accel_req = self._slew_accel_profile(self.current_slew, utime)
+        # Determine current accel request (deg/s^2) at mid-timestep.
+        # Using mid-timestep better represents average acceleration during the timestep,
+        # avoiding phase-boundary timing issues where accel is 0 at end but nonzero during.
+        t_mid = utime - dt / 2
+        accel_req = self._slew_accel_profile(self.current_slew, t_mid)
 
         # Track velocity and handle timestep discretization asymmetry.
         # With coarse timesteps (e.g., 10s), accel and decel phases may have different
@@ -2021,15 +2137,20 @@ class ACS:
 
         from math import pi
 
-        # rotation axis (unit) provided by Slew.predict_slew; default to +Z
-        axis = np.array(
+        # rotation axis (unit) provided by Slew.predict_slew (in inertial frame)
+        axis_inertial = np.array(
             getattr(self.current_slew, "rotation_axis", (0.0, 0.0, 1.0)), dtype=float
         )
-        a_nrm = np.linalg.norm(axis)
+        a_nrm = np.linalg.norm(axis_inertial)
         if a_nrm <= 0:
-            axis = np.array([0.0, 0.0, 1.0])
+            axis_inertial = np.array([0.0, 0.0, 1.0])
         else:
-            axis = axis / a_nrm
+            axis_inertial = axis_inertial / a_nrm
+
+        # Transform rotation axis from inertial to body frame.
+        # The axis from RA/Dec cross product is in inertial frame, but must be
+        # body-frame for use with body inertia tensor and wheel orientations.
+        axis = self._axis_inertial_to_body(axis_inertial, self.ra, self.dec)
 
         # Effective moment of inertia about the rotation axis: i_axis = axis^T * I * axis
         i_axis = float(axis.dot(I_mat.dot(axis)))
@@ -2069,6 +2190,18 @@ class ACS:
 
         # Apply wheel torques with momentum conservation (internal exchange)
         self._apply_wheel_torques_conserving(taus_allowed, dt)
+
+        # Track commanded wheel momentum change for slew verification.
+        # Wheel torques produce body torque T_actual; by Newton's 3rd law,
+        # wheel momentum changes by the negative (wheels spin opposite to body).
+        if hasattr(self, "_slew_commanded_wheel_delta"):
+            # Compute wheel momentum change from per-wheel torques
+            wheel_delta = np.zeros(3, dtype=float)
+            for i, w in enumerate(self.reaction_wheels):
+                if i < len(taus_allowed):
+                    axis_w = np.array(w.orientation, dtype=float)
+                    wheel_delta += taus_allowed[i] * dt * axis_w
+            self._slew_commanded_wheel_delta += wheel_delta
 
         # Log if wheels couldn't deliver requested torque (indicates validation gap)
         achieved_scalar = float(np.dot(T_actual, axis))
@@ -2456,9 +2589,25 @@ class ACS:
         return True
 
     def _apply_pass_wheel_update(self, dt: float, utime: float) -> bool:
-        """Approximate wheel loading during continuous ground pass tracking."""
+        """Approximate wheel loading during continuous ground pass tracking.
+
+        Uses _last_pointing_rate_rad_s for rate tracking to align with
+        the pointing-momentum consistency check.
+
+        Handles pass transitions:
+        - Pass START: spin-up from zero rate to tracking rate
+        - Pass END: spin-down from tracking rate to zero
+        """
+        # Handle pass END transition: was in pass, now not
         if self.current_pass is None:
-            self._last_pass_rate_deg_s = 0.0
+            if self._was_in_pass and dt > 0:
+                # Pass just ended - apply spin-down torque
+                last_rate = self._last_pointing_rate_rad_s * (180.0 / np.pi)
+                if abs(last_rate) > 0.01:  # Significant rate to spin down
+                    return self._apply_pass_transition_torque(
+                        dt, utime, target_rate=0.0, last_rate=last_rate
+                    )
+            self._was_in_pass = False
             self._last_pass_torque_target_mag = 0.0
             self._last_pass_torque_actual_mag = 0.0
             self._build_wheel_snapshot(utime, None, None)
@@ -2467,7 +2616,6 @@ class ACS:
         try:
             target_ra, target_dec = self.current_pass.ra_dec(utime)
         except Exception:
-            self._last_pass_rate_deg_s = 0.0
             self._last_pass_torque_target_mag = 0.0
             self._last_pass_torque_actual_mag = 0.0
             self._build_wheel_snapshot(utime, None, None)
@@ -2490,17 +2638,25 @@ class ACS:
         except Exception:
             dist_deg = 0.0
 
-        if dist_deg <= 0 or dt <= 0:
-            self._last_pass_rate_deg_s = 0.0
+        if dt <= 0:
             self._last_pass_torque_target_mag = 0.0
             self._last_pass_torque_actual_mag = 0.0
             self._build_wheel_snapshot(utime, None, None)
             return True
 
         # Continuous tracking: use rate change, not a rest-to-rest slew each step.
-        omega_req = dist_deg / dt  # deg/s
-        last_rate = float(getattr(self, "_last_pass_rate_deg_s", 0.0))
+        # Use the same rate tracker as the consistency check for alignment.
+        omega_req = dist_deg / dt if dist_deg > 0 else 0.0  # deg/s
+        # Get previous rate from pointing-based tracker (converted to deg/s)
+        last_rate = self._last_pointing_rate_rad_s * (180.0 / np.pi)
         accel_req = (omega_req - last_rate) / dt  # deg/s^2
+
+        # If no acceleration needed (same rate, no rotation), skip torque application
+        if abs(accel_req) < 1e-9 and dist_deg <= 0:
+            self._last_pass_torque_target_mag = 0.0
+            self._last_pass_torque_actual_mag = 0.0
+            self._build_wheel_snapshot(utime, None, None)
+            return True
 
         # Estimate rotation axis from endpoints
         try:
@@ -2512,14 +2668,19 @@ class ACS:
                 [np.cos(d1) * np.cos(r1), np.cos(d1) * np.sin(r1), np.sin(d1)],
                 dtype=float,
             )
-            axis = np.cross(v0, v1)
-            nrm = np.linalg.norm(axis)
+            axis_inertial = np.cross(v0, v1)
+            nrm = np.linalg.norm(axis_inertial)
             if nrm <= 1e-12:
-                axis = np.array([0.0, 0.0, 1.0])
+                axis_inertial = np.array([0.0, 0.0, 1.0])
             else:
-                axis = axis / nrm
+                axis_inertial = axis_inertial / nrm
         except Exception:
-            axis = np.array([0.0, 0.0, 1.0])
+            axis_inertial = np.array([0.0, 0.0, 1.0])
+
+        # Transform rotation axis from inertial to body frame.
+        # The axis from RA/Dec cross product is in inertial frame, but must be
+        # body-frame for use with body inertia tensor and wheel orientations.
+        axis = self._axis_inertial_to_body(axis_inertial, self.ra, self.dec)
 
         # Use existing wheel update logic with this synthetic accel
         # Build inertia matrix
@@ -2555,6 +2716,65 @@ class ACS:
         self._apply_external_torque(disturbance, dt, source="disturbance")
 
         # Apply wheel torques with momentum conservation
+        self._apply_wheel_torques_conserving(taus_allowed, dt)
+
+        # Track pass state for transition handling
+        self._was_in_pass = True
+        self._last_pass_axis = axis.copy()
+
+        self._build_wheel_snapshot(utime, taus, taus_allowed)
+        return True
+
+    def _apply_pass_transition_torque(
+        self, dt: float, utime: float, target_rate: float, last_rate: float
+    ) -> bool:
+        """Apply torque for pass START or END transitions.
+
+        Args:
+            dt: Time step (seconds).
+            utime: Unix timestamp.
+            target_rate: Desired rate after transition (deg/s).
+            last_rate: Rate before transition (deg/s).
+
+        Returns:
+            True if torque was applied.
+        """
+        from math import pi
+
+        accel_req = (target_rate - last_rate) / dt  # deg/s²
+
+        # Use the saved pass axis for spin-down, or default for spin-up
+        axis = self._last_pass_axis.copy()
+
+        # Build inertia matrix
+        moi_cfg = self.config.spacecraft_bus.attitude_control.spacecraft_moi
+        I_mat = DisturbanceModel._build_inertia(moi_cfg)
+        i_axis = float(axis.dot(I_mat.dot(axis)))
+        if i_axis <= 0:
+            i_axis = float(np.mean(np.array(moi_cfg, dtype=float)))
+
+        # Compute disturbance torque
+        disturbance = self._compute_disturbance_torque(utime)
+
+        requested_torque = (accel_req * (pi / 180.0)) * i_axis
+        T_desired = axis * requested_torque
+        T_desired = T_desired - disturbance
+
+        taus, taus_allowed, t_actual, _ = self._allocate_wheel_torques(
+            T_desired, dt, use_weights=True
+        )
+
+        try:
+            self._last_pass_torque_target_mag = float(np.linalg.norm(T_desired))
+            self._last_pass_torque_actual_mag = float(np.linalg.norm(t_actual))
+        except Exception:
+            self._last_pass_torque_target_mag = 0.0
+            self._last_pass_torque_actual_mag = 0.0
+
+        # Apply external disturbance torque
+        self._apply_external_torque(disturbance, dt, source="disturbance")
+
+        # Apply wheel torques
         self._apply_wheel_torques_conserving(taus_allowed, dt)
 
         self._build_wheel_snapshot(utime, taus, taus_allowed)
