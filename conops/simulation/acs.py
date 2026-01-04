@@ -1887,10 +1887,11 @@ class ACS:
         # - During slews: use slew acceleration profile (matches wheel update logic)
         # - Slew just ended: use final deceleration from velocity integral
         # - Otherwise: use observed rate change (for pass tracking, holds)
+        # Use last_slew (same as _update_wheel_momentum) for consistency
         is_slewing = (
-            self.current_slew is not None
-            and hasattr(self.current_slew, "is_slewing")
-            and self.current_slew.is_slewing(utime)
+            self.last_slew is not None
+            and hasattr(self.last_slew, "is_slewing")
+            and self.last_slew.is_slewing(utime)
         )
         slew_just_ended = getattr(self, "_slew_just_ended", False)
 
@@ -1903,10 +1904,10 @@ class ACS:
             self._last_pointing_rate_rad_s = current_rate_rad_s
             return
 
-        if is_slewing and self.current_slew is not None:
+        if is_slewing and self.last_slew is not None:
             # During slews, wheel update uses slew profile at mid-timestep
             t_mid = utime - dt / 2
-            accel_deg_s2 = self._slew_accel_profile(self.current_slew, t_mid)
+            accel_deg_s2 = self._slew_accel_profile(self.last_slew, t_mid)
             accel_rad_s2 = abs(accel_deg_s2) * (np.pi / 180.0)
             # Expected momentum change = I * α * dt (torque integrated over timestep)
             expected_delta_h = i_eff * accel_rad_s2 * dt
@@ -2009,9 +2010,9 @@ class ACS:
             else:
                 self.mtq_power_w = 0.0
         # Check slew state transitions
-        is_slewing = self.current_slew is not None and self.current_slew.is_slewing(
-            utime
-        )
+        # Use last_slew (same as _calculate_pointing) for consistency - this ensures
+        # wheel dynamics are updated whenever pointing changes due to slewing
+        is_slewing = self.last_slew is not None and self.last_slew.is_slewing(utime)
         if not self._was_slewing and is_slewing:
             # Slew just started - reset velocity tracking and record actual start momentum
             self._slew_velocity_integral = 0.0
@@ -2019,16 +2020,16 @@ class ACS:
             if self.reaction_wheels:
                 self.wheel_dynamics.record_slew_start()
                 self._slew_commanded_wheel_delta = np.zeros(3, dtype=float)
-            self._last_tracked_slew = self.current_slew
-        elif is_slewing and self.current_slew is not self._last_tracked_slew:
+            self._last_tracked_slew = self.last_slew
+        elif is_slewing and self.last_slew is not self._last_tracked_slew:
             # Slew was replaced mid-flight (e.g., SAFE mode interrupted science slew)
             # Record new baseline and set up verification for the new slew
-            self._last_slew_for_verification = self.current_slew
+            self._last_slew_for_verification = self.last_slew
             self._slew_velocity_integral = 0.0
             if self.reaction_wheels:
                 self.wheel_dynamics.record_slew_start()
                 self._slew_commanded_wheel_delta = np.zeros(3, dtype=float)
-            self._last_tracked_slew = self.current_slew
+            self._last_tracked_slew = self.last_slew
         # Track if we just finished slewing for the consistency check
         self._slew_just_ended = self._was_slewing and not is_slewing
         if self._slew_just_ended:
@@ -2089,7 +2090,7 @@ class ACS:
         self._was_slewing = is_slewing
 
         # Only update when actively slewing and we have wheels
-        if self.current_slew is None or not is_slewing:
+        if self.last_slew is None or not is_slewing:
             handled_tracking = False
             # Handle pass tracking or pass END transition
             if self.reaction_wheels and not self._desat_active and dt > 0:
@@ -2133,7 +2134,7 @@ class ACS:
         # Using mid-timestep better represents average acceleration during the timestep,
         # avoiding phase-boundary timing issues where accel is 0 at end but nonzero during.
         t_mid = utime - dt / 2
-        accel_req = self._slew_accel_profile(self.current_slew, t_mid)
+        accel_req = self._slew_accel_profile(self.last_slew, t_mid)
 
         # Track velocity and handle timestep discretization asymmetry.
         # With coarse timesteps (e.g., 10s), accel and decel phases may have different
@@ -2144,11 +2145,11 @@ class ACS:
         if accel_req == 0.0 and self._slew_velocity_integral > 1e-9 and dt > 0:
             # Check if we're past motion phase vs in cruise
             # Only apply velocity correction after motion phase, not cruise
-            dist = float(getattr(self.current_slew, "slewdist", 0.0) or 0.0)
-            a = float(self.current_slew.accel)
-            vmax = float(self.current_slew.vmax)
+            dist = float(getattr(self.last_slew, "slewdist", 0.0) or 0.0)
+            a = float(self.last_slew.accel)
+            vmax = float(self.last_slew.vmax)
             motion_time = float(self.acs_config.motion_time(dist, accel=a, vmax=vmax))
-            t_rel = float(utime - getattr(self.current_slew, "slewstart", 0.0))
+            t_rel = float(utime - getattr(self.last_slew, "slewstart", 0.0))
 
             if t_rel >= motion_time:
                 # Past motion phase (in settle) - apply corrective decel
@@ -2178,7 +2179,7 @@ class ACS:
 
         # rotation axis (unit) provided by Slew.predict_slew (in inertial frame)
         axis_inertial = np.array(
-            getattr(self.current_slew, "rotation_axis", (0.0, 0.0, 1.0)), dtype=float
+            getattr(self.last_slew, "rotation_axis", (0.0, 0.0, 1.0)), dtype=float
         )
         a_nrm = np.linalg.norm(axis_inertial)
         if a_nrm <= 0:
@@ -3174,8 +3175,11 @@ class ACS:
 
         # Clear the charging slew state immediately so _is_in_charging_mode returns False
         # This prevents staying in CHARGING mode while slewing back to science
+        # Also clear current_slew to maintain consistency with last_slew (used by
+        # _update_wheel_momentum and _calculate_pointing respectively)
         if self.last_slew is not None and self.last_slew.obstype == "CHARGE":
             self.last_slew = None
+            self.current_slew = None
 
         # Return to the previous science PPT if one exists
         if self.last_ppt is not None:
