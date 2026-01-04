@@ -402,6 +402,10 @@ class QueueDITL(DITLMixin, DITLStats):
             # Close PPT timeline segment if no active observation
             self._close_ppt_timeline_if_needed(utime)
 
+            # Re-query mode after operations to capture any newly enqueued commands
+            # This prevents 1-step mode gaps when commands are enqueued during this step
+            mode = self.acs.get_mode(utime)
+
             # Record pointing and mode
             self._record_pointing_data(ra, dec, roll, obsid, mode)
 
@@ -696,6 +700,10 @@ class QueueDITL(DITLMixin, DITLStats):
         )
         if termination_reason is not None:
             self._terminate_emergency_charging(termination_reason, utime)
+            # Immediately fetch a new PPT to avoid 1-step SCIENCE gap
+            # Get current pointing from ACS
+            ra, dec = self.acs.ra, self.acs.dec
+            self._fetch_new_ppt(utime, ra, dec)
 
     def _sync_charging_state(self) -> None:
         """Synchronize emergency_charging module state with queue state."""
