@@ -329,3 +329,65 @@ class TestComputeSlewParams:
             f"Long motion time should give lower accel (momentum-limited): "
             f"1s={accel_1s:.4f}, 100s={accel_100s:.4f}"
         )
+
+    def test_compute_slew_params_closed_form_momentum_limit(self):
+        """Verify compute_slew_params uses closed-form momentum-limited acceleration.
+
+        For triangular bang-bang slew:
+        - Peak rate: ω_peak = sqrt(α × distance)
+        - Peak momentum: H_peak = I × ω_peak
+        - Constraint: H_peak ≤ headroom
+        - Solving: α ≤ rate_limit² / distance
+
+        This closed-form solution is self-consistent (no iteration needed).
+        """
+        # Setup: low momentum forces momentum-limited regime
+        wheels = [
+            ReactionWheel(
+                max_torque=1.0,
+                max_momentum=0.5,  # Low momentum - will be the limit
+                orientation=(1.0, 0.0, 0.0),
+                current_momentum=0.0,
+                name="rw_x",
+            )
+        ]
+        inertia = np.diag([10.0, 10.0, 10.0])
+        wheel_dynamics = WheelDynamics(wheels, inertia)
+        axis = np.array([1.0, 0.0, 0.0])
+        distance = 10.0
+
+        # Compute expected values from first principles
+        # headroom = max_momentum * margin = 0.5 * 0.9 = 0.45 N·m·s
+        headroom = 0.5 * 0.9
+        moi = 10.0  # moment of inertia
+
+        # rate_limit = headroom / moi * (180/π) = 2.578 deg/s
+        rate_limit = headroom / moi * (180.0 / np.pi)
+
+        # momentum_limited_accel = rate_limit² / distance = 0.665 deg/s²
+        expected_accel = (rate_limit**2) / distance
+
+        # torque_limited_accel = τ/moi * (180/π) = 5.73 deg/s²
+        torque_limited_accel = (1.0 / moi) * (180.0 / np.pi)
+
+        # Verify we're in momentum-limited regime
+        assert expected_accel < torque_limited_accel, (
+            "Test requires momentum-limited regime"
+        )
+
+        # Get what compute_slew_params returns
+        accel, rate, motion_time = wheel_dynamics.compute_slew_params(axis, distance)
+
+        # Should match closed-form solution exactly
+        assert np.isclose(accel, expected_accel, rtol=1e-6), (
+            f"Acceleration should be momentum-limited at {expected_accel:.4f} deg/s², "
+            f"got {accel:.4f} deg/s²."
+        )
+
+        # Verify self-consistency: peak momentum should equal headroom
+        # ω_peak = sqrt(α × distance)
+        omega_peak = np.sqrt(accel * distance) * (np.pi / 180.0)  # rad/s
+        peak_momentum = moi * omega_peak
+        assert np.isclose(peak_momentum, headroom, rtol=1e-6), (
+            f"Peak momentum {peak_momentum:.4f} should equal headroom {headroom:.4f}"
+        )

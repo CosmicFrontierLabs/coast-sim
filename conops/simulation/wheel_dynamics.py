@@ -760,12 +760,31 @@ class WheelDynamics:
             return 0.0, 0.0, 0.0
 
         # Get physics-derived limits from wheel capabilities
-        # Use a conservative estimate of motion time for momentum-limited accel
-        # Start with triangular profile estimate, refine if needed
-        physics_accel = self.get_axis_accel_limit(axis, distance_deg)
+        #
+        # Torque-limited: α_torque = τ_max / I
+        # Momentum-limited: derived from peak momentum constraint
+        #   For triangular bang-bang: ω_peak = sqrt(α × distance)
+        #   Constraint: I × ω_peak ≤ headroom
+        #   Solving: α ≤ (headroom / I)² / distance = rate_limit² / distance
+        #
+        # This closed-form solution is self-consistent (no iteration needed).
+
+        # Torque-limited acceleration (pass motion_time=0 to ignore momentum limit)
+        torque_limited_accel = self.get_axis_accel_limit(axis, 0.0)
+
+        # Rate limit from momentum headroom
         physics_rate = self.get_axis_rate_limit(axis)
 
-        if physics_accel <= 0 or physics_rate <= 0:
+        if torque_limited_accel <= 0 or physics_rate <= 0:
+            return 0.0, 0.0, 0.0
+
+        # Momentum-limited acceleration (closed-form for triangular bang-bang)
+        momentum_limited_accel = (physics_rate**2) / distance_deg
+
+        # Take the more restrictive limit
+        physics_accel = min(torque_limited_accel, momentum_limited_accel)
+
+        if physics_accel <= 0:
             return 0.0, 0.0, 0.0
 
         # Apply optional operational caps
