@@ -95,7 +95,16 @@ def allocate_wheel_torques(
         [float(getattr(w, "current_momentum", 0.0)) for w in wheels], dtype=float
     )
 
-    # Solve least-squares for wheel torques (scalar per wheel) that produce t_desired.
+    # Solve least-squares for wheel torques (scalar per wheel) that produce t_desired on body.
+    #
+    # Physics: When wheel i applies torque tau_i along axis e_i:
+    #   - Wheel momentum changes by +tau_i * dt
+    #   - Body momentum changes by -tau_i * dt * e_i (Newton's 3rd law)
+    #
+    # So body torque from wheels = -E @ taus. To get t_desired on body, solve:
+    #   -E @ taus = t_desired  =>  E @ taus = -t_desired
+    t_wheel = -t_desired  # Wheel torque is opposite of desired body torque
+
     try:
         if use_weights:
             # Penalize wheels with higher stored momentum to spread load.
@@ -108,15 +117,15 @@ def allocate_wheel_torques(
             cols = e_mat.shape[1]
             reg = np.sqrt(lam) * w_mat
             a_mat = np.vstack([e_mat, reg])
-            b_vec = np.concatenate([t_desired, np.zeros(cols, dtype=float)])
+            b_vec = np.concatenate([t_wheel, np.zeros(cols, dtype=float)])
             taus, *_ = np.linalg.lstsq(a_mat, b_vec, rcond=None)
         else:
-            taus, *_ = np.linalg.lstsq(e_mat, t_desired, rcond=None)
+            taus, *_ = np.linalg.lstsq(e_mat, t_wheel, rcond=None)
     except Exception:
         # fallback: assign all torque to first wheel only (legacy behavior)
         taus = np.zeros((len(wheels),), dtype=float)
         if len(taus) > 0:
-            taus[0] = float(np.linalg.norm(t_desired))
+            taus[0] = float(np.linalg.norm(t_wheel))
 
     # Null-space bias: drive wheel momentum toward zero without changing net torque.
     if bias_gain > 0.0:

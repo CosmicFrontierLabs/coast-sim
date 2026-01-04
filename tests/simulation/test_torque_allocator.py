@@ -5,6 +5,12 @@ from conops.simulation.torque_allocator import allocate_wheel_torques
 
 
 def test_allocate_wheel_torques_clamps_by_margin():
+    """Test that wheel torques are clamped when approaching momentum limits.
+
+    Wheel at +0.9 momentum (max=1.0, margin=0.95 → headroom=0.05).
+    - Positive body torque → negative wheel torque (spins down) → away from max → no clamp
+    - Negative body torque → positive wheel torque (spins up) → toward max → clamped
+    """
     wheels = [
         ReactionWheel(
             max_torque=1.0,
@@ -14,23 +20,25 @@ def test_allocate_wheel_torques_clamps_by_margin():
         )
     ]
 
+    # Positive body torque → wheel spins DOWN (away from max) → no clamping
     taus, taus_allowed, _, clamped = allocate_wheel_torques(
         wheels,
         np.array([0.2, 0.0, 0.0]),
         dt=1.0,
         mom_margin=0.95,
     )
-    assert clamped is True
-    assert np.isclose(taus_allowed[0], 0.05)
+    assert clamped is False
+    assert np.isclose(taus_allowed[0], -0.2)  # negative wheel torque
 
+    # Negative body torque → wheel spins UP (toward max) → clamped
     taus, taus_allowed, _, clamped = allocate_wheel_torques(
         wheels,
         np.array([-0.2, 0.0, 0.0]),
         dt=1.0,
         mom_margin=0.95,
     )
-    assert clamped is False
-    assert np.isclose(taus_allowed[0], -0.2)
+    assert clamped is True
+    assert np.isclose(taus_allowed[0], 0.05)  # limited by headroom
 
 
 def test_allocate_wheel_torques_weighting_prefers_low_momentum():

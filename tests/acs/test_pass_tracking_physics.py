@@ -70,8 +70,9 @@ def test_pass_tracking_updates_wheel_momentum_axis(acs):
     acs._apply_pass_wheel_update(dt=1.0, utime=0.0)
 
     expected_torque = (math.pi / 180.0) * 10.0
+    # Wheel momentum is opposite to body torque (Newton's 3rd law)
     assert math.isclose(
-        acs.reaction_wheels[2].current_momentum, expected_torque, rel_tol=2e-2
+        acs.reaction_wheels[2].current_momentum, -expected_torque, rel_tol=2e-2
     )
     assert math.isclose(acs.reaction_wheels[0].current_momentum, 0.0, abs_tol=1e-9)
     assert math.isclose(acs.reaction_wheels[1].current_momentum, 0.0, abs_tol=1e-9)

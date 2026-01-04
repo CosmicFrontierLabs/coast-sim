@@ -119,8 +119,10 @@ def test_slew_torque_updates_wheel_momentum_consistently(acs, monkeypatch):
     expected_torque = (1.0 * np.pi / 180.0) * i_axis
 
     assert snapshot.t_actual_mag == pytest.approx(expected_torque, rel=1e-6)
+    # Wheel momentum is opposite to body torque (Newton's 3rd law)
+    # +x body torque → -x wheel momentum
     assert acs.reaction_wheels[0].current_momentum == pytest.approx(
-        expected_torque, rel=1e-6
+        -expected_torque, rel=1e-6
     )
     assert abs(acs.reaction_wheels[1].current_momentum) < 1e-8
     assert abs(acs.reaction_wheels[2].current_momentum) < 1e-8
