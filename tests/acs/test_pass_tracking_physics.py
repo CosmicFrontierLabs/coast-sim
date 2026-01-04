@@ -153,3 +153,71 @@ def test_pass_tracking_torque_uses_rate_delta(acs):
     expected_torque = (math.pi / 180.0) * 10.0 * accel_req
     assert acs._last_pass_rate_deg_s == pytest.approx(1.0, rel=1e-6)
     assert acs._last_pass_torque_target_mag == pytest.approx(expected_torque, rel=1e-6)
+
+
+def test_pass_tracking_axis_transform_at_nonzero_dec(acs):
+    """Verify pass tracking transforms rotation axis to body frame at non-zero Dec.
+
+    At (RA=0, Dec=45°):
+    - Body-Z points at celestial coordinates (RA=0, Dec=45°)
+    - The rotation axis for RA tracking transforms differently than at Dec=0
+
+    This test verifies that the body-frame transformation is applied correctly
+    and the correct wheel receives momentum for RA-tracking at non-zero Dec.
+
+    Key physics: At Dec=45°, RA tracking still rotates around celestial pole
+    (inertial Z), but that axis transforms to a different body-frame direction
+    than at Dec=0.
+    """
+    # Position spacecraft at (RA=0, Dec=45°)
+    acs.ra = 0.0
+    acs.dec = 45.0
+    acs.reaction_wheels = _make_orthogonal_wheels()
+    acs.wheel_dynamics.wheels = acs.reaction_wheels  # Keep in sync
+    acs._compute_disturbance_torque = lambda _ut: np.zeros(3)
+    acs.config.spacecraft_bus.attitude_control.spacecraft_moi = (10.0, 10.0, 10.0)
+
+    # Set up previous pointing state (needed for axis calculation)
+    acs._last_pointing_ra = 0.0
+    acs._last_pointing_dec = 45.0
+    acs._last_pointing_utime = -1.0
+    acs._last_pointing_rate_rad_s = 0.0
+
+    # Target: track to RA=1° at same Dec (pure RA tracking)
+    acs.current_pass = DummyPass(1.0, 45.0)
+
+    acs._apply_pass_wheel_update(dt=1.0, utime=0.0)
+
+    # At Dec=45°:
+    # - Body-Z = (cos(45)cos(0), cos(45)sin(0), sin(45)) = (0.707, 0, 0.707)
+    # - Celestial pole (inertial Z) = (0, 0, 1)
+    # - With pole-reference Gram-Schmidt:
+    #   y_b = pole - (pole·z_b)*z_b = (0,0,1) - 0.707*(0.707, 0, 0.707)
+    #       = (0,0,1) - (0.5, 0, 0.5) = (-0.5, 0, 0.5) normalized = (-0.707, 0, 0.707)
+    # - This means body-Y has significant X component in inertial frame
+
+    # The celestial pole maps to a mix of body axes, but Y should dominate
+    # because the Gram-Schmidt process aligns Y with the pole projection
+    y_wheel_momentum = acs.reaction_wheels[1].current_momentum
+
+    # At Dec=45°, the Y-wheel should still receive momentum for RA tracking
+    # (the pole-reference Gram-Schmidt keeps Y aligned toward the pole)
+    expected_torque = (math.pi / 180.0) * 10.0  # 1 deg/s² × 10 kg·m² = 0.1745 Nm
+
+    # Y-wheel should have significant momentum (sign depends on geometry)
+    assert abs(y_wheel_momentum) > 0.1 * expected_torque, (
+        f"Y-wheel should receive significant momentum for RA tracking at Dec=45°: "
+        f"Y={y_wheel_momentum:.4f}, expected magnitude ~{expected_torque:.4f}"
+    )
+
+    # X and Z wheels should have less momentum than Y
+    x_wheel_momentum = abs(acs.reaction_wheels[0].current_momentum)
+    z_wheel_momentum = abs(acs.reaction_wheels[2].current_momentum)
+
+    # Y should be dominant for RA tracking
+    assert abs(y_wheel_momentum) > x_wheel_momentum, (
+        f"Y-wheel should dominate for RA tracking: Y={abs(y_wheel_momentum):.4f}, X={x_wheel_momentum:.4f}"
+    )
+    assert abs(y_wheel_momentum) > z_wheel_momentum, (
+        f"Y-wheel should dominate for RA tracking: Y={abs(y_wheel_momentum):.4f}, Z={z_wheel_momentum:.4f}"
+    )

@@ -204,13 +204,19 @@ class TestSlewBudgetCheck:
         """Budget check passes when wheels have sufficient headroom."""
         cfg = MissionConfig()
         cfg.constraint.ephem = DummyEphem()
+        # Use 3 orthogonal wheels for 3-axis control. This is required since
+        # the rotation axis is transformed from inertial to body frame.
         cfg.spacecraft_bus.attitude_control.wheels = [
+            {"orientation": [1.0, 0.0, 0.0], "max_torque": 0.1, "max_momentum": 10.0},
+            {"orientation": [0.0, 1.0, 0.0], "max_torque": 0.1, "max_momentum": 10.0},
             {"orientation": [0.0, 0.0, 1.0], "max_torque": 0.1, "max_momentum": 10.0},
         ]
         acs = ACS(config=cfg, log=None)
 
-        # Small slew around Z axis
+        # Small slew around Z axis (in inertial frame, transforms to body Y at default pointing)
         slew = Slew(config=cfg)
+        slew.startra = acs.ra
+        slew.startdec = acs.dec
         slew.slewdist = 5.0
         slew.rotation_axis = (0.0, 0.0, 1.0)
         slew._accel_override = 0.1

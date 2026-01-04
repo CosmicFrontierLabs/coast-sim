@@ -396,3 +396,58 @@ class TestComputeSlewParams:
         assert np.isclose(peak_momentum, headroom, rtol=1e-6), (
             f"Peak momentum {peak_momentum:.4f} should equal headroom {headroom:.4f}"
         )
+
+
+def test_pre_slew_headroom_uses_body_frame_axis(acs):
+    """Verify pre-slew feasibility checks transform rotation axis to body frame.
+
+    The rotation axis from slew geometry is in inertial frame, but MOI calculations
+    need body-frame axis. At non-standard pointings, these frames differ significantly.
+
+    At (RA=0, Dec=0):
+    - Body-Z points at (1, 0, 0) inertial
+    - Body-Y aligned with celestial pole (0, 0, 1) inertial
+    - Body-X = (0, 1, 0) inertial
+
+    A slew around inertial Z-axis transforms to body-Y axis for MOI calculation.
+    """
+    _add_test_wheels(acs, max_torque=0.1, max_momentum=10.0)
+
+    # Set ACS to non-default pointing (RA=0, Dec=0)
+    acs.ra = 0.0
+    acs.dec = 0.0
+
+    # Create slew from this pointing
+    slew = Slew(config=acs.config)
+    slew.startra = 0.0
+    slew.startdec = 0.0
+    slew.endra = 5.0  # Small slew in RA
+    slew.enddec = 0.0
+    slew.slewdist = 5.0
+    slew.slewtime = 30.0
+    # Inertial Z-axis rotation (around celestial pole)
+    slew.rotation_axis = (0.0, 0.0, 1.0)
+    slew._accel_override = 0.5
+
+    # Mock disturbance model
+    from unittest.mock import Mock
+
+    acs.disturbance_model = Mock()
+    acs.disturbance_model.compute = Mock(return_value=(np.zeros(3), {}))
+
+    # The check should pass and use the correct body-frame axis
+    feasible, msg = acs._check_slew_momentum_budget(slew, 1000.0)
+    assert feasible, f"Slew should be feasible: {msg}"
+    assert "Budget OK" in msg
+
+    # Verify the returned axis is in body frame
+    _, returned_axis = acs._compute_slew_peak_momentum(slew)
+
+    # At (RA=0, Dec=0), inertial Z (0,0,1) transforms to body Y (0,1,0)
+    # The returned axis should be close to body-Y
+    expected_body_axis = np.array([0.0, 1.0, 0.0])
+    dot_product = abs(np.dot(returned_axis, expected_body_axis))
+    assert dot_product > 0.99, (
+        f"Axis should transform to body-Y at (RA=0, Dec=0): "
+        f"got {returned_axis}, expected ~{expected_body_axis}, dot={dot_product}"
+    )

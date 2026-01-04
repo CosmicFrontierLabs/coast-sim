@@ -114,14 +114,23 @@ class TestMomentumBudget:
 
     def test_check_slew_momentum_budget_sufficient(self, acs, mock_config):
         """Budget check passes with sufficient headroom."""
-        # Set up wheels with plenty of headroom
-        wheel = ReactionWheel(
-            max_torque=0.1,
-            max_momentum=10.0,  # Large capacity
-            orientation=(0.0, 0.0, 1.0),
-        )
-        wheel.current_momentum = 0.0
-        acs.reaction_wheels = [wheel]
+        # Set up 3 orthogonal wheels with plenty of headroom for 3-axis control.
+        # This is required since the rotation axis is transformed from inertial
+        # to body frame, and may not align with a single wheel.
+        wheels = [
+            ReactionWheel(
+                max_torque=0.1, max_momentum=10.0, orientation=(1.0, 0.0, 0.0)
+            ),
+            ReactionWheel(
+                max_torque=0.1, max_momentum=10.0, orientation=(0.0, 1.0, 0.0)
+            ),
+            ReactionWheel(
+                max_torque=0.1, max_momentum=10.0, orientation=(0.0, 0.0, 1.0)
+            ),
+        ]
+        for w in wheels:
+            w.current_momentum = 0.0
+        acs.reaction_wheels = wheels
         acs.wheel_dynamics.wheels = acs.reaction_wheels  # Keep in sync
 
         # Small slew
