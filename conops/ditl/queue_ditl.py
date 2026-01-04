@@ -750,19 +750,41 @@ class QueueDITL(DITLMixin, DITLStats):
             return
 
         # Check for pass slew (including when slewing to science target)
-        # Skip if we're already slewing to a pass (GSP type)
+        # Skip if we're actively slewing to a pass (GSP type) or have a pending GSP slew
         current_slew = self.acs.current_slew
-        if current_slew is not None and getattr(current_slew, "obstype", None) == "GSP":
+        if (
+            current_slew is not None
+            and current_slew.is_slewing(utime)
+            and getattr(current_slew, "obstype", None) == "GSP"
+        ):
             return
+
+        # Also skip if there's a pending GSP slew in the command queue
+        for cmd in self.acs._commands.pending:
+            if cmd.command_type == ACSCommandType.SLEW_TO_TARGET:
+                slew = getattr(cmd, "slew", None)
+                if slew is not None and getattr(slew, "obstype", None) == "GSP":
+                    return
 
         next_pass = self.acs.passrequests.next_pass(utime)
         # If there's no next pass, nothing to do
         if next_pass is None:
             return
 
+        # Determine effective position for slew time calculation
+        # Use current position for worst-case timing estimate. If we're slewing,
+        # we'll interrupt and start GSP from current pos, so use that distance.
+        effective_ra, effective_dec = ra, dec
+
         # Check if it's time to start slewing for the next pass
-        if next_pass.time_to_slew(utime=utime, ra=ra, dec=dec):
-            # If it's time to slew, enqueue the slew command
+        # Account for DESAT: if DESAT is active, add its remaining time to the slew timing
+        desat_buffer = 0.0
+        if self.acs._desat_active and self.acs._desat_end > utime:
+            desat_buffer = self.acs._desat_end - utime
+
+        if next_pass.time_to_slew(
+            utime=utime, ra=effective_ra, dec=effective_dec, time_buffer=desat_buffer
+        ):
             self.log.log_event(
                 utime=utime,
                 event_type="SLEW",
@@ -781,19 +803,34 @@ class QueueDITL(DITLMixin, DITLStats):
             slew.enddec = next_pass.gsstartdec
             slew.obstype = "GSP"  # Ground Station Pass slew
 
-            # Validate wheel capability before enqueueing
-            if not self.acs.validate_slew(slew, utime):
-                self.log.log_event(
-                    utime=utime,
-                    event_type="SLEW",
-                    description=f"Pass slew to {next_pass.station} rejected - wheel validation failed",
-                    acs_mode=self.acs.acsmode,
-                )
-                return
+            # Compute slew parameters using wheel limits
+            self.acs._compute_slew_distance(slew)
+            self.acs._apply_gsp_slew_wheel_limits(slew, utime)
+            slew.calc_slewtime()
+
+            # Determine execution time accounting for DESAT
+            # If DESAT is active, check if we can wait for it to complete
+            execution_time = utime
+            slew_duration = getattr(slew, "slewtime", 0.0) or 0.0
+            if self.acs._desat_active and self.acs._desat_end > utime:
+                desat_end = self.acs._desat_end
+                time_after_desat = desat_end + slew_duration
+
+                if time_after_desat <= next_pass.begin:
+                    # Can wait for DESAT to complete, then slew
+                    execution_time = desat_end
+                else:
+                    # DESAT would make us miss the pass - terminate it early
+                    self.acs._desat_active = False
+                    self.acs._log_or_print(
+                        utime,
+                        "DESAT",
+                        f"Terminating DESAT early for GSP slew to {next_pass.station}",
+                    )
 
             command = ACSCommand(
                 command_type=ACSCommandType.SLEW_TO_TARGET,
-                execution_time=utime,
+                execution_time=execution_time,
                 slew=slew,
             )
             self.acs.enqueue_command(command)

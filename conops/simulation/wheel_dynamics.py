@@ -724,8 +724,9 @@ class WheelDynamics:
         if i_axis <= 0:
             return 0.0
 
-        # Available momentum headroom
-        headroom = self.get_headroom_along_axis(axis)
+        # Available momentum headroom (with budget margin for conservative limit)
+        # Budget margin ensures computed rates will pass can_execute_slew check
+        headroom = self.get_headroom_along_axis(axis) * self._budget_margin
 
         # Max rate: ω = H / I
         omega_rad = headroom / i_axis
@@ -778,25 +779,41 @@ class WheelDynamics:
         if torque_limited_accel <= 0 or physics_rate <= 0:
             return 0.0, 0.0, 0.0
 
-        # Momentum-limited acceleration (closed-form for triangular bang-bang)
-        momentum_limited_accel = (physics_rate**2) / distance_deg
+        # Determine effective rate (capped by operational limit if provided)
+        if rate_cap is not None and rate_cap > 0:
+            effective_rate = min(physics_rate, rate_cap)
+        else:
+            effective_rate = physics_rate
 
-        # Take the more restrictive limit
-        physics_accel = min(torque_limited_accel, momentum_limited_accel)
+        # Momentum-limited acceleration only applies to triangular profiles.
+        # For trapezoidal profiles (rate capped below triangular peak), there's
+        # no momentum constraint on accel since peak momentum = I * rate_cap,
+        # which is already within limits if rate_cap <= physics_rate.
+        #
+        # Triangular profile peak rate = sqrt(accel * distance)
+        # If torque_limited_accel gives triangular peak > effective_rate,
+        # we'll use trapezoidal and don't need momentum limit on accel.
+        triangular_peak = (torque_limited_accel * distance_deg) ** 0.5
+        if triangular_peak > effective_rate:
+            # Will use trapezoidal profile - no momentum constraint on accel
+            physics_accel = torque_limited_accel
+        else:
+            # Will use triangular profile - need momentum constraint
+            # accel_limit = effective_rate² / distance ensures peak = effective_rate
+            momentum_limited_accel = (effective_rate**2) / distance_deg
+            physics_accel = min(torque_limited_accel, momentum_limited_accel)
 
         if physics_accel <= 0:
             return 0.0, 0.0, 0.0
 
-        # Apply optional operational caps
+        # Apply optional acceleration cap
         if accel_cap is not None and accel_cap > 0:
             accel = min(physics_accel, accel_cap)
         else:
             accel = physics_accel
 
-        if rate_cap is not None and rate_cap > 0:
-            rate = min(physics_rate, rate_cap)
-        else:
-            rate = physics_rate
+        # Rate is already computed as effective_rate
+        rate = effective_rate
 
         # Compute motion time using bang-bang profile
         # Triangular profile if we can't reach max rate

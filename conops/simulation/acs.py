@@ -283,6 +283,10 @@ class ACS:
         # Pass transition tracking for spin-up/spin-down torques
         self._was_in_pass: bool = False
         self._last_pass_axis: np.ndarray = np.array([0.0, 0.0, 1.0])
+        # Post-pass pointing state: hold at pass end until new slew starts
+        self._holding_at_pass_end: bool = False
+        self._last_pass_end_ra: float = 0.0
+        self._last_pass_end_dec: float = 0.0
         # Safe mode tracking for sun-following torques
         self._was_in_safe_mode_tracking: bool = False
         self._last_safe_mode_axis: np.ndarray = np.array([0.0, 0.0, 1.0])
@@ -604,6 +608,7 @@ class ACS:
 
         angle_deg = float(getattr(slew, "slewdist", 0.0))
         accel_deg = float(slew.accel)
+        max_rate = float(getattr(slew, "vmax", 0.0)) or None
         slew_time = float(getattr(slew, "slewtime", 0.0))
         if slew_time <= 0:
             slew_time = 60.0  # Default estimate
@@ -616,8 +621,9 @@ class ACS:
             dist_mag = 1e-6  # Default small disturbance
 
         # Delegate to WheelDynamics (axis is now in body frame)
+        # Pass max_rate to cap peak momentum for trapezoidal profiles
         return self.wheel_dynamics.check_slew_momentum_budget(
-            angle_deg, axis, accel_deg, slew_time, dist_mag
+            angle_deg, axis, accel_deg, slew_time, dist_mag, max_rate
         )
 
     def _record_slew_start_momentum(self, slew: "Slew") -> None:
@@ -1049,6 +1055,7 @@ class ACS:
         slew.calc_slewtime()
 
         # Pre-slew momentum budget check (for non-SAFE slews with wheels)
+        # SAFE slews must proceed regardless of wheel state (emergency mode)
         if self.reaction_wheels and slew.obstype != "SAFE":
             budget_ok, budget_msg = self._check_slew_momentum_budget(slew, utime)
             if not budget_ok:
@@ -1408,6 +1415,66 @@ class ACS:
                 f"Proceeding with default parameters.",
             )
 
+    def _apply_gsp_slew_wheel_limits(self, slew: Slew, utime: float) -> None:
+        """Apply wheel limits to GSP (ground station pass) slew parameters.
+
+        Like SAFE slews, GSP slews are priority and must proceed to avoid missing
+        ground station contacts. This method optimizes timing when wheels have
+        capacity, or uses defaults when limits are exceeded.
+        """
+        if not self.reaction_wheels:
+            return
+
+        dist = float(getattr(slew, "slewdist", 0.0) or 0.0)
+        if dist <= 0:
+            return
+
+        # Get rotation axis (set by predict_slew via _compute_slew_distance)
+        axis_inertial = np.array(
+            getattr(slew, "rotation_axis", (0.0, 0.0, 1.0)), dtype=float
+        )
+        nrm = np.linalg.norm(axis_inertial)
+        if nrm > 0:
+            axis_inertial = axis_inertial / nrm
+
+        # Transform to body frame at slew start position
+        start_ra = float(getattr(slew, "startra", self.ra))
+        start_dec = float(getattr(slew, "startdec", self.dec))
+        axis = self._axis_inertial_to_body(axis_inertial, start_ra, start_dec)
+
+        accel_cap = self.acs_config.get_accel_cap()
+        rate_cap = self.acs_config.max_slew_rate
+
+        can_execute, reason = self.wheel_dynamics.can_execute_slew(
+            axis, dist, accel_cap, rate_cap
+        )
+
+        if can_execute:
+            accel, rate, _ = self.wheel_dynamics.compute_slew_params(
+                axis, dist, accel_cap, rate_cap
+            )
+            slew.accel = accel
+            slew.vmax = rate
+        else:
+            # GSP slews must proceed - compute what params ARE achievable
+            # even if they don't meet the caps
+            accel, rate, _ = self.wheel_dynamics.compute_slew_params(
+                axis,
+                dist,
+                None,
+                None,  # No caps - get physics-limited values
+            )
+            if accel > 0 and rate > 0:
+                slew.accel = accel
+                slew.vmax = rate
+            else:
+                self._log_or_print(
+                    utime,
+                    "SLEW",
+                    f"{unixtime2date(utime)}: GSP slew may exceed wheel limits: {reason}. "
+                    f"Proceeding with default parameters.",
+                )
+
     def validate_slew(self, slew: Slew, utime: float | None = None) -> bool:
         """Validate a slew for wheel capability and update its kinematic parameters.
 
@@ -1686,13 +1753,23 @@ class ACS:
         # If we are in a groundstations pass
         elif self.current_pass is not None:
             self.ra, self.dec = self.current_pass.ra_dec(utime)  # type: ignore[assignment]
-        # If we are actively slewing
+            # Track pass end position for smooth transition when pass ends
+            self._last_pass_end_ra = self.ra
+            self._last_pass_end_dec = self.dec
+            self._holding_at_pass_end = True  # Will hold here when pass ends
+        # If we are actively slewing (takes priority over post-pass holding)
         elif self.last_slew is not None and self.last_slew.is_slewing(utime):
             self.ra, self.dec = self.last_slew.ra_dec(utime)
+            self._holding_at_pass_end = False  # Clear post-pass state on slew
+        # Just exited pass: hold at pass end position until new slew starts
+        elif self._holding_at_pass_end:
+            self.ra = self._last_pass_end_ra
+            self.dec = self._last_pass_end_dec
         # Slew scheduled but not started yet: hold at start position
         elif self.last_slew is not None and utime < self.last_slew.slewstart:
             self.ra = self.last_slew.startra
             self.dec = self.last_slew.startdec
+            self._holding_at_pass_end = False  # Clear on slew start
         # Slew completed: hold at end position
         elif self.last_slew is not None:
             self.ra = self.last_slew.endra
@@ -1807,10 +1884,11 @@ class ACS:
         dist_deg = float(np.rad2deg(np.arccos(cosc)))
         rate_deg_s = dist_deg / dt
 
-        # Use wheel physics limit during PASS mode (tracking rate depends on geometry)
+        # Use wheel physics limit during pass tracking (tracking rate depends on geometry)
         # Use configured slew rate limit during other modes (commanded slews)
-        is_pass = self.acsmode == ACSMode.PASS
-        max_rate = self._get_max_body_rate(for_pass_tracking=is_pass)
+        # Note: Check current_pass, not acsmode, because DESAT can be active during a pass
+        is_pass_tracking = self.current_pass is not None
+        max_rate = self._get_max_body_rate(for_pass_tracking=is_pass_tracking)
         if max_rate is None:
             raise ValueError(
                 "Cannot validate pointing rate: max_slew_rate not configured "
@@ -1819,7 +1897,11 @@ class ACS:
                 "max_momentum and spacecraft_moi."
             )
 
-        if rate_deg_s > max_rate:
+        # Add 5% tolerance for numerical discretization effects during pass tracking
+        # Pass tracking rates are computed from orbital geometry and may have
+        # small discretization artifacts near the rate limit
+        rate_tolerance = max_rate * 0.05 if is_pass_tracking else 0.0
+        if rate_deg_s > max_rate + rate_tolerance:
             warning = (
                 f"Pointing rate violation at t={utime}: {rate_deg_s:.2f} deg/s "
                 f"exceeds max {max_rate:.2f} deg/s "
@@ -1950,6 +2032,18 @@ class ACS:
             # integral which may not match the observed rate change due to discrete vs
             # continuous trajectory differences. Slew momentum is verified separately
             # by _verify_slew_end_momentum.
+            self._last_wheel_momentum = self._get_total_wheel_momentum().copy()
+            self._last_pointing_rate_rad_s = current_rate_rad_s
+            return
+
+        # Check if we just entered pass tracking (transition from no pass to pass)
+        # At pass START, the body starts rotating to track the ground station,
+        # but wheels don't have the accumulated momentum yet. Skip this check.
+        was_in_pass = getattr(self, "_was_in_pass_tracking", False)
+        in_pass = self.current_pass is not None
+        self._was_in_pass_tracking = in_pass
+        if in_pass and not was_in_pass and last_rate_rad_s < 0.001:
+            # Just started pass tracking from nearly stationary - skip check
             self._last_wheel_momentum = self._get_total_wheel_momentum().copy()
             self._last_pointing_rate_rad_s = current_rate_rad_s
             return

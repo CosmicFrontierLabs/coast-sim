@@ -721,6 +721,19 @@ class TestDITLADCSMomentumWarnings:
                 print(f"  {w}")
             if len(pointing_warnings) > 5:
                 print(f"  ... and {len(pointing_warnings) - 5} more")
+            # Debug worst warning (largest rate violation)
+            import re
+
+            worst_rate = 0.0
+            worst_idx = 0
+            for i, w in enumerate(pointing_warnings):
+                match = re.search(r"(\d+\.?\d*) deg/s exceeds", w)
+                if match:
+                    rate = float(match.group(1))
+                    if rate > worst_rate:
+                        worst_rate = rate
+                        worst_idx = i
+            self._debug_pointing_warning(ditl, pointing_warnings[worst_idx])
 
         assert len(pointing_warnings) == 0, (
             f"[seed={seed}] Expected 0 pointing warnings, got {len(pointing_warnings)}. "
@@ -832,6 +845,167 @@ class TestDITLADCSMomentumWarnings:
                 f"[seed={seed}] MTQ not effectively bleeding momentum: only {high_mom_neg_frac * 100:.1f}% "
                 f"of high-momentum MTQ-active steps show decreasing momentum (expected >40%)"
             )
+
+    def _debug_pointing_warning(self, ditl, warning: str) -> None:
+        """Debug helper to analyze a pointing warning in context."""
+        import re
+
+        print(f"\n{'=' * 60}")
+        print("DEBUG: Analyzing pointing warning")
+        print(f"{'=' * 60}")
+
+        # Parse timestamp from warning
+        match = re.search(r"t=(\d+\.?\d*)", warning)
+        if not match:
+            print("Could not parse timestamp from warning")
+            return
+
+        problem_time = float(match.group(1))
+        print(f"Problem time: {problem_time}")
+
+        # Find index in telemetry
+        utime_arr = np.array(ditl.utime)
+        idx = np.searchsorted(utime_arr, problem_time)
+        if idx >= len(utime_arr):
+            idx = len(utime_arr) - 1
+
+        # Show telemetry around problem time
+        ra_arr = np.array(ditl.ra)
+        dec_arr = np.array(ditl.dec)
+        mode_arr = np.array(ditl.mode)
+
+        print(f"\nTelemetry around problem time (idx={idx}):")
+        for i in range(max(0, idx - 3), min(len(utime_arr), idx + 4)):
+            marker = " >>>" if i == idx else "    "
+            print(
+                f"{marker} t={utime_arr[i]:.0f}: ra={ra_arr[i]:.2f}, dec={dec_arr[i]:.2f}, mode={mode_arr[i]}"
+            )
+
+        # Check pass state at problem time
+        current_pass = ditl.acs.passrequests.current_pass(problem_time)
+        prev_pass = ditl.acs.passrequests.current_pass(problem_time - ditl.step_size)
+        next_pass_obj = ditl.acs.passrequests.next_pass(problem_time)
+
+        print("\nPass state at problem time:")
+        print(f"  current_pass(t): {current_pass}")
+        print(f"  current_pass(t-dt): {prev_pass}")
+        print(f"  next_pass: {next_pass_obj}")
+
+        if current_pass:
+            print("\n  Pass details:")
+            print(f"    station: {current_pass.station}")
+            print(f"    begin: {current_pass.begin}")
+            print(f"    end: {current_pass.end}")
+            print(
+                f"    gsstart: ({current_pass.gsstartra:.2f}, {current_pass.gsstartdec:.2f})"
+            )
+            print(
+                f"    gsend: ({current_pass.gsendra:.2f}, {current_pass.gsenddec:.2f})"
+            )
+            ra_dec_at_t = current_pass.ra_dec(problem_time)
+            print(f"    ra_dec({problem_time:.0f}): {ra_dec_at_t}")
+            if current_pass.ra and current_pass.dec:
+                print(
+                    f"    profile[0]: ({current_pass.ra[0]:.2f}, {current_pass.dec[0]:.2f})"
+                )
+
+        # Check what slews were active
+        print("\nSlew state:")
+        last_slew = ditl.acs.last_slew
+        current_slew = ditl.acs.current_slew
+        if last_slew:
+            print(f"  last_slew: obstype={last_slew.obstype}, obsid={last_slew.obsid}")
+            print(f"    start: ({last_slew.startra:.2f}, {last_slew.startdec:.2f})")
+            print(f"    end: ({last_slew.endra:.2f}, {last_slew.enddec:.2f})")
+            print(f"    slewstart={last_slew.slewstart}, slewend={last_slew.slewend}")
+        if current_slew and current_slew != last_slew:
+            print(
+                f"  current_slew: obstype={current_slew.obstype}, obsid={current_slew.obsid}"
+            )
+            print(
+                f"    start: ({current_slew.startra:.2f}, {current_slew.startdec:.2f})"
+            )
+            print(f"    end: ({current_slew.endra:.2f}, {current_slew.enddec:.2f})")
+            print(
+                f"    slewstart={current_slew.slewstart}, slewend={current_slew.slewend}"
+            )
+
+        # Check slew timing for this pass
+        if current_pass:
+            # Calculate expected slew time
+            prev_ra = ra_arr[idx - 1] if idx > 0 else ra_arr[idx]
+            prev_dec = dec_arr[idx - 1] if idx > 0 else dec_arr[idx]
+            # Use great-circle distance formula
+            r0, d0 = np.deg2rad(prev_ra), np.deg2rad(prev_dec)
+            r1, d1 = (
+                np.deg2rad(current_pass.gsstartra),
+                np.deg2rad(current_pass.gsstartdec),
+            )
+            cosc = np.sin(d0) * np.sin(d1) + np.cos(d0) * np.cos(d1) * np.cos(r1 - r0)
+            cosc = np.clip(cosc, -1.0, 1.0)
+            dist = np.rad2deg(np.arccos(cosc))
+            print("\n  Slew analysis:")
+            print(f"    Spacecraft pos before pass: ({prev_ra:.2f}, {prev_dec:.2f})")
+            print(
+                f"    Pass start pos: ({current_pass.gsstartra:.2f}, {current_pass.gsstartdec:.2f})"
+            )
+            print(f"    Angular distance: {dist:.2f} deg")
+
+            # What slew time would be needed?
+            acs_cfg = ditl.config.spacecraft_bus.attitude_control
+            if acs_cfg:
+                expected_slew_time = acs_cfg.slew_time(dist)
+                print(f"    Expected slew time: {expected_slew_time:.1f}s")
+                print(
+                    f"    Should have started slewing at: t={current_pass.begin - expected_slew_time:.0f}"
+                )
+
+        # Check DITLLog for GSP slew events
+        print("\nDITL Log events in window [t-600, t+100]:")
+        if hasattr(ditl, "log") and hasattr(ditl.log, "events"):
+            relevant_events = []
+            for evt in ditl.log.events:
+                if hasattr(evt, "utime"):
+                    # Window from 600s before pass to 100s after problem
+                    if current_pass and (current_pass.begin - 600) <= evt.utime <= (
+                        problem_time + 100
+                    ):
+                        relevant_events.append(evt)
+            if relevant_events:
+                for evt in relevant_events:
+                    print(f"  t={evt.utime:.0f}: {evt.event_type} - {evt.description}")
+            else:
+                print("  (no events found in window)")
+
+        # Look specifically for what was happening when slew should have started
+        if current_pass:
+            acs_cfg = ditl.config.spacecraft_bus.attitude_control
+            if acs_cfg:
+                slew_start_time = current_pass.begin - acs_cfg.slew_time(dist)
+                slew_start_idx = np.searchsorted(utime_arr, slew_start_time)
+                print(
+                    f"\nState when slew SHOULD have started (t={slew_start_time:.0f}):"
+                )
+                if 0 <= slew_start_idx < len(utime_arr):
+                    print(
+                        f"  Position: ({ra_arr[slew_start_idx]:.2f}, {dec_arr[slew_start_idx]:.2f})"
+                    )
+                    print(f"  Mode: {mode_arr[slew_start_idx]}")
+                    # Check what next_pass would have been at that time
+                    next_p = ditl.acs.passrequests.next_pass(slew_start_time)
+                    print(f"  next_pass at that time: {next_p}")
+                    if next_p:
+                        # Would time_to_slew have returned True?
+                        time_to_slew_result = next_p.time_to_slew(
+                            utime=slew_start_time,
+                            ra=ra_arr[slew_start_idx],
+                            dec=dec_arr[slew_start_idx],
+                        )
+                        print(
+                            f"  time_to_slew({slew_start_time:.0f}) = {time_to_slew_result}"
+                        )
+
+        print(f"{'=' * 60}\n")
 
     def test_pointing_momentum_consistency_catches_teleport(self):
         """Verify pointing-momentum consistency check catches non-physical teleportation.
