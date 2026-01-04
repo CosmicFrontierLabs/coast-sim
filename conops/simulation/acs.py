@@ -1106,6 +1106,9 @@ class ACS:
         self.current_slew = slew
         self.last_slew = slew
 
+        # Clear post-pass hold state - we're now actively slewing
+        self._holding_at_pass_end = False
+
         # Reset clamp flag for this slew
         self._slew_clamped = False
 
@@ -1781,8 +1784,12 @@ class ACS:
             self._last_pass_end_ra = self.ra
             self._last_pass_end_dec = self.dec
             self._holding_at_pass_end = True  # Will hold here when pass ends
-        # If we are actively slewing (takes priority over post-pass holding)
-        elif self.last_slew is not None and self.last_slew.is_slewing(utime):
+        # If we are actively slewing (but not if holding at pass end - slew was interrupted)
+        elif (
+            self.last_slew is not None
+            and self.last_slew.is_slewing(utime)
+            and not self._holding_at_pass_end
+        ):
             self.ra, self.dec = self.last_slew.ra_dec(utime)
             self._holding_at_pass_end = False  # Clear post-pass state on slew
         # Just exited pass: hold at pass end position until new slew starts
