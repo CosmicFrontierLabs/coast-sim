@@ -2869,13 +2869,25 @@ class ACS:
             self._was_in_safe_mode_tracking = True
             return True
 
-        # Angular distance from previous pointing
+        # Angular distance from previous pointing to target
         from math import pi
+
+        # Compute target sun/charging pointing (same logic as _calculate_safe_mode_pointing)
+        # We must compute target here because wheel updates run before pointing updates,
+        # so self.ra/dec still has the previous timestep's value.
+        if self.solar_panel is not None:
+            target_ra, target_dec = self.solar_panel.optimal_charging_pointing(
+                utime, self.ephem
+            )
+        else:
+            index = self.ephem.index(dtutcfromtimestamp(utime))
+            target_ra = self.ephem.sun_ra_deg[index]
+            target_dec = self.ephem.sun_dec_deg[index]
 
         r0 = np.deg2rad(self._last_pointing_ra)
         d0 = np.deg2rad(self._last_pointing_dec)
-        r1 = np.deg2rad(self.ra)
-        d1 = np.deg2rad(self.dec)
+        r1 = np.deg2rad(target_ra)
+        d1 = np.deg2rad(target_dec)
 
         try:
             v0 = np.array(
@@ -2933,9 +2945,9 @@ class ACS:
         # Compute disturbance torque
         disturbance = self._compute_disturbance_torque(utime)
 
-        # Requested torque = I * alpha (plus disturbance rejection)
+        # Requested torque = I * alpha (minus disturbance to reject it)
         requested_torque = accel_req * (pi / 180.0) * i_axis
-        T_req = requested_torque * axis + disturbance
+        T_req = requested_torque * axis - disturbance
 
         # Allocate to wheels using the standard method
         taus, taus_allowed, t_actual, _ = self._allocate_wheel_torques(
@@ -2991,9 +3003,9 @@ class ACS:
         # Compute disturbance torque
         disturbance = self._compute_disturbance_torque(utime)
 
-        # Requested torque = I * alpha (plus disturbance rejection)
+        # Requested torque = I * alpha (minus disturbance to reject it)
         requested_torque = accel_req * (pi / 180.0) * i_axis
-        T_req = requested_torque * axis + disturbance
+        T_req = requested_torque * axis - disturbance
 
         # Allocate to wheels using the standard method
         taus, taus_allowed, t_actual, _ = self._allocate_wheel_torques(

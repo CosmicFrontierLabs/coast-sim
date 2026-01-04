@@ -2,7 +2,10 @@
 
 from unittest.mock import Mock
 
+import numpy as np
+
 from conops import ACSCommand, ACSCommandType, ACSMode
+from conops.simulation.reaction_wheel import ReactionWheel
 
 
 class TestSafeModeInitialization:
@@ -252,3 +255,152 @@ class TestSafeModeCommandInterface:
         assert acs.executed_commands[0].command_type == ACSCommandType.ENTER_SAFE_MODE
         assert acs.executed_commands[1].command_type == ACSCommandType.SLEW_TO_TARGET
         assert acs.executed_commands[1].slew.obstype == "SAFE"
+
+
+def _make_orthogonal_wheels(max_torque: float = 10.0, max_momentum: float = 10.0):
+    """Create three orthogonal reaction wheels for testing."""
+    return [
+        ReactionWheel(
+            max_torque=max_torque,
+            max_momentum=max_momentum,
+            orientation=(1.0, 0.0, 0.0),
+            current_momentum=0.0,
+            name="rw_x",
+        ),
+        ReactionWheel(
+            max_torque=max_torque,
+            max_momentum=max_momentum,
+            orientation=(0.0, 1.0, 0.0),
+            current_momentum=0.0,
+            name="rw_y",
+        ),
+        ReactionWheel(
+            max_torque=max_torque,
+            max_momentum=max_momentum,
+            orientation=(0.0, 0.0, 1.0),
+            current_momentum=0.0,
+            name="rw_z",
+        ),
+    ]
+
+
+class TestSafeModeWheelTracking:
+    """Test safe-mode wheel tracking with moving sun target."""
+
+    def test_safe_mode_tracking_reacts_to_moving_sun(self, acs, mock_ephem):
+        """Assert non-zero wheel torque when sun RA/Dec moves in safe mode.
+
+        This test verifies that safe-mode tracking computes the target sun
+        position at the start of each wheel update (not stale self.ra/dec),
+        resulting in wheel momentum changes when the sun moves.
+        """
+        # Set up wheels
+        acs.reaction_wheels = _make_orthogonal_wheels()
+        acs.wheel_dynamics.wheels = acs.reaction_wheels
+        acs._compute_disturbance_torque = lambda _ut: np.zeros(3)
+        acs.config.spacecraft_bus.attitude_control.spacecraft_moi = (10.0, 10.0, 10.0)
+
+        # Enter safe mode
+        utime = 1000.0
+        acs.request_safe_mode(utime)
+        acs.pointing(utime)
+        assert acs.in_safe_mode is True
+
+        # Complete the initial SAFE slew (mock returns 100s slew time)
+        acs.pointing(utime + 200)
+
+        # Record initial wheel momentum
+        initial_momentum = sum(abs(w.current_momentum) for w in acs.reaction_wheels)
+
+        # Move the sun target position
+        mock_ephem.sun[0].ra.deg = 50.0  # Was 45.0
+        mock_ephem.sun[0].dec.deg = 25.0  # Was 23.5
+        mock_ephem.sun_ra_deg = [50.0]
+        mock_ephem.sun_dec_deg = [25.0]
+
+        # Step forward - this should trigger tracking torque
+        acs.pointing(utime + 201)
+
+        # Wheel momentum should change since sun moved
+        final_momentum = sum(abs(w.current_momentum) for w in acs.reaction_wheels)
+        momentum_delta = abs(final_momentum - initial_momentum)
+
+        # With a ~5 degree sun movement and 10 kg·m² inertia,
+        # we expect measurable wheel momentum change
+        assert momentum_delta > 1e-6, (
+            f"Expected wheel momentum change when sun moves, got delta={momentum_delta}"
+        )
+
+
+class TestSafeModeDisturbanceRejection:
+    """Test that safe-mode correctly rejects (subtracts) disturbance torque."""
+
+    def test_safe_mode_disturbance_rejection_sign(self, acs, mock_ephem):
+        """Assert that constant disturbance is rejected, not amplified.
+
+        The wheel torque request should SUBTRACT disturbance to cancel it.
+        If disturbance were added instead, body momentum would diverge faster.
+
+        We move the sun slightly to ensure tracking is active (otherwise
+        the tracking function returns early with no wheel torque applied).
+        """
+        # Set up wheels
+        acs.reaction_wheels = _make_orthogonal_wheels()
+        acs.wheel_dynamics.wheels = acs.reaction_wheels
+        acs.config.spacecraft_bus.attitude_control.spacecraft_moi = (10.0, 10.0, 10.0)
+
+        # Apply a constant disturbance torque
+        constant_disturbance = np.array([0.01, 0.0, 0.0])  # 10 mNm about X
+        acs._compute_disturbance_torque = lambda _ut: constant_disturbance
+
+        # Enter safe mode
+        utime = 1000.0
+        acs.request_safe_mode(utime)
+        acs.pointing(utime)
+        assert acs.in_safe_mode is True
+
+        # Complete the initial SAFE slew
+        acs.pointing(utime + 200)
+
+        # Initialize pointing state for tracking
+        acs._last_pointing_ra = acs.ra
+        acs._last_pointing_dec = acs.dec
+        acs._last_pointing_utime = utime + 200
+        acs._last_pointing_rate_rad_s = 0.0
+
+        # Move sun slightly each step to keep tracking active
+        # This ensures the disturbance rejection code path is exercised
+        base_ra = mock_ephem.sun[0].ra.deg
+        for i in range(10):
+            t = utime + 201 + i
+            # Move sun by 0.1 deg/s
+            new_ra = base_ra + 0.1 * (i + 1)
+            mock_ephem.sun[0].ra.deg = new_ra
+            mock_ephem.sun_ra_deg = [new_ra]
+            acs.pointing(t)
+
+        # Check body momentum - with correct disturbance rejection, body momentum
+        # should stay near zero because wheel torque cancels the external disturbance.
+        #
+        # Physics:
+        # - External disturbance applies +0.01 Nm to body
+        # - With CORRECT subtraction: T_req = tracking - disturbance
+        #   Wheels apply -disturbance to body (canceling the external)
+        #   Body net effect: +disturbance + (-disturbance) = 0
+        # - With INCORRECT addition: T_req = tracking + disturbance
+        #   Wheels apply +disturbance to body (amplifying!)
+        #   Body net effect: +disturbance + (+disturbance) = 2*disturbance
+        #
+        # After 10 steps with disturbance 0.01 Nm:
+        # - Correct: body momentum ~0
+        # - Incorrect: body momentum ~0.2 Nm·s (double application)
+
+        final_body_momentum = np.linalg.norm(acs.wheel_dynamics.body_momentum)
+
+        # With correct subtraction, body momentum should stay near zero
+        # Allow some growth from tracking torque but not 2x disturbance amplification
+        # 10 steps * 1s * 0.02 Nm = 0.2 Nm·s if disturbance doubled
+        assert final_body_momentum < 0.1, (
+            f"Body momentum grew too much ({final_body_momentum:.4f}), "
+            "suggesting disturbance is added instead of subtracted"
+        )
