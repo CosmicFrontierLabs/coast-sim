@@ -258,28 +258,32 @@ class TestSafeModeCommandInterface:
         assert acs.executed_commands[1].slew.obstype == "SAFE"
 
 
-def _make_orthogonal_wheels(max_torque: float = 10.0, max_momentum: float = 10.0):
+def _make_orthogonal_wheels(
+    max_torque: float = 10.0,
+    max_momentum: float = 10.0,
+    current_momentum: float = 0.0,
+):
     """Create three orthogonal reaction wheels for testing."""
     return [
         ReactionWheel(
             max_torque=max_torque,
             max_momentum=max_momentum,
             orientation=(1.0, 0.0, 0.0),
-            current_momentum=0.0,
+            current_momentum=current_momentum,
             name="rw_x",
         ),
         ReactionWheel(
             max_torque=max_torque,
             max_momentum=max_momentum,
             orientation=(0.0, 1.0, 0.0),
-            current_momentum=0.0,
+            current_momentum=current_momentum,
             name="rw_y",
         ),
         ReactionWheel(
             max_torque=max_torque,
             max_momentum=max_momentum,
             orientation=(0.0, 0.0, 1.0),
-            current_momentum=0.0,
+            current_momentum=current_momentum,
             name="rw_z",
         ),
     ]
@@ -489,9 +493,10 @@ class TestSafeSlewWheelLimits:
 
     def test_safe_slew_warns_when_limits_exceeded(self, acs, mock_ephem, capsys):
         """SAFE slew should warn when wheel limits would be exceeded."""
-        # Setup wheels with very low limits
+        # Setup wheels that are nearly saturated (no headroom available)
+        # current_momentum close to max_momentum means no room for slew
         acs.reaction_wheels = _make_orthogonal_wheels(
-            max_torque=0.001, max_momentum=0.01
+            max_torque=1.0, max_momentum=1.0, current_momentum=0.99
         )
         acs.wheel_dynamics.wheels = acs.reaction_wheels
         acs.config.spacecraft_bus.attitude_control.spacecraft_moi = (10.0, 10.0, 10.0)
@@ -506,8 +511,9 @@ class TestSafeSlewWheelLimits:
 
     def test_safe_slew_proceeds_despite_exceeded_limits(self, acs, mock_ephem):
         """SAFE slew must proceed even when limits exceeded (emergency)."""
+        # Setup wheels that are nearly saturated (no headroom available)
         acs.reaction_wheels = _make_orthogonal_wheels(
-            max_torque=0.001, max_momentum=0.01
+            max_torque=1.0, max_momentum=1.0, current_momentum=0.99
         )
         acs.wheel_dynamics.wheels = acs.reaction_wheels
         acs.config.spacecraft_bus.attitude_control.spacecraft_moi = (10.0, 10.0, 10.0)

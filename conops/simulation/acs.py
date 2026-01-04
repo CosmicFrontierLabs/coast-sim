@@ -363,6 +363,30 @@ class ACS:
             return axis_body / nrm
         return np.array([0.0, 0.0, 1.0])
 
+    def _axis_body_to_inertial(
+        self, axis_body: np.ndarray, ra_deg: float, dec_deg: float
+    ) -> np.ndarray:
+        """Transform a rotation axis from body to inertial frame.
+
+        This is the inverse of _axis_inertial_to_body. The inverse of a rotation
+        matrix is its transpose.
+
+        Args:
+            axis_body: Rotation axis unit vector in body frame.
+            ra_deg: Current pointing right ascension (degrees).
+            dec_deg: Current pointing declination (degrees).
+
+        Returns:
+            Rotation axis unit vector in inertial frame.
+        """
+        r_ib = DisturbanceModel._build_rotation_matrix(ra_deg, dec_deg)
+        # Inverse of rotation matrix is its transpose
+        axis_inertial = np.asarray(r_ib.T.dot(axis_body), dtype=float)
+        nrm = float(np.linalg.norm(axis_inertial))
+        if nrm > 0:
+            return axis_inertial / nrm
+        return np.array([0.0, 0.0, 1.0])
+
     def _rate_limited_pointing(
         self,
         current_ra: float,
@@ -2835,11 +2859,35 @@ class ACS:
         last_rate = self._last_pointing_rate_rad_s * (180.0 / np.pi)
         accel_req = (omega_req - last_rate) / dt  # deg/s^2
 
-        # If no acceleration needed (same rate, no rotation), skip torque application
+        # If no acceleration needed (same rate, no rotation), still apply disturbance
+        # rejection to maintain pointing against external torques
         if abs(accel_req) < 1e-9 and dist_deg <= 0:
-            self._last_pass_torque_target_mag = 0.0
-            self._last_pass_torque_actual_mag = 0.0
-            self._build_wheel_snapshot(utime, None, None)
+            from math import pi
+
+            # Still need to reject disturbances even when holding position
+            disturbance = self._compute_disturbance_torque(utime)
+
+            # Use last tracking axis for disturbance rejection
+            axis = self._last_pass_axis.copy()
+
+            # Counter the disturbance to hold position
+            T_desired = -disturbance
+
+            taus, taus_allowed, t_actual, _ = self._allocate_wheel_torques(
+                T_desired, dt, use_weights=True
+            )
+
+            self._last_pass_torque_target_mag = float(np.linalg.norm(T_desired))
+            self._last_pass_torque_actual_mag = float(np.linalg.norm(t_actual))
+
+            # Apply external disturbance to body (changes total momentum)
+            self._apply_external_torque(disturbance, dt, source="disturbance")
+
+            # Apply wheel torques to counter disturbance
+            self._apply_wheel_torques_conserving(taus_allowed, dt)
+
+            self._was_in_pass = True
+            self._build_wheel_snapshot(utime, taus, taus_allowed)
             return True
 
         # Estimate rotation axis from endpoints
@@ -2855,7 +2903,13 @@ class ACS:
             axis_inertial = np.cross(v0, v1)
             nrm = np.linalg.norm(axis_inertial)
             if nrm <= 1e-12:
-                axis_inertial = np.array([0.0, 0.0, 1.0])
+                # Use last tracking axis if we have rate to spin down, else default
+                if abs(last_rate) > 0.01:
+                    axis_inertial = self._axis_body_to_inertial(
+                        self._last_pass_axis, self.ra, self.dec
+                    )
+                else:
+                    axis_inertial = np.array([0.0, 0.0, 1.0])
             else:
                 axis_inertial = axis_inertial / nrm
         except Exception:
@@ -3028,6 +3082,18 @@ class ACS:
             target_ra = self.ephem.sun_ra_deg[index]
             target_dec = self.ephem.sun_dec_deg[index]
 
+        # Apply same rate limiting as pointing will use (Fix 3: synchronize torque with pointing)
+        max_rate = self._get_max_body_rate(for_pass_tracking=True)
+        if max_rate is not None:
+            target_ra, target_dec = self._rate_limited_pointing(
+                self._last_pointing_ra,
+                self._last_pointing_dec,
+                target_ra,
+                target_dec,
+                dt,
+                max_rate,
+            )
+
         r0 = np.deg2rad(self._last_pointing_ra)
         d0 = np.deg2rad(self._last_pointing_dec)
         r1 = np.deg2rad(target_ra)
@@ -3048,19 +3114,37 @@ class ACS:
         except Exception:
             dist_deg = 0.0
 
-        if dist_deg <= 0:
-            # No motion, just hold
-            self._was_in_safe_mode_tracking = True
-            return True
-
         # Compute rate and acceleration
-        omega_req = dist_deg / dt  # deg/s
+        omega_req = dist_deg / dt if dist_deg > 0 else 0.0  # deg/s
         last_rate = self._last_pointing_rate_rad_s * (180.0 / pi)
         accel_req = (omega_req - last_rate) / dt  # deg/s^2
 
-        if abs(accel_req) < 1e-9:
-            # No acceleration needed, holding at constant rate
+        # If no acceleration needed and no motion, still apply disturbance rejection
+        if abs(accel_req) < 1e-9 and dist_deg <= 0:
+            # Still need to reject disturbances even when holding position
+            disturbance = self._compute_disturbance_torque(utime)
+
+            # Use last safe-mode tracking axis for disturbance rejection
+            axis = self._last_safe_mode_axis.copy()
+
+            # Counter the disturbance to hold position
+            T_desired = -disturbance
+
+            taus, taus_allowed, t_actual, _ = self._allocate_wheel_torques(
+                T_desired, dt, use_weights=True
+            )
+
+            self._last_pass_torque_target_mag = float(np.linalg.norm(T_desired))
+            self._last_pass_torque_actual_mag = float(np.linalg.norm(t_actual))
+
+            # Apply external disturbance to body (changes total momentum)
+            self._apply_external_torque(disturbance, dt, source="disturbance")
+
+            # Apply wheel torques to counter disturbance
+            self._apply_wheel_torques_conserving(taus_allowed, dt)
+
             self._was_in_safe_mode_tracking = True
+            self._build_wheel_snapshot(utime, taus, taus_allowed)
             return True
 
         # Compute rotation axis from pointing change
@@ -3068,7 +3152,15 @@ class ACS:
             axis_inertial = np.cross(v0, v1)
             nrm = np.linalg.norm(axis_inertial)
             if nrm <= 1e-12:
-                axis_inertial = np.array([0.0, 0.0, 1.0])
+                # Use last tracking axis if we have rate to spin down, else default
+                if abs(last_rate) > 0.01:
+                    axis_inertial = self._axis_body_to_inertial(
+                        self._last_safe_mode_axis,
+                        self._last_pointing_ra,
+                        self._last_pointing_dec,
+                    )
+                else:
+                    axis_inertial = np.array([0.0, 0.0, 1.0])
             else:
                 axis_inertial = axis_inertial / nrm
         except Exception:

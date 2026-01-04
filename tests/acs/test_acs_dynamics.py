@@ -335,22 +335,21 @@ class TestComputeSlewParams:
             f"1s={accel_1s:.4f}, 100s={accel_100s:.4f}"
         )
 
-    def test_compute_slew_params_closed_form_momentum_limit(self):
-        """Verify compute_slew_params uses closed-form momentum-limited acceleration.
+    def test_compute_slew_params_trapezoidal_uses_torque_limited_accel(self):
+        """Verify trapezoidal slews use torque-limited acceleration, not momentum.
 
-        For triangular bang-bang slew:
-        - Peak rate: ω_peak = sqrt(α × distance)
-        - Peak momentum: H_peak = I × ω_peak
-        - Constraint: H_peak ≤ headroom
-        - Solving: α ≤ rate_limit² / distance
+        For trapezoidal profiles (when triangular peak exceeds rate limit):
+        - Acceleration is torque-limited (max torque / inertia)
+        - Rate is capped by wheel momentum headroom
+        - Peak momentum at coast phase = I × rate_limit
 
-        This closed-form solution is self-consistent (no iteration needed).
+        This differs from triangular profiles where peak rate is lower.
         """
-        # Setup: low momentum forces momentum-limited regime
+        # Setup: low momentum means rate limit will cap, forcing trapezoidal profile
         wheels = [
             ReactionWheel(
                 max_torque=1.0,
-                max_momentum=0.5,  # Low momentum - will be the limit
+                max_momentum=0.5,  # Low momentum - will limit rate
                 orientation=(1.0, 0.0, 0.0),
                 current_momentum=0.0,
                 name="rw_x",
@@ -362,39 +361,47 @@ class TestComputeSlewParams:
         distance = 10.0
 
         # Compute expected values from first principles
-        # headroom = max_momentum * margin = 0.5 * 0.9 = 0.45 N·m·s
-        headroom = 0.5 * 0.9
+        # WheelDynamics applies two margins:
+        #   momentum_margin (0.9) in get_headroom_along_axis
+        #   budget_margin (0.85) in get_axis_rate_limit
+        # headroom = max_momentum * momentum_margin * budget_margin = 0.5 * 0.9 * 0.85
+        headroom = 0.5 * 0.9 * 0.85
         moi = 10.0  # moment of inertia
 
-        # rate_limit = headroom / moi * (180/π) = 2.578 deg/s
+        # rate_limit = headroom / moi * (180/π) = 2.192 deg/s
         rate_limit = headroom / moi * (180.0 / np.pi)
-
-        # momentum_limited_accel = rate_limit² / distance = 0.665 deg/s²
-        expected_accel = (rate_limit**2) / distance
 
         # torque_limited_accel = τ/moi * (180/π) = 5.73 deg/s²
         torque_limited_accel = (1.0 / moi) * (180.0 / np.pi)
 
-        # Verify we're in momentum-limited regime
-        assert expected_accel < torque_limited_accel, (
-            "Test requires momentum-limited regime"
+        # Verify we're in trapezoidal regime (triangular peak would exceed rate limit)
+        triangular_peak = np.sqrt(torque_limited_accel * distance)
+        assert triangular_peak > rate_limit, (
+            f"Test requires trapezoidal regime: peak {triangular_peak:.2f} > "
+            f"limit {rate_limit:.2f}"
         )
 
         # Get what compute_slew_params returns
         accel, rate, motion_time = wheel_dynamics.compute_slew_params(axis, distance)
 
-        # Should match closed-form solution exactly
-        assert np.isclose(accel, expected_accel, rtol=1e-6), (
-            f"Acceleration should be momentum-limited at {expected_accel:.4f} deg/s², "
+        # For trapezoidal profile: acceleration should be torque-limited
+        assert np.isclose(accel, torque_limited_accel, rtol=1e-6), (
+            f"Acceleration should be torque-limited at {torque_limited_accel:.4f} deg/s², "
             f"got {accel:.4f} deg/s²."
         )
 
-        # Verify self-consistency: peak momentum should equal headroom
-        # ω_peak = sqrt(α × distance)
-        omega_peak = np.sqrt(accel * distance) * (np.pi / 180.0)  # rad/s
-        peak_momentum = moi * omega_peak
-        assert np.isclose(peak_momentum, headroom, rtol=1e-6), (
-            f"Peak momentum {peak_momentum:.4f} should equal headroom {headroom:.4f}"
+        # Rate should be capped by momentum headroom
+        assert np.isclose(rate, rate_limit, rtol=1e-6), (
+            f"Rate should be momentum-limited at {rate_limit:.4f} deg/s, "
+            f"got {rate:.4f} deg/s."
+        )
+
+        # Verify coast-phase momentum equals usable headroom (with both margins applied)
+        omega_coast = rate * (np.pi / 180.0)  # rad/s
+        coast_momentum = moi * omega_coast
+        # Note: headroom already includes both margins
+        assert np.isclose(coast_momentum, headroom, rtol=1e-5), (
+            f"Coast momentum {coast_momentum:.4f} should equal headroom {headroom:.4f}"
         )
 
 
