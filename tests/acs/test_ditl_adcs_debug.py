@@ -187,9 +187,15 @@ class TestDITLADCSMomentumWarnings:
 
         return ditl, cfg
 
-    @pytest.fixture
-    def notebook_ditl_setup(self):
-        """Create DITL matching exactly the ditl-adcs.ipynb notebook (12h, 1000 targets)."""
+    @pytest.fixture(params=[41, 42, 43])
+    def notebook_ditl_setup(self, request):
+        """Create DITL matching exactly the ditl-adcs.ipynb notebook (12h, 1000 targets).
+
+        Parameterized with multiple random seeds to catch edge cases that only
+        appear with certain target distributions.
+        """
+        seed = request.param
+
         if not TLE_PATH.exists():
             pytest.skip(f"TLE file not found: {TLE_PATH}")
 
@@ -208,8 +214,8 @@ class TestDITLADCSMomentumWarnings:
             for station in cfg.ground_stations.stations:
                 station.schedule_probability = 1.0
 
-        # Exact notebook target setup
-        np.random.seed(43)
+        # Target setup with parameterized seed
+        np.random.seed(seed)
         n_targets = 1000
         target_ra = np.random.uniform(0, 360, n_targets)
         target_dec = np.random.uniform(-90, 90, n_targets)
@@ -231,7 +237,7 @@ class TestDITLADCSMomentumWarnings:
         ditl.acs._wheel_mom_margin = 1.0
         ditl.step_size = 10
 
-        return ditl, cfg
+        return ditl, cfg, seed
 
     def test_collect_momentum_warnings(self, short_ditl_setup):
         """Run DITL and collect all momentum-related warnings."""
@@ -553,7 +559,7 @@ class TestDITLADCSMomentumWarnings:
 
     def test_pass_tracking_rate(self, notebook_ditl_setup):
         """Verify spacecraft body rate matches required ground station tracking rate during passes."""
-        ditl, cfg = notebook_ditl_setup
+        ditl, cfg, seed = notebook_ditl_setup
 
         # Run simulation
         ditl.calc()
@@ -696,8 +702,13 @@ class TestDITLADCSMomentumWarnings:
           - Forward: wheel momentum returns to baseline after slews (conservation)
           - Reverse: body rotation requires corresponding wheel momentum change
         - No wheel saturation that would violate physics
+        - MTQ properly bleeds momentum when active
         """
-        ditl, cfg = notebook_ditl_setup
+        ditl, cfg, seed = notebook_ditl_setup
+
+        print(f"\n{'=' * 60}")
+        print(f"Running with seed={seed}")
+        print(f"{'=' * 60}")
 
         # Run simulation
         ditl.calc()
@@ -712,7 +723,7 @@ class TestDITLADCSMomentumWarnings:
                 print(f"  ... and {len(pointing_warnings) - 5} more")
 
         assert len(pointing_warnings) == 0, (
-            f"Expected 0 pointing warnings, got {len(pointing_warnings)}. "
+            f"[seed={seed}] Expected 0 pointing warnings, got {len(pointing_warnings)}. "
             f"First: {pointing_warnings[0] if pointing_warnings else 'N/A'}"
         )
 
@@ -726,11 +737,101 @@ class TestDITLADCSMomentumWarnings:
                 print(f"  ... and {len(momentum_warnings) - 5} more")
 
         assert len(momentum_warnings) == 0, (
-            f"Expected 0 momentum warnings, got {len(momentum_warnings)}. "
+            f"[seed={seed}] Expected 0 momentum warnings, got {len(momentum_warnings)}. "
             f"First: {momentum_warnings[0] if momentum_warnings else 'N/A'}"
         )
 
-        print("\nSUCCESS: No pointing or momentum warnings in 12-hour DITL")
+        # Validate MTQ behavior during active periods
+        self._validate_mtq_momentum_bleeding(ditl, seed)
+
+        print(
+            f"\n[seed={seed}] SUCCESS: No pointing or momentum warnings in 12-hour DITL"
+        )
+
+    def _validate_mtq_momentum_bleeding(self, ditl, seed: int) -> None:
+        """Verify MTQ properly bleeds wheel momentum when active.
+
+        When MTQ is active (power > 0), the net effect should be reduction
+        of wheel momentum magnitude over time. This validates that:
+        1. MTQ torque opposes wheel momentum (correct sign)
+        2. Momentum is actually being bled (not just spinning wheels harder)
+        """
+        mtq_power = np.array(getattr(ditl, "mtq_power", []))
+        wheel_momentum = np.array(getattr(ditl, "wheel_momentum_fraction_raw", []))
+        mode_arr = np.array(ditl.mode)
+
+        if mtq_power.size == 0 or wheel_momentum.size == 0:
+            print(f"  [seed={seed}] MTQ validation skipped - no telemetry available")
+            return
+
+        # Find periods where MTQ is active (power > threshold)
+        mtq_active = mtq_power > 0.1  # W threshold
+        mtq_active_count = mtq_active.sum()
+
+        if mtq_active_count == 0:
+            print(f"  [seed={seed}] MTQ validation skipped - MTQ never active")
+            return
+
+        print(f"\n  [seed={seed}] MTQ Validation:")
+        print(
+            f"    MTQ active steps: {mtq_active_count} ({mtq_active.mean() * 100:.1f}%)"
+        )
+
+        # Analyze momentum change during MTQ-active periods
+        # We expect momentum to decrease (on average) when MTQ is bleeding
+        dt = ditl.step_size
+
+        # Calculate momentum derivative at each step
+        momentum_deriv = np.diff(wheel_momentum) / dt
+
+        # Get derivatives during MTQ-active periods (excluding first step)
+        mtq_active_deriv_mask = mtq_active[1:]  # Align with diff output
+        mtq_active_derivs = momentum_deriv[mtq_active_deriv_mask]
+
+        if len(mtq_active_derivs) == 0:
+            print(f"    [seed={seed}] No MTQ-active derivative samples")
+            return
+
+        # Statistics on momentum change during MTQ activity
+        mean_deriv = mtq_active_derivs.mean()
+        negative_deriv_frac = (mtq_active_derivs < 0).mean()
+
+        print(f"    Mean momentum derivative during MTQ: {mean_deriv:.6f} /s")
+        print(
+            f"    Fraction with decreasing momentum: {negative_deriv_frac * 100:.1f}%"
+        )
+
+        # Also check by mode - MTQ should be most effective during DESAT
+        for m in [ACSMode.DESAT, ACSMode.SLEWING, ACSMode.SCIENCE]:
+            mode_mask = mode_arr[1:] == m
+            combined_mask = mtq_active_deriv_mask & mode_mask
+            if combined_mask.sum() > 10:  # Need enough samples
+                mode_derivs = momentum_deriv[combined_mask]
+                mode_mean = mode_derivs.mean()
+                mode_neg_frac = (mode_derivs < 0).mean()
+                print(
+                    f"    During {m.name}: mean_deriv={mode_mean:.6f}, decreasing={mode_neg_frac * 100:.1f}%"
+                )
+
+        # Validation: During high-momentum periods with MTQ active,
+        # momentum should be decreasing more often than increasing
+        high_momentum_mask = wheel_momentum[1:] > 0.3  # >30% capacity
+        combined_high = mtq_active_deriv_mask & high_momentum_mask
+
+        if combined_high.sum() > 10:
+            high_mom_derivs = momentum_deriv[combined_high]
+            high_mom_neg_frac = (high_mom_derivs < 0).mean()
+            print(
+                f"    High-momentum (>30%) with MTQ: {combined_high.sum()} steps, decreasing={high_mom_neg_frac * 100:.1f}%"
+            )
+
+            # Assert that MTQ is effective at bleeding momentum
+            # When momentum is high and MTQ is on, it should be decreasing >40% of the time
+            # (accounting for disturbances that may temporarily increase it)
+            assert high_mom_neg_frac > 0.4, (
+                f"[seed={seed}] MTQ not effectively bleeding momentum: only {high_mom_neg_frac * 100:.1f}% "
+                f"of high-momentum MTQ-active steps show decreasing momentum (expected >40%)"
+            )
 
     def test_pointing_momentum_consistency_catches_teleport(self):
         """Verify pointing-momentum consistency check catches non-physical teleportation.
