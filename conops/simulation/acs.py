@@ -939,6 +939,16 @@ class ACS:
             f"{unixtime2date(utime)}: Command queue cleared - no further commands will be executed",
         )
 
+        # Clear active pass to prevent pass tracking torques from fighting sun pointing
+        if self.current_pass is not None:
+            self._log_or_print(
+                utime,
+                "SAFE",
+                f"{unixtime2date(utime)}: Clearing active pass for safe mode",
+            )
+            self.current_pass = None
+        self._was_in_pass = False  # Reset transition flag to skip post-pass handling
+
         # Initiate slew to Sun pointing for safe mode
         # Use solar panel optimal pointing to maximize power generation
         if self.solar_panel is not None:
@@ -960,24 +970,14 @@ class ACS:
         self._enqueue_slew(safe_ra, safe_dec, obsid=-999, utime=utime, obstype="SAFE")
 
     def _start_desat(self, command: ACSCommand, utime: float) -> None:
-        """Start a reaction wheel desaturation/unloading period."""
-        duration = float(command.duration or 300.0)
-        # Do not start desat during SCIENCE dwell; defer until later
-        try:
-            current_mode = self.get_mode(utime)
-        except Exception:
-            current_mode = self.acsmode
-        if current_mode == ACSMode.SCIENCE and not self._is_actively_slewing(utime):
-            delay = getattr(self.ephem, "step_size", 1) or 1
-            command.execution_time = utime + delay
-            self._log_or_print(
-                utime,
-                "DESAT",
-                f"{unixtime2date(utime)}: DESAT deferred in SCIENCE mode, rescheduled to {unixtime2date(command.execution_time)}",
-            )
-            self.enqueue_command(command)
-            return
+        """Start a reaction wheel desaturation/unloading period.
 
+        DESAT starts immediately regardless of current mode. This is critical
+        because DESAT may be requested when stuck in SCIENCE mode with high
+        momentum (slews rejected). Starting DESAT transitions to DESAT mode,
+        which enables MTQ bleeding to reduce momentum.
+        """
+        duration = float(command.duration or 300.0)
         self._desat_active = True
         self._desat_end = utime + duration
         self._desat_use_mtq = bool(self.magnetorquers)
@@ -1126,6 +1126,8 @@ class ACS:
             is_first_slew = self._initialize_slew_positions(slew, utime)
             slew.at = None  # No visibility constraint in safe mode
             self._compute_slew_distance(slew)
+            # Apply wheel limits if possible (but don't gate - SAFE must proceed)
+            self._apply_safe_slew_wheel_limits(slew, utime)
             execution_time = utime  # Execute immediately
         else:
             # Set up target observation request and check visibility
@@ -1358,6 +1360,54 @@ class ACS:
 
         return True
 
+    def _apply_safe_slew_wheel_limits(self, slew: Slew, utime: float) -> None:
+        """Apply wheel limits to SAFE slew parameters without gating.
+
+        Unlike normal slews, SAFE slews must proceed regardless of wheel state.
+        This method optimizes timing when possible, or warns when limits exceeded.
+        """
+        if not self.reaction_wheels:
+            return
+
+        dist = float(getattr(slew, "slewdist", 0.0) or 0.0)
+        if dist <= 0:
+            return
+
+        # Get rotation axis (set by predict_slew via _compute_slew_distance)
+        axis_inertial = np.array(
+            getattr(slew, "rotation_axis", (0.0, 0.0, 1.0)), dtype=float
+        )
+        nrm = np.linalg.norm(axis_inertial)
+        if nrm > 0:
+            axis_inertial = axis_inertial / nrm
+
+        # Transform to body frame at current position
+        start_ra = float(getattr(slew, "startra", self.ra))
+        start_dec = float(getattr(slew, "startdec", self.dec))
+        axis = self._axis_inertial_to_body(axis_inertial, start_ra, start_dec)
+
+        accel_cap = self.acs_config.get_accel_cap()
+        rate_cap = self.acs_config.max_slew_rate
+
+        can_execute, reason = self.wheel_dynamics.can_execute_slew(
+            axis, dist, accel_cap, rate_cap
+        )
+
+        if can_execute:
+            accel, rate, _ = self.wheel_dynamics.compute_slew_params(
+                axis, dist, accel_cap, rate_cap
+            )
+            slew.accel = accel
+            slew.vmax = rate
+        else:
+            # SAFE must proceed - warn but don't block
+            self._log_or_print(
+                utime,
+                "SAFE",
+                f"{unixtime2date(utime)}: SAFE slew may exceed wheel limits: {reason}. "
+                f"Proceeding with default parameters.",
+            )
+
     def validate_slew(self, slew: Slew, utime: float | None = None) -> bool:
         """Validate a slew for wheel capability and update its kinematic parameters.
 
@@ -1450,12 +1500,12 @@ class ACS:
         if self.in_safe_mode:
             return ACSMode.SAFE
 
-        # Desat holds the spacecraft busy; treat as slewing/maintenance
+        # Desat holds position while bleeding wheel momentum via MTQ
         if self._desat_active:
             if utime >= self._desat_end:
                 self._desat_active = False
             else:
-                return ACSMode.SLEWING
+                return ACSMode.DESAT
 
         # Check if actively slewing
         if self._is_actively_slewing(utime):
@@ -3098,10 +3148,12 @@ class ACS:
         )
 
     def request_desat(self, utime: float, duration: float | None = None) -> None:
-        """Request a reaction wheel desaturation period."""
-        # If magnetorquers exist, we rely on continuous bleed instead of DESAT commands
-        if getattr(self, "magnetorquers", None):
-            return
+        """Request a reaction wheel desaturation period.
+
+        Even with magnetorquers, explicit DESAT is needed because MTQ bleeding
+        only occurs in non-SCIENCE modes. When stuck in SCIENCE mode with high
+        momentum (slews rejected), DESAT forces mode change to enable MTQ.
+        """
         # If a desat is active or already queued, do nothing
         if self._desat_active:
             return

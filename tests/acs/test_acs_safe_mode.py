@@ -1,5 +1,6 @@
 """Unit tests for ACS Safe Mode functionality."""
 
+from dataclasses import dataclass
 from unittest.mock import Mock
 
 import numpy as np
@@ -404,3 +405,118 @@ class TestSafeModeDisturbanceRejection:
             f"Body momentum grew too much ({final_body_momentum:.4f}), "
             "suggesting disturbance is added instead of subtracted"
         )
+
+
+@dataclass
+class DummyPass:
+    """Minimal pass for testing."""
+
+    ra_deg: float
+    dec_deg: float
+
+    def ra_dec(self, utime: float) -> tuple[float, float]:
+        return self.ra_deg, self.dec_deg
+
+
+class TestSafeModeClearsPass:
+    """Tests that safe-mode entry properly clears active pass."""
+
+    def test_safe_mode_clears_current_pass(self, acs, mock_ephem):
+        """SAFE entry should clear current_pass."""
+        # Set up an active pass
+        acs.current_pass = DummyPass(ra_deg=45.0, dec_deg=30.0)
+        assert acs.current_pass is not None
+
+        # Enter safe mode
+        utime = 1000.0
+        acs.request_safe_mode(utime)
+        acs.pointing(utime)
+
+        # Pass should be cleared
+        assert acs.current_pass is None
+        assert acs._was_in_pass is False
+
+    def test_safe_mode_uses_sun_tracking_not_pass_tracking(self, acs, mock_ephem):
+        """After SAFE entry mid-pass, wheel torques should track sun, not pass."""
+        # Set up wheels
+        acs.reaction_wheels = _make_orthogonal_wheels()
+        acs.wheel_dynamics.wheels = acs.reaction_wheels
+        acs._compute_disturbance_torque = lambda _ut: np.zeros(3)
+        acs.config.spacecraft_bus.attitude_control.spacecraft_moi = (10.0, 10.0, 10.0)
+
+        # Set up a pass pointing somewhere NOT at the sun
+        acs.current_pass = DummyPass(
+            ra_deg=180.0, dec_deg=-45.0
+        )  # Opposite side of sky
+
+        # Enter safe mode
+        utime = 1000.0
+        acs.request_safe_mode(utime)
+        acs.pointing(utime)
+
+        # Complete the SAFE slew
+        acs.pointing(utime + 200)
+
+        # Move sun to trigger tracking
+        mock_ephem.sun[0].ra.deg = 50.0
+        mock_ephem.sun_ra_deg = [50.0]
+        acs.pointing(utime + 201)
+
+        # Safe-mode tracking should be active (not pass tracking)
+        assert acs._was_in_safe_mode_tracking is True
+
+
+class TestSafeSlewWheelLimits:
+    """Tests that SAFE slews handle wheel limits appropriately."""
+
+    def test_safe_slew_uses_physics_params_when_capable(self, acs, mock_ephem):
+        """SAFE slew should use physics-derived parameters when wheels have capacity."""
+        acs.reaction_wheels = _make_orthogonal_wheels(
+            max_torque=10.0, max_momentum=50.0
+        )
+        acs.wheel_dynamics.wheels = acs.reaction_wheels
+        acs.config.spacecraft_bus.attitude_control.spacecraft_moi = (10.0, 10.0, 10.0)
+
+        utime = 1000.0
+        acs.request_safe_mode(utime)
+        acs.pointing(utime)
+
+        # Slew should have physics-derived (not default) parameters
+        slew = acs.last_slew
+        assert slew is not None
+        assert slew.obstype == "SAFE"
+        # With capable wheels, params should be set (not the defaults 0.5/0.25)
+
+    def test_safe_slew_warns_when_limits_exceeded(self, acs, mock_ephem, capsys):
+        """SAFE slew should warn when wheel limits would be exceeded."""
+        # Setup wheels with very low limits
+        acs.reaction_wheels = _make_orthogonal_wheels(
+            max_torque=0.001, max_momentum=0.01
+        )
+        acs.wheel_dynamics.wheels = acs.reaction_wheels
+        acs.config.spacecraft_bus.attitude_control.spacecraft_moi = (10.0, 10.0, 10.0)
+
+        utime = 1000.0
+        acs.request_safe_mode(utime)
+        acs.pointing(utime)
+
+        # Check warning was printed (ACS uses _log_or_print which prints to stdout)
+        captured = capsys.readouterr()
+        assert "SAFE slew may exceed wheel limits" in captured.out
+
+    def test_safe_slew_proceeds_despite_exceeded_limits(self, acs, mock_ephem):
+        """SAFE slew must proceed even when limits exceeded (emergency)."""
+        acs.reaction_wheels = _make_orthogonal_wheels(
+            max_torque=0.001, max_momentum=0.01
+        )
+        acs.wheel_dynamics.wheels = acs.reaction_wheels
+        acs.config.spacecraft_bus.attitude_control.spacecraft_moi = (10.0, 10.0, 10.0)
+
+        utime = 1000.0
+        acs.request_safe_mode(utime)
+        acs.pointing(utime)
+
+        # SAFE slew should be enqueued regardless of wheel limits
+        assert acs.last_slew is not None
+        assert acs.last_slew.obstype == "SAFE"
+        assert acs.in_safe_mode is True

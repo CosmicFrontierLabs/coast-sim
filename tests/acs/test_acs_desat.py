@@ -31,8 +31,8 @@ class TestDesatCommand:
         assert acs._desat_end == pytest.approx(120.0)
         assert all(w.current_momentum == 0.0 for w in acs.reaction_wheels)
 
-        # During desat, mode is treated as slewing/maintenance
-        assert acs.get_mode(10.0) == ACSMode.SLEWING
+        # During desat, mode is DESAT (holding position, MTQ active)
+        assert acs.get_mode(10.0) == ACSMode.DESAT
         # After desat window, mode returns to science when idle
         assert acs.get_mode(200.0) == ACSMode.SCIENCE
 
@@ -62,7 +62,7 @@ class TestCheckCurrentLoad:
         wheel = ReactionWheel(max_torque=0.1, max_momentum=1.0)
         wheel.current_momentum = 0.60  # exactly 60%
         self._setup_wheels(acs, [wheel])
-        # Ensure no magnetorquers (request_desat skips if MTQs exist)
+        # Clear magnetorquers to test non-MTQ desat path
         acs.magnetorquers = []
         # Use utime past the desat cooldown period (1800s)
         utime = 2000.0

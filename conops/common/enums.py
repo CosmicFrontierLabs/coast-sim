@@ -10,6 +10,7 @@ class ACSMode(int, Enum):
     PASS = 3
     CHARGING = 4
     SAFE = 5
+    DESAT = 6  # Wheel desaturation (holding position, MTQ active)
 
 
 class ChargeState(int, Enum):

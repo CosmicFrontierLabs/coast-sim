@@ -342,6 +342,7 @@ def plot_ditl_momentum(
         ACSMode.CHARGING.value: "orange",
         ACSMode.SAFE.value: "red",
         ACSMode.SAA.value: "gray",
+        ACSMode.DESAT.value: "cyan",
     }
     for m in ACSMode:
         mask = mode == m
