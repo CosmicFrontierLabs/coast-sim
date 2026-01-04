@@ -1350,6 +1350,12 @@ class ACS:
         # Verify pointing change is consistent with wheel momentum change
         self._validate_pointing_momentum_consistency(utime)
 
+        # Update pointing tracking state AFTER all validation functions have run,
+        # so they all see a consistent "before" state for comparison
+        self._last_pointing_ra = self.ra
+        self._last_pointing_dec = self.dec
+        self._last_pointing_utime = utime
+
         # Calculate roll angle
         # TODO: Enable when roll optimization is needed; currently disabled for performance
         if False:
@@ -1659,24 +1665,22 @@ class ACS:
         Compares current pointing to previous pointing and validates that
         the angular rate does not exceed physical limits. Logs a warning
         if an impossibly fast pointing change is detected.
+
+        Note: This function does NOT update _last_pointing_* state. That is
+        done once at the end of pointing() after all validation functions run,
+        so they all see a consistent "before" state.
         """
         if (
             self._last_pointing_ra is None
             or self._last_pointing_dec is None
             or self._last_pointing_utime is None
         ):
-            # First call - just record current pointing
-            self._last_pointing_ra = self.ra
-            self._last_pointing_dec = self.dec
-            self._last_pointing_utime = utime
+            # First call - no previous state to compare against
             return
 
         dt = utime - self._last_pointing_utime
         if dt <= 0:
             # Same timestep or going backwards - skip check
-            self._last_pointing_ra = self.ra
-            self._last_pointing_dec = self.dec
-            self._last_pointing_utime = utime
             return
 
         # Compute great-circle angular distance
@@ -1710,11 +1714,6 @@ class ACS:
             )
             self._pointing_warnings.append(warning)
             print(f"Pointing consistency warning: {warning}")
-
-        # Update tracking
-        self._last_pointing_ra = self.ra
-        self._last_pointing_dec = self.dec
-        self._last_pointing_utime = utime
 
     def _validate_pointing_momentum_consistency(self, utime: float) -> None:
         """Verify pointing change is consistent with wheel momentum change.

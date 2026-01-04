@@ -735,9 +735,12 @@ class TestDITLADCSMomentumWarnings:
     def test_pointing_momentum_consistency_catches_teleport(self):
         """Verify pointing-momentum consistency check catches non-physical teleportation.
 
-        This test simulates the bug where pointing jumped without corresponding
-        wheel momentum changes. The consistency check should catch this.
+        This test exercises the REAL code path through pointing() to ensure
+        the consistency check is not bypassed. It simulates a bug where pointing
+        jumps without corresponding wheel momentum changes.
         """
+        from unittest.mock import MagicMock, patch
+
         from conops.simulation.acs import ACS
 
         begin = datetime(2025, 1, 1)
@@ -749,29 +752,63 @@ class TestDITLADCSMomentumWarnings:
         # Create ACS directly without full constraint setup
         acs = ACS(config=cfg, log=None)
 
-        # Manually initialize wheel momentum tracking state
         t0 = begin.timestamp()
         initial_ra, initial_dec = 45.0, 30.0
-        acs.ra = initial_ra
-        acs.dec = initial_dec
-        acs._last_pointing_ra = initial_ra
-        acs._last_pointing_dec = initial_dec
-        acs._last_pointing_utime = t0
 
-        # Get initial wheel momentum
-        h_initial = acs._get_total_wheel_momentum().copy()
-        acs._last_wheel_momentum = h_initial.copy()
-        acs._wheel_momentum_before_update = h_initial.copy()
+        # Create a completed slew at initial position using MagicMock
+        slew1 = MagicMock()
+        slew1.startra = initial_ra
+        slew1.startdec = initial_dec
+        slew1.endra = initial_ra
+        slew1.enddec = initial_dec
+        slew1.slewstart = t0 - 100
+        slew1.slewend = t0 - 90
+        slew1.is_slewing = lambda utime: False  # Completed
+        slew1.obsid = 1
+        acs.last_slew = slew1
 
-        # Now simulate a "teleport" - change pointing by 30 deg without wheel change
+        # Replace constraint with a mock to avoid ephemeris issues
+        mock_constraint = MagicMock()
+        mock_constraint.in_eclipse.return_value = False
+        mock_constraint.in_saa.return_value = False
+        mock_constraint.in_constraint.return_value = False
+        acs.constraint = mock_constraint
+
+        # Call pointing() to establish baseline tracking state
+        acs.pointing(t0)
+
+        # Verify initial state is established
+        assert acs._last_pointing_ra == initial_ra
+        assert acs._last_pointing_dec == initial_dec
+        assert acs._last_pointing_utime == t0
+
+        # Record wheel momentum before the teleport
+        h_before = acs._get_total_wheel_momentum().copy()
+
+        # Now simulate a "teleport" by changing the slew end position
+        # This is like a bug where pointing jumps without proper wheel dynamics
         t1 = t0 + 10.0
-        acs.ra = initial_ra + 30.0  # Jump 30 degrees in RA
+        teleport_ra = initial_ra + 30.0  # Jump 30 degrees in RA
 
-        # Wheel momentum stays the same (no update happened)
-        acs._wheel_momentum_before_update = h_initial.copy()
+        slew2 = MagicMock()
+        slew2.startra = teleport_ra
+        slew2.startdec = initial_dec
+        slew2.endra = teleport_ra
+        slew2.enddec = initial_dec
+        slew2.slewstart = t0 - 100  # Already completed
+        slew2.slewend = t0 - 90
+        slew2.is_slewing = lambda utime: False
+        slew2.obsid = 2
+        acs.last_slew = slew2
 
-        # Call the consistency check - should catch the mismatch
-        acs._validate_pointing_momentum_consistency(t1)
+        # Patch _update_wheel_momentum to prevent it from changing wheel state
+        # This simulates the bug: pointing changes but wheels don't
+        with patch.object(acs, "_update_wheel_momentum"):
+            # Manually set wheel momentum before update to unchanged value
+            acs._wheel_momentum_before_update = h_before.copy()
+
+            # Call pointing() through the real code path
+            acs.pointing(t1)
 
         # Check that a warning was generated
         warnings = acs.get_pointing_warnings()
@@ -783,7 +820,7 @@ class TestDITLADCSMomentumWarnings:
 
         assert len(momentum_warnings) > 0, (
             "Expected pointing-momentum consistency check to catch teleportation, "
-            "but no warning was generated"
+            "but no warning was generated. This indicates the check is being bypassed."
         )
 
         # Verify the warning mentions the inconsistency
