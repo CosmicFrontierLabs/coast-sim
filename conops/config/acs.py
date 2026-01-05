@@ -369,32 +369,48 @@ class AttitudeControlSystem(BaseModel):
                 return f"{axes[0]}-axis"
             return "/".join(axes) + "-axes"
 
-        # Compare caps against achievable values
+        # Compare caps against achievable values with safety margin
+        # The 80% margin accounts for:
+        # - Wheel momentum accumulation reducing available torque headroom
+        # - Non-optimal torque allocation across multiple wheels
+        # - Slew axes not perfectly aligned with wheel orientations
+        safety_margin = 0.80
         tol = 1e-9
+
         if accel_cap is not None and min_accel is not None:
-            if accel_cap > min_accel:
+            safe_accel = min_accel * safety_margin
+            if accel_cap > safe_accel:
                 limiting_axes = [
                     name
                     for name, val in accel_by_axis.items()
                     if abs(val - min_accel) < tol
                 ]
                 warnings.append(
-                    f"max_slew_accel={accel_cap:.3f} deg/s² exceeds wheel capability "
-                    f"of {min_accel:.3f} deg/s² (limited by {format_axes(limiting_axes)}). "
-                    f"Slews will use {min_accel:.3f} deg/s²."
+                    f"max_slew_accel={accel_cap:.3f} deg/s² exceeds wheel capability. "
+                    f"Theoretical max is {min_accel:.3f} deg/s² (limited by {format_axes(limiting_axes)}), "
+                    f"but clamping to {safe_accel:.3f} deg/s² (80% safety margin for momentum "
+                    f"headroom and axis alignment)."
                 )
+                # Clamp to safe limit (not theoretical max)
+                self.max_slew_accel = safe_accel
+                if self.slew_acceleration is not None:
+                    self.slew_acceleration = safe_accel
 
         if rate_cap is not None and min_rate is not None:
-            if rate_cap > min_rate:
+            safe_rate = min_rate * safety_margin
+            if rate_cap > safe_rate:
                 limiting_axes = [
                     name
                     for name, val in rate_by_axis.items()
                     if abs(val - min_rate) < tol
                 ]
                 warnings.append(
-                    f"max_slew_rate={rate_cap:.3f} deg/s exceeds wheel capability "
-                    f"of {min_rate:.3f} deg/s (limited by {format_axes(limiting_axes)}). "
-                    f"Slews will use {min_rate:.3f} deg/s."
+                    f"max_slew_rate={rate_cap:.3f} deg/s exceeds wheel capability. "
+                    f"Theoretical max is {min_rate:.3f} deg/s (limited by {format_axes(limiting_axes)}), "
+                    f"but clamping to {safe_rate:.3f} deg/s (80% safety margin for momentum "
+                    f"headroom and axis alignment)."
                 )
+                # Clamp to safe limit (not theoretical max)
+                self.max_slew_rate = safe_rate
 
         return warnings

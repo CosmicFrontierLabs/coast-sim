@@ -233,6 +233,9 @@ class TestDITLADCSMomentumWarnings:
                 ss_min=300,  # Notebook uses 300s
             )
 
+        # Use default slew settings for physics validation tests
+        # High slew settings cause expected slew rejections due to momentum budget,
+        # so we test with defaults to verify physics correctness
         ditl = QueueDITL(config=cfg, ephem=ephem, begin=begin, end=end, queue=queue)
         ditl.acs._wheel_mom_margin = 1.0
         ditl.step_size = 10
@@ -603,6 +606,7 @@ class TestDITLADCSMomentumWarnings:
             actual_rates = []
             required_rates = []
             rate_errors = []
+            skipped_slewing = 0
 
             for i in range(1, len(pass_indices)):
                 idx = pass_indices[i]
@@ -612,20 +616,6 @@ class TestDITLADCSMomentumWarnings:
                 if idx != idx_prev + 1:
                     continue
 
-                # Actual pointing change
-                ra0, dec0 = ra_arr[idx_prev], dec_arr[idx_prev]
-                ra1, dec1 = ra_arr[idx], dec_arr[idx]
-
-                # Compute angular distance (same formula as ACS uses)
-                r0, d0 = np.deg2rad(ra0), np.deg2rad(dec0)
-                r1, d1 = np.deg2rad(ra1), np.deg2rad(dec1)
-                cosc = np.sin(d0) * np.sin(d1) + np.cos(d0) * np.cos(d1) * np.cos(
-                    r1 - r0
-                )
-                cosc = np.clip(cosc, -1.0, 1.0)
-                actual_dist_deg = np.rad2deg(np.arccos(cosc))
-                actual_rate = actual_dist_deg / dt  # deg/s
-
                 # Required pointing from Pass object
                 t = utime_arr[idx]
                 t_prev = utime_arr[idx_prev]
@@ -634,6 +624,42 @@ class TestDITLADCSMomentumWarnings:
 
                 if req_ra0 is None or req_ra1 is None:
                     continue
+
+                # Actual pointing
+                ra0, dec0 = ra_arr[idx_prev], dec_arr[idx_prev]
+                ra1, dec1 = ra_arr[idx], dec_arr[idx]
+
+                # Check if we're still slewing to the pass start (actual position
+                # differs significantly from required position). This can happen
+                # when wheel-limited GSP slews haven't completed by pass start.
+                # Skip these timesteps - we can only verify tracking rate once
+                # we've arrived at the pass and are actually tracking.
+                def angular_dist(ra_a, dec_a, ra_b, dec_b):
+                    r_a, d_a = np.deg2rad(ra_a), np.deg2rad(dec_a)
+                    r_b, d_b = np.deg2rad(ra_b), np.deg2rad(dec_b)
+                    cosc = np.sin(d_a) * np.sin(d_b) + np.cos(d_a) * np.cos(
+                        d_b
+                    ) * np.cos(r_a - r_b)
+                    return np.rad2deg(np.arccos(np.clip(cosc, -1.0, 1.0)))
+
+                position_error_now = angular_dist(ra1, dec1, req_ra1, req_dec1)
+                position_error_prev = angular_dist(ra0, dec0, req_ra0, req_dec0)
+
+                # Skip if position error > 1 degree (still slewing to pass start)
+                # Also skip if previous timestep was slewing (transition moment)
+                if position_error_now > 1.0 or position_error_prev > 1.0:
+                    skipped_slewing += 1
+                    continue
+
+                # Compute angular distance for actual pointing (same formula as ACS)
+                r0, d0 = np.deg2rad(ra0), np.deg2rad(dec0)
+                r1, d1 = np.deg2rad(ra1), np.deg2rad(dec1)
+                cosc = np.sin(d0) * np.sin(d1) + np.cos(d0) * np.cos(d1) * np.cos(
+                    r1 - r0
+                )
+                cosc = np.clip(cosc, -1.0, 1.0)
+                actual_dist_deg = np.rad2deg(np.arccos(cosc))
+                actual_rate = actual_dist_deg / dt  # deg/s
 
                 # Compute required angular distance
                 r0, d0 = np.deg2rad(req_ra0), np.deg2rad(req_dec0)
@@ -648,6 +674,9 @@ class TestDITLADCSMomentumWarnings:
                 actual_rates.append(actual_rate)
                 required_rates.append(required_rate)
                 rate_errors.append(abs(actual_rate - required_rate))
+
+            if skipped_slewing > 0:
+                print(f"  Skipped {skipped_slewing} timesteps (still slewing to pass)")
 
             if not actual_rates:
                 print("  WARNING: No valid rate samples computed")

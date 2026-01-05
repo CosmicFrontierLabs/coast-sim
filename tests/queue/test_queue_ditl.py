@@ -668,7 +668,10 @@ def test_record_wheel_resource_accepts_dataclass_snapshot(queue_ditl):
         pass_torque_actual_mag=0.0,
         mtq_proj_max=0.0,
         mtq_torque_mag=0.0,
+        mtq_bleed_torque_mag=0.0,
         mtq_power_w=0.0,
+        body_momentum=(0.0, 0.0, 0.0),
+        external_impulse=(0.0, 0.0, 0.0),
     )
     queue_ditl.acs.wheel_snapshot = lambda: snapshot
 
@@ -710,7 +713,10 @@ def test_record_wheel_resource_alignment(queue_ditl):
         pass_torque_actual_mag=0.0,
         mtq_proj_max=0.0,
         mtq_torque_mag=0.0,
+        mtq_bleed_torque_mag=0.0,
         mtq_power_w=0.0,
+        body_momentum=(0.0, 0.0, 0.0),
+        external_impulse=(0.0, 0.0, 0.0),
     )
     queue_ditl.acs.wheel_snapshot = lambda: snapshot
 
@@ -730,6 +736,9 @@ def test_record_wheel_resource_alignment(queue_ditl):
         len(queue_ditl.pass_torque_actual_mag),
         len(queue_ditl.mtq_proj_max),
         len(queue_ditl.mtq_torque_mag),
+        len(queue_ditl.mtq_bleed_torque_mag),
+        len(queue_ditl.body_momentum_history),
+        len(queue_ditl.external_impulse_history),
         len(queue_ditl.wheel_saturation),
     ]
     assert all(length == lengths[0] for length in lengths)

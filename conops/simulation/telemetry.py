@@ -31,4 +31,7 @@ class WheelTelemetrySnapshot:
     pass_torque_actual_mag: float
     mtq_proj_max: float
     mtq_torque_mag: float
+    mtq_bleed_torque_mag: float
     mtq_power_w: float
+    body_momentum: tuple[float, float, float]
+    external_impulse: tuple[float, float, float]

@@ -88,6 +88,7 @@ class WheelDynamics:
         self.mtq_power_w: float = 0.0
         self._last_mtq_proj_max: float = 0.0
         self._last_mtq_torque_mag: float = 0.0
+        self._last_mtq_bleed_torque_mag: float = 0.0
 
         # Precompute static wheel properties for torque allocation
         # (orientation matrix and max momentum/torque don't change during simulation)
@@ -399,6 +400,7 @@ class WheelDynamics:
 
         if not self.wheels:
             self.mtq_power_w = total_power
+            self._last_mtq_bleed_torque_mag = 0.0
             return total_power
 
         # Project MTQ torque onto each wheel axis and bleed momentum toward zero
@@ -458,6 +460,9 @@ class WheelDynamics:
         self.mtq_power_w = total_power
         self._last_mtq_proj_max = float(max_proj)
         self._last_mtq_torque_mag = float(np.linalg.norm(t_mtq))
+        self._last_mtq_bleed_torque_mag = (
+            float(np.linalg.norm(actual_impulse) / dt) if dt > 0 else 0.0
+        )
 
         _logger.debug(
             "MTQ desat: τ_mtq=[%.4e, %.4e, %.4e] N·m, "

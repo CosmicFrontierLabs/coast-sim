@@ -43,6 +43,9 @@ class DITLMixin:
     wheel_momentum_fraction: list[float]
     wheel_torque_fraction: list[float]
     wheel_saturation: list[int]
+    mtq_bleed_torque_mag: list[float]
+    body_momentum_history: list[tuple[float, float, float]]
+    external_impulse_history: list[tuple[float, float, float]]
     # Disturbance torque tracking (magnitudes)
     disturbance_total: list[float]
     disturbance_gg: list[float]
@@ -123,6 +126,9 @@ class DITLMixin:
         self.wheel_torque_actual_mag: list[float] = []
         self.mtq_proj_max: list[float] = []
         self.mtq_torque_mag: list[float] = []
+        self.mtq_bleed_torque_mag: list[float] = []
+        self.body_momentum_history: list[tuple[float, float, float]] = []
+        self.external_impulse_history: list[tuple[float, float, float]] = []
         # Hold-mode torque diagnostics
         self.hold_torque_target_mag: list[float] = []
         self.hold_torque_actual_mag: list[float] = []

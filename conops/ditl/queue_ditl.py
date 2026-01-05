@@ -776,15 +776,28 @@ class QueueDITL(DITLMixin, DITLStats):
         # we'll interrupt and start GSP from current pos, so use that distance.
         effective_ra, effective_dec = ra, dec
 
-        # Check if it's time to start slewing for the next pass
+        # Pre-compute GSP slew to get actual physics-limited duration
+        # This ensures scheduling uses real slew time, not config-based estimate
+        slew = Slew(config=self.config)
+        slew.startra = effective_ra
+        slew.startdec = effective_dec
+        slew.endra = next_pass.gsstartra
+        slew.enddec = next_pass.gsstartdec
+        slew.obstype = "GSP"
+
+        self.acs._compute_slew_distance(slew)
+        self.acs._apply_gsp_slew_wheel_limits(slew, utime)
+        slew.calc_slewtime()
+        actual_slew_time = getattr(slew, "slewtime", 0.0) or 0.0
+
         # Account for DESAT: if DESAT is active, add its remaining time to the slew timing
         desat_buffer = 0.0
         if self.acs._desat_active and self.acs._desat_end > utime:
             desat_buffer = self.acs._desat_end - utime
 
-        if next_pass.time_to_slew(
-            utime=utime, ra=effective_ra, dec=effective_dec, time_buffer=desat_buffer
-        ):
+        # Check if it's time to start slewing using ACTUAL physics-limited duration
+        time_until_slew = (next_pass.begin - actual_slew_time - desat_buffer) - utime
+        if time_until_slew <= self.ephem.step_size * 2:
             self.log.log_event(
                 utime=utime,
                 event_type="SLEW",
@@ -792,21 +805,14 @@ class QueueDITL(DITLMixin, DITLStats):
                 acs_mode=self.acs.acsmode,
             )
 
-            # Create slew object for the pass
-            slew = Slew(
-                config=self.config,
-            )
-
+            # Update slew start position to current (may have changed since pre-compute)
             slew.startra = ra
             slew.startdec = dec
-            slew.endra = next_pass.gsstartra
-            slew.enddec = next_pass.gsstartdec
-            slew.obstype = "GSP"  # Ground Station Pass slew
-
-            # Compute slew parameters using wheel limits
-            self.acs._compute_slew_distance(slew)
-            self.acs._apply_gsp_slew_wheel_limits(slew, utime)
-            slew.calc_slewtime()
+            if (ra, dec) != (effective_ra, effective_dec):
+                # Position changed - recompute slew params
+                self.acs._compute_slew_distance(slew)
+                self.acs._apply_gsp_slew_wheel_limits(slew, utime)
+                slew.calc_slewtime()
 
             # Determine execution time accounting for DESAT
             # If DESAT is active, check if we can wait for it to complete
@@ -1253,6 +1259,9 @@ class QueueDITL(DITLMixin, DITLStats):
             self.pass_torque_actual_mag.append(0.0)
             self.mtq_proj_max.append(0.0)
             self.mtq_torque_mag.append(0.0)
+            self.mtq_bleed_torque_mag.append(0.0)
+            self.body_momentum_history.append((0.0, 0.0, 0.0))
+            self.external_impulse_history.append((0.0, 0.0, 0.0))
             return
 
         snapshot = self.acs.wheel_snapshot()
@@ -1283,6 +1292,13 @@ class QueueDITL(DITLMixin, DITLStats):
         )
         self.mtq_proj_max.append(getattr(snapshot, "mtq_proj_max", 0.0))
         self.mtq_torque_mag.append(getattr(snapshot, "mtq_torque_mag", 0.0))
+        self.mtq_bleed_torque_mag.append(getattr(snapshot, "mtq_bleed_torque_mag", 0.0))
+        self.body_momentum_history.append(
+            getattr(snapshot, "body_momentum", (0.0, 0.0, 0.0))
+        )
+        self.external_impulse_history.append(
+            getattr(snapshot, "external_impulse", (0.0, 0.0, 0.0))
+        )
         # Track per-wheel raw maxima across the run
         wheels = getattr(snapshot, "wheels", None)
         if wheels is None or not hasattr(wheels, "__iter__"):

@@ -287,6 +287,8 @@ class ACS:
         self._holding_at_pass_end: bool = False
         self._last_pass_end_ra: float = 0.0
         self._last_pass_end_dec: float = 0.0
+        # Track if late GSP slew warning has been logged for current pass
+        self._logged_late_slew_during_pass: bool = False
         # Safe mode tracking for sun-following torques
         self._was_in_safe_mode_tracking: bool = False
         self._last_safe_mode_axis: np.ndarray = np.array([0.0, 0.0, 1.0])
@@ -1075,9 +1077,10 @@ class ACS:
         slew.predict_slew()
         slew.calc_slewtime()
 
-        # Pre-slew momentum budget check (for non-SAFE slews with wheels)
-        # SAFE slews must proceed regardless of wheel state (emergency mode)
-        if self.reaction_wheels and slew.obstype != "SAFE":
+        # Pre-slew momentum budget check (for non-critical slews with wheels)
+        # SAFE slews must proceed regardless (emergency mode)
+        # GSP slews must proceed regardless (ground station contact is operationally critical)
+        if self.reaction_wheels and slew.obstype not in ("SAFE", "GSP"):
             budget_ok, budget_msg = self._check_slew_momentum_budget(slew, utime)
             if not budget_ok:
                 self._log_or_print(
@@ -1131,14 +1134,23 @@ class ACS:
         This is a private helper method used internally by ACS for creating slew
         commands during battery charging operations.
         """
-        # Do not accept new slews while a desat is active or scheduled
+        # Do not accept new slews while a desat is active or scheduled,
+        # EXCEPT for SAFE slews which are emergency operations that take priority
         if self._desat_active or self._commands.has_pending_type(ACSCommandType.DESAT):
+            if obstype != "SAFE":
+                self._log_or_print(
+                    utime,
+                    "SLEW",
+                    f"{unixtime2date(utime)}: Slew rejected - desat in progress/queued",
+                )
+                return False
+            # SAFE slews proceed - terminate DESAT
+            self._desat_active = False
             self._log_or_print(
                 utime,
-                "SLEW",
-                f"{unixtime2date(utime)}: Slew rejected - desat in progress/queued",
+                "DESAT",
+                f"{unixtime2date(utime)}: DESAT terminated for SAFE mode slew",
             )
-            return False
 
         # Create slew object
         slew = Slew(
@@ -1779,7 +1791,27 @@ class ACS:
             self._calculate_safe_mode_pointing(utime)
         # If we are in a groundstations pass
         elif self.current_pass is not None:
-            self.ra, self.dec = self.current_pass.ra_dec(utime)  # type: ignore[assignment]
+            # If still actively slewing (ANY slew, not just GSP), follow slew trajectory.
+            # This prevents pointing teleportation when wheel-limited slews take longer
+            # than the time before pass start, or when a PPT slew overlaps pass start.
+            if self.last_slew is not None and self.last_slew.is_slewing(utime):
+                slew_pos = self.last_slew.ra_dec(utime)
+                self.ra, self.dec = slew_pos[0], slew_pos[1]
+                # Log warning: pass started but slew still in progress
+                if not getattr(self, "_logged_late_slew_during_pass", False):
+                    obstype = getattr(self.last_slew, "obstype", "?")
+                    self._log_or_print(
+                        utime,
+                        "PASS",
+                        f"{unixtime2date(utime)}: Pass started but {obstype} slew still in progress - "
+                        f"continuing slew before pass tracking",
+                    )
+                    self._logged_late_slew_during_pass = True
+            else:
+                pass_pos = self.current_pass.ra_dec(utime)
+                if pass_pos[0] is not None and pass_pos[1] is not None:
+                    self.ra, self.dec = pass_pos[0], pass_pos[1]
+                self._logged_late_slew_during_pass = False  # Reset for next pass
             # Track pass end position for smooth transition when pass ends
             self._last_pass_end_ra = self.ra
             self._last_pass_end_dec = self.dec
@@ -2268,18 +2300,18 @@ class ACS:
         if self.last_slew is None or not is_slewing:
             handled_tracking = False
             # Handle pass tracking or pass END transition
-            if self.reaction_wheels and not self._desat_active and dt > 0:
+            # Note: Pass tracking is allowed during DESAT. MTQ bleed and wheel
+            # tracking torques can coexist - MTQ applies external torque to bleed
+            # momentum while wheels provide internal torque for tracking.
+            if self.reaction_wheels and dt > 0:
                 # Call pass update for both active pass and pass END handling
                 if self.current_pass is not None or self._was_in_pass:
                     handled_tracking = self._apply_pass_wheel_update(dt, utime)
 
             # Handle safe-mode sun tracking (after SAFE slew completes)
-            if (
-                self.reaction_wheels
-                and not self._desat_active
-                and dt > 0
-                and not handled_tracking
-            ):
+            # Note: Like pass tracking, safe-mode tracking is allowed during DESAT.
+            # MTQ bleed and wheel tracking torques can coexist.
+            if self.reaction_wheels and dt > 0 and not handled_tracking:
                 if self.in_safe_mode or self._was_in_safe_mode_tracking:
                     handled_tracking = self._apply_safe_mode_wheel_update(dt, utime)
 
@@ -2465,6 +2497,7 @@ class ACS:
         # Copy diagnostic values from WheelDynamics for telemetry
         self._last_mtq_proj_max = self.wheel_dynamics._last_mtq_proj_max
         self._last_mtq_torque_mag = self.wheel_dynamics._last_mtq_torque_mag
+        self._last_mtq_bleed_torque_mag = self.wheel_dynamics._last_mtq_bleed_torque_mag
 
     def _slew_accel_profile(self, slew: Slew, utime: float) -> float:
         """Return signed slew acceleration (deg/s^2) at utime for bang-bang profile.
@@ -2564,6 +2597,15 @@ class ACS:
             except Exception:
                 return 0.0
 
+        def _snap_vec(val: Any) -> tuple[float, float, float]:
+            try:
+                arr = np.array(val, dtype=float).reshape(-1)
+                if arr.size >= 3:
+                    return (float(arr[0]), float(arr[1]), float(arr[2]))
+            except Exception:
+                pass
+            return (0.0, 0.0, 0.0)
+
         # Clear cached diagnostics when not actively slewing (unless in a pass update)
         try:
             if self.current_slew is None or not self.current_slew.is_slewing(utime):
@@ -2576,6 +2618,7 @@ class ACS:
             if self.acsmode == ACSMode.SCIENCE and not self._mtq_bleed_in_science:
                 self._last_mtq_proj_max = 0.0
                 self._last_mtq_torque_mag = 0.0
+                self._last_mtq_bleed_torque_mag = 0.0
                 self.mtq_power_w = 0.0
         except Exception:
             pass
@@ -2651,7 +2694,18 @@ class ACS:
             ),
             mtq_proj_max=_snap_float(getattr(self, "_last_mtq_proj_max", 0.0)),
             mtq_torque_mag=_snap_float(getattr(self, "_last_mtq_torque_mag", 0.0)),
+            mtq_bleed_torque_mag=_snap_float(
+                getattr(self, "_last_mtq_bleed_torque_mag", 0.0)
+            ),
             mtq_power_w=_snap_float(getattr(self, "mtq_power_w", 0.0)),
+            body_momentum=_snap_vec(
+                getattr(self.wheel_dynamics, "body_momentum", (0.0, 0.0, 0.0))
+            ),
+            external_impulse=_snap_vec(
+                getattr(
+                    self.wheel_dynamics, "_cumulative_external_impulse", (0.0, 0.0, 0.0)
+                )
+            ),
         )
 
     def wheel_snapshot(self) -> WheelTelemetrySnapshot:
@@ -2675,7 +2729,10 @@ class ACS:
             pass_torque_actual_mag=0.0,
             mtq_proj_max=0.0,
             mtq_torque_mag=0.0,
+            mtq_bleed_torque_mag=0.0,
             mtq_power_w=0.0,
+            body_momentum=(0.0, 0.0, 0.0),
+            external_impulse=(0.0, 0.0, 0.0),
         )
 
     @property
