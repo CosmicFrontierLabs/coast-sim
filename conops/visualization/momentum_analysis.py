@@ -673,6 +673,7 @@ def plot_ditl_momentum(
     residual_raw = None
     diff_plot = None
     tol_band = None
+    kin_step_plot = None
     body_momentum_source = None
     if body_momentum_kin is not None and body_momentum_kin.shape == (len(hours), 3):
         body_momentum_source = body_momentum_kin
@@ -746,6 +747,41 @@ def plot_ditl_momentum(
                 color="0.8",
                 alpha=0.3,
                 linewidth=0,
+                label="tolerance",
+            )
+        if body_momentum_kin is not None and body_momentum_kin.shape == (
+            len(hours),
+            3,
+        ):
+            delta_h = np.diff(body_momentum_kin, axis=0)
+            delta_mag = np.linalg.norm(delta_h, axis=1)
+            if delta_mag.size:
+                delta_mag = np.insert(delta_mag, 0, delta_mag[0])
+            else:
+                delta_mag = np.zeros(len(hours), dtype=float)
+            window_seconds = 600.0
+            if dt > 0:
+                window = max(3, int(round(window_seconds / dt)))
+            else:
+                window = 3
+            window = min(window, len(hours))
+            step_scale = np.full(len(delta_mag), np.nan, dtype=float)
+            for i in range(len(delta_mag)):
+                start = max(0, i - window + 1)
+                window_vals = delta_mag[start : i + 1]
+                window_vals = window_vals[np.isfinite(window_vals)]
+                if window_vals.size:
+                    step_scale[i] = float(np.quantile(window_vals, 0.9))
+            kin_step_plot = np.maximum(step_scale, eps_resid)
+            ax.plot(
+                hours,
+                kin_step_plot,
+                color="0.5",
+                linewidth=0.8,
+                alpha=0.6,
+                linestyle="--",
+                label="kin step p90",
+                zorder=1,
             )
     elif total_mom_vec is not None and ext_impulse_internal is not None:
         h0 = total_mom_vec[0]
@@ -777,6 +813,7 @@ def plot_ditl_momentum(
                 color="0.8",
                 alpha=0.3,
                 linewidth=0,
+                label="tolerance",
             )
     elif wheel_frac_raw.size == len(hours):
         max_mom = 1.0
@@ -808,6 +845,7 @@ def plot_ditl_momentum(
                 color="0.8",
                 alpha=0.3,
                 linewidth=0,
+                label="tolerance",
             )
     else:
         ax.text(
@@ -891,6 +929,13 @@ def plot_ditl_momentum(
                 y_min = min(y_min, dmin)
             if dmax is not None:
                 y_max = max(y_max, dmax)
+        if kin_step_plot is not None:
+            kmin = _robust_min(kin_step_plot)
+            kmax = _robust_max(kin_step_plot)
+            if kmin is not None:
+                y_min = min(y_min, kmin)
+            if kmax is not None:
+                y_max = max(y_max, kmax)
         if tol_band is not None:
             tmin = _robust_min(tol_band)
             tmax = _robust_max(tol_band)
@@ -919,7 +964,8 @@ def plot_ditl_momentum(
                 ha="left",
                 va="bottom",
             )
-        if diff_plot is not None or ext_impulse_independent is None:
+        handles, labels = ax.get_legend_handles_labels()
+        if labels:
             ax.legend(loc="upper right", fontsize=legend_font_size)
     ax.set_ylabel(
         "Residual\n(Nms, log)", fontsize=label_font_size, fontfamily=font_family
