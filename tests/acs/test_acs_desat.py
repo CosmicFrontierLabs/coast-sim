@@ -8,9 +8,10 @@ from conops import ACSCommand, ACSCommandType, ACSMode, ReactionWheel
 
 
 class TestDesatCommand:
-    """Ensure DESAT command updates state and wheel momentum."""
+    """Ensure DESAT command updates state correctly."""
 
-    def test_desat_command_resets_momentum_and_mode(self, acs):
+    def test_desat_command_activates_desat_mode(self, acs):
+        """DESAT command activates desat state and mode."""
         # Ensure we have a wheel with stored momentum
         acs.reaction_wheels = [ReactionWheel(max_torque=0.1, max_momentum=0.2)]
         acs.reaction_wheels[0].current_momentum = 0.2
@@ -29,12 +30,33 @@ class TestDesatCommand:
         acs._process_commands(0.0)
         assert acs._desat_active is True
         assert acs._desat_end == pytest.approx(120.0)
-        assert all(w.current_momentum == 0.0 for w in acs.reaction_wheels)
 
-        # During desat, mode is DESAT (holding position, MTQ active)
+        # During desat, mode is DESAT (holding position)
         assert acs.get_mode(10.0) == ACSMode.DESAT
         # After desat window, mode returns to science when idle
         assert acs.get_mode(200.0) == ACSMode.SCIENCE
+
+    def test_desat_without_mtq_preserves_momentum(self, acs):
+        """Without magnetorquers, DESAT cannot reduce momentum (conservation)."""
+        # Ensure we have a wheel with stored momentum and no MTQs
+        acs.reaction_wheels = [ReactionWheel(max_torque=0.1, max_momentum=0.2)]
+        acs.reaction_wheels[0].current_momentum = 0.2
+        acs.magnetorquers = []  # No MTQs available
+
+        cmd = ACSCommand(
+            command_type=ACSCommandType.DESAT,
+            execution_time=0.0,
+            duration=120.0,
+        )
+        acs.enqueue_command(cmd)
+
+        # Process command
+        acs._process_commands(0.0)
+        assert acs._desat_active is True
+        assert acs._desat_use_mtq is False
+
+        # Momentum must be preserved - no external torque available
+        assert acs.reaction_wheels[0].current_momentum == pytest.approx(0.2)
 
 
 class TestCheckCurrentLoad:

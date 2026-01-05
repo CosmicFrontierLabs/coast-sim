@@ -1012,16 +1012,13 @@ class ACS:
         self._desat_end = utime + duration
         self._desat_use_mtq = bool(self.magnetorquers)
         if not self._desat_use_mtq:
-            # legacy instant unload
-            for w in self.reaction_wheels:
-                try:
-                    w.current_momentum = 0.0
-                except Exception:
-                    continue
+            # Without magnetorquers, we cannot shed momentum (no external torque).
+            # Still enter DESAT mode in case higher-level logic needs the mode change.
             self._log_or_print(
                 utime,
                 "DESAT",
-                f"{unixtime2date(utime)}: Starting desat for {duration:.0f}s (wheels reset)",
+                f"{unixtime2date(utime)}: DESAT requested but no magnetorquers available - "
+                f"cannot reduce wheel momentum",
             )
         else:
             self._log_or_print(
@@ -1550,10 +1547,13 @@ class ACS:
         if self.reaction_wheels:
             self._wheel_momentum_before_update = self._get_total_wheel_momentum().copy()
 
-        # Calculate current RA/Dec pointing
-        # Also update runtime-coupled wheel momentum while slewing
-        self._update_wheel_momentum(utime)
+        # Calculate current RA/Dec pointing FIRST so wheel updates use current position.
+        # Previously, wheel updates ran first, causing disturbance/tracking torques to be
+        # computed at the previous timestep's position (one-step lag).
         self._calculate_pointing(utime)
+
+        # Update wheel momentum based on current pointing and slew state
+        self._update_wheel_momentum(utime)
 
         # Verify pointing change is consistent with wheel momentum change
         self._validate_pointing_momentum_consistency(utime)
@@ -2836,10 +2836,20 @@ class ACS:
             self._build_wheel_snapshot(utime, None, None)
             return False
 
-        # Compute great-circle distance between current pointing and target (deg)
+        # Compute great-circle distance from PREVIOUS pointing to target (deg).
+        # Use _last_pointing_ra/dec since self.ra/dec is already updated to current
+        # position by _calculate_pointing (which now runs before wheel updates).
         try:
-            ra0 = float(self.ra)
-            dec0 = float(self.dec)
+            ra0 = float(
+                self._last_pointing_ra
+                if self._last_pointing_ra is not None
+                else self.ra
+            )
+            dec0 = float(
+                self._last_pointing_dec
+                if self._last_pointing_dec is not None
+                else self.dec
+            )
             ra1 = float(target_ra if target_ra is not None else 0.0)
             dec1 = float(target_dec if target_dec is not None else 0.0)
             r0 = np.deg2rad(ra0)
@@ -3077,9 +3087,8 @@ class ACS:
         # Angular distance from previous pointing to target
         from math import pi
 
-        # Compute target sun/charging pointing (same logic as _calculate_safe_mode_pointing)
-        # We must compute target here because wheel updates run before pointing updates,
-        # so self.ra/dec still has the previous timestep's value.
+        # Compute target sun/charging pointing (same logic as _calculate_safe_mode_pointing).
+        # We need the target to compute the required motion from previous to current position.
         if self.solar_panel is not None:
             target_ra, target_dec = self.solar_panel.optimal_charging_pointing(
                 utime, self.ephem
