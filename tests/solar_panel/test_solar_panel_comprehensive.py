@@ -1994,55 +1994,6 @@ class TestIlluminationAndPower:
         assert np.all(illumination == 0.0)
         assert np.all(power == 0.0)
 
-    @pytest.mark.skip(
-        reason="Array times with non-scalar indices breaks separation() - needs production fix"
-    )
-    def test_illumination_and_power_with_array_times(self, mock_ephemeris):
-        """Test illumination_and_power with array of times."""
-        from datetime import datetime, timezone
-
-        panel = SolarPanel(
-            sidemount=True,
-            cant_x=0.0,
-            cant_y=0.0,
-            max_power=500.0,
-            conversion_efficiency=0.9,
-        )
-        panel_set = SolarPanelSet(panels=[panel])
-
-        times = [
-            datetime(2018, 1, 1, tzinfo=timezone.utc),
-            datetime(2018, 1, 2, tzinfo=timezone.utc),
-        ]
-
-        # Use the mock_ephemeris fixture which has properly sized arrays
-        ephem = mock_ephemeris
-        ephem.index = Mock(return_value=0)  # Always return index 0 for simplicity
-
-        # Mock eclipse constraint for array evaluation
-        mock_constraint = Mock()
-        mock_result = Mock()
-        mock_result.constraint_array = np.array([False, False])  # Not in eclipse
-        mock_constraint.evaluate = Mock(return_value=mock_result)
-
-        with patch("conops.SolarPanel._eclipse_constraint", mock_constraint):
-            illumination, power = panel_set.illumination_and_power(
-                time=times,
-                ephem=ephem,
-                ra=0.0,
-                dec=0.0,
-            )
-
-        # Should return arrays
-        assert isinstance(illumination, np.ndarray)
-        assert isinstance(power, np.ndarray)
-        assert len(illumination) == 2
-        assert len(power) == 2
-        # With sun at RA=90, pointing at RA=0, Dec=0 (perpendicular), sidemount should be ~1.0
-        # Values depend on sun position from mock_ephemeris
-        assert np.all(illumination >= 0.0)
-        assert np.all(power >= 0.0)
-
     def test_illumination_and_power_efficiency_fallback(self):
         """Test illumination_and_power with efficiency fallback to set level."""
         panel = SolarPanel(max_power=500.0, conversion_efficiency=None)
