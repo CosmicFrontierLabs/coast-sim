@@ -2407,8 +2407,8 @@ class ACS:
         self._apply_wheel_torques_conserving(taus_allowed, dt)
 
         # Track commanded wheel momentum change for slew verification.
-        # Wheel torques produce body torque T_actual; by Newton's 3rd law,
-        # wheel momentum changes by the negative (wheels spin opposite to body).
+        # T_actual is the body torque; by Newton's 3rd law, wheel momentum
+        # changes in the opposite direction (wheels spin opposite to body).
         if hasattr(self, "_slew_commanded_wheel_delta"):
             # Compute wheel momentum change from per-wheel torques
             wheel_delta = np.zeros(3, dtype=float)

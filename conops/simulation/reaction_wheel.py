@@ -88,6 +88,9 @@ class ReactionWheel:
             return 0.0
         needed = abs(requested_torque) * motion_time
         if needed <= available:
+            # Enough headroom, but still must respect max torque capability
+            if abs(requested_torque) > self.max_torque:
+                return self.max_torque if requested_torque >= 0 else -self.max_torque
             return requested_torque
         # scale torque down so needed == available
         scale = available / (needed)

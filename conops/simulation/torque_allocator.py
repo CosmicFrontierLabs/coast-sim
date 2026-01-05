@@ -154,7 +154,8 @@ def allocate_wheel_torques(
         if abs(allowed) + 1e-9 < abs(taus[i]):
             clamped = True
 
-    # Compute actual produced torque vector
-    t_actual = e_mat.dot(taus_allowed) if e_mat.size else np.zeros(3)
+    # Compute actual body torque vector.
+    # Wheel torque is E @ taus_allowed, body torque is the reaction: -E @ taus_allowed
+    t_actual = -e_mat.dot(taus_allowed) if e_mat.size else np.zeros(3)
 
     return taus, taus_allowed, t_actual, clamped
