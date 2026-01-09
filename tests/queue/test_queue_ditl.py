@@ -503,6 +503,142 @@ class TestFetchNewPPT:
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "No targets available from Queue" in log_text
 
+    def test_fetch_ppt_defers_during_active_pass(self, queue_ditl):
+        """Test that _fetch_new_ppt returns early when a pass is in progress."""
+        mock_pass = Mock()
+        queue_ditl.acs.passrequests.current_pass = Mock(return_value=mock_pass)
+        queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        # PPT should not be set
+        assert queue_ditl.ppt is None
+        # Queue should not be queried
+        queue_ditl.queue.get.assert_not_called()
+        # No slew command should be enqueued
+        queue_ditl.acs.enqueue_command.assert_not_called()
+        # Log should indicate deferral
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "Deferring PPT fetch - pass in progress" in log_text
+
+    def test_fetch_ppt_rejects_slew_execution_during_pass(self, queue_ditl):
+        """Test slew rejection when execution time falls during a pass."""
+        # Setup mock PPT
+        mock_ppt = Mock()
+        mock_ppt.ra = 45.0
+        mock_ppt.dec = 30.0
+        mock_ppt.obsid = 1001
+        mock_ppt.next_vis = Mock(return_value=1000.0)
+        mock_ppt.ss_max = 3600.0
+        mock_ppt.ss_min = 100.0
+        queue_ditl.queue.get = Mock(return_value=mock_ppt)
+
+        # Mock that execution time falls during a pass
+        # First call returns None (initial check), second call returns a pass (execution time check)
+        queue_ditl.acs.passrequests.current_pass = Mock(side_effect=[None, Mock()])
+
+        queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        # PPT should be cleared
+        assert queue_ditl.ppt is None
+        # No command should be enqueued
+        queue_ditl.acs.enqueue_command.assert_not_called()
+        # Log should indicate rejection
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "Slew rejected - execution time falls during a pass" in log_text
+
+    def test_fetch_ppt_rejects_slew_completion_during_pass(self, queue_ditl):
+        """Test slew rejection when slew would complete during a pass."""
+        # Setup mock PPT
+        mock_ppt = Mock()
+        mock_ppt.ra = 45.0
+        mock_ppt.dec = 30.0
+        mock_ppt.obsid = 1001
+        mock_ppt.next_vis = Mock(return_value=1000.0)
+        mock_ppt.ss_max = 3600.0
+        mock_ppt.ss_min = 100.0
+        queue_ditl.queue.get = Mock(return_value=mock_ppt)
+
+        # No pass at current time or execution time, but pass during slew completion
+        def current_pass_check(time):
+            if time < 1050.0:  # Before slew completes
+                return None
+            else:  # Slew completion time
+                return Mock()  # Pass is active when slew would complete
+
+        queue_ditl.acs.passrequests.current_pass = Mock(side_effect=current_pass_check)
+
+        queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        # PPT should be cleared
+        assert queue_ditl.ppt is None
+        # No command should be enqueued
+        queue_ditl.acs.enqueue_command.assert_not_called()
+        # Log should indicate rejection
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "Slew rejected - would complete during a pass" in log_text
+
+    def test_fetch_ppt_rejects_insufficient_observation_time(self, queue_ditl):
+        """Test target rejection when there's not enough time before next pass."""
+        # Setup mock PPT with minimum observation time requirement
+        mock_ppt = Mock()
+        mock_ppt.ra = 45.0
+        mock_ppt.dec = 30.0
+        mock_ppt.obsid = 1001
+        mock_ppt.next_vis = Mock(return_value=1000.0)
+        mock_ppt.ss_max = 3600.0
+        mock_ppt.ss_min = 500.0  # Requires 500 seconds
+        queue_ditl.queue.get = Mock(return_value=mock_ppt)
+
+        # No current pass
+        queue_ditl.acs.passrequests.current_pass = Mock(return_value=None)
+
+        # Mock a pass that starts too soon
+        mock_next_pass = Mock()
+        mock_next_pass.begin = 1200.0  # Pass begins in 200 seconds
+        mock_next_pass.gsstartra = 100.0
+        mock_next_pass.gsstartdec = 50.0
+        queue_ditl.acs.passrequests.next_pass = Mock(return_value=mock_next_pass)
+
+        queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        # PPT should be cleared
+        assert queue_ditl.ppt is None
+        # No command should be enqueued
+        queue_ditl.acs.enqueue_command.assert_not_called()
+        # Log should indicate rejection with available time
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "rejected - only" in log_text
+        assert "available before pass" in log_text
+        assert str(mock_ppt.obsid) in log_text
+
+    def test_fetch_ppt_accepts_with_sufficient_observation_time(self, queue_ditl):
+        """Test target acceptance when there's enough time before next pass."""
+        # Setup mock PPT
+        mock_ppt = Mock()
+        mock_ppt.ra = 45.0
+        mock_ppt.dec = 30.0
+        mock_ppt.obsid = 1001
+        mock_ppt.next_vis = Mock(return_value=1000.0)
+        mock_ppt.ss_max = 3600.0
+        mock_ppt.ss_min = 100.0  # Requires 100 seconds
+        queue_ditl.queue.get = Mock(return_value=mock_ppt)
+
+        # No current pass
+        queue_ditl.acs.passrequests.current_pass = Mock(return_value=None)
+
+        # Mock a pass with plenty of time
+        mock_next_pass = Mock()
+        mock_next_pass.begin = 2000.0  # Pass begins in 1000 seconds
+        mock_next_pass.gsstartra = 100.0
+        mock_next_pass.gsstartdec = 50.0
+        queue_ditl.acs.passrequests.next_pass = Mock(return_value=mock_next_pass)
+
+        queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        # PPT should be set
+        assert queue_ditl.ppt is mock_ppt
+        # Command should be enqueued
+        queue_ditl.acs.enqueue_command.assert_called_once()
+
 
 class TestRecordSpacecraftState:
     """Test _record_spacecraft_state helper method."""
@@ -1386,6 +1522,82 @@ class TestCheckAndManagePasses:
         queue_ditl.acs.last_ppt = Mock(obsid=0xBEEF)
         queue_ditl._check_and_manage_passes(utime, ra, dec)
         # Verify method completes successfully
+
+    def test_check_and_manage_passes_slew_to_pass_has_gsp_obstype(self, queue_ditl):
+        """Test that slew to ground station pass is marked with GSP obstype."""
+        utime = 1000.0
+        ra, dec = 10.0, 20.0
+
+        # Create a mock pass object
+        pass_obj = Mock()
+        pass_obj.station = "GS_TEST"
+        pass_obj.begin = 1100.0
+        pass_obj.gsstartra = 100.0
+        pass_obj.gsstartdec = 50.0
+        pass_obj.time_to_slew = Mock(return_value=True)
+
+        # Mock the pass request methods
+        queue_ditl.acs.passrequests.current_pass = Mock(return_value=None)
+        queue_ditl.acs.passrequests.next_pass = Mock(return_value=pass_obj)
+        queue_ditl.acs.acsmode = ACSMode.SCIENCE
+
+        # Call the method
+        queue_ditl._check_and_manage_passes(utime, ra, dec)
+
+        # Verify a slew command was enqueued
+        queue_ditl.acs.enqueue_command.assert_called_once()
+
+        # Get the enqueued command
+        call_args = queue_ditl.acs.enqueue_command.call_args
+        command = call_args[0][0]
+
+        # Verify it's a SLEW_TO_TARGET command
+        assert command.command_type == ACSCommandType.SLEW_TO_TARGET
+
+        # Verify the slew has GSP obstype marker
+        assert command.slew.obstype == "GSP"
+
+        # Verify slew points to the pass start position
+        assert command.slew.endra == pass_obj.gsstartra
+        assert command.slew.enddec == pass_obj.gsstartdec
+
+    def test_check_and_manage_passes_skip_slew_when_already_slewing(self, queue_ditl):
+        """Test that we don't initiate a slew to a pass if already slewing."""
+        utime = 1000.0
+        ra, dec = 10.0, 20.0
+
+        # Set mode to SLEWING
+        queue_ditl.acs.acsmode = ACSMode.SLEWING
+
+        # Create a mock pass that would otherwise need slewing
+        pass_obj = Mock()
+        pass_obj.time_to_slew = Mock(return_value=True)
+        queue_ditl.acs.passrequests.next_pass = Mock(return_value=pass_obj)
+
+        # Call the method
+        queue_ditl._check_and_manage_passes(utime, ra, dec)
+
+        # No command should be enqueued because we're already slewing
+        queue_ditl.acs.enqueue_command.assert_not_called()
+
+    def test_check_and_manage_passes_skip_slew_when_in_pass(self, queue_ditl):
+        """Test that we don't initiate a slew to next pass if currently in a pass."""
+        utime = 1000.0
+        ra, dec = 10.0, 20.0
+
+        # Set mode to PASS
+        queue_ditl.acs.acsmode = ACSMode.PASS
+
+        # Create a mock pass that would otherwise need slewing
+        pass_obj = Mock()
+        pass_obj.time_to_slew = Mock(return_value=True)
+        queue_ditl.acs.passrequests.next_pass = Mock(return_value=pass_obj)
+
+        # Call the method
+        queue_ditl._check_and_manage_passes(utime, ra, dec)
+
+        # No command should be enqueued because we're already in a pass
+        queue_ditl.acs.enqueue_command.assert_not_called()
 
 
 class TestGetACSQueueStatus:

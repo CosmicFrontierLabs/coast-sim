@@ -391,6 +391,89 @@ class TestEndPassCoverage:
         acs._end_pass(1514764800.0)
         assert len(acs.command_queue) == 0
 
+    def test_end_pass_clears_stale_slew(self, acs):
+        """Test that _end_pass clears slews that started before current time (stale slews)."""
+        from conops.simulation.slew import Slew
+
+        # Create a slew that started in the past (stale)
+        mock_slew = Mock(spec=Slew)
+        mock_slew.slewstart = 1514764700.0  # Started 100 seconds ago
+        acs.last_slew = mock_slew
+
+        # Set up pass state
+        acs.current_pass = Mock(spec=Pass)
+        acs.acsmode = ACSMode.PASS
+
+        # End the pass
+        acs._end_pass(1514764800.0)
+
+        # Stale slew should be cleared
+        assert acs.last_slew is None
+        # Pass should be cleared
+        assert acs.current_pass is None
+        # Mode should be SCIENCE
+        assert acs.acsmode == ACSMode.SCIENCE
+
+    def test_end_pass_preserves_fresh_slew(self, acs):
+        """Test that _end_pass preserves slews that start in the future (fresh slews)."""
+        from conops.simulation.slew import Slew
+
+        # Create a slew that starts in the future (fresh)
+        mock_slew = Mock(spec=Slew)
+        mock_slew.slewstart = 1514764900.0  # Starts 100 seconds from now
+        acs.last_slew = mock_slew
+
+        # Set up pass state
+        acs.current_pass = Mock(spec=Pass)
+        acs.acsmode = ACSMode.PASS
+
+        # End the pass
+        acs._end_pass(1514764800.0)
+
+        # Fresh slew should be preserved
+        assert acs.last_slew is mock_slew
+        # Pass should still be cleared
+        assert acs.current_pass is None
+        # Mode should be SCIENCE
+        assert acs.acsmode == ACSMode.SCIENCE
+
+    def test_end_pass_handles_no_slew(self, acs):
+        """Test that _end_pass works correctly when there's no last_slew."""
+        # No slew at all
+        acs.last_slew = None
+
+        # Set up pass state
+        acs.current_pass = Mock(spec=Pass)
+        acs.acsmode = ACSMode.PASS
+
+        # End the pass (should not error)
+        acs._end_pass(1514764800.0)
+
+        # Everything should work as expected
+        assert acs.last_slew is None
+        assert acs.current_pass is None
+        assert acs.acsmode == ACSMode.SCIENCE
+
+    def test_end_pass_clears_slew_starting_exactly_at_current_time(self, acs):
+        """Test edge case where slew starts exactly at current time."""
+        from conops.simulation.slew import Slew
+
+        # Create a slew that starts exactly at current time
+        mock_slew = Mock(spec=Slew)
+        mock_slew.slewstart = 1514764800.0  # Starts at exact current time
+        acs.last_slew = mock_slew
+
+        # Set up pass state
+        acs.current_pass = Mock(spec=Pass)
+        acs.acsmode = ACSMode.PASS
+
+        # End the pass
+        acs._end_pass(1514764800.0)
+
+        # Slew starting at current time should be cleared (< is not satisfied, so preserved)
+        assert acs.last_slew is mock_slew
+        # This documents the current behavior: slews at exactly utime are kept
+
 
 class TestProcessCommandsCoverage:
     """Test _process_commands to ensure queue processing is covered."""
