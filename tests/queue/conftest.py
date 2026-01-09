@@ -128,6 +128,8 @@ def queue_ditl(mock_config, mock_ephem):
         mock_acs.slew_dists = []
         mock_acs.last_slew = None
         mock_acs.current_slew = None  # No active slew by default
+        mock_acs.ra = 0.0  # Current pointing RA
+        mock_acs.dec = 0.0  # Current pointing Dec
         # Set acsmode to a real ACSMode enum value for logging
         from conops import ACSMode
 
@@ -517,6 +519,8 @@ def queue_ditl_no_queue_log(mock_config, mock_ephem):
         mock_acs.slew_dists = []
         mock_acs.last_slew = None
         mock_acs.current_slew = None  # No active slew by default
+        mock_acs.ra = 0.0  # Current pointing RA
+        mock_acs.dec = 0.0  # Current pointing Dec
         # Set acsmode to a real ACSMode enum value for logging
         from conops import ACSMode
 
@@ -575,6 +579,8 @@ def queue_ditl_acs_no_ephem(mock_config, mock_ephem):
         mock_acs.slew_dists = []
         mock_acs.last_slew = None
         mock_acs.current_slew = None  # No active slew by default
+        mock_acs.ra = 0.0  # Current pointing RA
+        mock_acs.dec = 0.0  # Current pointing Dec
         # Set acsmode to a real ACSMode enum value for logging
         from conops import ACSMode
 

@@ -224,7 +224,7 @@ class TestPredictSlew:
         slew, ra_path, dec_path = slew_predict_setup
         slew.predict_slew()
         slew.acs_config.predict_slew.assert_called_once_with(
-            45.0, 30.0, 90.0, 60.0, steps=20
+            45.0, 30.0, 90.0, 60.0, steps=100
         )
 
     def test_predict_slew_sets_slewdist(self, slew_predict_setup):
@@ -251,3 +251,114 @@ class TestPredictSlew:
         slew, ra_path, dec_path = slew_predict_setup
         slew.predict_slew()
         assert np.allclose(slew.slewpath[1], dec_path)
+
+
+class TestSlewPathResolution:
+    """Tests demonstrating why 100 steps is better than 20 for slew paths.
+
+    Near celestial poles, small great-circle distances correspond to large RA
+    changes. When interpolating linearly in RA/Dec between sparse path points,
+    the interpolated position deviates from the true great circle path.
+
+    This test class quantifies the interpolation deviation for different step counts.
+    """
+
+    def _compute_max_interpolation_deviation(self, steps: int) -> float:
+        """Compute max deviation when linearly interpolating between path points.
+
+        For each segment between path points, computes the midpoint via:
+        1. Linear RA/Dec interpolation (what the slew code does)
+        2. True great-circle midpoint
+
+        Returns the maximum angular deviation in degrees.
+        """
+        from conops.common import angular_separation, great_circle
+
+        # Polar slew: RA changes significantly, Dec near pole
+        start_ra, start_dec = 0.0, 85.0
+        end_ra, end_dec = 180.0, 85.0
+
+        # Get great-circle path with specified steps
+        ra_path, dec_path = great_circle(start_ra, start_dec, end_ra, end_dec, steps)
+
+        max_deviation = 0.0
+        for i in range(len(ra_path) - 1):
+            # Linear interpolation midpoint (what slew code does)
+            lin_ra = (ra_path[i] + ra_path[i + 1]) / 2
+            lin_dec = (dec_path[i] + dec_path[i + 1]) / 2
+
+            # True great-circle midpoint
+            gc_ra, gc_dec = great_circle(
+                ra_path[i], dec_path[i], ra_path[i + 1], dec_path[i + 1], npts=3
+            )
+            true_ra, true_dec = gc_ra[1], gc_dec[1]  # Middle point
+
+            # Angular deviation
+            deviation = angular_separation(lin_ra, lin_dec, true_ra, true_dec)
+            max_deviation = max(max_deviation, deviation)
+
+        return max_deviation
+
+    def test_20_steps_has_significant_deviation(self):
+        """With 20 steps, interpolation can deviate >0.1 deg from great circle."""
+        deviation = self._compute_max_interpolation_deviation(20)
+        assert deviation > 0.1, (
+            f"Expected >0.1° deviation with 20 steps, got {deviation:.3f}°"
+        )
+
+    def test_100_steps_has_small_deviation(self):
+        """With 100 steps, interpolation deviation is under 0.1 deg."""
+        deviation = self._compute_max_interpolation_deviation(100)
+        assert deviation < 0.1, (
+            f"Expected <0.1° deviation with 100 steps, got {deviation:.4f}°"
+        )
+
+    def test_100_steps_is_better_than_20_steps(self):
+        """100 steps reduces interpolation deviation by ~5x vs 20 steps.
+
+        With 5x more path points, the deviation scales roughly as 1/N,
+        so we expect approximately 5x improvement.
+        """
+        deviation_20 = self._compute_max_interpolation_deviation(20)
+        deviation_100 = self._compute_max_interpolation_deviation(100)
+        improvement = deviation_20 / deviation_100
+        assert improvement > 4, f"Expected >4x improvement, got {improvement:.1f}x"
+        # Print for informational purposes
+        print(
+            f"\n  Deviation: 20 steps = {deviation_20:.4f}°, 100 steps = {deviation_100:.4f}° ({improvement:.1f}x better)"
+        )
+
+    def test_runtime_cost_is_acceptable(self):
+        """100 steps path calculation is reasonably fast."""
+        import time
+
+        from conops.common import great_circle
+
+        start_ra, start_dec = 0.0, 85.0
+        end_ra, end_dec = 180.0, 85.0
+
+        # Warm up
+        for _ in range(10):
+            great_circle(start_ra, start_dec, end_ra, end_dec, 20)
+            great_circle(start_ra, start_dec, end_ra, end_dec, 100)
+
+        # Time 20 steps
+        n_iter = 1000
+        t0 = time.perf_counter()
+        for _ in range(n_iter):
+            great_circle(start_ra, start_dec, end_ra, end_dec, 20)
+        time_20 = time.perf_counter() - t0
+
+        # Time 100 steps
+        t0 = time.perf_counter()
+        for _ in range(n_iter):
+            great_circle(start_ra, start_dec, end_ra, end_dec, 100)
+        time_100 = time.perf_counter() - t0
+
+        ratio = time_100 / time_20
+        # Accept up to 10x slowdown (very conservative) - actual is usually ~5x
+        assert ratio < 10, f"100 steps is {ratio:.1f}x slower than 20 steps"
+        # Print for informational purposes (visible with pytest -v)
+        print(
+            f"\n  Runtime: 20 steps = {time_20 * 1000:.2f}ms, 100 steps = {time_100 * 1000:.2f}ms ({ratio:.1f}x)"
+        )
