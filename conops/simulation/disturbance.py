@@ -87,6 +87,7 @@ class DisturbanceModel:
     B0_T = 3.12e-5  # equatorial field at surface (T)
     AU_M = 1.495978707e11
     SRP_P0 = 4.56e-6  # N/m^2 at 1 AU
+    _MAX_EPHEM_CACHE = 200000
 
     def __init__(self, ephem: Any, cfg: DisturbanceConfig) -> None:
         self.ephem = ephem
@@ -104,6 +105,17 @@ class DisturbanceModel:
         self._cached_r_ib: np.ndarray | None = None
         self._cached_ra: float | None = None
         self._cached_dec: float | None = None
+        self._cached_inertia: np.ndarray | None = None
+        self._cached_moi_key: tuple[float, ...] | float | None = None
+        self._ephem_cache_ready = False
+        self._ephem_cache_failed = False
+        self._ephem_pos_m: np.ndarray | None = None
+        self._ephem_vel_m: np.ndarray | None = None
+        self._ephem_sun_m: np.ndarray | None = None
+        self._ephem_lat: np.ndarray | None = None
+        self._ephem_lon: np.ndarray | None = None
+        self._ephem_r_norm: np.ndarray | None = None
+        self._ephem_alt_m: np.ndarray | None = None
         # Cache whether we have residual magnetic moment (avoid recomputing every call)
         rmm = cfg.residual_magnetic_moment
         self._has_residual_magnetic = (rmm[0] ** 2 + rmm[1] ** 2 + rmm[2] ** 2) > 0
@@ -178,6 +190,111 @@ class DisturbanceModel:
             return np.diag([val, val, val])
         except Exception:
             return np.diag([1.0, 1.0, 1.0])
+
+    @staticmethod
+    def _moi_key(moi_cfg: Any) -> tuple[float, ...] | float | None:
+        """Create a hashable key for inertia caching."""
+        try:
+            if isinstance(moi_cfg, (list, tuple, np.ndarray)):
+                arr = np.array(moi_cfg, dtype=float).reshape(-1)
+                return tuple(float(v) for v in arr)
+            return float(moi_cfg)
+        except Exception:
+            return None
+
+    def _infer_scale(self, vecs: np.ndarray, vec_type: str) -> float:
+        units = self.cfg.ephemeris_units.lower()
+        if units == "m":
+            return 1.0
+        if units == "km":
+            return 1000.0
+        mags = np.linalg.norm(vecs, axis=1)
+        if vec_type == "position":
+            return 1000.0 if float(np.nanmedian(mags)) < 1e5 else 1.0
+        return 1000.0 if float(np.nanmedian(mags)) < 100.0 else 1.0
+
+    def _scale_ephem_vectors(self, vecs: np.ndarray, vec_type: str) -> np.ndarray:
+        scale = self._infer_scale(vecs, vec_type)
+        return vecs if scale == 1.0 else vecs * scale
+
+    def _scale_sun_vectors(self, vecs: np.ndarray) -> np.ndarray:
+        units = self.cfg.ephemeris_units.lower()
+        if units == "m":
+            return vecs
+        if units == "km":
+            return vecs * 1000.0
+        mags = np.linalg.norm(vecs, axis=1)
+        scale = 1000.0 if float(np.nanmedian(mags)) < 1e9 else 1.0
+        return vecs if scale == 1.0 else vecs * scale
+
+    def _ephem_lat_lon_arrays(
+        self, n: int, pos_m: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        for lat_attr, lon_attr in (("lat", "long"), ("latitude_deg", "longitude_deg")):
+            try:
+                lat_seq = getattr(self.ephem, lat_attr, None)
+                lon_seq = getattr(self.ephem, lon_attr, None)
+                if lat_seq is None or lon_seq is None:
+                    continue
+                lat_arr = np.asarray(lat_seq, dtype=float)
+                lon_arr = np.asarray(lon_seq, dtype=float)
+                if lat_arr.shape[0] == n and lon_arr.shape[0] == n:
+                    return lat_arr, lon_arr
+            except Exception:
+                continue
+
+        x = pos_m[:, 0]
+        y = pos_m[:, 1]
+        z = pos_m[:, 2]
+        lon = np.rad2deg(np.arctan2(y, x))
+        lat = np.rad2deg(np.arctan2(z, np.sqrt(x * x + y * y)))
+        return lat, lon
+
+    def _prepare_ephem_cache(self) -> None:
+        if self._ephem_cache_ready or self._ephem_cache_failed:
+            return
+
+        try:
+            pos = np.asarray(self.ephem.gcrs_pv.position, dtype=float)
+            vel = np.asarray(self.ephem.gcrs_pv.velocity, dtype=float)
+        except Exception:
+            self._ephem_cache_failed = True
+            return
+
+        if pos.ndim != 2 or vel.ndim != 2 or pos.shape[1] < 3 or vel.shape[1] < 3:
+            self._ephem_cache_failed = True
+            return
+
+        n = pos.shape[0]
+        if n == 0 or vel.shape[0] != n or n > self._MAX_EPHEM_CACHE:
+            self._ephem_cache_failed = True
+            return
+
+        pos = pos[:, :3]
+        vel = vel[:, :3]
+        pos_m = self._scale_ephem_vectors(pos, "position")
+        vel_m = self._scale_ephem_vectors(vel, "velocity")
+
+        r_norm = np.linalg.norm(pos_m, axis=1)
+        alt_m = np.maximum(0.0, r_norm - self.RE_M)
+        lat_arr, lon_arr = self._ephem_lat_lon_arrays(n, pos_m)
+
+        self._ephem_pos_m = pos_m
+        self._ephem_vel_m = vel_m
+        self._ephem_r_norm = r_norm
+        self._ephem_alt_m = alt_m
+        self._ephem_lat = lat_arr
+        self._ephem_lon = lon_arr
+
+        if self.cfg.solar_area_m2 > 0:
+            try:
+                sun = np.asarray(self.ephem.sun_pv.position, dtype=float)
+                if sun.ndim == 2 and sun.shape[0] == n and sun.shape[1] >= 3:
+                    self._ephem_sun_m = self._scale_sun_vectors(sun[:, :3])
+            except Exception:
+                self._ephem_sun_m = None
+
+        self._ephem_cache_ready = True
 
     def _to_meters(self, vec: np.ndarray, vec_type: str) -> np.ndarray:
         """Convert position/velocity vector to meters.
@@ -296,6 +413,8 @@ class DisturbanceModel:
         use _bfield_from_geodetic() directly with pre-computed coordinates.
         """
         b_const = np.array([0.0, 0.0, self.cfg.magnetorquer_bfield_T], dtype=float)
+        if not self._ephem_cache_failed:
+            self._prepare_ephem_cache()
         try:
             idx = self.ephem.index(dtutcfromtimestamp(utime))
         except Exception:
@@ -303,6 +422,25 @@ class DisturbanceModel:
 
         lat_deg_val: float | None = None
         lon_deg_val: float | None = None
+        if self._ephem_cache_ready:
+            try:
+                alt_m = (
+                    float(self._ephem_alt_m[idx])
+                    if self._ephem_alt_m is not None
+                    else 500e3
+                )
+                lat_deg_val = (
+                    float(self._ephem_lat[idx]) if self._ephem_lat is not None else 0.0
+                )
+                lon_deg_val = (
+                    float(self._ephem_lon[idx]) if self._ephem_lon is not None else 0.0
+                )
+                return self._bfield_from_geodetic(
+                    alt_m, lat_deg_val, lon_deg_val, ra_deg, dec_deg, r_ib
+                )
+            except Exception:
+                pass
+
         try:
             lat_deg_val = float(getattr(self.ephem, "latitude_deg", [0.0])[idx])
             lon_deg_val = float(getattr(self.ephem, "longitude_deg", [0.0])[idx])
@@ -450,7 +588,18 @@ class DisturbanceModel:
     ) -> tuple[np.ndarray, dict[str, float | list[float]]]:
         """Compute aggregate disturbance torque in body frame."""
         torque = np.zeros(3, dtype=float)
-        i_mat = self._build_inertia(moi_cfg)
+        moi_key = self._moi_key(moi_cfg)
+        if (
+            moi_key is not None
+            and self._cached_inertia is not None
+            and self._cached_moi_key == moi_key
+        ):
+            i_mat = self._cached_inertia
+        else:
+            i_mat = self._build_inertia(moi_cfg)
+            if moi_key is not None:
+                self._cached_inertia = i_mat
+                self._cached_moi_key = moi_key
 
         # Reuse cached rotation matrix if pointing unchanged
         if (
@@ -465,33 +614,74 @@ class DisturbanceModel:
             self._cached_ra = ra_deg
             self._cached_dec = dec_deg
 
+        if not self._ephem_cache_failed:
+            self._prepare_ephem_cache()
+
         # Compute ephemeris index once and reuse for all lookups
         idx = None
-        r_vec = None
-        v_vec = None
+        r_vec: np.ndarray | None = None
+        v_vec: np.ndarray | None = None
+        r_vec_norm: float | None = None
+        alt_m: float | None = None
+        lat_deg: float | None = None
+        lon_deg: float | None = None
+        r_vec_from_cache = False
+        v_vec_from_cache = False
         try:
             idx = self.ephem.index(dtutcfromtimestamp(utime))
-            r_vec = np.array(self.ephem.gcrs_pv.position[idx])
-            v_vec = np.array(self.ephem.gcrs_pv.velocity[idx])
         except Exception:
-            pass
+            idx = None
+
+        if idx is not None and self._ephem_cache_ready:
+            try:
+                if self._ephem_pos_m is not None:
+                    r_vec = self._ephem_pos_m[idx]
+                    r_vec_from_cache = True
+                if self._ephem_vel_m is not None:
+                    v_vec = self._ephem_vel_m[idx]
+                    v_vec_from_cache = True
+                if self._ephem_r_norm is not None:
+                    r_vec_norm = float(self._ephem_r_norm[idx])
+                if self._ephem_alt_m is not None:
+                    alt_m = float(self._ephem_alt_m[idx])
+                if self._ephem_lat is not None:
+                    lat_deg = float(self._ephem_lat[idx])
+                if self._ephem_lon is not None:
+                    lon_deg = float(self._ephem_lon[idx])
+            except Exception:
+                r_vec = None
+                v_vec = None
+                r_vec_norm = None
+                alt_m = None
+                lat_deg = None
+                lon_deg = None
+                r_vec_from_cache = False
+                v_vec_from_cache = False
+
+        if idx is not None and (r_vec is None or v_vec is None):
+            try:
+                r_vec = np.asarray(self.ephem.gcrs_pv.position[idx], dtype=float)
+                v_vec = np.asarray(self.ephem.gcrs_pv.velocity[idx], dtype=float)
+            except Exception:
+                r_vec = None
+                v_vec = None
 
         # Convert position/velocity to meters based on configured units
-        if r_vec is not None:
+        if r_vec is not None and not r_vec_from_cache:
             r_vec = self._to_meters(r_vec, "position")
-        if v_vec is not None:
+        if v_vec is not None and not v_vec_from_cache:
             v_vec = self._to_meters(v_vec, "velocity")
 
         gg_mag = drag_mag = srp_mag = mag_mag = 0.0
-        alt_m: float = 0.0
-        r_vec_norm: float = 0.0
 
         if r_vec is not None:
             r_body = self._inertial_to_body(r_vec, ra_deg, dec_deg, r_ib)
             r_norm = np.linalg.norm(r_body)
             # Compute altitude once for reuse in drag and magnetic field
-            r_vec_norm = float(np.linalg.norm(r_vec))
-            alt_m = max(0.0, r_vec_norm - self.RE_M)
+            if r_vec_norm is None:
+                r_vec_norm = float(np.linalg.norm(r_vec))
+            if alt_m is None:
+                alt_m = max(0.0, r_vec_norm - self.RE_M)
             if r_norm > 0:
                 r_hat = r_body / r_norm
                 torque_gg = (
@@ -500,9 +690,7 @@ class DisturbanceModel:
                 torque += torque_gg
                 gg_mag = float(np.linalg.norm(torque_gg))
 
-        lat_deg: float | None = None
-        lon_deg: float | None = None
-        if idx is not None:
+        if (lat_deg is None or lon_deg is None) and idx is not None:
             try:
                 lat_seq = getattr(self.ephem, "lat", None)
                 lon_seq = getattr(self.ephem, "long", None)
@@ -526,7 +714,8 @@ class DisturbanceModel:
             if v_mag > 0 and r_vec is not None:
                 lat_use = float(lat_deg) if lat_deg is not None else 0.0
                 lon_use = float(lon_deg) if lon_deg is not None else 0.0
-                rho = self.atmospheric_density(utime, alt_m, lat_use, lon_use)
+                alt_use = alt_m if alt_m is not None else 0.0
+                rho = self.atmospheric_density(utime, alt_use, lat_use, lon_use)
                 q = 0.5 * rho * v_mag * v_mag
                 v_hat = v_body / v_mag
                 f_drag = -q * self.cfg.drag_coeff * self.cfg.drag_area_m2 * v_hat
@@ -537,12 +726,15 @@ class DisturbanceModel:
         if self.cfg.solar_area_m2 > 0 and not in_eclipse and idx is not None:
             try:
                 # Use sun_pv.position for fast array access (rust-ephem 0.3.0+)
-                sun_vec = np.array(self.ephem.sun_pv.position[idx])
-                # Sun distance is ~1 AU = 1.496e11 m = 1.496e8 km
-                # If magnitude < 1e9, assume km; otherwise assume meters
-                sun_mag = float(np.linalg.norm(sun_vec))
-                if sun_mag > 0 and sun_mag < 1e9:
-                    sun_vec = sun_vec * 1000.0
+                if self._ephem_cache_ready and self._ephem_sun_m is not None:
+                    sun_vec = self._ephem_sun_m[idx]
+                else:
+                    sun_vec = np.asarray(self.ephem.sun_pv.position[idx], dtype=float)
+                    # Sun distance is ~1 AU = 1.496e11 m = 1.496e8 km
+                    # If magnitude < 1e9, assume km; otherwise assume meters
+                    sun_mag = float(np.linalg.norm(sun_vec))
+                    if sun_mag > 0 and sun_mag < 1e9:
+                        sun_vec = sun_vec * 1000.0
                 r_sc = r_vec if r_vec is not None else np.zeros(3, dtype=float)
                 r_sun = sun_vec - r_sc
                 r_sun_mag = np.linalg.norm(r_sun)
@@ -569,8 +761,9 @@ class DisturbanceModel:
         if self._has_residual_magnetic and r_vec is not None:
             lat_use = float(lat_deg) if lat_deg is not None else 0.0
             lon_use = float(lon_deg) if lon_deg is not None else 0.0
+            alt_use = alt_m if alt_m is not None else 0.0
             b_body, _ = self._bfield_from_geodetic(
-                alt_m, lat_use, lon_use, ra_deg, dec_deg, r_ib
+                alt_use, lat_use, lon_use, ra_deg, dec_deg, r_ib
             )
             torque_mag = np.cross(self.cfg.residual_magnetic_moment, b_body)
             torque += torque_mag

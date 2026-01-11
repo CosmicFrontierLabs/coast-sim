@@ -5,7 +5,7 @@ import numpy as np
 import rust_ephem
 from pydantic import BaseModel
 
-from ..common import ACSMode, angular_separation, unixtime2date
+from ..common import ACSMode, unixtime2date
 from ..common.enums import ACSCommandType
 from ..config import MissionConfig
 from ..simulation.acs_command import ACSCommand
@@ -852,13 +852,18 @@ class QueueDITL(DITLMixin, DITLStats):
             return
 
         # Skip expensive timing estimates when the next pass is far away.
-        time_to_pass = next_pass.begin - utime
+        try:
+            pass_begin = float(next_pass.begin)
+        except (TypeError, ValueError, AttributeError):
+            return
+
+        time_to_pass = pass_begin - utime
         if time_to_pass > self._get_gsp_slew_time_window():
             return
 
         # Determine effective position for slew time calculation using planned attitude.
         effective_ra, effective_dec = self._predict_pointing_at(
-            utime, next_pass.begin, ra, dec
+            utime, pass_begin, ra, dec
         )
 
         time_current = self._estimate_gsp_slew_time(
@@ -875,11 +880,19 @@ class QueueDITL(DITLMixin, DITLStats):
 
         # Account for DESAT: if DESAT is active, add its remaining time to the slew timing
         desat_buffer = 0.0
-        if self.acs._desat_active and self.acs._desat_end > utime:
-            desat_buffer = self.acs._desat_end - utime
+        desat_active = getattr(self.acs, "_desat_active", False)
+        if not isinstance(desat_active, bool):
+            desat_active = False
+        desat_end_raw = getattr(self.acs, "_desat_end", 0.0)
+        try:
+            desat_end = float(desat_end_raw)
+        except (TypeError, ValueError):
+            desat_end = 0.0
+        if desat_active and desat_end > utime:
+            desat_buffer = desat_end - utime
 
         # Check if it's time to start slewing using ACTUAL physics-limited duration
-        time_until_slew = (next_pass.begin - actual_slew_time - desat_buffer) - utime
+        time_until_slew = (pass_begin - actual_slew_time - desat_buffer) - utime
         if time_until_slew <= self.ephem.step_size * 2:
             self.log.log_event(
                 utime=utime,
@@ -902,11 +915,10 @@ class QueueDITL(DITLMixin, DITLStats):
             # If DESAT is active, check if we can wait for it to complete
             execution_time = utime
             slew_duration = getattr(slew, "slewtime", 0.0) or 0.0
-            if self.acs._desat_active and self.acs._desat_end > utime:
-                desat_end = self.acs._desat_end
+            if desat_active and desat_end > utime:
                 time_after_desat = desat_end + slew_duration
 
-                if time_after_desat <= next_pass.begin:
+                if time_after_desat <= pass_begin:
                     # Can wait for DESAT to complete, then slew
                     execution_time = desat_end
                 else:
@@ -1597,33 +1609,79 @@ class QueueDITL(DITLMixin, DITLStats):
         if acs_cfg is None:
             return 0.0
 
-        accel_cap = acs_cfg.get_accel_cap()
-        rate_cap = acs_cfg.max_slew_rate
+        accel_cap = (
+            acs_cfg.get_accel_cap() if hasattr(acs_cfg, "get_accel_cap") else None
+        )
+        rate_cap = getattr(acs_cfg, "max_slew_rate", None)
+        try:
+            accel_cap_val = float(accel_cap) if accel_cap is not None else None
+        except (TypeError, ValueError):
+            accel_cap_val = None
+        try:
+            rate_cap_val = float(rate_cap) if rate_cap is not None else None
+        except (TypeError, ValueError):
+            rate_cap_val = None
+
         accel_default = (
-            float(accel_cap) if accel_cap is not None and accel_cap > 0 else 0.5
+            accel_cap_val if accel_cap_val is not None and accel_cap_val > 0 else 0.5
         )
         rate_default = (
-            float(rate_cap) if rate_cap is not None and rate_cap > 0 else 0.25
+            rate_cap_val if rate_cap_val is not None and rate_cap_val > 0 else 0.25
         )
 
         accel = accel_default
         rate = rate_default
 
-        if getattr(self.acs, "reaction_wheels", None):
+        reaction_wheels = getattr(self.acs, "reaction_wheels", None)
+        if isinstance(reaction_wheels, list) and reaction_wheels:
             axis_inertial = self._calc_rotation_axis_inertial(s_ra, s_dec, e_ra, e_dec)
             axis = self.acs._axis_inertial_to_body(axis_inertial, s_ra, s_dec)
             wheel_dynamics = getattr(self.acs, "wheel_dynamics", None)
             if wheel_dynamics is not None:
-                accel, rate, _ = wheel_dynamics.compute_slew_params(
-                    axis, distance, accel_cap, rate_cap
-                )
-                if accel <= 0 or rate <= 0:
-                    accel, rate, _ = wheel_dynamics.compute_slew_params(
-                        axis, distance, None, None
+                accel_val = None
+                rate_val = None
+                try:
+                    params = wheel_dynamics.compute_slew_params(
+                        axis, distance, accel_cap, rate_cap
                     )
-                if accel <= 0 or rate <= 0:
-                    accel = accel_default
-                    rate = rate_default
+                except Exception:
+                    params = None
+                if isinstance(params, (list, tuple)) and len(params) >= 2:
+                    try:
+                        accel_val = float(params[0])
+                    except (TypeError, ValueError):
+                        accel_val = None
+                    try:
+                        rate_val = float(params[1])
+                    except (TypeError, ValueError):
+                        rate_val = None
+
+                if (
+                    accel_val is None
+                    or accel_val <= 0
+                    or rate_val is None
+                    or rate_val <= 0
+                ):
+                    try:
+                        params = wheel_dynamics.compute_slew_params(
+                            axis, distance, None, None
+                        )
+                    except Exception:
+                        params = None
+                    if isinstance(params, (list, tuple)) and len(params) >= 2:
+                        try:
+                            accel_val = float(params[0])
+                        except (TypeError, ValueError):
+                            accel_val = None
+                        try:
+                            rate_val = float(params[1])
+                        except (TypeError, ValueError):
+                            rate_val = None
+
+                if accel_val is not None and accel_val > 0:
+                    accel = accel_val
+                if rate_val is not None and rate_val > 0:
+                    rate = rate_val
 
         slew_time = acs_cfg.slew_time(distance, accel=accel, vmax=rate)
         return float(round(slew_time))
@@ -1654,8 +1712,16 @@ class QueueDITL(DITLMixin, DITLStats):
             return 0.0
 
         acs_cfg = self.config.spacecraft_bus.attitude_control
-        accel = acs_cfg.slew_acceleration  # deg/s^2
-        max_rate = acs_cfg.max_slew_rate  # deg/s
+        accel_raw = getattr(acs_cfg, "slew_acceleration", None)  # deg/s^2
+        max_rate_raw = getattr(acs_cfg, "max_slew_rate", None)  # deg/s
+        try:
+            accel = float(accel_raw) if accel_raw is not None else None
+        except (TypeError, ValueError):
+            accel = None
+        try:
+            max_rate = float(max_rate_raw) if max_rate_raw is not None else None
+        except (TypeError, ValueError):
+            max_rate = None
 
         if accel is None or accel <= 0:
             accel = 0.01  # Default fallback
