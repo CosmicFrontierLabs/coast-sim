@@ -1259,6 +1259,7 @@ class QueueDITL(DITLMixin, DITLStats):
             self.pass_torque_actual_mag.append(0.0)
             self.mtq_proj_max.append(0.0)
             self.mtq_torque_mag.append(0.0)
+            self.mtq_torque_vec_history.append((0.0, 0.0, 0.0))
             self.mtq_bleed_torque_mag.append(0.0)
             self.body_momentum_history.append((0.0, 0.0, 0.0))
             self.external_impulse_history.append((0.0, 0.0, 0.0))
@@ -1292,6 +1293,9 @@ class QueueDITL(DITLMixin, DITLStats):
         )
         self.mtq_proj_max.append(getattr(snapshot, "mtq_proj_max", 0.0))
         self.mtq_torque_mag.append(getattr(snapshot, "mtq_torque_mag", 0.0))
+        self.mtq_torque_vec_history.append(
+            getattr(snapshot, "mtq_torque_vec", (0.0, 0.0, 0.0))
+        )
         self.mtq_bleed_torque_mag.append(getattr(snapshot, "mtq_bleed_torque_mag", 0.0))
         self.body_momentum_history.append(
             getattr(snapshot, "body_momentum", (0.0, 0.0, 0.0))

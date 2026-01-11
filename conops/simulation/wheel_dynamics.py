@@ -88,6 +88,7 @@ class WheelDynamics:
         self.mtq_power_w: float = 0.0
         self._last_mtq_proj_max: float = 0.0
         self._last_mtq_torque_mag: float = 0.0
+        self._last_mtq_torque_vec: np.ndarray = np.zeros(3, dtype=float)
         self._last_mtq_bleed_torque_mag: float = 0.0
 
         # Precompute static wheel properties for torque allocation
@@ -376,11 +377,17 @@ class WheelDynamics:
         """
         if not self.magnetorquers or dt <= 0:
             self.mtq_power_w = 0.0
+            self._last_mtq_proj_max = 0.0
+            self._last_mtq_torque_mag = 0.0
+            self._last_mtq_torque_vec = np.zeros(3, dtype=float)
+            self._last_mtq_bleed_torque_mag = 0.0
             return 0.0
 
         # Build total torque vector from magnetorquers using m x B
         t_mtq = np.zeros(3, dtype=float)
         total_power = 0.0
+        mtq_axes: list[np.ndarray] = []
+        mtq_limits: list[float] = []
 
         for m in self.magnetorquers:
             try:
@@ -393,13 +400,50 @@ class WheelDynamics:
             else:
                 v = v / vn
 
-            dipole = float(m.get("dipole_strength", m.get("dipole", 0.0)))
-            m_vec = v * dipole  # A·m² in body frame
-            t_mtq += np.cross(m_vec, b_field_body)
+            dipole_max = float(m.get("dipole_strength", m.get("dipole", 0.0)))
+            mtq_axes.append(v)
+            mtq_limits.append(abs(dipole_max))
             total_power += float(m.get("power_draw", 0.0))
+
+        if mtq_axes and self.wheels:
+            b_vec = np.array(b_field_body, dtype=float)
+            b_norm = np.linalg.norm(b_vec)
+            if b_norm > 0:
+                wheel_momentum = np.zeros(3, dtype=float)
+                for w in self.wheels:
+                    try:
+                        axis = np.array(w.orientation, dtype=float)
+                    except Exception:
+                        axis = np.array([1.0, 0.0, 0.0])
+                    an = np.linalg.norm(axis)
+                    if an <= 0:
+                        axis = np.array([1.0, 0.0, 0.0])
+                    else:
+                        axis = axis / an
+                    wheel_momentum += axis * float(getattr(w, "current_momentum", 0.0))
+
+                if np.linalg.norm(wheel_momentum) > 0:
+                    # Command torque aligned with wheel momentum so dm sign matches mom.
+                    tau_des = wheel_momentum / dt
+                    m_des = np.cross(b_vec, tau_des) / (b_norm * b_norm)
+                    axes_mat = np.column_stack(mtq_axes)
+                    try:
+                        m_cmd = np.linalg.lstsq(axes_mat, m_des, rcond=None)[0]
+                    except Exception:
+                        m_cmd = axes_mat.T @ m_des
+                    for i, limit in enumerate(mtq_limits):
+                        if limit > 0:
+                            m_cmd[i] = float(np.clip(m_cmd[i], -limit, limit))
+                        else:
+                            m_cmd[i] = 0.0
+                    m_vec = axes_mat @ m_cmd
+                    t_mtq = np.cross(m_vec, b_vec)
 
         if not self.wheels:
             self.mtq_power_w = total_power
+            self._last_mtq_proj_max = 0.0
+            self._last_mtq_torque_mag = float(np.linalg.norm(t_mtq))
+            self._last_mtq_torque_vec = np.array(t_mtq, dtype=float)
             self._last_mtq_bleed_torque_mag = 0.0
             return total_power
 
@@ -460,6 +504,7 @@ class WheelDynamics:
         self.mtq_power_w = total_power
         self._last_mtq_proj_max = float(max_proj)
         self._last_mtq_torque_mag = float(np.linalg.norm(t_mtq))
+        self._last_mtq_torque_vec = np.array(t_mtq, dtype=float)
         self._last_mtq_bleed_torque_mag = (
             float(np.linalg.norm(actual_impulse) / dt) if dt > 0 else 0.0
         )

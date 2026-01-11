@@ -126,6 +126,7 @@ class DITLMixin:
         self.wheel_torque_actual_mag: list[float] = []
         self.mtq_proj_max: list[float] = []
         self.mtq_torque_mag: list[float] = []
+        self.mtq_torque_vec_history: list[tuple[float, float, float]] = []
         self.mtq_bleed_torque_mag: list[float] = []
         self.body_momentum_history: list[tuple[float, float, float]] = []
         self.external_impulse_history: list[tuple[float, float, float]] = []

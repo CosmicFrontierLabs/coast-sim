@@ -122,6 +122,7 @@ class ACS:
         self._last_desat_request: float = 0.0
         self._last_desat_end: float = 0.0
         self.mtq_power_w: float = 0.0
+        self._last_mtq_torque_vec = (0.0, 0.0, 0.0)
         # Allow some configurable buffer below absolute wheel momentum capacity for allocation
         # Keep some buffer below absolute capacity so we avoid hard saturation;
         # adjust in tests/notebooks if needed for what-if sweeps.
@@ -2497,6 +2498,12 @@ class ACS:
         # Copy diagnostic values from WheelDynamics for telemetry
         self._last_mtq_proj_max = self.wheel_dynamics._last_mtq_proj_max
         self._last_mtq_torque_mag = self.wheel_dynamics._last_mtq_torque_mag
+        mtq_vec = self.wheel_dynamics._last_mtq_torque_vec
+        self._last_mtq_torque_vec = (
+            float(mtq_vec[0]),
+            float(mtq_vec[1]),
+            float(mtq_vec[2]),
+        )
         self._last_mtq_bleed_torque_mag = self.wheel_dynamics._last_mtq_bleed_torque_mag
 
     def _slew_accel_profile(self, slew: Slew, utime: float) -> float:
@@ -2618,6 +2625,7 @@ class ACS:
             if self.acsmode == ACSMode.SCIENCE and not self._mtq_bleed_in_science:
                 self._last_mtq_proj_max = 0.0
                 self._last_mtq_torque_mag = 0.0
+                self._last_mtq_torque_vec = (0.0, 0.0, 0.0)
                 self._last_mtq_bleed_torque_mag = 0.0
                 self.mtq_power_w = 0.0
         except Exception:
@@ -2694,6 +2702,9 @@ class ACS:
             ),
             mtq_proj_max=_snap_float(getattr(self, "_last_mtq_proj_max", 0.0)),
             mtq_torque_mag=_snap_float(getattr(self, "_last_mtq_torque_mag", 0.0)),
+            mtq_torque_vec=_snap_vec(
+                getattr(self, "_last_mtq_torque_vec", (0.0, 0.0, 0.0))
+            ),
             mtq_bleed_torque_mag=_snap_float(
                 getattr(self, "_last_mtq_bleed_torque_mag", 0.0)
             ),
@@ -2729,6 +2740,7 @@ class ACS:
             pass_torque_actual_mag=0.0,
             mtq_proj_max=0.0,
             mtq_torque_mag=0.0,
+            mtq_torque_vec=(0.0, 0.0, 0.0),
             mtq_bleed_torque_mag=0.0,
             mtq_power_w=0.0,
             body_momentum=(0.0, 0.0, 0.0),

@@ -74,4 +74,5 @@ conops/_version.py
 
 # Claude Code
 CLAUDE.md
+AGENTS.md
 todo.md

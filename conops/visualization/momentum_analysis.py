@@ -81,6 +81,10 @@ def plot_ditl_momentum(
     wheel_history = getattr(ditl, "wheel_momentum_history", {})
     mtq_torque = np.array(getattr(ditl, "mtq_torque_mag", []))
     mtq_bleed = np.array(getattr(ditl, "mtq_bleed_torque_mag", []))
+    mtq_torque_vec = np.array(getattr(ditl, "mtq_torque_vec_history", []), dtype=float)
+    has_mtq_torque_vec = mtq_torque_vec.shape == (len(hours), 3)
+    if mtq_torque.size != len(hours) and has_mtq_torque_vec:
+        mtq_torque = np.linalg.norm(mtq_torque_vec, axis=1)
     dist_torque = np.array(getattr(ditl, "disturbance_total", []))
     mode = np.array(ditl.mode)
     mode_colors = {
@@ -218,6 +222,8 @@ def plot_ditl_momentum(
         mtq_active = mtq_torque > 0
     elif mtq_bleed.size == len(hours):
         mtq_active = mtq_bleed > 0
+    elif has_mtq_torque_vec:
+        mtq_active = np.linalg.norm(mtq_torque_vec, axis=1) > 0
 
     wheel_axes: dict[str, np.ndarray] = {}
     wheel_mom_vec = None
@@ -240,47 +246,30 @@ def plot_ditl_momentum(
 
     mtq_sign_match: dict[str, np.ndarray] = {}
     mtq_bleed_impulse = None
+    mtq_bleed_impulse_est = None
     if (
-        mtq_active is not None
-        and dt > 0
-        and len(ra_arr) == len(hours)
-        and len(dec_arr) == len(hours)
-        and wheel_axes
-        and hasattr(ditl, "acs")
-        and hasattr(ditl.acs, "magnetorquers")
-        and hasattr(ditl.acs, "disturbance_model")
+        dt > 0
+        and dist_vec.shape == (len(hours), 3)
+        and external_impulse_hist.shape == (len(hours), 3)
     ):
-        mtq_vecs = []
-        for mtq in ditl.acs.magnetorquers:
-            try:
-                v = np.array(mtq.get("orientation", (1.0, 0.0, 0.0)), dtype=float)
-            except Exception:
-                v = np.array([1.0, 0.0, 0.0], dtype=float)
-            vn = np.linalg.norm(v)
-            v = v / vn if vn > 0 else np.array([1.0, 0.0, 0.0], dtype=float)
-            dipole_val = mtq.get("dipole_strength") or mtq.get("dipole") or 0.0
-            try:
-                dipole = float(dipole_val)  # type: ignore[arg-type]
-            except (TypeError, ValueError):
-                dipole = 0.0
-            mtq_vecs.append(v * dipole)
-        if mtq_vecs:
+        delta_ext = np.diff(
+            external_impulse_hist, axis=0, prepend=external_impulse_hist[:1]
+        )
+        mtq_bleed_impulse = dist_vec * dt - delta_ext
+    if dt > 0 and wheel_axes:
+        if has_mtq_torque_vec:
             mtq_sign_match = {
                 name: np.zeros(len(hours), dtype=bool) for name in wheel_axes
             }
-            mtq_bleed_impulse = np.zeros((len(hours), 3), dtype=float)
+            mtq_bleed_impulse_est = np.zeros((len(hours), 3), dtype=float)
             for i in range(1, len(hours)):
-                if not mtq_active[i]:
+                if mtq_active is not None and not mtq_active[i]:
                     continue
-                try:
-                    b_body, _ = ditl.acs.disturbance_model.local_bfield_vector(
-                        utime[i], ra_arr[i], dec_arr[i]
-                    )
-                except Exception:
+                t_mtq = mtq_torque_vec[i]
+                if not np.isfinite(t_mtq).all():
                     continue
-                t_mtq = np.zeros(3, dtype=float)
-                for m_vec in mtq_vecs:
-                    t_mtq += np.cross(m_vec, b_body)
+                if not np.any(t_mtq):
+                    continue
                 for name, axis in wheel_axes.items():
                     mom = float(wheel_history[name][i - 1])
                     if mom == 0.0:
@@ -300,7 +289,66 @@ def plot_ditl_momentum(
                     if actual_dm == 0.0:
                         continue
                     mtq_sign_match[name][i] = True
-                    mtq_bleed_impulse[i] += actual_dm * axis
+                    mtq_bleed_impulse_est[i] += actual_dm * axis
+        elif (
+            mtq_active is not None
+            and len(ra_arr) == len(hours)
+            and len(dec_arr) == len(hours)
+            and hasattr(ditl, "acs")
+            and hasattr(ditl.acs, "magnetorquers")
+            and hasattr(ditl.acs, "disturbance_model")
+        ):
+            mtq_vecs = []
+            for mtq in ditl.acs.magnetorquers:
+                try:
+                    v = np.array(mtq.get("orientation", (1.0, 0.0, 0.0)), dtype=float)
+                except Exception:
+                    v = np.array([1.0, 0.0, 0.0], dtype=float)
+                vn = np.linalg.norm(v)
+                v = v / vn if vn > 0 else np.array([1.0, 0.0, 0.0], dtype=float)
+                dipole_val = mtq.get("dipole_strength") or mtq.get("dipole") or 0.0
+                try:
+                    dipole = float(dipole_val)  # type: ignore[arg-type]
+                except (TypeError, ValueError):
+                    dipole = 0.0
+                mtq_vecs.append(v * dipole)
+            if mtq_vecs:
+                mtq_sign_match = {
+                    name: np.zeros(len(hours), dtype=bool) for name in wheel_axes
+                }
+                mtq_bleed_impulse_est = np.zeros((len(hours), 3), dtype=float)
+                for i in range(1, len(hours)):
+                    if not mtq_active[i]:
+                        continue
+                    try:
+                        b_body, _ = ditl.acs.disturbance_model.local_bfield_vector(
+                            utime[i], ra_arr[i], dec_arr[i]
+                        )
+                    except Exception:
+                        continue
+                    t_mtq = np.zeros(3, dtype=float)
+                    for m_vec in mtq_vecs:
+                        t_mtq += np.cross(m_vec, b_body)
+                    for name, axis in wheel_axes.items():
+                        mom = float(wheel_history[name][i - 1])
+                        if mom == 0.0:
+                            continue
+                        tau_w = float(np.dot(t_mtq, axis))
+                        if tau_w == 0.0:
+                            continue
+                        dm = tau_w * dt
+                        if (mom > 0 and dm <= 0) or (mom < 0 and dm >= 0):
+                            continue
+                        new_mom = mom - dm
+                        if mom > 0:
+                            new_mom = max(0.0, new_mom)
+                        else:
+                            new_mom = min(0.0, new_mom)
+                        actual_dm = mom - new_mom
+                        if actual_dm == 0.0:
+                            continue
+                        mtq_sign_match[name][i] = True
+                        mtq_bleed_impulse_est[i] += actual_dm * axis
 
     # Compute cumulative impulse
     if dist_vec.shape == (len(hours), 3) and dt > 0:
@@ -313,8 +361,13 @@ def plot_ditl_momentum(
         dist_impulse_vec = None
         dist_impulse_cum = np.zeros_like(hours)
 
-    if mtq_bleed_impulse is not None:
-        mtq_impulse_cum = np.linalg.norm(np.cumsum(mtq_bleed_impulse, axis=0), axis=1)
+    mtq_bleed_impulse_use = mtq_bleed_impulse
+    if mtq_bleed_impulse_use is None:
+        mtq_bleed_impulse_use = mtq_bleed_impulse_est
+    if mtq_bleed_impulse_use is not None:
+        mtq_impulse_cum = np.linalg.norm(
+            np.cumsum(mtq_bleed_impulse_use, axis=0), axis=1
+        )
         mtq_impulse_label = "MTQ bleed"
     elif mtq_bleed.size == len(hours):
         mtq_impulse_cum = np.cumsum(mtq_bleed) * dt
@@ -327,7 +380,7 @@ def plot_ditl_momentum(
         mtq_impulse_label = "MTQ"
 
     if mtq_torque.size == len(hours) and (
-        mtq_bleed.size == len(hours) or mtq_bleed_impulse is not None
+        mtq_bleed.size == len(hours) or mtq_bleed_impulse_use is not None
     ):
         mtq_potential_impulse_cum = np.cumsum(mtq_torque) * dt
     else:
@@ -538,6 +591,13 @@ def plot_ditl_momentum(
                     alpha=1.0,
                     color=color,
                 )
+        y_min = 0.0
+        if mtq_sign_match:
+            y_min = min(sign_y_base - 0.5 * sign_y_step, 0.0)
+        y_max = max_y * 1.1
+        if y_max <= y_min:
+            y_max = max_y if max_y > 0 else y_min + 1e-6
+        ax.set_ylim(y_min, y_max)
         legend = ax.legend(
             loc="upper right",
             fontsize=legend_font_size,
@@ -691,8 +751,8 @@ def plot_ditl_momentum(
     ext_impulse_independent = None
     if dist_impulse_vec is not None:
         ext_impulse_independent = dist_impulse_vec.copy()
-        if mtq_bleed_impulse is not None:
-            ext_impulse_independent -= np.cumsum(mtq_bleed_impulse, axis=0)
+        if mtq_bleed_impulse_use is not None:
+            ext_impulse_independent -= np.cumsum(mtq_bleed_impulse_use, axis=0)
 
     if total_mom_vec is not None and ext_impulse_independent is not None:
         h0 = total_mom_vec[0]
@@ -954,10 +1014,25 @@ def plot_ditl_momentum(
             rel = residual_plot / denom
             rel_mean = float(np.mean(rel)) * 100.0
             rel_p95 = float(np.quantile(rel, 0.95)) * 100.0
+            text_lines = [f"residual/|H|: mean {rel_mean:.1f}%, p95 {rel_p95:.1f}%"]
+            total_mom_mag = np.linalg.norm(total_mom_vec, axis=1)
+            max_h = float(np.nanmax(total_mom_mag)) if total_mom_mag.size else 0.0
+            if np.isfinite(max_h) and max_h > 0:
+                gate_threshold = max(0.05 * max_h, 1e-6)
+                gate_mask = total_mom_mag > gate_threshold
+                if np.any(gate_mask):
+                    rel_gate = residual_plot[gate_mask] / np.maximum(
+                        total_mom_mag[gate_mask], 1e-6
+                    )
+                    rel_gate_mean = float(np.mean(rel_gate)) * 100.0
+                    rel_gate_p95 = float(np.quantile(rel_gate, 0.95)) * 100.0
+                    text_lines.append(
+                        f"H>5% max: mean {rel_gate_mean:.1f}%, p95 {rel_gate_p95:.1f}%"
+                    )
             ax.text(
                 0.02,
                 0.05,
-                f"residual/|H|: mean {rel_mean:.1f}%, p95 {rel_p95:.1f}%",
+                "\n".join(text_lines),
                 transform=ax.transAxes,
                 fontsize=tick_font_size,
                 color="0.3",
