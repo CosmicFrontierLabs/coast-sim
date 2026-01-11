@@ -5,7 +5,7 @@ import numpy as np
 import rust_ephem
 from pydantic import BaseModel
 
-from ..common import ACSMode, unixtime2date
+from ..common import ACSMode, angular_separation, unixtime2date
 from ..common.enums import ACSCommandType
 from ..config import MissionConfig
 from ..simulation.acs_command import ACSCommand
@@ -646,41 +646,44 @@ class QueueDITL(DITLMixin, DITLStats):
             return
 
         # Check to see if it's time to slew to the next pass
-        # Note that if we're already in PASS or SLEWING mode, we skip this,
-        # because you can't slew to a pass while already in a pass or slewing.
-        if self.acs.acsmode not in (ACSMode.PASS, ACSMode.SLEWING):
-            next_pass = self.acs.passrequests.next_pass(utime)
+        # Skip if already in PASS or SLEWING mode - can't interrupt a slew mid-motion.
+        # Pass-aware scheduling in _fetch_new_ppt prevents conflicts.
+        if self.acs.acsmode in (ACSMode.PASS, ACSMode.SLEWING):
+            return
 
-            # If there's no next pass, nothing to do
-            if next_pass is None:
-                return
+        next_pass = self.acs.passrequests.next_pass(utime)
 
-            # Check if it's time to start slewing for the next pass
-            if next_pass.time_to_slew(utime=utime, ra=ra, dec=dec):
-                # If it's time to slew, enqueue the slew command
-                self.log.log_event(
-                    utime=utime,
-                    event_type="SLEW",
-                    description=f"Slewing for pass to {next_pass.station}",
-                    acs_mode=self.acs.acsmode,
-                )
+        # If there's no next pass, nothing to do
+        if next_pass is None:
+            return
 
-                # Create slew object for the pass
-                slew = Slew(
-                    config=self.config,
-                )
+        # Check if it's time to start slewing for the next pass
+        if next_pass.time_to_slew(utime=utime, ra=ra, dec=dec):
+            # If it's time to slew, enqueue the slew command
+            self.log.log_event(
+                utime=utime,
+                event_type="SLEW",
+                description=f"Slewing for pass to {next_pass.station}",
+                acs_mode=self.acs.acsmode,
+            )
 
-                slew.startra = ra
-                slew.startdec = dec
-                slew.endra = next_pass.gsstartra
-                slew.enddec = next_pass.gsstartdec
-                command = ACSCommand(
-                    command_type=ACSCommandType.SLEW_TO_TARGET,
-                    execution_time=utime,
-                    slew=slew,
-                )
-                self.acs.enqueue_command(command)
-                return
+            # Create slew object for the pass
+            slew = Slew(
+                config=self.config,
+            )
+
+            slew.startra = ra
+            slew.startdec = dec
+            slew.endra = next_pass.gsstartra
+            slew.enddec = next_pass.gsstartdec
+            slew.obstype = "GSP"  # Ground Station Pass slew
+            command = ACSCommand(
+                command_type=ACSCommandType.SLEW_TO_TARGET,
+                execution_time=utime,
+                slew=slew,
+            )
+            self.acs.enqueue_command(command)
+            return
 
     def _handle_pass_mode(self, utime: float) -> None:
         """Handle spacecraft behavior during ground station passes."""
@@ -814,6 +817,20 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _fetch_new_ppt(self, utime: float, ra: float, dec: float) -> None:
         """Fetch a new pointing target from the queue and enqueue slew command."""
+        # Don't issue science slews during an active pass - this prevents the
+        # teleportation bug where a slew is issued with start position from the
+        # pass tracking, but the spacecraft continues following the pass instead.
+        # When the pass ends, the stale slew would report incorrect positions.
+        current_pass = self.acs.passrequests.current_pass(utime)
+        if current_pass is not None:
+            self.log.log_event(
+                utime=utime,
+                event_type="QUEUE",
+                description="Deferring PPT fetch - pass in progress",
+                acs_mode=self.acs.acsmode,
+            )
+            return
+
         self.log.log_event(
             utime=utime,
             event_type="QUEUE",
@@ -895,7 +912,58 @@ class QueueDITL(DITLMixin, DITLStats):
 
             slew.slewstart = execution_time
             slew.calc_slewtime()
+
+            # Verify slew won't overlap with a pass - check both start and end
+            slew_end = execution_time + slew.slewtime
+            if self.acs.passrequests.current_pass(execution_time) is not None:
+                self.log.log_event(
+                    utime=utime,
+                    event_type="SLEW",
+                    description="Slew rejected - execution time falls during a pass",
+                    obsid=self.ppt.obsid,
+                    acs_mode=self.acs.acsmode,
+                )
+                self.ppt = None
+                return
+            if self.acs.passrequests.current_pass(slew_end) is not None:
+                self.log.log_event(
+                    utime=utime,
+                    event_type="SLEW",
+                    description="Slew rejected - would complete during a pass",
+                    obsid=self.ppt.obsid,
+                    acs_mode=self.acs.acsmode,
+                )
+                self.ppt = None
+                return
+
             self.acs.slew_dists.append(slew.slewdist)
+
+            # Check if there's enough observation time before the next pass
+            slew_end_time = slew.slewstart + slew.slewtime
+            next_pass = self.acs.passrequests.next_pass(slew_end_time)
+            if next_pass is not None:
+                # Calculate when we need to start slewing to the pass
+                time_to_pass_slew = next_pass.begin - slew_end_time
+                # Estimate slew time to pass start position using existing utilities
+                pass_slew_dist = angular_separation(
+                    self.ppt.ra, self.ppt.dec, next_pass.gsstartra, next_pass.gsstartdec
+                )
+                acs_cfg = self.config.spacecraft_bus.attitude_control
+                pass_slew_time = acs_cfg.slew_time(pass_slew_dist)
+
+                # Available observation time = time until pass - slew time to pass
+                available_obs_time = time_to_pass_slew - pass_slew_time
+                if available_obs_time < self.ppt.ss_min:
+                    self.log.log_event(
+                        utime=utime,
+                        event_type="QUEUE",
+                        description=f"Target {self.ppt.obsid} rejected - only {available_obs_time:.0f}s "
+                        f"available before pass (need {self.ppt.ss_min}s)",
+                        obsid=self.ppt.obsid,
+                        acs_mode=self.acs.acsmode,
+                    )
+                    self.ppt = None
+                    return
 
             # Update PPT timing based on slew
             self.ppt.begin = int(execution_time)
