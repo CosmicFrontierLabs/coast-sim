@@ -33,6 +33,8 @@ def make_ditl_adcs_config(ephem: object, mtq_dipole: float = 32.0) -> MissionCon
     # Spacecraft properties from notebook
     acs.spacecraft_moi = (45.0, 45.0, 45.0)
     acs.wheel_enabled = False
+    acs.slew_acceleration = 0.05
+    acs.max_slew_rate = 0.5
 
     # Magnetorquers
     acs.magnetorquers = [
