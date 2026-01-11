@@ -85,6 +85,8 @@ def mock_config(mock_ephem, mock_constraint):
     acs_cfg.wheel_max_torque = template_cfg.wheel_max_torque
     acs_cfg.wheel_max_momentum = template_cfg.wheel_max_momentum
     acs_cfg.wheels = []
+    acs_cfg.mtq_cycle_on_s = template_cfg.mtq_cycle_on_s
+    acs_cfg.mtq_cycle_off_s = template_cfg.mtq_cycle_off_s
     acs_cfg.spacecraft_moi = template_cfg.spacecraft_moi
     acs_cfg.predict_slew = Mock(return_value=(45.0, []))
     acs_cfg.slew_time = Mock(return_value=100.0)

@@ -119,6 +119,8 @@ class ACS:
         self._desat_end = 0.0
         self._desat_use_mtq = False
         self._mtq_bleed_in_science = False
+        self._mtq_cycle_on_s = 9.0
+        self._mtq_cycle_off_s = 1.0
         self._last_desat_request: float = 0.0
         self._last_desat_end: float = 0.0
         self.mtq_power_w: float = 0.0
@@ -224,6 +226,7 @@ class ACS:
         self._mtq_bleed_in_science = bool(
             getattr(acs_cfg, "mtq_bleed_in_science", False)
         )
+        self._sync_mtq_cycle_config()
         # Create disturbance model from ACS config
         self.disturbance_model = DisturbanceModel(
             self.ephem,
@@ -2191,6 +2194,7 @@ class ACS:
             )
         except Exception:
             self._mtq_bleed_in_science = False
+        self._sync_mtq_cycle_config()
 
         # track last update time
         if not hasattr(self, "_last_pointing_time") or self._last_pointing_time is None:
@@ -2206,8 +2210,13 @@ class ACS:
                 self._build_wheel_snapshot(utime, None, None)
             return
 
-        # Compute external disturbance torque (for both control and bookkeeping)
-        disturbance_torque = self._compute_disturbance_torque(utime)
+        disturbance_torque: np.ndarray | None = None
+
+        def _get_disturbance() -> np.ndarray:
+            nonlocal disturbance_torque
+            if disturbance_torque is None:
+                disturbance_torque = self._compute_disturbance_torque(utime)
+            return disturbance_torque
 
         # Apply magnetorquer desat bleed: during DESAT, or continuously when not in SCIENCE
         if self.magnetorquers:
@@ -2319,7 +2328,7 @@ class ACS:
             # If holding attitude (no slew/pass/safe-mode tracking), apply wheel torque
             # to reject disturbances
             if self.reaction_wheels and not handled_tracking:
-                self._apply_hold_wheel_torque(disturbance_torque, dt, utime)
+                self._apply_hold_wheel_torque(_get_disturbance(), dt, utime)
 
             # Proactively request desat if momentum is high while idle
             if self.reaction_wheels and not self._desat_active:
@@ -2375,7 +2384,7 @@ class ACS:
 
         if accel_req == 0.0:
             # During settle/hold portion of a slew, reject disturbances like a hold
-            self._apply_hold_wheel_torque(disturbance_torque, dt, utime)
+            self._apply_hold_wheel_torque(_get_disturbance(), dt, utime)
             self._last_pointing_time = utime
             return
 
@@ -2407,7 +2416,7 @@ class ACS:
         requested_torque = (accel_req * (pi / 180.0)) * i_axis
 
         # Compute disturbance torque (external)
-        disturbance = self._compute_disturbance_torque(utime)
+        disturbance = _get_disturbance()
 
         # Desired spacecraft torque vector (3D), including disturbance rejection
         T_desired = axis * requested_torque
@@ -2480,6 +2489,56 @@ class ACS:
 
         self._last_pointing_time = utime
 
+    def _sync_mtq_cycle_config(self) -> None:
+        """Refresh MTQ duty-cycle settings from the ACS config."""
+        try:
+            on_s = float(
+                getattr(self.acs_config, "mtq_cycle_on_s", self._mtq_cycle_on_s)
+            )
+            off_s = float(
+                getattr(self.acs_config, "mtq_cycle_off_s", self._mtq_cycle_off_s)
+            )
+        except Exception:
+            return
+        self._mtq_cycle_on_s = max(0.0, on_s)
+        self._mtq_cycle_off_s = max(0.0, off_s)
+
+    def _mtq_cycle_on_time(self, utime: float, dt: float) -> float:
+        """Return MTQ on-time within the last dt seconds."""
+        if dt <= 0:
+            return 0.0
+        on_s = float(self._mtq_cycle_on_s)
+        off_s = float(self._mtq_cycle_off_s)
+        if on_s <= 0 and off_s <= 0:
+            return float(dt)
+        if on_s <= 0:
+            return 0.0
+        if off_s <= 0:
+            return float(dt)
+        period = on_s + off_s
+        if period <= 0:
+            return float(dt)
+        t1 = float(utime)
+        t0 = t1 - float(dt)
+
+        def on_time_to(t: float) -> float:
+            if t <= 0:
+                return 0.0
+            cycles = int(t // period)
+            rem = t - cycles * period
+            return cycles * on_s + min(on_s, rem)
+
+        on_time = on_time_to(t1) - on_time_to(t0)
+        return max(0.0, min(float(dt), on_time))
+
+    def _clear_mtq_diagnostics(self) -> None:
+        """Reset MTQ telemetry/power when MTQs are inactive."""
+        self.mtq_power_w = 0.0
+        self._last_mtq_proj_max = 0.0
+        self._last_mtq_torque_mag = 0.0
+        self._last_mtq_torque_vec = (0.0, 0.0, 0.0)
+        self._last_mtq_bleed_torque_mag = 0.0
+
     def _apply_magnetorquer_desat(self, dt: float, utime: float) -> None:
         """Bleed wheel momentum using magnetorquers during desat.
 
@@ -2489,11 +2548,17 @@ class ACS:
         if not self.magnetorquers or dt <= 0:
             return
 
+        on_time = self._mtq_cycle_on_time(utime, dt)
+        if on_time <= 0:
+            self._clear_mtq_diagnostics()
+            return
+        duty = min(1.0, on_time / dt) if dt > 0 else 0.0
+
         # Get local magnetic field in body frame
         b_body, _ = self.disturbance_model.local_bfield_vector(utime, self.ra, self.dec)
 
         # Delegate to WheelDynamics for the physics
-        self.mtq_power_w = self.wheel_dynamics.apply_magnetorquer_desat(b_body, dt)
+        self.mtq_power_w = self.wheel_dynamics.apply_magnetorquer_desat(b_body, on_time)
 
         # Copy diagnostic values from WheelDynamics for telemetry
         self._last_mtq_proj_max = self.wheel_dynamics._last_mtq_proj_max
@@ -2505,6 +2570,16 @@ class ACS:
             float(mtq_vec[2]),
         )
         self._last_mtq_bleed_torque_mag = self.wheel_dynamics._last_mtq_bleed_torque_mag
+        if duty < 1.0:
+            self.mtq_power_w *= duty
+            self._last_mtq_proj_max *= duty
+            self._last_mtq_torque_mag *= duty
+            self._last_mtq_torque_vec = (
+                self._last_mtq_torque_vec[0] * duty,
+                self._last_mtq_torque_vec[1] * duty,
+                self._last_mtq_torque_vec[2] * duty,
+            )
+            self._last_mtq_bleed_torque_mag *= duty
 
     def _slew_accel_profile(self, slew: Slew, utime: float) -> float:
         """Return signed slew acceleration (deg/s^2) at utime for bang-bang profile.

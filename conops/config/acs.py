@@ -70,6 +70,9 @@ class AttitudeControlSystem(BaseModel):
     magnetorquer_bfield_T: float = 3e-5  # representative LEO field magnitude (Tesla)
     # If True, allow MTQ bleed during SCIENCE; default keeps MTQs off in SCIENCE
     mtq_bleed_in_science: bool = False
+    # MTQ duty cycle timing (seconds): on for mtq_cycle_on_s, off for mtq_cycle_off_s
+    mtq_cycle_on_s: float = 9.0
+    mtq_cycle_off_s: float = 1.0
     # Disturbance modeling inputs (drag/SRP/gg/magnetic)
     cp_offset_body: tuple[float, float, float] = (
         0.0,
