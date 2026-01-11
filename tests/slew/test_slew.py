@@ -235,12 +235,12 @@ class TestPredictSlew:
     def test_predict_slew_sets_path_ra_length(self, slew_predict_setup):
         slew, ra_path, dec_path = slew_predict_setup
         slew.predict_slew()
-        assert len(slew.slewpath[0]) == 20
+        assert len(slew.slewpath[0]) == 100
 
     def test_predict_slew_sets_path_dec_length(self, slew_predict_setup):
         slew, ra_path, dec_path = slew_predict_setup
         slew.predict_slew()
-        assert len(slew.slewpath[1]) == 20
+        assert len(slew.slewpath[1]) == 100
 
     def test_predict_slew_sets_path_ra_values(self, slew_predict_setup):
         slew, ra_path, dec_path = slew_predict_setup
@@ -251,6 +251,17 @@ class TestPredictSlew:
         slew, ra_path, dec_path = slew_predict_setup
         slew.predict_slew()
         assert np.allclose(slew.slewpath[1], dec_path)
+
+    def test_predict_slew_zero_distance_sets_default_axis(self, slew, acs_config):
+        acs_config.predict_slew = Mock(return_value=(0.0, ([0.0] * 100, [0.0] * 100)))
+        slew.startra = 10.0
+        slew.startdec = -5.0
+        slew.endra = 10.0
+        slew.enddec = -5.0
+
+        slew.predict_slew()
+
+        assert slew.rotation_axis == (0.0, 0.0, 1.0)
 
 
 class TestSlewPathResolution:

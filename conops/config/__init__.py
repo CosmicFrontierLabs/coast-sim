@@ -1,4 +1,4 @@
-from .acs import AttitudeControlSystem
+from .acs import AttitudeControlSystem, MagnetorquerSpec, WheelSpec
 from .battery import Battery
 from .communications import (
     AntennaPointing,
@@ -45,6 +45,7 @@ __all__ = [
     "GroundStationRegistry",
     "Heater",
     "Instrument",
+    "MagnetorquerSpec",
     "ObservationCategories",
     "ObservationCategory",
     "OnboardRecorder",
@@ -55,6 +56,7 @@ __all__ = [
     "SpacecraftBus",
     "TargetConfig",
     "VisualizationConfig",
+    "WheelSpec",
     "DAY_SECONDS",
     "DTOR",
 ]

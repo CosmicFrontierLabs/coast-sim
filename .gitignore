@@ -63,6 +63,7 @@ Thumbs.db
 
 # Pre-commit
 .pre-commit-config.yaml
+.cache/
 
 # Jupyter
 .ipynb_checkpoints/
@@ -70,3 +71,9 @@ Thumbs.db
 
 # Distribution / packaging
 *.whl
+conops/_version.py
+
+# Claude Code
+CLAUDE.md
+AGENTS.md
+todo.md

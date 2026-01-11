@@ -182,6 +182,7 @@ class TestStartSlewCoverage:
         mock_pass.slewstart = 1514764800.0
         mock_pass.slewtime = 60.0
         mock_pass.calc_slewtime = Mock()
+        mock_pass.predict_slew = Mock()
 
         acs._start_slew(mock_pass, 1514764800.0)
         assert mock_pass.startra == 10.0
@@ -200,6 +201,7 @@ class TestStartSlewCoverage:
         mock_pass.slewstart = 1514764800.0
         mock_pass.slewtime = 60.0
         mock_pass.calc_slewtime = Mock()
+        mock_pass.predict_slew = Mock()
 
         acs._start_slew(mock_pass, 1514764800.0)
         assert mock_pass.startdec == 20.0
@@ -218,6 +220,7 @@ class TestStartSlewCoverage:
         mock_pass.slewstart = 1514764800.0
         mock_pass.slewtime = 60.0
         mock_pass.calc_slewtime = Mock()
+        mock_pass.predict_slew = Mock()
 
         acs._start_slew(mock_pass, 1514764800.0)
         mock_pass.calc_slewtime.assert_called_once()
@@ -512,7 +515,8 @@ class TestProcessCommandsCoverage:
             execution_time=1514764900.0,
             slew=mock_slew1,
         )
-        acs.command_queue = [command1, command2, command3]
+        for cmd in [command1, command2, command3]:
+            acs._commands.enqueue(cmd)
 
         acs._process_commands(1514764815.0)
         assert len(acs.executed_commands) >= 1
@@ -536,7 +540,8 @@ class TestProcessCommandsCoverage:
             execution_time=1514764900.0,
             slew=mock_slew1,
         )
-        acs.command_queue = [command1, command2, command3]
+        for cmd in [command1, command2, command3]:
+            acs._commands.enqueue(cmd)
 
         acs._process_commands(1514764815.0)
         assert len(acs.executed_commands) >= 2
@@ -560,7 +565,8 @@ class TestProcessCommandsCoverage:
             execution_time=1514764900.0,
             slew=mock_slew1,
         )
-        acs.command_queue = [command1, command2, command3]
+        for cmd in [command1, command2, command3]:
+            acs._commands.enqueue(cmd)
 
         acs._process_commands(1514764815.0)
         assert acs.executed_commands[0] == command1
@@ -584,7 +590,8 @@ class TestProcessCommandsCoverage:
             execution_time=1514764900.0,
             slew=mock_slew1,
         )
-        acs.command_queue = [command1, command2, command3]
+        for cmd in [command1, command2, command3]:
+            acs._commands.enqueue(cmd)
 
         acs._process_commands(1514764815.0)
         assert acs.executed_commands[1] == command2
@@ -608,7 +615,8 @@ class TestProcessCommandsCoverage:
             execution_time=1514764900.0,
             slew=mock_slew1,
         )
-        acs.command_queue = [command1, command2, command3]
+        for cmd in [command1, command2, command3]:
+            acs._commands.enqueue(cmd)
 
         acs._process_commands(1514764815.0)
         assert len(acs.command_queue) == 1
@@ -631,7 +639,8 @@ class TestProcessCommandsCoverage:
             execution_time=1514764900.0,
             slew=mock_slew1,
         )
-        acs.command_queue = [command1, command2, command3]
+        for cmd in [command1, command2, command3]:
+            acs._commands.enqueue(cmd)
 
         acs._process_commands(1514764815.0)
         assert acs.command_queue[0] == command3
@@ -1201,7 +1210,7 @@ class TestBatteryChargingMethods:
             dec=30.0,
             obsid=0xBEEF,
         )
-        acs.command_queue = [command]
+        acs._commands.enqueue(command)
 
         with patch.object(acs, "_start_battery_charge") as mock_start:
             acs._process_commands(1514764800.0)
@@ -1212,7 +1221,7 @@ class TestBatteryChargingMethods:
             command_type=ACSCommandType.END_BATTERY_CHARGE,
             execution_time=1514764800.0,
         )
-        acs.command_queue = [command]
+        acs._commands.enqueue(command)
 
         with patch.object(acs, "_end_battery_charge") as mock_end:
             acs._process_commands(1514764800.0)

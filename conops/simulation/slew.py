@@ -1,3 +1,4 @@
+import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -5,6 +6,8 @@ import rust_ephem
 
 from ..common import roll_over_angle, unixtime2date
 from ..config import AttitudeControlSystem, Constraint, MissionConfig
+
+_logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..targets.pointing import Pointing
@@ -61,6 +64,13 @@ class Slew:
         self.slewtime = 0
         self.slewdist = 0
 
+        # Slew kinematic parameters (deg/s^2, deg/s)
+        # Initialized from config, may be updated by wheel dynamics validation
+        accel_cap = self.acs_config.get_accel_cap()
+        rate_cap = self.acs_config.max_slew_rate
+        self.accel: float = float(accel_cap) if accel_cap is not None else 0.5
+        self.vmax: float = float(rate_cap) if rate_cap is not None else 0.25
+
         self.obstype = "PPT"
         self.obsid = 0
         self.mode = 0
@@ -106,9 +116,11 @@ class Slew:
             return ra, dec
 
         total_dist = float(self.slewdist)
-        motion_time = self.acs_config.motion_time(total_dist)
+        motion_time = self.acs_config.motion_time(
+            total_dist, accel=self.accel, vmax=self.vmax
+        )
         tau = max(0.0, min(float(t), motion_time))
-        s = self.acs_config.s_of_t(total_dist, tau)
+        s = self.acs_config.s_of_t(total_dist, tau, accel=self.accel, vmax=self.vmax)
         f = 0.0 if total_dist == 0 else max(0.0, min(1.0, s / total_dist))
 
         # Interpolate along the great-circle path using fraction f
@@ -144,7 +156,9 @@ class Slew:
             )
 
         # Calculate slew time using AttitudeControlSystem
-        self.slewtime = round(self.acs_config.slew_time(distance))
+        self.slewtime = round(
+            self.acs_config.slew_time(distance, accel=self.accel, vmax=self.vmax)
+        )
 
         self.slewend = self.slewstart + self.slewtime
         return self.slewtime
@@ -158,3 +172,40 @@ class Slew:
         self.slewdist, self.slewpath = self.acs_config.predict_slew(
             self.startra, self.startdec, self.endra, self.enddec, steps=100
         )
+
+        # Estimate an approximate rotation axis for this slew in body frame.
+        # Use the great-circle endpoints to form unit vectors and take their
+        # cross-product. This axis is used by ACS to project requested
+        # scalar accelerations/torques into a 3D torque vector for wheel mapping.
+        # start vector
+        ra0 = float(self.startra)
+        dec0 = float(self.startdec)
+        ra1 = float(self.endra)
+        dec1 = float(self.enddec)
+        # convert to radians
+        r0 = np.deg2rad(ra0)
+        d0 = np.deg2rad(dec0)
+        r1 = np.deg2rad(ra1)
+        d1 = np.deg2rad(dec1)
+        v0 = np.array([np.cos(d0) * np.cos(r0), np.cos(d0) * np.sin(r0), np.sin(d0)])
+        v1 = np.array([np.cos(d1) * np.cos(r1), np.cos(d1) * np.sin(r1), np.sin(d1)])
+        axis = np.cross(v0, v1)
+        nrm = np.linalg.norm(axis)
+        if nrm <= 1e-12:
+            # Near-zero or near-antipodal slew: rotation axis is undefined
+            if self.slewdist < 0.01:
+                _logger.debug(
+                    "Slew distance %.6f deg is near-zero; using default Z rotation axis",
+                    self.slewdist,
+                )
+            else:
+                # Large distance but small cross product = near-antipodal (180 deg)
+                _logger.warning(
+                    "Slew of %.1f deg has undefined rotation axis (antipodal points); "
+                    "using default Z axis. Consider breaking into two slews.",
+                    self.slewdist,
+                )
+            self.rotation_axis = (0.0, 0.0, 1.0)
+            return
+        axis = axis / nrm
+        self.rotation_axis = (float(axis[0]), float(axis[1]), float(axis[2]))

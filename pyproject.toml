@@ -33,6 +33,7 @@ dependencies = [
     "numpy>=2",
     "pydantic>=2.12",
     "pyproj>=3.7.0",
+    "pymsis>=0.9",
     "pytz>=2025.2",
     "rust-ephem>=0.3.0",
     "shapely>=2",

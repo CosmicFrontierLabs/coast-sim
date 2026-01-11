@@ -10,6 +10,7 @@ class ACSMode(int, Enum):
     PASS = 3
     CHARGING = 4
     SAFE = 5
+    DESAT = 6  # Wheel desaturation (holding position, MTQ active)
 
 
 class ChargeState(int, Enum):
@@ -29,6 +30,7 @@ class ACSCommandType(Enum):
     START_BATTERY_CHARGE = auto()
     END_BATTERY_CHARGE = auto()
     ENTER_SAFE_MODE = auto()
+    DESAT = auto()
 
 
 class AntennaType(str, Enum):

@@ -62,20 +62,23 @@ class TestAttitudeControlSystem:
     """Tests for AttitudeControlSystem class."""
 
     def test_initialization_defaults_slew_acceleration(self, default_acs):
-        """Test ACS initializes with default slew_acceleration."""
-        assert default_acs.slew_acceleration == 0.5
+        """Test ACS initializes with default slew_acceleration (None = physics-derived)."""
+        # slew_acceleration is now None by default - values derived from wheel physics
+        assert default_acs.slew_acceleration is None
 
     def test_initialization_defaults_max_slew_rate(self, default_acs):
-        """Test ACS initializes with default max_slew_rate."""
-        assert default_acs.max_slew_rate == 0.25
+        """Test ACS initializes with default max_slew_rate (None = physics-derived)."""
+        # max_slew_rate is now None by default - values derived from wheel physics
+        assert default_acs.max_slew_rate is None
 
     def test_initialization_defaults_slew_accuracy(self, default_acs):
         """Test ACS initializes with default slew_accuracy."""
         assert default_acs.slew_accuracy == 0.01
 
     def test_initialization_defaults_settle_time(self, default_acs):
-        """Test ACS initializes with default settle_time."""
-        assert default_acs.settle_time == 120.0
+        """Test ACS initializes with default settle_time (deprecated, now 0)."""
+        # settle_time is deprecated and defaults to 0 - slew ends when motion ends
+        assert default_acs.settle_time == 0.0
 
     def test_initialization_custom_slew_acceleration(self, custom_acs):
         """Test ACS initializes with custom slew_acceleration."""
@@ -218,12 +221,13 @@ class TestAttitudeControlSystem:
         assert abs(s - angle) < 1e-6
 
     def test_slew_time(self):
-        """Test slew_time includes motion time and settle time."""
-        acs = AttitudeControlSystem(slew_acceleration=0.5, settle_time=60.0)
+        """Test slew_time equals motion time (settle_time no longer added)."""
+        # settle_time is deprecated - slew_time now equals motion_time
+        acs = AttitudeControlSystem(slew_acceleration=0.5, max_slew_rate=0.5)
         angle = 10.0
         motion_time = acs.motion_time(angle)
         total_time = acs.slew_time(angle)
-        assert abs(total_time - (motion_time + 60.0)) < 1e-6
+        assert abs(total_time - motion_time) < 1e-6
 
     def test_slew_time_zero_angle(self, default_acs):
         """Test slew_time returns 0 for zero angle."""
@@ -329,6 +333,82 @@ class TestAttitudeControlSystem:
         """Test predict_slew across meridian distance less than 180."""
         slewdist, slewpath = default_acs.predict_slew(350, 0, 10, 0)
         assert slewdist < 180  # Should not go the long way
+
+    def test_validate_wheel_capabilities_no_caps(self):
+        """No warnings when no caps are configured."""
+        acs = AttitudeControlSystem()
+        warnings = acs.validate_wheel_capabilities()
+        assert warnings == []
+
+    def test_validate_wheel_capabilities_no_wheels(self):
+        """Warning when caps set but no wheels defined."""
+        acs = AttitudeControlSystem(max_slew_accel=1.0)
+        warnings = acs.validate_wheel_capabilities()
+        assert len(warnings) == 1
+        assert "no wheels defined" in warnings[0]
+
+    def test_validate_wheel_capabilities_achievable_caps(self):
+        """No warnings when caps are within wheel capability."""
+        # 3-axis wheels: 0.1 N*m torque, 1.0 N*m*s momentum
+        # MOI: 5 kg*m² per axis
+        # Max accel: 0.1 / 5 = 0.02 rad/s² = 1.15 deg/s²
+        # Max rate: 1.0 / 5 = 0.2 rad/s = 11.5 deg/s
+        acs = AttitudeControlSystem(
+            max_slew_accel=0.5,  # Well below 1.15
+            max_slew_rate=5.0,  # Well below 11.5
+            wheels=[
+                {"orientation": [1, 0, 0], "max_torque": 0.1, "max_momentum": 1.0},
+                {"orientation": [0, 1, 0], "max_torque": 0.1, "max_momentum": 1.0},
+                {"orientation": [0, 0, 1], "max_torque": 0.1, "max_momentum": 1.0},
+            ],
+            spacecraft_moi=(5.0, 5.0, 5.0),
+        )
+        warnings = acs.validate_wheel_capabilities()
+        assert warnings == []
+
+    def test_validate_wheel_capabilities_exceeds_accel(self):
+        """Warning when accel cap exceeds wheel capability."""
+        acs = AttitudeControlSystem(
+            max_slew_accel=5.0,  # Way above capability
+            wheels=[
+                {"orientation": [1, 0, 0], "max_torque": 0.1, "max_momentum": 1.0},
+                {"orientation": [0, 1, 0], "max_torque": 0.1, "max_momentum": 1.0},
+                {"orientation": [0, 0, 1], "max_torque": 0.1, "max_momentum": 1.0},
+            ],
+            spacecraft_moi=(5.0, 5.0, 5.0),
+        )
+        warnings = acs.validate_wheel_capabilities()
+        assert len(warnings) == 1
+        assert "max_slew_accel=5.000" in warnings[0]
+        assert "exceeds wheel capability" in warnings[0]
+
+    def test_validate_wheel_capabilities_exceeds_rate(self):
+        """Warning when rate cap exceeds wheel capability."""
+        acs = AttitudeControlSystem(
+            max_slew_rate=50.0,  # Way above capability
+            wheels=[
+                {"orientation": [1, 0, 0], "max_torque": 0.1, "max_momentum": 1.0},
+                {"orientation": [0, 1, 0], "max_torque": 0.1, "max_momentum": 1.0},
+                {"orientation": [0, 0, 1], "max_torque": 0.1, "max_momentum": 1.0},
+            ],
+            spacecraft_moi=(5.0, 5.0, 5.0),
+        )
+        warnings = acs.validate_wheel_capabilities()
+        assert len(warnings) == 1
+        assert "max_slew_rate=50.000" in warnings[0]
+        assert "exceeds wheel capability" in warnings[0]
+
+    def test_validate_wheel_capabilities_legacy_wheel_params(self):
+        """Validation works with legacy single-wheel params."""
+        acs = AttitudeControlSystem(
+            max_slew_accel=5.0,  # Exceeds capability
+            wheel_max_torque=0.1,
+            wheel_max_momentum=1.0,
+            spacecraft_moi=(5.0, 5.0, 5.0),
+        )
+        warnings = acs.validate_wheel_capabilities()
+        assert len(warnings) == 1
+        assert "exceeds wheel capability" in warnings[0]
 
 
 class TestSpacecraftBus:

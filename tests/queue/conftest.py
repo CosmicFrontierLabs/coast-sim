@@ -71,12 +71,16 @@ def mock_config():
     config.spacecraft_bus = Mock()
     config.spacecraft_bus.power = Mock(return_value=50.0)
     config.spacecraft_bus.attitude_control = Mock()
+    config.slew_distance_weight = 0.0
     config.spacecraft_bus.attitude_control.predict_slew = Mock(
         return_value=(10.0, [])
     )  # Return (distance, path)
     config.spacecraft_bus.attitude_control.slew_time = Mock(
         return_value=100.0
     )  # Return slew time in seconds
+    # Slew now reads accel/vmax from config during initialization
+    config.spacecraft_bus.attitude_control.get_accel_cap = Mock(return_value=0.5)
+    config.spacecraft_bus.attitude_control.max_slew_rate = 0.25
 
     # Mock payload
     config.payload = Mock()
@@ -109,6 +113,7 @@ def queue_ditl(mock_config, mock_ephem):
         mock_pt = Mock()
         mock_pt.passes = []
         mock_pt.get = Mock()
+        mock_pt.next_pass = Mock(return_value=None)  # No upcoming passes by default
         mock_pt.check_pass_timing = Mock(
             return_value={"start_pass": None, "end_pass": False, "updated_pass": None}
         )
@@ -122,6 +127,8 @@ def queue_ditl(mock_config, mock_ephem):
         mock_acs.slewing = False
         mock_acs.inpass = False
         mock_acs.saa = None
+        mock_acs.ra = 0.0
+        mock_acs.dec = 0.0
         mock_acs.pointing = Mock(return_value=(0.0, 0.0, 0.0, 0))
         mock_acs.enqueue_command = Mock()
         mock_acs.passrequests = mock_pt
@@ -134,6 +141,9 @@ def queue_ditl(mock_config, mock_ephem):
         from conops import ACSMode
 
         mock_acs.acsmode = ACSMode.SCIENCE
+        # Mock command queue for duplicate command prevention
+        mock_acs._commands = Mock()
+        mock_acs._commands.has_pending_type = Mock(return_value=False)
         # Mock the helper methods used in _fetch_new_ppt
         mock_target_request = Mock()
         mock_target_request.next_vis = Mock(return_value=1000.0)
@@ -500,6 +510,7 @@ def queue_ditl_no_queue_log(mock_config, mock_ephem):
         mock_pt = Mock()
         mock_pt.passes = []
         mock_pt.get = Mock()
+        mock_pt.next_pass = Mock(return_value=None)  # No upcoming passes by default
         mock_pt.check_pass_timing = Mock(
             return_value={"start_pass": None, "end_pass": False, "updated_pass": None}
         )
@@ -525,6 +536,9 @@ def queue_ditl_no_queue_log(mock_config, mock_ephem):
         from conops import ACSMode
 
         mock_acs.acsmode = ACSMode.SCIENCE
+        # Mock command queue for duplicate command prevention
+        mock_acs._commands = Mock()
+        mock_acs._commands.has_pending_type = Mock(return_value=False)
         # Mock the helper methods used in _fetch_new_ppt
         mock_target_request = Mock()
         mock_target_request.next_vis = Mock(return_value=1000.0)
@@ -561,6 +575,7 @@ def queue_ditl_acs_no_ephem(mock_config, mock_ephem):
         mock_pt = Mock()
         mock_pt.passes = []
         mock_pt.get = Mock()
+        mock_pt.next_pass = Mock(return_value=None)  # No upcoming passes by default
         mock_pt.check_pass_timing = Mock(
             return_value={"start_pass": None, "end_pass": False, "updated_pass": None}
         )
@@ -585,6 +600,9 @@ def queue_ditl_acs_no_ephem(mock_config, mock_ephem):
         from conops import ACSMode
 
         mock_acs.acsmode = ACSMode.SCIENCE
+        # Mock command queue for duplicate command prevention
+        mock_acs._commands = Mock()
+        mock_acs._commands.has_pending_type = Mock(return_value=False)
         # Mock the helper methods used in _fetch_new_ppt
         mock_target_request = Mock()
         mock_target_request.next_vis = Mock(return_value=1000.0)

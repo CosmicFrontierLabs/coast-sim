@@ -55,6 +55,9 @@ def mock_config():
     cfg.battery = Mock()
     cfg.spacecraft_bus = Mock()
     cfg.spacecraft_bus.attitude_control = Mock()
+    # Slew now reads accel/vmax from config during initialization
+    cfg.spacecraft_bus.attitude_control.get_accel_cap = Mock(return_value=0.5)
+    cfg.spacecraft_bus.attitude_control.max_slew_rate = 0.25
     cfg.payload = Mock()
     cfg.recorder = Mock()
     # ground stations

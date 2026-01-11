@@ -39,6 +39,24 @@ class DITLMixin:
     recorder_alert: list[int]
     data_generated_gb: list[float]
     data_downlinked_gb: list[float]
+    # Reaction wheel resource tracking
+    wheel_momentum_fraction: list[float]
+    wheel_torque_fraction: list[float]
+    wheel_saturation: list[int]
+    mtq_bleed_torque_mag: list[float]
+    body_momentum_history: list[tuple[float, float, float]]
+    external_impulse_history: list[tuple[float, float, float]]
+    # Disturbance torque tracking (magnitudes)
+    disturbance_total: list[float]
+    disturbance_gg: list[float]
+    disturbance_drag: list[float]
+    disturbance_srp: list[float]
+    disturbance_mag: list[float]
+    # Momentum management stats
+    desat_time_steps: int
+    desat_event_count: int
+    desat_request_count: int
+    headroom_rejects: int
 
     def __init__(
         self,
@@ -98,6 +116,50 @@ class DITLMixin:
 
         # Initialize common subsystems (can be overridden by subclasses)
         self._init_subsystems()
+
+        # Reaction wheel resource tracking (aggregated across wheels)
+        self.wheel_momentum_fraction: list[float] = []
+        self.wheel_momentum_fraction_raw: list[float] = []
+        self.wheel_torque_fraction: list[float] = []
+        self.wheel_saturation: list[int] = []
+        # Diagnostics: torque magnitudes and MTQ projection
+        self.wheel_torque_actual_mag: list[float] = []
+        self.mtq_proj_max: list[float] = []
+        self.mtq_torque_mag: list[float] = []
+        self.mtq_torque_vec_history: list[tuple[float, float, float]] = []
+        self.mtq_bleed_torque_mag: list[float] = []
+        self.body_momentum_history: list[tuple[float, float, float]] = []
+        self.external_impulse_history: list[tuple[float, float, float]] = []
+        # Hold-mode torque diagnostics
+        self.hold_torque_target_mag: list[float] = []
+        self.hold_torque_actual_mag: list[float] = []
+        # Pass-mode tracking diagnostics
+        self.pass_tracking_rate_deg_s: list[float] = []
+        self.pass_torque_target_mag: list[float] = []
+        self.pass_torque_actual_mag: list[float] = []
+        # Per-wheel max momentum (raw) tracked over the run
+        self.wheel_per_wheel_max_raw: dict[str, float] = {}
+        # Per-wheel momentum history (signed Nms) for diagnostics
+        self.wheel_momentum_history: dict[str, list[float]] = {}
+        # Per-wheel torque history (applied torque, N*m) for diagnostics
+        self.wheel_torque_history: dict[str, list[float]] = {}
+        # Magnetorquer power draw (W) per step
+        self.mtq_power: list[float] = []
+        # Reaction wheel power draw (W) per step
+        self.wheel_power: list[float] = []
+        self._last_desat_request = 0.0
+        # Disturbance torque tracking
+        self.disturbance_total = []
+        self.disturbance_gg = []
+        self.disturbance_drag = []
+        self.disturbance_srp = []
+        self.disturbance_mag = []
+        self.disturbance_vec: list[tuple[float, float, float]] = []
+        # Momentum management stats
+        self.desat_time_steps = 0
+        self.desat_event_count = 0
+        self.desat_request_count = 0
+        self.headroom_rejects = 0
 
     def _init_subsystems(self) -> None:
         """Initialize subsystems from config. Can be overridden by subclasses."""

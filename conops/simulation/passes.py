@@ -144,9 +144,11 @@ class Pass(BaseModel):
         # Convert to radians
 
         return (
-            separation(
-                [spacecraft_ra * DTOR, spacecraft_dec * DTOR],
-                [target_ra * DTOR, target_dec * DTOR],
+            float(
+                separation(
+                    [spacecraft_ra * DTOR, spacecraft_dec * DTOR],
+                    [target_ra * DTOR, target_dec * DTOR],
+                )
             )
             / DTOR
         )
@@ -222,12 +224,20 @@ class Pass(BaseModel):
         rate_mbps = self.get_data_rate(band, direction)
         return rate_mbps * self.length  # Mbps * seconds = Megabits
 
-    def time_to_slew(self, utime: float, ra: float, dec: float) -> bool:
+    def time_to_slew(
+        self, utime: float, ra: float, dec: float, time_buffer: float = 0.0
+    ) -> bool:
         """Determine whether to begin slewing for this pass.
 
         Calculates the slew time between current RA/Dec and the appropriate pointing of the pass.
         If on time, slews to pass start. If late, slews to where the pass currently is.
         Returns True when the pass time minus slew time is less than 60 seconds away.
+
+        Args:
+            utime: Current time
+            ra: Current RA
+            dec: Current Dec
+            time_buffer: Additional time to account for (e.g., DESAT completion)
         """
         assert self.ephem is not None, "Ephemeris must be set for Pass class"
         assert self.config is not None, "Config must be set for Pass class"
@@ -256,7 +266,8 @@ class Pass(BaseModel):
         else:
             raise ValueError("ACS config must be set to calculate slew time")
         # Determine if we need to start slewing now
-        time_until_slew = (self.begin - slewtime) - utime
+        # Account for time_buffer (e.g., waiting for DESAT to complete)
+        time_until_slew = (self.begin - slewtime - time_buffer) - utime
 
         # If we are within 2 ephem steps of needing to slew, return True
         # FIXME: Is this buffer necessary?

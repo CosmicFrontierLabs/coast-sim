@@ -22,7 +22,11 @@ def constraint(ephem):
 
 @pytest.fixture
 def acs_config():
-    return Mock()
+    acs = Mock()
+    # Slew.__init__ now calls get_accel_cap() and max_slew_rate
+    acs.get_accel_cap = Mock(return_value=0.5)
+    acs.max_slew_rate = 0.25
+    return acs
 
 
 @pytest.fixture
@@ -170,8 +174,8 @@ def slew_calc_setup_alt(slew, acs_config):
 
 @pytest.fixture
 def slew_predict_setup(slew, acs_config):
-    ra_path = np.linspace(45.0, 90.0, 20)
-    dec_path = np.linspace(30.0, 60.0, 20)
+    ra_path = np.linspace(45.0, 90.0, 100)
+    dec_path = np.linspace(30.0, 60.0, 100)
     acs_config.predict_slew = Mock(return_value=(14.142, (ra_path, dec_path)))
     slew.startra = 45.0
     slew.startdec = 30.0

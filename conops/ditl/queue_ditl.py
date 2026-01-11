@@ -5,7 +5,7 @@ import numpy as np
 import rust_ephem
 from pydantic import BaseModel
 
-from ..common import ACSMode, angular_separation, unixtime2date
+from ..common import ACSMode, unixtime2date
 from ..common.enums import ACSCommandType
 from ..config import MissionConfig
 from ..simulation.acs_command import ACSCommand
@@ -92,6 +92,7 @@ class QueueDITL(DITLMixin, DITLStats):
         # Subsystem power tracking
         self.power_bus = list()
         self.power_payload = list()
+        self.mtq_power: list[float] = []
         # Data recorder tracking
         self.recorder_volume_gb = list()
         self.recorder_fill_fraction = list()
@@ -101,6 +102,8 @@ class QueueDITL(DITLMixin, DITLStats):
 
         # Event log
         self.log = DITLLog()
+
+        self._gsp_slew_time_window_s: float | None = None
 
         # TOO (Target of Opportunity) register - holds pending TOOs
         self.too_register: list[TOORequest] = []
@@ -372,6 +375,19 @@ class QueueDITL(DITLMixin, DITLStats):
         if self.acs.ephem is None:
             self.acs.ephem = self.ephem
 
+        # If safe mode already requested, enqueue immediately and exit
+        if (
+            getattr(self.config.fault_management, "safe_mode_requested", False)
+            and not self.acs.in_safe_mode
+        ):
+            safe_cmd = ACSCommand(
+                command_type=ACSCommandType.ENTER_SAFE_MODE,
+                execution_time=self.begin.timestamp(),
+            )
+            self.acs.enqueue_command(safe_cmd)
+            self.config.fault_management.safe_mode_requested = False
+            return True
+
         # Set up timing and schedule passes
         if not self._setup_simulation_timing():
             return False
@@ -381,6 +397,21 @@ class QueueDITL(DITLMixin, DITLStats):
 
         # Set up simulation length from begin/end datetimes
         simlen = int((self.end - self.begin).total_seconds() / self.step_size)
+
+        # Cache hasattr checks to avoid repeated lookups in hot loop
+        has_wheel_dynamics = (
+            hasattr(self.acs, "wheel_dynamics") and self.acs.wheel_dynamics is not None
+        )
+        self._has_wheel_snapshot = hasattr(self.acs, "wheel_snapshot")
+        has_disturbance_components = hasattr(self.acs, "_last_disturbance_components")
+
+        # Initialize momentum conservation tracking at TRUE start (before any physics)
+        if has_wheel_dynamics:
+            self.acs.wheel_dynamics.reset_conservation_tracking()
+            # Record initial state explicitly (all zeros if starting fresh)
+            self.acs.wheel_dynamics._initial_total_momentum = (
+                self.acs.wheel_dynamics.get_total_system_momentum().copy()
+            )
 
         # DITL loop
         for i in range(simlen):
@@ -393,11 +424,35 @@ class QueueDITL(DITLMixin, DITLStats):
             ra, dec, roll, obsid = self.acs.pointing(utime)
             mode = self.acs.get_mode(utime)
 
+            # If safe mode requested, prioritize it and skip other ops this step
+            if (
+                getattr(self.config.fault_management, "safe_mode_requested", False)
+                and not self.acs.in_safe_mode
+            ):
+                safe_cmd = ACSCommand(
+                    command_type=ACSCommandType.ENTER_SAFE_MODE,
+                    execution_time=utime,
+                )
+                self.acs.enqueue_command(safe_cmd)
+                # Prevent duplicate requests
+                self.config.fault_management.safe_mode_requested = False
+                continue
+
             # Check pass timing and manage passes
             self._check_and_manage_passes(utime, ra, dec)
 
             # Handle spacecraft operations based on current mode
+            pending_before = self._pending_commands_signature(
+                self._get_pending_commands()
+            )
             self._handle_mode_operations(mode, utime, ra, dec)
+
+            # Re-check pass scheduling after operations to catch newly queued slews.
+            pending_after = self._pending_commands_signature(
+                self._get_pending_commands()
+            )
+            if pending_before != pending_after:
+                self._check_and_manage_passes(utime, ra, dec)
 
             # Close PPT timeline segment if no active observation
             self._close_ppt_timeline_if_needed(utime)
@@ -414,6 +469,45 @@ class QueueDITL(DITLMixin, DITLStats):
                 i, utime, ra, dec, mode, in_eclipse=self.acs.in_eclipse
             )
 
+            # Record reaction wheel resource usage
+            self._record_wheel_resource(utime)
+            self._maybe_request_desat(utime)
+            # Track desat active time
+            if getattr(self.acs, "_desat_active", False):
+                self.desat_time_steps += 1
+            # Record disturbance torques (magnitudes) if available
+            if has_disturbance_components:
+                comps = self.acs._last_disturbance_components or {}
+
+                def _safe(val: Any) -> float:
+                    try:
+                        return float(val)
+                    except Exception:
+                        return 0.0
+
+                self.disturbance_total.append(_safe(comps.get("total", 0.0)))
+                self.disturbance_gg.append(_safe(comps.get("gg", 0.0)))
+                self.disturbance_drag.append(_safe(comps.get("drag", 0.0)))
+                self.disturbance_srp.append(_safe(comps.get("srp", 0.0)))
+                self.disturbance_mag.append(_safe(comps.get("mag", 0.0)))
+                vec = comps.get("vector", (0.0, 0.0, 0.0))
+                if isinstance(vec, (list, tuple)) and len(vec) == 3:
+                    try:
+                        self.disturbance_vec.append(
+                            (float(vec[0]), float(vec[1]), float(vec[2]))
+                        )
+                    except Exception:
+                        self.disturbance_vec.append((0.0, 0.0, 0.0))
+                else:
+                    self.disturbance_vec.append((0.0, 0.0, 0.0))
+            else:
+                self.disturbance_total.append(0.0)
+                self.disturbance_gg.append(0.0)
+                self.disturbance_drag.append(0.0)
+                self.disturbance_srp.append(0.0)
+                self.disturbance_mag.append(0.0)
+                self.disturbance_vec.append((0.0, 0.0, 0.0))
+
             # Handle data generation and downlink
             self._handle_data_management(utime, mode)
 
@@ -423,6 +517,14 @@ class QueueDITL(DITLMixin, DITLStats):
         # Make sure the last PPT of the day ends (if any)
         if self.plan:
             self.plan[-1].end = utime
+
+        # Capture ACS momentum management counters
+        if hasattr(self.acs, "desat_events"):
+            self.desat_event_count = self.acs.desat_events
+        if hasattr(self.acs, "desat_requests"):
+            self.desat_request_count = self.acs.desat_requests
+        if hasattr(self.acs, "headroom_rejects"):
+            self.headroom_rejects = self.acs.headroom_rejects
 
         return True
 
@@ -591,7 +693,8 @@ class QueueDITL(DITLMixin, DITLStats):
             year = self.begin.year
             day = self.begin.timetuple().tm_yday
             # Calculate length in days from begin/end
-            length = int((self.end - self.begin).total_seconds() / 86400)
+            # Use at least 1 day to avoid empty pass windows on short sims
+            length = max(1, int((self.end - self.begin).total_seconds() / 86400))
             self.acs.passrequests.get(year, day, length)
             if self.acs.passrequests.passes:
                 for p in self.acs.passrequests.passes:
@@ -613,6 +716,75 @@ class QueueDITL(DITLMixin, DITLStats):
         # Check if we're in a pass, if yes, command ACS to start the pass
         current_pass = self.acs.passrequests.current_pass(utime)
         if current_pass is not None and self.acs.acsmode != ACSMode.PASS:
+            # Don't enqueue if START_PASS is already pending (commands are processed
+            # after _check_and_manage_passes, so we'd see duplicates otherwise)
+            if self.acs._commands.has_pending_type(ACSCommandType.START_PASS):
+                return
+
+            current_slew = self.acs.current_slew
+            has_active_gsp = (
+                current_slew is not None
+                and current_slew.is_slewing(utime)
+                and getattr(current_slew, "obstype", None) == "GSP"
+            )
+            pending_cmds = self._get_pending_commands()
+            has_pending_gsp = any(
+                cmd.command_type == ACSCommandType.SLEW_TO_TARGET
+                and getattr(getattr(cmd, "slew", None), "obstype", None) == "GSP"
+                for cmd in pending_cmds
+            )
+
+            # If we missed the pre-pass slew, issue a late GSP slew to the current pass
+            if not has_active_gsp and not has_pending_gsp:
+                pass_ra = pass_dec = None
+                try:
+                    pass_pos = current_pass.ra_dec(utime)
+                except Exception:
+                    pass_pos = None
+                if (
+                    isinstance(pass_pos, (tuple, list))
+                    and len(pass_pos) >= 2
+                    and pass_pos[0] is not None
+                    and pass_pos[1] is not None
+                ):
+                    pass_ra, pass_dec = pass_pos[0], pass_pos[1]
+                if pass_ra is not None and pass_dec is not None:
+                    acs_cfg = self.config.spacecraft_bus.attitude_control
+                    slew_tol = (
+                        float(getattr(acs_cfg, "slew_accuracy", 0.0))
+                        if acs_cfg is not None
+                        else 0.0
+                    )
+                    if (
+                        self._calc_angular_distance(ra, dec, pass_ra, pass_dec)
+                        > slew_tol
+                    ):
+                        self.log.log_event(
+                            utime=utime,
+                            event_type="SLEW",
+                            description=(
+                                "Late pass start - slewing to current pass position"
+                            ),
+                            acs_mode=self.acs.acsmode,
+                        )
+                        slew = Slew(config=self.config)
+                        slew.startra = ra
+                        slew.startdec = dec
+                        slew.endra = pass_ra
+                        slew.enddec = pass_dec
+                        slew.obstype = "GSP"
+                        slew.slewstart = utime
+                        self.acs._compute_slew_distance(slew)
+                        self.acs._apply_gsp_slew_wheel_limits(slew, utime)
+                        slew.calc_slewtime()
+                        command = ACSCommand(
+                            command_type=ACSCommandType.SLEW_TO_TARGET,
+                            execution_time=utime,
+                            slew=slew,
+                        )
+                        self.acs.enqueue_command(command)
+
+            self._clear_pending_ppt_slews()
             self.log.log_event(
                 utime=utime,
                 event_type="PASS",
@@ -632,6 +804,9 @@ class QueueDITL(DITLMixin, DITLStats):
             self.acs.passrequests.current_pass(utime - self.ephem.step_size)
             and current_pass is None
         ):
+            # Don't enqueue if END_PASS is already pending
+            if self.acs._commands.has_pending_type(ACSCommandType.END_PASS):
+                return
             self.log.log_event(
                 utime=utime,
                 event_type="PASS",
@@ -646,20 +821,79 @@ class QueueDITL(DITLMixin, DITLStats):
             return
 
         # Check to see if it's time to slew to the next pass
-        # Skip if already in PASS or SLEWING mode - can't interrupt a slew mid-motion.
-        # Pass-aware scheduling in _fetch_new_ppt prevents conflicts.
-        if self.acs.acsmode in (ACSMode.PASS, ACSMode.SLEWING):
+        # Skip if already in PASS mode (already handling pass)
+        # Allow check when SLEWING - pass slews should interrupt science slews
+        if self.acs.acsmode == ACSMode.PASS:
             return
 
-        next_pass = self.acs.passrequests.next_pass(utime)
+        # Check for pass slew (including when slewing to science target)
+        # Skip if we're actively slewing to a pass (GSP type) or have a pending GSP slew
+        current_slew = self.acs.current_slew
+        if (
+            current_slew is not None
+            and current_slew.is_slewing(utime)
+            and getattr(current_slew, "obstype", None) == "GSP"
+        ):
+            return
 
+        # Also skip if there's a pending GSP slew in the command queue
+        for cmd in self._get_pending_commands():
+            if cmd.command_type == ACSCommandType.SLEW_TO_TARGET:
+                pending_slew = getattr(cmd, "slew", None)
+                if (
+                    pending_slew is not None
+                    and getattr(pending_slew, "obstype", None) == "GSP"
+                ):
+                    return
+
+        next_pass = self.acs.passrequests.next_pass(utime)
         # If there's no next pass, nothing to do
         if next_pass is None:
             return
 
-        # Check if it's time to start slewing for the next pass
-        if next_pass.time_to_slew(utime=utime, ra=ra, dec=dec):
-            # If it's time to slew, enqueue the slew command
+        # Skip expensive timing estimates when the next pass is far away.
+        try:
+            pass_begin = float(next_pass.begin)
+        except (TypeError, ValueError, AttributeError):
+            return
+
+        time_to_pass = pass_begin - utime
+        if time_to_pass > self._get_gsp_slew_time_window():
+            return
+
+        # Determine effective position for slew time calculation using planned attitude.
+        effective_ra, effective_dec = self._predict_pointing_at(
+            utime, pass_begin, ra, dec
+        )
+
+        time_current = self._estimate_gsp_slew_time(
+            ra, dec, next_pass.gsstartra, next_pass.gsstartdec
+        )
+        time_planned = (
+            time_current
+            if (effective_ra, effective_dec) == (ra, dec)
+            else self._estimate_gsp_slew_time(
+                effective_ra, effective_dec, next_pass.gsstartra, next_pass.gsstartdec
+            )
+        )
+        actual_slew_time = max(time_current, time_planned)
+
+        # Account for DESAT: if DESAT is active, add its remaining time to the slew timing
+        desat_buffer = 0.0
+        desat_active = getattr(self.acs, "_desat_active", False)
+        if not isinstance(desat_active, bool):
+            desat_active = False
+        desat_end_raw = getattr(self.acs, "_desat_end", 0.0)
+        try:
+            desat_end = float(desat_end_raw)
+        except (TypeError, ValueError):
+            desat_end = 0.0
+        if desat_active and desat_end > utime:
+            desat_buffer = desat_end - utime
+
+        # Check if it's time to start slewing using ACTUAL physics-limited duration
+        time_until_slew = (pass_begin - actual_slew_time - desat_buffer) - utime
+        if time_until_slew <= self.ephem.step_size * 2:
             self.log.log_event(
                 utime=utime,
                 event_type="SLEW",
@@ -667,19 +901,38 @@ class QueueDITL(DITLMixin, DITLStats):
                 acs_mode=self.acs.acsmode,
             )
 
-            # Create slew object for the pass
-            slew = Slew(
-                config=self.config,
-            )
-
+            slew = Slew(config=self.config)
             slew.startra = ra
             slew.startdec = dec
             slew.endra = next_pass.gsstartra
             slew.enddec = next_pass.gsstartdec
-            slew.obstype = "GSP"  # Ground Station Pass slew
+            slew.obstype = "GSP"
+            self.acs._compute_slew_distance(slew)
+            self.acs._apply_gsp_slew_wheel_limits(slew, utime)
+            slew.calc_slewtime()
+
+            # Determine execution time accounting for DESAT
+            # If DESAT is active, check if we can wait for it to complete
+            execution_time = utime
+            slew_duration = getattr(slew, "slewtime", 0.0) or 0.0
+            if desat_active and desat_end > utime:
+                time_after_desat = desat_end + slew_duration
+
+                if time_after_desat <= pass_begin:
+                    # Can wait for DESAT to complete, then slew
+                    execution_time = desat_end
+                else:
+                    # DESAT would make us miss the pass - terminate it early
+                    self.acs._desat_active = False
+                    self.acs._log_or_print(
+                        utime,
+                        "DESAT",
+                        f"Terminating DESAT early for GSP slew to {next_pass.station}",
+                    )
+
             command = ACSCommand(
                 command_type=ACSCommandType.SLEW_TO_TARGET,
-                execution_time=utime,
+                execution_time=execution_time,
                 slew=slew,
             )
             self.acs.enqueue_command(command)
@@ -879,6 +1132,17 @@ class QueueDITL(DITLMixin, DITLStats):
             slew.startra = self.acs.ra
             slew.startdec = self.acs.dec
 
+            # Validate wheel capability before proceeding
+            if not self.acs.validate_slew(slew, utime):
+                self.log.log_event(
+                    utime=utime,
+                    event_type="SLEW",
+                    description="Slew rejected - wheel validation failed",
+                    obsid=self.ppt.obsid,
+                    acs_mode=self.acs.acsmode,
+                )
+                return
+
             # Calculate slew timing
             execution_time = utime
 
@@ -940,16 +1204,29 @@ class QueueDITL(DITLMixin, DITLStats):
 
             # Check if there's enough observation time before the next pass
             slew_end_time = slew.slewstart + slew.slewtime
-            next_pass = self.acs.passrequests.next_pass(slew_end_time)
+            next_pass = self.acs.passrequests.next_pass(utime)
             if next_pass is not None:
+                if next_pass.begin <= slew_end_time:
+                    self.log.log_event(
+                        utime=utime,
+                        event_type="QUEUE",
+                        description=(
+                            f"Target {self.ppt.obsid} rejected - slew would overlap "
+                            f"pass starting at {unixtime2date(next_pass.begin)}"
+                        ),
+                        obsid=self.ppt.obsid,
+                        acs_mode=self.acs.acsmode,
+                    )
+                    self.ppt = None
+                    return
+
                 # Calculate when we need to start slewing to the pass
                 time_to_pass_slew = next_pass.begin - slew_end_time
-                # Estimate slew time to pass start position using existing utilities
-                pass_slew_dist = angular_separation(
+                # Estimate slew time to pass start position
+                pass_slew_dist = self._calc_angular_distance(
                     self.ppt.ra, self.ppt.dec, next_pass.gsstartra, next_pass.gsstartdec
                 )
-                acs_cfg = self.config.spacecraft_bus.attitude_control
-                pass_slew_time = acs_cfg.slew_time(pass_slew_dist)
+                pass_slew_time = self._estimate_slew_time(pass_slew_dist)
 
                 # Available observation time = time until pass - slew time to pass
                 available_obs_time = time_to_pass_slew - pass_slew_time
@@ -1015,11 +1292,13 @@ class QueueDITL(DITLMixin, DITLStats):
         self.panel_power.append(panel_power)
 
         # Calculate power consumption by subsystem
-        bus_power, payload_power, total_power = self._calculate_power_consumption(
-            mode=mode, in_eclipse=in_eclipse
+        bus_power, payload_power, total_power, mtq_power, wheel_power = (
+            self._calculate_power_consumption(mode=mode, in_eclipse=in_eclipse)
         )
         self.power_bus.append(bus_power)
         self.power_payload.append(payload_power)
+        self.mtq_power.append(mtq_power)
+        self.wheel_power.append(wheel_power)
         self.power.append(total_power)
 
         # Update battery state
@@ -1040,16 +1319,27 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _calculate_power_consumption(
         self, mode: ACSMode, in_eclipse: bool
-    ) -> tuple[float, float, float]:
+    ) -> tuple[float, float, float, float, float]:
         """Calculate total spacecraft power consumption broken down by subsystem.
 
         Returns:
-            Tuple of (bus_power, payload_power, total_power) in watts
+            Tuple of (bus_power, payload_power, total_power, mtq_power, wheel_power)
+            in watts. MTQ power reflects ACS telemetry and may be non-zero in SCIENCE
+            when mtq_bleed_in_science is enabled. Wheel power includes idle and
+            torque-dependent consumption from all reaction wheels.
         """
         bus_power = self.spacecraft_bus.power(mode=mode, in_eclipse=in_eclipse)
         payload_power = self.payload.power(mode=mode, in_eclipse=in_eclipse)
-        total_power = bus_power + payload_power
-        return bus_power, payload_power, total_power
+        try:
+            mtq_power = float(getattr(self.acs, "mtq_power_w", 0.0))
+        except (TypeError, ValueError):
+            mtq_power = 0.0
+        try:
+            wheel_power = float(getattr(self.acs, "wheel_power_w", 0.0))
+        except (TypeError, ValueError):
+            wheel_power = 0.0
+        total_power = bus_power + payload_power + mtq_power + wheel_power
+        return bus_power, payload_power, total_power, mtq_power, wheel_power
 
     def _update_battery_state(
         self, consumed_power: float, generated_power: float
@@ -1059,6 +1349,128 @@ class QueueDITL(DITLMixin, DITLStats):
         self.battery.charge(generated_power, self.step_size)
         self.batterylevel.append(self.battery.battery_level)
         self.charge_state.append(self.battery.charge_state)
+
+    def _record_wheel_resource(self, utime: float) -> None:
+        """Record aggregated reaction wheel torque/momentum usage."""
+        # Use cached value if available, otherwise check at runtime (for tests)
+        has_snapshot = getattr(self, "_has_wheel_snapshot", None)
+        if has_snapshot is None:
+            has_snapshot = hasattr(self.acs, "wheel_snapshot")
+        if not has_snapshot:
+            self.wheel_momentum_fraction.append(0.0)
+            self.wheel_momentum_fraction_raw.append(0.0)
+            self.wheel_torque_fraction.append(0.0)
+            self.wheel_saturation.append(0)
+            self.wheel_torque_actual_mag.append(0.0)
+            self.hold_torque_target_mag.append(0.0)
+            self.hold_torque_actual_mag.append(0.0)
+            self.pass_tracking_rate_deg_s.append(0.0)
+            self.pass_torque_target_mag.append(0.0)
+            self.pass_torque_actual_mag.append(0.0)
+            self.mtq_proj_max.append(0.0)
+            self.mtq_torque_mag.append(0.0)
+            self.mtq_torque_vec_history.append((0.0, 0.0, 0.0))
+            self.mtq_bleed_torque_mag.append(0.0)
+            self.body_momentum_history.append((0.0, 0.0, 0.0))
+            self.external_impulse_history.append((0.0, 0.0, 0.0))
+            return
+
+        snapshot = self.acs.wheel_snapshot()
+        # Handle both real WheelTelemetrySnapshot and Mock objects
+        self.wheel_momentum_fraction.append(
+            getattr(snapshot, "max_momentum_fraction", 0.0)
+        )
+        self.wheel_momentum_fraction_raw.append(
+            getattr(snapshot, "max_momentum_fraction_raw", 0.0)
+        )
+        self.wheel_torque_fraction.append(getattr(snapshot, "max_torque_fraction", 0.0))
+        self.wheel_saturation.append(1 if getattr(snapshot, "saturated", False) else 0)
+        self.wheel_torque_actual_mag.append(getattr(snapshot, "t_actual_mag", 0.0))
+        self.hold_torque_target_mag.append(
+            getattr(snapshot, "hold_torque_target_mag", 0.0)
+        )
+        self.hold_torque_actual_mag.append(
+            getattr(snapshot, "hold_torque_actual_mag", 0.0)
+        )
+        self.pass_tracking_rate_deg_s.append(
+            getattr(snapshot, "pass_tracking_rate_deg_s", 0.0)
+        )
+        self.pass_torque_target_mag.append(
+            getattr(snapshot, "pass_torque_target_mag", 0.0)
+        )
+        self.pass_torque_actual_mag.append(
+            getattr(snapshot, "pass_torque_actual_mag", 0.0)
+        )
+        self.mtq_proj_max.append(getattr(snapshot, "mtq_proj_max", 0.0))
+        self.mtq_torque_mag.append(getattr(snapshot, "mtq_torque_mag", 0.0))
+        self.mtq_torque_vec_history.append(
+            getattr(snapshot, "mtq_torque_vec", (0.0, 0.0, 0.0))
+        )
+        self.mtq_bleed_torque_mag.append(getattr(snapshot, "mtq_bleed_torque_mag", 0.0))
+        self.body_momentum_history.append(
+            getattr(snapshot, "body_momentum", (0.0, 0.0, 0.0))
+        )
+        self.external_impulse_history.append(
+            getattr(snapshot, "external_impulse", (0.0, 0.0, 0.0))
+        )
+        # Track per-wheel raw maxima across the run
+        wheels = getattr(snapshot, "wheels", None)
+        if wheels is None or not hasattr(wheels, "__iter__"):
+            return
+        try:
+            for w in wheels:
+                name = getattr(w, "name", None)
+                if not name:
+                    continue
+                # Store signed momentum time series
+                hist = self.wheel_momentum_history.setdefault(name, [])
+                hist.append(getattr(w, "momentum", 0.0))
+                # Store applied torque time series
+                thist = self.wheel_torque_history.setdefault(name, [])
+                thist.append(getattr(w, "torque_applied", 0.0))
+                frac = getattr(w, "momentum_fraction_raw", 0.0)
+                prev = self.wheel_per_wheel_max_raw.get(name, 0.0)
+                if frac > prev:
+                    self.wheel_per_wheel_max_raw[name] = frac
+        except TypeError:
+            # wheels is not iterable (e.g., Mock object)
+            pass
+
+    @staticmethod
+    def _safe_float(val: float | int | None) -> float:
+        if val is None:
+            return 0.0
+        try:
+            return float(val)
+        except Exception:
+            return 0.0
+
+    def _maybe_request_desat(self, utime: float) -> None:
+        """Trigger a desaturation when wheels have been saturated for several steps."""
+        if len(self.wheel_saturation) < 3:
+            return
+
+        # If MTQ bleed is enabled in SCIENCE, skip command-based desat
+        if getattr(self.acs, "magnetorquers", None) and getattr(
+            self.acs, "_mtq_bleed_in_science", False
+        ):
+            return
+
+        if self.acs._desat_active:
+            return
+
+        # Require sustained saturation and a cooldown between desats
+        if all(s == 1 for s in self.wheel_saturation[-5:]):
+            if utime - getattr(self, "_last_desat_request", 0.0) < 1800:
+                return
+            self.log.log_event(
+                utime=utime,
+                event_type="DESAT",
+                description="Reaction wheels saturated, requesting desat",
+                acs_mode=self.acs.acsmode,
+            )
+            self.acs.request_desat(utime)
+            self._last_desat_request = utime
 
     def _terminate_science_ppt_for_pass(self, utime: float) -> None:
         """Terminate the current science PPT during ground station pass."""
@@ -1106,3 +1518,361 @@ class QueueDITL(DITLMixin, DITLStats):
         self.acs.enqueue_command(command)
         self._terminate_charging_ppt(utime)
         self.emergency_charging.terminate_current_charging(utime)
+
+    def _calc_angular_distance(
+        self, ra1: float, dec1: float, ra2: float, dec2: float
+    ) -> float:
+        """Calculate angular distance between two sky positions in degrees."""
+        # Convert to radians
+        r1, d1 = np.deg2rad(ra1), np.deg2rad(dec1)
+        r2, d2 = np.deg2rad(ra2), np.deg2rad(dec2)
+
+        # Great circle distance using Vincenty formula for numerical stability
+        cos_d = np.sin(d1) * np.sin(d2) + np.cos(d1) * np.cos(d2) * np.cos(r2 - r1)
+        cos_d = np.clip(cos_d, -1.0, 1.0)
+        return float(np.rad2deg(np.arccos(cos_d)))
+
+    def _calc_rotation_axis_inertial(
+        self, start_ra: float, start_dec: float, end_ra: float, end_dec: float
+    ) -> np.ndarray:
+        """Estimate rotation axis in inertial frame from endpoints."""
+        r0 = np.deg2rad(start_ra)
+        d0 = np.deg2rad(start_dec)
+        r1 = np.deg2rad(end_ra)
+        d1 = np.deg2rad(end_dec)
+        v0 = np.array(
+            [np.cos(d0) * np.cos(r0), np.cos(d0) * np.sin(r0), np.sin(d0)],
+            dtype=float,
+        )
+        v1 = np.array(
+            [np.cos(d1) * np.cos(r1), np.cos(d1) * np.sin(r1), np.sin(d1)],
+            dtype=float,
+        )
+        axis = np.cross(v0, v1)
+        nrm = float(np.linalg.norm(axis))
+        if nrm <= 1e-12:
+            return np.array([0.0, 0.0, 1.0], dtype=float)
+        return axis / nrm
+
+    def _get_gsp_slew_time_window(self) -> float:
+        """Return a conservative window before pass start to begin timing checks."""
+        cached = getattr(self, "_gsp_slew_time_window_s", None)
+        if cached is not None:
+            return float(cached)
+
+        acs_cfg = self.config.spacecraft_bus.attitude_control
+        if acs_cfg is None or self.ephem is None:
+            self._gsp_slew_time_window_s = 0.0
+            return 0.0
+
+        accel_cap = acs_cfg.get_accel_cap()
+        rate_cap = acs_cfg.max_slew_rate
+
+        # Conservative floors to avoid underestimating slow slews.
+        accel_floor = 0.01
+        rate_floor = 0.05
+        accel = (
+            accel_floor
+            if accel_cap is None or accel_cap <= 0
+            else min(float(accel_cap), accel_floor)
+        )
+        rate = (
+            rate_floor
+            if rate_cap is None or rate_cap <= 0
+            else min(float(rate_cap), rate_floor)
+        )
+
+        # Worst-case slew distance is 180 degrees.
+        base_time = float(acs_cfg.slew_time(180.0, accel=accel, vmax=rate))
+        # Add margin and cover a full desat window (default 1200s).
+        window = base_time * 2.0 + 1200.0 + self.ephem.step_size * 4
+        self._gsp_slew_time_window_s = float(window)
+        return float(window)
+
+    def _estimate_gsp_slew_time(
+        self, start_ra: float, start_dec: float, end_ra: float, end_dec: float
+    ) -> float:
+        """Estimate GSP slew time without building a great-circle path."""
+        try:
+            s_ra = float(start_ra)
+            s_dec = float(start_dec)
+            e_ra = float(end_ra)
+            e_dec = float(end_dec)
+        except (TypeError, ValueError):
+            return 0.0
+
+        distance = self._calc_angular_distance(s_ra, s_dec, e_ra, e_dec)
+        if distance <= 0:
+            return 0.0
+
+        acs_cfg = self.config.spacecraft_bus.attitude_control
+        if acs_cfg is None:
+            return 0.0
+
+        accel_cap = (
+            acs_cfg.get_accel_cap() if hasattr(acs_cfg, "get_accel_cap") else None
+        )
+        rate_cap = getattr(acs_cfg, "max_slew_rate", None)
+        try:
+            accel_cap_val = float(accel_cap) if accel_cap is not None else None
+        except (TypeError, ValueError):
+            accel_cap_val = None
+        try:
+            rate_cap_val = float(rate_cap) if rate_cap is not None else None
+        except (TypeError, ValueError):
+            rate_cap_val = None
+
+        accel_default = (
+            accel_cap_val if accel_cap_val is not None and accel_cap_val > 0 else 0.5
+        )
+        rate_default = (
+            rate_cap_val if rate_cap_val is not None and rate_cap_val > 0 else 0.25
+        )
+
+        accel = accel_default
+        rate = rate_default
+
+        reaction_wheels = getattr(self.acs, "reaction_wheels", None)
+        if isinstance(reaction_wheels, list) and reaction_wheels:
+            axis_inertial = self._calc_rotation_axis_inertial(s_ra, s_dec, e_ra, e_dec)
+            axis = self.acs._axis_inertial_to_body(axis_inertial, s_ra, s_dec)
+            wheel_dynamics = getattr(self.acs, "wheel_dynamics", None)
+            if wheel_dynamics is not None:
+                accel_val = None
+                rate_val = None
+                try:
+                    params = wheel_dynamics.compute_slew_params(
+                        axis, distance, accel_cap, rate_cap
+                    )
+                except Exception:
+                    params = None
+                if isinstance(params, (list, tuple)) and len(params) >= 2:
+                    try:
+                        accel_val = float(params[0])
+                    except (TypeError, ValueError):
+                        accel_val = None
+                    try:
+                        rate_val = float(params[1])
+                    except (TypeError, ValueError):
+                        rate_val = None
+
+                if (
+                    accel_val is None
+                    or accel_val <= 0
+                    or rate_val is None
+                    or rate_val <= 0
+                ):
+                    try:
+                        params = wheel_dynamics.compute_slew_params(
+                            axis, distance, None, None
+                        )
+                    except Exception:
+                        params = None
+                    if isinstance(params, (list, tuple)) and len(params) >= 2:
+                        try:
+                            accel_val = float(params[0])
+                        except (TypeError, ValueError):
+                            accel_val = None
+                        try:
+                            rate_val = float(params[1])
+                        except (TypeError, ValueError):
+                            rate_val = None
+
+                if accel_val is not None and accel_val > 0:
+                    accel = accel_val
+                if rate_val is not None and rate_val > 0:
+                    rate = rate_val
+
+        slew_time = acs_cfg.slew_time(distance, accel=accel, vmax=rate)
+        return float(round(slew_time))
+
+    def _pending_commands_signature(self, commands: list[Any]) -> list[tuple[Any, ...]]:
+        """Build a lightweight signature for pending commands."""
+        signature: list[tuple[Any, ...]] = []
+        for cmd in commands:
+            slew = getattr(cmd, "slew", None)
+            signature.append(
+                (
+                    id(cmd),
+                    getattr(cmd, "command_type", None),
+                    getattr(cmd, "execution_time", None),
+                    getattr(slew, "obstype", None),
+                    getattr(slew, "obsid", None),
+                )
+            )
+        return signature
+
+    def _estimate_slew_time(self, distance_deg: float) -> float:
+        """Estimate slew time for a given angular distance.
+
+        Uses the ACS configuration's slew acceleration and max rate to compute
+        a bang-bang slew profile duration.
+        """
+        if distance_deg <= 0:
+            return 0.0
+
+        acs_cfg = self.config.spacecraft_bus.attitude_control
+        accel_raw = getattr(acs_cfg, "slew_acceleration", None)  # deg/s^2
+        max_rate_raw = getattr(acs_cfg, "max_slew_rate", None)  # deg/s
+        try:
+            accel = float(accel_raw) if accel_raw is not None else None
+        except (TypeError, ValueError):
+            accel = None
+        try:
+            max_rate = float(max_rate_raw) if max_rate_raw is not None else None
+        except (TypeError, ValueError):
+            max_rate = None
+
+        if accel is None or accel <= 0:
+            accel = 0.01  # Default fallback
+        if max_rate is None or max_rate <= 0:
+            max_rate = 0.3  # Default fallback
+
+        # Time to accelerate to max rate
+        t_accel = max_rate / accel
+        # Distance covered during acceleration phase
+        d_accel = 0.5 * accel * t_accel**2
+
+        if distance_deg <= 2 * d_accel:
+            # Triangle profile (never reaches max rate)
+            return float(2 * np.sqrt(distance_deg / accel))
+        else:
+            # Trapezoid profile (cruise phase at max rate)
+            cruise_distance = distance_deg - 2 * d_accel
+            t_cruise = cruise_distance / max_rate
+            return float(2 * t_accel + t_cruise)
+
+    def _get_pending_commands(self) -> list[Any]:
+        """Return pending ACS commands, tolerant of mocked command queues."""
+        commands = getattr(self.acs, "_commands", None)
+        if commands is None:
+            return []
+
+        pending = getattr(commands, "_pending", None)
+        if pending is not None:
+            try:
+                return list(pending)
+            except TypeError:
+                return []
+
+        pending = getattr(commands, "pending", [])
+        try:
+            return list(pending)
+        except TypeError:
+            return []
+
+    def _clear_pending_ppt_slews(self) -> int:
+        """Remove pending PPT slews from the ACS command queue."""
+        commands = getattr(self.acs, "_commands", None)
+        if commands is None or not hasattr(commands, "_pending"):
+            return 0
+
+        pending = getattr(commands, "_pending", None)
+        if not isinstance(pending, list) or not pending:
+            return 0
+
+        kept = []
+        removed = 0
+        for cmd in pending:
+            if (
+                cmd.command_type == ACSCommandType.SLEW_TO_TARGET
+                and getattr(getattr(cmd, "slew", None), "obstype", None) == "PPT"
+            ):
+                removed += 1
+                continue
+            kept.append(cmd)
+
+        if removed:
+            commands._pending = kept
+        return removed
+
+    def _set_slew_kinematics_for_prediction(self, slew: Slew) -> None:
+        """Assign accel/vmax for a predicted slew without side effects."""
+        if not getattr(self.acs, "reaction_wheels", None):
+            return
+
+        dist = float(getattr(slew, "slewdist", 0.0) or 0.0)
+        if dist <= 0:
+            return
+
+        axis_inertial = np.array(
+            getattr(slew, "rotation_axis", (0.0, 0.0, 1.0)), dtype=float
+        )
+        nrm = np.linalg.norm(axis_inertial)
+        if nrm > 0:
+            axis_inertial = axis_inertial / nrm
+
+        start_ra = float(getattr(slew, "startra", self.acs.ra))
+        start_dec = float(getattr(slew, "startdec", self.acs.dec))
+        axis = self.acs._axis_inertial_to_body(axis_inertial, start_ra, start_dec)
+
+        acs_cfg = self.config.spacecraft_bus.attitude_control
+        accel_cap = acs_cfg.get_accel_cap()
+        rate_cap = acs_cfg.max_slew_rate
+
+        accel, rate, _ = self.acs.wheel_dynamics.compute_slew_params(
+            axis, dist, accel_cap, rate_cap
+        )
+        if accel > 0 and rate > 0:
+            slew.accel = accel
+            slew.vmax = rate
+
+    def _predict_pointing_at(
+        self, utime: float, target_time: float, ra: float, dec: float
+    ) -> tuple[float, float]:
+        """Predict pointing at target_time using current and pending slews."""
+        if target_time <= utime:
+            return ra, dec
+
+        cur_ra, cur_dec = ra, dec
+        t_cursor = utime
+
+        active_slew = getattr(self.acs, "current_slew", None) or getattr(
+            self.acs, "last_slew", None
+        )
+        if isinstance(active_slew, Slew) and active_slew.is_slewing(utime):
+            if target_time <= active_slew.slewend:
+                return active_slew.ra_dec(target_time)
+            cur_ra, cur_dec = active_slew.endra, active_slew.enddec
+            t_cursor = active_slew.slewend
+
+        pending = sorted(
+            (
+                cmd
+                for cmd in self._get_pending_commands()
+                if cmd.command_type == ACSCommandType.SLEW_TO_TARGET
+            ),
+            key=lambda cmd: cmd.execution_time,
+        )
+
+        for cmd in pending:
+            if cmd.execution_time < t_cursor:
+                continue
+            if cmd.execution_time >= target_time:
+                break
+            slew = cmd.slew
+            if slew is None:
+                continue
+            if getattr(slew, "obstype", None) == "GSP":
+                continue
+
+            predicted = Slew(config=self.config)
+            predicted.startra = cur_ra
+            predicted.startdec = cur_dec
+            predicted.endra = float(getattr(slew, "endra", cur_ra))
+            predicted.enddec = float(getattr(slew, "enddec", cur_dec))
+            predicted.obstype = getattr(slew, "obstype", "PPT")
+            predicted.obsid = getattr(slew, "obsid", 0)
+            predicted.slewstart = float(cmd.execution_time)
+
+            self.acs._compute_slew_distance(predicted)
+            self._set_slew_kinematics_for_prediction(predicted)
+            predicted.calc_slewtime()
+
+            if target_time <= predicted.slewend:
+                return predicted.ra_dec(target_time)
+
+            cur_ra, cur_dec = predicted.endra, predicted.enddec
+            t_cursor = predicted.slewend
+
+        return cur_ra, cur_dec
