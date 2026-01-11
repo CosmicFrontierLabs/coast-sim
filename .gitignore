@@ -77,3 +77,8 @@ conops/_version.py
 CLAUDE.md
 AGENTS.md
 todo.md
+
+# Local artifacts
+ditl_12hr.prof
+plots/
+slew_scan_results.md
