@@ -62,10 +62,24 @@ class SolarPanel(BaseModel):
         default=True, description="Whether panel is side-mounted relative to boresight"
     )
     cant_x: float = Field(
-        default=0.0, description="Cant angle around X-axis in degrees"
+        default=0.0,
+        description=(
+            "Cant angle about the spacecraft X-axis (deg). Together with cant_y this "
+            "forms one of two orthogonal tilt components of the panel normal. For "
+            "body-mounted panels the net cant is computed from cant_x and cant_y; "
+            "for side-mounted panels it is applied relative to the nominal side mount."
+        ),
     )
     cant_y: float = Field(
-        default=0.0, description="Cant angle around Y-axis in degrees"
+        default=0.0,
+        description=(
+            "Cant angle about the spacecraft Y-axis (deg). This is the second "
+            "orthogonal tilt component, combined with cant_x (e.g., via their "
+            "resultant magnitude) to define the overall panel cant. Its effect "
+            "depends on sidemount: for body-mounted panels it contributes to the "
+            "net cant away from boresight, while for side-mounted panels it tilts "
+            "the panel relative to the nominal side-mounted orientation."
+        ),
     )
     azimuth_deg: float = Field(
         default=0.0,

@@ -198,7 +198,7 @@ ground_stations:
       downlink_rate_mbps: 10.0
     gain_db: null
   - code: PVG
-    name: Punta Veija
+    name: Punta Vieja
     latitude_deg: 8.7832
     longitude_deg: -71.2325
     elevation_m: 0.0
