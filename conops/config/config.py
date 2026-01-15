@@ -23,24 +23,52 @@ class MissionConfig(BaseModel):
     Configuration class for the spacecraft and its subsystems.
     """
 
-    name: str = "Default Config"
-    spacecraft_bus: SpacecraftBus = Field(default_factory=SpacecraftBus)
-    solar_panel: SolarPanelSet = Field(default_factory=SolarPanelSet)
-    payload: Payload = Field(default_factory=Payload)
-    battery: Battery = Field(default_factory=Battery)
-    constraint: Constraint = Field(default_factory=Constraint)
-    ground_stations: GroundStationRegistry = Field(
-        default_factory=GroundStationRegistry
+    name: str = Field(default="Default Config", description="Mission name/identifier")
+    spacecraft_bus: SpacecraftBus = Field(
+        default_factory=SpacecraftBus,
+        description="Spacecraft Bus Configuration. Defines the main spacecraft platform including power, attitude control, and communications",
     )
-    recorder: OnboardRecorder = Field(default_factory=OnboardRecorder)
-    fault_management: FaultManagement = Field(default_factory=FaultManagement)
-    observation_categories: ObservationCategories = (
-        ObservationCategories.default_categories()
+    solar_panel: SolarPanelSet = Field(
+        default_factory=SolarPanelSet,
+        description="Solar Panel Configuration. Defines solar array characteristics and power generation capability",
+    )
+    payload: Payload = Field(
+        default_factory=Payload,
+        description="Payload/Instrument Configuration. Defines science instruments with power draw and data generation rates",
+    )
+    battery: Battery = Field(
+        default_factory=Battery,
+        description="Battery Configuration. Defines battery capacity, voltage, and charging parameters",
+    )
+    constraint: Constraint = Field(
+        default_factory=Constraint,
+        description="Pointing Constraints. Defines geometric constraints for spacecraft pointing",
+    )
+    ground_stations: GroundStationRegistry = Field(
+        default_factory=GroundStationRegistry,
+        description="Ground Station Network. Defines ground station locations and communication capabilities",
+    )
+    recorder: OnboardRecorder = Field(
+        default_factory=OnboardRecorder,
+        description="Onboard Data Recorder. Defines storage capacity and fill thresholds",
+    )
+    fault_management: FaultManagement = Field(
+        default_factory=FaultManagement,
+        description="Fault Management System. Defines thresholds and responses for system health monitoring",
+    )
+    observation_categories: ObservationCategories = Field(
+        default_factory=ObservationCategories.default_categories,
+        description="Observation Categories. Defines categories for different observation types with ID ranges",
     )
     visualization: VisualizationConfig = Field(
-        default_factory=VisualizationConfig, exclude=True
+        default_factory=VisualizationConfig,
+        exclude=True,
+        description="Visualization Configuration",
     )
-    targets: TargetConfig = Field(default_factory=TargetConfig)
+    targets: TargetConfig = Field(
+        default_factory=TargetConfig,
+        description="Target Configuration. Defines observational targets and scheduling parameters",
+    )
 
     @model_validator(mode="after")
     def init_fault_management_defaults(self) -> Self:
@@ -155,116 +183,89 @@ class MissionConfig(BaseModel):
         yaml_lines.append("#   Acceleration: degrees per second squared (deg/s²)")
         yaml_lines.append("")
 
+        # Helper to get field description from model
+        def get_field_description(field_name: str) -> str | None:
+            """Get description from field metadata."""
+            field_info = self.__class__.model_fields.get(field_name)
+            if field_info and field_info.description:
+                return field_info.description
+            return None
+
         # Add mission name
-        yaml_lines.append("# Mission name/identifier")
+        name_desc = get_field_description("name")
+        if name_desc:
+            yaml_lines.append(f"# {name_desc}")
         yaml_lines.append(f'name: "{config_dict["name"]}"')
         yaml_lines.append("")
 
         # Spacecraft bus section
-        yaml_lines.append("# Spacecraft Bus Configuration")
-        yaml_lines.append(
-            "# Defines the main spacecraft platform including power, attitude control, and communications"
-        )
+        bus_desc = get_field_description("spacecraft_bus")
+        if bus_desc:
+            yaml_lines.append(f"# {bus_desc}")
         yaml_lines.append("spacecraft_bus:")
         self._add_bus_annotations(yaml_lines, config_dict["spacecraft_bus"])
         yaml_lines.append("")
 
         # Solar panel section
-        yaml_lines.append("# Solar Panel Configuration")
-        yaml_lines.append(
-            "# Defines solar array characteristics and power generation capability"
-        )
-        yaml_lines.append(
-            "# conversion_efficiency: Overall efficiency of the solar array system"
-        )
+        solar_desc = get_field_description("solar_panel")
+        if solar_desc:
+            yaml_lines.append(f"# {solar_desc}")
         yaml_lines.append("solar_panel:")
         self._add_yaml_content(yaml_lines, config_dict["solar_panel"], indent=1)
         yaml_lines.append("")
 
         # Payload section
-        yaml_lines.append("# Payload/Instrument Configuration")
-        yaml_lines.append(
-            "# Defines science instruments with power draw and data generation rates"
-        )
+        payload_desc = get_field_description("payload")
+        if payload_desc:
+            yaml_lines.append(f"# {payload_desc}")
         yaml_lines.append("payload:")
         self._add_yaml_content(yaml_lines, config_dict["payload"], indent=1)
         yaml_lines.append("")
 
         # Battery section
-        yaml_lines.append("# Battery Configuration")
-        yaml_lines.append("# amphour: Battery capacity in Ampere-hours (Ah)")
-        yaml_lines.append("# voltage: Nominal battery voltage (V)")
-        yaml_lines.append("# watthour: Total energy storage capacity (Wh)")
-        yaml_lines.append(
-            "# max_depth_of_discharge: Maximum allowed depth of discharge (0.0-1.0)"
-        )
-        yaml_lines.append(
-            "# recharge_threshold: Battery level fraction to stop charging (0.0-1.0)"
-        )
-        yaml_lines.append("# charge_level: Current battery charge level (Wh)")
+        battery_desc = get_field_description("battery")
+        if battery_desc:
+            yaml_lines.append(f"# {battery_desc}")
         yaml_lines.append("battery:")
         self._add_yaml_content(yaml_lines, config_dict["battery"], indent=1)
         yaml_lines.append("")
 
         # Constraints section
-        yaml_lines.append("# Pointing Constraints")
-        yaml_lines.append("# Defines geometric constraints for spacecraft pointing")
-        yaml_lines.append(
-            "# min_angle/max_angle: Angular separation constraints in degrees"
-        )
+        constraint_desc = get_field_description("constraint")
+        if constraint_desc:
+            yaml_lines.append(f"# {constraint_desc}")
         yaml_lines.append("constraint:")
         self._add_yaml_content(yaml_lines, config_dict["constraint"], indent=1)
         yaml_lines.append("")
 
         # Ground stations section
-        yaml_lines.append("# Ground Station Network")
-        yaml_lines.append("# latitude_deg/longitude_deg: Station location in degrees")
-        yaml_lines.append("# elevation_m: Station elevation above sea level in meters")
-        yaml_lines.append(
-            "# min_elevation_deg: Minimum elevation angle for contact (degrees)"
-        )
-        yaml_lines.append(
-            "# schedule_probability: Likelihood of successful contact (0.0-1.0)"
-        )
-        yaml_lines.append(
-            "# uplink_rate_mbps/downlink_rate_mbps: Data transfer rates in Mbps"
-        )
+        ground_stations_desc = get_field_description("ground_stations")
+        if ground_stations_desc:
+            yaml_lines.append(f"# {ground_stations_desc}")
         yaml_lines.append("ground_stations:")
         self._add_yaml_content(yaml_lines, config_dict["ground_stations"], indent=1)
         yaml_lines.append("")
 
         # Recorder section
-        yaml_lines.append("# Onboard Data Recorder")
-        yaml_lines.append("# capacity_gb: Total storage capacity (GB)")
-        yaml_lines.append("# current_volume_gb: Current data volume stored (GB)")
-        yaml_lines.append(
-            "# yellow_threshold/red_threshold: Fill level alerts (0.0-1.0)"
-        )
+        recorder_desc = get_field_description("recorder")
+        if recorder_desc:
+            yaml_lines.append(f"# {recorder_desc}")
         yaml_lines.append("recorder:")
         self._add_yaml_content(yaml_lines, config_dict["recorder"], indent=1)
         yaml_lines.append("")
 
         # Fault management section
-        yaml_lines.append("# Fault Management System")
-        yaml_lines.append(
-            "# Defines thresholds and responses for system health monitoring"
-        )
-        yaml_lines.append("# direction: 'above' or 'below' indicates threshold type")
-        yaml_lines.append(
-            "# safe_mode_on_red: Whether to enter safe mode on RED threshold breach"
-        )
+        fault_desc = get_field_description("fault_management")
+        if fault_desc:
+            yaml_lines.append(f"# {fault_desc}")
         yaml_lines.append("fault_management:")
         self._add_yaml_content(yaml_lines, config_dict["fault_management"], indent=1)
         yaml_lines.append("")
 
         # Observation categories section
-        yaml_lines.append("# Observation Categories")
-        yaml_lines.append(
-            "# Defines categories for different observation types with ID ranges and colors"
-        )
-        yaml_lines.append(
-            "# obsid_min/obsid_max: Observation ID range for this category"
-        )
+        obs_cat_desc = get_field_description("observation_categories")
+        if obs_cat_desc:
+            yaml_lines.append(f"# {obs_cat_desc}")
         yaml_lines.append("observation_categories:")
         self._add_yaml_content(
             yaml_lines, config_dict["observation_categories"], indent=1
@@ -273,10 +274,9 @@ class MissionConfig(BaseModel):
 
         # Targets section (if present)
         if "targets" in config_dict:
-            yaml_lines.append("# Target Configuration")
-            yaml_lines.append(
-                "# Defines observational targets and scheduling parameters"
-            )
+            targets_desc = get_field_description("targets")
+            if targets_desc:
+                yaml_lines.append(f"# {targets_desc}")
             yaml_lines.append("targets:")
             self._add_yaml_content(yaml_lines, config_dict["targets"], indent=1)
 
