@@ -76,13 +76,42 @@ Load a pre-defined configuration from a JSON file:
 
    config = MissionConfig.from_json_file("spacecraft_config.json")
 
-**4. Save to JSON File**
+**4. Load from YAML File**
+
+Load a pre-defined configuration from a YAML file (typically more human-readable than JSON):
+
+.. code-block:: python
+
+   config = MissionConfig.from_yaml_file("spacecraft_config.yaml")
+
+**5. Save to JSON File**
 
 Save a configuration to JSON for version control or sharing:
 
 .. code-block:: python
 
    config.to_json_file("spacecraft_config.json")
+
+**6. Save to YAML File**
+
+Save a configuration to YAML with helpful annotations explaining units and purpose:
+
+.. code-block:: python
+
+   config.to_yaml_file("spacecraft_config.yaml")
+
+The YAML output includes comprehensive comments explaining:
+
+- Default units for physical quantities (power in Watts, time in seconds, etc.)
+- Purpose and meaning of configuration settings
+- Valid ranges or constraints where applicable
+
+This makes YAML configurations particularly useful for:
+
+- Human review and editing
+- Documentation and configuration examples
+- Onboarding new team members
+- Version control with readable diffs
 
 Configuration Components
 ------------------------

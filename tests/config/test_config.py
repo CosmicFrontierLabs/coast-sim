@@ -3,6 +3,8 @@
 import json
 from unittest.mock import Mock
 
+import yaml
+
 from conops import (
     Battery,
     Constraint,
@@ -187,3 +189,52 @@ class TestConfig:
         with open(file_path) as f:
             data = json.load(f)
         assert data["name"] == "Test Config"
+
+    def test_from_yaml_file(self, tmp_path):
+        """Test loading Config from YAML file."""
+        yaml_data = {
+            "name": "Test Config",
+            "spacecraft_bus": {"mass": 100.0},
+            "solar_panel": {"area": 10.0},
+            "payload": {"mass": 50.0},
+            "battery": {"capacity": 200.0, "max_depth_of_discharge": 0.8},
+            "constraint": {"some_constraint": "value"},
+            "ground_stations": {},
+        }
+        file_path = tmp_path / "config.yaml"
+        with open(file_path, "w") as f:
+            yaml.safe_dump(yaml_data, f)
+        config = MissionConfig.from_yaml_file(str(file_path))
+        assert config.name == "Test Config"
+        assert config.fault_management is not None
+
+    def test_to_yaml_file(self, tmp_path):
+        """Test saving Config to YAML file."""
+        # Create a realistic config instead of using Mocks
+        config = MissionConfig(name="Test Config")
+        file_path = tmp_path / "config.yaml"
+        config.to_yaml_file(str(file_path))
+        assert file_path.exists()
+        with open(file_path) as f:
+            content = f.read()
+        # Check for header comments
+        assert "COAST-Sim Mission Configuration File" in content
+        assert "Units Legend:" in content
+        # Check that data was written
+        assert 'name: "Test Config"' in content
+
+    def test_yaml_roundtrip(self, tmp_path):
+        """Test that YAML save and load maintains data integrity."""
+        # Use example config to test full roundtrip
+        import os
+
+        example_path = os.path.join(
+            os.path.dirname(__file__), "..", "..", "examples", "example_config.json"
+        )
+        if os.path.exists(example_path):
+            config1 = MissionConfig.from_json_file(example_path)
+            yaml_path = tmp_path / "roundtrip.yaml"
+            config1.to_yaml_file(str(yaml_path))
+            config2 = MissionConfig.from_yaml_file(str(yaml_path))
+            # Compare the model dumps to ensure data integrity
+            assert config1.model_dump() == config2.model_dump()

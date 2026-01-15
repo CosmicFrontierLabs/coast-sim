@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from typing import Any, Self
+
+import yaml
 from pydantic import BaseModel, Field, model_validator
 
 from .battery import Battery
@@ -40,7 +43,7 @@ class MissionConfig(BaseModel):
     targets: TargetConfig = Field(default_factory=TargetConfig)
 
     @model_validator(mode="after")
-    def init_fault_management_defaults(self) -> MissionConfig:
+    def init_fault_management_defaults(self) -> Self:
         """Initialize default fault thresholds if none provided.
 
         Currently sets up a battery_level threshold using the battery
@@ -97,3 +100,231 @@ class MissionConfig(BaseModel):
         """Save configuration to a JSON file."""
         with open(filepath, "w") as f:
             f.write(self.model_dump_json(indent=4))
+
+    @classmethod
+    def from_yaml_file(cls, filepath: str) -> MissionConfig:
+        """Load configuration from a YAML file.
+
+        Args:
+            filepath: Path to the YAML configuration file.
+
+        Returns:
+            MissionConfig: Validated configuration object.
+        """
+        with open(filepath) as f:
+            config_dict = yaml.safe_load(f)
+            return cls.model_validate(config_dict)
+
+    def to_yaml_file(self, filepath: str) -> None:
+        """Save configuration to a YAML file with annotations.
+
+        The YAML output includes helpful comments explaining:
+        - Default units for physical quantities (e.g., power in Watts, time in seconds)
+        - Purpose and meaning of configuration settings
+        - Valid ranges or constraints where applicable
+
+        Args:
+            filepath: Path where the YAML file will be written.
+        """
+        config_dict = self.model_dump(mode="json", exclude_none=False)
+
+        # Build annotated YAML with comments
+        yaml_lines = []
+        yaml_lines.append("# COAST-Sim Mission Configuration File")
+        yaml_lines.append("# Generated YAML configuration with annotations")
+        yaml_lines.append("#")
+        yaml_lines.append(
+            "# This file defines the complete spacecraft configuration including:"
+        )
+        yaml_lines.append("#   - Spacecraft bus and subsystems")
+        yaml_lines.append("#   - Power generation and storage")
+        yaml_lines.append("#   - Payload instruments")
+        yaml_lines.append("#   - Ground stations")
+        yaml_lines.append("#   - Operational constraints")
+        yaml_lines.append("#")
+        yaml_lines.append("# Units Legend:")
+        yaml_lines.append("#   Power: Watts (W)")
+        yaml_lines.append("#   Energy: Watt-hours (Wh)")
+        yaml_lines.append("#   Time: seconds (s) unless otherwise specified")
+        yaml_lines.append("#   Angles: degrees (deg)")
+        yaml_lines.append(
+            "#   Data rates: Gigabits per second (Gbps) or Megabits per second (Mbps)"
+        )
+        yaml_lines.append("#   Data volume: Gigabits (Gb) or Gigabytes (GB)")
+        yaml_lines.append("#   Slew rates: degrees per second (deg/s)")
+        yaml_lines.append("#   Acceleration: degrees per second squared (deg/s²)")
+        yaml_lines.append("")
+
+        # Add mission name
+        yaml_lines.append("# Mission name/identifier")
+        yaml_lines.append(f'name: "{config_dict["name"]}"')
+        yaml_lines.append("")
+
+        # Spacecraft bus section
+        yaml_lines.append("# Spacecraft Bus Configuration")
+        yaml_lines.append(
+            "# Defines the main spacecraft platform including power, attitude control, and communications"
+        )
+        yaml_lines.append("spacecraft_bus:")
+        self._add_bus_annotations(yaml_lines, config_dict["spacecraft_bus"])
+        yaml_lines.append("")
+
+        # Solar panel section
+        yaml_lines.append("# Solar Panel Configuration")
+        yaml_lines.append(
+            "# Defines solar array characteristics and power generation capability"
+        )
+        yaml_lines.append(
+            "# conversion_efficiency: Overall efficiency of the solar array system"
+        )
+        yaml_lines.append("solar_panel:")
+        self._add_yaml_content(yaml_lines, config_dict["solar_panel"], indent=1)
+        yaml_lines.append("")
+
+        # Payload section
+        yaml_lines.append("# Payload/Instrument Configuration")
+        yaml_lines.append(
+            "# Defines science instruments with power draw and data generation rates"
+        )
+        yaml_lines.append("payload:")
+        self._add_yaml_content(yaml_lines, config_dict["payload"], indent=1)
+        yaml_lines.append("")
+
+        # Battery section
+        yaml_lines.append("# Battery Configuration")
+        yaml_lines.append("# amphour: Battery capacity in Ampere-hours (Ah)")
+        yaml_lines.append("# voltage: Nominal battery voltage (V)")
+        yaml_lines.append("# watthour: Total energy storage capacity (Wh)")
+        yaml_lines.append(
+            "# max_depth_of_discharge: Maximum allowed depth of discharge (0.0-1.0)"
+        )
+        yaml_lines.append(
+            "# recharge_threshold: Battery level fraction to stop charging (0.0-1.0)"
+        )
+        yaml_lines.append("# charge_level: Current battery charge level (Wh)")
+        yaml_lines.append("battery:")
+        self._add_yaml_content(yaml_lines, config_dict["battery"], indent=1)
+        yaml_lines.append("")
+
+        # Constraints section
+        yaml_lines.append("# Pointing Constraints")
+        yaml_lines.append("# Defines geometric constraints for spacecraft pointing")
+        yaml_lines.append(
+            "# min_angle/max_angle: Angular separation constraints in degrees"
+        )
+        yaml_lines.append("constraint:")
+        self._add_yaml_content(yaml_lines, config_dict["constraint"], indent=1)
+        yaml_lines.append("")
+
+        # Ground stations section
+        yaml_lines.append("# Ground Station Network")
+        yaml_lines.append("# latitude_deg/longitude_deg: Station location in degrees")
+        yaml_lines.append("# elevation_m: Station elevation above sea level in meters")
+        yaml_lines.append(
+            "# min_elevation_deg: Minimum elevation angle for contact (degrees)"
+        )
+        yaml_lines.append(
+            "# schedule_probability: Likelihood of successful contact (0.0-1.0)"
+        )
+        yaml_lines.append(
+            "# uplink_rate_mbps/downlink_rate_mbps: Data transfer rates in Mbps"
+        )
+        yaml_lines.append("ground_stations:")
+        self._add_yaml_content(yaml_lines, config_dict["ground_stations"], indent=1)
+        yaml_lines.append("")
+
+        # Recorder section
+        yaml_lines.append("# Onboard Data Recorder")
+        yaml_lines.append("# capacity_gb: Total storage capacity (GB)")
+        yaml_lines.append("# current_volume_gb: Current data volume stored (GB)")
+        yaml_lines.append(
+            "# yellow_threshold/red_threshold: Fill level alerts (0.0-1.0)"
+        )
+        yaml_lines.append("recorder:")
+        self._add_yaml_content(yaml_lines, config_dict["recorder"], indent=1)
+        yaml_lines.append("")
+
+        # Fault management section
+        yaml_lines.append("# Fault Management System")
+        yaml_lines.append(
+            "# Defines thresholds and responses for system health monitoring"
+        )
+        yaml_lines.append("# direction: 'above' or 'below' indicates threshold type")
+        yaml_lines.append(
+            "# safe_mode_on_red: Whether to enter safe mode on RED threshold breach"
+        )
+        yaml_lines.append("fault_management:")
+        self._add_yaml_content(yaml_lines, config_dict["fault_management"], indent=1)
+        yaml_lines.append("")
+
+        # Observation categories section
+        yaml_lines.append("# Observation Categories")
+        yaml_lines.append(
+            "# Defines categories for different observation types with ID ranges and colors"
+        )
+        yaml_lines.append(
+            "# obsid_min/obsid_max: Observation ID range for this category"
+        )
+        yaml_lines.append("observation_categories:")
+        self._add_yaml_content(
+            yaml_lines, config_dict["observation_categories"], indent=1
+        )
+        yaml_lines.append("")
+
+        # Targets section (if present)
+        if "targets" in config_dict:
+            yaml_lines.append("# Target Configuration")
+            yaml_lines.append(
+                "# Defines observational targets and scheduling parameters"
+            )
+            yaml_lines.append("targets:")
+            self._add_yaml_content(yaml_lines, config_dict["targets"], indent=1)
+
+        # Write to file
+        with open(filepath, "w") as f:
+            f.write("\n".join(yaml_lines))
+
+    def _add_bus_annotations(
+        self, lines: list[str], bus_config: dict[str, Any], indent: int = 1
+    ) -> None:
+        """Add spacecraft bus configuration with inline annotations."""
+        ind = "  " * indent
+
+        lines.append(f'{ind}name: "{bus_config["name"]}"')
+        lines.append(f"{ind}# Power consumption of the spacecraft bus")
+        lines.append(f"{ind}power_draw:")
+        self._add_yaml_content(lines, bus_config["power_draw"], indent + 1)
+        lines.append(f"{ind}# Attitude control system parameters")
+        lines.append(f"{ind}# slew_acceleration: Angular acceleration (deg/s²)")
+        lines.append(f"{ind}# max_slew_rate: Maximum angular velocity (deg/s)")
+        lines.append(f"{ind}# slew_accuracy: Pointing accuracy (deg)")
+        lines.append(f"{ind}# settle_time: Time to stabilize after slew (s)")
+        lines.append(f"{ind}attitude_control:")
+        self._add_yaml_content(lines, bus_config["attitude_control"], indent + 1)
+        if bus_config.get("communications"):
+            lines.append(f"{ind}communications:")
+            self._add_yaml_content(lines, bus_config["communications"], indent + 1)
+        else:
+            lines.append(f"{ind}communications: null")
+        if bus_config.get("heater"):
+            lines.append(f"{ind}# Thermal heater configuration")
+            lines.append(f"{ind}heater:")
+            self._add_yaml_content(lines, bus_config["heater"], indent + 1)
+        else:
+            lines.append(f"{ind}heater: null")
+        lines.append(f"{ind}# Data generation rates")
+        lines.append(f"{ind}# rate_gbps: Continuous data generation rate (Gbps)")
+        lines.append(f"{ind}# per_observation_gb: Data volume per observation (GB)")
+        lines.append(f"{ind}data_generation:")
+        self._add_yaml_content(lines, bus_config["data_generation"], indent + 1)
+
+    def _add_yaml_content(
+        self, lines: list[str], content: dict[str, Any] | list[Any] | Any, indent: int
+    ) -> None:
+        """Add YAML content with proper indentation."""
+        yaml_str = yaml.safe_dump(content, default_flow_style=False, sort_keys=False)
+        for line in yaml_str.rstrip().split("\n"):
+            if line:  # Skip empty lines
+                lines.append(("  " * indent) + line)
+            else:
+                lines.append("")
