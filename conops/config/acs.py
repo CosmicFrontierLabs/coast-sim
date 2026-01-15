@@ -1,5 +1,5 @@
 import numpy as np
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..common import great_circle, separation
 from .constants import DTOR
@@ -13,10 +13,18 @@ class AttitudeControlSystem(BaseModel):
     maximum slew rate, accuracy, and settling time.
     """
 
-    slew_acceleration: float = 0.5  # deg/s^2 - maximum angular acceleration
-    max_slew_rate: float = 0.25  # deg/s (15 deg/min)
-    slew_accuracy: float = 0.01  # deg - pointing accuracy after slew
-    settle_time: float = 120.0  # seconds - time to settle after slew
+    slew_acceleration: float = Field(
+        default=0.5, description="Maximum angular acceleration in degrees/second²"
+    )
+    max_slew_rate: float = Field(
+        default=0.25, description="Maximum slew rate in degrees/second (15 deg/min)"
+    )
+    slew_accuracy: float = Field(
+        default=0.01, description="Pointing accuracy after slew completion in degrees"
+    )
+    settle_time: float = Field(
+        default=120.0, description="Time to settle after slew completion in seconds"
+    )
 
     def motion_time(self, angle_deg: float) -> float:
         """Time to complete the motion (excluding settle) under bang-bang control."""

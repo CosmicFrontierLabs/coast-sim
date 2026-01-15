@@ -54,14 +54,30 @@ class SolarPanel(BaseModel):
     # Class-level eclipse constraint (stateless, shared across all instances)
     _eclipse_constraint = rust_ephem.EclipseConstraint()
 
-    name: str = "Panel"
-    gimbled: bool = False
-    sidemount: bool = True
-    cant_x: float = 0.0  # degrees
-    cant_y: float = 0.0  # degrees
-    azimuth_deg: float = 0.0  # degrees around boresight/X
-    max_power: float = 800.0  # Watts at full illumination
-    conversion_efficiency: float | None = None
+    name: str = Field(
+        default="Panel", description="Name/identifier for the solar panel"
+    )
+    gimbled: bool = Field(default=False, description="Whether the panel is gimbled")
+    sidemount: bool = Field(
+        default=True, description="Whether panel is side-mounted relative to boresight"
+    )
+    cant_x: float = Field(
+        default=0.0, description="Cant angle around X-axis in degrees"
+    )
+    cant_y: float = Field(
+        default=0.0, description="Cant angle around Y-axis in degrees"
+    )
+    azimuth_deg: float = Field(
+        default=0.0,
+        description="Structural placement angle around spacecraft in degrees",
+    )
+    max_power: float = Field(
+        default=800.0, description="Maximum power output at full illumination in Watts"
+    )
+    conversion_efficiency: float | None = Field(
+        default=None,
+        description="Optional per-panel efficiency (uses array-level if not specified)",
+    )
 
     def panel_illumination_fraction(
         self,
@@ -235,11 +251,19 @@ class SolarPanelSet(BaseModel):
             does not override it.
     """
 
-    name: str = "Default Solar Panel"
-    panels: list[SolarPanel] = Field(default_factory=lambda: [SolarPanel()])
+    name: str = Field(
+        default="Default Solar Panel", description="Name for the solar panel array"
+    )
+    panels: list[SolarPanel] = Field(
+        default_factory=lambda: [SolarPanel()],
+        description="List of individual solar panel configurations",
+    )
 
     # Array-level default efficiency
-    conversion_efficiency: float = 0.95
+    conversion_efficiency: float = Field(
+        default=0.95,
+        description="Default array-level conversion efficiency if panel does not override",
+    )
 
     # Cached panel geometry for vectorized calculations
     _geometry_cache: _PanelGeometry | None = PrivateAttr(default=None)

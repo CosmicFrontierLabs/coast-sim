@@ -162,10 +162,15 @@ class FaultConstraint(BaseModel):
         ... )
     """
 
-    name: str
-    constraint: ConstraintConfig
-    time_threshold_seconds: float | None = None
-    description: str = ""
+    name: str = Field(description="Constraint name identifier")
+    constraint: ConstraintConfig = Field(description="Constraint configuration object")
+    time_threshold_seconds: float | None = Field(
+        default=None,
+        description="Maximum continuous violation time before safe mode trigger",
+    )
+    description: str = Field(
+        default="", description="Human-readable description of constraint purpose"
+    )
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -180,10 +185,12 @@ class FaultThreshold(BaseModel):
         direction: 'below' or 'above' indicating fault when value passes *below* or *above* limit.
     """
 
-    name: str
-    yellow: float
-    red: float
-    direction: str = Field(default="below")  # 'below' or 'above'
+    name: str = Field(description="Parameter name to monitor")
+    yellow: float = Field(description="Yellow threshold value")
+    red: float = Field(description="Red threshold value")
+    direction: str = Field(
+        default="below", description="Fault direction: 'below' or 'above'"
+    )
 
     def classify(self, value: float) -> str:
         """Return nominal|yellow|red for the given value."""
@@ -212,14 +219,26 @@ class FaultManagement(BaseModel):
     can trigger safe mode after sustained violations beyond a time threshold.
     """
 
-    thresholds: list[FaultThreshold] = Field(default_factory=list)
-    red_limit_constraints: list[FaultConstraint] = Field(default_factory=list)
-    states: dict[str, FaultState] = Field(default_factory=dict)
-    safe_mode_on_red: bool = True  # Global policy: enter safe mode for any RED
-    safe_mode_requested: bool = False  # Flag set when safe mode should be triggered
+    thresholds: list[FaultThreshold] = Field(
+        default_factory=list, description="List of parameter thresholds to monitor"
+    )
+    red_limit_constraints: list[FaultConstraint] = Field(
+        default_factory=list,
+        description="List of spacecraft-level red limit constraints",
+    )
+    states: dict[str, FaultState] = Field(
+        default_factory=dict,
+        description="Current fault states for monitored parameters",
+    )
+    safe_mode_on_red: bool = Field(
+        default=True, description="Whether to trigger safe mode on any RED condition"
+    )
+    safe_mode_requested: bool = Field(
+        default=False, description="Flag indicating safe mode has been requested"
+    )
     events: list[FaultEvent] = Field(
-        default_factory=list
-    )  # Event log with timestamps and causes
+        default_factory=list, description="Event log with timestamps and causes"
+    )
 
     def ensure_state(self, name: str) -> FaultState:
         if name not in self.states:

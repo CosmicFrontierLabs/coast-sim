@@ -12,7 +12,7 @@ class Battery(BaseModel):
     # Power drain - 253 W (daily average) - peak power = 416 w
     # Solar panel power - area = 2.0 m^2 -- solar constant = 1353 w/m^2 --
     # efficiency = 29.5%  = ~800W charge rate
-    name: str = "Default Battery"
+    name: str = Field(default="Default Battery", description="Battery name/identifier")
     amphour: float = Field(
         default=20, description="Battery capacity in Ampere-hours (Ah)"
     )

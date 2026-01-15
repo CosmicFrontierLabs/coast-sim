@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .acs import AttitudeControlSystem
 from .communications import CommunicationsSystem
@@ -8,12 +8,25 @@ from .thermal import Heater
 
 
 class SpacecraftBus(BaseModel):
-    name: str = "Default Bus"
-    power_draw: PowerDraw = PowerDraw()
-    attitude_control: AttitudeControlSystem = AttitudeControlSystem()
-    communications: CommunicationsSystem | None = None
-    heater: Heater | None = None
-    data_generation: DataGeneration = DataGeneration()
+    name: str = Field(default="Default Bus", description="Name of the spacecraft bus")
+    power_draw: PowerDraw = Field(
+        default_factory=PowerDraw,
+        description="Power draw specifications for bus systems",
+    )
+    attitude_control: AttitudeControlSystem = Field(
+        default_factory=AttitudeControlSystem,
+        description="Attitude control system (ACS) configuration",
+    )
+    communications: CommunicationsSystem | None = Field(
+        default=None, description="Communications system configuration"
+    )
+    heater: Heater | None = Field(
+        default=None, description="Heater system configuration"
+    )
+    data_generation: DataGeneration = Field(
+        default_factory=DataGeneration,
+        description="Data generation specifications for bus-level data",
+    )
 
     def power(self, mode: int | None = None, in_eclipse: bool = False) -> float:
         """Get the power draw for the spacecraft bus in the given mode.

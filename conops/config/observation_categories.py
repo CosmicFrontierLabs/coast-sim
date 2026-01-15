@@ -20,10 +20,12 @@ class ObservationCategory(BaseModel):
         Matplotlib color specification for visualization.
     """
 
-    name: str
-    obsid_min: int
-    obsid_max: int
-    color: str = "tab:blue"
+    name: str = Field(description="Category name")
+    obsid_min: int = Field(description="Minimum observation ID (inclusive)")
+    obsid_max: int = Field(description="Maximum observation ID (exclusive)")
+    color: str = Field(
+        default="tab:blue", description="Matplotlib color for visualization"
+    )
 
 
 class ObservationCategories(BaseModel):
@@ -57,9 +59,16 @@ class ObservationCategories(BaseModel):
     ... )
     """
 
-    categories: list[ObservationCategory] = Field(default_factory=list)
-    default_name: str = "Observation"
-    default_color: str = "tab:blue"
+    categories: list[ObservationCategory] = Field(
+        default_factory=list,
+        description="List of observation categories with ID ranges and colors",
+    )
+    default_name: str = Field(
+        default="Observation", description="Default category name for unmatched obsids"
+    )
+    default_color: str = Field(
+        default="tab:blue", description="Default color for unmatched obsids"
+    )
 
     def get_category(self, obsid: int) -> ObservationCategory:
         """Get the category for a given observation ID.

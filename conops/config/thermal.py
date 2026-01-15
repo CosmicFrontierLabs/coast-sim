@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .power import PowerDraw
 
@@ -10,8 +10,10 @@ class Heater(BaseModel):
     requiring active thermal management to maintain temperature.
     """
 
-    name: str
-    power_draw: PowerDraw
+    name: str = Field(description="Name/identifier for the heater")
+    power_draw: PowerDraw = Field(
+        description="Power draw characteristics for the heater"
+    )
 
     def power(self, mode: int | None = None, in_eclipse: bool = False) -> float:
         """Get the heater power in the given mode and eclipse state.

@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .data_generator import DataGeneration
 from .power import PowerDraw
@@ -28,10 +28,21 @@ class Instrument(BaseModel):
         75.0
     """
 
-    name: str = "Default Instrument"
-    power_draw: PowerDraw = PowerDraw(nominal_power=50, peak_power=100, power_mode={})
-    heater: Heater | None = None
-    data_generation: DataGeneration = DataGeneration()
+    name: str = Field(
+        default="Default Instrument", description="Instrument name/identifier"
+    )
+    power_draw: PowerDraw = Field(
+        default_factory=lambda: PowerDraw(
+            nominal_power=50, peak_power=100, power_mode={}
+        ),
+        description="Power draw characteristics for the instrument",
+    )
+    heater: Heater | None = Field(
+        default=None, description="Optional heater system for the instrument"
+    )
+    data_generation: DataGeneration = Field(
+        default_factory=DataGeneration, description="Data generation characteristics"
+    )
 
     def power(self, mode: int | None = None, in_eclipse: bool = False) -> float:
         """Get the power draw for the instrument in the given mode.
