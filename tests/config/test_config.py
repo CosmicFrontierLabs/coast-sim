@@ -220,8 +220,8 @@ class TestConfig:
         # Check for header comments
         assert "COAST-Sim Mission Configuration File" in content
         assert "Units Legend:" in content
-        # Check that data was written
-        assert 'name: "Test Config"' in content
+        # Check that data was written (name value may or may not have quotes depending on YAML dumper)
+        assert "name: Test Config" in content or 'name: "Test Config"' in content
 
     def test_yaml_roundtrip(self, tmp_path):
         """Test that YAML save and load maintains data integrity."""

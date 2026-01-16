@@ -81,7 +81,8 @@
         "emergency_recharge": false,
         "max_depth_of_discharge": 0.4,
         "recharge_threshold": 0.95,
-        "charge_level": 1000.0
+        "charge_level": 1000.0,
+        "emergency_charging_min_illumination": 1.0
     },
     "constraint": {
         "sun_constraint": {
@@ -294,5 +295,8 @@
         ],
         "default_name": "Other",
         "default_color": "tab:purple"
+    },
+    "targets": {
+        "slew_distance_weight": 0.0
     }
 }

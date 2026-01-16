@@ -183,148 +183,178 @@ class MissionConfig(BaseModel):
         yaml_lines.append("#   Acceleration: degrees per second squared (deg/s²)")
         yaml_lines.append("")
 
-        # Helper to get field description from model
-        def get_field_description(field_name: str) -> str | None:
-            """Get description from field metadata."""
-            field_info = self.__class__.model_fields.get(field_name)
-            if field_info and field_info.description:
-                return field_info.description
-            return None
+        # Dynamically iterate through all top-level fields
+        for field_name, field_info in self.__class__.model_fields.items():
+            # Skip visualization as it's excluded
+            if field_info.exclude:
+                continue
 
-        # Add mission name
-        name_desc = get_field_description("name")
-        if name_desc:
-            yaml_lines.append(f"# {name_desc}")
-        yaml_lines.append(f'name: "{config_dict["name"]}"')
-        yaml_lines.append("")
+            if field_name not in config_dict:
+                continue
 
-        # Spacecraft bus section
-        bus_desc = get_field_description("spacecraft_bus")
-        if bus_desc:
-            yaml_lines.append(f"# {bus_desc}")
-        yaml_lines.append("spacecraft_bus:")
-        self._add_bus_annotations(yaml_lines, config_dict["spacecraft_bus"])
-        yaml_lines.append("")
+            # Add section header comment
+            if field_info.description:
+                yaml_lines.append(f"# {field_info.description}")
 
-        # Solar panel section
-        solar_desc = get_field_description("solar_panel")
-        if solar_desc:
-            yaml_lines.append(f"# {solar_desc}")
-        yaml_lines.append("solar_panel:")
-        self._add_yaml_content(yaml_lines, config_dict["solar_panel"], indent=1)
-        yaml_lines.append("")
+            field_value = config_dict[field_name]
+            field_model = field_info.annotation
 
-        # Payload section
-        payload_desc = get_field_description("payload")
-        if payload_desc:
-            yaml_lines.append(f"# {payload_desc}")
-        yaml_lines.append("payload:")
-        self._add_yaml_content(yaml_lines, config_dict["payload"], indent=1)
-        yaml_lines.append("")
-
-        # Battery section
-        battery_desc = get_field_description("battery")
-        if battery_desc:
-            yaml_lines.append(f"# {battery_desc}")
-        yaml_lines.append("battery:")
-        self._add_yaml_content(yaml_lines, config_dict["battery"], indent=1)
-        yaml_lines.append("")
-
-        # Constraints section
-        constraint_desc = get_field_description("constraint")
-        if constraint_desc:
-            yaml_lines.append(f"# {constraint_desc}")
-        yaml_lines.append("constraint:")
-        self._add_yaml_content(yaml_lines, config_dict["constraint"], indent=1)
-        yaml_lines.append("")
-
-        # Ground stations section
-        ground_stations_desc = get_field_description("ground_stations")
-        if ground_stations_desc:
-            yaml_lines.append(f"# {ground_stations_desc}")
-        yaml_lines.append("ground_stations:")
-        self._add_yaml_content(yaml_lines, config_dict["ground_stations"], indent=1)
-        yaml_lines.append("")
-
-        # Recorder section
-        recorder_desc = get_field_description("recorder")
-        if recorder_desc:
-            yaml_lines.append(f"# {recorder_desc}")
-        yaml_lines.append("recorder:")
-        self._add_yaml_content(yaml_lines, config_dict["recorder"], indent=1)
-        yaml_lines.append("")
-
-        # Fault management section
-        fault_desc = get_field_description("fault_management")
-        if fault_desc:
-            yaml_lines.append(f"# {fault_desc}")
-        yaml_lines.append("fault_management:")
-        self._add_yaml_content(yaml_lines, config_dict["fault_management"], indent=1)
-        yaml_lines.append("")
-
-        # Observation categories section
-        obs_cat_desc = get_field_description("observation_categories")
-        if obs_cat_desc:
-            yaml_lines.append(f"# {obs_cat_desc}")
-        yaml_lines.append("observation_categories:")
-        self._add_yaml_content(
-            yaml_lines, config_dict["observation_categories"], indent=1
-        )
-        yaml_lines.append("")
-
-        # Targets section (if present)
-        if "targets" in config_dict:
-            targets_desc = get_field_description("targets")
-            if targets_desc:
-                yaml_lines.append(f"# {targets_desc}")
-            yaml_lines.append("targets:")
-            self._add_yaml_content(yaml_lines, config_dict["targets"], indent=1)
+            # For scalar top-level fields, just output directly
+            if not isinstance(field_value, (dict, list)):
+                yaml_str = yaml.safe_dump(
+                    {field_name: field_value}, default_flow_style=False, sort_keys=False
+                )
+                yaml_lines.append(yaml_str.rstrip())
+            else:
+                # For dict/list fields, use the key and then indent content
+                yaml_lines.append(f"{field_name}:")
+                self._add_annotated_yaml_content(
+                    yaml_lines, field_value, field_model, indent=1
+                )
+            yaml_lines.append("")
 
         # Write to file
         with open(filepath, "w") as f:
             f.write("\n".join(yaml_lines))
 
-    def _add_bus_annotations(
-        self, lines: list[str], bus_config: dict[str, Any], indent: int = 1
+    def _add_annotated_yaml_content(
+        self,
+        lines: list[str],
+        content: dict[str, Any] | list[Any] | Any,
+        model_class: Any,
+        indent: int = 1,
     ) -> None:
-        """Add spacecraft bus configuration with inline annotations."""
+        """Add YAML content with annotations from Pydantic model field descriptions.
+
+        Args:
+            lines: List of YAML lines to append to
+            content: The data content to serialize (dict, list, or scalar)
+            model_class: The Pydantic model class for field descriptions (can be generic type)
+            indent: Indentation level for nested content
+        """
         ind = "  " * indent
 
-        lines.append(f'{ind}name: "{bus_config["name"]}"')
-        lines.append(f"{ind}# Power consumption of the spacecraft bus")
-        lines.append(f"{ind}power_draw:")
-        self._add_yaml_content(lines, bus_config["power_draw"], indent + 1)
-        lines.append(f"{ind}# Attitude control system parameters")
-        lines.append(f"{ind}# slew_acceleration: Angular acceleration (deg/s²)")
-        lines.append(f"{ind}# max_slew_rate: Maximum angular velocity (deg/s)")
-        lines.append(f"{ind}# slew_accuracy: Pointing accuracy (deg)")
-        lines.append(f"{ind}# settle_time: Time to stabilize after slew (s)")
-        lines.append(f"{ind}attitude_control:")
-        self._add_yaml_content(lines, bus_config["attitude_control"], indent + 1)
-        if bus_config.get("communications"):
-            lines.append(f"{ind}communications:")
-            self._add_yaml_content(lines, bus_config["communications"], indent + 1)
-        else:
-            lines.append(f"{ind}communications: null")
-        if bus_config.get("heater"):
-            lines.append(f"{ind}# Thermal heater configuration")
-            lines.append(f"{ind}heater:")
-            self._add_yaml_content(lines, bus_config["heater"], indent + 1)
-        else:
-            lines.append(f"{ind}heater: null")
-        lines.append(f"{ind}# Data generation rates")
-        lines.append(f"{ind}# rate_gbps: Continuous data generation rate (Gbps)")
-        lines.append(f"{ind}# per_observation_gb: Data volume per observation (GB)")
-        lines.append(f"{ind}data_generation:")
-        self._add_yaml_content(lines, bus_config["data_generation"], indent + 1)
+        # Handle dict with potential nested model
+        if isinstance(content, dict):
+            if hasattr(model_class, "model_fields"):
+                # Iterate through fields in the model
+                for field_name, field_info in model_class.model_fields.items():
+                    if field_name not in content:
+                        continue
 
-    def _add_yaml_content(
-        self, lines: list[str], content: dict[str, Any] | list[Any] | Any, indent: int
-    ) -> None:
-        """Add YAML content with proper indentation."""
-        yaml_str = yaml.safe_dump(content, default_flow_style=False, sort_keys=False)
-        for line in yaml_str.rstrip().split("\n"):
-            if line:  # Skip empty lines
-                lines.append(("  " * indent) + line)
+                    field_value = content[field_name]
+
+                    # Add field description as comment
+                    if field_info.description:
+                        lines.append(f"{ind}# {field_name}: {field_info.description}")
+
+                    # Handle lists
+                    if isinstance(field_value, list):
+                        lines.append(f"{ind}{field_name}:")
+                        # Get the item type from list annotation
+                        item_model = self._get_list_item_type(field_info.annotation)
+                        if (
+                            field_value
+                            and isinstance(field_value[0], dict)
+                            and item_model
+                            and hasattr(item_model, "model_fields")
+                        ):
+                            # For lists of dicts with a model, add annotated items
+                            for item in field_value:
+                                lines.append(f"{ind}  - name: {item.get('name', '')}")
+                                for (
+                                    item_field_name,
+                                    item_field_info,
+                                ) in item_model.model_fields.items():
+                                    if (
+                                        item_field_name in ("name",)
+                                        or item_field_name not in item
+                                    ):
+                                        continue
+                                    item_val = item[item_field_name]
+                                    if item_field_info.description:
+                                        lines.append(
+                                            f"{ind}    # {item_field_name}: {item_field_info.description}"
+                                        )
+                                    yaml_str = yaml.safe_dump(
+                                        {item_field_name: item_val},
+                                        default_flow_style=False,
+                                        sort_keys=False,
+                                    )
+                                    for line in yaml_str.rstrip().split("\n"):
+                                        if line:
+                                            lines.append(ind + "    " + line)
+                        else:
+                            # Default list handling
+                            self._add_annotated_yaml_content(
+                                lines,
+                                field_value,
+                                item_model if item_model else Any,
+                                indent + 1,
+                            )
+                    # Handle nested models
+                    elif isinstance(field_value, dict) and hasattr(
+                        field_info.annotation, "model_fields"
+                    ):
+                        lines.append(f"{ind}{field_name}:")
+                        self._add_annotated_yaml_content(
+                            lines,
+                            field_value,
+                            field_info.annotation,
+                            indent=indent + 1,
+                        )
+                    else:
+                        # Scalar or non-pydantic value
+                        yaml_str = yaml.safe_dump(
+                            {field_name: field_value},
+                            default_flow_style=False,
+                            sort_keys=False,
+                        )
+                        for line in yaml_str.rstrip().split("\n"):
+                            if line:
+                                lines.append(ind + line)
             else:
-                lines.append("")
+                # No model class, just dump as-is
+                yaml_str = yaml.safe_dump(
+                    content, default_flow_style=False, sort_keys=False
+                )
+                for line in yaml_str.rstrip().split("\n"):
+                    if line:
+                        lines.append(ind + line)
+                    else:
+                        lines.append("")
+        # Handle list
+        elif isinstance(content, list):
+            yaml_str = yaml.safe_dump(
+                content, default_flow_style=False, sort_keys=False
+            )
+            for line in yaml_str.rstrip().split("\n"):
+                if line:
+                    lines.append(ind + line)
+        else:
+            # Scalar value
+            yaml_str = yaml.safe_dump(
+                content, default_flow_style=False, sort_keys=False
+            )
+            lines.append(ind + yaml_str.rstrip())
+
+    def _get_list_item_type(self, model_class: Any) -> Any:
+        """Extract the item type from a list annotation.
+
+        Args:
+            model_class: A type annotation like list[SomeModel]
+
+        Returns:
+            The item type, or None if not determinable
+        """
+        # Try to get the origin and args from typing
+        import typing
+
+        if hasattr(typing, "get_origin") and hasattr(typing, "get_args"):
+            origin = typing.get_origin(model_class)
+            args = typing.get_args(model_class)
+
+            if origin is list and args:
+                return args[0]
+
+        return None
