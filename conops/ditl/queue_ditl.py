@@ -60,6 +60,9 @@ class QueueDITL(DITLMixin, DITLStats):
     ephem: rust_ephem.Ephemeris  # Override to make non-optional
     queue: Queue
     too_register: list[TOORequest]  # Register of pending TOO requests
+    _ephem_start_index: int
+    _sim_steps: int
+    _ppt_constraint_cache: dict[int, tuple[int, np.ndarray]]
 
     def __init__(
         self,
@@ -128,6 +131,9 @@ class QueueDITL(DITLMixin, DITLStats):
             starting_obsid=999000,
             log=self.log,
         )
+        self._ephem_start_index = 0
+        self._sim_steps = 0
+        self._ppt_constraint_cache = {}
 
     def get_acs_queue_status(self) -> dict[str, Any]:
         """
@@ -558,6 +564,7 @@ class QueueDITL(DITLMixin, DITLStats):
             )
             self.acs.enqueue_command(command)
             self.ppt = self.charging_ppt
+            self._precompute_ppt_constraints(self.charging_ppt)
 
     def _setup_simulation_timing(self) -> bool:
         """Set up timing aspect of simulation."""
@@ -574,7 +581,37 @@ class QueueDITL(DITLMixin, DITLStats):
         self.utime = (
             np.arange(self.ustart, self.uend, self.step_size).astype(float).tolist()
         )
+        self._ephem_start_index = self.ephem.index(self.begin)
+        self._sim_steps = len(self.utime)
         return True
+
+    def _step_index(self, utime: float) -> int:
+        return int(round((utime - self.ustart) / self.step_size))
+
+    def _precompute_ppt_constraints(self, ppt: Pointing) -> None:
+        if self._sim_steps <= 0:
+            return
+        if self.constraint.ephem is None:
+            return
+
+        begin_step = self._step_index(float(ppt.begin))
+        end_step = self._step_index(float(ppt.end))
+        if end_step < 0 or begin_step >= self._sim_steps:
+            return
+
+        begin_step = max(0, begin_step)
+        end_step = min(self._sim_steps - 1, end_step)
+        if end_step < begin_step:
+            return
+
+        indices = list(
+            range(
+                self._ephem_start_index + begin_step,
+                self._ephem_start_index + end_step + 1,
+            )
+        )
+        mask = self.constraint.in_constraint_indices(ppt.ra, ppt.dec, indices)
+        self._ppt_constraint_cache[id(ppt)] = (begin_step, mask)
 
     def _schedule_groundstation_passes(self) -> None:
         """Populate groundstation passes for the simulation window."""
@@ -716,6 +753,21 @@ class QueueDITL(DITLMixin, DITLStats):
         ):
             self.emergency_charging.current_charging_ppt = self.charging_ppt
 
+    def _ppt_in_constraint(self, ppt: Pointing, utime: float) -> bool:
+        cache = self._ppt_constraint_cache.get(id(ppt))
+        if cache is not None and self._sim_steps > 0:
+            begin_step, mask = cache
+            step_index = self._step_index(utime)
+            offset = step_index - begin_step
+            if 0 <= offset < len(mask):
+                return bool(mask[offset])
+        return self.constraint.in_constraint(ppt.ra, ppt.dec, utime)
+
+    def _clear_ppt_constraint_cache(self, ppt: Pointing | None) -> None:
+        if ppt is None:
+            return
+        self._ppt_constraint_cache.pop(id(ppt), None)
+
     def _manage_ppt_lifecycle(self, utime: float, mode: ACSMode) -> None:
         """Manage the lifecycle of the current pointing (PPT)."""
         if self.ppt is None:
@@ -724,7 +776,7 @@ class QueueDITL(DITLMixin, DITLStats):
         # Handle charging PPT constraint checks (regardless of mode)
         if self.ppt == self.charging_ppt:
             # Check constraints for charging PPT even if mode hasn't transitioned yet
-            if self.constraint.in_constraint(self.ppt.ra, self.ppt.dec, utime):
+            if self._ppt_in_constraint(self.ppt, utime):
                 constraint_name = self._get_constraint_name(
                     self.ppt.ra, self.ppt.dec, utime
                 )
@@ -755,7 +807,7 @@ class QueueDITL(DITLMixin, DITLStats):
         """Check if PPT should terminate due to constraints, completion, or timeout."""
         assert self.ppt is not None
 
-        if self.constraint.in_constraint(self.ppt.ra, self.ppt.dec, utime):
+        if self._ppt_in_constraint(self.ppt, utime):
             constraint_name = self._get_constraint_name(
                 self.ppt.ra, self.ppt.dec, utime
             )
@@ -800,6 +852,7 @@ class QueueDITL(DITLMixin, DITLStats):
         if mark_done:
             self.ppt.done = True
 
+        self._clear_ppt_constraint_cache(self.ppt)
         self.ppt = None
         self.acs.last_slew = None
 
@@ -969,6 +1022,7 @@ class QueueDITL(DITLMixin, DITLStats):
             self.ppt.begin = int(execution_time)
             # Update PPT end time to ensure it has enough time for slew + max observation
             self.ppt.end = int(execution_time + slew.slewtime + self.ppt.ss_max)
+            self._precompute_ppt_constraints(self.ppt)
 
             # Enqueue the slew command
             command = ACSCommand(
@@ -1068,6 +1122,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 self.plan[-1].end = utime
             self.ppt.end = utime
             self.ppt.done = True
+            self._clear_ppt_constraint_cache(self.ppt)
             self.ppt = None
 
     def _terminate_charging_ppt(self, utime: float) -> None:
@@ -1078,6 +1133,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 self.plan[-1].end = utime
             self.charging_ppt.end = utime
             self.charging_ppt.done = True
+            self._clear_ppt_constraint_cache(self.charging_ppt)
             self.charging_ppt = None
             self.acs.last_slew = None
 
