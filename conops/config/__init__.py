@@ -23,6 +23,11 @@ from .power import PowerDraw
 from .recorder import OnboardRecorder
 from .solar_panel import SolarPanel, SolarPanelSet, create_solar_panel_vector
 from .spacecraft_bus import SpacecraftBus
+from .star_tracker import (
+    StarTracker,
+    StarTrackerConfiguration,
+    StarTrackerOrientation,
+)
 from .targets import TargetConfig
 from .thermal import Heater
 from .visualization import VisualizationConfig
@@ -53,6 +58,9 @@ __all__ = [
     "SolarPanel",
     "SolarPanelSet",
     "SpacecraftBus",
+    "StarTracker",
+    "StarTrackerConfiguration",
+    "StarTrackerOrientation",
     "TargetConfig",
     "VisualizationConfig",
     "DAY_SECONDS",
