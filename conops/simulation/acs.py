@@ -10,8 +10,8 @@ from ..common import (
     unixtime2yearday,
 )
 from ..config import MissionConfig
-from ..config.constants import DTOR
 from ..simulation.passes import PassTimes
+from ..simulation.roll import optimum_roll
 from .acs_command import ACSCommand
 from .emergency_charging import EmergencyCharging
 from .passes import Pass
@@ -464,18 +464,15 @@ class ACS:
         # Calculate current RA/Dec pointing
         self._calculate_pointing(utime)
 
-        # Calculate roll angle
-        # FIXME: Rolls should be pre-calculated, as this is computationally expensive
-        if False:
-            from ..simulation.roll import optimum_roll
-
-            self.roll = optimum_roll(
-                self.ra * DTOR,
-                self.dec * DTOR,
-                utime,
-                self.ephem,
-                self.solar_panel,
-            )
+        # Calculate roll angle to optimize solar panel illumination
+        # NOTE: This optimizes solar panel power generation. Consider pre-calculating if performance is an issue.
+        self.roll = optimum_roll(
+            self.ra,
+            self.dec,
+            utime,
+            self.ephem,
+            self.solar_panel,
+        )
 
         # Return current pointing
         if self.last_slew is not None:

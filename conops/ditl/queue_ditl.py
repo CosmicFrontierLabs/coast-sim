@@ -411,7 +411,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
             # Calculate and record power data
             self._record_power_data(
-                i, utime, ra, dec, mode, in_eclipse=self.acs.in_eclipse
+                i, utime, ra, dec, roll, mode, in_eclipse=self.acs.in_eclipse
             )
 
             # Handle data generation and downlink
@@ -1005,12 +1005,15 @@ class QueueDITL(DITLMixin, DITLStats):
         utime: float,
         ra: float,
         dec: float,
+        roll: float,
         mode: ACSMode,
         in_eclipse: bool,
     ) -> None:
         """Calculate and record power generation, consumption, and battery state."""
         # Calculate solar panel power
-        panel_illumination, panel_power = self._calculate_panel_power(i, utime, ra, dec)
+        panel_illumination, panel_power = self._calculate_panel_power(
+            i, utime, ra, dec, roll
+        )
         self.panel.append(panel_illumination)
         self.panel_power.append(panel_power)
 
@@ -1026,12 +1029,12 @@ class QueueDITL(DITLMixin, DITLStats):
         self._update_battery_state(total_power, panel_power)
 
     def _calculate_panel_power(
-        self, i: int, utime: float, ra: float, dec: float
+        self, i: int, utime: float, ra: float, dec: float, roll: float
     ) -> tuple[float, float]:
         """Calculate solar panel illumination and power generation."""
         panel_illumination, panel_power = (
             self.config.solar_panel.illumination_and_power(
-                time=self.utime[i], ra=ra, dec=dec, ephem=self.ephem
+                time=self.utime[i], ra=ra, dec=dec, ephem=self.ephem, roll=roll
             )
         )
         assert isinstance(panel_illumination, float)
