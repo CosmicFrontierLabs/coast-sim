@@ -82,8 +82,13 @@ class StarTrackerOrientation(BaseModel):
         # Compose: rz @ ry @ rx (intrinsic ZYX)
         return rz @ ry @ rx
 
-    def transform_pointing(self, ra_deg: float, dec_deg: float) -> tuple[float, float]:
+    def transform_pointing(
+        self, ra_deg: float, dec_deg: float, roll_deg: float = 0.0
+    ) -> tuple[float, float]:
         """Transform a pointing from spacecraft frame to star tracker frame.
+
+        The transformation accounts for both the spacecraft's roll attitude and
+        the star tracker's offset orientation relative to the spacecraft body.
 
         Args
         ----
@@ -91,22 +96,37 @@ class StarTrackerOrientation(BaseModel):
             Right ascension in spacecraft frame, degrees
         dec_deg : float
             Declination in spacecraft frame, degrees
+        roll_deg : float, optional
+            Spacecraft roll angle in degrees. Default is 0.
 
         Returns
         -------
         tuple[float, float]
             (ra, dec) in star tracker frame, degrees
         """
-        # Convert RA/Dec to vector
+        # Convert RA/Dec to vector in spacecraft frame
         ra_rad = np.deg2rad(ra_deg)
         dec_rad = np.deg2rad(dec_deg)
-        v_body = np.array(
+        v_sc = np.array(
             [
                 np.cos(dec_rad) * np.cos(ra_rad),
                 np.cos(dec_rad) * np.sin(ra_rad),
                 np.sin(dec_rad),
             ]
         )
+
+        # Apply spacecraft roll to get vector in spacecraft body frame
+        roll_rad = np.deg2rad(roll_deg)
+        cos_roll = np.cos(roll_rad)
+        sin_roll = np.sin(roll_rad)
+        roll_matrix: npt.NDArray[np.float64] = np.array(
+            [
+                [1, 0, 0],
+                [0, cos_roll, -sin_roll],
+                [0, sin_roll, cos_roll],
+            ]
+        )
+        v_body = roll_matrix @ v_sc
 
         # Transform to star tracker frame
         rot_matrix = self.to_rotation_matrix()
@@ -147,7 +167,9 @@ class StarTracker(BaseModel):
     soft_constraint: Constraint | None = None
     modes_require_lock: list[int] | None = None
 
-    def in_hard_constraint(self, ra_deg: float, dec_deg: float, utime: float) -> bool:
+    def in_hard_constraint(
+        self, ra_deg: float, dec_deg: float, utime: float, roll_deg: float = 0.0
+    ) -> bool:
         """Check if pointing violates hard constraint.
 
         Args
@@ -158,6 +180,8 @@ class StarTracker(BaseModel):
             Declination in spacecraft frame, degrees
         utime : float
             Unix timestamp
+        roll_deg : float, optional
+            Spacecraft roll angle in degrees. Default is 0.
 
         Returns
         -------
@@ -168,10 +192,12 @@ class StarTracker(BaseModel):
             return False
 
         # Transform pointing to star tracker frame
-        ra_st, dec_st = self.orientation.transform_pointing(ra_deg, dec_deg)
+        ra_st, dec_st = self.orientation.transform_pointing(ra_deg, dec_deg, roll_deg)
         return self.hard_constraint.in_constraint(ra_st, dec_st, utime)
 
-    def in_soft_constraint(self, ra_deg: float, dec_deg: float, utime: float) -> bool:
+    def in_soft_constraint(
+        self, ra_deg: float, dec_deg: float, utime: float, roll_deg: float = 0.0
+    ) -> bool:
         """Check if pointing violates soft constraint.
 
         Args
@@ -182,6 +208,8 @@ class StarTracker(BaseModel):
             Declination in spacecraft frame, degrees
         utime : float
             Unix timestamp
+        roll_deg : float, optional
+            Spacecraft roll angle in degrees. Default is 0.
 
         Returns
         -------
@@ -192,7 +220,7 @@ class StarTracker(BaseModel):
             return False
 
         # Transform pointing to star tracker frame
-        ra_st, dec_st = self.orientation.transform_pointing(ra_deg, dec_deg)
+        ra_st, dec_st = self.orientation.transform_pointing(ra_deg, dec_deg, roll_deg)
         return self.soft_constraint.in_constraint(ra_st, dec_st, utime)
 
     def requires_lock_in_mode(self, mode: int | None = None) -> bool:
@@ -246,7 +274,7 @@ class StarTrackerConfiguration(BaseModel):
         return len(self.star_trackers)
 
     def trackers_violating_hard_constraints(
-        self, ra_deg: float, dec_deg: float, utime: float
+        self, ra_deg: float, dec_deg: float, utime: float, roll_deg: float = 0.0
     ) -> int:
         """Count how many star trackers violate hard constraints.
 
@@ -258,6 +286,8 @@ class StarTrackerConfiguration(BaseModel):
             Declination in spacecraft frame, degrees
         utime : float
             Unix timestamp
+        roll_deg : float, optional
+            Spacecraft roll angle in degrees. Default is 0.
 
         Returns
         -------
@@ -266,12 +296,12 @@ class StarTrackerConfiguration(BaseModel):
         """
         count = 0
         for st in self.star_trackers:
-            if st.in_hard_constraint(ra_deg, dec_deg, utime):
+            if st.in_hard_constraint(ra_deg, dec_deg, utime, roll_deg):
                 count += 1
         return count
 
     def any_tracker_violating_soft_constraints(
-        self, ra_deg: float, dec_deg: float, utime: float
+        self, ra_deg: float, dec_deg: float, utime: float, roll_deg: float = 0.0
     ) -> bool:
         """Check if any star tracker violates soft constraints.
 
@@ -283,6 +313,8 @@ class StarTrackerConfiguration(BaseModel):
             Declination in spacecraft frame, degrees
         utime : float
             Unix timestamp
+        roll_deg : float, optional
+            Spacecraft roll angle in degrees. Default is 0.
 
         Returns
         -------
@@ -290,12 +322,17 @@ class StarTrackerConfiguration(BaseModel):
             True if any star tracker violates soft constraints
         """
         for st in self.star_trackers:
-            if st.in_soft_constraint(ra_deg, dec_deg, utime):
+            if st.in_soft_constraint(ra_deg, dec_deg, utime, roll_deg):
                 return True
         return False
 
     def is_pointing_valid(
-        self, ra_deg: float, dec_deg: float, utime: float, mode: int | None = None
+        self,
+        ra_deg: float,
+        dec_deg: float,
+        utime: float,
+        roll_deg: float = 0.0,
+        mode: int | None = None,
     ) -> bool:
         """Check if pointing is valid considering hard constraints and minimum trackers.
 
@@ -310,6 +347,8 @@ class StarTrackerConfiguration(BaseModel):
             Declination in spacecraft frame, degrees
         utime : float
             Unix timestamp
+        roll_deg : float, optional
+            Spacecraft roll angle in degrees. Default is 0.
         mode : int, optional
             Operational mode (used for lock requirement checking)
 
@@ -322,13 +361,15 @@ class StarTrackerConfiguration(BaseModel):
             # No star trackers configured - allow all pointings
             return True
 
-        violations = self.trackers_violating_hard_constraints(ra_deg, dec_deg, utime)
+        violations = self.trackers_violating_hard_constraints(
+            ra_deg, dec_deg, utime, roll_deg
+        )
         functional_trackers = len(self.star_trackers) - violations
 
         return functional_trackers >= self.min_functional_trackers
 
     def check_soft_constraint_degradation(
-        self, ra_deg: float, dec_deg: float, utime: float
+        self, ra_deg: float, dec_deg: float, utime: float, roll_deg: float = 0.0
     ) -> bool:
         """Check if pointing results in any soft constraint violations.
 
@@ -342,13 +383,17 @@ class StarTrackerConfiguration(BaseModel):
             Declination in spacecraft frame, degrees
         utime : float
             Unix timestamp
+        roll_deg : float, optional
+            Spacecraft roll angle in degrees. Default is 0.
 
         Returns
         -------
         bool
             True if any star tracker will operate at degraded performance
         """
-        return self.any_tracker_violating_soft_constraints(ra_deg, dec_deg, utime)
+        return self.any_tracker_violating_soft_constraints(
+            ra_deg, dec_deg, utime, roll_deg
+        )
 
     def get_tracker_by_name(self, name: str) -> StarTracker | None:
         """Get a star tracker by name.
