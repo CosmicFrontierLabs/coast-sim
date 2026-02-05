@@ -492,8 +492,8 @@ class SolarPanelSet(BaseModel):
         panel_illum = np.cos(np.radians(panel_sun_angle))
 
         # Apply azimuthal constraint for side-mounted panels with non-zero azimuth
-        # cos(azimuth) gives the projection factor
-        azimuth_factor = np.abs(np.cos(geom.azimuth_rad))
+        # cos(azimuth + roll) gives the projection factor
+        azimuth_factor = np.abs(np.cos(geom.azimuth_rad + np.deg2rad(roll)))
         # Only apply to sidemount panels (azimuth doesn't affect body-mount)
         panel_illum = np.where(
             geom.sidemount, panel_illum * azimuth_factor, panel_illum
