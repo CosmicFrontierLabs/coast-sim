@@ -26,7 +26,7 @@ def optimum_roll(
     sunvec = ephem.sun_pv.position[index] - ephem.gcrs_pv.position[index]  # km
 
     # Sun vector in body coordinates for roll=0
-    s_body_0 = scbodyvector(ra, dec, 0.0, sunvec)
+    s_body_0 = scbodyvector(ra * DTOR, dec * DTOR, 0.0, sunvec)
 
     if solar_panel is None:
         # Analytic optimum: choose roll that minimizes the Z-component of Sun
