@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 from unittest.mock import Mock
 
+import numpy as np
 import pytest
 import rust_ephem
 
@@ -45,6 +46,9 @@ class DummyEphemeris:
         self.earth_dec_deg = [0.0]
         self.sun_ra_deg = [45.0]
         self.sun_dec_deg = [23.5]
+        # Mock position/velocity data for roll calculation
+        self.sun_pv = Mock(position=np.array([[1.5e8, 0.0, 0.0]]))
+        self.gcrs_pv = Mock(position=np.array([[0.0, 0.0, 6378.0]]))
 
     def index(self, time):
         return 0

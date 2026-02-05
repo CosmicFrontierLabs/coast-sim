@@ -705,6 +705,7 @@ class TestRecordSpacecraftState:
             utime=1000.0,
             ra=45.0,
             dec=30.0,
+            roll=0,
             mode=ACSMode.SCIENCE,
             in_eclipse=False,
         )
@@ -717,6 +718,7 @@ class TestRecordSpacecraftState:
             utime=1000.0,
             ra=45.0,
             dec=30.0,
+            roll=0,
             mode=ACSMode.SCIENCE,
             in_eclipse=False,
         )
@@ -729,6 +731,7 @@ class TestRecordSpacecraftState:
             utime=1000.0,
             ra=45.0,
             dec=30.0,
+            roll=0,
             mode=ACSMode.SCIENCE,
             in_eclipse=False,
         )
@@ -741,6 +744,7 @@ class TestRecordSpacecraftState:
             utime=1000.0,
             ra=45.0,
             dec=30.0,
+            roll=0,
             mode=ACSMode.SCIENCE,
             in_eclipse=False,
         )
@@ -758,6 +762,7 @@ class TestRecordSpacecraftState:
             utime=1000.0,
             ra=0.0,
             dec=0.0,
+            roll=0.0,
             mode=ACSMode.SCIENCE,
             in_eclipse=False,
         )
@@ -777,6 +782,7 @@ class TestRecordSpacecraftState:
             utime=1000.0,
             ra=0.0,
             dec=0.0,
+            roll=0.0,
             mode=ACSMode.SCIENCE,
             in_eclipse=False,
         )
@@ -796,6 +802,7 @@ class TestRecordSpacecraftState:
             utime=1000.0,
             ra=0.0,
             dec=0.0,
+            roll=0.0,
             mode=ACSMode.SCIENCE,
             in_eclipse=False,
         )
@@ -813,6 +820,7 @@ class TestRecordSpacecraftState:
             utime=1000.0,
             ra=0.0,
             dec=0.0,
+            roll=0.0,
             mode=ACSMode.SCIENCE,
             in_eclipse=False,
         )
@@ -830,6 +838,7 @@ class TestRecordSpacecraftState:
             utime=1000.0,
             ra=0.0,
             dec=0.0,
+            roll=0.0,
             mode=ACSMode.SCIENCE,
             in_eclipse=False,
         )

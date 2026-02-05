@@ -1,16 +1,19 @@
 """Test fixtures for ACS subsystem tests."""
 
+from collections.abc import Generator
 from unittest.mock import Mock, patch
 
+import numpy as np
 import pytest
 
 from conops import ACS, AttitudeControlSystem, Constraint, SpacecraftBus
+from conops.config.solar_panel import SolarPanel, SolarPanelSet
 
 
 class DummyEphemeris:
     """Minimal mock ephemeris for testing."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.step_size = 1.0
         # Mock both earth and sun positions (legacy SkyCoord style)
         self.earth = [Mock(ra=Mock(deg=0.0), dec=Mock(deg=0.0))]
@@ -22,47 +25,43 @@ class DummyEphemeris:
         self.sun_dec_deg = [23.5]
         self.moon_ra_deg = [90.0]
         self.moon_dec_deg = [10.0]
+        # Mock position/velocity data for roll calculation
+        self.sun_pv = Mock(position=np.array([[1.5e8, 0.0, 0.0]]))  # Sun position in km
+        self.gcrs_pv = Mock(
+            position=np.array([[0.0, 0.0, 6378.0]])
+        )  # S/C position in km
 
-    def index(self, time):
+    def index(self, time: object) -> int:
         return 0
 
 
 @pytest.fixture
-def mock_ephem():
+def mock_ephem() -> DummyEphemeris:
     """Create a mock ephemeris object."""
     return DummyEphemeris()
 
 
 @pytest.fixture
-def mock_constraint(mock_ephem):
+def mock_constraint(mock_ephem: DummyEphemeris) -> Mock:
     """Create a mock constraint."""
     constraint = Mock(spec=Constraint)
     constraint.ephem = mock_ephem
     constraint.panel_constraint = Mock()
-    constraint.panel_constraint.solar_panel = Mock()
+    constraint.panel_constraint.solar_panel = None
     constraint.in_constraint = Mock(return_value=False)
     constraint.in_eclipse = Mock(return_value=False)
     return constraint
 
 
 @pytest.fixture
-def mock_config(mock_ephem, mock_constraint):
+def mock_config(mock_ephem: DummyEphemeris, mock_constraint: Mock) -> Mock:
     """Create a mock config."""
     config = Mock()
     config.constraint = mock_constraint
     config.ground_stations = Mock()
 
-    # Create a mock solar panel with the optimal_charging_pointing method
-    solar_panel_mock = Mock()
-
-    def mock_optimal_charging_pointing(utime, ephem):
-        # Return current sun position
-        return (ephem.sun[0].ra.deg, ephem.sun[0].dec.deg)
-
-    solar_panel_mock.optimal_charging_pointing.side_effect = (
-        mock_optimal_charging_pointing
-    )
-    config.solar_panel = solar_panel_mock
+    panel = SolarPanel(name="Panel", azimuth_deg=0.0, cant_deg=45.0, area_m2=1.0)
+    config.solar_panel = SolarPanelSet(panels=[panel])
 
     config.spacecraft_bus = Mock()
     config.spacecraft_bus.attitude_control = Mock()
@@ -74,7 +73,7 @@ def mock_config(mock_ephem, mock_constraint):
 
 
 @pytest.fixture
-def acs(mock_constraint, mock_config):
+def acs(mock_constraint: Mock, mock_config: Mock) -> Generator[ACS, None, None]:
     """Create an ACS instance with mocked dependencies."""
     with patch("conops.simulation.passes.PassTimes") as mock_passtimes:
         mock_pt = Mock()
@@ -88,17 +87,17 @@ def acs(mock_constraint, mock_config):
 
 
 @pytest.fixture
-def bus():
+def bus() -> SpacecraftBus:
     return SpacecraftBus()
 
 
 @pytest.fixture
-def acs_config():
+def acs_config() -> AttitudeControlSystem:
     return AttitudeControlSystem(
         slew_acceleration=1.0, max_slew_rate=0.5, settle_time=90.0
     )
 
 
 @pytest.fixture
-def default_acs():
+def default_acs() -> AttitudeControlSystem:
     return AttitudeControlSystem()

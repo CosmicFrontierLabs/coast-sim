@@ -37,6 +37,9 @@ class DummyEphemeris:
         self.sun_dec_deg = np.full(len(unix_times), 23.5)
         self.moon_ra_deg = np.full(len(unix_times), 90.0)
         self.moon_dec_deg = np.full(len(unix_times), 10.0)
+        # Mock position/velocity data for roll calculation
+        self.sun_pv = Mock(position=np.array([[1.5e8, 0.0, 0.0]] * len(unix_times)))
+        self.gcrs_pv = Mock(position=np.array([[0.0, 0.0, 6378.0]] * len(unix_times)))
 
     def index(self, time):
         """Mock index method."""
