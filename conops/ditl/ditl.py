@@ -193,7 +193,7 @@ class DITL(DITLMixin, DITLStats):
 
             # Calculate solar panel illumination and power (more efficient than separate calls)
             panel_illumination, panel_power = self.solar_panel.illumination_and_power(
-                time=self.utime[i], ra=ra, dec=dec, ephem=self.ephem
+                time=self.utime[i], ra=ra, dec=dec, ephem=self.ephem, roll=roll
             )
             assert isinstance(panel_illumination, float)
             assert isinstance(panel_power, float)

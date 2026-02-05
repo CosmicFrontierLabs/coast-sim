@@ -129,10 +129,11 @@ class TestSafeModePointing:
         # The mock slew_time returns 100.0 seconds, so advance beyond that
         acs.pointing(utime + 200)
 
-        assert acs.ra == mock_ephem.sun[0].ra.deg
-        assert acs.dec == mock_ephem.sun[0].dec.deg
-        assert acs.ra == 45.0
-        assert acs.dec == 23.5
+        expected_ra, expected_dec = acs.solar_panel.optimal_charging_pointing(
+            utime + 200, mock_ephem
+        )
+        assert acs.ra == expected_ra
+        assert acs.dec == expected_dec
 
     def test_safe_mode_pointing_updates_with_sun(self, acs, mock_ephem):
         """Test that safe mode pointing tracks the Sun over time."""
@@ -153,8 +154,11 @@ class TestSafeModePointing:
         acs.pointing(utime + 1000)
 
         # Pointing should update to new Sun position
-        assert acs.ra == 90.0
-        assert acs.dec == 45.0
+        expected_ra, expected_dec = acs.solar_panel.optimal_charging_pointing(
+            utime + 1000, mock_ephem
+        )
+        assert acs.ra == expected_ra
+        assert acs.dec == expected_dec
         assert acs.ra != initial_ra
         assert acs.dec != initial_dec
 

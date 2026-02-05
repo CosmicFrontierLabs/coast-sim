@@ -366,7 +366,7 @@ class TestEmergencyCharging:
             lambda ra, dec, utime: ra == 180.0
         )
 
-        def mock_illumination(time, ra, dec, ephem):
+        def mock_illumination(time, ra, dec, ephem, roll=0.0):
             if ra == 210.0:
                 return 0.9
             return 0.5
@@ -722,7 +722,7 @@ class TestEmergencyCharging:
             lambda ra, dec, utime: False
         )
 
-        def mock_illumination(time, ra, dec, ephem):
+        def mock_illumination(time, ra, dec, ephem, roll=0.0):
             if abs(ra) < 60 or ra > 300:
                 return 0.85
             return 0.5
@@ -812,7 +812,7 @@ class TestEmergencyCharging:
         utime = 1700000000.0
         mock_config.constraint.in_constraint = Mock(return_value=False)
 
-        def mock_illumination(time, ra, dec, ephem):
+        def mock_illumination(time, ra, dec, ephem, roll=0.0):
             ra_rad = np.radians(ra)
             dec_rad = np.radians(dec)
             sun_ra_rad = np.radians(sun_ra)
@@ -859,7 +859,7 @@ class TestEmergencyCharging:
         utime = 1700000000.0
         mock_config.constraint.in_constraint = Mock(return_value=False)
 
-        def mock_illumination(time, ra, dec, ephem):
+        def mock_illumination(time, ra, dec, ephem, roll=0.0):
             ra_rad = np.radians(ra)
             dec_rad = np.radians(dec)
             sun_ra_rad = np.radians(sun_ra)
@@ -917,7 +917,7 @@ class TestEmergencyCharging:
         high_ra = (optimal_ra + 90.0) % 360.0
         high_dec = optimal_dec
 
-        def mock_illumination(time, ra, dec, ephem):
+        def mock_illumination(time, ra, dec, ephem, roll=0.0):
             if abs(ra - high_ra) < 1e-6 and abs(dec - high_dec) < 1e-6:
                 return 1.0
             if abs(ra - optimal_ra) < 1e-6 and abs(dec - optimal_dec) < 1e-6:
@@ -960,7 +960,7 @@ class TestEmergencyCharging:
             Mock(return_value=(optimal_ra, optimal_dec)),
         )
 
-        def mock_illumination(time, ra, dec, ephem):
+        def mock_illumination(time, ra, dec, ephem, roll=0.0):
             if abs(ra - optimal_ra) < 1e-6 and abs(dec - optimal_dec) < 1e-6:
                 return 1.0
             return 0.7

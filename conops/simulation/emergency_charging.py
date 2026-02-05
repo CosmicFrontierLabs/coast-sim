@@ -324,7 +324,7 @@ class EmergencyCharging:
 
             # Calculate solar panel illumination for this pointing
             illumination = self.solar_panel.panel_illumination_fraction(
-                time=utime, ra=alt_ra, dec=alt_dec, ephem=ephem
+                time=utime, ra=alt_ra, dec=alt_dec, ephem=ephem, roll=0.0
             )
 
             # Ensure we have a float (should be scalar for single time)

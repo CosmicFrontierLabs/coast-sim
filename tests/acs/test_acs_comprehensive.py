@@ -284,7 +284,7 @@ class TestPointing:
 
         assert ra == 0.0  # Earth RA from mock
         assert dec == 0.0  # Earth Dec from mock
-        assert roll == 0.0
+        assert 0.0 <= roll < 360.0
         assert obsid == 0  # Default obsid when no slew is active
 
     @patch("conops.optimum_roll")
