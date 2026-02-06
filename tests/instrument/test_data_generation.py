@@ -110,7 +110,7 @@ class TestPayloadDataGeneration:
                 name="Spectrometer", data_generation=DataGeneration(rate_gbps=0.05)
             ),
         ]
-        payload = Payload(payload=instruments)
+        payload = Payload(instruments=instruments)
 
         total_rate = payload.total_data_rate_gbps()
         assert total_rate == pytest.approx(0.3, rel=1e-6)
@@ -121,7 +121,7 @@ class TestPayloadDataGeneration:
             Instrument(name="Camera1", data_generation=DataGeneration(rate_gbps=0.1)),
             Instrument(name="Camera2", data_generation=DataGeneration(rate_gbps=0.2)),
         ]
-        payload = Payload(payload=instruments)
+        payload = Payload(instruments=instruments)
 
         # 60 seconds at 0.3 Gbps total
         data = payload.data_generated(60)
@@ -139,7 +139,7 @@ class TestPayloadDataGeneration:
                 data_generation=DataGeneration(per_observation_gb=3.0),
             ),
         ]
-        payload = Payload(payload=instruments)
+        payload = Payload(instruments=instruments)
 
         # Should return sum of per-observation amounts
         data = payload.data_generated(60)
@@ -158,7 +158,7 @@ class TestPayloadDataGeneration:
                 data_generation=DataGeneration(per_observation_gb=2.0),
             ),
         ]
-        payload = Payload(payload=instruments)
+        payload = Payload(instruments=instruments)
 
         # 60 seconds: Camera generates 6.0 Gb, Spectrometer generates 2.0 Gb
         data = payload.data_generated(60)
@@ -174,7 +174,7 @@ class TestPayloadDataGeneration:
                 data_generation=DataGeneration(per_observation_gb=1.0),
             ),
         ]
-        payload = Payload(payload=instruments)
+        payload = Payload(instruments=instruments)
 
         # 60 seconds: Camera generates 6.0 Gb, Spectrometer generates 1.0 Gb
         data = payload.data_generated(60)
@@ -191,7 +191,7 @@ class TestDataGenerationScenarios:
             name="High-Res Camera",
             data_generation=DataGeneration(rate_gbps=1.0),  # 1 Gbps
         )
-        payload = Payload(payload=[camera])
+        payload = Payload(instruments=[camera])
 
         # 10 minute observation
         data = payload.data_generated(600)
@@ -210,7 +210,7 @@ class TestDataGenerationScenarios:
                 data_generation=DataGeneration(rate_gbps=0.0005),
             ),
         ]
-        payload = Payload(payload=instruments)
+        payload = Payload(instruments=instruments)
 
         # 1 hour of data collection
         data = payload.data_generated(3600)
@@ -223,7 +223,7 @@ class TestDataGenerationScenarios:
             name="Survey Camera",
             data_generation=DataGeneration(per_observation_gb=0.5),
         )
-        payload = Payload(payload=[camera])
+        payload = Payload(instruments=[camera])
 
         # Each observation generates fixed amount
         data = payload.data_generated(1)  # Duration doesn't matter

@@ -29,7 +29,7 @@ class TestDataManagementIntegration:
             name="Camera",
             data_generation=DataGeneration(rate_gbps=0.01),  # 0.01 Gbps
         )
-        payload = Payload(payload=[camera])
+        payload = Payload(instruments=[camera])
 
         # Create recorder with moderate capacity
         recorder = OnboardRecorder(
@@ -239,7 +239,7 @@ class TestDataGenerationScenarios:
                 data_generation=DataGeneration(rate_gbps=0.01),
             ),
         ]
-        payload = Payload(payload=instruments)
+        payload = Payload(instruments=instruments)
 
         # 60 seconds of observation
         # Camera: 0.05 * 60 = 3.0 Gb

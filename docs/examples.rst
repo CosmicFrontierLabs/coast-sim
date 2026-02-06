@@ -180,7 +180,7 @@ Configure and simulate onboard data storage, generation, and downlink:
        data_generation=DataGeneration(per_observation_gb=2.0)  # 2 Gb per obs
    )
 
-   payload = Payload(payload=[camera, spectrometer])
+   payload = Payload(instruments=[camera, spectrometer])
 
    # Configure onboard data recorder
    recorder = OnboardRecorder(
