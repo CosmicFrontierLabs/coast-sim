@@ -52,7 +52,7 @@ class Instrument(BaseModel):
 
 class Payload(BaseModel):
     """
-    The payload is a a collection of instruments that can be operated together.
+    The payload is a collection of instruments that can be operated together.
 
     This class manages multiple Instrument instances and provides aggregate
     operations across all instruments in the payload.
