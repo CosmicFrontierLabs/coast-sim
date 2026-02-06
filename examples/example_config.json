@@ -40,10 +40,7 @@
             {
                 "name": "Example Solar Panel",
                 "gimbled": false,
-                "sidemount": true,
-                "cant_x": 0.0,
-                "cant_y": 0.0,
-                "azimuth_deg": 0.0,
+                "normal": [0.0, 1.0, 0.0],
                 "max_power": 474.21,
                 "conversion_efficiency": 0.94
             }

@@ -175,7 +175,7 @@ class TestSolarPanel:
 
     def test_optimal_charging_ra_sidemount(self):
         """Test RA for side-mounted panels."""
-        panel = SolarPanelSet(panels=[SolarPanel(sidemount=True)])
+        panel = SolarPanelSet(panels=[SolarPanel(normal=(0.0, 1.0, 0.0))])
         mock_ephem = Mock()
         mock_ephem.index.return_value = 0
         mock_sun_coord = Mock()
@@ -190,7 +190,7 @@ class TestSolarPanel:
 
     def test_optimal_charging_dec_sidemount(self):
         """Test Dec for side-mounted panels."""
-        panel = SolarPanelSet(panels=[SolarPanel(sidemount=True)])
+        panel = SolarPanelSet(panels=[SolarPanel(normal=(0.0, 1.0, 0.0))])
         mock_ephem = Mock()
         mock_ephem.index.return_value = 0
         mock_sun_coord = Mock()
@@ -205,7 +205,7 @@ class TestSolarPanel:
 
     def test_optimal_charging_ra_bodymount(self):
         """Test RA for body-mounted panels."""
-        panel = SolarPanelSet(panels=[SolarPanel(sidemount=False)])
+        panel = SolarPanelSet(panels=[SolarPanel(normal=(0.0, 0.0, -1.0))])
         mock_ephem = Mock()
         mock_ephem.index.return_value = 0
         mock_sun_coord = Mock()
@@ -220,7 +220,7 @@ class TestSolarPanel:
 
     def test_optimal_charging_dec_bodymount(self):
         """Test Dec for body-mounted panels."""
-        panel = SolarPanelSet(panels=[SolarPanel(sidemount=False)])
+        panel = SolarPanelSet(panels=[SolarPanel(normal=(0.0, 0.0, -1.0))])
         mock_ephem = Mock()
         mock_ephem.index.return_value = 0
         mock_sun_coord = Mock()
@@ -235,7 +235,7 @@ class TestSolarPanel:
 
     def test_optimal_charging_pointing_wraps_ra(self):
         """Test that RA wraps correctly at 360 degrees."""
-        panel = SolarPanelSet(panels=[SolarPanel(sidemount=True)])
+        panel = SolarPanelSet(panels=[SolarPanel(normal=(0.0, 1.0, 0.0))])
         mock_ephem = Mock()
         mock_ephem.index.return_value = 0
         mock_sun_coord = Mock()

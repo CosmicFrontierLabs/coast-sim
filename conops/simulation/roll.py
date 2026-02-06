@@ -1,7 +1,7 @@
 import numpy as np
 import rust_ephem
 
-from ..common import dtutcfromtimestamp, rotvec, scbodyvector
+from ..common import dtutcfromtimestamp, scbodyvector
 from ..config import DTOR, SolarPanelSet
 
 """Roll computation helpers."""
@@ -39,39 +39,34 @@ def optimum_roll(
     panels = solar_panel._effective_panels()
     base_normals = []
     weights = []  # max_power * efficiency
-    azimuths = []  # radians per panel
     for p in panels:
-        n = np.array([0.0, 1.0, 0.0]) if p.sidemount else np.array([0.0, 0.0, -1.0])
-        if p.cant_x:
-            n = rotvec(1, p.cant_x * DTOR, n)
-        if p.cant_y:
-            n = rotvec(2, p.cant_y * DTOR, n)
-        base_normals.append(n)
+        base_normals.append(np.array(p.normal, dtype=float))
         eff = (
             p.conversion_efficiency
             if p.conversion_efficiency is not None
             else solar_panel.conversion_efficiency
         )
         weights.append(p.max_power * eff)
-        azimuths.append((p.azimuth_deg or 0.0) * DTOR)
 
     # Convert lists to arrays
     n_mat = np.asarray(base_normals, dtype=float)  # shape (P,3)
     w_vec = np.asarray(weights, dtype=float)  # shape (P,)
-    phi = np.asarray(azimuths, dtype=float)  # shape (P,)
     s = np.asarray(s_body_0, dtype=float)  # shape (3,)
+
+    # For roll angle theta about X-axis, the rotated normal is:
+    # n'_x = n_x
+    # n'_y = n_y*cos(theta) - n_z*sin(theta)
+    # n'_z = n_y*sin(theta) + n_z*cos(theta)
+    # Illumination = n' · s_normalized
+
+    # Normalize sun vector
+    s_norm = s / np.linalg.norm(s)
 
     # Precompute per-panel coefficients for rotation about X:
     # illum(theta) = (nx*sx) + cos(theta)*(ny*sy + nz*sz) + sin(theta)*(nz*sy - ny*sz)
-    a_coef = n_mat[:, 0] * s[0]
-    b_coef = n_mat[:, 1] * s[1] + n_mat[:, 2] * s[2]
-    c_coef = n_mat[:, 2] * s[1] - n_mat[:, 1] * s[2]
-
-    # Apply per-panel azimuth as rotation about X to (b,c)
-    cphi = np.cos(phi)
-    sphi = np.sin(phi)
-    b_adj = b_coef * cphi + c_coef * sphi
-    c_adj = c_coef * cphi - b_coef * sphi
+    a_coef = n_mat[:, 0] * s_norm[0]
+    b_coef = n_mat[:, 1] * s_norm[1] + n_mat[:, 2] * s_norm[2]
+    c_coef = n_mat[:, 1] * s_norm[2] - n_mat[:, 2] * s_norm[1]
 
     # Angles 0..359 degrees
     deg = np.arange(360.0, dtype=float)
@@ -83,8 +78,8 @@ def optimum_roll(
     # Broadcasting: cos_t[:,None]*B[None,:] etc.
     illum = (
         a_coef[None, :]
-        + cos_t[:, None] * b_adj[None, :]
-        + sin_t[:, None] * c_adj[None, :]
+        + cos_t[:, None] * b_coef[None, :]
+        + sin_t[:, None] * c_coef[None, :]
     )
     illum = np.maximum(illum, 0.0)
 
@@ -112,7 +107,7 @@ def optimum_roll_sidemount(
     sunvec = ephem.sun_pv.position[index] - ephem.gcrs_pv.position[index]  # km
 
     # Sun vector in body coordinates for roll=0
-    s_body_0 = scbodyvector(ra, dec, 0.0, sunvec)
+    s_body_0 = scbodyvector(ra * DTOR, dec * DTOR, 0.0, sunvec)
     y0 = s_body_0[1]
     z0 = s_body_0[2]
 

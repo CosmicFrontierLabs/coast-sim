@@ -75,12 +75,8 @@ def multi_panel_set():
         name="Array",
         conversion_efficiency=0.95,
         panels=[
-            SolarPanel(
-                name="P1", sidemount=True, cant_x=5.0, cant_y=0.0, max_power=300.0
-            ),
-            SolarPanel(
-                name="P2", sidemount=False, cant_x=0.0, cant_y=12.0, max_power=700.0
-            ),
+            SolarPanel(name="P1", normal=(0.0, 1.0, 0.0), max_power=300.0),
+            SolarPanel(name="P2", normal=(0.0, 0.0, -1.0), max_power=700.0),
         ],
     )
 

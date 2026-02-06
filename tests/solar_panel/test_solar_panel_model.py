@@ -23,21 +23,13 @@ class TestMultiplePanelsConfiguration:
         effective = multi_panel_set._effective_panels()
         assert effective[1].name == "P2"
 
-    def test_first_panel_sidemount(self, multi_panel_set):
+    def test_first_panel_normal(self, multi_panel_set):
         effective = multi_panel_set._effective_panels()
-        assert effective[0].sidemount is True
+        assert effective[0].normal == (0.0, 1.0, 0.0)
 
-    def test_second_panel_sidemount(self, multi_panel_set):
+    def test_second_panel_normal(self, multi_panel_set):
         effective = multi_panel_set._effective_panels()
-        assert effective[1].sidemount is False
-
-    def test_first_panel_cant_x(self, multi_panel_set):
-        effective = multi_panel_set._effective_panels()
-        assert effective[0].cant_x == pytest.approx(5.0)
-
-    def test_second_panel_cant_y(self, multi_panel_set):
-        effective = multi_panel_set._effective_panels()
-        assert effective[1].cant_y == pytest.approx(12.0)
+        assert effective[1].normal == (0.0, 0.0, -1.0)
 
     def test_first_panel_max_power(self, multi_panel_set):
         effective = multi_panel_set._effective_panels()

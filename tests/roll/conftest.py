@@ -31,12 +31,9 @@ def mock_sun_coord():
 def mock_solar_panel_single():
     solar_panel = Mock()
     mock_panel = Mock()
-    mock_panel.sidemount = True
-    mock_panel.cant_x = None
-    mock_panel.cant_y = None
+    mock_panel.normal = (0.0, 1.0, 0.0)  # Side-mounted
     mock_panel.conversion_efficiency = 0.3
     mock_panel.max_power = 800.0
-    mock_panel.azimuth_deg = 0.0
     solar_panel._effective_panels = Mock(return_value=[mock_panel])
     solar_panel.conversion_efficiency = 0.3
     return solar_panel
@@ -46,19 +43,13 @@ def mock_solar_panel_single():
 def mock_solar_panel_multiple():
     solar_panel = Mock()
     mock_panel1 = Mock()
-    mock_panel1.sidemount = True
-    mock_panel1.cant_x = 0.0
-    mock_panel1.cant_y = 0.0
+    mock_panel1.normal = (0.0, 1.0, 0.0)  # Side-mounted
     mock_panel1.conversion_efficiency = 0.3
     mock_panel1.max_power = 800.0
-    mock_panel1.azimuth_deg = 0.0
     mock_panel2 = Mock()
-    mock_panel2.sidemount = False
-    mock_panel2.cant_x = 0.0
-    mock_panel2.cant_y = 0.0
+    mock_panel2.normal = (0.0, 0.0, -1.0)  # Body-mounted
     mock_panel2.conversion_efficiency = 0.3
     mock_panel2.max_power = 600.0
-    mock_panel2.azimuth_deg = 90.0
     solar_panel._effective_panels = Mock(return_value=[mock_panel1, mock_panel2])
     solar_panel.conversion_efficiency = 0.3
     return solar_panel
@@ -68,12 +59,9 @@ def mock_solar_panel_multiple():
 def mock_solar_panel_canted():
     solar_panel = Mock()
     mock_panel = Mock()
-    mock_panel.sidemount = True
-    mock_panel.cant_x = 10.0
-    mock_panel.cant_y = 5.0
+    mock_panel.normal = (0.1, 0.866, -0.5)  # Canted normal vector
     mock_panel.conversion_efficiency = 0.3
     mock_panel.max_power = 800.0
-    mock_panel.azimuth_deg = 45.0
     solar_panel._effective_panels = Mock(return_value=[mock_panel])
     solar_panel.conversion_efficiency = 0.3
     return solar_panel

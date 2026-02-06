@@ -121,10 +121,7 @@ is an example of a JSON configuration file defining your spacecraft parameters:
                {
                    "name": "Main Solar Panel",
                    "gimbled": false,
-                   "sidemount": true,
-                   "cant_x": 0.0,
-                   "cant_y": 0.0,
-                   "azimuth_deg": 0.0,
+                   "normal": [0.0, 1.0, 0.0],
                    "max_power": 500.0,
                    "conversion_efficiency": 0.9
                }

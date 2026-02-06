@@ -187,10 +187,13 @@ The :class:`~conops.config.SolarPanelSet` defines the solar array configuration.
 
 * ``name`` (str): Panel identifier
 * ``gimbled`` (bool): Whether the panel can track the Sun
-* ``sidemount`` (bool): Whether panel normal is perpendicular to boresight
-* ``cant_x`` (float): Cant angle around X-axis (degrees)
-* ``cant_y`` (float): Cant angle around Y-axis (degrees)
-* ``azimuth_deg`` (float): Structural placement angle around boresight (degrees)
+* ``normal`` (tuple[float, float, float]): Panel normal vector in spacecraft body frame
+
+  - +x is the spacecraft pointing direction (boresight)
+  - +y is the spacecraft "up" direction
+  - +z completes the right-handed coordinate system
+  - Should be a unit vector for proper illumination calculations
+
 * ``max_power`` (float): Maximum power output at full illumination (Watts)
 * ``conversion_efficiency`` (float | None): Per-panel efficiency override
 
@@ -204,18 +207,14 @@ The :class:`~conops.config.SolarPanelSet` defines the solar array configuration.
            SolarPanel(
                name="Panel +Y",
                gimbled=False,
-               sidemount=True,
-               cant_x=0.0,
-               azimuth_deg=0.0,
+               normal=(0.0, 1.0, 0.0),  # Side-mounted
                max_power=400.0,
                conversion_efficiency=0.94,
            ),
            SolarPanel(
                name="Panel -Y",
                gimbled=False,
-               sidemount=True,
-               cant_x=0.0,
-               azimuth_deg=180.0,
+               normal=(0.0, -1.0, 0.0),  # Opposite side
                max_power=400.0,
                conversion_efficiency=0.94,
            ),
