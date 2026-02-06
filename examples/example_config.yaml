@@ -93,23 +93,20 @@ solar_panel:
 
 # Payload/Instrument Configuration. Defines science instruments with power draw and data generation rates
 payload:
-  payload:
-    - name: Optical Imager
+  instruments:
+    - name: Default Instrument
       # power_draw: Power draw characteristics for the instrument
       power_draw:
         nominal_power: 50.0
-        peak_power: 300.0
-        power_mode:
-          '0': 200.0
-          '1': 50.0
-          '2': 50.0
+        peak_power: 100.0
+        power_mode: {}
         eclipse_power: null
         eclipse_power_mode: {}
       # heater: Optional heater system for the instrument
       heater: null
       # data_generation: Data generation characteristics
       data_generation:
-        rate_gbps: 0.0001953125
+        rate_gbps: 0.0
         per_observation_gb: 0.0
 
 # Battery Configuration. Defines battery capacity, voltage, and charging parameters
