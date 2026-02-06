@@ -21,7 +21,7 @@ from .instrument import Instrument, Payload
 from .observation_categories import ObservationCategories, ObservationCategory
 from .power import PowerDraw
 from .recorder import OnboardRecorder
-from .solar_panel import SolarPanel, SolarPanelSet
+from .solar_panel import SolarPanel, SolarPanelSet, create_solar_panel_vector
 from .spacecraft_bus import SpacecraftBus
 from .targets import TargetConfig
 from .thermal import Heater
@@ -57,4 +57,5 @@ __all__ = [
     "VisualizationConfig",
     "DAY_SECONDS",
     "DTOR",
+    "create_solar_panel_vector",
 ]

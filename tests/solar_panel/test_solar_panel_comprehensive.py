@@ -1289,3 +1289,96 @@ class TestCoverageCompletion:
         # Should return sun position when no physical panels
         assert ra == 90.0
         assert dec == 30.0
+
+    def test_create_normal_vector(self):
+        """Test the create_solar_panel_vector helper function with dual-axis canting."""
+        import math
+
+        from conops.config.solar_panel import create_solar_panel_vector
+
+        # Test sidemount with no cant
+        normal = create_solar_panel_vector("sidemount", 0.0, 0.0)
+        assert normal == (0.0, 1.0, 0.0)
+
+        # Test sidemount with Z-axis cant only
+        normal = create_solar_panel_vector("sidemount", cant_z=30.0)
+        expected_x = -math.sin(math.radians(30.0))
+        expected_y = math.cos(math.radians(30.0))
+        assert abs(normal[0] - expected_x) < 1e-10
+        assert abs(normal[1] - expected_y) < 1e-10
+        assert abs(normal[2]) < 1e-10
+
+        # Test sidemount with perpendicular (X) cant only
+        normal = create_solar_panel_vector("sidemount", cant_z=0.0, cant_perp=45.0)
+        # After X rotation of 45°: y becomes cos(45°), z becomes sin(45°)
+        expected_y = math.cos(math.radians(45.0))
+        expected_z = math.sin(math.radians(45.0))
+        assert abs(normal[0]) < 1e-10
+        assert abs(normal[1] - expected_y) < 1e-10
+        assert abs(normal[2] - expected_z) < 1e-10
+
+        # Test sidemount with both cants
+        normal = create_solar_panel_vector("sidemount", cant_z=30.0, cant_perp=45.0)
+        # This combines both rotations
+        assert len(normal) == 3
+        # Verify it's still a unit vector (approximately)
+        magnitude = math.sqrt(normal[0] ** 2 + normal[1] ** 2 + normal[2] ** 2)
+        assert abs(magnitude - 1.0) < 1e-10
+
+        # Test aftmount with no cant
+        normal = create_solar_panel_vector("aftmount", 0.0, 0.0)
+        assert normal == (-1.0, 0.0, 0.0)
+
+        # Test aftmount with Z-axis cant only
+        normal = create_solar_panel_vector("aftmount", cant_z=45.0)
+        expected_x = -math.cos(math.radians(45.0))
+        expected_y = -math.sin(math.radians(45.0))
+        assert abs(normal[0] - expected_x) < 1e-10
+        assert abs(normal[1] - expected_y) < 1e-10
+        assert abs(normal[2]) < 1e-10
+
+        # Test aftmount with perpendicular (Y) cant only
+        normal = create_solar_panel_vector("aftmount", cant_z=0.0, cant_perp=45.0)
+        # After Y rotation of 45°: x becomes -cos(45°), z becomes sin(45°)
+        expected_x = -math.cos(math.radians(45.0))
+        expected_z = math.sin(math.radians(45.0))
+        assert abs(normal[0] - expected_x) < 1e-10
+        assert abs(normal[1]) < 1e-10
+        assert abs(normal[2] - expected_z) < 1e-10
+
+        # Test aftmount with both cants
+        normal = create_solar_panel_vector("aftmount", cant_z=30.0, cant_perp=30.0)
+        # Verify it's still a unit vector (approximately)
+        magnitude = math.sqrt(normal[0] ** 2 + normal[1] ** 2 + normal[2] ** 2)
+        assert abs(magnitude - 1.0) < 1e-10
+
+        # Test boresight (forward-facing panel) with no cant
+        normal = create_solar_panel_vector("boresight", 0.0, 0.0)
+        assert normal == (1.0, 0.0, 0.0)
+
+        # Test boresight with backward slant (negative cant_perp tilts down)
+        normal = create_solar_panel_vector("boresight", cant_z=0.0, cant_perp=-45.0)
+        # After Y rotation of -45°: x becomes cos(-45°), z becomes sin(-45°)
+        expected_x = math.cos(math.radians(-45.0))
+        expected_z = math.sin(math.radians(-45.0))
+        assert abs(normal[0] - expected_x) < 1e-10
+        assert abs(normal[1]) < 1e-10
+        assert abs(normal[2] - expected_z) < 1e-10
+
+        # Test boresight with Z-axis cant only (yaw left/right)
+        normal = create_solar_panel_vector("boresight", cant_z=30.0)
+        expected_x = math.cos(math.radians(30.0))
+        expected_y = math.sin(math.radians(30.0))
+        assert abs(normal[0] - expected_x) < 1e-10
+        assert abs(normal[1] - expected_y) < 1e-10
+        assert abs(normal[2]) < 1e-10
+
+        # Test boresight with both cants
+        normal = create_solar_panel_vector("boresight", cant_z=30.0, cant_perp=-45.0)
+        # Verify it's still a unit vector (approximately)
+        magnitude = math.sqrt(normal[0] ** 2 + normal[1] ** 2 + normal[2] ** 2)
+        assert abs(magnitude - 1.0) < 1e-10
+
+        # Test invalid mount
+        with pytest.raises(ValueError, match="Unknown mount type"):
+            create_solar_panel_vector("invalid")

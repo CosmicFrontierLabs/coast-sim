@@ -47,6 +47,7 @@ class SolarPanel(BaseModel):
             - +y is the spacecraft "up" direction
             - +z completes the right-handed coordinate system
             Should be a unit vector for proper illumination calculations.
+            Use create_solar_panel_vector() to generate vectors for common mount types.
         max_power (float): Maximum electrical power output at full illumination (W).
         conversion_efficiency (Optional[float]): Optional per-panel efficiency.
             If not provided, array-level efficiency is used.
@@ -174,6 +175,82 @@ def _get_eclipse_constraint() -> rust_ephem.EclipseConstraint:
     if _ECLIPSE_PANEL_CACHE is None:
         _ECLIPSE_PANEL_CACHE = SolarPanel()
     return _ECLIPSE_PANEL_CACHE._eclipse_constraint
+
+
+def create_solar_panel_vector(
+    mount: str, cant_z: float = 0.0, cant_perp: float = 0.0
+) -> tuple[float, float, float]:
+    """
+    Create a unit normal vector for a solar panel based on mount type and cant angles.
+
+    Supports canting in two axes, allowing flexible panel orientation. The Z-axis
+    cant is supported for all mount types, while the perpendicular cant varies by type.
+
+    Args:
+        mount: Mount type - 'sidemount', 'aftmount', or 'boresight'
+        cant_z: Cant angle around Z-axis in degrees
+        cant_perp: Cant angle around perpendicular axis in degrees:
+            - For 'sidemount': rotates around X-axis (pitch-like)
+            - For 'aftmount': rotates around Y-axis (pitch-like)
+            - For 'boresight': rotates around Y-axis (pitch-like)
+
+    Returns:
+        Unit normal vector (x, y, z) in spacecraft body frame
+
+    Mount types:
+        - 'sidemount': +Y direction (spacecraft "up")
+        - 'aftmount': -X direction (spacecraft "back")
+        - 'boresight': +X direction (spacecraft forward/pointing)
+
+    Example:
+        # Sidemount panel with 30° yaw and 15° pitch
+        normal = create_solar_panel_vector('sidemount', cant_z=30.0, cant_perp=15.0)
+
+        # Boresight panel tilted backward 45°
+        normal = create_solar_panel_vector('boresight', cant_perp=-45.0)
+    """
+    import math
+
+    theta_z = math.radians(cant_z)
+    theta_perp = math.radians(cant_perp)
+
+    if mount == "sidemount":
+        # Start with +Y (0, 1, 0)
+        # First rotate around Z axis
+        x_after_z = -math.sin(theta_z)
+        y_after_z = math.cos(theta_z)
+
+        # Then rotate around X axis (pitch)
+        x = x_after_z
+        y = y_after_z * math.cos(theta_perp)
+        z = y_after_z * math.sin(theta_perp)
+
+    elif mount == "aftmount":
+        # Start with -X (-1, 0, 0)
+        # First rotate around Z axis
+        x_after_z = -math.cos(theta_z)
+        y_after_z = -math.sin(theta_z)
+
+        # Then rotate around Y axis (pitch)
+        x = x_after_z * math.cos(theta_perp)
+        y = y_after_z
+        z = -x_after_z * math.sin(theta_perp)
+
+    elif mount == "boresight":
+        # Start with +X (1, 0, 0)
+        # First rotate around Z axis
+        x_after_z = math.cos(theta_z)
+        y_after_z = math.sin(theta_z)
+
+        # Then rotate around Y axis (pitch)
+        x = x_after_z * math.cos(theta_perp)
+        y = y_after_z
+        z = x_after_z * math.sin(theta_perp)
+
+    else:
+        raise ValueError(f"Unknown mount type: {mount}")
+
+    return (x, y, z)
 
 
 class _PanelGeometry:
