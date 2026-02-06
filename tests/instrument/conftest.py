@@ -40,7 +40,7 @@ def i2_20_40():
 
 @pytest.fixture
 def payload_10_20_and_20_40(i1_10_20, i2_20_40):
-    return Payload(payload=[i1_10_20, i2_20_40])
+    return Payload(instruments=[i1_10_20, i2_20_40])
 
 
 @pytest.fixture
@@ -52,4 +52,4 @@ def i1_5_10_mode0():
 
 @pytest.fixture
 def payload_mixed(i1_5_10_mode0, i2_20_40):
-    return Payload(payload=[i1_5_10_mode0, i2_20_40])
+    return Payload(instruments=[i1_5_10_mode0, i2_20_40])

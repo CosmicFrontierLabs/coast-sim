@@ -3,11 +3,9 @@
 import pytest
 
 from conops.config import (
-    BandCapability,
     Battery,
     Constraint,
     DataGeneration,
-    GroundStation,
     GroundStationRegistry,
     Instrument,
     MissionConfig,
@@ -21,68 +19,30 @@ from conops.config import (
 class TestDataManagementIntegration:
     """Test suite for integrated data management in DITL."""
 
-    @pytest.fixture
-    def config_with_data_generation(self):
-        """Create a config with data generation and recorder."""
-        # Create instruments with data generation
-        camera = Instrument(
-            name="Camera",
-            data_generation=DataGeneration(rate_gbps=0.01),  # 0.01 Gbps
-        )
-        payload = Payload(payload=[camera])
-
-        # Create recorder with moderate capacity
-        recorder = OnboardRecorder(
-            name="SSR",
-            capacity_gb=10.0,
-            yellow_threshold=0.7,
-            red_threshold=0.9,
-        )
-
-        # Create ground station with downlink capability
-        gs_registry = GroundStationRegistry()
-        gs_registry.add(
-            GroundStation(
-                code="TST",
-                name="Test Station",
-                latitude_deg=0.0,
-                longitude_deg=0.0,
-                bands=[BandCapability(band="X", downlink_rate_mbps=100.0)],
-            )
-        )
-
-        # Create minimal config
-        config = MissionConfig(
-            name="Test Config with Data",
-            spacecraft_bus=SpacecraftBus(),
-            solar_panel=SolarPanelSet(),
-            payload=payload,
-            battery=Battery(),
-            constraint=Constraint(),
-            ground_stations=gs_registry,
-            recorder=recorder,
-        )
-
-        return config
-
-    def test_config_includes_recorder(self, config_with_data_generation):
+    def test_config_includes_recorder(
+        self, config_with_data_generation: MissionConfig
+    ) -> None:
         """Test that config includes recorder."""
         config = config_with_data_generation
         assert config.recorder is not None
         assert config.recorder.capacity_gb == 10.0
 
-    def test_payload_has_data_generation(self, config_with_data_generation):
+    def test_payload_has_data_generation(
+        self, config_with_data_generation: MissionConfig
+    ) -> None:
         """Test that payload has data generation configured."""
         config = config_with_data_generation
         assert config.payload.total_data_rate_gbps() == 0.01
 
-    def test_ground_station_has_downlink_rate(self, config_with_data_generation):
+    def test_ground_station_has_downlink_rate(
+        self, config_with_data_generation: MissionConfig
+    ) -> None:
         """Test that ground station has downlink rate configured."""
         config = config_with_data_generation
         station = config.ground_stations.get("TST")
         assert station.get_downlink_rate("X") == 100.0
 
-    def test_recorder_operations_in_config(self):
+    def test_recorder_operations_in_config(self) -> None:
         """Test recorder operations work with config."""
         recorder = OnboardRecorder(capacity_gb=50.0)
 
@@ -108,11 +68,11 @@ class TestDataManagementIntegration:
 class TestDataGenerationScenarios:
     """Test realistic scenarios of data generation and downlink."""
 
-    def test_simple_observation_and_downlink(self):
+    def test_simple_observation_and_downlink(self) -> None:
         """Test simple observation generating data and downlink clearing it."""
         recorder = OnboardRecorder(capacity_gb=100.0)
         payload = Payload(
-            payload=[
+            instruments=[
                 Instrument(
                     name="Camera",
                     data_generation=DataGeneration(rate_gbps=0.1),
@@ -136,11 +96,11 @@ class TestDataGenerationScenarios:
         assert downlinked == 60.0  # All data downlinked
         assert recorder.current_volume_gb == 0.0
 
-    def test_data_accumulation_over_multiple_observations(self):
+    def test_data_accumulation_over_multiple_observations(self) -> None:
         """Test data accumulating over multiple observations."""
         recorder = OnboardRecorder(capacity_gb=100.0)
         payload = Payload(
-            payload=[
+            instruments=[
                 Instrument(
                     name="Spectrometer",
                     data_generation=DataGeneration(per_observation_gb=2.0),
@@ -156,11 +116,11 @@ class TestDataGenerationScenarios:
         assert recorder.current_volume_gb == 20.0
         assert recorder.get_fill_fraction() == 0.2
 
-    def test_insufficient_downlink_capacity(self):
+    def test_insufficient_downlink_capacity(self) -> None:
         """Test scenario where downlink can't clear all data."""
         recorder = OnboardRecorder(capacity_gb=100.0)
         payload = Payload(
-            payload=[
+            instruments=[
                 Instrument(
                     name="High-Rate Camera",
                     data_generation=DataGeneration(rate_gbps=0.5),
@@ -185,7 +145,7 @@ class TestDataGenerationScenarios:
         assert downlinked == 60.0
         assert recorder.current_volume_gb == 40.0  # Still lots of data remaining
 
-    def test_recorder_alerts_during_fill(self):
+    def test_recorder_alerts_during_fill(self) -> None:
         """Test that recorder triggers alerts as it fills up."""
         recorder = OnboardRecorder(
             capacity_gb=100.0,
@@ -193,7 +153,7 @@ class TestDataGenerationScenarios:
             red_threshold=0.9,
         )
         payload = Payload(
-            payload=[
+            instruments=[
                 Instrument(
                     name="Camera",
                     data_generation=DataGeneration(rate_gbps=0.1),
@@ -221,7 +181,7 @@ class TestDataGenerationScenarios:
         assert recorder.get_fill_fraction() == 0.95
         assert recorder.get_alert_level() == 2
 
-    def test_mixed_instruments_data_generation(self):
+    def test_mixed_instruments_data_generation(self) -> None:
         """Test data generation with multiple instruments of different types."""
         recorder = OnboardRecorder(capacity_gb=100.0)
 
@@ -239,7 +199,7 @@ class TestDataGenerationScenarios:
                 data_generation=DataGeneration(rate_gbps=0.01),
             ),
         ]
-        payload = Payload(payload=instruments)
+        payload = Payload(instruments=instruments)
 
         # 60 seconds of observation
         # Camera: 0.05 * 60 = 3.0 Gb
@@ -251,11 +211,11 @@ class TestDataGenerationScenarios:
 
         assert recorder.current_volume_gb == pytest.approx(4.6, rel=1e-6)
 
-    def test_daily_operations_simulation(self):
+    def test_daily_operations_simulation(self) -> None:
         """Test a simplified daily operations scenario."""
         recorder = OnboardRecorder(capacity_gb=50.0)
         payload = Payload(
-            payload=[
+            instruments=[
                 Instrument(
                     name="Science Instrument",
                     data_generation=DataGeneration(rate_gbps=0.02),

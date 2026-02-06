@@ -8,6 +8,20 @@ import pytest
 from matplotlib import pyplot as plt
 
 from conops import DITL, ACSMode
+from conops.config import (
+    BandCapability,
+    Battery,
+    Constraint,
+    DataGeneration,
+    GroundStation,
+    GroundStationRegistry,
+    Instrument,
+    MissionConfig,
+    OnboardRecorder,
+    Payload,
+    SolarPanelSet,
+    SpacecraftBus,
+)
 from conops.ditl.ditl_mixin import DITLMixin
 
 
@@ -361,3 +375,48 @@ def ditl_with_pass_setup(ditl_instance, mock_config):
         ditl.config.spacecraft_bus = Mock()
     ditl.config.spacecraft_bus.communications = None
     return ditl
+
+
+@pytest.fixture
+def config_with_data_generation() -> MissionConfig:
+    """Create a config with data generation and recorder."""
+    # Create instruments with data generation
+    camera = Instrument(
+        name="Camera",
+        data_generation=DataGeneration(rate_gbps=0.01),  # 0.01 Gbps
+    )
+    payload = Payload(instruments=[camera])
+
+    # Create recorder with moderate capacity
+    recorder = OnboardRecorder(
+        name="SSR",
+        capacity_gb=10.0,
+        yellow_threshold=0.7,
+        red_threshold=0.9,
+    )
+
+    # Create ground station with downlink capability
+    gs_registry = GroundStationRegistry()
+    gs_registry.add(
+        GroundStation(
+            code="TST",
+            name="Test Station",
+            latitude_deg=0.0,
+            longitude_deg=0.0,
+            bands=[BandCapability(band="X", downlink_rate_mbps=100.0)],
+        )
+    )
+
+    # Create minimal config
+    config = MissionConfig(
+        name="Test Config with Data",
+        spacecraft_bus=SpacecraftBus(),
+        solar_panel=SolarPanelSet(),
+        payload=payload,
+        battery=Battery(),
+        constraint=Constraint(),
+        ground_stations=gs_registry,
+        recorder=recorder,
+    )
+
+    return config

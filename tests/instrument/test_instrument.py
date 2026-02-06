@@ -46,7 +46,7 @@ class TestPayload:
         assert isclose(payload.power(), 30.0)
 
     def test_payload_aggregates_nominal_power_after_change(self, i1_10_20, i2_20_40):
-        payload = Payload(payload=[i1_10_20, i2_20_40])
+        payload = Payload(instruments=[i1_10_20, i2_20_40])
         i1_10_20.power_draw.nominal_power = 15.0
         assert isclose(payload.power(), 35.0)
 
@@ -142,7 +142,7 @@ class TestPayloadEclipse:
             name="Cam2", power_draw=PowerDraw(nominal_power=20.0, eclipse_power=25.0)
         )
 
-        inst_set = Payload(payload=[inst1, inst2])
+        inst_set = Payload(instruments=[inst1, inst2])
 
         # Sunlight: 30 + 20 = 50
         assert inst_set.power(in_eclipse=False) == 50.0
@@ -168,7 +168,7 @@ class TestPayloadEclipse:
             ),
         )
 
-        inst_set = Payload(payload=[inst1, inst2])
+        inst_set = Payload(instruments=[inst1, inst2])
 
         # Sunlight: (35+5) + (25+3) = 68
         assert inst_set.power(in_eclipse=False) == 68.0

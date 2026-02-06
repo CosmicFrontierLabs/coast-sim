@@ -145,7 +145,7 @@ across all instruments:
 
    from conops.config import Payload
 
-   payload = Payload(payload=[camera, spectrometer])
+   payload = Payload(instruments=[camera, spectrometer])
 
    # Get total data rate across all instruments
    total_rate = payload.total_data_rate_gbps()  # 0.5 Gbps from camera
