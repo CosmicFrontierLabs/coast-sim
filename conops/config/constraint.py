@@ -60,34 +60,49 @@ class Constraint(BaseModel):
 
     # FIXME: Constraint types should be more general
     sun_constraint: ConstraintConfig = Field(
-        default_factory=lambda: rust_ephem.SunConstraint(min_angle=SUN_OCCULT)
+        default_factory=lambda: rust_ephem.SunConstraint(min_angle=SUN_OCCULT),
+        description="Sun constraint configuration",
     )
     anti_sun_constraint: ConstraintConfig = Field(
         default_factory=lambda: rust_ephem.SunConstraint(
             min_angle=0, max_angle=ANTISUN_OCCULT
-        )
+        ),
+        description="Anti-sun constraint configuration",
     )
     moon_constraint: ConstraintConfig = Field(
-        default_factory=lambda: rust_ephem.MoonConstraint(min_angle=MOON_OCCULT)
+        default_factory=lambda: rust_ephem.MoonConstraint(min_angle=MOON_OCCULT),
+        description="Moon constraint configuration",
     )
     earth_constraint: ConstraintConfig = Field(
-        default_factory=lambda: rust_ephem.EarthLimbConstraint(min_angle=EARTH_OCCULT)
+        default_factory=lambda: rust_ephem.EarthLimbConstraint(min_angle=EARTH_OCCULT),
+        description="Earth constraint configuration",
     )
     # FIXME: For now solar panel constraint is just constraining the spacecraft
     # to be within >45 degrees of the sun and < 45 degrees from anti-sun,
     # except in eclipse
-    panel_constraint: ConstraintConfig = (
-        rust_ephem.SunConstraint(
-            min_angle=PANEL_CONSTRAINT, max_angle=180 - PANEL_CONSTRAINT
-        )
-        & ~rust_ephem.EclipseConstraint()
+    panel_constraint: ConstraintConfig = Field(
+        default_factory=lambda: (
+            rust_ephem.SunConstraint(
+                min_angle=PANEL_CONSTRAINT, max_angle=180 - PANEL_CONSTRAINT
+            )
+            & ~rust_ephem.EclipseConstraint()
+        ),
+        description="Solar panel constraint configuration",
     )
 
-    ephem: rust_ephem.Ephemeris | None = Field(default=None, exclude=True)
+    ephem: rust_ephem.Ephemeris | None = Field(
+        default=None,
+        exclude=True,
+        description="Ephemeris object for constraint calculations",
+    )
 
-    bestroll: float = Field(default=0.0, exclude=True)
+    bestroll: float = Field(
+        default=0.0, exclude=True, description="Best roll angle for optimization"
+    )
     bestpointing: np.ndarray = Field(
-        default_factory=lambda: np.array([-1, -1, -1]), exclude=True
+        default_factory=lambda: np.array([-1, -1, -1]),
+        exclude=True,
+        description="Best pointing vector for optimization",
     )
 
     # Per-timestep constraint result cache: {(constraint_type, ra, dec, time): bool}

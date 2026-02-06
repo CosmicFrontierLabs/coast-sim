@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from typing import Any
+
+import yaml
 from pydantic import BaseModel, Field, model_validator
 
 from .battery import Battery
@@ -20,24 +23,52 @@ class MissionConfig(BaseModel):
     Configuration class for the spacecraft and its subsystems.
     """
 
-    name: str = "Default Config"
-    spacecraft_bus: SpacecraftBus = Field(default_factory=SpacecraftBus)
-    solar_panel: SolarPanelSet = Field(default_factory=SolarPanelSet)
-    payload: Payload = Field(default_factory=Payload)
-    battery: Battery = Field(default_factory=Battery)
-    constraint: Constraint = Field(default_factory=Constraint)
-    ground_stations: GroundStationRegistry = Field(
-        default_factory=GroundStationRegistry
+    name: str = Field(default="Default Config", description="Mission name/identifier")
+    spacecraft_bus: SpacecraftBus = Field(
+        default_factory=SpacecraftBus,
+        description="Spacecraft Bus Configuration. Defines the main spacecraft platform including power, attitude control, and communications",
     )
-    recorder: OnboardRecorder = Field(default_factory=OnboardRecorder)
-    fault_management: FaultManagement = Field(default_factory=FaultManagement)
-    observation_categories: ObservationCategories = (
-        ObservationCategories.default_categories()
+    solar_panel: SolarPanelSet = Field(
+        default_factory=SolarPanelSet,
+        description="Solar Panel Configuration. Defines solar array characteristics and power generation capability",
+    )
+    payload: Payload = Field(
+        default_factory=Payload,
+        description="Payload/Instrument Configuration. Defines science instruments with power draw and data generation rates",
+    )
+    battery: Battery = Field(
+        default_factory=Battery,
+        description="Battery Configuration. Defines battery capacity, voltage, and charging parameters",
+    )
+    constraint: Constraint = Field(
+        default_factory=Constraint,
+        description="Pointing Constraints. Defines geometric constraints for spacecraft pointing",
+    )
+    ground_stations: GroundStationRegistry = Field(
+        default_factory=GroundStationRegistry,
+        description="Ground Station Network. Defines ground station locations and communication capabilities",
+    )
+    recorder: OnboardRecorder = Field(
+        default_factory=OnboardRecorder,
+        description="Onboard Data Recorder. Defines storage capacity and fill thresholds",
+    )
+    fault_management: FaultManagement = Field(
+        default_factory=FaultManagement,
+        description="Fault Management System. Defines thresholds and responses for system health monitoring",
+    )
+    observation_categories: ObservationCategories = Field(
+        default_factory=ObservationCategories.default_categories,
+        description="Observation Categories. Defines categories for different observation types with ID ranges",
     )
     visualization: VisualizationConfig = Field(
-        default_factory=VisualizationConfig, exclude=True
+        default_factory=VisualizationConfig,
+        exclude=True,
+        description="Visualization Configuration",
     )
-    targets: TargetConfig = Field(default_factory=TargetConfig)
+    targets: TargetConfig = Field(
+        default_factory=TargetConfig,
+        description="Target Configuration. Defines observational targets and scheduling parameters",
+    )
 
     @model_validator(mode="after")
     def init_fault_management_defaults(self) -> MissionConfig:
@@ -97,3 +128,233 @@ class MissionConfig(BaseModel):
         """Save configuration to a JSON file."""
         with open(filepath, "w") as f:
             f.write(self.model_dump_json(indent=4))
+
+    @classmethod
+    def from_yaml_file(cls, filepath: str) -> MissionConfig:
+        """Load configuration from a YAML file.
+
+        Args:
+            filepath: Path to the YAML configuration file.
+
+        Returns:
+            MissionConfig: Validated configuration object.
+        """
+        with open(filepath) as f:
+            config_dict = yaml.safe_load(f)
+            return cls.model_validate(config_dict)
+
+    def to_yaml_file(self, filepath: str) -> None:
+        """Save configuration to a YAML file with annotations.
+
+        The YAML output includes helpful comments explaining:
+        - Default units for physical quantities (e.g., power in Watts, time in seconds)
+        - Purpose and meaning of configuration settings
+        - Valid ranges or constraints where applicable
+
+        Args:
+            filepath: Path where the YAML file will be written.
+        """
+        config_dict = self.model_dump(mode="json", exclude_none=False)
+
+        # Build annotated YAML with comments
+        yaml_lines = []
+        yaml_lines.append("# COAST-Sim Mission Configuration File")
+        yaml_lines.append("# Generated YAML configuration with annotations")
+        yaml_lines.append("#")
+        yaml_lines.append(
+            "# This file defines the complete spacecraft configuration including:"
+        )
+        yaml_lines.append("#   - Spacecraft bus and subsystems")
+        yaml_lines.append("#   - Power generation and storage")
+        yaml_lines.append("#   - Payload instruments")
+        yaml_lines.append("#   - Ground stations")
+        yaml_lines.append("#   - Operational constraints")
+        yaml_lines.append("#")
+        yaml_lines.append("# Units Legend:")
+        yaml_lines.append("#   Power: Watts (W)")
+        yaml_lines.append("#   Energy: Watt-hours (Wh)")
+        yaml_lines.append("#   Time: seconds (s) unless otherwise specified")
+        yaml_lines.append("#   Angles: degrees (deg)")
+        yaml_lines.append(
+            "#   Data rates: Gigabits per second (Gbps) or Megabits per second (Mbps)"
+        )
+        yaml_lines.append("#   Data volume: Gigabits (Gb) or Gigabytes (GB)")
+        yaml_lines.append("#   Slew rates: degrees per second (deg/s)")
+        yaml_lines.append("#   Acceleration: degrees per second squared (deg/s²)")
+        yaml_lines.append("")
+
+        # Dynamically iterate through all top-level fields
+        for field_name, field_info in self.__class__.model_fields.items():
+            # Skip visualization as it's excluded
+            if field_info.exclude:
+                continue
+
+            if field_name not in config_dict:
+                continue
+
+            # Add section header comment
+            if field_info.description:
+                yaml_lines.append(f"# {field_info.description}")
+
+            field_value = config_dict[field_name]
+            field_model = field_info.annotation
+
+            # For scalar top-level fields, just output directly
+            if not isinstance(field_value, (dict, list)):
+                yaml_str = yaml.safe_dump(
+                    {field_name: field_value}, default_flow_style=False, sort_keys=False
+                )
+                yaml_lines.append(yaml_str.rstrip())
+            else:
+                # For dict/list fields, use the key and then indent content
+                yaml_lines.append(f"{field_name}:")
+                self._add_annotated_yaml_content(
+                    yaml_lines, field_value, field_model, indent=1
+                )
+            yaml_lines.append("")
+
+        # Write to file
+        with open(filepath, "w") as f:
+            f.write("\n".join(yaml_lines))
+
+    def _add_annotated_yaml_content(
+        self,
+        lines: list[str],
+        content: dict[str, Any] | list[Any] | Any,
+        model_class: Any,
+        indent: int = 1,
+    ) -> None:
+        """Add YAML content with annotations from Pydantic model field descriptions.
+
+        Args:
+            lines: List of YAML lines to append to
+            content: The data content to serialize (dict, list, or scalar)
+            model_class: The Pydantic model class for field descriptions (can be generic type)
+            indent: Indentation level for nested content
+        """
+        ind = "  " * indent
+
+        # Handle dict with potential nested model
+        if isinstance(content, dict):
+            if hasattr(model_class, "model_fields"):
+                # Iterate through fields in the model
+                for field_name, field_info in model_class.model_fields.items():
+                    if field_name not in content:
+                        continue
+
+                    field_value = content[field_name]
+
+                    # Add field description as comment
+                    if field_info.description:
+                        lines.append(f"{ind}# {field_name}: {field_info.description}")
+
+                    # Handle lists
+                    if isinstance(field_value, list):
+                        lines.append(f"{ind}{field_name}:")
+                        # Get the item type from list annotation
+                        item_model = self._get_list_item_type(field_info.annotation)
+                        if (
+                            field_value
+                            and isinstance(field_value[0], dict)
+                            and item_model
+                            and hasattr(item_model, "model_fields")
+                        ):
+                            # For lists of dicts with a model, add annotated items
+                            for item in field_value:
+                                lines.append(f"{ind}  - name: {item.get('name', '')}")
+                                for (
+                                    item_field_name,
+                                    item_field_info,
+                                ) in item_model.model_fields.items():
+                                    if (
+                                        item_field_name in ("name",)
+                                        or item_field_name not in item
+                                    ):
+                                        continue
+                                    item_val = item[item_field_name]
+                                    if item_field_info.description:
+                                        lines.append(
+                                            f"{ind}    # {item_field_name}: {item_field_info.description}"
+                                        )
+                                    yaml_str = yaml.safe_dump(
+                                        {item_field_name: item_val},
+                                        default_flow_style=False,
+                                        sort_keys=False,
+                                    )
+                                    for line in yaml_str.rstrip().split("\n"):
+                                        if line:
+                                            lines.append(ind + "    " + line)
+                        else:
+                            # Default list handling
+                            self._add_annotated_yaml_content(
+                                lines,
+                                field_value,
+                                item_model if item_model else Any,
+                                indent + 1,
+                            )
+                    # Handle nested models
+                    elif isinstance(field_value, dict) and hasattr(
+                        field_info.annotation, "model_fields"
+                    ):
+                        lines.append(f"{ind}{field_name}:")
+                        self._add_annotated_yaml_content(
+                            lines,
+                            field_value,
+                            field_info.annotation,
+                            indent=indent + 1,
+                        )
+                    else:
+                        # Scalar or non-pydantic value
+                        yaml_str = yaml.safe_dump(
+                            {field_name: field_value},
+                            default_flow_style=False,
+                            sort_keys=False,
+                        )
+                        for line in yaml_str.rstrip().split("\n"):
+                            if line:
+                                lines.append(ind + line)
+            else:
+                # No model class, just dump as-is
+                yaml_str = yaml.safe_dump(
+                    content, default_flow_style=False, sort_keys=False
+                )
+                for line in yaml_str.rstrip().split("\n"):
+                    if line:
+                        lines.append(ind + line)
+                    else:
+                        lines.append("")
+        # Handle list
+        elif isinstance(content, list):
+            yaml_str = yaml.safe_dump(
+                content, default_flow_style=False, sort_keys=False
+            )
+            for line in yaml_str.rstrip().split("\n"):
+                if line:
+                    lines.append(ind + line)
+        else:
+            # Scalar value
+            yaml_str = yaml.safe_dump(
+                content, default_flow_style=False, sort_keys=False
+            )
+            lines.append(ind + yaml_str.rstrip())
+
+    def _get_list_item_type(self, model_class: Any) -> Any:
+        """Extract the item type from a list annotation.
+
+        Args:
+            model_class: A type annotation like list[SomeModel]
+
+        Returns:
+            The item type, or None if not determinable
+        """
+        # Try to get the origin and args from typing
+        import typing
+
+        if hasattr(typing, "get_origin") and hasattr(typing, "get_args"):
+            origin = typing.get_origin(model_class)
+            args = typing.get_args(model_class)
+
+            if origin is list and args:
+                return args[0]
+
+        return None

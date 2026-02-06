@@ -51,23 +51,19 @@
         "conversion_efficiency": 0.95
     },
     "payload": {
-        "payload": [
+        "instruments": [
             {
-                "name": "Optical Imager",
+                "name": "Default Instrument",
                 "power_draw": {
                     "nominal_power": 50.0,
-                    "peak_power": 300.0,
-                    "power_mode": {
-                        "0": 200.0,
-                        "1": 50.0,
-                        "2": 50.0
-                    },
+                    "peak_power": 100.0,
+                    "power_mode": {},
                     "eclipse_power": null,
                     "eclipse_power_mode": {}
                 },
                 "heater": null,
                 "data_generation": {
-                    "rate_gbps": 0.0001953125,
+                    "rate_gbps": 0.0,
                     "per_observation_gb": 0.0
                 }
             }
@@ -81,7 +77,8 @@
         "emergency_recharge": false,
         "max_depth_of_discharge": 0.4,
         "recharge_threshold": 0.95,
-        "charge_level": 1000.0
+        "charge_level": 1000.0,
+        "emergency_charging_min_illumination": 1.0
     },
     "constraint": {
         "sun_constraint": {
@@ -294,5 +291,8 @@
         ],
         "default_name": "Other",
         "default_color": "tab:purple"
+    },
+    "targets": {
+        "slew_distance_weight": 0.0
     }
 }

@@ -58,9 +58,10 @@ dev = [
     "mypy>=1.15",
     "pre-commit>=4.2",
     "ruff>=0.11",
-    "types-pytz>=2025.2.0.20250326",
-    "types-shapely>=2.1.0.20250418",
-    "types-tqdm>=4.67.0.20250809",
+    "types-pytz>=2025.2",
+    "types-pyyaml>=6.0",
+    "types-shapely>=2",
+    "types-tqdm>=4.67",
 ]
 test = ["pytest>=8", "pytest-cov>=7"]
 docs = [

@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class PowerDraw(BaseModel):
@@ -10,11 +10,19 @@ class PowerDraw(BaseModel):
     specified for eclipse conditions (e.g., heaters drawing more power in eclipse).
     """
 
-    nominal_power: float = 50  # Watts
-    peak_power: float = 300
-    power_mode: dict[int, float] = {}
-    eclipse_power: float | None = None
-    eclipse_power_mode: dict[int, float] = {}
+    nominal_power: float = Field(default=50, description="Nominal power draw in Watts")
+    peak_power: float = Field(default=300, description="Peak power draw in Watts")
+    power_mode: dict[int, float] = Field(
+        default_factory=dict,
+        description="Mode-specific power draw mapping (mode -> Watts)",
+    )
+    eclipse_power: float | None = Field(
+        default=None, description="Optional power draw during eclipse in Watts"
+    )
+    eclipse_power_mode: dict[int, float] = Field(
+        default_factory=dict,
+        description="Mode-specific power draw during eclipse (mode -> Watts)",
+    )
 
     def power(self, mode: int | None = None, in_eclipse: bool = False) -> float:
         """Get power draw for the given mode and eclipse state.

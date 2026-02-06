@@ -1,6 +1,6 @@
 from typing import Any
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from ..common import ChargeState
 
@@ -12,20 +12,30 @@ class Battery(BaseModel):
     # Power drain - 253 W (daily average) - peak power = 416 w
     # Solar panel power - area = 2.0 m^2 -- solar constant = 1353 w/m^2 --
     # efficiency = 29.5%  = ~800W charge rate
-    name: str = "Default Battery"
-    amphour: float = 20  # amphour
-    voltage: float = 28  # Volts
-    watthour: float = 560  # 20 * 28
-    emergency_recharge: bool = False
-    max_depth_of_discharge: float = 0.3  # Maximum allowed depth of discharge (30%)
-    recharge_threshold: float = (
-        0.95  # Threshold at which emergency recharge ends (95% SOC)
+    name: str = Field(default="Default Battery", description="Battery name/identifier")
+    amphour: float = Field(
+        default=20, description="Battery capacity in Ampere-hours (Ah)"
     )
-    charge_level: float = 0  # Current charge level in watthours
-    # Illumination threshold for early exit in emergency charging search.
-    # 1.0 = require best possible illumination (original behavior)
-    # Lower values (e.g., 0.7) allow early exit once "good enough" illumination found
-    emergency_charging_min_illumination: float = 1.0
+    voltage: float = Field(default=28, description="Nominal battery voltage (V)")
+    watthour: float = Field(
+        default=560, description="Total energy storage capacity (Wh)"
+    )
+    emergency_recharge: bool = Field(
+        default=False, description="Flag indicating emergency recharge mode"
+    )
+    max_depth_of_discharge: float = Field(
+        default=0.3, description="Maximum allowed depth of discharge (0.0-1.0)"
+    )
+    recharge_threshold: float = Field(
+        default=0.95, description="Battery level fraction to stop charging (0.0-1.0)"
+    )
+    charge_level: float = Field(
+        default=0, description="Current battery charge level (Wh)"
+    )
+    emergency_charging_min_illumination: float = Field(
+        default=1.0,
+        description="Illumination threshold for emergency charging (0.0-1.0)",
+    )
 
     @model_validator(mode="before")
     @classmethod

@@ -38,7 +38,9 @@ class OnboardRecorder(BaseModel):
         0
     """
 
-    name: str = "Default Recorder"
+    name: str = Field(
+        default="Default Recorder", description="Recorder name/identifier"
+    )
     capacity_gb: float = Field(
         default=32.0, gt=0, description="Maximum storage capacity in Gigabits"
     )
