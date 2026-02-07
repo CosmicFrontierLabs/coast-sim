@@ -56,12 +56,14 @@ class SolarPanel(BaseModel):
     # Class-level eclipse constraint (stateless, shared across all instances)
     _eclipse_constraint = rust_ephem.EclipseConstraint()
 
-
     name: str = Field(
         default="Panel", description="Name/identifier for the solar panel"
     )
     gimbled: bool = Field(default=False, description="Whether the panel is gimbled")
-    normal: tuple[float, float, float] = Field(default=(0.0, 1.0, 0.0), description="Panel normal vector in spacecraft body frame")
+    normal: tuple[float, float, float] = Field(
+        default=(0.0, 1.0, 0.0),
+        description="Panel normal vector in spacecraft body frame",
+    )
     max_power: float = Field(
         default=800.0, description="Maximum power output at full illumination in Watts"
     )
@@ -69,7 +71,6 @@ class SolarPanel(BaseModel):
         default=None,
         description="Optional per-panel efficiency (uses array-level if not specified)",
     )
-
 
     def panel_illumination_fraction(
         self,
