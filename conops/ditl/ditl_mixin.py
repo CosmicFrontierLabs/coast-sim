@@ -21,6 +21,7 @@ class DITLMixin:
     mode: list[int]
     panel: list[float]
     power: list[float]
+    in_eclipse: list[bool]
     begin: datetime
     end: datetime
     step_size: int

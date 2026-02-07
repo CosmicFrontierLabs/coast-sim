@@ -1003,6 +1003,7 @@ class QueueDITL(DITLMixin, DITLStats):
         self.dec.append(dec)
         self.roll.append(roll)
         self.obsid.append(obsid)
+        self.in_eclipse.append(self.acs.in_eclipse)
 
     def _record_power_data(
         self,
