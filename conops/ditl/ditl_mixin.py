@@ -10,6 +10,7 @@ from ..config import MissionConfig
 from ..simulation.acs import ACS
 from ..simulation.passes import Pass, PassTimes
 from ..targets import Plan, PlanEntry
+from .telemetry import Telemetry
 
 
 class DITLMixin:
@@ -39,6 +40,8 @@ class DITLMixin:
     recorder_alert: list[int]
     data_generated_gb: list[float]
     data_downlinked_gb: list[float]
+    # Telemetry container
+    telemetry: Telemetry
 
     def __init__(
         self,

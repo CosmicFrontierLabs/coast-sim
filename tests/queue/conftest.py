@@ -67,8 +67,17 @@ def mock_config():
     config.battery = Mock()
     config.battery.battery_level = 0.8
     config.battery.battery_alert = False
+    config.battery.charge_state = 0  # NOT_CHARGING
     config.battery.drain = Mock()
     config.battery.charge = Mock()
+
+    # Mock recorder
+    config.recorder = Mock()
+    config.recorder.current_volume_gb = 10.0
+    config.recorder.get_fill_fraction = Mock(return_value=0.3)
+    config.recorder.get_alert_level = Mock(return_value=0)
+    config.recorder.add_data = Mock()
+    config.recorder.remove_data = Mock(return_value=0.0)
 
     # Mock spacecraft bus
     config.spacecraft_bus = Mock()
@@ -84,6 +93,7 @@ def mock_config():
     # Mock payload
     config.payload = Mock()
     config.payload.power = Mock(return_value=30.0)
+    config.payload.data_generated = Mock(return_value=1.0)
 
     # Mock solar panel
     config.solar_panel = Mock()
@@ -137,6 +147,8 @@ def queue_ditl(mock_config, mock_ephem):
         from conops import ACSMode
 
         mock_acs.acsmode = ACSMode.SCIENCE
+        mock_acs.get_mode = Mock(return_value=ACSMode.SCIENCE)
+        mock_acs.in_eclipse = False
         # Mock the helper methods used in _fetch_new_ppt
         mock_target_request = Mock()
         mock_target_request.next_vis = Mock(return_value=1000.0)
@@ -528,6 +540,8 @@ def queue_ditl_no_queue_log(mock_config, mock_ephem):
         from conops import ACSMode
 
         mock_acs.acsmode = ACSMode.SCIENCE
+        mock_acs.get_mode = Mock(return_value=ACSMode.SCIENCE)
+        mock_acs.in_eclipse = False
         # Mock the helper methods used in _fetch_new_ppt
         mock_target_request = Mock()
         mock_target_request.next_vis = Mock(return_value=1000.0)
@@ -588,6 +602,8 @@ def queue_ditl_acs_no_ephem(mock_config, mock_ephem):
         from conops import ACSMode
 
         mock_acs.acsmode = ACSMode.SCIENCE
+        mock_acs.get_mode = Mock(return_value=ACSMode.SCIENCE)
+        mock_acs.in_eclipse = False
         # Mock the helper methods used in _fetch_new_ppt
         mock_target_request = Mock()
         mock_target_request.next_vis = Mock(return_value=1000.0)

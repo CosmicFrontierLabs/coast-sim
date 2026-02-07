@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 import numpy as np
 import rust_ephem
@@ -9,6 +9,7 @@ from ..config import MissionConfig
 from .ditl_log import DITLLog
 from .ditl_mixin import DITLMixin
 from .ditl_stats import DITLStats
+from .telemetry import Housekeeping, PayloadData, Telemetry
 
 
 class DITL(DITLMixin, DITLStats):
@@ -49,6 +50,9 @@ class DITL(DITLMixin, DITLStats):
         recorder_alert (np.ndarray): Recorder alert level (0/1/2) at each timestep.
         data_generated_gb (np.ndarray): Data generated in Gb at each timestep.
         data_downlinked_gb (np.ndarray): Data downlinked in Gb at each timestep.
+
+    Attributes:
+        telemetry (Telemetry): Structured telemetry data container.
     """
 
     def __init__(
@@ -84,6 +88,9 @@ class DITL(DITLMixin, DITLStats):
         )
         # DITL also needs solar_panel
         self.solar_panel = self.config.solar_panel
+
+        # Initialize telemetry container
+        self.telemetry = Telemetry()
 
         # Event log
         self.log = DITLLog()
@@ -144,7 +151,7 @@ class DITL(DITLMixin, DITLStats):
 
         self.utime = np.arange(self.ustart, self.uend, self.step_size).tolist()
 
-        # Set up simulation telemetry arrays
+        # Initialize telemetry arrays for backward compatibility
         simlen = len(self.utime)
         self.ra = np.zeros(simlen).tolist()
         self.dec = np.zeros(simlen).tolist()
@@ -216,6 +223,29 @@ class DITL(DITLMixin, DITLStats):
             self.charge_state[i] = self.battery.charge_state
             self.obsid[i] = obsid
 
+            # Create housekeeping telemetry record
+            hk = Housekeeping(
+                timestamp=datetime.fromtimestamp(self.utime[i], tz=timezone.utc),
+                ra=ra,
+                dec=dec,
+                roll=roll,
+                mode=mode,
+                panel_illumination=panel_illumination,
+                power_usage=power_usage,
+                power_bus=bus_power,
+                power_payload=payload_power,
+                battery_level=self.battery.battery_level,
+                charge_state=int(self.battery.charge_state),
+                battery_alert=self.battery.battery_alert,
+                obsid=obsid,
+                recorder_volume_gb=self.recorder.current_volume_gb,
+                recorder_fill_fraction=self.recorder.get_fill_fraction(),
+                recorder_alert=0
+                if self.recorder.get_alert_level() == 0
+                else int(self.recorder.get_alert_level()),
+            )
+            self.telemetry.housekeeping.append(hk)
+
             # Data management: generate and downlink data
             data_generated, data_downlinked = self._process_data_management(
                 self.utime[i], mode, self.step_size
@@ -230,6 +260,14 @@ class DITL(DITLMixin, DITLStats):
             self.recorder_alert[i] = self.recorder.get_alert_level()
             self.data_generated_gb[i] = prev_generated + data_generated
             self.data_downlinked_gb[i] = prev_downlinked + data_downlinked
+
+            # Create payload data record if data was generated
+            if data_generated > 0:
+                pd = PayloadData(
+                    timestamp=datetime.fromtimestamp(self.utime[i], tz=timezone.utc),
+                    data_size_gb=data_generated,
+                )
+                self.telemetry.data.append(pd)
 
         return True
 

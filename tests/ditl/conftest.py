@@ -104,6 +104,7 @@ def mock_config_detailed():
     config.battery = Mock()
     config.battery.battery_level = 0.8
     config.battery.battery_alert = False
+    config.battery.charge_state = 0
     config.battery.drain = Mock()
     config.battery.charge = Mock()
     config.battery.panel_charge_rate = 100.0
@@ -124,7 +125,7 @@ def mock_config_detailed():
     config.recorder = Mock()
     config.recorder.current_volume_gb = 0.0
     config.recorder.get_fill_fraction = Mock(return_value=0.0)
-    config.recorder.get_alert_level = Mock(return_value="none")
+    config.recorder.get_alert_level = Mock(return_value=0)
     config.recorder.add_data = Mock()
     config.recorder.remove_data = Mock(return_value=0.0)
 

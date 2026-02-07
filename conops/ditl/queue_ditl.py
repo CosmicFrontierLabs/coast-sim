@@ -15,6 +15,7 @@ from ..targets import Plan, Pointing, Queue
 from .ditl_log import DITLLog
 from .ditl_mixin import DITLMixin
 from .ditl_stats import DITLStats
+from .telemetry import Housekeeping, PayloadData, Telemetry
 
 
 class TOORequest(BaseModel):
@@ -71,6 +72,9 @@ class QueueDITL(DITLMixin, DITLStats):
     ) -> None:
         # Initialize mixin
         DITLMixin.__init__(self, config=config, ephem=ephem, begin=begin, end=end)
+
+        # Initialize telemetry container
+        self.telemetry = Telemetry()
 
         # Current target (already set in mixin but repeated for clarity)
         self.ppt = None
@@ -444,6 +448,14 @@ class QueueDITL(DITLMixin, DITLStats):
         self.recorder_alert.append(self.recorder.get_alert_level())
         self.data_generated_gb.append(prev_generated + data_generated)
         self.data_downlinked_gb.append(prev_downlinked + data_downlinked)
+
+        # Create payload data record if data was generated
+        if data_generated > 0:
+            pd = PayloadData(
+                timestamp=datetime.fromtimestamp(utime, tz=timezone.utc),
+                data_size_gb=data_generated,
+            )
+            self.telemetry.data.append(pd)
 
     def _handle_fault_management(self, utime: float) -> None:
         """Handle fault management checks and safe mode requests."""
@@ -1027,6 +1039,29 @@ class QueueDITL(DITLMixin, DITLStats):
 
         # Update battery state
         self._update_battery_state(total_power, panel_power)
+
+        # Create housekeeping telemetry record
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(utime, tz=timezone.utc),
+            ra=ra,
+            dec=dec,
+            roll=roll,
+            mode=mode,
+            panel_illumination=panel_illumination,
+            power_usage=total_power,
+            power_bus=bus_power,
+            power_payload=payload_power,
+            battery_level=self.battery.battery_level,
+            charge_state=int(self.battery.charge_state),
+            battery_alert=self.battery.battery_alert,
+            obsid=self.obsid[-1] if self.obsid else 0,
+            recorder_volume_gb=self.recorder.current_volume_gb,
+            recorder_fill_fraction=self.recorder.get_fill_fraction(),
+            recorder_alert=0
+            if self.recorder.get_alert_level() == 0
+            else int(self.recorder.get_alert_level()),
+        )
+        self.telemetry.housekeeping.append(hk)
 
     def _calculate_panel_power(
         self, i: int, utime: float, ra: float, dec: float, roll: float

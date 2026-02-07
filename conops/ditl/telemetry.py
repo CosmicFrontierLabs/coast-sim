@@ -1,6 +1,7 @@
 """Telemetry data storage for DITL simulations."""
 
 from collections.abc import Iterable
+from datetime import datetime
 from typing import Any, SupportsIndex, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -15,7 +16,7 @@ class Housekeeping(BaseModel):
     Records spacecraft state and power data at a single timestep.
 
     Attributes:
-        utime: Unix timestamp of the recording
+        timestamp: UTC timestamp of the recording
         ra: Right ascension in degrees
         dec: Declination in degrees
         roll: Roll angle in degrees
@@ -33,7 +34,7 @@ class Housekeeping(BaseModel):
         recorder_alert: Recorder alert level (0/1/2)
     """
 
-    utime: float | None = Field(default=None, description="Unix timestamp")
+    timestamp: datetime | None = Field(default=None, description="UTC timestamp")
     ra: float | None = Field(default=None, description="Right ascension in degrees")
     dec: float | None = Field(default=None, description="Declination in degrees")
     roll: float | None = Field(default=0.0, description="Roll angle in degrees")
@@ -130,11 +131,11 @@ class PayloadData(BaseModel):
     Records a data generation event with timestamp and data size.
 
     Attributes:
-        utime: Unix timestamp of the data record
+        timestamp: UTC timestamp of the data record
         data_size_gb: Size of data generated in Gb
     """
 
-    utime: float = Field(description="Unix timestamp")
+    timestamp: datetime = Field(description="UTC timestamp")
     data_size_gb: float = Field(description="Size of data generated in Gb")
 
 

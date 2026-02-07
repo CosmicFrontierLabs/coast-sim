@@ -10,7 +10,7 @@ from conops import ACSCommandType, ACSMode, Pass, QueueDITL
 class TestQueueDITLInitialization:
     """Test QueueDITL initialization."""
 
-    def test_initialization_ppts_defaults(self, mock_config):
+    def test_initialization_ppts_defaults(self, mock_config) -> None:
         with (
             patch("conops.Queue"),
             patch("conops.PassTimes"),
@@ -20,7 +20,7 @@ class TestQueueDITLInitialization:
             assert ditl.ppt is None
             assert ditl.charging_ppt is None
 
-    def test_initialization_pointing_lists_empty(self, mock_config):
+    def test_initialization_pointing_lists_empty(self, mock_config) -> None:
         with (
             patch("conops.Queue"),
             patch("conops.PassTimes"),
@@ -33,7 +33,7 @@ class TestQueueDITLInitialization:
             assert ditl.mode == []
             assert ditl.obsid == []
 
-    def test_initialization_power_lists_empty_and_plan(self, mock_config):
+    def test_initialization_power_lists_empty_and_plan(self, mock_config) -> None:
         with (
             patch("conops.Queue"),
             patch("conops.PassTimes"),
@@ -46,7 +46,7 @@ class TestQueueDITLInitialization:
             assert ditl.panel_power == []
             assert len(ditl.plan) == 0
 
-    def test_initialization_stores_config_subsystems(self, mock_config):
+    def test_initialization_stores_config_subsystems(self, mock_config) -> None:
         with (
             patch("conops.Queue"),
             patch("conops.PassTimes"),
@@ -62,14 +62,14 @@ class TestQueueDITLInitialization:
 class TestSetupSimulationTiming:
     """Test _setup_simulation_timing helper method."""
 
-    def test_setup_timing_success_returns_true(self, queue_ditl):
+    def test_setup_timing_success_returns_true(self, queue_ditl) -> None:
         queue_ditl.year = 2018
         queue_ditl.day = 331
         queue_ditl.length = 1
         queue_ditl.step_size = 60
         assert queue_ditl._setup_simulation_timing() is True
 
-    def test_setup_timing_sets_ustart(self, queue_ditl):
+    def test_setup_timing_sets_ustart(self, queue_ditl) -> None:
         queue_ditl.year = 2018
         queue_ditl.day = 331
         queue_ditl.length = 1
@@ -77,7 +77,7 @@ class TestSetupSimulationTiming:
         queue_ditl._setup_simulation_timing()
         assert queue_ditl.ustart > 0
 
-    def test_setup_timing_sets_uend_greater(self, queue_ditl):
+    def test_setup_timing_sets_uend_greater(self, queue_ditl) -> None:
         queue_ditl.year = 2018
         queue_ditl.day = 331
         queue_ditl.length = 1
@@ -85,7 +85,7 @@ class TestSetupSimulationTiming:
         queue_ditl._setup_simulation_timing()
         assert queue_ditl.uend > queue_ditl.ustart
 
-    def test_setup_timing_uend_length_and_utime(self, queue_ditl):
+    def test_setup_timing_uend_length_and_utime(self, queue_ditl) -> None:
         queue_ditl.step_size = 60
         queue_ditl._setup_simulation_timing()
         assert queue_ditl.uend == queue_ditl.ustart + 86400
@@ -95,7 +95,7 @@ class TestSetupSimulationTiming:
 class TestScheduleGroundstationPasses:
     """Test _schedule_groundstation_passes helper method."""
 
-    def test_schedule_passes_empty_schedule_called(self, queue_ditl):
+    def test_schedule_passes_empty_schedule_called(self, queue_ditl) -> None:
         queue_ditl.acs.passrequests.passes = []
         queue_ditl.year = 2018
         queue_ditl.day = 331
@@ -103,7 +103,7 @@ class TestScheduleGroundstationPasses:
         queue_ditl._schedule_groundstation_passes()
         queue_ditl.acs.passrequests.get.assert_called_once_with(2018, 331, 1)
 
-    def test_schedule_passes_empty_prints_message(self, queue_ditl, capsys):
+    def test_schedule_passes_empty_prints_message(self, queue_ditl, capsys) -> None:
         queue_ditl.acs.passrequests.passes = []
         queue_ditl.year = 2018
         queue_ditl.day = 331
@@ -116,13 +116,13 @@ class TestScheduleGroundstationPasses:
             for event in queue_ditl.log.events
         )
 
-    def test_schedule_passes_already_scheduled_no_get(self, queue_ditl):
+    def test_schedule_passes_already_scheduled_no_get(self, queue_ditl) -> None:
         mock_pass = Mock()
         queue_ditl.acs.passrequests.passes = [mock_pass]
         queue_ditl._schedule_groundstation_passes()
         queue_ditl.acs.passrequests.get.assert_not_called()
 
-    def test_schedule_passes_returns_passes_print(self, queue_ditl, capsys):
+    def test_schedule_passes_returns_passes_print(self, queue_ditl, capsys) -> None:
         queue_ditl.acs.passrequests.passes = []
         queue_ditl.year = 2018
         queue_ditl.day = 331
@@ -151,7 +151,7 @@ class TestScheduleGroundstationPasses:
 class TestDetermineMode:
     """Test mode determination now handled by ACS.get_mode() - these tests use real ACS instance."""
 
-    def test_determine_mode_slewing(self, mock_config, mock_ephem):
+    def test_determine_mode_slewing(self, mock_config, mock_ephem) -> None:
         from conops import ACS, Constraint
 
         constraint = Constraint(ephem=None)
@@ -167,7 +167,7 @@ class TestDetermineMode:
         mode = acs.get_mode(1000.0)
         assert mode == ACSMode.SLEWING
 
-    def test_determine_mode_pass(self, mock_config, mock_ephem):
+    def test_determine_mode_pass(self, mock_config, mock_ephem) -> None:
         from conops import ACS, Constraint, Pass
 
         constraint = Constraint(ephem=None)
@@ -182,7 +182,7 @@ class TestDetermineMode:
         mode = acs.get_mode(1000.0)
         assert mode == ACSMode.PASS
 
-    def test_determine_mode_saa(self, mock_config, mock_ephem):
+    def test_determine_mode_saa(self, mock_config, mock_ephem) -> None:
         from conops import ACS, Constraint
 
         constraint = Constraint(ephem=None)
@@ -197,7 +197,9 @@ class TestDetermineMode:
         mode = acs.get_mode(1000.0)
         assert mode == ACSMode.SAA
 
-    def test_determine_mode_charging(self, mock_config, mock_ephem, monkeypatch):
+    def test_determine_mode_charging(
+        self, mock_config, mock_ephem, monkeypatch
+    ) -> None:
         from conops import ACS, Constraint
 
         constraint = Mock(spec=Constraint)
@@ -217,7 +219,7 @@ class TestDetermineMode:
         mode = acs.get_mode(1000.0)
         assert mode == ACSMode.CHARGING
 
-    def test_determine_mode_science(self, mock_config, mock_ephem):
+    def test_determine_mode_science(self, mock_config, mock_ephem) -> None:
         from conops import ACS, Constraint
 
         constraint = Constraint(ephem=None)
@@ -237,7 +239,7 @@ class TestDetermineMode:
 class TestHandlePassMode:
     """Test _handle_pass_mode helper method."""
 
-    def test_handle_pass_terminates_ppt_end_time_set(self, queue_ditl):
+    def test_handle_pass_terminates_ppt_end_time_set(self, queue_ditl) -> None:
         mock_ppt = Mock()
         mock_ppt.end = 0
         mock_ppt.done = False
@@ -245,7 +247,7 @@ class TestHandlePassMode:
         queue_ditl._handle_pass_mode(1000.0)
         assert mock_ppt.end == 1000.0
 
-    def test_handle_pass_terminates_ppt_done_flag_set(self, queue_ditl):
+    def test_handle_pass_terminates_ppt_done_flag_set(self, queue_ditl) -> None:
         mock_ppt = Mock()
         mock_ppt.end = 0
         mock_ppt.done = False
@@ -253,7 +255,7 @@ class TestHandlePassMode:
         queue_ditl._handle_pass_mode(1000.0)
         assert mock_ppt.done is True
 
-    def test_handle_pass_terminates_ppt_cleared(self, queue_ditl):
+    def test_handle_pass_terminates_ppt_cleared(self, queue_ditl) -> None:
         mock_ppt = Mock()
         mock_ppt.end = 0
         mock_ppt.done = False
@@ -261,7 +263,7 @@ class TestHandlePassMode:
         queue_ditl._handle_pass_mode(1000.0)
         assert queue_ditl.ppt is None
 
-    def test_handle_pass_terminates_charging_ppt_end_time_set(self, queue_ditl):
+    def test_handle_pass_terminates_charging_ppt_end_time_set(self, queue_ditl) -> None:
         mock_charging = Mock()
         mock_charging.end = 0
         mock_charging.done = False
@@ -269,7 +271,7 @@ class TestHandlePassMode:
         queue_ditl._handle_pass_mode(1000.0)
         assert mock_charging.end == 1000.0
 
-    def test_handle_pass_terminates_charging_ppt_done_set(self, queue_ditl):
+    def test_handle_pass_terminates_charging_ppt_done_set(self, queue_ditl) -> None:
         mock_charging = Mock()
         mock_charging.end = 0
         mock_charging.done = False
@@ -277,7 +279,7 @@ class TestHandlePassMode:
         queue_ditl._handle_pass_mode(1000.0)
         assert mock_charging.done is True
 
-    def test_handle_pass_terminates_charging_ppt_cleared(self, queue_ditl):
+    def test_handle_pass_terminates_charging_ppt_cleared(self, queue_ditl) -> None:
         mock_charging = Mock()
         mock_charging.end = 0
         mock_charging.done = False
@@ -285,7 +287,7 @@ class TestHandlePassMode:
         queue_ditl._handle_pass_mode(1000.0)
         assert queue_ditl.charging_ppt is None
 
-    def test_handle_pass_no_ppt(self, queue_ditl):
+    def test_handle_pass_no_ppt(self, queue_ditl) -> None:
         queue_ditl.ppt = None
         queue_ditl.charging_ppt = None
         queue_ditl._handle_pass_mode(1000.0)
@@ -294,7 +296,9 @@ class TestHandlePassMode:
 class TestHandleChargingMode:
     """Test _handle_charging_mode helper method."""
 
-    def test_charging_ends_when_battery_recharged_end_set(self, queue_ditl, capsys):
+    def test_charging_ends_when_battery_recharged_end_set(
+        self, queue_ditl, capsys
+    ) -> None:
         queue_ditl.battery.battery_alert = False
         queue_ditl.battery.battery_level = 0.85
         mock_charging = Mock()
@@ -305,7 +309,9 @@ class TestHandleChargingMode:
         queue_ditl._handle_charging_mode(1000.0)
         assert mock_charging.end == 1000.0
 
-    def test_charging_ends_when_battery_recharged_done_flag(self, queue_ditl, capsys):
+    def test_charging_ends_when_battery_recharged_done_flag(
+        self, queue_ditl, capsys
+    ) -> None:
         queue_ditl.battery.battery_alert = False
         queue_ditl.battery.battery_level = 0.85
         mock_charging = Mock()
@@ -332,7 +338,9 @@ class TestHandleChargingMode:
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "Battery recharged" in log_text
 
-    def test_charging_ends_when_constrained_end_and_done_set(self, queue_ditl, capsys):
+    def test_charging_ends_when_constrained_end_and_done_set(
+        self, queue_ditl, capsys
+    ) -> None:
         queue_ditl.battery.battery_alert = True
         mock_charging = Mock()
         mock_charging.ra = 10.0
@@ -350,7 +358,7 @@ class TestHandleChargingMode:
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "Charging pointing constrained" in log_text
 
-    def test_charging_ends_in_eclipse_clears_charging(self, queue_ditl, capsys):
+    def test_charging_ends_in_eclipse_clears_charging(self, queue_ditl, capsys) -> None:
         queue_ditl.battery.battery_alert = True
         mock_charging = Mock()
         mock_charging.ra = 10.0
@@ -364,7 +372,7 @@ class TestHandleChargingMode:
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "Entered eclipse" in log_text
 
-    def test_charging_continues(self, queue_ditl):
+    def test_charging_continues(self, queue_ditl) -> None:
         queue_ditl.battery.battery_alert = True
         mock_charging = Mock()
         mock_charging.ra = 10.0
@@ -378,7 +386,7 @@ class TestHandleChargingMode:
 class TestManagePPTLifecycle:
     """Test _manage_ppt_lifecycle helper method."""
 
-    def test_manage_ppt_science_mode_exposure_decrements(self, queue_ditl):
+    def test_manage_ppt_science_mode_exposure_decrements(self, queue_ditl) -> None:
         mock_ppt = Mock()
         mock_ppt.exptime = 300.0
         mock_ppt.ra = 10.0
@@ -391,7 +399,7 @@ class TestManagePPTLifecycle:
         assert mock_ppt.exptime == 240.0
         assert queue_ditl.ppt is mock_ppt
 
-    def test_manage_ppt_slewing_no_exptime_decrement(self, queue_ditl):
+    def test_manage_ppt_slewing_no_exptime_decrement(self, queue_ditl) -> None:
         mock_ppt = Mock()
         mock_ppt.exptime = 300.0
         mock_ppt.ra = 10.0
@@ -402,7 +410,7 @@ class TestManagePPTLifecycle:
         queue_ditl._manage_ppt_lifecycle(1000.0, ACSMode.SLEWING)
         assert mock_ppt.exptime == 300.0
 
-    def test_manage_ppt_becomes_constrained_terminates(self, queue_ditl):
+    def test_manage_ppt_becomes_constrained_terminates(self, queue_ditl) -> None:
         mock_ppt = Mock()
         mock_ppt.exptime = 300.0
         mock_ppt.ra = 10.0
@@ -415,7 +423,7 @@ class TestManagePPTLifecycle:
         queue_ditl._manage_ppt_lifecycle(1000.0, ACSMode.SCIENCE)
         assert queue_ditl.ppt is None
 
-    def test_manage_ppt_exposure_complete_terminates(self, queue_ditl):
+    def test_manage_ppt_exposure_complete_terminates(self, queue_ditl) -> None:
         mock_ppt = Mock()
         mock_ppt.exptime = 30.0
         mock_ppt.ra = 10.0
@@ -430,7 +438,7 @@ class TestManagePPTLifecycle:
         assert queue_ditl.ppt is None
         assert mock_ppt.done is True
 
-    def test_manage_ppt_time_window_elapsed_terminate(self, queue_ditl):
+    def test_manage_ppt_time_window_elapsed_terminate(self, queue_ditl) -> None:
         mock_ppt = Mock()
         mock_ppt.exptime = 300.0
         mock_ppt.ra = 10.0
@@ -442,7 +450,7 @@ class TestManagePPTLifecycle:
         queue_ditl._manage_ppt_lifecycle(1000.0, ACSMode.SCIENCE)
         assert queue_ditl.ppt is None
 
-    def test_manage_ppt_charging_ppt_ignored(self, queue_ditl):
+    def test_manage_ppt_charging_ppt_ignored(self, queue_ditl) -> None:
         mock_charging = Mock()
         mock_charging.exptime = 300.0
         queue_ditl.ppt = mock_charging
@@ -454,7 +462,9 @@ class TestManagePPTLifecycle:
 class TestFetchNewPPT:
     """Test _fetch_new_ppt helper method."""
 
-    def test_fetch_ppt_sets_ppt_and_returns_last_positions(self, queue_ditl, capsys):
+    def test_fetch_ppt_sets_ppt_and_returns_last_positions(
+        self, queue_ditl, capsys
+    ) -> None:
         mock_ppt = Mock()
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
@@ -465,7 +475,7 @@ class TestFetchNewPPT:
         queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
         assert queue_ditl.ppt is mock_ppt
 
-    def test_fetch_ppt_enqueues_slew_command(self, queue_ditl, capsys):
+    def test_fetch_ppt_enqueues_slew_command(self, queue_ditl, capsys) -> None:
         mock_ppt = Mock()
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
@@ -482,7 +492,7 @@ class TestFetchNewPPT:
         assert command.slew.enddec == 30.0
         assert command.slew.obsid == 1001
 
-    def test_fetch_ppt_prints_messages(self, queue_ditl, capsys):
+    def test_fetch_ppt_prints_messages(self, queue_ditl, capsys) -> None:
         mock_ppt = Mock()
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
@@ -495,7 +505,7 @@ class TestFetchNewPPT:
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "Fetching new PPT from Queue" in log_text
 
-    def test_fetch_ppt_none_available(self, queue_ditl, capsys):
+    def test_fetch_ppt_none_available(self, queue_ditl, capsys) -> None:
         queue_ditl.queue.get = Mock(return_value=None)
         queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
         assert queue_ditl.ppt is None
@@ -503,7 +513,7 @@ class TestFetchNewPPT:
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "No targets available from Queue" in log_text
 
-    def test_fetch_ppt_defers_during_active_pass(self, queue_ditl):
+    def test_fetch_ppt_defers_during_active_pass(self, queue_ditl) -> None:
         """Test that _fetch_new_ppt returns early when a pass is in progress."""
         mock_pass = Mock()
         queue_ditl.acs.passrequests.current_pass = Mock(return_value=mock_pass)
@@ -519,7 +529,7 @@ class TestFetchNewPPT:
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "Deferring PPT fetch - pass in progress" in log_text
 
-    def test_fetch_ppt_rejects_slew_execution_during_pass(self, queue_ditl):
+    def test_fetch_ppt_rejects_slew_execution_during_pass(self, queue_ditl) -> None:
         """Test slew rejection when execution time falls during a pass."""
         # Setup mock PPT
         mock_ppt = Mock()
@@ -545,7 +555,7 @@ class TestFetchNewPPT:
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "Slew rejected - execution time falls during a pass" in log_text
 
-    def test_fetch_ppt_rejects_slew_completion_during_pass(self, queue_ditl):
+    def test_fetch_ppt_rejects_slew_completion_during_pass(self, queue_ditl) -> None:
         """Test slew rejection when slew would complete during a pass."""
         # Setup mock PPT
         mock_ppt = Mock()
@@ -576,7 +586,7 @@ class TestFetchNewPPT:
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "Slew rejected - would complete during a pass" in log_text
 
-    def test_fetch_ppt_rejects_insufficient_observation_time(self, queue_ditl):
+    def test_fetch_ppt_rejects_insufficient_observation_time(self, queue_ditl) -> None:
         """Test target rejection when there's not enough time before next pass."""
         # Setup mock PPT with minimum observation time requirement
         mock_ppt = Mock()
@@ -610,7 +620,9 @@ class TestFetchNewPPT:
         assert "available before pass" in log_text
         assert str(mock_ppt.obsid) in log_text
 
-    def test_fetch_ppt_accepts_with_sufficient_observation_time(self, queue_ditl):
+    def test_fetch_ppt_accepts_with_sufficient_observation_time(
+        self, queue_ditl
+    ) -> None:
         """Test target acceptance when there's enough time before next pass."""
         # Setup mock PPT
         mock_ppt = Mock()
@@ -643,7 +655,7 @@ class TestFetchNewPPT:
 class TestRecordSpacecraftState:
     """Test _record_spacecraft_state helper method."""
 
-    def test_record_state_mode(self, queue_ditl):
+    def test_record_state_mode(self, queue_ditl) -> None:
         queue_ditl.utime = [1000.0, 1060.0, 1120.0]
         queue_ditl._record_pointing_data(
             ra=45.0,
@@ -654,7 +666,7 @@ class TestRecordSpacecraftState:
         )
         assert queue_ditl.mode == [ACSMode.SCIENCE]
 
-    def test_record_state_ra(self, queue_ditl):
+    def test_record_state_ra(self, queue_ditl) -> None:
         queue_ditl.utime = [1000.0, 1060.0, 1120.0]
         queue_ditl._record_pointing_data(
             ra=45.0,
@@ -665,7 +677,7 @@ class TestRecordSpacecraftState:
         )
         assert queue_ditl.ra == [45.0]
 
-    def test_record_state_dec(self, queue_ditl):
+    def test_record_state_dec(self, queue_ditl) -> None:
         queue_ditl.utime = [1000.0, 1060.0, 1120.0]
         queue_ditl._record_pointing_data(
             ra=45.0,
@@ -676,7 +688,7 @@ class TestRecordSpacecraftState:
         )
         assert queue_ditl.dec == [30.0]
 
-    def test_record_state_roll(self, queue_ditl):
+    def test_record_state_roll(self, queue_ditl) -> None:
         queue_ditl.utime = [1000.0, 1060.0, 1120.0]
         queue_ditl._record_pointing_data(
             ra=45.0,
@@ -687,7 +699,7 @@ class TestRecordSpacecraftState:
         )
         assert queue_ditl.roll == [15.0]
 
-    def test_record_state_obsid(self, queue_ditl):
+    def test_record_state_obsid(self, queue_ditl) -> None:
         queue_ditl.utime = [1000.0, 1060.0, 1120.0]
         queue_ditl._record_pointing_data(
             ra=45.0,
@@ -698,7 +710,7 @@ class TestRecordSpacecraftState:
         )
         assert queue_ditl.obsid == [1001]
 
-    def test_record_state_panel_length(self, queue_ditl):
+    def test_record_state_panel_length(self, queue_ditl) -> None:
         queue_ditl.utime = [1000.0, 1060.0, 1120.0]
         queue_ditl._record_power_data(
             i=0,
@@ -711,7 +723,7 @@ class TestRecordSpacecraftState:
         )
         assert len(queue_ditl.panel) == 1
 
-    def test_record_state_power_length(self, queue_ditl):
+    def test_record_state_power_length(self, queue_ditl) -> None:
         queue_ditl.utime = [1000.0, 1060.0, 1120.0]
         queue_ditl._record_power_data(
             i=0,
@@ -724,7 +736,7 @@ class TestRecordSpacecraftState:
         )
         assert len(queue_ditl.power) == 1
 
-    def test_record_state_panel_power_length(self, queue_ditl):
+    def test_record_state_panel_power_length(self, queue_ditl) -> None:
         queue_ditl.utime = [1000.0, 1060.0, 1120.0]
         queue_ditl._record_power_data(
             i=0,
@@ -737,7 +749,7 @@ class TestRecordSpacecraftState:
         )
         assert len(queue_ditl.panel_power) == 1
 
-    def test_record_state_batterylevel_length(self, queue_ditl):
+    def test_record_state_batterylevel_length(self, queue_ditl) -> None:
         queue_ditl.utime = [1000.0, 1060.0, 1120.0]
         queue_ditl._record_power_data(
             i=0,
@@ -750,7 +762,7 @@ class TestRecordSpacecraftState:
         )
         assert len(queue_ditl.batterylevel) == 1
 
-    def test_record_state_spacecraft_power_call(self, queue_ditl):
+    def test_record_state_spacecraft_power_call(self, queue_ditl) -> None:
         queue_ditl.utime = [1000.0]
         queue_ditl.spacecraft_bus.power = Mock(return_value=50.0)
         queue_ditl.payload.power = Mock(return_value=30.0)
@@ -770,7 +782,7 @@ class TestRecordSpacecraftState:
             mode=ACSMode.SCIENCE, in_eclipse=False
         )
 
-    def test_record_state_payload_power_call(self, queue_ditl):
+    def test_record_state_payload_power_call(self, queue_ditl) -> None:
         queue_ditl.utime = [1000.0]
         queue_ditl.spacecraft_bus.power = Mock(return_value=50.0)
         queue_ditl.payload.power = Mock(return_value=30.0)
@@ -790,7 +802,7 @@ class TestRecordSpacecraftState:
             mode=ACSMode.SCIENCE, in_eclipse=False
         )
 
-    def test_record_state_power_sum(self, queue_ditl):
+    def test_record_state_power_sum(self, queue_ditl) -> None:
         queue_ditl.utime = [1000.0]
         queue_ditl.spacecraft_bus.power = Mock(return_value=50.0)
         queue_ditl.payload.power = Mock(return_value=30.0)
@@ -808,7 +820,7 @@ class TestRecordSpacecraftState:
         )
         assert queue_ditl.power == [80.0]  # 50 + 30
 
-    def test_record_state_battery_drain_called(self, queue_ditl):
+    def test_record_state_battery_drain_called(self, queue_ditl) -> None:
         queue_ditl.utime = [1000.0]
         queue_ditl.spacecraft_bus.power = Mock(return_value=50.0)
         queue_ditl.payload.power = Mock(return_value=30.0)
@@ -826,7 +838,7 @@ class TestRecordSpacecraftState:
         )
         queue_ditl.battery.drain.assert_called_once_with(80.0, 60)
 
-    def test_record_state_battery_charge_called(self, queue_ditl):
+    def test_record_state_battery_charge_called(self, queue_ditl) -> None:
         queue_ditl.utime = [1000.0]
         queue_ditl.spacecraft_bus.power = Mock(return_value=50.0)
         queue_ditl.payload.power = Mock(return_value=30.0)
@@ -848,12 +860,12 @@ class TestRecordSpacecraftState:
 class TestCalcMethod:
     """Test main calc method integration."""
 
-    def test_calc_requires_ephemeris(self, queue_ditl):
+    def test_calc_requires_ephemeris(self, queue_ditl) -> None:
         queue_ditl.ephem = None
         with pytest.raises(AssertionError, match="Ephemeris must be set"):
             queue_ditl.calc()
 
-    def test_calc_basic_success_return(self, queue_ditl):
+    def test_calc_basic_success_return(self, queue_ditl) -> None:
         queue_ditl.year = 2018
         queue_ditl.day = 331
         queue_ditl.length = 1
@@ -861,7 +873,7 @@ class TestCalcMethod:
         result = queue_ditl.calc()
         assert result is True
 
-    def test_calc_basic_success_mode_and_pointing_length(self, queue_ditl):
+    def test_calc_basic_success_mode_and_pointing_length(self, queue_ditl) -> None:
         queue_ditl.year = 2018
         queue_ditl.day = 331
         queue_ditl.length = 1
@@ -871,7 +883,7 @@ class TestCalcMethod:
         assert len(queue_ditl.ra) == 24
         assert len(queue_ditl.dec) == 24
 
-    def test_calc_sets_acs_ephemeris(self, queue_ditl):
+    def test_calc_sets_acs_ephemeris(self, queue_ditl) -> None:
         queue_ditl.acs.ephem = None
         queue_ditl.year = 2018
         queue_ditl.day = 331
@@ -880,7 +892,7 @@ class TestCalcMethod:
         queue_ditl.calc()
         assert queue_ditl.acs.ephem is queue_ditl.ephem
 
-    def test_calc_tracks_ppt_in_plan(self, queue_ditl):
+    def test_calc_tracks_ppt_in_plan(self, queue_ditl) -> None:
         queue_ditl.year = 2018
         queue_ditl.day = 331
         queue_ditl.length = 1
@@ -905,7 +917,7 @@ class TestCalcMethod:
 
         assert len(queue_ditl.plan) > 0
 
-    def test_calc_handles_pass_mode_result_true(self, queue_ditl):
+    def test_calc_handles_pass_mode_result_true(self, queue_ditl) -> None:
         queue_ditl.year = 2018
         queue_ditl.day = 331
         queue_ditl.length = 1
@@ -914,7 +926,7 @@ class TestCalcMethod:
         result = queue_ditl.calc()
         assert result is True
 
-    def test_calc_handles_pass_mode_contains_pass(self, queue_ditl):
+    def test_calc_handles_pass_mode_contains_pass(self, queue_ditl) -> None:
         queue_ditl.year = 2018
         queue_ditl.day = 331
         queue_ditl.length = 1
@@ -923,7 +935,7 @@ class TestCalcMethod:
         queue_ditl.calc()
         assert ACSMode.PASS in queue_ditl.mode
 
-    def test_calc_handles_emergency_charging_initiates(self, queue_ditl):
+    def test_calc_handles_emergency_charging_initiates(self, queue_ditl) -> None:
         queue_ditl.year = 2018
         queue_ditl.day = 331
         queue_ditl.length = 1
@@ -947,7 +959,9 @@ class TestCalcMethod:
         assert result is True
         assert queue_ditl.emergency_charging.initiate_emergency_charging.called
 
-    def test_calc_handles_emergency_charging_enqueue_command_and_type(self, queue_ditl):
+    def test_calc_handles_emergency_charging_enqueue_command_and_type(
+        self, queue_ditl
+    ) -> None:
         queue_ditl.year = 2018
         queue_ditl.day = 331
         queue_ditl.length = 1
@@ -975,7 +989,7 @@ class TestCalcMethod:
         ]
         assert "START_BATTERY_CHARGE" in command_types
 
-    def test_calc_closes_final_ppt_end_set(self, queue_ditl):
+    def test_calc_closes_final_ppt_end_set(self, queue_ditl) -> None:
         queue_ditl.year = 2018
         queue_ditl.day = 331
         queue_ditl.length = 1
@@ -998,7 +1012,7 @@ class TestCalcMethod:
         if queue_ditl.plan:
             assert queue_ditl.plan[-1].end > 0
 
-    def test_calc_handles_naive_datetimes(self, queue_ditl):
+    def test_calc_handles_naive_datetimes(self, queue_ditl) -> None:
         """Test calc method handles naive datetimes by making them UTC."""
         from datetime import datetime
 
@@ -1017,7 +1031,7 @@ class TestCalcMethod:
         assert queue_ditl.begin.tzinfo is not None
         assert queue_ditl.end.tzinfo is not None
 
-    def test_calc_handles_safe_mode_request(self, queue_ditl):
+    def test_calc_handles_safe_mode_request(self, queue_ditl) -> None:
         """Test calc method handles safe mode requests."""
         # Set up safe mode request
         queue_ditl.config.fault_management.safe_mode_requested = True
@@ -1037,7 +1051,9 @@ class TestCalcMethod:
         command = call_args[0][0]
         assert command.command_type == ACSCommandType.ENTER_SAFE_MODE
 
-    def test_track_ppt_in_timeline_closes_placeholder_end_times(self, queue_ditl):
+    def test_track_ppt_in_timeline_closes_placeholder_end_times(
+        self, queue_ditl
+    ) -> None:
         """Test _track_ppt_in_timeline closes PPTs with placeholder end times."""
         from conops.targets import PlanEntry
 
@@ -1066,7 +1082,9 @@ class TestCalcMethod:
         )  # Should be set to current PPT begin time
         assert len(queue_ditl.plan) == 2  # Should have both PPTs now
 
-    def test_close_ppt_timeline_if_needed_closes_when_ppt_none(self, queue_ditl):
+    def test_close_ppt_timeline_if_needed_closes_when_ppt_none(
+        self, queue_ditl
+    ) -> None:
         """Test _close_ppt_timeline_if_needed closes PPT when ppt is None."""
         from conops.targets import PlanEntry
 
@@ -1085,7 +1103,7 @@ class TestCalcMethod:
         # Check that the PPT's end time was updated
         assert mock_ppt.end == 2000.0
 
-    def test_terminate_ppt_marks_done_when_requested(self, queue_ditl):
+    def test_terminate_ppt_marks_done_when_requested(self, queue_ditl) -> None:
         """Test _terminate_ppt sets done flag when mark_done=True."""
         from conops.targets import PlanEntry
 
@@ -1107,7 +1125,7 @@ class TestCalcMethod:
         assert mock_ppt.end == 1500.0
         assert queue_ditl.ppt is None
 
-    def test_fetch_ppt_delays_for_current_slew(self, queue_ditl, capsys):
+    def test_fetch_ppt_delays_for_current_slew(self, queue_ditl, capsys) -> None:
         """Test _fetch_new_ppt delays slew when current slew is in progress."""
         from conops.simulation.slew import Slew
 
@@ -1139,7 +1157,7 @@ class TestCalcMethod:
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "delaying next slew until" in log_text
 
-    def test_fetch_ppt_delays_for_visibility(self, queue_ditl, capsys):
+    def test_fetch_ppt_delays_for_visibility(self, queue_ditl, capsys) -> None:
         """Test _fetch_new_ppt delays slew when target visibility requires it."""
         # Create mock PPT
         mock_ppt = Mock()
@@ -1163,7 +1181,7 @@ class TestCalcMethod:
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "Slew delayed by" in log_text
 
-    def test_terminate_science_ppt_for_pass_sets_done_flag(self, queue_ditl):
+    def test_terminate_science_ppt_for_pass_sets_done_flag(self, queue_ditl) -> None:
         """Test _terminate_science_ppt_for_pass sets done flag."""
         from conops.targets import PlanEntry
 
@@ -1184,7 +1202,7 @@ class TestCalcMethod:
         assert mock_ppt.end == 1500.0
         assert queue_ditl.ppt is None
 
-    def test_terminate_charging_ppt_sets_done_flag(self, queue_ditl):
+    def test_terminate_charging_ppt_sets_done_flag(self, queue_ditl) -> None:
         """Test _terminate_charging_ppt sets done flag."""
         from conops.targets import PlanEntry
 
@@ -1226,7 +1244,7 @@ class TestCalcMethod:
 class TestGetConstraintName:
     """Tests for _get_constraint_name method."""
 
-    def test_get_constraint_name_earth_name(self, queue_ditl):
+    def test_get_constraint_name_earth_name(self, queue_ditl) -> None:
         ra, dec, utime = 10.0, 20.0, 1000.0
         queue_ditl.constraint.in_earth = Mock(return_value=True)
         queue_ditl.constraint.in_moon = Mock(return_value=False)
@@ -1235,7 +1253,7 @@ class TestGetConstraintName:
         name = queue_ditl._get_constraint_name(ra, dec, utime)
         assert name == "Earth Limb"
 
-    def test_get_constraint_name_earth_call(self, queue_ditl):
+    def test_get_constraint_name_earth_call(self, queue_ditl) -> None:
         ra, dec, utime = 10.0, 20.0, 1000.0
         queue_ditl.constraint.in_earth = Mock(return_value=True)
         queue_ditl.constraint.in_moon = Mock(return_value=False)
@@ -1244,7 +1262,7 @@ class TestGetConstraintName:
         _ = queue_ditl._get_constraint_name(ra, dec, utime)
         queue_ditl.constraint.in_earth.assert_called_once_with(ra, dec, utime)
 
-    def test_get_constraint_name_moon_name(self, queue_ditl):
+    def test_get_constraint_name_moon_name(self, queue_ditl) -> None:
         ra, dec, utime = 11.0, 21.0, 2000.0
         queue_ditl.constraint.in_earth = Mock(return_value=False)
         queue_ditl.constraint.in_moon = Mock(return_value=True)
@@ -1253,7 +1271,7 @@ class TestGetConstraintName:
         name = queue_ditl._get_constraint_name(ra, dec, utime)
         assert name == "Moon"
 
-    def test_get_constraint_name_moon_calls(self, queue_ditl):
+    def test_get_constraint_name_moon_calls(self, queue_ditl) -> None:
         ra, dec, utime = 11.0, 21.0, 2000.0
         queue_ditl.constraint.in_earth = Mock(return_value=False)
         queue_ditl.constraint.in_moon = Mock(return_value=True)
@@ -1263,7 +1281,7 @@ class TestGetConstraintName:
         queue_ditl.constraint.in_earth.assert_called_once_with(ra, dec, utime)
         queue_ditl.constraint.in_moon.assert_called_once_with(ra, dec, utime)
 
-    def test_get_constraint_name_sun_name(self, queue_ditl):
+    def test_get_constraint_name_sun_name(self, queue_ditl) -> None:
         ra, dec, utime = 12.0, 22.0, 3000.0
         queue_ditl.constraint.in_earth = Mock(return_value=False)
         queue_ditl.constraint.in_moon = Mock(return_value=False)
@@ -1272,7 +1290,7 @@ class TestGetConstraintName:
         name = queue_ditl._get_constraint_name(ra, dec, utime)
         assert name == "Sun"
 
-    def test_get_constraint_name_sun_calls(self, queue_ditl):
+    def test_get_constraint_name_sun_calls(self, queue_ditl) -> None:
         ra, dec, utime = 12.0, 22.0, 3000.0
         queue_ditl.constraint.in_earth = Mock(return_value=False)
         queue_ditl.constraint.in_moon = Mock(return_value=False)
@@ -1283,7 +1301,7 @@ class TestGetConstraintName:
         queue_ditl.constraint.in_moon.assert_called_once_with(ra, dec, utime)
         queue_ditl.constraint.in_sun.assert_called_once_with(ra, dec, utime)
 
-    def test_get_constraint_name_panel_name(self, queue_ditl):
+    def test_get_constraint_name_panel_name(self, queue_ditl) -> None:
         ra, dec, utime = 13.0, 23.0, 4000.0
         queue_ditl.constraint.in_earth = Mock(return_value=False)
         queue_ditl.constraint.in_moon = Mock(return_value=False)
@@ -1292,7 +1310,7 @@ class TestGetConstraintName:
         name = queue_ditl._get_constraint_name(ra, dec, utime)
         assert name == "Panel"
 
-    def test_get_constraint_name_panel_calls(self, queue_ditl):
+    def test_get_constraint_name_panel_calls(self, queue_ditl) -> None:
         ra, dec, utime = 13.0, 23.0, 4000.0
         queue_ditl.constraint.in_earth = Mock(return_value=False)
         queue_ditl.constraint.in_moon = Mock(return_value=False)
@@ -1304,7 +1322,7 @@ class TestGetConstraintName:
         queue_ditl.constraint.in_sun.assert_called_once_with(ra, dec, utime)
         queue_ditl.constraint.in_panel.assert_called_once_with(ra, dec, utime)
 
-    def test_get_constraint_name_unknown_name(self, queue_ditl):
+    def test_get_constraint_name_unknown_name(self, queue_ditl) -> None:
         ra, dec, utime = 14.0, 24.0, 5000.0
         queue_ditl.constraint.in_earth = Mock(return_value=False)
         queue_ditl.constraint.in_moon = Mock(return_value=False)
@@ -1313,7 +1331,7 @@ class TestGetConstraintName:
         name = queue_ditl._get_constraint_name(ra, dec, utime)
         assert name == "Unknown"
 
-    def test_get_constraint_name_unknown_calls(self, queue_ditl):
+    def test_get_constraint_name_unknown_calls(self, queue_ditl) -> None:
         ra, dec, utime = 14.0, 24.0, 5000.0
         queue_ditl.constraint.in_earth = Mock(return_value=False)
         queue_ditl.constraint.in_moon = Mock(return_value=False)
@@ -1325,7 +1343,7 @@ class TestGetConstraintName:
         queue_ditl.constraint.in_sun.assert_called_once_with(ra, dec, utime)
         queue_ditl.constraint.in_panel.assert_called_once_with(ra, dec, utime)
 
-    def test_get_constraint_name_precedence_earth(self, queue_ditl):
+    def test_get_constraint_name_precedence_earth(self, queue_ditl) -> None:
         ra, dec, utime = 15.0, 25.0, 6000.0
         queue_ditl.constraint.in_earth = Mock(return_value=True)
         queue_ditl.constraint.in_moon = Mock(return_value=True)
@@ -1339,7 +1357,9 @@ class TestGetConstraintName:
 class TestCheckAndManagePasses:
     """Tests for _check_and_manage_passes helper method."""
 
-    def test_check_and_manage_passes_end_pass_calls_check_pass_timing(self, queue_ditl):
+    def test_check_and_manage_passes_end_pass_calls_check_pass_timing(
+        self, queue_ditl
+    ) -> None:
         """Test that END_PASS is enqueued when we detect a pass ended."""
         utime = 1000.0
         ra, dec = 10.0, 20.0
@@ -1351,7 +1371,9 @@ class TestCheckAndManagePasses:
         # The method should work without errors even when pass ends
         assert True
 
-    def test_check_and_manage_passes_end_pass_enqueues_command(self, queue_ditl):
+    def test_check_and_manage_passes_end_pass_enqueues_command(
+        self, queue_ditl
+    ) -> None:
         """Test that END_PASS command is enqueued when pass ends."""
         utime = 1000.0
         ra, dec = 10.0, 20.0
@@ -1363,7 +1385,7 @@ class TestCheckAndManagePasses:
         queue_ditl._check_and_manage_passes(utime, ra, dec)
         # verify method runs without error
 
-    def test_check_and_manage_passes_end_pass_command_type(self, queue_ditl):
+    def test_check_and_manage_passes_end_pass_command_type(self, queue_ditl) -> None:
         """Test that END_PASS command has correct type."""
         utime = 1000.0
         ra, dec = 10.0, 20.0
@@ -1374,7 +1396,9 @@ class TestCheckAndManagePasses:
         queue_ditl._check_and_manage_passes(utime, ra, dec)
         # Test documents that when no pass, no command is sent
 
-    def test_check_and_manage_passes_end_pass_command_execution_time(self, queue_ditl):
+    def test_check_and_manage_passes_end_pass_command_execution_time(
+        self, queue_ditl
+    ) -> None:
         """Test that END_PASS command has correct execution time."""
         utime = 1000.0
         ra, dec = 10.0, 20.0
@@ -1396,7 +1420,9 @@ class TestCheckAndManagePasses:
         queue_ditl._check_and_manage_passes(utime, ra, dec)
         queue_ditl.acs.enqueue_command.assert_called_once()
 
-    def test_check_and_manage_passes_start_pass_enqueues_command(self, queue_ditl):
+    def test_check_and_manage_passes_start_pass_enqueues_command(
+        self, queue_ditl
+    ) -> None:
         """Test that START_PASS command is enqueued when entering pass."""
         utime = 1000.0
         ra, dec = 10.0, 20.0
@@ -1420,7 +1446,7 @@ class TestCheckAndManagePasses:
         assert cmd.command_type == ACSCommandType.START_PASS
         assert cmd.execution_time == utime
 
-    def test_check_and_manage_passes_start_pass_sets_obsid(self, queue_ditl):
+    def test_check_and_manage_passes_start_pass_sets_obsid(self, queue_ditl) -> None:
         """Test that pass gets assigned obsid when starting."""
         utime = 1000.0
         ra, dec = 10.0, 20.0
@@ -1434,7 +1460,9 @@ class TestCheckAndManagePasses:
         # In the current code, obsid is not set during START_PASS
         # This test documents that behavior
 
-    def test_check_and_manage_passes_start_pass_command_slew_station(self, queue_ditl):
+    def test_check_and_manage_passes_start_pass_command_slew_station(
+        self, queue_ditl
+    ) -> None:
         """Test START_PASS behavior in SAA mode (should not be enqueued)."""
         utime = 1000.0
         ra, dec = 10.0, 20.0
@@ -1489,7 +1517,9 @@ class TestCheckAndManagePasses:
         queue_ditl._check_and_manage_passes(utime, ra, dec)
         # Verify behavior documented
 
-    def test_check_and_manage_passes_both_end_and_start_command_order(self, queue_ditl):
+    def test_check_and_manage_passes_both_end_and_start_command_order(
+        self, queue_ditl
+    ) -> None:
         """Test command ordering during pass transitions."""
         utime = 3000.0
         ra, dec = 0.0, 0.0
@@ -1532,7 +1562,9 @@ class TestCheckAndManagePasses:
         queue_ditl._check_and_manage_passes(utime, ra, dec)
         # Verify method completes successfully
 
-    def test_check_and_manage_passes_slew_to_pass_has_gsp_obstype(self, queue_ditl):
+    def test_check_and_manage_passes_slew_to_pass_has_gsp_obstype(
+        self, queue_ditl
+    ) -> None:
         """Test that slew to ground station pass is marked with GSP obstype."""
         utime = 1000.0
         ra, dec = 10.0, 20.0
@@ -1570,7 +1602,9 @@ class TestCheckAndManagePasses:
         assert command.slew.endra == pass_obj.gsstartra
         assert command.slew.enddec == pass_obj.gsstartdec
 
-    def test_check_and_manage_passes_skip_slew_when_already_slewing(self, queue_ditl):
+    def test_check_and_manage_passes_skip_slew_when_already_slewing(
+        self, queue_ditl
+    ) -> None:
         """Test that we don't initiate a slew to a pass if already slewing."""
         utime = 1000.0
         ra, dec = 10.0, 20.0
@@ -1589,7 +1623,7 @@ class TestCheckAndManagePasses:
         # No command should be enqueued because we're already slewing
         queue_ditl.acs.enqueue_command.assert_not_called()
 
-    def test_check_and_manage_passes_skip_slew_when_in_pass(self, queue_ditl):
+    def test_check_and_manage_passes_skip_slew_when_in_pass(self, queue_ditl) -> None:
         """Test that we don't initiate a slew to next pass if currently in a pass."""
         utime = 1000.0
         ra, dec = 10.0, 20.0
@@ -1612,7 +1646,7 @@ class TestCheckAndManagePasses:
 class TestGetACSQueueStatus:
     """Test get_acs_queue_status method."""
 
-    def test_get_acs_queue_status_empty_queue(self, queue_ditl):
+    def test_get_acs_queue_status_empty_queue(self, queue_ditl) -> None:
         queue_ditl.acs.command_queue = []
         queue_ditl.acs.current_slew = None
         queue_ditl.acs.acsmode = ACSMode.SCIENCE
@@ -1625,7 +1659,7 @@ class TestGetACSQueueStatus:
         }
         assert status == expected
 
-    def test_get_acs_queue_status_with_pending_commands(self, queue_ditl):
+    def test_get_acs_queue_status_with_pending_commands(self, queue_ditl) -> None:
         mock_cmd1 = Mock()
         mock_cmd1.command_type.name = "SLEW_TO_TARGET"
         mock_cmd1.execution_time = 1000.0
@@ -1660,7 +1694,7 @@ class TestGetACSQueueStatus:
         }
         assert status == expected
 
-    def test_get_acs_queue_status_with_current_slew(self, queue_ditl):
+    def test_get_acs_queue_status_with_current_slew(self, queue_ditl) -> None:
         queue_ditl.acs.command_queue = []
         mock_slew = Mock()
         mock_slew.__class__.__name__ = "Slew"
@@ -1675,7 +1709,7 @@ class TestGetACSQueueStatus:
         }
         assert status == expected
 
-    def test_get_acs_queue_status_different_modes(self, queue_ditl):
+    def test_get_acs_queue_status_different_modes(self, queue_ditl) -> None:
         queue_ditl.acs.command_queue = []
         queue_ditl.acs.current_slew = None
         for mode in [ACSMode.SCIENCE, ACSMode.CHARGING, ACSMode.SAA]:
@@ -1683,7 +1717,7 @@ class TestGetACSQueueStatus:
             status = queue_ditl.get_acs_queue_status()
             assert status["acs_mode"] == mode.name
 
-    def test_get_acs_queue_status_mixed_state(self, queue_ditl):
+    def test_get_acs_queue_status_mixed_state(self, queue_ditl) -> None:
         mock_cmd = Mock()
         mock_cmd.command_type.name = "END_PASS"
         mock_cmd.execution_time = 1500.0
@@ -1714,43 +1748,51 @@ class TestGetACSQueueStatus:
 class TestTOOFunctionality:
     """Test Target of Opportunity (TOO) functionality in QueueDITL."""
 
-    def test_too_request_model_creation_obsid(self, basic_too_request):
+    def test_too_request_model_creation_obsid(self, basic_too_request) -> None:
         """Test TOORequest model creation - obsid field."""
         assert basic_too_request.obsid == 1000001
 
-    def test_too_request_model_creation_ra(self, basic_too_request):
+    def test_too_request_model_creation_ra(self, basic_too_request) -> None:
         """Test TOORequest model creation - ra field."""
         assert basic_too_request.ra == 180.0
 
-    def test_too_request_model_creation_dec(self, basic_too_request):
+    def test_too_request_model_creation_dec(self, basic_too_request) -> None:
         """Test TOORequest model creation - dec field."""
         assert basic_too_request.dec == 45.0
 
-    def test_too_request_model_creation_merit(self, basic_too_request):
+    def test_too_request_model_creation_merit(self, basic_too_request) -> None:
         """Test TOORequest model creation - merit field."""
         assert basic_too_request.merit == 10000.0
 
-    def test_too_request_model_creation_exptime(self, basic_too_request):
+    def test_too_request_model_creation_exptime(self, basic_too_request) -> None:
         """Test TOORequest model creation - exptime field."""
         assert basic_too_request.exptime == 3600
 
-    def test_too_request_model_creation_name(self, basic_too_request):
+    def test_too_request_model_creation_name(self, basic_too_request) -> None:
         """Test TOORequest model creation - name field."""
         assert basic_too_request.name == "GRB 250101A"
 
-    def test_too_request_model_creation_submit_time_default(self, basic_too_request):
+    def test_too_request_model_creation_submit_time_default(
+        self, basic_too_request
+    ) -> None:
         """Test TOORequest model creation - submit_time default value."""
         assert basic_too_request.submit_time == 0.0  # default
 
-    def test_too_request_model_creation_executed_default(self, basic_too_request):
+    def test_too_request_model_creation_executed_default(
+        self, basic_too_request
+    ) -> None:
         """Test TOORequest model creation - executed default value."""
         assert basic_too_request.executed is False
 
-    def test_too_request_with_custom_submit_time_value(self, custom_too_request):
+    def test_too_request_with_custom_submit_time_value(
+        self, custom_too_request
+    ) -> None:
         """Test TOORequest with custom submit_time - check value."""
         assert custom_too_request.submit_time == 1234567890.0
 
-    def test_too_request_with_custom_submit_time_executed(self, custom_too_request):
+    def test_too_request_with_custom_submit_time_executed(
+        self, custom_too_request
+    ) -> None:
         """Test TOORequest with custom submit_time - check executed flag."""
         assert custom_too_request.executed is True
 
@@ -1766,19 +1808,21 @@ class TestTOOFunctionality:
         """Test submit_too with immediate activation - check register content."""
         assert queue_ditl.too_register[0] == submitted_too
 
-    def test_submit_too_immediate_activation_obsid(self, submitted_too):
+    def test_submit_too_immediate_activation_obsid(self, submitted_too) -> None:
         """Test submit_too with immediate activation - check obsid."""
         assert submitted_too.obsid == 1000001
 
-    def test_submit_too_immediate_activation_submit_time(self, submitted_too):
+    def test_submit_too_immediate_activation_submit_time(self, submitted_too) -> None:
         """Test submit_too with immediate activation - check submit_time."""
         assert submitted_too.submit_time == 0.0
 
-    def test_submit_too_immediate_activation_executed(self, submitted_too):
+    def test_submit_too_immediate_activation_executed(self, submitted_too) -> None:
         """Test submit_too with immediate activation - check executed flag."""
         assert submitted_too.executed is False
 
-    def test_submit_too_with_unix_timestamp_submit_time(self, unix_timestamp_too):
+    def test_submit_too_with_unix_timestamp_submit_time(
+        self, unix_timestamp_too
+    ) -> None:
         """Test submit_too with Unix timestamp submit_time - check submit_time."""
         submit_time = 1640995200.0  # 2022-01-01 00:00:00 UTC
         assert unix_timestamp_too.submit_time == submit_time
@@ -1789,7 +1833,7 @@ class TestTOOFunctionality:
         """Test submit_too with Unix timestamp submit_time - check register length."""
         assert len(queue_ditl.too_register) == 1
 
-    def test_submit_too_with_datetime(self, queue_ditl):
+    def test_submit_too_with_datetime(self, queue_ditl) -> None:
         """Test submit_too with datetime submit_time."""
         from datetime import datetime, timezone
 
@@ -1808,7 +1852,7 @@ class TestTOOFunctionality:
 
         assert too.submit_time == expected_timestamp
 
-    def test_submit_too_with_naive_datetime(self, queue_ditl):
+    def test_submit_too_with_naive_datetime(self, queue_ditl) -> None:
         """Test submit_too with naive datetime (should be converted to UTC)."""
         from datetime import datetime, timezone
 
@@ -1827,7 +1871,9 @@ class TestTOOFunctionality:
 
         assert too.submit_time == expected_timestamp
 
-    def test_submit_too_multiple_requests_length(self, queue_ditl, standard_too_params):
+    def test_submit_too_multiple_requests_length(
+        self, queue_ditl, standard_too_params
+    ) -> None:
         """Test submitting multiple TOO requests - check register length."""
         # Submit first TOO
         queue_ditl.submit_too(**standard_too_params)
@@ -1925,12 +1971,12 @@ class TestTOOFunctionality:
 
         assert too2.submit_time == 1000.0
 
-    def test_check_too_interrupt_no_pending_toos(self, queue_ditl):
+    def test_check_too_interrupt_no_pending_toos(self, queue_ditl) -> None:
         """Test _check_too_interrupt when no TOOs are pending."""
         result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
         assert result is False
 
-    def test_check_too_interrupt_too_not_yet_active(self, queue_ditl):
+    def test_check_too_interrupt_too_not_yet_active(self, queue_ditl) -> None:
         """Test _check_too_interrupt when TOO submit_time is in the future."""
         # Submit TOO with future submit_time
         queue_ditl.submit_too(
@@ -1947,7 +1993,7 @@ class TestTOOFunctionality:
         result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
         assert result is False
 
-    def test_check_too_interrupt_too_already_executed(self, queue_ditl):
+    def test_check_too_interrupt_too_already_executed(self, queue_ditl) -> None:
         """Test _check_too_interrupt when TOO has already been executed."""
         too = queue_ditl.submit_too(
             obsid=1000001,
@@ -1962,7 +2008,7 @@ class TestTOOFunctionality:
         result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
         assert result is False
 
-    def test_check_too_interrupt_merit_too_low(self, queue_ditl):
+    def test_check_too_interrupt_merit_too_low(self, queue_ditl) -> None:
         """Test _check_too_interrupt when TOO merit is lower than current observation."""
         # Submit TOO with low merit
         queue_ditl.submit_too(
@@ -2194,7 +2240,7 @@ class TestTOOFunctionality:
                 1000.0, 180.0, 45.0
             )
 
-    def test_too_request_pydantic_validation_valid(self):
+    def test_too_request_pydantic_validation_valid(self) -> None:
         """Test TOORequest Pydantic validation - valid creation."""
         from conops.ditl import TOORequest
 
@@ -2209,7 +2255,7 @@ class TestTOOFunctionality:
         )
         assert too.obsid == 1000001
 
-    def test_too_request_pydantic_validation_invalid_obsid(self):
+    def test_too_request_pydantic_validation_invalid_obsid(self) -> None:
         """Test TOORequest Pydantic validation - invalid obsid type."""
         from pydantic import ValidationError
 
@@ -2226,7 +2272,7 @@ class TestTOOFunctionality:
                 name="Invalid TOO",
             )
 
-    def test_too_request_model_dump(self):
+    def test_too_request_model_dump(self) -> None:
         """Test TOORequest model_dump method."""
         from conops.ditl import TOORequest
 
@@ -2258,19 +2304,19 @@ class TestTOOFunctionality:
 class TestQueueDITLCoverage:
     """Test cases to achieve 100% coverage for QueueDITL."""
 
-    def test_queue_log_assignment_when_none(self, queue_ditl_no_queue_log):
+    def test_queue_log_assignment_when_none(self, queue_ditl_no_queue_log) -> None:
         """Test that queue.log is assigned when provided queue has no log (line 112)."""
         # The fixture already tests this by creating a QueueDITL with queue.log = None
         # and verifying it gets assigned during initialization
         assert queue_ditl_no_queue_log.queue.log is not None
 
-    def test_acs_ephem_assignment_when_none(self, queue_ditl_acs_no_ephem):
+    def test_acs_ephem_assignment_when_none(self, queue_ditl_acs_no_ephem) -> None:
         """Test that acs.ephem is assigned when ACS has no ephem (line 377)."""
         # Manually trigger the ephem assignment that happens in run()
         queue_ditl_acs_no_ephem.acs.ephem = queue_ditl_acs_no_ephem.ephem
         assert queue_ditl_acs_no_ephem.acs.ephem is not None
 
-    def test_handle_science_mode_called(self, mock_config, mock_ephem):
+    def test_handle_science_mode_called(self, mock_config, mock_ephem) -> None:
         """Test that _handle_science_mode is called for SCIENCE mode (line 506)."""
         with (
             patch("conops.Queue") as mock_queue_class,
@@ -2390,7 +2436,7 @@ class TestQueueDITLCoverage:
                 mock_manage_ppt.assert_not_called()
                 mock_fetch_ppt.assert_not_called()
 
-    def test_pass_ending_logic_triggered(self, mock_config, mock_ephem):
+    def test_pass_ending_logic_triggered(self, mock_config, mock_ephem) -> None:
         """Test pass ending logic when previous pass existed but current doesn't (lines 631-642)."""
         with (
             patch("conops.Queue") as mock_queue_class,
@@ -2454,12 +2500,12 @@ class TestQueueDITLCoverage:
             assert call_args.command_type == ACSCommandType.END_PASS
             assert call_args.execution_time == 1000.0
 
-    # def test_pass_slewing_logic_triggered(self, mock_config, mock_ephem):
+    # def test_pass_slewing_logic_triggered(self, mock_config, mock_ephem) -> None:
     #     """Test pass slewing logic when it's time to slew to next pass (lines 655-679)."""
     #     # NOTE: This test was removed due to patching issues with relative imports
     #     # The pass slewing logic is tested indirectly through integration tests
 
-    def test_charging_ppt_constraint_check(self, mock_config, mock_ephem):
+    def test_charging_ppt_constraint_check(self, mock_config, mock_ephem) -> None:
         """Test charging PPT constraint checking (lines 717-727)."""
         with (
             patch("conops.Queue") as mock_queue_class,
@@ -2532,7 +2578,7 @@ class TestQueueDITLCoverage:
             mock_get_constraint.assert_called_once_with(10.0, 20.0, 1000.0)
             mock_terminate.assert_called_once_with("constraint", 1000.0)
 
-    def test_slew_visibility_check_rejection(self, mock_config, mock_ephem):
+    def test_slew_visibility_check_rejection(self, mock_config, mock_ephem) -> None:
         """Test slew visibility check that rejects slew when target not visible (lines 844-851)."""
         with (
             patch("conops.Queue") as mock_queue_class,

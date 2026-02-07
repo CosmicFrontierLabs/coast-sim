@@ -17,7 +17,7 @@ class TestHousekeeping:
     def test_housekeeping_creation_with_none_values(self) -> None:
         """Test creating Housekeeping with None values."""
         hk = Housekeeping()
-        assert hk.utime is None
+        assert hk.timestamp is None
         assert hk.ra is None
         assert hk.dec is None
         assert hk.roll == 0.0  # Has default
@@ -25,8 +25,11 @@ class TestHousekeeping:
 
     def test_housekeeping_creation_with_values(self) -> None:
         """Test creating Housekeeping with specific values."""
+        from datetime import datetime, timezone
+
+        expected_dt = datetime.fromtimestamp(1234567890.0, tz=timezone.utc)
         hk = Housekeeping(
-            utime=1234567890.0,
+            timestamp=expected_dt,
             ra=45.0,
             dec=30.0,
             roll=10.0,
@@ -36,7 +39,7 @@ class TestHousekeeping:
             battery_level=0.9,
             obsid=42,
         )
-        assert hk.utime == 1234567890.0
+        assert hk.timestamp == expected_dt
         assert hk.ra == 45.0
         assert hk.dec == 30.0
         assert hk.roll == 10.0
@@ -101,8 +104,11 @@ class TestPayloadData:
 
     def test_payload_data_creation(self) -> None:
         """Test creating PayloadData."""
-        pd = PayloadData(utime=1234567890.0, data_size_gb=1.5)
-        assert pd.utime == 1234567890.0
+        from datetime import datetime, timezone
+
+        expected_dt = datetime.fromtimestamp(1234567890.0, tz=timezone.utc)
+        pd = PayloadData(timestamp=expected_dt, data_size_gb=1.5)
+        assert pd.timestamp == expected_dt
         assert pd.data_size_gb == 1.5
 
 
@@ -264,7 +270,7 @@ class TestTelemetry:
     def test_init_with_data(self) -> None:
         """Test initialization with data."""
         hk = Housekeeping(ra=45.0)
-        pd = PayloadData(utime=1234567890.0, data_size_gb=1.5)
+        pd = PayloadData(timestamp=1234567890.0, data_size_gb=1.5)
         tm = Telemetry(housekeeping=[hk], data=[pd])
         assert len(tm.housekeeping) == 1
         assert len(tm.data) == 1
@@ -280,7 +286,7 @@ class TestTelemetry:
 
         # Setting new lists should wrap them
         tm.housekeeping = [Housekeeping(ra=45.0)]
-        tm.data = [PayloadData(utime=1234567890.0, data_size_gb=1.5)]
+        tm.data = [PayloadData(timestamp=1234567890.0, data_size_gb=1.5)]
         assert isinstance(tm.housekeeping, _CacheInvalidatingList)
         assert isinstance(tm.data, _CacheInvalidatingList)
         assert tm.housekeeping.ra == [45.0]
@@ -375,11 +381,15 @@ class TestTelemetry:
 
     def test_attribute_access_on_data(self) -> None:
         """Test attribute access on data list."""
-        pd1 = PayloadData(utime=1234567890.0, data_size_gb=1.5)
-        pd2 = PayloadData(utime=1234567891.0, data_size_gb=2.0)
+        from datetime import datetime, timezone
+
+        dt1 = datetime.fromtimestamp(1234567890.0, tz=timezone.utc)
+        dt2 = datetime.fromtimestamp(1234567891.0, tz=timezone.utc)
+        pd1 = PayloadData(timestamp=dt1, data_size_gb=1.5)
+        pd2 = PayloadData(timestamp=dt2, data_size_gb=2.0)
         tm = Telemetry(data=[pd1, pd2])
 
-        assert tm.data.utime == [1234567890.0, 1234567891.0]
+        assert tm.data.timestamp == [dt1, dt2]
         assert tm.data.data_size_gb == [1.5, 2.0]
 
     def test_model_config(self) -> None:
