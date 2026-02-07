@@ -60,7 +60,11 @@ def mock_config(mock_ephem: DummyEphemeris, mock_constraint: Mock) -> Mock:
     config.constraint = mock_constraint
     config.ground_stations = Mock()
 
-    panel = SolarPanel(name="Panel", azimuth_deg=0.0, cant_deg=45.0, area_m2=1.0)
+    panel = SolarPanel(
+        name="Panel",
+        normal=(-0.0, 0.7071067811865476, 0.7071067811865476),
+        max_power=250.0,
+    )
     config.solar_panel = SolarPanelSet(panels=[panel])
 
     config.spacecraft_bus = Mock()

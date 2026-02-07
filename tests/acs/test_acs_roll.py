@@ -54,7 +54,11 @@ def mock_config_roll(mock_ephem_roll, mock_constraint_roll):
     config.constraint = mock_constraint_roll
     config.ground_stations = Mock()
 
-    panel = SolarPanel(name="Panel", azimuth_deg=0.0, cant_deg=45.0, area_m2=1.0)
+    panel = SolarPanel(
+        name="Panel",
+        normal=(-0.0, 0.7071067811865476, 0.7071067811865476),
+        max_power=250.0,
+    )
     config.solar_panel = SolarPanelSet(panels=[panel])
 
     config.spacecraft_bus = Mock()
@@ -133,7 +137,11 @@ class TestACSRollCalculation:
         config1 = Mock()
         config1.constraint = constraint1
         config1.ground_stations = Mock()
-        panel1 = SolarPanel(name="Panel", azimuth_deg=0.0, cant_deg=45.0, area_m2=1.0)
+        panel1 = SolarPanel(
+            name="Panel",
+            normal=(-0.0, 0.7071067811865476, 0.7071067811865476),
+            max_power=250.0,
+        )
         config1.solar_panel = SolarPanelSet(panels=[panel1])
         config1.spacecraft_bus = Mock()
         config1.spacecraft_bus.attitude_control = Mock()
@@ -156,7 +164,11 @@ class TestACSRollCalculation:
         config2 = Mock()
         config2.constraint = constraint2
         config2.ground_stations = Mock()
-        panel2 = SolarPanel(name="Panel", azimuth_deg=0.0, cant_deg=45.0, area_m2=1.0)
+        panel2 = SolarPanel(
+            name="Panel",
+            normal=(-0.0, 0.7071067811865476, 0.7071067811865476),
+            max_power=250.0,
+        )
         config2.solar_panel = SolarPanelSet(panels=[panel2])
         config2.spacecraft_bus = Mock()
         config2.spacecraft_bus.attitude_control = Mock()
@@ -304,7 +316,11 @@ class TestACSRollEdgeCases:
         config = Mock()
         config.constraint = constraint
         config.ground_stations = Mock()
-        panel = SolarPanel(name="Panel", azimuth_deg=0.0, cant_deg=45.0, area_m2=1.0)
+        panel = SolarPanel(
+            name="Panel",
+            normal=(-0.0, 0.7071067811865476, 0.7071067811865476),
+            max_power=250.0,
+        )
         config.solar_panel = SolarPanelSet(panels=[panel])
         config.spacecraft_bus = Mock()
         config.spacecraft_bus.attitude_control = Mock()
