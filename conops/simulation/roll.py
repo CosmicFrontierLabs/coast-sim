@@ -36,7 +36,7 @@ def optimum_roll(
         return float((roll_rad / DTOR) % 360.0)
 
     # Weighted optimization using actual panel geometry (vectorized)
-    panels = solar_panel._effective_panels()
+    panels = solar_panel.panels
     base_normals = []
     weights = []  # max_power * efficiency
     for p in panels:

@@ -662,7 +662,7 @@ class ACS:
         return not (pass1.end <= pass2.begin or pass1.begin >= pass2.end)
 
     def request_battery_charge(
-        self, utime: float, ra: float, dec: float, obsid: int
+        self, utime: float, ra: float, dec: float, roll: float, obsid: int
     ) -> None:
         """Request emergency battery charging at specified pointing.
 
@@ -674,13 +674,14 @@ class ACS:
             execution_time=utime,
             ra=ra,
             dec=dec,
+            roll=roll,
             obsid=obsid,
         )
         self.enqueue_command(command)
         self._log_or_print(
             utime,
             "CHARGING",
-            f"Battery charge requested at RA={ra:.2f} Dec={dec:.2f} obsid={obsid}",
+            f"Battery charge requested at RA={ra:.2f} Dec={dec:.2f} Roll={roll:.2f} obsid={obsid}",
         )
 
     def request_end_battery_charge(self, utime: float) -> None:
@@ -738,7 +739,11 @@ class ACS:
         )
         if charging_ppt is not None:
             self.request_battery_charge(
-                utime, charging_ppt.ra, charging_ppt.dec, charging_ppt.obsid
+                utime,
+                charging_ppt.ra,
+                charging_ppt.dec,
+                charging_ppt.roll,
+                charging_ppt.obsid,
             )
             return charging_ppt.ra, charging_ppt.dec, charging_ppt
         return lastra, lastdec, None

@@ -318,24 +318,6 @@ class TestSolarPanelSetBasics:
         assert panel_set.sidemount is False
 
 
-class TestSolarPanelSetEffectivePanels:
-    """Test _effective_panels method."""
-
-    def test_effective_panels_returns_all(self) -> None:
-        """Test that _effective_panels returns all configured panels."""
-        panels = [
-            SolarPanel(name="P1"),
-            SolarPanel(name="P2"),
-            SolarPanel(name="P3"),
-        ]
-        panel_set = SolarPanelSet(panels=panels)
-        effective = panel_set._effective_panels()
-        assert len(effective) == 3
-        assert effective[0].name == "P1"
-        assert effective[1].name == "P2"
-        assert effective[2].name == "P3"
-
-
 class TestSolarPanelSetIllumination:
     """Test panel set illumination calculations."""
 
@@ -569,7 +551,7 @@ class TestSolarPanelEdgeCases:
             SolarPanel(max_power=10000.0),
         ]
         panel_set = SolarPanelSet(panels=panels)
-        total = sum(p.max_power for p in panel_set._effective_panels())
+        total = sum(p.max_power for p in panel_set.panels)
         assert total == pytest.approx(10010.0)
 
     def test_panel_efficiency_boundary_values(self) -> None:

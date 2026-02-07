@@ -558,6 +558,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 execution_time=utime,
                 ra=self.charging_ppt.ra,
                 dec=self.charging_ppt.dec,
+                roll=self.charging_ppt.roll,
                 obsid=self.charging_ppt.obsid,
             )
             self.acs.enqueue_command(command)

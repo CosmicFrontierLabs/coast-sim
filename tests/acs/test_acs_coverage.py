@@ -929,6 +929,7 @@ class TestBatteryChargingMethods:
         mock_charging_ppt = Mock()
         mock_charging_ppt.ra = 45.0
         mock_charging_ppt.dec = 30.0
+        mock_charging_ppt.roll = 15.0
         mock_charging_ppt.obsid = 0xC4A6
         mock_emergency_charging.initiate_emergency_charging = Mock(
             return_value=mock_charging_ppt
@@ -940,7 +941,7 @@ class TestBatteryChargingMethods:
             acs.initiate_emergency_charging(
                 utime, mock_ephem, mock_emergency_charging, lastra, lastdec, current_ppt
             )
-            mock_request.assert_called_once_with(utime, 45.0, 30.0, 0xC4A6)
+            mock_request.assert_called_once_with(utime, 45.0, 30.0, 15.0, 0xC4A6)
 
     def test_initiate_emergency_charging_returns_updated_ra_dec_ppt(self, acs):
         utime = 1514764800.0
@@ -951,6 +952,7 @@ class TestBatteryChargingMethods:
         mock_charging_ppt = Mock()
         mock_charging_ppt.ra = 45.0
         mock_charging_ppt.dec = 30.0
+        mock_charging_ppt.roll = 15.0
         mock_charging_ppt.obsid = 0xC4A6
         mock_emergency_charging.initiate_emergency_charging = Mock(
             return_value=mock_charging_ppt
@@ -973,6 +975,7 @@ class TestBatteryChargingMethods:
         mock_charging_ppt = Mock()
         mock_charging_ppt.ra = 45.0
         mock_charging_ppt.dec = 30.0
+        mock_charging_ppt.roll = 15.0
         mock_charging_ppt.obsid = 0xC4A6
         mock_emergency_charging.initiate_emergency_charging = Mock(
             return_value=mock_charging_ppt
@@ -995,6 +998,7 @@ class TestBatteryChargingMethods:
         mock_charging_ppt = Mock()
         mock_charging_ppt.ra = 45.0
         mock_charging_ppt.dec = 30.0
+        mock_charging_ppt.roll = 15.0
         mock_charging_ppt.obsid = 0xC4A6
         mock_emergency_charging.initiate_emergency_charging = Mock(
             return_value=mock_charging_ppt

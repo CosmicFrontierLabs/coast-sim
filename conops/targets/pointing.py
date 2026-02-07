@@ -12,6 +12,7 @@ class Pointing(PlanEntry):
 
     ra: float
     dec: float
+    roll: float
     obsid: int
     name: str
     merit: float
@@ -22,6 +23,7 @@ class Pointing(PlanEntry):
         config: MissionConfig | None = None,
         ra: float = 0.0,
         dec: float = 0.0,
+        roll: float = 0.0,
         obsid: int = 0,
         name: str = "FakeTarget",
         merit: float = 100.0,
