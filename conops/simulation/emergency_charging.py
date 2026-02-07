@@ -332,9 +332,12 @@ class EmergencyCharging:
                 if slew > self.max_slew_deg:
                     continue  # Skip pointings beyond slew limit
 
-            # Calculate solar panel illumination for this pointing
+            # Calculate optimal roll angle for this pointing
+            optimal_roll = optimum_roll(alt_ra, alt_dec, utime, ephem, self.solar_panel)
+
+            # Calculate solar panel illumination for this pointing with optimal roll
             illumination = self.solar_panel.panel_illumination_fraction(
-                time=utime, ra=alt_ra, dec=alt_dec, ephem=ephem, roll=0.0
+                time=utime, ra=alt_ra, dec=alt_dec, ephem=ephem, roll=optimal_roll
             )
 
             # Ensure we have a float (should be scalar for single time)
