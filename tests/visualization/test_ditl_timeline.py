@@ -8,6 +8,7 @@ import pytest
 from conops.visualization.ditl_timeline import (
     annotate_slew_distances,
     plot_ditl_timeline,
+    plot_ditl_timeline_plotly,
 )
 
 
@@ -200,6 +201,21 @@ class TestPlotDitlTimeline:
 
         # Clean up
         plt.close(fig)
+
+    def test_plot_ditl_timeline_plotly_returns_figure(self, mock_ditl_with_ephem):
+        """Test that plot_ditl_timeline_plotly returns a Plotly figure."""
+        fig = plot_ditl_timeline_plotly(mock_ditl_with_ephem)
+
+        assert fig is not None
+        assert hasattr(fig, "data")
+        assert hasattr(fig, "layout")
+
+    def test_plot_ditl_timeline_plotly_custom_title(self, mock_ditl_with_ephem):
+        """Test plot_ditl_timeline_plotly with custom title."""
+        title = "Custom Test Title"
+        fig = plot_ditl_timeline_plotly(mock_ditl_with_ephem, title=title)
+
+        assert fig.layout.title.text == title
 
 
 class TestAnnotateSlewDistances:
