@@ -5,6 +5,7 @@ import pytest
 from conops.common.enums import ACSMode
 from conops.ditl.telemetry import (
     Housekeeping,
+    HousekeepingList,
     PayloadData,
     Telemetry,
     _CacheInvalidatingList,
@@ -260,7 +261,7 @@ class TestTelemetry:
     def test_init_empty(self) -> None:
         """Test initialization with no data."""
         tm = Telemetry()
-        assert isinstance(tm.housekeeping, _CacheInvalidatingList)
+        assert isinstance(tm.housekeeping, HousekeepingList)
         assert isinstance(tm.data, _CacheInvalidatingList)
         assert len(tm.housekeeping) == 0
         assert len(tm.data) == 0

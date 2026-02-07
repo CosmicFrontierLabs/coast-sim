@@ -1,8 +1,7 @@
 """Telemetry data storage for DITL simulations."""
 
-from collections.abc import Iterable
 from datetime import datetime
-from typing import Any, SupportsIndex, TypeVar
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -139,77 +138,88 @@ class PayloadData(BaseModel):
     data_size_gb: float = Field(description="Size of data generated in Gb")
 
 
-T = TypeVar("T")
+class HousekeepingList(list[Housekeeping]):
+    """List of Housekeeping records with convenient property access to fields."""
 
+    @property
+    def timestamp(self) -> list[datetime | None]:
+        """Get timestamp values from all housekeeping records."""
+        return [hk.timestamp for hk in self]
 
-class _CacheInvalidatingList(list[T]):
-    """List wrapper that invalidates cache when modified."""
+    @property
+    def ra(self) -> list[float | None]:
+        """Get RA values from all housekeeping records."""
+        return [hk.ra for hk in self]
 
-    def __init__(
-        self, *args: Any, telemetry: "Telemetry | None" = None, **kwargs: Any
-    ) -> None:
-        """Initialize with reference to parent Telemetry object."""
-        super().__init__(*args, **kwargs)
-        self._telemetry = telemetry
+    @property
+    def dec(self) -> list[float | None]:
+        """Get Dec values from all housekeeping records."""
+        return [hk.dec for hk in self]
 
-    def append(self, item: T) -> None:
-        """Append item and clear cache."""
-        super().append(item)
-        if self._telemetry and hasattr(self._telemetry, "clear_cache"):
-            self._telemetry.clear_cache()
+    @property
+    def roll(self) -> list[float | None]:
+        """Get roll values from all housekeeping records."""
+        return [hk.roll for hk in self]
 
-    def extend(self, items: Iterable[T]) -> None:
-        """Extend with items and clear cache."""
-        super().extend(items)
-        if self._telemetry and hasattr(self._telemetry, "clear_cache"):
-            self._telemetry.clear_cache()
+    @property
+    def mode(self) -> list[ACSMode | int | None]:
+        """Get mode values from all housekeeping records."""
+        return [hk.mode for hk in self]
 
-    def __setitem__(self, key: SupportsIndex | slice, value: T | Iterable[T]) -> None:
-        """Set item and clear cache."""
-        super().__setitem__(key, value)  # type: ignore
-        if self._telemetry and hasattr(self._telemetry, "clear_cache"):
-            self._telemetry.clear_cache()
+    @property
+    def panel_illumination(self) -> list[float | None]:
+        """Get panel illumination values from all housekeeping records."""
+        return [hk.panel_illumination for hk in self]
 
-    def __delitem__(self, key: SupportsIndex | slice) -> None:
-        """Delete item and clear cache."""
-        super().__delitem__(key)
-        if self._telemetry and hasattr(self._telemetry, "clear_cache"):
-            self._telemetry.clear_cache()
+    @property
+    def power_usage(self) -> list[float | None]:
+        """Get power usage values from all housekeeping records."""
+        return [hk.power_usage for hk in self]
 
-    def insert(self, index: SupportsIndex, item: T) -> None:
-        """Insert item and clear cache."""
-        super().insert(index, item)
-        if self._telemetry and hasattr(self._telemetry, "clear_cache"):
-            self._telemetry.clear_cache()
+    @property
+    def power_bus(self) -> list[float | None]:
+        """Get power bus values from all housekeeping records."""
+        return [hk.power_bus for hk in self]
 
-    def remove(self, item: T) -> None:
-        """Remove item and clear cache."""
-        super().remove(item)
-        if self._telemetry and hasattr(self._telemetry, "clear_cache"):
-            self._telemetry.clear_cache()
+    @property
+    def power_payload(self) -> list[float | None]:
+        """Get power payload values from all housekeeping records."""
+        return [hk.power_payload for hk in self]
 
-    def pop(self, index: SupportsIndex = -1) -> T:
-        """Pop item and clear cache."""
-        result = super().pop(index)
-        if self._telemetry and hasattr(self._telemetry, "clear_cache"):
-            self._telemetry.clear_cache()
-        return result
+    @property
+    def battery_level(self) -> list[float | None]:
+        """Get battery level values from all housekeeping records."""
+        return [hk.battery_level for hk in self]
 
-    def clear(self) -> None:
-        """Clear list and invalidate cache."""
-        super().clear()
-        if self._telemetry and hasattr(self._telemetry, "clear_cache"):
-            self._telemetry.clear_cache()
+    @property
+    def charge_state(self) -> list[int | None]:
+        """Get charge state values from all housekeeping records."""
+        return [hk.charge_state for hk in self]
 
-    def __getattr__(self, name: str) -> list[Any]:
-        """Allow attribute access to extract field values from all items."""
-        # Check if this is a valid attribute of the items in the list
-        if self and hasattr(self[0], name):
-            return [getattr(item, name) for item in self]
-        # Fall back to normal attribute access
-        raise AttributeError(
-            f"'{type(self).__name__}' object has no attribute '{name}'"
-        )
+    @property
+    def battery_alert(self) -> list[int | None]:
+        """Get battery alert values from all housekeeping records."""
+        return [hk.battery_alert for hk in self]
+
+    @property
+    def obsid(self) -> list[int | None]:
+        """Get obsid values from all housekeeping records."""
+        return [hk.obsid for hk in self]
+
+    @property
+    def recorder_volume_gb(self) -> list[float | None]:
+        """Get recorder volume values from all housekeeping records."""
+        return [hk.recorder_volume_gb for hk in self]
+
+    @property
+    def recorder_fill_fraction(self) -> list[float | None]:
+        """Get recorder fill fraction values from all housekeeping records."""
+        return [hk.recorder_fill_fraction for hk in self]
+
+    @property
+    def recorder_alert(self) -> list[int | None]:
+        """Get recorder alert values from all housekeeping records."""
+        return [hk.recorder_alert for hk in self]
 
 
 class Telemetry(BaseModel):
@@ -224,107 +234,11 @@ class Telemetry(BaseModel):
         data: List of PayloadData records generated during the simulation
     """
 
-    housekeeping: list[Housekeeping] = Field(
-        default_factory=list, description="List of housekeeping records"
+    housekeeping: HousekeepingList = Field(
+        default_factory=HousekeepingList, description="List of housekeeping records"
     )
     data: list[PayloadData] = Field(
         default_factory=list, description="List of payload data records"
     )
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    def __init__(self, **data: Any) -> None:
-        """Initialize Telemetry and set up field cache."""
-        super().__init__(**data)
-        # Cache for extracted fields to avoid recomputation
-        self._field_cache: dict[str, list[Any]] = {}
-        self._fields_cache: dict[tuple[str, ...], dict[str, list[Any]]] = {}
-        # Convert lists to cache-invalidating versions
-        self._convert_to_cache_aware_lists()
-
-    def _convert_to_cache_aware_lists(self) -> None:
-        """Convert housekeeping and data lists to cache-invalidating versions."""
-        if not isinstance(self.housekeeping, _CacheInvalidatingList):
-            housekeeping: _CacheInvalidatingList[Housekeeping] = _CacheInvalidatingList(
-                self.housekeeping, telemetry=self
-            )
-            object.__setattr__(self, "housekeeping", housekeeping)
-        if not isinstance(self.data, _CacheInvalidatingList):
-            data: _CacheInvalidatingList[PayloadData] = _CacheInvalidatingList(
-                self.data, telemetry=self
-            )
-            object.__setattr__(self, "data", data)
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        """Override to clear cache and wrap lists for housekeeping or data fields."""
-        # Wrap lists and clear cache if housekeeping or data fields are being reassigned
-        if name in ("housekeeping", "data") and hasattr(self, "_field_cache"):
-            self._field_cache.clear()
-            self._fields_cache.clear()
-            # Wrap the value if it's not already wrapped
-            if not isinstance(value, _CacheInvalidatingList):
-                if name == "housekeeping":
-                    value = _CacheInvalidatingList[Housekeeping](value, telemetry=self)
-                else:  # name == "data"
-                    value = _CacheInvalidatingList[PayloadData](value, telemetry=self)
-        super().__setattr__(name, value)
-
-    def get_housekeeping_field(self, field_name: str) -> list[Any]:
-        """
-        Get a cached array of a single housekeeping field.
-
-        Uses internal caching to avoid recomputing the same field multiple times.
-
-        Parameters
-        ----------
-        field_name : str
-            Name of the field to extract (must be a valid Housekeeping attribute)
-
-        Returns
-        -------
-        list
-            List of field values from all housekeeping records
-
-        Raises
-        ------
-        AttributeError
-            If field_name is not a valid Housekeeping attribute
-        """
-        if field_name not in self._field_cache:
-            self._field_cache[field_name] = Housekeeping.extract_field(
-                self.housekeeping, field_name
-            )
-        return self._field_cache[field_name]
-
-    def get_housekeeping_fields(self, field_names: list[str]) -> dict[str, list[Any]]:
-        """
-        Get cached arrays of multiple housekeeping fields.
-
-        Uses internal caching to avoid recomputing the same fields multiple times.
-
-        Parameters
-        ----------
-        field_names : list[str]
-            Names of fields to extract (must be valid Housekeeping attributes)
-
-        Returns
-        -------
-        dict[str, list[Any]]
-            Dictionary mapping field names to lists of values
-
-        Raises
-        ------
-        AttributeError
-            If any field_name is not a valid Housekeeping attribute
-        """
-        field_tuple = tuple(sorted(field_names))
-        if field_tuple not in self._fields_cache:
-            self._fields_cache[field_tuple] = Housekeeping.extract_fields(
-                self.housekeeping, field_names
-            )
-        return self._fields_cache[field_tuple]
-
-    def clear_cache(self) -> None:
-        """Clear all cached field extractions."""
-        self._field_cache.clear()
-        self._fields_cache.clear()

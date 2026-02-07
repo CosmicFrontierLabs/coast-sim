@@ -1,5 +1,6 @@
 """Basic DITL timeline visualization with core spacecraft telemetry."""
 
+import math
 from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
@@ -8,9 +9,11 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.font_manager import FontProperties
 
+from ..common.enums import ACSMode
 from ..config.visualization import VisualizationConfig
 
 if TYPE_CHECKING:
+    from ..common.enums import ACSMode
     from ..ditl.ditl_mixin import DITLMixin
 
 
@@ -65,14 +68,33 @@ def plot_ditl_telemetry(
     tick_font_size = config.tick_font_size
     title_prop = FontProperties(family=font_family, size=title_font_size, weight="bold")
 
-    timehours = (np.array(ditl.utime) - ditl.utime[0]) / 3600
+    # Helper function to replace None with NaN for plotting
+    def none_to_nan(values: list[float | None]) -> list[float]:
+        return [v if v is not None else float("nan") for v in values]
+
+    def none_to_default(
+        values: list[ACSMode | int | None], default: int = -1
+    ) -> list[ACSMode | int]:
+        return [v if v is not None else default for v in values]
+
+    timehours = np.array(
+        [
+            hk.timestamp.timestamp() if hk.timestamp else 0
+            for hk in ditl.telemetry.housekeeping
+        ]
+    ) - (
+        ditl.telemetry.housekeeping[0].timestamp.timestamp()
+        if ditl.telemetry.housekeeping[0].timestamp
+        else 0
+    )
+    timehours = timehours / 3600
 
     fig = plt.figure(figsize=figsize)
     axes = []
 
     ax = plt.subplot(711)
     axes.append(ax)
-    plt.plot(timehours, ditl.ra)
+    plt.plot(timehours, none_to_nan(ditl.telemetry.housekeeping.ra))
     ax.xaxis.set_visible(False)
     plt.ylabel("RA", fontsize=label_font_size, fontfamily=font_family)
     ax.set_title(
@@ -81,19 +103,19 @@ def plot_ditl_telemetry(
 
     ax = plt.subplot(712)
     axes.append(ax)
-    ax.plot(timehours, ditl.dec)
+    ax.plot(timehours, none_to_nan(ditl.telemetry.housekeeping.dec))
     ax.xaxis.set_visible(False)
     plt.ylabel("Dec", fontsize=label_font_size, fontfamily=font_family)
 
     ax = plt.subplot(713)
     axes.append(ax)
-    ax.plot(timehours, ditl.mode)
+    ax.plot(timehours, none_to_default(ditl.telemetry.housekeeping.mode))
     ax.xaxis.set_visible(False)
     plt.ylabel("Mode", fontsize=label_font_size, fontfamily=font_family)
 
     ax = plt.subplot(714)
     axes.append(ax)
-    ax.plot(timehours, ditl.batterylevel)
+    ax.plot(timehours, none_to_nan(ditl.telemetry.housekeeping.battery_level))
     ax.axhline(
         y=1.0 - ditl.config.battery.max_depth_of_discharge,
         color="r",
@@ -105,7 +127,7 @@ def plot_ditl_telemetry(
 
     ax = plt.subplot(715)
     axes.append(ax)
-    ax.plot(timehours, ditl.panel)
+    ax.plot(timehours, none_to_nan(ditl.telemetry.housekeeping.panel_illumination))
     ax.xaxis.set_visible(False)
     ax.set_ylim(0, 1)
     ax.set_ylabel("Panel Ill.", fontsize=label_font_size, fontfamily=font_family)
@@ -113,16 +135,29 @@ def plot_ditl_telemetry(
     ax = plt.subplot(716)
     axes.append(ax)
     # Check if subsystem power data is available
+    power_bus_values = none_to_nan(ditl.telemetry.housekeeping.power_bus)
+    power_payload_values = none_to_nan(ditl.telemetry.housekeeping.power_payload)
     if (
-        hasattr(ditl, "power_bus")
-        and hasattr(ditl, "power_payload")
-        and ditl.power_bus
-        and ditl.power_payload
+        power_bus_values
+        and power_payload_values
+        and any(v is not None for v in power_bus_values)
+        and any(v is not None for v in power_payload_values)
     ):
         # Line plot showing power breakdown
-        ax.plot(timehours, ditl.power_bus, label="Bus", alpha=0.8)
-        ax.plot(timehours, ditl.power_payload, label="Payload", alpha=0.8)
-        ax.plot(timehours, ditl.power, label="Total", linewidth=2, alpha=0.9)
+        ax.plot(timehours, power_bus_values, label="Bus", alpha=0.8)
+        ax.plot(
+            timehours,
+            power_payload_values,
+            label="Payload",
+            alpha=0.8,
+        )
+        ax.plot(
+            timehours,
+            none_to_nan(ditl.telemetry.housekeeping.power_usage),
+            label="Total",
+            linewidth=2,
+            alpha=0.9,
+        )
         ax.legend(
             loc="upper right",
             fontsize=config.legend_font_size,
@@ -130,14 +165,28 @@ def plot_ditl_telemetry(
         )
     else:
         # Fall back to total power only
-        ax.plot(timehours, ditl.power, label="Total")
-    ax.set_ylim(0, max(ditl.power) * 1.1)
+        ax.plot(
+            timehours,
+            none_to_nan(ditl.telemetry.housekeeping.power_usage),
+            label="Total",
+        )
+    ax.set_ylim(
+        0,
+        max(
+            x
+            for x in none_to_nan(ditl.telemetry.housekeeping.power_usage)
+            if not math.isnan(x)
+        )
+        * 1.1,
+    )
+    ax.set_ylabel("Power (W)", fontsize=label_font_size, fontfamily=font_family)
+    ax.xaxis.set_visible(False)
     ax.set_ylabel("Power (W)", fontsize=label_font_size, fontfamily=font_family)
     ax.xaxis.set_visible(False)
 
     ax = plt.subplot(717)
     axes.append(ax)
-    ax.plot(timehours, ditl.obsid)
+    ax.plot(timehours, none_to_default(ditl.telemetry.housekeeping.obsid))
     ax.set_ylabel("ObsID", fontsize=label_font_size, fontfamily=font_family)
     ax.set_xlabel(
         "Time (hour of day)", fontsize=label_font_size, fontfamily=font_family

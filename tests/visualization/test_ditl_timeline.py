@@ -127,9 +127,22 @@ class TestPlotDitlTimeline:
         mock_plan_entry.slewtime = 0.0
         mock_ditl.plan = [mock_plan_entry]
 
-        # Add timeline data with safe mode
-        mock_ditl.utime = [0, 1800, 3600]  # 0, 0.5, 1 hour
-        mock_ditl.mode = [ACSMode.SCIENCE, ACSMode.SAFE, ACSMode.SCIENCE]
+        # Add timeline data with safe mode using telemetry
+        from datetime import datetime, timedelta, timezone
+
+        from conops.ditl.telemetry import Housekeeping, Telemetry
+
+        base_time = datetime.fromtimestamp(0, tz=timezone.utc)
+        housekeeping_records = [
+            Housekeeping(timestamp=base_time, mode=ACSMode.SCIENCE),
+            Housekeeping(
+                timestamp=base_time + timedelta(seconds=1800), mode=ACSMode.SAFE
+            ),
+            Housekeeping(
+                timestamp=base_time + timedelta(seconds=3600), mode=ACSMode.SCIENCE
+            ),
+        ]
+        mock_ditl.telemetry = Telemetry(housekeeping=housekeeping_records)
 
         fig, ax = plot_ditl_timeline(mock_ditl)
 
@@ -164,16 +177,11 @@ class TestPlotDitlTimeline:
         mock_ditl.config = Mock()
         mock_ditl.config.observation_categories = None
         mock_ditl.utime = []  # Empty utime
-        mock_ditl.ra = []
-        mock_ditl.dec = []
-        mock_ditl.mode = []
-        mock_ditl.obsid = []
-        mock_ditl.panel = []
-        mock_ditl.power = []
-        mock_ditl.batterylevel = []
-        mock_ditl.charge_state = []
-        mock_ditl.power_bus = []
-        mock_ditl.power_payload = []
+        # Add empty telemetry
+        from conops.ditl.telemetry import Telemetry
+
+        mock_ditl.telemetry = Telemetry(housekeeping=[])
+
         mock_ditl.constraint = Mock()
         mock_ditl.constraint.in_eclipse = Mock(return_value=False)
         mock_ditl.acs = Mock()

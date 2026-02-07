@@ -50,9 +50,15 @@ class TestPlotAcsModeDistribution:
         """Test plot_acs_mode_distribution handles unknown modes."""
         from unittest.mock import Mock
 
+        from conops.ditl.telemetry import Housekeeping, Telemetry
+
         # Create mock with unknown mode
         mock_ditl = Mock()
-        mock_ditl.mode = [ACSMode.SCIENCE.value, 999]  # 999 is unknown
+        # Create telemetry with unknown mode
+        hk1 = Housekeeping(mode=ACSMode.SCIENCE.value)
+        hk2 = Housekeeping(mode=999)  # 999 is unknown
+        telemetry = Telemetry(housekeeping=[hk1, hk2])
+        mock_ditl.telemetry = telemetry
 
         fig, ax = plot_acs_mode_distribution(mock_ditl)
 

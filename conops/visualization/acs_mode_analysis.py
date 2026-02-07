@@ -63,7 +63,7 @@ def plot_acs_mode_distribution(
     from ..common import ACSMode
 
     modes = []
-    for mode_val in ditl.mode:
+    for mode_val in ditl.telemetry.housekeeping.mode:
         if mode_val in [m.value for m in ACSMode]:
             mode_name = ACSMode(mode_val).name
         else:

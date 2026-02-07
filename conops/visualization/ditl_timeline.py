@@ -5,6 +5,8 @@ showing spacecraft operations including observations, slews, SAA passages,
 eclipses, and ground station passes.
 """
 
+from datetime import datetime, timezone
+
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
@@ -113,8 +115,13 @@ def plot_ditl_timeline(
     ax = plt.axes((0.12, 0.3, 0.8, 0.5), frameon=True)
 
     # Calculate timeline duration in hours
-    if hasattr(ditl, "utime") and len(ditl.utime) > 0:
-        duration_hours = (ditl.utime[-1] - ditl.utime[0]) / 3600.0
+    if ditl.telemetry.housekeeping and len(ditl.telemetry.housekeeping) > 0:
+        start_time = ditl.telemetry.housekeeping.timestamp[0]
+        end_time = ditl.telemetry.housekeeping.timestamp[-1]
+        if start_time is not None and end_time is not None:
+            duration_hours = (end_time - start_time).total_seconds() / 3600.0
+        else:
+            duration_hours = 24.0
     else:
         duration_hours = 24.0
 
@@ -380,21 +387,27 @@ def _extract_safe_mode(
     ditl: QueueDITL | DITL, t_start: float, offset_hours: float
 ) -> list[tuple[float, float]]:
     """Extract safe mode periods from mode timeline."""
-    if not hasattr(ditl, "mode") or not hasattr(ditl, "utime"):
+    if not hasattr(ditl, "telemetry") or not ditl.telemetry.housekeeping:
         return []
 
     safe_segments: list[tuple[float, float]] = []
     in_safe = False
     safe_start = 0.0
 
-    for i, mode_val in enumerate(ditl.mode):
+    for i, mode_val in enumerate(ditl.telemetry.housekeeping.mode):
         # Check if in SAFE mode (mode value = 5)
         if isinstance(mode_val, ACSMode):
             is_safe = mode_val == ACSMode.SAFE
         else:
             is_safe = mode_val == ACSMode.SAFE.value
 
-        time_hours = (ditl.utime[i] - t_start) / 3600 - offset_hours
+        timestamp = ditl.telemetry.housekeeping.timestamp[i]
+        if timestamp is None:
+            continue
+
+        time_hours = (
+            timestamp - datetime.fromtimestamp(t_start, tz=timezone.utc)
+        ).total_seconds() / 3600 - offset_hours
 
         if is_safe and not in_safe:
             # Entering safe mode
@@ -408,8 +421,17 @@ def _extract_safe_mode(
 
     # Handle safe mode extending to end of simulation
     if in_safe:
-        safe_duration = (ditl.utime[-1] - t_start) / 3600 - offset_hours - safe_start
-        safe_segments.append((safe_start, safe_duration))
+        end_time = ditl.telemetry.housekeeping.timestamp[-1]
+        if end_time is not None:
+            safe_duration = (
+                (
+                    end_time - datetime.fromtimestamp(t_start, tz=timezone.utc)
+                ).total_seconds()
+                / 3600
+                - offset_hours
+                - safe_start
+            )
+            safe_segments.append((safe_start, safe_duration))
 
     return safe_segments
 
@@ -418,21 +440,27 @@ def _extract_saa_passages(
     ditl: QueueDITL | DITL, t_start: float, offset_hours: float
 ) -> list[tuple[float, float]]:
     """Extract SAA passage times from mode timeline."""
-    if not hasattr(ditl, "mode") or not hasattr(ditl, "utime"):
+    if not hasattr(ditl, "telemetry") or not ditl.telemetry.housekeeping:
         return []
 
     saa_segments: list[tuple[float, float]] = []
     in_saa = False
     saa_start = 0.0
 
-    for i, mode_val in enumerate(ditl.mode):
+    for i, mode_val in enumerate(ditl.telemetry.housekeeping.mode):
         # Check if in SAA mode
         if isinstance(mode_val, ACSMode):
             is_saa = mode_val == ACSMode.SAA
         else:
             is_saa = mode_val == ACSMode.SAA.value
 
-        time_hours = (ditl.utime[i] - t_start) / 3600 - offset_hours
+        timestamp = ditl.telemetry.housekeeping.timestamp[i]
+        if timestamp is None:
+            continue
+
+        time_hours = (
+            timestamp - datetime.fromtimestamp(t_start, tz=timezone.utc)
+        ).total_seconds() / 3600 - offset_hours
 
         if is_saa and not in_saa:
             # Entering SAA
@@ -446,8 +474,17 @@ def _extract_saa_passages(
 
     # Handle SAA extending to end of simulation
     if in_saa:
-        saa_duration = (ditl.utime[-1] - t_start) / 3600 - offset_hours - saa_start
-        saa_segments.append((saa_start, saa_duration))
+        end_time = ditl.telemetry.housekeeping.timestamp[-1]
+        if end_time is not None:
+            saa_duration = (
+                (
+                    end_time - datetime.fromtimestamp(t_start, tz=timezone.utc)
+                ).total_seconds()
+                / 3600
+                - offset_hours
+                - saa_start
+            )
+            saa_segments.append((saa_start, saa_duration))
 
     return saa_segments
 
@@ -462,16 +499,24 @@ def _extract_eclipses(
     if (
         hasattr(ditl, "constraint")
         and ditl.constraint is not None
-        and hasattr(ditl, "utime")
+        and hasattr(ditl, "telemetry")
+        and ditl.telemetry.housekeeping
     ):
         in_eclipse = False
         eclipse_start = 0.0
 
-        for i, utime in enumerate(ditl.utime):
-            time_hours = (utime - t_start) / 3600 - offset_hours
+        for i, timestamp in enumerate(ditl.telemetry.housekeeping.timestamp):
+            if timestamp is None:
+                continue
+
+            time_hours = (
+                timestamp - datetime.fromtimestamp(t_start, tz=timezone.utc)
+            ).total_seconds() / 3600 - offset_hours
 
             # Check if in eclipse using constraint
-            is_eclipsed = ditl.constraint.in_eclipse(ra=0, dec=0, time=utime)
+            is_eclipsed = ditl.constraint.in_eclipse(
+                ra=0, dec=0, time=timestamp.timestamp()
+            )
 
             if is_eclipsed and not in_eclipse:
                 # Entering eclipse
@@ -485,10 +530,17 @@ def _extract_eclipses(
 
         # Handle eclipse extending to end of simulation
         if in_eclipse:
-            eclipse_duration = (
-                (ditl.utime[-1] - t_start) / 3600 - offset_hours - eclipse_start
-            )
-            eclipse_segments.append((eclipse_start, eclipse_duration))
+            end_time = ditl.telemetry.housekeeping.timestamp[-1]
+            if end_time is not None:
+                eclipse_duration = (
+                    (
+                        end_time - datetime.fromtimestamp(t_start, tz=timezone.utc)
+                    ).total_seconds()
+                    / 3600
+                    - offset_hours
+                    - eclipse_start
+                )
+                eclipse_segments.append((eclipse_start, eclipse_duration))
 
     return eclipse_segments
 
