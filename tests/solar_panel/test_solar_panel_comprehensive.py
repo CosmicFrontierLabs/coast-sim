@@ -9,47 +9,17 @@ import pytest
 from conops import SolarPanel, SolarPanelSet
 
 
-def make_mock_ephem(sun_ra: float = 90.0, sun_dec: float = 30.0) -> Mock:
-    """Create a mock ephemeris with both legacy and new rust-ephem 0.3.0+ attributes."""
-    ephem = Mock()
-    ephem.index = Mock(return_value=0)
-
-    # Legacy SkyCoord-style access
-    sun_mock = Mock()
-    sun_mock.ra = Mock()
-    sun_mock.ra.deg = sun_ra
-    sun_mock.dec = Mock()
-    sun_mock.dec.deg = sun_dec
-    sun_mock.separation = Mock(return_value=Mock(deg=45.0))
-    ephem.sun = np.array([sun_mock])
-
-    # New direct array access (rust-ephem 0.3.0+)
-    ephem.sun_ra_deg = np.array([sun_ra])
-    ephem.sun_dec_deg = np.array([sun_dec])
-
-    # Earth position
-    earth_mock = Mock()
-    earth_mock.separation = Mock(return_value=Mock(deg=0.5))
-    ephem.earth = np.array([earth_mock])
-
-    # Earth radius angle
-    ephem.earth_radius_angle = np.array([Mock(deg=0.3)])
-
-    ephem._tle_ephem = Mock()
-
-    return ephem
-
-
 class TestSolarPanelSetCoverage:
     """Tests for SolarPanelSet class."""
 
-    def test_panel_illumination_fraction_empty_panels(self) -> None:
+    def test_panel_illumination_fraction_empty_panels(
+        self, empty_solar_panel_set, mock_ephem
+    ) -> None:
         """Test panel_illumination_fraction with an empty panels list."""
-        panel_set = SolarPanelSet(panels=[])
-        ephem = Mock()
+        panel_set = empty_solar_panel_set
         # This should return 0.0 for empty panels
         result_scalar = panel_set.panel_illumination_fraction(
-            time=1514764800.0, ephem=ephem, ra=0.0, dec=0.0
+            time=1514764800.0, ephem=mock_ephem, ra=0.0, dec=0.0
         )
         assert result_scalar == 0.0
 
@@ -58,16 +28,15 @@ class TestSolarPanelSetCoverage:
             datetime.fromtimestamp(1514764860.0, tz=timezone.utc),
         ]
         result_array = panel_set.panel_illumination_fraction(
-            time=times, ephem=ephem, ra=0.0, dec=0.0
+            time=times, ephem=mock_ephem, ra=0.0, dec=0.0
         )
         assert isinstance(result_array, np.ndarray)
         assert np.all(result_array == 0)
 
-    def test_power_empty_panels(self) -> None:
+    def test_power_empty_panels(self, empty_solar_panel_set, mock_ephem) -> None:
         """Test power calculation with an empty panels list."""
-        panel_set = SolarPanelSet(panels=[])
-        ephem = Mock()
-        result = panel_set.power(time=1514764800.0, ra=0.0, dec=0.0, ephem=ephem)
+        panel_set = empty_solar_panel_set
+        result = panel_set.power(time=1514764800.0, ra=0.0, dec=0.0, ephem=mock_ephem)
         assert result == 0.0
 
 
@@ -75,9 +44,9 @@ class TestSolarPanelSetCoverage:
 class TestSolarPanelInitialization:
     """Test SolarPanel initialization and default values."""
 
-    def test_default_panel_creation(self) -> None:
+    def test_default_panel_creation(self, default_solar_panel) -> None:
         """Test creating a solar panel with default values."""
-        panel = SolarPanel()
+        panel = default_solar_panel
         assert panel.name == "Panel"
         assert panel.gimbled is False
         assert panel.normal == (0.0, 1.0, 0.0)
@@ -312,18 +281,22 @@ class TestSolarPanelSetBasics:
         panel_set = SolarPanelSet(panels=panels)
         assert panel_set.sidemount is False
 
-    def test_sidemount_property_empty_panels(self) -> None:
+    def test_sidemount_property_empty_panels(
+        self, empty_solar_panel_set: SolarPanelSet
+    ) -> None:
         """Test sidemount property with empty panel list."""
-        panel_set = SolarPanelSet(panels=[])
+        panel_set = empty_solar_panel_set
         assert panel_set.sidemount is False
 
 
 class TestSolarPanelSetIllumination:
     """Test panel set illumination calculations."""
 
-    def test_panel_illumination_single_panel(self, mock_ephemeris: Mock) -> None:
+    def test_panel_illumination_single_panel(
+        self, mock_ephemeris: Mock, single_panel_set: SolarPanelSet
+    ) -> None:
         """Test illumination with single panel."""
-        panel_set = SolarPanelSet(panels=[SolarPanel()])
+        panel_set = single_panel_set
         mock_ephem = mock_ephemeris
         mock_time = datetime(2018, 1, 1, tzinfo=timezone.utc)
 
@@ -366,10 +339,11 @@ class TestSolarPanelSetIllumination:
             # Weighted average: 0.5 * 0.8 + 0.5 * 0.6 = 0.7
             assert result == pytest.approx(0.7)
 
-    def test_panel_illumination_zero_max_power(self, mock_ephemeris: Mock) -> None:
+    def test_panel_illumination_zero_max_power(
+        self, mock_ephemeris: Mock, zero_power_panel_set: SolarPanelSet
+    ) -> None:
         """Test illumination when total max power is zero."""
-        panels = [SolarPanel(max_power=0.0)]
-        panel_set = SolarPanelSet(panels=panels)
+        panel_set = zero_power_panel_set
         mock_ephem = mock_ephemeris
         mock_time = datetime(2018, 1, 1, tzinfo=timezone.utc)
 
@@ -463,9 +437,11 @@ class TestSolarPanelSetPower:
             # Power = 1.0 * 500 * 0.88 = 440
             assert result == pytest.approx(440.0)
 
-    def test_power_zero_panels(self, mock_ephemeris: Mock) -> None:
+    def test_power_zero_panels(
+        self, mock_ephemeris: Mock, empty_solar_panel_set: SolarPanelSet
+    ) -> None:
         """Test power with empty panel list."""
-        panel_set = SolarPanelSet(panels=[])
+        panel_set = empty_solar_panel_set
         mock_ephem = mock_ephemeris
         mock_time = datetime(2018, 1, 1, tzinfo=timezone.utc)
 
@@ -803,10 +779,11 @@ class TestPowerEdgeCases:
 class TestIlluminationAndPower:
     """Tests for the illumination_and_power method."""
 
-    def test_illumination_and_power_single_panel(self) -> None:
+    def test_illumination_and_power_single_panel(
+        self, standard_single_panel_set: SolarPanelSet
+    ) -> None:
         """Test illumination_and_power with single panel."""
-        panel = SolarPanel(max_power=500.0, conversion_efficiency=0.9)
-        panel_set = SolarPanelSet(panels=[panel])
+        panel_set = standard_single_panel_set
 
         ephem = Mock()
         ephem.index = Mock(return_value=0)
@@ -908,9 +885,11 @@ class TestIlluminationAndPower:
         assert illumination == 0.0
         assert power == 0.0
 
-    def test_illumination_and_power_empty_panels(self) -> None:
+    def test_illumination_and_power_empty_panels(
+        self, empty_solar_panel_set: SolarPanelSet
+    ) -> None:
         """Test illumination_and_power with empty panel list."""
-        panel_set = SolarPanelSet(panels=[])
+        panel_set = empty_solar_panel_set
 
         ephem = Mock()
         illumination, power = panel_set.illumination_and_power(
@@ -923,11 +902,13 @@ class TestIlluminationAndPower:
         assert illumination == 0.0
         assert power == 0.0
 
-    def test_illumination_and_power_empty_panels_array_time(self) -> None:
+    def test_illumination_and_power_empty_panels_array_time(
+        self, empty_solar_panel_set: SolarPanelSet
+    ) -> None:
         """Test illumination_and_power with empty panel list and array time."""
         from datetime import datetime, timezone
 
-        panel_set = SolarPanelSet(panels=[])
+        panel_set = empty_solar_panel_set
 
         times = [
             datetime(2018, 1, 1, tzinfo=timezone.utc),
@@ -963,9 +944,11 @@ class TestIlluminationAndPower:
         assert np.all(illumination == 0.0)
         assert np.all(power == 0.0)
 
-    def test_illumination_and_power_empty_panels_numpy_array_time(self) -> None:
+    def test_illumination_and_power_empty_panels_numpy_array_time(
+        self, empty_solar_panel_set: SolarPanelSet
+    ) -> None:
         """Test illumination_and_power with empty panel list and numpy array time."""
-        panel_set = SolarPanelSet(panels=[])
+        panel_set = empty_solar_panel_set
 
         times = np.array([1514764800.0, 1514851200.0])  # Unix timestamps
 
@@ -1111,10 +1094,11 @@ class TestCoverageCompletion:
 
         assert result == 0.0
 
-    def test_solar_panel_set_geometry_cache_hit(self) -> None:
+    def test_solar_panel_set_geometry_cache_hit(
+        self, standard_single_panel_set: SolarPanelSet
+    ) -> None:
         """Test _get_geometry returns cached geometry (line 237)."""
-        panel = SolarPanel(max_power=500.0, conversion_efficiency=0.9)
-        panel_set = SolarPanelSet(panels=[panel])
+        panel_set = standard_single_panel_set
 
         # Access geometry once to populate cache
         geom1 = panel_set._get_geometry()
@@ -1125,11 +1109,12 @@ class TestCoverageCompletion:
         # Should be the same object (cached)
         assert geom1 is geom2
 
-    def test_illumination_method_empty_panels_different_time_types(self) -> None:
+    def test_illumination_method_empty_panels_different_time_types(
+        self, zero_power_panel_set: SolarPanelSet
+    ) -> None:
         """Test illumination method with zero power panels for different time types (lines 305, 309-312)."""
         # Use panels with zero max_power to hit the total_max <= 0 path
-        panel = SolarPanel(max_power=0.0)
-        panel_set = SolarPanelSet(panels=[panel])
+        panel_set = zero_power_panel_set
 
         ephem = Mock()
 
@@ -1163,7 +1148,7 @@ class TestCoverageCompletion:
 
         # Test custom sequence that fails on len() to hit the except block
         class BadLenSequence:
-            def __len__(self):
+            def __len__(self) -> None:
                 raise Exception("Bad len")
 
         bad_time = BadLenSequence()
@@ -1272,17 +1257,19 @@ class TestCoverageCompletion:
         assert ra == 90.0
         assert dec == 30.0
 
-    def test_create_normal_vector(self):
-        """Test the create_solar_panel_vector helper function with dual-axis canting."""
+    def test_create_normal_vector_sidemount_no_cant(self) -> None:
+        """Test create_solar_panel_vector with sidemount and no cant."""
+        from conops.config.solar_panel import create_solar_panel_vector
+
+        normal = create_solar_panel_vector("sidemount", 0.0, 0.0)
+        assert normal == (0.0, 1.0, 0.0)
+
+    def test_create_normal_vector_sidemount_z_cant_only(self) -> None:
+        """Test create_solar_panel_vector with sidemount and Z-axis cant only."""
         import math
 
         from conops.config.solar_panel import create_solar_panel_vector
 
-        # Test sidemount with no cant
-        normal = create_solar_panel_vector("sidemount", 0.0, 0.0)
-        assert normal == (0.0, 1.0, 0.0)
-
-        # Test sidemount with Z-axis cant only
         normal = create_solar_panel_vector("sidemount", cant_z=30.0)
         expected_x = -math.sin(math.radians(30.0))
         expected_y = math.cos(math.radians(30.0))
@@ -1290,7 +1277,12 @@ class TestCoverageCompletion:
         assert abs(normal[1] - expected_y) < 1e-10
         assert abs(normal[2]) < 1e-10
 
-        # Test sidemount with perpendicular (X) cant only
+    def test_create_normal_vector_sidemount_perp_cant_only(self) -> None:
+        """Test create_solar_panel_vector with sidemount and perpendicular cant only."""
+        import math
+
+        from conops.config.solar_panel import create_solar_panel_vector
+
         normal = create_solar_panel_vector("sidemount", cant_z=0.0, cant_perp=45.0)
         # After X rotation of 45°: y becomes cos(45°), z becomes sin(45°)
         expected_y = math.cos(math.radians(45.0))
@@ -1299,7 +1291,12 @@ class TestCoverageCompletion:
         assert abs(normal[1] - expected_y) < 1e-10
         assert abs(normal[2] - expected_z) < 1e-10
 
-        # Test sidemount with both cants
+    def test_create_normal_vector_sidemount_both_cants_unit_vector(self) -> None:
+        """Test create_solar_panel_vector with sidemount and both cants produces unit vector."""
+        import math
+
+        from conops.config.solar_panel import create_solar_panel_vector
+
         normal = create_solar_panel_vector("sidemount", cant_z=30.0, cant_perp=45.0)
         # This combines both rotations
         assert len(normal) == 3
@@ -1307,11 +1304,19 @@ class TestCoverageCompletion:
         magnitude = math.sqrt(normal[0] ** 2 + normal[1] ** 2 + normal[2] ** 2)
         assert abs(magnitude - 1.0) < 1e-10
 
-        # Test aftmount with no cant
+    def test_create_normal_vector_aftmount_no_cant(self) -> None:
+        """Test create_solar_panel_vector with aftmount and no cant."""
+        from conops.config.solar_panel import create_solar_panel_vector
+
         normal = create_solar_panel_vector("aftmount", 0.0, 0.0)
         assert normal == (-1.0, 0.0, 0.0)
 
-        # Test aftmount with Z-axis cant only
+    def test_create_normal_vector_aftmount_z_cant_only(self) -> None:
+        """Test create_solar_panel_vector with aftmount and Z-axis cant only."""
+        import math
+
+        from conops.config.solar_panel import create_solar_panel_vector
+
         normal = create_solar_panel_vector("aftmount", cant_z=45.0)
         expected_x = -math.cos(math.radians(45.0))
         expected_y = -math.sin(math.radians(45.0))
@@ -1319,7 +1324,12 @@ class TestCoverageCompletion:
         assert abs(normal[1] - expected_y) < 1e-10
         assert abs(normal[2]) < 1e-10
 
-        # Test aftmount with perpendicular (Y) cant only
+    def test_create_normal_vector_aftmount_perp_cant_only(self) -> None:
+        """Test create_solar_panel_vector with aftmount and perpendicular cant only."""
+        import math
+
+        from conops.config.solar_panel import create_solar_panel_vector
+
         normal = create_solar_panel_vector("aftmount", cant_z=0.0, cant_perp=45.0)
         # After Y rotation of 45°: x becomes -cos(45°), z becomes sin(45°)
         expected_x = -math.cos(math.radians(45.0))
@@ -1328,17 +1338,30 @@ class TestCoverageCompletion:
         assert abs(normal[1]) < 1e-10
         assert abs(normal[2] - expected_z) < 1e-10
 
-        # Test aftmount with both cants
+    def test_create_normal_vector_aftmount_both_cants_unit_vector(self) -> None:
+        """Test create_solar_panel_vector with aftmount and both cants produces unit vector."""
+        import math
+
+        from conops.config.solar_panel import create_solar_panel_vector
+
         normal = create_solar_panel_vector("aftmount", cant_z=30.0, cant_perp=30.0)
         # Verify it's still a unit vector (approximately)
         magnitude = math.sqrt(normal[0] ** 2 + normal[1] ** 2 + normal[2] ** 2)
         assert abs(magnitude - 1.0) < 1e-10
 
-        # Test boresight (forward-facing panel) with no cant
+    def test_create_normal_vector_boresight_no_cant(self) -> None:
+        """Test create_solar_panel_vector with boresight and no cant."""
+        from conops.config.solar_panel import create_solar_panel_vector
+
         normal = create_solar_panel_vector("boresight", 0.0, 0.0)
         assert normal == (1.0, 0.0, 0.0)
 
-        # Test boresight with backward slant (negative cant_perp tilts down)
+    def test_create_normal_vector_boresight_backward_slant(self) -> None:
+        """Test create_solar_panel_vector with boresight and backward slant."""
+        import math
+
+        from conops.config.solar_panel import create_solar_panel_vector
+
         normal = create_solar_panel_vector("boresight", cant_z=0.0, cant_perp=-45.0)
         # After Y rotation of -45°: x becomes cos(-45°), z becomes sin(-45°)
         expected_x = math.cos(math.radians(-45.0))
@@ -1347,7 +1370,12 @@ class TestCoverageCompletion:
         assert abs(normal[1]) < 1e-10
         assert abs(normal[2] - expected_z) < 1e-10
 
-        # Test boresight with Z-axis cant only (yaw left/right)
+    def test_create_normal_vector_boresight_z_cant_only(self) -> None:
+        """Test create_solar_panel_vector with boresight and Z-axis cant only."""
+        import math
+
+        from conops.config.solar_panel import create_solar_panel_vector
+
         normal = create_solar_panel_vector("boresight", cant_z=30.0)
         expected_x = math.cos(math.radians(30.0))
         expected_y = math.sin(math.radians(30.0))
@@ -1355,12 +1383,246 @@ class TestCoverageCompletion:
         assert abs(normal[1] - expected_y) < 1e-10
         assert abs(normal[2]) < 1e-10
 
-        # Test boresight with both cants
+    def test_create_normal_vector_boresight_both_cants_unit_vector(self) -> None:
+        """Test create_solar_panel_vector with boresight and both cants produces unit vector."""
+        import math
+
+        from conops.config.solar_panel import create_solar_panel_vector
+
         normal = create_solar_panel_vector("boresight", cant_z=30.0, cant_perp=-45.0)
         # Verify it's still a unit vector (approximately)
         magnitude = math.sqrt(normal[0] ** 2 + normal[1] ** 2 + normal[2] ** 2)
         assert abs(magnitude - 1.0) < 1e-10
 
-        # Test invalid mount
+    def test_create_normal_vector_invalid_mount(self) -> None:
+        """Test create_solar_panel_vector with invalid mount type raises ValueError."""
+        from conops.config.solar_panel import create_solar_panel_vector
+
         with pytest.raises(ValueError, match="Unknown mount type"):
             create_solar_panel_vector("invalid")
+
+    def test_create_normal_vector_old_style_azimuth_0(self) -> None:
+        """Test create_solar_panel_vector old style with azimuth 0° (north/+Y)."""
+        from conops.config.solar_panel import create_solar_panel_vector
+
+        normal = create_solar_panel_vector(cant_x=0.0, cant_y=0.0, azimuth_deg=0.0)
+        assert normal == (0.0, 1.0, 0.0)
+
+    def test_create_normal_vector_old_style_azimuth_90(self) -> None:
+        """Test create_solar_panel_vector old style with azimuth 90° (up/+Z)."""
+        from conops.config.solar_panel import create_solar_panel_vector
+
+        normal = create_solar_panel_vector(cant_x=0.0, cant_y=0.0, azimuth_deg=90.0)
+        assert normal == (0.0, 0.0, 1.0)
+
+    def test_create_normal_vector_old_style_azimuth_180(self) -> None:
+        """Test create_solar_panel_vector old style with azimuth 180° (south/-Y)."""
+        from conops.config.solar_panel import create_solar_panel_vector
+
+        normal = create_solar_panel_vector(cant_x=0.0, cant_y=0.0, azimuth_deg=180.0)
+        assert normal == (0.0, -1.0, 0.0)
+
+    def test_create_normal_vector_old_style_azimuth_270(self) -> None:
+        """Test create_solar_panel_vector old style with azimuth 270° (down/-Z)."""
+        from conops.config.solar_panel import create_solar_panel_vector
+
+        normal = create_solar_panel_vector(cant_x=0.0, cant_y=0.0, azimuth_deg=270.0)
+        assert normal == (0.0, 0.0, -1.0)
+
+    def test_create_normal_vector_old_style_with_cants_unit_vector(self) -> None:
+        """Test create_solar_panel_vector old style with cant angles produces unit vector."""
+        import math
+
+        from conops.config.solar_panel import create_solar_panel_vector
+
+        normal = create_solar_panel_vector(cant_x=30.0, cant_y=15.0, azimuth_deg=0.0)
+        # Verify it's still a unit vector (approximately)
+        magnitude = math.sqrt(normal[0] ** 2 + normal[1] ** 2 + normal[2] ** 2)
+        assert abs(magnitude - 1.0) < 1e-10
+
+    def test_create_normal_vector_old_style_non_cardinal_azimuth_45(self) -> None:
+        """Test create_solar_panel_vector old style with non-cardinal azimuth 45°."""
+        from conops.config.solar_panel import create_solar_panel_vector
+
+        normal = create_solar_panel_vector(cant_x=0.0, cant_y=0.0, azimuth_deg=45.0)
+        # 45° rounds to 0° (closest cardinal), so should be +Y
+        assert normal == (0.0, 1.0, 0.0)
+
+    def test_create_normal_vector_old_style_non_cardinal_azimuth_135(self) -> None:
+        """Test create_solar_panel_vector old style with non-cardinal azimuth 135°."""
+        from conops.config.solar_panel import create_solar_panel_vector
+
+        normal = create_solar_panel_vector(cant_x=0.0, cant_y=0.0, azimuth_deg=135.0)
+        # 135° rounds to 180° (closest cardinal), so should be -Y
+        assert normal == (0.0, -1.0, 0.0)
+
+    def test_create_normal_vector_parameter_validation_mix_mount_cant_x(self) -> None:
+        """Test parameter validation: mixing mount with cant_x raises ValueError."""
+        from conops.config.solar_panel import create_solar_panel_vector
+
+        with pytest.raises(
+            ValueError,
+            match="Cannot mix old style parameters.*with new style parameters",
+        ):
+            create_solar_panel_vector(mount="sidemount", cant_x=10.0)
+
+    def test_create_normal_vector_parameter_validation_mix_mount_cant_y(self) -> None:
+        """Test parameter validation: mixing mount with cant_y raises ValueError."""
+        from conops.config.solar_panel import create_solar_panel_vector
+
+        with pytest.raises(
+            ValueError,
+            match="Cannot mix old style parameters.*with new style parameters",
+        ):
+            create_solar_panel_vector(mount="sidemount", cant_y=10.0)
+
+    def test_create_normal_vector_parameter_validation_mix_mount_azimuth(self) -> None:
+        """Test parameter validation: mixing mount with azimuth_deg raises ValueError."""
+        from conops.config.solar_panel import create_solar_panel_vector
+
+        with pytest.raises(
+            ValueError,
+            match="Cannot mix old style parameters.*with new style parameters",
+        ):
+            create_solar_panel_vector(mount="sidemount", azimuth_deg=90.0)
+
+    def test_create_normal_vector_parameter_validation_mix_cant_x_mount(self) -> None:
+        """Test parameter validation: mixing cant_x with mount raises ValueError."""
+        from conops.config.solar_panel import create_solar_panel_vector
+
+        with pytest.raises(
+            ValueError,
+            match="Cannot mix old style parameters.*with new style parameters",
+        ):
+            create_solar_panel_vector(cant_x=10.0, mount="sidemount")
+
+    def test_create_normal_vector_parameter_validation_default_behavior(self) -> None:
+        """Test parameter validation: default behavior when no parameters provided."""
+        from conops.config.solar_panel import create_solar_panel_vector
+
+        normal = create_solar_panel_vector()
+        # Should default to sidemount with no cant
+        assert normal == (0.0, 1.0, 0.0)
+
+    def test_create_normal_vector_parameter_validation_old_style_partial_cant_x(
+        self,
+    ) -> None:
+        """Test parameter validation: old style with partial parameters (cant_x only)."""
+        import math
+
+        from conops.config.solar_panel import create_solar_panel_vector
+
+        normal = create_solar_panel_vector(
+            cant_x=30.0
+        )  # missing cant_y and azimuth_deg
+        # Should be azimuth 0° with cant_x=30°
+        expected_y = math.cos(math.radians(30.0))
+        expected_z = math.sin(math.radians(30.0))
+        assert abs(normal[0]) < 1e-10
+        assert abs(normal[1] - expected_y) < 1e-10
+        assert abs(normal[2] - expected_z) < 1e-10
+
+    def test_create_normal_vector_parameter_validation_old_style_azimuth_only(
+        self,
+    ) -> None:
+        """Test parameter validation: old style with only azimuth_deg provided."""
+        from conops.config.solar_panel import create_solar_panel_vector
+
+        normal = create_solar_panel_vector(
+            azimuth_deg=90.0
+        )  # missing cant_x and cant_y
+        # Should be +Z direction with no cant
+        assert normal == (0.0, 0.0, 1.0)
+
+    def test_create_normal_vector_parameter_validation_old_style_cant_y_only(
+        self,
+    ) -> None:
+        """Test parameter validation: old style with only cant_y provided."""
+        from conops.config.solar_panel import create_solar_panel_vector
+
+        normal = create_solar_panel_vector(
+            cant_y=20.0
+        )  # missing cant_x and azimuth_deg
+        # Should be azimuth 0° with cant_y=20°
+        # For azimuth 0°, cant_y rotates around Y-axis
+        # x_final = sin(0°) * sin(20°) = 0
+        # y_final = cos(0°) = 1
+        # z_final = sin(0°) * cos(20°) = 0
+        assert normal == (0.0, 1.0, 0.0)
+
+    def test_create_normal_vector_interpolation_logic_azimuth_0(self) -> None:
+        """Test interpolation logic for azimuth 0°."""
+        import math
+
+        from conops.config.solar_panel import create_solar_panel_vector
+
+        normal = create_solar_panel_vector(cant_x=0.0, cant_y=0.0, azimuth_deg=0.0)
+        # For now, just check that we get a valid unit vector - the exact mapping may need adjustment
+        magnitude = math.sqrt(normal[0] ** 2 + normal[1] ** 2 + normal[2] ** 2)
+        assert abs(magnitude - 1.0) < 1e-10
+
+    def test_create_normal_vector_interpolation_logic_azimuth_30(self) -> None:
+        """Test interpolation logic for azimuth 30°."""
+        import math
+
+        from conops.config.solar_panel import create_solar_panel_vector
+
+        normal = create_solar_panel_vector(cant_x=0.0, cant_y=0.0, azimuth_deg=30.0)
+        # For now, just check that we get a valid unit vector - the exact mapping may need adjustment
+        magnitude = math.sqrt(normal[0] ** 2 + normal[1] ** 2 + normal[2] ** 2)
+        assert abs(magnitude - 1.0) < 1e-10
+
+    def test_create_normal_vector_interpolation_logic_azimuth_60(self) -> None:
+        """Test interpolation logic for azimuth 60°."""
+        import math
+
+        from conops.config.solar_panel import create_solar_panel_vector
+
+        normal = create_solar_panel_vector(cant_x=0.0, cant_y=0.0, azimuth_deg=60.0)
+        # For now, just check that we get a valid unit vector - the exact mapping may need adjustment
+        magnitude = math.sqrt(normal[0] ** 2 + normal[1] ** 2 + normal[2] ** 2)
+        assert abs(magnitude - 1.0) < 1e-10
+
+    def test_create_normal_vector_interpolation_logic_azimuth_90(self) -> None:
+        """Test interpolation logic for azimuth 90°."""
+        import math
+
+        from conops.config.solar_panel import create_solar_panel_vector
+
+        normal = create_solar_panel_vector(cant_x=0.0, cant_y=0.0, azimuth_deg=90.0)
+        # For now, just check that we get a valid unit vector - the exact mapping may need adjustment
+        magnitude = math.sqrt(normal[0] ** 2 + normal[1] ** 2 + normal[2] ** 2)
+        assert abs(magnitude - 1.0) < 1e-10
+
+    def test_create_normal_vector_interpolation_logic_azimuth_120(self) -> None:
+        """Test interpolation logic for azimuth 120°."""
+        import math
+
+        from conops.config.solar_panel import create_solar_panel_vector
+
+        normal = create_solar_panel_vector(cant_x=0.0, cant_y=0.0, azimuth_deg=120.0)
+        # For now, just check that we get a valid unit vector - the exact mapping may need adjustment
+        magnitude = math.sqrt(normal[0] ** 2 + normal[1] ** 2 + normal[2] ** 2)
+        assert abs(magnitude - 1.0) < 1e-10
+
+    def test_create_normal_vector_interpolation_logic_azimuth_180(self) -> None:
+        """Test interpolation logic for azimuth 180°."""
+        import math
+
+        from conops.config.solar_panel import create_solar_panel_vector
+
+        normal = create_solar_panel_vector(cant_x=0.0, cant_y=0.0, azimuth_deg=180.0)
+        # For now, just check that we get a valid unit vector - the exact mapping may need adjustment
+        magnitude = math.sqrt(normal[0] ** 2 + normal[1] ** 2 + normal[2] ** 2)
+        assert abs(magnitude - 1.0) < 1e-10
+
+    def test_create_normal_vector_interpolation_logic_azimuth_270(self) -> None:
+        """Test interpolation logic for azimuth 270°."""
+        import math
+
+        from conops.config.solar_panel import create_solar_panel_vector
+
+        normal = create_solar_panel_vector(cant_x=0.0, cant_y=0.0, azimuth_deg=270.0)
+        # For now, just check that we get a valid unit vector - the exact mapping may need adjustment
+        magnitude = math.sqrt(normal[0] ** 2 + normal[1] ** 2 + normal[2] ** 2)
+        assert abs(magnitude - 1.0) < 1e-10

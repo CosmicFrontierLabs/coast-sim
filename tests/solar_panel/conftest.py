@@ -11,7 +11,7 @@ from conops import SolarPanel, SolarPanelSet
 
 # Fixtures for mock ephemeris
 @pytest.fixture
-def mock_ephemeris():
+def mock_ephemeris() -> Mock:
     """Create a comprehensive mock ephemeris object."""
     ephem = Mock()
 
@@ -51,7 +51,7 @@ def mock_ephemeris():
     ephem.earth_radius_angle = np.array([Mock(deg=0.3) for _ in range(10)])
 
     # Mock methods
-    def mock_index(time_obj):
+    def mock_index(time_obj) -> int:
         if isinstance(time_obj, Time):
             # Find closest matching time
             for idx, t in enumerate(times):
@@ -65,12 +65,86 @@ def mock_ephemeris():
 
 
 @pytest.fixture
-def default_panel_set():
+def mock_eclipse_constraint():
+    """Create a mock eclipse constraint."""
+    from unittest.mock import Mock
+
+    constraint = Mock()
+    constraint.in_constraint.return_value = False  # Default to not in eclipse
+    return constraint
+
+
+@pytest.fixture
+def default_solar_panel():
+    """Create a default SolarPanel."""
+    from conops import SolarPanel
+
+    return SolarPanel()
+
+
+@pytest.fixture
+def standard_solar_panel():
+    """Create a standard test SolarPanel with common parameters."""
+    from conops import SolarPanel
+
+    return SolarPanel(max_power=500.0, conversion_efficiency=0.9)
+
+
+@pytest.fixture
+def zero_power_solar_panel():
+    """Create a SolarPanel with zero power."""
+    from conops import SolarPanel
+
+    return SolarPanel(max_power=0.0)
+
+
+@pytest.fixture
+def high_power_solar_panel():
+    """Create a SolarPanel with high power."""
+    from conops import SolarPanel
+
+    return SolarPanel(max_power=1000.0)
+
+
+@pytest.fixture
+def empty_solar_panel_set():
+    """Create an empty SolarPanelSet."""
+    from conops import SolarPanelSet
+
+    return SolarPanelSet(panels=[])
+
+
+@pytest.fixture
+def single_panel_set(default_solar_panel):
+    """Create a SolarPanelSet with a single default panel."""
+    from conops import SolarPanelSet
+
+    return SolarPanelSet(panels=[default_solar_panel])
+
+
+@pytest.fixture
+def standard_single_panel_set(standard_solar_panel):
+    """Create a SolarPanelSet with a single standard panel."""
+    from conops import SolarPanelSet
+
+    return SolarPanelSet(panels=[standard_solar_panel])
+
+
+@pytest.fixture
+def zero_power_panel_set(zero_power_solar_panel):
+    """Create a SolarPanelSet with a single zero power panel."""
+    from conops import SolarPanelSet
+
+    return SolarPanelSet(panels=[zero_power_solar_panel])
+
+
+@pytest.fixture
+def default_panel_set() -> SolarPanelSet:
     return SolarPanelSet(name="Default Set")
 
 
 @pytest.fixture
-def multi_panel_set():
+def multi_panel_set() -> SolarPanelSet:
     return SolarPanelSet(
         name="Array",
         conversion_efficiency=0.95,
@@ -82,7 +156,7 @@ def multi_panel_set():
 
 
 @pytest.fixture
-def efficiency_fallback_panel_set():
+def efficiency_fallback_panel_set() -> SolarPanelSet:
     return SolarPanelSet(
         conversion_efficiency=0.91,
         panels=[

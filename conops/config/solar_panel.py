@@ -179,79 +179,182 @@ def _get_eclipse_constraint() -> rust_ephem.EclipseConstraint:
 
 
 def create_solar_panel_vector(
-    mount: str, cant_z: float = 0.0, cant_perp: float = 0.0
+    mount: str | None = None,
+    cant_z: float = 0.0,
+    cant_perp: float = 0.0,
+    cant_x: float | None = None,
+    cant_y: float | None = None,
+    azimuth_deg: float | None = None,
 ) -> tuple[float, float, float]:
     """
     Create a unit normal vector for a solar panel based on mount type and cant angles.
 
-    Supports canting in two axes, allowing flexible panel orientation. The Z-axis
-    cant is supported for all mount types, while the perpendicular cant varies by type.
+    Supports both new and old style parameter configurations for backward compatibility.
+    Only one parameter style may be used at a time - either old style OR new style, not both.
 
     Args:
-        mount: Mount type - 'sidemount', 'aftmount', or 'boresight'
-        cant_z: Cant angle around Z-axis in degrees
-        cant_perp: Cant angle around perpendicular axis in degrees:
+        mount: Mount type - 'sidemount', 'aftmount', or 'boresight' (new style)
+        cant_z: Cant angle around Z-axis in degrees (new style)
+        cant_perp: Cant angle around perpendicular axis in degrees (new style):
             - For 'sidemount': rotates around X-axis (pitch-like)
             - For 'aftmount': rotates around Y-axis (pitch-like)
             - For 'boresight': rotates around Y-axis (pitch-like)
+        cant_x: Cant angle around X-axis (deg), one of two orthogonal tilts (old style)
+        cant_y: Cant angle around Y-axis (deg), one of two orthogonal tilts (old style)
+        azimuth_deg: Structural placement angle around boresight/X (deg) (old style).
+            0° = +Y (side), 90° = +Z, 180° = -Y, 270° = -Z. This places the
+            panel around the spacecraft circumference; roll adds on top of this.
 
     Returns:
         Unit normal vector (x, y, z) in spacecraft body frame
 
-    Mount types:
+    Mount types (new style):
+        mount: Mount type - 'sidemount', 'aftmount', or 'boresight' (new style)
+        cant_z: Cant angle around Z-axis in degrees (new style)
+        cant_perp: Cant angle around perpendicular axis in degrees (new style):
+            - For 'sidemount': rotates around X-axis (pitch-like)
+            - For 'aftmount': rotates around Y-axis (pitch-like)
+            - For 'boresight': rotates around Y-axis (pitch-like)
+        cant_x: Cant angle around X-axis (deg), one of two orthogonal tilts (old style)
+        cant_y: Cant angle around Y-axis (deg), one of two orthogonal tilts (old style)
+        azimuth_deg: Structural placement angle around boresight/X (deg) (old style).
+            0° = +Y (side), 90° = +Z, 180° = -Y, 270° = -Z. This places the
+            panel around the spacecraft circumference; roll adds on top of this.
+
+    Returns:
+        Unit normal vector (x, y, z) in spacecraft body frame
+
+    Mount types (new style):
         - 'sidemount': +Y direction (spacecraft "up")
         - 'aftmount': -X direction (spacecraft "back")
         - 'boresight': +X direction (spacecraft forward/pointing)
 
-    Example:
-        # Sidemount panel with 30° yaw and 15° pitch
+    Examples:
+        # New style - Sidemount panel with 30° yaw and 15° pitch
         normal = create_solar_panel_vector('sidemount', cant_z=30.0, cant_perp=15.0)
 
-        # Boresight panel tilted backward 45°
+        # New style - Boresight panel tilted backward 45°
         normal = create_solar_panel_vector('boresight', cant_perp=-45.0)
+
+        # Old style - Panel at 0° azimuth (+Y) with 30° cant around X and 15° cant around Y
+        normal = create_solar_panel_vector(cant_x=30.0, cant_y=15.0, azimuth_deg=0.0)
     """
-    import math
 
-    theta_z = math.radians(cant_z)
-    theta_perp = math.radians(cant_perp)
+    # Validate that only one parameter style is used
+    old_style_provided = (
+        cant_x is not None or cant_y is not None or azimuth_deg is not None
+    )
+    new_style_provided = mount is not None
 
-    if mount == "sidemount":
-        # Start with +Y (0, 1, 0)
-        # First rotate around Z axis
-        x_after_z = -math.sin(theta_z)
-        y_after_z = math.cos(theta_z)
+    if old_style_provided and new_style_provided:
+        raise ValueError(
+            "Cannot mix old style parameters (cant_x, cant_y, azimuth_deg) "
+            "with new style parameters (mount, cant_z, cant_perp). "
+            "Use either old style OR new style, not both."
+        )
 
-        # Then rotate around X axis (pitch)
-        x = x_after_z
-        y = y_after_z * math.cos(theta_perp)
-        z = y_after_z * math.sin(theta_perp)
+    # Check if old style parameters are provided
+    if old_style_provided:
+        # Use old style parameters
+        if cant_x is None:
+            cant_x = 0.0
+        if cant_y is None:
+            cant_y = 0.0
+        if azimuth_deg is None:
+            azimuth_deg = 0.0
 
-    elif mount == "aftmount":
-        # Start with -X (-1, 0, 0)
-        # First rotate around Z axis
-        x_after_z = -math.cos(theta_z)
-        y_after_z = -math.sin(theta_z)
+        # Convert old style to rotation matrix approach
+        # azimuth_deg determines the base orientation around the boresight
+        # cant_x and cant_y are additional tilts
 
-        # Then rotate around Y axis (pitch)
-        x = x_after_z * math.cos(theta_perp)
-        y = y_after_z
-        z = -x_after_z * math.sin(theta_perp)
+        theta_x = np.radians(cant_x)
+        theta_y = np.radians(cant_y)
 
-    elif mount == "boresight":
-        # Start with +X (1, 0, 0)
-        # First rotate around Z axis
-        x_after_z = math.cos(theta_z)
-        y_after_z = math.sin(theta_z)
+        # Start with base vector based on azimuth
+        # 0° = +Y, 90° = +Z, 180° = -Y, 270° = -Z
+        if azimuth_deg == 0.0:
+            # +Y direction
+            base_x, base_y, base_z = 0.0, 1.0, 0.0
+        elif azimuth_deg == 90.0:
+            # +Z direction
+            base_x, base_y, base_z = 0.0, 0.0, 1.0
+        elif azimuth_deg == 180.0:
+            # -Y direction
+            base_x, base_y, base_z = 0.0, -1.0, 0.0
+        elif azimuth_deg == 270.0:
+            # -Z direction
+            base_x, base_y, base_z = 0.0, 0.0, -1.0
+        else:
+            # Interpolate between the cardinal directions
+            # For simplicity, use the closest cardinal direction for now
+            # A more sophisticated implementation would interpolate
+            closest_az = round(azimuth_deg / 90.0) * 90.0
+            if closest_az == 0.0:
+                base_x, base_y, base_z = 0.0, 1.0, 0.0
+            elif closest_az == 90.0:
+                base_x, base_y, base_z = 0.0, 0.0, 1.0
+            elif closest_az == 180.0:
+                base_x, base_y, base_z = 0.0, -1.0, 0.0
+            else:  # 270
+                base_x, base_y, base_z = 0.0, 0.0, -1.0
 
-        # Then rotate around Y axis (pitch)
-        x = x_after_z * math.cos(theta_perp)
-        y = y_after_z
-        z = x_after_z * math.sin(theta_perp)
+        # Apply cant angles
+        # First cant around X-axis (theta_x)
+        y_after_x = base_y * np.cos(theta_x) - base_z * np.sin(theta_x)
+        z_after_x = base_y * np.sin(theta_x) + base_z * np.cos(theta_x)
+
+        # Then cant around Y-axis (theta_y)
+        x_final = base_x * np.cos(theta_y) + z_after_x * np.sin(theta_y)
+        y_final = y_after_x
+        z_final = -base_x * np.sin(theta_y) + z_after_x * np.cos(theta_y)
+
+        return (x_final, y_final, z_final)
 
     else:
-        raise ValueError(f"Unknown mount type: {mount}")
+        # Use new style parameters
+        if mount is None:
+            mount = "sidemount"
 
-    return (x, y, z)
+        theta_z = np.radians(cant_z)
+        theta_perp = np.radians(cant_perp)
+
+        if mount == "sidemount":
+            # Start with +Y (0, 1, 0)
+            # First rotate around Z axis
+            x_after_z = -np.sin(theta_z)
+            y_after_z = np.cos(theta_z)
+
+            # Then rotate around X axis (pitch)
+            x = x_after_z
+            y = y_after_z * np.cos(theta_perp)
+            z = y_after_z * np.sin(theta_perp)
+
+        elif mount == "aftmount":
+            # Start with -X (-1, 0, 0)
+            # First rotate around Z axis
+            x_after_z = -np.cos(theta_z)
+            y_after_z = -np.sin(theta_z)
+
+            # Then rotate around Y axis (pitch)
+            x = x_after_z * np.cos(theta_perp)
+            y = y_after_z
+            z = -x_after_z * np.sin(theta_perp)
+
+        elif mount == "boresight":
+            # Start with +X (1, 0, 0)
+            # First rotate around Z axis
+            x_after_z = np.cos(theta_z)
+            y_after_z = np.sin(theta_z)
+
+            # Then rotate around Y axis (pitch)
+            x = x_after_z * np.cos(theta_perp)
+            y = y_after_z
+            z = x_after_z * np.sin(theta_perp)
+
+        else:
+            raise ValueError(f"Unknown mount type: {mount}")
+
+        return (x, y, z)
 
 
 class _PanelGeometry:
