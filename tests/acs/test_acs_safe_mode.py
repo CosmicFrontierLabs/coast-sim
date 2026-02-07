@@ -66,7 +66,7 @@ class TestSafeModeEntry:
 
         # Enqueue multiple commands
         acs.request_safe_mode(utime)
-        acs.request_battery_charge(utime + 100, 10.0, 20.0, 123)
+        acs.request_battery_charge(utime + 100, 10.0, 20.0, 30.0, 123)
         acs.request_end_battery_charge(utime + 200)
 
         assert len(acs.command_queue) == 3
@@ -92,7 +92,7 @@ class TestSafeModeIrreversibility:
         assert acs.in_safe_mode is True
 
         # Try to execute other commands - they shouldn't work
-        acs.request_battery_charge(utime + 100, 10.0, 20.0, 123)
+        acs.request_battery_charge(utime + 100, 10.0, 20.0, 30.0, 123)
         acs.pointing(utime + 100)
 
         # Should still be in safe mode

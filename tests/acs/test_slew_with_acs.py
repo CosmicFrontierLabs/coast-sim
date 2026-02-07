@@ -1,15 +1,17 @@
+from typing import Any
+
 from conops import AttitudeControlSystem, Constraint, MissionConfig, Slew, SpacecraftBus
 
 
 class DummyConstraint(Constraint):
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs: dict[str, Any]) -> None:
         # Initialize with minimal required fields
         super().__init__(**kwargs)
         # Slew asserts constraint.ephem is not None, but does not use it during calc
         self.ephem = object()
 
 
-def test_slew_uses_acs_config():
+def test_slew_uses_acs_config() -> None:
     acs = AttitudeControlSystem(
         slew_acceleration=1.0, max_slew_rate=0.5, settle_time=90.0
     )
@@ -28,7 +30,7 @@ def test_slew_uses_acs_config():
     assert calc == round(expected)
 
 
-def test_slew_path_and_secs_lengths():
+def test_slew_path_and_secs_lengths() -> None:
     acs = AttitudeControlSystem()
     constraint = DummyConstraint()
     spacecraft_bus = SpacecraftBus(attitude_control=acs)

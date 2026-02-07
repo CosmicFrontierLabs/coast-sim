@@ -4,22 +4,22 @@ from conops import AttitudeControlSystem
 
 
 class TestAttitudeControlSystem:
-    def test_defaults_present_on_bus_instance(self, bus):
+    def test_defaults_present_on_bus_instance(self, bus) -> None:
         assert isinstance(bus.attitude_control, AttitudeControlSystem)
 
-    def test_defaults_present_on_bus_max_slew_rate(self, bus):
+    def test_defaults_present_on_bus_max_slew_rate(self, bus) -> None:
         assert bus.attitude_control.max_slew_rate > 0
 
-    def test_defaults_present_on_bus_settle_time(self, bus):
+    def test_defaults_present_on_bus_settle_time(self, bus) -> None:
         assert bus.attitude_control.settle_time >= 0
 
-    def test_triangular_profile_time(self, acs_config):
+    def test_triangular_profile_time(self, acs_config) -> None:
         angle = 0.1  # deg
         expected_no_settle = 2 * math.sqrt(angle / acs_config.slew_acceleration)
         expected = expected_no_settle + acs_config.settle_time
         assert abs(acs_config.slew_time(angle) - expected) < 1e-6
 
-    def test_trapezoidal_profile_time(self, acs_config):
+    def test_trapezoidal_profile_time(self, acs_config) -> None:
         angle = 90.0
         t_accel = acs_config.max_slew_rate / acs_config.slew_acceleration
         d_accel = 0.5 * acs_config.slew_acceleration * t_accel**2
@@ -29,5 +29,5 @@ class TestAttitudeControlSystem:
         expected = expected_no_settle + acs_config.settle_time
         assert abs(acs_config.slew_time(angle) - expected) < 1e-6
 
-    def test_zero_angle_time(self, default_acs):
+    def test_zero_angle_time(self, default_acs) -> None:
         assert default_acs.slew_time(0) == 0.0

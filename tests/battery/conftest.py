@@ -212,4 +212,10 @@ def mock_ephem():
     ephem.sun_ra_deg = [180.0]
     ephem.sun_dec_deg = [0.0]
     ephem.in_eclipse = Mock(return_value=False)
+    # Add position/velocity data for roll calculation (needed by optimum_roll)
+    # Make position arrays directly subscriptable
+    ephem.sun_pv = Mock()
+    ephem.sun_pv.position = np.array([[1.5e8, 0.0, 0.0]])  # Sun position in km
+    ephem.gcrs_pv = Mock()
+    ephem.gcrs_pv.position = np.array([[0.0, 0.0, 6378.0]])  # S/C position in km
     return ephem

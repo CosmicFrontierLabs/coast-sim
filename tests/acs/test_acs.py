@@ -32,7 +32,7 @@ class DummyEphemeris:
 class TestACSInitialization:
     """Test ACS initialization and properties."""
 
-    def test_acs_initialization(self, acs, mock_constraint):
+    def test_acs_initialization(self, acs, mock_constraint) -> None:
         """Test that ACS initializes with correct defaults."""
         assert acs.constraint is mock_constraint
         assert acs.ra == 180.0  # Earth-opposite nadir pointing
@@ -45,13 +45,13 @@ class TestACSInitialization:
         assert acs.current_pass is None
         assert acs.slew_dists == []
 
-    def test_acs_requires_constraint(self, mock_config):
+    def test_acs_requires_constraint(self, mock_config) -> None:
         """Test that ACS requires a constraint."""
         mock_config.constraint = None
         with pytest.raises(AssertionError, match="Constraint must be provided"):
             ACS(config=mock_config)
 
-    def test_acs_requires_constraint_with_ephem(self, mock_config):
+    def test_acs_requires_constraint_with_ephem(self, mock_config) -> None:
         """Test that ACS requires constraint with ephemeris."""
         mock_config.constraint.ephem = None
         with pytest.raises(AssertionError, match="Ephemeris must be set"):
@@ -61,37 +61,37 @@ class TestACSInitialization:
 class TestACSAttributes:
     """Test ACS attribute access and manipulation."""
 
-    def test_obstype_attribute(self, acs):
+    def test_obstype_attribute(self, acs) -> None:
         """Test obstype attribute."""
         assert acs.obstype == "PPT"
         acs.obstype = "GSP"
         assert acs.obstype == "GSP"
 
-    def test_constraint_attribute(self, acs, mock_constraint):
+    def test_constraint_attribute(self, acs, mock_constraint) -> None:
         """Test constraint attribute."""
         assert acs.constraint is mock_constraint
 
-    def test_config_attribute(self, acs, mock_config):
+    def test_config_attribute(self, acs, mock_config) -> None:
         """Test config attribute."""
         assert acs.config is mock_config
 
-    def test_solar_panel_attribute(self, acs):
+    def test_solar_panel_attribute(self, acs) -> None:
         """Test solar_panel attribute exists."""
         assert acs.solar_panel is not None
 
-    def test_ephem_attribute(self, acs):
+    def test_ephem_attribute(self, acs) -> None:
         """Test ephem attribute exists."""
         assert acs.ephem is not None
 
-    def test_last_slew_attribute(self, acs):
+    def test_last_slew_attribute(self, acs) -> None:
         """Test last_slew attribute."""
         assert acs.last_slew is not None  # Initialized with boundary condition slew
 
-    def test_last_ppt_attribute(self, acs):
+    def test_last_ppt_attribute(self, acs) -> None:
         """Test last_ppt attribute."""
         assert acs.last_ppt is None
 
-    def test_current_pass_attribute(self, acs):
+    def test_current_pass_attribute(self, acs) -> None:
         """Test current_pass attribute."""
         assert acs.current_pass is None
 
@@ -99,36 +99,36 @@ class TestACSAttributes:
 class TestACSStateManagement:
     """Test ACS state management."""
 
-    def test_acsmode_initial(self, acs):
+    def test_acsmode_initial(self, acs) -> None:
         """Test default acsmode is SCIENCE."""
         assert acs.acsmode == ACSMode.SCIENCE
 
-    def test_acsmode_set_slewing(self, acs):
+    def test_acsmode_set_slewing(self, acs) -> None:
         """Test setting acsmode to SLEWING."""
         acs.acsmode = ACSMode.SLEWING
         assert acs.acsmode == ACSMode.SLEWING
 
-    def test_acsmode_set_saa(self, acs):
+    def test_acsmode_set_saa(self, acs) -> None:
         """Test setting acsmode to SAA."""
         acs.acsmode = ACSMode.SAA
         assert acs.acsmode == ACSMode.SAA
 
-    def test_acsmode_set_pass(self, acs):
+    def test_acsmode_set_pass(self, acs) -> None:
         """Test setting acsmode to PASS."""
         acs.acsmode = ACSMode.PASS
         assert acs.acsmode == ACSMode.PASS
 
-    def test_acsmode_set_charging(self, acs):
+    def test_acsmode_set_charging(self, acs) -> None:
         """Test setting acsmode to CHARGING."""
         acs.acsmode = ACSMode.CHARGING
         assert acs.acsmode == ACSMode.CHARGING
 
-    def test_acsmode_return_to_science(self, acs):
+    def test_acsmode_return_to_science(self, acs) -> None:
         """Test returning acsmode to SCIENCE."""
         acs.acsmode = ACSMode.SCIENCE
         assert acs.acsmode == ACSMode.SCIENCE
 
-    def test_ra_dec_updates(self, acs):
+    def test_ra_dec_updates(self, acs) -> None:
         """Test that RA/Dec can be updated."""
         assert acs.ra == 180.0  # Earth-opposite nadir pointing
         assert acs.dec == 0.0
@@ -137,20 +137,20 @@ class TestACSStateManagement:
         assert acs.ra == 45.0
         assert acs.dec == 30.0
 
-    def test_roll_updates(self, acs):
+    def test_roll_updates(self, acs) -> None:
         """Test that roll can be updated."""
         assert acs.roll == 0.0
         acs.roll = 90.0
         assert acs.roll == 90.0
 
-    def test_slew_dists_tracking(self, acs):
+    def test_slew_dists_tracking(self, acs) -> None:
         """Test that slew_dists list is tracked."""
         assert acs.slew_dists == []
         acs.slew_dists.append(45.0)
         assert len(acs.slew_dists) == 1
         assert acs.slew_dists[0] == 45.0
 
-    def test_rapid_state_changes(self, acs):
+    def test_rapid_state_changes(self, acs) -> None:
         """Test rapid state changes."""
         for _ in range(10):
             for mode in [
@@ -167,7 +167,7 @@ class TestACSStateManagement:
 class TestACSPassRequestManagement:
     """Test pass request management."""
 
-    def test_request_pass_basic(self, acs):
+    def test_request_pass_basic(self, acs) -> None:
         """Test requesting a pass."""
         acs.passrequests.passes = []
         mock_pass = Mock()
@@ -178,7 +178,7 @@ class TestACSPassRequestManagement:
         acs.request_pass(mock_pass)
         assert mock_pass in acs.passrequests.passes
 
-    def test_request_pass_multiple(self, acs):
+    def test_request_pass_multiple(self, acs) -> None:
         """Test requesting multiple non-overlapping passes."""
         acs.passrequests.passes = []
         mock_pass1 = Mock()
@@ -193,7 +193,7 @@ class TestACSPassRequestManagement:
         acs.request_pass(mock_pass2)
         assert len(acs.passrequests.passes) >= 2
 
-    def test_request_pass_with_same_pass(self, acs):
+    def test_request_pass_with_same_pass(self, acs) -> None:
         """Test that non-overlapping passes can be added to list."""
         acs.passrequests.passes = []
         passes_to_add = []
@@ -211,7 +211,7 @@ class TestACSPassRequestManagement:
 class TestACSStateTransitions:
     """Test state transitions during operations."""
 
-    def test_full_state_cycle(self, acs):
+    def test_full_state_cycle(self, acs) -> None:
         """Test cycling through all acsmode states."""
         for mode in [0, 1, 2, 3, 4]:
             acs.acsmode = mode

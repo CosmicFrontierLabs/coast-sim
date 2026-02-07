@@ -81,12 +81,12 @@ def acs_roll(mock_constraint_roll, mock_config_roll):
 class TestACSRollInitialization:
     """Test ACS roll angle initialization."""
 
-    def test_roll_initialized_to_zero(self, acs_roll):
+    def test_roll_initialized_to_zero(self, acs_roll) -> None:
         """Test that roll is initialized to 0.0."""
         assert acs_roll.roll == 0.0
         assert isinstance(acs_roll.roll, float)
 
-    def test_roll_is_accessible(self, acs_roll):
+    def test_roll_is_accessible(self, acs_roll) -> None:
         """Test that roll attribute is accessible."""
         assert hasattr(acs_roll, "roll")
         roll = acs_roll.roll
@@ -96,7 +96,7 @@ class TestACSRollInitialization:
 class TestACSRollCalculation:
     """Test ACS roll angle calculation in the pointing method."""
 
-    def test_pointing_returns_roll(self, acs_roll):
+    def test_pointing_returns_roll(self, acs_roll) -> None:
         """Test that pointing() method returns roll angle."""
         utime = 1514764800.0
         ra, dec, roll, obsid = acs_roll.pointing(utime)
@@ -107,7 +107,7 @@ class TestACSRollCalculation:
         assert isinstance(obsid, (int, type(None)))
         assert 0.0 <= roll < 360.0
 
-    def test_roll_calculation_updates_state(self, acs_roll):
+    def test_roll_calculation_updates_state(self, acs_roll) -> None:
         """Test that roll calculation updates the ACS state."""
         utime = 1514764800.0
 
@@ -119,7 +119,7 @@ class TestACSRollCalculation:
         # Roll should be a valid angle
         assert 0.0 <= acs_roll.roll < 360.0
 
-    def test_roll_varies_with_sun_position(self):
+    def test_roll_varies_with_sun_position(self) -> None:
         """Test that roll varies with sun position."""
         # Create two ACS instances with different sun positions
         ephem1 = DummyEphemeris(sun_ra=0.0, sun_dec=0.0)
@@ -180,7 +180,7 @@ class TestACSRollCalculation:
         assert 0.0 <= roll1 < 360.0
         assert 0.0 <= roll2 < 360.0
 
-    def test_roll_angle_in_valid_range(self, acs_roll):
+    def test_roll_angle_in_valid_range(self, acs_roll) -> None:
         """Test that roll angle is always in valid range [0, 360)."""
         utime = 1514764800.0
 
@@ -192,7 +192,7 @@ class TestACSRollCalculation:
 class TestACSRollWithSolarPanels:
     """Test ACS roll calculation with solar panels."""
 
-    def test_roll_optimization_with_panel_set(self, acs_roll):
+    def test_roll_optimization_with_panel_set(self, acs_roll) -> None:
         """Test that roll is calculated to optimize solar panel illumination."""
         # The ACS should calculate roll using optimum_roll
         utime = 1514764800.0
@@ -204,7 +204,7 @@ class TestACSRollWithSolarPanels:
         assert isinstance(roll, float)
         assert 0.0 <= roll < 360.0
 
-    def test_roll_persists_across_pointing_calls(self, acs_roll):
+    def test_roll_persists_across_pointing_calls(self, acs_roll) -> None:
         """Test that roll value is properly maintained."""
         utime1 = 1514764800.0
         utime2 = 1514764900.0
@@ -220,7 +220,7 @@ class TestACSRollWithSolarPanels:
 class TestACSRollInPointingOutput:
     """Test that roll is correctly integrated in the pointing output."""
 
-    def test_pointing_tuple_format(self, acs_roll):
+    def test_pointing_tuple_format(self, acs_roll) -> None:
         """Test that pointing returns (ra, dec, roll, obsid)."""
         utime = 1514764800.0
         result = acs_roll.pointing(utime)
@@ -233,7 +233,7 @@ class TestACSRollInPointingOutput:
         assert isinstance(dec, (int, float, np.floating))
         assert isinstance(roll, (int, float, np.floating))
 
-    def test_roll_consistency_in_multiple_calls(self, acs_roll):
+    def test_roll_consistency_in_multiple_calls(self, acs_roll) -> None:
         """Test that roll calculation is consistent across multiple calls."""
         utime = 1514764800.0
 
@@ -251,7 +251,7 @@ class TestACSRollInPointingOutput:
 class TestACSRollMode:
     """Test roll calculation in different ACS modes."""
 
-    def test_roll_in_science_mode(self, acs_roll):
+    def test_roll_in_science_mode(self, acs_roll) -> None:
         """Test roll calculation in SCIENCE mode."""
         acs_roll.acsmode = ACSMode.SCIENCE
         utime = 1514764800.0
@@ -260,7 +260,7 @@ class TestACSRollMode:
 
         assert 0.0 <= roll < 360.0
 
-    def test_roll_in_pass_mode(self, acs_roll):
+    def test_roll_in_pass_mode(self, acs_roll) -> None:
         """Test roll calculation in PASS mode."""
         acs_roll.acsmode = ACSMode.PASS
         utime = 1514764800.0
@@ -269,7 +269,7 @@ class TestACSRollMode:
 
         assert 0.0 <= roll < 360.0
 
-    def test_roll_in_safe_mode(self, acs_roll):
+    def test_roll_in_safe_mode(self, acs_roll) -> None:
         """Test roll calculation when in safe mode."""
         acs_roll.in_safe_mode = True
         utime = 1514764800.0
@@ -282,7 +282,7 @@ class TestACSRollMode:
 class TestACSRollEdgeCases:
     """Test edge cases for ACS roll calculation."""
 
-    def test_roll_at_zero_sun_elevation(self, acs_roll):
+    def test_roll_at_zero_sun_elevation(self, acs_roll) -> None:
         """Test roll calculation when sun is at equator."""
         utime = 1514764800.0
 
@@ -291,7 +291,7 @@ class TestACSRollEdgeCases:
         # Should still return valid roll
         assert 0.0 <= roll < 360.0
 
-    def test_roll_near_poles(self):
+    def test_roll_near_poles(self) -> None:
         """Test roll calculation with spacecraft near poles."""
         ephem = DummyEphemeris(sun_ra=0.0, sun_dec=89.0)
         constraint = Mock()

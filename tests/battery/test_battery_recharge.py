@@ -41,11 +41,11 @@ def make_batch_constraint_mock(
 class TestBattery:
     """Test Battery class emergency recharge functionality."""
 
-    def test_default_recharge_threshold(self, default_battery):
+    def test_default_recharge_threshold(self, default_battery) -> None:
         """Test that recharge_threshold defaults to 0.95 (95%)."""
         assert default_battery.recharge_threshold == 0.95
 
-    def test_custom_recharge_threshold(self, battery_with_custom_threshold):
+    def test_custom_recharge_threshold(self, battery_with_custom_threshold) -> None:
         """Test that custom recharge_threshold can be set."""
         assert battery_with_custom_threshold.recharge_threshold == 0.90
 
@@ -122,12 +122,14 @@ class TestBattery:
         )
         assert battery_with_dod_and_threshold.emergency_recharge is False
 
-    def test_battery_alert_false_when_above_threshold(self, battery_with_dod):
+    def test_battery_alert_false_when_above_threshold(self, battery_with_dod) -> None:
         """Test battery_alert False when battery level is sufficient."""
         battery_with_dod.charge_level = battery_with_dod.watthour * 0.96
         assert battery_with_dod.battery_alert is False
 
-    def test_emergency_recharge_false_when_above_threshold(self, battery_with_dod):
+    def test_emergency_recharge_false_when_above_threshold(
+        self, battery_with_dod
+    ) -> None:
         """Test emergency_recharge False when battery level is sufficient."""
         battery_with_dod.charge_level = battery_with_dod.watthour * 0.80
         assert battery_with_dod.emergency_recharge is False
@@ -136,35 +138,35 @@ class TestBattery:
 class TestACSMode:
     """Test that CHARGING mode is added to ACSMode enum."""
 
-    def test_charging_mode_exists(self):
+    def test_charging_mode_exists(self) -> None:
         """Test that CHARGING mode exists in ACSMode enum."""
         assert hasattr(ACSMode, "CHARGING")
 
-    def test_charging_mode_value(self):
+    def test_charging_mode_value(self) -> None:
         """Test that CHARGING mode has value 4."""
         assert ACSMode.CHARGING.value == 4
 
-    def test_acsmode_has_science(self):
+    def test_acsmode_has_science(self) -> None:
         """SCIENCE should be present in ACSMode."""
         modes = [mode.name for mode in ACSMode]
         assert "SCIENCE" in modes
 
-    def test_acsmode_has_slewing(self):
+    def test_acsmode_has_slewing(self) -> None:
         """SLEWING should be present in ACSMode."""
         modes = [mode.name for mode in ACSMode]
         assert "SLEWING" in modes
 
-    def test_acsmode_has_saa(self):
+    def test_acsmode_has_saa(self) -> None:
         """SAA should be present in ACSMode."""
         modes = [mode.name for mode in ACSMode]
         assert "SAA" in modes
 
-    def test_acsmode_has_pass(self):
+    def test_acsmode_has_pass(self) -> None:
         """PASS should be present in ACSMode."""
         modes = [mode.name for mode in ACSMode]
         assert "PASS" in modes
 
-    def test_acsmode_has_charging(self):
+    def test_acsmode_has_charging(self) -> None:
         """CHARGING should be present in ACSMode."""
         modes = [mode.name for mode in ACSMode]
         assert "CHARGING" in modes
@@ -173,7 +175,7 @@ class TestACSMode:
 class TestSolarPanel:
     """Test SolarPanel optimal charging pointing functionality."""
 
-    def test_optimal_charging_ra_sidemount(self):
+    def test_optimal_charging_ra_sidemount(self) -> None:
         """Test RA for side-mounted panels."""
         panel = SolarPanelSet(panels=[SolarPanel(normal=(0.0, 1.0, 0.0))])
         mock_ephem = Mock()
@@ -188,7 +190,7 @@ class TestSolarPanel:
         ra, dec = panel.optimal_charging_pointing(utime, mock_ephem)
         assert ra == (45.0 + 90.0) % 360.0
 
-    def test_optimal_charging_dec_sidemount(self):
+    def test_optimal_charging_dec_sidemount(self) -> None:
         """Test Dec for side-mounted panels."""
         panel = SolarPanelSet(panels=[SolarPanel(normal=(0.0, 1.0, 0.0))])
         mock_ephem = Mock()
@@ -203,7 +205,7 @@ class TestSolarPanel:
         ra, dec = panel.optimal_charging_pointing(utime, mock_ephem)
         assert dec == 10.0
 
-    def test_optimal_charging_ra_bodymount(self):
+    def test_optimal_charging_ra_bodymount(self) -> None:
         """Test RA for body-mounted panels."""
         panel = SolarPanelSet(panels=[SolarPanel(normal=(0.0, 0.0, -1.0))])
         mock_ephem = Mock()
@@ -218,7 +220,7 @@ class TestSolarPanel:
         ra, dec = panel.optimal_charging_pointing(utime, mock_ephem)
         assert ra == 120.0
 
-    def test_optimal_charging_dec_bodymount(self):
+    def test_optimal_charging_dec_bodymount(self) -> None:
         """Test Dec for body-mounted panels."""
         panel = SolarPanelSet(panels=[SolarPanel(normal=(0.0, 0.0, -1.0))])
         mock_ephem = Mock()
@@ -233,7 +235,7 @@ class TestSolarPanel:
         ra, dec = panel.optimal_charging_pointing(utime, mock_ephem)
         assert dec == -15.0
 
-    def test_optimal_charging_pointing_wraps_ra(self):
+    def test_optimal_charging_pointing_wraps_ra(self) -> None:
         """Test that RA wraps correctly at 360 degrees."""
         panel = SolarPanelSet(panels=[SolarPanel(normal=(0.0, 1.0, 0.0))])
         mock_ephem = Mock()
@@ -252,21 +254,21 @@ class TestSolarPanel:
 class TestEmergencyCharging:
     """Test EmergencyCharging class functionality."""
 
-    def test_initialization_sets_constraint(self, mock_config):
+    def test_initialization_sets_constraint(self, mock_config) -> None:
         ec = EmergencyCharging(
             config=mock_config,
             starting_obsid=555000,
         )
         assert ec.constraint == mock_config.constraint
 
-    def test_initialization_sets_solar_panel(self, mock_config):
+    def test_initialization_sets_solar_panel(self, mock_config) -> None:
         ec = EmergencyCharging(
             config=mock_config,
             starting_obsid=555000,
         )
         assert ec.solar_panel == mock_config.solar_panel
 
-    def test_initialization_next_charging_obsid(self, mock_config):
+    def test_initialization_next_charging_obsid(self, mock_config) -> None:
         # Ensure config has the expected subsystems
         mock_config.solar_panel = mock_config.solar_panel
         ec = EmergencyCharging(
@@ -275,7 +277,7 @@ class TestEmergencyCharging:
         )
         assert ec.next_charging_obsid == 555000
 
-    def test_initialization_current_charging_ppt_none(self, mock_config):
+    def test_initialization_current_charging_ppt_none(self, mock_config) -> None:
         ec = EmergencyCharging(
             config=mock_config,
             starting_obsid=555000,
@@ -409,7 +411,7 @@ class TestEmergencyCharging:
         emergency_charging.clear_current_charging()
         assert emergency_charging.current_charging_ppt is None
 
-    def test_is_charging_active_initially_false(self, emergency_charging):
+    def test_is_charging_active_initially_false(self, emergency_charging) -> None:
         assert emergency_charging.is_charging_active() is False
 
     def test_is_charging_active_true_after_create(
@@ -738,7 +740,7 @@ class TestEmergencyCharging:
         slew = angular_separation(0.0, 0.0, ppt.ra, ppt.dec)
         assert slew <= 60.0
 
-    def test_slew_limit_sidemount_ra_dec_not_none(self, mock_config):
+    def test_slew_limit_sidemount_ra_dec_not_none(self, mock_config) -> None:
         ec = EmergencyCharging(
             config=mock_config,
             starting_obsid=999000,
@@ -755,7 +757,7 @@ class TestEmergencyCharging:
         assert ra is not None
         assert dec is not None
 
-    def test_slew_limit_sidemount_within_45deg_and_90deg_sep(self, mock_config):
+    def test_slew_limit_sidemount_within_45deg_and_90deg_sep(self, mock_config) -> None:
         ec = EmergencyCharging(
             config=mock_config,
             starting_obsid=999000,
@@ -1064,7 +1066,7 @@ class TestEmergencyCharging:
 class TestQueueDITLEmergencyCharging:
     """Test QueueDITL emergency charging functionality."""
 
-    def test_initialization_adds_charging_ppt_attribute(self, mock_config):
+    def test_initialization_adds_charging_ppt_attribute(self, mock_config) -> None:
         """Test that QueueDITL initializes charging-related variables."""
 
         def mock_ditl_init(self, config=None, ephem=None, begin=None, end=None):
@@ -1080,7 +1082,7 @@ class TestQueueDITLEmergencyCharging:
             ditl = QueueDITL(config=mock_config)
             assert hasattr(ditl, "charging_ppt")
 
-    def test_initialization_charging_ppt_is_none(self, mock_config):
+    def test_initialization_charging_ppt_is_none(self, mock_config) -> None:
         def mock_ditl_init(self, config=None, ephem=None, begin=None, end=None):
             self.config = config
             self.ephem = ephem or Mock()
@@ -1094,7 +1096,7 @@ class TestQueueDITLEmergencyCharging:
             ditl = QueueDITL(config=mock_config)
             assert ditl.charging_ppt is None
 
-    def test_initialization_emergency_charging_exists(self, mock_config):
+    def test_initialization_emergency_charging_exists(self, mock_config) -> None:
         def mock_ditl_init(self, config=None, ephem=None, begin=None, end=None):
             self.config = config
             self.ephem = ephem or Mock()
@@ -1109,7 +1111,7 @@ class TestQueueDITLEmergencyCharging:
             assert hasattr(ditl, "emergency_charging")
             assert isinstance(ditl.emergency_charging, EmergencyCharging)
 
-    def test_emergency_charging_integration_returns_pointing(self, queue_ditl):
+    def test_emergency_charging_integration_returns_pointing(self, queue_ditl) -> None:
         utime = 1700000000.0
         mock_ppt = Mock(spec=Pointing)
         mock_ppt.ra = 180.0
@@ -1123,7 +1125,7 @@ class TestQueueDITLEmergencyCharging:
         )
         assert result == mock_ppt
 
-    def test_emergency_charging_integration_called_once(self, queue_ditl):
+    def test_emergency_charging_integration_called_once(self, queue_ditl) -> None:
         utime = 1700000000.0
         mock_ppt = Mock(spec=Pointing)
         mock_ppt.ra = 180.0
@@ -1137,13 +1139,13 @@ class TestQueueDITLEmergencyCharging:
         )
         queue_ditl.emergency_charging.create_charging_pointing.assert_called_once()
 
-    def test_charging_ppt_type_annotation_present(self):
+    def test_charging_ppt_type_annotation_present(self) -> None:
         from typing import get_type_hints
 
         hints = get_type_hints(QueueDITL)
         assert "charging_ppt" in hints
 
-    def test_charging_ppt_type_annotation_contains_pointing(self):
+    def test_charging_ppt_type_annotation_contains_pointing(self) -> None:
         from typing import get_type_hints
 
         hints = get_type_hints(QueueDITL)
@@ -1158,39 +1160,41 @@ class TestQueueDITLIntegration:
     ):
         assert ACSMode.CHARGING.value == 4
 
-    def test_charging_ppt_terminated_on_battery_recharged(self):
+    def test_charging_ppt_terminated_on_battery_recharged(self) -> None:
         pass
 
-    def test_charging_ppt_terminated_on_constraint_violation(self):
+    def test_charging_ppt_terminated_on_constraint_violation(self) -> None:
         pass
 
-    def test_science_ppt_terminated_on_battery_alert(self):
+    def test_science_ppt_terminated_on_battery_alert(self) -> None:
         pass
 
 
 class TestBatteryRechargeScenarios:
     """End-to-end scenario tests for battery recharge."""
 
-    def test_full_discharge_recharge_cycle_initial_state(self):
+    def test_full_discharge_recharge_cycle_initial_state(self) -> None:
         battery = Battery(
             max_depth_of_discharge=0.35, recharge_threshold=0.95, watthour=560.0
         )
         assert battery.battery_level == 1.0
 
-    def test_full_discharge_recharge_cycle_initial_alert_false(self):
+    def test_full_discharge_recharge_cycle_initial_alert_false(self) -> None:
         battery = Battery(
             max_depth_of_discharge=0.35, recharge_threshold=0.95, watthour=560.0
         )
         assert battery.battery_alert is False
 
-    def test_full_discharge_recharge_cycle_alert_after_60percent(self):
+    def test_full_discharge_recharge_cycle_alert_after_60percent(self) -> None:
         battery = Battery(
             max_depth_of_discharge=0.35, recharge_threshold=0.95, watthour=560.0
         )
         battery.charge_level = battery.watthour * 0.60
         assert battery.battery_alert is True
 
-    def test_full_discharge_recharge_cycle_emergency_recharge_after_60percent(self):
+    def test_full_discharge_recharge_cycle_emergency_recharge_after_60percent(
+        self,
+    ) -> None:
         battery = Battery(
             max_depth_of_discharge=0.35, recharge_threshold=0.95, watthour=560.0
         )
@@ -1199,7 +1203,7 @@ class TestBatteryRechargeScenarios:
         _ = battery.battery_alert
         assert battery.emergency_recharge is True
 
-    def test_full_discharge_recharge_cycle_alert_persists_at_80percent(self):
+    def test_full_discharge_recharge_cycle_alert_persists_at_80percent(self) -> None:
         battery = Battery(
             max_depth_of_discharge=0.35, recharge_threshold=0.95, watthour=560.0
         )
@@ -1217,50 +1221,54 @@ class TestBatteryRechargeScenarios:
         _ = battery.battery_alert
         assert battery.emergency_recharge is True
 
-    def test_full_discharge_recharge_cycle_alert_persists_at_94percent(self):
+    def test_full_discharge_recharge_cycle_alert_persists_at_94percent(self) -> None:
         battery = Battery(
             max_depth_of_discharge=0.35, recharge_threshold=0.95, watthour=560.0
         )
         battery.charge_level = battery.watthour * 0.94
         assert battery.battery_alert is True
 
-    def test_full_discharge_recharge_cycle_alert_clears_at_95percent(self):
+    def test_full_discharge_recharge_cycle_alert_clears_at_95percent(self) -> None:
         battery = Battery(
             max_depth_of_discharge=0.35, recharge_threshold=0.95, watthour=560.0
         )
         battery.charge_level = battery.watthour * 0.95
         assert battery.battery_alert is False
 
-    def test_full_discharge_recharge_cycle_emergency_recharge_clears_at_95percent(self):
+    def test_full_discharge_recharge_cycle_emergency_recharge_clears_at_95percent(
+        self,
+    ) -> None:
         battery = Battery(
             max_depth_of_discharge=0.35, recharge_threshold=0.95, watthour=560.0
         )
         battery.charge_level = battery.watthour * 0.95
         assert battery.emergency_recharge is False
 
-    def test_full_discharge_recharge_cycle_alert_remains_cleared_at_100percent(self):
+    def test_full_discharge_recharge_cycle_alert_remains_cleared_at_100percent(
+        self,
+    ) -> None:
         battery = Battery(
             max_depth_of_discharge=0.35, recharge_threshold=0.95, watthour=560.0
         )
         battery.charge_level = battery.watthour * 1.0
         assert battery.battery_alert is False
 
-    def test_multiple_charge_discharge_cycles_first_cycle_alert(self):
+    def test_multiple_charge_discharge_cycles_first_cycle_alert(self) -> None:
         battery = Battery(max_depth_of_discharge=0.35, recharge_threshold=0.95)
         battery.charge_level = battery.watthour * 0.60
         assert battery.battery_alert is True
 
-    def test_multiple_charge_discharge_cycles_first_cycle_clear(self):
+    def test_multiple_charge_discharge_cycles_first_cycle_clear(self) -> None:
         battery = Battery(max_depth_of_discharge=0.35, recharge_threshold=0.95)
         battery.charge_level = battery.watthour * 0.95
         assert battery.battery_alert is False
 
-    def test_multiple_charge_discharge_cycles_second_cycle_alert(self):
+    def test_multiple_charge_discharge_cycles_second_cycle_alert(self) -> None:
         battery = Battery(max_depth_of_discharge=0.35, recharge_threshold=0.95)
         battery.charge_level = battery.watthour * 0.55
         assert battery.battery_alert is True
 
-    def test_multiple_charge_discharge_cycles_second_cycle_clear(self):
+    def test_multiple_charge_discharge_cycles_second_cycle_clear(self) -> None:
         battery = Battery(max_depth_of_discharge=0.35, recharge_threshold=0.95)
         battery.charge_level = battery.watthour * 0.95
         assert battery.battery_alert is False
