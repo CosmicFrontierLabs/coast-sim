@@ -32,6 +32,7 @@ import numpy as np
 import numpy.typing as npt
 from pydantic import BaseModel, Field, field_validator
 
+from ..common.vector import rotvec, vecnorm
 from .constraint import Constraint
 
 
@@ -62,51 +63,16 @@ def create_star_tracker_vector(
     pitch_rad = np.deg2rad(pitch_deg)
     yaw_rad = np.deg2rad(yaw_deg)
 
-    # Compute rotation matrices
-    # Yaw rotation about Z axis
-    cos_yaw = np.cos(yaw_rad)
-    sin_yaw = np.sin(yaw_rad)
-    r_z = np.array(
-        [
-            [cos_yaw, -sin_yaw, 0],
-            [sin_yaw, cos_yaw, 0],
-            [0, 0, 1],
-        ]
-    )
+    # Start with default boresight along +X
+    boresight = np.array([1.0, 0.0, 0.0])
 
-    # Pitch rotation about Y axis
-    cos_pitch = np.cos(pitch_rad)
-    sin_pitch = np.sin(pitch_rad)
-    r_y = np.array(
-        [
-            [cos_pitch, 0, sin_pitch],
-            [0, 1, 0],
-            [-sin_pitch, 0, cos_pitch],
-        ]
-    )
+    # Apply rotations in ZYX order: yaw (Z), then pitch (Y), then roll (X)
+    boresight = rotvec(3, yaw_rad, boresight)  # Yaw around Z
+    boresight = rotvec(2, pitch_rad, boresight)  # Pitch around Y
+    boresight = rotvec(1, roll_rad, boresight)  # Roll around X
 
-    # Roll rotation about X axis
-    cos_roll = np.cos(roll_rad)
-    sin_roll = np.sin(roll_rad)
-    r_x = np.array(
-        [
-            [1, 0, 0],
-            [0, cos_roll, -sin_roll],
-            [0, sin_roll, cos_roll],
-        ]
-    )
-
-    # Combined rotation: r = r_x @ r_y @ r_z (apply yaw, then pitch, then roll)
-    r_combined = r_x @ r_y @ r_z
-
-    # Default boresight pointing along +X
-    boresight_default = np.array([1.0, 0.0, 0.0])
-
-    # Apply rotation to get final boresight
-    boresight = r_combined @ boresight_default
-
-    # Normalize to ensure unit vector (should already be close to 1)
-    boresight = boresight / np.linalg.norm(boresight)
+    # Normalize to ensure unit vector
+    boresight = vecnorm(boresight)
 
     return tuple(boresight)
 
