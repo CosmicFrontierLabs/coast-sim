@@ -140,10 +140,10 @@ class TestPlotDitlTimeline:
         housekeeping_records = [
             Housekeeping(timestamp=base_time, acs_mode=ACSMode.SCIENCE),
             Housekeeping(
-                timestamp=base_time + timedelta(seconds=1800), mode=ACSMode.SAFE
+                timestamp=base_time + timedelta(seconds=1800), acs_mode=ACSMode.SAFE
             ),
             Housekeeping(
-                timestamp=base_time + timedelta(seconds=3600), mode=ACSMode.SCIENCE
+                timestamp=base_time + timedelta(seconds=3600), acs_mode=ACSMode.SCIENCE
             ),
         ]
         mock_ditl.telemetry = Telemetry(
