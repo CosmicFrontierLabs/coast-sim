@@ -277,6 +277,7 @@ class ACS:
         # Always start slew from current spacecraft position - ACS drives the spacecraft
         slew.startra = self.ra
         slew.startdec = self.dec
+        slew.startroll = self.roll  # Start roll from current ACS roll
         slew.slewstart = utime
         slew.calc_slewtime()
 
@@ -320,7 +321,11 @@ class ACS:
         slew.slewrequest = utime
         slew.endra = ra
         slew.enddec = dec
-        slew.endroll = roll if roll is not None else 0.0
+        # If roll not provided, calculate optimal roll at target position
+        if roll is None:
+            slew.endroll = optimum_roll(ra, dec, utime, self.ephem, self.solar_panel)
+        else:
+            slew.endroll = roll
         slew.obstype = obstype
         slew.obsid = obsid
 
