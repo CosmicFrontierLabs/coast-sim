@@ -314,12 +314,6 @@ Visualization Example
 
    plt.tight_layout()
    plt.show()
-   axes[3].set_xlabel('Time')
-   axes[3].set_title('Data Downlink Rate')
-   axes[3].grid(True)
-
-   plt.tight_layout()
-   plt.show()
 
 Fault Management Integration
 -----------------------------
