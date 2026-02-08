@@ -139,36 +139,40 @@ def plot_ditl_telemetry(
     ax.plot(timehours, none_to_nan(ditl.telemetry.housekeeping.panel_illumination))
 
     # Mark eclipse periods using the telemetry in_eclipse data
-    eclipse_values = [
-        hk.in_eclipse for hk in ditl.telemetry.housekeeping if hk.in_eclipse is not None
-    ]
-    if eclipse_values:
-        eclipse_mask = np.array(eclipse_values)
-        if np.any(eclipse_mask):
-            # Find eclipse start and end times
-            eclipse_starts = []
-            eclipse_ends = []
-            in_eclipse = False
-            for i, is_eclipse in enumerate(eclipse_mask):
-                if is_eclipse and not in_eclipse:
-                    eclipse_starts.append(timehours[i])
-                    in_eclipse = True
-                elif not is_eclipse and in_eclipse:
-                    eclipse_ends.append(timehours[i - 1])
-                    in_eclipse = False
-            # Handle case where eclipse continues to end
-            if in_eclipse:
-                eclipse_ends.append(timehours[-1])
+    # Build a 1:1 boolean mask aligned with housekeeping/timehours.
+    # Treat None (or missing) values as not in eclipse (False).
+    eclipse_mask = np.array(
+        [
+            bool(hk.in_eclipse) if hk.in_eclipse is not None else False
+            for hk in ditl.telemetry.housekeeping
+        ],
+        dtype=bool,
+    )
+    if eclipse_mask.size and np.any(eclipse_mask):
+        # Find eclipse start and end times
+        eclipse_starts = []
+        eclipse_ends = []
+        in_eclipse = False
+        for i, is_eclipse in enumerate(eclipse_mask):
+            if is_eclipse and not in_eclipse:
+                eclipse_starts.append(timehours[i])
+                in_eclipse = True
+            elif not is_eclipse and in_eclipse:
+                eclipse_ends.append(timehours[i - 1])
+                in_eclipse = False
+        # Handle case where eclipse continues to end
+        if in_eclipse:
+            eclipse_ends.append(timehours[-1])
 
-            # Shade eclipse regions
-            for start, end in zip(eclipse_starts, eclipse_ends):
-                ax.axvspan(
-                    start,
-                    end,
-                    alpha=0.3,
-                    color="gray",
-                    label="Eclipse" if start == eclipse_starts[0] else "",
-                )
+        # Shade eclipse regions
+        for start, end in zip(eclipse_starts, eclipse_ends):
+            ax.axvspan(
+                start,
+                end,
+                alpha=0.3,
+                color="gray",
+                label="Eclipse" if start == eclipse_starts[0] else "",
+            )
 
     ax.xaxis.set_visible(False)
     ax.set_ylim(0, 1)
