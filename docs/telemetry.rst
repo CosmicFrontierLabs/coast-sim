@@ -228,5 +228,4 @@ you can migrate to the new telemetry system:
    battery_levels = ditl.telemetry.housekeeping.battery_level
 
 The legacy array access is maintained for backward compatibility, but the new telemetry
-system provides better type safety and more structured data access.</content>
-<parameter name="filePath">/Users/jak51/STAR/coast-sim/docs/telemetry.rst
+system provides better type safety and more structured data access.
