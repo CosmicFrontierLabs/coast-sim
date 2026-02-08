@@ -21,8 +21,10 @@ class Slew:
     slewend: float
     startra: float
     startdec: float
+    startroll: float
     endra: float
     enddec: float
+    endroll: float
     slewtime: float
     slewpath: tuple[list[float], list[float]]
     slewsecs: list[float]
@@ -56,8 +58,10 @@ class Slew:
         self.slewend = 0
         self.startra = 0
         self.startdec = 0
+        self.startroll = 0
         self.endra = 0
         self.enddec = 0
+        self.endroll = 0
         self.slewtime = 0
         self.slewdist = 0
 
@@ -67,7 +71,7 @@ class Slew:
         self.at = None  # What's the target associated with this slew?
 
     def __str__(self) -> str:
-        return f"Slew from {self.startra:.3f},{self.startdec:.3f} to {self.endra},{self.enddec} @ {unixtime2date(self.slewstart)}"
+        return f"Slew from {self.startra:.3f},{self.startdec:.3f},{self.startroll:.3f}° to {self.endra:.3f},{self.enddec:.3f},{self.endroll:.3f}° @ {unixtime2date(self.slewstart)}"
 
     def is_slewing(self, utime: float) -> bool:
         """For a given utime, are we slewing?"""
@@ -78,6 +82,10 @@ class Slew:
 
     def ra_dec(self, utime: float) -> tuple[float, float]:
         return self.slew_ra_dec(utime)
+
+    def roll(self, utime: float) -> float:
+        """Return roll angle at the given time during the slew."""
+        return self.slew_roll(utime)
 
     def slew_ra_dec(self, utime: float) -> tuple[float, float]:
         """Return RA/Dec at time using bang-bang slew profile when configured.
@@ -126,6 +134,30 @@ class Slew:
         ra = np.interp(idx, x, ras) % 360
         dec = np.interp(idx, x, dec_path)
         return ra, dec
+
+    def slew_roll(self, utime: float) -> float:
+        """Return roll angle at time using linear interpolation during slew."""
+        # Time since slew start
+        t = utime - self.slewstart
+        if t <= 0:
+            return self.startroll
+
+        # If no slew time calculated, return start roll
+        if self.slewtime <= 0:
+            return self.startroll
+
+        # Linear interpolation between start and end roll
+        f = max(0.0, min(1.0, t / self.slewtime))
+        roll_diff = self.endroll - self.startroll
+
+        # Handle roll angle wrapping (roll is periodic every 360 degrees)
+        # Choose the shortest path
+        if roll_diff > 180:
+            roll_diff -= 360
+        elif roll_diff < -180:
+            roll_diff += 360
+
+        return (self.startroll + f * roll_diff) % 360
 
     def calc_slewtime(self) -> float:
         """Calculate time to slew between 2 coordinates, given in degrees.

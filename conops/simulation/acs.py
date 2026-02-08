@@ -299,7 +299,13 @@ class ACS:
         return slew.obstype == "PPT" and isinstance(slew, Slew)
 
     def _enqueue_slew(
-        self, ra: float, dec: float, obsid: int, utime: float, obstype: str = "PPT"
+        self,
+        ra: float,
+        dec: float,
+        obsid: int,
+        utime: float,
+        obstype: str = "PPT",
+        roll: float | None = None,
     ) -> bool:
         """Create and enqueue a slew command.
 
@@ -314,6 +320,7 @@ class ACS:
         slew.slewrequest = utime
         slew.endra = ra
         slew.enddec = dec
+        slew.endroll = roll if roll is not None else 0.0
         slew.obstype = obstype
         slew.obsid = obsid
 
@@ -325,7 +332,7 @@ class ACS:
             execution_time = utime  # Execute immediately
         else:
             # Set up target observation request and check visibility
-            target_request = self._create_target_request(slew, utime)
+            target_request = self._create_target_request(slew, utime, roll)
             slew.at = target_request
 
             visstart = target_request.next_vis(utime)
@@ -357,7 +364,9 @@ class ACS:
 
         return True
 
-    def _create_target_request(self, slew: Slew, utime: float) -> "Pointing":
+    def _create_target_request(
+        self, slew: Slew, utime: float, roll: float | None = None
+    ) -> "Pointing":
         """Create and configure a target observation request for visibility checking."""
         from ..targets import Pointing
 
@@ -365,6 +374,7 @@ class ACS:
             config=self.config,
             ra=slew.endra,
             dec=slew.enddec,
+            roll=roll if roll is not None else 0.0,
             obsid=slew.obsid,
         )
         target.isat = slew.obstype != "PPT"
@@ -384,10 +394,12 @@ class ACS:
         if self.last_slew:
             slew.startra = self.ra
             slew.startdec = self.dec
+            slew.startroll = self.roll
             return False
 
         slew.startra = self.ra
         slew.startdec = self.dec
+        slew.startroll = self.roll
         return True
 
     def _is_slew_valid(self, visstart: float, obstype: str, utime: float) -> bool:
@@ -638,6 +650,7 @@ class ACS:
             and self.current_slew.is_slewing(utime)
         ):
             self.ra, self.dec = self.current_slew.ra_dec(utime)
+            self.roll = self.current_slew.roll(utime)
         else:
             # After slew completes or for continuous tracking, maintain optimal pointing
             self.ra = target_ra
@@ -764,7 +777,12 @@ class ACS:
                 f"Starting battery charge at RA={command.ra:.2f} Dec={command.dec:.2f} obsid={command.obsid}",
             )
             self._enqueue_slew(
-                command.ra, command.dec, command.obsid, utime, obstype="CHARGE"
+                command.ra,
+                command.dec,
+                command.obsid,
+                utime,
+                obstype="CHARGE",
+                roll=command.roll,
             )
 
     def _end_battery_charge(self, utime: float) -> None:
