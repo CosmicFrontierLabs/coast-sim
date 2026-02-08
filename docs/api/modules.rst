@@ -26,6 +26,7 @@ Core Modules
    conops.ditl.ditl_mixin
    conops.ditl.ditl_stats
    conops.ditl.queue_ditl
+   conops.ditl.telemetry
    conops.simulation
    conops.simulation.acs
    conops.simulation.acs_command

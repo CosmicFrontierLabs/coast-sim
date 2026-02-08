@@ -1,7 +1,9 @@
 Visualization
 =============
 
-COASTSim includes plotting utilities for DITL simulation outputs and telemetry.
+COASTSim includes plotting utilities for DITL simulation outputs and telemetry data.
+The visualization system works with COASTSim's structured telemetry system, providing
+comprehensive plotting capabilities for analyzing simulation results.
 These plotting functions are implemented under `conops.visualization` and accept
 an optional `config` parameter. When omitted, the functions use `ditl.config.visualization`
 if available, or sensible defaults from the `VisualizationConfig` model.
@@ -27,9 +29,9 @@ Key plotting utilities
 The following plotting functions are available under `conops.visualization`:
 
 - `plot_ditl_telemetry()` — basic multi-panel timeline showing RA/Dec, ACS mode, battery,
-  power, and observation IDs.
-- `plot_data_management_telemetry()` — recorder volume, fill fraction, generated/downlinked data, and alerts.
-- `plot_acs_mode_distribution()` — pie chart showing the distribution of time spent in each ACS mode.
+  power, and observation IDs from telemetry data.
+- `plot_data_management_telemetry()` — recorder volume, fill fraction, generated/downlinked data, and alerts from telemetry data.
+- `plot_acs_mode_distribution()` — pie chart showing the distribution of time spent in each ACS mode from telemetry data.
 - `plot_ditl_timeline()` — timeline with orbit numbers, observations, slews, SAA, and eclipses.
 - `plot_sky_pointing()` — an interactive Mollweide sky projection with current pointing and constraints.
 - `save_sky_pointing_movie()` — export the entire DITL sky pointing visualization as a movie (MP4, AVI, or GIF).
@@ -68,12 +70,29 @@ Example:
    fig, axes = plot_ditl_telemetry(ditl)
    fig2, ax2 = plot_acs_mode_distribution(ditl, config=cfg.visualization)
 
-Working with DITL Logs
-----------------------
+Working with Telemetry Data
+----------------------------
 
-All timeline and telemetry visualizations can be driven from the structured
-event log ``ditl.log``. For batch processing across many runs, persist logs
-with ``DITLLogStore`` and load events by ``run_id``:
+All timeline and telemetry visualizations work with COASTSim's structured telemetry system.
+The telemetry data is automatically recorded during DITL simulation and stored in ``ditl.telemetry``.
+
+.. code-block:: python
+
+   from conops.ditl import QueueDITL
+   from conops.visualization import plot_ditl_telemetry
+
+   ditl = QueueDITL(config=config)
+   ditl.calc()
+
+   # Access structured telemetry data
+   telemetry = ditl.telemetry
+   housekeeping = telemetry.housekeeping  # All timestep data
+   payload_data = telemetry.data          # Data generation events
+
+   # Plot telemetry
+   fig, axes = plot_ditl_telemetry(ditl)
+
+For batch processing across many runs, persist logs with ``DITLLogStore`` and load events by ``run_id``:
 
 .. code-block:: python
 

@@ -226,21 +226,39 @@ Add the recorder to your spacecraft configuration:
 Telemetry Output
 ~~~~~~~~~~~~~~~~
 
-During simulation, DITL tracks data management telemetry:
+During simulation, DITL automatically records data management telemetry in structured format:
 
 .. code-block:: python
 
-   from conops.ditl import DITL
+   from conops.ditl import QueueDITL
+   from conops import MissionConfig
 
-   ditl = DITL(config=config)
+   config = MissionConfig()
+   ditl = QueueDITL(config=config)
    ditl.calc()
 
-   # Access data management telemetry
-   recorder_volume = ditl.recorder_volume_gb      # Current volume at each timestep
-   fill_fraction = ditl.recorder_fill_fraction    # Fill level (0-1) at each timestep
-   alert_level = ditl.recorder_alert              # Alert level (0/1/2) at each timestep
-   data_generated = ditl.data_generated_gb        # Data generated at each timestep
-   data_downlinked = ditl.data_downlinked_gb      # Data downlinked at each timestep
+   # Access data management telemetry through structured telemetry system
+   telemetry = ditl.telemetry
+
+   # Housekeeping data (recorded at each timestep)
+   recorder_volume = telemetry.housekeeping.recorder_volume_gb      # Current volume at each timestep
+   fill_fraction = telemetry.housekeeping.recorder_fill_fraction    # Fill level (0-1) at each timestep
+   alert_level = telemetry.housekeeping.recorder_alert              # Alert level (0/1/2) at each timestep
+
+   # Payload data (recorded when data is generated)
+   data_events = telemetry.data  # List of PayloadData records
+   data_sizes = [pd.data_size_gb for pd in data_events]
+
+For backward compatibility, the legacy array access is still available:
+
+.. code-block:: python
+
+   # Legacy access (still supported)
+   recorder_volume = ditl.recorder_volume_gb
+   fill_fraction = ditl.recorder_fill_fraction
+   alert_level = ditl.recorder_alert
+   data_generated = ditl.data_generated_gb
+   data_downlinked = ditl.data_downlinked_gb
 
 Visualization Example
 ~~~~~~~~~~~~~~~~~~~~~
@@ -248,36 +266,54 @@ Visualization Example
 .. code-block:: python
 
    import matplotlib.pyplot as plt
-   from datetime import datetime
+   from conops.visualization import plot_data_management_telemetry
 
-   # Convert timestamps to datetime for plotting
-   times = [datetime.fromtimestamp(t) for t in ditl.utime]
+   # Use the built-in plotting function
+   fig, axes = plot_data_management_telemetry(ditl)
+   plt.show()
 
+   # Or create custom plots using telemetry data
    fig, axes = plt.subplots(4, 1, figsize=(12, 10), sharex=True)
 
+   # Get timestamps for plotting
+   times = telemetry.housekeeping.timestamp
+
    # Recorder volume
-   axes[0].plot(times, ditl.recorder_volume_gb, 'b-')
+   axes[0].plot(times, telemetry.housekeeping.recorder_volume_gb, 'b-')
    axes[0].set_ylabel('Volume (Gb)')
    axes[0].set_title('Onboard Recorder Status')
    axes[0].grid(True)
 
    # Fill fraction with thresholds
-   axes[1].plot(times, ditl.recorder_fill_fraction, 'g-', label='Fill Level')
+   axes[1].plot(times, telemetry.housekeeping.recorder_fill_fraction, 'g-', label='Fill Level')
    axes[1].axhline(y=0.7, color='orange', linestyle='--', label='Yellow Threshold')
    axes[1].axhline(y=0.9, color='red', linestyle='--', label='Red Threshold')
    axes[1].set_ylabel('Fill Fraction')
    axes[1].legend()
    axes[1].grid(True)
 
-   # Data generation
-   axes[2].plot(times, ditl.data_generated_gb, 'purple', alpha=0.7)
-   axes[2].set_ylabel('Generated (Gb)')
-   axes[2].set_title('Data Generation Rate')
-   axes[2].grid(True)
+   # Data generation events
+   if telemetry.data:
+       data_times = [pd.timestamp for pd in telemetry.data]
+       data_sizes = [pd.data_size_gb for pd in telemetry.data]
+       axes[2].bar(data_times, data_sizes, width=0.01, alpha=0.7, color='purple')
+       axes[2].set_ylabel('Generated (Gb)')
+       axes[2].set_title('Data Generation Events')
+       axes[2].grid(True)
 
-   # Data downlink
-   axes[3].plot(times, ditl.data_downlinked_gb, 'red', alpha=0.7)
-   axes[3].set_ylabel('Downlinked (Gb)')
+   # Alert levels
+   colors = ['green', 'orange', 'red']  # 0=normal, 1=warning, 2=critical
+   for i, alert in enumerate(telemetry.housekeeping.recorder_alert):
+       if alert > 0:  # Only plot non-zero alerts
+           axes[3].scatter(times[i], alert, c=colors[alert], s=20, alpha=0.8)
+   axes[3].set_ylabel('Alert Level')
+   axes[3].set_title('Recorder Alerts')
+   axes[3].set_yticks([0, 1, 2])
+   axes[3].set_yticklabels(['Normal', 'Warning', 'Critical'])
+   axes[3].grid(True)
+
+   plt.tight_layout()
+   plt.show()
    axes[3].set_xlabel('Time')
    axes[3].set_title('Data Downlink Rate')
    axes[3].grid(True)

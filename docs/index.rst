@@ -15,6 +15,7 @@ optimize observation schedules, and validate operational constraints before laun
    installation
    quickstart
    configuration
+   telemetry
    examples
    visualization
    sky_pointing_visualization
@@ -34,6 +35,7 @@ Features
 * **Observation Planning**: Target queue management and scheduling algorithms
 * **Instrument Modeling**: Multi-instrument configurations with power and pointing requirements
 * **Data Management**: Onboard data storage simulation with generation and downlink modeling
+* **Telemetry System**: Structured telemetry data models for simulation analysis and visualization
 * **Constraint Management**: Sun, Moon, Earth limb, and custom geometric constraints
 * **Fault Management**: Extensible parameter monitoring with yellow/red thresholds and automatic safe mode
 * **Power Budget Analysis**: Solar panel modeling, battery management, and emergency charging scenarios
