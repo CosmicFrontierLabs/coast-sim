@@ -63,7 +63,7 @@ def optimum_roll(
     s_norm = s / np.linalg.norm(s)
 
     # Precompute per-panel coefficients for rotation about X:
-    # illum(theta) = (nx*sx) + cos(theta)*(ny*sy + nz*sz) + sin(theta)*(nz*sy - ny*sz)
+    # illum(theta) = (nx*sx) + cos(theta)*(ny*sy + nz*sz) + sin(theta)*(ny*sz - nz*sy)
     a_coef = n_mat[:, 0] * s_norm[0]
     b_coef = n_mat[:, 1] * s_norm[1] + n_mat[:, 2] * s_norm[2]
     c_coef = n_mat[:, 1] * s_norm[2] - n_mat[:, 2] * s_norm[1]

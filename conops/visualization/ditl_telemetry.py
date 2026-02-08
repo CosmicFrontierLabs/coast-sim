@@ -272,13 +272,6 @@ def plot_ditl_telemetry_plotly(
         >>> fig = plot_ditl_telemetry_plotly(ditl)
         >>> fig.show()
     """
-    try:
-        import plotly.graph_objects as go
-    except ImportError:
-        raise ImportError(
-            "plotly is required for plot_ditl_telemetry_plotly. Install with: pip install plotly"
-        )
-
     # Resolve config: if the provided config is not a VisualizationConfig instance,
     # then try to use ditl.config.visualization if it's a VisualizationConfig, else use defaults.
     if not isinstance(config, VisualizationConfig):
