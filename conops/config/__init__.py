@@ -27,6 +27,7 @@ from .star_tracker import (
     StarTracker,
     StarTrackerConfiguration,
     StarTrackerOrientation,
+    create_star_tracker_vector,
 )
 from .targets import TargetConfig
 from .thermal import Heater
@@ -66,4 +67,5 @@ __all__ = [
     "DAY_SECONDS",
     "DTOR",
     "create_solar_panel_vector",
+    "create_star_tracker_vector",
 ]

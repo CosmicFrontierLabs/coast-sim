@@ -12,14 +12,15 @@ from conops.config import (
 
 @pytest.fixture
 def basic_orientation():
-    """Basic star tracker orientation (no rotation)."""
-    return StarTrackerOrientation(roll=0.0, pitch=0.0, yaw=0.0)
+    """Basic star tracker orientation (boresight along +X)."""
+    return StarTrackerOrientation(boresight=(1.0, 0.0, 0.0))
 
 
 @pytest.fixture
 def rotated_orientation():
-    """Star tracker rotated 45 degrees about X-axis."""
-    return StarTrackerOrientation(roll=45.0, pitch=0.0, yaw=0.0)
+    """Star tracker rotated to point toward +Y direction."""
+    # 90 degree pitch (rotation about Y) gives: (0, 1, 0)
+    return StarTrackerOrientation(boresight=(0.0, 1.0, 0.0))
 
 
 @pytest.fixture
@@ -102,9 +103,10 @@ def config_triple_trackers_high_requirement(basic_star_tracker, rotated_orientat
         name="ST2",
         orientation=rotated_orientation,
     )
+    # 90 degree roll about X (rotation around boresight axis) - boresight stays (1,0,0)
     st3 = StarTracker(
         name="ST3",
-        orientation=StarTrackerOrientation(roll=0.0, pitch=45.0, yaw=0.0),
+        orientation=StarTrackerOrientation(boresight=(1.0, 0.0, 0.0)),
     )
     return StarTrackerConfiguration(
         star_trackers=[basic_star_tracker, st2, st3],
