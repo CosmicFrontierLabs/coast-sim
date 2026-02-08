@@ -2,7 +2,7 @@ from typing import Literal
 
 import numpy as np
 
-from ..common import unixtime2date
+from ..common import angular_separation, dtutcfromtimestamp, unixtime2date
 from ..config import MissionConfig
 from .plan_entry import PlanEntry
 
@@ -70,6 +70,27 @@ class Pointing(PlanEntry):
     def in_panel(self, utime: float) -> bool:
         """Is this target in Panel constraint?"""
         return self.config.constraint.in_panel(self.ra, self.dec, utime)
+
+    def sun_angle(self, utime: float) -> float:
+        """Calculate the angular distance from this pointing to the Sun.
+
+        Args:
+            utime: Unix timestamp
+
+        Returns:
+            Angular distance to the Sun in degrees
+        """
+        assert self.config.constraint is not None, "Constraint must be set"
+        assert self.config.constraint.ephem is not None, "Ephemeris must be set"
+
+        ephem = self.config.constraint.ephem
+        time_dt = dtutcfromtimestamp(utime)
+        idx = ephem.index(time_dt)
+
+        sun_ra = ephem.sun_ra_deg[idx]
+        sun_dec = ephem.sun_dec_deg[idx]
+
+        return angular_separation(sun_ra, sun_dec, self.ra, self.dec)
 
     def next_vis(self, utime: float) -> float | Literal[False]:
         """When is this target visible next?"""

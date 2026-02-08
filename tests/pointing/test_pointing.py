@@ -260,3 +260,79 @@ class TestPointing:
         # Reset
         pointing.reset()
         assert pointing.slewtime == 0
+
+
+class TestPointingSunAngle:
+    """Test sun_angle method for calculating angular distance to the Sun."""
+
+    def test_sun_angle_calculates_distance(self, mock_config):
+        """Test that sun_angle correctly calculates angular distance to the Sun."""
+        from unittest.mock import Mock
+
+        import numpy as np
+
+        # Create mock ephemeris with sun position
+        mock_ephem = Mock()
+        # Sun at RA=90°, Dec=0°
+        mock_ephem.sun_ra_deg = np.array([90.0])
+        mock_ephem.sun_dec_deg = np.array([0.0])
+        mock_ephem.index = Mock(return_value=0)
+
+        mock_config.constraint.ephem = mock_ephem
+
+        # Create pointing at RA=0°, Dec=0°
+        pointing = Pointing(config=mock_config, ra=0.0, dec=0.0)
+
+        # Calculate sun angle
+        angle = pointing.sun_angle(1000.0)
+
+        # Should be 90° separation
+        assert abs(angle - 90.0) < 0.01
+
+    def test_sun_angle_same_position(self, mock_config):
+        """Test sun_angle when pointing is at the Sun."""
+        from unittest.mock import Mock
+
+        import numpy as np
+
+        # Create mock ephemeris
+        mock_ephem = Mock()
+        # Sun at RA=45°, Dec=30°
+        mock_ephem.sun_ra_deg = np.array([45.0])
+        mock_ephem.sun_dec_deg = np.array([30.0])
+        mock_ephem.index = Mock(return_value=0)
+
+        mock_config.constraint.ephem = mock_ephem
+
+        # Create pointing at same location as Sun
+        pointing = Pointing(config=mock_config, ra=45.0, dec=30.0)
+
+        # Calculate sun angle
+        angle = pointing.sun_angle(1000.0)
+
+        # Should be 0° separation (or very close due to floating point)
+        assert abs(angle) < 0.01
+
+    def test_sun_angle_opposite_position(self, mock_config):
+        """Test sun_angle when pointing is opposite the Sun."""
+        from unittest.mock import Mock
+
+        import numpy as np
+
+        # Create mock ephemeris
+        mock_ephem = Mock()
+        # Sun at RA=0°, Dec=0°
+        mock_ephem.sun_ra_deg = np.array([0.0])
+        mock_ephem.sun_dec_deg = np.array([0.0])
+        mock_ephem.index = Mock(return_value=0)
+
+        mock_config.constraint.ephem = mock_ephem
+
+        # Create pointing 180° away (on opposite side of celestial sphere)
+        pointing = Pointing(config=mock_config, ra=180.0, dec=0.0)
+
+        # Calculate sun angle
+        angle = pointing.sun_angle(1000.0)
+
+        # Should be 180° separation
+        assert abs(angle - 180.0) < 0.01
