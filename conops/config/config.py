@@ -103,6 +103,35 @@ class MissionConfig(BaseModel):
                 red=self.recorder.red_threshold,
                 direction="above",
             )
+        # Add star tracker threshold if not already present and star trackers are configured
+        star_trackers = None
+        try:
+            star_trackers = self.spacecraft_bus.star_trackers
+            has_star_trackers = (
+                hasattr(star_trackers, "num_trackers")
+                and star_trackers.num_trackers() > 0
+            )
+        except AttributeError:
+            has_star_trackers = False
+
+        if (
+            not any(
+                t.name == "star_tracker_functional_count"
+                for t in self.fault_management.thresholds
+            )
+            and has_star_trackers
+            and star_trackers is not None
+        ):
+            # Trigger when functional count drops below the configured minimum.
+            min_functional = star_trackers.min_functional_trackers
+            yellow = min_functional
+            red = min_functional - 1
+            self.fault_management.add_threshold(
+                name="star_tracker_functional_count",
+                yellow=yellow,
+                red=red,
+                direction="below",
+            )
         return self
 
     def data_generated(self, duration_seconds: float) -> float:

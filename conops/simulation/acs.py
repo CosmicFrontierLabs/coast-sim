@@ -669,6 +669,9 @@ class ACS:
         )
         self.star_tracker_functional_count = (
             num_trackers - self.star_tracker_hard_violations
+            if isinstance(num_trackers, int)
+            and isinstance(self.star_tracker_hard_violations, int)
+            else 0
         )
 
         # Log hard constraint violations
