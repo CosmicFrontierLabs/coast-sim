@@ -271,34 +271,13 @@ def create_solar_panel_vector(
 
         theta_x = np.radians(cant_x)
         theta_y = np.radians(cant_y)
+        azimuth_rad = np.radians(azimuth_deg)
 
-        # Start with base vector based on azimuth
-        # 0° = +Y, 90° = +Z, 180° = -Y, 270° = -Z
-        if azimuth_deg == 0.0:
-            # +Y direction
-            base_x, base_y, base_z = 0.0, 1.0, 0.0
-        elif azimuth_deg == 90.0:
-            # +Z direction
-            base_x, base_y, base_z = 0.0, 0.0, 1.0
-        elif azimuth_deg == 180.0:
-            # -Y direction
-            base_x, base_y, base_z = 0.0, -1.0, 0.0
-        elif azimuth_deg == 270.0:
-            # -Z direction
-            base_x, base_y, base_z = 0.0, 0.0, -1.0
-        else:
-            # Interpolate between the cardinal directions
-            # For simplicity, use the closest cardinal direction for now
-            # A more sophisticated implementation would interpolate
-            closest_az = round(azimuth_deg / 90.0) * 90.0
-            if closest_az == 0.0:
-                base_x, base_y, base_z = 0.0, 1.0, 0.0
-            elif closest_az == 90.0:
-                base_x, base_y, base_z = 0.0, 0.0, 1.0
-            elif closest_az == 180.0:
-                base_x, base_y, base_z = 0.0, -1.0, 0.0
-            else:  # 270
-                base_x, base_y, base_z = 0.0, 0.0, -1.0
+        # Compute base vector continuously around the boresight (X-axis)
+        # azimuth_deg: 0° = +Y, 90° = +Z, 180° = -Y, 270° = -Z
+        base_x = 0.0
+        base_y = np.cos(azimuth_rad)
+        base_z = np.sin(azimuth_rad)
 
         # Apply cant angles
         # First cant around X-axis (theta_x)

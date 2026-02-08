@@ -1,5 +1,6 @@
 """Additional comprehensive tests for solar_panel.py to achieve near 100% coverage."""
 
+import math
 from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
@@ -1413,21 +1414,21 @@ class TestCoverageCompletion:
         from conops.config.solar_panel import create_solar_panel_vector
 
         normal = create_solar_panel_vector(cant_x=0.0, cant_y=0.0, azimuth_deg=90.0)
-        assert normal == (0.0, 0.0, 1.0)
+        assert normal == pytest.approx((0.0, 0.0, 1.0), abs=1e-10)
 
     def test_create_normal_vector_old_style_azimuth_180(self) -> None:
         """Test create_solar_panel_vector old style with azimuth 180° (south/-Y)."""
         from conops.config.solar_panel import create_solar_panel_vector
 
         normal = create_solar_panel_vector(cant_x=0.0, cant_y=0.0, azimuth_deg=180.0)
-        assert normal == (0.0, -1.0, 0.0)
+        assert normal == pytest.approx((0.0, -1.0, 0.0), abs=1e-10)
 
     def test_create_normal_vector_old_style_azimuth_270(self) -> None:
         """Test create_solar_panel_vector old style with azimuth 270° (down/-Z)."""
         from conops.config.solar_panel import create_solar_panel_vector
 
         normal = create_solar_panel_vector(cant_x=0.0, cant_y=0.0, azimuth_deg=270.0)
-        assert normal == (0.0, 0.0, -1.0)
+        assert normal == pytest.approx((0.0, 0.0, -1.0), abs=1e-10)
 
     def test_create_normal_vector_old_style_with_cants_unit_vector(self) -> None:
         """Test create_solar_panel_vector old style with cant angles produces unit vector."""
@@ -1445,16 +1446,22 @@ class TestCoverageCompletion:
         from conops.config.solar_panel import create_solar_panel_vector
 
         normal = create_solar_panel_vector(cant_x=0.0, cant_y=0.0, azimuth_deg=45.0)
-        # 45° rounds to 0° (closest cardinal), so should be +Y
-        assert normal == (0.0, 1.0, 0.0)
+        # 45° should give vector at 45° in Y-Z plane: (0, cos(45°), sin(45°))
+        expected = (0.0, 1 / math.sqrt(2), 1 / math.sqrt(2))  # ≈ (0.0, 0.7071, 0.7071)
+        assert normal == pytest.approx(expected, abs=1e-10)
 
     def test_create_normal_vector_old_style_non_cardinal_azimuth_135(self) -> None:
         """Test create_solar_panel_vector old style with non-cardinal azimuth 135°."""
         from conops.config.solar_panel import create_solar_panel_vector
 
         normal = create_solar_panel_vector(cant_x=0.0, cant_y=0.0, azimuth_deg=135.0)
-        # 135° rounds to 180° (closest cardinal), so should be -Y
-        assert normal == (0.0, -1.0, 0.0)
+        # 135° should give vector at 135° in Y-Z plane: (0, cos(135°), sin(135°))
+        expected = (
+            0.0,
+            -1 / math.sqrt(2),
+            1 / math.sqrt(2),
+        )  # ≈ (0.0, -0.7071, 0.7071)
+        assert normal == pytest.approx(expected, abs=1e-10)
 
     def test_create_normal_vector_parameter_validation_mix_mount_cant_x(self) -> None:
         """Test parameter validation: mixing mount with cant_x raises ValueError."""
@@ -1532,7 +1539,7 @@ class TestCoverageCompletion:
             azimuth_deg=90.0
         )  # missing cant_x and cant_y
         # Should be +Z direction with no cant
-        assert normal == (0.0, 0.0, 1.0)
+        assert normal == pytest.approx((0.0, 0.0, 1.0), abs=1e-10)
 
     def test_create_normal_vector_parameter_validation_old_style_cant_y_only(
         self,
