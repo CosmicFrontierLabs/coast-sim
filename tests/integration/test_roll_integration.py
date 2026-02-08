@@ -71,8 +71,8 @@ def create_test_config_with_panels(
     panel_set = SolarPanelSet(
         conversion_efficiency=0.95,
         panels=[
-            SolarPanel(name="P1", sidemount=True, azimuth_deg=0.0, max_power=500.0),
-            SolarPanel(name="P2", sidemount=True, azimuth_deg=90.0, max_power=500.0),
+            SolarPanel(name="P1", normal=(1.0, 0.0, 0.0), max_power=500.0),
+            SolarPanel(name="P2", normal=(0.0, 1.0, 0.0), max_power=500.0),
         ],
     )
     constraint.panel_constraint.solar_panel = panel_set
