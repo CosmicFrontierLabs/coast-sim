@@ -168,6 +168,12 @@ def ditl(mock_config_detailed, mock_ephem):
         mock_acs.add_slew = Mock()
         mock_acs.passrequests = mock_pt
         mock_acs.get_mode = Mock(return_value=ACSMode.SCIENCE)
+        # Add star tracker attributes for Housekeeping telemetry
+        mock_acs.star_tracker_hard_violations = 0
+        mock_acs.star_tracker_soft_violations = False
+        mock_acs.star_tracker_functional_count = (
+            3  # Assume 3 functional star trackers by default
+        )
         mock_acs_class.return_value = mock_acs
 
         ditl = DITL(config=mock_config_detailed)
