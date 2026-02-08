@@ -195,42 +195,26 @@ def create_solar_panel_vector(
     Only one parameter style may be used at a time - either old style OR new style, not both.
 
     Args:
-        mount: Mount type - 'sidemount', 'aftmount', or 'boresight' (new style)
-        cant_z: Cant angle around Z-axis in degrees (new style)
-        cant_perp: Cant angle around perpendicular axis in degrees (new style):
-            - For 'sidemount': rotates around X-axis (pitch-like)
-            - For 'aftmount': rotates around Y-axis (pitch-like)
-            - For 'boresight': rotates around Y-axis (pitch-like)
-        cant_x: Cant angle around X-axis (deg), one of two orthogonal tilts (old style)
-        cant_y: Cant angle around Y-axis (deg), one of two orthogonal tilts (old style)
-        azimuth_deg: Structural placement angle around boresight/X (deg) (old style).
+        mount: Mount type (new style): 'sidemount', 'aftmount', or 'boresight'.
+        cant_z: Cant angle around the spacecraft Z-axis in degrees (new style yaw-like rotation).
+        cant_perp: Cant angle in degrees around the axis perpendicular to the panel mounting
+            direction (new style pitch-like rotation):
+            - For 'sidemount': rotates around X-axis.
+            - For 'aftmount': rotates around Y-axis.
+            - For 'boresight': rotates around Y-axis.
+        cant_x: Cant angle around X-axis in degrees (old style), one of two orthogonal tilts.
+        cant_y: Cant angle around Y-axis in degrees (old style), one of two orthogonal tilts.
+        azimuth_deg: Structural placement angle around boresight/X in degrees (old style).
             0° = +Y (side), 90° = +Z, 180° = -Y, 270° = -Z. This places the
             panel around the spacecraft circumference; roll adds on top of this.
 
     Returns:
-        Unit normal vector (x, y, z) in spacecraft body frame
+        Unit normal vector (x, y, z) in the spacecraft body frame.
 
-    Mount types (new style):
-        mount: Mount type - 'sidemount', 'aftmount', or 'boresight' (new style)
-        cant_z: Cant angle around Z-axis in degrees (new style)
-        cant_perp: Cant angle around perpendicular axis in degrees (new style):
-            - For 'sidemount': rotates around X-axis (pitch-like)
-            - For 'aftmount': rotates around Y-axis (pitch-like)
-            - For 'boresight': rotates around Y-axis (pitch-like)
-        cant_x: Cant angle around X-axis (deg), one of two orthogonal tilts (old style)
-        cant_y: Cant angle around Y-axis (deg), one of two orthogonal tilts (old style)
-        azimuth_deg: Structural placement angle around boresight/X (deg) (old style).
-            0° = +Y (side), 90° = +Z, 180° = -Y, 270° = -Z. This places the
-            panel around the spacecraft circumference; roll adds on top of this.
-
-    Returns:
-        Unit normal vector (x, y, z) in spacecraft body frame
-
-    Mount types (new style):
-        - 'sidemount': +Y direction (spacecraft "up")
-        - 'aftmount': -X direction (spacecraft "back")
-        - 'boresight': +X direction (spacecraft forward/pointing)
-
+    Mount types:
+        - 'sidemount': Panel nominally faces +Y (spacecraft "up").
+        - 'aftmount': Panel nominally faces -X (spacecraft "back").
+        - 'boresight': Panel nominally faces +X (spacecraft forward/pointing).
     Examples:
         # New style - Sidemount panel with 30° yaw and 15° pitch
         normal = create_solar_panel_vector('sidemount', cant_z=30.0, cant_perp=15.0)
