@@ -32,7 +32,7 @@ import numpy as np
 import numpy.typing as npt
 from pydantic import BaseModel, Field, field_validator
 
-from ..common.vector import rotvec, vecnorm
+from ..common.vector import radec2vec, rotvec, vec2radec, vecnorm
 from .constraint import Constraint
 
 
@@ -133,11 +133,11 @@ class StarTrackerOrientation(BaseModel):
             second = np.cross(np.array([1.0, 0.0, 0.0]), bore)
 
         # Normalize second axis
-        second = second / np.linalg.norm(second)
+        second = vecnorm(second)
 
         # Third axis: perpendicular to both boresight and second
         third = np.cross(bore, second)
-        third = third / np.linalg.norm(third)
+        third = vecnorm(third)
 
         # Compose rotation matrix: columns are the new basis vectors
         return np.column_stack([bore, second, third])
@@ -177,34 +177,18 @@ class StarTrackerOrientation(BaseModel):
         # Convert RA/Dec to vector in spacecraft frame
         ra_rad = np.deg2rad(ra_deg)
         dec_rad = np.deg2rad(dec_deg)
-        v_sc = np.array(
-            [
-                np.cos(dec_rad) * np.cos(ra_rad),
-                np.cos(dec_rad) * np.sin(ra_rad),
-                np.sin(dec_rad),
-            ]
-        )
+        v_sc = radec2vec(ra_rad, dec_rad)
 
         # Apply spacecraft roll to get vector in spacecraft body frame
         roll_rad = np.deg2rad(roll_deg)
-        cos_roll = np.cos(roll_rad)
-        sin_roll = np.sin(roll_rad)
-        roll_matrix: npt.NDArray[np.float64] = np.array(
-            [
-                [1, 0, 0],
-                [0, cos_roll, -sin_roll],
-                [0, sin_roll, cos_roll],
-            ]
-        )
-        v_body = roll_matrix @ v_sc
+        v_body = rotvec(1, roll_rad, v_sc)
 
         # Transform to star tracker frame
         rot_matrix = self.to_rotation_matrix()
         v_st = rot_matrix @ v_body
 
         # Convert back to RA/Dec
-        ra_st_rad = np.arctan2(v_st[1], v_st[0])
-        dec_st_rad = np.arcsin(v_st[2])
+        ra_st_rad, dec_st_rad = vec2radec(v_st)
 
         return np.rad2deg(ra_st_rad), np.rad2deg(dec_st_rad)
 
