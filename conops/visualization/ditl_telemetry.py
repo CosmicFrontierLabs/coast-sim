@@ -74,8 +74,11 @@ def plot_ditl_telemetry(
 
     def none_to_default(
         values: list[ACSMode | int | None], default: int = -1
-    ) -> list[ACSMode | int]:
-        return [v if v is not None else default for v in values]
+    ) -> list[int]:
+        return [
+            v.value if isinstance(v, ACSMode) else (v if v is not None else default)
+            for v in values
+        ]
 
     timehours = np.array(
         [
@@ -170,15 +173,14 @@ def plot_ditl_telemetry(
             none_to_nan(ditl.telemetry.housekeeping.power_usage),
             label="Total",
         )
-    ax.set_ylim(
-        0,
-        max(
-            x
-            for x in none_to_nan(ditl.telemetry.housekeeping.power_usage)
-            if not math.isnan(x)
-        )
-        * 1.1,
-    )
+    # Calculate y-limit for power plot safely
+    power_values = none_to_nan(ditl.telemetry.housekeeping.power_usage)
+    finite_power_values = [x for x in power_values if not math.isnan(x)]
+    if finite_power_values:
+        max_power = max(finite_power_values) * 1.1
+    else:
+        max_power = 1.0  # Default when no power data available
+    ax.set_ylim(0, max_power)
     ax.set_ylabel("Power (W)", fontsize=label_font_size, fontfamily=font_family)
     ax.xaxis.set_visible(False)
     ax.set_ylabel("Power (W)", fontsize=label_font_size, fontfamily=font_family)
