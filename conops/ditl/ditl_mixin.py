@@ -79,6 +79,7 @@ class DITLMixin:
 
         self.ra = []
         self.dec = []
+        self.roll = []
         self.utime = []
         self.mode = []
         self.obsid = []

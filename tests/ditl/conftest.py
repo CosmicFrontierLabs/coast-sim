@@ -162,7 +162,8 @@ def ditl(mock_config_detailed, mock_ephem):
         mock_acs.slewing = False
         mock_acs.inpass = False
         mock_acs.saa = None
-        mock_acs.in_eclipse = False
+        mock_acs.in_eclipse = False  # Set as attribute
+        mock_acs.configure_mock(in_eclipse=False)  # Also configure mock to return False
         mock_acs.pointing = Mock(return_value=(0.0, 0.0, 0.0, 0))
         mock_acs.add_slew = Mock()
         mock_acs.passrequests = mock_pt

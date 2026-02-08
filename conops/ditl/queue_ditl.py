@@ -77,11 +77,6 @@ class QueueDITL(DITLMixin, DITLStats):
         self.ppt = None
 
         # Pointing history
-        self.ra = list()
-        self.dec = list()
-        self.roll = list()
-        self.mode = list()
-        self.obsid = list()
         self.plan = Plan()
 
         # Power and battery history
