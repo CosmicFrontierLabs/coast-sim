@@ -31,6 +31,8 @@ class Housekeeping(BaseModel):
         recorder_volume_gb: Recorder data volume in Gb
         recorder_fill_fraction: Recorder fill fraction (0-1)
         recorder_alert: Recorder alert level (0/1/2)
+        sun_angle_deg: Angular distance from pointing to the Sun in degrees
+        in_eclipse: Whether spacecraft is in eclipse
     """
 
     timestamp: datetime | None = Field(default=None, description="UTC timestamp")
@@ -66,6 +68,12 @@ class Housekeeping(BaseModel):
     )
     recorder_alert: int | None = Field(
         default=None, description="Recorder alert level (0/1/2)"
+    )
+    sun_angle_deg: float | None = Field(
+        default=None, description="Angular distance to Sun in degrees"
+    )
+    in_eclipse: bool | None = Field(
+        default=None, description="Whether spacecraft is in eclipse"
     )
 
     @classmethod
@@ -220,6 +228,16 @@ class HousekeepingList(list[Housekeeping]):
     def recorder_alert(self) -> list[int | None]:
         """Get recorder alert values from all housekeeping records."""
         return [hk.recorder_alert for hk in self]
+
+    @property
+    def sun_angle_deg(self) -> list[float | None]:
+        """Get sun angle values from all housekeeping records."""
+        return [hk.sun_angle_deg for hk in self]
+
+    @property
+    def in_eclipse(self) -> list[bool | None]:
+        """Get eclipse state values from all housekeeping records."""
+        return [hk.in_eclipse for hk in self]
 
 
 class Telemetry(BaseModel):

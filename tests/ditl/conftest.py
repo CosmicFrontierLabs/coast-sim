@@ -162,6 +162,7 @@ def ditl(mock_config_detailed, mock_ephem):
         mock_acs.slewing = False
         mock_acs.inpass = False
         mock_acs.saa = None
+        mock_acs.in_eclipse = False
         mock_acs.pointing = Mock(return_value=(0.0, 0.0, 0.0, 0))
         mock_acs.add_slew = Mock()
         mock_acs.passrequests = mock_pt
@@ -188,7 +189,9 @@ def mock_pass_inst():
 @pytest.fixture
 def mock_acs_inst():
     """Mock ACS instance."""
-    return Mock()
+    mock_acs = Mock()
+    mock_acs.in_eclipse = False
+    return mock_acs
 
 
 @pytest.fixture

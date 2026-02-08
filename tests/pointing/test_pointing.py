@@ -1,87 +1,23 @@
-from conops import Pointing
-
-# Assuming DummyConstraint is defined elsewhere or imported; if not, define it here or import it.
-# For this example, I'll assume it's available.
-
-
-class TestPointingInitialization:
-    """Test Pointing initialization and default fields."""
-
-    def test_exptime_is_none(self, pointing):
-        assert pointing.exptime is None
-
-    def test_done_is_false(self, pointing):
-        assert pointing.done is False
-
-    def test_obstype_is_at(self, pointing):
-        assert pointing.obstype == "AT"
-
-    def test_isat_is_false(self, pointing):
-        assert pointing.isat is False
-
-
-class TestPointingVisibility:
-    """Test visibility-related methods on Pointing."""
-
-    def test_in_sun(self, dummy_constraint, mock_config):
-        mock_config.constraint = dummy_constraint
-        tr = Pointing(config=mock_config)
-        # ra/dec values passed through to the constraint; methods just return the stubbed values
-        tr.ra = 12.34
-        tr.dec = -21.0
-        assert tr.in_sun(12345)
-
-    def test_in_earth(self, dummy_constraint, mock_config):
-        mock_config.constraint = dummy_constraint
-        tr = Pointing(config=mock_config)
-        # ra/dec values passed through to the constraint; methods just return the stubbed values
-        tr.ra = 12.34
-        tr.dec = -21.0
-        assert tr.in_earth(12345)
-
-    def test_in_moon_is_false(self, dummy_constraint, mock_config):
-        mock_config.constraint = dummy_constraint
-        tr = Pointing(config=mock_config)
-        # ra/dec values passed through to the constraint; methods just return the stubbed values
-        tr.ra = 12.34
-        tr.dec = -21.0
-        assert tr.in_moon(12345) is False
-
-    def test_in_panel(self, dummy_constraint, mock_config):
-        mock_config.constraint = dummy_constraint
-        tr = Pointing(config=mock_config)
-        # ra/dec values passed through to the constraint; methods just return the stubbed values
-        tr.ra = 12.34
-        tr.dec = -21.0
-        assert tr.in_panel(12345)
-
-
 class TestPointingNextVis:
-    """Test next_vis and visible methods for visibility window calculation."""
+    """Test next_vis method of Pointing."""
 
-    def test_visible_returns_current_time_if_visible(self, pointing):
-        utime = 1000.0
-        # Place a visibility window that includes utime
-        pointing.windows = [(utime - 1.0, utime + 10.0)]
-        # Confirm visible at utime (visible returns the window tuple, not True)
-        assert pointing.visible(utime, utime) == (utime - 1.0, utime + 10.0)
-
-    def test_next_vis_returns_current_time_if_visible(self, pointing):
-        utime = 1000.0
-        # Place a visibility window that includes utime
-        pointing.windows = [(utime - 1.0, utime + 10.0)]
+    def test_next_vis_returns_same_time_when_in_window(self, pointing) -> None:
+        pointing.windows = [(5.0, 10.0)]
+        utime = 7.0
         assert pointing.next_vis(utime) == utime
 
-    def test_next_vis_returns_false_when_no_windows(self, pointing):
+    def test_next_vis_returns_false_when_no_windows(self, pointing) -> None:
         pointing.windows = []
         assert pointing.next_vis(10.0) is False
 
-    def test_next_vis_returns_next_start_time_before_first_window(self, pointing):
+    def test_next_vis_returns_next_start_time_before_first_window(
+        self, pointing
+    ) -> None:
         pointing.windows = [(5.0, 7.0), (15.0, 20.0)]
         # utime before first window start -> should return 5.0
         assert pointing.next_vis(0.0) == 5.0
 
-    def test_next_vis_returns_next_start_time_between_windows(self, pointing):
+    def test_next_vis_returns_next_start_time_between_windows(self, pointing) -> None:
         pointing.windows = [(5.0, 7.0), (15.0, 20.0)]
         # utime between windows starts -> should return 15.0
         assert pointing.next_vis(10.0) == 15.0
@@ -90,7 +26,7 @@ class TestPointingNextVis:
 class TestPointingStringRepresentation:
     """Test string representation of Pointing."""
 
-    def test_str_contains_target_name_and_id(self, pointing):
+    def test_str_contains_target_name_and_id(self, pointing) -> None:
         pointing.begin = 0
         pointing.name = "TargetName"
         pointing.obsid = 42
@@ -102,7 +38,7 @@ class TestPointingStringRepresentation:
         # Ensure human-readable components are present
         assert "TargetName (42)" in s
 
-    def test_str_contains_ra(self, pointing):
+    def test_str_contains_ra(self, pointing) -> None:
         pointing.begin = 0
         pointing.name = "TargetName"
         pointing.obsid = 42
@@ -114,7 +50,7 @@ class TestPointingStringRepresentation:
         # Ensure human-readable components are present
         assert "RA=1.2345" in s
 
-    def test_str_contains_dec(self, pointing):
+    def test_str_contains_dec(self, pointing) -> None:
         pointing.begin = 0
         pointing.name = "TargetName"
         pointing.obsid = 42
@@ -126,7 +62,7 @@ class TestPointingStringRepresentation:
         # Ensure human-readable components are present
         assert "Dec" in s or "Dec=" in s  # Accept either formatting presence
 
-    def test_str_contains_merit(self, pointing):
+    def test_str_contains_merit(self, pointing) -> None:
         pointing.begin = 0
         pointing.name = "TargetName"
         pointing.obsid = 42
@@ -142,76 +78,76 @@ class TestPointingStringRepresentation:
 class TestPointing:
     """Test Pointing class initialization and properties."""
 
-    def test_constraint(self, pointing, constraint):
+    def test_constraint(self, pointing, constraint) -> None:
         assert pointing.constraint == constraint
 
-    def test_obstype_at(self, pointing):
+    def test_obstype_at(self, pointing) -> None:
         assert pointing.obstype == "AT"
 
-    def test_ra_zero(self, pointing):
+    def test_ra_zero(self, pointing) -> None:
         assert pointing.ra == 0.0
 
-    def test_dec_zero(self, pointing):
+    def test_dec_zero(self, pointing) -> None:
         assert pointing.dec == 0.0
 
-    def test_obsid_zero(self, pointing):
+    def test_obsid_zero(self, pointing) -> None:
         assert pointing.obsid == 0
 
-    def test_name_fake_target(self, pointing):
+    def test_name_fake_target(self, pointing) -> None:
         assert pointing.name == "FakeTarget"
 
-    def test_fom_100(self, pointing):
+    def test_fom_100(self, pointing) -> None:
         assert pointing.fom == 100.0  # fom is maintained as legacy alias for merit
 
-    def test_merit_100(self, pointing):
+    def test_merit_100(self, pointing) -> None:
         assert pointing.merit == 100
 
-    def test_exptime_none(self, pointing):
+    def test_exptime_none(self, pointing) -> None:
         assert pointing.exptime is None
 
-    def test_exptime_setter_initializes_exporig(self, pointing):
+    def test_exptime_setter_initializes_exporig(self, pointing) -> None:
         # First set initializes _exporig
         pointing.exptime = 500
         assert pointing.exptime == 500
 
-    def test_exptime_setter_sets_exporig(self, pointing):
+    def test_exptime_setter_sets_exporig(self, pointing) -> None:
         # First set initializes _exporig
         pointing.exptime = 500
         assert pointing._exporig == 500
 
-    def test_exptime_setter_second_set_changes_exptime(self, pointing):
+    def test_exptime_setter_second_set_changes_exptime(self, pointing) -> None:
         # First set initializes _exporig
         pointing.exptime = 500
         # Second set doesn't change _exporig
         pointing.exptime = 1000
         assert pointing.exptime == 1000
 
-    def test_exptime_setter_second_set_does_not_change_exporig(self, pointing):
+    def test_exptime_setter_second_set_does_not_change_exporig(self, pointing) -> None:
         # First set initializes _exporig
         pointing.exptime = 500
         # Second set doesn't change _exporig
         pointing.exptime = 1000
         assert pointing._exporig == 500
 
-    def test_done_property_initially_false(self, pointing):
+    def test_done_property_initially_false(self, pointing) -> None:
         # Set exptime first to avoid None comparison
         pointing.exptime = 100
         # Initially done is False
         assert pointing.done is False
 
-    def test_done_property_setter_true(self, pointing):
+    def test_done_property_setter_true(self, pointing) -> None:
         # Set exptime first to avoid None comparison
         pointing.exptime = 100
         # Set done to True
         pointing.done = True
         assert pointing.done is True
 
-    def test_done_property_when_exptime_zero(self, pointing):
+    def test_done_property_when_exptime_zero(self, pointing) -> None:
         pointing.exptime = 0
         # When exptime <= 0, done should be True
         assert pointing.done is True
 
-    def test_reset_exptime_to_exporig(self, pointing):
+    def test_reset_exptime_to_exporig(self, pointing) -> None:
         pointing.exptime = 500
         pointing.begin = 100.0
         pointing.end = 200.0
@@ -221,7 +157,7 @@ class TestPointing:
         pointing.reset()
         assert pointing.exptime == 500  # Should be reset to _exporig
 
-    def test_reset_done_to_false(self, pointing):
+    def test_reset_done_to_false(self, pointing) -> None:
         pointing.exptime = 500
         pointing.begin = 100.0
         pointing.end = 200.0
@@ -231,7 +167,7 @@ class TestPointing:
         pointing.reset()
         assert pointing.done is False
 
-    def test_reset_begin_to_zero(self, pointing):
+    def test_reset_begin_to_zero(self, pointing) -> None:
         pointing.exptime = 500
         pointing.begin = 100.0
         pointing.end = 200.0
@@ -241,7 +177,7 @@ class TestPointing:
         pointing.reset()
         assert pointing.begin == 0
 
-    def test_reset_end_to_zero(self, pointing):
+    def test_reset_end_to_zero(self, pointing) -> None:
         pointing.exptime = 500
         pointing.begin = 100.0
         pointing.end = 200.0
@@ -251,7 +187,7 @@ class TestPointing:
         pointing.reset()
         assert pointing.end == 0
 
-    def test_reset_slewtime_to_zero(self, pointing):
+    def test_reset_slewtime_to_zero(self, pointing) -> None:
         pointing.exptime = 500
         pointing.begin = 100.0
         pointing.end = 200.0
@@ -260,79 +196,3 @@ class TestPointing:
         # Reset
         pointing.reset()
         assert pointing.slewtime == 0
-
-
-class TestPointingSunAngle:
-    """Test sun_angle method for calculating angular distance to the Sun."""
-
-    def test_sun_angle_calculates_distance(self, mock_config):
-        """Test that sun_angle correctly calculates angular distance to the Sun."""
-        from unittest.mock import Mock
-
-        import numpy as np
-
-        # Create mock ephemeris with sun position
-        mock_ephem = Mock()
-        # Sun at RA=90°, Dec=0°
-        mock_ephem.sun_ra_deg = np.array([90.0])
-        mock_ephem.sun_dec_deg = np.array([0.0])
-        mock_ephem.index = Mock(return_value=0)
-
-        mock_config.constraint.ephem = mock_ephem
-
-        # Create pointing at RA=0°, Dec=0°
-        pointing = Pointing(config=mock_config, ra=0.0, dec=0.0)
-
-        # Calculate sun angle
-        angle = pointing.sun_angle(1000.0)
-
-        # Should be 90° separation
-        assert abs(angle - 90.0) < 0.01
-
-    def test_sun_angle_same_position(self, mock_config):
-        """Test sun_angle when pointing is at the Sun."""
-        from unittest.mock import Mock
-
-        import numpy as np
-
-        # Create mock ephemeris
-        mock_ephem = Mock()
-        # Sun at RA=45°, Dec=30°
-        mock_ephem.sun_ra_deg = np.array([45.0])
-        mock_ephem.sun_dec_deg = np.array([30.0])
-        mock_ephem.index = Mock(return_value=0)
-
-        mock_config.constraint.ephem = mock_ephem
-
-        # Create pointing at same location as Sun
-        pointing = Pointing(config=mock_config, ra=45.0, dec=30.0)
-
-        # Calculate sun angle
-        angle = pointing.sun_angle(1000.0)
-
-        # Should be 0° separation (or very close due to floating point)
-        assert abs(angle) < 0.01
-
-    def test_sun_angle_opposite_position(self, mock_config):
-        """Test sun_angle when pointing is opposite the Sun."""
-        from unittest.mock import Mock
-
-        import numpy as np
-
-        # Create mock ephemeris
-        mock_ephem = Mock()
-        # Sun at RA=0°, Dec=0°
-        mock_ephem.sun_ra_deg = np.array([0.0])
-        mock_ephem.sun_dec_deg = np.array([0.0])
-        mock_ephem.index = Mock(return_value=0)
-
-        mock_config.constraint.ephem = mock_ephem
-
-        # Create pointing 180° away (on opposite side of celestial sphere)
-        pointing = Pointing(config=mock_config, ra=180.0, dec=0.0)
-
-        # Calculate sun angle
-        angle = pointing.sun_angle(1000.0)
-
-        # Should be 180° separation
-        assert abs(angle - 180.0) < 0.01

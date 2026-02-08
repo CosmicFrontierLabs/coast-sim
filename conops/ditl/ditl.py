@@ -5,6 +5,7 @@ import rust_ephem
 
 from conops.targets.plan import Plan
 
+from ..common import angular_separation, dtutcfromtimestamp
 from ..config import MissionConfig
 from .ditl_log import DITLLog
 from .ditl_mixin import DITLMixin
@@ -221,6 +222,7 @@ class DITL(DITLMixin, DITLStats):
             self.obsid[i] = obsid
 
             # Create housekeeping telemetry record
+            sun_angle_deg = self._compute_sun_angle(self.utime[i], ra, dec)
             hk = Housekeeping(
                 timestamp=datetime.fromtimestamp(self.utime[i], tz=timezone.utc),
                 ra=ra,
@@ -238,6 +240,8 @@ class DITL(DITLMixin, DITLStats):
                 recorder_volume_gb=self.recorder.current_volume_gb,
                 recorder_fill_fraction=self.recorder.get_fill_fraction(),
                 recorder_alert=self.recorder.get_alert_level(),
+                sun_angle_deg=sun_angle_deg,
+                in_eclipse=self.acs.in_eclipse,
             )
             self.telemetry.housekeeping.append(hk)
 
@@ -265,6 +269,20 @@ class DITL(DITLMixin, DITLStats):
                 self.telemetry.data.append(pd)
 
         return True
+
+    def _compute_sun_angle(self, utime: float, ra: float, dec: float) -> float | None:
+        """Compute angular distance from pointing to the Sun in degrees."""
+        if self.ephem is None:
+            return None
+
+        try:
+            idx = self.ephem.index(dtutcfromtimestamp(utime))
+            sun_ra = self.ephem.sun_ra_deg[idx]
+            sun_dec = self.ephem.sun_dec_deg[idx]
+        except Exception:
+            return None
+
+        return angular_separation(sun_ra, sun_dec, ra, dec)
 
 
 class DITLs:

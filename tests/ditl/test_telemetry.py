@@ -151,13 +151,27 @@ class TestTelemetry:
 
     def test_attribute_access_on_housekeeping(self) -> None:
         """Test attribute access on housekeeping list."""
-        hk1 = Housekeeping(ra=45.0, dec=30.0, acs_mode=ACSMode.SCIENCE)
-        hk2 = Housekeeping(ra=90.0, dec=60.0, acs_mode=ACSMode.SAFE)
+        hk1 = Housekeeping(
+            ra=45.0,
+            dec=30.0,
+            acs_mode=ACSMode.SCIENCE,
+            sun_angle_deg=10.0,
+            in_eclipse=False,
+        )
+        hk2 = Housekeeping(
+            ra=90.0,
+            dec=60.0,
+            acs_mode=ACSMode.SAFE,
+            sun_angle_deg=20.0,
+            in_eclipse=True,
+        )
         tm = Telemetry(housekeeping=HousekeepingList([hk1, hk2]))
 
         assert tm.housekeeping.ra == [45.0, 90.0]
         assert tm.housekeeping.dec == [30.0, 60.0]
         assert tm.housekeeping.acs_mode == [ACSMode.SCIENCE, ACSMode.SAFE]
+        assert tm.housekeeping.sun_angle_deg == [10.0, 20.0]
+        assert tm.housekeeping.in_eclipse == [False, True]
 
     def test_attribute_access_on_data(self) -> None:
         """Test attribute access on data list."""
