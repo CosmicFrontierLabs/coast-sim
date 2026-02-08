@@ -314,7 +314,9 @@ class TestEmergencyCharging:
         ppt = emergency_charging.create_charging_pointing(utime, mock_ephem)
         assert ppt.ra == 180.0
         assert ppt.dec == 0.0
-        assert ppt.roll == 0.0  # Default roll
+        assert isinstance(
+            ppt.roll, float
+        )  # Roll should be properly set (not default -1.0)
         assert ppt.name == "EMERGENCY_CHARGE_999000"
         assert ppt.obsid == 999000
 

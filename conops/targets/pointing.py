@@ -42,6 +42,7 @@ class Pointing(PlanEntry):
         self.isat = False
         self.ra = ra
         self.dec = dec
+        self.roll = roll
         self.obsid = obsid
         self.name = name
         # ``fom`` is maintained as a legacy alias for ``merit`` for

@@ -136,11 +136,14 @@ def plot_ditl_telemetry(
 
     ax = plt.subplot(715)
     axes.append(ax)
-    ax.plot(timehours, ditl.panel)
+    ax.plot(timehours, none_to_nan(ditl.telemetry.housekeeping.panel_illumination))
 
-    # Mark eclipse periods using the DITL in_eclipse array
-    if hasattr(ditl, "in_eclipse") and ditl.in_eclipse:
-        eclipse_mask = np.array(ditl.in_eclipse)
+    # Mark eclipse periods using the telemetry in_eclipse data
+    eclipse_values = [
+        hk.in_eclipse for hk in ditl.telemetry.housekeeping if hk.in_eclipse is not None
+    ]
+    if eclipse_values:
+        eclipse_mask = np.array(eclipse_values)
         if np.any(eclipse_mask):
             # Find eclipse start and end times
             eclipse_starts = []

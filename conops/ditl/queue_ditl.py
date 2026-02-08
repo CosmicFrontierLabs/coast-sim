@@ -85,6 +85,8 @@ class QueueDITL(DITLMixin, DITLStats):
         self.charge_state = list()
         self.power = list()
         self.panel_power = list()
+        # Eclipse tracking
+        self.in_eclipse = list()
         # Subsystem power tracking
         self.power_bus = list()
         self.power_payload = list()
