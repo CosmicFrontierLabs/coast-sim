@@ -54,6 +54,9 @@ class DITLMixin:
         # Initialize mixin
         self.config = config
 
+        # Initialize telemetry container
+        self.telemetry = Telemetry()
+
         # Set ephemeris if provided
         if ephem is not None:
             self.ephem = ephem

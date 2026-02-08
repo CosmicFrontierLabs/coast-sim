@@ -9,7 +9,7 @@ from ..config import MissionConfig
 from .ditl_log import DITLLog
 from .ditl_mixin import DITLMixin
 from .ditl_stats import DITLStats
-from .telemetry import Housekeeping, PayloadData, Telemetry
+from .telemetry import Housekeeping, PayloadData
 
 
 class DITL(DITLMixin, DITLStats):
@@ -88,9 +88,6 @@ class DITL(DITLMixin, DITLStats):
         )
         # DITL also needs solar_panel
         self.solar_panel = self.config.solar_panel
-
-        # Initialize telemetry container
-        self.telemetry = Telemetry()
 
         # Event log
         self.log = DITLLog()
@@ -240,9 +237,7 @@ class DITL(DITLMixin, DITLStats):
                 obsid=obsid,
                 recorder_volume_gb=self.recorder.current_volume_gb,
                 recorder_fill_fraction=self.recorder.get_fill_fraction(),
-                recorder_alert=0
-                if self.recorder.get_alert_level() == 0
-                else int(self.recorder.get_alert_level()),
+                recorder_alert=self.recorder.get_alert_level(),
             )
             self.telemetry.housekeeping.append(hk)
 

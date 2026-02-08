@@ -15,7 +15,7 @@ from ..targets import Plan, Pointing, Queue
 from .ditl_log import DITLLog
 from .ditl_mixin import DITLMixin
 from .ditl_stats import DITLStats
-from .telemetry import Housekeeping, PayloadData, Telemetry
+from .telemetry import Housekeeping, PayloadData
 
 
 class TOORequest(BaseModel):
@@ -72,9 +72,6 @@ class QueueDITL(DITLMixin, DITLStats):
     ) -> None:
         # Initialize mixin
         DITLMixin.__init__(self, config=config, ephem=ephem, begin=begin, end=end)
-
-        # Initialize telemetry container
-        self.telemetry = Telemetry()
 
         # Current target (already set in mixin but repeated for clarity)
         self.ppt = None

@@ -14,7 +14,9 @@ from conops.visualization.ditl_timeline import (
 class TestPlotDitlTimeline:
     """Test plot_ditl_timeline function."""
 
-    def test_plot_ditl_timeline_returns_figure_and_axes(self, mock_ditl_with_ephem):
+    def test_plot_ditl_timeline_returns_figure_and_axes(
+        self, mock_ditl_with_ephem
+    ) -> None:
         """Test that plot_ditl_timeline returns a figure and axes."""
         fig, ax = plot_ditl_timeline(mock_ditl_with_ephem)
 
@@ -24,7 +26,7 @@ class TestPlotDitlTimeline:
         # Clean up
         plt.close(fig)
 
-    def test_plot_ditl_timeline_custom_figsize(self, mock_ditl_with_ephem):
+    def test_plot_ditl_timeline_custom_figsize(self, mock_ditl_with_ephem) -> None:
         """Test plot_ditl_timeline with custom figsize."""
         figsize = (15, 8)
         fig, ax = plot_ditl_timeline(mock_ditl_with_ephem, figsize=figsize)
@@ -35,7 +37,7 @@ class TestPlotDitlTimeline:
         # Clean up
         plt.close(fig)
 
-    def test_plot_ditl_timeline_offset_hours(self, mock_ditl_with_ephem):
+    def test_plot_ditl_timeline_offset_hours(self, mock_ditl_with_ephem) -> None:
         """Test plot_ditl_timeline with time offset."""
         offset_hours = 5.0
         fig, ax = plot_ditl_timeline(mock_ditl_with_ephem, offset_hours=offset_hours)
@@ -45,7 +47,7 @@ class TestPlotDitlTimeline:
         # Clean up
         plt.close(fig)
 
-    def test_plot_ditl_timeline_hide_orbit_numbers(self, mock_ditl_with_ephem):
+    def test_plot_ditl_timeline_hide_orbit_numbers(self, mock_ditl_with_ephem) -> None:
         """Test plot_ditl_timeline with orbit numbers hidden."""
         fig, ax = plot_ditl_timeline(mock_ditl_with_ephem, show_orbit_numbers=False)
 
@@ -54,7 +56,7 @@ class TestPlotDitlTimeline:
         # Clean up
         plt.close(fig)
 
-    def test_plot_ditl_timeline_hide_saa(self, mock_ditl_with_ephem):
+    def test_plot_ditl_timeline_hide_saa(self, mock_ditl_with_ephem) -> None:
         """Test plot_ditl_timeline with SAA passages hidden."""
         fig, ax = plot_ditl_timeline(mock_ditl_with_ephem, show_saa=False)
 
@@ -63,7 +65,7 @@ class TestPlotDitlTimeline:
         # Clean up
         plt.close(fig)
 
-    def test_plot_ditl_timeline_custom_orbit_period(self, mock_ditl_with_ephem):
+    def test_plot_ditl_timeline_custom_orbit_period(self, mock_ditl_with_ephem) -> None:
         """Test plot_ditl_timeline with custom orbit period."""
         orbit_period = 5000.0
         fig, ax = plot_ditl_timeline(mock_ditl_with_ephem, orbit_period=orbit_period)
@@ -73,7 +75,9 @@ class TestPlotDitlTimeline:
         # Clean up
         plt.close(fig)
 
-    def test_plot_ditl_timeline_with_observation_categories(self, mock_ditl_with_ephem):
+    def test_plot_ditl_timeline_with_observation_categories(
+        self, mock_ditl_with_ephem
+    ) -> None:
         """Test plot_ditl_timeline with custom observation categories."""
         from conops.config import ObservationCategories, ObservationCategory
 
@@ -94,7 +98,7 @@ class TestPlotDitlTimeline:
         # Clean up
         plt.close(fig)
 
-    def test_plot_ditl_timeline_show_saa(self, mock_ditl_with_ephem):
+    def test_plot_ditl_timeline_show_saa(self, mock_ditl_with_ephem) -> None:
         """Test plot_ditl_timeline with SAA passages shown."""
         fig, ax = plot_ditl_timeline(mock_ditl_with_ephem, show_saa=True)
 
@@ -103,7 +107,7 @@ class TestPlotDitlTimeline:
         # Clean up
         plt.close(fig)
 
-    def test_plot_ditl_timeline_with_safe_mode(self):
+    def test_plot_ditl_timeline_with_safe_mode(self) -> None:
         """Test plot_ditl_timeline includes safe mode in the timeline."""
         from unittest.mock import Mock
 
@@ -130,7 +134,7 @@ class TestPlotDitlTimeline:
         # Add timeline data with safe mode using telemetry
         from datetime import datetime, timedelta, timezone
 
-        from conops.ditl.telemetry import Housekeeping, Telemetry
+        from conops.ditl.telemetry import Housekeeping, HousekeepingList, Telemetry
 
         base_time = datetime.fromtimestamp(0, tz=timezone.utc)
         housekeeping_records = [
@@ -142,7 +146,9 @@ class TestPlotDitlTimeline:
                 timestamp=base_time + timedelta(seconds=3600), mode=ACSMode.SCIENCE
             ),
         ]
-        mock_ditl.telemetry = Telemetry(housekeeping=housekeeping_records)
+        mock_ditl.telemetry = Telemetry(
+            housekeeping=HousekeepingList(housekeeping_records)
+        )
 
         fig, ax = plot_ditl_timeline(mock_ditl)
 
@@ -154,7 +160,7 @@ class TestPlotDitlTimeline:
         # Clean up
         plt.close(fig)
 
-    def test_plot_ditl_timeline_empty_plan_raises_error(self):
+    def test_plot_ditl_timeline_empty_plan_raises_error(self) -> None:
         """Test plot_ditl_timeline raises error with empty plan."""
         from unittest.mock import Mock
 
@@ -164,7 +170,7 @@ class TestPlotDitlTimeline:
         with pytest.raises(ValueError, match="DITL simulation has no pointings"):
             plot_ditl_timeline(mock_ditl)
 
-    def test_plot_ditl_timeline_empty_utime_uses_default_duration(self):
+    def test_plot_ditl_timeline_empty_utime_uses_default_duration(self) -> None:
         """Test plot_ditl_timeline uses default duration when utime is empty."""
         from unittest.mock import Mock
 
@@ -178,9 +184,9 @@ class TestPlotDitlTimeline:
         mock_ditl.config.observation_categories = None
         mock_ditl.utime = []  # Empty utime
         # Add empty telemetry
-        from conops.ditl.telemetry import Telemetry
+        from conops.ditl.telemetry import HousekeepingList, Telemetry
 
-        mock_ditl.telemetry = Telemetry(housekeeping=[])
+        mock_ditl.telemetry = Telemetry(housekeeping=HousekeepingList([]))
 
         mock_ditl.constraint = Mock()
         mock_ditl.constraint.in_eclipse = Mock(return_value=False)
@@ -199,7 +205,7 @@ class TestPlotDitlTimeline:
 class TestAnnotateSlewDistances:
     """Test annotate_slew_distances function."""
 
-    def test_annotate_slew_distances_basic(self, mock_ditl_with_ephem):
+    def test_annotate_slew_distances_basic(self, mock_ditl_with_ephem) -> None:
         """Test basic annotate_slew_distances functionality."""
         fig = plt.figure()
         ax = plt.axes([0.1, 0.1, 0.8, 0.8])
@@ -225,7 +231,7 @@ class TestAnnotateSlewDistances:
         # Clean up
         plt.close(fig)
 
-    def test_annotate_slew_distances_empty_indices(self, mock_ditl_with_ephem):
+    def test_annotate_slew_distances_empty_indices(self, mock_ditl_with_ephem) -> None:
         """Test annotate_slew_distances with empty slew indices."""
         fig = plt.figure()
         ax = plt.axes([0.1, 0.1, 0.8, 0.8])
@@ -245,7 +251,7 @@ class TestAnnotateSlewDistances:
         # Clean up
         plt.close(fig)
 
-    def test_annotate_slew_distances_multiple_slews(self, mock_ditl_with_ephem):
+    def test_annotate_slew_distances_multiple_slews(self, mock_ditl_with_ephem) -> None:
         """Test annotate_slew_distances with multiple slews."""
         fig = plt.figure()
         ax = plt.axes([0.1, 0.1, 0.8, 0.8])

@@ -1,5 +1,7 @@
 """Shared fixtures for visualization tests."""
 
+from typing import Any
+
 import matplotlib
 import pytest
 
@@ -10,10 +12,11 @@ from unittest.mock import Mock
 import numpy as np
 
 from conops.common import ACSMode
+from conops.ditl.telemetry import Housekeeping, HousekeepingList, Telemetry
 
 
 @pytest.fixture
-def mock_ditl():
+def mock_ditl() -> Mock:
     """Create a mock DITL object with minimal telemetry data for testing."""
     from unittest.mock import Mock
 
@@ -40,7 +43,7 @@ def mock_ditl():
 
     # Add ephemeris mock for sky pointing tests
     class MockEphem:
-        def __init__(self):
+        def __init__(self) -> None:
             self.earth = []
             self.earth_radius_deg = []
             for _ in range(100):
@@ -52,15 +55,13 @@ def mock_ditl():
                 self.earth.append(mock_earth)
                 self.earth_radius_deg.append(1.0)
 
-        def index(self, dt):
+        def index(self, dt: Any) -> int:
             return 0
 
     ditl.ephem = MockEphem()
 
     # Add minimal telemetry data using the new Telemetry structure
     from datetime import datetime, timedelta, timezone
-
-    from conops.ditl.telemetry import Housekeeping, Telemetry
 
     # Create housekeeping records
     housekeeping_records = []
@@ -98,7 +99,7 @@ def mock_ditl():
 
     # Create telemetry container
     telemetry = Telemetry(
-        housekeeping=housekeeping_records,
+        housekeeping=HousekeepingList(housekeeping_records),
         data_generated_gb=[0.0, 0.5, 1.2, 1.8, 2.5],
         data_downlinked_gb=[0.0, 0.3, 0.8, 1.4, 2.0],
     )
@@ -115,13 +116,13 @@ def mock_ditl():
 
 
 @pytest.fixture
-def mock_ditl_with_ephem(mock_ditl):
+def mock_ditl_with_ephem(mock_ditl: Mock) -> Mock:
     """Create a mock DITL with ephemeris data for timeline plotting."""
 
     # Add ephemeris-related attributes needed for timeline plotting
     # Create a mock ephem object that behaves like the real rust_ephem.Ephemeris
     class MockEphem:
-        def __init__(self):
+        def __init__(self) -> None:
             self.earth = []
             self.earth_radius_deg = []
             for _ in range(100):
@@ -133,7 +134,7 @@ def mock_ditl_with_ephem(mock_ditl):
                 self.earth.append(mock_earth)
                 self.earth_radius_deg.append(1.0)
 
-        def index(self, dt):
+        def index(self, dt: Any) -> int:
             return 0
 
     mock_ditl.ephem = MockEphem()
@@ -159,7 +160,7 @@ def mock_ditl_with_ephem(mock_ditl):
     mock_ditl.acs.passrequests.passes = [mock_pass]
 
     # Mock constraint with in_eclipse method that returns True for some points
-    def mock_in_eclipse(ra, dec, time):
+    def mock_in_eclipse(ra: float, dec: float, time: float) -> bool:
         # Return True for multiple points to cover enter/exit and extending
         # time is now a timestamp, so check against the timestamps in the telemetry
         timestamps = [
