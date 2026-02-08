@@ -4,7 +4,7 @@ from conops import AttitudeControlSystem, Constraint, MissionConfig, Slew, Space
 
 
 class DummyConstraint(Constraint):
-    def __init__(self, **kwargs: dict[str, Any]) -> None:
+    def __init__(self, **kwargs: Any) -> None:
         # Initialize with minimal required fields
         super().__init__(**kwargs)
         # Slew asserts constraint.ephem is not None, but does not use it during calc
