@@ -43,6 +43,14 @@ def scbodyvector(
     return body
 
 
+def vecnorm(v: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Normalize a vector to unit length. If the vector has zero length, returns the original vector."""
+    norm = np.linalg.norm(v)
+    if norm < 1e-15:
+        return v  # Return original vector if it's effectively zero-length
+    return v / norm
+
+
 def rotvec(n: int, a: float, v: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     """Rotate a vector v by angle a (radians) around axis n (1=x,2=y,3=z).
     Preserves the original sign convention (rotation uses -a)."""

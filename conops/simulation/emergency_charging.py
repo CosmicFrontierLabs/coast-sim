@@ -1,5 +1,7 @@
 """Emergency battery charging functionality for spacecraft operations."""
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -10,6 +12,7 @@ from conops.config.battery import Battery
 from ..common import unixtime2date
 from ..common.vector import angular_separation
 from ..config import MissionConfig
+from .roll import optimum_roll
 
 if TYPE_CHECKING:
     from ..ditl.ditl_log import DITLLog
@@ -55,8 +58,8 @@ class EmergencyCharging:
         starting_obsid: int = 999000,
         max_slew_deg: float | None = None,
         sidemount: bool = False,
-        log: "DITLLog | None" = None,
-    ):
+        log: DITLLog | None = None,
+    ) -> None:
         """
         Initialize emergency charging manager.
 
@@ -76,7 +79,7 @@ class EmergencyCharging:
         self.battery = config.battery
 
         self.next_charging_obsid = starting_obsid
-        self.current_charging_ppt: "Pointing | None" = None
+        self.current_charging_ppt: Pointing | None = None
         self.max_slew_deg = max_slew_deg
         self.sidemount = sidemount
         self._charging_suppressed_due_to_eclipse = False
@@ -97,7 +100,7 @@ class EmergencyCharging:
         ephem: rust_ephem.Ephemeris,
         lastra: float = 0.0,
         lastdec: float = 0.0,
-    ) -> "Pointing | None":
+    ) -> Pointing | None:
         """
         Create an emergency charging pointing to recover battery charge.
 
@@ -141,13 +144,20 @@ class EmergencyCharging:
             self._log_or_print(utime, "ERROR", "No valid charging pointing found")
             return None
 
+        # Calculate optimal roll angle for solar panel pointing
+        roll_angle = optimum_roll(
+            charging_ra, charging_dec, utime, ephem, self.solar_panel
+        )
+
         # Create the charging PPT
-        charging_ppt = self._create_pointing(charging_ra, charging_dec, utime)
+        charging_ppt = self._create_pointing(
+            charging_ra, charging_dec, roll_angle, utime
+        )
 
         self._log_or_print(
             utime,
             "CHARGING",
-            f"Starting EMERGENCY CHARGING pointing at RA={charging_ra:.2f}, Dec={charging_dec:.2f}, obsid={charging_ppt.obsid}",
+            f"Starting EMERGENCY CHARGING pointing at RA={charging_ra:.2f}, Dec={charging_dec:.2f}, roll={roll_angle:.2f}°, obsid={charging_ppt.obsid}",
         )
 
         self.current_charging_ppt = charging_ppt
@@ -159,8 +169,8 @@ class EmergencyCharging:
         ephem: rust_ephem.Ephemeris,
         lastra: float,
         lastdec: float,
-        current_ppt: "Pointing | None",
-    ) -> "Pointing | None":
+        current_ppt: Pointing | None,
+    ) -> Pointing | None:
         """Terminate current science PPT (if any) and create a charging PPT.
 
         This encapsulates the initiation path so callers can delegate the
@@ -322,9 +332,12 @@ class EmergencyCharging:
                 if slew > self.max_slew_deg:
                     continue  # Skip pointings beyond slew limit
 
-            # Calculate solar panel illumination for this pointing
+            # Calculate optimal roll angle for this pointing
+            optimal_roll = optimum_roll(alt_ra, alt_dec, utime, ephem, self.solar_panel)
+
+            # Calculate solar panel illumination for this pointing with optimal roll
             illumination = self.solar_panel.panel_illumination_fraction(
-                time=utime, ra=alt_ra, dec=alt_dec, ephem=ephem, roll=0.0
+                time=utime, ra=alt_ra, dec=alt_dec, ephem=ephem, roll=optimal_roll
             )
 
             # Ensure we have a float (should be scalar for single time)
@@ -496,13 +509,16 @@ class EmergencyCharging:
         )
         return None, None
 
-    def _create_pointing(self, ra: float, dec: float, utime: float) -> "Pointing":
+    def _create_pointing(
+        self, ra: float, dec: float, roll: float, utime: float
+    ) -> Pointing:
         """
         Create a Pointing object for emergency charging.
 
         Args:
             ra: Right ascension in degrees
             dec: Declination in degrees
+            roll: Roll angle in degrees
             utime: Current unix timestamp
 
         Returns:
@@ -514,6 +530,7 @@ class EmergencyCharging:
             config=self.config,
             ra=ra,
             dec=dec,
+            roll=roll,
             name=f"EMERGENCY_CHARGE_{self.next_charging_obsid}",
             obsid=self.next_charging_obsid,
             exptime=86400,

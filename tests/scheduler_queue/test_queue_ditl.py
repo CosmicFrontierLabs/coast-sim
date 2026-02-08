@@ -945,6 +945,7 @@ class TestCalcMethod:
         mock_charging.ra = 100.0
         mock_charging.dec = 50.0
         mock_charging.obsid = 999001
+        mock_charging.roll = 0.0
         mock_charging.begin = 1543622400
         mock_charging.end = 1543622400 + 86400
         mock_charging.copy = Mock(return_value=Mock())
@@ -971,6 +972,7 @@ class TestCalcMethod:
         mock_charging.ra = 100.0
         mock_charging.dec = 50.0
         mock_charging.obsid = 999001
+        mock_charging.roll = 0.0
         mock_charging.begin = 1543622400
         mock_charging.end = 1543622400 + 86400
         mock_charging.copy = Mock(return_value=Mock())

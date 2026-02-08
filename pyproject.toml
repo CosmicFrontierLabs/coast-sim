@@ -31,6 +31,7 @@ dependencies = [
     "astropy>=6",
     "matplotlib>=3.10",
     "numpy>=2",
+    "plotly>=6.5.2",
     "pydantic>=2.12",
     "pyproj>=3.7.0",
     "pytz>=2025.2",
@@ -62,6 +63,7 @@ dev = [
     "types-pyyaml>=6.0",
     "types-shapely>=2",
     "types-tqdm>=4.67",
+    "plotly-stubs>=0.0.6",
 ]
 test = ["pytest>=8", "pytest-cov>=7"]
 docs = [

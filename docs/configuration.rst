@@ -187,10 +187,13 @@ The :class:`~conops.config.SolarPanelSet` defines the solar array configuration.
 
 * ``name`` (str): Panel identifier
 * ``gimbled`` (bool): Whether the panel can track the Sun
-* ``sidemount`` (bool): Whether panel normal is perpendicular to boresight
-* ``cant_x`` (float): Cant angle around X-axis (degrees)
-* ``cant_y`` (float): Cant angle around Y-axis (degrees)
-* ``azimuth_deg`` (float): Structural placement angle around boresight (degrees)
+* ``normal`` (tuple[float, float, float]): Panel normal vector in spacecraft body frame
+
+  - +x is the spacecraft pointing direction (boresight)
+  - +y is the spacecraft "up" direction
+  - +z completes the right-handed coordinate system
+  - Should be a unit vector for proper illumination calculations
+
 * ``max_power`` (float): Maximum power output at full illumination (Watts)
 * ``conversion_efficiency`` (float | None): Per-panel efficiency override
 
@@ -204,19 +207,82 @@ The :class:`~conops.config.SolarPanelSet` defines the solar array configuration.
            SolarPanel(
                name="Panel +Y",
                gimbled=False,
-               sidemount=True,
-               cant_x=0.0,
-               azimuth_deg=0.0,
+               normal=(0.0, 1.0, 0.0),  # Side-mounted
                max_power=400.0,
                conversion_efficiency=0.94,
            ),
            SolarPanel(
                name="Panel -Y",
                gimbled=False,
-               sidemount=True,
-               cant_x=0.0,
-               azimuth_deg=180.0,
+               normal=(0.0, -1.0, 0.0),  # Opposite side
                max_power=400.0,
+               conversion_efficiency=0.94,
+           ),
+       ],
+       conversion_efficiency=0.95,
+   )
+
+Solar Panel Vector Helper Function
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Defining panel normal vectors manually can be error-prone. The
+:func:`~conops.config.solar_panel.create_solar_panel_vector` helper function
+simplifies this by generating unit normal vectors based on mount type and cant angles.
+
+**Supported Mount Types:**
+
+* ``'sidemount'``: Panel faces +Y (spacecraft "up")
+* ``'aftmount'``: Panel faces -X (spacecraft "back")
+* ``'boresight'``: Panel faces +X (spacecraft forward/pointing direction)
+
+**Cant Angles:**
+
+* ``cant_z``: Rotation around Z-axis (yaw) in degrees
+* ``cant_perp``: Rotation around perpendicular axis (pitch) in degrees
+
+  - For 'sidemount': rotates around X-axis
+  - For 'aftmount': rotates around Y-axis
+  - For 'boresight': rotates around Y-axis
+
+**Examples:**
+
+.. code-block:: python
+
+   from conops.config import SolarPanelSet, SolarPanel
+   from conops.config.solar_panel import create_solar_panel_vector
+
+   # Simple side-mounted panel (no cant)
+   normal = create_solar_panel_vector('sidemount')
+   # Result: (0.0, 1.0, 0.0)
+
+   # Side-mounted panel with 30° yaw
+   normal = create_solar_panel_vector('sidemount', cant_z=30.0)
+
+   # Aft-mounted panel with 45° pitch backward slant
+   normal = create_solar_panel_vector('aftmount', cant_perp=-45.0)
+
+   # Boresight panel tilted backward 45° (forward-facing with backward slant)
+   normal = create_solar_panel_vector('boresight', cant_perp=-45.0)
+
+   # Complex orientation: boresight with 30° yaw left and 45° backward pitch
+   normal = create_solar_panel_vector('boresight', cant_z=30.0, cant_perp=-45.0)
+
+   # Use in panel definition
+   solar_panel = SolarPanelSet(
+       name="Main Solar Array",
+       panels=[
+           SolarPanel(
+               name="Panel +Y",
+               gimbled=False,
+               normal=create_solar_panel_vector('sidemount', cant_z=10.0),
+               max_power=400.0,
+               conversion_efficiency=0.94,
+           ),
+           SolarPanel(
+               name="Panel Boresight Aft",
+               gimbled=False,
+               normal=create_solar_panel_vector('boresight', cant_perp=-30.0),
+               max_power=200.0,
                conversion_efficiency=0.94,
            ),
        ],

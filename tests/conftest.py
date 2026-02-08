@@ -7,14 +7,36 @@ import pytest
 
 @pytest.fixture
 def mock_ephem():
-    """Create mock ephemeris."""
+    """Create mock ephemeris with both legacy and new rust-ephem 0.3.0+ attributes."""
+
+    import numpy as np
+
     ephem = Mock()
-    ephem.step_size = 60.0
-    ephem.timestamp = Mock()
-    ephem.timestamp.unix = [1514764800.0 + i * 60.0 for i in range(1440)]
-    ephem.earth = [Mock(ra=Mock(deg=0.0), dec=Mock(deg=0.0)) for _ in range(1440)]
-    ephem.sun = [Mock(ra=Mock(deg=0.0), dec=Mock(deg=0.0))]
-    ephem.index.return_value = 0
+    ephem.index = Mock(return_value=0)
+
+    # Legacy SkyCoord-style access
+    sun_mock = Mock()
+    sun_mock.ra = Mock()
+    sun_mock.ra.deg = 90.0
+    sun_mock.dec = Mock()
+    sun_mock.dec.deg = 30.0
+    sun_mock.separation = Mock(return_value=Mock(deg=45.0))
+    ephem.sun = np.array([sun_mock])
+
+    # New direct array access (rust-ephem 0.3.0+)
+    ephem.sun_ra_deg = np.array([90.0])
+    ephem.sun_dec_deg = np.array([30.0])
+
+    # Earth position
+    earth_mock = Mock()
+    earth_mock.separation = Mock(return_value=Mock(deg=0.5))
+    ephem.earth = np.array([earth_mock])
+
+    # Earth radius angle
+    ephem.earth_radius_angle = np.array([Mock(deg=0.3)])
+
+    ephem._tle_ephem = Mock()
+
     return ephem
 
 

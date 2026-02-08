@@ -85,6 +85,8 @@ class QueueDITL(DITLMixin, DITLStats):
         self.charge_state = list()
         self.power = list()
         self.panel_power = list()
+        # Eclipse tracking
+        self.in_eclipse = list()
         # Subsystem power tracking
         self.power_bus = list()
         self.power_payload = list()
@@ -558,6 +560,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 execution_time=utime,
                 ra=self.charging_ppt.ra,
                 dec=self.charging_ppt.dec,
+                roll=self.charging_ppt.roll,
                 obsid=self.charging_ppt.obsid,
             )
             self.acs.enqueue_command(command)
@@ -1002,6 +1005,7 @@ class QueueDITL(DITLMixin, DITLStats):
         self.dec.append(dec)
         self.roll.append(roll)
         self.obsid.append(obsid)
+        self.in_eclipse.append(self.acs.in_eclipse)
 
     def _record_power_data(
         self,

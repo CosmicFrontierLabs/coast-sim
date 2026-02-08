@@ -60,7 +60,8 @@ def mock_ditl() -> Mock:
 
     ditl.ephem = MockEphem()
 
-    # Add minimal telemetry data using the new Telemetry structure
+    # Add utime for timeline plotting
+    ditl.utime = [0.0, 3600.0, 7200.0, 10800.0, 14400.0]
     from datetime import datetime, timedelta, timezone
 
     # Create housekeeping records
@@ -94,6 +95,7 @@ def mock_ditl() -> Mock:
             recorder_volume_gb=[0.0, 0.5, 1.2, 1.8, 2.0][i],
             recorder_fill_fraction=[0.0, 0.05, 0.12, 0.18, 0.2][i],
             recorder_alert=[0, 0, 0, 1, 2][i],
+            in_eclipse=[False, False, True, False, False][i],  # Eclipse periods
         )
         housekeeping_records.append(hk)
 

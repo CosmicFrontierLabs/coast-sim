@@ -277,6 +277,7 @@ class ACS:
         # Always start slew from current spacecraft position - ACS drives the spacecraft
         slew.startra = self.ra
         slew.startdec = self.dec
+        slew.startroll = self.roll  # Start roll from current ACS roll
         slew.slewstart = utime
         slew.calc_slewtime()
 
@@ -299,7 +300,13 @@ class ACS:
         return slew.obstype == "PPT" and isinstance(slew, Slew)
 
     def _enqueue_slew(
-        self, ra: float, dec: float, obsid: int, utime: float, obstype: str = "PPT"
+        self,
+        ra: float,
+        dec: float,
+        obsid: int,
+        utime: float,
+        obstype: str = "PPT",
+        roll: float | None = None,
     ) -> bool:
         """Create and enqueue a slew command.
 
@@ -314,6 +321,11 @@ class ACS:
         slew.slewrequest = utime
         slew.endra = ra
         slew.enddec = dec
+        # If roll not provided, calculate optimal roll at target position
+        if roll is None:
+            slew.endroll = optimum_roll(ra, dec, utime, self.ephem, self.solar_panel)
+        else:
+            slew.endroll = roll
         slew.obstype = obstype
         slew.obsid = obsid
 
@@ -325,7 +337,7 @@ class ACS:
             execution_time = utime  # Execute immediately
         else:
             # Set up target observation request and check visibility
-            target_request = self._create_target_request(slew, utime)
+            target_request = self._create_target_request(slew, utime, roll)
             slew.at = target_request
 
             visstart = target_request.next_vis(utime)
@@ -357,7 +369,9 @@ class ACS:
 
         return True
 
-    def _create_target_request(self, slew: Slew, utime: float) -> "Pointing":
+    def _create_target_request(
+        self, slew: Slew, utime: float, roll: float | None = None
+    ) -> "Pointing":
         """Create and configure a target observation request for visibility checking."""
         from ..targets import Pointing
 
@@ -365,6 +379,7 @@ class ACS:
             config=self.config,
             ra=slew.endra,
             dec=slew.enddec,
+            roll=roll if roll is not None else 0.0,
             obsid=slew.obsid,
         )
         target.isat = slew.obstype != "PPT"
@@ -384,10 +399,12 @@ class ACS:
         if self.last_slew:
             slew.startra = self.ra
             slew.startdec = self.dec
+            slew.startroll = self.roll
             return False
 
         slew.startra = self.ra
         slew.startdec = self.dec
+        slew.startroll = self.roll
         return True
 
     def _is_slew_valid(self, visstart: float, obstype: str, utime: float) -> bool:
@@ -638,6 +655,7 @@ class ACS:
             and self.current_slew.is_slewing(utime)
         ):
             self.ra, self.dec = self.current_slew.ra_dec(utime)
+            self.roll = self.current_slew.roll(utime)
         else:
             # After slew completes or for continuous tracking, maintain optimal pointing
             self.ra = target_ra
@@ -662,7 +680,7 @@ class ACS:
         return not (pass1.end <= pass2.begin or pass1.begin >= pass2.end)
 
     def request_battery_charge(
-        self, utime: float, ra: float, dec: float, obsid: int
+        self, utime: float, ra: float, dec: float, roll: float, obsid: int
     ) -> None:
         """Request emergency battery charging at specified pointing.
 
@@ -674,13 +692,14 @@ class ACS:
             execution_time=utime,
             ra=ra,
             dec=dec,
+            roll=roll,
             obsid=obsid,
         )
         self.enqueue_command(command)
         self._log_or_print(
             utime,
             "CHARGING",
-            f"Battery charge requested at RA={ra:.2f} Dec={dec:.2f} obsid={obsid}",
+            f"Battery charge requested at RA={ra:.2f} Dec={dec:.2f} Roll={roll:.2f} obsid={obsid}",
         )
 
     def request_end_battery_charge(self, utime: float) -> None:
@@ -738,7 +757,11 @@ class ACS:
         )
         if charging_ppt is not None:
             self.request_battery_charge(
-                utime, charging_ppt.ra, charging_ppt.dec, charging_ppt.obsid
+                utime,
+                charging_ppt.ra,
+                charging_ppt.dec,
+                charging_ppt.roll,
+                charging_ppt.obsid,
             )
             return charging_ppt.ra, charging_ppt.dec, charging_ppt
         return lastra, lastdec, None
@@ -759,7 +782,12 @@ class ACS:
                 f"Starting battery charge at RA={command.ra:.2f} Dec={command.dec:.2f} obsid={command.obsid}",
             )
             self._enqueue_slew(
-                command.ra, command.dec, command.obsid, utime, obstype="CHARGE"
+                command.ra,
+                command.dec,
+                command.obsid,
+                utime,
+                obstype="CHARGE",
+                roll=command.roll,
             )
 
     def _end_battery_charge(self, utime: float) -> None:

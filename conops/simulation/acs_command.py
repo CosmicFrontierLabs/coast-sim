@@ -16,6 +16,7 @@ class ACSCommand(BaseModel):
     slew: "Slew | None" = None
     ra: float | None = None
     dec: float | None = None
+    roll: float | None = None
     obsid: int | None = None
     obstype: str = "PPT"
 

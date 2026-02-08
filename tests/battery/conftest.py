@@ -95,7 +95,8 @@ def mock_config(mock_ephem):
     # Create minimal payload, battery, solar_panel
     payload = Payload(instruments=[])
     battery = Battery(capacity_wh=1000, max_depth_of_discharge=0.8)
-    solar_panel = SolarPanelSet(panels=[SolarPanel(sidemount=False)])
+    # Body-mounted panel: points at sun (Z-dominant normal)
+    solar_panel = SolarPanelSet(panels=[SolarPanel(normal=(0.0, 0.0, -1.0))])
 
     constraint = Mock(spec=Constraint)
     constraint.ephem = mock_ephem
@@ -211,4 +212,10 @@ def mock_ephem():
     ephem.sun_ra_deg = [180.0]
     ephem.sun_dec_deg = [0.0]
     ephem.in_eclipse = Mock(return_value=False)
+    # Add position/velocity data for roll calculation (needed by optimum_roll)
+    # Make position arrays directly subscriptable
+    ephem.sun_pv = Mock()
+    ephem.sun_pv.position = np.array([[1.5e8, 0.0, 0.0]])  # Sun position in km
+    ephem.gcrs_pv = Mock()
+    ephem.gcrs_pv.position = np.array([[0.0, 0.0, 6378.0]])  # S/C position in km
     return ephem

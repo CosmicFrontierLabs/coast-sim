@@ -20,14 +20,10 @@ from conops.config.solar_panel import SolarPanel, SolarPanelSet
 def create_test_panel_set() -> SolarPanelSet:
     """Create a realistic multi-panel configuration."""
     panels = [
-        SolarPanel(name="Panel1", sidemount=True, azimuth_deg=0, max_power=800),
-        SolarPanel(name="Panel2", sidemount=True, azimuth_deg=180, max_power=800),
-        SolarPanel(
-            name="Panel3", sidemount=True, azimuth_deg=90, cant_x=15, max_power=400
-        ),
-        SolarPanel(
-            name="Panel4", sidemount=True, azimuth_deg=270, cant_x=15, max_power=400
-        ),
+        SolarPanel(name="Panel1", normal=(0.0, 1.0, 0.0), max_power=800),
+        SolarPanel(name="Panel2", normal=(0.0, -1.0, 0.0), max_power=800),
+        SolarPanel(name="Panel3", normal=(0.0, 0.966, -0.259), max_power=400),
+        SolarPanel(name="Panel4", normal=(0.0, -0.966, -0.259), max_power=400),
     ]
     return SolarPanelSet(panels=panels)
 

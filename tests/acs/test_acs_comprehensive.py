@@ -10,7 +10,7 @@ class TestAddSlew:
     """Test enqueue_command method."""
 
     @patch("conops.targets.Pointing")
-    def test_enqueue_command_basic(self, mock_too, acs):
+    def test_enqueue_command_basic(self, mock_too, acs) -> None:
         """Test basic slew addition."""
         # Setup mock Pointing
         mock_at = Mock(spec=Pointing)
@@ -24,7 +24,7 @@ class TestAddSlew:
         assert len(acs.command_queue) == 1
 
     @patch("conops.targets.Pointing")
-    def test_enqueue_command_different_obstype(self, mock_too, acs):
+    def test_enqueue_command_different_obstype(self, mock_too, acs) -> None:
         """Test adding slew with different obstype."""
         mock_at = Mock(spec=Pointing)
         mock_at.next_vis = Mock(return_value=1514764800.0)
@@ -41,7 +41,7 @@ class TestAddSlewClass:
 
     @patch("conops.targets.Pointing")
     @patch("conops.unixtime2yearday")
-    def test_enqueue_command_first_slew(self, mock_yearday, mock_too, acs):
+    def test_enqueue_command_first_slew(self, mock_yearday, mock_too, acs) -> None:
         """Test adding first slew."""
         mock_yearday.return_value = (2018, 1)
 
@@ -75,7 +75,7 @@ class TestAddSlewClass:
 
     @patch("conops.targets.Pointing")
     @patch("conops.unixtime2yearday")
-    def test_enqueue_command_subsequent_slew(self, mock_yearday, mock_too, acs):
+    def test_enqueue_command_subsequent_slew(self, mock_yearday, mock_too, acs) -> None:
         """Test adding subsequent slew."""
         mock_yearday.return_value = (2018, 1)
 
@@ -114,7 +114,9 @@ class TestAddSlewClass:
 
     @patch("conops.targets.Pointing")
     @patch("conops.unixtime2yearday")
-    def test_enqueue_command_rejected_constraint(self, mock_yearday, mock_too, acs):
+    def test_enqueue_command_rejected_constraint(
+        self, mock_yearday, mock_too, acs
+    ) -> None:
         """Test slew rejected due to constraint."""
         mock_yearday.return_value = (2018, 1)
 
@@ -142,7 +144,9 @@ class TestAddSlewClass:
 
     @patch("conops.targets.Pointing")
     @patch("conops.unixtime2yearday")
-    def test_enqueue_command_delayed_for_visibility(self, mock_yearday, mock_too, acs):
+    def test_enqueue_command_delayed_for_visibility(
+        self, mock_yearday, mock_too, acs
+    ) -> None:
         """Test slew delayed for visibility."""
         mock_yearday.return_value = (2018, 1)
 
@@ -171,7 +175,9 @@ class TestAddSlewClass:
 
     @patch("conops.targets.Pointing")
     @patch("conops.unixtime2yearday")
-    def test_enqueue_command_during_existing_slew(self, mock_yearday, mock_too, acs):
+    def test_enqueue_command_during_existing_slew(
+        self, mock_yearday, mock_too, acs
+    ) -> None:
         """Test adding slew during an existing slew."""
         mock_yearday.return_value = (2018, 1)
 
@@ -210,7 +216,7 @@ class TestAddSlewClass:
 
     @patch("conops.targets.Pointing")
     @patch("conops.unixtime2yearday")
-    def test_enqueue_command_during_pass(self, mock_yearday, mock_too, acs):
+    def test_enqueue_command_during_pass(self, mock_yearday, mock_too, acs) -> None:
         """Test adding slew during a pass updates last_ppt."""
         mock_yearday.return_value = (2018, 1)
 
@@ -243,7 +249,7 @@ class TestAddSlewClass:
 
     @patch("conops.targets.Pointing")
     @patch("conops.unixtime2yearday")
-    def test_enqueue_command_gsp_obstype(self, mock_yearday, mock_too, acs):
+    def test_enqueue_command_gsp_obstype(self, mock_yearday, mock_too, acs) -> None:
         """Test adding slew with GSP obstype."""
         mock_yearday.return_value = (2018, 1)
 
@@ -275,7 +281,7 @@ class TestPointing:
     """Test pointing method."""
 
     @patch("conops.optimum_roll")
-    def test_pointing_no_slew(self, mock_roll, acs, mock_ephem):
+    def test_pointing_no_slew(self, mock_roll, acs, mock_ephem) -> None:
         """Test pointing with no slew."""
         mock_roll.return_value = 0.0
         acs.ephem = mock_ephem
@@ -288,7 +294,7 @@ class TestPointing:
         assert obsid == 0  # Default obsid when no slew is active
 
     @patch("conops.optimum_roll")
-    def test_pointing_slew_start_adjustment(self, mock_roll, acs):
+    def test_pointing_slew_start_adjustment(self, mock_roll, acs) -> None:
         """Test pointing adjusts slew start when within step_size."""
         mock_roll.return_value = 0.0
 
@@ -315,7 +321,7 @@ class TestPointing:
         assert acs.last_slew is not None
 
     @patch("conops.optimum_roll")
-    def test_pointing_during_slew(self, mock_roll, acs):
+    def test_pointing_during_slew(self, mock_roll, acs) -> None:
         """Test pointing during an active slew."""
         mock_roll.return_value = 45.0
 
@@ -336,7 +342,7 @@ class TestPointing:
         assert dec == 30.0
 
     @patch("conops.optimum_roll")
-    def test_pointing_during_pass_slew(self, mock_roll, acs):
+    def test_pointing_during_pass_slew(self, mock_roll, acs) -> None:
         """Test pointing during pass slew."""
         mock_roll.return_value = 45.0
 
@@ -355,7 +361,7 @@ class TestPointing:
         assert obsid == 200
 
     @patch("conops.optimum_roll")
-    def test_pointing_during_pass_dwell(self, mock_roll, acs):
+    def test_pointing_during_pass_dwell(self, mock_roll, acs) -> None:
         """Test pointing during pass dwell phase."""
         mock_roll.return_value = 0.0
 
@@ -379,7 +385,9 @@ class TestPointing:
         assert dec == 30.0
 
     @patch("conops.optimum_roll")
-    def test_pointing_with_constraint_violation(self, mock_roll, acs, mock_constraint):
+    def test_pointing_with_constraint_violation(
+        self, mock_roll, acs, mock_constraint
+    ) -> None:
         """Test pointing with constraint violation."""
         mock_roll.return_value = 0.0
 
@@ -428,7 +436,7 @@ class TestPointing:
         assert dec == 30.0
 
     @patch("conops.optimum_roll")
-    def test_pointing_pass_after_dwell(self, mock_roll, acs):
+    def test_pointing_pass_after_dwell(self, mock_roll, acs) -> None:
         """Test pointing after pass dwell phase."""
         mock_roll.return_value = 0.0
 
@@ -453,7 +461,7 @@ class TestPointing:
 class TestRequestPass:
     """Test request_pass method."""
 
-    def test_request_pass_no_overlap(self, acs):
+    def test_request_pass_no_overlap(self, acs) -> None:
         """Test requesting pass with no overlap."""
         acs.passrequests.passes = []
 
@@ -465,7 +473,7 @@ class TestRequestPass:
 
         assert mock_pass in acs.passrequests.passes
 
-    def test_request_pass_overlap_end(self, acs):
+    def test_request_pass_overlap_end(self, acs) -> None:
         """Test requesting pass with overlap at end."""
         existing_pass = Mock(spec=Pass)
         existing_pass.begin = 1514765000.0
@@ -482,7 +490,7 @@ class TestRequestPass:
         # Should not add overlapping pass
         assert new_pass not in acs.passrequests.passes
 
-    def test_request_pass_overlap_begin(self, acs):
+    def test_request_pass_overlap_begin(self, acs) -> None:
         """Test requesting pass with overlap at begin."""
         existing_pass = Mock(spec=Pass)
         existing_pass.begin = 1514765000.0
@@ -499,7 +507,7 @@ class TestRequestPass:
         # Should not add overlapping pass
         assert new_pass not in acs.passrequests.passes
 
-    def test_request_pass_no_overlap_before(self, acs):
+    def test_request_pass_no_overlap_before(self, acs) -> None:
         """Test requesting pass before existing pass."""
         existing_pass = Mock(spec=Pass)
         existing_pass.begin = 1514765000.0
@@ -515,7 +523,7 @@ class TestRequestPass:
 
         assert new_pass in acs.passrequests.passes
 
-    def test_request_pass_no_overlap_after(self, acs):
+    def test_request_pass_no_overlap_after(self, acs) -> None:
         """Test requesting pass after existing pass."""
         existing_pass = Mock(spec=Pass)
         existing_pass.begin = 1514765000.0
@@ -537,7 +545,7 @@ class TestAddSlewClassEdgeCases:
 
     @patch("conops.targets.Pointing")
     @patch("conops.unixtime2yearday")
-    def test_enqueue_command_pass_object(self, mock_yearday, mock_too, acs):
+    def test_enqueue_command_pass_object(self, mock_yearday, mock_too, acs) -> None:
         """Test adding a Pass object (not storing as last_ppt)."""
         mock_yearday.return_value = (2018, 1)
 
@@ -575,7 +583,7 @@ class TestAddSlewClassEdgeCases:
 
     @patch("conops.targets.Pointing")
     @patch("conops.unixtime2yearday")
-    def test_enqueue_command_slew_in_pass(self, mock_yearday, mock_too, acs):
+    def test_enqueue_command_slew_in_pass(self, mock_yearday, mock_too, acs) -> None:
         """Test adding Slew during pass mode stores it as last_ppt."""
         mock_yearday.return_value = (2018, 1)
 
@@ -609,7 +617,9 @@ class TestAddSlewClassEdgeCases:
 
     @patch("conops.targets.Pointing")
     @patch("conops.unixtime2yearday")
-    def test_enqueue_command_non_ppt_rejection(self, mock_yearday, mock_too, acs):
+    def test_enqueue_command_non_ppt_rejection(
+        self, mock_yearday, mock_too, acs
+    ) -> None:
         """Test that only PPT slews are rejected for constraints."""
         mock_yearday.return_value = (2018, 1)
 
@@ -638,7 +648,9 @@ class TestAddSlewClassEdgeCases:
 
     @patch("conops.targets.Pointing")
     @patch("conops.unixtime2yearday")
-    def test_enqueue_command_delayed_start_not_ppt(self, mock_yearday, mock_too, acs):
+    def test_enqueue_command_delayed_start_not_ppt(
+        self, mock_yearday, mock_too, acs
+    ) -> None:
         """Test slew with delayed start for non-PPT obstype."""
         mock_yearday.return_value = (2018, 1)
 

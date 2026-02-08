@@ -1,14 +1,16 @@
 from datetime import datetime
+from typing import cast
 
 import numpy as np
 import numpy.typing as npt
 import rust_ephem
 from pydantic import BaseModel, Field, PrivateAttr
 
-from ..common import dtutcfromtimestamp, separation
+from ..common import dtutcfromtimestamp
+from ..common.vector import vecnorm
 
 
-def get_slice_indices(
+def get_ephemeris_indices(
     time: datetime | list[datetime], ephemeris: rust_ephem.Ephemeris
 ) -> np.ndarray:
     """
@@ -40,12 +42,13 @@ class SolarPanel(BaseModel):
     Attributes:
         name (str): Name/identifier for the panel.
         gimbled (bool): Whether this panel is gimbled.
-        sidemount (bool): Whether the panel is side-mounted (normal ~90° from boresight).
-        cant_x (float): Cant angle around X-axis (deg), one of two orthogonal tilts.
-        cant_y (float): Cant angle around Y-axis (deg), one of two orthogonal tilts.
-        azimuth_deg (float): Structural placement angle around boresight/X (deg).
-            0° = +Y (side), 90° = +Z, 180° = -Y, 270° = -Z. This places the
-            panel around the spacecraft circumference; roll adds on top of this.
+        normal (tuple[float, float, float]): Panel normal vector in spacecraft body frame.
+            Defined as (x, y, z) where:
+            - +x is the spacecraft pointing direction (boresight)
+            - +y is the spacecraft "up" direction
+            - +z completes the right-handed coordinate system
+            Should be a unit vector for proper illumination calculations.
+            Use create_solar_panel_vector() to generate vectors for common mount types.
         max_power (float): Maximum electrical power output at full illumination (W).
         conversion_efficiency (Optional[float]): Optional per-panel efficiency.
             If not provided, array-level efficiency is used.
@@ -58,32 +61,9 @@ class SolarPanel(BaseModel):
         default="Panel", description="Name/identifier for the solar panel"
     )
     gimbled: bool = Field(default=False, description="Whether the panel is gimbled")
-    sidemount: bool = Field(
-        default=True, description="Whether panel is side-mounted relative to boresight"
-    )
-    cant_x: float = Field(
-        default=0.0,
-        description=(
-            "Cant angle about the spacecraft X-axis (deg). Together with cant_y this "
-            "forms one of two orthogonal tilt components of the panel normal. For "
-            "body-mounted panels the net cant is computed from cant_x and cant_y; "
-            "for side-mounted panels it is applied relative to the nominal side mount."
-        ),
-    )
-    cant_y: float = Field(
-        default=0.0,
-        description=(
-            "Cant angle about the spacecraft Y-axis (deg). This is the second "
-            "orthogonal tilt component, combined with cant_x (e.g., via their "
-            "resultant magnitude) to define the overall panel cant. Its effect "
-            "depends on sidemount: for body-mounted panels it contributes to the "
-            "net cant away from boresight, while for side-mounted panels it tilts "
-            "the panel relative to the nominal side-mounted orientation."
-        ),
-    )
-    azimuth_deg: float = Field(
-        default=0.0,
-        description="Structural placement angle around spacecraft in degrees",
+    normal: tuple[float, float, float] = Field(
+        default=(0.0, 1.0, 0.0),
+        description="Panel normal vector in spacecraft body frame",
     )
     max_power: float = Field(
         default=800.0, description="Maximum power output at full illumination in Watts"
@@ -113,6 +93,8 @@ class SolarPanel(BaseModel):
         Returns:
             float or np.ndarray: Fraction of panel illumination (0.0 to 1.0)
         """
+        from ..common import scbodyvector
+
         # Convert unix time to datetime if needed
         if isinstance(time, (int, float)):
             time = [dtutcfromtimestamp(time)]
@@ -125,7 +107,9 @@ class SolarPanel(BaseModel):
 
         # Get the array index of the ephemeris for this time
         try:
-            i = get_slice_indices(time=time[0] if scalar else time, ephemeris=ephem)
+            indices = get_ephemeris_indices(
+                time=time[0] if scalar else time, ephemeris=ephem
+            )
         except Exception as e:
             print(f"Error getting slice for time={time}, ephem={ephem}: {e}")
             raise
@@ -150,54 +134,37 @@ class SolarPanel(BaseModel):
                 return float(frac[0])
             return frac
 
-        # Non-gimbled panels: compute illumination based on cant, azimuth, and pointing
-        # Calculate sun angle using vector separation (expects radians)
-        sun_ra_rad = np.deg2rad(ephem.sun_ra_deg[i])
-        sun_dec_rad = np.deg2rad(ephem.sun_dec_deg[i])
-        target_ra_rad = np.deg2rad(ra)
-        target_dec_rad = np.deg2rad(dec)
+        # Non-gimbled panels: compute illumination based on panel normal vector
+        # Get sun position in body frame for each time
+        normal = np.array(self.normal, dtype=np.float64)
 
-        # Calculate angle between boresight and sun
-        sunangle = np.rad2deg(
-            separation([sun_ra_rad, sun_dec_rad], [target_ra_rad, target_dec_rad])
-        )
+        # For each time, get sun vector and compute dot product with normal
+        illum = np.zeros(len(indices))
+        for idx, time_idx in enumerate(indices):
+            # Get sun position vector from ephemeris
+            sunvec = ephem.sun_pv.position[time_idx] - ephem.gcrs_pv.position[time_idx]
 
-        if self.sidemount:
-            # Side-mounted panel with optimal roll assumption
-            # The panel normal is perpendicular to boresight (90°).
-            # For side-mounted panels, only cant_x is relevant because the cant_y component
-            # does not affect the tilt toward or away from the boresight in the side-mount geometry.
-            # This is a deliberate change from previous behavior, where both cant_x and cant_y
-            # were combined. If this is not the intended behavior, consider reverting to using
-            # np.hypot(self.cant_x, self.cant_y) here.
-            panel_offset_angle = 90.0 - self.cant_x
-        else:
-            # Body-mounted panel: panel normal aligned with boresight, with cant offset
-            cant_mag = np.hypot(self.cant_x, self.cant_y)
-            panel_offset_angle = 0 + cant_mag
+            # Convert sun vector to body frame
+            sun_body = scbodyvector(
+                np.deg2rad(ra), np.deg2rad(dec), np.deg2rad(roll), sunvec
+            )
 
-        # Calculate panel illumination for this panel
-        panel_sun_angle = 180 - sunangle - panel_offset_angle
-        panel = np.cos(np.radians(panel_sun_angle))
+            # Illumination is the dot product of normal with sun direction (scaled by sun vector magnitude)
+            # Normalize sun vector for proper dot product
+            sun_mag = np.linalg.norm(sun_body)
+            if sun_mag > 0:
+                sun_normalized = sun_body / sun_mag
+                illum[idx] = np.dot(normal, sun_normalized)
+            else:
+                illum[idx] = 0.0
 
-        # Apply azimuthal constraint for side-mounted panels
-        # With optimal roll, the spacecraft orients to maximize total power
-        # but panels at different azimuthal positions around the spacecraft
-        # cannot all receive optimal illumination simultaneously
-        if self.sidemount and self.azimuth_deg != 0.0:
-            # Panels at non-zero azimuth receive reduced illumination
-            # based on their angular position around the spacecraft.
-            # The roll angle adjusts the effective azimuth position of the panel.
-            # cos(azimuth + roll) gives the projection factor
-            effective_azimuth_rad = np.deg2rad(self.azimuth_deg + roll)
-            azimuth_factor = np.abs(np.cos(effective_azimuth_rad))
-            panel = panel * azimuth_factor
-
-        panel = np.clip(panel * not_in_eclipse, a_min=0, a_max=None)
+        # Clip negative illumination to zero and apply eclipse constraint
+        illum = np.clip(illum * not_in_eclipse, a_min=0, a_max=None)
 
         if scalar:
-            return float(panel[0])
-        return np.array(panel)
+            return float(illum[0])
+        # Return with added fudge for mypy type checker
+        return cast(npt.NDArray[np.float64], illum)
 
 
 # Cached SolarPanel instance for accessing eclipse constraint
@@ -214,42 +181,172 @@ def _get_eclipse_constraint() -> rust_ephem.EclipseConstraint:
     return _ECLIPSE_PANEL_CACHE._eclipse_constraint
 
 
+def create_solar_panel_vector(
+    mount: str | None = None,
+    cant_z: float = 0.0,
+    cant_perp: float = 0.0,
+    cant_x: float | None = None,
+    cant_y: float | None = None,
+    azimuth_deg: float | None = None,
+) -> tuple[float, float, float]:
+    """
+    Create a unit normal vector for a solar panel based on mount type and cant angles.
+
+    Supports both new and old style parameter configurations for backward compatibility.
+    Only one parameter style may be used at a time - either old style OR new style, not both.
+
+    Args:
+        mount: Mount type (new style): 'sidemount', 'aftmount', or 'boresight'.
+        cant_z: Cant angle around the spacecraft Z-axis in degrees (new style yaw-like rotation).
+        cant_perp: Cant angle in degrees around the axis perpendicular to the panel mounting
+            direction (new style pitch-like rotation):
+            - For 'sidemount': rotates around X-axis.
+            - For 'aftmount': rotates around Y-axis.
+            - For 'boresight': rotates around Y-axis.
+        cant_x: Cant angle around X-axis in degrees (old style), one of two orthogonal tilts.
+        cant_y: Cant angle around Y-axis in degrees (old style), one of two orthogonal tilts.
+        azimuth_deg: Structural placement angle around boresight/X in degrees (old style).
+            0° = +Y (side), 90° = +Z, 180° = -Y, 270° = -Z. This places the
+            panel around the spacecraft circumference; roll adds on top of this.
+
+    Returns:
+        Unit normal vector (x, y, z) in the spacecraft body frame.
+
+    Mount types:
+        - 'sidemount': Panel nominally faces +Y (spacecraft "up").
+        - 'aftmount': Panel nominally faces -X (spacecraft "back").
+        - 'boresight': Panel nominally faces +X (spacecraft forward/pointing).
+    Examples:
+        # New style - Sidemount panel with 30° yaw and 15° pitch
+        normal = create_solar_panel_vector('sidemount', cant_z=30.0, cant_perp=15.0)
+
+        # New style - Boresight panel tilted backward 45°
+        normal = create_solar_panel_vector('boresight', cant_perp=-45.0)
+
+        # Old style - Panel at 0° azimuth (+Y) with 30° cant around X and 15° cant around Y
+        normal = create_solar_panel_vector(cant_x=30.0, cant_y=15.0, azimuth_deg=0.0)
+    """
+
+    # Validate that only one parameter style is used
+    old_style_provided = (
+        cant_x is not None or cant_y is not None or azimuth_deg is not None
+    )
+    new_style_provided = mount is not None
+
+    if old_style_provided and new_style_provided:
+        raise ValueError(
+            "Cannot mix old style parameters (cant_x, cant_y, azimuth_deg) "
+            "with new style parameters (mount, cant_z, cant_perp). "
+            "Use either old style OR new style, not both."
+        )
+
+    # Check if old style parameters are provided
+    if old_style_provided:
+        # Use old style parameters
+        if cant_x is None:
+            cant_x = 0.0
+        if cant_y is None:
+            cant_y = 0.0
+        if azimuth_deg is None:
+            azimuth_deg = 0.0
+
+        # Convert old style to rotation matrix approach
+        # azimuth_deg determines the base orientation around the boresight
+        # cant_x and cant_y are additional tilts
+
+        theta_x = np.radians(cant_x)
+        theta_y = np.radians(cant_y)
+        azimuth_rad = np.radians(azimuth_deg)
+
+        # Compute base vector continuously around the boresight (X-axis)
+        # azimuth_deg: 0° = +Y, 90° = +Z, 180° = -Y, 270° = -Z
+        base_x = 0.0
+        base_y = np.cos(azimuth_rad)
+        base_z = np.sin(azimuth_rad)
+
+        # Apply cant angles
+        # First cant around X-axis (theta_x)
+        y_after_x = base_y * np.cos(theta_x) - base_z * np.sin(theta_x)
+        z_after_x = base_y * np.sin(theta_x) + base_z * np.cos(theta_x)
+
+        # Then cant around Y-axis (theta_y)
+        x_final = base_x * np.cos(theta_y) + z_after_x * np.sin(theta_y)
+        y_final = y_after_x
+        z_final = -base_x * np.sin(theta_y) + z_after_x * np.cos(theta_y)
+
+        return (x_final, y_final, z_final)
+
+    else:
+        # Use new style parameters
+        if mount is None:
+            mount = "sidemount"
+
+        theta_z = np.radians(cant_z)
+        theta_perp = np.radians(cant_perp)
+
+        if mount == "sidemount":
+            # Start with +Y (0, 1, 0)
+            # First rotate around Z axis
+            x_after_z = -np.sin(theta_z)
+            y_after_z = np.cos(theta_z)
+
+            # Then rotate around X axis (pitch)
+            x = x_after_z
+            y = y_after_z * np.cos(theta_perp)
+            z = y_after_z * np.sin(theta_perp)
+
+        elif mount == "aftmount":
+            # Start with -X (-1, 0, 0)
+            # First rotate around Z axis
+            x_after_z = -np.cos(theta_z)
+            y_after_z = -np.sin(theta_z)
+
+            # Then rotate around Y axis (pitch)
+            x = x_after_z * np.cos(theta_perp)
+            y = y_after_z
+            z = -x_after_z * np.sin(theta_perp)
+
+        elif mount == "boresight":
+            # Start with +X (1, 0, 0)
+            # First rotate around Z axis
+            x_after_z = np.cos(theta_z)
+            y_after_z = np.sin(theta_z)
+
+            # Then rotate around Y axis (pitch)
+            x = x_after_z * np.cos(theta_perp)
+            y = y_after_z
+            z = x_after_z * np.sin(theta_perp)
+
+        else:
+            raise ValueError(f"Unknown mount type: {mount}")
+
+        return (x, y, z)
+
+
 class _PanelGeometry:
     """Pre-computed panel geometry arrays for vectorized calculations."""
 
     __slots__ = (
         "gimbled",
-        "sidemount",
-        "cant_x",
-        "cant_y",
-        "azimuth_rad",
+        "normal",
         "max_power",
         "efficiency",
         "weights",
-        "panel_offset_angle",
     )
 
     def __init__(
         self,
         gimbled: npt.NDArray[np.bool_],
-        sidemount: npt.NDArray[np.bool_],
-        cant_x: npt.NDArray[np.float64],
-        cant_y: npt.NDArray[np.float64],
-        azimuth_rad: npt.NDArray[np.float64],
+        normal: npt.NDArray[np.float64],
         max_power: npt.NDArray[np.float64],
         efficiency: npt.NDArray[np.float64],
         weights: npt.NDArray[np.float64],
-        panel_offset_angle: npt.NDArray[np.float64],
     ) -> None:
         self.gimbled = gimbled
-        self.sidemount = sidemount
-        self.cant_x = cant_x
-        self.cant_y = cant_y
-        self.azimuth_rad = azimuth_rad
+        self.normal = vecnorm(normal)  # shape (P, 3)
         self.max_power = max_power
         self.efficiency = efficiency
         self.weights = weights
-        self.panel_offset_angle = panel_offset_angle
 
 
 class SolarPanelSet(BaseModel):
@@ -284,33 +381,28 @@ class SolarPanelSet(BaseModel):
 
     @property
     def sidemount(self) -> bool:
-        """Return True if any panel is side-mounted. This is a hack right now
-        to get the optimum charging pointing calculation to work correctly.
+        """DEPRECATED: Return True if any panel is primarily side-mounted (y-component dominant).
 
-        FIXME: This should be handled better in the future.
+        This is kept for backwards compatibility. With the new normal vector approach,
+        panels can have arbitrary orientations.
         """
         for p in self.panels:
-            if p.sidemount:
+            n = p.normal
+            # Check if y-component is dominant (side-mounted characteristic)
+            if abs(n[1]) > abs(n[0]) and abs(n[1]) > abs(n[2]):
                 return True
         return False
-
-    def _effective_panels(self) -> list[SolarPanel]:
-        """Return the configured panels for this set."""
-        return self.panels
 
     def _get_geometry(self) -> _PanelGeometry:
         """Get or compute cached panel geometry arrays."""
         if self._geometry_cache is not None:
             return self._geometry_cache
 
-        panels = self._effective_panels()
+        panels = self.panels
         n = len(panels)
 
         gimbled = np.array([p.gimbled for p in panels], dtype=bool)
-        sidemount = np.array([p.sidemount for p in panels], dtype=bool)
-        cant_x = np.array([p.cant_x for p in panels], dtype=np.float64)
-        cant_y = np.array([p.cant_y for p in panels], dtype=np.float64)
-        azimuth_rad = np.deg2rad([p.azimuth_deg for p in panels])
+        normal = np.array([p.normal for p in panels], dtype=np.float64)  # shape (P, 3)
         max_power = np.array([p.max_power for p in panels], dtype=np.float64)
         efficiency = np.array(
             [
@@ -325,23 +417,12 @@ class SolarPanelSet(BaseModel):
         total_max = max_power.sum()
         weights = max_power / total_max if total_max > 0 else np.zeros(n)
 
-        # Pre-compute panel offset angles
-        # Sidemount: 90 - cant_x
-        # Body-mount: hypot(cant_x, cant_y)
-        panel_offset_angle = np.where(
-            sidemount, 90.0 - cant_x, np.hypot(cant_x, cant_y)
-        )
-
         self._geometry_cache = _PanelGeometry(
             gimbled=gimbled,
-            sidemount=sidemount,
-            cant_x=cant_x,
-            cant_y=cant_y,
-            azimuth_rad=azimuth_rad,
+            normal=normal,
             max_power=max_power,
             efficiency=efficiency,
             weights=weights,
-            panel_offset_angle=panel_offset_angle,
         )
         return self._geometry_cache
 
@@ -370,7 +451,7 @@ class SolarPanelSet(BaseModel):
         # Convert unix time for scalar detection
         scalar = isinstance(time, (int, float))
 
-        panels = self._effective_panels()
+        panels = self.panels
         total_max = sum(p.max_power for p in panels)
 
         # If we have no panels or total max power is zero, return zeros with correct shape
@@ -431,7 +512,7 @@ class SolarPanelSet(BaseModel):
             float or np.ndarray: Power generated by the solar panels in Watts
         """
         scalar = isinstance(time, (int, float))
-        panels = self._effective_panels()
+        panels = self.panels
 
         # Accumulate power across panels
         power_accum = None
@@ -478,7 +559,9 @@ class SolarPanelSet(BaseModel):
         Returns:
             tuple: (illumination_fraction, power_watts)
         """
-        panels = self._effective_panels()
+        from ..common import scbodyvector
+
+        panels = self.panels
         if not panels:
             if isinstance(time, (float, int, datetime)):
                 return 0.0, 0.0
@@ -511,31 +594,23 @@ class SolarPanelSet(BaseModel):
             # In eclipse - no illumination for any panel
             return (0.0, 0.0) if scalar else (np.array([0.0]), np.array([0.0]))
 
-        # Get sun position from pre-computed arrays (no SkyCoord overhead)
-        sun_ra_deg = ephem.sun_ra_deg[idx]
-        sun_dec_deg = ephem.sun_dec_deg[idx]
-
-        # Compute sun angle (same for all panels at this pointing)
-        sun_ra_rad = np.deg2rad(sun_ra_deg)
-        sun_dec_rad = np.deg2rad(sun_dec_deg)
-        target_ra_rad = np.deg2rad(ra)
-        target_dec_rad = np.deg2rad(dec)
-        sunangle = np.rad2deg(
-            separation([sun_ra_rad, sun_dec_rad], [target_ra_rad, target_dec_rad])
+        # Get sun vector in body frame
+        sunvec = ephem.sun_pv.position[idx] - ephem.gcrs_pv.position[idx]  # km
+        sun_body = scbodyvector(
+            np.deg2rad(ra), np.deg2rad(dec), np.deg2rad(roll), sunvec
         )
 
-        # Vectorized panel illumination calculation
-        # panel_sun_angle = 180 - sunangle - panel_offset_angle
-        panel_sun_angle = 180.0 - sunangle - geom.panel_offset_angle
-        panel_illum = np.cos(np.radians(panel_sun_angle))
+        # Normalize sun vector
+        sun_mag = np.linalg.norm(sun_body)
+        if sun_mag > 0:
+            sun_normalized = sun_body / sun_mag
+        else:
+            # No sun direction - return zero illumination
+            return (0.0, 0.0) if scalar else (np.array([0.0]), np.array([0.0]))
 
-        # Apply azimuthal constraint for side-mounted panels with non-zero azimuth
-        # cos(azimuth + roll) gives the projection factor
-        azimuth_factor = np.abs(np.cos(geom.azimuth_rad + np.deg2rad(roll)))
-        # Only apply to sidemount panels (azimuth doesn't affect body-mount)
-        panel_illum = np.where(
-            geom.sidemount, panel_illum * azimuth_factor, panel_illum
-        )
+        # Vectorized panel illumination calculation: dot product of normal with sun direction
+        # illum per panel: shape (P,)
+        panel_illum = np.dot(geom.normal, sun_normalized)
 
         # Gimbled panels get full illumination when not in eclipse
         panel_illum = np.where(geom.gimbled, 1.0, panel_illum)
@@ -558,7 +633,7 @@ class SolarPanelSet(BaseModel):
         roll: float = 0.0,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Fallback loop-based implementation for list of times."""
-        panels = self._effective_panels()
+        panels = self.panels
         total_max = sum(p.max_power for p in panels)
 
         illum_accum = np.zeros(len(time))
@@ -586,8 +661,10 @@ class SolarPanelSet(BaseModel):
     ) -> tuple[float, float]:
         """Find optimal RA/Dec pointing for maximum solar panel illumination.
 
-        For side-mounted panels, the optimal pointing is perpendicular to the Sun.
-        For body-mounted panels, the optimal pointing is directly at the Sun.
+        Analyzes panel normal vectors to determine optimal pointing:
+        - Panels with dominant Y component (side-mounted): point perpendicular to sun
+        - Panels with dominant Z component (body-mounted): point directly at sun
+        - Mixed arrays: uses weighted average approach
 
         Args:
             time: Unix timestamp
@@ -601,100 +678,32 @@ class SolarPanelSet(BaseModel):
         sun_ra = ephem.sun_ra_deg[index]
         sun_dec = ephem.sun_dec_deg[index]
 
-        if self.sidemount:
-            # For side-mounted panels, point perpendicular to sun (90 degrees away)
-            # This maximizes illumination on the side panels
-            # Point at sun RA + 90 degrees, same dec
+        # Analyze panel normal vectors to determine optimal pointing
+        panels = self.panels
+
+        # Check dominant axis of panel normals (weighted by max_power)
+        total_power = sum(p.max_power for p in panels)
+        if total_power <= 0:
+            # No physical panels - default to pointing at sun
+            return sun_ra, sun_dec
+
+        # Compute weighted average normal vector
+        avg_normal = np.zeros(3)
+        for p in panels:
+            weight = p.max_power / total_power
+            avg_normal += np.array(p.normal) * weight
+
+        # Determine dominant axis
+        abs_normal = np.abs(avg_normal)
+        dominant_axis = np.argmax(abs_normal)
+
+        if dominant_axis == 1:  # Y is dominant (side-mounted-like)
+            # Point perpendicular to sun (90 degrees away in RA)
             optimal_ra = (sun_ra + 90.0) % 360.0
             optimal_dec = sun_dec
-        else:
-            # For body-mounted panels, point directly at sun
+        else:  # X (boresight) or Z is dominant (body-mounted-like)
+            # Point directly at sun
             optimal_ra = sun_ra
             optimal_dec = sun_dec
 
         return optimal_ra, optimal_dec
-
-
-# class SolarPanelConstraint(BaseModel):
-#     """
-#     For a given RA/Dec and time, determine if the solar panel constraint is
-#     violated. Solar panel constraint is defined as the angle between the Sun
-#     and the normal vector of the solar panel being within a given range.
-
-#     Parameters
-#     ----------
-#     min_angle
-#         The minimum angle of the Sun from solar panel normal vector.
-
-#     max_angle
-#         The maximum angle of the Sun from solar panel normal vector.
-
-#     Methods
-#     -------
-#     __call__(coord, ephemeris, sun_radius_angle=None)
-#         Checks if a given coordinate is inside the constraint.
-
-#     """
-
-#     name: str = "Panel"
-#     short_name: Literal["Panel"] = "Panel"
-#     solar_panel: SolarPanelSet = Field(..., description="Solar panel configuration")
-#     min_angle: float | None = Field(
-#         default=None, ge=0, le=180, description="Minimum angle of Sun from the panel"
-#     )
-#     max_angle: float | None = Field(
-#         default=None, ge=0, le=180, description="Maximum angle of Sun from the panel"
-#     )
-
-#     def __call__(
-#         self, time: Time, ephemeris: Any, coordinate: SkyCoord
-#     ) -> np.typing.NDArray[np.bool_]:
-#         """
-#         Check if a given coordinate and set of times is inside the solar panel constraint.
-
-#         Parameters
-#         ----------
-#         coordinate : SkyCoord
-#             The coordinate to check. SkyCoord object with RA/Dec in degrees.
-#         time : Time
-#             The time to check. Array-like Time object.
-#         ephemeris : Ephemeris
-#             The ephemeris object.
-
-#         Returns
-#         -------
-#         bool : np.ndarray[np.bool_]
-#             Array of booleans. `True` if the coordinate is inside the
-#             constraint, `False` otherwise.
-
-#         """
-#         # Find a slice what the part of the ephemeris that we're using
-#         i = get_slice_indices(time=time, ephemeris=ephemeris)
-
-#         # Calculate the panel illumination angle
-#         panel_illumination = self.solar_panel.panel_illumination_fraction(
-#             time=ephemeris.timestamp[i], coordinate=coordinate, ephem=ephemeris
-#         )
-#         panel_angle = np.arccos(panel_illumination) * u.rad
-
-#         # Check if the spacecraft is in eclipse
-#         in_eclipse = (
-#             ephemeris.sun[i].separation(ephemeris.earth[i])
-#             <= ephemeris.earth_radius_angle[i]
-#         )
-
-#         # Set the panel angle to 0 if in eclipse, as we don't care about the
-#         # angle of the Sun on the panel if there's no Sun.
-#         panel_angle[in_eclipse] = 0 * u.rad
-
-#         # Construct the constraint based on the minimum and maximum angles
-#         in_constraint = np.zeros(len(ephemeris.sun[i]), dtype=bool)
-
-#         if self.min_angle is not None:
-#             in_constraint |= panel_angle < self.min_angle * u.deg
-
-#         if self.max_angle is not None:
-#             in_constraint |= panel_angle > self.max_angle * u.deg
-
-#         # Return the result as True or False, or an array of True/False
-#         return in_constraint
