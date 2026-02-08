@@ -93,7 +93,7 @@ class TestPointingStringRepresentation:
     def test_str_contains_target_name_and_id(self, pointing):
         pointing.begin = 0
         pointing.name = "TargetName"
-        pointing.targetid = 42
+        pointing.obsid = 42
         pointing.ra = 1.2345
         pointing.dec = -0.1234
         pointing.roll = 3.4
@@ -105,7 +105,7 @@ class TestPointingStringRepresentation:
     def test_str_contains_ra(self, pointing):
         pointing.begin = 0
         pointing.name = "TargetName"
-        pointing.targetid = 42
+        pointing.obsid = 42
         pointing.ra = 1.2345
         pointing.dec = -0.1234
         pointing.roll = 3.4
@@ -117,7 +117,7 @@ class TestPointingStringRepresentation:
     def test_str_contains_dec(self, pointing):
         pointing.begin = 0
         pointing.name = "TargetName"
-        pointing.targetid = 42
+        pointing.obsid = 42
         pointing.ra = 1.2345
         pointing.dec = -0.1234
         pointing.roll = 3.4
@@ -129,7 +129,7 @@ class TestPointingStringRepresentation:
     def test_str_contains_merit(self, pointing):
         pointing.begin = 0
         pointing.name = "TargetName"
-        pointing.targetid = 42
+        pointing.obsid = 42
         pointing.ra = 1.2345
         pointing.dec = -0.1234
         pointing.roll = 3.4
@@ -154,8 +154,8 @@ class TestPointing:
     def test_dec_zero(self, pointing):
         assert pointing.dec == 0.0
 
-    def test_targetid_zero(self, pointing):
-        assert pointing.targetid == 0
+    def test_obsid_zero(self, pointing):
+        assert pointing.obsid == 0
 
     def test_name_fake_target(self, pointing):
         assert pointing.name == "FakeTarget"

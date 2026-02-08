@@ -123,7 +123,7 @@ class DumbScheduler:
                 # Check observation length relative to min time + slewtime
                 if (
                     obslen >= (self.mintime + slewtime)
-                    and task.targetid not in self.scheduled
+                    and task.obsid not in self.scheduled
                 ):
                     found = True
                     selected_target = task
@@ -178,13 +178,13 @@ class DumbScheduler:
             # Update the target's remaining requested exposure
             selected_target.exptime -= exposure_time
 
-            ppt.obsid = selected_target.targetid
+            ppt.obsid = selected_target.obsid
             assert self.saa is not None
             ppt.saa = self.saa
             ppt.merit = selected_target.merit
             ppt.name = selected_target.name
 
-            self.scheduled.append(selected_target.targetid)
+            self.scheduled.append(selected_target.obsid)
             self.plan.extend([ppt])
 
             # Move to next index for scheduling after this observation
