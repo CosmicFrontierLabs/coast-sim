@@ -7,6 +7,7 @@ import rust_ephem
 from pydantic import BaseModel, Field, PrivateAttr
 
 from ..common import dtutcfromtimestamp
+from ..common.vector import vecnorm
 
 
 def get_ephemeris_indices(
@@ -342,7 +343,7 @@ class _PanelGeometry:
         weights: npt.NDArray[np.float64],
     ) -> None:
         self.gimbled = gimbled
-        self.normal = normal  # shape (P, 3)
+        self.normal = vecnorm(normal)  # shape (P, 3)
         self.max_power = max_power
         self.efficiency = efficiency
         self.weights = weights

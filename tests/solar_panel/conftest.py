@@ -51,7 +51,7 @@ def mock_ephemeris() -> Mock:
     ephem.earth_radius_angle = np.array([Mock(deg=0.3) for _ in range(10)])
 
     # Mock methods
-    def mock_index(time_obj) -> int:
+    def mock_index(time_obj: Time) -> int:
         if isinstance(time_obj, Time):
             # Find closest matching time
             for idx, t in enumerate(times):
@@ -65,7 +65,7 @@ def mock_ephemeris() -> Mock:
 
 
 @pytest.fixture
-def mock_eclipse_constraint():
+def mock_eclipse_constraint() -> Mock:
     """Create a mock eclipse constraint."""
     from unittest.mock import Mock
 
@@ -75,7 +75,7 @@ def mock_eclipse_constraint():
 
 
 @pytest.fixture
-def default_solar_panel():
+def default_solar_panel() -> SolarPanel:
     """Create a default SolarPanel."""
     from conops import SolarPanel
 
@@ -83,7 +83,7 @@ def default_solar_panel():
 
 
 @pytest.fixture
-def standard_solar_panel():
+def standard_solar_panel() -> SolarPanel:
     """Create a standard test SolarPanel with common parameters."""
     from conops import SolarPanel
 
@@ -91,7 +91,7 @@ def standard_solar_panel():
 
 
 @pytest.fixture
-def zero_power_solar_panel():
+def zero_power_solar_panel() -> SolarPanel:
     """Create a SolarPanel with zero power."""
     from conops import SolarPanel
 
@@ -99,7 +99,7 @@ def zero_power_solar_panel():
 
 
 @pytest.fixture
-def high_power_solar_panel():
+def high_power_solar_panel() -> SolarPanel:
     """Create a SolarPanel with high power."""
     from conops import SolarPanel
 
@@ -107,7 +107,7 @@ def high_power_solar_panel():
 
 
 @pytest.fixture
-def empty_solar_panel_set():
+def empty_solar_panel_set() -> SolarPanelSet:
     """Create an empty SolarPanelSet."""
     from conops import SolarPanelSet
 
@@ -115,7 +115,7 @@ def empty_solar_panel_set():
 
 
 @pytest.fixture
-def single_panel_set(default_solar_panel):
+def single_panel_set(default_solar_panel: SolarPanel) -> SolarPanelSet:
     """Create a SolarPanelSet with a single default panel."""
     from conops import SolarPanelSet
 
@@ -123,7 +123,7 @@ def single_panel_set(default_solar_panel):
 
 
 @pytest.fixture
-def standard_single_panel_set(standard_solar_panel):
+def standard_single_panel_set(standard_solar_panel: SolarPanel) -> SolarPanelSet:
     """Create a SolarPanelSet with a single standard panel."""
     from conops import SolarPanelSet
 
@@ -131,7 +131,7 @@ def standard_single_panel_set(standard_solar_panel):
 
 
 @pytest.fixture
-def zero_power_panel_set(zero_power_solar_panel):
+def zero_power_panel_set(zero_power_solar_panel: SolarPanel) -> SolarPanelSet:
     """Create a SolarPanelSet with a single zero power panel."""
     from conops import SolarPanelSet
 
@@ -153,6 +153,62 @@ def multi_panel_set() -> SolarPanelSet:
             SolarPanel(name="P2", normal=(0.0, 0.0, -1.0), max_power=700.0),
         ],
     )
+
+
+@pytest.fixture
+def solar_panel_y_normal(mock_eclipse_constraint: Mock) -> SolarPanel:
+    """Create a side-mounted solar panel (Y normal)."""
+    panel = SolarPanel(
+        name="TestPanel_Y",
+        normal=(0.0, 1.0, 0.0),  # Y-pointing normal
+        max_power=100.0,
+    )
+    panel._eclipse_constraint = mock_eclipse_constraint
+    return panel
+
+
+@pytest.fixture
+def mock_ephemeris_with_sun_vectors() -> Mock:
+    """Create a mock ephemeris object with sun position vectors."""
+    from datetime import datetime, timezone
+
+    ephem = Mock()
+    index = 0
+    ephem.sun_pv = Mock()
+    ephem.sun_pv.position = np.array(
+        [
+            [1.496e8, 0, 0],  # Sun position in km (scaled)
+        ]
+    )
+
+    ephem.gcrs_pv = Mock()
+    ephem.gcrs_pv.position = np.array(
+        [
+            [0, 0, 0],  # Spacecraft position (at origin for simplicity)
+        ]
+    )
+
+    ephem.sun_ra_deg = np.array([0.0])
+    ephem.sun_dec_deg = np.array([0.0])
+    ephem.index = Mock(return_value=index)
+    # Add times array for rust_ephem constraints
+    ephem.times = np.array([datetime(2023, 11, 14, 22, 13, 20, tzinfo=timezone.utc)])
+    return ephem
+
+
+@pytest.fixture
+def panel_set(mock_eclipse_constraint: Mock) -> SolarPanelSet:
+    """Create a test panel set with multiple panels."""
+    panels = [
+        SolarPanel(name="Panel1", normal=(0.0, 1.0, 0.0), max_power=100.0),
+        SolarPanel(name="Panel2", normal=(0.0, 1.0, 0.0), max_power=100.0),
+        SolarPanel(name="Panel3", normal=(0.0, 0.0, -1.0), max_power=100.0),
+    ]
+    # Patch eclipse constraint for all panels
+    for panel in panels:
+        panel._eclipse_constraint = mock_eclipse_constraint
+
+    return SolarPanelSet(panels=panels)
 
 
 @pytest.fixture

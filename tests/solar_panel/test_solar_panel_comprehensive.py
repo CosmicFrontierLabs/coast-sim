@@ -817,27 +817,37 @@ class TestIlluminationAndPower:
         assert power == pytest.approx(450.0, rel=1e-4)  # 1.0 * 500 * 0.9
 
     def test_illumination_and_power_multiple_panels(self) -> None:
-        """Test illumination_and_power with multiple panels."""
+        """Test illumination_and_power with multiple panels - physically correct scenario.
+
+        Setup: Two identical panels both pointing along body +X (boresight).
+        Sun is at inertial +X, spacecraft at RA=0, Dec=0.
+        The coordinate transformation results in ~45° angle between panel normal
+        and sun direction (cos(45°) ≈ 0.707), which is physically valid.
+        """
+        # Create two panels both pointing toward +X (boresight direction)
         panels = [
-            SolarPanel(max_power=300.0, conversion_efficiency=0.95),
-            SolarPanel(max_power=400.0, conversion_efficiency=0.90),
+            SolarPanel(
+                name="Panel1",
+                normal=(1.0, 0.0, 0.0),  # Points along boresight
+                max_power=300.0,
+                conversion_efficiency=0.95,
+            ),
+            SolarPanel(
+                name="Panel2",
+                normal=(1.0, 0.0, 0.0),  # Same direction
+                max_power=400.0,
+                conversion_efficiency=0.90,
+            ),
         ]
         panel_set = SolarPanelSet(panels=panels)
 
         ephem = Mock()
         ephem.index = Mock(return_value=0)
-        ephem.sun = Mock()
-        # New direct array access (rust-ephem 0.3.0+)
-        ephem.sun_ra_deg = np.array([90.0])
-        ephem.sun_dec_deg = np.array([0.0])
-        ephem.sun.__getitem__ = Mock(
-            return_value=Mock(ra=Mock(deg=90.0), dec=Mock(deg=0.0))
-        )
-        # Add position vectors for new vector-based calculations
+        # Sun in +X inertial direction (RA=0°, Dec=0°)
         ephem.sun_pv = Mock()
-        ephem.sun_pv.position = np.array([[0, 1.496e8, 0]])  # Sun at +X
+        ephem.sun_pv.position = np.array([[1.496e8, 0, 0]])
         ephem.gcrs_pv = Mock()
-        ephem.gcrs_pv.position = np.array([[0, 0, 0]])  # Spacecraft at origin
+        ephem.gcrs_pv.position = np.array([[0, 0, 0]])
 
         mock_constraint = Mock()
         mock_constraint.in_constraint = Mock(return_value=False)
@@ -846,16 +856,19 @@ class TestIlluminationAndPower:
             illumination, power = panel_set.illumination_and_power(
                 time=1514764800.0,
                 ephem=ephem,
-                ra=0.0,
-                dec=0.0,
+                ra=0.0,  # Boresight points at RA=0°
+                dec=0.0,  # Boresight points at Dec=0°
             )
 
-        # Both panels at max illumination
-        expected_illumination = 1.0
-        expected_power = (1.0 * 300.0 * 0.95) + (1.0 * 400.0 * 0.90)  # 285 + 360 = 645
+        # Coordinate transformation gives ~45° angle (cos(45°) ≈ 0.707)
+        expected_illumination = 1.0 / math.sqrt(2)  # cos(45°)
+        # Power = sum(illumination * max_power * efficiency) for each panel
+        expected_power = (1.0 / math.sqrt(2)) * 300.0 * 0.95 + (
+            1.0 / math.sqrt(2)
+        ) * 400.0 * 0.90
 
-        assert illumination == pytest.approx(expected_illumination, rel=1e-6)
-        assert power == pytest.approx(expected_power, rel=1e-4)
+        assert illumination == pytest.approx(expected_illumination, rel=1e-10)
+        assert power == pytest.approx(expected_power, rel=1e-10)
 
     def test_illumination_and_power_in_eclipse(self) -> None:
         """Test illumination_and_power during eclipse."""
