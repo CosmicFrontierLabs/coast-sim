@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, PrivateAttr
 from ..common import dtutcfromtimestamp
 
 
-def get_slice_indices(
+def get_ephemeris_indices(
     time: datetime | list[datetime], ephemeris: rust_ephem.Ephemeris
 ) -> np.ndarray:
     """
@@ -106,7 +106,9 @@ class SolarPanel(BaseModel):
 
         # Get the array index of the ephemeris for this time
         try:
-            i = get_slice_indices(time=time[0] if scalar else time, ephemeris=ephem)
+            indices = get_ephemeris_indices(
+                time=time[0] if scalar else time, ephemeris=ephem
+            )
         except Exception as e:
             print(f"Error getting slice for time={time}, ephem={ephem}: {e}")
             raise
@@ -136,8 +138,8 @@ class SolarPanel(BaseModel):
         normal = np.array(self.normal, dtype=np.float64)
 
         # For each time, get sun vector and compute dot product with normal
-        illum = np.zeros(len(i))
-        for idx, time_idx in enumerate(i):
+        illum = np.zeros(len(indices))
+        for idx, time_idx in enumerate(indices):
             # Get sun position vector from ephemeris
             sunvec = ephem.sun_pv.position[time_idx] - ephem.gcrs_pv.position[time_idx]
 
@@ -741,88 +743,3 @@ class SolarPanelSet(BaseModel):
             optimal_dec = sun_dec
 
         return optimal_ra, optimal_dec
-
-
-# class SolarPanelConstraint(BaseModel):
-#     """
-#     For a given RA/Dec and time, determine if the solar panel constraint is
-#     violated. Solar panel constraint is defined as the angle between the Sun
-#     and the normal vector of the solar panel being within a given range.
-
-#     Parameters
-#     ----------
-#     min_angle
-#         The minimum angle of the Sun from solar panel normal vector.
-
-#     max_angle
-#         The maximum angle of the Sun from solar panel normal vector.
-
-#     Methods
-#     -------
-#     __call__(coord, ephemeris, sun_radius_angle=None)
-#         Checks if a given coordinate is inside the constraint.
-
-#     """
-
-#     name: str = "Panel"
-#     short_name: Literal["Panel"] = "Panel"
-#     solar_panel: SolarPanelSet = Field(..., description="Solar panel configuration")
-#     min_angle: float | None = Field(
-#         default=None, ge=0, le=180, description="Minimum angle of Sun from the panel"
-#     )
-#     max_angle: float | None = Field(
-#         default=None, ge=0, le=180, description="Maximum angle of Sun from the panel"
-#     )
-
-#     def __call__(
-#         self, time: Time, ephemeris: Any, coordinate: SkyCoord
-#     ) -> np.typing.NDArray[np.bool_]:
-#         """
-#         Check if a given coordinate and set of times is inside the solar panel constraint.
-
-#         Parameters
-#         ----------
-#         coordinate : SkyCoord
-#             The coordinate to check. SkyCoord object with RA/Dec in degrees.
-#         time : Time
-#             The time to check. Array-like Time object.
-#         ephemeris : Ephemeris
-#             The ephemeris object.
-
-#         Returns
-#         -------
-#         bool : np.ndarray[np.bool_]
-#             Array of booleans. `True` if the coordinate is inside the
-#             constraint, `False` otherwise.
-
-#         """
-#         # Find a slice what the part of the ephemeris that we're using
-#         i = get_slice_indices(time=time, ephemeris=ephemeris)
-
-#         # Calculate the panel illumination angle
-#         panel_illumination = self.solar_panel.panel_illumination_fraction(
-#             time=ephemeris.timestamp[i], coordinate=coordinate, ephem=ephemeris
-#         )
-#         panel_angle = np.arccos(panel_illumination) * u.rad
-
-#         # Check if the spacecraft is in eclipse
-#         in_eclipse = (
-#             ephemeris.sun[i].separation(ephemeris.earth[i])
-#             <= ephemeris.earth_radius_angle[i]
-#         )
-
-#         # Set the panel angle to 0 if in eclipse, as we don't care about the
-#         # angle of the Sun on the panel if there's no Sun.
-#         panel_angle[in_eclipse] = 0 * u.rad
-
-#         # Construct the constraint based on the minimum and maximum angles
-#         in_constraint = np.zeros(len(ephemeris.sun[i]), dtype=bool)
-
-#         if self.min_angle is not None:
-#             in_constraint |= panel_angle < self.min_angle * u.deg
-
-#         if self.max_angle is not None:
-#             in_constraint |= panel_angle > self.max_angle * u.deg
-
-#         # Return the result as True or False, or an array of True/False
-#         return in_constraint

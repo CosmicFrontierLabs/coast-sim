@@ -548,14 +548,14 @@ class TestSolarPanelEdgeCases:
         assert total == 0.0
 
 
-class TestGetSliceIndices:
-    """Tests for get_slice_indices function."""
+class TestGetEphemerisIndices:
+    """Tests for get_ephemeris_indices function."""
 
-    def test_get_slice_indices_multiple_times(self) -> None:
-        """Test get_slice_indices with multiple datetime times."""
+    def test_get_ephemeris_indices_multiple_times(self) -> None:
+        """Test get_ephemeris_indices with multiple datetime times."""
         from datetime import datetime, timezone
 
-        from conops.config.solar_panel import get_slice_indices
+        from conops.config.solar_panel import get_ephemeris_indices
 
         times = [
             datetime(2018, 1, 1, tzinfo=timezone.utc),
@@ -567,24 +567,24 @@ class TestGetSliceIndices:
         ephem = Mock()
         ephem.index = Mock(side_effect=[0, 1, 2])
 
-        indices = get_slice_indices(times, ephem)
+        indices = get_ephemeris_indices(times, ephem)
 
         expected = np.array([0, 1, 2])
         np.testing.assert_array_equal(indices, expected)
         assert ephem.index.call_count == 3
 
-    def test_get_slice_indices_single_time(self) -> None:
-        """Test get_slice_indices with single datetime time."""
+    def test_get_ephemeris_indices_single_time(self) -> None:
+        """Test get_ephemeris_indices with single datetime time."""
         from datetime import datetime, timezone
 
-        from conops.config.solar_panel import get_slice_indices
+        from conops.config.solar_panel import get_ephemeris_indices
 
         time_single = datetime(2018, 1, 1, tzinfo=timezone.utc)
 
         ephem = Mock()
         ephem.index = Mock(return_value=5)
 
-        indices = get_slice_indices(time_single, ephem)
+        indices = get_ephemeris_indices(time_single, ephem)
 
         assert indices == 5
         ephem.index.assert_called_once_with(time_single)
