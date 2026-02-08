@@ -109,9 +109,9 @@ def plot_ditl_telemetry(
 
     ax = plt.subplot(713)
     axes.append(ax)
-    ax.plot(timehours, none_to_default(ditl.telemetry.housekeeping.mode))
+    ax.plot(timehours, none_to_default(ditl.telemetry.housekeeping.acs_mode))
     ax.xaxis.set_visible(False)
-    plt.ylabel("Mode", fontsize=label_font_size, fontfamily=font_family)
+    plt.ylabel("ACS Mode", fontsize=label_font_size, fontfamily=font_family)
 
     ax = plt.subplot(714)
     axes.append(ax)

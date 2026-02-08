@@ -19,7 +19,7 @@ class Housekeeping(BaseModel):
         ra: Right ascension in degrees
         dec: Declination in degrees
         roll: Roll angle in degrees
-        mode: Current ACS mode (SCIENCE, SLEWING, SAFE, SAA, etc.)
+        acs_mode: Current ACS mode (SCIENCE, SLEWING, SAFE, SAA, etc.)
         panel_illumination: Solar panel illumination fraction (0-1)
         power_usage: Total power usage in W
         power_bus: Spacecraft bus power usage in W
@@ -37,7 +37,7 @@ class Housekeeping(BaseModel):
     ra: float | None = Field(default=None, description="Right ascension in degrees")
     dec: float | None = Field(default=None, description="Declination in degrees")
     roll: float | None = Field(default=0.0, description="Roll angle in degrees")
-    mode: ACSMode | int | None = Field(default=None, description="ACS mode")
+    acs_mode: ACSMode | int | None = Field(default=None, description="ACS mode")
     panel_illumination: float | None = Field(
         default=None, description="Solar panel illumination fraction (0-1)"
     )
@@ -162,9 +162,9 @@ class HousekeepingList(list[Housekeeping]):
         return [hk.roll for hk in self]
 
     @property
-    def mode(self) -> list[ACSMode | int | None]:
-        """Get mode values from all housekeeping records."""
-        return [hk.mode for hk in self]
+    def acs_mode(self) -> list[ACSMode | int | None]:
+        """Get ACS mode values from all housekeeping records."""
+        return [hk.acs_mode for hk in self]
 
     @property
     def panel_illumination(self) -> list[float | None]:

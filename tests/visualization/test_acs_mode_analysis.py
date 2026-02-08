@@ -56,8 +56,8 @@ class TestPlotAcsModeDistribution:
         # Create mock with unknown mode
         mock_ditl = Mock()
         # Create telemetry with unknown mode
-        hk1 = Housekeeping(mode=ACSMode.SCIENCE.value)
-        hk2 = Housekeeping(mode=999)  # 999 is unknown
+        hk1 = Housekeeping(acs_mode=ACSMode.SCIENCE.value)
+        hk2 = Housekeeping(acs_mode=999)  # 999 is unknown
         telemetry = Telemetry(housekeeping=HousekeepingList([hk1, hk2]))
         mock_ditl.telemetry = telemetry
 

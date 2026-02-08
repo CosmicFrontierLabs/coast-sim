@@ -394,7 +394,7 @@ def _extract_safe_mode(
     in_safe = False
     safe_start = 0.0
 
-    for i, mode_val in enumerate(ditl.telemetry.housekeeping.mode):
+    for i, mode_val in enumerate(ditl.telemetry.housekeeping.acs_mode):
         # Check if in SAFE mode (mode value = 5)
         if isinstance(mode_val, ACSMode):
             is_safe = mode_val == ACSMode.SAFE
@@ -447,7 +447,7 @@ def _extract_saa_passages(
     in_saa = False
     saa_start = 0.0
 
-    for i, mode_val in enumerate(ditl.telemetry.housekeeping.mode):
+    for i, mode_val in enumerate(ditl.telemetry.housekeeping.acs_mode):
         # Check if in SAA mode
         if isinstance(mode_val, ACSMode):
             is_saa = mode_val == ACSMode.SAA

@@ -1043,7 +1043,7 @@ class QueueDITL(DITLMixin, DITLStats):
             ra=ra,
             dec=dec,
             roll=roll,
-            mode=mode,
+            acs_mode=mode,
             panel_illumination=panel_illumination,
             power_usage=total_power,
             power_bus=bus_power,

@@ -21,7 +21,7 @@ class TestHousekeeping:
         assert hk.ra is None
         assert hk.dec is None
         assert hk.roll == 0.0  # Has default
-        assert hk.mode is None
+        assert hk.acs_mode is None
 
     def test_housekeeping_creation_with_values(self) -> None:
         """Test creating Housekeeping with specific values."""
@@ -33,7 +33,7 @@ class TestHousekeeping:
             ra=45.0,
             dec=30.0,
             roll=10.0,
-            mode=ACSMode.SCIENCE,
+            acs_mode=ACSMode.SCIENCE,
             panel_illumination=0.8,
             power_usage=100.0,
             battery_level=0.9,
@@ -43,7 +43,7 @@ class TestHousekeeping:
         assert hk.ra == 45.0
         assert hk.dec == 30.0
         assert hk.roll == 10.0
-        assert hk.mode == ACSMode.SCIENCE
+        assert hk.acs_mode == ACSMode.SCIENCE
         assert hk.panel_illumination == 0.8
         assert hk.power_usage == 100.0
         assert hk.battery_level == 0.9
@@ -151,13 +151,13 @@ class TestTelemetry:
 
     def test_attribute_access_on_housekeeping(self) -> None:
         """Test attribute access on housekeeping list."""
-        hk1 = Housekeeping(ra=45.0, dec=30.0, mode=ACSMode.SCIENCE)
-        hk2 = Housekeeping(ra=90.0, dec=60.0, mode=ACSMode.SAFE)
+        hk1 = Housekeeping(ra=45.0, dec=30.0, acs_mode=ACSMode.SCIENCE)
+        hk2 = Housekeeping(ra=90.0, dec=60.0, acs_mode=ACSMode.SAFE)
         tm = Telemetry(housekeeping=HousekeepingList([hk1, hk2]))
 
         assert tm.housekeeping.ra == [45.0, 90.0]
         assert tm.housekeeping.dec == [30.0, 60.0]
-        assert tm.housekeeping.mode == [ACSMode.SCIENCE, ACSMode.SAFE]
+        assert tm.housekeeping.acs_mode == [ACSMode.SCIENCE, ACSMode.SAFE]
 
     def test_attribute_access_on_data(self) -> None:
         """Test attribute access on data list."""

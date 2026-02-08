@@ -138,7 +138,7 @@ class TestPlotDitlTimeline:
 
         base_time = datetime.fromtimestamp(0, tz=timezone.utc)
         housekeeping_records = [
-            Housekeeping(timestamp=base_time, mode=ACSMode.SCIENCE),
+            Housekeeping(timestamp=base_time, acs_mode=ACSMode.SCIENCE),
             Housekeeping(
                 timestamp=base_time + timedelta(seconds=1800), mode=ACSMode.SAFE
             ),

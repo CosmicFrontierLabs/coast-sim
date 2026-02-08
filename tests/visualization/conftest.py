@@ -75,7 +75,7 @@ def mock_ditl() -> Mock:
             timestamp=ts,
             ra=[0.0, 10.0, 20.0, 30.0, 40.0][i],
             dec=[0.0, 5.0, 10.0, 15.0, 20.0][i],
-            mode=[
+            acs_mode=[
                 ACSMode.SCIENCE,  # 0
                 ACSMode.SAA,  # 1 - SAA passage
                 ACSMode.SLEWING,  # 2 - slewing
