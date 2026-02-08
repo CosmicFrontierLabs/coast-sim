@@ -233,7 +233,7 @@ def populated_ditl(ditl_instance):
             timestamp=ts,
             ra=[1.0, 2.0, 3.0, 4.0][i],
             dec=[0.5, 0.6, 0.7, 0.8][i],
-            mode=[0, 1, 2, 3][i],
+            acs_mode=[0, 1, 2, 3][i],
             obsid=[0, 1, 2, 3][i],
             panel_illumination=[0.1, 0.2, 0.3, 0.4][i],
             power_usage=[5.0, 6.0, 7.0, 8.0][i],
