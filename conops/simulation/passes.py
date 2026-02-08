@@ -267,7 +267,7 @@ class Pass(BaseModel):
 
 
 class PassTimes:
-    """Like the swift PassTimes class, except we calculate our passes based on epheris and groundstation location"""
+    """PassTimes class for calculating passes based on ephemeris and ground station location"""
 
     passes: list[Pass]
     constraint: Constraint
