@@ -75,6 +75,15 @@ class Housekeeping(BaseModel):
     in_eclipse: bool | None = Field(
         default=None, description="Whether spacecraft is in eclipse"
     )
+    star_tracker_hard_violations: int | None = Field(
+        default=None, description="Number of star trackers violating hard constraints"
+    )
+    star_tracker_soft_violations: bool | None = Field(
+        default=None, description="Whether any star tracker violates soft constraints"
+    )
+    star_tracker_functional_count: int | None = Field(
+        default=None, description="Number of functional star trackers"
+    )
 
     @classmethod
     def extract_field(cls, records: list["Housekeeping"], field_name: str) -> list[Any]:
