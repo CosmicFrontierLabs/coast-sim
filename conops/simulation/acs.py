@@ -45,6 +45,9 @@ class ACS:
     last_ppt: Slew | None
     last_slew: Slew | None
     in_eclipse: bool
+    star_tracker_hard_violations: int
+    star_tracker_soft_violations: bool
+    star_tracker_functional_count: int
 
     def __init__(self, config: MissionConfig, log: "DITLLog | None" = None) -> None:
         """Initialize the Attitude Control System.
@@ -82,6 +85,11 @@ class ACS:
         self.acsmode = ACSMode.SCIENCE  # Start in science/pointing mode
         self.in_eclipse = False  # Initialize eclipse state
         self.in_safe_mode = False  # Safe mode flag - once True, cannot be exited
+
+        # Star tracker constraint state
+        self.star_tracker_hard_violations = 0
+        self.star_tracker_soft_violations = False
+        self.star_tracker_functional_count = 0
 
         # Command queue (sorted by execution_time)
         self.command_queue = []
@@ -613,6 +621,77 @@ class ACS:
                     ),
                 )
             # Note: acsmode remains SCIENCE - the DITL will decide if charging is needed
+
+        # Check star tracker constraints
+        self._check_star_tracker_constraints(utime)
+
+    def _check_star_tracker_constraints(self, utime: float) -> None:
+        """Check and log star tracker constraint violations for current pointing.
+
+        Checks both hard constraints (which make pointing invalid) and soft constraints
+        (which indicate degraded performance) for all configured star trackers.
+        """
+
+        star_trackers = self.config.spacecraft_bus.star_trackers
+
+        # Skip if no star trackers configured or if star_trackers is mocked (for tests)
+        if star_trackers.num_trackers() == 0:
+            return
+
+        # Get current pointing (RA, Dec, roll)
+        current_ra = self.ra
+        current_dec = self.dec
+        current_roll = self.roll
+
+        # Check if this is a real star tracker configuration (not mocked)
+        if not hasattr(star_trackers, "trackers_violating_hard_constraints"):
+            return
+
+        # Check hard constraints
+        hard_violations = star_trackers.trackers_violating_hard_constraints(
+            current_ra, current_dec, utime, current_roll
+        )
+
+        # Check soft constraints
+        soft_violations = star_trackers.any_tracker_violating_soft_constraints(
+            current_ra, current_dec, utime, current_roll
+        )
+
+        # Update ACS state for Housekeeping telemetry
+        self.star_tracker_hard_violations = (
+            hard_violations if isinstance(hard_violations, int) else 0
+        )
+        self.star_tracker_soft_violations = soft_violations
+        num_trackers = (
+            star_trackers.num_trackers()
+            if isinstance(star_trackers.num_trackers(), int)
+            else 0
+        )
+        self.star_tracker_functional_count = (
+            num_trackers - self.star_tracker_hard_violations
+        )
+
+        # Log hard constraint violations
+        if isinstance(hard_violations, int) and hard_violations > 0:
+            functional_trackers = star_trackers.num_trackers() - hard_violations
+            min_required = star_trackers.min_functional_trackers
+
+            self._log_or_print(
+                utime,
+                "STAR_TRACKER_HARD_CONSTRAINT",
+                f"STAR_TRACKER: HARD_CONSTRAINT: RA={current_ra:.3f}° Dec={current_dec:.3f}° "
+                f"roll={current_roll:.3f}° violations={hard_violations} "
+                f"functional={functional_trackers} min_required={min_required}",
+            )
+
+        # Log soft constraint violations (degraded performance)
+        if soft_violations:
+            self._log_or_print(
+                utime,
+                "STAR_TRACKER_SOFT_CONSTRAINT",
+                f"STAR_TRACKER: SOFT_CONSTRAINT: RA={current_ra:.3f}° Dec={current_dec:.3f}° "
+                f"roll={current_roll:.3f}° - Degraded star tracker performance",
+            )
 
     def _calculate_pointing(self, utime: float) -> None:
         """Calculate current RA/Dec based on slew state or safe mode."""
