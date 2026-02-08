@@ -721,7 +721,7 @@ def plot_ditl_timeline_plotly(
     show_orbit_numbers : bool, optional
         Whether to show orbit numbers at the top (default: True).
     show_saa : bool, optional
-        Whether to show SAA passages (default: True).
+        Whether to show SAA passages (default: False).
     font_family : str, optional
         Font family to use for text. If None, uses config.font_family (default: 'Helvetica').
     font_size : int, optional
