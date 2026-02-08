@@ -28,7 +28,7 @@ class Pointing(PlanEntry):
         exptime: int = 1000,
         ss_min: int = 300,
         ss_max: int = 86400,
-    ):
+    ) -> None:
         # Handle both old and new parameter styles for backward compatibility
         if config is None:
             raise ValueError("Config must be provided to Pointing")
@@ -40,7 +40,6 @@ class Pointing(PlanEntry):
         self.isat = False
         self.ra = ra
         self.dec = dec
-        self.targetid = obsid
         self.obsid = obsid
         self.name = name
         # ``fom`` is maintained as a legacy alias for ``merit`` for
@@ -88,7 +87,7 @@ class Pointing(PlanEntry):
             return False
 
     def __str__(self) -> str:
-        return f"{unixtime2date(self.begin)} {self.name} ({self.targetid}) RA={self.ra:.4f}, Dec={self.dec:4f}, Roll={self.roll:.1f}, Merit={self.merit}"
+        return f"{unixtime2date(self.begin)} {self.name} ({self.obsid}) RA={self.ra:.4f}, Dec={self.dec:4f}, Roll={self.roll:.1f}, Merit={self.merit}"
 
     @property
     def done(self) -> bool:

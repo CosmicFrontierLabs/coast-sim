@@ -1,8 +1,12 @@
 """Unit tests for conops.visualization.acs_mode_analysis module."""
 
+from unittest.mock import Mock
+
 import matplotlib.pyplot as plt
 
 from conops.common import ACSMode
+from conops.config.visualization import VisualizationConfig
+from conops.ditl.telemetry import Housekeeping, HousekeepingList, Telemetry
 from conops.visualization.acs_mode_analysis import plot_acs_mode_distribution
 
 
@@ -48,11 +52,14 @@ class TestPlotAcsModeDistribution:
 
     def test_plot_acs_mode_distribution_with_unknown_mode(self):
         """Test plot_acs_mode_distribution handles unknown modes."""
-        from unittest.mock import Mock
 
         # Create mock with unknown mode
         mock_ditl = Mock()
-        mock_ditl.mode = [ACSMode.SCIENCE.value, 999]  # 999 is unknown
+        # Create telemetry with unknown mode
+        hk1 = Housekeeping(acs_mode=ACSMode.SCIENCE.value)
+        hk2 = Housekeeping(acs_mode=999)  # 999 is unknown
+        telemetry = Telemetry(housekeeping=HousekeepingList([hk1, hk2]))
+        mock_ditl.telemetry = telemetry
 
         fig, ax = plot_acs_mode_distribution(mock_ditl)
 
@@ -75,7 +82,6 @@ class TestPlotAcsModeDistribution:
 
     def test_plot_acs_mode_distribution_title_font_from_config(self, mock_ditl):
         """Test that the plot title uses the font family from VisualizationConfig."""
-        from conops.config.visualization import VisualizationConfig
 
         viz_config = VisualizationConfig(font_family="Courier")
         fig, ax = plot_acs_mode_distribution(mock_ditl, config=viz_config)

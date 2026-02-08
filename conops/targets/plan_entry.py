@@ -42,7 +42,6 @@ class PlanEntry:
         assert self.ephem is not None, "Ephemeris must be set for PlanEntry class"
         assert self.acs_config is not None, "ACS config must be set for PlanEntry class"
         self.name = ""
-        # self.targetid = 0
         self.ra = 0.0
         self.dec = 0.0
         self.roll = -1.0
@@ -79,24 +78,8 @@ class PlanEntry:
         obj.__dict__.update(self.__dict__)
         return obj
 
-    @property
-    def targetid(self) -> int:
-        return self.obsid & 0xFFFFFF
-
-    @targetid.setter
-    def targetid(self, value: int) -> None:
-        self.obsid = value + (self.segment << 24)
-
-    @property
-    def segment(self) -> int:
-        return self.obsid >> 24
-
-    @segment.setter
-    def segment(self, value: int) -> None:
-        self.obsid = self.targetid + (value << 24)
-
     def __str__(self) -> str:
-        return f"{unixtime2date(self.begin)} Target: {self.name} ({self.targetid}/{self.segment}) Exp: {self.exposure}s "
+        return f"{unixtime2date(self.begin)} Target: {self.name} ({self.obsid}) Exp: {self.exposure}s "
 
     @property
     def exposure(self) -> int:  # (),excludesaa=False):

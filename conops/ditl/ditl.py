@@ -1,14 +1,16 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 import numpy as np
 import rust_ephem
 
 from conops.targets.plan import Plan
 
+from ..common import angular_separation, dtutcfromtimestamp
 from ..config import MissionConfig
 from .ditl_log import DITLLog
 from .ditl_mixin import DITLMixin
 from .ditl_stats import DITLStats
+from .telemetry import Housekeeping, PayloadData
 
 
 class DITL(DITLMixin, DITLStats):
@@ -49,6 +51,9 @@ class DITL(DITLMixin, DITLStats):
         recorder_alert (np.ndarray): Recorder alert level (0/1/2) at each timestep.
         data_generated_gb (np.ndarray): Data generated in Gb at each timestep.
         data_downlinked_gb (np.ndarray): Data downlinked in Gb at each timestep.
+
+    Attributes:
+        telemetry (Telemetry): Structured telemetry data container.
     """
 
     def __init__(
@@ -144,7 +149,7 @@ class DITL(DITLMixin, DITLStats):
 
         self.utime = np.arange(self.ustart, self.uend, self.step_size).tolist()
 
-        # Set up simulation telemetry arrays
+        # Initialize telemetry arrays for backward compatibility
         simlen = len(self.utime)
         self.ra = np.zeros(simlen).tolist()
         self.dec = np.zeros(simlen).tolist()
@@ -216,6 +221,30 @@ class DITL(DITLMixin, DITLStats):
             self.charge_state[i] = self.battery.charge_state
             self.obsid[i] = obsid
 
+            # Create housekeeping telemetry record
+            sun_angle_deg = self._compute_sun_angle(self.utime[i], ra, dec)
+            hk = Housekeeping(
+                timestamp=datetime.fromtimestamp(self.utime[i], tz=timezone.utc),
+                ra=ra,
+                dec=dec,
+                roll=roll,
+                acs_mode=mode,
+                panel_illumination=panel_illumination,
+                power_usage=power_usage,
+                power_bus=bus_power,
+                power_payload=payload_power,
+                battery_level=self.battery.battery_level,
+                charge_state=int(self.battery.charge_state),
+                battery_alert=self.battery.battery_alert,
+                obsid=obsid,
+                recorder_volume_gb=self.recorder.current_volume_gb,
+                recorder_fill_fraction=self.recorder.get_fill_fraction(),
+                recorder_alert=self.recorder.get_alert_level(),
+                sun_angle_deg=sun_angle_deg,
+                in_eclipse=self.acs.in_eclipse,
+            )
+            self.telemetry.housekeeping.append(hk)
+
             # Data management: generate and downlink data
             data_generated, data_downlinked = self._process_data_management(
                 self.utime[i], mode, self.step_size
@@ -231,7 +260,29 @@ class DITL(DITLMixin, DITLStats):
             self.data_generated_gb[i] = prev_generated + data_generated
             self.data_downlinked_gb[i] = prev_downlinked + data_downlinked
 
+            # Create payload data record if data was generated
+            if data_generated > 0:
+                pd = PayloadData(
+                    timestamp=datetime.fromtimestamp(self.utime[i], tz=timezone.utc),
+                    data_size_gb=data_generated,
+                )
+                self.telemetry.data.append(pd)
+
         return True
+
+    def _compute_sun_angle(self, utime: float, ra: float, dec: float) -> float | None:
+        """Compute angular distance from pointing to the Sun in degrees."""
+        if self.ephem is None:
+            return None
+
+        try:
+            idx = self.ephem.index(dtutcfromtimestamp(utime))
+            sun_ra = self.ephem.sun_ra_deg[idx]
+            sun_dec = self.ephem.sun_dec_deg[idx]
+        except Exception:
+            return None
+
+        return angular_separation(sun_ra, sun_dec, ra, dec)
 
 
 class DITLs:

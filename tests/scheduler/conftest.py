@@ -25,12 +25,12 @@ from conops.config.constraint import Constraint as RealConstraint
 class SimpleTarget:
     """Simple target class for testing."""
 
-    def __init__(self, targetid, ra, dec, exptime, name=""):
-        self.targetid = targetid
+    def __init__(self, obsid, ra, dec, exptime, name=""):
+        self.obsid = obsid
         self.ra = ra
         self.dec = dec
         self.exptime = exptime
-        self.name = name or f"Target_{targetid}"
+        self.name = name or f"Target_{obsid}"
         self.merit = 100
         self.slewtime = 0
 
@@ -44,8 +44,8 @@ class SimpleTarget:
 def simple_target_factory():
     """Factory fixture for creating SimpleTarget instances."""
 
-    def _factory(targetid, ra, dec, exptime, name=""):
-        return SimpleTarget(targetid, ra, dec, exptime, name)
+    def _factory(obsid, ra, dec, exptime, name=""):
+        return SimpleTarget(obsid, ra, dec, exptime, name)
 
     return _factory
 
@@ -189,8 +189,8 @@ def scheduler(mock_config, mock_saa):
 def sample_targets():
     """Create sample target entries."""
     return [
-        SimpleTarget(targetid=1, ra=45.0, dec=30.0, exptime=600, name="Galaxy A"),
-        SimpleTarget(targetid=2, ra=90.0, dec=-45.0, exptime=480, name="Nebula B"),
-        SimpleTarget(targetid=3, ra=180.0, dec=60.0, exptime=720, name="Star C"),
-        SimpleTarget(targetid=4, ra=270.0, dec=-30.0, exptime=300, name="Cluster D"),
+        SimpleTarget(obsid=1, ra=45.0, dec=30.0, exptime=600, name="Galaxy A"),
+        SimpleTarget(obsid=2, ra=90.0, dec=-45.0, exptime=480, name="Nebula B"),
+        SimpleTarget(obsid=3, ra=180.0, dec=60.0, exptime=720, name="Star C"),
+        SimpleTarget(obsid=4, ra=270.0, dec=-30.0, exptime=300, name="Cluster D"),
     ]

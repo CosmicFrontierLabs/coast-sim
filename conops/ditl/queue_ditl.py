@@ -5,7 +5,7 @@ import numpy as np
 import rust_ephem
 from pydantic import BaseModel
 
-from ..common import ACSMode, angular_separation, unixtime2date
+from ..common import ACSMode, angular_separation, dtutcfromtimestamp, unixtime2date
 from ..common.enums import ACSCommandType
 from ..config import MissionConfig
 from ..simulation.acs_command import ACSCommand
@@ -15,6 +15,7 @@ from ..targets import Plan, Pointing, Queue
 from .ditl_log import DITLLog
 from .ditl_mixin import DITLMixin
 from .ditl_stats import DITLStats
+from .telemetry import Housekeeping, PayloadData
 
 
 class TOORequest(BaseModel):
@@ -76,11 +77,6 @@ class QueueDITL(DITLMixin, DITLStats):
         self.ppt = None
 
         # Pointing history
-        self.ra = list()
-        self.dec = list()
-        self.roll = list()
-        self.mode = list()
-        self.obsid = list()
         self.plan = Plan()
 
         # Power and battery history
@@ -444,6 +440,14 @@ class QueueDITL(DITLMixin, DITLStats):
         self.recorder_alert.append(self.recorder.get_alert_level())
         self.data_generated_gb.append(prev_generated + data_generated)
         self.data_downlinked_gb.append(prev_downlinked + data_downlinked)
+
+        # Create payload data record if data was generated
+        if data_generated > 0:
+            pd = PayloadData(
+                timestamp=datetime.fromtimestamp(utime, tz=timezone.utc),
+                data_size_gb=data_generated,
+            )
+            self.telemetry.data.append(pd)
 
     def _handle_fault_management(self, utime: float) -> None:
         """Handle fault management checks and safe mode requests."""
@@ -1028,6 +1032,29 @@ class QueueDITL(DITLMixin, DITLStats):
         # Update battery state
         self._update_battery_state(total_power, panel_power)
 
+        # Create housekeeping telemetry record
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(utime, tz=timezone.utc),
+            ra=ra,
+            dec=dec,
+            roll=roll,
+            acs_mode=mode,
+            panel_illumination=panel_illumination,
+            power_usage=total_power,
+            power_bus=bus_power,
+            power_payload=payload_power,
+            battery_level=self.battery.battery_level,
+            charge_state=int(self.battery.charge_state),
+            battery_alert=self.battery.battery_alert,
+            obsid=self.obsid[-1] if self.obsid else 0,
+            recorder_volume_gb=self.recorder.current_volume_gb,
+            recorder_fill_fraction=self.recorder.get_fill_fraction(),
+            recorder_alert=self.recorder.get_alert_level(),
+            sun_angle_deg=self._compute_sun_angle(utime, ra, dec),
+            in_eclipse=in_eclipse,
+        )
+        self.telemetry.housekeeping.append(hk)
+
     def _calculate_panel_power(
         self, i: int, utime: float, ra: float, dec: float, roll: float
     ) -> tuple[float, float]:
@@ -1040,6 +1067,20 @@ class QueueDITL(DITLMixin, DITLStats):
         assert isinstance(panel_illumination, float)
         assert isinstance(panel_power, float)
         return panel_illumination, panel_power
+
+    def _compute_sun_angle(self, utime: float, ra: float, dec: float) -> float | None:
+        """Compute angular distance from pointing to the Sun in degrees."""
+        if self.ephem is None:
+            return None
+
+        try:
+            idx = self.ephem.index(dtutcfromtimestamp(utime))
+            sun_ra = self.ephem.sun_ra_deg[idx]
+            sun_dec = self.ephem.sun_dec_deg[idx]
+        except Exception:
+            return None
+
+        return angular_separation(sun_ra, sun_dec, ra, dec)
 
     def _calculate_power_consumption(
         self, mode: ACSMode, in_eclipse: bool

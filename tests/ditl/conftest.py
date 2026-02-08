@@ -23,6 +23,7 @@ from conops.config import (
     SpacecraftBus,
 )
 from conops.ditl.ditl_mixin import DITLMixin
+from conops.ditl.telemetry import Housekeeping
 
 
 class DummyEphemeris:
@@ -104,6 +105,7 @@ def mock_config_detailed():
     config.battery = Mock()
     config.battery.battery_level = 0.8
     config.battery.battery_alert = False
+    config.battery.charge_state = 0
     config.battery.drain = Mock()
     config.battery.charge = Mock()
     config.battery.panel_charge_rate = 100.0
@@ -124,7 +126,7 @@ def mock_config_detailed():
     config.recorder = Mock()
     config.recorder.current_volume_gb = 0.0
     config.recorder.get_fill_fraction = Mock(return_value=0.0)
-    config.recorder.get_alert_level = Mock(return_value="none")
+    config.recorder.get_alert_level = Mock(return_value=0)  # 0 = no alert
     config.recorder.add_data = Mock()
     config.recorder.remove_data = Mock(return_value=0.0)
 
@@ -160,6 +162,8 @@ def ditl(mock_config_detailed, mock_ephem):
         mock_acs.slewing = False
         mock_acs.inpass = False
         mock_acs.saa = None
+        mock_acs.in_eclipse = False  # Set as attribute
+        mock_acs.configure_mock(in_eclipse=False)  # Also configure mock to return False
         mock_acs.pointing = Mock(return_value=(0.0, 0.0, 0.0, 0))
         mock_acs.add_slew = Mock()
         mock_acs.passrequests = mock_pt
@@ -186,7 +190,9 @@ def mock_pass_inst():
 @pytest.fixture
 def mock_acs_inst():
     """Mock ACS instance."""
-    return Mock()
+    mock_acs = Mock()
+    mock_acs.in_eclipse = False
+    return mock_acs
 
 
 @pytest.fixture
@@ -209,9 +215,39 @@ def ditl_instance(mock_config, mock_pass_inst, mock_acs_inst):
 @pytest.fixture
 def populated_ditl(ditl_instance):
     """Fixture to populate DITLMixin with sample data for plotting."""
+    from datetime import datetime, timezone
+
+    from conops.ditl.telemetry import HousekeepingList, Telemetry
+
     ditl, _, _ = ditl_instance
     # Populate data arrays of same length
     base_time = 1514764800.0
+    timestamps = [
+        datetime.fromtimestamp(base_time + i * 60, tz=timezone.utc) for i in range(4)
+    ]
+
+    # Create housekeeping records
+    housekeeping_records = []
+    for i, ts in enumerate(timestamps):
+        hk = Housekeeping(
+            timestamp=ts,
+            ra=[1.0, 2.0, 3.0, 4.0][i],
+            dec=[0.5, 0.6, 0.7, 0.8][i],
+            acs_mode=[0, 1, 2, 3][i],
+            obsid=[0, 1, 2, 3][i],
+            panel_illumination=[0.1, 0.2, 0.3, 0.4][i],
+            power_usage=[5.0, 6.0, 7.0, 8.0][i],
+            battery_level=[0.2, 0.3, 0.4, 0.5][i],
+        )
+        housekeeping_records.append(hk)
+
+    # Create telemetry container
+    telemetry = Telemetry(
+        housekeeping=HousekeepingList(housekeeping_records),
+    )
+    ditl.telemetry = telemetry
+
+    # Keep backward compatibility by also setting the old attributes
     ditl.utime = [base_time + i * 60 for i in range(4)]
     ditl.ra = [1.0, 2.0, 3.0, 4.0]
     ditl.dec = [0.5, 0.6, 0.7, 0.8]

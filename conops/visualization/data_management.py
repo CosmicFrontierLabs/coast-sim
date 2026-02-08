@@ -1,7 +1,5 @@
 """Data management visualization utilities for CONOPS simulations."""
 
-from datetime import datetime
-
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
@@ -68,11 +66,13 @@ def plot_data_management_telemetry(
     # Create figure with 5 subplots
     fig, axes = plt.subplots(5, 1, figsize=figsize)
 
-    # Convert unix timestamps to datetime objects
-    times = [datetime.fromtimestamp(t) for t in ditl.utime]
+    # Convert timestamps to datetime objects (timestamps are already datetime objects)
+    times = ditl.telemetry.housekeeping.timestamp
 
     # Plot 1: Recorder Volume (Gb)
-    axes[0].plot(times, ditl.recorder_volume_gb, "b-", linewidth=2)
+    axes[0].plot(
+        times, ditl.telemetry.housekeeping.recorder_volume_gb, "b-", linewidth=2
+    )
     axes[0].set_ylabel("Volume (Gb)", fontsize=label_font_size, fontfamily=font_family)
     axes[0].set_title("Onboard Recorder Data Volume", fontproperties=title_prop)
     axes[0].grid(True, alpha=0.3)
@@ -85,7 +85,9 @@ def plot_data_management_telemetry(
     axes[0].legend(prop={"family": font_family, "size": config.legend_font_size})
 
     # Plot 2: Recorder Fill Fraction
-    axes[1].plot(times, ditl.recorder_fill_fraction, "g-", linewidth=2)
+    axes[1].plot(
+        times, ditl.telemetry.housekeeping.recorder_fill_fraction, "g-", linewidth=2
+    )
     axes[1].axhline(
         y=ditl.config.recorder.yellow_threshold,
         color="orange",
@@ -124,8 +126,13 @@ def plot_data_management_telemetry(
     # Plot 5: Recorder Alert Timeline
     # Map integer alert levels to colors
     alert_colors = {0: "green", 1: "yellow", 2: "red"}
-    colors = [alert_colors[alert] for alert in ditl.recorder_alert]
-    axes[4].scatter(times, ditl.recorder_alert, c=colors, s=10, alpha=0.6)
+    colors = [
+        alert_colors.get(alert, "gray") if alert is not None else "gray"
+        for alert in ditl.telemetry.housekeeping.recorder_alert
+    ]
+    axes[4].scatter(
+        times, ditl.telemetry.housekeeping.recorder_alert, c=colors, s=10, alpha=0.6
+    )
     axes[4].set_yticks([0, 1, 2])
     axes[4].set_yticklabels(["None", "Yellow", "Red"])
     axes[4].set_ylabel("Alert Level", fontsize=label_font_size, fontfamily=font_family)

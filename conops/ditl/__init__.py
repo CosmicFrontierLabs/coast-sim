@@ -5,6 +5,7 @@ from .ditl_log_store import DITLLogStore
 from .ditl_mixin import DITLMixin
 from .ditl_stats import DITLStats
 from .queue_ditl import QueueDITL, TOORequest
+from .telemetry import Housekeeping, PayloadData, Telemetry
 
 __all__ = [
     "DITL",
@@ -16,4 +17,7 @@ __all__ = [
     "DITLStats",
     "QueueDITL",
     "TOORequest",
+    "Housekeeping",
+    "PayloadData",
+    "Telemetry",
 ]

@@ -256,7 +256,7 @@ class TestDumbSchedulerScheduling:
 
     def test_targets_with_zero_exptime_skipped_only_one_scheduled(
         self, scheduler, simple_target_factory
-    ):
+    ) -> None:
         target1 = simple_target_factory(1, 45.0, 30.0, 600)
         target2 = simple_target_factory(2, 90.0, 0.0, 0)
         scheduler.targlist.add_target(target1)
@@ -266,7 +266,7 @@ class TestDumbSchedulerScheduling:
 
     def test_targets_with_zero_exptime_skipped_target2_not_scheduled(
         self, scheduler, simple_target_factory
-    ):
+    ) -> None:
         target1 = simple_target_factory(1, 45.0, 30.0, 600)
         target2 = simple_target_factory(2, 90.0, 0.0, 0)
         scheduler.targlist.add_target(target1)
@@ -276,7 +276,7 @@ class TestDumbSchedulerScheduling:
 
     def test_scheduling_respects_time_window_begin_after_start(
         self, scheduler, simple_target_factory
-    ):
+    ) -> None:
         target = simple_target_factory(1, 45.0, 30.0, 600)
         scheduler.targlist.add_target(target)
         scheduler.days = 1
@@ -286,7 +286,7 @@ class TestDumbSchedulerScheduling:
 
     def test_scheduling_respects_time_window_begin_within_day(
         self, scheduler, simple_target_factory
-    ):
+    ) -> None:
         target = simple_target_factory(1, 45.0, 30.0, 600)
         scheduler.targlist.add_target(target)
         scheduler.days = 1
@@ -298,14 +298,14 @@ class TestDumbSchedulerScheduling:
 class TestDumbSchedulerPlanEntry:
     """Test plan entry properties."""
 
-    def test_plan_entry_begin_not_none(self, scheduler, simple_target_factory):
+    def test_plan_entry_begin_not_none(self, scheduler, simple_target_factory) -> None:
         target = simple_target_factory(1, 45.0, 30.0, 600)
         scheduler.targlist.add_target(target)
         scheduler.schedule()
         ppt = scheduler.plan[0]
         assert ppt.begin is not None
 
-    def test_plan_entry_end_not_none(self, scheduler, simple_target_factory):
+    def test_plan_entry_end_not_none(self, scheduler, simple_target_factory) -> None:
         target = simple_target_factory(1, 45.0, 30.0, 600)
         scheduler.targlist.add_target(target)
         scheduler.schedule()
@@ -405,14 +405,14 @@ class TestDumbSchedulerEdgeCases:
     """Test edge cases and error handling."""
 
     def test_extremely_short_observation_runs(self, scheduler, simple_target_factory):
-        target = simple_target_factory(targetid=1, ra=45.0, dec=30.0, exptime=60)
+        target = simple_target_factory(obsid=1, ra=45.0, dec=30.0, exptime=60)
         scheduler.targlist.add_target(target)
         scheduler.mintime = 30  # Allow very short observations
         scheduler.schedule()
         assert scheduler.schedule is not None
 
     def test_extremely_long_observation_runs(self, scheduler, simple_target_factory):
-        target = simple_target_factory(targetid=1, ra=45.0, dec=30.0, exptime=86400)
+        target = simple_target_factory(obsid=1, ra=45.0, dec=30.0, exptime=86400)
         scheduler.targlist.add_target(target)
         scheduler.schedule()
         # No assert: may or may not schedule depending on available window
@@ -420,7 +420,7 @@ class TestDumbSchedulerEdgeCases:
     def test_large_target_list_runs(self, scheduler, simple_target_factory):
         for i in range(100):
             target = simple_target_factory(
-                targetid=i,
+                obsid=i,
                 ra=(i * 3.6) % 360,
                 dec=(i - 50) % 90 - 45,
                 exptime=300,
@@ -432,10 +432,10 @@ class TestDumbSchedulerEdgeCases:
     def test_multiple_scheduling_runs_handle_success(
         self, scheduler, simple_target_factory
     ):
-        target = simple_target_factory(targetid=1, ra=45.0, dec=30.0, exptime=300)
+        target = simple_target_factory(obsid=1, ra=45.0, dec=30.0, exptime=300)
         scheduler.targlist.add_target(target)
         scheduler.schedule()
-        target2 = simple_target_factory(targetid=2, ra=90.0, dec=0.0, exptime=300)
+        target2 = simple_target_factory(obsid=2, ra=90.0, dec=0.0, exptime=300)
         scheduler.targlist.add_target(target2)
         scheduler.schedule()
         # No assert: behavior depends on implementation
@@ -498,7 +498,7 @@ class TestDumbSchedulerIntegration:
     def test_plan_summary_after_scheduling_counts(
         self, scheduler, simple_target_factory
     ):
-        target = simple_target_factory(targetid=1, ra=45.0, dec=30.0, exptime=600)
+        target = simple_target_factory(obsid=1, ra=45.0, dec=30.0, exptime=600)
         scheduler.targlist.add_target(target)
         scheduler.schedule()
         total_scheduled = len(scheduler.scheduled)

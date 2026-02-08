@@ -1,5 +1,7 @@
 """Shared fixtures for visualization tests."""
 
+from typing import Any
+
 import matplotlib
 import pytest
 
@@ -10,10 +12,11 @@ from unittest.mock import Mock
 import numpy as np
 
 from conops.common import ACSMode
+from conops.ditl.telemetry import Housekeeping, HousekeepingList, Telemetry
 
 
 @pytest.fixture
-def mock_ditl():
+def mock_ditl() -> Mock:
     """Create a mock DITL object with minimal telemetry data for testing."""
     from unittest.mock import Mock
 
@@ -40,7 +43,7 @@ def mock_ditl():
 
     # Add ephemeris mock for sky pointing tests
     class MockEphem:
-        def __init__(self):
+        def __init__(self) -> None:
             self.earth = []
             self.earth_radius_deg = []
             for _ in range(100):
@@ -52,31 +55,55 @@ def mock_ditl():
                 self.earth.append(mock_earth)
                 self.earth_radius_deg.append(1.0)
 
-        def index(self, dt):
+        def index(self, dt: Any) -> int:
             return 0
 
     ditl.ephem = MockEphem()
 
-    # Add minimal telemetry data
-    ditl.utime = [0, 3600, 7200, 10800, 14400]  # 5 time points: 0, 1, 2, 3, 4 hours
-    ditl.ra = [0.0, 10.0, 20.0, 30.0, 40.0]
-    ditl.dec = [0.0, 5.0, 10.0, 15.0, 20.0]
-    ditl.mode = [
-        ACSMode.SCIENCE,  # 0
-        ACSMode.SAA,  # 1 - SAA passage
-        ACSMode.SLEWING,  # 2 - slewing
-        ACSMode.SCIENCE,  # 3 - exit charging
-        ACSMode.CHARGING,  # 4 - enter charging again, end with charging
-    ]
-    ditl.obsid = [0, 10000, 10001, 0, 10002]  # Mix of survey observations and slews
-    ditl.panel = [0.8, 0.9, 0.7, 0.6, 0.5]  # Solar panel illumination
-    ditl.power = [150.0, 200.0, 180.0, 160.0, 140.0]  # Power consumption
-    ditl.batterylevel = [0.8, 0.85, 0.82, 0.78, 0.75]  # Battery levels
-    ditl.charge_state = [1, 1, 1, 0, 1]  # Charging states
+    # Add minimal telemetry data using the new Telemetry structure
+    from datetime import datetime, timedelta, timezone
 
-    # Subsystem power breakdown
-    ditl.power_bus = [50.0, 60.0, 55.0, 52.0, 48.0]
-    ditl.power_payload = [100.0, 140.0, 125.0, 108.0, 92.0]
+    # Create housekeeping records
+    housekeeping_records = []
+    timestamps = [
+        datetime.fromtimestamp(0, tz=timezone.utc) + i * timedelta(hours=1)
+        for i in range(5)
+    ]
+
+    for i, ts in enumerate(timestamps):
+        hk = Housekeeping(
+            timestamp=ts,
+            ra=[0.0, 10.0, 20.0, 30.0, 40.0][i],
+            dec=[0.0, 5.0, 10.0, 15.0, 20.0][i],
+            acs_mode=[
+                ACSMode.SCIENCE,  # 0
+                ACSMode.SAA,  # 1 - SAA passage
+                ACSMode.SLEWING,  # 2 - slewing
+                ACSMode.SCIENCE,  # 3 - exit charging
+                ACSMode.CHARGING,  # 4 - enter charging again, end with charging
+            ][i],
+            obsid=[0, 10000, 10001, 0, 10002][
+                i
+            ],  # Mix of survey observations and slews
+            panel_illumination=[0.8, 0.9, 0.7, 0.6, 0.5][i],  # Solar panel illumination
+            power_usage=[150.0, 200.0, 180.0, 160.0, 140.0][i],  # Power consumption
+            battery_level=[0.8, 0.85, 0.82, 0.78, 0.75][i],  # Battery levels
+            charge_state=[1, 1, 1, 0, 1][i],  # Charging states
+            power_bus=[50.0, 60.0, 55.0, 52.0, 48.0][i],
+            power_payload=[100.0, 140.0, 125.0, 108.0, 92.0][i],
+            recorder_volume_gb=[0.0, 0.5, 1.2, 1.8, 2.0][i],
+            recorder_fill_fraction=[0.0, 0.05, 0.12, 0.18, 0.2][i],
+            recorder_alert=[0, 0, 0, 1, 2][i],
+        )
+        housekeeping_records.append(hk)
+
+    # Create telemetry container
+    telemetry = Telemetry(
+        housekeeping=HousekeepingList(housekeeping_records),
+        data_generated_gb=[0.0, 0.5, 1.2, 1.8, 2.5],
+        data_downlinked_gb=[0.0, 0.3, 0.8, 1.4, 2.0],
+    )
+    ditl.telemetry = telemetry
 
     # Data management telemetry
     ditl.recorder_volume_gb = [0.0, 0.5, 1.2, 1.8, 2.0]
@@ -89,13 +116,13 @@ def mock_ditl():
 
 
 @pytest.fixture
-def mock_ditl_with_ephem(mock_ditl):
+def mock_ditl_with_ephem(mock_ditl: Mock) -> Mock:
     """Create a mock DITL with ephemeris data for timeline plotting."""
 
     # Add ephemeris-related attributes needed for timeline plotting
     # Create a mock ephem object that behaves like the real rust_ephem.Ephemeris
     class MockEphem:
-        def __init__(self):
+        def __init__(self) -> None:
             self.earth = []
             self.earth_radius_deg = []
             for _ in range(100):
@@ -107,7 +134,7 @@ def mock_ditl_with_ephem(mock_ditl):
                 self.earth.append(mock_earth)
                 self.earth_radius_deg.append(1.0)
 
-        def index(self, dt):
+        def index(self, dt: Any) -> int:
             return 0
 
     mock_ditl.ephem = MockEphem()
@@ -133,9 +160,13 @@ def mock_ditl_with_ephem(mock_ditl):
     mock_ditl.acs.passrequests.passes = [mock_pass]
 
     # Mock constraint with in_eclipse method that returns True for some points
-    def mock_in_eclipse(ra, dec, time):
+    def mock_in_eclipse(ra: float, dec: float, time: float) -> bool:
         # Return True for multiple points to cover enter/exit and extending
-        return time in [7200, 14400]  # utime[2] and utime[4]
+        # time is now a timestamp, so check against the timestamps in the telemetry
+        timestamps = [
+            ts.timestamp() for ts in mock_ditl.telemetry.housekeeping.timestamp
+        ]
+        return time in [timestamps[2], timestamps[4]]  # indices 2 and 4
 
     mock_ditl.constraint.in_eclipse = mock_in_eclipse
 

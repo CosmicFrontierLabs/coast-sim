@@ -90,38 +90,11 @@ class TestPlanEntryCopy:
         assert copied.constraint is plan_entry.constraint  # Shallow copy
 
 
-class TestTargetIdAndSegmentProperties:
-    def test_targetid_getter(self, plan_entry):
-        """Test targetid property getter."""
+class TestObsidProperties:
+    def test_obsid_value(self, plan_entry):
+        """Test obsid property value."""
         plan_entry.obsid = 0x12ABCD
-        assert plan_entry.targetid == 0x12ABCD
-
-    def test_targetid_setter(self, plan_entry):
-        """Test targetid property setter."""
-        plan_entry.obsid = 0x00000000
-        plan_entry.targetid = 0xABCDEF
-        assert plan_entry.targetid == 0xABCDEF
-        assert plan_entry.obsid == 0xABCDEF
-
-    def test_segment_getter(self, plan_entry):
-        """Test segment property getter."""
-        plan_entry.obsid = 0x12ABCD
-        assert plan_entry.segment == 0x0
-
-    def test_segment_setter(self, plan_entry):
-        """Test segment property setter."""
-        plan_entry.obsid = 0x00ABCD
-        plan_entry.segment = 0x05
-        assert plan_entry.segment == 0x05
-        assert plan_entry.obsid == (0x05 << 24) + 0xABCD
-
-    def test_targetid_and_segment_interaction(self, plan_entry):
-        """Test that targetid and segment work together correctly."""
-        plan_entry.targetid = 0x123456
-        plan_entry.segment = 0xAB
-        assert plan_entry.targetid == 0x123456
-        assert plan_entry.segment == 0xAB
-        assert plan_entry.obsid == 0xAB123456
+        assert plan_entry.obsid == 0x12ABCD
 
 
 class TestPlanEntryStr:
@@ -136,8 +109,7 @@ class TestPlanEntryStr:
         result = str(plan_entry)
 
         assert "TestTarget" in result
-        assert str(plan_entry.targetid) in result
-        assert str(plan_entry.segment) in result
+        assert str(plan_entry.obsid) in result
         assert "900s" in result  # exposure time
 
 
