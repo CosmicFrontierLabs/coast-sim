@@ -107,7 +107,7 @@ def plot_ditl_timeline(
     show_orbit_numbers : bool, optional
         Whether to show orbit numbers at the top (default: True).
     show_saa : bool, optional
-        Whether to show SAA passages (default: True).
+        Whether to show SAA passages (default: False).
     save_path : str, optional
         If provided, save the figure to this path (default: None).
     font_family : str, optional
