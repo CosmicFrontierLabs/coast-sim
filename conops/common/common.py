@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 
 import numpy as np
 
+from .enums import ACSMode
+
 # Make sure we are working in UTC times
 os.environ["TZ"] = "UTC"
 time.tzset()
@@ -52,3 +54,25 @@ def unixtime2yearday(utime: float) -> tuple[int, int]:
 def dtutcfromtimestamp(timestamp: float) -> datetime:
     """Return a timezone-aware UTC datetime from a unix timestamp"""
     return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+
+
+def normalize_acs_mode(mode: "ACSMode | int | None") -> "ACSMode | None":
+    """Normalize ACS mode to ACSMode enum, handling int conversion gracefully.
+
+    Args:
+        mode: Raw mode value from housekeeping or ACS
+
+    Returns:
+        Normalized ACSMode enum, or None if conversion fails
+    """
+    if mode is None:
+        return None
+    # Import here to avoid circular imports
+    from .enums import ACSMode
+
+    if isinstance(mode, ACSMode):
+        return mode
+    try:
+        return ACSMode(mode)
+    except ValueError:
+        return None

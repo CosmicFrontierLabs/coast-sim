@@ -114,7 +114,7 @@ from typing import TYPE_CHECKING, Any, cast
 from pydantic import BaseModel, Field
 from rust_ephem.constraints import ConstraintConfig
 
-from ..common import ACSMode
+from ..common import ACSMode, normalize_acs_mode
 from ..common.common import dtutcfromtimestamp
 
 if TYPE_CHECKING:
@@ -393,15 +393,9 @@ class FaultManagement(BaseModel):
                 current_mode = housekeeping.acs_mode
                 if current_mode is None:
                     current_mode = acs.acsmode
+                current_mode = normalize_acs_mode(current_mode)
                 if current_mode is None:
                     continue
-                if isinstance(current_mode, int) and not isinstance(
-                    current_mode, ACSMode
-                ):
-                    try:
-                        current_mode = ACSMode(current_mode)
-                    except ValueError:
-                        continue
                 if current_mode not in threshold.acs_modes:
                     continue
             state = threshold.classify(val)

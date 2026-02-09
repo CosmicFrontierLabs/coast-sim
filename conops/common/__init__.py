@@ -2,6 +2,7 @@ from .common import (
     dtutcfromtimestamp,
     givename,
     ics_date_conv,
+    normalize_acs_mode,
     unixtime2date,
     unixtime2yearday,
 )
@@ -22,10 +23,12 @@ __all__ = [
     "AntennaType",
     "Polarization",
     "ChargeState",
+    "angular_separation",
     "dtutcfromtimestamp",
     "givename",
     "great_circle",
     "ics_date_conv",
+    "normalize_acs_mode",
     "radec2vec",
     "roll_over_angle",
     "rotvec",
@@ -33,5 +36,4 @@ __all__ = [
     "separation",
     "unixtime2date",
     "unixtime2yearday",
-    "angular_separation",
 ]

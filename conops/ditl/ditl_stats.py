@@ -3,6 +3,7 @@ from datetime import datetime
 
 import numpy as np
 
+from ..common import normalize_acs_mode
 from ..config.config import MissionConfig
 
 
@@ -39,7 +40,6 @@ class DITLStats:
         - ACS commands (if available)
         - Ground station pass statistics (if available)
         """
-        from ..common import ACSMode
 
         # Basic simulation info
         print("=" * 70)
@@ -63,10 +63,9 @@ class DITLStats:
             print(f"{'Mode':<20} {'Count':<10} {'Percentage':<12} {'Time (hours)':<15}")
             print("-" * 70)
             for mode_val, count in sorted(mode_counts.items()):
+                acs_mode = normalize_acs_mode(mode_val)
                 mode_name = (
-                    ACSMode(mode_val).name
-                    if mode_val in [m.value for m in ACSMode]
-                    else f"UNKNOWN({mode_val})"
+                    acs_mode.name if acs_mode is not None else f"UNKNOWN({mode_val})"
                 )
                 percentage = (count / total_steps) * 100
                 time_hours = (count * self.step_size) / 3600
