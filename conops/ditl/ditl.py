@@ -249,7 +249,6 @@ class DITL(DITLMixin, DITLStats):
                 housekeeping=hk,
                 step_size=self.step_size,
                 acs=self.acs,
-                ephem=self.ephem,
             )
 
             # Check if safe mode was requested by fault management

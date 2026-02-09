@@ -29,22 +29,33 @@ Configuration Example (JSON):
     }
 
 Usage Example (Python):
-    from conops.fault_management import FaultManagement
+    from datetime import datetime, timezone
+
+    from conops.common import ACSMode
+    from conops.config.fault_management import FaultManagement
+    from conops.ditl.telemetry import Housekeeping
 
     # Create fault management system
     fm = FaultManagement()
 
     # Add thresholds programmatically
     fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
-    fm.add_threshold("temperature", yellow=50.0, red=60.0, direction="above")
+    fm.add_threshold(
+        "temperature",
+        yellow=50.0,
+        red=60.0,
+        direction="above",
+        acs_modes=[ACSMode.SCIENCE],
+    )
 
     # Check parameters each simulation cycle
-    classifications = fm.check(
-        values={"battery_level": 0.45, "temperature": 55.0},
-        utime=current_time,
-        step_size=1.0,
-        acs=spacecraft_acs
+    hk = Housekeeping(
+        timestamp=datetime.now(tz=timezone.utc),
+        battery_level=0.45,
+        temperature=55.0,
+        acs_mode=ACSMode.SCIENCE,
     )
+    classifications = fm.check(housekeeping=hk, step_size=1.0, acs=spacecraft_acs)
 
     # Get accumulated statistics
     stats = fm.statistics()
@@ -283,7 +294,6 @@ class FaultManagement(BaseModel):
         housekeeping: Housekeeping,
         step_size: float | None = None,
         acs: ACS | None = None,
-        ephem: Ephemeris | None = None,  # type: ignore # noqa: F821
     ) -> dict[str, str]:
         """Evaluate all monitored parameters and red limit constraints.
 
@@ -292,11 +302,11 @@ class FaultManagement(BaseModel):
             step_size: Simulation time step in seconds (used for duration accumulation).
                 If None, this is derived from ephemeris when available.
             acs: ACS instance to trigger safe mode if needed.
-            ephem: Spacecraft ephemeris (required for red limit constraint checking).
 
         Returns:
             Dict mapping parameter name to classification string (for thresholds only).
         """
+        ephem = getattr(acs, "ephem", None) if acs is not None else None
         if step_size is None:
             if ephem is None:
                 raise ValueError("step_size must be provided when ephemeris is None")

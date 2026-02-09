@@ -1,6 +1,7 @@
 """Tests for spacecraft-level red limit constraints in fault management system."""
 
 from datetime import datetime, timezone
+from unittest.mock import Mock
 
 import pytest
 
@@ -8,6 +9,14 @@ from conops.config.fault_management import (
     FaultState,
 )
 from conops.ditl.telemetry import Housekeeping
+
+
+@pytest.fixture
+def acs_with_ephem(ephem):
+    acs = Mock()
+    acs.ephem = ephem
+    acs.in_safe_mode = False
+    return acs
 
 
 class TestFaultConstraint:
@@ -176,7 +185,7 @@ class TestFaultManagementRedLimits:
         assert any(c.name == "earth_limit" for c in fm.red_limit_constraints)
 
     def test_check_red_limit_constraints_creates_states(
-        self, fm, ephem, constraint_sun_30
+        self, fm, ephem, acs_with_ephem, constraint_sun_30
     ):
         fm.add_red_limit_constraint(
             name="sun_limit",
@@ -188,7 +197,7 @@ class TestFaultManagementRedLimits:
             ra=180.0,
             dec=0.0,
         )
-        fm.check(hk, step_size=60.0, ephem=ephem)
+        fm.check(hk, step_size=60.0, acs=acs_with_ephem)
         assert "sun_limit" in fm.states
 
     def test_red_limit_statistics_contains_constraint(self, fm, constraint_sun_30):
@@ -250,7 +259,7 @@ class TestFaultManagementRedLimits:
         assert stats["test_constraint"]["continuous_violation_seconds"] == 100.0
 
     def test_safe_mode_not_triggered_below_threshold_state(
-        self, fm_safe, ephem, constraint_sun_90
+        self, fm_safe, ephem, acs_with_ephem, constraint_sun_90
     ):
         fm = fm_safe
         fm.add_red_limit_constraint(
@@ -264,7 +273,7 @@ class TestFaultManagementRedLimits:
                 ra=0.0,
                 dec=0.0,
             )
-            fm.check(hk, step_size=60.0, ephem=ephem)
+            fm.check(hk, step_size=60.0, acs=acs_with_ephem)
         assert fm.safe_mode_requested is False
 
     def test_continuous_violation_resets_on_recovery_total_stays(self, fm):
@@ -294,7 +303,7 @@ class TestFaultConstraintIntegration:
     """Integration tests for red limit constraints in simulation context."""
 
     def test_constraint_with_no_time_threshold_never_triggers_safe_mode_accumulates(
-        self, fm_safe, constraint_sun_90, ephem
+        self, fm_safe, constraint_sun_90, ephem, acs_with_ephem
     ):
         fm = fm_safe
         fm.add_red_limit_constraint(
@@ -308,11 +317,11 @@ class TestFaultConstraintIntegration:
                 ra=0.0,
                 dec=0.0,
             )
-            fm.check(hk, step_size=60.0, ephem=ephem)
+            fm.check(hk, step_size=60.0, acs=acs_with_ephem)
         assert fm.states["monitor_only"].red_seconds > 0
 
     def test_constraint_with_no_time_threshold_never_triggers_safe_mode_not_requested(
-        self, fm_safe, constraint_sun_90, ephem
+        self, fm_safe, constraint_sun_90, ephem, acs_with_ephem
     ):
         fm = fm_safe
         fm.add_red_limit_constraint(
@@ -326,7 +335,7 @@ class TestFaultConstraintIntegration:
                 ra=0.0,
                 dec=0.0,
             )
-            fm.check(hk, step_size=60.0, ephem=ephem)
+            fm.check(hk, step_size=60.0, acs=acs_with_ephem)
         assert fm.safe_mode_requested is False
 
     def test_mixed_regular_fault_classification_is_yellow(self, fm, constraint_sun_30):
