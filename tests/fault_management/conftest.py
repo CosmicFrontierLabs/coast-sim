@@ -23,7 +23,7 @@ from conops.ditl.telemetry import Housekeeping
 
 
 @pytest.fixture
-def acs_stub():
+def acs_stub() -> Mock:
     acs = Mock()
     acs.in_safe_mode = False
     acs.acsmode = None
@@ -176,7 +176,7 @@ class DummyEphemeris:
 
 
 @pytest.fixture
-def base_config():
+def base_config() -> MissionConfig:
     # Minimal mocks for required subsystems
     spacecraft_bus = Mock(spec=SpacecraftBus)
     spacecraft_bus.attitude_control = Mock()
@@ -212,7 +212,7 @@ def base_config():
 
 # Fixtures for common data used across tests
 @pytest.fixture
-def ephem():
+def ephem() -> rust_ephem.TLEEphemeris:
     return rust_ephem.TLEEphemeris(
         tle="examples/example.tle",
         begin=datetime(2025, 1, 1, tzinfo=timezone.utc),
@@ -222,37 +222,37 @@ def ephem():
 
 
 @pytest.fixture
-def fm():
+def fm() -> FaultManagement:
     return FaultManagement()
 
 
 @pytest.fixture
-def fm_safe():
+def fm_safe() -> FaultManagement:
     return FaultManagement(safe_mode_on_red=True)
 
 
 @pytest.fixture
-def constraint_sun_30():
+def constraint_sun_30() -> rust_ephem.SunConstraint:
     return rust_ephem.SunConstraint(min_angle=30.0)
 
 
 @pytest.fixture
-def constraint_sun_90():
+def constraint_sun_90() -> rust_ephem.SunConstraint:
     return rust_ephem.SunConstraint(min_angle=90.0)
 
 
 @pytest.fixture
-def constraint_earth_10():
+def constraint_earth_10() -> rust_ephem.EarthLimbConstraint:
     return rust_ephem.EarthLimbConstraint(min_angle=10.0)
 
 
 @pytest.fixture
-def constraint_moon_5():
+def constraint_moon_5() -> rust_ephem.MoonConstraint:
     return rust_ephem.MoonConstraint(min_angle=5.0)
 
 
 @pytest.fixture
-def fault_constraint():
+def fault_constraint() -> FaultConstraint:
     return FaultConstraint(
         name="test_sun_limit",
         constraint=rust_ephem.SunConstraint(min_angle=30.0),
@@ -262,7 +262,7 @@ def fault_constraint():
 
 
 @pytest.fixture
-def fault_monitor_constraint():
+def fault_monitor_constraint() -> FaultConstraint:
     return FaultConstraint(
         name="test_monitor",
         constraint=rust_ephem.MoonConstraint(min_angle=5.0),
