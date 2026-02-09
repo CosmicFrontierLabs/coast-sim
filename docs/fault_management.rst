@@ -424,6 +424,9 @@ Threshold names must match predefined ``Housekeeping`` fields.
 
 If you need to monitor a new metric, first add it to the ``Housekeeping`` model in code, then add thresholds for that new field. Arbitrary extra fields in ``Housekeeping(...)`` are not accepted.
 
+   # Check in simulation loop
+   classifications = fm.check(housekeeping=hk, acs=acs)
+
 API Reference
 -------------
 
