@@ -368,13 +368,10 @@ class FaultManagement(BaseModel):
         ephem = acs.ephem
         if ephem is None:
             raise ValueError("ACS ephemeris must be set for fault management checks")
-        step_size = ephem.step_size
 
-        if housekeeping.timestamp is None:
-            raise ValueError(
-                "Housekeeping timestamp must be set for fault management checks"
-            )
+        step_size = ephem.step_size
         utime = housekeeping.timestamp.timestamp()
+
         thresholds_by_name = {t.name: t for t in self.thresholds}
         values: dict[str, float] = {}
         for name in thresholds_by_name:

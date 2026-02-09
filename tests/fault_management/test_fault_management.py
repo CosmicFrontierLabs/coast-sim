@@ -524,15 +524,15 @@ class TestMultipleConstraintHandling:
     def test_no_constraints_checks_thresholds_only(self, acs_stub) -> None:
         """Test without constraints, only thresholds are checked."""
         fm = FaultManagement()
-        fm.add_threshold("battery", yellow=0.5, red=0.4, direction="below")
+        fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
 
         hk = Housekeeping(
             timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
-            battery=0.45,
+            battery_level=0.45,
         )
 
         classifications = fm.check(hk, acs=acs_stub)
-        assert "battery" in classifications
+        assert "battery_level" in classifications
 
     def test_early_exit_when_no_ephemeris_for_constraints(self, acs_stub) -> None:
         """Test constraint checking skipped when ephem/ra/dec not available."""
@@ -595,6 +595,35 @@ class TestSafeModeTriggering:
         # Should also not log safe_mode_trigger events
         safe_mode_events = [e for e in fm.events if e.event_type == "safe_mode_trigger"]
         assert len(safe_mode_events) == 0
+
+    def test_safe_mode_not_retriggered_when_already_requested(self, acs_stub) -> None:
+        """Test safe mode not triggered again if already requested."""
+        fm = FaultManagement(safe_mode_on_red=True)
+        fm.add_threshold("power_usage", yellow=50.0, red=60.0, direction="above")
+
+        # First check: trigger safe mode
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
+            power_usage=65.0,
+        )
+        fm.check(hk, acs=acs_stub)
+        assert fm.safe_mode_requested
+        initial_event_count = len(
+            [e for e in fm.events if e.event_type == "safe_mode_trigger"]
+        )
+
+        # Second check: try to trigger again (should be ignored)
+        hk2 = Housekeeping(
+            timestamp=datetime.fromtimestamp(1001.0, tz=timezone.utc),
+            power_usage=65.0,  # Still red
+        )
+        fm.check(hk2, acs=acs_stub)
+
+        # Should not have added another safe_mode_trigger event
+        final_event_count = len(
+            [e for e in fm.events if e.event_type == "safe_mode_trigger"]
+        )
+        assert final_event_count == initial_event_count
 
 
 class TestThresholdTransitionEvents:
