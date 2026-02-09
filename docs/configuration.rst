@@ -598,108 +598,123 @@ This field is excluded from JSON serialization.
        figsize=(16, 10),
    )
 
-Complete JSON Example
----------------------
+Complete Programmatic Example
+-----------------------------
 
-Here is a complete example of a ``MissionConfig`` in JSON format:
+Here is a complete example of creating a ``MissionConfig`` programmatically:
 
-.. code-block:: json
+.. code-block:: python
 
-   {
-       "name": "Example Observatory",
-       "spacecraft_bus": {
-           "name": "Observatory Bus",
-           "power_draw": {
-               "nominal_power": 50.0,
-               "peak_power": 300.0,
-               "power_mode": {"0": 70.0, "1": 100.0},
-               "eclipse_power": 75.0
-           },
-           "attitude_control": {
-               "slew_acceleration": 0.01,
-               "max_slew_rate": 0.3,
-               "slew_accuracy": 0.01,
-               "settle_time": 10.0
-           },
-           "heater": {
-               "name": "Bus Heaters",
-               "power_draw": {
-                   "nominal_power": 25.0,
-                   "eclipse_power": 75.0
-               }
-           }
-       },
-       "solar_panel": {
-           "name": "Solar Array",
-           "panels": [
-               {
-                   "name": "Panel A",
-                   "gimbled": false,
-                   "sidemount": true,
-                   "max_power": 500.0,
-                   "conversion_efficiency": 0.94
-               }
+   from conops.config import (
+       MissionConfig,
+       SpacecraftBus,
+       SolarPanelSet,
+       SolarPanel,
+       Payload,
+       Instrument,
+       Battery,
+       Constraint,
+       GroundStationRegistry,
+       GroundStation,
+       OnboardRecorder,
+       FaultManagement,
+       PowerDraw,
+       DataGeneration,
+       BandCapability,
+       AttitudeControlSystem,
+       Heater,
+   )
+   from conops.common import ACSMode
+   import rust_ephem
+
+   # Create fault management with custom thresholds
+   fault_management = FaultManagement()
+   fault_management.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
+   fault_management.add_threshold(
+       "star_tracker_functional_count",
+       yellow=2.0,
+       red=1.0,
+       direction="below",
+       acs_modes=[ACSMode.SCIENCE]
+   )
+
+   # Create the complete configuration
+   config = MissionConfig(
+       name="Example Observatory",
+       spacecraft_bus=SpacecraftBus(
+           name="Observatory Bus",
+           power_draw=PowerDraw(
+               nominal_power=50.0,
+               peak_power=300.0,
+               power_mode={0: 70.0, 1: 100.0},
+               eclipse_power=75.0
+           ),
+           attitude_control=AttitudeControlSystem(
+               slew_acceleration=0.01,
+               max_slew_rate=0.3,
+               slew_accuracy=0.01,
+               settle_time=10.0
+           ),
+           heater=Heater(
+               name="Bus Heaters",
+               power_draw=PowerDraw(
+                   nominal_power=25.0,
+                   eclipse_power=75.0
+               )
+           )
+       ),
+       solar_panel=SolarPanelSet(
+           name="Solar Array",
+           panels=[
+               SolarPanel(
+                   name="Panel A",
+                   gimbled=False,
+                   sidemount=True,
+                   max_power=500.0,
+                   conversion_efficiency=0.94
+               )
            ],
-           "conversion_efficiency": 0.95
-       },
-       "payload": {
-           "payload": [
-               {
-                   "name": "Main Instrument",
-                   "power_draw": {
-                       "nominal_power": 100.0,
-                       "peak_power": 150.0
-                   },
-                   "data_generation": {
-                       "rate_gbps": 0.001
-                   }
-               }
+           conversion_efficiency=0.95
+       ),
+       payload=Payload(
+           payload=[
+               Instrument(
+                   name="Main Instrument",
+                   power_draw=PowerDraw(nominal_power=100.0, peak_power=150.0),
+                   data_generation=DataGeneration(rate_gbps=0.001)
+               )
            ]
-       },
-       "battery": {
-           "amphour": 20.0,
-           "voltage": 28.0,
-           "max_depth_of_discharge": 0.4,
-           "recharge_threshold": 0.95
-       },
-       "constraint": {
-           "sun_constraint": {
-               "type": "sun",
-               "min_angle": 45.0
-           },
-           "moon_constraint": {
-               "type": "moon",
-               "min_angle": 20.0
-           },
-           "earth_constraint": {
-               "type": "earth_limb",
-               "min_angle": 15.0
-           }
-       },
-       "ground_stations": {
-           "stations": [
-               {
-                   "code": "GND",
-                   "name": "Ground Station",
-                   "latitude_deg": 35.0,
-                   "longitude_deg": -106.0,
-                   "min_elevation_deg": 10.0,
-                   "bands": [{"band": "S", "downlink_rate_mbps": 10.0}]
-               }
+       ),
+       battery=Battery(
+           amphour=20.0,
+           voltage=28.0,
+           max_depth_of_discharge=0.4,
+           recharge_threshold=0.95
+       ),
+       constraint=Constraint(
+           sun_constraint=rust_ephem.SunConstraint(min_angle=45.0),
+           moon_constraint=rust_ephem.MoonConstraint(min_angle=20.0),
+           earth_constraint=rust_ephem.EarthLimbConstraint(min_angle=15.0)
+       ),
+       ground_stations=GroundStationRegistry(
+           stations=[
+               GroundStation(
+                   code="GND",
+                   name="Ground Station",
+                   latitude_deg=35.0,
+                   longitude_deg=-106.0,
+                   min_elevation_deg=10.0,
+                   bands=[BandCapability(band="S", downlink_rate_mbps=10.0)]
+               )
            ]
-       },
-       "recorder": {
-           "capacity_gb": 64.0,
-           "yellow_threshold": 0.7,
-           "red_threshold": 0.9
-       },
-       "fault_management": {
-           "thresholds": [
-               {"name": "battery_level", "yellow": 0.5, "red": 0.4, "direction": "below"}
-           ],
-           "safe_mode_on_red": true
-       }
-   }
+       ),
+       recorder=OnboardRecorder(
+           capacity_gb=64.0,
+           yellow_threshold=0.7,
+           red_threshold=0.9
+       ),
+       fault_management=fault_management
+   )
 
 Automatic Fault Thresholds
 --------------------------
@@ -710,7 +725,25 @@ based on the battery and recorder configuration:
 1. **battery_level**: Yellow at ``1.0 - max_depth_of_discharge``, Red 10% below that
 2. **recorder_fill_fraction**: Uses the recorder's ``yellow_threshold`` and ``red_threshold``
 
-You can override these by providing custom thresholds in the ``fault_management`` configuration.
+You can override these by adding custom thresholds to the ``FaultManagement`` instance.
+Custom thresholds can include ``acs_modes`` to restrict checking to specific Attitude Control System modes.
+
+.. code-block:: python
+
+   from conops.config import MissionConfig, FaultManagement
+   from conops.common import ACSMode
+
+   # Create config (automatically adds default thresholds)
+   config = MissionConfig()
+
+   # Add custom thresholds programmatically
+   config.fault_management.add_threshold(
+       "star_tracker_functional_count",
+       yellow=2.0,
+       red=1.0,
+       direction="below",
+       acs_modes=[ACSMode.SCIENCE]
+   )
 
 Using with DITL Simulation
 --------------------------
