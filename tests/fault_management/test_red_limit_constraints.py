@@ -1,10 +1,13 @@
 """Tests for spacecraft-level red limit constraints in fault management system."""
 
+from datetime import datetime, timezone
+
 import pytest
 
 from conops.config.fault_management import (
     FaultState,
 )
+from conops.ditl.telemetry import Housekeeping
 
 
 class TestFaultConstraint:
@@ -180,14 +183,12 @@ class TestFaultManagementRedLimits:
             constraint=constraint_sun_30,
             time_threshold_seconds=300.0,
         )
-        fm.check(
-            values={},
-            utime=ephem.timestamp[0].timestamp(),
-            step_size=60.0,
-            ephem=ephem,
+        hk = Housekeeping(
+            timestamp=ephem.timestamp[0],
             ra=180.0,
             dec=0.0,
         )
+        fm.check(hk, step_size=60.0, ephem=ephem)
         assert "sun_limit" in fm.states
 
     def test_red_limit_statistics_contains_constraint(self, fm, constraint_sun_30):
@@ -258,14 +259,12 @@ class TestFaultManagementRedLimits:
             time_threshold_seconds=300.0,
         )
         for i in range(4):  # 4 * 60 = 240 seconds < 300 second threshold
-            fm.check(
-                values={},
-                utime=ephem.timestamp[i].timestamp(),
-                step_size=60.0,
-                ephem=ephem,
+            hk = Housekeeping(
+                timestamp=ephem.timestamp[i],
                 ra=0.0,
                 dec=0.0,
             )
+            fm.check(hk, step_size=60.0, ephem=ephem)
         assert fm.safe_mode_requested is False
 
     def test_continuous_violation_resets_on_recovery_total_stays(self, fm):
@@ -304,14 +303,12 @@ class TestFaultConstraintIntegration:
             time_threshold_seconds=None,
         )
         for i in range(20):
-            fm.check(
-                values={},
-                utime=ephem.timestamp[i].timestamp(),
-                step_size=60.0,
-                ephem=ephem,
+            hk = Housekeeping(
+                timestamp=ephem.timestamp[i],
                 ra=0.0,
                 dec=0.0,
             )
+            fm.check(hk, step_size=60.0, ephem=ephem)
         assert fm.states["monitor_only"].red_seconds > 0
 
     def test_constraint_with_no_time_threshold_never_triggers_safe_mode_not_requested(
@@ -324,14 +321,12 @@ class TestFaultConstraintIntegration:
             time_threshold_seconds=None,
         )
         for i in range(20):
-            fm.check(
-                values={},
-                utime=ephem.timestamp[i].timestamp(),
-                step_size=60.0,
-                ephem=ephem,
+            hk = Housekeeping(
+                timestamp=ephem.timestamp[i],
                 ra=0.0,
                 dec=0.0,
             )
+            fm.check(hk, step_size=60.0, ephem=ephem)
         assert fm.safe_mode_requested is False
 
     def test_mixed_regular_fault_classification_is_yellow(self, fm, constraint_sun_30):
@@ -341,9 +336,11 @@ class TestFaultConstraintIntegration:
             constraint=constraint_sun_30,
             time_threshold_seconds=300.0,
         )
-        classifications = fm.check(
-            values={"battery_level": 0.45}, utime=1000.0, step_size=60.0
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
+            battery_level=0.45,
         )
+        classifications = fm.check(hk, step_size=60.0)
         assert classifications["battery_level"] == "yellow"
 
     def test_mixed_regular_fault_does_not_trigger_safe_mode_on_yellow(
@@ -355,7 +352,11 @@ class TestFaultConstraintIntegration:
             constraint=constraint_sun_30,
             time_threshold_seconds=300.0,
         )
-        fm.check(values={"battery_level": 0.45}, utime=1000.0, step_size=60.0)
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
+            battery_level=0.45,
+        )
+        fm.check(hk, step_size=60.0)
         assert fm.safe_mode_requested is False
 
     def test_mixed_regular_fault_triggers_safe_mode_on_red(self, fm, constraint_sun_30):
@@ -365,7 +366,11 @@ class TestFaultConstraintIntegration:
             constraint=constraint_sun_30,
             time_threshold_seconds=300.0,
         )
-        fm.check(values={"battery_level": 0.35}, utime=1060.0, step_size=60.0)
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1060.0, tz=timezone.utc),
+            battery_level=0.35,
+        )
+        fm.check(hk, step_size=60.0)
         assert fm.safe_mode_requested is True
 
 

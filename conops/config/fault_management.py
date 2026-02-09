@@ -66,12 +66,15 @@ Safe Mode Behavior:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, Field
 from rust_ephem.constraints import ConstraintConfig
 
 from ..common.common import dtutcfromtimestamp
+
+if TYPE_CHECKING:
+    from ..ditl.telemetry import Housekeeping
 
 
 @dataclass
@@ -247,36 +250,47 @@ class FaultManagement(BaseModel):
 
     def check(
         self,
-        values: dict[str, float],
-        utime: float,
+        housekeeping: Housekeeping,
         step_size: float,
         acs: ACS | None = None,
         ephem: Ephemeris | None = None,  # type: ignore # noqa: F821
-        ra: float | None = None,
-        dec: float | None = None,
     ) -> dict[str, str]:
         """Evaluate all monitored parameters and red limit constraints.
 
         Args:
-            values: Mapping of parameter name -> current numeric value.
-            utime: Current unix time of simulation.
+            housekeeping: Housekeeping telemetry packet containing all spacecraft state.
             step_size: Simulation time step in seconds (used for duration accumulation).
             acs: ACS instance to trigger safe mode if needed.
             ephem: Spacecraft ephemeris (required for red limit constraint checking).
-            ra: Current pointing RA in degrees (required for red limit constraint checking).
-            dec: Current pointing Dec in degrees (required for red limit constraint checking).
 
         Returns:
             Dict mapping parameter name to classification string (for thresholds only).
         """
+        # Extract utime and values from housekeeping
+        utime = housekeeping.timestamp.timestamp() if housekeeping.timestamp else 0.0
+
+        # Build values dict dynamically from housekeeping based on configured thresholds
+        values: dict[str, float] = {}
+        for thresh in self.thresholds:
+            # Get value from housekeeping if it exists
+            val = getattr(housekeeping, thresh.name, None)
+            if val is not None:
+                # Convert to float if needed
+                values[thresh.name] = float(val)
+
+        ra = housekeeping.ra
+        dec = housekeeping.dec
         classifications: dict[str, str] = {}
 
         # Check regular threshold-based faults
         for name, val in values.items():
-            thresh = next((t for t in self.thresholds if t.name == name), None)
-            if thresh is None:
+            threshold: FaultThreshold | None = next(
+                (t for t in self.thresholds if t.name == name),
+                None,
+            )
+            if threshold is None:
                 continue  # Not monitored
-            state = thresh.classify(val)
+            state = threshold.classify(val)
             classifications[name] = state
             st = self.ensure_state(name)
 
@@ -293,9 +307,9 @@ class FaultManagement(BaseModel):
                             "previous_state": previous_state,
                             "new_state": state,
                             "value": val,
-                            "yellow_threshold": thresh.yellow,
-                            "red_threshold": thresh.red,
-                            "direction": thresh.direction,
+                            "yellow_threshold": threshold.yellow,
+                            "red_threshold": threshold.red,
+                            "direction": threshold.direction,
                         },
                     )
                 )
@@ -318,8 +332,8 @@ class FaultManagement(BaseModel):
                             cause=f"RED threshold exceeded for {name}",
                             metadata={
                                 "value": val,
-                                "red_threshold": thresh.red,
-                                "direction": thresh.direction,
+                                "red_threshold": threshold.red,
+                                "direction": threshold.direction,
                             },
                         )
                     )

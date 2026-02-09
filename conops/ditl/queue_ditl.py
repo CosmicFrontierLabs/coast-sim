@@ -454,17 +454,17 @@ class QueueDITL(DITLMixin, DITLStats):
     def _handle_fault_management(self, utime: float) -> None:
         """Handle fault management checks and safe mode requests."""
         if self.config.fault_management is not None:
+            # Get the most recent housekeeping record
+            if not self.telemetry.housekeeping:
+                return
+
+            hk = self.telemetry.housekeeping[-1]
+
             self.config.fault_management.check(
-                values={
-                    "battery_level": self.battery.battery_level,
-                    "recorder_fill_fraction": self.recorder.get_fill_fraction(),
-                },
-                utime=utime,
+                housekeeping=hk,
                 step_size=self.step_size,
                 acs=self.acs,
                 ephem=self.ephem,
-                ra=self.ra[-1] if self.ra else None,
-                dec=self.dec[-1] if self.dec else None,
             )
             # Check if safe mode has been requested by fault management
             if (

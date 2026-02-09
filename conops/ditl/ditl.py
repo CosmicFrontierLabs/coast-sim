@@ -221,7 +221,7 @@ class DITL(DITLMixin, DITLStats):
             self.charge_state[i] = self.battery.charge_state
             self.obsid[i] = obsid
 
-            # Create housekeeping telemetry record
+            # Create housekeeping telemetry record for fault checking
             sun_angle_deg = self._compute_sun_angle(self.utime[i], ra, dec)
             hk = Housekeeping(
                 timestamp=datetime.fromtimestamp(self.utime[i], tz=timezone.utc),
@@ -243,6 +243,24 @@ class DITL(DITLMixin, DITLStats):
                 sun_angle_deg=sun_angle_deg,
                 in_eclipse=self.acs.in_eclipse,
             )
+
+            # Check fault management thresholds and red limit constraints
+            self.config.fault_management.check(
+                housekeeping=hk,
+                step_size=self.step_size,
+                acs=self.acs,
+                ephem=self.ephem,
+            )
+
+            # Check if safe mode was requested by fault management
+            if (
+                self.config.fault_management.safe_mode_requested
+                and not self.acs.in_safe_mode
+            ):
+                self.acs.request_safe_mode(self.utime[i])
+                self.config.fault_management.safe_mode_requested = False  # Reset flag
+
+            # Store housekeeping telemetry
             self.telemetry.housekeeping.append(hk)
 
             # Data management: generate and downlink data

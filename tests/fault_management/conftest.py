@@ -8,6 +8,7 @@ import pytest
 import rust_ephem
 
 from conops import (
+    ACS,
     Battery,
     Constraint,
     FaultManagement,
@@ -18,6 +19,117 @@ from conops import (
     SpacecraftBus,
 )
 from conops.config.fault_management import FaultConstraint
+from conops.ditl.telemetry import Housekeeping
+
+
+@pytest.fixture
+def fm_with_yellow_state(base_config: MissionConfig) -> tuple[FaultManagement, ACS]:
+    """Fixture providing fault management after checking yellow state."""
+    fm = base_config.fault_management
+    acs = ACS(config=base_config)
+    battery_threshold = next(t for t in fm.thresholds if t.name == "battery_level")
+    base_config.battery.charge_level = base_config.battery.watthour * (
+        battery_threshold.yellow - 0.01
+    )
+    hk = Housekeeping(
+        timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
+        battery_level=base_config.battery.battery_level,
+        recorder_fill_fraction=0.0,
+        star_tracker_functional_count=0,
+    )
+    fm.check(hk, step_size=60.0, acs=acs)
+    return fm, acs
+
+
+@pytest.fixture
+def fm_with_red_state(base_config: MissionConfig) -> tuple[FaultManagement, ACS]:
+    """Fixture providing fault management after checking red state."""
+    fm = base_config.fault_management
+    acs = ACS(config=base_config)
+    battery_threshold = next(t for t in fm.thresholds if t.name == "battery_level")
+    base_config.battery.charge_level = base_config.battery.watthour * (
+        battery_threshold.red - 0.01
+    )
+    hk = Housekeeping(
+        timestamp=datetime.fromtimestamp(2000.0, tz=timezone.utc),
+        battery_level=base_config.battery.battery_level,
+        recorder_fill_fraction=0.0,
+        star_tracker_functional_count=0,
+    )
+    fm.check(hk, step_size=60.0, acs=acs)
+    return fm, acs
+
+
+@pytest.fixture
+def fm_with_multiple_cycles(base_config: MissionConfig) -> tuple[FaultManagement, ACS]:
+    """Fixture providing fault management after multiple yellow cycles."""
+    fm = base_config.fault_management
+    acs = ACS(config=base_config)
+    battery_threshold = next(t for t in fm.thresholds if t.name == "battery_level")
+    yellow_limit = battery_threshold.yellow
+
+    # Cycle 1: nominal (no accumulation)
+    base_config.battery.charge_level = base_config.battery.watthour * (
+        yellow_limit + 0.05
+    )
+    hk = Housekeeping(
+        timestamp=datetime.fromtimestamp(3000.0, tz=timezone.utc),
+        battery_level=base_config.battery.battery_level,
+        recorder_fill_fraction=0.0,
+        star_tracker_functional_count=0,
+    )
+    fm.check(hk, step_size=60.0, acs=acs)
+
+    # Cycle 2: yellow
+    base_config.battery.charge_level = base_config.battery.watthour * (
+        yellow_limit - 0.01
+    )
+    hk = Housekeeping(
+        timestamp=datetime.fromtimestamp(3060.0, tz=timezone.utc),
+        battery_level=base_config.battery.battery_level,
+        recorder_fill_fraction=0.0,
+        star_tracker_functional_count=0,
+    )
+    fm.check(hk, step_size=60.0, acs=acs)
+
+    # Cycle 3: yellow again
+    hk = Housekeeping(
+        timestamp=datetime.fromtimestamp(3120.0, tz=timezone.utc),
+        battery_level=base_config.battery.battery_level,
+        recorder_fill_fraction=0.0,
+        star_tracker_functional_count=0,
+    )
+    fm.check(hk, step_size=60.0, acs=acs)
+    return fm, acs
+
+
+@pytest.fixture
+def fm_with_above_threshold() -> FaultManagement:
+    """Fixture providing fault management with 'above' direction threshold after multiple checks."""
+    fm = FaultManagement()
+    fm.add_threshold("temperature", yellow=50.0, red=60.0, direction="above")
+
+    # Test nominal
+    hk = Housekeeping(
+        timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
+        temperature=40.0,
+    )
+    fm.check(hk, step_size=1.0)
+
+    # Test yellow
+    hk = Housekeeping(
+        timestamp=datetime.fromtimestamp(1001.0, tz=timezone.utc),
+        temperature=55.0,
+    )
+    fm.check(hk, step_size=1.0)
+
+    # Test red
+    hk = Housekeeping(
+        timestamp=datetime.fromtimestamp(1002.0, tz=timezone.utc),
+        temperature=65.0,
+    )
+    fm.check(hk, step_size=1.0)
+    return fm
 
 
 class DummyBattery:
