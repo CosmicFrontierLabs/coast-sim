@@ -164,7 +164,7 @@ class FaultConstraint(BaseModel):
         name: Descriptive name for the constraint (e.g., 'spacecraft_sun_limit')
         constraint: rust_ephem ConstraintConfig defining the constraint
         time_threshold_seconds: Maximum continuous time allowed in violation before triggering safe mode.
-                              If None, no automatic safe mode trigger occurs.
+                                If None, no automatic safe mode trigger occurs.
         description: Optional human-readable description of the constraint purpose
 
     Example:
