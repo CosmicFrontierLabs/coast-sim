@@ -197,7 +197,7 @@ class TestFaultManagementRedLimits:
             ra=180.0,
             dec=0.0,
         )
-        fm.check(hk, step_size=60.0, acs=acs_with_ephem)
+        fm.check(hk, acs=acs_with_ephem)
         assert "sun_limit" in fm.states
 
     def test_red_limit_statistics_contains_constraint(self, fm, constraint_sun_30):
@@ -273,7 +273,7 @@ class TestFaultManagementRedLimits:
                 ra=0.0,
                 dec=0.0,
             )
-            fm.check(hk, step_size=60.0, acs=acs_with_ephem)
+            fm.check(hk, acs=acs_with_ephem)
         assert fm.safe_mode_requested is False
 
     def test_continuous_violation_resets_on_recovery_total_stays(self, fm):
@@ -317,7 +317,7 @@ class TestFaultConstraintIntegration:
                 ra=0.0,
                 dec=0.0,
             )
-            fm.check(hk, step_size=60.0, acs=acs_with_ephem)
+            fm.check(hk, acs=acs_with_ephem)
         assert fm.states["monitor_only"].red_seconds > 0
 
     def test_constraint_with_no_time_threshold_never_triggers_safe_mode_not_requested(
@@ -335,25 +335,11 @@ class TestFaultConstraintIntegration:
                 ra=0.0,
                 dec=0.0,
             )
-            fm.check(hk, step_size=60.0, acs=acs_with_ephem)
+            fm.check(hk, acs=acs_with_ephem)
         assert fm.safe_mode_requested is False
 
-    def test_mixed_regular_fault_classification_is_yellow(self, fm, constraint_sun_30):
-        fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
-        fm.add_red_limit_constraint(
-            name="sun_limit",
-            constraint=constraint_sun_30,
-            time_threshold_seconds=300.0,
-        )
-        hk = Housekeeping(
-            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
-            battery_level=0.45,
-        )
-        classifications = fm.check(hk, step_size=60.0)
-        assert classifications["battery_level"] == "yellow"
-
-    def test_mixed_regular_fault_does_not_trigger_safe_mode_on_yellow(
-        self, fm, constraint_sun_30
+    def test_mixed_regular_fault_classification_is_yellow(
+        self, fm, constraint_sun_30, acs_stub
     ):
         fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
         fm.add_red_limit_constraint(
@@ -365,10 +351,28 @@ class TestFaultConstraintIntegration:
             timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
             battery_level=0.45,
         )
-        fm.check(hk, step_size=60.0)
+        classifications = fm.check(hk, acs=acs_stub)
+        assert classifications["battery_level"] == "yellow"
+
+    def test_mixed_regular_fault_does_not_trigger_safe_mode_on_yellow(
+        self, fm, constraint_sun_30, acs_stub
+    ):
+        fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
+        fm.add_red_limit_constraint(
+            name="sun_limit",
+            constraint=constraint_sun_30,
+            time_threshold_seconds=300.0,
+        )
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
+            battery_level=0.45,
+        )
+        fm.check(hk, acs=acs_stub)
         assert fm.safe_mode_requested is False
 
-    def test_mixed_regular_fault_triggers_safe_mode_on_red(self, fm, constraint_sun_30):
+    def test_mixed_regular_fault_triggers_safe_mode_on_red(
+        self, fm, constraint_sun_30, acs_stub
+    ):
         fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
         fm.add_red_limit_constraint(
             name="sun_limit",
@@ -379,7 +383,7 @@ class TestFaultConstraintIntegration:
             timestamp=datetime.fromtimestamp(1060.0, tz=timezone.utc),
             battery_level=0.35,
         )
-        fm.check(hk, step_size=60.0)
+        fm.check(hk, acs=acs_stub)
         assert fm.safe_mode_requested is True
 
 

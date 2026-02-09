@@ -23,6 +23,15 @@ from conops.ditl.telemetry import Housekeeping
 
 
 @pytest.fixture
+def acs_stub():
+    acs = Mock()
+    acs.in_safe_mode = False
+    acs.acsmode = None
+    acs.ephem = Mock(step_size=1.0)
+    return acs
+
+
+@pytest.fixture
 def fm_with_yellow_state(base_config: MissionConfig) -> tuple[FaultManagement, ACS]:
     """Fixture providing fault management after checking yellow state."""
     fm = base_config.fault_management
@@ -37,7 +46,7 @@ def fm_with_yellow_state(base_config: MissionConfig) -> tuple[FaultManagement, A
         recorder_fill_fraction=0.0,
         star_tracker_functional_count=0,
     )
-    fm.check(hk, step_size=60.0, acs=acs)
+    fm.check(hk, acs=acs)
     return fm, acs
 
 
@@ -56,7 +65,7 @@ def fm_with_red_state(base_config: MissionConfig) -> tuple[FaultManagement, ACS]
         recorder_fill_fraction=0.0,
         star_tracker_functional_count=0,
     )
-    fm.check(hk, step_size=60.0, acs=acs)
+    fm.check(hk, acs=acs)
     return fm, acs
 
 
@@ -78,7 +87,7 @@ def fm_with_multiple_cycles(base_config: MissionConfig) -> tuple[FaultManagement
         recorder_fill_fraction=0.0,
         star_tracker_functional_count=0,
     )
-    fm.check(hk, step_size=60.0, acs=acs)
+    fm.check(hk, acs=acs)
 
     # Cycle 2: yellow
     base_config.battery.charge_level = base_config.battery.watthour * (
@@ -90,7 +99,7 @@ def fm_with_multiple_cycles(base_config: MissionConfig) -> tuple[FaultManagement
         recorder_fill_fraction=0.0,
         star_tracker_functional_count=0,
     )
-    fm.check(hk, step_size=60.0, acs=acs)
+    fm.check(hk, acs=acs)
 
     # Cycle 3: yellow again
     hk = Housekeeping(
@@ -99,12 +108,12 @@ def fm_with_multiple_cycles(base_config: MissionConfig) -> tuple[FaultManagement
         recorder_fill_fraction=0.0,
         star_tracker_functional_count=0,
     )
-    fm.check(hk, step_size=60.0, acs=acs)
+    fm.check(hk, acs=acs)
     return fm, acs
 
 
 @pytest.fixture
-def fm_with_above_threshold() -> FaultManagement:
+def fm_with_above_threshold(acs_stub) -> FaultManagement:
     """Fixture providing fault management with 'above' direction threshold after multiple checks."""
     fm = FaultManagement()
     fm.add_threshold("temperature", yellow=50.0, red=60.0, direction="above")
@@ -114,21 +123,21 @@ def fm_with_above_threshold() -> FaultManagement:
         timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
         temperature=40.0,
     )
-    fm.check(hk, step_size=1.0)
+    fm.check(hk, acs=acs_stub)
 
     # Test yellow
     hk = Housekeeping(
         timestamp=datetime.fromtimestamp(1001.0, tz=timezone.utc),
         temperature=55.0,
     )
-    fm.check(hk, step_size=1.0)
+    fm.check(hk, acs=acs_stub)
 
     # Test red
     hk = Housekeeping(
         timestamp=datetime.fromtimestamp(1002.0, tz=timezone.utc),
         temperature=65.0,
     )
-    fm.check(hk, step_size=1.0)
+    fm.check(hk, acs=acs_stub)
     return fm
 
 
@@ -150,7 +159,7 @@ class DummyEphemeris:
     """Minimal mock ephemeris for testing."""
 
     def __init__(self):
-        self.step_size = 1.0
+        self.step_size = 60.0
         self.earth = [Mock(ra=Mock(deg=0.0), dec=Mock(deg=0.0))]
         self.sun = [Mock(ra=Mock(deg=45.0), dec=Mock(deg=23.5))]
         # New direct array access (rust-ephem 0.3.0+)

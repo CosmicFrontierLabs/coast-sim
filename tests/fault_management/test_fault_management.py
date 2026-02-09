@@ -86,34 +86,34 @@ class TestMultipleCycles:
 
 
 class TestAboveThreshold:
-    def test_classifies_nominal(self) -> None:
+    def test_classifies_nominal(self, acs_stub) -> None:
         fm = FaultManagement()
         fm.add_threshold("temperature", yellow=50.0, red=60.0, direction="above")
         hk = Housekeeping(
             timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
             temperature=40.0,
         )
-        classifications = fm.check(hk, step_size=1.0)
+        classifications = fm.check(hk, acs=acs_stub)
         assert classifications["temperature"] == "nominal"
 
-    def test_classifies_yellow(self) -> None:
+    def test_classifies_yellow(self, acs_stub) -> None:
         fm = FaultManagement()
         fm.add_threshold("temperature", yellow=50.0, red=60.0, direction="above")
         hk = Housekeeping(
             timestamp=datetime.fromtimestamp(1001.0, tz=timezone.utc),
             temperature=55.0,
         )
-        classifications = fm.check(hk, step_size=1.0)
+        classifications = fm.check(hk, acs=acs_stub)
         assert classifications["temperature"] == "yellow"
 
-    def test_classifies_red(self) -> None:
+    def test_classifies_red(self, acs_stub) -> None:
         fm = FaultManagement()
         fm.add_threshold("temperature", yellow=50.0, red=60.0, direction="above")
         hk = Housekeeping(
             timestamp=datetime.fromtimestamp(1002.0, tz=timezone.utc),
             temperature=65.0,
         )
-        classifications = fm.check(hk, step_size=1.0)
+        classifications = fm.check(hk, acs=acs_stub)
         assert classifications["temperature"] == "red"
 
     def test_accumulates_yellow_seconds(
@@ -136,32 +136,32 @@ class TestAboveThreshold:
 
 
 class TestUnmonitoredParameters:
-    def test_includes_battery_level(self) -> None:
+    def test_includes_battery_level(self, acs_stub) -> None:
         fm = FaultManagement()
         fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
         hk = Housekeeping(
             timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
             battery_level=0.6,
         )
-        classifications = fm.check(hk, step_size=1.0)
+        classifications = fm.check(hk, acs=acs_stub)
         assert "battery_level" in classifications
 
-    def test_excludes_temperature(self) -> None:
+    def test_excludes_temperature(self, acs_stub) -> None:
         fm = FaultManagement()
         fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
         hk = Housekeeping(
             timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
             battery_level=0.6,
         )
-        classifications = fm.check(hk, step_size=1.0)
+        classifications = fm.check(hk, acs=acs_stub)
         assert "temperature" not in classifications
 
-    def test_classifies_battery_as_nominal(self) -> None:
+    def test_classifies_battery_as_nominal(self, acs_stub) -> None:
         fm = FaultManagement()
         fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
         hk = Housekeeping(
             timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
             battery_level=0.6,
         )
-        classifications = fm.check(hk, step_size=1.0)
+        classifications = fm.check(hk, acs=acs_stub)
         assert classifications["battery_level"] == "nominal"

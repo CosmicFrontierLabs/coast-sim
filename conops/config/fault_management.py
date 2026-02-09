@@ -55,7 +55,7 @@ Usage Example (Python):
         temperature=55.0,
         acs_mode=ACSMode.SCIENCE,
     )
-    classifications = fm.check(housekeeping=hk, step_size=1.0, acs=spacecraft_acs)
+    classifications = fm.check(housekeeping=hk, acs=spacecraft_acs)
 
     # Get accumulated statistics
     stats = fm.statistics()
@@ -272,11 +272,11 @@ class FaultManagement(BaseModel):
         name: str,
         cause: str,
         metadata: dict[str, Any],
-        acs: ACS | None,
+        acs: ACS,
     ) -> None:
         if not self.safe_mode_on_red:
             return
-        if acs is not None and acs.in_safe_mode:
+        if acs.in_safe_mode:
             return
         self.safe_mode_requested = True
         self.events.append(
@@ -292,25 +292,22 @@ class FaultManagement(BaseModel):
     def check(
         self,
         housekeeping: Housekeeping,
-        step_size: float | None = None,
-        acs: ACS | None = None,
+        acs: ACS,
     ) -> dict[str, str]:
-        """Evaluate all monitored parameters and red limit constraints.
+        """
+        Evaluate all monitored parameters and red limit constraints.
 
         Args:
             housekeeping: Housekeeping telemetry packet containing all spacecraft state.
-            step_size: Simulation time step in seconds (used for duration accumulation).
-                If None, this is derived from ephemeris when available.
-            acs: ACS instance to trigger safe mode if needed.
+            acs: ACS instance to trigger safe mode
 
         Returns:
             Dict mapping parameter name to classification string (for thresholds only).
         """
-        ephem = getattr(acs, "ephem", None) if acs is not None else None
-        if step_size is None:
-            if ephem is None:
-                raise ValueError("step_size must be provided when ephemeris is None")
-            step_size = ephem.step_size
+        ephem = acs.ephem
+        if ephem is None:
+            raise ValueError("ACS ephemeris must be set for fault management checks")
+        step_size = ephem.step_size
 
         utime = housekeeping.timestamp.timestamp() if housekeeping.timestamp else 0.0
         thresholds_by_name = {t.name: t for t in self.thresholds}
@@ -331,7 +328,7 @@ class FaultManagement(BaseModel):
             # If ACS mode info is not available, skip checking this threshold.
             if threshold.acs_modes is not None:
                 current_mode = housekeeping.acs_mode
-                if current_mode is None and acs is not None:
+                if current_mode is None:
                     current_mode = acs.acsmode
                 if current_mode is None:
                     continue

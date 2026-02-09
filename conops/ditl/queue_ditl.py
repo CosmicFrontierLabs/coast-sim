@@ -462,7 +462,6 @@ class QueueDITL(DITLMixin, DITLStats):
 
             self.config.fault_management.check(
                 housekeeping=hk,
-                step_size=self.step_size,
                 acs=self.acs,
             )
             # Check if safe mode has been requested by fault management

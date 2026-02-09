@@ -247,7 +247,6 @@ class DITL(DITLMixin, DITLStats):
             # Check fault management thresholds and red limit constraints
             self.config.fault_management.check(
                 housekeeping=hk,
-                step_size=self.step_size,
                 acs=self.acs,
             )
 
