@@ -71,6 +71,7 @@ from typing import TYPE_CHECKING, Any, cast
 from pydantic import BaseModel, Field
 from rust_ephem.constraints import ConstraintConfig
 
+from ..common import ACSMode
 from ..common.common import dtutcfromtimestamp
 
 if TYPE_CHECKING:
@@ -186,6 +187,7 @@ class FaultThreshold(BaseModel):
         yellow: Value at or beyond which a YELLOW fault is flagged.
         red: Value at or beyond which a RED fault is flagged.
         direction: 'below' or 'above' indicating fault when value passes *below* or *above* limit.
+        acs_modes: ACS modes where this parameter should be checked (None = all modes).
     """
 
     name: str = Field(description="Parameter name to monitor")
@@ -193,6 +195,10 @@ class FaultThreshold(BaseModel):
     red: float = Field(description="Red threshold value")
     direction: str = Field(
         default="below", description="Fault direction: 'below' or 'above'"
+    )
+    acs_modes: list[ACSMode] | None = Field(
+        default=None,
+        description="ACS modes where this parameter should be checked",
     )
 
     def classify(self, value: float) -> str:
@@ -248,10 +254,34 @@ class FaultManagement(BaseModel):
             self.states[name] = FaultState()
         return self.states[name]
 
+    def _trigger_safe_mode(
+        self,
+        *,
+        utime: float,
+        name: str,
+        cause: str,
+        metadata: dict[str, Any],
+        acs: ACS | None,
+    ) -> None:
+        if not self.safe_mode_on_red:
+            return
+        if acs is not None and acs.in_safe_mode:
+            return
+        self.safe_mode_requested = True
+        self.events.append(
+            FaultEvent(
+                utime=utime,
+                event_type="safe_mode_trigger",
+                name=name,
+                cause=cause,
+                metadata=metadata,
+            )
+        )
+
     def check(
         self,
         housekeeping: Housekeeping,
-        step_size: float,
+        step_size: float | None = None,
         acs: ACS | None = None,
         ephem: Ephemeris | None = None,  # type: ignore # noqa: F821
     ) -> dict[str, str]:
@@ -260,41 +290,54 @@ class FaultManagement(BaseModel):
         Args:
             housekeeping: Housekeeping telemetry packet containing all spacecraft state.
             step_size: Simulation time step in seconds (used for duration accumulation).
+                If None, this is derived from ephemeris when available.
             acs: ACS instance to trigger safe mode if needed.
             ephem: Spacecraft ephemeris (required for red limit constraint checking).
 
         Returns:
             Dict mapping parameter name to classification string (for thresholds only).
         """
-        # Extract utime and values from housekeeping
-        utime = housekeeping.timestamp.timestamp() if housekeeping.timestamp else 0.0
+        if step_size is None:
+            if ephem is None:
+                raise ValueError("step_size must be provided when ephemeris is None")
+            step_size = ephem.step_size
 
-        # Build values dict dynamically from housekeeping based on configured thresholds
+        utime = housekeeping.timestamp.timestamp() if housekeeping.timestamp else 0.0
+        thresholds_by_name = {t.name: t for t in self.thresholds}
         values: dict[str, float] = {}
-        for thresh in self.thresholds:
-            # Get value from housekeeping if it exists
-            val = getattr(housekeeping, thresh.name, None)
+        for name in thresholds_by_name:
+            val = getattr(housekeeping, name, None)
             if val is not None:
-                # Convert to float if needed
-                values[thresh.name] = float(val)
+                values[name] = float(val)
 
         ra = housekeeping.ra
         dec = housekeeping.dec
         classifications: dict[str, str] = {}
 
-        # Check regular threshold-based faults
         for name, val in values.items():
-            threshold: FaultThreshold | None = next(
-                (t for t in self.thresholds if t.name == name),
-                None,
-            )
-            if threshold is None:
-                continue  # Not monitored
+            threshold = thresholds_by_name[name]
+            # Check if this fault has ACS mode restrictions and if so, whether
+            # current mode is in the allowed list before classifying the fault.
+            # If ACS mode info is not available, skip checking this threshold.
+            if threshold.acs_modes is not None:
+                current_mode = housekeeping.acs_mode
+                if current_mode is None and acs is not None:
+                    current_mode = acs.acsmode
+                if current_mode is None:
+                    continue
+                if isinstance(current_mode, int) and not isinstance(
+                    current_mode, ACSMode
+                ):
+                    try:
+                        current_mode = ACSMode(current_mode)
+                    except ValueError:
+                        continue
+                if current_mode not in threshold.acs_modes:
+                    continue
             state = threshold.classify(val)
             classifications[name] = state
             st = self.ensure_state(name)
 
-            # Log state transitions
             previous_state = st.current
             if previous_state != state:
                 self.events.append(
@@ -314,29 +357,24 @@ class FaultManagement(BaseModel):
                     )
                 )
 
-            # Accumulate time
             if state == "yellow":
                 st.yellow_seconds += step_size
             elif state == "red":
                 st.red_seconds += step_size
             st.current = state
-            # Set safe mode flag when RED condition detected
-            if state == "red" and self.safe_mode_on_red:
-                if acs is None or not acs.in_safe_mode:
-                    self.safe_mode_requested = True
-                    self.events.append(
-                        FaultEvent(
-                            utime=utime,
-                            event_type="safe_mode_trigger",
-                            name=name,
-                            cause=f"RED threshold exceeded for {name}",
-                            metadata={
-                                "value": val,
-                                "red_threshold": threshold.red,
-                                "direction": threshold.direction,
-                            },
-                        )
-                    )
+
+            if state == "red":
+                self._trigger_safe_mode(
+                    utime=utime,
+                    name=name,
+                    cause=f"RED threshold exceeded for {name}",
+                    metadata={
+                        "value": val,
+                        "red_threshold": threshold.red,
+                        "direction": threshold.direction,
+                    },
+                    acs=acs,
+                )
 
         # Check spacecraft-level red limit constraints if ephemeris and pointing provided
         if (
@@ -394,28 +432,20 @@ class FaultManagement(BaseModel):
                         red_limit.time_threshold_seconds is not None
                         and fault_state.continuous_violation_seconds
                         >= red_limit.time_threshold_seconds
-                        and self.safe_mode_on_red
                     ):
-                        # Trigger safe mode
-                        if acs is None or not acs.in_safe_mode:
-                            self.safe_mode_requested = True
-                            self.events.append(
-                                FaultEvent(
-                                    utime=utime,
-                                    event_type="safe_mode_trigger",
-                                    name=red_limit.name,
-                                    cause="Constraint violation exceeded time threshold",
-                                    metadata={
-                                        "constraint_type": type(
-                                            red_limit.constraint
-                                        ).__name__,
-                                        "continuous_violation_seconds": fault_state.continuous_violation_seconds,
-                                        "time_threshold_seconds": red_limit.time_threshold_seconds,
-                                        "ra": ra,
-                                        "dec": dec,
-                                    },
-                                )
-                            )
+                        self._trigger_safe_mode(
+                            utime=utime,
+                            name=red_limit.name,
+                            cause="Constraint violation exceeded time threshold",
+                            metadata={
+                                "constraint_type": type(red_limit.constraint).__name__,
+                                "continuous_violation_seconds": fault_state.continuous_violation_seconds,
+                                "time_threshold_seconds": red_limit.time_threshold_seconds,
+                                "ra": ra,
+                                "dec": dec,
+                            },
+                            acs=acs,
+                        )
                 else:
                     # Log violation cleared
                     if previous_violation_state:
@@ -471,10 +501,21 @@ class FaultManagement(BaseModel):
         return stats
 
     def add_threshold(
-        self, name: str, yellow: float, red: float, direction: str = "below"
+        self,
+        name: str,
+        yellow: float,
+        red: float,
+        direction: str = "below",
+        acs_modes: list[ACSMode] | None = None,
     ) -> None:
         self.thresholds.append(
-            FaultThreshold(name=name, yellow=yellow, red=red, direction=direction)
+            FaultThreshold(
+                name=name,
+                yellow=yellow,
+                red=red,
+                direction=direction,
+                acs_modes=acs_modes,
+            )
         )
 
     def add_red_limit_constraint(
