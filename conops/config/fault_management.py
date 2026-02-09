@@ -119,6 +119,7 @@ from ..common.common import dtutcfromtimestamp
 
 if TYPE_CHECKING:
     from ..ditl.telemetry import Housekeeping
+    from ..simulation import ACS
 
 
 @dataclass
@@ -640,10 +641,3 @@ class FaultManagement(BaseModel):
                 description=description,
             )
         )
-
-
-# Lazy import for type checking to avoid circular import
-try:  # pragma: no cover
-    from ..simulation.acs import ACS  # noqa: F401
-except Exception:  # pragma: no cover
-    pass
