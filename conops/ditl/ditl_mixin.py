@@ -62,11 +62,15 @@ class DITLMixin:
         if ephem is not None:
             self.ephem = ephem
             self.config.constraint.ephem = ephem
+            # Also set ephemeris on star tracker constraints
+            self.config.spacecraft_bus.star_trackers.set_ephem(ephem)
         else:
             assert config.constraint.ephem is not None, (
                 "Ephemeris must be set in Config Constraint"
             )
             self.ephem = config.constraint.ephem
+            # Also set ephemeris on star tracker constraints
+            self.config.spacecraft_bus.star_trackers.set_ephem(config.constraint.ephem)
 
         # Override begin/end if provided, else use limits of ephemeris
         if begin is not None:

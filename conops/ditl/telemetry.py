@@ -248,6 +248,21 @@ class HousekeepingList(list[Housekeeping]):
         """Get eclipse state values from all housekeeping records."""
         return [hk.in_eclipse for hk in self]
 
+    @property
+    def star_tracker_hard_violations(self) -> list[int | None]:
+        """Get star tracker hard violation counts from all housekeeping records."""
+        return [hk.star_tracker_hard_violations for hk in self]
+
+    @property
+    def star_tracker_soft_violations(self) -> list[bool | None]:
+        """Get star tracker soft violation states from all housekeeping records."""
+        return [hk.star_tracker_soft_violations for hk in self]
+
+    @property
+    def star_tracker_functional_count(self) -> list[int | None]:
+        """Get star tracker functional counts from all housekeeping records."""
+        return [hk.star_tracker_functional_count for hk in self]
+
 
 class Telemetry(BaseModel):
     """

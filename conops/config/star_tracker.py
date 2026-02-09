@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import numpy as np
 import numpy.typing as npt
+import rust_ephem
 from pydantic import BaseModel, Field, field_validator
+from rust_ephem import EarthLimbConstraint, SunConstraint
 
 from ..common.vector import radec2vec, rotvec, vec2radec, vecnorm
 from .constraint import Constraint
@@ -215,6 +217,17 @@ class StarTracker(BaseModel):
     soft_constraint: Constraint | None = None
     modes_require_lock: list[int] | None = None
 
+    def set_ephem(self, ephem: rust_ephem.Ephemeris) -> None:
+        """Set ephemeris on constraint objects.
+
+        Args:
+            ephem: Ephemeris object for constraint calculations
+        """
+        if self.hard_constraint is not None:
+            self.hard_constraint.ephem = ephem
+        if self.soft_constraint is not None:
+            self.soft_constraint.ephem = ephem
+
     def in_hard_constraint(
         self, ra_deg: float, dec_deg: float, utime: float, roll_deg: float = 0.0
     ) -> bool:
@@ -275,6 +288,20 @@ class StarTracker(BaseModel):
         return mode in self.modes_require_lock
 
 
+# Default Star Tracker configuration, aligned with the boresight and does not
+# work if pointed at the Earth (Earth limb constraint with min_angle=0) or
+# within 20 degrees of the Sun (Sun constraint with min_angle=20). This
+# is just an example configuration - users can create their own star trackers
+# with different orientations and constraints as needed.
+default_star_tracker = StarTracker(
+    orientation=StarTrackerOrientation(boresight=(0.0, 1.0, 0.0)),
+    hard_constraint=Constraint(
+        earth_constraint=EarthLimbConstraint(min_angle=0),
+        sun_constraint=SunConstraint(min_angle=20),
+    ),
+)  # Example: star tracker pointing along +Y
+
+
 class StarTrackerConfiguration(BaseModel):
     """Configuration for star tracker subsystem on spacecraft.
 
@@ -287,8 +314,18 @@ class StarTrackerConfiguration(BaseModel):
             Default is 1 (at least one star tracker must be functional).
     """
 
-    star_trackers: list[StarTracker] = Field(default_factory=list)
+    # FIXME: star_trackers.star_trackers
+    star_trackers: list[StarTracker] = Field(default=[default_star_tracker])
     min_functional_trackers: int = 1
+
+    def set_ephem(self, ephem: rust_ephem.Ephemeris) -> None:
+        """Set ephemeris on all star tracker constraint objects.
+
+        Args:
+            ephem: Ephemeris object for constraint calculations
+        """
+        for st in self.star_trackers:
+            st.set_ephem(ephem)
 
     def num_trackers(self) -> int:
         """Get the number of star trackers.
