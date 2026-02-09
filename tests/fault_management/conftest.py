@@ -116,26 +116,26 @@ def fm_with_multiple_cycles(base_config: MissionConfig) -> tuple[FaultManagement
 def fm_with_above_threshold(acs_stub) -> FaultManagement:
     """Fixture providing fault management with 'above' direction threshold after multiple checks."""
     fm = FaultManagement()
-    fm.add_threshold("temperature", yellow=50.0, red=60.0, direction="above")
+    fm.add_threshold("battery_level", yellow=50.0, red=60.0, direction="above")
 
     # Test nominal
     hk = Housekeeping(
         timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
-        temperature=40.0,
+        battery_level=40.0,
     )
     fm.check(hk, acs=acs_stub)
 
     # Test yellow
     hk = Housekeeping(
         timestamp=datetime.fromtimestamp(1001.0, tz=timezone.utc),
-        temperature=55.0,
+        battery_level=55.0,
     )
     fm.check(hk, acs=acs_stub)
 
     # Test red
     hk = Housekeeping(
         timestamp=datetime.fromtimestamp(1002.0, tz=timezone.utc),
-        temperature=65.0,
+        battery_level=65.0,
     )
     fm.check(hk, acs=acs_stub)
     return fm

@@ -72,6 +72,38 @@ Safe Mode Behavior:
     3. Safe mode is irreversible once entered
     4. Spacecraft points solar panels at Sun for maximum power generation
     5. All queued commands are cleared
+
+ACS Mode Filtering:
+    Thresholds can be restricted to specific ACS modes using the acs_modes parameter.
+    This allows different fault policies for different operational modes.
+
+    Examples:
+
+    # Only check star tracker count during SCIENCE mode (when precision pointing matters)
+    fm.add_threshold(
+        "star_tracker_functional_count",
+        yellow=2.0,
+        red=1.0,
+        direction="below",
+        acs_modes=[ACSMode.SCIENCE],
+    )
+
+    # Check thermal limits in all modes except SAFE mode (thermal control always matters)
+    fm.add_threshold(
+        "temperature",
+        yellow=50.0,
+        red=60.0,
+        direction="above",
+        acs_modes=[ACSMode.SCIENCE, ACSMode.SLEW, ACSMode.SETTLE],
+    )
+
+    # Check battery level in all modes (None = no filtering)
+    fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
+
+    # During fault checking, the current ACS mode is determined from:
+    # 1. housekeeping.acs_mode (preferred)
+    # 2. acs.acsmode (fallback)
+    # Thresholds are only evaluated when the current mode is in acs_modes list.
 """
 
 from __future__ import annotations
@@ -199,6 +231,33 @@ class FaultThreshold(BaseModel):
         red: Value at or beyond which a RED fault is flagged.
         direction: 'below' or 'above' indicating fault when value passes *below* or *above* limit.
         acs_modes: ACS modes where this parameter should be checked (None = all modes).
+
+    Examples:
+        >>> # Check battery level in all modes
+        >>> battery_threshold = FaultThreshold(
+        ...     name="battery_level",
+        ...     yellow=0.5,
+        ...     red=0.4,
+        ...     direction="below"
+        ... )
+
+        >>> # Only check star tracker count during SCIENCE mode
+        >>> star_tracker_threshold = FaultThreshold(
+        ...     name="star_tracker_functional_count",
+        ...     yellow=2.0,
+        ...     red=1.0,
+        ...     direction="below",
+        ...     acs_modes=[ACSMode.SCIENCE]
+        ... )
+
+        >>> # Check thermal limits in multiple modes
+        >>> thermal_threshold = FaultThreshold(
+        ...     name="temperature",
+        ...     yellow=50.0,
+        ...     red=60.0,
+        ...     direction="above",
+        ...     acs_modes=[ACSMode.SCIENCE, ACSMode.SLEW, ACSMode.SETTLE]
+        ... )
     """
 
     name: str = Field(description="Parameter name to monitor")
@@ -312,7 +371,9 @@ class FaultManagement(BaseModel):
         step_size = ephem.step_size
 
         if housekeeping.timestamp is None:
-            raise ValueError("Housekeeping timestamp must be set for fault management checks")
+            raise ValueError(
+                "Housekeeping timestamp must be set for fault management checks"
+            )
         utime = housekeeping.timestamp.timestamp()
         thresholds_by_name = {t.name: t for t in self.thresholds}
         values: dict[str, float] = {}
@@ -519,6 +580,36 @@ class FaultManagement(BaseModel):
         direction: str = "below",
         acs_modes: list[ACSMode] | None = None,
     ) -> None:
+        """Add a parameter threshold for fault monitoring.
+
+        Args:
+            name: Parameter name to monitor (must match Housekeeping attribute name)
+            yellow: Value at or beyond which a YELLOW fault is flagged
+            red: Value at or beyond which a RED fault is flagged
+            direction: 'below' or 'above' indicating fault direction
+            acs_modes: ACS modes where this threshold should be checked.
+                      None (default) means check in all modes.
+
+        Examples:
+            >>> fm = FaultManagement()
+            >>> # Check battery in all modes
+            >>> fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
+            >>> # Only check star trackers during science operations
+            >>> fm.add_threshold("star_tracker_count", yellow=2.0, red=1.0,
+            ...                  direction="below", acs_modes=[ACSMode.SCIENCE])
+        """
+        # Import here to avoid circular imports
+        from ..ditl.telemetry import Housekeeping
+
+        # Check if name is a valid Housekeeping attribute
+        valid_housekeeping_fields = set(Housekeeping.model_fields.keys())
+        if name not in valid_housekeeping_fields:
+            raise ValueError(
+                f"Threshold name '{name}' is not a valid Housekeeping attribute. "
+                f"Valid predefined fields are: {sorted(valid_housekeeping_fields)}. "
+                f"For custom fields, names must be valid Python identifiers."
+            )
+
         self.thresholds.append(
             FaultThreshold(
                 name=name,

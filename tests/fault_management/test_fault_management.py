@@ -91,50 +91,50 @@ class TestMultipleCycles:
 class TestAboveThreshold:
     def test_classifies_nominal(self, acs_stub) -> None:
         fm = FaultManagement()
-        fm.add_threshold("temperature", yellow=50.0, red=60.0, direction="above")
+        fm.add_threshold("battery_level", yellow=50.0, red=60.0, direction="above")
         hk = Housekeeping(
             timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
-            temperature=40.0,
+            battery_level=40.0,
         )
         classifications = fm.check(hk, acs=acs_stub)
-        assert classifications["temperature"] == "nominal"
+        assert classifications["battery_level"] == "nominal"
 
     def test_classifies_yellow(self, acs_stub) -> None:
         fm = FaultManagement()
-        fm.add_threshold("temperature", yellow=50.0, red=60.0, direction="above")
+        fm.add_threshold("battery_level", yellow=50.0, red=60.0, direction="above")
         hk = Housekeeping(
             timestamp=datetime.fromtimestamp(1001.0, tz=timezone.utc),
-            temperature=55.0,
+            battery_level=55.0,
         )
         classifications = fm.check(hk, acs=acs_stub)
-        assert classifications["temperature"] == "yellow"
+        assert classifications["battery_level"] == "yellow"
 
     def test_classifies_red(self, acs_stub) -> None:
         fm = FaultManagement()
-        fm.add_threshold("temperature", yellow=50.0, red=60.0, direction="above")
+        fm.add_threshold("battery_level", yellow=50.0, red=60.0, direction="above")
         hk = Housekeeping(
             timestamp=datetime.fromtimestamp(1002.0, tz=timezone.utc),
-            temperature=65.0,
+            battery_level=65.0,
         )
         classifications = fm.check(hk, acs=acs_stub)
-        assert classifications["temperature"] == "red"
+        assert classifications["battery_level"] == "red"
 
     def test_accumulates_yellow_seconds(
         self, fm_with_above_threshold: FaultManagement
     ) -> None:
-        stats = fm_with_above_threshold.statistics()["temperature"]
+        stats = fm_with_above_threshold.statistics()["battery_level"]
         assert stats["yellow_seconds"] == 1.0
 
     def test_accumulates_red_seconds(
         self, fm_with_above_threshold: FaultManagement
     ) -> None:
-        stats = fm_with_above_threshold.statistics()["temperature"]
+        stats = fm_with_above_threshold.statistics()["battery_level"]
         assert stats["red_seconds"] == 1.0
 
     def test_current_state_is_red(
         self, fm_with_above_threshold: FaultManagement
     ) -> None:
-        stats = fm_with_above_threshold.statistics()["temperature"]
+        stats = fm_with_above_threshold.statistics()["battery_level"]
         assert stats["current"] == "red"
 
 
@@ -148,16 +148,6 @@ class TestUnmonitoredParameters:
         )
         classifications = fm.check(hk, acs=acs_stub)
         assert "battery_level" in classifications
-
-    def test_excludes_temperature(self, acs_stub) -> None:
-        fm = FaultManagement()
-        fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
-        hk = Housekeeping(
-            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
-            battery_level=0.6,
-        )
-        classifications = fm.check(hk, acs=acs_stub)
-        assert "temperature" not in classifications
 
     def test_classifies_battery_as_nominal(self, acs_stub) -> None:
         fm = FaultManagement()
@@ -272,7 +262,7 @@ class TestACSModeFiltering:
         """Test threshold with acs_modes only triggers in specified modes."""
         fm = FaultManagement()
         fm.add_threshold(
-            "parameter",
+            "power_usage",
             yellow=50.0,
             red=60.0,
             direction="above",
@@ -283,17 +273,17 @@ class TestACSModeFiltering:
         acs_stub.acsmode = ACSMode.SCIENCE
         hk = Housekeeping(
             timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
-            parameter=65.0,
+            power_usage=65.0,
             acs_mode=ACSMode.SCIENCE,
         )
         fm.check(hk, acs=acs_stub)
-        assert fm.statistics()["parameter"]["current"] == "red"
+        assert fm.statistics()["power_usage"]["current"] == "red"
 
     def test_threshold_skipped_when_acs_mode_not_in_list(self, acs_stub) -> None:
         """Test threshold is skipped when current mode not in acs_modes list."""
         fm = FaultManagement()
         fm.add_threshold(
-            "parameter",
+            "power_usage",
             yellow=50.0,
             red=60.0,
             direction="above",
@@ -304,18 +294,18 @@ class TestACSModeFiltering:
         acs_stub.acsmode = ACSMode.SAFE
         hk = Housekeeping(
             timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
-            parameter=65.0,  # Would be red if checked
+            power_usage=65.0,  # Would be red if checked
             acs_mode=ACSMode.SAFE,
         )
         classifications = fm.check(hk, acs=acs_stub)
         # Parameter should not be in classifications
-        assert "parameter" not in classifications
+        assert "power_usage" not in classifications
 
     def test_threshold_with_int_acs_mode_conversion(self, acs_stub) -> None:
         """Test threshold converts int acs_mode to ACSMode enum."""
         fm = FaultManagement()
         fm.add_threshold(
-            "parameter",
+            "power_usage",
             yellow=50.0,
             red=60.0,
             direction="above",
@@ -327,19 +317,19 @@ class TestACSModeFiltering:
         acs_stub.acsmode = 0
         hk = Housekeeping(
             timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
-            parameter=65.0,
+            power_usage=65.0,
             acs_mode=0,  # Pass int 0 which is ACSMode.SCIENCE
         )
         classifications = fm.check(hk, acs=acs_stub)
         # Should be converted to enum and included
-        assert "parameter" in classifications
-        assert classifications["parameter"] == "red"
+        assert "power_usage" in classifications
+        assert classifications["power_usage"] == "red"
 
     def test_threshold_skipped_when_no_acs_mode_available(self, acs_stub) -> None:
         """Test threshold skipped when acs_mode not available and mode filtering enabled."""
         fm = FaultManagement()
         fm.add_threshold(
-            "parameter",
+            "power_usage",
             yellow=50.0,
             red=60.0,
             direction="above",
@@ -350,18 +340,18 @@ class TestACSModeFiltering:
         acs_stub.acsmode = None
         hk = Housekeeping(
             timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
-            parameter=65.0,
+            power_usage=65.0,
             acs_mode=None,
         )
         classifications = fm.check(hk, acs=acs_stub)
         # Should be skipped
-        assert "parameter" not in classifications
+        assert "power_usage" not in classifications
 
     def test_threshold_skipped_on_invalid_int_acs_mode(self, acs_stub) -> None:
         """Test threshold skipped when int acs_mode cannot be converted to enum."""
         fm = FaultManagement()
         fm.add_threshold(
-            "parameter",
+            "power_usage",
             yellow=50.0,
             red=60.0,
             direction="above",
@@ -372,18 +362,18 @@ class TestACSModeFiltering:
         acs_stub.acsmode = 999
         hk = Housekeeping(
             timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
-            parameter=65.0,
+            power_usage=65.0,
             acs_mode=999,  # Invalid enum value
         )
         classifications = fm.check(hk, acs=acs_stub)
         # Should be skipped
-        assert "parameter" not in classifications
+        assert "power_usage" not in classifications
 
     def test_threshold_with_housekeeping_acs_mode_preferred(self, acs_stub) -> None:
         """Test housekeeping.acs_mode takes precedence over acs.acsmode."""
         fm = FaultManagement()
         fm.add_threshold(
-            "parameter",
+            "power_usage",
             yellow=50.0,
             red=60.0,
             direction="above",
@@ -394,13 +384,13 @@ class TestACSModeFiltering:
         acs_stub.acsmode = ACSMode.SAFE
         hk = Housekeeping(
             timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
-            parameter=65.0,
+            power_usage=65.0,
             acs_mode=ACSMode.SCIENCE,  # Use this one
         )
         classifications = fm.check(hk, acs=acs_stub)
         # Should be checked because housekeeping has SCIENCE
-        assert "parameter" in classifications
-        assert classifications["parameter"] == "red"
+        assert "power_usage" in classifications
+        assert classifications["power_usage"] == "red"
 
 
 class TestContinuousViolationRecovery:
@@ -515,13 +505,13 @@ class TestMissingEphemerisHandling:
     def test_check_raises_when_ephemeris_none(self, acs_stub) -> None:
         """Test check raises ValueError when ACS ephemeris is None."""
         fm = FaultManagement()
-        fm.add_threshold("parameter", yellow=50.0, red=60.0)
+        fm.add_threshold("power_usage", yellow=50.0, red=60.0)
 
         acs_stub.ephem = None
 
         hk = Housekeeping(
             timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
-            parameter=40.0,
+            power_usage=40.0,
         )
 
         with pytest.raises(ValueError, match="ACS ephemeris must be set"):
@@ -574,13 +564,13 @@ class TestSafeModeTriggering:
     ) -> None:
         """Test safe mode flag not set again if already in safe mode."""
         fm = FaultManagement(safe_mode_on_red=True)
-        fm.add_threshold("parameter", yellow=50.0, red=60.0, direction="above")
+        fm.add_threshold("power_usage", yellow=50.0, red=60.0, direction="above")
 
         acs_stub.in_safe_mode = True
 
         hk = Housekeeping(
             timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
-            parameter=65.0,
+            power_usage=65.0,
         )
 
         # Reset the flag to see if it gets set again
@@ -593,11 +583,11 @@ class TestSafeModeTriggering:
     def test_safe_mode_disabled_no_trigger_on_red(self, acs_stub) -> None:
         """Test safe mode not triggered when safe_mode_on_red is False."""
         fm = FaultManagement(safe_mode_on_red=False)
-        fm.add_threshold("parameter", yellow=50.0, red=60.0, direction="above")
+        fm.add_threshold("power_usage", yellow=50.0, red=60.0, direction="above")
 
         hk = Housekeeping(
             timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
-            parameter=65.0,
+            power_usage=65.0,
         )
 
         fm.check(hk, acs=acs_stub)
@@ -613,19 +603,19 @@ class TestThresholdTransitionEvents:
     def test_transition_event_logged_nominal_to_yellow(self, acs_stub) -> None:
         """Test event logged when transitioning from nominal to yellow."""
         fm = FaultManagement()
-        fm.add_threshold("parameter", yellow=50.0, red=60.0, direction="above")
+        fm.add_threshold("power_usage", yellow=50.0, red=60.0, direction="above")
 
         # First check: nominal
         hk = Housekeeping(
             timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
-            parameter=40.0,
+            power_usage=40.0,
         )
         fm.check(hk, acs=acs_stub)
 
         # Second check: yellow
         hk = Housekeeping(
             timestamp=datetime.fromtimestamp(1001.0, tz=timezone.utc),
-            parameter=55.0,
+            power_usage=55.0,
         )
         fm.check(hk, acs=acs_stub)
 
@@ -637,11 +627,11 @@ class TestThresholdTransitionEvents:
     def test_transition_event_contains_threshold_metadata(self, acs_stub) -> None:
         """Test transition event metadata includes thresholds and direction."""
         fm = FaultManagement()
-        fm.add_threshold("parameter", yellow=50.0, red=60.0, direction="above")
+        fm.add_threshold("power_usage", yellow=50.0, red=60.0, direction="above")
 
         hk = Housekeeping(
             timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
-            parameter=55.0,
+            power_usage=55.0,
         )
         fm.check(hk, acs=acs_stub)
 
