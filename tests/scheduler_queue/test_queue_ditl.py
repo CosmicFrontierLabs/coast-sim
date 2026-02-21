@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from conops import ACSCommandType, ACSMode, Pass, QueueDITL
+from conops.config.config import MissionConfig
 from conops.ditl.telemetry import Housekeeping
 
 
