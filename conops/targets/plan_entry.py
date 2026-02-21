@@ -27,9 +27,11 @@ class PlanEntry(BaseModel):
     roll: float = -1.0
     begin: float = 0.0
     end: float = 0.0
-    windows: list[list[float]] = Field(default_factory=list)
+    windows: list[list[float]] = Field(default_factory=list, exclude=True)
     merit: float = 101.0
-    slewpath: tuple[list[float], list[float]] = Field(default_factory=lambda: ([], []))
+    slewpath: tuple[list[float], list[float]] = Field(
+        default_factory=lambda: ([], []), exclude=True
+    )
     slewtime: int = 0
     insaa: int = 0
     obsid: int = 0
