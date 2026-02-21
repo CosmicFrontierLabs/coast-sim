@@ -599,7 +599,6 @@ class FaultManagement(BaseModel):
             raise ValueError(
                 f"Threshold name '{name}' is not a valid Housekeeping attribute. "
                 f"Valid predefined fields are: {sorted(valid_housekeeping_fields)}. "
-                f"For custom fields, names must be valid Python identifiers."
             )
 
         self.thresholds.append(
