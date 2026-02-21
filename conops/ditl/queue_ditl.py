@@ -374,6 +374,9 @@ class QueueDITL(DITLMixin, DITLStats):
         if not self._setup_simulation_timing():
             return False
 
+        # Precompute eclipse status for all timesteps (single batch call)
+        self.constraint.precompute_eclipse(self.utime, self.step_size)
+
         # Schedule groundstation passes (these will be queued in ACS)
         self._schedule_groundstation_passes()
 

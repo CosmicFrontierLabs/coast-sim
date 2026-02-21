@@ -198,10 +198,51 @@ class Constraint(BaseModel):
 
     def in_eclipse(self, ra: float, dec: float, time: float) -> bool:
         assert self.ephem is not None, "Ephemeris must be set to use in_eclipse method"
+        # Check precomputed cache first (keyed by rounded time)
+        if hasattr(self, "_eclipse_precomputed") and self._eclipse_precomputed:
+            time_key = int(time)  # Round to nearest second
+            if time_key in self._eclipse_precomputed:
+                return self._eclipse_precomputed[time_key]
         # Eclipse constraint is special - create once and cache
         if not hasattr(self, "_eclipse_constraint"):
             self._eclipse_constraint = rust_ephem.EclipseConstraint()
         return self._cached_check("eclipse", ra, dec, time, self._eclipse_constraint)
+
+    def precompute_eclipse(self, utimes: list[float], step_size: float) -> None:
+        """Precompute eclipse status for all simulation timesteps.
+
+        Since eclipse depends only on orbital position (not pointing direction),
+        we can batch-compute it once at simulation start.
+
+        Args:
+            utimes: List of unix timestamps for simulation
+            step_size: Time step in seconds (for cache key rounding)
+        """
+        if self.ephem is None or not utimes:
+            return
+
+        # Ensure eclipse constraint exists
+        if not hasattr(self, "_eclipse_constraint"):
+            self._eclipse_constraint = rust_ephem.EclipseConstraint()
+
+        # Convert to datetime objects for batch API
+        times = [dtutcfromtimestamp(t) for t in utimes]
+
+        # Batch compute - use dummy RA/Dec since eclipse is position-only
+        result = self._eclipse_constraint.in_constraint_batch(
+            ephemeris=self.ephem,
+            target_ras=[0.0],
+            target_decs=[0.0],
+            times=times,
+        )
+        # Result shape is (1, n_times), flatten
+        eclipse_flags = np.asarray(result).flatten()
+
+        # Store in dict keyed by rounded time
+        self._eclipse_precomputed: dict[int, bool] = {}
+        for utime, is_eclipsed in zip(utimes, eclipse_flags):
+            time_key = int(utime)
+            self._eclipse_precomputed[time_key] = bool(is_eclipsed)
 
     def in_moon(self, ra: float, dec: float, time: float) -> bool:
         assert self.ephem is not None, "Ephemeris must be set to use in_moon method"
@@ -289,3 +330,86 @@ class Constraint(BaseModel):
         if self.in_earth(ra, dec, utime):
             count += 2
         return count
+
+    def first_constraint_violation(
+        self,
+        ra: float,
+        dec: float,
+        start_utime: float,
+        end_utime: float,
+        step_size: float,
+    ) -> float | None:
+        """Find the first time a constraint is violated using batch evaluation.
+
+        Computes constraint violations for all timesteps in a single batch call
+        to the Rust constraint evaluator, which is much faster than repeated
+        scalar calls.
+
+        Note: The generated timesteps start from start_utime and must align with
+        ephemeris timestamps. If start_utime is not on the ephemeris grid, the
+        batch API will raise ValueError.
+
+        Args:
+            ra: Right ascension in degrees
+            dec: Declination in degrees
+            start_utime: Start time as Unix timestamp (must align with ephemeris)
+            end_utime: End time as Unix timestamp
+            step_size: Time step in seconds
+
+        Returns:
+            Unix timestamp of first violation, or None if no violations occur.
+        """
+        if self.ephem is None:
+            return None
+
+        # Clamp end_utime to ephemeris coverage
+        ephem_end = self.ephem.end.timestamp()
+        end_utime = min(end_utime, ephem_end)
+
+        # Generate timesteps
+        n_steps = int((end_utime - start_utime) / step_size) + 1
+        if n_steps <= 0:
+            return None
+
+        utimes = [start_utime + i * step_size for i in range(n_steps)]
+        # Ensure we don't exceed ephemeris bounds
+        utimes = [t for t in utimes if t <= ephem_end]
+        if not utimes:
+            return None
+
+        times = [dtutcfromtimestamp(t) for t in utimes]
+
+        # Use combined constraint for batch evaluation
+        # Each constraint type needs to be checked; OR them together
+        violations = None
+        constraint_types = [
+            self.sun_constraint,
+            self.earth_constraint,
+            self.panel_constraint,
+            self.moon_constraint,
+            self.anti_sun_constraint,
+        ]
+
+        for constraint_func in constraint_types:
+            result = constraint_func.in_constraint_batch(
+                ephemeris=self.ephem,
+                target_ras=[ra],
+                target_decs=[dec],
+                times=times,
+            )
+            # Result shape is (1, n_times), flatten to (n_times,)
+            result_flat = np.asarray(result).flatten()
+            if violations is None:
+                violations = result_flat
+            else:
+                violations = violations | result_flat
+
+        if violations is None:
+            return None
+
+        # Find first True value
+        violation_indices = np.where(violations)[0]
+        if len(violation_indices) == 0:
+            return None
+
+        return float(utimes[int(violation_indices[0])])
