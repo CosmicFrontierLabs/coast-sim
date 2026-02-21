@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from conops import ACSCommandType, ACSMode, Pass, QueueDITL
+from conops.ditl.telemetry import Housekeeping
 
 
 class TestQueueDITLInitialization:
@@ -1052,6 +1053,36 @@ class TestCalcMethod:
         call_args = queue_ditl.acs.enqueue_command.call_args
         command = call_args[0][0]
         assert command.command_type == ACSCommandType.ENTER_SAFE_MODE
+
+    def test_create_housekeeping_record_uses_current_state(self, queue_ditl) -> None:
+        """Housekeeping helper should capture post-update recorder values."""
+        queue_ditl.panel = [0.75]
+        queue_ditl.power = [80.0]
+        queue_ditl.power_bus = [50.0]
+        queue_ditl.power_payload = [30.0]
+        queue_ditl.obsid = [1001]
+        queue_ditl.battery.battery_level = 0.82
+        queue_ditl.battery.charge_state = 1
+        queue_ditl.battery.battery_alert = 0
+
+        queue_ditl.recorder.current_volume_gb = 12.5
+        queue_ditl.recorder.get_fill_fraction = Mock(return_value=0.92)
+        queue_ditl.recorder.get_alert_level = Mock(return_value=2)
+
+        hk = queue_ditl._create_housekeeping_record(
+            utime=1000.0,
+            ra=45.0,
+            dec=30.0,
+            roll=10.0,
+            mode=ACSMode.SCIENCE,
+        )
+
+        assert isinstance(hk, Housekeeping)
+        assert hk.panel_illumination == 0.75
+        assert hk.power_usage == 80.0
+        assert hk.recorder_volume_gb == 12.5
+        assert hk.recorder_fill_fraction == 0.92
+        assert hk.recorder_alert == 2
 
     def test_track_ppt_in_timeline_closes_placeholder_end_times(
         self, queue_ditl
