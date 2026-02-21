@@ -35,8 +35,6 @@ class Housekeeping(BaseModel):
         in_eclipse: Whether spacecraft is in eclipse
     """
 
-    model_config = ConfigDict(extra="allow")
-
     timestamp: datetime = Field(description="UTC timestamp")
     ra: float | None = Field(default=None, description="Right ascension in degrees")
     dec: float | None = Field(default=None, description="Declination in degrees")

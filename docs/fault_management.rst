@@ -15,7 +15,7 @@ Key Features
 * **Bidirectional thresholds**: Support for both "below" and "above" threshold types
 * **Time tracking**: Accumulate duration spent in yellow and red states, or in constraint violations
 * **Automatic safe mode**: Trigger irreversible safe mode on RED conditions or sustained constraint violations
-* **Extensible architecture**: Easily add new monitored parameters or constraints
+* **Schema-validated thresholds**: Threshold names must match predefined ``Housekeeping`` fields
 
 Configuration
 -------------
@@ -36,15 +36,15 @@ Create and configure fault management using the ``FaultManagement`` class:
 
    # Add parameter thresholds
    fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
-   fm.add_threshold("temperature", yellow=50.0, red=60.0, direction="above")
-   fm.add_threshold("power_draw", yellow=450.0, red=500.0, direction="above")
+    fm.add_threshold("power_usage", yellow=450.0, red=500.0, direction="above")
+    fm.add_threshold("recorder_fill_fraction", yellow=0.8, red=0.95, direction="above")
 
-   # Add mode-specific threshold (star trackers only matter in SCIENCE mode)
+   # Add mode-specific threshold (power usage only checked in SCIENCE mode)
    fm.add_threshold(
-       "star_tracker_functional_count",
-       yellow=2.0,
-       red=1.0,
-       direction="below",
+       "power_usage",
+       yellow=450.0,
+       red=500.0,
+       direction="above",
        acs_modes=[ACSMode.SCIENCE]
    )
 
@@ -90,8 +90,8 @@ ACS Mode Filtering
 Thresholds can be restricted to specific Attitude Control System (ACS) modes using the ``acs_modes`` parameter. This allows different fault policies for different operational modes.
 
 For example:
-- Only check star tracker count during SCIENCE mode (when precision pointing matters)
-- Check thermal limits in all modes except SAFE mode (thermal control always matters)
+- Only check high power draw during SCIENCE mode
+- Check recorder fill level in all modes except SAFE mode
 - Monitor battery level in all modes (default behavior)
 
 Programmatic Configuration with ACS Modes:
@@ -106,23 +106,31 @@ Programmatic Configuration with ACS Modes:
    # Check battery in all modes (default)
    fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
 
-   # Only check star trackers during science operations
+   # Only check high power usage during science operations
    fm.add_threshold(
-       "star_tracker_functional_count",
-       yellow=2.0,
-       red=1.0,
-       direction="below",
+       "power_usage",
+       yellow=450.0,
+       red=500.0,
+       direction="above",
        acs_modes=[ACSMode.SCIENCE]
    )
 
-   # Check thermal limits in multiple modes
+   # Check recorder fill limits in multiple modes
    fm.add_threshold(
-       "temperature",
-       yellow=50.0,
-       red=60.0,
+       "recorder_fill_fraction",
+       yellow=0.8,
+       red=0.95,
        direction="above",
        acs_modes=[ACSMode.SCIENCE, ACSMode.SLEW, ACSMode.SETTLE]
    )
+
+Valid threshold names are the predefined ``Housekeeping`` fields. Commonly used fields include:
+
+* ``battery_level``
+* ``power_usage`` / ``power_bus`` / ``power_payload``
+* ``panel_illumination``
+* ``recorder_fill_fraction`` / ``recorder_alert``
+* ``sun_angle_deg``
 
 During fault checking, the current ACS mode is determined from:
 1. ``housekeeping.acs_mode`` (preferred)
@@ -195,15 +203,15 @@ Creating Fault Management
 
    # Add thresholds programmatically
    fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
-   fm.add_threshold("temperature", yellow=50.0, red=60.0, direction="above")
-   fm.add_threshold("power_draw", yellow=450.0, red=500.0, direction="above")
+    fm.add_threshold("power_usage", yellow=450.0, red=500.0, direction="above")
+    fm.add_threshold("recorder_fill_fraction", yellow=0.8, red=0.95, direction="above")
 
-   # Add mode-specific threshold (star trackers only matter in SCIENCE mode)
+   # Add mode-specific threshold
    fm.add_threshold(
-       "star_tracker_functional_count",
-       yellow=2.0,
-       red=1.0,
-       direction="below",
+       "power_usage",
+       yellow=450.0,
+       red=500.0,
+       direction="above",
        acs_modes=[ACSMode.SCIENCE]
    )
 
@@ -244,8 +252,8 @@ Call ``check()`` each simulation cycle to evaluate monitored parameters and red 
    hk = Housekeeping(
        timestamp=datetime.now(tz=timezone.utc),
        battery_level=battery.battery_level,
-       temperature=thermal.current_temp,
-       power_draw=power_system.total_draw,
+       power_usage=power_system.total_draw,
+       recorder_fill_fraction=data_system.buffer_usage_fraction,
        ra=current_pointing_ra,
        dec=current_pointing_dec,
        acs_mode=spacecraft_acs.acsmode
@@ -254,7 +262,7 @@ Call ``check()`` each simulation cycle to evaluate monitored parameters and red 
    # Check parameters and constraints
    classifications = fm.check(housekeeping=hk, acs=spacecraft_acs)
 
-   # classifications = {"battery_level": "yellow", "temperature": "nominal", ...}
+   # classifications = {"battery_level": "yellow", "power_usage": "nominal", ...}
    # Red limit constraints are checked automatically using housekeeping data
 
 Retrieving Statistics
@@ -273,7 +281,7 @@ Get accumulated time in each fault state and constraint violation statistics:
    #         "red_seconds": 0.0,
    #         "current": "yellow"
    #     },
-   #     "temperature": {
+    #     "power_usage": {
    #         "yellow_seconds": 45.0,
    #         "red_seconds": 30.0,
    #         "current": "red"
@@ -371,8 +379,8 @@ Complete example configurations are available in:
 The threshold-based example demonstrates monitoring of:
 
 * **battery_level**: Warning at 50%, critical at 40%
-* **temperature**: Warning at 50°C, critical at 60°C
-* **power_draw**: Warning at 450W, critical at 500W
+* **power_usage**: Warning at 450W, critical at 500W
+* **recorder_fill_fraction**: Warning at 80%, critical at 95%
 
 The red limit example demonstrates spacecraft health and safety constraints:
 
@@ -409,33 +417,12 @@ Filtering events:
 
 The event log is append-only for the duration of a simulation; clear with ``fm.events.clear()`` if needed between runs.
 
-Adding Custom Parameters
-------------------------
+Housekeeping Schema and New Metrics
+-----------------------------------
 
-To monitor additional parameters:
+Threshold names must match predefined ``Housekeeping`` fields.
 
-1. Add threshold to configuration (JSON or programmatically)
-2. Include parameter value in ``Housekeeping`` telemetry packet
-3. System automatically tracks state and accumulates duration
-
-Example - monitoring data buffer usage:
-
-.. code-block:: python
-
-   # Add threshold
-   fm.add_threshold("data_buffer", yellow=0.8, red=0.95, direction="above")
-
-   # Create housekeeping with custom parameter
-   hk = Housekeeping(
-       timestamp=datetime.now(tz=timezone.utc),
-       battery_level=battery.battery_level,
-       data_buffer=data_system.buffer_usage_fraction,  # Custom parameter
-       ra=current_ra,
-       dec=current_dec
-   )
-
-   # Check in simulation loop
-   classifications = fm.check(housekeeping=hk, acs=acs)
+If you need to monitor a new metric, first add it to the ``Housekeeping`` model in code, then add thresholds for that new field. Arbitrary extra fields in ``Housekeeping(...)`` are not accepted.
 
 API Reference
 -------------
@@ -466,8 +453,8 @@ ACS Mode Filtering
 ^^^^^^^^^^^^^^^^^^^
 
 * **Mode-appropriate monitoring**: Use ``acs_modes`` to check parameters only when they matter operationally
-* **Precision requirements**: Only monitor high-precision parameters (star trackers, fine pointing) during SCIENCE mode
-* **Thermal safety**: Check thermal limits in all modes except SAFE (thermal control is always critical)
+* **Operational focus**: Monitor high power usage during SCIENCE mode when needed
+* **Data safety**: Check recorder fill limits in operational modes where data accumulation matters
 * **Power monitoring**: Monitor battery levels in all modes (power is always critical)
 * **Test mode transitions**: Verify thresholds behave correctly during mode changes
 
@@ -475,4 +462,4 @@ General
 ^^^^^^^
 
 * **Safe mode policy**: Consider setting ``safe_mode_on_red: false`` for analysis runs where you want to observe fault behavior without intervention
-* **Separate concerns**: Use thresholds for subsystem health (battery, temperature), red limits for pointing safety
+* **Separate concerns**: Use thresholds for subsystem health (battery, power, recorder fill), red limits for pointing safety
