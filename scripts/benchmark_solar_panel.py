@@ -11,6 +11,7 @@ Usage:
 
 import time
 from datetime import datetime, timedelta
+from typing import Any
 
 from rust_ephem import TLEEphemeris
 
@@ -28,7 +29,7 @@ def create_test_panel_set() -> SolarPanelSet:
     return SolarPanelSet(panels=panels)
 
 
-def run_benchmark(num_timesteps: int = 4320) -> dict:
+def run_benchmark(num_timesteps: int = 4320) -> dict[str, Any]:
     """Run A/B benchmark comparing old loop vs new vectorized implementation.
 
     Args:
@@ -90,11 +91,11 @@ def run_benchmark(num_timesteps: int = 4320) -> dict:
 
     start = time.perf_counter()
     for t in timesteps:
-        illum, power = panel_set_new.illumination_and_power(
+        illum_new, power_new = panel_set_new.illumination_and_power(
             time=t, ra=ra, dec=dec, ephem=ephem
         )
-        new_illum_total += illum
-        new_power_total += power
+        new_illum_total += float(illum_new)
+        new_power_total += float(power_new)
     elapsed_new = time.perf_counter() - start
 
     # =========================================================================

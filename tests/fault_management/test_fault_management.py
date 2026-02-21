@@ -89,7 +89,7 @@ class TestMultipleCycles:
 
 
 class TestAboveThreshold:
-    def test_classifies_nominal(self, acs_stub) -> None:
+    def test_classifies_nominal(self, acs_stub: Mock) -> None:
         fm = FaultManagement()
         fm.add_threshold("battery_level", yellow=50.0, red=60.0, direction="above")
         hk = Housekeeping(
@@ -99,7 +99,7 @@ class TestAboveThreshold:
         classifications = fm.check(hk, acs=acs_stub)
         assert classifications["battery_level"] == "nominal"
 
-    def test_classifies_yellow(self, acs_stub) -> None:
+    def test_classifies_yellow(self, acs_stub: Mock) -> None:
         fm = FaultManagement()
         fm.add_threshold("battery_level", yellow=50.0, red=60.0, direction="above")
         hk = Housekeeping(
@@ -109,7 +109,7 @@ class TestAboveThreshold:
         classifications = fm.check(hk, acs=acs_stub)
         assert classifications["battery_level"] == "yellow"
 
-    def test_classifies_red(self, acs_stub) -> None:
+    def test_classifies_red(self, acs_stub: Mock) -> None:
         fm = FaultManagement()
         fm.add_threshold("battery_level", yellow=50.0, red=60.0, direction="above")
         hk = Housekeeping(
@@ -139,7 +139,7 @@ class TestAboveThreshold:
 
 
 class TestUnmonitoredParameters:
-    def test_includes_battery_level(self, acs_stub) -> None:
+    def test_includes_battery_level(self, acs_stub: Mock) -> None:
         fm = FaultManagement()
         fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
         hk = Housekeeping(
@@ -149,7 +149,7 @@ class TestUnmonitoredParameters:
         classifications = fm.check(hk, acs=acs_stub)
         assert "battery_level" in classifications
 
-    def test_classifies_battery_as_nominal(self, acs_stub) -> None:
+    def test_classifies_battery_as_nominal(self, acs_stub: Mock) -> None:
         fm = FaultManagement()
         fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
         hk = Housekeeping(
@@ -258,7 +258,7 @@ class TestFaultEventStringRepresentation:
 class TestACSModeFiltering:
     """Test ACS mode-specific threshold checking."""
 
-    def test_threshold_with_acs_modes_filter(self, acs_stub) -> None:
+    def test_threshold_with_acs_modes_filter(self, acs_stub: Mock) -> None:
         """Test threshold with acs_modes only triggers in specified modes."""
         fm = FaultManagement()
         fm.add_threshold(
@@ -279,7 +279,7 @@ class TestACSModeFiltering:
         fm.check(hk, acs=acs_stub)
         assert fm.statistics()["power_usage"]["current"] == "red"
 
-    def test_threshold_skipped_when_acs_mode_not_in_list(self, acs_stub) -> None:
+    def test_threshold_skipped_when_acs_mode_not_in_list(self, acs_stub: Mock) -> None:
         """Test threshold is skipped when current mode not in acs_modes list."""
         fm = FaultManagement()
         fm.add_threshold(
@@ -301,7 +301,7 @@ class TestACSModeFiltering:
         # Parameter should not be in classifications
         assert "power_usage" not in classifications
 
-    def test_threshold_with_int_acs_mode_conversion(self, acs_stub) -> None:
+    def test_threshold_with_int_acs_mode_conversion(self, acs_stub: Mock) -> None:
         """Test threshold converts int acs_mode to ACSMode enum."""
         fm = FaultManagement()
         fm.add_threshold(
@@ -325,7 +325,7 @@ class TestACSModeFiltering:
         assert "power_usage" in classifications
         assert classifications["power_usage"] == "red"
 
-    def test_threshold_skipped_when_no_acs_mode_available(self, acs_stub) -> None:
+    def test_threshold_skipped_when_no_acs_mode_available(self, acs_stub: Mock) -> None:
         """Test threshold skipped when acs_mode not available and mode filtering enabled."""
         fm = FaultManagement()
         fm.add_threshold(
@@ -347,7 +347,7 @@ class TestACSModeFiltering:
         # Should be skipped
         assert "power_usage" not in classifications
 
-    def test_threshold_skipped_on_invalid_int_acs_mode(self, acs_stub) -> None:
+    def test_threshold_skipped_on_invalid_int_acs_mode(self, acs_stub: Mock) -> None:
         """Test threshold skipped when int acs_mode cannot be converted to enum."""
         fm = FaultManagement()
         fm.add_threshold(
@@ -369,7 +369,9 @@ class TestACSModeFiltering:
         # Should be skipped
         assert "power_usage" not in classifications
 
-    def test_threshold_with_housekeeping_acs_mode_preferred(self, acs_stub) -> None:
+    def test_threshold_with_housekeeping_acs_mode_preferred(
+        self, acs_stub: Mock
+    ) -> None:
         """Test housekeeping.acs_mode takes precedence over acs.acsmode."""
         fm = FaultManagement()
         fm.add_threshold(
@@ -392,11 +394,7 @@ class TestACSModeFiltering:
         assert "power_usage" in classifications
         assert classifications["power_usage"] == "red"
 
-
-class TestContinuousViolationRecovery:
-    """Test continuous violation time reset on constraint recovery."""
-
-    def test_continuous_violation_accumulates(self, acs_stub) -> None:
+    def test_continuous_violation_accumulates(self, acs_stub: Mock) -> None:
         """Test continuous violation time accumulates while in violation."""
         fm = FaultManagement()
         constraint = Mock(spec=rust_ephem.SunConstraint)
@@ -422,7 +420,7 @@ class TestContinuousViolationRecovery:
         stats = fm.statistics()["sun_limit"]
         assert stats["continuous_violation_seconds"] == pytest.approx(180.0)
 
-    def test_continuous_violation_resets_on_recovery(self, acs_stub) -> None:
+    def test_continuous_violation_resets_on_recovery(self, acs_stub: Mock) -> None:
         """Test continuous violation time resets when constraint is satisfied."""
         fm = FaultManagement()
         constraint = Mock(spec=rust_ephem.SunConstraint)
@@ -461,7 +459,7 @@ class TestContinuousViolationRecovery:
         # Total red_seconds should remain
         assert stats["red_seconds"] == pytest.approx(60.0)
 
-    def test_constraint_violation_cleared_event_logged(self, acs_stub) -> None:
+    def test_constraint_violation_cleared_event_logged(self, acs_stub: Mock) -> None:
         """Test event is logged when constraint violation is cleared."""
         fm = FaultManagement()
         constraint = Mock(spec=rust_ephem.SunConstraint)
@@ -502,7 +500,7 @@ class TestContinuousViolationRecovery:
 class TestMissingEphemerisHandling:
     """Test handling of missing ephemeris."""
 
-    def test_check_raises_when_ephemeris_none(self, acs_stub) -> None:
+    def test_check_raises_when_ephemeris_none(self, acs_stub: Mock) -> None:
         """Test check raises ValueError when ACS ephemeris is None."""
         fm = FaultManagement()
         fm.add_threshold("power_usage", yellow=50.0, red=60.0)
@@ -521,7 +519,7 @@ class TestMissingEphemerisHandling:
 class TestMultipleConstraintHandling:
     """Test handling of multiple red limit constraints."""
 
-    def test_no_constraints_checks_thresholds_only(self, acs_stub) -> None:
+    def test_no_constraints_checks_thresholds_only(self, acs_stub: Mock) -> None:
         """Test without constraints, only thresholds are checked."""
         fm = FaultManagement()
         fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
@@ -534,7 +532,7 @@ class TestMultipleConstraintHandling:
         classifications = fm.check(hk, acs=acs_stub)
         assert "battery_level" in classifications
 
-    def test_early_exit_when_no_ephemeris_for_constraints(self, acs_stub) -> None:
+    def test_early_exit_when_no_ephemeris_for_constraints(self, acs_stub: Mock) -> None:
         """Test constraint checking skipped when ephem/ra/dec not available."""
         fm = FaultManagement()
         constraint = rust_ephem.SunConstraint(min_angle=30.0)
@@ -560,7 +558,7 @@ class TestSafeModeTriggering:
     """Test safe mode trigger conditions."""
 
     def test_safe_mode_not_retriggered_when_already_in_safe_mode(
-        self, acs_stub
+        self, acs_stub: Mock
     ) -> None:
         """Test safe mode flag not set again if already in safe mode."""
         fm = FaultManagement(safe_mode_on_red=True)
@@ -580,7 +578,7 @@ class TestSafeModeTriggering:
         # Should not set flag since already in safe mode
         assert not fm.safe_mode_requested
 
-    def test_safe_mode_disabled_no_trigger_on_red(self, acs_stub) -> None:
+    def test_safe_mode_disabled_no_trigger_on_red(self, acs_stub: Mock) -> None:
         """Test safe mode not triggered when safe_mode_on_red is False."""
         fm = FaultManagement(safe_mode_on_red=False)
         fm.add_threshold("power_usage", yellow=50.0, red=60.0, direction="above")
@@ -596,7 +594,9 @@ class TestSafeModeTriggering:
         safe_mode_events = [e for e in fm.events if e.event_type == "safe_mode_trigger"]
         assert len(safe_mode_events) == 0
 
-    def test_safe_mode_not_retriggered_when_already_requested(self, acs_stub) -> None:
+    def test_safe_mode_not_retriggered_when_already_requested(
+        self, acs_stub: Mock
+    ) -> None:
         """Test safe mode not triggered again if already requested."""
         fm = FaultManagement(safe_mode_on_red=True)
         fm.add_threshold("power_usage", yellow=50.0, red=60.0, direction="above")
@@ -629,7 +629,7 @@ class TestSafeModeTriggering:
 class TestThresholdTransitionEvents:
     """Test event logging for threshold transitions."""
 
-    def test_transition_event_logged_nominal_to_yellow(self, acs_stub) -> None:
+    def test_transition_event_logged_nominal_to_yellow(self, acs_stub: Mock) -> None:
         """Test event logged when transitioning from nominal to yellow."""
         fm = FaultManagement()
         fm.add_threshold("power_usage", yellow=50.0, red=60.0, direction="above")
@@ -653,7 +653,7 @@ class TestThresholdTransitionEvents:
         assert "nominal" in transitions[0].cause
         assert "yellow" in transitions[0].cause
 
-    def test_transition_event_contains_threshold_metadata(self, acs_stub) -> None:
+    def test_transition_event_contains_threshold_metadata(self, acs_stub: Mock) -> None:
         """Test transition event metadata includes thresholds and direction."""
         fm = FaultManagement()
         fm.add_threshold("power_usage", yellow=50.0, red=60.0, direction="above")
@@ -676,7 +676,7 @@ class TestConstraintViolationTimeThreshold:
     """Test constraint violation exceeding time threshold triggering safe mode."""
 
     def test_constraint_violation_exceeds_time_threshold_triggers_safe_mode(
-        self, acs_stub
+        self, acs_stub: Mock
     ) -> None:
         """Test safe mode triggered when constraint violation exceeds time threshold."""
         fm = FaultManagement(safe_mode_on_red=True)
@@ -717,3 +717,287 @@ class TestConstraintViolationTimeThreshold:
         safe_mode_events = [e for e in fm.events if e.event_type == "safe_mode_trigger"]
         assert len(safe_mode_events) > 0
         assert "exceeded time threshold" in safe_mode_events[0].cause
+
+
+class TestACSModeFilteringEdgeCases:
+    """Comprehensive edge case tests for ACS mode filtering during fault accumulation."""
+
+    def test_mode_transition_during_fault_accumulation(
+        self, acs_stub_60s: Mock
+    ) -> None:
+        """Test that mode transitions during fault accumulation work correctly."""
+        fm = FaultManagement()
+        fm.add_threshold(
+            "battery_level",
+            yellow=50.0,
+            red=60.0,
+            direction="above",
+            acs_modes=[ACSMode.SCIENCE],
+        )
+
+        # Start in SCIENCE mode - should accumulate faults
+        acs_stub_60s.acsmode = ACSMode.SCIENCE
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
+            battery_level=55.0,  # Yellow threshold
+        )
+        fm.check(hk, acs=acs_stub_60s)
+
+        # Transition to SLEWING mode - should not accumulate faults
+        acs_stub_60s.acsmode = ACSMode.SLEWING
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(
+                1060.0, tz=timezone.utc
+            ),  # 60 seconds later
+            battery_level=55.0,
+        )
+        fm.check(hk, acs=acs_stub_60s)
+
+        # Back to SCIENCE mode - should resume accumulation
+        acs_stub_60s.acsmode = ACSMode.SCIENCE
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(
+                1120.0, tz=timezone.utc
+            ),  # Another 60 seconds
+            battery_level=55.0,
+        )
+        fm.check(hk, acs=acs_stub_60s)
+
+        stats = fm.statistics()["battery_level"]
+        assert stats["yellow_seconds"] == pytest.approx(120.0)  # 60 + 60 seconds
+
+    def test_mode_transition_from_filtered_to_unfiltered(
+        self, acs_stub_60s: Mock
+    ) -> None:
+        """Test transition from filtered mode to unfiltered mode during fault."""
+        fm = FaultManagement()
+        fm.add_threshold(
+            "battery_level",
+            yellow=50.0,
+            red=60.0,
+            direction="above",
+            acs_modes=[ACSMode.SCIENCE],
+        )
+
+        # Start in SLEWING mode (filtered) - no accumulation
+        acs_stub_60s.acsmode = ACSMode.SLEWING
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
+            battery_level=55.0,
+        )
+        fm.check(hk, acs=acs_stub_60s)
+
+        # Transition to SCIENCE mode - should start accumulating
+        acs_stub_60s.acsmode = ACSMode.SCIENCE
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1060.0, tz=timezone.utc),
+            battery_level=55.0,
+        )
+        fm.check(hk, acs=acs_stub_60s)
+
+        stats = fm.statistics()["battery_level"]
+        assert stats["yellow_seconds"] == pytest.approx(60.0)
+
+    def test_multiple_mode_transitions_during_accumulation(
+        self, acs_stub_60s: Mock
+    ) -> None:
+        """Test multiple mode transitions during fault accumulation period."""
+        fm = FaultManagement()
+        fm.add_threshold(
+            "battery_level",
+            yellow=50.0,
+            red=60.0,
+            direction="above",
+            acs_modes=[ACSMode.SCIENCE, ACSMode.SLEWING],
+        )
+
+        # SCIENCE mode - accumulate
+        acs_stub_60s.acsmode = ACSMode.SCIENCE
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
+            battery_level=55.0,
+        )
+        fm.check(hk, acs=acs_stub_60s)
+
+        # SLEWING mode - accumulate
+        acs_stub_60s.acsmode = ACSMode.SLEWING
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1060.0, tz=timezone.utc),
+            battery_level=55.0,
+        )
+        fm.check(hk, acs=acs_stub_60s)
+
+        # SAA mode - no accumulation
+        acs_stub_60s.acsmode = ACSMode.SAA
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1120.0, tz=timezone.utc),
+            battery_level=55.0,
+        )
+        fm.check(hk, acs=acs_stub_60s)
+
+        # Back to SCIENCE - accumulate
+        acs_stub_60s.acsmode = ACSMode.SCIENCE
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1180.0, tz=timezone.utc),
+            battery_level=55.0,
+        )
+        fm.check(hk, acs=acs_stub_60s)
+
+        stats = fm.statistics()["battery_level"]
+        assert stats["yellow_seconds"] == pytest.approx(180.0)  # 60 + 60 + 60 seconds
+
+    def test_fault_accumulation_boundary_at_mode_transition(
+        self, acs_stub_60s: Mock
+    ) -> None:
+        """Test fault accumulation behavior exactly at mode transition boundaries."""
+        fm = FaultManagement()
+        fm.add_threshold(
+            "battery_level",
+            yellow=50.0,
+            red=60.0,
+            direction="above",
+            acs_modes=[ACSMode.SCIENCE],
+        )
+
+        # SCIENCE mode - accumulate to near threshold
+        acs_stub_60s.acsmode = ACSMode.SCIENCE
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
+            battery_level=55.0,
+        )
+        fm.check(hk, acs=acs_stub_60s)
+
+        # Transition to filtered mode at exact boundary
+        acs_stub_60s.acsmode = ACSMode.SLEWING
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1060.0, tz=timezone.utc),
+            battery_level=55.0,
+        )
+        fm.check(hk, acs=acs_stub_60s)
+
+        # Stay in filtered mode - no additional accumulation
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1120.0, tz=timezone.utc),
+            battery_level=55.0,
+        )
+        fm.check(hk, acs=acs_stub_60s)
+
+        stats = fm.statistics()["battery_level"]
+        assert stats["yellow_seconds"] == pytest.approx(60.0)  # Only first cycle
+
+    def test_red_threshold_trigger_during_mode_transition(
+        self, acs_stub_60s: Mock
+    ) -> None:
+        """Test red threshold trigger during mode transition."""
+        fm = FaultManagement(safe_mode_on_red=True)
+        fm.add_threshold(
+            "battery_level",
+            yellow=50.0,
+            red=60.0,
+            direction="above",
+            acs_modes=[ACSMode.SCIENCE],
+        )
+
+        # SCIENCE mode - accumulate yellow
+        acs_stub_60s.acsmode = ACSMode.SCIENCE
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
+            battery_level=55.0,
+        )
+        fm.check(hk, acs=acs_stub_60s)
+
+        # Transition to SLEWING - no accumulation
+        acs_stub_60s.acsmode = ACSMode.SLEWING
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1060.0, tz=timezone.utc),
+            battery_level=65.0,  # Red threshold
+        )
+        fm.check(hk, acs=acs_stub_60s)
+
+        # Back to SCIENCE - should trigger red
+        acs_stub_60s.acsmode = ACSMode.SCIENCE
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1120.0, tz=timezone.utc),
+            battery_level=65.0,
+        )
+        fm.check(hk, acs=acs_stub_60s)
+
+        assert fm.safe_mode_requested
+        stats = fm.statistics()["battery_level"]
+        assert stats["red_seconds"] == pytest.approx(60.0)
+
+    def test_mode_filtering_with_multiple_thresholds(self, acs_stub_60s: Mock) -> None:
+        """Test mode filtering with multiple thresholds having different mode filters."""
+        fm = FaultManagement()
+        # Battery threshold only for SCIENCE mode
+        fm.add_threshold(
+            "battery_level",
+            yellow=50.0,
+            red=60.0,
+            direction="above",
+            acs_modes=[ACSMode.SCIENCE],
+        )
+        # Power threshold for all modes
+        fm.add_threshold("power_usage", yellow=40.0, red=50.0, direction="above")
+
+        acs_stub_60s.acsmode = ACSMode.SCIENCE
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
+            battery_level=55.0,  # Yellow for battery in SCIENCE
+            power_usage=45.0,  # Yellow for power in any mode
+        )
+        fm.check(hk, acs=acs_stub_60s)
+
+        # Switch to SLEWING - battery should not accumulate, power should
+        acs_stub_60s.acsmode = ACSMode.SLEWING
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1060.0, tz=timezone.utc),
+            battery_level=55.0,
+            power_usage=45.0,
+        )
+        fm.check(hk, acs=acs_stub_60s)
+
+        battery_stats = fm.statistics()["battery_level"]
+        power_stats = fm.statistics()["power_usage"]
+
+        assert battery_stats["yellow_seconds"] == pytest.approx(
+            60.0
+        )  # Only first cycle
+        assert power_stats["yellow_seconds"] == pytest.approx(120.0)  # Both cycles
+
+    def test_mode_transition_at_exact_fault_boundary(self, acs_stub_60s: Mock) -> None:
+        """Test mode transition exactly when fault condition starts/stops."""
+        fm = FaultManagement()
+        fm.add_threshold(
+            "battery_level",
+            yellow=50.0,
+            red=60.0,
+            direction="above",
+            acs_modes=[ACSMode.SCIENCE],
+        )
+
+        # Normal operation
+        acs_stub_60s.acsmode = ACSMode.SCIENCE
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
+            battery_level=40.0,  # Normal
+        )
+        fm.check(hk, acs=acs_stub_60s)
+
+        # Fault starts - transition to filtered mode simultaneously
+        acs_stub_60s.acsmode = ACSMode.SLEWING
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1060.0, tz=timezone.utc),
+            battery_level=55.0,  # Yellow - but filtered mode
+        )
+        fm.check(hk, acs=acs_stub_60s)
+
+        # Fault continues in filtered mode
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1120.0, tz=timezone.utc),
+            battery_level=55.0,
+        )
+        fm.check(hk, acs=acs_stub_60s)
+
+        stats = fm.statistics()["battery_level"]
+        assert stats["yellow_seconds"] == 0.0  # No accumulation in filtered mode

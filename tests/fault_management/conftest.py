@@ -27,7 +27,17 @@ def acs_stub() -> Mock:
     acs = Mock()
     acs.in_safe_mode = False
     acs.acsmode = None
-    acs.ephem = Mock(step_size=1.0)
+    acs.ephem = Mock(step_size=1.0)  # Keep original step_size for existing tests
+    return acs
+
+
+@pytest.fixture
+def acs_stub_60s() -> Mock:
+    """ACS stub with 60 second step size for mode transition tests."""
+    acs = Mock()
+    acs.in_safe_mode = False
+    acs.acsmode = None
+    acs.ephem = Mock(step_size=60.0)
     return acs
 
 
@@ -44,7 +54,6 @@ def fm_with_yellow_state(base_config: MissionConfig) -> tuple[FaultManagement, A
         timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
         battery_level=base_config.battery.battery_level,
         recorder_fill_fraction=0.0,
-        star_tracker_functional_count=0,
     )
     fm.check(hk, acs=acs)
     return fm, acs
@@ -63,7 +72,6 @@ def fm_with_red_state(base_config: MissionConfig) -> tuple[FaultManagement, ACS]
         timestamp=datetime.fromtimestamp(2000.0, tz=timezone.utc),
         battery_level=base_config.battery.battery_level,
         recorder_fill_fraction=0.0,
-        star_tracker_functional_count=0,
     )
     fm.check(hk, acs=acs)
     return fm, acs
@@ -85,7 +93,6 @@ def fm_with_multiple_cycles(base_config: MissionConfig) -> tuple[FaultManagement
         timestamp=datetime.fromtimestamp(3000.0, tz=timezone.utc),
         battery_level=base_config.battery.battery_level,
         recorder_fill_fraction=0.0,
-        star_tracker_functional_count=0,
     )
     fm.check(hk, acs=acs)
 
@@ -97,7 +104,6 @@ def fm_with_multiple_cycles(base_config: MissionConfig) -> tuple[FaultManagement
         timestamp=datetime.fromtimestamp(3060.0, tz=timezone.utc),
         battery_level=base_config.battery.battery_level,
         recorder_fill_fraction=0.0,
-        star_tracker_functional_count=0,
     )
     fm.check(hk, acs=acs)
 
@@ -106,14 +112,13 @@ def fm_with_multiple_cycles(base_config: MissionConfig) -> tuple[FaultManagement
         timestamp=datetime.fromtimestamp(3120.0, tz=timezone.utc),
         battery_level=base_config.battery.battery_level,
         recorder_fill_fraction=0.0,
-        star_tracker_functional_count=0,
     )
     fm.check(hk, acs=acs)
     return fm, acs
 
 
 @pytest.fixture
-def fm_with_above_threshold(acs_stub) -> FaultManagement:
+def fm_with_above_threshold(acs_stub: Mock) -> FaultManagement:
     """Fixture providing fault management with 'above' direction threshold after multiple checks."""
     fm = FaultManagement()
     fm.add_threshold("battery_level", yellow=50.0, red=60.0, direction="above")
@@ -122,6 +127,7 @@ def fm_with_above_threshold(acs_stub) -> FaultManagement:
     hk = Housekeeping(
         timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
         battery_level=40.0,
+        recorder_fill_fraction=0.0,
     )
     fm.check(hk, acs=acs_stub)
 
@@ -144,21 +150,21 @@ def fm_with_above_threshold(acs_stub) -> FaultManagement:
 class DummyBattery:
     """Simple battery mock for testing."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.charge_level = 800.0
         self.watthour = 1000
         self.capacity = 1000
         self.max_depth_of_discharge = 0.6
 
     @property
-    def battery_level(self):
+    def battery_level(self) -> float:
         return self.charge_level / self.watthour
 
 
 class DummyEphemeris:
     """Minimal mock ephemeris for testing."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.step_size = 60.0
         self.earth = [Mock(ra=Mock(deg=0.0), dec=Mock(deg=0.0))]
         self.sun = [Mock(ra=Mock(deg=45.0), dec=Mock(deg=23.5))]
@@ -171,7 +177,7 @@ class DummyEphemeris:
         self.sun_pv = Mock(position=np.array([[1.5e8, 0.0, 0.0]]))
         self.gcrs_pv = Mock(position=np.array([[0.0, 0.0, 6378.0]]))
 
-    def index(self, time):
+    def index(self, time: datetime) -> int:
         return 0
 
 
