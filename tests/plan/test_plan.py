@@ -1,8 +1,10 @@
 """Tests for conops.plan module."""
 
+import json
 from unittest.mock import Mock
 
 from conops import PlanEntry
+from conops._version import __version__
 
 
 class TestTargetList:
@@ -139,3 +141,52 @@ class TestPlan:
         empty_plan.append(ppt1)
         empty_plan.append(ppt2)
         assert empty_plan[1] == ppt2
+
+    def test_standard_filename_contains_start_end_and_version(self, empty_plan):
+        """Test standard filename includes start/end/version components."""
+        ppt1 = Mock(spec=PlanEntry)
+        ppt1.begin = 0.0
+        ppt1.end = 100.0
+        empty_plan.append(ppt1)
+
+        filename = empty_plan.standard_filename
+
+        assert filename.startswith("plan_19700101T000000Z_19700101T000140Z_v")
+        assert filename.endswith(".json")
+        assert __version__.replace("+", "-") in filename
+
+    def test_write_to_disk_creates_json_with_metadata_and_entries(
+        self, empty_plan, tmp_path
+    ):
+        """Test writing plan to disk creates JSON payload and standard filename."""
+        ppt1 = Mock(spec=PlanEntry)
+        ppt1.name = "PPT-1"
+        ppt1.obsid = 10
+        ppt1.obstype = "PPT"
+        ppt1.ra = 10.5
+        ppt1.dec = -5.0
+        ppt1.roll = 0.25
+        ppt1.begin = 100.0
+        ppt1.end = 200.0
+        ppt1.exposure = 95
+        ppt1.exptime = 100
+        ppt1.slewtime = 5
+        ppt1.slewdist = 0.9
+        ppt1.insaa = 0
+        ppt1.windows = [[100.0, 200.0]]
+        ppt1.merit = 1.0
+        ppt1.ss_min = 10
+        ppt1.ss_max = 20
+        ppt1.slewpath = ([1.0], [2.0])
+        empty_plan.append(ppt1)
+
+        output_path = empty_plan.write_to_disk(str(tmp_path))
+        payload = json.loads(output_path.read_text())
+
+        assert output_path.name == empty_plan.standard_filename
+        assert payload["version"] == __version__
+        assert payload["start"] == 100.0
+        assert payload["end"] == 200.0
+        assert len(payload["entries"]) == 1
+        assert payload["entries"][0]["name"] == "PPT-1"
+        assert payload["entries"][0]["obsid"] == 10
