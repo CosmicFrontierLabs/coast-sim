@@ -96,12 +96,9 @@ class TargetQueue:
 
         for target in self.targets:
             # Initialize merit using any pre-configured merit on the target.
-            # Previously this used a `fom` attribute; prefer setting `merit`
             # directly on targets now.
-            if getattr(target, "fom", None) is None:
+            if target.merit is None:
                 target.merit = 100
-            else:
-                target.merit = target.fom
 
             # Penalize constrained targets
             if target.visible(self.utime, self.utime) is False:

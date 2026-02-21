@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
 from conops import PlanEntry
 
@@ -39,25 +40,89 @@ class MockTarget:
 
 
 class TestPlanEntryInit:
-    def test_init_with_constraint_and_acs(self, mock_config):
-        """Test PlanEntry initialization with valid constraint and ACS."""
+    def test_init_sets_constraint(self, mock_config):
+        """Test PlanEntry initialization sets constraint."""
         pe = PlanEntry(config=mock_config)
         assert pe.constraint is mock_config.constraint
+
+    def test_init_sets_acs_config(self, mock_config):
+        """Test PlanEntry initialization sets ACS config."""
+        pe = PlanEntry(config=mock_config)
         assert pe.acs_config is mock_config.spacecraft_bus.attitude_control
+
+    def test_init_sets_ephem(self, mock_config):
+        """Test PlanEntry initialization sets ephem."""
+        pe = PlanEntry(config=mock_config)
         assert pe.ephem is mock_config.constraint.ephem
+
+    def test_init_sets_default_name(self, mock_config):
+        """Test PlanEntry initialization sets default name."""
+        pe = PlanEntry(config=mock_config)
         assert pe.name == ""
+
+    def test_init_sets_default_ra(self, mock_config):
+        """Test PlanEntry initialization sets default ra."""
+        pe = PlanEntry(config=mock_config)
         assert pe.ra == 0.0
+
+    def test_init_sets_default_dec(self, mock_config):
+        """Test PlanEntry initialization sets default dec."""
+        pe = PlanEntry(config=mock_config)
         assert pe.dec == 0.0
+
+    def test_init_sets_default_roll(self, mock_config):
+        """Test PlanEntry initialization sets default roll."""
+        pe = PlanEntry(config=mock_config)
         assert pe.roll == -1.0
+
+    def test_init_sets_default_begin(self, mock_config):
+        """Test PlanEntry initialization sets default begin."""
+        pe = PlanEntry(config=mock_config)
         assert pe.begin == 0
+
+    def test_init_sets_default_slewtime(self, mock_config):
+        """Test PlanEntry initialization sets default slewtime."""
+        pe = PlanEntry(config=mock_config)
         assert pe.slewtime == 0
+
+    def test_init_sets_default_insaa(self, mock_config):
+        """Test PlanEntry initialization sets default insaa."""
+        pe = PlanEntry(config=mock_config)
         assert pe.insaa == 0
+
+    def test_init_sets_default_end(self, mock_config):
+        """Test PlanEntry initialization sets default end."""
+        pe = PlanEntry(config=mock_config)
         assert pe.end == 0
+
+    def test_init_sets_default_obsid(self, mock_config):
+        """Test PlanEntry initialization sets default obsid."""
+        pe = PlanEntry(config=mock_config)
         assert pe.obsid == 0
+
+    def test_init_sets_default_merit(self, mock_config):
+        """Test PlanEntry initialization sets default merit."""
+        pe = PlanEntry(config=mock_config)
         assert pe.merit == 101
+
+    def test_init_sets_default_windows(self, mock_config):
+        """Test PlanEntry initialization sets default windows."""
+        pe = PlanEntry(config=mock_config)
         assert pe.windows == []
+
+    def test_init_sets_default_obstype(self, mock_config):
+        """Test PlanEntry initialization sets default obstype."""
+        pe = PlanEntry(config=mock_config)
         assert pe.obstype == "PPT"
+
+    def test_init_sets_default_slewpath(self, mock_config):
+        """Test PlanEntry initialization sets default slewpath."""
+        pe = PlanEntry(config=mock_config)
         assert pe.slewpath == ([], [])
+
+    def test_init_sets_default_slewdist(self, mock_config):
+        """Test PlanEntry initialization sets default slewdist."""
+        pe = PlanEntry(config=mock_config)
         assert pe.slewdist == 0.0
 
     def test_init_without_config_raises_assertion(self):
@@ -66,28 +131,46 @@ class TestPlanEntryInit:
             PlanEntry(config=None)
 
     def test_init_with_constraint_missing_ephem(self, mock_config):
-        """Test that initialization with constraint missing ephem raises AssertionError."""
+        """Test that initialization with constraint missing ephem raises ValidationError."""
         mock_config.constraint.ephem = None
-        with pytest.raises(AssertionError, match="Ephemeris must be set"):
+        with pytest.raises(ValidationError, match="Ephemeris must be set"):
             PlanEntry(config=mock_config)
 
 
 class TestPlanEntryCopy:
-    def test_copy_creates_independent_object(self, plan_entry):
-        """Test that copy creates an independent object."""
-        plan_entry.name = "Test Target"
-        plan_entry.ra = 123.45
-        plan_entry.dec = 67.89
-        plan_entry.merit = 50
-
-        copied = plan_entry.copy()
-
+    def test_copy_creates_different_object(self, plan_entry):
+        """Test that copy creates a different object."""
+        copied = plan_entry.model_copy()
         assert copied is not plan_entry
+
+    def test_copy_preserves_name(self, plan_entry):
+        """Test that copy preserves name."""
+        plan_entry.name = "Test Target"
+        copied = plan_entry.model_copy()
         assert copied.name == plan_entry.name
+
+    def test_copy_preserves_ra(self, plan_entry):
+        """Test that copy preserves ra."""
+        plan_entry.ra = 123.45
+        copied = plan_entry.model_copy()
         assert copied.ra == plan_entry.ra
+
+    def test_copy_preserves_dec(self, plan_entry):
+        """Test that copy preserves dec."""
+        plan_entry.dec = 67.89
+        copied = plan_entry.model_copy()
         assert copied.dec == plan_entry.dec
+
+    def test_copy_preserves_merit(self, plan_entry):
+        """Test that copy preserves merit."""
+        plan_entry.merit = 50
+        copied = plan_entry.model_copy()
         assert copied.merit == plan_entry.merit
-        assert copied.constraint is plan_entry.constraint  # Shallow copy
+
+    def test_copy_shallow_copies_constraint(self, plan_entry):
+        """Test that copy shallow copies constraint."""
+        copied = plan_entry.model_copy()
+        assert copied.constraint is plan_entry.constraint
 
 
 class TestObsidProperties:
@@ -98,8 +181,8 @@ class TestObsidProperties:
 
 
 class TestPlanEntryStr:
-    def test_str_representation(self, plan_entry):
-        """Test string representation of PlanEntry."""
+    def test_str_includes_name(self, plan_entry):
+        """Test string representation includes name."""
         plan_entry.name = "TestTarget"
         plan_entry.begin = 1000000000
         plan_entry.end = 1000001000
@@ -107,14 +190,33 @@ class TestPlanEntryStr:
         plan_entry.obsid = 0x12ABCD
 
         result = str(plan_entry)
-
         assert "TestTarget" in result
+
+    def test_str_includes_obsid(self, plan_entry):
+        """Test string representation includes obsid."""
+        plan_entry.name = "TestTarget"
+        plan_entry.begin = 1000000000
+        plan_entry.end = 1000001000
+        plan_entry.slewtime = 100
+        plan_entry.obsid = 0x12ABCD
+
+        result = str(plan_entry)
         assert str(plan_entry.obsid) in result
+
+    def test_str_includes_exposure_time(self, plan_entry):
+        """Test string representation includes exposure time."""
+        plan_entry.name = "TestTarget"
+        plan_entry.begin = 1000000000
+        plan_entry.end = 1000001000
+        plan_entry.slewtime = 100
+        plan_entry.obsid = 0x12ABCD
+
+        result = str(plan_entry)
         assert "900s" in result  # exposure time
 
 
 class TestExposureProperty:
-    def test_exposure_without_saa(self, plan_entry):
+    def test_exposure_without_saa_calculates_correctly(self, plan_entry):
         """Test exposure calculation without SAA."""
         plan_entry.begin = 1000
         plan_entry.end = 2000
@@ -123,9 +225,17 @@ class TestExposureProperty:
 
         exposure = plan_entry.exposure
         assert exposure == 900  # 2000 - 1000 - 100
+
+    def test_exposure_without_saa_sets_insaa_to_zero(self, plan_entry):
+        """Test exposure sets insaa to zero without SAA."""
+        plan_entry.begin = 1000
+        plan_entry.end = 2000
+        plan_entry.slewtime = 100
+        plan_entry.saa = False
+
         assert plan_entry.insaa == 0
 
-    def test_exposure_with_saa_no_overlap(self, plan_entry):
+    def test_exposure_with_saa_no_overlap_calculates_correctly(self, plan_entry):
         """Test exposure with SAA but no overlap."""
         plan_entry.begin = 1000
         plan_entry.end = 1100
@@ -134,6 +244,14 @@ class TestExposureProperty:
 
         exposure = plan_entry.exposure
         assert exposure == 90  # 1100 - 1000 - 10
+
+    def test_exposure_with_saa_no_overlap_sets_insaa_to_zero(self, plan_entry):
+        """Test exposure sets insaa to zero with SAA but no overlap."""
+        plan_entry.begin = 1000
+        plan_entry.end = 1100
+        plan_entry.slewtime = 10
+        plan_entry.saa = MockSAA([[2000, 2100]])
+
         assert plan_entry.insaa == 0
 
     # def test_exposure_with_saa_overlap(self, plan_entry):
@@ -178,21 +296,37 @@ class TestGivename:
         assert plan_entry.name.startswith("GRB")
         assert "-" in plan_entry.name  # Negative declination
 
-    def test_givename_various_coordinates(self, plan_entry):
-        """Test givename with various coordinates."""
-        test_cases = [
-            (0.0, 0.0),
-            (90.0, 30.0),
-            (270.0, -60.0),
-            (359.9, 89.9),
-        ]
+    def test_givename_ra_zero_dec_zero(self, plan_entry):
+        """Test givename with ra=0.0, dec=0.0."""
+        plan_entry.ra = 0.0
+        plan_entry.dec = 0.0
+        plan_entry.givename()
+        assert plan_entry.name != ""
+        assert "J" in plan_entry.name
 
-        for ra, dec in test_cases:
-            plan_entry.ra = ra
-            plan_entry.dec = dec
-            plan_entry.givename()
-            assert plan_entry.name != ""
-            assert "J" in plan_entry.name
+    def test_givename_ra_90_dec_30(self, plan_entry):
+        """Test givename with ra=90.0, dec=30.0."""
+        plan_entry.ra = 90.0
+        plan_entry.dec = 30.0
+        plan_entry.givename()
+        assert plan_entry.name != ""
+        assert "J" in plan_entry.name
+
+    def test_givename_ra_270_dec_neg_60(self, plan_entry):
+        """Test givename with ra=270.0, dec=-60.0."""
+        plan_entry.ra = 270.0
+        plan_entry.dec = -60.0
+        plan_entry.givename()
+        assert plan_entry.name != ""
+        assert "J" in plan_entry.name
+
+    def test_givename_ra_359_9_dec_89_9(self, plan_entry):
+        """Test givename with ra=359.9, dec=89.9."""
+        plan_entry.ra = 359.9
+        plan_entry.dec = 89.9
+        plan_entry.givename()
+        assert plan_entry.name != ""
+        assert "J" in plan_entry.name
 
 
 class TestVisibility:
@@ -321,46 +455,86 @@ class TestRaDec:
 
 
 class TestCalcSlewtime:
-    def test_calc_slewtime_basic(self, plan_entry):
-        """Test calc_slewtime basic calculation."""
+    def test_calc_slewtime_returns_positive_value(self, plan_entry):
+        """Test calc_slewtime returns positive value."""
         lastra = 100.0
         lastdec = 30.0
         plan_entry.ra = 150.0
         plan_entry.dec = 60.0
 
         slewtime = plan_entry.calc_slewtime(lastra, lastdec)
-
         assert slewtime > 0
-        # Note: calc_slewtime no longer updates self.slewtime
+
+    def test_calc_slewtime_does_not_update_self_slewtime(self, plan_entry):
+        """Test calc_slewtime does not update self.slewtime."""
+        lastra = 100.0
+        lastdec = 30.0
+        plan_entry.ra = 150.0
+        plan_entry.dec = 60.0
+
+        plan_entry.calc_slewtime(lastra, lastdec)
         assert plan_entry.slewtime == 0
 
-    def test_calc_slewtime_uses_cached_distance(self, plan_entry):
-        """Test calc_slewtime computes distance (predict_slew always recalculates)."""
+    def test_calc_slewtime_sets_slewdist(self, plan_entry):
+        """Test calc_slewtime sets slewdist."""
+        lastra = 100.0
+        lastdec = 30.0
+        plan_entry.ra = 150.0
+        plan_entry.dec = 60.0
+
+        plan_entry.calc_slewtime(lastra, lastdec)
+        assert plan_entry.slewdist > 0
+
+    def test_calc_slewtime_uses_slew_time_from_acs_config(self, plan_entry):
+        """Test calc_slewtime uses slew_time from acs_config."""
         lastra = 100.0
         lastdec = 30.0
         plan_entry.ra = 150.0
         plan_entry.dec = 60.0
 
         slewtime = plan_entry.calc_slewtime(lastra, lastdec)
-
-        # calc_slewtime always calls predict_slew which recalculates distance
-        assert plan_entry.slewdist > 0
         assert slewtime == round(plan_entry.acs_config.slew_time(plan_entry.slewdist))
 
 
 class TestPredictSlew:
-    def test_predict_slew_basic(self, plan_entry):
-        """Test predict_slew calculation."""
+    def test_predict_slew_sets_slewdist_not_false(self, plan_entry):
+        """Test predict_slew sets slewdist to not False."""
         lastra = 100.0
         lastdec = 30.0
         plan_entry.ra = 150.0
         plan_entry.dec = 60.0
 
         plan_entry.predict_slew(lastra, lastdec)
-
         assert plan_entry.slewdist is not False
+
+    def test_predict_slew_sets_slewpath_not_false(self, plan_entry):
+        """Test predict_slew sets slewpath to not False."""
+        lastra = 100.0
+        lastdec = 30.0
+        plan_entry.ra = 150.0
+        plan_entry.dec = 60.0
+
+        plan_entry.predict_slew(lastra, lastdec)
         assert plan_entry.slewpath is not False
+
+    def test_predict_slew_sets_positive_slewdist(self, plan_entry):
+        """Test predict_slew sets positive slewdist."""
+        lastra = 100.0
+        lastdec = 30.0
+        plan_entry.ra = 150.0
+        plan_entry.dec = 60.0
+
+        plan_entry.predict_slew(lastra, lastdec)
         assert plan_entry.slewdist > 0
+
+    def test_predict_slew_sets_slewpath_as_tuple_of_two_lists(self, plan_entry):
+        """Test predict_slew sets slewpath as tuple of two lists."""
+        lastra = 100.0
+        lastdec = 30.0
+        plan_entry.ra = 150.0
+        plan_entry.dec = 60.0
+
+        plan_entry.predict_slew(lastra, lastdec)
         assert len(plan_entry.slewpath) == 2  # (ra_path, dec_path)
 
     def test_predict_slew_zero_distance(self, plan_entry):
@@ -372,13 +546,18 @@ class TestPredictSlew:
 
         assert plan_entry.slewdist == 0.0
 
-    def test_predict_slew_large_distance(self, plan_entry):
-        """Test predict_slew with large distance."""
+    def test_predict_slew_large_distance_sets_positive_slewdist(self, plan_entry):
+        """Test predict_slew with large distance sets positive slewdist."""
         plan_entry.ra = 180.0
         plan_entry.dec = 60.0
 
         plan_entry.predict_slew(0.0, -60.0)
-
         assert plan_entry.slewdist > 0
-        # Distance should be significant
+
+    def test_predict_slew_large_distance_sets_significant_slewdist(self, plan_entry):
+        """Test predict_slew with large distance sets significant slewdist."""
+        plan_entry.ra = 180.0
+        plan_entry.dec = 60.0
+
+        plan_entry.predict_slew(0.0, -60.0)
         assert plan_entry.slewdist > 100

@@ -6,6 +6,7 @@ from unittest.mock import Mock
 import pytest
 
 from conops import Pointing
+from conops.config import MissionConfig
 
 
 class DummyConstraint:
@@ -46,18 +47,25 @@ def constraint():
     return DummyConstraint()
 
 
+class TestMissionConfig(MissionConfig):
+    """Minimal MissionConfig for testing."""
+
+    pass
+
+
 @pytest.fixture
 def mock_config(constraint):
-    """Create a mock config."""
-    config = Mock()
+    """Create a test config."""
+    config = TestMissionConfig()
     config.constraint = constraint
-    config.constraint.ephem = Mock()
+    config.spacecraft_bus = Mock()
+    config.spacecraft_bus.attitude_control = Mock()
     return config
 
 
 @pytest.fixture
 def pointing(mock_config):
-    return Pointing(config=mock_config, exptime=None)
+    return Pointing(config=mock_config)
 
 
 @pytest.fixture

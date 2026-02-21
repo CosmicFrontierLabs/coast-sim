@@ -190,3 +190,20 @@ class TestPlan:
         assert len(payload["entries"]) == 1
         assert payload["entries"][0]["name"] == "PPT-1"
         assert payload["entries"][0]["obsid"] == 10
+
+    def test_write_to_disk_bumps_version_if_filename_exists(self, empty_plan, tmp_path):
+        """Test write_to_disk increments version tag in filename to avoid collisions."""
+        ppt1 = Mock(spec=PlanEntry)
+        ppt1.begin = 100.0
+        ppt1.end = 200.0
+        ppt1.exposure = 95
+        empty_plan.append(ppt1)
+
+        first_path = empty_plan.write_to_disk(str(tmp_path))
+        second_path = empty_plan.write_to_disk(str(tmp_path))
+
+        assert first_path.exists()
+        assert second_path.exists()
+        assert first_path != second_path
+        assert second_path.name.endswith(".json")
+        assert __version__.replace("+", "-") + ".1" in second_path.name

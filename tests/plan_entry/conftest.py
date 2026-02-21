@@ -6,6 +6,13 @@ import numpy as np
 import pytest
 
 from conops import PlanEntry
+from conops.config import MissionConfig
+
+
+class TestMissionConfig(MissionConfig):
+    """Minimal MissionConfig for testing."""
+
+    pass
 
 
 class MockEphemeris:
@@ -79,8 +86,8 @@ def mock_acs():
 
 @pytest.fixture
 def mock_config(mock_constraint, mock_acs):
-    """Fixture for mock config."""
-    config = Mock()
+    """Fixture for test config."""
+    config = TestMissionConfig()
     config.constraint = mock_constraint
     config.spacecraft_bus = Mock()
     config.spacecraft_bus.attitude_control = mock_acs

@@ -379,17 +379,13 @@ def submitted_too(queue_ditl, standard_too_params):
 @pytest.fixture
 def low_merit_current_ppt(queue_ditl):
     """Create a current pointing object with low merit for TOO interrupt tests."""
-    from conops import Pointing
-
-    ppt = Pointing(
-        config=queue_ditl.config,
-        ra=0.0,
-        dec=0.0,
-        obsid=1,
-        name="Current obs",
-        merit=100.0,  # Lower merit than typical TOO
-        exptime=1800,
-    )
+    ppt = Mock()
+    ppt.ra = 0.0
+    ppt.dec = 0.0
+    ppt.obsid = 1
+    ppt.name = "Current obs"
+    ppt.merit = 100.0  # Lower merit than typical TOO
+    ppt.exptime = 1800
     queue_ditl.ppt = ppt
     return ppt
 

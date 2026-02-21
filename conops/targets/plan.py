@@ -78,9 +78,18 @@ class Plan(BaseModel):
 
     @property
     def standard_filename(self) -> str:
+        return self._standard_filename_for_bump()
+
+    def _version_tag(self, bump: int = 0) -> str:
+        base_version = __version__.replace("+", "-")
+        if bump == 0:
+            return base_version
+        return f"{base_version}.{bump}"
+
+    def _standard_filename_for_bump(self, bump: int = 0) -> str:
         start_tag = self._format_timestamp(self.start)
         end_tag = self._format_timestamp(self.end)
-        version_tag = __version__.replace("+", "-")
+        version_tag = self._version_tag(bump)
         return f"plan_{start_tag}_{end_tag}_v{version_tag}.json"
 
     @staticmethod
@@ -124,6 +133,14 @@ class Plan(BaseModel):
     def write_to_disk(self, directory: str = ".") -> Path:
         output_directory = Path(directory)
         output_directory.mkdir(parents=True, exist_ok=True)
-        output_path = output_directory / self.standard_filename
+
+        version_bump = 0
+        output_path = output_directory / self._standard_filename_for_bump(version_bump)
+        while output_path.exists():
+            version_bump += 1
+            output_path = output_directory / self._standard_filename_for_bump(
+                version_bump
+            )
+
         self.to_json_file(str(output_path))
         return output_path

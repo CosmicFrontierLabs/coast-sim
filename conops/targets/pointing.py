@@ -3,58 +3,18 @@ from typing import Literal
 import numpy as np
 
 from ..common import unixtime2date
-from ..config import MissionConfig
 from .plan_entry import PlanEntry
 
 
 class Pointing(PlanEntry):
     """Define the basic parameters of an observing target with visibility checking."""
 
-    ra: float
-    dec: float
-    roll: float
-    obsid: int
-    name: str
-    merit: float
-    isat: bool
+    model_config = PlanEntry.model_config
 
-    def __init__(
-        self,
-        config: MissionConfig | None = None,
-        ra: float = 0.0,
-        dec: float = 0.0,
-        roll: float = 0.0,
-        obsid: int = 0,
-        name: str = "FakeTarget",
-        merit: float = 100.0,
-        exptime: int = 1000,
-        ss_min: int = 300,
-        ss_max: int = 86400,
-    ) -> None:
-        # Handle both old and new parameter styles for backward compatibility
-        if config is None:
-            raise ValueError("Config must be provided to Pointing")
-
-        PlanEntry.__init__(self, config=config, exptime=exptime)
-        assert config.constraint is not None, "Constraint not properly set in Pointing"
-        self.done = False
-        self.obstype = "AT"
-        self.isat = False
-        self.ra = ra
-        self.dec = dec
-        self.roll = roll
-        self.obsid = obsid
-        self.name = name
-        # ``fom`` is maintained as a legacy alias for ``merit`` for
-        # backwards compatibility (e.g. tests and older code). The
-        # canonical field we use internally is ``merit`` which can be
-        # recomputed each scheduling iteration by ``Queue.meritsort``.
-        self.fom = merit
-        self.merit = merit
-        self._done = False
-        # Snapshot min/max size
-        self.ss_min = ss_min  # seconds
-        self.ss_max = ss_max  # seconds
+    # Additional fields for Pointing
+    isat: bool = False
+    obstype: str = "AT"
+    done: bool = False
 
     def in_sun(self, utime: float) -> bool:
         """Is this target in Sun constraint?"""
@@ -92,19 +52,9 @@ class Pointing(PlanEntry):
     def __str__(self) -> str:
         return f"{unixtime2date(self.begin)} {self.name} ({self.obsid}) RA={self.ra:.4f}, Dec={self.dec:4f}, Roll={self.roll:.1f}, Merit={self.merit}"
 
-    @property
-    def done(self) -> bool:
-        if self.exptime is not None and self.exptime <= 0:
-            self._done = True
-        return self._done
-
-    @done.setter
-    def done(self, v: bool) -> None:
-        self._done = v
-
     def reset(self) -> None:
-        if self._exporig is not None:
-            self._exptime = self._exporig
+        if self.exporig is not None:
+            self.exptime = self.exporig
         self.done = False
         self.begin = 0
         self.end = 0

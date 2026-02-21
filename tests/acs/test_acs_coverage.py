@@ -1095,6 +1095,7 @@ class TestBatteryChargingMethods:
 
         with (
             patch.object(acs, "enqueue_command") as mock_enqueue_command,
+            patch("conops.targets.Pointing") as mock_pointing_class,
             patch(
                 "conops.Pointing.visibility",
                 new=lambda self, *args, **kwargs: (
@@ -1104,6 +1105,12 @@ class TestBatteryChargingMethods:
             ),
             patch("conops.Pointing.next_vis", return_value=1514764800.0),
         ):
+            # Mock Pointing constructor to return a mock object
+            mock_pointing = Mock()
+            mock_pointing.visibility.return_value = 0
+            mock_pointing.next_vis.return_value = 1514764800.0
+            mock_pointing_class.return_value = mock_pointing
+
             acs.config.spacecraft_bus.attitude_control.predict_slew.return_value = (
                 0.0,
                 (Mock(), Mock()),
@@ -1130,6 +1137,7 @@ class TestBatteryChargingMethods:
 
         with (
             patch.object(acs, "enqueue_command"),
+            patch("conops.targets.Pointing") as mock_pointing_class,
             patch(
                 "conops.Pointing.visibility",
                 new=lambda self, *args, **kwargs: (
@@ -1139,6 +1147,12 @@ class TestBatteryChargingMethods:
             ),
             patch("conops.Pointing.next_vis", return_value=1514764800.0),
         ):
+            # Mock Pointing constructor to return a mock object
+            mock_pointing = Mock()
+            mock_pointing.visibility.return_value = 0
+            mock_pointing.next_vis.return_value = 1514764800.0
+            mock_pointing_class.return_value = mock_pointing
+
             acs.config.spacecraft_bus.attitude_control.predict_slew.return_value = (
                 0.0,
                 (Mock(), Mock()),
@@ -1171,6 +1185,7 @@ class TestBatteryChargingMethods:
 
         with (
             patch.object(acs, "enqueue_command") as mock_enqueue_command,
+            patch("conops.targets.Pointing") as mock_pointing_class,
             patch(
                 "conops.Pointing.visibility",
                 new=lambda self, *args, **kwargs: (
@@ -1180,6 +1195,12 @@ class TestBatteryChargingMethods:
             ),
             patch("conops.Pointing.next_vis", return_value=1514764800.0),
         ):
+            # Mock Pointing constructor to return a mock object
+            mock_pointing = Mock()
+            mock_pointing.visibility.return_value = 0
+            mock_pointing.next_vis.return_value = 1514764800.0
+            mock_pointing_class.return_value = mock_pointing
+
             acs.config.spacecraft_bus.attitude_control.predict_slew.return_value = (
                 0.0,
                 (Mock(), Mock()),

@@ -2053,51 +2053,72 @@ class TestTOOFunctionality:
             name="Low merit TOO",
         )
 
-        # Set current PPT with higher merit
-        from conops import Pointing
-
-        queue_ditl.ppt = Pointing(
-            config=queue_ditl.config,
-            ra=0.0,
-            dec=0.0,
-            obsid=1,
-            name="Current obs",
-            merit=1000.0,  # Higher merit
-            exptime=1800,
-        )
+        # Set current PPT with higher merit (use Mock to avoid Pointing validation)
+        mock_ppt = Mock()
+        mock_ppt.ra = 0.0
+        mock_ppt.dec = 0.0
+        mock_ppt.obsid = 1
+        mock_ppt.name = "Current obs"
+        mock_ppt.merit = 1000.0  # Higher merit
+        mock_ppt.exptime = 1800
+        queue_ditl.ppt = mock_ppt
 
         result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
         assert result is False
 
+    @patch("conops.ditl.queue_ditl.Pointing")
     @patch("conops.targets.pointing.Pointing.visibility")
     def test_check_too_interrupt_target_not_visible(
-        self, mock_pointing_visible, mock_pointing_visibility, queue_ditl, submitted_too
+        self, mock_pointing_visibility, mock_pointing_class, queue_ditl, submitted_too
     ):
         """Test _check_too_interrupt when TOO target is not visible."""
-        mock_pointing_visible.return_value = False  # Target not visible
+        # Mock Pointing constructor to return a mock object
+        mock_pointing = Mock()
+        mock_pointing.visibility.return_value = None
+        mock_pointing.visible.return_value = False  # Target not visible
+        mock_pointing_class.return_value = mock_pointing
 
         result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
         assert result is False  # No interrupt should occur
-        mock_pointing_visible.assert_called_once()
+        mock_pointing.visible.assert_called_once()
 
+    @patch("conops.ditl.queue_ditl.Pointing")
     def test_check_too_interrupt_successful_interrupt_result(
         self,
+        mock_pointing_class,
         mock_too_interrupt_success,
         queue_ditl,
         submitted_too,
         low_merit_current_ppt,
     ):
         """Test _check_too_interrupt when TOO successfully interrupts - check result."""
+        # Mock Pointing constructor to return a mock object
+        mock_pointing = Mock()
+        mock_pointing.visibility.return_value = None
+        mock_pointing.visible.return_value = True
+        mock_pointing_class.return_value = mock_pointing
+
         # Mock queue.add to avoid actual queue operations
         with patch.object(queue_ditl.queue, "add"):
             result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
 
             assert result is True  # Should return True for successful interrupt
 
+    @patch("conops.ditl.queue_ditl.Pointing")
     def test_check_too_interrupt_successful_interrupt_executed(
-        self, mock_too_interrupt_success, queue_ditl, low_merit_current_ppt
+        self,
+        mock_pointing_class,
+        mock_too_interrupt_success,
+        queue_ditl,
+        low_merit_current_ppt,
     ):
         """Test _check_too_interrupt when TOO successfully interrupts - check executed flag."""
+        # Mock Pointing constructor to return a mock object
+        mock_pointing = Mock()
+        mock_pointing.visibility.return_value = None
+        mock_pointing.visible.return_value = True
+        mock_pointing_class.return_value = mock_pointing
+
         # Submit TOO with high merit
         too = queue_ditl.submit_too(
             obsid=1000001,
@@ -2114,10 +2135,21 @@ class TestTOOFunctionality:
 
             assert too.executed is True
 
+    @patch("conops.ditl.queue_ditl.Pointing")
     def test_check_too_interrupt_successful_interrupt_terminate_called(
-        self, mock_too_interrupt_success, queue_ditl, low_merit_current_ppt
+        self,
+        mock_pointing_class,
+        mock_too_interrupt_success,
+        queue_ditl,
+        low_merit_current_ppt,
     ):
         """Test _check_too_interrupt when TOO successfully interrupts - check terminate called."""
+        # Mock Pointing constructor to return a mock object
+        mock_pointing = Mock()
+        mock_pointing.visibility.return_value = None
+        mock_pointing.visible.return_value = True
+        mock_pointing_class.return_value = mock_pointing
+
         # Submit TOO with high merit
         queue_ditl.submit_too(
             obsid=1000001,
@@ -2138,10 +2170,21 @@ class TestTOOFunctionality:
                 mark_done=False,
             )
 
+    @patch("conops.ditl.queue_ditl.Pointing")
     def test_check_too_interrupt_successful_interrupt_queue_add_called(
-        self, mock_too_interrupt_success, queue_ditl, low_merit_current_ppt
+        self,
+        mock_pointing_class,
+        mock_too_interrupt_success,
+        queue_ditl,
+        low_merit_current_ppt,
     ):
         """Test _check_too_interrupt when TOO successfully interrupts - check queue.add called."""
+        # Mock Pointing constructor to return a mock object
+        mock_pointing = Mock()
+        mock_pointing.visibility.return_value = None
+        mock_pointing.visible.return_value = True
+        mock_pointing_class.return_value = mock_pointing
+
         # Submit TOO with high merit
         queue_ditl.submit_too(
             obsid=1000001,
@@ -2165,10 +2208,21 @@ class TestTOOFunctionality:
                 exptime=3600,
             )
 
+    @patch("conops.ditl.queue_ditl.Pointing")
     def test_check_too_interrupt_successful_interrupt_fetch_called(
-        self, mock_too_interrupt_success, queue_ditl, low_merit_current_ppt
+        self,
+        mock_pointing_class,
+        mock_too_interrupt_success,
+        queue_ditl,
+        low_merit_current_ppt,
     ):
         """Test _check_too_interrupt when TOO successfully interrupts - check fetch called."""
+        # Mock Pointing constructor to return a mock object
+        mock_pointing = Mock()
+        mock_pointing.visibility.return_value = None
+        mock_pointing.visible.return_value = True
+        mock_pointing_class.return_value = mock_pointing
+
         # Submit TOO with high merit
         queue_ditl.submit_too(
             obsid=1000001,
@@ -2187,10 +2241,16 @@ class TestTOOFunctionality:
                 1000.0, 180.0, 45.0
             )
 
+    @patch("conops.ditl.queue_ditl.Pointing")
     def test_check_too_interrupt_no_current_observation_result(
-        self, mock_too_interrupt_no_current_obs, queue_ditl
+        self, mock_pointing_class, mock_too_interrupt_no_current_obs, queue_ditl
     ):
         """Test _check_too_interrupt when there is no current observation - check result."""
+        # Mock Pointing constructor to return a mock object
+        mock_pointing = Mock()
+        mock_pointing.visible.return_value = True
+        mock_pointing_class.return_value = mock_pointing
+
         # Submit TOO
         queue_ditl.submit_too(
             obsid=1000001,
@@ -2208,10 +2268,16 @@ class TestTOOFunctionality:
 
             assert result is True  # Should return True for successful interrupt
 
+    @patch("conops.ditl.queue_ditl.Pointing")
     def test_check_too_interrupt_no_current_observation_executed(
-        self, mock_too_interrupt_no_current_obs, queue_ditl
+        self, mock_pointing_class, mock_too_interrupt_no_current_obs, queue_ditl
     ):
         """Test _check_too_interrupt when there is no current observation - check executed flag."""
+        # Mock Pointing constructor to return a mock object
+        mock_pointing = Mock()
+        mock_pointing.visible.return_value = True
+        mock_pointing_class.return_value = mock_pointing
+
         # Submit TOO
         too = queue_ditl.submit_too(
             obsid=1000001,
@@ -2229,10 +2295,16 @@ class TestTOOFunctionality:
 
             assert too.executed is True
 
+    @patch("conops.ditl.queue_ditl.Pointing")
     def test_check_too_interrupt_no_current_observation_queue_add_called(
-        self, mock_too_interrupt_no_current_obs, queue_ditl
+        self, mock_pointing_class, mock_too_interrupt_no_current_obs, queue_ditl
     ):
         """Test _check_too_interrupt when there is no current observation - check queue.add called."""
+        # Mock Pointing constructor to return a mock object
+        mock_pointing = Mock()
+        mock_pointing.visible.return_value = True
+        mock_pointing_class.return_value = mock_pointing
+
         # Submit TOO
         queue_ditl.submit_too(
             obsid=1000001,
@@ -2250,10 +2322,16 @@ class TestTOOFunctionality:
 
             mock_queue_add.assert_called_once()
 
+    @patch("conops.ditl.queue_ditl.Pointing")
     def test_check_too_interrupt_no_current_observation_fetch_called(
-        self, mock_too_interrupt_no_current_obs, queue_ditl
+        self, mock_pointing_class, mock_too_interrupt_no_current_obs, queue_ditl
     ):
         """Test _check_too_interrupt when there is no current observation - check fetch called."""
+        # Mock Pointing constructor to return a mock object
+        mock_pointing = Mock()
+        mock_pointing.visible.return_value = True
+        mock_pointing_class.return_value = mock_pointing
+
         # Submit TOO
         queue_ditl.submit_too(
             obsid=1000001,
