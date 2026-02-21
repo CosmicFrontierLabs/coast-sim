@@ -278,6 +278,49 @@ class Constraint(BaseModel):
 
         return violations if violations is not None else np.zeros(len(ras), dtype=bool)
 
+    def in_constraint_indices(
+        self,
+        ra: float,
+        dec: float,
+        indices: list[int],
+    ) -> np.ndarray:
+        """Check constraints for a single pointing across ephemeris indices.
+
+        This batches constraint checks across multiple time indices for a
+        fixed RA/Dec, using rust_ephem's in_constraint_batch() API.
+        """
+        if not indices:
+            return np.zeros(0, dtype=bool)
+
+        assert self.ephem is not None, (
+            "Ephemeris must be set to use in_constraint_indices"
+        )
+
+        violations: np.ndarray | None = None
+        constraint_types = [
+            self.sun_constraint,
+            self.earth_constraint,
+            self.panel_constraint,
+            self.moon_constraint,
+            self.anti_sun_constraint,
+        ]
+        for constraint_func in constraint_types:
+            result = constraint_func.in_constraint_batch(
+                ephemeris=self.ephem,
+                target_ras=[ra],
+                target_decs=[dec],
+                indices=indices,
+            )
+            result_flat = np.asarray(result).reshape(-1)
+            if violations is None:
+                violations = result_flat
+            else:
+                violations = violations | result_flat
+
+        return (
+            violations if violations is not None else np.zeros(len(indices), dtype=bool)
+        )
+
     def in_constraint_count(self, ra: float, dec: float, utime: float) -> int:
         count = 0
         if self.in_sun(ra, dec, utime):
