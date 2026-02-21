@@ -112,7 +112,7 @@ class TestScheduleGroundstationPasses:
         queue_ditl.acs.passrequests.get.assert_called_once_with(2018, 331, 1)
 
     def test_schedule_passes_empty_prints_message(
-        self, queue_ditl: QueueDITL, capsys
+        self, queue_ditl: QueueDITL, capsys: pytest.CaptureFixture[str]
     ) -> None:
         queue_ditl.acs.passrequests.passes = []
         queue_ditl.year = 2018
@@ -135,7 +135,7 @@ class TestScheduleGroundstationPasses:
         queue_ditl.acs.passrequests.get.assert_not_called()
 
     def test_schedule_passes_returns_passes_print(
-        self, queue_ditl: QueueDITL, capsys
+        self, queue_ditl: QueueDITL, capsys: pytest.CaptureFixture[str]
     ) -> None:
         queue_ditl.acs.passrequests.passes = []
         queue_ditl.year = 2018
@@ -218,7 +218,10 @@ class TestDetermineMode:
         assert mode == ACSMode.SAA
 
     def test_determine_mode_charging(
-        self, mock_config: MissionConfig, mock_ephem: Mock, monkeypatch
+        self,
+        mock_config: MissionConfig,
+        mock_ephem: Mock,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from conops import ACS, Constraint
 
@@ -309,7 +312,9 @@ class TestHandlePassMode:
         queue_ditl._handle_pass_mode(1000.0)
         assert mock_charging.done is True
 
-    def test_handle_pass_terminates_charging_ppt_cleared(self, queue_ditl) -> None:
+    def test_handle_pass_terminates_charging_ppt_cleared(
+        self, queue_ditl: QueueDITL
+    ) -> None:
         mock_charging = Mock()
         mock_charging.end = 0
         mock_charging.done = False
@@ -317,7 +322,7 @@ class TestHandlePassMode:
         queue_ditl._handle_pass_mode(1000.0)
         assert queue_ditl.charging_ppt is None
 
-    def test_handle_pass_no_ppt(self, queue_ditl) -> None:
+    def test_handle_pass_no_ppt(self, queue_ditl: QueueDITL) -> None:
         queue_ditl.ppt = None
         queue_ditl.charging_ppt = None
         queue_ditl._handle_pass_mode(1000.0)
@@ -327,7 +332,7 @@ class TestHandleChargingMode:
     """Test _handle_charging_mode helper method."""
 
     def test_charging_ends_when_battery_recharged_end_set(
-        self, queue_ditl, capsys
+        self, queue_ditl: QueueDITL, capsys: pytest.CaptureFixture[str]
     ) -> None:
         queue_ditl.battery.battery_alert = False
         queue_ditl.battery.battery_level = 0.85
@@ -340,7 +345,7 @@ class TestHandleChargingMode:
         assert mock_charging.end == 1000.0
 
     def test_charging_ends_when_battery_recharged_done_flag(
-        self, queue_ditl, capsys
+        self, queue_ditl: QueueDITL, capsys: pytest.CaptureFixture[str]
     ) -> None:
         queue_ditl.battery.battery_alert = False
         queue_ditl.battery.battery_level = 0.85
@@ -353,8 +358,8 @@ class TestHandleChargingMode:
         assert mock_charging.done is True
 
     def test_charging_ends_when_battery_recharged_clears_charging_ppt(
-        self, queue_ditl, capsys
-    ):
+        self, queue_ditl: QueueDITL, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         queue_ditl.battery.battery_alert = False
         queue_ditl.battery.battery_level = 0.85
         mock_charging = Mock()
@@ -369,7 +374,7 @@ class TestHandleChargingMode:
         assert "Battery recharged" in log_text
 
     def test_charging_ends_when_constrained_end_and_done_set(
-        self, queue_ditl, capsys
+        self, queue_ditl: QueueDITL, capsys: pytest.CaptureFixture[str]
     ) -> None:
         queue_ditl.battery.battery_alert = True
         mock_charging = Mock()
@@ -388,7 +393,9 @@ class TestHandleChargingMode:
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "Charging pointing constrained" in log_text
 
-    def test_charging_ends_in_eclipse_clears_charging(self, queue_ditl, capsys) -> None:
+    def test_charging_ends_in_eclipse_clears_charging(
+        self, queue_ditl: QueueDITL, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         queue_ditl.battery.battery_alert = True
         mock_charging = Mock()
         mock_charging.ra = 10.0
@@ -402,7 +409,7 @@ class TestHandleChargingMode:
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "Entered eclipse" in log_text
 
-    def test_charging_continues(self, queue_ditl) -> None:
+    def test_charging_continues(self, queue_ditl: QueueDITL) -> None:
         queue_ditl.battery.battery_alert = True
         mock_charging = Mock()
         mock_charging.ra = 10.0
@@ -416,7 +423,9 @@ class TestHandleChargingMode:
 class TestManagePPTLifecycle:
     """Test _manage_ppt_lifecycle helper method."""
 
-    def test_manage_ppt_science_mode_exposure_decrements(self, queue_ditl) -> None:
+    def test_manage_ppt_science_mode_exposure_decrements(
+        self, queue_ditl: QueueDITL
+    ) -> None:
         mock_ppt = Mock()
         mock_ppt.exptime = 300.0
         mock_ppt.ra = 10.0
@@ -429,7 +438,9 @@ class TestManagePPTLifecycle:
         assert mock_ppt.exptime == 240.0
         assert queue_ditl.ppt is mock_ppt
 
-    def test_manage_ppt_slewing_no_exptime_decrement(self, queue_ditl) -> None:
+    def test_manage_ppt_slewing_no_exptime_decrement(
+        self, queue_ditl: QueueDITL
+    ) -> None:
         mock_ppt = Mock()
         mock_ppt.exptime = 300.0
         mock_ppt.ra = 10.0
@@ -440,7 +451,9 @@ class TestManagePPTLifecycle:
         queue_ditl._manage_ppt_lifecycle(1000.0, ACSMode.SLEWING)
         assert mock_ppt.exptime == 300.0
 
-    def test_manage_ppt_becomes_constrained_terminates(self, queue_ditl) -> None:
+    def test_manage_ppt_becomes_constrained_terminates(
+        self, queue_ditl: QueueDITL
+    ) -> None:
         mock_ppt = Mock()
         mock_ppt.exptime = 300.0
         mock_ppt.ra = 10.0
@@ -453,7 +466,9 @@ class TestManagePPTLifecycle:
         queue_ditl._manage_ppt_lifecycle(1000.0, ACSMode.SCIENCE)
         assert queue_ditl.ppt is None
 
-    def test_manage_ppt_exposure_complete_terminates(self, queue_ditl) -> None:
+    def test_manage_ppt_exposure_complete_terminates(
+        self, queue_ditl: QueueDITL
+    ) -> None:
         mock_ppt = Mock()
         mock_ppt.exptime = 30.0
         mock_ppt.ra = 10.0
@@ -468,7 +483,9 @@ class TestManagePPTLifecycle:
         assert queue_ditl.ppt is None
         assert mock_ppt.done is True
 
-    def test_manage_ppt_time_window_elapsed_terminate(self, queue_ditl) -> None:
+    def test_manage_ppt_time_window_elapsed_terminate(
+        self, queue_ditl: QueueDITL
+    ) -> None:
         mock_ppt = Mock()
         mock_ppt.exptime = 300.0
         mock_ppt.ra = 10.0
@@ -480,7 +497,7 @@ class TestManagePPTLifecycle:
         queue_ditl._manage_ppt_lifecycle(1000.0, ACSMode.SCIENCE)
         assert queue_ditl.ppt is None
 
-    def test_manage_ppt_charging_ppt_ignored(self, queue_ditl) -> None:
+    def test_manage_ppt_charging_ppt_ignored(self, queue_ditl: QueueDITL) -> None:
         mock_charging = Mock()
         mock_charging.exptime = 300.0
         queue_ditl.ppt = mock_charging
@@ -493,7 +510,7 @@ class TestFetchNewPPT:
     """Test _fetch_new_ppt helper method."""
 
     def test_fetch_ppt_sets_ppt_and_returns_last_positions(
-        self, queue_ditl, capsys
+        self, queue_ditl: QueueDITL, capsys: pytest.CaptureFixture[str]
     ) -> None:
         mock_ppt = Mock()
         mock_ppt.ra = 45.0
@@ -505,7 +522,9 @@ class TestFetchNewPPT:
         queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
         assert queue_ditl.ppt is mock_ppt
 
-    def test_fetch_ppt_enqueues_slew_command(self, queue_ditl, capsys) -> None:
+    def test_fetch_ppt_enqueues_slew_command(
+        self, queue_ditl: QueueDITL, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         mock_ppt = Mock()
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
@@ -522,7 +541,9 @@ class TestFetchNewPPT:
         assert command.slew.enddec == 30.0
         assert command.slew.obsid == 1001
 
-    def test_fetch_ppt_prints_messages(self, queue_ditl, capsys) -> None:
+    def test_fetch_ppt_prints_messages(
+        self, queue_ditl: QueueDITL, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         mock_ppt = Mock()
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
@@ -535,7 +556,9 @@ class TestFetchNewPPT:
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "Fetching new PPT from Queue" in log_text
 
-    def test_fetch_ppt_none_available(self, queue_ditl, capsys) -> None:
+    def test_fetch_ppt_none_available(
+        self, queue_ditl: QueueDITL, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         queue_ditl.queue.get = Mock(return_value=None)
         queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
         assert queue_ditl.ppt is None
@@ -543,7 +566,7 @@ class TestFetchNewPPT:
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "No targets available from Queue" in log_text
 
-    def test_fetch_ppt_defers_during_active_pass(self, queue_ditl) -> None:
+    def test_fetch_ppt_defers_during_active_pass(self, queue_ditl: QueueDITL) -> None:
         """Test that _fetch_new_ppt returns early when a pass is in progress."""
         mock_pass = Mock()
         queue_ditl.acs.passrequests.current_pass = Mock(return_value=mock_pass)
@@ -559,7 +582,9 @@ class TestFetchNewPPT:
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "Deferring PPT fetch - pass in progress" in log_text
 
-    def test_fetch_ppt_rejects_slew_execution_during_pass(self, queue_ditl) -> None:
+    def test_fetch_ppt_rejects_slew_execution_during_pass(
+        self, queue_ditl: QueueDITL
+    ) -> None:
         """Test slew rejection when execution time falls during a pass."""
         # Setup mock PPT
         mock_ppt = Mock()
@@ -585,7 +610,9 @@ class TestFetchNewPPT:
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "Slew rejected - execution time falls during a pass" in log_text
 
-    def test_fetch_ppt_rejects_slew_completion_during_pass(self, queue_ditl) -> None:
+    def test_fetch_ppt_rejects_slew_completion_during_pass(
+        self, queue_ditl: QueueDITL
+    ) -> None:
         """Test slew rejection when slew would complete during a pass."""
         # Setup mock PPT
         mock_ppt = Mock()
@@ -616,7 +643,9 @@ class TestFetchNewPPT:
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "Slew rejected - would complete during a pass" in log_text
 
-    def test_fetch_ppt_rejects_insufficient_observation_time(self, queue_ditl) -> None:
+    def test_fetch_ppt_rejects_insufficient_observation_time(
+        self, queue_ditl: QueueDITL
+    ) -> None:
         """Test target rejection when there's not enough time before next pass."""
         # Setup mock PPT with minimum observation time requirement
         mock_ppt = Mock()
