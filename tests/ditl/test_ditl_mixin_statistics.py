@@ -1,6 +1,7 @@
 """Tests for DITLMixin.print_statistics method, refactored into a test class."""
 
 from datetime import datetime
+from unittest.mock import Mock
 
 from conops import (
     ACSMode,
@@ -40,7 +41,6 @@ def create_test_config(ephem=None):
     if ephem is None:
         # Create a simple mock ephemeris
         import datetime
-        from unittest.mock import Mock
 
         import numpy as np
 
@@ -69,6 +69,9 @@ def create_test_config(ephem=None):
     spacecraft_bus.attitude_control = Mock()
     spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))
     spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
+    spacecraft_bus.star_trackers = Mock()
+    spacecraft_bus.star_trackers.set_ephem = Mock()
+    spacecraft_bus.star_trackers.num_trackers = Mock(return_value=0)
 
     solar_panel = Mock(spec=SolarPanelSet)
     solar_panel.optimal_charging_pointing = Mock(return_value=(45.0, 23.5))
