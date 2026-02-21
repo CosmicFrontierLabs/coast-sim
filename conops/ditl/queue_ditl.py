@@ -415,8 +415,12 @@ class QueueDITL(DITLMixin, DITLStats):
             # Handle data generation and downlink
             self._handle_data_management(utime, mode)
 
+            # Create housekeeping snapshot from current timestep state
+            hk = self._create_housekeeping_record(utime, ra, dec, roll, mode)
+            self.telemetry.housekeeping.append(hk)
+
             # Fault management checks (e.g., battery level thresholds)
-            self._handle_fault_management(utime)
+            self._handle_fault_management(utime, hk)
 
         # Make sure the last PPT of the day ends (if any)
         if self.plan:
@@ -451,20 +455,20 @@ class QueueDITL(DITLMixin, DITLStats):
             )
             self.telemetry.data.append(pd)
 
-    def _handle_fault_management(self, utime: float) -> None:
+    def _handle_fault_management(
+        self, utime: float, hk: Housekeeping | None = None
+    ) -> None:
         """Handle fault management checks and safe mode requests."""
         if self.config.fault_management is not None:
+            # Get the most recent housekeeping record
+            if hk is None:
+                if not self.telemetry.housekeeping:
+                    return
+                hk = self.telemetry.housekeeping[-1]
+
             self.config.fault_management.check(
-                values={
-                    "battery_level": self.battery.battery_level,
-                    "recorder_fill_fraction": self.recorder.get_fill_fraction(),
-                },
-                utime=utime,
-                step_size=self.step_size,
+                housekeeping=hk,
                 acs=self.acs,
-                ephem=self.ephem,
-                ra=self.ra[-1] if self.ra else None,
-                dec=self.dec[-1] if self.dec else None,
             )
             # Check if safe mode has been requested by fault management
             if (
@@ -476,6 +480,36 @@ class QueueDITL(DITLMixin, DITLStats):
                     execution_time=utime,
                 )
                 self.acs.enqueue_command(command)
+
+    def _create_housekeeping_record(
+        self, utime: float, ra: float, dec: float, roll: float, mode: ACSMode
+    ) -> Housekeeping:
+        """Create a housekeeping telemetry record from current timestep state."""
+        panel_illumination = self.panel[-1] if self.panel else None
+        total_power = self.power[-1] if self.power else None
+        bus_power = self.power_bus[-1] if self.power_bus else None
+        payload_power = self.power_payload[-1] if self.power_payload else None
+
+        return Housekeeping(
+            timestamp=datetime.fromtimestamp(utime, tz=timezone.utc),
+            ra=ra,
+            dec=dec,
+            roll=roll,
+            acs_mode=mode,
+            panel_illumination=panel_illumination,
+            power_usage=total_power,
+            power_bus=bus_power,
+            power_payload=payload_power,
+            battery_level=self.battery.battery_level,
+            charge_state=int(self.battery.charge_state),
+            battery_alert=self.battery.battery_alert,
+            obsid=self.obsid[-1] if self.obsid else None,
+            recorder_volume_gb=self.recorder.current_volume_gb,
+            recorder_fill_fraction=self.recorder.get_fill_fraction(),
+            recorder_alert=self.recorder.get_alert_level(),
+            sun_angle_deg=self._compute_sun_angle(utime, ra, dec),
+            in_eclipse=self.acs.in_eclipse,
+        )
 
     def _track_ppt_in_timeline(self) -> None:
         """Track the start of a new PPT in the plan timeline."""
@@ -1035,29 +1069,6 @@ class QueueDITL(DITLMixin, DITLStats):
 
         # Update battery state
         self._update_battery_state(total_power, panel_power)
-
-        # Create housekeeping telemetry record
-        hk = Housekeeping(
-            timestamp=datetime.fromtimestamp(utime, tz=timezone.utc),
-            ra=ra,
-            dec=dec,
-            roll=roll,
-            acs_mode=mode,
-            panel_illumination=panel_illumination,
-            power_usage=total_power,
-            power_bus=bus_power,
-            power_payload=payload_power,
-            battery_level=self.battery.battery_level,
-            charge_state=int(self.battery.charge_state),
-            battery_alert=self.battery.battery_alert,
-            obsid=self.obsid[-1] if self.obsid else 0,
-            recorder_volume_gb=self.recorder.current_volume_gb,
-            recorder_fill_fraction=self.recorder.get_fill_fraction(),
-            recorder_alert=self.recorder.get_alert_level(),
-            sun_angle_deg=self._compute_sun_angle(utime, ra, dec),
-            in_eclipse=in_eclipse,
-        )
-        self.telemetry.housekeeping.append(hk)
 
     def _calculate_panel_power(
         self, i: int, utime: float, ra: float, dec: float, roll: float

@@ -1,5 +1,7 @@
 """Unit tests for telemetry.py."""
 
+from datetime import datetime, timezone
+
 import pytest
 
 from conops.common.enums import ACSMode
@@ -16,8 +18,11 @@ class TestHousekeeping:
 
     def test_housekeeping_creation_with_none_values(self) -> None:
         """Test creating Housekeeping with None values."""
-        hk = Housekeeping()
-        assert hk.timestamp is None
+        from datetime import datetime, timezone
+
+        timestamp = datetime.fromtimestamp(1000.0, tz=timezone.utc)
+        hk = Housekeeping(timestamp=timestamp)
+        assert hk.timestamp == timestamp
         assert hk.ra is None
         assert hk.dec is None
         assert hk.roll == 0.0  # Has default
@@ -56,21 +61,31 @@ class TestHousekeeping:
 
     def test_extract_field_single_record(self) -> None:
         """Test extract_field with single record."""
-        hk = Housekeeping(ra=45.0, dec=30.0)
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc), ra=45.0, dec=30.0
+        )
         result = Housekeeping.extract_field([hk], "ra")
         assert result == [45.0]
 
     def test_extract_field_multiple_records(self) -> None:
         """Test extract_field with multiple records."""
-        hk1 = Housekeeping(ra=45.0, dec=30.0)
-        hk2 = Housekeeping(ra=90.0, dec=60.0)
-        hk3 = Housekeeping(ra=None, dec=45.0)
+        hk1 = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc), ra=45.0, dec=30.0
+        )
+        hk2 = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc), ra=90.0, dec=60.0
+        )
+        hk3 = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc), ra=None, dec=45.0
+        )
         result = Housekeeping.extract_field([hk1, hk2, hk3], "ra")
         assert result == [45.0, 90.0, None]
 
     def test_extract_field_invalid_attribute(self) -> None:
         """Test extract_field with invalid attribute."""
-        hk = Housekeeping(ra=45.0)
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc), ra=45.0
+        )
         with pytest.raises(AttributeError):
             Housekeeping.extract_field([hk], "invalid_field")
 
@@ -81,9 +96,24 @@ class TestHousekeeping:
 
     def test_extract_fields_multiple_records(self) -> None:
         """Test extract_fields with multiple records."""
-        hk1 = Housekeeping(ra=45.0, dec=30.0, roll=10.0)
-        hk2 = Housekeeping(ra=90.0, dec=60.0, roll=20.0)
-        hk3 = Housekeeping(ra=None, dec=45.0, roll=None)
+        hk1 = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
+            ra=45.0,
+            dec=30.0,
+            roll=10.0,
+        )
+        hk2 = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
+            ra=90.0,
+            dec=60.0,
+            roll=20.0,
+        )
+        hk3 = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
+            ra=None,
+            dec=45.0,
+            roll=None,
+        )
         result = Housekeeping.extract_fields([hk1, hk2, hk3], ["ra", "dec", "roll"])
         expected = {
             "ra": [45.0, 90.0, None],
@@ -94,7 +124,9 @@ class TestHousekeeping:
 
     def test_extract_fields_invalid_attribute(self) -> None:
         """Test extract_fields with invalid attribute."""
-        hk = Housekeeping(ra=45.0)
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc), ra=45.0
+        )
         with pytest.raises(AttributeError):
             Housekeeping.extract_fields([hk], ["ra", "invalid_field"])
 
@@ -125,7 +157,9 @@ class TestTelemetry:
 
     def test_init_with_data(self) -> None:
         """Test initialization with data."""
-        hk = Housekeeping(ra=45.0)
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc), ra=45.0
+        )
         pd = PayloadData(timestamp=1234567890.0, data_size_gb=1.5)
         tm = Telemetry(housekeeping=HousekeepingList([hk]), data=[pd])
         assert len(tm.housekeeping) == 1
@@ -141,7 +175,13 @@ class TestTelemetry:
         assert isinstance(tm.data, list)
 
         # Setting new lists
-        tm.housekeeping = HousekeepingList([Housekeeping(ra=45.0)])
+        tm.housekeeping = HousekeepingList(
+            [
+                Housekeeping(
+                    timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc), ra=45.0
+                )
+            ]
+        )
         tm.data = [PayloadData(timestamp=1234567890.0, data_size_gb=1.5)]
         assert isinstance(tm.housekeeping, HousekeepingList)
         assert isinstance(tm.data, list)
@@ -152,6 +192,7 @@ class TestTelemetry:
     def test_attribute_access_on_housekeeping(self) -> None:
         """Test attribute access on housekeeping list."""
         hk1 = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
             ra=45.0,
             dec=30.0,
             acs_mode=ACSMode.SCIENCE,
@@ -159,6 +200,7 @@ class TestTelemetry:
             in_eclipse=False,
         )
         hk2 = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
             ra=90.0,
             dec=60.0,
             acs_mode=ACSMode.SAFE,

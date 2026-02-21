@@ -16,6 +16,7 @@ Usage:
 
 import time
 from datetime import datetime, timedelta
+from typing import Any
 
 import numpy as np
 from rust_ephem import TLEEphemeris
@@ -27,7 +28,7 @@ def run_benchmark(
     num_timesteps: int = 100,
     num_targets: int = 20,
     checks_per_target: int = 8,
-) -> dict:
+) -> dict[str, Any]:
     """Run constraint caching benchmark with actual A/B comparison.
 
     Args:

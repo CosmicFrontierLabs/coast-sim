@@ -1,5 +1,6 @@
 """Unit tests for conops.visualization.acs_mode_analysis module."""
 
+from datetime import datetime, timezone
 from unittest.mock import Mock
 
 import matplotlib.pyplot as plt
@@ -56,8 +57,13 @@ class TestPlotAcsModeDistribution:
         # Create mock with unknown mode
         mock_ditl = Mock()
         # Create telemetry with unknown mode
-        hk1 = Housekeeping(acs_mode=ACSMode.SCIENCE.value)
-        hk2 = Housekeeping(acs_mode=999)  # 999 is unknown
+        hk1 = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
+            acs_mode=ACSMode.SCIENCE.value,
+        )
+        hk2 = Housekeeping(
+            timestamp=datetime.fromtimestamp(1001.0, tz=timezone.utc), acs_mode=999
+        )  # 999 is unknown
         telemetry = Telemetry(housekeeping=HousekeepingList([hk1, hk2]))
         mock_ditl.telemetry = telemetry
 

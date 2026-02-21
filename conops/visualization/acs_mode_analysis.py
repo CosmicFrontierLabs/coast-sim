@@ -8,6 +8,7 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.font_manager import FontProperties
 
+from ..common import normalize_acs_mode
 from ..config.visualization import VisualizationConfig
 
 if TYPE_CHECKING:
@@ -60,12 +61,12 @@ def plot_acs_mode_distribution(
     title_prop = FontProperties(family=font_family, size=title_font_size, weight="bold")
 
     # Convert mode values to names
-    from ..common import ACSMode
 
     modes = []
     for mode_val in ditl.telemetry.housekeeping.acs_mode:
-        if mode_val in [m.value for m in ACSMode]:
-            mode_name = ACSMode(mode_val).name
+        normalized_mode = normalize_acs_mode(mode_val)
+        if normalized_mode is not None:
+            mode_name = normalized_mode.name
         else:
             mode_name = f"UNKNOWN({mode_val})"
         modes.append(mode_name)
