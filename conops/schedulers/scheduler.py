@@ -40,7 +40,7 @@ class DumbScheduler:
         self.targlist: TargetList = TargetList()
         self.step_size = self.ephem.step_size
         self.issurvey = False
-        self.config: MissionConfig | None = None  # optional: can be set externally
+        self.config = config
         self.gimbled = False  # Default: not gimbled
         self.sidemount = False  # Default: not side-mounted
         self.log = log  # Optional log for event recording

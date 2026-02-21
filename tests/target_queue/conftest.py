@@ -63,12 +63,27 @@ def mock_targets(mock_target):
 @pytest.fixture
 def mock_config():
     """Fixture for a mock config."""
-    config = Mock()
-    config.constraint = Mock()
-    config.spacecraft_bus = Mock()
-    config.attitude_control = Mock()
-    config.targets = Mock()
-    config.targets.slew_distance_weight = 0.0
+    from conops import (
+        Battery,
+        Constraint,
+        FaultManagement,
+        GroundStationRegistry,
+        MissionConfig,
+        Payload,
+        SolarPanelSet,
+        SpacecraftBus,
+    )
+
+    config = MissionConfig(
+        name="Test Config",
+        spacecraft_bus=SpacecraftBus(),
+        solar_panel=SolarPanelSet(),
+        payload=Payload(),
+        battery=Battery(),
+        constraint=Constraint(),
+        ground_stations=GroundStationRegistry(),
+        fault_management=FaultManagement(),
+    )
     return config
 
 

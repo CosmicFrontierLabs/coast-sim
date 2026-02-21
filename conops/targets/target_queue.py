@@ -1,7 +1,7 @@
 from typing import Any
 
 import numpy as np
-import rust_ephem
+from pydantic import BaseModel, Field, field_validator
 
 from ..common import unixtime2date
 from ..config import AttitudeControlSystem, Constraint, MissionConfig
@@ -9,38 +9,33 @@ from ..ditl.ditl_log import DITLLog
 from . import Pointing
 
 
-class TargetQueue:
+class TargetQueue(BaseModel):
     """TargetQueue class, contains a list of targets for Spacecraft to observe."""
 
-    targets: list[Pointing]
-    ephem: rust_ephem.Ephemeris | None
-    utime: float
-    gs: Any
-    log: DITLLog | None
-    constraint: Constraint | None
-    acs_config: AttitudeControlSystem | None
-    config: MissionConfig | None
+    model_config = {"arbitrary_types_allowed": True}
 
-    def __init__(
-        self,
-        config: MissionConfig | None = None,
-        ephem: rust_ephem.Ephemeris | None = None,
-        log: DITLLog | None = None,
-    ):
-        # Extract config parameters from Config object
-        if config is None:
+    # Pydantic fields
+    targets: list[Pointing] = Field(default_factory=list)
+    ephem: Any = None  # Allow any type for ephem to support mocks in tests
+    utime: float = 0.0
+    gs: Any = None
+    log: DITLLog | None = None
+    constraint: Constraint | None = (
+        None  # Allow any type for constraint to support mocks in tests
+    )
+    acs_config: AttitudeControlSystem | None = (
+        None  # Allow any type for acs_config to support mocks in tests
+    )
+    config: MissionConfig = Field(default_factory=MissionConfig, exclude=True)
+    slew_distance_weight: float = 0.0
+
+    @field_validator("config")
+    @classmethod
+    def validate_config(cls, v: Any) -> Any:
+        """Validate config parameter, allowing None or extracting values from MissionConfig-like objects."""
+        if v is None:
             raise ValueError("Config must be provided to TargetQueue")
-        self.config = config
-        self.constraint = config.constraint
-        self.acs_config = config.spacecraft_bus.attitude_control
-
-        self.targets = []
-        self.ephem = ephem
-        self.utime = 0.0
-        self.gs = None
-        self.log = log
-        # Optional weight to penalize long slews when selecting next target
-        self.slew_distance_weight = config.targets.slew_distance_weight
+        return v
 
     def __getitem__(self, number: int) -> Pointing:
         return self.targets[number]

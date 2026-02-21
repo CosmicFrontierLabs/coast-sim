@@ -96,35 +96,35 @@ class TestGetTarget:
     def test_get_target_calls_meritsort(self, queue_instance):
         """Test that meritsort is called with provided coordinates."""
         utime = 1762924800.0
-        with patch.object(queue_instance, "meritsort") as mock_meritsort:
+        with patch.object(type(queue_instance), "meritsort") as mock_meritsort:
             _ = queue_instance.get(ra=0, dec=0, utime=utime)
             mock_meritsort.assert_called_once_with()
 
     def test_get_target_returns_not_none(self, queue_instance):
         """Test that get returns a target when available."""
         utime = 1762924800.0
-        with patch.object(queue_instance, "meritsort"):
+        with patch.object(type(queue_instance), "meritsort"):
             target = queue_instance.get(ra=0, dec=0, utime=utime)
         assert target is not None
 
     def test_get_target_returns_first_target(self, queue_instance):
         """Test that get returns the first target in the queue."""
         utime = 1762924800.0
-        with patch.object(queue_instance, "meritsort"):
+        with patch.object(type(queue_instance), "meritsort"):
             target = queue_instance.get(ra=0, dec=0, utime=utime)
         assert target == queue_instance.targets[0]
 
     def test_get_target_calc_slewtime_called(self, queue_instance):
         """Test that calc_slewtime is called on the returned target."""
         utime = 1762924800.0
-        with patch.object(queue_instance, "meritsort"):
+        with patch.object(type(queue_instance), "meritsort"):
             target = queue_instance.get(ra=0, dec=0, utime=utime)
         target.calc_slewtime.assert_called_once_with(0, 0)
 
     def test_get_target_begin_set(self, queue_instance):
         """Test that the begin time is set correctly."""
         utime = 1762924800.0
-        with patch.object(queue_instance, "meritsort"):
+        with patch.object(type(queue_instance), "meritsort"):
             target = queue_instance.get(ra=0, dec=0, utime=utime)
         expected_begin = int(utime)
         assert target.begin == expected_begin
@@ -132,7 +132,7 @@ class TestGetTarget:
     def test_get_target_end_set(self, queue_instance):
         """Test that the end time is set correctly."""
         utime = 1762924800.0
-        with patch.object(queue_instance, "meritsort"):
+        with patch.object(type(queue_instance), "meritsort"):
             target = queue_instance.get(ra=0, dec=0, utime=utime)
         expected_end = int(utime + target.slewtime + target.ss_max)
         assert target.end == expected_end
@@ -145,7 +145,7 @@ class TestGetTarget:
         for target in queue_instance.targets:
             target.visible.return_value = False
 
-        with patch.object(queue_instance, "meritsort"):
+        with patch.object(type(queue_instance), "meritsort"):
             target = queue_instance.get(ra=0, dec=0, utime=utime)
 
         assert target is None
@@ -154,7 +154,7 @@ class TestGetTarget:
         """Test when observation end time exceeds ephemeris."""
         utime = queue_instance.ephem.timestamp[-1].timestamp() - 50
 
-        with patch.object(queue_instance, "meritsort"):
+        with patch.object(type(queue_instance), "meritsort"):
             target = queue_instance.get(ra=0, dec=0, utime=utime)
 
         endtime = utime + target.slewtime + target.ss_min
@@ -165,7 +165,7 @@ class TestGetTarget:
         """Test that visible() is called with the constrained ephemeris end."""
         utime = queue_instance.ephem.timestamp[-1].timestamp() - 50
 
-        with patch.object(queue_instance, "meritsort"):
+        with patch.object(type(queue_instance), "meritsort"):
             _ = queue_instance.get(ra=0, dec=0, utime=utime)
 
         expected_endtime_check = queue_instance.ephem.timestamp[-1].timestamp()
@@ -177,7 +177,7 @@ class TestGetTarget:
         """Test that get() can still return a target when observation is constrained by ephem."""
         utime = queue_instance.ephem.timestamp[-1].timestamp() - 50
 
-        with patch.object(queue_instance, "meritsort"):
+        with patch.object(type(queue_instance), "meritsort"):
             target = queue_instance.get(ra=0, dec=0, utime=utime)
 
         assert (
@@ -197,7 +197,7 @@ class TestSlewDistanceWeight:
         for i, target in enumerate(queue_instance.targets):
             target.slewdist = (i + 1) * 10.0  # 10, 20, 30, 40, 50
 
-        with patch.object(queue_instance, "meritsort"):
+        with patch.object(type(queue_instance), "meritsort"):
             target = queue_instance.get(ra=0, dec=0, utime=utime)
 
         # Should return first target (highest merit) regardless of slewdist
@@ -224,7 +224,7 @@ class TestSlewDistanceWeight:
         queue_instance.targets[4].merit = 60
         queue_instance.targets[4].slewdist = 50.0
 
-        with patch.object(queue_instance, "meritsort"):
+        with patch.object(type(queue_instance), "meritsort"):
             target = queue_instance.get(ra=0, dec=0, utime=utime)
 
         # Should return target[2] with best score despite lower merit
@@ -240,7 +240,7 @@ class TestSlewDistanceWeight:
             target.merit = 100
             target.slewdist = (i + 1) * 10.0  # 10, 20, 30, 40, 50
 
-        with patch.object(queue_instance, "meritsort"):
+        with patch.object(type(queue_instance), "meritsort"):
             target = queue_instance.get(ra=0, dec=0, utime=utime)
 
         # Should return target[0] with shortest slew distance
@@ -256,7 +256,7 @@ class TestSlewDistanceWeight:
             if hasattr(target, "slewdist"):
                 delattr(target, "slewdist")
 
-        with patch.object(queue_instance, "meritsort"):
+        with patch.object(type(queue_instance), "meritsort"):
             target = queue_instance.get(ra=0, dec=0, utime=utime)
 
         # Should still return first target (no penalty applied)

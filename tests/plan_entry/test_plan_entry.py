@@ -127,7 +127,9 @@ class TestPlanEntryInit:
 
     def test_init_without_config_raises_assertion(self):
         """Test that initialization without constraint raises AssertionError."""
-        with pytest.raises(ValueError, match="Config must be provided to PlanEntry"):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
             PlanEntry(config=None)
 
     def test_init_with_constraint_missing_ephem(self, mock_config):

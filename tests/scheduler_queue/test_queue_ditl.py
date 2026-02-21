@@ -13,7 +13,7 @@ class TestQueueDITLInitialization:
 
     def test_initialization_ppts_defaults(self, mock_config) -> None:
         with (
-            patch("conops.Queue"),
+            patch("conops.ditl.queue_ditl.Queue"),
             patch("conops.PassTimes"),
             patch("conops.ACS"),
         ):
@@ -23,7 +23,7 @@ class TestQueueDITLInitialization:
 
     def test_initialization_pointing_lists_empty(self, mock_config) -> None:
         with (
-            patch("conops.Queue"),
+            patch("conops.ditl.queue_ditl.Queue"),
             patch("conops.PassTimes"),
             patch("conops.ACS"),
         ):
@@ -36,7 +36,7 @@ class TestQueueDITLInitialization:
 
     def test_initialization_power_lists_empty_and_plan(self, mock_config) -> None:
         with (
-            patch("conops.Queue"),
+            patch("conops.ditl.queue_ditl.Queue"),
             patch("conops.PassTimes"),
             patch("conops.ACS"),
         ):
@@ -49,7 +49,7 @@ class TestQueueDITLInitialization:
 
     def test_initialization_stores_config_subsystems(self, mock_config) -> None:
         with (
-            patch("conops.Queue"),
+            patch("conops.ditl.queue_ditl.Queue"),
             patch("conops.PassTimes"),
             patch("conops.ACS"),
         ):

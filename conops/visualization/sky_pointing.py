@@ -480,9 +480,9 @@ class SkyPointingController:
             decs: list[float] = []
             sizes: list[int] = []
 
-            for ppt in self.ditl.plan:
-                ra = ppt.ra
-                dec = ppt.dec
+            for plan_entry in self.ditl.plan.entries:
+                ra = plan_entry.ra
+                dec = plan_entry.dec
 
                 # Convert RA from 0-360 to -180 to 180 for mollweide, with RA=0 on left
                 ra_plot = self._convert_ra_for_plotting(np.array([ra]))[0]
@@ -491,13 +491,13 @@ class SkyPointingController:
                 decs.append(np.deg2rad(dec))
 
                 # Size by observation type or ID
-                if hasattr(ppt, "obsid"):
+                if hasattr(plan_entry, "obsid"):
                     # Use obsid to determine size
-                    if ppt.obsid >= 1000000:
+                    if plan_entry.obsid >= 1000000:
                         sizes.append(100)
-                    elif ppt.obsid >= 20000:
+                    elif plan_entry.obsid >= 20000:
                         sizes.append(60)
-                    elif ppt.obsid >= 10000:
+                    elif plan_entry.obsid >= 10000:
                         sizes.append(40)
                     else:
                         sizes.append(40)
@@ -514,13 +514,17 @@ class SkyPointingController:
         colors: list[str] = []
         self.current_plot_categories = {}  # Reset for this plot
 
-        for ppt in self.ditl.plan:
+        for plan_entry in self.ditl.plan.entries:
             # Get base color from observation categories
             base_color = "tab:blue"  # Default fallback
             category_name = "Other"  # Default category name
             try:
-                if self.observation_categories is not None and hasattr(ppt, "obsid"):
-                    category = self.observation_categories.get_category(ppt.obsid)
+                if self.observation_categories is not None and hasattr(
+                    plan_entry, "obsid"
+                ):
+                    category = self.observation_categories.get_category(
+                        plan_entry.obsid
+                    )
                     if hasattr(category, "color") and isinstance(category.color, str):
                         base_color = category.color
                         category_name = category.name
@@ -534,9 +538,9 @@ class SkyPointingController:
 
             # Use full color for active target, lightened color for others
             if (
-                hasattr(self.ditl, "ppt")
-                and self.ditl.ppt is not None
-                and ppt == self.ditl.ppt
+                hasattr(self.ditl, "plan_entry")
+                and self.ditl.plan_entry is not None
+                and plan_entry == self.ditl.plan_entry
             ):
                 final_color = base_color  # Full color for active target
                 self.current_plot_categories[category_name] = (

@@ -207,11 +207,17 @@ def mock_ditl_with_ephem(mock_ditl: Mock) -> Mock:
     mock_plan_entry4.ra = 180.0
     mock_plan_entry4.dec = -30.0
 
-    mock_ditl.plan = [
+    # Create a Plan object with entries
+    mock_plan = Mock()
+    mock_plan.entries = [
         mock_plan_entry1,
         mock_plan_entry2,
         mock_plan_entry3,
         mock_plan_entry4,
     ]
+    # Make it behave like a list for indexing and len
+    mock_plan.__getitem__ = lambda self, idx: self.entries[idx]
+    mock_plan.__len__ = lambda self: len(self.entries)
+    mock_ditl.plan = mock_plan
 
     return mock_ditl

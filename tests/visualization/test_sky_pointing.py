@@ -28,13 +28,21 @@ def mock_ditl():
     ditl.mode = [1] * 100  # Mock ACS mode data
 
     # Plan with scheduled observations
-    ditl.plan = []
+    plan_entries = []
     for i in range(10):
         ppt = Mock()
         ppt.ra = np.random.uniform(0, 360)
         ppt.dec = np.random.uniform(-60, 60)
         ppt.obsid = 10000 + i
-        ditl.plan.append(ppt)
+        plan_entries.append(ppt)
+
+    # Create a Plan object with entries
+    mock_plan = Mock()
+    mock_plan.entries = plan_entries
+    # Make it behave like a list for indexing and len
+    mock_plan.__getitem__ = lambda self, idx: self.entries[idx]
+    mock_plan.__len__ = lambda self: len(self.entries)
+    ditl.plan = mock_plan
 
     # Mock constraint
     ditl.constraint = Mock()

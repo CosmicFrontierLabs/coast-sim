@@ -405,17 +405,21 @@ def _extract_observations(
         name: [] for name in categories.get_all_category_names()
     }
 
-    for ppt in ditl.plan:
+    for plan_entry in ditl.plan.entries:
         # Calculate observation start and duration
-        obs_start = (ppt.begin + ppt.slewtime - t_start) / 3600 - offset_hours
-        obs_duration = (ppt.end - (ppt.begin + ppt.slewtime)) / 3600
+        obs_start = (
+            plan_entry.begin + plan_entry.slewtime - t_start
+        ) / 3600 - offset_hours
+        obs_duration = (
+            plan_entry.end - (plan_entry.begin + plan_entry.slewtime)
+        ) / 3600
 
         # Skip if no duration or negative duration
         if obs_duration <= 0:
             continue
 
         # Categorize by obsid using configuration
-        category = categories.get_category(ppt.obsid)
+        category = categories.get_category(plan_entry.obsid)
         observations[category.name].append((obs_start, obs_duration))
 
     return observations
@@ -426,10 +430,10 @@ def _extract_slews(
 ) -> list[tuple[float, float]]:
     """Extract slew segments from plan."""
     slew_segments = []
-    for ppt in ditl.plan:
-        if ppt.slewtime > 0:
-            slew_start = (ppt.begin - t_start) / 3600 - offset_hours
-            slew_duration = ppt.slewtime / 3600
+    for plan_entry in ditl.plan.entries:
+        if plan_entry.slewtime > 0:
+            slew_start = (plan_entry.begin - t_start) / 3600 - offset_hours
+            slew_duration = plan_entry.slewtime / 3600
             slew_segments.append((slew_start, slew_duration))
     return slew_segments
 
@@ -651,9 +655,9 @@ def annotate_slew_distances(
 
     for idx in slew_indices:
         if idx < len(ditl.plan):
-            ppt = ditl.plan[idx]
-            if ppt.slewtime > 0 and hasattr(ppt, "slewdist"):
-                slew_start = (ppt.begin - t_start) / 3600 - offset_hours
+            plan_entry = ditl.plan[idx]
+            if plan_entry.slewtime > 0 and hasattr(plan_entry, "slewdist"):
+                slew_start = (plan_entry.begin - t_start) / 3600 - offset_hours
 
                 # Add arrow annotation
                 ax.annotate(
@@ -677,7 +681,7 @@ def annotate_slew_distances(
                 ax.text(
                     slew_start - 0.55,
                     0.14,
-                    f"{ppt.slewdist:.0f}°",
+                    f"{plan_entry.slewdist:.0f}°",
                     ha="right",
                     va="center",
                     fontsize=font_size,

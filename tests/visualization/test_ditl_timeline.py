@@ -130,7 +130,13 @@ class TestPlotDitlTimeline:
         mock_plan_entry.end = 3600.0
         mock_plan_entry.obsid = 10000
         mock_plan_entry.slewtime = 0.0
-        mock_ditl.plan = [mock_plan_entry]
+
+        # Create a mock Plan object
+        mock_plan = Mock()
+        mock_plan.entries = [mock_plan_entry]
+        mock_plan.__getitem__ = lambda self, idx: self.entries[idx]
+        mock_plan.__len__ = lambda self: len(self.entries)
+        mock_ditl.plan = mock_plan
 
         # Add timeline data with safe mode using telemetry
         from datetime import datetime, timedelta, timezone
@@ -176,11 +182,18 @@ class TestPlotDitlTimeline:
         from unittest.mock import Mock
 
         mock_ditl = Mock()
-        mock_ditl.plan = [Mock()]
-        mock_ditl.plan[0].begin = 0.0
-        mock_ditl.plan[0].end = 1800.0
-        mock_ditl.plan[0].obsid = 10000
-        mock_ditl.plan[0].slewtime = 0.0
+        mock_plan_entry = Mock()
+        mock_plan_entry.begin = 0.0
+        mock_plan_entry.end = 1800.0
+        mock_plan_entry.obsid = 10000
+        mock_plan_entry.slewtime = 0.0
+
+        # Create a mock Plan object
+        mock_plan = Mock()
+        mock_plan.entries = [mock_plan_entry]
+        mock_plan.__getitem__ = lambda self, idx: mock_plan.entries[idx]
+        mock_plan.__len__ = lambda self: len(mock_plan.entries)
+        mock_ditl.plan = mock_plan
         mock_ditl.config = Mock()
         mock_ditl.config.observation_categories = None
         mock_ditl.utime = []  # Empty utime

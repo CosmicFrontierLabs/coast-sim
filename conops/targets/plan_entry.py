@@ -15,7 +15,7 @@ class PlanEntry(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    config: MissionConfig | None = Field(default=None, exclude=True)
+    config: MissionConfig = Field(default_factory=MissionConfig, exclude=True)
     constraint: Constraint | None = Field(default=None, exclude=True)
     ephem: rust_ephem.Ephemeris | None = Field(default=None, exclude=True)
     acs_config: AttitudeControlSystem | None = Field(default=None, exclude=True)
