@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
-from .._version import __version__
 from .plan_entry import PlanEntry
 
 
@@ -70,21 +68,29 @@ class Plan(BaseModel):
             return 0.0
         return min(ppt.begin for ppt in self.entries)
 
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def begin(self) -> float:
+        return self.start
+
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def end(self) -> float:
         if not self.entries:
             return 0.0
         return max(ppt.end for ppt in self.entries)
 
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def number_of_targets(self) -> int:
+        return len(self.entries)
+
     @property
     def standard_filename(self) -> str:
         return self._standard_filename_for_bump()
 
     def _version_tag(self, bump: int = 0) -> str:
-        base_version = __version__.replace("+", "-")
-        if bump == 0:
-            return base_version
-        return f"{base_version}.{bump}"
+        return str(bump)
 
     def _standard_filename_for_bump(self, bump: int = 0) -> str:
         start_tag = self._format_timestamp(self.start)
@@ -92,43 +98,8 @@ class Plan(BaseModel):
         version_tag = self._version_tag(bump)
         return f"plan_{start_tag}_{end_tag}_v{version_tag}.json"
 
-    @staticmethod
-    def _serialize_entry(entry: PlanEntry) -> dict[str, object]:
-        if hasattr(entry, "model_dump"):
-            serialized = entry.model_dump(mode="json")
-            if isinstance(serialized, dict):
-                serialized["exposure"] = entry.exposure
-                return serialized
-
-        return {
-            "name": getattr(entry, "name", ""),
-            "obsid": getattr(entry, "obsid", 0),
-            "obstype": getattr(entry, "obstype", ""),
-            "ra": getattr(entry, "ra", 0.0),
-            "dec": getattr(entry, "dec", 0.0),
-            "roll": getattr(entry, "roll", 0.0),
-            "begin": getattr(entry, "begin", 0.0),
-            "end": getattr(entry, "end", 0.0),
-            "exposure": getattr(entry, "exposure", 0),
-            "exptime": getattr(entry, "exptime", None),
-            "slewtime": getattr(entry, "slewtime", 0),
-            "slewdist": getattr(entry, "slewdist", 0.0),
-            "insaa": getattr(entry, "insaa", 0),
-            "windows": getattr(entry, "windows", []),
-            "merit": getattr(entry, "merit", 0.0),
-            "ss_min": getattr(entry, "ss_min", None),
-            "ss_max": getattr(entry, "ss_max", None),
-            "slewpath": list(getattr(entry, "slewpath", ([], []))),
-        }
-
     def to_json_file(self, filepath: str) -> None:
-        payload = {
-            "version": __version__,
-            "start": self.start,
-            "end": self.end,
-            "entries": [self._serialize_entry(entry) for entry in self.entries],
-        }
-        Path(filepath).write_text(json.dumps(payload, indent=4))
+        Path(filepath).write_text(self.model_dump_json(indent=4))
 
     def write_to_disk(self, directory: str = ".") -> Path:
         output_directory = Path(directory)

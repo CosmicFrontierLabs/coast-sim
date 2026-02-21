@@ -4,7 +4,6 @@ import json
 from unittest.mock import Mock
 
 from conops import PlanEntry
-from conops._version import __version__
 
 
 class TestTargetList:
@@ -151,9 +150,8 @@ class TestPlan:
 
         filename = empty_plan.standard_filename
 
-        assert filename.startswith("plan_19700101T000000Z_19700101T000140Z_v")
+        assert filename.startswith("plan_19700101T000000Z_19700101T000140Z_v0")
         assert filename.endswith(".json")
-        assert __version__.replace("+", "-") in filename
 
     def test_write_to_disk_creates_json_with_metadata_and_entries(
         self, empty_plan, tmp_path
@@ -178,15 +176,34 @@ class TestPlan:
         ppt1.ss_min = 10
         ppt1.ss_max = 20
         ppt1.slewpath = ([1.0], [2.0])
+        ppt1.model_dump.return_value = {
+            "name": "PPT-1",
+            "obsid": 10,
+            "obstype": "PPT",
+            "ra": 10.5,
+            "dec": -5.0,
+            "roll": 0.25,
+            "begin": 100.0,
+            "end": 200.0,
+            "slewtime": 5,
+            "insaa": 0,
+            "exptime": 100,
+            "slewdist": 0.9,
+            "merit": 1.0,
+            "ss_min": 10,
+            "ss_max": 20,
+            "exporig": 100,
+        }
         empty_plan.append(ppt1)
 
         output_path = empty_plan.write_to_disk(str(tmp_path))
         payload = json.loads(output_path.read_text())
 
         assert output_path.name == empty_plan.standard_filename
-        assert payload["version"] == __version__
-        assert payload["start"] == 100.0
+        assert set(payload.keys()) == {"entries", "begin", "end", "number_of_targets"}
+        assert payload["begin"] == 100.0
         assert payload["end"] == 200.0
+        assert payload["number_of_targets"] == 1
         assert len(payload["entries"]) == 1
         assert payload["entries"][0]["name"] == "PPT-1"
         assert payload["entries"][0]["obsid"] == 10
@@ -197,6 +214,24 @@ class TestPlan:
         ppt1.begin = 100.0
         ppt1.end = 200.0
         ppt1.exposure = 95
+        ppt1.model_dump.return_value = {
+            "name": "PPT-1",
+            "obsid": 1,
+            "obstype": "PPT",
+            "ra": 0.0,
+            "dec": 0.0,
+            "roll": 0.0,
+            "begin": 100.0,
+            "end": 200.0,
+            "slewtime": 0,
+            "insaa": 0,
+            "exptime": 100,
+            "slewdist": 0.0,
+            "merit": 0.0,
+            "ss_min": 0.0,
+            "ss_max": 0.0,
+            "exporig": 100,
+        }
         empty_plan.append(ppt1)
 
         first_path = empty_plan.write_to_disk(str(tmp_path))
@@ -206,4 +241,4 @@ class TestPlan:
         assert second_path.exists()
         assert first_path != second_path
         assert second_path.name.endswith(".json")
-        assert __version__.replace("+", "-") + ".1" in second_path.name
+        assert "_v1.json" in second_path.name
