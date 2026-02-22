@@ -242,6 +242,9 @@ class DITL(DITLMixin, DITLStats):
                 recorder_alert=self.recorder.get_alert_level(),
                 sun_angle_deg=sun_angle_deg,
                 in_eclipse=self.acs.in_eclipse,
+                star_tracker_hard_violations=self.acs.star_tracker_hard_violations,
+                star_tracker_soft_violations=self.acs.star_tracker_soft_violations,
+                star_tracker_functional_count=self.acs.star_tracker_functional_count,
             )
 
             # Check fault management thresholds and red limit constraints

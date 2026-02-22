@@ -509,6 +509,9 @@ class QueueDITL(DITLMixin, DITLStats):
             recorder_alert=self.recorder.get_alert_level(),
             sun_angle_deg=self._compute_sun_angle(utime, ra, dec),
             in_eclipse=self.acs.in_eclipse,
+            star_tracker_hard_violations=self.acs.star_tracker_hard_violations,
+            star_tracker_soft_violations=self.acs.star_tracker_soft_violations,
+            star_tracker_functional_count=self.acs.star_tracker_functional_count,
         )
 
     def _track_ppt_in_timeline(self) -> None:

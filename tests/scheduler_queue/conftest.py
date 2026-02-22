@@ -149,6 +149,12 @@ def queue_ditl(mock_config, mock_ephem):
         mock_acs.acsmode = ACSMode.SCIENCE
         mock_acs.get_mode = Mock(return_value=ACSMode.SCIENCE)
         mock_acs.in_eclipse = False
+        # Add star tracker attributes for Housekeeping telemetry
+        mock_acs.configure_mock(
+            star_tracker_hard_violations=0,
+            star_tracker_soft_violations=False,
+            star_tracker_functional_count=3,  # Assume 3 functional star trackers by default
+        )
         # Mock the helper methods used in _fetch_new_ppt
         mock_target_request = Mock()
         mock_target_request.next_vis = Mock(return_value=1000.0)
@@ -542,6 +548,12 @@ def queue_ditl_no_queue_log(mock_config, mock_ephem):
         mock_acs.acsmode = ACSMode.SCIENCE
         mock_acs.get_mode = Mock(return_value=ACSMode.SCIENCE)
         mock_acs.in_eclipse = False
+        # Add star tracker attributes for Housekeeping telemetry
+        mock_acs.configure_mock(
+            star_tracker_hard_violations=0,
+            star_tracker_soft_violations=False,
+            star_tracker_functional_count=3,  # Assume 3 functional star trackers by default
+        )
         # Mock the helper methods used in _fetch_new_ppt
         mock_target_request = Mock()
         mock_target_request.next_vis = Mock(return_value=1000.0)
@@ -604,6 +616,12 @@ def queue_ditl_acs_no_ephem(mock_config, mock_ephem):
         mock_acs.acsmode = ACSMode.SCIENCE
         mock_acs.get_mode = Mock(return_value=ACSMode.SCIENCE)
         mock_acs.in_eclipse = False
+        # Add star tracker attributes for Housekeeping telemetry
+        mock_acs.configure_mock(
+            star_tracker_hard_violations=0,
+            star_tracker_soft_violations=False,
+            star_tracker_functional_count=3,  # Assume 3 functional star trackers by default
+        )
         # Mock the helper methods used in _fetch_new_ppt
         mock_target_request = Mock()
         mock_target_request.next_vis = Mock(return_value=1000.0)

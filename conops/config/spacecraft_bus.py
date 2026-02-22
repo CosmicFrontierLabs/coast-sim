@@ -4,6 +4,7 @@ from .acs import AttitudeControlSystem
 from .communications import CommunicationsSystem
 from .data_generator import DataGeneration
 from .power import PowerDraw
+from .star_tracker import StarTrackerConfiguration
 from .thermal import Heater
 
 
@@ -26,6 +27,10 @@ class SpacecraftBus(BaseModel):
     data_generation: DataGeneration = Field(
         default_factory=DataGeneration,
         description="Data generation specifications for bus-level data",
+    )
+    star_trackers: StarTrackerConfiguration = Field(
+        default_factory=StarTrackerConfiguration,
+        description="Star tracker configuration",
     )
 
     def power(self, mode: int | None = None, in_eclipse: bool = False) -> float:

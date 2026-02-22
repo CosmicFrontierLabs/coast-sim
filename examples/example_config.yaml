@@ -66,6 +66,84 @@ spacecraft_bus:
     rate_gbps: 0.0
     # per_observation_gb: Fixed data generated per observation in Gb
     per_observation_gb: 0.0
+  # star_trackers: Star tracker configuration
+  star_trackers:
+    star_trackers:
+      - name: ST-NadirSide
+        orientation:
+          boresight:
+          - 0.0
+          - 1.0
+          - 0.0
+        hard_constraint:
+          sun_constraint:
+            type: sun
+            min_angle: 25.0
+            max_angle: null
+          anti_sun_constraint:
+            type: sun
+            min_angle: 0.0
+            max_angle: 180.0
+          moon_constraint:
+            type: moon
+            min_angle: 20.0
+            max_angle: null
+          earth_constraint:
+            type: earth_limb
+            min_angle: 12.0
+            max_angle: null
+            include_refraction: false
+            horizon_dip: false
+          panel_constraint:
+            type: and
+            constraints:
+            - type: sun
+              min_angle: 45.0
+              max_angle: 135.0
+            - type: not
+              constraint:
+                type: eclipse
+                umbra_only: true
+        soft_constraint: null
+        modes_require_lock: null
+      - name: ST-ZenithSide
+        orientation:
+          boresight:
+          - 0.0
+          - -1.0
+          - 0.0
+        hard_constraint:
+          sun_constraint:
+            type: sun
+            min_angle: 20.0
+            max_angle: null
+          anti_sun_constraint:
+            type: sun
+            min_angle: 0.0
+            max_angle: 180.0
+          moon_constraint:
+            type: moon
+            min_angle: 20.0
+            max_angle: null
+          earth_constraint:
+            type: earth_limb
+            min_angle: 12.0
+            max_angle: null
+            include_refraction: false
+            horizon_dip: false
+          panel_constraint:
+            type: and
+            constraints:
+            - type: sun
+              min_angle: 45.0
+              max_angle: 135.0
+            - type: not
+              constraint:
+                type: eclipse
+                umbra_only: true
+        soft_constraint: null
+        modes_require_lock: null
+    min_functional_trackers: 1
 
 # Solar Panel Configuration. Defines solar array characteristics and power generation capability
 solar_panel:
@@ -277,6 +355,8 @@ fault_management:
       red: 0.5
       # direction: Fault direction: 'below' or 'above'
       direction: below
+      # acs_modes: ACS modes where this parameter should be checked
+      acs_modes: null
     - name: recorder_fill_fraction
       # yellow: Yellow threshold value
       yellow: 0.7
@@ -284,6 +364,17 @@ fault_management:
       red: 0.9
       # direction: Fault direction: 'below' or 'above'
       direction: above
+      # acs_modes: ACS modes where this parameter should be checked
+      acs_modes: null
+    - name: star_tracker_functional_count
+      # yellow: Yellow threshold value
+      yellow: 1.0
+      # red: Red threshold value
+      red: 0.0
+      # direction: Fault direction: 'below' or 'above'
+      direction: below
+      # acs_modes: ACS modes where this parameter should be checked
+      acs_modes: null
   # red_limit_constraints: List of spacecraft-level red limit constraints
   red_limit_constraints:
     - name: Sun Avoidance

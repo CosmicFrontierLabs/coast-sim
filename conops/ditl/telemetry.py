@@ -75,6 +75,15 @@ class Housekeeping(BaseModel):
     in_eclipse: bool | None = Field(
         default=None, description="Whether spacecraft is in eclipse"
     )
+    star_tracker_hard_violations: int | None = Field(
+        default=None, description="Number of star trackers violating hard constraints"
+    )
+    star_tracker_soft_violations: bool | None = Field(
+        default=None, description="Whether any star tracker violates soft constraints"
+    )
+    star_tracker_functional_count: int | None = Field(
+        default=None, description="Number of functional star trackers"
+    )
 
     @classmethod
     def extract_field(cls, records: list["Housekeeping"], field_name: str) -> list[Any]:
@@ -238,6 +247,21 @@ class HousekeepingList(list[Housekeeping]):
     def in_eclipse(self) -> list[bool | None]:
         """Get eclipse state values from all housekeeping records."""
         return [hk.in_eclipse for hk in self]
+
+    @property
+    def star_tracker_hard_violations(self) -> list[int | None]:
+        """Get star tracker hard violation counts from all housekeeping records."""
+        return [hk.star_tracker_hard_violations for hk in self]
+
+    @property
+    def star_tracker_soft_violations(self) -> list[bool | None]:
+        """Get star tracker soft violation states from all housekeeping records."""
+        return [hk.star_tracker_soft_violations for hk in self]
+
+    @property
+    def star_tracker_functional_count(self) -> list[int | None]:
+        """Get star tracker functional counts from all housekeeping records."""
+        return [hk.star_tracker_functional_count for hk in self]
 
 
 class Telemetry(BaseModel):
