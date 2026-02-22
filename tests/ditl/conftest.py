@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from matplotlib import pyplot as plt
 
-from conops import DITL, ACSMode
+from conops import DITL, ACSMode, Queue
 from conops.config import (
     BandCapability,
     Battery,
@@ -23,6 +23,7 @@ from conops.config import (
     SpacecraftBus,
 )
 from conops.ditl.ditl_mixin import DITLMixin
+from conops.ditl.ditl_stats import DITLStats
 from conops.ditl.telemetry import Housekeeping
 
 
@@ -59,6 +60,113 @@ class DummyEphemeris:
     def index(self, time):
         """Mock index method."""
         return 0
+
+
+class MockDITL(DITLMixin, DITLStats):
+    """Mock DITL class for statistics testing."""
+
+    def __init__(self, config: MissionConfig) -> None:
+        super().__init__(config)
+        self.ra = []
+        self.dec = []
+        self.roll = []
+        self.mode = []
+        self.panel = []
+        self.power = []
+        self.panel_power = []
+        self.batterylevel = []
+        self.obsid = []
+        self.utime = []
+
+
+def create_statistics_test_config(ephem: DummyEphemeris | None = None) -> MissionConfig:
+    """Create minimal MissionConfig for DITL statistics tests."""
+    if ephem is None:
+        ephem = DummyEphemeris()
+
+    spacecraft_bus = Mock(spec=SpacecraftBus)
+    spacecraft_bus.attitude_control = Mock()
+    spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))
+    spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
+    spacecraft_bus.star_trackers = Mock()
+    spacecraft_bus.star_trackers.set_ephem = Mock()
+    spacecraft_bus.star_trackers.num_trackers = Mock(return_value=0)
+
+    solar_panel = Mock(spec=SolarPanelSet)
+    solar_panel.optimal_charging_pointing = Mock(return_value=(45.0, 23.5))
+
+    payload = Mock(spec=Payload)
+    battery = Mock(spec=Battery)
+    battery.capacity = 100.0
+    battery.max_depth_of_discharge = 0.3
+    constraint = Mock(spec=Constraint)
+    constraint.ephem = ephem
+    ground_stations = Mock(spec=GroundStationRegistry)
+
+    return MissionConfig(
+        name="Test Spacecraft",
+        spacecraft_bus=spacecraft_bus,
+        solar_panel=solar_panel,
+        payload=payload,
+        battery=battery,
+        constraint=constraint,
+        ground_stations=ground_stations,
+    )
+
+
+def _populate_statistics_sample_data(ditl: MockDITL) -> None:
+    ditl.begin = datetime.datetime(2025, 11, 1, 0, 0, 0)
+    ditl.end = datetime.datetime(2025, 11, 1, 1, 0, 0)
+    ditl.step_size = 60
+
+    for i in range(60):
+        ditl.utime.append(i * 60)
+        ditl.ra.append(180.0 + i * 0.1)
+        ditl.dec.append(45.0 + i * 0.05)
+        ditl.roll.append(0.0)
+        ditl.mode.append(ACSMode.SCIENCE if i % 5 != 0 else ACSMode.SLEWING)
+        ditl.panel.append(0.8 if i % 10 < 8 else 0.0)
+        ditl.power.append(50.0 + i * 0.5)
+        ditl.panel_power.append(80.0 if i % 10 < 8 else 0.0)
+        ditl.batterylevel.append(0.8 - i * 0.001)
+        ditl.obsid.append(1000 + (i // 10))
+
+
+@pytest.fixture
+def statistics_test_config() -> MissionConfig:
+    return create_statistics_test_config()
+
+
+@pytest.fixture
+def ditl_basic(statistics_test_config: MissionConfig) -> MockDITL:
+    ditl = MockDITL(statistics_test_config)
+    _populate_statistics_sample_data(ditl)
+    return ditl
+
+
+@pytest.fixture
+def ditl_empty(statistics_test_config: MissionConfig) -> MockDITL:
+    ditl = MockDITL(statistics_test_config)
+    ditl.begin = datetime.datetime(2025, 11, 1, 0, 0, 0)
+    ditl.end = datetime.datetime(2025, 11, 1, 1, 0, 0)
+    ditl.step_size = 60
+    return ditl
+
+
+@pytest.fixture
+def ditl_with_queue(statistics_test_config: MissionConfig) -> MockDITL:
+    ditl = MockDITL(statistics_test_config)
+    ditl.begin = datetime.datetime(2025, 11, 1, 0, 0, 0)
+    ditl.end = datetime.datetime(2025, 11, 1, 1, 0, 0)
+    ditl.step_size = 60
+    ditl.utime = [0]
+    ditl.mode = [ACSMode.SCIENCE]
+    ditl.obsid = [1000]
+    ditl.batterylevel = [0.8]
+    ditl.ra = [180.0]
+    ditl.dec = [45.0]
+    ditl.queue = Queue(config=statistics_test_config)
+    return ditl
 
 
 @pytest.fixture
@@ -144,7 +252,7 @@ def mock_config_detailed():
 
 
 @pytest.fixture
-def ditl(mock_config_detailed, mock_ephem):
+def ditl(mock_config_detailed, mock_ephem) -> DITL:
     """Create a DITL instance with mocked dependencies."""
     with (
         patch("conops.PassTimes") as mock_passtimes,
