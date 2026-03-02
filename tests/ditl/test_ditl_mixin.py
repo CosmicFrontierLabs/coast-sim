@@ -2,6 +2,8 @@ from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
 import matplotlib
+import numpy as np
+import pytest
 from matplotlib.figure import Figure
 
 from conops import DITLMixin
@@ -348,3 +350,71 @@ class TestDITLMixin:
 
             # Verify _init_subsystems was called
             mock_init_subsystems.assert_called_once()
+
+    def test_instantaneous_field_of_regard_full_sky_returns_4pi_steradians(
+        self, ditl_instance: tuple[DITLMixin, Mock, Mock]
+    ) -> None:
+        """instantaneous_field_of_regard should return 4*pi sr when unconstrained everywhere."""
+        ditl, _, _ = ditl_instance
+
+        ditl.constraint.in_constraint_batch = Mock(
+            return_value=np.zeros(12, dtype=bool)
+        )
+
+        visible_sr = ditl.instantaneous_field_of_regard(utime=1000.0, n_ra=4, n_dec=3)
+
+        assert np.isclose(visible_sr, 4.0 * np.pi)
+
+    def test_instantaneous_field_of_regard_all_constrained_returns_zero(
+        self, ditl_instance: tuple[DITLMixin, Mock, Mock]
+    ) -> None:
+        """instantaneous_field_of_regard should return 0 sr when constrained everywhere."""
+        ditl, _, _ = ditl_instance
+
+        ditl.constraint.in_constraint_batch = Mock(return_value=np.ones(6, dtype=bool))
+
+        visible_sr = ditl.instantaneous_field_of_regard(utime=1000.0, n_ra=3, n_dec=2)
+
+        assert np.isclose(visible_sr, 0.0)
+
+    def test_instantaneous_field_of_regard_partial_visibility_returns_expected_area(
+        self, ditl_instance: tuple[DITLMixin, Mock, Mock]
+    ) -> None:
+        """instantaneous_field_of_regard should return expected steradians for partial visibility."""
+        ditl, _, _ = ditl_instance
+
+        # n_ra=2, n_dec=2 -> each cell has area pi sr. Two visible cells -> 2*pi sr.
+        violations = np.array([False, True, True, False], dtype=bool)
+        ditl.constraint.in_constraint_batch = Mock(return_value=violations)
+
+        visible_sr = ditl.instantaneous_field_of_regard(utime=1000.0, n_ra=2, n_dec=2)
+
+        assert np.isclose(visible_sr, 2.0 * np.pi)
+
+    def test_instantaneous_field_of_regard_calls_constraint_batch(
+        self, ditl_instance: tuple[DITLMixin, Mock, Mock]
+    ) -> None:
+        """instantaneous_field_of_regard should evaluate constraints via in_constraint_batch."""
+        ditl, _, _ = ditl_instance
+
+        ditl.constraint.in_constraint_batch = Mock(return_value=np.zeros(6, dtype=bool))
+
+        ditl.instantaneous_field_of_regard(utime=1234.5, n_ra=3, n_dec=2)
+
+        ditl.constraint.in_constraint_batch.assert_called_once()
+        kwargs = ditl.constraint.in_constraint_batch.call_args.kwargs
+        assert kwargs["utime"] == 1234.5
+        assert len(kwargs["ras"]) == 6
+        assert len(kwargs["decs"]) == 6
+
+    def test_instantaneous_field_of_regard_rejects_nonpositive_grid_sizes(
+        self, ditl_instance: tuple[DITLMixin, Mock, Mock]
+    ) -> None:
+        """instantaneous_field_of_regard should raise for invalid grid dimensions."""
+        ditl, _, _ = ditl_instance
+
+        with pytest.raises(ValueError, match="n_ra must be a positive integer"):
+            ditl.instantaneous_field_of_regard(utime=1000.0, n_ra=0, n_dec=10)
+
+        with pytest.raises(ValueError, match="n_dec must be a positive integer"):
+            ditl.instantaneous_field_of_regard(utime=1000.0, n_ra=10, n_dec=0)

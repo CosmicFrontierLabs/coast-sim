@@ -315,3 +315,14 @@ class TestDITLIntegration:
         ditl.calc()
         # Should have 4 timesteps (np.arange from 0 to 4 with step 1 gives [0,1,2,3])
         assert len(ditl.utime) == 4
+
+    def test_housekeeping_records_for_solid_angle(self, ditl: DITL) -> None:
+        """Test that FOR solid angle is recorded in housekeeping telemetry."""
+        with patch.object(
+            DITL, "instantaneous_field_of_regard", return_value=1.234
+        ) as mock_for:
+            ditl.calc()
+
+        assert len(ditl.telemetry.housekeeping) > 0
+        assert all(hk.for_solid_angle_sr == 1.234 for hk in ditl.telemetry.housekeeping)
+        assert mock_for.call_count == len(ditl.telemetry.housekeeping)

@@ -1,6 +1,7 @@
 from datetime import datetime
 
 import matplotlib.pyplot as plt
+import numpy as np
 import rust_ephem
 
 from conops.common.enums import ACSMode
@@ -228,3 +229,62 @@ class DITLMixin:
                     best_effective = effective
 
         return best_effective if best_effective > 0.0 else None
+
+    def instantaneous_field_of_regard(
+        self,
+        utime: float,
+        n_ra: int = 360,
+        n_dec: int = 180,
+    ) -> float:
+        """Compute instantaneous field of regard as visible solid angle.
+
+        The field of regard is the region of sky that is visible (i.e., not
+        constrained) at a given time after all configured constraints are
+        applied. This method returns the visible region area in steradians.
+
+        Args:
+            utime: Unix timestamp for the instantaneous evaluation.
+            n_ra: Number of right-ascension samples in [0, 360).
+            n_dec: Number of declination bins spanning [-90, 90].
+
+        Returns:
+            Visible field of regard in steradians.
+        """
+        if n_ra <= 0:
+            raise ValueError("n_ra must be a positive integer")
+        if n_dec <= 0:
+            raise ValueError("n_dec must be a positive integer")
+
+        ra_edges = np.linspace(0.0, 360.0, n_ra + 1)
+        dec_edges = np.linspace(-90.0, 90.0, n_dec + 1)
+        ra_centers = 0.5 * (ra_edges[:-1] + ra_edges[1:])
+        dec_centers = 0.5 * (dec_edges[:-1] + dec_edges[1:])
+        ra_grid, dec_grid = np.meshgrid(ra_centers, dec_centers)
+
+        violations_flat = self.constraint.in_constraint_batch(
+            ras=ra_grid.ravel().tolist(),
+            decs=dec_grid.ravel().tolist(),
+            utime=utime,
+        )
+
+        violations = np.asarray(violations_flat, dtype=bool).ravel()
+        expected_size = n_dec * n_ra
+        if violations.size == 1:
+            violations = np.full(expected_size, bool(violations[0]), dtype=bool)
+        elif violations.size != expected_size:
+            raise ValueError(
+                "Constraint batch result size mismatch: "
+                f"expected {expected_size}, got {violations.size}"
+            )
+
+        visible_mask = ~violations.reshape((n_dec, n_ra))
+
+        d_ra = np.deg2rad(ra_edges[1] - ra_edges[0])
+        dec_edges_rad = np.deg2rad(dec_edges)
+        dec_band_areas = d_ra * (np.sin(dec_edges_rad[1:]) - np.sin(dec_edges_rad[:-1]))
+
+        visible_solid_angle_sr = float(
+            np.sum(dec_band_areas[:, np.newaxis] * visible_mask)
+        )
+
+        return visible_solid_angle_sr

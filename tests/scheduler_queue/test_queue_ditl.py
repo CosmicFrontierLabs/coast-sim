@@ -1069,13 +1069,16 @@ class TestCalcMethod:
         queue_ditl.recorder.get_fill_fraction = Mock(return_value=0.92)
         queue_ditl.recorder.get_alert_level = Mock(return_value=2)
 
-        hk = queue_ditl._create_housekeeping_record(
-            utime=1000.0,
-            ra=45.0,
-            dec=30.0,
-            roll=10.0,
-            mode=ACSMode.SCIENCE,
-        )
+        with patch.object(
+            queue_ditl, "instantaneous_field_of_regard", return_value=1.234
+        ):
+            hk = queue_ditl._create_housekeeping_record(
+                utime=1000.0,
+                ra=45.0,
+                dec=30.0,
+                roll=10.0,
+                mode=ACSMode.SCIENCE,
+            )
 
         assert isinstance(hk, Housekeeping)
         assert hk.panel_illumination == 0.75
@@ -1083,6 +1086,7 @@ class TestCalcMethod:
         assert hk.recorder_volume_gb == 12.5
         assert hk.recorder_fill_fraction == 0.92
         assert hk.recorder_alert == 2
+        assert hk.for_solid_angle_sr == 1.234
 
     def test_track_ppt_in_timeline_closes_placeholder_end_times(
         self, queue_ditl
