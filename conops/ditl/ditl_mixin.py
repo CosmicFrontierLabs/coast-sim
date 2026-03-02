@@ -1,7 +1,6 @@
 from datetime import datetime
 
 import matplotlib.pyplot as plt
-import numpy as np
 import rust_ephem
 
 from conops.common.enums import ACSMode
@@ -107,38 +106,6 @@ class DITLMixin:
 
         # Initialize common subsystems (can be overridden by subclasses)
         self._init_subsystems()
-
-        # Cache FOR geometry by (n_ra, n_dec) to avoid rebuilding each timestep
-        self._for_geometry_cache: dict[
-            tuple[int, int], tuple[list[float], list[float], np.ndarray]
-        ] = {}
-        self._for_value_cache: dict[tuple[int, int, int, int], float] = {}
-
-    def _get_for_geometry_cache(
-        self, n_ra: int, n_dec: int
-    ) -> tuple[list[float], list[float], np.ndarray]:
-        """Return cached FOR sampling geometry for a given grid size."""
-        key = (n_ra, n_dec)
-        cached = self._for_geometry_cache.get(key)
-        if cached is not None:
-            return cached
-
-        ra_edges = np.linspace(0.0, 360.0, n_ra + 1)
-        dec_edges = np.linspace(-90.0, 90.0, n_dec + 1)
-        ra_centers = 0.5 * (ra_edges[:-1] + ra_edges[1:])
-        dec_centers = 0.5 * (dec_edges[:-1] + dec_edges[1:])
-        ra_grid, dec_grid = np.meshgrid(ra_centers, dec_centers)
-
-        ras = ra_grid.ravel().tolist()
-        decs = dec_grid.ravel().tolist()
-
-        d_ra = np.deg2rad(ra_edges[1] - ra_edges[0])
-        dec_edges_rad = np.deg2rad(dec_edges)
-        dec_band_areas = d_ra * (np.sin(dec_edges_rad[1:]) - np.sin(dec_edges_rad[:-1]))
-
-        result = (ras, decs, dec_band_areas)
-        self._for_geometry_cache[key] = result
-        return result
 
     def _init_subsystems(self) -> None:
         """Initialize subsystems from config. Can be overridden by subclasses."""
