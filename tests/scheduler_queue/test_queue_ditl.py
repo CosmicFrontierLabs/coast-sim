@@ -1070,7 +1070,7 @@ class TestCalcMethod:
         queue_ditl.recorder.get_alert_level = Mock(return_value=2)
 
         with patch.object(
-            queue_ditl, "instantaneous_field_of_regard", return_value=1.234
+            queue_ditl.constraint, "instantaneous_field_of_regard", return_value=1.234
         ):
             hk = queue_ditl._create_housekeeping_record(
                 utime=1000.0,
