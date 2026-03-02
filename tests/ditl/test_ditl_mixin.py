@@ -418,3 +418,81 @@ class TestDITLMixin:
 
         with pytest.raises(ValueError, match="n_dec must be a positive integer"):
             ditl.instantaneous_field_of_regard(utime=1000.0, n_ra=10, n_dec=0)
+
+    def test_instantaneous_field_of_regard_reuses_cached_geometry(
+        self, ditl_instance: tuple[DITLMixin, Mock, Mock]
+    ) -> None:
+        """instantaneous_field_of_regard should reuse RA/Dec geometry cache for same grid size."""
+        ditl, _, _ = ditl_instance
+
+        ditl.constraint.in_constraint_batch = Mock(
+            side_effect=[np.zeros(6, dtype=bool), np.ones(6, dtype=bool)]
+        )
+
+        ditl.instantaneous_field_of_regard(utime=1000.0, n_ra=3, n_dec=2)
+        ditl.instantaneous_field_of_regard(utime=1060.0, n_ra=3, n_dec=2)
+
+        kwargs1 = ditl.constraint.in_constraint_batch.call_args_list[0].kwargs
+        kwargs2 = ditl.constraint.in_constraint_batch.call_args_list[1].kwargs
+
+        assert kwargs1["ras"] is kwargs2["ras"]
+        assert kwargs1["decs"] is kwargs2["decs"]
+        assert len(ditl._for_geometry_cache) == 1
+
+    def test_instantaneous_field_of_regard_caches_by_grid_size(
+        self, ditl_instance: tuple[DITLMixin, Mock, Mock]
+    ) -> None:
+        """instantaneous_field_of_regard should keep separate geometry caches per resolution."""
+        ditl, _, _ = ditl_instance
+
+        ditl.constraint.in_constraint_batch = Mock(
+            side_effect=[np.zeros(6, dtype=bool), np.zeros(12, dtype=bool)]
+        )
+
+        ditl.instantaneous_field_of_regard(utime=1000.0, n_ra=3, n_dec=2)
+        ditl.instantaneous_field_of_regard(utime=1060.0, n_ra=4, n_dec=3)
+
+        assert len(ditl._for_geometry_cache) == 2
+
+    def test_housekeeping_field_of_regard_reuses_value_within_cadence_bucket(
+        self, ditl_instance: tuple[DITLMixin, Mock, Mock]
+    ) -> None:
+        """housekeeping_field_of_regard should reuse cached value within the same cadence bucket."""
+        ditl, _, _ = ditl_instance
+
+        with patch.object(
+            ditl, "instantaneous_field_of_regard", return_value=1.234
+        ) as mock_for:
+            first = ditl.housekeeping_field_of_regard(utime=1000.0, cadence_steps=5)
+            second = ditl.housekeeping_field_of_regard(utime=1180.0, cadence_steps=5)
+
+        assert first == 1.234
+        assert second == 1.234
+        assert mock_for.call_count == 1
+
+    def test_housekeeping_field_of_regard_recomputes_across_cadence_buckets(
+        self, ditl_instance: tuple[DITLMixin, Mock, Mock]
+    ) -> None:
+        """housekeeping_field_of_regard should recompute when moving to a new cadence bucket."""
+        ditl, _, _ = ditl_instance
+
+        with patch.object(
+            ditl, "instantaneous_field_of_regard", side_effect=[1.0, 2.0]
+        ) as mock_for:
+            first = ditl.housekeeping_field_of_regard(utime=1000.0, cadence_steps=5)
+            second = ditl.housekeeping_field_of_regard(utime=1300.0, cadence_steps=5)
+
+        assert first == 1.0
+        assert second == 2.0
+        assert mock_for.call_count == 2
+
+    def test_housekeeping_field_of_regard_rejects_nonpositive_cadence(
+        self, ditl_instance: tuple[DITLMixin, Mock, Mock]
+    ) -> None:
+        """housekeeping_field_of_regard should raise for invalid cadence_steps."""
+        ditl, _, _ = ditl_instance
+
+        with pytest.raises(
+            ValueError, match="cadence_steps must be a positive integer"
+        ):
+            ditl.housekeeping_field_of_regard(utime=1000.0, cadence_steps=0)

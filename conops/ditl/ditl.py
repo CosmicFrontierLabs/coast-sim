@@ -223,7 +223,9 @@ class DITL(DITLMixin, DITLStats):
 
             # Create housekeeping telemetry record for fault checking
             sun_angle_deg = self._compute_sun_angle(self.utime[i], ra, dec)
-            for_solid_angle_sr = self.instantaneous_field_of_regard(utime=self.utime[i])
+            for_solid_angle_sr = self.constraint.instantaneous_field_of_regard(
+                utime=self.utime[i]
+            )
             hk = Housekeeping(
                 timestamp=datetime.fromtimestamp(self.utime[i], tz=timezone.utc),
                 ra=ra,

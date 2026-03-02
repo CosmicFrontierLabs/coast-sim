@@ -508,7 +508,9 @@ class QueueDITL(DITLMixin, DITLStats):
             recorder_fill_fraction=self.recorder.get_fill_fraction(),
             recorder_alert=self.recorder.get_alert_level(),
             sun_angle_deg=self._compute_sun_angle(utime, ra, dec),
-            for_solid_angle_sr=self.instantaneous_field_of_regard(utime=utime),
+            for_solid_angle_sr=self.constraint.instantaneous_field_of_regard(
+                utime=utime
+            ),
             in_eclipse=self.acs.in_eclipse,
         )
 

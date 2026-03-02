@@ -319,7 +319,7 @@ class TestDITLIntegration:
     def test_housekeeping_records_for_solid_angle(self, ditl: DITL) -> None:
         """Test that FOR solid angle is recorded in housekeeping telemetry."""
         with patch.object(
-            DITL, "instantaneous_field_of_regard", return_value=1.234
+            DITL, "housekeeping_field_of_regard", return_value=1.234
         ) as mock_for:
             ditl.calc()
 
