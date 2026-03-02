@@ -69,9 +69,17 @@ class QueueDITL(DITLMixin, DITLStats):
         begin: datetime | None = None,
         end: datetime | None = None,
         queue: Queue | None = None,
+        calculate_field_of_regard: bool = False,
     ) -> None:
         # Initialize mixin
-        DITLMixin.__init__(self, config=config, ephem=ephem, begin=begin, end=end)
+        DITLMixin.__init__(
+            self,
+            config=config,
+            ephem=ephem,
+            begin=begin,
+            end=end,
+            calculate_field_of_regard=calculate_field_of_regard,
+        )
 
         # Current target (already set in mixin but repeated for clarity)
         self.ppt = None
@@ -508,8 +516,10 @@ class QueueDITL(DITLMixin, DITLStats):
             recorder_fill_fraction=self.recorder.get_fill_fraction(),
             recorder_alert=self.recorder.get_alert_level(),
             sun_angle_deg=self._compute_sun_angle(utime, ra, dec),
-            for_solid_angle_sr=self.constraint.instantaneous_field_of_regard(
-                utime=utime
+            for_solid_angle_sr=(
+                self.constraint.instantaneous_field_of_regard(utime=utime)
+                if self.calculate_field_of_regard
+                else None
             ),
             in_eclipse=self.acs.in_eclipse,
         )

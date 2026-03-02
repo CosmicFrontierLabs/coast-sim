@@ -1088,6 +1088,26 @@ class TestCalcMethod:
         assert hk.recorder_alert == 2
         assert hk.for_solid_angle_sr == 1.234
 
+    def test_create_housekeeping_record_skips_for_when_disabled(
+        self, queue_ditl
+    ) -> None:
+        """Housekeeping helper should omit FOR when calculation is disabled."""
+        queue_ditl.calculate_field_of_regard = False
+
+        with patch.object(
+            queue_ditl.constraint, "instantaneous_field_of_regard"
+        ) as mock_for:
+            hk = queue_ditl._create_housekeeping_record(
+                utime=1000.0,
+                ra=45.0,
+                dec=30.0,
+                roll=10.0,
+                mode=ACSMode.SCIENCE,
+            )
+
+        assert hk.for_solid_angle_sr is None
+        mock_for.assert_not_called()
+
     def test_track_ppt_in_timeline_closes_placeholder_end_times(
         self, queue_ditl
     ) -> None:

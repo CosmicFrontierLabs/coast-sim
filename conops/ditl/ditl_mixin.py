@@ -43,6 +43,7 @@ class DITLMixin:
     data_downlinked_gb: list[float]
     # Telemetry container
     telemetry: Telemetry
+    calculate_field_of_regard: bool
 
     def __init__(
         self,
@@ -51,9 +52,11 @@ class DITLMixin:
         begin: datetime | None = None,
         end: datetime | None = None,
         plan: Plan = Plan(),
+        calculate_field_of_regard: bool = False,
     ) -> None:
         # Initialize mixin
         self.config = config
+        self.calculate_field_of_regard = calculate_field_of_regard
 
         # Initialize telemetry container
         self.telemetry = Telemetry()

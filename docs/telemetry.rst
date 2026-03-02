@@ -73,6 +73,12 @@ Housekeeping Fields
    - ``recorder_fill_fraction``: Recorder fill fraction (0-1)
    - ``recorder_alert``: Recorder alert level (0=normal, 1=warning, 2=critical)
 
+**Constraint Geometry**
+   - ``sun_angle_deg``: Angular distance from current pointing to Sun in degrees
+   - ``for_solid_angle_sr``: Instantaneous field-of-regard solid angle in steradians.
+     This value is optional and is ``None`` unless FOR calculation is enabled.
+   - ``in_eclipse``: Whether spacecraft is in eclipse
+
 Payload Data
 ------------
 
@@ -152,7 +158,9 @@ During DITL simulation, telemetry data is automatically recorded and stored in t
    from conops import MissionConfig
 
    config = MissionConfig()
-   ditl = QueueDITL(config=config)
+   # FOR calculation is disabled by default.
+   # Enable it only when this telemetry is needed.
+   ditl = QueueDITL(config=config, calculate_field_of_regard=True)
    ditl.calc()  # Run simulation
 
    # Access telemetry data

@@ -326,3 +326,14 @@ class TestDITLIntegration:
         assert len(ditl.telemetry.housekeeping) > 0
         assert all(hk.for_solid_angle_sr == 1.234 for hk in ditl.telemetry.housekeeping)
         assert mock_for.call_count == len(ditl.telemetry.housekeeping)
+
+    def test_housekeeping_skips_for_when_disabled(self, ditl: DITL) -> None:
+        """FOR calculation should be optional and omitted when disabled."""
+        ditl.calculate_field_of_regard = False
+
+        with patch.object(ditl.constraint, "instantaneous_field_of_regard") as mock_for:
+            ditl.calc()
+
+        assert len(ditl.telemetry.housekeeping) > 0
+        assert all(hk.for_solid_angle_sr is None for hk in ditl.telemetry.housekeeping)
+        mock_for.assert_not_called()

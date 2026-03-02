@@ -33,6 +33,8 @@ Here's a simple example of running a Day-In-The-Life (DITL) simulation:
     )
 
     # Create DITL object
+    # Field-of-regard telemetry is disabled by default.
+    # Enable with calculate_field_of_regard=True when needed.
     ditl = QueueDITL(config=config, ephem=ephemeris)
 
     # Add 1000 random observations to the observation queue
