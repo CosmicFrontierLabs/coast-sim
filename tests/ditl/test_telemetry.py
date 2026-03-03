@@ -27,6 +27,7 @@ class TestHousekeeping:
         assert hk.dec is None
         assert hk.roll == 0.0  # Has default
         assert hk.acs_mode is None
+        assert hk.for_solid_angle_sr is None
 
     def test_housekeeping_creation_with_values(self) -> None:
         """Test creating Housekeeping with specific values."""
@@ -197,6 +198,7 @@ class TestTelemetry:
             dec=30.0,
             acs_mode=ACSMode.SCIENCE,
             sun_angle_deg=10.0,
+            for_solid_angle_sr=3.1,
             in_eclipse=False,
         )
         hk2 = Housekeeping(
@@ -205,6 +207,7 @@ class TestTelemetry:
             dec=60.0,
             acs_mode=ACSMode.SAFE,
             sun_angle_deg=20.0,
+            for_solid_angle_sr=2.8,
             in_eclipse=True,
         )
         tm = Telemetry(housekeeping=HousekeepingList([hk1, hk2]))
@@ -213,6 +216,7 @@ class TestTelemetry:
         assert tm.housekeeping.dec == [30.0, 60.0]
         assert tm.housekeeping.acs_mode == [ACSMode.SCIENCE, ACSMode.SAFE]
         assert tm.housekeeping.sun_angle_deg == [10.0, 20.0]
+        assert tm.housekeeping.for_solid_angle_sr == [3.1, 2.8]
         assert tm.housekeeping.in_eclipse == [False, True]
 
     def test_attribute_access_on_data(self) -> None:

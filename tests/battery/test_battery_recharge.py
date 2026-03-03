@@ -1071,9 +1071,18 @@ class TestQueueDITLEmergencyCharging:
     def test_initialization_adds_charging_ppt_attribute(self, mock_config) -> None:
         """Test that QueueDITL initializes charging-related variables."""
 
-        def mock_ditl_init(self, config=None, ephem=None, begin=None, end=None):
+        def mock_ditl_init(
+            self,
+            config=None,
+            ephem=None,
+            begin=None,
+            end=None,
+            calculate_field_of_regard=False,
+            **kwargs,
+        ):
             self.config = config
             self.ephem = ephem or Mock()
+            self.calculate_field_of_regard = calculate_field_of_regard
             self._init_subsystems()
 
         with patch(
@@ -1085,9 +1094,18 @@ class TestQueueDITLEmergencyCharging:
             assert hasattr(ditl, "charging_ppt")
 
     def test_initialization_charging_ppt_is_none(self, mock_config) -> None:
-        def mock_ditl_init(self, config=None, ephem=None, begin=None, end=None):
+        def mock_ditl_init(
+            self,
+            config=None,
+            ephem=None,
+            begin=None,
+            end=None,
+            calculate_field_of_regard=False,
+            **kwargs,
+        ):
             self.config = config
             self.ephem = ephem or Mock()
+            self.calculate_field_of_regard = calculate_field_of_regard
             self._init_subsystems()
 
         with patch(
@@ -1099,9 +1117,18 @@ class TestQueueDITLEmergencyCharging:
             assert ditl.charging_ppt is None
 
     def test_initialization_emergency_charging_exists(self, mock_config) -> None:
-        def mock_ditl_init(self, config=None, ephem=None, begin=None, end=None):
+        def mock_ditl_init(
+            self,
+            config=None,
+            ephem=None,
+            begin=None,
+            end=None,
+            calculate_field_of_regard=False,
+            **kwargs,
+        ):
             self.config = config
             self.ephem = ephem or Mock()
+            self.calculate_field_of_regard = calculate_field_of_regard
             self._init_subsystems()
 
         with patch(

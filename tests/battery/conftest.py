@@ -121,10 +121,19 @@ def mock_config(mock_ephem):
 def queue_ditl(mock_config):
     """Create a QueueDITL instance with mocked dependencies."""
 
-    def mock_ditl_init(self, config=None, ephem=None, begin=None, end=None):
+    def mock_ditl_init(
+        self,
+        config=None,
+        ephem=None,
+        begin=None,
+        end=None,
+        calculate_field_of_regard=False,
+        **kwargs,
+    ):
         """Mock DITLMixin.__init__ that sets config and calls _init_subsystems."""
         self.config = config
         self.ephem = ephem or Mock()  # Mock ephem
+        self.calculate_field_of_regard = calculate_field_of_regard
         self._init_subsystems()
 
     with patch(

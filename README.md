@@ -70,6 +70,9 @@ ephemeris = TLEEphemeris(tle="example.tle", begin=begin, end=end)
 
 # Run DITL simulation
 ditl = QueueDITL(config=config)
+# Field-of-regard telemetry is optional and disabled by default.
+# Enable it only when needed:
+# ditl = QueueDITL(config=config, calculate_field_of_regard=True)
 ditl.ephem = ephemeris
 ditl.begin = begin
 ditl.end = end
@@ -176,6 +179,10 @@ Pydantic-based configuration management for spacecraft parameters, instruments, 
 ### DITL Simulation (`conops.ditl`)
 
 Day-In-The-Life simulation classes including DITL, DITLMixin, and QueueDITL for comprehensive timeline simulation.
+
+Instantaneous field-of-regard telemetry (`for_solid_angle_sr`) is optional and
+disabled by default for performance. To enable it, pass
+`calculate_field_of_regard=True` when creating `DITL` or `QueueDITL`.
 
 ### Scheduling (`conops.schedulers`)
 

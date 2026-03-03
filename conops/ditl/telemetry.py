@@ -32,6 +32,7 @@ class Housekeeping(BaseModel):
         recorder_fill_fraction: Recorder fill fraction (0-1)
         recorder_alert: Recorder alert level (0/1/2)
         sun_angle_deg: Angular distance from pointing to the Sun in degrees
+        for_solid_angle_sr: Instantaneous field-of-regard solid angle in steradians
         in_eclipse: Whether spacecraft is in eclipse
     """
 
@@ -71,6 +72,10 @@ class Housekeeping(BaseModel):
     )
     sun_angle_deg: float | None = Field(
         default=None, description="Angular distance to Sun in degrees"
+    )
+    for_solid_angle_sr: float | None = Field(
+        default=None,
+        description="Instantaneous field-of-regard solid angle in steradians",
     )
     in_eclipse: bool | None = Field(
         default=None, description="Whether spacecraft is in eclipse"
@@ -233,6 +238,11 @@ class HousekeepingList(list[Housekeeping]):
     def sun_angle_deg(self) -> list[float | None]:
         """Get sun angle values from all housekeeping records."""
         return [hk.sun_angle_deg for hk in self]
+
+    @property
+    def for_solid_angle_sr(self) -> list[float | None]:
+        """Get FOR solid-angle values from all housekeeping records."""
+        return [hk.for_solid_angle_sr for hk in self]
 
     @property
     def in_eclipse(self) -> list[bool | None]:

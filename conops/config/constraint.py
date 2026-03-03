@@ -1,4 +1,4 @@
-from functools import lru_cache
+from functools import cached_property, lru_cache
 from typing import cast
 
 import numpy as np
@@ -168,7 +168,7 @@ class Constraint(BaseModel):
         """Return (hits, misses) for cache performance monitoring."""
         return (self._cache_hits, self._cache_misses)
 
-    @property
+    @cached_property
     def constraint(self) -> ConstraintConfig:
         """Combined constraint from all individual constraints"""
         if not hasattr(self, "_constraint_cache"):
@@ -224,6 +224,24 @@ class Constraint(BaseModel):
         if self.in_anti_sun(ra, dec, utime):
             return True
         return False
+
+    def instantaneous_field_of_regard(self, utime: float) -> float:
+        """Calculate the instantaneous field of regard (FOR) solid angle at a given time.
+
+        This is a simplified calculation based on the current Sun angle and panel constraint.
+        A more accurate calculation would consider the actual geometry of the constraints
+        and the spacecraft's orientation.
+
+        Returns:
+            FOR solid angle in steradians
+        """
+        assert self.ephem is not None, "Ephemeris must be set to calculate FOR"
+
+        field_of_regard = self.constraint.instantaneous_field_of_regard(
+            ephemeris=self.ephem,
+            time=dtutcfromtimestamp(utime),
+        )
+        return field_of_regard
 
     def in_constraint_batch(
         self,

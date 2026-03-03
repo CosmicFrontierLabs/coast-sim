@@ -63,6 +63,7 @@ class DITL(DITLMixin, DITLStats):
         plan: Plan = Plan(),
         begin: datetime | None = None,
         end: datetime | None = None,
+        calculate_field_of_regard: bool = False,
     ) -> None:
         """Initialize DITL with spacecraft configuration.
 
@@ -74,7 +75,9 @@ class DITL(DITLMixin, DITLStats):
             plan (Plan, optional): Pre-planned pointing schedule to execute.
             begin (datetime, optional): Start time for simulation (timezone-aware).
             end (datetime, optional): End time for simulation (timezone-aware).
-            step_size (int, optional): Time step in seconds (default: 60).
+            calculate_field_of_regard (bool, optional): Whether to compute
+                instantaneous field-of-regard telemetry (for_solid_angle_sr).
+                Defaults to False.
 
         Raises:
             AssertionError: If config is None. MissionConfig must be provided as it contains
@@ -85,7 +88,13 @@ class DITL(DITLMixin, DITLStats):
             All subsystems are extracted from the provided config for direct access.
         """
         DITLMixin.__init__(
-            self, config=config, ephem=ephem, begin=begin, end=end, plan=plan
+            self,
+            config=config,
+            ephem=ephem,
+            begin=begin,
+            end=end,
+            plan=plan,
+            calculate_field_of_regard=calculate_field_of_regard,
         )
         # DITL also needs solar_panel
         self.solar_panel = self.config.solar_panel
@@ -223,6 +232,11 @@ class DITL(DITLMixin, DITLStats):
 
             # Create housekeeping telemetry record for fault checking
             sun_angle_deg = self._compute_sun_angle(self.utime[i], ra, dec)
+            for_solid_angle_sr = (
+                self.constraint.instantaneous_field_of_regard(utime=self.utime[i])
+                if self.calculate_field_of_regard
+                else None
+            )
             hk = Housekeeping(
                 timestamp=datetime.fromtimestamp(self.utime[i], tz=timezone.utc),
                 ra=ra,
@@ -241,6 +255,7 @@ class DITL(DITLMixin, DITLStats):
                 recorder_fill_fraction=self.recorder.get_fill_fraction(),
                 recorder_alert=self.recorder.get_alert_level(),
                 sun_angle_deg=sun_angle_deg,
+                for_solid_angle_sr=for_solid_angle_sr,
                 in_eclipse=self.acs.in_eclipse,
             )
 
