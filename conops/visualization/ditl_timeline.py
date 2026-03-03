@@ -6,6 +6,7 @@ eclipses, and ground station passes.
 """
 
 from datetime import datetime, timezone
+from typing import Any, cast
 
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
@@ -811,7 +812,7 @@ def plot_ditl_timeline_plotly(
                 fig.add_trace(
                     go.Bar(
                         x=[duration],
-                        y=["Observations"],
+                        y=cast(Any, ["Observations"]),
                         orientation="h",
                         marker_color=color,
                         name=label,
@@ -831,7 +832,7 @@ def plot_ditl_timeline_plotly(
         fig.add_trace(
             go.Bar(
                 x=[duration],
-                y=["Charging"],
+                y=cast(Any, ["Charging"]),
                 orientation="h",
                 marker_color=charging_color,
                 name="Battery Charging",
@@ -848,7 +849,7 @@ def plot_ditl_timeline_plotly(
         fig.add_trace(
             go.Bar(
                 x=[duration],
-                y=["Slewing"],
+                y=cast(Any, ["Slewing"]),
                 orientation="h",
                 marker_color="gray",
                 name="Slew and Settle",
@@ -865,7 +866,7 @@ def plot_ditl_timeline_plotly(
         fig.add_trace(
             go.Bar(
                 x=[duration],
-                y=["Safe Mode"],
+                y=cast(Any, ["Safe Mode"]),
                 orientation="h",
                 marker_color="red",
                 name="Safe Mode",
@@ -883,7 +884,7 @@ def plot_ditl_timeline_plotly(
             fig.add_trace(
                 go.Bar(
                     x=[duration],
-                    y=["SAA"],
+                    y=cast(Any, ["SAA"]),
                     orientation="h",
                     marker_color="orange",
                     name="SAA",
@@ -900,7 +901,7 @@ def plot_ditl_timeline_plotly(
         fig.add_trace(
             go.Bar(
                 x=[duration],
-                y=["Eclipse"],
+                y=cast(Any, ["Eclipse"]),
                 orientation="h",
                 marker_color="black",
                 name="Eclipse",
@@ -917,7 +918,7 @@ def plot_ditl_timeline_plotly(
         fig.add_trace(
             go.Bar(
                 x=[duration],
-                y=["Ground Contact"],
+                y=cast(Any, ["Ground Contact"]),
                 orientation="h",
                 marker_color="white",
                 marker_line_color="black",
@@ -944,7 +945,7 @@ def plot_ditl_timeline_plotly(
             fig.add_trace(
                 go.Bar(
                     x=[orbit_width],
-                    y=["Orbit"],
+                    y=cast(Any, ["Orbit"]),
                     orientation="h",
                     marker_color=barcol,
                     marker_line_color="black",
