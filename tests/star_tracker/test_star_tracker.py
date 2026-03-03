@@ -131,12 +131,15 @@ class TestStarTrackerComputedConstraint:
 
         c = cfg.startracker_constraint
         assert c is not None
-        assert c.type == "boresight_offset"
-        assert c.roll_deg == pytest.approx(0.0)
-        assert c.pitch_deg == pytest.approx(0.0)
-        assert c.yaw_deg == pytest.approx(90.0)
+        assert c.type == "at_least"
+        assert c.min_violated == 1
+        assert len(c.constraints) == 1
+        assert c.constraints[0].type == "boresight_offset"
+        assert c.constraints[0].roll_deg == pytest.approx(0.0)
+        assert c.constraints[0].pitch_deg == pytest.approx(0.0)
+        assert c.constraints[0].yaw_deg == pytest.approx(90.0)
 
-    def test_startracker_constraint_multiple_soft_constraints_or_combined(self):
+    def test_startracker_constraint_multiple_soft_constraints_at_least_combined(self):
         from conops.config import Constraint, StarTrackerConfiguration
 
         st1 = StarTracker(
@@ -157,6 +160,60 @@ class TestStarTrackerComputedConstraint:
         cfg = StarTrackerConfiguration(star_trackers=[st1, st2])
         c = cfg.startracker_constraint
         assert c is not None
-        assert c.type == "or"
+        assert c.type == "at_least"
+        assert c.min_violated == 2
         assert len(c.constraints) == 2
         assert all(child.type == "boresight_offset" for child in c.constraints)
+
+    def test_startracker_constraint_respects_min_functional_trackers_threshold(self):
+        from conops.config import Constraint, StarTrackerConfiguration
+
+        st1 = StarTracker(
+            name="ST1",
+            orientation=StarTrackerOrientation(boresight=(1.0, 0.0, 0.0)),
+            soft_constraint=Constraint(
+                sun_constraint=rust_ephem.SunConstraint(min_angle=20.0)
+            ),
+        )
+        st2 = StarTracker(
+            name="ST2",
+            orientation=StarTrackerOrientation(boresight=(0.0, 1.0, 0.0)),
+            soft_constraint=Constraint(
+                moon_constraint=rust_ephem.MoonConstraint(min_angle=10.0)
+            ),
+        )
+
+        cfg = StarTrackerConfiguration(
+            star_trackers=[st1, st2],
+            min_functional_trackers=2,
+        )
+        c = cfg.startracker_constraint
+        assert c is not None
+        assert c.type == "at_least"
+        assert c.min_violated == 1
+        assert len(c.constraints) == 2
+
+    def test_startracker_constraint_none_when_threshold_unreachable_from_soft_only(
+        self,
+    ):
+        from conops.config import Constraint, StarTrackerConfiguration
+
+        st1 = StarTracker(
+            name="ST1",
+            orientation=StarTrackerOrientation(boresight=(1.0, 0.0, 0.0)),
+            soft_constraint=Constraint(
+                sun_constraint=rust_ephem.SunConstraint(min_angle=20.0)
+            ),
+        )
+        st2 = StarTracker(
+            name="ST2",
+            orientation=StarTrackerOrientation(boresight=(0.0, 1.0, 0.0)),
+            soft_constraint=None,
+        )
+
+        cfg = StarTrackerConfiguration(
+            star_trackers=[st1, st2],
+            min_functional_trackers=1,
+        )
+
+        assert cfg.startracker_constraint is None
