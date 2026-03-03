@@ -32,7 +32,7 @@ import numpy as np
 import numpy.typing as npt
 import rust_ephem
 from pydantic import BaseModel, Field, computed_field, field_validator
-from rust_ephem import EarthLimbConstraint, SunConstraint
+from rust_ephem import AtLeastConstraint, EarthLimbConstraint, SunConstraint
 from rust_ephem.constraints import ConstraintConfig
 
 from ..common.vector import radec2vec, rotvec, vec2radec, vecnorm
@@ -343,9 +343,12 @@ class StarTrackerConfiguration(BaseModel):
 
         Each star tracker soft constraint is wrapped with a boresight offset so it is
         evaluated in the star tracker frame but queried in spacecraft pointing frame.
-        All soft constraints are OR-combined to indicate any soft-constraint violation.
+        The combined violation condition is based on ``min_functional_trackers``:
+        the constraint is violated only when enough trackers violate their soft
+        constraints that the minimum functional requirement can no longer be met.
         """
-        combined: ConstraintConfig | None = None
+        offset_constraints: list[ConstraintConfig] = []
+        total_trackers = len(self.star_trackers)
 
         for st in self.star_trackers:
             if st.soft_constraint is None:
@@ -360,13 +363,25 @@ class StarTrackerConfiguration(BaseModel):
                 pitch_deg=pitch_deg,
                 yaw_deg=yaw_deg,
             )
+            offset_constraints.append(offset_constraint)
 
-            if combined is None:
-                combined = offset_constraint
-            else:
-                combined = combined | offset_constraint
+        if not offset_constraints:
+            return None
 
-        return combined
+        if self.min_functional_trackers <= 0:
+            return None
+
+        required_violations = total_trackers - self.min_functional_trackers + 1
+        if required_violations <= 0:
+            return None
+
+        if required_violations > len(offset_constraints):
+            return None
+
+        return AtLeastConstraint(
+            min_violated=required_violations,
+            constraints=offset_constraints,
+        )
 
     def set_ephem(self, ephem: rust_ephem.Ephemeris) -> None:
         """Set ephemeris on all star tracker constraint objects.
