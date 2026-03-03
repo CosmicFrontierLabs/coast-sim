@@ -31,8 +31,9 @@ from __future__ import annotations
 import numpy as np
 import numpy.typing as npt
 import rust_ephem
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator
 from rust_ephem import EarthLimbConstraint, SunConstraint
+from rust_ephem.constraints import ConstraintConfig
 
 from ..common.vector import radec2vec, rotvec, vec2radec, vecnorm
 from .constraint import Constraint
@@ -312,11 +313,60 @@ class StarTrackerConfiguration(BaseModel):
         min_functional_trackers: Minimum number of star trackers that must not violate hard
             constraints for pointing to be valid. If 0, hard constraints are not enforced.
             Default is 1 (at least one star tracker must be functional).
+        startracker_constraint: Computed observing constraint built from all star
+            tracker soft constraints, with boresight offsets applied.
     """
 
     # FIXME: star_trackers.star_trackers
     star_trackers: list[StarTracker] = Field(default=[default_star_tracker])
     min_functional_trackers: int = 1
+
+    @staticmethod
+    def _boresight_to_euler_deg(
+        boresight: tuple[float, float, float],
+    ) -> tuple[float, float, float]:
+        """Convert boresight unit vector to equivalent roll/pitch/yaw offsets.
+
+        For a boresight vector, roll about +X is underdetermined; we set roll=0 and
+        derive pitch/yaw that rotate +X to the requested boresight.
+        """
+        x, y, z = vecnorm(np.asarray(boresight, dtype=np.float64))
+        yaw_deg = float(np.rad2deg(np.arctan2(y, x)))
+        pitch_deg = float(np.rad2deg(np.arctan2(z, np.hypot(x, y))))
+        roll_deg = 0.0
+        return roll_deg, pitch_deg, yaw_deg
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def startracker_constraint(self) -> ConstraintConfig | None:
+        """Combined observing constraint from all star tracker soft constraints.
+
+        Each star tracker soft constraint is wrapped with a boresight offset so it is
+        evaluated in the star tracker frame but queried in spacecraft pointing frame.
+        All soft constraints are OR-combined to indicate any soft-constraint violation.
+        """
+        combined: ConstraintConfig | None = None
+
+        for st in self.star_trackers:
+            if st.soft_constraint is None:
+                continue
+
+            base_constraint = st.soft_constraint.constraint
+            roll_deg, pitch_deg, yaw_deg = self._boresight_to_euler_deg(
+                st.orientation.boresight
+            )
+            offset_constraint = base_constraint.boresight_offset(
+                roll_deg=roll_deg,
+                pitch_deg=pitch_deg,
+                yaw_deg=yaw_deg,
+            )
+
+            if combined is None:
+                combined = offset_constraint
+            else:
+                combined = combined | offset_constraint
+
+        return combined
 
     def set_ephem(self, ephem: rust_ephem.Ephemeris) -> None:
         """Set ephemeris on all star tracker constraint objects.

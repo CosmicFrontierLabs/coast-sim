@@ -2,6 +2,9 @@
 
 import time
 
+import pytest
+import rust_ephem
+
 from conops.config import StarTracker, StarTrackerOrientation
 
 
@@ -102,3 +105,58 @@ class TestStarTrackerModeLockRequirements:
         )
         # Nominal mode should not require lock
         assert not st.requires_lock_in_mode(None)
+
+
+class TestStarTrackerComputedConstraint:
+    """Test computed star tracker observing constraint."""
+
+    def test_startracker_constraint_none_without_soft_constraints(self):
+        st = StarTracker(name="ST1")
+        from conops.config import StarTrackerConfiguration
+
+        cfg = StarTrackerConfiguration(star_trackers=[st])
+        assert cfg.startracker_constraint is None
+
+    def test_startracker_constraint_single_tracker_has_boresight_offset(self):
+        from conops.config import Constraint, StarTrackerConfiguration
+
+        st = StarTracker(
+            name="ST_Soft",
+            orientation=StarTrackerOrientation(boresight=(0.0, 1.0, 0.0)),
+            soft_constraint=Constraint(
+                sun_constraint=rust_ephem.SunConstraint(min_angle=25.0)
+            ),
+        )
+        cfg = StarTrackerConfiguration(star_trackers=[st])
+
+        c = cfg.startracker_constraint
+        assert c is not None
+        assert c.type == "boresight_offset"
+        assert c.roll_deg == pytest.approx(0.0)
+        assert c.pitch_deg == pytest.approx(0.0)
+        assert c.yaw_deg == pytest.approx(90.0)
+
+    def test_startracker_constraint_multiple_soft_constraints_or_combined(self):
+        from conops.config import Constraint, StarTrackerConfiguration
+
+        st1 = StarTracker(
+            name="ST1",
+            orientation=StarTrackerOrientation(boresight=(1.0, 0.0, 0.0)),
+            soft_constraint=Constraint(
+                sun_constraint=rust_ephem.SunConstraint(min_angle=20.0)
+            ),
+        )
+        st2 = StarTracker(
+            name="ST2",
+            orientation=StarTrackerOrientation(boresight=(0.0, 1.0, 0.0)),
+            soft_constraint=Constraint(
+                moon_constraint=rust_ephem.MoonConstraint(min_angle=10.0)
+            ),
+        )
+
+        cfg = StarTrackerConfiguration(star_trackers=[st1, st2])
+        c = cfg.startracker_constraint
+        assert c is not None
+        assert c.type == "or"
+        assert len(c.constraints) == 2
+        assert all(child.type == "boresight_offset" for child in c.constraints)
