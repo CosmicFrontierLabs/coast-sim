@@ -1056,6 +1056,8 @@ class TestCalcMethod:
 
     def test_create_housekeeping_record_uses_current_state(self, queue_ditl) -> None:
         """Housekeeping helper should capture post-update recorder values."""
+        queue_ditl.calculate_field_of_regard = True
+
         queue_ditl.panel = [0.75]
         queue_ditl.power = [80.0]
         queue_ditl.power_bus = [50.0]
