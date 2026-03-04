@@ -75,6 +75,13 @@ class DITLMixin:
             # Also set ephemeris on star tracker constraints
             self.config.spacecraft_bus.star_trackers.set_ephem(config.constraint.ephem)
 
+        # Keep mission-level planning/FOR constraints synchronized with star-tracker
+        # hard exclusions.
+        self.config.constraint.star_tracker_hard_constraint = (
+            self.config.spacecraft_bus.star_trackers.startracker_hard_constraint
+        )
+        self.config.constraint.invalidate_combined_constraint_cache()
+
         # Override begin/end if provided, else use limits of ephemeris
         if begin is not None:
             self.begin = begin

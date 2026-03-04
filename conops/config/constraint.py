@@ -108,6 +108,10 @@ class Constraint(BaseModel):
         default=None,
         description="Solar panel constraint configuration",
     )
+    star_tracker_hard_constraint: ConstraintConfig | None = Field(
+        default=None,
+        description="Star tracker hard exclusion constraint",
+    )
 
     ephem: rust_ephem.Ephemeris | None = Field(
         default=None,
@@ -187,6 +191,10 @@ class Constraint(BaseModel):
         """Return (hits, misses) for cache performance monitoring."""
         return (self._cache_hits, self._cache_misses)
 
+    def invalidate_combined_constraint_cache(self) -> None:
+        """Invalidate cached combined constraint after component updates."""
+        self.__dict__.pop("constraint", None)
+
     @cached_property
     def constraint(self) -> ConstraintConfig | None:
         """Combined constraint from all individual constraints"""
@@ -197,6 +205,7 @@ class Constraint(BaseModel):
                 self.earth_constraint,
                 self.panel_constraint,
                 self.anti_sun_constraint,
+                self.star_tracker_hard_constraint,
             ]
             active_constraints = [
                 component
@@ -250,6 +259,20 @@ class Constraint(BaseModel):
         assert self.ephem is not None, "Ephemeris must be set to use in_moon method"
         return self._cached_check("moon", ra, dec, time, self.moon_constraint)
 
+    def in_star_tracker_hard(self, ra: float, dec: float, time: float) -> bool:
+        if self.star_tracker_hard_constraint is None:
+            return False
+        assert self.ephem is not None, (
+            "Ephemeris must be set to use in_star_tracker_hard method"
+        )
+        return self._cached_check(
+            "star_tracker_hard",
+            ra,
+            dec,
+            time,
+            self.star_tracker_hard_constraint,
+        )
+
     def in_constraint(self, ra: float, dec: float, utime: float) -> bool:
         """For a given time is a RA/Dec in occult?"""
         # Short-circuit evaluation for scalar times (most common case)
@@ -265,6 +288,8 @@ class Constraint(BaseModel):
         if self.in_moon(ra, dec, utime):
             return True
         if self.in_anti_sun(ra, dec, utime):
+            return True
+        if self.in_star_tracker_hard(ra, dec, utime):
             return True
         return False
 
@@ -325,6 +350,7 @@ class Constraint(BaseModel):
             self.panel_constraint,
             self.moon_constraint,
             self.anti_sun_constraint,
+            self.star_tracker_hard_constraint,
         ]
         for constraint_func in constraint_types:
             if constraint_func is None:
@@ -378,5 +404,7 @@ class DefaultConstraint(Constraint):
         if self.in_anti_sun(ra, dec, utime):
             count += 2
         if self.in_earth(ra, dec, utime):
+            count += 2
+        if self.in_star_tracker_hard(ra, dec, utime):
             count += 2
         return count

@@ -117,6 +117,38 @@ class TestStarTrackerComputedConstraint:
         cfg = StarTrackerConfiguration(star_trackers=[st])
         assert cfg.startracker_constraint is None
 
+    def test_startracker_hard_constraint_none_without_hard_constraints(self):
+        st = StarTracker(name="ST1")
+        from conops.config import StarTrackerConfiguration
+
+        cfg = StarTrackerConfiguration(star_trackers=[st])
+        assert cfg.startracker_hard_constraint is None
+
+    def test_startracker_hard_constraint_multiple_trackers_or_combined(self):
+        from conops.config import Constraint, StarTrackerConfiguration
+
+        st1 = StarTracker(
+            name="ST1",
+            orientation=StarTrackerOrientation(boresight=(1.0, 0.0, 0.0)),
+            hard_constraint=Constraint(
+                sun_constraint=rust_ephem.SunConstraint(min_angle=20.0)
+            ),
+        )
+        st2 = StarTracker(
+            name="ST2",
+            orientation=StarTrackerOrientation(boresight=(0.0, 1.0, 0.0)),
+            hard_constraint=Constraint(
+                moon_constraint=rust_ephem.MoonConstraint(min_angle=10.0)
+            ),
+        )
+
+        cfg = StarTrackerConfiguration(star_trackers=[st1, st2])
+        c = cfg.startracker_hard_constraint
+        assert c is not None
+        assert c.type == "or"
+        assert len(c.constraints) == 2
+        assert all(child.type == "boresight_offset" for child in c.constraints)
+
     def test_startracker_constraint_single_tracker_has_boresight_offset(self):
         from conops.config import Constraint, StarTrackerConfiguration
 

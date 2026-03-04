@@ -132,6 +132,15 @@ class MissionConfig(BaseModel):
                 red=red,
                 direction="below",
             )
+
+        # Propagate star tracker hard exclusions into mission-level planning constraint.
+        if star_trackers is not None and has_star_trackers:
+            self.constraint.star_tracker_hard_constraint = (
+                star_trackers.startracker_hard_constraint
+            )
+        else:
+            self.constraint.star_tracker_hard_constraint = None
+        self.constraint.invalidate_combined_constraint_cache()
         return self
 
     def data_generated(self, duration_seconds: float) -> float:

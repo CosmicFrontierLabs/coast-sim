@@ -338,6 +338,40 @@ class StarTrackerConfiguration(BaseModel):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
+    def startracker_hard_constraint(self) -> ConstraintConfig | None:
+        """Combined hard constraint from all star trackers.
+
+        Hard constraints are OR-combined so that any hard violation from any
+        tracker excludes that pointing.
+        """
+        combined: ConstraintConfig | None = None
+
+        for st in self.star_trackers:
+            if st.hard_constraint is None:
+                continue
+
+            base_constraint = st.hard_constraint.constraint
+            if base_constraint is None:
+                continue
+
+            roll_deg, pitch_deg, yaw_deg = self._boresight_to_euler_deg(
+                st.orientation.boresight
+            )
+            offset_constraint = base_constraint.boresight_offset(
+                roll_deg=roll_deg,
+                pitch_deg=pitch_deg,
+                yaw_deg=yaw_deg,
+            )
+
+            if combined is None:
+                combined = offset_constraint
+            else:
+                combined = combined | offset_constraint
+
+        return combined
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
     def startracker_constraint(self) -> ConstraintConfig | None:
         """Combined observing constraint from all star tracker soft constraints.
 
