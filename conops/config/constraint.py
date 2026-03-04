@@ -26,6 +26,32 @@ _RA_DEC_ROUNDER = 10**_RA_DEC_PRECISION
 _TIME_ROUNDER = 10**_TIME_PRECISION
 
 
+def _default_sun_constraint() -> ConstraintConfig:
+    return rust_ephem.SunConstraint(min_angle=SUN_OCCULT)
+
+
+def _default_anti_sun_constraint() -> ConstraintConfig:
+    return rust_ephem.SunConstraint(min_angle=0, max_angle=ANTISUN_OCCULT)
+
+
+def _default_moon_constraint() -> ConstraintConfig:
+    return rust_ephem.MoonConstraint(min_angle=MOON_OCCULT)
+
+
+def _default_earth_constraint() -> ConstraintConfig:
+    return rust_ephem.EarthLimbConstraint(min_angle=EARTH_OCCULT)
+
+
+def _default_panel_constraint() -> ConstraintConfig:
+    return (
+        rust_ephem.SunConstraint(
+            min_angle=PANEL_CONSTRAINT,
+            max_angle=180 - PANEL_CONSTRAINT,
+        )
+        & ~rust_ephem.EclipseConstraint()
+    )
+
+
 @lru_cache(maxsize=65536)
 def _round_constraint_key(
     constraint_type: str, ra: float, dec: float, utime: float
@@ -59,35 +85,32 @@ class Constraint(BaseModel):
     """
 
     # FIXME: Constraint types should be more general
-    sun_constraint: ConstraintConfig = Field(
-        default_factory=lambda: rust_ephem.SunConstraint(min_angle=SUN_OCCULT),
+    sun_constraint: ConstraintConfig | None = Field(
+        default=None,
         description="Sun constraint configuration",
     )
-    anti_sun_constraint: ConstraintConfig = Field(
-        default_factory=lambda: rust_ephem.SunConstraint(
-            min_angle=0, max_angle=ANTISUN_OCCULT
-        ),
+    anti_sun_constraint: ConstraintConfig | None = Field(
+        default=None,
         description="Anti-sun constraint configuration",
     )
-    moon_constraint: ConstraintConfig = Field(
-        default_factory=lambda: rust_ephem.MoonConstraint(min_angle=MOON_OCCULT),
+    moon_constraint: ConstraintConfig | None = Field(
+        default=None,
         description="Moon constraint configuration",
     )
-    earth_constraint: ConstraintConfig = Field(
-        default_factory=lambda: rust_ephem.EarthLimbConstraint(min_angle=EARTH_OCCULT),
+    earth_constraint: ConstraintConfig | None = Field(
+        default=None,
         description="Earth constraint configuration",
     )
     # FIXME: For now solar panel constraint is just constraining the spacecraft
     # to be within >45 degrees of the sun and < 45 degrees from anti-sun,
     # except in eclipse
-    panel_constraint: ConstraintConfig = Field(
-        default_factory=lambda: (
-            rust_ephem.SunConstraint(
-                min_angle=PANEL_CONSTRAINT, max_angle=180 - PANEL_CONSTRAINT
-            )
-            & ~rust_ephem.EclipseConstraint()
-        ),
+    panel_constraint: ConstraintConfig | None = Field(
+        default=None,
         description="Solar panel constraint configuration",
+    )
+    star_tracker_hard_constraint: ConstraintConfig | None = Field(
+        default=None,
+        description="Star tracker hard exclusion constraint",
     )
 
     ephem: rust_ephem.Ephemeris | None = Field(
@@ -168,31 +191,58 @@ class Constraint(BaseModel):
         """Return (hits, misses) for cache performance monitoring."""
         return (self._cache_hits, self._cache_misses)
 
+    def invalidate_combined_constraint_cache(self) -> None:
+        """Invalidate cached combined constraint after component updates."""
+        self.__dict__.pop("constraint", None)
+
     @cached_property
-    def constraint(self) -> ConstraintConfig:
+    def constraint(self) -> ConstraintConfig | None:
         """Combined constraint from all individual constraints"""
         if not hasattr(self, "_constraint_cache"):
-            self._constraint_cache = (
-                self.sun_constraint
-                | self.moon_constraint
-                | self.earth_constraint
-                | self.panel_constraint
-            )
+            constraint_components = [
+                self.sun_constraint,
+                self.moon_constraint,
+                self.earth_constraint,
+                self.panel_constraint,
+                self.anti_sun_constraint,
+                self.star_tracker_hard_constraint,
+            ]
+            active_constraints = [
+                component
+                for component in constraint_components
+                if component is not None
+            ]
+
+            if not active_constraints:
+                self._constraint_cache = None
+            else:
+                combined = active_constraints[0]
+                for component in active_constraints[1:]:
+                    combined = combined | component
+                self._constraint_cache = combined
         return self._constraint_cache
 
     def in_sun(self, ra: float, dec: float, time: float) -> bool:
+        if self.sun_constraint is None:
+            return False
         assert self.ephem is not None, "Ephemeris must be set to use in_sun method"
         return self._cached_check("sun", ra, dec, time, self.sun_constraint)
 
     def in_panel(self, ra: float, dec: float, time: float) -> bool:
+        if self.panel_constraint is None:
+            return False
         assert self.ephem is not None, "Ephemeris must be set to use in_panel method"
         return self._cached_check("panel", ra, dec, time, self.panel_constraint)
 
     def in_anti_sun(self, ra: float, dec: float, time: float) -> bool:
+        if self.anti_sun_constraint is None:
+            return False
         assert self.ephem is not None, "Ephemeris must be set to use in_anti_sun method"
         return self._cached_check("anti_sun", ra, dec, time, self.anti_sun_constraint)
 
     def in_earth(self, ra: float, dec: float, time: float) -> bool:
+        if self.earth_constraint is None:
+            return False
         assert self.ephem is not None, "Ephemeris must be set to use in_earth method"
         return self._cached_check("earth", ra, dec, time, self.earth_constraint)
 
@@ -204,8 +254,24 @@ class Constraint(BaseModel):
         return self._cached_check("eclipse", ra, dec, time, self._eclipse_constraint)
 
     def in_moon(self, ra: float, dec: float, time: float) -> bool:
+        if self.moon_constraint is None:
+            return False
         assert self.ephem is not None, "Ephemeris must be set to use in_moon method"
         return self._cached_check("moon", ra, dec, time, self.moon_constraint)
+
+    def in_star_tracker_hard(self, ra: float, dec: float, time: float) -> bool:
+        if self.star_tracker_hard_constraint is None:
+            return False
+        assert self.ephem is not None, (
+            "Ephemeris must be set to use in_star_tracker_hard method"
+        )
+        return self._cached_check(
+            "star_tracker_hard",
+            ra,
+            dec,
+            time,
+            self.star_tracker_hard_constraint,
+        )
 
     def in_constraint(self, ra: float, dec: float, utime: float) -> bool:
         """For a given time is a RA/Dec in occult?"""
@@ -223,6 +289,8 @@ class Constraint(BaseModel):
             return True
         if self.in_anti_sun(ra, dec, utime):
             return True
+        if self.in_star_tracker_hard(ra, dec, utime):
+            return True
         return False
 
     def instantaneous_field_of_regard(self, utime: float) -> float:
@@ -236,6 +304,9 @@ class Constraint(BaseModel):
             FOR solid angle in steradians
         """
         assert self.ephem is not None, "Ephemeris must be set to calculate FOR"
+
+        if self.constraint is None:
+            return float(4.0 * np.pi)
 
         field_of_regard = self.constraint.instantaneous_field_of_regard(
             ephemeris=self.ephem,
@@ -279,8 +350,11 @@ class Constraint(BaseModel):
             self.panel_constraint,
             self.moon_constraint,
             self.anti_sun_constraint,
+            self.star_tracker_hard_constraint,
         ]
         for constraint_func in constraint_types:
+            if constraint_func is None:
+                continue
             result = constraint_func.in_constraint_batch(
                 ephemeris=self.ephem,
                 target_ras=ras,
@@ -296,6 +370,31 @@ class Constraint(BaseModel):
 
         return violations if violations is not None else np.zeros(len(ras), dtype=bool)
 
+
+class DefaultConstraint(Constraint):
+    """Default mission constraint set preserving legacy COAST-Sim behavior."""
+
+    sun_constraint: ConstraintConfig | None = Field(
+        default_factory=_default_sun_constraint,
+        description="Sun constraint configuration",
+    )
+    anti_sun_constraint: ConstraintConfig | None = Field(
+        default_factory=_default_anti_sun_constraint,
+        description="Anti-sun constraint configuration",
+    )
+    moon_constraint: ConstraintConfig | None = Field(
+        default_factory=_default_moon_constraint,
+        description="Moon constraint configuration",
+    )
+    earth_constraint: ConstraintConfig | None = Field(
+        default_factory=_default_earth_constraint,
+        description="Earth constraint configuration",
+    )
+    panel_constraint: ConstraintConfig | None = Field(
+        default_factory=_default_panel_constraint,
+        description="Solar panel constraint configuration",
+    )
+
     def in_constraint_count(self, ra: float, dec: float, utime: float) -> int:
         count = 0
         if self.in_sun(ra, dec, utime):
@@ -305,5 +404,7 @@ class Constraint(BaseModel):
         if self.in_anti_sun(ra, dec, utime):
             count += 2
         if self.in_earth(ra, dec, utime):
+            count += 2
+        if self.in_star_tracker_hard(ra, dec, utime):
             count += 2
         return count

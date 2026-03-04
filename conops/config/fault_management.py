@@ -546,7 +546,7 @@ class FaultManagement(BaseModel):
         stats: dict[str, dict[str, float | str | bool]] = {}
 
         for name, st in self.states.items():
-            # Check if this is a red limit constraint or threshold-based parameter
+            # Check if this is a red limit constraint or special constraint
             if any(c.name == name for c in self.red_limit_constraints):
                 # Red limit constraint stats
                 stats[name] = {

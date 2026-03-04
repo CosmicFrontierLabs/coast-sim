@@ -32,6 +32,117 @@
         "data_generation": {
             "rate_gbps": 0.0,
             "per_observation_gb": 0.0
+        },
+        "star_trackers": {
+            "star_trackers": [
+                {
+                    "name": "ST-NadirSide",
+                    "orientation": {
+                        "boresight": [
+                            0.0,
+                            1.0,
+                            0.0
+                        ]
+                    },
+                    "hard_constraint": {
+                        "sun_constraint": {
+                            "type": "sun",
+                            "min_angle": 25.0,
+                            "max_angle": null
+                        },
+                        "anti_sun_constraint": {
+                            "type": "sun",
+                            "min_angle": 0.0,
+                            "max_angle": 180.0
+                        },
+                        "moon_constraint": {
+                            "type": "moon",
+                            "min_angle": 20.0,
+                            "max_angle": null
+                        },
+                        "earth_constraint": {
+                            "type": "earth_limb",
+                            "min_angle": 12.0,
+                            "max_angle": null,
+                            "include_refraction": false,
+                            "horizon_dip": false
+                        },
+                        "panel_constraint": {
+                            "type": "and",
+                            "constraints": [
+                                {
+                                    "type": "sun",
+                                    "min_angle": 45.0,
+                                    "max_angle": 135.0
+                                },
+                                {
+                                    "type": "not",
+                                    "constraint": {
+                                        "type": "eclipse",
+                                        "umbra_only": true
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "soft_constraint": null,
+                    "modes_require_lock": null
+                },
+                {
+                    "name": "ST-ZenithSide",
+                    "orientation": {
+                        "boresight": [
+                            0.0,
+                            -1.0,
+                            0.0
+                        ]
+                    },
+                    "hard_constraint": {
+                        "sun_constraint": {
+                            "type": "sun",
+                            "min_angle": 20.0,
+                            "max_angle": null
+                        },
+                        "anti_sun_constraint": {
+                            "type": "sun",
+                            "min_angle": 0.0,
+                            "max_angle": 180.0
+                        },
+                        "moon_constraint": {
+                            "type": "moon",
+                            "min_angle": 20.0,
+                            "max_angle": null
+                        },
+                        "earth_constraint": {
+                            "type": "earth_limb",
+                            "min_angle": 12.0,
+                            "max_angle": null,
+                            "include_refraction": false,
+                            "horizon_dip": false
+                        },
+                        "panel_constraint": {
+                            "type": "and",
+                            "constraints": [
+                                {
+                                    "type": "sun",
+                                    "min_angle": 45.0,
+                                    "max_angle": 135.0
+                                },
+                                {
+                                    "type": "not",
+                                    "constraint": {
+                                        "type": "eclipse",
+                                        "umbra_only": true
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "soft_constraint": null,
+                    "modes_require_lock": null
+                }
+            ],
+            "min_functional_trackers": 1
         }
     },
     "solar_panel": {
@@ -219,13 +330,22 @@
                 "name": "battery_level",
                 "yellow": 0.6,
                 "red": 0.5,
-                "direction": "below"
+                "direction": "below",
+                "acs_modes": null
             },
             {
                 "name": "recorder_fill_fraction",
                 "yellow": 0.7,
                 "red": 0.9,
-                "direction": "above"
+                "direction": "above",
+                "acs_modes": null
+            },
+            {
+                "name": "star_tracker_functional_count",
+                "yellow": 1.0,
+                "red": 0.0,
+                "direction": "below",
+                "acs_modes": null
             }
         ],
         "red_limit_constraints": [

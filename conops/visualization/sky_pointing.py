@@ -608,11 +608,73 @@ class SkyPointingController:
             ("anti_sun", self.ditl.config.constraint.anti_sun_constraint),
             ("panel", self.ditl.config.constraint.panel_constraint),
         ]
+
+        # Add aggregated star-tracker constraints (if configured)
+        star_trackers = None
+        if hasattr(self.ditl, "config") and hasattr(self.ditl.config, "spacecraft_bus"):
+            star_trackers = getattr(
+                self.ditl.config.spacecraft_bus, "star_trackers", None
+            )
+
+        if star_trackers is not None and hasattr(star_trackers, "num_trackers"):
+            try:
+                has_trackers = star_trackers.num_trackers() > 0
+            except Exception:
+                has_trackers = False
+
+            if has_trackers:
+                # Soft constraints are already exposed as a computed combined constraint
+                st_soft_constraint = getattr(
+                    star_trackers, "startracker_constraint", None
+                )
+                if st_soft_constraint is not None:
+                    constraint_types.append(("star_tracker_soft", st_soft_constraint))
+
+                # Build combined hard constraint using min_functional_trackers threshold
+                st_hard_constraints: list[rust_ephem.constraints.ConstraintConfig] = []
+                total_trackers = int(star_trackers.num_trackers())
+                for st in getattr(star_trackers, "star_trackers", []):
+                    if getattr(st, "hard_constraint", None) is None:
+                        continue
+
+                    base_constraint = st.hard_constraint.constraint
+                    if base_constraint is None:
+                        continue
+                    roll_deg, pitch_deg, yaw_deg = (
+                        star_trackers._boresight_to_euler_deg(st.orientation.boresight)
+                    )
+                    offset_constraint = base_constraint.boresight_offset(
+                        roll_deg=roll_deg,
+                        pitch_deg=pitch_deg,
+                        yaw_deg=yaw_deg,
+                    )
+                    st_hard_constraints.append(offset_constraint)
+
+                min_functional = int(
+                    getattr(star_trackers, "min_functional_trackers", 1)
+                )
+                required_violations = total_trackers - min_functional + 1
+                st_hard_combined = None
+                if (
+                    required_violations > 0
+                    and required_violations <= len(st_hard_constraints)
+                    and len(st_hard_constraints) > 0
+                ):
+                    st_hard_combined = rust_ephem.AtLeastConstraint(
+                        min_violated=required_violations,
+                        constraints=st_hard_constraints,
+                    )
+
+                if st_hard_combined is not None:
+                    constraint_types.append(("star_tracker_hard", st_hard_combined))
+
         assert self.ditl.ephem is not None, (
             "Ephemeris must be set for constraint calculations."
         )
 
         for name, constraint_func in constraint_types:
+            if constraint_func is None:
+                continue
             # Batch evaluation with datetime array
             result = constraint_func.in_constraint_batch(
                 ephemeris=self.ditl.ephem,
@@ -699,7 +761,83 @@ class SkyPointingController:
             ),
         ]
 
+        # Add aggregated star-tracker hard/soft constraints (if configured)
+        star_trackers = None
+        if hasattr(self.ditl, "config") and hasattr(self.ditl.config, "spacecraft_bus"):
+            star_trackers = getattr(
+                self.ditl.config.spacecraft_bus, "star_trackers", None
+            )
+
+        if star_trackers is not None and hasattr(star_trackers, "num_trackers"):
+            try:
+                has_trackers = star_trackers.num_trackers() > 0
+            except Exception:
+                has_trackers = False
+
+            if has_trackers:
+                st_soft_constraint = getattr(
+                    star_trackers, "startracker_constraint", None
+                )
+                if st_soft_constraint is not None:
+                    constraint_types.append(
+                        (
+                            "Star Tracker Soft",
+                            st_soft_constraint,
+                            "magenta",
+                            None,
+                            None,
+                        )
+                    )
+
+                st_hard_constraints: list[rust_ephem.constraints.ConstraintConfig] = []
+                total_trackers = int(star_trackers.num_trackers())
+                for st in getattr(star_trackers, "star_trackers", []):
+                    if getattr(st, "hard_constraint", None) is None:
+                        continue
+
+                    base_constraint = st.hard_constraint.constraint
+                    if base_constraint is None:
+                        continue
+                    roll_deg, pitch_deg, yaw_deg = (
+                        star_trackers._boresight_to_euler_deg(st.orientation.boresight)
+                    )
+                    offset_constraint = base_constraint.boresight_offset(
+                        roll_deg=roll_deg,
+                        pitch_deg=pitch_deg,
+                        yaw_deg=yaw_deg,
+                    )
+
+                    st_hard_constraints.append(offset_constraint)
+
+                min_functional = int(
+                    getattr(star_trackers, "min_functional_trackers", 1)
+                )
+                required_violations = total_trackers - min_functional + 1
+                st_hard_combined = None
+                if (
+                    required_violations > 0
+                    and required_violations <= len(st_hard_constraints)
+                    and len(st_hard_constraints) > 0
+                ):
+                    st_hard_combined = rust_ephem.AtLeastConstraint(
+                        min_violated=required_violations,
+                        constraints=st_hard_constraints,
+                    )
+
+                if st_hard_combined is not None:
+                    constraint_types.append(
+                        (
+                            "Star Tracker Hard",
+                            st_hard_combined,
+                            "red",
+                            None,
+                            None,
+                        )
+                    )
+
         for name, constraint_func, color, body_ra, body_dec in constraint_types:
+            if constraint_func is None:
+                continue
             self._plot_single_constraint(
                 name,
                 constraint_func,
