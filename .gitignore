@@ -70,3 +70,4 @@ Thumbs.db
 
 # Distribution / packaging
 *.whl
+conops/_version.py
