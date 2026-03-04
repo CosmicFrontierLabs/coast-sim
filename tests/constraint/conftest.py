@@ -5,19 +5,19 @@ from unittest.mock import Mock
 
 import pytest
 
-from conops import Constraint
+from conops import DefaultConstraint
 
 
 @pytest.fixture
 def constraint():
-    """Fixture for a basic Constraint instance."""
-    return Constraint()
+    """Fixture for a basic default constraint instance."""
+    return DefaultConstraint()
 
 
 @pytest.fixture
 def constraint_with_ephem():
-    """Fixture for a Constraint instance with mocked ephem."""
-    c = Constraint()
+    """Fixture for a default constraint instance with mocked ephem."""
+    c = DefaultConstraint()
     c.ephem = Mock()
     c.ephem._tle_ephem = Mock()
     return c

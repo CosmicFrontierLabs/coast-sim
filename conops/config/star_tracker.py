@@ -355,6 +355,8 @@ class StarTrackerConfiguration(BaseModel):
                 continue
 
             base_constraint = st.soft_constraint.constraint
+            if base_constraint is None:
+                continue
             roll_deg, pitch_deg, yaw_deg = self._boresight_to_euler_deg(
                 st.orientation.boresight
             )

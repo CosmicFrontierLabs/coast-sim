@@ -112,7 +112,17 @@ class PlanEntry:
         assert self.ephem is not None, "Ephemeris must be set to calculate visibility"
 
         # Calculate the visibility of this target
-        in_constraint = self.constraint.constraint.evaluate(
+        combined_constraint = self.constraint.constraint
+        if combined_constraint is None:
+            self.windows = [
+                [
+                    float(self.ephem.begin.timestamp()),
+                    float(self.ephem.end.timestamp()),
+                ]
+            ]
+            return 0
+
+        in_constraint = combined_constraint.evaluate(
             ephemeris=self.ephem,
             target_ra=self.ra,  # already in degrees
             target_dec=self.dec,

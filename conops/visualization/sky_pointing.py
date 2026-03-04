@@ -638,6 +638,8 @@ class SkyPointingController:
                         continue
 
                     base_constraint = st.hard_constraint.constraint
+                    if base_constraint is None:
+                        continue
                     roll_deg, pitch_deg, yaw_deg = (
                         star_trackers._boresight_to_euler_deg(st.orientation.boresight)
                     )
@@ -671,6 +673,8 @@ class SkyPointingController:
         )
 
         for name, constraint_func in constraint_types:
+            if constraint_func is None:
+                continue
             # Batch evaluation with datetime array
             result = constraint_func.in_constraint_batch(
                 ephemeris=self.ditl.ephem,
@@ -792,6 +796,8 @@ class SkyPointingController:
                         continue
 
                     base_constraint = st.hard_constraint.constraint
+                    if base_constraint is None:
+                        continue
                     roll_deg, pitch_deg, yaw_deg = (
                         star_trackers._boresight_to_euler_deg(st.orientation.boresight)
                     )
@@ -830,6 +836,8 @@ class SkyPointingController:
                     )
 
         for name, constraint_func, color, body_ra, body_dec in constraint_types:
+            if constraint_func is None:
+                continue
             self._plot_single_constraint(
                 name,
                 constraint_func,

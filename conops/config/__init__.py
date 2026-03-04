@@ -7,7 +7,7 @@ from .communications import (
 )
 from .config import MissionConfig
 from .constants import DAY_SECONDS, DTOR
-from .constraint import Constraint
+from .constraint import Constraint, DefaultConstraint
 from .data_generator import DataGeneration
 from .fault_management import (
     FaultConstraint,
@@ -41,6 +41,7 @@ __all__ = [
     "CommunicationsSystem",
     "MissionConfig",
     "Constraint",
+    "DefaultConstraint",
     "DataGeneration",
     "FaultConstraint",
     "FaultEvent",

@@ -6,7 +6,7 @@ import yaml
 from pydantic import BaseModel, Field, model_validator
 
 from .battery import Battery
-from .constraint import Constraint
+from .constraint import Constraint, DefaultConstraint
 from .fault_management import FaultManagement
 from .groundstation import GroundStationRegistry
 from .instrument import Payload
@@ -41,7 +41,7 @@ class MissionConfig(BaseModel):
         description="Battery Configuration. Defines battery capacity, voltage, and charging parameters",
     )
     constraint: Constraint = Field(
-        default_factory=Constraint,
+        default_factory=DefaultConstraint,
         description="Pointing Constraints. Defines geometric constraints for spacecraft pointing",
     )
     ground_stations: GroundStationRegistry = Field(

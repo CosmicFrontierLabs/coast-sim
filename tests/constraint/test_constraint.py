@@ -5,7 +5,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from conops import Constraint
+from conops import Constraint, DefaultConstraint
 
 
 class TestConstraintInit:
@@ -23,60 +23,59 @@ class TestConstraintInit:
         """Test Constraint initialization with default ephem."""
         assert constraint.ephem is None
 
-    def test_constraint_init_has_sun_constraint(self, constraint):
-        """Test Constraint has sun_constraint."""
-        assert constraint.sun_constraint is not None
+    def test_constraint_init_sun_constraint_defaults_to_none(self):
+        """Test bare Constraint defaults to no sun constraint."""
+        assert Constraint().sun_constraint is None
 
-    def test_constraint_init_has_anti_sun_constraint(self, constraint):
-        """Test Constraint has anti_sun_constraint."""
-        assert constraint.anti_sun_constraint is not None
+    def test_constraint_init_anti_sun_constraint_defaults_to_none(self):
+        """Test bare Constraint defaults to no anti-sun constraint."""
+        assert Constraint().anti_sun_constraint is None
 
-    def test_constraint_init_has_moon_constraint(self, constraint):
-        """Test Constraint has moon_constraint."""
-        assert constraint.moon_constraint is not None
+    def test_constraint_init_moon_constraint_defaults_to_none(self):
+        """Test bare Constraint defaults to no moon constraint."""
+        assert Constraint().moon_constraint is None
 
-    def test_constraint_init_has_earth_constraint(self, constraint):
-        """Test Constraint has earth_constraint."""
-        assert constraint.earth_constraint is not None
+    def test_constraint_init_earth_constraint_defaults_to_none(self):
+        """Test bare Constraint defaults to no earth constraint."""
+        assert Constraint().earth_constraint is None
 
-    def test_constraint_init_has_panel_constraint(self, constraint):
-        """Test Constraint has panel_constraint."""
-        assert constraint.panel_constraint is not None
+    def test_constraint_init_panel_constraint_defaults_to_none(self):
+        """Test bare Constraint defaults to no panel constraint."""
+        assert Constraint().panel_constraint is None
 
-    def test_constraint_ephemeris_assertion_in_sun(self):
-        """Test constraint in_sun asserts ephemeris is set."""
+    def test_default_constraint_has_legacy_constraints(self):
+        """Test DefaultConstraint preserves legacy non-None defaults."""
+        default_constraint = DefaultConstraint()
+        assert default_constraint.sun_constraint is not None
+        assert default_constraint.anti_sun_constraint is not None
+        assert default_constraint.moon_constraint is not None
+        assert default_constraint.earth_constraint is not None
+        assert default_constraint.panel_constraint is not None
+
+    def test_constraint_in_sun_noop_when_constraint_is_none(self):
+        """Test in_sun returns False when sun constraint is disabled."""
         constraint = Constraint(ephem=None)
+        assert not constraint.in_sun(45.0, 30.0, 1700000000.0)
 
-        with pytest.raises(AssertionError, match="Ephemeris must be set"):
-            constraint.in_sun(45.0, 30.0, 1700000000.0)
-
-    def test_constraint_ephemeris_assertion_in_panel(self):
-        """Test constraint in_panel asserts ephemeris is set."""
+    def test_constraint_in_panel_noop_when_constraint_is_none(self):
+        """Test in_panel returns False when panel constraint is disabled."""
         constraint = Constraint(ephem=None)
+        assert not constraint.in_panel(45.0, 30.0, 1700000000.0)
 
-        with pytest.raises(AssertionError, match="Ephemeris must be set"):
-            constraint.in_panel(45.0, 30.0, 1700000000.0)
-
-    def test_constraint_ephemeris_assertion_in_anti_sun(self):
-        """Test constraint in_anti_sun asserts ephemeris is set."""
+    def test_constraint_in_anti_sun_noop_when_constraint_is_none(self):
+        """Test in_anti_sun returns False when anti-sun constraint is disabled."""
         constraint = Constraint(ephem=None)
+        assert not constraint.in_anti_sun(45.0, 30.0, 1700000000.0)
 
-        with pytest.raises(AssertionError, match="Ephemeris must be set"):
-            constraint.in_anti_sun(45.0, 30.0, 1700000000.0)
-
-    def test_constraint_ephemeris_assertion_in_earth(self):
-        """Test constraint in_earth asserts ephemeris is set."""
+    def test_constraint_in_earth_noop_when_constraint_is_none(self):
+        """Test in_earth returns False when earth constraint is disabled."""
         constraint = Constraint(ephem=None)
+        assert not constraint.in_earth(45.0, 30.0, 1700000000.0)
 
-        with pytest.raises(AssertionError, match="Ephemeris must be set"):
-            constraint.in_earth(45.0, 30.0, 1700000000.0)
-
-    def test_constraint_ephemeris_assertion_in_moon(self):
-        """Test constraint in_moon asserts ephemeris is set."""
+    def test_constraint_in_moon_noop_when_constraint_is_none(self):
+        """Test in_moon returns False when moon constraint is disabled."""
         constraint = Constraint(ephem=None)
-
-        with pytest.raises(AssertionError, match="Ephemeris must be set"):
-            constraint.in_moon(45.0, 30.0, 1700000000.0)
+        assert not constraint.in_moon(45.0, 30.0, 1700000000.0)
 
 
 class TestConstraintProperties:
@@ -104,7 +103,7 @@ class TestInSunMethod:
 
     def test_in_sun_requires_ephemeris(self):
         """Test in_sun raises assertion without ephemeris."""
-        constraint = Constraint(ephem=None)
+        constraint = DefaultConstraint(ephem=None)
 
         with pytest.raises(AssertionError, match="Ephemeris must be set"):
             constraint.in_sun(45.0, 30.0, 1700000000.0)
@@ -115,7 +114,7 @@ class TestInPanelMethod:
 
     def test_in_panel_requires_ephemeris(self):
         """Test in_panel raises assertion without ephemeris."""
-        constraint = Constraint(ephem=None)
+        constraint = DefaultConstraint(ephem=None)
 
         with pytest.raises(AssertionError, match="Ephemeris must be set"):
             constraint.in_panel(45.0, 30.0, 1700000000.0)
@@ -126,7 +125,7 @@ class TestInAntiSunMethod:
 
     def test_in_anti_sun_requires_ephemeris(self):
         """Test in_anti_sun raises assertion without ephemeris."""
-        constraint = Constraint(ephem=None)
+        constraint = DefaultConstraint(ephem=None)
 
         with pytest.raises(AssertionError, match="Ephemeris must be set"):
             constraint.in_anti_sun(45.0, 30.0, 1700000000.0)
@@ -137,7 +136,7 @@ class TestInEarthMethod:
 
     def test_in_earth_requires_ephemeris(self):
         """Test in_earth raises assertion without ephemeris."""
-        constraint = Constraint(ephem=None)
+        constraint = DefaultConstraint(ephem=None)
 
         with pytest.raises(AssertionError, match="Ephemeris must be set"):
             constraint.in_earth(45.0, 30.0, 1700000000.0)
@@ -148,7 +147,7 @@ class TestInMoonMethod:
 
     def test_in_moon_requires_ephemeris(self):
         """Test in_moon raises assertion without ephemeris."""
-        constraint = Constraint(ephem=None)
+        constraint = DefaultConstraint(ephem=None)
 
         with pytest.raises(AssertionError, match="Ephemeris must be set"):
             constraint.in_moon(45.0, 30.0, 1700000000.0)
