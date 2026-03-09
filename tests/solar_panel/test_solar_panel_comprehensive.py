@@ -1156,7 +1156,10 @@ class TestCoverageCompletion:
         assert np.array_equal(result1, np.array([0.0]))
 
         result2 = panel_set.panel_illumination_fraction(
-            time=[1514764800.0], ra=0.0, dec=0.0, ephem=ephem
+            time=[1514764800.0],
+            ra=0.0,
+            dec=0.0,
+            ephem=ephem,  # type: ignore[arg-type]  # tests list[float] early-exit
         )
         assert np.array_equal(result2, np.array([0.0]))
 
@@ -1198,7 +1201,7 @@ class TestCoverageCompletion:
             ),
         ):
             illumination, power = panel_set.illumination_and_power(
-                time=[1514764800.0, 1514764801.0],  # List of times triggers fallback
+                time=[1514764800.0, 1514764801.0],  # type: ignore[arg-type]  # tests list[float] fallback path
                 ra=0.0,
                 dec=0.0,
                 ephem=ephem,

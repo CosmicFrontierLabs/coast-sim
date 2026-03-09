@@ -479,8 +479,13 @@ class TestProcessCommandsCoverage:
     """Test _process_commands to ensure queue processing is covered."""
 
     def _make_mock_slew(
-        self, startra=0.0, startdec=0.0, endra=45.0, enddec=30.0, obstype="PPT"
-    ):
+        self,
+        startra: float = 0.0,
+        startdec: float = 0.0,
+        endra: float = 45.0,
+        enddec: float = 30.0,
+        obstype: str = "PPT",
+    ) -> Mock:
         """Helper to create a mock slew with all required attributes."""
         mock_slew = Mock(spec=Slew)
         mock_slew.startra = startra

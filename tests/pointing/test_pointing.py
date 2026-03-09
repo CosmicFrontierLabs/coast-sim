@@ -88,7 +88,7 @@ class TestPointing:
     """Test Pointing class initialization and properties."""
 
     def test_constraint(self, pointing: Pointing, constraint: DummyConstraint) -> None:
-        assert pointing.constraint == constraint
+        assert pointing.constraint is constraint
 
     def test_obstype_at(self, pointing: Pointing) -> None:
         assert pointing.obstype == "AT"
