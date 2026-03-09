@@ -630,41 +630,7 @@ class SkyPointingController:
                 if st_soft_constraint is not None:
                     constraint_types.append(("star_tracker_soft", st_soft_constraint))
 
-                # Build combined hard constraint using min_functional_trackers threshold
-                st_hard_constraints: list[rust_ephem.constraints.ConstraintConfig] = []
-                total_trackers = int(star_trackers.num_trackers())
-                for st in getattr(star_trackers, "star_trackers", []):
-                    if getattr(st, "hard_constraint", None) is None:
-                        continue
-
-                    base_constraint = st.hard_constraint.constraint
-                    if base_constraint is None:
-                        continue
-                    roll_deg, pitch_deg, yaw_deg = (
-                        star_trackers._boresight_to_euler_deg(st.orientation.boresight)
-                    )
-                    offset_constraint = base_constraint.boresight_offset(
-                        roll_deg=roll_deg,
-                        pitch_deg=pitch_deg,
-                        yaw_deg=yaw_deg,
-                    )
-                    st_hard_constraints.append(offset_constraint)
-
-                min_functional = int(
-                    getattr(star_trackers, "min_functional_trackers", 1)
-                )
-                required_violations = total_trackers - min_functional + 1
-                st_hard_combined = None
-                if (
-                    required_violations > 0
-                    and required_violations <= len(st_hard_constraints)
-                    and len(st_hard_constraints) > 0
-                ):
-                    st_hard_combined = rust_ephem.AtLeastConstraint(
-                        min_violated=required_violations,
-                        constraints=st_hard_constraints,
-                    )
-
+                st_hard_combined = star_trackers.startracker_hard_constraint
                 if st_hard_combined is not None:
                     constraint_types.append(("star_tracker_hard", st_hard_combined))
 
@@ -789,41 +755,7 @@ class SkyPointingController:
                         )
                     )
 
-                st_hard_constraints: list[rust_ephem.constraints.ConstraintConfig] = []
-                total_trackers = int(star_trackers.num_trackers())
-                for st in getattr(star_trackers, "star_trackers", []):
-                    if getattr(st, "hard_constraint", None) is None:
-                        continue
-
-                    base_constraint = st.hard_constraint.constraint
-                    if base_constraint is None:
-                        continue
-                    roll_deg, pitch_deg, yaw_deg = (
-                        star_trackers._boresight_to_euler_deg(st.orientation.boresight)
-                    )
-                    offset_constraint = base_constraint.boresight_offset(
-                        roll_deg=roll_deg,
-                        pitch_deg=pitch_deg,
-                        yaw_deg=yaw_deg,
-                    )
-
-                    st_hard_constraints.append(offset_constraint)
-
-                min_functional = int(
-                    getattr(star_trackers, "min_functional_trackers", 1)
-                )
-                required_violations = total_trackers - min_functional + 1
-                st_hard_combined = None
-                if (
-                    required_violations > 0
-                    and required_violations <= len(st_hard_constraints)
-                    and len(st_hard_constraints) > 0
-                ):
-                    st_hard_combined = rust_ephem.AtLeastConstraint(
-                        min_violated=required_violations,
-                        constraints=st_hard_constraints,
-                    )
-
+                st_hard_combined = star_trackers.startracker_hard_constraint
                 if st_hard_combined is not None:
                     constraint_types.append(
                         (

@@ -28,10 +28,12 @@ Example:
 
 from __future__ import annotations
 
+from functools import cached_property
+
 import numpy as np
 import numpy.typing as npt
 import rust_ephem
-from pydantic import BaseModel, Field, computed_field, field_validator
+from pydantic import BaseModel, Field, field_validator
 from rust_ephem import AtLeastConstraint, EarthLimbConstraint, SunConstraint
 from rust_ephem.constraints import ConstraintConfig
 
@@ -336,8 +338,7 @@ class StarTrackerConfiguration(BaseModel):
         roll_deg = 0.0
         return roll_deg, pitch_deg, yaw_deg
 
-    @computed_field  # type: ignore[prop-decorator]
-    @property
+    @cached_property
     def startracker_hard_constraint(self) -> ConstraintConfig | None:
         """Combined hard constraint from all star trackers.
 
@@ -370,8 +371,7 @@ class StarTrackerConfiguration(BaseModel):
 
         return combined
 
-    @computed_field  # type: ignore[prop-decorator]
-    @property
+    @cached_property
     def startracker_constraint(self) -> ConstraintConfig | None:
         """Combined observing constraint from all star tracker soft constraints.
 
