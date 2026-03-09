@@ -485,8 +485,11 @@ class StarTrackerConfiguration(BaseModel):
     ) -> bool:
         """Check if pointing is valid considering hard constraints and minimum trackers.
 
-        A pointing is valid if at least min_functional_trackers star trackers do not
-        violate hard constraints.
+        A pointing is valid when both conditions hold:
+        1. **No** star tracker is in a hard constraint (absolute keep-out; any
+           violation immediately invalidates the pointing regardless of redundancy).
+        2. The number of star trackers *not* violating soft constraints is at least
+           ``min_functional_trackers`` (fault-tolerance check).
 
         Args:
             ra_deg: Right ascension in spacecraft frame, degrees
@@ -502,11 +505,21 @@ class StarTrackerConfiguration(BaseModel):
             # No star trackers configured - allow all pointings
             return True
 
-        violations = self.trackers_violating_hard_constraints(
-            ra_deg, dec_deg, utime, roll_deg
-        )
-        functional_trackers = len(self.star_trackers) - violations
+        # Hard constraints are absolute keep-outs: any violation invalidates the pointing.
+        if (
+            self.trackers_violating_hard_constraints(ra_deg, dec_deg, utime, roll_deg)
+            > 0
+        ):
+            return False
 
+        # Soft constraints represent performance degradation.
+        # The pointing is valid only when enough trackers remain unaffected.
+        soft_violations = sum(
+            1
+            for st in self.star_trackers
+            if st.in_soft_constraint(ra_deg, dec_deg, utime, roll_deg)
+        )
+        functional_trackers = len(self.star_trackers) - soft_violations
         return functional_trackers >= self.min_functional_trackers
 
     def check_soft_constraint_degradation(
