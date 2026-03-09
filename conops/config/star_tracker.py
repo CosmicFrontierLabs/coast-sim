@@ -311,20 +311,6 @@ class StarTracker(ConfigModel):
         return mode in self.modes_require_lock
 
 
-# Default Star Tracker configuration, aligned with the boresight and does not
-# work if pointed at the Earth (Earth limb constraint with min_angle=0) or
-# within 20 degrees of the Sun (Sun constraint with min_angle=20). This
-# is just an example configuration - users can create their own star trackers
-# with different orientations and constraints as needed.
-default_star_tracker = StarTracker(
-    orientation=StarTrackerOrientation(boresight=(0.0, 1.0, 0.0)),
-    hard_constraint=Constraint(
-        earth_constraint=EarthLimbConstraint(min_angle=0),
-        sun_constraint=SunConstraint(min_angle=20),
-    ),
-)  # Example: star tracker pointing along +Y
-
-
 class StarTrackerConfiguration(ConfigModel):
     """Configuration for star tracker subsystem on spacecraft.
 
@@ -591,10 +577,19 @@ class StarTrackerConfiguration(ConfigModel):
 class DefaultStarTrackerConfiguration(StarTrackerConfiguration):
     """Star tracker configuration pre-populated with a single default star tracker.
 
-    The default tracker is oriented along +Y with hard constraints for Earth limb
-    (min_angle=0) and Sun (min_angle=20 deg) avoidance.
+    The default tracker is oriented along +X (aligned with the spacecraft boresight)
+    with soft constraints for Earth limb (min_angle=0) and Sun (min_angle=20 deg)
+    avoidance.
     """
 
     star_trackers: list[StarTracker] = Field(
-        default_factory=lambda: [default_star_tracker]
+        default_factory=lambda: [
+            StarTracker(
+                orientation=StarTrackerOrientation(boresight=(1.0, 0.0, 0.0)),
+                soft_constraint=Constraint(
+                    earth_constraint=EarthLimbConstraint(min_angle=0),
+                    sun_constraint=SunConstraint(min_angle=20),
+                ),
+            )
+        ]
     )
