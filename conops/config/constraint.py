@@ -198,29 +198,25 @@ class Constraint(BaseModel):
     @cached_property
     def constraint(self) -> ConstraintConfig | None:
         """Combined constraint from all individual constraints"""
-        if not hasattr(self, "_constraint_cache"):
-            constraint_components = [
-                self.sun_constraint,
-                self.moon_constraint,
-                self.earth_constraint,
-                self.panel_constraint,
-                self.anti_sun_constraint,
-                self.star_tracker_hard_constraint,
-            ]
-            active_constraints = [
-                component
-                for component in constraint_components
-                if component is not None
-            ]
+        constraint_components = [
+            self.sun_constraint,
+            self.moon_constraint,
+            self.earth_constraint,
+            self.panel_constraint,
+            self.anti_sun_constraint,
+            self.star_tracker_hard_constraint,
+        ]
+        active_constraints = [
+            component for component in constraint_components if component is not None
+        ]
 
-            if not active_constraints:
-                self._constraint_cache = None
-            else:
-                combined = active_constraints[0]
-                for component in active_constraints[1:]:
-                    combined = combined | component
-                self._constraint_cache = combined
-        return self._constraint_cache
+        if not active_constraints:
+            return None
+
+        combined = active_constraints[0]
+        for component in active_constraints[1:]:
+            combined = combined | component
+        return combined
 
     def in_sun(self, ra: float, dec: float, time: float) -> bool:
         if self.sun_constraint is None:

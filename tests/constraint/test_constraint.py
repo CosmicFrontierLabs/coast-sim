@@ -11,39 +11,39 @@ from conops import Constraint, DefaultConstraint
 class TestConstraintInit:
     """Test Constraint initialization."""
 
-    def test_constraint_init_defaults_bestroll(self, constraint):
+    def test_constraint_init_defaults_bestroll(self, constraint) -> None:
         """Test Constraint initialization with default bestroll."""
         assert constraint.bestroll == 0.0
 
-    def test_constraint_init_defaults_bestpointing(self, constraint):
+    def test_constraint_init_defaults_bestpointing(self, constraint) -> None:
         """Test Constraint initialization with default bestpointing."""
         assert np.array_equal(constraint.bestpointing, np.array([-1, -1, -1]))
 
-    def test_constraint_init_defaults_ephem(self, constraint):
+    def test_constraint_init_defaults_ephem(self, constraint) -> None:
         """Test Constraint initialization with default ephem."""
         assert constraint.ephem is None
 
-    def test_constraint_init_sun_constraint_defaults_to_none(self):
+    def test_constraint_init_sun_constraint_defaults_to_none(self) -> None:
         """Test bare Constraint defaults to no sun constraint."""
         assert Constraint().sun_constraint is None
 
-    def test_constraint_init_anti_sun_constraint_defaults_to_none(self):
+    def test_constraint_init_anti_sun_constraint_defaults_to_none(self) -> None:
         """Test bare Constraint defaults to no anti-sun constraint."""
         assert Constraint().anti_sun_constraint is None
 
-    def test_constraint_init_moon_constraint_defaults_to_none(self):
+    def test_constraint_init_moon_constraint_defaults_to_none(self) -> None:
         """Test bare Constraint defaults to no moon constraint."""
         assert Constraint().moon_constraint is None
 
-    def test_constraint_init_earth_constraint_defaults_to_none(self):
+    def test_constraint_init_earth_constraint_defaults_to_none(self) -> None:
         """Test bare Constraint defaults to no earth constraint."""
         assert Constraint().earth_constraint is None
 
-    def test_constraint_init_panel_constraint_defaults_to_none(self):
+    def test_constraint_init_panel_constraint_defaults_to_none(self) -> None:
         """Test bare Constraint defaults to no panel constraint."""
         assert Constraint().panel_constraint is None
 
-    def test_default_constraint_has_legacy_constraints(self):
+    def test_default_constraint_has_legacy_constraints(self) -> None:
         """Test DefaultConstraint preserves legacy non-None defaults."""
         default_constraint = DefaultConstraint()
         assert default_constraint.sun_constraint is not None
@@ -52,27 +52,27 @@ class TestConstraintInit:
         assert default_constraint.earth_constraint is not None
         assert default_constraint.panel_constraint is not None
 
-    def test_constraint_in_sun_noop_when_constraint_is_none(self):
+    def test_constraint_in_sun_noop_when_constraint_is_none(self) -> None:
         """Test in_sun returns False when sun constraint is disabled."""
         constraint = Constraint(ephem=None)
         assert not constraint.in_sun(45.0, 30.0, 1700000000.0)
 
-    def test_constraint_in_panel_noop_when_constraint_is_none(self):
+    def test_constraint_in_panel_noop_when_constraint_is_none(self) -> None:
         """Test in_panel returns False when panel constraint is disabled."""
         constraint = Constraint(ephem=None)
         assert not constraint.in_panel(45.0, 30.0, 1700000000.0)
 
-    def test_constraint_in_anti_sun_noop_when_constraint_is_none(self):
+    def test_constraint_in_anti_sun_noop_when_constraint_is_none(self) -> None:
         """Test in_anti_sun returns False when anti-sun constraint is disabled."""
         constraint = Constraint(ephem=None)
         assert not constraint.in_anti_sun(45.0, 30.0, 1700000000.0)
 
-    def test_constraint_in_earth_noop_when_constraint_is_none(self):
+    def test_constraint_in_earth_noop_when_constraint_is_none(self) -> None:
         """Test in_earth returns False when earth constraint is disabled."""
         constraint = Constraint(ephem=None)
         assert not constraint.in_earth(45.0, 30.0, 1700000000.0)
 
-    def test_constraint_in_moon_noop_when_constraint_is_none(self):
+    def test_constraint_in_moon_noop_when_constraint_is_none(self) -> None:
         """Test in_moon returns False when moon constraint is disabled."""
         constraint = Constraint(ephem=None)
         assert not constraint.in_moon(45.0, 30.0, 1700000000.0)
@@ -81,16 +81,16 @@ class TestConstraintInit:
 class TestConstraintProperties:
     """Test Constraint model properties."""
 
-    def test_constraint_bestpointing_default(self, constraint):
+    def test_constraint_bestpointing_default(self, constraint) -> None:
         """Test bestpointing default value."""
         expected = np.array([-1, -1, -1])
         assert np.array_equal(constraint.bestpointing, expected)
 
-    def test_constraint_bestroll_default(self, constraint):
+    def test_constraint_bestroll_default(self, constraint) -> None:
         """Test bestroll default value."""
         assert constraint.bestroll == 0.0
 
-    def test_constraint_exclusion_from_serialization(self, constraint):
+    def test_constraint_exclusion_from_serialization(self, constraint) -> None:
         """Test that ephem is excluded from model serialization."""
         # ephem is marked with exclude=True in Field definition
         # so it should not appear in model_dump
@@ -101,7 +101,7 @@ class TestConstraintProperties:
 class TestInSunMethod:
     """Test in_sun method - requires actual Ephemeris, skip detailed tests."""
 
-    def test_in_sun_requires_ephemeris(self):
+    def test_in_sun_requires_ephemeris(self) -> None:
         """Test in_sun raises assertion without ephemeris."""
         constraint = DefaultConstraint(ephem=None)
 
@@ -112,7 +112,7 @@ class TestInSunMethod:
 class TestInPanelMethod:
     """Test in_panel method - requires actual Ephemeris."""
 
-    def test_in_panel_requires_ephemeris(self):
+    def test_in_panel_requires_ephemeris(self) -> None:
         """Test in_panel raises assertion without ephemeris."""
         constraint = DefaultConstraint(ephem=None)
 
@@ -123,7 +123,7 @@ class TestInPanelMethod:
 class TestInAntiSunMethod:
     """Test in_anti_sun method - requires actual Ephemeris."""
 
-    def test_in_anti_sun_requires_ephemeris(self):
+    def test_in_anti_sun_requires_ephemeris(self) -> None:
         """Test in_anti_sun raises assertion without ephemeris."""
         constraint = DefaultConstraint(ephem=None)
 
@@ -134,7 +134,7 @@ class TestInAntiSunMethod:
 class TestInEarthMethod:
     """Test in_earth method - requires actual Ephemeris."""
 
-    def test_in_earth_requires_ephemeris(self):
+    def test_in_earth_requires_ephemeris(self) -> None:
         """Test in_earth raises assertion without ephemeris."""
         constraint = DefaultConstraint(ephem=None)
 
@@ -145,7 +145,7 @@ class TestInEarthMethod:
 class TestInMoonMethod:
     """Test in_moon method - requires actual Ephemeris."""
 
-    def test_in_moon_requires_ephemeris(self):
+    def test_in_moon_requires_ephemeris(self) -> None:
         """Test in_moon raises assertion without ephemeris."""
         constraint = DefaultConstraint(ephem=None)
 
@@ -255,7 +255,7 @@ class TestInOccultCountMethod:
 class TestInGalConsMethod:
     """Test ingalcons method - which appears to be missing from implementation."""
 
-    def test_ingalcons_not_implemented(self, constraint):
+    def test_ingalcons_not_implemented(self, constraint) -> None:
         """Test that ingalcons method doesn't exist (likely legacy code reference)."""
         # The method is called in in_constraint_count with hardonly=False, but doesn't exist
         assert not hasattr(constraint, "ingalcons")
@@ -290,7 +290,9 @@ class TestConstraintFloatTimeReturnsScalar:
         assert result
 
     @patch("rust_ephem.SunConstraint.in_constraint")
-    def test_in_sun_with_float_called(self, mock_in_constraint, constraint_with_ephem):
+    def test_in_sun_with_float_called(
+        self, mock_in_constraint, constraint_with_ephem
+    ) -> None:
         """Test in_sun with float time calls constraint."""
         # Mock the in_constraint method to return True
         mock_in_constraint.return_value = True
@@ -440,7 +442,9 @@ class TestConstraintFloatTimeReturnsScalar:
         assert result
 
     @patch("rust_ephem.MoonConstraint.in_constraint")
-    def test_in_moon_with_float_called(self, mock_in_constraint, constraint_with_ephem):
+    def test_in_moon_with_float_called(
+        self, mock_in_constraint, constraint_with_ephem
+    ) -> None:
         """Test in_moon with float time calls constraint."""
         # Mock the in_constraint method to return True
         mock_in_constraint.return_value = True
@@ -864,7 +868,7 @@ class TestConstraintEdgeCases:
 class TestInEclipseMethod:
     """Test in_eclipse method - requires actual Ephemeris."""
 
-    def test_in_eclipse_requires_ephemeris(self):
+    def test_in_eclipse_requires_ephemeris(self) -> None:
         """Test in_eclipse raises assertion without ephemeris."""
         constraint = Constraint(ephem=None)
 
@@ -909,15 +913,6 @@ class TestInEclipseMethod:
         assert mock_in_constraint.called
 
 
-class TestConstraintProperty:
-    """Test Constraint.constraint property."""
-
-    def test_constraint_property_sets_constraint_cache(self, constraint):
-        """Test that accessing constraint property sets _constraint_cache."""
-        _ = constraint.constraint
-        assert constraint._constraint_cache is not None
-
-
 class TestConstraintInSun:
     """Test Constraint in_sun method behavior."""
 
@@ -937,7 +932,7 @@ class TestConstraintInSun:
 class TestConstraintCaching:
     """Test constraint result caching functionality."""
 
-    def test_cache_stats_initial_zeros(self, constraint):
+    def test_cache_stats_initial_zeros(self, constraint) -> None:
         """Test that cache stats start at zero."""
         hits, misses = constraint.cache_stats()
         assert hits == 0
@@ -973,7 +968,9 @@ class TestConstraintCaching:
         assert misses == 1
 
     @patch("rust_ephem.SunConstraint.in_constraint")
-    def test_cache_returns_same_result(self, mock_in_constraint, constraint_with_ephem):
+    def test_cache_returns_same_result(
+        self, mock_in_constraint, constraint_with_ephem
+    ) -> None:
         """Test that cached result matches original result."""
         mock_in_constraint.return_value = True
 
@@ -986,7 +983,9 @@ class TestConstraintCaching:
         mock_in_constraint.assert_called_once()
 
     @patch("rust_ephem.SunConstraint.in_constraint")
-    def test_clear_cache_resets(self, mock_in_constraint, constraint_with_ephem):
+    def test_clear_cache_resets(
+        self, mock_in_constraint, constraint_with_ephem
+    ) -> None:
         """Test that clear_cache clears the cache."""
         mock_in_constraint.return_value = True
 
