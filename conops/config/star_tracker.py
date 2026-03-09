@@ -115,14 +115,32 @@ class StarTrackerOrientation(BaseModel):
         return v
 
     def to_rotation_matrix(self) -> npt.NDArray[np.float64]:
-        """Convert boresight vector to rotation matrix.
+        """Build the rotation matrix whose columns are the star tracker basis vectors.
 
-        Returns a 3x3 rotation matrix that transforms vectors from spacecraft body frame
-        to star tracker frame, where the star tracker +X axis is aligned with the boresight.
+        The three columns of the returned matrix are, in order: the boresight
+        (ST +X axis), an arbitrarily-chosen perpendicular axis (ST +Y), and their
+        cross-product (ST +Z), all expressed in **spacecraft body-frame**
+        coordinates.
 
-        Returns:
-            3x3 rotation matrix transforming vectors from spacecraft body frame
-            to star tracker frame.
+        Interpretation
+        --------------
+        Because the columns are the ST basis vectors written in body-frame
+        coordinates, the matrix ``R`` maps from **ST frame to body frame**::
+
+            v_body = R @ v_st
+
+        To transform a body-frame vector into star-tracker-frame coordinates
+        (i.e. to obtain the components that the star tracker "sees"), use the
+        **transpose** (which equals the inverse for an orthonormal matrix)::
+
+            v_st = R.T @ v_body
+
+        This is the convention used in :meth:`transform_pointing`.
+
+        Returns
+        -------
+        ndarray, shape (3, 3)
+            Orthonormal rotation matrix (R_ST←body⁻¹, equivalently R_body←ST).
         """
         # Boresight is the first column of the rotation matrix
         bore = np.array(self.boresight, dtype=np.float64)
@@ -188,9 +206,10 @@ class StarTrackerOrientation(BaseModel):
         roll_rad = np.deg2rad(roll_deg)
         v_body = rotvec(1, roll_rad, v_sc)
 
-        # Transform to star tracker frame
+        # Transform to star tracker frame: columns of R are ST basis vectors in
+        # body frame, so R maps ST→body; R.T maps body→ST.
         rot_matrix = self.to_rotation_matrix()
-        v_st = rot_matrix @ v_body
+        v_st = rot_matrix.T @ v_body
 
         # Convert back to RA/Dec
         ra_st_rad, dec_st_rad = vec2radec(v_st)
@@ -483,20 +502,28 @@ class StarTrackerConfiguration(BaseModel):
         roll_deg: float = 0.0,
         mode: int | None = None,
     ) -> bool:
-        """Check if pointing is valid considering hard constraints and minimum trackers.
+        """Check if pointing is valid considering hard constraints and the
+        minimum number of operational trackers.
 
         A pointing is valid when both conditions hold:
+
         1. **No** star tracker is in a hard constraint (absolute keep-out; any
            violation immediately invalidates the pointing regardless of redundancy).
-        2. The number of star trackers *not* violating soft constraints is at least
-           ``min_functional_trackers`` (fault-tolerance check).
+        2. The number of trackers counted as *functional* is at least
+           ``min_functional_trackers``.  A tracker is considered non-functional
+           when it is both in its soft-constraint zone **and**
+           :meth:`~StarTracker.requires_lock_in_mode` returns ``True`` for
+           ``mode``.  Trackers that do not require a lock in the current mode
+           are always counted as functional regardless of soft-constraint state.
 
         Args:
             ra_deg: Right ascension in spacecraft frame, degrees
             dec_deg: Declination in spacecraft frame, degrees
             utime: Unix timestamp
             roll_deg: Spacecraft roll angle in degrees. Default is 0.
-            mode: Operational mode (used for lock requirement checking)
+            mode: Operational mode. Controls which trackers must have a lock
+                (see :attr:`~StarTracker.modes_require_lock`). Pass ``None``
+                for nominal/unspecified mode.
 
         Returns:
             True if pointing is valid, False otherwise
@@ -513,11 +540,14 @@ class StarTrackerConfiguration(BaseModel):
             return False
 
         # Soft constraints represent performance degradation.
-        # The pointing is valid only when enough trackers remain unaffected.
+        # A tracker is non-functional only when it is in its soft zone AND it
+        # requires a lock in this mode — a tracker that doesn't need a lock is
+        # still operational regardless of soft-constraint state.
         soft_violations = sum(
             1
             for st in self.star_trackers
-            if st.in_soft_constraint(ra_deg, dec_deg, utime, roll_deg)
+            if st.requires_lock_in_mode(mode)
+            and st.in_soft_constraint(ra_deg, dec_deg, utime, roll_deg)
         )
         functional_trackers = len(self.star_trackers) - soft_violations
         return functional_trackers >= self.min_functional_trackers
