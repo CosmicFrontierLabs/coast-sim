@@ -122,7 +122,8 @@ Metadata Fields
      - COASTSim package version that produced the file.
    * - ``created_at``
      - string
-     - ISO-8601 UTC timestamp of when the file was written.
+     - ISO-8601 UTC timestamp of when the :class:`~conops.targets.plan_schema.PlanSchema`
+       instance was created/validated (not updated by :meth:`~conops.targets.plan_schema.PlanSchema.save`).
    * - ``start``
      - float
      - Unix timestamp of the first entry's ``begin`` time (0 if the plan is empty).
