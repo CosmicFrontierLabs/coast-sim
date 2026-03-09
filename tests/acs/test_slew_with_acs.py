@@ -5,10 +5,10 @@ from conops import AttitudeControlSystem, Constraint, MissionConfig, Slew, Space
 
 class DummyConstraint(Constraint):
     def __init__(self, **kwargs: Any) -> None:
-        # Initialize with minimal required fields
         super().__init__(**kwargs)
-        # Slew asserts constraint.ephem is not None, but does not use it during calc
-        self.ephem = object()
+        # Bypass validate_assignment: Slew asserts constraint.ephem is not None,
+        # but does not use it during calc.
+        object.__setattr__(self, "ephem", object())
 
 
 def test_slew_uses_acs_config() -> None:

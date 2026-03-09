@@ -3,10 +3,11 @@ from typing import cast
 
 import numpy as np
 import rust_ephem
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import ConfigDict, Field, PrivateAttr
 from rust_ephem.constraints import ConstraintConfig
 
 from ..common import dtutcfromtimestamp
+from ._base import ConfigModel
 from .constants import (
     ANTISUN_OCCULT,
     EARTH_OCCULT,
@@ -70,7 +71,7 @@ def _round_constraint_key(
     )
 
 
-class Constraint(BaseModel):
+class Constraint(ConfigModel):
     """Class to calculate Spacecraft constraints.
 
     Constraint checks are cached to avoid redundant computations when the same
@@ -135,7 +136,9 @@ class Constraint(BaseModel):
     _cache_hits: int = PrivateAttr(default=0)
     _cache_misses: int = PrivateAttr(default=0)
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    # validate_assignment=False: this class holds external rust_ephem types
+    # (Ephemeris, ConstraintConfig) that tests legitimately mock via assignment.
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=False)
 
     def _cache_key(
         self, constraint_type: str, ra: float, dec: float, utime: float

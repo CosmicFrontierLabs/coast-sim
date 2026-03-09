@@ -1,9 +1,10 @@
-from pydantic import BaseModel, Field
+from pydantic import Field
 
+from ._base import ConfigModel
 from .power import PowerDraw
 
 
-class Heater(BaseModel):
+class Heater(ConfigModel):
     """Simple model of a spacecraft heater that draws power depending on the mode.
 
     Heaters typically draw more power during eclipse when there is no solar heating,

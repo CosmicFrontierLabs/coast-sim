@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import Field
+
+from ._base import ConfigModel
 
 
-class ObservationCategory(BaseModel):
+class ObservationCategory(ConfigModel):
     """Configuration for a single observation category.
 
     Attributes
@@ -28,7 +30,7 @@ class ObservationCategory(BaseModel):
     )
 
 
-class ObservationCategories(BaseModel):
+class ObservationCategories(ConfigModel):
     """Configuration for categorizing observations by target ID ranges.
 
     This class defines how target IDs (obsid) map to observation categories

@@ -33,11 +33,12 @@ from functools import cached_property
 import numpy as np
 import numpy.typing as npt
 import rust_ephem
-from pydantic import BaseModel, Field, field_validator
+from pydantic import Field, field_validator
 from rust_ephem import AtLeastConstraint, EarthLimbConstraint, SunConstraint
 from rust_ephem.constraints import ConstraintConfig
 
 from ..common.vector import radec2vec, rotvec, vec2radec, vecnorm
+from ._base import ConfigModel
 from .constraint import Constraint
 
 
@@ -82,7 +83,7 @@ def create_star_tracker_vector(
     return tuple(boresight)
 
 
-class StarTrackerOrientation(BaseModel):
+class StarTrackerOrientation(ConfigModel):
     """Orientation of a star tracker boresight in spacecraft body frame.
 
     The boresight direction defines where the star tracker looks. It is represented
@@ -217,7 +218,7 @@ class StarTrackerOrientation(BaseModel):
         return np.rad2deg(ra_st_rad), np.rad2deg(dec_st_rad)
 
 
-class StarTracker(BaseModel):
+class StarTracker(ConfigModel):
     """Configuration for a single star tracker.
 
     Attributes:
@@ -324,7 +325,7 @@ default_star_tracker = StarTracker(
 )  # Example: star tracker pointing along +Y
 
 
-class StarTrackerConfiguration(BaseModel):
+class StarTrackerConfiguration(ConfigModel):
     """Configuration for star tracker subsystem on spacecraft.
 
     Manages multiple star trackers with independent orientations and constraints.

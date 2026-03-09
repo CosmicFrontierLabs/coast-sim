@@ -1,7 +1,7 @@
-from pydantic import BaseModel
+from ._base import ConfigModel
 
 
-class VisualizationConfig(BaseModel):
+class VisualizationConfig(ConfigModel):
     """Configuration for visualization settings."""
 
     # ACS mode color mapping

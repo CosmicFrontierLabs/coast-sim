@@ -1,9 +1,11 @@
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import Field, field_validator
+
+from ._base import ConfigModel
 
 
-class OnboardRecorder(BaseModel):
+class OnboardRecorder(ConfigModel):
     """
     A model representing the spacecraft's onboard data storage device.
 

@@ -1,5 +1,6 @@
-from pydantic import BaseModel, Field
+from pydantic import Field
 
+from ._base import ConfigModel
 from .acs import AttitudeControlSystem
 from .communications import CommunicationsSystem
 from .data_generator import DataGeneration
@@ -8,7 +9,7 @@ from .star_tracker import DefaultStarTrackerConfiguration, StarTrackerConfigurat
 from .thermal import Heater
 
 
-class SpacecraftBus(BaseModel):
+class SpacecraftBus(ConfigModel):
     name: str = Field(default="Default Bus", description="Name of the spacecraft bus")
     power_draw: PowerDraw = Field(
         default_factory=PowerDraw,

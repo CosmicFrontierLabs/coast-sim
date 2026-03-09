@@ -3,8 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
 
+from ._base import ConfigModel
 from .battery import Battery
 from .constraint import Constraint, DefaultConstraint
 from .fault_management import FaultManagement
@@ -18,7 +19,7 @@ from .targets import TargetConfig
 from .visualization import VisualizationConfig
 
 
-class MissionConfig(BaseModel):
+class MissionConfig(ConfigModel):
     """
     Configuration class for the spacecraft and its subsystems.
     """
@@ -122,13 +123,13 @@ class MissionConfig(BaseModel):
             and has_star_trackers
             and star_trackers is not None
         ):
-            # Trigger when functional count drops below the configured minimum.
-            # Skip if min_functional_trackers <= 0: no meaningful threshold to set.
-            min_functional = star_trackers.min_functional_trackers
-            if min_functional <= 0:
-                return self
-            yellow = min_functional
-            red = max(min_functional - 1, 0)
+            # Hard constraints are absolute keep-outs: any hard violation invalidates
+            # the pointing.  Fire RED the moment functional count drops below
+            # num_trackers (i.e. any tracker is in hard violation), and YELLOW
+            # one step earlier as a leading indicator.
+            num_trackers = star_trackers.num_trackers()
+            red = num_trackers - 1  # any hard violation → RED
+            yellow = num_trackers  # degraded-but-nominal → YELLOW (leading indicator)
             self.fault_management.add_threshold(
                 name="star_tracker_functional_count",
                 yellow=yellow,

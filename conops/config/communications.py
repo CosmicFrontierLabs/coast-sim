@@ -2,12 +2,13 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
 
 from ..common.enums import AntennaType, Polarization
+from ._base import ConfigModel
 
 
-class BandCapability(BaseModel):
+class BandCapability(ConfigModel):
     """Defines a communication band's data rate capabilities."""
 
     band: Literal["S", "X", "Ka", "Ku", "L", "C", "K"]  # Common spacecraft bands
@@ -51,7 +52,7 @@ class BandCapability(BaseModel):
         return data
 
 
-class AntennaPointing(BaseModel):
+class AntennaPointing(ConfigModel):
     """Defines antenna pointing configuration based on antenna type."""
 
     antenna_type: AntennaType = Field(
@@ -90,7 +91,7 @@ class AntennaPointing(BaseModel):
         )
 
 
-class CommunicationsSystem(BaseModel):
+class CommunicationsSystem(ConfigModel):
     """Onboard communications system configuration.
 
     Defines band capabilities, data rates, antenna type, pointing,

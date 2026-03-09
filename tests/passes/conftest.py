@@ -77,7 +77,7 @@ def mock_constraint(mock_ephem):
 @pytest.fixture
 def mock_acs_config():
     """Create a mock ACS config."""
-    config = Mock()
+    config = Mock(spec=AttitudeControlSystem)
     config.predict_slew = Mock(return_value=(10.0, np.array([[0, 0, 1]])))
     config.slew_time = Mock(return_value=10.0)  # Add slew_time method
     return config
@@ -191,7 +191,7 @@ def create_ephem(tle_path):
 
 @pytest.fixture
 def acs_mock():
-    acs = Mock()
+    acs = Mock(spec=AttitudeControlSystem)
     acs.predict_slew.return_value = (0.1, None)
     acs.slew_time.return_value = 100.0
     return acs

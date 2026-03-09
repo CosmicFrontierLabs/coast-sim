@@ -85,7 +85,10 @@ class TestConfig:
         assert isinstance(minimal_config["config"].fault_management, FaultManagement)
 
     def test_init_fault_management_defaults_none(self) -> None:
-        """Test init_fault_management_defaults does nothing if fault_management is None."""
+        """Test that assigning None to fault_management is rejected by validate_assignment."""
+        import pytest
+        from pydantic import ValidationError
+
         battery = Mock(spec=Battery)
         battery.max_depth_of_discharge = 0.3  # Configure mock battery
         config = MissionConfig(
@@ -96,10 +99,9 @@ class TestConfig:
             constraint=Mock(spec=Constraint),
             ground_stations=Mock(spec=GroundStationRegistry),
         )
-        # Set fault_management to None after creation to test the validator
-        config.fault_management = None
-        config.init_fault_management_defaults()
-        # No assertions needed, just ensure no errors
+        # validate_assignment=True means None is rejected for a non-optional field
+        with pytest.raises(ValidationError):
+            config.fault_management = None
 
     def test_init_fault_management_defaults_adds_threshold(self) -> None:
         """Test init_fault_management_defaults adds battery_level threshold if not present."""
