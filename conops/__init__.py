@@ -72,6 +72,8 @@ from .targets import (
 from .visualization import (
     annotate_slew_distances,
     plot_ditl_timeline,
+    plot_fault_management_timeline,
+    plot_fault_management_timeline_plotly,
 )
 
 __all__ = [
@@ -115,6 +117,8 @@ __all__ = [
     "Plan",
     "PlanEntry",
     "plot_ditl_timeline",
+    "plot_fault_management_timeline",
+    "plot_fault_management_timeline_plotly",
     "Pointing",
     "PowerDraw",
     "Queue",
