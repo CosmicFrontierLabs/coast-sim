@@ -197,6 +197,7 @@ class TestPlanSchema:
         schema = PlanSchema.load(dest)
         assert schema.version == "0.1.0"
         assert len(schema.entries) == 1
+        assert schema.num_entries == len(schema.entries)
         # num_entries and created_at will have schema defaults
         assert isinstance(schema.created_at, str)
 
