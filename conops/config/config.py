@@ -123,9 +123,12 @@ class MissionConfig(BaseModel):
             and star_trackers is not None
         ):
             # Trigger when functional count drops below the configured minimum.
+            # Skip if min_functional_trackers <= 0: no meaningful threshold to set.
             min_functional = star_trackers.min_functional_trackers
+            if min_functional <= 0:
+                return self
             yellow = min_functional
-            red = min_functional - 1
+            red = max(min_functional - 1, 0)
             self.fault_management.add_threshold(
                 name="star_tracker_functional_count",
                 yellow=yellow,
