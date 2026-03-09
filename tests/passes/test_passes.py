@@ -11,6 +11,7 @@ from conops import (
     Pass,
     PassTimes,
 )
+from conops.config import AttitudeControlSystem
 
 
 class TestPassInitialization:
@@ -274,7 +275,7 @@ class TestPassTimeToSlew:
         ephem_obj = create_ephem(begin_dt, end_dt, step_size=60)
 
         mock_config.constraint = mock_constraint
-        mock_config.spacecraft_bus.attitude_control = None
+        object.__setattr__(mock_config.spacecraft_bus, "attitude_control", None)
         p = Pass(
             config=mock_config,
             ephem=ephem_obj,
@@ -331,7 +332,7 @@ class TestPassTimes:
 
     def test_passtimes_uses_default_ground_stations(self, mock_constraint, mock_config):
         """Test PassTimes uses default ground stations when none provided."""
-        mock_config.ground_stations = None
+        object.__setattr__(mock_config, "ground_stations", None)
         pt = PassTimes(config=mock_config)
         assert isinstance(pt.ground_stations, GroundStationRegistry)
 
@@ -346,7 +347,7 @@ class TestPassTimes:
 
     def test_passtimes_requires_ephemeris(self, mock_config):
         """Test PassTimes requires ephemeris."""
-        constraint = Mock()
+        constraint = Mock(spec=Constraint)
         constraint.ephem = None
         with pytest.raises(AssertionError, match="Ephemeris must be set"):
             # PassTimes reads constraint from config.constraint
@@ -431,7 +432,7 @@ class TestPassTimes:
 
         # Manually add passes out of order
         mock_config.constraint = mock_constraint
-        mock_config.spacecraft_bus.attitude_control = Mock()
+        mock_config.spacecraft_bus.attitude_control = Mock(spec=AttitudeControlSystem)
         p1 = Pass(
             config=mock_config,
             ephem=None,
@@ -440,7 +441,7 @@ class TestPassTimes:
             length=100.0,
         )
         mock_config.constraint = mock_constraint
-        mock_config.spacecraft_bus.attitude_control = Mock()
+        mock_config.spacecraft_bus.attitude_control = Mock(spec=AttitudeControlSystem)
         p2 = Pass(
             config=mock_config,
             ephem=None,
@@ -449,7 +450,7 @@ class TestPassTimes:
             length=100.0,
         )
         mock_config.constraint = mock_constraint
-        mock_config.spacecraft_bus.attitude_control = Mock()
+        mock_config.spacecraft_bus.attitude_control = Mock(spec=AttitudeControlSystem)
         p3 = Pass(
             config=mock_config,
             ephem=None,

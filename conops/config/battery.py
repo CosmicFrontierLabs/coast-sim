@@ -1,11 +1,12 @@
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
 
 from ..common import ChargeState
+from ._base import ConfigModel
 
 
-class Battery(BaseModel):
+class Battery(ConfigModel):
     """It's a fake battery"""
 
     # Battery size - 20 Ah Voltage = 28V

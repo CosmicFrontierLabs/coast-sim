@@ -1,7 +1,9 @@
-from pydantic import BaseModel, Field
+from pydantic import Field
+
+from ._base import ConfigModel
 
 
-class DataGeneration(BaseModel):
+class DataGeneration(ConfigModel):
     """
     A model representing data generation characteristics for an instrument.
 

@@ -111,11 +111,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 from rust_ephem.constraints import ConstraintConfig
 
 from ..common import ACSMode, normalize_acs_mode
 from ..common.common import dtutcfromtimestamp
+from ._base import ConfigModel
 
 if TYPE_CHECKING:
     from ..ditl.telemetry import Housekeeping
@@ -186,7 +187,7 @@ class FaultState:
     red_seconds: float = 0.0  # Number of seconds in red state
 
 
-class FaultConstraint(BaseModel):
+class FaultConstraint(ConfigModel):
     """Spacecraft-level red limit constraint for health and safety.
 
     These constraints define absolute limits that the spacecraft should never violate
@@ -223,7 +224,7 @@ class FaultConstraint(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
 
-class FaultThreshold(BaseModel):
+class FaultThreshold(ConfigModel):
     """Threshold configuration for a single monitored parameter.
 
     Attributes:
@@ -288,7 +289,7 @@ class FaultThreshold(BaseModel):
             return "nominal"
 
 
-class FaultManagement(BaseModel):
+class FaultManagement(ConfigModel):
     """Extensible Fault Management system.
 
     Monitors configured parameters each simulation cycle, classifies them
@@ -546,7 +547,7 @@ class FaultManagement(BaseModel):
         stats: dict[str, dict[str, float | str | bool]] = {}
 
         for name, st in self.states.items():
-            # Check if this is a red limit constraint or threshold-based parameter
+            # Check if this is a red limit constraint or special constraint
             if any(c.name == name for c in self.red_limit_constraints):
                 # Red limit constraint stats
                 stats[name] = {

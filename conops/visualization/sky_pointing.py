@@ -608,11 +608,39 @@ class SkyPointingController:
             ("anti_sun", self.ditl.config.constraint.anti_sun_constraint),
             ("panel", self.ditl.config.constraint.panel_constraint),
         ]
+
+        # Add aggregated star-tracker constraints (if configured)
+        star_trackers = None
+        if hasattr(self.ditl, "config") and hasattr(self.ditl.config, "spacecraft_bus"):
+            star_trackers = getattr(
+                self.ditl.config.spacecraft_bus, "star_trackers", None
+            )
+
+        if star_trackers is not None and hasattr(star_trackers, "num_trackers"):
+            try:
+                has_trackers = star_trackers.num_trackers() > 0
+            except Exception:
+                has_trackers = False
+
+            if has_trackers:
+                # Soft constraints are already exposed as a computed combined constraint
+                st_soft_constraint = getattr(
+                    star_trackers, "startracker_constraint", None
+                )
+                if st_soft_constraint is not None:
+                    constraint_types.append(("star_tracker_soft", st_soft_constraint))
+
+                st_hard_combined = star_trackers.startracker_hard_constraint
+                if st_hard_combined is not None:
+                    constraint_types.append(("star_tracker_hard", st_hard_combined))
+
         assert self.ditl.ephem is not None, (
             "Ephemeris must be set for constraint calculations."
         )
 
         for name, constraint_func in constraint_types:
+            if constraint_func is None:
+                continue
             # Batch evaluation with datetime array
             result = constraint_func.in_constraint_batch(
                 ephemeris=self.ditl.ephem,
@@ -699,7 +727,49 @@ class SkyPointingController:
             ),
         ]
 
+        # Add aggregated star-tracker hard/soft constraints (if configured)
+        star_trackers = None
+        if hasattr(self.ditl, "config") and hasattr(self.ditl.config, "spacecraft_bus"):
+            star_trackers = getattr(
+                self.ditl.config.spacecraft_bus, "star_trackers", None
+            )
+
+        if star_trackers is not None and hasattr(star_trackers, "num_trackers"):
+            try:
+                has_trackers = star_trackers.num_trackers() > 0
+            except Exception:
+                has_trackers = False
+
+            if has_trackers:
+                st_soft_constraint = getattr(
+                    star_trackers, "startracker_constraint", None
+                )
+                if st_soft_constraint is not None:
+                    constraint_types.append(
+                        (
+                            "Star Tracker Soft",
+                            st_soft_constraint,
+                            "magenta",
+                            None,
+                            None,
+                        )
+                    )
+
+                st_hard_combined = star_trackers.startracker_hard_constraint
+                if st_hard_combined is not None:
+                    constraint_types.append(
+                        (
+                            "Star Tracker Hard",
+                            st_hard_combined,
+                            "red",
+                            None,
+                            None,
+                        )
+                    )
+
         for name, constraint_func, color, body_ra, body_dec in constraint_types:
+            if constraint_func is None:
+                continue
             self._plot_single_constraint(
                 name,
                 constraint_func,

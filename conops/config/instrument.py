@@ -1,11 +1,12 @@
-from pydantic import BaseModel, Field
+from pydantic import Field
 
+from ._base import ConfigModel
 from .data_generator import DataGeneration
 from .power import PowerDraw
 from .thermal import Heater
 
 
-class Instrument(BaseModel):
+class Instrument(ConfigModel):
     """
     A model representing a spacecraft instrument with power consumption characteristics.
 
@@ -61,7 +62,7 @@ class Instrument(BaseModel):
         return base_power + heater_power
 
 
-class Payload(BaseModel):
+class Payload(ConfigModel):
     """
     The payload is a collection of instruments that can be operated together.
 

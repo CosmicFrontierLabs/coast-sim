@@ -1,11 +1,12 @@
 import numpy as np
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from ..common import great_circle, separation
+from ._base import ConfigModel
 from .constants import DTOR
 
 
-class AttitudeControlSystem(BaseModel):
+class AttitudeControlSystem(ConfigModel):
     """
     Attitude Control System (ACS) configuration parameters.
 

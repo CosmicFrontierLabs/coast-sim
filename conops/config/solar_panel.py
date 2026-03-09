@@ -4,10 +4,11 @@ from typing import cast
 import numpy as np
 import numpy.typing as npt
 import rust_ephem
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import Field, PrivateAttr
 
 from ..common import dtutcfromtimestamp
 from ..common.vector import vecnorm
+from ._base import ConfigModel
 
 
 def get_ephemeris_indices(
@@ -35,7 +36,7 @@ def get_ephemeris_indices(
         return np.array(indices)
 
 
-class SolarPanel(BaseModel):
+class SolarPanel(ConfigModel):
     """
     Configuration for a single solar panel element.
 
@@ -349,7 +350,7 @@ class _PanelGeometry:
         self.weights = weights
 
 
-class SolarPanelSet(BaseModel):
+class SolarPanelSet(ConfigModel):
     """
     Model that describes the solar panel configuration and power generation
 

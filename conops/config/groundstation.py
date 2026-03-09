@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import Field, field_validator
 
+from ._base import ConfigModel
 from .communications import BandCapability
 
 
-class GroundStation(BaseModel):
+class GroundStation(ConfigModel):
     """Pydantic model describing a ground station location and capabilities."""
 
     code: str = Field(description="Short code identifier (e.g., GHA, RWA)")
@@ -54,7 +55,7 @@ class GroundStation(BaseModel):
         return None
 
 
-class GroundStationRegistry(BaseModel):
+class GroundStationRegistry(ConfigModel):
     """Container holding all defined ground stations (list-backed)."""
 
     stations: list[GroundStation] = Field(default_factory=list)

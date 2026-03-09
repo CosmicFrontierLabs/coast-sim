@@ -21,6 +21,7 @@ from .config import (
     AttitudeControlSystem,
     Battery,
     Constraint,
+    DefaultConstraint,
     FaultManagement,
     FaultThreshold,
     GroundStation,
@@ -71,6 +72,8 @@ from .targets import (
 from .visualization import (
     annotate_slew_distances,
     plot_ditl_timeline,
+    plot_fault_management_timeline,
+    plot_fault_management_timeline_plotly,
 )
 
 __all__ = [
@@ -85,6 +88,7 @@ __all__ = [
     "ChargeState",
     "MissionConfig",
     "Constraint",
+    "DefaultConstraint",
     "DAY_SECONDS",
     "DITL",
     "DITLEvent",
@@ -113,6 +117,8 @@ __all__ = [
     "Plan",
     "PlanEntry",
     "plot_ditl_timeline",
+    "plot_fault_management_timeline",
+    "plot_fault_management_timeline_plotly",
     "Pointing",
     "PowerDraw",
     "Queue",

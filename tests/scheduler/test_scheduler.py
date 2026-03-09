@@ -22,7 +22,7 @@ class TestDumbSchedulerInit:
         assert scheduler.days == 1
 
     def test_init_without_constraint(self, mock_config):
-        mock_config.constraint = None
+        object.__setattr__(mock_config, "constraint", None)
         # Current implementation accesses config.constraint.ephem directly, which
         # raises AttributeError if constraint is None. Update the test to assert
         # that AttributeError is raised instead of ValueError.

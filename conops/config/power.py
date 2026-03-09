@@ -1,7 +1,9 @@
-from pydantic import BaseModel, Field
+from pydantic import Field
+
+from ._base import ConfigModel
 
 
-class PowerDraw(BaseModel):
+class PowerDraw(ConfigModel):
     """
     Power draw characteristics for a given subsystem, with option to specify
     different power draws based on operational modes.

@@ -437,13 +437,13 @@ class TestEmergencyCharging:
 
     def _helper_find_valid_pointing_sidemount(
         self,
-        emergency_charging,
-        sun_ra,
-        sun_dec,
-        utime,
-        current_ra=None,
-        current_dec=None,
-    ):
+        emergency_charging: EmergencyCharging,
+        sun_ra: float,
+        sun_dec: float,
+        utime: float,
+        current_ra: float | None = None,
+        current_dec: float | None = None,
+    ) -> tuple[float | None, float | None]:
         # Utility: returns found pointing
         ra, dec = emergency_charging._find_valid_pointing_sidemount(
             sun_ra, sun_dec, utime, current_ra, current_dec

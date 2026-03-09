@@ -1,13 +1,15 @@
-from pydantic import BaseModel, Field
+from pydantic import Field
 
+from ._base import ConfigModel
 from .acs import AttitudeControlSystem
 from .communications import CommunicationsSystem
 from .data_generator import DataGeneration
 from .power import PowerDraw
+from .star_tracker import DefaultStarTrackerConfiguration, StarTrackerConfiguration
 from .thermal import Heater
 
 
-class SpacecraftBus(BaseModel):
+class SpacecraftBus(ConfigModel):
     name: str = Field(default="Default Bus", description="Name of the spacecraft bus")
     power_draw: PowerDraw = Field(
         default_factory=PowerDraw,
@@ -26,6 +28,10 @@ class SpacecraftBus(BaseModel):
     data_generation: DataGeneration = Field(
         default_factory=DataGeneration,
         description="Data generation specifications for bus-level data",
+    )
+    star_trackers: StarTrackerConfiguration = Field(
+        default_factory=DefaultStarTrackerConfiguration,
+        description="Star tracker configuration",
     )
 
     def power(self, mode: int | None = None, in_eclipse: bool = False) -> float:

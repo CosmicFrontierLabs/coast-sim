@@ -3,10 +3,11 @@ from __future__ import annotations
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
 
+from ._base import ConfigModel
 from .battery import Battery
-from .constraint import Constraint
+from .constraint import Constraint, DefaultConstraint
 from .fault_management import FaultManagement
 from .groundstation import GroundStationRegistry
 from .instrument import Payload
@@ -18,7 +19,7 @@ from .targets import TargetConfig
 from .visualization import VisualizationConfig
 
 
-class MissionConfig(BaseModel):
+class MissionConfig(ConfigModel):
     """
     Configuration class for the spacecraft and its subsystems.
     """
@@ -41,7 +42,7 @@ class MissionConfig(BaseModel):
         description="Battery Configuration. Defines battery capacity, voltage, and charging parameters",
     )
     constraint: Constraint = Field(
-        default_factory=Constraint,
+        default_factory=DefaultConstraint,
         description="Pointing Constraints. Defines geometric constraints for spacecraft pointing",
     )
     ground_stations: GroundStationRegistry = Field(
@@ -103,6 +104,47 @@ class MissionConfig(BaseModel):
                 red=self.recorder.red_threshold,
                 direction="above",
             )
+        # Add star tracker threshold if not already present and star trackers are configured
+        star_trackers = None
+        try:
+            star_trackers = self.spacecraft_bus.star_trackers
+            has_star_trackers = (
+                hasattr(star_trackers, "num_trackers")
+                and star_trackers.num_trackers() > 0
+            )
+        except AttributeError:
+            has_star_trackers = False
+
+        if (
+            not any(
+                t.name == "star_tracker_functional_count"
+                for t in self.fault_management.thresholds
+            )
+            and has_star_trackers
+            and star_trackers is not None
+        ):
+            # Hard constraints are absolute keep-outs: any hard violation invalidates
+            # the pointing.  Fire RED the moment functional count drops below
+            # num_trackers (i.e. any tracker is in hard violation), and YELLOW
+            # one step earlier as a leading indicator.
+            num_trackers = star_trackers.num_trackers()
+            red = num_trackers - 1  # any hard violation → RED
+            yellow = num_trackers  # degraded-but-nominal → YELLOW (leading indicator)
+            self.fault_management.add_threshold(
+                name="star_tracker_functional_count",
+                yellow=yellow,
+                red=red,
+                direction="below",
+            )
+
+        # Propagate star tracker hard exclusions into mission-level planning constraint.
+        if star_trackers is not None and has_star_trackers:
+            self.constraint.star_tracker_hard_constraint = (
+                star_trackers.startracker_hard_constraint
+            )
+        else:
+            self.constraint.star_tracker_hard_constraint = None
+        self.constraint.invalidate_combined_constraint_cache()
         return self
 
     def data_generated(self, duration_seconds: float) -> float:
