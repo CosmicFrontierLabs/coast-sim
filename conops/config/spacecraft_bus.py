@@ -4,7 +4,7 @@ from .acs import AttitudeControlSystem
 from .communications import CommunicationsSystem
 from .data_generator import DataGeneration
 from .power import PowerDraw
-from .star_tracker import StarTrackerConfiguration
+from .star_tracker import DefaultStarTrackerConfiguration, StarTrackerConfiguration
 from .thermal import Heater
 
 
@@ -29,7 +29,7 @@ class SpacecraftBus(BaseModel):
         description="Data generation specifications for bus-level data",
     )
     star_trackers: StarTrackerConfiguration = Field(
-        default_factory=StarTrackerConfiguration,
+        default_factory=DefaultStarTrackerConfiguration,
         description="Star tracker configuration",
     )
 

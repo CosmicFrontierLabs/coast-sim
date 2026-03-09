@@ -24,6 +24,7 @@ from .recorder import OnboardRecorder
 from .solar_panel import SolarPanel, SolarPanelSet, create_solar_panel_vector
 from .spacecraft_bus import SpacecraftBus
 from .star_tracker import (
+    DefaultStarTrackerConfiguration,
     StarTracker,
     StarTrackerConfiguration,
     StarTrackerOrientation,
@@ -61,6 +62,7 @@ __all__ = [
     "SolarPanelSet",
     "SpacecraftBus",
     "StarTracker",
+    "DefaultStarTrackerConfiguration",
     "StarTrackerConfiguration",
     "StarTrackerOrientation",
     "TargetConfig",

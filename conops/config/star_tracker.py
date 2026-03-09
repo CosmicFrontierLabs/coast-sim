@@ -320,7 +320,7 @@ class StarTrackerConfiguration(BaseModel):
     """
 
     # FIXME: star_trackers.star_trackers
-    star_trackers: list[StarTracker] = Field(default=[default_star_tracker])
+    star_trackers: list[StarTracker] = Field(default_factory=list)
     min_functional_trackers: int = 1
 
     @staticmethod
@@ -542,3 +542,15 @@ class StarTrackerConfiguration(BaseModel):
             if st.name == name:
                 return st
         return None
+
+
+class DefaultStarTrackerConfiguration(StarTrackerConfiguration):
+    """Star tracker configuration pre-populated with a single default star tracker.
+
+    The default tracker is oriented along +Y with hard constraints for Earth limb
+    (min_angle=0) and Sun (min_angle=20 deg) avoidance.
+    """
+
+    star_trackers: list[StarTracker] = Field(
+        default_factory=lambda: [default_star_tracker]
+    )
