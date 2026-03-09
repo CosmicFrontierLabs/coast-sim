@@ -207,8 +207,9 @@ Backward Compatibility
 
 :meth:`~conops.targets.plan_schema.PlanSchema.load` accepts files written by older versions of
 COASTSim that predate ``PlanSchema``.  Fields not present in the file (e.g. ``created_at``,
-``num_entries``) are filled with schema defaults.  Files that contain an ``exporig`` key (old
-spelling) are accepted without modification.
+``num_entries``) are filled with schema defaults.  Legacy files must already use the field
+names documented above (including ``exporig``); there is currently no automatic renaming or
+aliasing of deprecated keys.
 
 The ``from_attributes=True`` model configuration means the schema can also validate against
 any object that exposes the expected attributes, not just plain dicts.
