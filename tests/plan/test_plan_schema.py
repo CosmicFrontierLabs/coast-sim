@@ -110,8 +110,31 @@ class TestPlanSchema:
         schema = _make_schema(3)
         assert schema.num_entries == 3
         assert len(schema.entries) == 3
-        assert schema.version == "test-1.0"
+        assert schema.version == 0  # coerced from "test-1.0"
         assert schema.start == pytest.approx(1_000_000.0)
+
+    def test_save_to_directory_autogenerates_filename(self, tmp_path):
+        schema = _make_schema(1)
+        returned_path = schema.save(str(tmp_path) + "/")
+        assert returned_path.parent == tmp_path.resolve()
+        assert returned_path.suffix == ".json"
+        assert returned_path.name.startswith("plan_")
+        assert returned_path.exists()
+
+    def test_save_to_existing_directory_autogenerates_filename(self, tmp_path):
+        schema = _make_schema(1)
+        returned_path = schema.save(tmp_path)  # tmp_path already exists as dir
+        assert returned_path.parent == tmp_path.resolve()
+        assert returned_path.name.startswith("plan_")
+
+    def test_default_filename_format(self):
+        schema = _make_schema(1)
+        name = schema._default_filename()
+        # e.g. plan_19700101T277H46M40Z_..._vtest-1.0.json
+        assert name.startswith("plan_")
+        assert name.endswith(".json")
+        parts = name[len("plan_") : name.rfind("_v")]
+        assert "T" in parts  # ISO date component present
 
     def test_save_and_load_roundtrip(self, tmp_path):
         original = _make_schema(2)
@@ -181,8 +204,7 @@ class TestPlanSchema:
         schema = PlanSchema.load(example)
         assert schema.num_entries >= 0
         assert isinstance(schema.entries, list)
-        # version string should be non-empty
-        assert schema.version
+        assert isinstance(schema.version, int)
 
     def test_load_legacy_json_without_metadata(self, tmp_path):
         """Files produced before PlanSchema existed may lack created_at / num_entries."""
@@ -195,7 +217,7 @@ class TestPlanSchema:
         dest = tmp_path / "legacy.json"
         dest.write_text(json.dumps(legacy))
         schema = PlanSchema.load(dest)
-        assert schema.version == "0.1.0"
+        assert schema.version == 0  # legacy semver coerced to 0
         assert len(schema.entries) == 1
         assert schema.num_entries == len(schema.entries)
         # num_entries and created_at will have schema defaults

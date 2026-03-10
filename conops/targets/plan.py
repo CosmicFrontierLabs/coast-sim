@@ -69,7 +69,9 @@ class Plan:
         Parameters
         ----------
         path:
-            Destination file path.
+            Destination file path or directory.  When a directory is given,
+            the filename is auto-generated from the plan's start/end times and
+            version.  Parent directories are created automatically.
         indent:
             JSON indentation level (default 2).
 

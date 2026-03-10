@@ -31,6 +31,18 @@ class ACSCommandType(Enum):
     ENTER_SAFE_MODE = auto()
 
 
+class ObsType(str, Enum):
+    """Observation / slew type codes used throughout the simulation."""
+
+    PPT = "PPT"  # Pre-Programmed Target (default scheduled observation)
+    AT = "AT"  # Astronomical Target (queue-scheduled observation)
+    TOO = "TOO"  # Target of Opportunity (unplanned high-priority observation)
+    SAFE = "SAFE"  # Safe-mode pointing
+    SUNPOINT = "SUNPOINT"  # Sun-pointing (power recovery)
+    CHARGE = "CHARGE"  # Battery-charging slew
+    GSP = "GSP"  # Ground Station Pass
+
+
 class AntennaType(str, Enum):
     """Antenna mounting and pointing configuration."""
 

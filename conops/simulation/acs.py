@@ -5,6 +5,7 @@ import rust_ephem
 from ..common import (
     ACSCommandType,
     ACSMode,
+    ObsType,
     dtutcfromtimestamp,
     unixtime2date,
     unixtime2yearday,
@@ -81,7 +82,7 @@ class ACS:
 
         # Current state
         self.roll = 0.0
-        self.obstype = "PPT"
+        self.obstype = ObsType.PPT
         self.acsmode = ACSMode.SCIENCE  # Start in science/pointing mode
         self.in_eclipse = False  # Initialize eclipse state
         self.in_safe_mode = False  # Safe mode flag - once True, cannot be exited
@@ -272,7 +273,9 @@ class ACS:
             f"{unixtime2date(utime)}: Initiating slew to safe mode pointing at RA={safe_ra:.2f} Dec={safe_dec:.2f}",
         )
         # Enqueue slew to safe pointing with a special obsid
-        self._enqueue_slew(safe_ra, safe_dec, obsid=-999, utime=utime, obstype="SAFE")
+        self._enqueue_slew(
+            safe_ra, safe_dec, obsid=-999, utime=utime, obstype=ObsType.SAFE
+        )
 
     def _start_slew(self, slew: Slew, utime: float) -> None:
         """Start executing a slew.
@@ -313,7 +316,7 @@ class ACS:
         dec: float,
         obsid: int,
         utime: float,
-        obstype: str = "PPT",
+        obstype: ObsType = ObsType.PPT,
         roll: float | None = None,
     ) -> bool:
         """Create and enqueue a slew command.
@@ -868,7 +871,7 @@ class ACS:
                 command.dec,
                 command.obsid,
                 utime,
-                obstype="CHARGE",
+                obstype=ObsType.CHARGE,
                 roll=command.roll,
             )
 

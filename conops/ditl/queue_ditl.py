@@ -5,7 +5,13 @@ import numpy as np
 import rust_ephem
 from pydantic import BaseModel
 
-from ..common import ACSMode, angular_separation, dtutcfromtimestamp, unixtime2date
+from ..common import (
+    ACSMode,
+    ObsType,
+    angular_separation,
+    dtutcfromtimestamp,
+    unixtime2date,
+)
 from ..common.enums import ACSCommandType
 from ..config import MissionConfig
 from ..simulation.acs_command import ACSCommand
@@ -733,7 +739,7 @@ class QueueDITL(DITLMixin, DITLStats):
             slew.startdec = dec
             slew.endra = next_pass.gsstartra
             slew.enddec = next_pass.gsstartdec
-            slew.obstype = "GSP"  # Ground Station Pass slew
+            slew.obstype = ObsType.GSP  # Ground Station Pass slew
             command = ACSCommand(
                 command_type=ACSCommandType.SLEW_TO_TARGET,
                 execution_time=utime,
@@ -914,7 +920,7 @@ class QueueDITL(DITLMixin, DITLStats):
             slew.slewrequest = utime
             slew.endra = self.ppt.ra
             slew.enddec = self.ppt.dec
-            slew.obstype = "PPT"
+            slew.obstype = ObsType.PPT
             slew.obsid = self.ppt.obsid
 
             # Use the PPT from the queue which already has visibility calculated

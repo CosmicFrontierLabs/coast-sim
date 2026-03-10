@@ -6,7 +6,14 @@ from .common import (
     unixtime2date,
     unixtime2yearday,
 )
-from .enums import ACSCommandType, ACSMode, AntennaType, ChargeState, Polarization
+from .enums import (
+    ACSCommandType,
+    ACSMode,
+    AntennaType,
+    ChargeState,
+    ObsType,
+    Polarization,
+)
 from .vector import (
     angular_separation,
     great_circle,
@@ -21,8 +28,9 @@ __all__ = [
     "ACSCommandType",
     "ACSMode",
     "AntennaType",
-    "Polarization",
     "ChargeState",
+    "ObsType",
+    "Polarization",
     "angular_separation",
     "dtutcfromtimestamp",
     "givename",
