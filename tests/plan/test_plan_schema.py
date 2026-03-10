@@ -149,6 +149,10 @@ class TestPlanSchema:
         assert len(loaded.entries) == len(original.entries)
         assert loaded.entries[0].obsid == original.entries[0].obsid
         assert loaded.entries[0].ra == pytest.approx(original.entries[0].ra)
+        assert loaded.entries[0].begin == pytest.approx(original.entries[0].begin)
+        assert loaded.entries[0].end == pytest.approx(original.entries[0].end)
+        assert loaded.start == pytest.approx(original.start)
+        assert loaded.end == pytest.approx(original.end)
 
     def test_save_produces_valid_json(self, tmp_path):
         schema = _make_schema(1)
@@ -160,6 +164,9 @@ class TestPlanSchema:
         assert "start" in raw
         assert "end" in raw
         assert "num_entries" in raw
+        assert isinstance(raw["start"], str), "start should be an ISO-8601 string"
+        assert isinstance(raw["end"], str), "end should be an ISO-8601 string"
+        assert "T" in raw["start"]  # sanity-check ISO format
         assert isinstance(raw["entries"], list)
         assert len(raw["entries"]) == 1
 
@@ -191,6 +198,9 @@ class TestPlanSchema:
             "exposure",
         ):
             assert key in entry, f"JSON entry missing key: {key}"
+        assert isinstance(entry["begin"], str), "begin should be an ISO-8601 string"
+        assert isinstance(entry["end"], str), "end should be an ISO-8601 string"
+        assert "T" in entry["begin"]
 
     def test_load_existing_example_json(self):
         """Load a plan JSON file produced by a previous version (backward compat)."""

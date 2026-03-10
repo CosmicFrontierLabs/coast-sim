@@ -26,7 +26,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from .._version import __version__
 from ..common.enums import ObsType
@@ -63,6 +70,18 @@ class PlanEntrySchema(BaseModel):
     isat: bool = False
     done: bool = False
     exposure: int = 0
+
+    @field_validator("begin", "end", mode="before")
+    @classmethod
+    def _coerce_time(cls, v: Any) -> float:
+        """Accept Unix timestamps (float/int) or ISO-8601 strings."""
+        if isinstance(v, str):
+            return datetime.fromisoformat(v).timestamp()
+        return float(v)
+
+    @field_serializer("begin", "end")
+    def _serialize_time(self, v: float) -> str:
+        return datetime.fromtimestamp(v, tz=timezone.utc).isoformat()
 
     @model_validator(mode="before")
     @classmethod
@@ -131,6 +150,21 @@ class PlanSchema(BaseModel):
     num_entries: int = 0
     entries: list[PlanEntrySchema] = Field(default_factory=list)
 
+    @field_validator("start", "end", mode="before")
+    @classmethod
+    def _coerce_time(cls, v: Any) -> float:
+        """Accept Unix timestamps (float/int) or ISO-8601 strings."""
+        if isinstance(v, str):
+            try:
+                return datetime.fromisoformat(v).timestamp()
+            except ValueError:
+                return float(v)
+        return float(v)
+
+    @field_serializer("start", "end")
+    def _serialize_time(self, v: float) -> str:
+        return datetime.fromtimestamp(v, tz=timezone.utc).isoformat()
+
     @field_validator("version", mode="before")
     @classmethod
     def _coerce_version(cls, v: Any) -> int:
@@ -158,6 +192,12 @@ class PlanSchema(BaseModel):
                 "entries": entries,
             }
         return data
+
+    @model_validator(mode="after")
+    def _sync_num_entries(self) -> PlanSchema:
+        """Keep num_entries consistent with the actual entries list."""
+        self.num_entries = len(self.entries)
+        return self
 
     # ── Convenience constructors ───────────────────────────────────────────────
 

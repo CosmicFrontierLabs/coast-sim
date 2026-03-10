@@ -38,8 +38,7 @@ class ObsType(str, Enum):
     AT = "AT"  # Astronomical Target (queue-scheduled observation)
     TOO = "TOO"  # Target of Opportunity (unplanned high-priority observation)
     SAFE = "SAFE"  # Safe-mode pointing
-    SUNPOINT = "SUNPOINT"  # Sun-pointing (power recovery)
-    CHARGE = "CHARGE"  # Battery-charging slew
+    CHARGE = "CHARGE"  # Battery-charging / sun-pointing maneuver
     GSP = "GSP"  # Ground Station Pass
 
 
