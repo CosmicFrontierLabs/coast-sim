@@ -205,6 +205,9 @@ Entry Fields
 Backward Compatibility
 ----------------------
 
+:meth:`~conops.targets.plan_schema.PlanSchema.save` creates any missing parent directories
+automatically, so you can pass a nested path without creating it first.
+
 :meth:`~conops.targets.plan_schema.PlanSchema.load` accepts files written by older versions of
 COASTSim that predate ``PlanSchema``.  Fields not present in the file (e.g. ``created_at``,
 ``num_entries``) are filled with schema defaults.  Legacy files must already use the field
