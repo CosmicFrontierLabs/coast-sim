@@ -107,7 +107,7 @@ class PlanEntrySchema(BaseModel):
                 "exporig": data._exporig,
                 "isat": getattr(data, "isat", False),
                 "done": getattr(data, "done", False),
-                "exposure": data.exposure,
+                "exposure": data.end - data.begin - data.slewtime - data.insaa,
             }
         return data
 
