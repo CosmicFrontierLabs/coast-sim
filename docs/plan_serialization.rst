@@ -77,10 +77,11 @@ The JSON file contains a metadata envelope followed by the entry list.
 .. code-block:: json
 
    {
-     "version": "0.1.3",
+     "version": 3,
+     "coast_sim_version": "0.1.3",
      "created_at": "2025-12-01T00:00:00+00:00",
-     "start": 1764547200.0,
-     "end": 1764633540.0,
+     "start": "2025-12-01T00:00:00+00:00",
+     "end": "2025-12-01T23:59:00+00:00",
      "num_entries": 42,
      "entries": [
        {
@@ -88,8 +89,8 @@ The JSON file contains a metadata envelope followed by the entry list.
          "ra": 83.82,
          "dec": -5.39,
          "roll": 0.0,
-         "begin": 1764547200.0,
-         "end": 1764548200.0,
+         "begin": "2025-12-01T00:00:00+00:00",
+         "end": "2025-12-01T00:16:40+00:00",
          "merit": 95.0,
          "slewtime": 120,
          "insaa": 0,
@@ -118,18 +119,25 @@ Metadata Fields
      - Type
      - Description
    * - ``version``
+     - int
+     - Integer plan-file revision counter.  Starts at 0 and is incremented
+       automatically each time a new plan is saved to the same directory for
+       the same time window (see :ref:`auto-versioning` below).
+   * - ``coast_sim_version``
      - string
-     - COASTSim package version that produced the file.
+     - COASTSim package version that produced the file (e.g. ``"0.1.3"``).
    * - ``created_at``
      - string
      - ISO-8601 UTC timestamp of when the :class:`~conops.targets.plan_schema.PlanSchema`
        instance was created/validated (not updated by :meth:`~conops.targets.plan_schema.PlanSchema.save`).
    * - ``start``
-     - float
-     - Unix timestamp of the first entry's ``begin`` time (0 if the plan is empty).
+     - string
+     - ISO-8601 UTC timestamp of the first entry's ``begin`` time
+       (``"1970-01-01T00:00:00+00:00"`` if the plan is empty).
    * - ``end``
-     - float
-     - Unix timestamp of the last entry's ``end`` time (0 if the plan is empty).
+     - string
+     - ISO-8601 UTC timestamp of the last entry's ``end`` time
+       (``"1970-01-01T00:00:00+00:00"`` if the plan is empty).
    * - ``num_entries``
      - int
      - Total number of entries in the file.
@@ -157,11 +165,11 @@ Entry Fields
      - float
      - Spacecraft roll angle in degrees (``-1`` = unset).
    * - ``begin``
-     - float
-     - Start of the visibility window (Unix time).
+     - string
+     - Start of the observation window (ISO-8601 UTC).
    * - ``end``
-     - float
-     - End of the visibility window (Unix time).
+     - string
+     - End of the observation window (ISO-8601 UTC).
    * - ``merit``
      - float
      - Scheduler merit/priority figure of merit.
@@ -202,6 +210,17 @@ Entry Fields
      - int
      - Net science exposure time: ``end − begin − slewtime − insaa`` (seconds).
 
+.. _auto-versioning:
+
+Auto-versioning
+~~~~~~~~~~~~~~~
+
+When ``path`` is a directory (or ends with ``/``), :meth:`~conops.targets.Plan.save`
+scans the directory for existing files matching
+``plan_<start>_<end>_v<N>.json`` and sets ``version`` to ``max(N) + 1``
+(or ``0`` if no matching files exist).  Saving to an explicit file path
+leaves ``version`` unchanged.
+
 Backward Compatibility
 ----------------------
 
@@ -210,9 +229,13 @@ automatically, so you can pass a nested path without creating it first.
 
 :meth:`~conops.targets.plan_schema.PlanSchema.load` accepts files written by older versions of
 COASTSim that predate ``PlanSchema``.  Fields not present in the file (e.g. ``created_at``,
-``num_entries``) are filled with schema defaults.  Legacy files must already use the field
-names documented above (including ``exporig``); there is currently no automatic renaming or
-aliasing of deprecated keys.
+``num_entries``) are filled with schema defaults; ``num_entries`` is always recomputed from
+the actual entry list after loading.  Legacy files that store ``start``, ``end``, ``begin``,
+or ``end`` as numeric Unix timestamps (float/int) are accepted and converted to
+:class:`~datetime.datetime` objects internally — only the on-disk format changed to ISO-8601.
+Legacy files that stored ``version`` as a semantic-version string (e.g. ``"0.1.3"``) are
+coerced to ``0``.  Legacy files must already use the field names documented above (including
+``exporig``); there is currently no automatic renaming or aliasing of deprecated keys.
 
 The ``from_attributes=True`` model configuration means the schema can also validate against
 any object that exposes the expected attributes, not just plain dicts.

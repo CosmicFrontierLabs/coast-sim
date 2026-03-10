@@ -233,6 +233,60 @@ class TestPlanSchema:
         # num_entries and created_at will have schema defaults
         assert isinstance(schema.created_at, str)
 
+    def test_reconcile_num_entries_when_missing(self, tmp_path):
+        """num_entries is recomputed from entries when absent in JSON."""
+        raw = {
+            "version": 0,
+            "start": 1_000_000,
+            "end": 1_002_000,
+            "entries": [_ENTRY_DICT, _ENTRY_DICT],
+            # no num_entries key
+        }
+        dest = tmp_path / "plan.json"
+        dest.write_text(json.dumps(raw))
+        schema = PlanSchema.load(dest)
+        assert schema.num_entries == 2
+
+    def test_reconcile_num_entries_when_stale(self, tmp_path):
+        """num_entries is corrected when it disagrees with the actual entries list."""
+        raw = {
+            "version": 0,
+            "start": 1_000_000,
+            "end": 1_002_000,
+            "num_entries": 99,  # intentionally wrong
+            "entries": [_ENTRY_DICT],
+        }
+        dest = tmp_path / "plan.json"
+        dest.write_text(json.dumps(raw))
+        schema = PlanSchema.load(dest)
+        assert schema.num_entries == 1
+
+    def test_reconcile_start_when_missing(self, tmp_path):
+        """start is inferred from the first entry's begin time when absent."""
+        raw = {
+            "version": 0,
+            "end": 1_001_000,
+            "entries": [_ENTRY_DICT],
+            # no start key
+        }
+        dest = tmp_path / "plan.json"
+        dest.write_text(json.dumps(raw))
+        schema = PlanSchema.load(dest)
+        assert schema.start == pytest.approx(_ENTRY_DICT["begin"])
+
+    def test_reconcile_end_when_missing(self, tmp_path):
+        """end is inferred from the last entry's end time when absent."""
+        raw = {
+            "version": 0,
+            "start": 1_000_000,
+            "entries": [_ENTRY_DICT],
+            # no end key
+        }
+        dest = tmp_path / "plan.json"
+        dest.write_text(json.dumps(raw))
+        schema = PlanSchema.load(dest)
+        assert schema.end == pytest.approx(_ENTRY_DICT["end"])
+
     def test_from_plan_classmethod_empty_plan(self):
         """from_plan on an empty Plan should produce zero entries and start/end=0."""
         from conops.targets.plan import Plan

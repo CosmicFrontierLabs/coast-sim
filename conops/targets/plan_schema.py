@@ -195,9 +195,21 @@ class PlanSchema(BaseModel):
         return data
 
     @model_validator(mode="after")
-    def _sync_num_entries(self) -> PlanSchema:
-        """Keep num_entries consistent with the actual entries list."""
+    def _reconcile_metadata(self) -> PlanSchema:
+        """Keep num_entries, start, and end consistent with the entries list.
+
+        This corrects metadata that may be missing or stale in legacy JSON
+        files (e.g. files written before ``num_entries`` / ``start`` / ``end``
+        were stored, or files whose entry list was modified after creation).
+        """
         self.num_entries = len(self.entries)
+        if self.entries:
+            computed_start = self.entries[0].begin
+            computed_end = self.entries[-1].end
+            if self.start == 0.0:
+                self.start = computed_start
+            if self.end == 0.0:
+                self.end = computed_end
         return self
 
     # ── Convenience constructors ───────────────────────────────────────────────
