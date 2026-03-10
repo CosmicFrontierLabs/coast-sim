@@ -10,6 +10,7 @@ import rust_ephem
 from conops.config.battery import Battery
 
 from ..common import unixtime2date
+from ..common.enums import ObsType
 from ..common.vector import angular_separation
 from ..config import MissionConfig
 from .roll import optimum_roll
@@ -535,6 +536,7 @@ class EmergencyCharging:
             obsid=self.next_charging_obsid,
             exptime=86400,
         )
+        charging_ppt.obstype = ObsType.CHARGE
         self.next_charging_obsid += 1
         charging_ppt.begin = int(utime)
         charging_ppt.end = int(utime + 86400)  # Set far end time
