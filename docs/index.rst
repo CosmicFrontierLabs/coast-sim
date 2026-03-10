@@ -42,8 +42,10 @@ Features
 * **Power Budget Analysis**: Solar panel modeling, battery management, and emergency charging scenarios
 * **Ground Station Passes**: Communication window calculations and data downlink planning
 * **Attitude Control System**: Slew modeling, pointing accuracy, and settle time simulation
+* **Star Tracker Support**: Multi-tracker attitude determination with configurable hard/soft constraints and functional-count monitoring
 * **South Atlantic Anomaly (SAA) Avoidance**: Radiation belt constraint handling
 * **DITL Generation**: Comprehensive day-in-the-life timeline simulation
+* **Instantaneous Field of Regard**: Optional computation of accessible sky solid angle at each simulation timestep
 * **Plan Serialisation**: Save and reload observation plans as portable, version-stamped JSON files
 
 Quick Example
