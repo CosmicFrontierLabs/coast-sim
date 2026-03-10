@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.2.0](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.1.2...v0.2.0) (2026-03-10)
+
+
+### Features
+
+* add star tracker support ([#98](https://github.com/CosmicFrontierLabs/coast-sim/issues/98)) ([ee418d6](https://github.com/CosmicFrontierLabs/coast-sim/commit/ee418d6c721dded95825304d49eaaf7969d0043a))
+* add support for reading/writing configuration in YAML ([#91](https://github.com/CosmicFrontierLabs/coast-sim/issues/91)) ([bfd05df](https://github.com/CosmicFrontierLabs/coast-sim/commit/bfd05df740c23cbc621f8f4c76212914485ec26e))
+* fault management refactor ([#99](https://github.com/CosmicFrontierLabs/coast-sim/issues/99)) ([e2a3139](https://github.com/CosmicFrontierLabs/coast-sim/commit/e2a3139e7a176e575f2c4c8ad9dbc91777affd2e))
+* improve support for spacecraft roll angles ([#94](https://github.com/CosmicFrontierLabs/coast-sim/issues/94)) ([16c041f](https://github.com/CosmicFrontierLabs/coast-sim/commit/16c041f6444c91b3d06e6ff9c1166cc45fdfa357))
+* redo how solar panels are defined ([#95](https://github.com/CosmicFrontierLabs/coast-sim/issues/95)) ([67d1aba](https://github.com/CosmicFrontierLabs/coast-sim/commit/67d1abafbbfa290b8bcb011f86143d9ada09c0df))
+* rename `Payload`'s `payload` attribute to `instruments` ([#96](https://github.com/CosmicFrontierLabs/coast-sim/issues/96)) ([0d9dfc1](https://github.com/CosmicFrontierLabs/coast-sim/commit/0d9dfc11d4c74118bed247e80f8c2dc4ede9647e))
+* Serialize DITL generated plans to disk ([#104](https://github.com/CosmicFrontierLabs/coast-sim/issues/104)) ([1a4db33](https://github.com/CosmicFrontierLabs/coast-sim/commit/1a4db3398784bdb0856bca29ed6b372817b745f5))
+* **targets:** Add slew distance weight to target selection scoring ([#70](https://github.com/CosmicFrontierLabs/coast-sim/issues/70)) ([d74803f](https://github.com/CosmicFrontierLabs/coast-sim/commit/d74803faca89edabebe4a8639bcae6c558ec7ba9))
+* **visibility:** add instantaneous field of regard calculator ([#102](https://github.com/CosmicFrontierLabs/coast-sim/issues/102)) ([1345b49](https://github.com/CosmicFrontierLabs/coast-sim/commit/1345b49272b3feb41c015e4b021cbf3e5facb06a))
+
+
+### Bug Fixes
+
+* Add pass-aware scheduling to prevent observation/pass conflicts ([#82](https://github.com/CosmicFrontierLabs/coast-sim/issues/82)) ([5c49ee6](https://github.com/CosmicFrontierLabs/coast-sim/commit/5c49ee6927d739f4881fe87aee582cb53e0500d0))
+* Address three misc bugs missed in previous updates ([#83](https://github.com/CosmicFrontierLabs/coast-sim/issues/83)) ([b1865f8](https://github.com/CosmicFrontierLabs/coast-sim/commit/b1865f8cb51e5409e0065a1051b95a0efe2a9b2a))
+* update documentation for 0.2.0 release ([#105](https://github.com/CosmicFrontierLabs/coast-sim/issues/105)) ([b7d113a](https://github.com/CosmicFrontierLabs/coast-sim/commit/b7d113a241ca4f2708bc4ce14f5dc6f0354ecb95))
+* **vector:** Use 180° threshold in roll_over_angle for shortest path ([#78](https://github.com/CosmicFrontierLabs/coast-sim/issues/78)) ([536df89](https://github.com/CosmicFrontierLabs/coast-sim/commit/536df890ef36e9e2902f199a92e161b39e02ada8))
+
+
+### Performance Improvements
+
+* optimize emergency charging pointing search ([#74](https://github.com/CosmicFrontierLabs/coast-sim/issues/74)) ([7c34ef4](https://github.com/CosmicFrontierLabs/coast-sim/commit/7c34ef4550f6a521fc9a29eb448747446c35fa7b))
+* Use rust-ephem 0.3.0 direct array access for sun/moon/earth positions ([#72](https://github.com/CosmicFrontierLabs/coast-sim/issues/72)) ([73ce95a](https://github.com/CosmicFrontierLabs/coast-sim/commit/73ce95acf524782c855d968c1bc6111775bc2470))
+* Vectorize solar panel illumination calculations ([#65](https://github.com/CosmicFrontierLabs/coast-sim/issues/65)) ([b741afd](https://github.com/CosmicFrontierLabs/coast-sim/commit/b741afd63b1328021550e56943bb99d87a7fc91d))
+
 ## [0.1.2](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.1.1...v0.1.2) (2025-12-18)
 
 
