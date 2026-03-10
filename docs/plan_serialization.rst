@@ -51,7 +51,7 @@ returns a :class:`~conops.targets.plan_schema.PlanSchema` (preserving all metada
 .. code-block:: python
 
    schema = Plan.load("plan_20251201.json")
-   print(schema.version)          # e.g. "0.1.3"
+   print(schema.version)          # schema format version (integer)
    print(schema.num_entries)      # number of plan entries
    print(schema.entries[0].name)  # first target name
 
