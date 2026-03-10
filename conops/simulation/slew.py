@@ -4,6 +4,7 @@ import numpy as np
 import rust_ephem
 
 from ..common import roll_over_angle, unixtime2date
+from ..common.enums import ObsType
 from ..config import AttitudeControlSystem, Constraint, MissionConfig
 
 if TYPE_CHECKING:
@@ -29,7 +30,7 @@ class Slew:
     slewpath: tuple[list[float], list[float]]
     slewsecs: list[float]
     slewdist: float
-    obstype: str
+    obstype: ObsType
     obsid: int
     mode: int
     slewrequest: float
@@ -65,7 +66,7 @@ class Slew:
         self.slewtime = 0
         self.slewdist = 0
 
-        self.obstype = "PPT"
+        self.obstype = ObsType.PPT
         self.obsid = 0
         self.mode = 0
         self.at = None  # What's the target associated with this slew?

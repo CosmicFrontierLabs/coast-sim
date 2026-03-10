@@ -5,6 +5,7 @@ import rust_ephem
 from ..common import (
     ACSCommandType,
     ACSMode,
+    ObsType,
     dtutcfromtimestamp,
     unixtime2date,
     unixtime2yearday,
@@ -37,7 +38,7 @@ class ACS:
     ra: float
     dec: float
     roll: float
-    obstype: str
+    obstype: ObsType
     acsmode: ACSMode
     command_queue: list[ACSCommand]
     executed_commands: list[ACSCommand]
@@ -81,7 +82,7 @@ class ACS:
 
         # Current state
         self.roll = 0.0
-        self.obstype = "PPT"
+        self.obstype = ObsType.PPT
         self.acsmode = ACSMode.SCIENCE  # Start in science/pointing mode
         self.in_eclipse = False  # Initialize eclipse state
         self.in_safe_mode = False  # Safe mode flag - once True, cannot be exited
@@ -138,7 +139,7 @@ class ACS:
             command.command_type == ACSCommandType.SLEW_TO_TARGET
             and hasattr(command, "slew")
             and command.slew is not None
-            and command.slew.obstype == "SAFE"
+            and command.slew.obstype == ObsType.SAFE
         )
 
         # Prevent any commands from being enqueued in safe mode (except SAFE slews)
@@ -272,7 +273,9 @@ class ACS:
             f"{unixtime2date(utime)}: Initiating slew to safe mode pointing at RA={safe_ra:.2f} Dec={safe_dec:.2f}",
         )
         # Enqueue slew to safe pointing with a special obsid
-        self._enqueue_slew(safe_ra, safe_dec, obsid=-999, utime=utime, obstype="SAFE")
+        self._enqueue_slew(
+            safe_ra, safe_dec, obsid=-999, utime=utime, obstype=ObsType.SAFE
+        )
 
     def _start_slew(self, slew: Slew, utime: float) -> None:
         """Start executing a slew.
@@ -305,7 +308,7 @@ class ACS:
 
     def _is_science_pointing(self, slew: Slew) -> bool:
         """Check if slew represents a science pointing (not a pass)."""
-        return slew.obstype == "PPT" and isinstance(slew, Slew)
+        return slew.obstype == ObsType.PPT and isinstance(slew, Slew)
 
     def _enqueue_slew(
         self,
@@ -313,7 +316,7 @@ class ACS:
         dec: float,
         obsid: int,
         utime: float,
-        obstype: str = "PPT",
+        obstype: ObsType = ObsType.PPT,
         roll: float | None = None,
     ) -> bool:
         """Create and enqueue a slew command.
@@ -338,7 +341,7 @@ class ACS:
         slew.obsid = obsid
 
         # For SAFE mode, skip visibility checking (emergency situation)
-        if obstype == "SAFE":
+        if obstype == ObsType.SAFE:
             # Initialize slew positions without target
             is_first_slew = self._initialize_slew_positions(slew, utime)
             slew.at = None  # No visibility constraint in safe mode
@@ -390,7 +393,7 @@ class ACS:
             roll=roll if roll is not None else 0.0,
             obsid=slew.obsid,
         )
-        target.isat = slew.obstype != "PPT"
+        target.isat = slew.obstype != ObsType.PPT
 
         year, day = unixtime2yearday(utime)
         target.visibility()
@@ -415,9 +418,9 @@ class ACS:
         slew.startroll = self.roll
         return True
 
-    def _is_slew_valid(self, visstart: float, obstype: str, utime: float) -> bool:
+    def _is_slew_valid(self, visstart: float, obstype: ObsType, utime: float) -> bool:
         """Check if the requested slew is valid (target is visible)."""
-        if not visstart and obstype == "PPT":
+        if not visstart and obstype == ObsType.PPT:
             self._log_or_print(
                 utime,
                 "SLEW",
@@ -450,7 +453,7 @@ class ACS:
             )
 
         # Wait for target visibility if constrained
-        if visstart > execution_time and slew.obstype == "PPT":
+        if visstart > execution_time and slew.obstype == ObsType.PPT:
             self._log_or_print(
                 utime,
                 "SLEW",
@@ -521,13 +524,15 @@ class ACS:
                 "Current slew must be set when actively slewing"
             )
             # Check if slewing for charging - but only report CHARGING if in sunlight
-            if self.current_slew.obstype == "CHARGE":
+            if self.current_slew.obstype == ObsType.CHARGE:
                 # Check eclipse state - no point being in CHARGING mode during eclipse
                 if self.in_eclipse:
                     return ACSMode.SLEWING  # In eclipse, treat as normal slew
                 return ACSMode.CHARGING
             return (
-                ACSMode.PASS if self.current_slew.obstype == "GSP" else ACSMode.SLEWING
+                ACSMode.PASS
+                if self.current_slew.obstype == ObsType.GSP
+                else ACSMode.SLEWING
             )
 
         # Check if dwelling in charging mode (after slew to charge pointing)
@@ -557,7 +562,7 @@ class ACS:
         # Must have completed a CHARGE slew and not be actively slewing
         if not (
             self.last_slew is not None
-            and self.last_slew.obstype == "CHARGE"
+            and self.last_slew.obstype == ObsType.CHARGE
             and not self._is_actively_slewing(utime)
         ):
             return False
@@ -588,7 +593,7 @@ class ACS:
             isinstance(self.last_slew, Slew)
             and self.last_slew.at is not None
             and not isinstance(self.last_slew.at, bool)
-            and self.last_slew.obstype == "PPT"
+            and self.last_slew.obstype == ObsType.PPT
             and self.constraint.in_constraint(
                 self.last_slew.at.ra, self.last_slew.at.dec, utime
             )
@@ -733,7 +738,7 @@ class ACS:
         # If actively slewing to safe mode position, use slew interpolation
         if (
             self.current_slew is not None
-            and self.current_slew.obstype == "SAFE"
+            and self.current_slew.obstype == ObsType.SAFE
             and self.current_slew.is_slewing(utime)
         ):
             self.ra, self.dec = self.current_slew.ra_dec(utime)
@@ -868,7 +873,7 @@ class ACS:
                 command.dec,
                 command.obsid,
                 utime,
-                obstype="CHARGE",
+                obstype=ObsType.CHARGE,
                 roll=command.roll,
             )
 
@@ -881,7 +886,7 @@ class ACS:
 
         # Clear the charging slew state immediately so _is_in_charging_mode returns False
         # This prevents staying in CHARGING mode while slewing back to science
-        if self.last_slew is not None and self.last_slew.obstype == "CHARGE":
+        if self.last_slew is not None and self.last_slew.obstype == ObsType.CHARGE:
             self.last_slew = None
 
         # Return to the previous science PPT if one exists

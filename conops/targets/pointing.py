@@ -3,6 +3,7 @@ from typing import Literal
 import numpy as np
 
 from ..common import unixtime2date
+from ..common.enums import ObsType
 from ..config import MissionConfig
 from .plan_entry import PlanEntry
 
@@ -38,7 +39,7 @@ class Pointing(PlanEntry):
         PlanEntry.__init__(self, config=config, exptime=exptime)
         assert config.constraint is not None, "Constraint not properly set in Pointing"
         self.done = False
-        self.obstype = "AT"
+        self.obstype = ObsType.AT
         self.isat = False
         self.ra = ra
         self.dec = dec

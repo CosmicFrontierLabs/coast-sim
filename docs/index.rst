@@ -23,6 +23,7 @@ optimize observation schedules, and validate operational constraints before laun
    data_management
    fault_management
    target_of_opportunity
+   plan_serialization
    api/modules
    contributing
    README
@@ -43,6 +44,7 @@ Features
 * **Attitude Control System**: Slew modeling, pointing accuracy, and settle time simulation
 * **South Atlantic Anomaly (SAA) Avoidance**: Radiation belt constraint handling
 * **DITL Generation**: Comprehensive day-in-the-life timeline simulation
+* **Plan Serialisation**: Save and reload observation plans as portable, version-stamped JSON files
 
 Quick Example
 -------------

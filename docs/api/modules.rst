@@ -45,6 +45,7 @@ Scheduling and Planning
    conops.targets.pointing
    conops.targets.plan
    conops.targets.plan_entry
+   conops.targets.plan_schema
    conops.targets.target_queue
 
 Spacecraft Components

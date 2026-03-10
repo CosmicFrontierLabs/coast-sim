@@ -5,6 +5,7 @@ from typing import Literal
 import rust_ephem
 
 from ..common import givename, unixtime2date
+from ..common.enums import ObsType
 from ..config import Constraint, MissionConfig
 from ..simulation.saa import SAA
 
@@ -54,7 +55,7 @@ class PlanEntry:
         self.saa = None
         self.merit = 101
         self.windows = list()
-        self.obstype = "PPT"
+        self.obstype: ObsType = ObsType.PPT
         self.slewpath = ([], [])
         self.slewdist = 0.0
         self.ss_min = 1000

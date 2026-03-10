@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .plan_entry import PlanEntry
+
+if TYPE_CHECKING:
+    from .plan_schema import PlanSchema
 
 
 class TargetList:
@@ -55,3 +60,49 @@ class Plan:
 
     def append(self, ppt: PlanEntry) -> None:
         self.entries.append(ppt)
+
+    def save(self, path: str | Path, *, indent: int = 2) -> Path:
+        """Serialise the plan to a JSON file.
+
+        Delegates to :meth:`~conops.targets.plan_schema.PlanSchema.save`.
+
+        Parameters
+        ----------
+        path:
+            Destination file path or directory.  When a directory is given,
+            the filename is auto-generated from the plan's start/end times and
+            version.  Parent directories are created automatically.
+        indent:
+            JSON indentation level (default 2).
+
+        Returns
+        -------
+        Path
+            The resolved path of the written file.
+        """
+        from .plan_schema import PlanSchema
+
+        return PlanSchema.from_plan(self).save(path, indent=indent)
+
+    @classmethod
+    def load(cls, path: str | Path) -> PlanSchema:
+        """Load a plan from a JSON file previously written by :meth:`save`.
+
+        Delegates to :meth:`~conops.targets.plan_schema.PlanSchema.load` and
+        returns a :class:`~conops.targets.plan_schema.PlanSchema` (a Pydantic
+        model) rather than a plain :class:`Plan`, so that metadata such as
+        ``version`` and ``created_at`` is preserved.
+
+        Parameters
+        ----------
+        path:
+            Source file path.
+
+        Returns
+        -------
+        PlanSchema
+            The deserialised schema object.
+        """
+        from .plan_schema import PlanSchema
+
+        return PlanSchema.load(path)
