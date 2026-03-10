@@ -144,6 +144,7 @@ The :class:`~conops.config.SpacecraftBus` defines the spacecraft bus subsystems.
 * ``communications`` (:class:`~conops.config.CommunicationsSystem`): Optional comms system
 * ``heater`` (:class:`~conops.config.Heater`): Optional thermal heater
 * ``data_generation`` (:class:`~conops.config.DataGeneration`): Bus-level data generation
+* ``star_trackers`` (:class:`~conops.config.StarTrackerConfiguration`): Optional star tracker configuration
 
 .. code-block:: python
 
@@ -289,6 +290,107 @@ simplifies this by generating unit normal vectors based on mount type and cant a
        conversion_efficiency=0.95,
    )
 
+star_tracker
+~~~~~~~~~~~~
+
+The :class:`~conops.config.StarTrackerConfiguration` configures the star tracker system.
+Star trackers provide attitude determination by identifying star fields and are subject
+to avoidance constraints (e.g., never look within N° of the Sun).
+
+**StarTrackerConfiguration Attributes:**
+
+* ``star_trackers`` (list[StarTracker]): Individual star tracker configurations
+* ``min_functional_trackers`` (int): Minimum number of trackers required for attitude lock
+
+**StarTracker Attributes:**
+
+* ``name`` (str): Tracker identifier
+* ``orientation`` (:class:`~conops.config.StarTrackerOrientation`): Boresight direction in spacecraft body frame
+* ``hard_constraint`` (optional): Constraint defining regions where the tracker *cannot* operate (e.g. Sun avoidance). Violations are recorded in the ``star_tracker_hard_violations`` telemetry field.
+* ``soft_constraint`` (optional): Constraint defining regions of degraded performance. Violations are recorded in ``star_tracker_soft_violations``.
+* ``modes_require_lock`` (list[int]): ACS modes that require this tracker to have a valid lock
+
+**StarTrackerOrientation Attributes:**
+
+* ``boresight`` (tuple[float, float, float]): Boresight direction as a unit vector in spacecraft body frame
+
+  - +x is the spacecraft pointing direction (forward/boresight)
+  - +y is the spacecraft "up" direction
+  - +z completes the right-handed coordinate system
+
+Star Tracker Vector Helper Function
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The :func:`~conops.config.star_tracker.create_star_tracker_vector` helper converts
+roll, pitch, and yaw Euler angles to a boresight vector, mirroring the solar panel
+helper:
+
+.. code-block:: python
+
+   from conops.config.star_tracker import create_star_tracker_vector
+
+   # Star tracker pointing along spacecraft boresight (+X)
+   boresight = create_star_tracker_vector(roll_deg=0, pitch_deg=0, yaw_deg=0)
+   # Result: (1.0, 0.0, 0.0)
+
+   # Star tracker rotated 90° in pitch to point "up" (+Z)
+   boresight = create_star_tracker_vector(roll_deg=0, pitch_deg=90, yaw_deg=0)
+
+   # Star tracker angled 45° to the side
+   boresight = create_star_tracker_vector(roll_deg=0, pitch_deg=0, yaw_deg=45)
+
+Euler angles use the ZYX convention: yaw about Z, then pitch about Y, then roll about X.
+
+**Example:**
+
+.. code-block:: python
+
+   from conops.config import (
+       SpacecraftBus,
+       StarTracker,
+       StarTrackerConfiguration,
+       StarTrackerOrientation,
+   )
+   from conops.config.star_tracker import create_star_tracker_vector
+   from rust_ephem import SunConstraint, EarthLimbConstraint
+
+   # Build two star trackers at different orientations
+   st1 = StarTracker(
+       name="ST1",
+       orientation=StarTrackerOrientation(
+           boresight=create_star_tracker_vector(pitch_deg=45),  # 45° off boresight
+       ),
+       hard_constraint=SunConstraint(min_angle=30.0),   # Must avoid Sun by 30°
+       soft_constraint=SunConstraint(min_angle=45.0),   # Degraded within 45° of Sun
+       modes_require_lock=[1],   # Mode 1 requires this tracker
+   )
+
+   st2 = StarTracker(
+       name="ST2",
+       orientation=StarTrackerOrientation(
+           boresight=create_star_tracker_vector(pitch_deg=-45),  # Opposite side
+       ),
+       hard_constraint=SunConstraint(min_angle=30.0),
+   )
+
+   star_trackers = StarTrackerConfiguration(
+       star_trackers=[st1, st2],
+       min_functional_trackers=1,  # At least one must be unobstructed
+   )
+
+   # Attach to spacecraft bus
+   spacecraft_bus = SpacecraftBus(
+       name="Observatory Bus",
+       star_trackers=star_trackers,
+       # ... other bus fields ...
+   )
+
+The ACS monitors star tracker constraints at each timestep and records:
+
+* ``star_tracker_hard_violations``: Number of trackers violating their hard constraint
+* ``star_tracker_soft_violations``: Number of trackers violating their soft constraint
+* ``star_tracker_functional_count``: Number of functional (non-violated) trackers
+
 payload
 ~~~~~~~
 
@@ -296,7 +398,7 @@ The :class:`~conops.config.Payload` contains the science instruments.
 
 **Payload Attributes:**
 
-* ``payload`` (list[Instrument]): List of instrument configurations
+* ``instruments`` (list[Instrument]): List of instrument configurations
 
 **Instrument Attributes:**
 
@@ -310,7 +412,7 @@ The :class:`~conops.config.Payload` contains the science instruments.
    from conops.config import Payload, Instrument, PowerDraw, DataGeneration
 
    payload = Payload(
-       payload=[
+       instruments=[
            Instrument(
                name="X-ray Telescope",
                power_draw=PowerDraw(
@@ -677,7 +779,7 @@ Here is a complete example of creating a ``MissionConfig`` programmatically:
            conversion_efficiency=0.95
        ),
        payload=Payload(
-           payload=[
+           instruments=[
                Instrument(
                    name="Main Instrument",
                    power_draw=PowerDraw(nominal_power=100.0, peak_power=150.0),

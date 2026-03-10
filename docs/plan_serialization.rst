@@ -184,7 +184,9 @@ Entry Fields
      - Numeric observation identifier.
    * - ``obstype``
      - string
-     - Observation type (e.g. ``"AT"`` for Astronomical Target, ``"PPT"`` for Preprogrammed Target).
+     - Observation type. Valid values: ``"AT"`` (Astronomical Target), ``"PPT"`` (Preprogrammed Target),
+       ``"TOO"`` (Target of Opportunity), ``"SAFE"`` (Safe mode pointing), ``"CHARGE"`` (Emergency charging),
+       ``"GSP"`` (Ground Station Pass).
    * - ``slewdist``
      - float
      - Angular slew distance in degrees.
