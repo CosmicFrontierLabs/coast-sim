@@ -127,7 +127,8 @@ class PlanSchema(BaseModel):
     coast_sim_version:
         COASTSim package version that produced this file.
     created_at:
-        ISO-8601 UTC timestamp of when the file was written.
+        ISO-8601 UTC timestamp of when this schema instance was created or
+        validated (typically just before it is written to disk).
     start:
         Unix timestamp of the first entry's ``begin`` time (or 0 if empty).
     end:
