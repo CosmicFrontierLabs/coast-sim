@@ -146,6 +146,10 @@ class Constraint(ConfigModel):
             "interpreted by higher-level logic."
         ),
     )
+    radiator_hard_constraint: ConstraintConfig | None = Field(
+        default=None,
+        description="Radiator hard exclusion constraint",
+    )
 
     ephem: rust_ephem.Ephemeris | None = Field(
         default=None,
@@ -250,6 +254,7 @@ class Constraint(ConfigModel):
             self.anti_sun_constraint,
             self.star_tracker_hard_constraint,
             self.star_tracker_soft_constraint,
+            self.radiator_hard_constraint,
         ]
         active_constraints = [
             component for component in constraint_components if component is not None
@@ -425,6 +430,18 @@ class Constraint(ConfigModel):
             target_roll=target_roll,
         )
 
+    def in_radiator_hard(self, ra: float, dec: float, time: float) -> bool:
+        if self.radiator_hard_constraint is None:
+            return False
+        assert self.ephem is not None, "Ephemeris must be set to use in_radiator_hard"
+        return self._cached_check(
+            "radiator_hard",
+            ra,
+            dec,
+            time,
+            self.radiator_hard_constraint,
+        )
+
     def in_constraint(
         self,
         ra: float,
@@ -453,6 +470,8 @@ class Constraint(ConfigModel):
         if self.in_star_tracker_soft(
             ra=ra, dec=dec, time=utime, target_roll=target_roll, acs_mode=acs_mode
         ):
+            return True
+        if self.in_radiator_hard(ra, dec, utime):
             return True
         return False
 
@@ -527,6 +546,7 @@ class Constraint(ConfigModel):
             self.orbit_constraint,
             self.star_tracker_hard_constraint,
             self.star_tracker_soft_constraint,
+            self.radiator_hard_constraint,
         ]
         for constraint_func in constraint_types:
             if constraint_func is None:
@@ -600,5 +620,7 @@ class DefaultConstraint(Constraint):
         if self.in_star_tracker_soft(
             ra=ra, dec=dec, time=time, target_roll=target_roll, acs_mode=acs_mode
         ):
+            count += 2
+        if self.in_radiator_hard(ra, dec, utime):
             count += 2
         return count

@@ -41,6 +41,12 @@ class TargetQueue:
         self.log = log
         # Optional weight to penalize long slews when selecting next target
         self.slew_distance_weight = config.targets.slew_distance_weight
+        self.radiator_sun_exposure_weight = getattr(
+            config.targets, "radiator_sun_exposure_weight", 0.0
+        )
+        self.radiator_earth_exposure_weight = getattr(
+            config.targets, "radiator_earth_exposure_weight", 0.0
+        )
 
     def __getitem__(self, number: int) -> Pointing:
         return self.targets[number]
@@ -186,10 +192,44 @@ class TargetQueue:
                 target.end = int(utime + target.slewtime + target.ss_max)
                 # If no slew weighting, return first visible target (fast path)
                 if self.slew_distance_weight == 0.0:
-                    return target
+                    if (
+                        self.radiator_sun_exposure_weight == 0.0
+                        and self.radiator_earth_exposure_weight == 0.0
+                    ):
+                        return target
                 # Otherwise, score all visible targets and pick best
                 slewdist = getattr(target, "slewdist", 0.0)
                 score = target.merit - self.slew_distance_weight * slewdist
+
+                if (
+                    self.radiator_sun_exposure_weight > 0.0
+                    or self.radiator_earth_exposure_weight > 0.0
+                ):
+                    if self.config is not None:
+                        radiators = getattr(
+                            self.config.spacecraft_bus, "radiators", None
+                        )
+                    else:
+                        radiators = None
+                    if (
+                        radiators is not None
+                        and hasattr(radiators, "num_radiators")
+                        and radiators.num_radiators() > 0
+                    ):
+                        metrics = radiators.exposure_metrics(
+                            ra_deg=target.ra,
+                            dec_deg=target.dec,
+                            utime=utime,
+                            ephem=self.ephem,
+                            roll_deg=getattr(target, "roll", 0.0),
+                        )
+                        sun_exposure = float(metrics.get("sun_exposure", 0.0))
+                        earth_exposure = float(metrics.get("earth_exposure", 0.0))
+                        score -= (
+                            self.radiator_sun_exposure_weight * sun_exposure
+                            + self.radiator_earth_exposure_weight * earth_exposure
+                        )
+
                 if score > best_score:
                     best_score = score
                     best_target = target

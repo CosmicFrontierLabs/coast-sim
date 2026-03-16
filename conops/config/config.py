@@ -174,6 +174,23 @@ class MissionConfig(ConfigModel):
             self.constraint.star_tracker_hard_constraint = None
             self.constraint.star_tracker_soft_constraint = None
             self.constraint.star_tracker_enforce_modes = None
+
+        radiators = None
+        try:
+            radiators = self.spacecraft_bus.radiators
+            has_radiators = (
+                hasattr(radiators, "num_radiators") and radiators.num_radiators() > 0
+            )
+        except AttributeError:
+            has_radiators = False
+
+        if radiators is not None and has_radiators:
+            self.constraint.radiator_hard_constraint = (
+                radiators.radiator_hard_constraint
+            )
+        else:
+            self.constraint.radiator_hard_constraint = None
+
         self.constraint.invalidate_combined_constraint_cache()
         return self
 

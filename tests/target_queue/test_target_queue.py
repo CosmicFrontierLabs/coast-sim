@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from conops import Queue
 
@@ -275,3 +275,32 @@ class TestQueueSelectionBehavior:
             target = queue_instance.get(ra=0, dec=0, utime=utime)
 
         assert target == queue_instance.targets[0]
+
+    def test_radiator_exposure_penalty_prefers_cooler_target(self, queue_instance):
+        """Radiator exposure weights should steer selection toward lower-exposure targets."""
+        utime = 1762924800.0
+        queue_instance.slew_distance_weight = 0.0
+        queue_instance.radiator_sun_exposure_weight = 100.0
+        queue_instance.radiator_earth_exposure_weight = 0.0
+
+        # Make merit identical so only radiator penalty drives selection.
+        queue_instance.targets[0].merit = 100
+        queue_instance.targets[1].merit = 100
+        queue_instance.targets[0].ra = 0.0
+        queue_instance.targets[1].ra = 1.0
+
+        radiators = Mock()
+        radiators.num_radiators.return_value = 2
+
+        def _metrics(ra_deg, **kwargs):
+            if ra_deg == 0.0:
+                return {"sun_exposure": 0.9, "earth_exposure": 0.0}
+            return {"sun_exposure": 0.1, "earth_exposure": 0.0}
+
+        radiators.exposure_metrics.side_effect = _metrics
+        queue_instance.config.spacecraft_bus.radiators = radiators
+
+        with patch.object(queue_instance, "meritsort"):
+            chosen = queue_instance.get(ra=0, dec=0, utime=utime)
+
+        assert chosen == queue_instance.targets[1]

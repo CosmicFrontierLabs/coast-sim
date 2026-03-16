@@ -78,9 +78,9 @@ docs = [
 requires = ["setuptools", "setuptools_scm"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-# Automatically discover all packages and subpackages
-packages = { find = {} }
+[tool.setuptools.packages.find]
+# orbit_visualizer lives in its own repo (orbit-visualizer) — exclude it here
+exclude = ["orbit_visualizer*"]
 
 [tool.setuptools_scm]
 # Use Git tags to determine the version

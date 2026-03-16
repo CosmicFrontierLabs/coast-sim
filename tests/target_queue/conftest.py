@@ -69,6 +69,8 @@ def mock_config():
     config.attitude_control = Mock()
     config.targets = Mock()
     config.targets.slew_distance_weight = 0.0
+    config.targets.radiator_sun_exposure_weight = 0.0
+    config.targets.radiator_earth_exposure_weight = 0.0
     return config
 
 

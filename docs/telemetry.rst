@@ -93,6 +93,18 @@ Housekeeping Fields
    - ``star_tracker_soft_violations``: Whether any tracker is in its soft constraint zone
    - ``star_tracker_functional_count``: Number of hard-constraint-clear trackers
 
+**Star Tracker and Radiator State**
+   - ``star_tracker_hard_violations``: Number of star trackers in hard keep-out zones
+   - ``star_tracker_soft_violations``: Whether any star tracker is in a soft-degradation zone
+   - ``star_tracker_functional_count``: Number of star trackers currently counted as functional
+   - ``radiator_hard_violations``: Number of radiators violating hard keep-out constraints
+   - ``radiator_sun_exposure``: Area-weighted Sun exposure for all configured radiators (0-1)
+   - ``radiator_earth_exposure``: Area-weighted Earth exposure for all configured radiators (0-1)
+   - ``radiator_heat_dissipation_w``: Total first-order estimated radiator heat dissipation (W)
+
+Radiator metrics are continuous performance signals, not binary "working/failing"
+states. Pointing can reduce radiator heat rejection without implying hardware failure.
+
 Payload Data
 ------------
 

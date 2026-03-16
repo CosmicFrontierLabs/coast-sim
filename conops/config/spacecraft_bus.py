@@ -5,6 +5,7 @@ from .acs import AttitudeControlSystem
 from .communications import CommunicationsSystem
 from .data_generator import DataGeneration
 from .power import PowerDraw
+from .radiator import DefaultRadiatorConfiguration, RadiatorConfiguration
 from .star_tracker import DefaultStarTrackerConfiguration, StarTrackerConfiguration
 from .thermal import Heater
 
@@ -32,6 +33,10 @@ class SpacecraftBus(ConfigModel):
     star_trackers: StarTrackerConfiguration = Field(
         default_factory=DefaultStarTrackerConfiguration,
         description="Star tracker configuration",
+    )
+    radiators: RadiatorConfiguration = Field(
+        default_factory=DefaultRadiatorConfiguration,
+        description="Body-mounted radiator configuration",
     )
 
     def power(self, mode: int | None = None, in_eclipse: bool = False) -> float:

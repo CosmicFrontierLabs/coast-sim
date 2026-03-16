@@ -67,6 +67,7 @@ class DITLMixin:
             self.config.constraint.ephem = ephem
             # Also set ephemeris on star tracker constraints
             self.config.spacecraft_bus.star_trackers.set_ephem(ephem)
+            self.config.spacecraft_bus.radiators.set_ephem(ephem)
         else:
             assert config.constraint.ephem is not None, (
                 "Ephemeris must be set in Config Constraint"
@@ -74,6 +75,7 @@ class DITLMixin:
             self.ephem = config.constraint.ephem
             # Also set ephemeris on star tracker constraints
             self.config.spacecraft_bus.star_trackers.set_ephem(config.constraint.ephem)
+            self.config.spacecraft_bus.radiators.set_ephem(config.constraint.ephem)
 
         # Keep mission-level planning/FOR constraints synchronized with star-tracker
         # hard exclusions.
@@ -82,6 +84,9 @@ class DITLMixin:
         )
         self.config.constraint.star_tracker_soft_constraint = (
             self.config.spacecraft_bus.star_trackers.startracker_constraint
+        )
+        self.config.constraint.radiator_hard_constraint = (
+            self.config.spacecraft_bus.radiators.radiator_hard_constraint
         )
         self.config.constraint.invalidate_combined_constraint_cache()
 

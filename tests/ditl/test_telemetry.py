@@ -164,7 +164,10 @@ class TestTelemetry:
         hk = Housekeeping(
             timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc), ra=45.0
         )
-        pd = PayloadData(timestamp=1234567890.0, data_size_gb=1.5)
+        pd = PayloadData(
+            timestamp=datetime.fromtimestamp(1234567890.0, tz=timezone.utc),
+            data_size_gb=1.5,
+        )
         tm = Telemetry(housekeeping=HousekeepingList([hk]), data=[pd])
         assert len(tm.housekeeping) == 1
         assert len(tm.data) == 1
@@ -186,7 +189,12 @@ class TestTelemetry:
                 )
             ]
         )
-        tm.data = [PayloadData(timestamp=1234567890.0, data_size_gb=1.5)]
+        tm.data = [
+            PayloadData(
+                timestamp=datetime.fromtimestamp(1234567890.0, tz=timezone.utc),
+                data_size_gb=1.5,
+            )
+        ]
         assert isinstance(tm.housekeeping, HousekeepingList)
         assert isinstance(tm.data, list)
         assert tm.housekeeping.ra == [45.0]
@@ -203,6 +211,9 @@ class TestTelemetry:
             sun_angle_deg=10.0,
             for_solid_angle_sr=3.1,
             in_eclipse=False,
+            radiator_sun_exposure=0.2,
+            radiator_earth_exposure=0.4,
+            radiator_heat_dissipation_w=120.0,
         )
         hk2 = Housekeeping(
             timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
@@ -212,6 +223,9 @@ class TestTelemetry:
             sun_angle_deg=20.0,
             for_solid_angle_sr=2.8,
             in_eclipse=True,
+            radiator_sun_exposure=0.1,
+            radiator_earth_exposure=0.3,
+            radiator_heat_dissipation_w=150.0,
         )
         tm = Telemetry(housekeeping=HousekeepingList([hk1, hk2]))
 
@@ -221,6 +235,9 @@ class TestTelemetry:
         assert tm.housekeeping.sun_angle_deg == [10.0, 20.0]
         assert tm.housekeeping.for_solid_angle_sr == [3.1, 2.8]
         assert tm.housekeeping.in_eclipse == [False, True]
+        assert tm.housekeeping.radiator_sun_exposure == [0.2, 0.1]
+        assert tm.housekeeping.radiator_earth_exposure == [0.4, 0.3]
+        assert tm.housekeeping.radiator_heat_dissipation_w == [120.0, 150.0]
 
 
 class TestHousekeepingNewFields:
