@@ -22,6 +22,8 @@ from ..common.vector import radec2vec, rotvec, vec2radec, vecnorm
 from ._base import ConfigModel
 from .constraint import Constraint
 
+STEFAN_BOLTZMANN_W_PER_M2_K4 = 5.670374419e-8
+
 
 class RadiatorOrientation(ConfigModel):
     """Orientation of a radiator normal in spacecraft body frame."""
@@ -91,7 +93,33 @@ class Radiator(ConfigModel):
     dissipation_coefficient_w_per_m2: float = Field(
         default=220.0,
         ge=0.0,
-        description="Nominal heat rejection coefficient used for first-order thermal model",
+        description="Upper bound on emitted thermal flux used for calibration/backward compatibility",
+    )
+    absorptivity: float = Field(
+        default=0.2,
+        ge=0.0,
+        le=1.0,
+        description="Effective absorptivity for incoming radiative flux",
+    )
+    radiator_temperature_k: float = Field(
+        default=300.0,
+        gt=0.0,
+        description="Representative radiator surface temperature in Kelvin",
+    )
+    sink_temperature_k: float = Field(
+        default=3.0,
+        ge=0.0,
+        description="Background sink temperature in Kelvin",
+    )
+    solar_constant_w_per_m2: float = Field(
+        default=1361.0,
+        ge=0.0,
+        description="Solar constant used for absorbed Sun flux term (W/m^2)",
+    )
+    earth_ir_flux_w_per_m2: float = Field(
+        default=237.0,
+        ge=0.0,
+        description="Effective Earth IR flux term (W/m^2)",
     )
     sun_loading_factor: float = Field(default=0.7, ge=0.0)
     earth_loading_factor: float = Field(default=0.3, ge=0.0)
@@ -171,19 +199,30 @@ class Radiator(ConfigModel):
         return sun_exposure, earth_exposure
 
     def heat_dissipation_w(self, sun_exposure: float, earth_exposure: float) -> float:
-        """Compute first-order radiator heat shedding capability in Watts."""
-        loading = (
-            self.sun_loading_factor * sun_exposure
-            + self.earth_loading_factor * earth_exposure
+        """Compute net radiator heat flow in Watts.
+
+        Positive values indicate net heat rejection (dumping heat).
+        Negative values indicate net absorption from external fluxes.
+        """
+        absorbed_flux_w_per_m2 = self.absorptivity * (
+            self.solar_constant_w_per_m2 * self.sun_loading_factor * sun_exposure
+            + self.earth_ir_flux_w_per_m2 * self.earth_loading_factor * earth_exposure
         )
-        attenuation = max(0.0, 1.0 - loading)
-        return (
-            self.area_m2
-            * self.emissivity
-            * self.efficiency
-            * self.dissipation_coefficient_w_per_m2
-            * attenuation
+
+        emitted_flux_w_per_m2 = (
+            self.emissivity
+            * STEFAN_BOLTZMANN_W_PER_M2_K4
+            * (self.radiator_temperature_k**4 - self.sink_temperature_k**4)
         )
+
+        # Keep legacy calibration lever by capping emitted flux.
+        emitted_flux_w_per_m2 = min(
+            emitted_flux_w_per_m2,
+            self.dissipation_coefficient_w_per_m2,
+        )
+
+        net_flux_w_per_m2 = emitted_flux_w_per_m2 - absorbed_flux_w_per_m2
+        return self.area_m2 * self.efficiency * net_flux_w_per_m2
 
 
 class RadiatorConfiguration(ConfigModel):

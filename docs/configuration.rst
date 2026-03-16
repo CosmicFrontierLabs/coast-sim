@@ -440,9 +440,14 @@ logic. A radiator always exists physically; geometry changes how well it sheds h
 * ``subsystem`` (str): Subsystem served by radiator (for example ``"payload"`` or ``"spacecraft_bus"``)
 * ``efficiency`` (float): Thermal efficiency factor [0, 1]
 * ``emissivity`` (float): Surface emissivity [0, 1]
-* ``dissipation_coefficient_w_per_m2`` (float): Nominal heat rejection coefficient
-* ``sun_loading_factor`` (float): Penalty factor from Sun-facing exposure
-* ``earth_loading_factor`` (float): Penalty factor from Earth-facing exposure
+* ``absorptivity`` (float): Effective absorptivity [0, 1]
+* ``radiator_temperature_k`` (float): Representative radiator temperature in Kelvin
+* ``sink_temperature_k`` (float): Thermal sink/background temperature in Kelvin
+* ``solar_constant_w_per_m2`` (float): Solar constant term (W/m²), default 1361
+* ``earth_ir_flux_w_per_m2`` (float): Earth IR loading term (W/m²), default 237
+* ``dissipation_coefficient_w_per_m2`` (float): Emitted flux cap for model calibration/backward compatibility
+* ``sun_loading_factor`` (float): Weighting factor applied to Sun exposure term
+* ``earth_loading_factor`` (float): Weighting factor applied to Earth exposure term
 * ``hard_constraint`` (optional): Keep-out constraint for invalid radiator pointing
 
 **RadiatorOrientation Attributes:**
@@ -475,6 +480,11 @@ logic. A radiator always exists physically; geometry changes how well it sheds h
        subsystem="spacecraft_bus",
        efficiency=0.9,
        emissivity=0.85,
+       absorptivity=0.2,
+       radiator_temperature_k=300.0,
+       sink_temperature_k=3.0,
+       solar_constant_w_per_m2=1361.0,
+       earth_ir_flux_w_per_m2=237.0,
        dissipation_coefficient_w_per_m2=220.0,
        sun_loading_factor=0.7,
        earth_loading_factor=0.3,
@@ -503,6 +513,25 @@ Queue scheduling can penalize radiator exposure using target-selection weights:
 
 Higher values steer scheduling away from pointings that increase thermal loading on
 radiators. These are merit penalties, so tune relative to your target merit scale.
+
+Radiator Net Heat Model
+^^^^^^^^^^^^^^^^^^^^^^^
+
+COASTSim uses a first-order net-radiative model for each radiator:
+
+.. math::
+
+    Q_{net} = A\,\eta\,[\min(\epsilon\sigma(T_r^4 - T_s^4), C_d) - \alpha(S_0 f_{sun}E_{sun} + F_{earth} f_{earth}E_{earth})]
+
+Where:
+
+* :math:`S_0` is ``solar_constant_w_per_m2``
+* :math:`F_{earth}` is ``earth_ir_flux_w_per_m2``
+* :math:`E_{sun}, E_{earth}` are geometric exposure factors in [0, 1]
+* :math:`f_{sun}, f_{earth}` are loading weights
+
+Positive :math:`Q_{net}` means net heat rejection (dumping heat).
+Negative :math:`Q_{net}` means net absorbed external radiative load.
 
 payload
 ~~~~~~~

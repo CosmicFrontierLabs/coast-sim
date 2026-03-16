@@ -46,6 +46,8 @@ class TestRadiatorConfiguration:
             efficiency=1.0,
             emissivity=1.0,
             dissipation_coefficient_w_per_m2=100.0,
+            absorptivity=1.0,
+            solar_constant_w_per_m2=1361.0,
             sun_loading_factor=1.0,
             earth_loading_factor=0.0,
         )
@@ -71,4 +73,5 @@ class TestRadiatorConfiguration:
         assert isinstance(heat, float)
         assert sun_exp == pytest.approx(1.0)
         assert earth_exp == pytest.approx(0.0)
-        assert heat == pytest.approx(0.0)
+        # Emitted flux is capped to 100 W/m^2 while absorbed solar flux is 1361 W/m^2.
+        assert heat == pytest.approx(-1261.0)
