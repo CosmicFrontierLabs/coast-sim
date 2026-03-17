@@ -113,6 +113,10 @@ class Constraint(ConfigModel):
         default=None,
         description="Star tracker hard exclusion constraint",
     )
+    star_tracker_soft_constraint: ConstraintConfig | None = Field(
+        default=None,
+        description="Star tracker soft exclusion constraint for scheduling",
+    )
 
     ephem: rust_ephem.Ephemeris | None = Field(
         default=None,
@@ -208,6 +212,7 @@ class Constraint(ConfigModel):
             self.panel_constraint,
             self.anti_sun_constraint,
             self.star_tracker_hard_constraint,
+            self.star_tracker_soft_constraint,
         ]
         active_constraints = [
             component for component in constraint_components if component is not None
@@ -272,6 +277,20 @@ class Constraint(ConfigModel):
             self.star_tracker_hard_constraint,
         )
 
+    def in_star_tracker_soft(self, ra: float, dec: float, time: float) -> bool:
+        if self.star_tracker_soft_constraint is None:
+            return False
+        assert self.ephem is not None, (
+            "Ephemeris must be set to use in_star_tracker_soft method"
+        )
+        return self._cached_check(
+            "star_tracker_soft",
+            ra,
+            dec,
+            time,
+            self.star_tracker_soft_constraint,
+        )
+
     def in_constraint(self, ra: float, dec: float, utime: float) -> bool:
         """For a given time is a RA/Dec in occult?"""
         # Short-circuit evaluation for scalar times (most common case)
@@ -289,6 +308,8 @@ class Constraint(ConfigModel):
         if self.in_anti_sun(ra, dec, utime):
             return True
         if self.in_star_tracker_hard(ra, dec, utime):
+            return True
+        if self.in_star_tracker_soft(ra, dec, utime):
             return True
         return False
 
@@ -350,6 +371,7 @@ class Constraint(ConfigModel):
             self.moon_constraint,
             self.anti_sun_constraint,
             self.star_tracker_hard_constraint,
+            self.star_tracker_soft_constraint,
         ]
         for constraint_func in constraint_types:
             if constraint_func is None:
@@ -405,5 +427,7 @@ class DefaultConstraint(Constraint):
         if self.in_earth(ra, dec, utime):
             count += 2
         if self.in_star_tracker_hard(ra, dec, utime):
+            count += 2
+        if self.in_star_tracker_soft(ra, dec, utime):
             count += 2
         return count

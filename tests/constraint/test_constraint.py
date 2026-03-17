@@ -43,6 +43,12 @@ class TestConstraintInit:
         """Test bare Constraint defaults to no panel constraint."""
         assert Constraint().panel_constraint is None
 
+    def test_constraint_init_star_tracker_soft_constraint_defaults_to_none(
+        self,
+    ) -> None:
+        """Test bare Constraint defaults to no star-tracker soft constraint."""
+        assert Constraint().star_tracker_soft_constraint is None
+
     def test_default_constraint_has_legacy_constraints(self) -> None:
         """Test DefaultConstraint preserves legacy non-None defaults."""
         default_constraint = DefaultConstraint()
@@ -189,6 +195,37 @@ class TestInOccultMethod:
         mock_earth.return_value = False
         mock_moon.return_value = False
         mock_panel.return_value = False
+
+        result = constraint.in_constraint(45.0, 30.0, 1700000000.0)
+
+        assert result is True
+
+    @patch("conops.Constraint.in_star_tracker_soft")
+    @patch("conops.Constraint.in_star_tracker_hard")
+    @patch("conops.Constraint.in_panel")
+    @patch("conops.Constraint.in_moon")
+    @patch("conops.Constraint.in_earth")
+    @patch("conops.Constraint.in_anti_sun")
+    @patch("conops.Constraint.in_sun")
+    def test_in_constraint_star_tracker_soft_violation(
+        self,
+        mock_sun,
+        mock_antisun,
+        mock_earth,
+        mock_moon,
+        mock_panel,
+        mock_star_tracker_hard,
+        mock_star_tracker_soft,
+        constraint,
+    ):
+        """Test in_constraint returns True when soft star-tracker constraint is violated."""
+        mock_sun.return_value = False
+        mock_antisun.return_value = False
+        mock_earth.return_value = False
+        mock_moon.return_value = False
+        mock_panel.return_value = False
+        mock_star_tracker_hard.return_value = False
+        mock_star_tracker_soft.return_value = True
 
         result = constraint.in_constraint(45.0, 30.0, 1700000000.0)
 

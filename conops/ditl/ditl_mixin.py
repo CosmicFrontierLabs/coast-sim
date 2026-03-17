@@ -80,6 +80,9 @@ class DITLMixin:
         self.config.constraint.star_tracker_hard_constraint = (
             self.config.spacecraft_bus.star_trackers.startracker_hard_constraint
         )
+        self.config.constraint.star_tracker_soft_constraint = (
+            self.config.spacecraft_bus.star_trackers.startracker_constraint
+        )
         self.config.constraint.invalidate_combined_constraint_cache()
 
         # Override begin/end if provided, else use limits of ephemeris
