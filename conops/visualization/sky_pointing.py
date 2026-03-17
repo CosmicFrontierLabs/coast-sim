@@ -23,6 +23,7 @@ from matplotlib.patches import Circle
 from matplotlib.widgets import Button, Slider
 
 from ..common import dtutcfromtimestamp
+from ..config import DTOR
 from ..config.observation_categories import ObservationCategories
 from ..config.visualization import VisualizationConfig
 
@@ -320,11 +321,51 @@ class SkyPointingController:
         # Track categories present in current plot
         self.current_plot_categories: dict[str, str] = {}  # category_name -> color
 
+        # Cache per-point optimal roll maps; Sun geometry changes slowly so nearby
+        # frames can share the same solution.
+        self._optimal_roll_cache: dict[tuple[Any, ...], npt.NDArray[np.float64]] = {}
+        self._optimal_roll_cache_max_entries: int = 64
+        self._optimal_roll_cache_step_deg: float = 0.02
+
         # Control widgets
         self.slider: Slider
         self.play_button: Button
         self.prev_button: Button
         self.next_button: Button
+
+    def _solar_panel_signature(self) -> tuple[Any, ...]:
+        """Build a hashable signature for panel geometry/efficiency settings."""
+        solar_panel = getattr(self.ditl.config, "solar_panel", None)
+        if solar_panel is None:
+            return ("no_solar_panel",)
+
+        panels = getattr(solar_panel, "panels", None)
+        if not isinstance(panels, list) or len(panels) == 0:
+            return ("empty_panels",)
+
+        panel_sig: list[tuple[Any, ...]] = []
+        for panel in panels:
+            normal = getattr(panel, "normal", None)
+            max_power = getattr(panel, "max_power", None)
+            panel_eff = getattr(panel, "conversion_efficiency", None)
+            if normal is None or max_power is None:
+                continue
+            n_arr = np.asarray(normal, dtype=np.float64)
+            panel_sig.append(
+                (
+                    round(float(n_arr[0]), 6),
+                    round(float(n_arr[1]), 6),
+                    round(float(n_arr[2]), 6),
+                    round(float(max_power), 6),
+                    None if panel_eff is None else round(float(panel_eff), 6),
+                )
+            )
+
+        return (
+            "panel",
+            round(float(getattr(solar_panel, "conversion_efficiency", 1.0)), 6),
+            tuple(panel_sig),
+        )
 
     def add_controls(self) -> None:
         """Add interactive control widgets to the figure."""
@@ -796,17 +837,6 @@ class SkyPointingController:
         # Use the same regular grid as the other constraints
         _, _, ra_flat, dec_flat = self._create_regular_sky_grid(n_ra, n_dec)
 
-        idx = self._find_time_index(utime)
-        roll_deg = 0.0
-        try:
-            rolls = getattr(self.ditl, "roll", None)
-            if isinstance(rolls, list | tuple | np.ndarray) and idx < len(rolls):
-                roll_val = rolls[idx]
-                if roll_val is not None:
-                    roll_deg = float(roll_val)
-        except (TypeError, ValueError):
-            roll_deg = 0.0
-
         # Spacecraft boresight (+X) unit vectors for all grid points.
         ra_rad = np.deg2rad(ra_flat)
         dec_rad = np.deg2rad(dec_flat)
@@ -835,17 +865,103 @@ class SkyPointingController:
         z0 = np.cross(x_hat, y0)
         z0 = z0 / np.linalg.norm(z0, axis=1)[:, None]
 
-        # Roll is position angle around boresight (+X).
-        roll_rad = np.deg2rad(roll_deg)
-        c = np.cos(roll_rad)
-        s = np.sin(roll_rad)
-        y_hat = y0 * c - z0 * s
-        z_hat = y0 * s + z0 * c
-
         time_dt = dtutcfromtimestamp(utime)
         ephem = self.ditl.ephem
         if ephem is None:
             return None
+
+        # Compute/cache an optimal roll per sky point so star tracker masks represent
+        # where constraints would be encountered when panel pointing is optimized.
+        ephem_idx = ephem.index(time_dt)
+        sun_ra = float(ephem.sun_ra_deg[ephem_idx])
+        sun_dec = float(ephem.sun_dec_deg[ephem_idx])
+        bucket_step = max(1e-6, self._optimal_roll_cache_step_deg)
+        roll_cache_key = (
+            n_ra,
+            n_dec,
+            int(np.round(sun_ra / bucket_step)),
+            int(np.round(sun_dec / bucket_step)),
+            self._solar_panel_signature(),
+        )
+
+        roll_deg_per_point = self._optimal_roll_cache.get(roll_cache_key)
+        if roll_deg_per_point is None:
+            sun_vec = np.asarray(
+                ephem.sun_pv.position[ephem_idx], dtype=np.float64
+            ) - np.asarray(ephem.gcrs_pv.position[ephem_idx], dtype=np.float64)
+            sun_norm = np.linalg.norm(sun_vec)
+            if sun_norm <= 0.0:
+                return None
+            sun_unit = sun_vec / sun_norm
+
+            sx0 = x_hat @ sun_unit
+            sy0 = y0 @ sun_unit
+            sz0 = z0 @ sun_unit
+
+            solar_panel = getattr(self.ditl.config, "solar_panel", None)
+            if (
+                solar_panel is not None
+                and hasattr(solar_panel, "panels")
+                and isinstance(solar_panel.panels, list)
+                and len(solar_panel.panels) > 0
+            ):
+                panel_normals: list[npt.NDArray[np.float64]] = []
+                panel_weights: list[float] = []
+                default_eff = float(getattr(solar_panel, "conversion_efficiency", 1.0))
+
+                for panel in solar_panel.panels:
+                    normal = getattr(panel, "normal", None)
+                    max_power = getattr(panel, "max_power", None)
+                    if normal is None or max_power is None:
+                        continue
+
+                    panel_normals.append(np.asarray(normal, dtype=np.float64))
+                    panel_eff = getattr(panel, "conversion_efficiency", None)
+                    eff_val = float(panel_eff) if panel_eff is not None else default_eff
+                    panel_weights.append(float(max_power) * eff_val)
+
+                if len(panel_normals) == 0 or len(panel_weights) == 0:
+                    roll_rad_per_point = np.arctan2(-sy0, sz0)
+                    roll_deg_per_point = (roll_rad_per_point / DTOR) % 360.0
+                else:
+                    n_mat = np.asarray(panel_normals, dtype=np.float64)  # (P, 3)
+                    w_vec = np.asarray(panel_weights, dtype=np.float64)  # (P,)
+
+                    deg_grid = np.arange(360.0, dtype=np.float64)
+                    ang_grid = deg_grid * DTOR
+                    cos_grid = np.cos(ang_grid)[None, :]  # (1, 360)
+                    sin_grid = np.sin(ang_grid)[None, :]  # (1, 360)
+
+                    totals = np.zeros((len(ra_flat), 360), dtype=np.float64)
+                    for p_idx in range(n_mat.shape[0]):
+                        nx, ny, nz = n_mat[p_idx]
+                        a_coef = nx * sx0
+                        b_coef = ny * sy0 + nz * sz0
+                        c_coef = ny * sz0 - nz * sy0
+                        illum = (
+                            a_coef[:, None]
+                            + b_coef[:, None] * cos_grid
+                            + c_coef[:, None] * sin_grid
+                        )
+                        np.maximum(illum, 0.0, out=illum)
+                        totals += illum * w_vec[p_idx]
+
+                    best_idx = np.argmax(totals, axis=1)
+                    roll_deg_per_point = deg_grid[best_idx]
+            else:
+                roll_rad_per_point = np.arctan2(-sy0, sz0)
+                roll_deg_per_point = (roll_rad_per_point / DTOR) % 360.0
+
+            self._optimal_roll_cache[roll_cache_key] = roll_deg_per_point
+            while len(self._optimal_roll_cache) > self._optimal_roll_cache_max_entries:
+                self._optimal_roll_cache.pop(next(iter(self._optimal_roll_cache)))
+
+        # Apply per-point roll as position-angle rotations around boresight (+X).
+        roll_rad_per_point = np.deg2rad(roll_deg_per_point)
+        c = np.cos(roll_rad_per_point)[:, None]
+        s = np.sin(roll_rad_per_point)[:, None]
+        y_hat = y0 * c - z0 * s
+        z_hat = y0 * s + z0 * c
 
         tracker_masks: list[npt.NDArray[np.bool_]] = []
         for st in trackers:
