@@ -454,9 +454,6 @@ class StarTrackerConfiguration(ConfigModel):
         total_trackers = len(required_trackers)
 
         for st in required_trackers:
-            if st.soft_constraint is None:
-                continue
-
             if st.soft_constraint_offset is None:
                 continue
             offset_constraint = st.soft_constraint_offset
