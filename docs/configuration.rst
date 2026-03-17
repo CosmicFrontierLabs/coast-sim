@@ -422,10 +422,10 @@ Radiators in COASTSim have:
 
 * Hard keep-out constraints (optional) for invalid orientations.
 * Continuous Sun/Earth exposure metrics.
-* A first-order heat-dissipation estimate used for optimization and analysis.
+* A first-order net heat-flow estimate used for optimization and analysis.
 
 Unlike star trackers, radiators do **not** use soft constraints or functional-count
-logic. A radiator always exists physically; geometry changes how well it sheds heat.
+logic. A radiator always exists physically; geometry changes its net thermal behavior.
 
 **RadiatorConfiguration Attributes:**
 
@@ -529,6 +529,10 @@ Where:
 * :math:`F_{earth}` is ``earth_ir_flux_w_per_m2``
 * :math:`E_{sun}, E_{earth}` are geometric exposure factors in [0, 1]
 * :math:`f_{sun}, f_{earth}` are loading weights
+* :math:`\alpha` is ``absorptivity`` and :math:`\epsilon` is ``emissivity``
+* :math:`C_d` is ``dissipation_coefficient_w_per_m2`` (emission cap)
+* :math:`\sigma` is the Stefan-Boltzmann constant
+* :math:`A` is radiator area and :math:`\eta` is ``efficiency``
 
 Positive :math:`Q_{net}` means net heat rejection (dumping heat).
 Negative :math:`Q_{net}` means net absorbed external radiative load.

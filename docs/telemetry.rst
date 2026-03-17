@@ -100,10 +100,11 @@ Housekeeping Fields
    - ``radiator_hard_violations``: Number of radiators violating hard keep-out constraints
    - ``radiator_sun_exposure``: Area-weighted Sun exposure for all configured radiators (0-1)
    - ``radiator_earth_exposure``: Area-weighted Earth exposure for all configured radiators (0-1)
-   - ``radiator_heat_dissipation_w``: Total first-order estimated radiator heat dissipation (W)
+   - ``radiator_heat_dissipation_w``: Total first-order net radiator heat flow (W); positive rejects heat, negative absorbs net external radiative load
 
 Radiator metrics are continuous performance signals, not binary "working/failing"
-states. Pointing can reduce radiator heat rejection without implying hardware failure.
+states. Pointing can reduce heat rejection or even drive temporary net heat absorption
+without implying hardware failure.
 
 Payload Data
 ------------
