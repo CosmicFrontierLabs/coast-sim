@@ -91,6 +91,9 @@ def create_statistics_test_config(ephem: DummyEphemeris | None = None) -> Missio
     spacecraft_bus.star_trackers = Mock()
     spacecraft_bus.star_trackers.set_ephem = Mock()
     spacecraft_bus.star_trackers.num_trackers = Mock(return_value=0)
+    spacecraft_bus.radiators = Mock()
+    spacecraft_bus.radiators.set_ephem = Mock()
+    spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
 
     solar_panel = Mock(spec=SolarPanelSet)
     solar_panel.optimal_charging_pointing = Mock(return_value=(45.0, 23.5))
@@ -226,6 +229,9 @@ def mock_config_detailed():
     config.spacecraft_bus.attitude_control = Mock()
     config.spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))
     config.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
+    config.spacecraft_bus.radiators = Mock()
+    config.spacecraft_bus.radiators.set_ephem = Mock()
+    config.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
 
     # Mock payload
     config.payload = Mock()
