@@ -654,12 +654,20 @@ class ACS:
 
         # Check hard constraints
         hard_violations = star_trackers.trackers_violating_hard_constraints(
-            current_ra, current_dec, utime, current_roll
+            current_ra,
+            current_dec,
+            utime,
+            current_roll,
+            mode=int(self.acsmode),
         )
 
         # Check soft constraints
         soft_violations = star_trackers.any_tracker_violating_soft_constraints(
-            current_ra, current_dec, utime, current_roll
+            current_ra,
+            current_dec,
+            utime,
+            current_roll,
+            mode=int(self.acsmode),
         )
 
         # Update ACS state for Housekeeping telemetry

@@ -512,8 +512,6 @@ class TestFetchNewPPT:
             10.0,
             20.0,
             1000.0,
-            current_roll=queue_ditl.acs.roll,
-            current_mode=int(queue_ditl.acs.acsmode),
         )
 
     def test_fetch_ppt_enqueues_slew_command(

@@ -37,6 +37,7 @@ from pydantic import Field, field_validator
 from rust_ephem import AtLeastConstraint, EarthLimbConstraint, SunConstraint
 from rust_ephem.constraints import ConstraintConfig
 
+from ..common.enums import ACSMode
 from ..common.vector import radec2vec, rotvec, vec2radec, vecnorm
 from ._base import ConfigModel
 from .constraint import Constraint
@@ -365,6 +366,9 @@ class StarTrackerConfiguration(ConfigModel):
         combined: ConstraintConfig | None = None
 
         for st in self.star_trackers:
+            # Queue/schedule planning is science-mode driven.
+            if not st.requires_lock_in_mode(int(ACSMode.SCIENCE)):
+                continue
             if st.hard_constraint is None:
                 continue
 
@@ -399,9 +403,14 @@ class StarTrackerConfiguration(ConfigModel):
         constraints that the minimum functional requirement can no longer be met.
         """
         offset_constraints: list[ConstraintConfig] = []
-        total_trackers = len(self.star_trackers)
+        required_trackers = [
+            st
+            for st in self.star_trackers
+            if st.requires_lock_in_mode(int(ACSMode.SCIENCE))
+        ]
+        total_trackers = len(required_trackers)
 
-        for st in self.star_trackers:
+        for st in required_trackers:
             if st.soft_constraint is None:
                 continue
 
@@ -454,7 +463,12 @@ class StarTrackerConfiguration(ConfigModel):
         return len(self.star_trackers)
 
     def trackers_violating_hard_constraints(
-        self, ra_deg: float, dec_deg: float, utime: float, roll_deg: float = 0.0
+        self,
+        ra_deg: float,
+        dec_deg: float,
+        utime: float,
+        roll_deg: float = 0.0,
+        mode: int | None = None,
     ) -> int:
         """Count how many star trackers violate hard constraints.
 
@@ -469,12 +483,19 @@ class StarTrackerConfiguration(ConfigModel):
         """
         count = 0
         for st in self.star_trackers:
+            if not st.requires_lock_in_mode(mode):
+                continue
             if st.in_hard_constraint(ra_deg, dec_deg, utime, roll_deg):
                 count += 1
         return count
 
     def any_tracker_violating_soft_constraints(
-        self, ra_deg: float, dec_deg: float, utime: float, roll_deg: float = 0.0
+        self,
+        ra_deg: float,
+        dec_deg: float,
+        utime: float,
+        roll_deg: float = 0.0,
+        mode: int | None = None,
     ) -> bool:
         """Check if any star tracker violates soft constraints.
 
@@ -488,6 +509,8 @@ class StarTrackerConfiguration(ConfigModel):
             True if any star tracker violates soft constraints
         """
         for st in self.star_trackers:
+            if not st.requires_lock_in_mode(mode):
+                continue
             if st.in_soft_constraint(ra_deg, dec_deg, utime, roll_deg):
                 return True
         return False
@@ -530,11 +553,19 @@ class StarTrackerConfiguration(ConfigModel):
             # No star trackers configured - allow all pointings
             return True
 
-        # Hard constraints are absolute keep-outs: any violation invalidates the pointing.
-        if (
-            self.trackers_violating_hard_constraints(ra_deg, dec_deg, utime, roll_deg)
-            > 0
-        ):
+        required_trackers = [
+            st for st in self.star_trackers if st.requires_lock_in_mode(mode)
+        ]
+        if not required_trackers:
+            return True
+
+        # Hard constraints are enforced only for trackers that require lock in this mode.
+        hard_violations = sum(
+            1
+            for st in required_trackers
+            if st.in_hard_constraint(ra_deg, dec_deg, utime, roll_deg)
+        )
+        if hard_violations > 0:
             return False
 
         # Soft constraints represent performance degradation.
@@ -543,15 +574,20 @@ class StarTrackerConfiguration(ConfigModel):
         # still operational regardless of soft-constraint state.
         soft_violations = sum(
             1
-            for st in self.star_trackers
-            if st.requires_lock_in_mode(mode)
-            and st.in_soft_constraint(ra_deg, dec_deg, utime, roll_deg)
+            for st in required_trackers
+            if st.in_soft_constraint(ra_deg, dec_deg, utime, roll_deg)
         )
-        functional_trackers = len(self.star_trackers) - soft_violations
-        return functional_trackers >= self.min_functional_trackers
+        functional_trackers = len(required_trackers) - soft_violations
+        required_functional = min(self.min_functional_trackers, len(required_trackers))
+        return functional_trackers >= required_functional
 
     def check_soft_constraint_degradation(
-        self, ra_deg: float, dec_deg: float, utime: float, roll_deg: float = 0.0
+        self,
+        ra_deg: float,
+        dec_deg: float,
+        utime: float,
+        roll_deg: float = 0.0,
+        mode: int | None = None,
     ) -> bool:
         """Check if pointing results in any soft constraint violations.
 
@@ -567,7 +603,11 @@ class StarTrackerConfiguration(ConfigModel):
             True if any star tracker will operate at degraded performance
         """
         return self.any_tracker_violating_soft_constraints(
-            ra_deg, dec_deg, utime, roll_deg
+            ra_deg,
+            dec_deg,
+            utime,
+            roll_deg,
+            mode=mode,
         )
 
     def get_tracker_by_name(self, name: str) -> StarTracker | None:

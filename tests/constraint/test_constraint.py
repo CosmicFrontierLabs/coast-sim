@@ -1,6 +1,6 @@
 """Tests for conops.constraint module."""
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
@@ -338,6 +338,49 @@ class TestConstraintFloatTimeReturnsScalar:
 
         # Verify the constraint was called
         assert mock_in_constraint.called
+
+
+class TestConstraintRollPassthrough:
+    """Test roll passthrough to rust-ephem constraint APIs."""
+
+    @patch("rust_ephem.SunConstraint.in_constraint")
+    def test_in_sun_forwards_target_roll(
+        self, mock_in_constraint, constraint_with_ephem
+    ) -> None:
+        mock_in_constraint.return_value = False
+
+        _ = constraint_with_ephem.in_sun(
+            45.0,
+            30.0,
+            1700000000.0,
+            target_roll=12.5,
+        )
+
+        assert mock_in_constraint.call_args.kwargs["target_roll"] == 12.5
+
+    def test_in_constraint_batch_forwards_target_roll(
+        self, constraint_with_ephem
+    ) -> None:
+        mock_constraint = Mock()
+        mock_constraint.in_constraint_batch.return_value = np.zeros((2, 1), dtype=bool)
+        constraint_with_ephem.sun_constraint = mock_constraint
+        constraint_with_ephem.earth_constraint = None
+        constraint_with_ephem.panel_constraint = None
+        constraint_with_ephem.moon_constraint = None
+        constraint_with_ephem.anti_sun_constraint = None
+        constraint_with_ephem.star_tracker_hard_constraint = None
+        constraint_with_ephem.star_tracker_soft_constraint = None
+
+        _ = constraint_with_ephem.in_constraint_batch(
+            ras=[10.0, 20.0],
+            decs=[-5.0, 15.0],
+            utime=1700000000.0,
+            target_roll=22.0,
+        )
+
+        assert (
+            mock_constraint.in_constraint_batch.call_args.kwargs["target_roll"] == 22.0
+        )
 
     @patch("rust_ephem.AndConstraint.in_constraint")
     def test_in_panel_with_float_returns_scalar(
