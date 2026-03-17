@@ -121,6 +121,7 @@ class TargetQueue:
         utime: float,
         endtime: float,
         current_roll: float,
+        current_mode: int | None,
     ) -> bool:
         """Roll-aware guard for star-tracker validity during target selection.
 
@@ -157,6 +158,7 @@ class TargetQueue:
                     dec_deg=target.dec,
                     utime=utime,
                     roll_deg=current_roll,
+                    mode=current_mode,
                 )
             )
             end_ok = bool(
@@ -165,6 +167,7 @@ class TargetQueue:
                     dec_deg=target.dec,
                     utime=endtime,
                     roll_deg=current_roll,
+                    mode=current_mode,
                 )
             )
             return start_ok and end_ok
@@ -178,6 +181,7 @@ class TargetQueue:
         dec: float,
         utime: float,
         current_roll: float = 0.0,
+        current_mode: int | None = None,
     ) -> Pointing | None:
         """Get the next best target to observe from the queue.
 
@@ -245,6 +249,7 @@ class TargetQueue:
                     utime,
                     endtime,
                     current_roll,
+                    current_mode,
                 ):
                     continue
 

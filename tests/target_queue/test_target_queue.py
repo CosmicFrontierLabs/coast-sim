@@ -279,6 +279,31 @@ class TestStarTrackerRollAwareQueueFiltering:
         assert target == queue_instance.targets[1]
         call_kwargs = star_trackers.is_pointing_valid.call_args.kwargs
         assert call_kwargs["roll_deg"] == roll
+        assert call_kwargs["mode"] is None
+
+    def test_get_forwards_mode_to_star_tracker_validity(self, queue_instance):
+        """Queue ST filtering should pass current ACS mode for lock-dependent soft checks."""
+        utime = 1762924800.0
+        roll = 12.5
+        mode = 2
+
+        star_trackers = queue_instance.config.spacecraft_bus.star_trackers
+        star_trackers.num_trackers.return_value = 2
+        star_trackers.is_pointing_valid.side_effect = [False, False, True, True]
+
+        with patch.object(queue_instance, "meritsort"):
+            target = queue_instance.get(
+                ra=0,
+                dec=0,
+                utime=utime,
+                current_roll=roll,
+                current_mode=mode,
+            )
+
+        assert target == queue_instance.targets[1]
+        call_kwargs = star_trackers.is_pointing_valid.call_args.kwargs
+        assert call_kwargs["roll_deg"] == roll
+        assert call_kwargs["mode"] == mode
 
     def test_get_without_star_trackers_preserves_existing_behavior(
         self, queue_instance
@@ -288,6 +313,12 @@ class TestStarTrackerRollAwareQueueFiltering:
         queue_instance.config.spacecraft_bus.star_trackers = None
 
         with patch.object(queue_instance, "meritsort"):
-            target = queue_instance.get(ra=0, dec=0, utime=utime, current_roll=30.0)
+            target = queue_instance.get(
+                ra=0,
+                dec=0,
+                utime=utime,
+                current_roll=30.0,
+                current_mode=2,
+            )
 
         assert target == queue_instance.targets[0]

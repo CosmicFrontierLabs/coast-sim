@@ -901,7 +901,13 @@ class QueueDITL(DITLMixin, DITLStats):
             acs_mode=self.acs.acsmode,
         )
 
-        self.ppt = self.queue.get(ra, dec, utime, current_roll=self.acs.roll)
+        self.ppt = self.queue.get(
+            ra,
+            dec,
+            utime,
+            current_roll=self.acs.roll,
+            current_mode=int(self.acs.acsmode),
+        )
 
         if self.ppt is not None:
             self.log.log_event(
