@@ -115,7 +115,70 @@ class TargetQueue:
         # Sort by merit (highest first)
         self.targets.sort(key=lambda x: x.merit, reverse=True)
 
-    def get(self, ra: float, dec: float, utime: float) -> Pointing | None:
+    def _is_star_tracker_pointing_valid(
+        self,
+        target: Pointing,
+        utime: float,
+        endtime: float,
+        current_roll: float,
+    ) -> bool:
+        """Roll-aware guard for star-tracker validity during target selection.
+
+        Visibility windows are currently precomputed in RA/Dec only, so this
+        check rejects candidates that violate star-tracker validity when the
+        current roll is applied.
+        """
+        if self.config is None:
+            return True
+
+        spacecraft_bus = getattr(self.config, "spacecraft_bus", None)
+        star_trackers = getattr(spacecraft_bus, "star_trackers", None)
+        if star_trackers is None:
+            return True
+
+        num_trackers_fn = getattr(star_trackers, "num_trackers", None)
+        if not callable(num_trackers_fn):
+            return True
+
+        try:
+            if int(num_trackers_fn()) <= 0:
+                return True
+        except Exception:
+            return True
+
+        is_valid_fn = getattr(star_trackers, "is_pointing_valid", None)
+        if not callable(is_valid_fn):
+            return True
+
+        try:
+            start_ok = bool(
+                is_valid_fn(
+                    ra_deg=target.ra,
+                    dec_deg=target.dec,
+                    utime=utime,
+                    roll_deg=current_roll,
+                )
+            )
+            end_ok = bool(
+                is_valid_fn(
+                    ra_deg=target.ra,
+                    dec_deg=target.dec,
+                    utime=endtime,
+                    roll_deg=current_roll,
+                )
+            )
+            return start_ok and end_ok
+        except Exception:
+            # Avoid hard failure in selection path if custom tracker config errors.
+            return True
+
+    def get(
+        self,
+        ra: float,
+        dec: float,
+        utime: float,
+        current_roll: float = 0.0,
+    ) -> Pointing | None:
         """Get the next best target to observe from the queue.
 
         Given current position (ra, dec) and time, returns the next highest-merit
@@ -174,6 +237,17 @@ class TargetQueue:
 
             # Check if target is visible for full observation
             if target.visible(utime, endtime):
+                # Apply roll-aware star tracker validity check to close the
+                # gap between RA/Dec-only visibility precomputation and runtime
+                # roll-aware constraint evaluation.
+                if not self._is_star_tracker_pointing_valid(
+                    target,
+                    utime,
+                    endtime,
+                    current_roll,
+                ):
+                    continue
+
                 target.begin = int(utime)
                 target.end = int(utime + target.slewtime + target.ss_max)
                 # If no slew weighting, return first visible target (fast path)
