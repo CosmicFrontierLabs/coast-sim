@@ -194,10 +194,11 @@ class StarTrackerOrientation(ConfigModel):
             frame of reference to observe the spacecraft's input pointing direction.
 
         Example:
-            If star tracker boresight points along +X (default), and we point the
-            spacecraft at (RA=45°, Dec=30°) with roll=0°, we get back (45°, 30°).
-            If the same spacecraft pointing happens while roll=90°, the star tracker
-            frame sees a different (RA, Dec).
+            If the star tracker boresight points along +X (default), and we point the
+            spacecraft at (RA=45°, Dec=30°), the tracker boresight inertial direction
+            (and thus the returned (RA, Dec)) is unchanged by roll about +X; roll=0°
+            and roll=90° give the same (RA, Dec) for the boresight. Roll only changes
+            the apparent (RA, Dec) for trackers whose boresight is offset from +X.
         """
         # Spacecraft boresight (+X body axis) in inertial coordinates.
         ra_rad = np.deg2rad(ra_deg)
