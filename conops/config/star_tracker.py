@@ -169,7 +169,7 @@ class StarTrackerOrientation(ConfigModel):
     def transform_pointing(
         self, ra_deg: float, dec_deg: float, roll_deg: float = 0.0
     ) -> tuple[float, float]:
-        """Transform spacecraft frame pointing to star tracker's local frame.
+        """Transform spacecraft attitude to star-tracker inertial pointing.
 
         Given a pointing direction in the spacecraft frame (RA/Dec), this method
         computes what that same direction looks like from the star tracker's
@@ -198,19 +198,30 @@ class StarTrackerOrientation(ConfigModel):
             If the same spacecraft pointing happens while roll=90°, the star tracker
             frame sees a different (RA, Dec).
         """
-        # Convert RA/Dec to vector in spacecraft frame
+        # Spacecraft boresight (+X body axis) in inertial coordinates.
         ra_rad = np.deg2rad(ra_deg)
         dec_rad = np.deg2rad(dec_deg)
-        v_sc = radec2vec(ra_rad, dec_rad)
+        x_hat = radec2vec(ra_rad, dec_rad)
 
-        # Apply spacecraft roll to get vector in spacecraft body frame
+        # Build the body Y/Z basis around boresight using sky north as reference.
+        ref = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        y0 = np.cross(ref, x_hat)
+        if np.linalg.norm(y0) < 1e-12:
+            # Near celestial poles, choose a different reference for numerical stability.
+            y0 = np.cross(np.array([0.0, 1.0, 0.0], dtype=np.float64), x_hat)
+        y0 = vecnorm(y0)
+        z0 = vecnorm(np.cross(x_hat, y0))
+
+        # Roll is a position-angle rotation about boresight (+X).
         roll_rad = np.deg2rad(roll_deg)
-        v_body = rotvec(1, roll_rad, v_sc)
+        c = np.cos(roll_rad)
+        s = np.sin(roll_rad)
+        y_hat = y0 * c - z0 * s
+        z_hat = y0 * s + z0 * c
 
-        # Transform to star tracker frame: columns of R are ST basis vectors in
-        # body frame, so R maps ST→body; R.T maps body→ST.
-        rot_matrix = self.to_rotation_matrix()
-        v_st = rot_matrix.T @ v_body
+        # Tracker boresight in inertial frame: linear combination of body axes.
+        b = np.asarray(self.boresight, dtype=np.float64)
+        v_st = b[0] * x_hat + b[1] * y_hat + b[2] * z_hat
 
         # Convert back to RA/Dec
         ra_st_rad, dec_st_rad = vec2radec(v_st)

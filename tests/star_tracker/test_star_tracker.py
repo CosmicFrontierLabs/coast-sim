@@ -2,6 +2,7 @@
 
 import time
 
+import numpy as np
 import pytest
 import rust_ephem
 
@@ -59,6 +60,28 @@ class TestStarTrackerConstraints:
         assert st.name == "ST_OrientedConstraint"
         assert st.orientation.boresight == boresight
         assert st.hard_constraint is not None
+
+    def test_plus_x_boresight_is_roll_position_angle_invariant(self):
+        """For +X boresight, inertial tracker pointing should match input RA/Dec for any roll."""
+        ori = StarTrackerOrientation(boresight=(1.0, 0.0, 0.0))
+
+        ra0, dec0 = ori.transform_pointing(120.0, -20.0, roll_deg=0.0)
+        ra1, dec1 = ori.transform_pointing(120.0, -20.0, roll_deg=90.0)
+
+        assert ra0 == pytest.approx(120.0, abs=1e-9)
+        assert dec0 == pytest.approx(-20.0, abs=1e-9)
+        assert ra1 == pytest.approx(120.0, abs=1e-9)
+        assert dec1 == pytest.approx(-20.0, abs=1e-9)
+
+    def test_off_axis_boresight_changes_with_roll(self):
+        """For off-axis boresight, roll should change inertial tracker pointing."""
+        ori = StarTrackerOrientation(boresight=(0.0, 1.0, 0.0))
+
+        ra0, dec0 = ori.transform_pointing(120.0, -20.0, roll_deg=0.0)
+        ra1, dec1 = ori.transform_pointing(120.0, -20.0, roll_deg=90.0)
+
+        assert not np.isclose(ra0, ra1, atol=1e-6)
+        assert not np.isclose(dec0, dec1, atol=1e-6)
 
 
 class TestStarTrackerModeLockRequirements:

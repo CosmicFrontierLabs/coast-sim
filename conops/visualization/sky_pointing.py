@@ -4,8 +4,11 @@ Interactive visualization showing spacecraft pointing on a mollweide projection
 of the sky with scheduled observations and constraint regions.
 """
 
+# pyright: reportMissingTypeStubs=false
+
 import os
-from typing import TYPE_CHECKING, Any, Optional
+from importlib import import_module
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
@@ -727,46 +730,6 @@ class SkyPointingController:
             ),
         ]
 
-        # Add aggregated star-tracker hard/soft constraints (if configured)
-        star_trackers = None
-        if hasattr(self.ditl, "config") and hasattr(self.ditl.config, "spacecraft_bus"):
-            star_trackers = getattr(
-                self.ditl.config.spacecraft_bus, "star_trackers", None
-            )
-
-        if star_trackers is not None and hasattr(star_trackers, "num_trackers"):
-            try:
-                has_trackers = star_trackers.num_trackers() > 0
-            except Exception:
-                has_trackers = False
-
-            if has_trackers:
-                st_soft_constraint = getattr(
-                    star_trackers, "startracker_constraint", None
-                )
-                if st_soft_constraint is not None:
-                    constraint_types.append(
-                        (
-                            "Star Tracker Soft",
-                            st_soft_constraint,
-                            "magenta",
-                            None,
-                            None,
-                        )
-                    )
-
-                st_hard_combined = star_trackers.startracker_hard_constraint
-                if st_hard_combined is not None:
-                    constraint_types.append(
-                        (
-                            "Star Tracker Hard",
-                            st_hard_combined,
-                            "red",
-                            None,
-                            None,
-                        )
-                    )
-
         for name, constraint_func, color, body_ra, body_dec in constraint_types:
             if constraint_func is None:
                 continue
@@ -778,6 +741,212 @@ class SkyPointingController:
                 body_ra,
                 body_dec,
             )
+
+        # Star tracker regions are evaluated with the current spacecraft roll.
+        self._plot_roll_aware_star_tracker_constraints(utime)
+
+    def _plot_roll_aware_star_tracker_constraints(self, utime: float) -> None:
+        """Plot roll-aware star tracker hard/soft constraint regions."""
+        hard_mask = self._compute_roll_aware_star_tracker_mask(
+            utime=utime,
+            kind="hard",
+        )
+        if hard_mask is not None:
+            self._plot_constraint_mask(
+                name="Star Tracker Hard",
+                color="red",
+                constrained_flat=hard_mask,
+            )
+
+        soft_mask = self._compute_roll_aware_star_tracker_mask(
+            utime=utime,
+            kind="soft",
+        )
+        if soft_mask is not None:
+            self._plot_constraint_mask(
+                name="Star Tracker Soft",
+                color="magenta",
+                constrained_flat=soft_mask,
+            )
+
+    def _compute_roll_aware_star_tracker_mask(
+        self,
+        utime: float,
+        kind: str,
+    ) -> npt.NDArray[np.bool_] | None:
+        """Compute a roll-aware star tracker constraint mask on the sky grid."""
+        if not hasattr(self.ditl, "config") or not hasattr(
+            self.ditl.config, "spacecraft_bus"
+        ):
+            return None
+
+        star_trackers = getattr(self.ditl.config.spacecraft_bus, "star_trackers", None)
+        if star_trackers is None or not hasattr(star_trackers, "star_trackers"):
+            return None
+
+        raw_trackers: object = getattr(star_trackers, "star_trackers", [])
+        if not isinstance(raw_trackers, (list, tuple)) or not raw_trackers:
+            return None
+        trackers: list[Any] = list(raw_trackers)
+
+        # Grid dimensions for contourf/pcolormesh
+        n_ra = self.n_grid_points * 2
+        n_dec = self.n_grid_points
+
+        # Use the same regular grid as the other constraints
+        _, _, ra_flat, dec_flat = self._create_regular_sky_grid(n_ra, n_dec)
+
+        idx = self._find_time_index(utime)
+        roll_deg = 0.0
+        try:
+            rolls = getattr(self.ditl, "roll", None)
+            if isinstance(rolls, list | tuple | np.ndarray) and idx < len(rolls):
+                roll_val = rolls[idx]
+                if roll_val is not None:
+                    roll_deg = float(roll_val)
+        except (TypeError, ValueError):
+            roll_deg = 0.0
+
+        # Spacecraft boresight (+X) unit vectors for all grid points.
+        ra_rad = np.deg2rad(ra_flat)
+        dec_rad = np.deg2rad(dec_flat)
+        cos_dec = np.cos(dec_rad)
+        x_hat = np.column_stack(
+            [
+                cos_dec * np.cos(ra_rad),
+                cos_dec * np.sin(ra_rad),
+                np.sin(dec_rad),
+            ]
+        )
+
+        # Construct body Y/Z basis around boresight using sky north as reference.
+        ref = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        y0 = np.cross(ref, x_hat)
+        y0_norm = np.linalg.norm(y0, axis=1)
+
+        # Near poles, use alternate reference to avoid degeneracy.
+        pole_mask = y0_norm < 1e-12
+        if np.any(pole_mask):
+            alt_ref = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+            y0[pole_mask] = np.cross(alt_ref, x_hat[pole_mask])
+            y0_norm = np.linalg.norm(y0, axis=1)
+
+        y0 = y0 / y0_norm[:, None]
+        z0 = np.cross(x_hat, y0)
+        z0 = z0 / np.linalg.norm(z0, axis=1)[:, None]
+
+        # Roll is position angle around boresight (+X).
+        roll_rad = np.deg2rad(roll_deg)
+        c = np.cos(roll_rad)
+        s = np.sin(roll_rad)
+        y_hat = y0 * c - z0 * s
+        z_hat = y0 * s + z0 * c
+
+        time_dt = dtutcfromtimestamp(utime)
+        ephem = self.ditl.ephem
+        if ephem is None:
+            return None
+
+        tracker_masks: list[npt.NDArray[np.bool_]] = []
+        for st in trackers:
+            orientation = getattr(st, "orientation", None)
+            if orientation is None:
+                continue
+            constraint_obj = (
+                getattr(st, "hard_constraint", None)
+                if kind == "hard"
+                else getattr(st, "soft_constraint", None)
+            )
+            if constraint_obj is None or constraint_obj.constraint is None:
+                continue
+
+            boresight = getattr(orientation, "boresight", None)
+            if boresight is None:
+                continue
+            b = np.asarray(boresight, dtype=np.float64)
+            v_st = b[0] * x_hat + b[1] * y_hat + b[2] * z_hat
+
+            ra_st = (np.degrees(np.arctan2(v_st[:, 1], v_st[:, 0])) + 360.0) % 360.0
+            dec_st = np.degrees(np.arcsin(np.clip(v_st[:, 2], -1.0, 1.0)))
+
+            result = constraint_obj.constraint.in_constraint_batch(
+                ephemeris=ephem,
+                target_ras=ra_st.tolist(),
+                target_decs=dec_st.tolist(),
+                times=[time_dt],
+            )[:, 0]
+            tracker_masks.append(
+                cast(npt.NDArray[np.bool_], np.asarray(result, dtype=bool))
+            )
+
+        if len(tracker_masks) == 0:
+            return None
+
+        stacked_masks = cast(npt.NDArray[np.bool_], np.vstack(tracker_masks))
+        if kind == "hard":
+            hard_mask = cast(npt.NDArray[np.bool_], np.any(stacked_masks, axis=0))
+            return hard_mask
+
+        # Soft constraints: mimic startracker_constraint semantics (AtLeast violations).
+        total_trackers = len(trackers)
+        min_functional = int(getattr(star_trackers, "min_functional_trackers", 1))
+        required_violations = max(0, total_trackers - min_functional + 1)
+        if required_violations > len(tracker_masks):
+            return None
+
+        soft_counts = cast(npt.NDArray[np.int_], np.sum(stacked_masks, axis=0))
+        soft_mask = soft_counts >= required_violations
+        return soft_mask
+
+    def _plot_constraint_mask(
+        self,
+        name: str,
+        color: str,
+        constrained_flat: npt.NDArray[np.bool_],
+    ) -> None:
+        """Render a precomputed 1D boolean constraint mask on the sky grid."""
+        n_ra = self.n_grid_points * 2
+        n_dec = self.n_grid_points
+        ra_grid_rad, dec_grid_rad, _, _ = self._create_regular_sky_grid(n_ra, n_dec)
+
+        constrained_2d = constrained_flat.reshape((n_dec, n_ra)).astype(float)
+        if not constrained_2d.any():
+            return
+
+        sigma = max(1.0, self.n_grid_points / 50)
+        smoothed = _gaussian_smooth(constrained_2d, sigma=sigma)
+
+        self.ax.contourf(
+            ra_grid_rad,
+            dec_grid_rad,
+            smoothed,
+            levels=[0.5, 1.0],
+            colors=[mcolors.to_rgba(color, self.constraint_alpha)],
+            zorder=1,
+            antialiased=True,
+        )
+
+        edge_smoothed = _gaussian_smooth(constrained_2d, sigma=0.8)
+        self.ax.contour(
+            ra_grid_rad,
+            dec_grid_rad,
+            edge_smoothed,
+            levels=[0.5],
+            colors=[color],
+            linewidths=1.0,
+            zorder=1.1,
+        )
+
+        self.ax.plot(
+            [],
+            [],
+            marker="s",
+            markersize=10,
+            markerfacecolor=mcolors.to_rgba(color, self.constraint_alpha),
+            markeredgecolor="none",
+            linestyle="none",
+            label=f"{name} Cons.",
+        )
 
     def _plot_earth_disk(self, utime: float) -> None:
         """Plot the physical extent of Earth as seen from the spacecraft using a filled contour (``contourf``).
@@ -1488,10 +1657,13 @@ def save_sky_pointing_movie(
     from matplotlib.animation import FFMpegWriter, PillowWriter
 
     # Try to import tqdm, fall back to no progress bar if unavailable
+    progress_wrapper: Any = None
     if show_progress:
         try:
-            from tqdm import tqdm
-        except ImportError:
+            module_name = "tqdm"
+            tqdm_module = import_module(module_name)
+            progress_wrapper = getattr(tqdm_module, "tqdm")
+        except (ImportError, AttributeError):
             show_progress = False
             print("Note: tqdm not available, progress bar disabled")
 
@@ -1555,8 +1727,8 @@ def save_sky_pointing_movie(
         with writer.saving(fig, output_file, dpi=dpi):
             # Create iterator with optional progress bar
             iterator: Any
-            if show_progress:
-                iterator = tqdm(
+            if progress_wrapper is not None:
+                iterator = progress_wrapper(
                     enumerate(time_indices),
                     total=total_frames,
                     desc="Rendering frames",
