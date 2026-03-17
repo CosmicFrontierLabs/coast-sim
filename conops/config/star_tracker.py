@@ -246,6 +246,44 @@ class StarTracker(ConfigModel):
     hard_constraint: Constraint | None = None
     soft_constraint: Constraint | None = None
 
+    @staticmethod
+    def _boresight_to_euler_deg(
+        boresight: tuple[float, float, float],
+    ) -> tuple[float, float, float]:
+        """Convert boresight unit vector to equivalent roll/pitch/yaw offsets."""
+        x, y, z = vecnorm(np.asarray(boresight, dtype=np.float64))
+        yaw_deg = float(np.rad2deg(np.arctan2(y, x)))
+        pitch_deg = float(np.rad2deg(np.arctan2(z, np.hypot(x, y))))
+        return 0.0, pitch_deg, yaw_deg
+
+    @cached_property
+    def hard_constraint_offset(self) -> ConstraintConfig | None:
+        """Hard constraint transformed into spacecraft pointing frame."""
+        if self.hard_constraint is None or self.hard_constraint.constraint is None:
+            return None
+        roll_deg, pitch_deg, yaw_deg = self._boresight_to_euler_deg(
+            self.orientation.boresight
+        )
+        return self.hard_constraint.constraint.boresight_offset(
+            roll_deg=roll_deg,
+            pitch_deg=pitch_deg,
+            yaw_deg=yaw_deg,
+        )
+
+    @cached_property
+    def soft_constraint_offset(self) -> ConstraintConfig | None:
+        """Soft constraint transformed into spacecraft pointing frame."""
+        if self.soft_constraint is None or self.soft_constraint.constraint is None:
+            return None
+        roll_deg, pitch_deg, yaw_deg = self._boresight_to_euler_deg(
+            self.orientation.boresight
+        )
+        return self.soft_constraint.constraint.boresight_offset(
+            roll_deg=roll_deg,
+            pitch_deg=pitch_deg,
+            yaw_deg=yaw_deg,
+        )
+
     def set_ephem(self, ephem: rust_ephem.Ephemeris) -> None:
         """Set ephemeris on constraint objects.
 
@@ -271,7 +309,7 @@ class StarTracker(ConfigModel):
         Returns:
             True if pointing violates hard constraint, False otherwise
         """
-        if self.hard_constraint is None:
+        if self.hard_constraint_offset is None:
             return False
 
         # Transform pointing to star tracker frame
@@ -294,7 +332,7 @@ class StarTracker(ConfigModel):
         Returns:
             True if pointing violates soft constraint, False otherwise
         """
-        if self.soft_constraint is None:
+        if self.soft_constraint_offset is None:
             return False
 
         # Transform pointing to star tracker frame
@@ -368,11 +406,7 @@ class StarTrackerConfiguration(ConfigModel):
         spherical-coordinate decomposition that ``boresight_offset`` expects.
         Roll about the boresight is underdetermined; we set it to 0.
         """
-        x, y, z = vecnorm(np.asarray(boresight, dtype=np.float64))
-        yaw_deg = float(np.rad2deg(np.arctan2(y, x)))
-        pitch_deg = float(np.rad2deg(np.arctan2(z, np.hypot(x, y))))
-        roll_deg = 0.0
-        return roll_deg, pitch_deg, yaw_deg
+        return StarTracker._boresight_to_euler_deg(boresight)
 
     @cached_property
     def startracker_hard_constraint(self) -> ConstraintConfig | None:
@@ -392,18 +426,9 @@ class StarTrackerConfiguration(ConfigModel):
             if st.hard_constraint is None:
                 continue
 
-            base_constraint = st.hard_constraint.constraint
-            if base_constraint is None:
+            if st.hard_constraint_offset is None:
                 continue
-
-            roll_deg, pitch_deg, yaw_deg = self._boresight_to_euler_deg(
-                st.orientation.boresight
-            )
-            offset_constraint = base_constraint.boresight_offset(
-                roll_deg=roll_deg,
-                pitch_deg=pitch_deg,
-                yaw_deg=yaw_deg,
-            )
+            offset_constraint = st.hard_constraint_offset
 
             if combined is None:
                 combined = offset_constraint
@@ -432,17 +457,9 @@ class StarTrackerConfiguration(ConfigModel):
             if st.soft_constraint is None:
                 continue
 
-            base_constraint = st.soft_constraint.constraint
-            if base_constraint is None:
+            if st.soft_constraint_offset is None:
                 continue
-            roll_deg, pitch_deg, yaw_deg = self._boresight_to_euler_deg(
-                st.orientation.boresight
-            )
-            offset_constraint = base_constraint.boresight_offset(
-                roll_deg=roll_deg,
-                pitch_deg=pitch_deg,
-                yaw_deg=yaw_deg,
-            )
+            offset_constraint = st.soft_constraint_offset
             offset_constraints.append(offset_constraint)
 
         if not offset_constraints:

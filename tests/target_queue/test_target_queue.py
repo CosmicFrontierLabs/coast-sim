@@ -4,43 +4,43 @@ from conops import Queue
 
 
 class TestQueueInitAndAppend:
-    def test_queue_init_targets_empty(self, mock_config):
+    def test_queue_init_targets_empty(self, mock_config) -> None:
         queue = Queue(config=mock_config)
         assert queue.targets == []
 
-    def test_queue_init_ephem_none(self, mock_config):
+    def test_queue_init_ephem_none(self, mock_config) -> None:
         queue = Queue(config=mock_config)
         assert queue.ephem is None
 
-    def test_queue_init_utime_none(self, mock_config):
+    def test_queue_init_utime_none(self, mock_config) -> None:
         queue = Queue(config=mock_config)
         assert queue.utime == 0.0
 
-    def test_queue_init_gs_none(self, mock_config):
+    def test_queue_init_gs_none(self, mock_config) -> None:
         queue = Queue(config=mock_config)
         assert queue.gs is None
 
-    def test_queue_append_len(self, mock_target, mock_config):
+    def test_queue_append_len(self, mock_target, mock_config) -> None:
         queue = Queue(config=mock_config)
         queue.append(mock_target)
         assert len(queue.targets) == 1
 
-    def test_queue_append_target_equals(self, mock_target, mock_config):
+    def test_queue_append_target_equals(self, mock_target, mock_config) -> None:
         queue = Queue(config=mock_config)
         queue.append(mock_target)
         assert queue.targets[0] == mock_target
 
 
 class TestQueueBasicOps:
-    def test_queue_len(self, queue_instance):
+    def test_queue_len(self, queue_instance) -> None:
         """Test the length of the queue."""
         assert len(queue_instance) == 5
 
-    def test_queue_getitem(self, queue_instance, mock_targets):
+    def test_queue_getitem(self, queue_instance, mock_targets) -> None:
         """Test getting an item from the queue."""
         assert queue_instance[2] == mock_targets[2]
 
-    def test_queue_reset_reset_called(self, queue_instance):
+    def test_queue_reset_reset_called(self, queue_instance) -> None:
         """Test resetting the queue calls reset() on each target."""
         for target in queue_instance.targets:
             target.done = True
@@ -50,7 +50,7 @@ class TestQueueBasicOps:
         for target in queue_instance.targets:
             target.reset.assert_called_once()
 
-    def test_queue_reset_targets_done_false(self, queue_instance):
+    def test_queue_reset_targets_done_false(self, queue_instance) -> None:
         """Test resetting the queue clears done flag on each target."""
         for target in queue_instance.targets:
             target.done = True
@@ -63,7 +63,9 @@ class TestQueueBasicOps:
 
 class TestMeritsort:
     @patch("numpy.random.random", side_effect=[0.1, 0.2, 0.3, 0.4, 0.5])
-    def test_meritsort_invisible_target_merit(self, mock_random, queue_instance):
+    def test_meritsort_invisible_target_merit(
+        self, mock_random, queue_instance
+    ) -> None:
         """The invisible target should get -900 + random penalty as merit."""
         invisible_target = queue_instance.targets[1]
         invisible_target.visible.return_value = False

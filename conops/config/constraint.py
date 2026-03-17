@@ -430,7 +430,9 @@ class Constraint(ConfigModel):
             target_roll=target_roll,
         )
 
-    def in_radiator_hard(self, ra: float, dec: float, time: float) -> bool:
+    def in_radiator_hard(
+        self, ra: float, dec: float, time: float, target_roll: float | None = None
+    ) -> bool:
         if self.radiator_hard_constraint is None:
             return False
         assert self.ephem is not None, "Ephemeris must be set to use in_radiator_hard"
@@ -440,6 +442,7 @@ class Constraint(ConfigModel):
             dec,
             time,
             self.radiator_hard_constraint,
+            target_roll=target_roll,
         )
 
     def in_constraint(
@@ -471,7 +474,7 @@ class Constraint(ConfigModel):
             ra=ra, dec=dec, time=utime, target_roll=target_roll, acs_mode=acs_mode
         ):
             return True
-        if self.in_radiator_hard(ra, dec, utime):
+        if self.in_radiator_hard(ra, dec, utime, target_roll=target_roll):
             return True
         return False
 
