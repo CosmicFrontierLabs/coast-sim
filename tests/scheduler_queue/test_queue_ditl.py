@@ -508,6 +508,11 @@ class TestFetchNewPPT:
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
         queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
         assert queue_ditl.ppt is mock_ppt
+        cast(Mock, queue_ditl.queue).get.assert_called_once_with(
+            10.0,
+            20.0,
+            1000.0,
+        )
 
     def test_fetch_ppt_enqueues_slew_command(
         self, queue_ditl: QueueDITL, capsys: pytest.CaptureFixture[str]

@@ -55,8 +55,12 @@ def _default_panel_constraint() -> ConstraintConfig:
 
 @lru_cache(maxsize=65536)
 def _round_constraint_key(
-    constraint_type: str, ra: float, dec: float, utime: float
-) -> tuple[str, float, float, float]:
+    constraint_type: str,
+    ra: float,
+    dec: float,
+    utime: float,
+    target_roll: float | None,
+) -> tuple[str, float, float, float, float | None]:
     """Generate a cache key with rounded values using integer math.
 
     This module-level function is memoized with lru_cache to avoid redundant
@@ -68,6 +72,9 @@ def _round_constraint_key(
         int(ra * _RA_DEC_ROUNDER) / _RA_DEC_ROUNDER,
         int(dec * _RA_DEC_ROUNDER) / _RA_DEC_ROUNDER,
         int(utime * _TIME_ROUNDER) / _TIME_ROUNDER if _TIME_ROUNDER > 1 else int(utime),
+        None
+        if target_roll is None
+        else int(target_roll * _RA_DEC_ROUNDER) / _RA_DEC_ROUNDER,
     )
 
 
@@ -113,6 +120,10 @@ class Constraint(ConfigModel):
         default=None,
         description="Star tracker hard exclusion constraint",
     )
+    star_tracker_soft_constraint: ConstraintConfig | None = Field(
+        default=None,
+        description="Star tracker soft exclusion constraint for scheduling",
+    )
 
     ephem: rust_ephem.Ephemeris | None = Field(
         default=None,
@@ -130,7 +141,7 @@ class Constraint(ConfigModel):
     )
 
     # Per-timestep constraint result cache: {(constraint_type, ra, dec, time): bool}
-    _cache: dict[tuple[str, float, float, float], bool] = PrivateAttr(
+    _cache: dict[tuple[str, float, float, float, float | None], bool] = PrivateAttr(
         default_factory=dict
     )
     _cache_hits: int = PrivateAttr(default=0)
@@ -141,10 +152,15 @@ class Constraint(ConfigModel):
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=False)
 
     def _cache_key(
-        self, constraint_type: str, ra: float, dec: float, utime: float
-    ) -> tuple[str, float, float, float]:
+        self,
+        constraint_type: str,
+        ra: float,
+        dec: float,
+        utime: float,
+        target_roll: float | None = None,
+    ) -> tuple[str, float, float, float, float | None]:
         """Generate a cache key with rounded values to avoid floating-point mismatches."""
-        return _round_constraint_key(constraint_type, ra, dec, utime)
+        return _round_constraint_key(constraint_type, ra, dec, utime, target_roll)
 
     def _cached_check(
         self,
@@ -153,6 +169,7 @@ class Constraint(ConfigModel):
         dec: float,
         utime: float,
         check_fn: ConstraintConfig,
+        target_roll: float | None = None,
     ) -> bool:
         """Check cache first, compute and store if miss.
 
@@ -166,7 +183,7 @@ class Constraint(ConfigModel):
         Returns:
             True if constraint is violated, False otherwise
         """
-        key = self._cache_key(constraint_type, ra, dec, utime)
+        key = self._cache_key(constraint_type, ra, dec, utime, target_roll)
         if key in self._cache:
             self._cache_hits += 1
             return self._cache[key]
@@ -181,6 +198,7 @@ class Constraint(ConfigModel):
                 target_ra=ra,
                 target_dec=dec,
                 time=dt,
+                target_roll=target_roll,
             ),
         )
         self._cache[key] = result
@@ -208,6 +226,7 @@ class Constraint(ConfigModel):
             self.panel_constraint,
             self.anti_sun_constraint,
             self.star_tracker_hard_constraint,
+            self.star_tracker_soft_constraint,
         ]
         active_constraints = [
             component for component in constraint_components if component is not None
@@ -221,29 +240,50 @@ class Constraint(ConfigModel):
             combined = combined | component
         return combined
 
-    def in_sun(self, ra: float, dec: float, time: float) -> bool:
+    def in_sun(
+        self, ra: float, dec: float, time: float, target_roll: float | None = None
+    ) -> bool:
         if self.sun_constraint is None:
             return False
         assert self.ephem is not None, "Ephemeris must be set to use in_sun method"
-        return self._cached_check("sun", ra, dec, time, self.sun_constraint)
+        return self._cached_check(
+            "sun", ra, dec, time, self.sun_constraint, target_roll=target_roll
+        )
 
-    def in_panel(self, ra: float, dec: float, time: float) -> bool:
+    def in_panel(
+        self, ra: float, dec: float, time: float, target_roll: float | None = None
+    ) -> bool:
         if self.panel_constraint is None:
             return False
         assert self.ephem is not None, "Ephemeris must be set to use in_panel method"
-        return self._cached_check("panel", ra, dec, time, self.panel_constraint)
+        return self._cached_check(
+            "panel", ra, dec, time, self.panel_constraint, target_roll=target_roll
+        )
 
-    def in_anti_sun(self, ra: float, dec: float, time: float) -> bool:
+    def in_anti_sun(
+        self, ra: float, dec: float, time: float, target_roll: float | None = None
+    ) -> bool:
         if self.anti_sun_constraint is None:
             return False
         assert self.ephem is not None, "Ephemeris must be set to use in_anti_sun method"
-        return self._cached_check("anti_sun", ra, dec, time, self.anti_sun_constraint)
+        return self._cached_check(
+            "anti_sun",
+            ra,
+            dec,
+            time,
+            self.anti_sun_constraint,
+            target_roll=target_roll,
+        )
 
-    def in_earth(self, ra: float, dec: float, time: float) -> bool:
+    def in_earth(
+        self, ra: float, dec: float, time: float, target_roll: float | None = None
+    ) -> bool:
         if self.earth_constraint is None:
             return False
         assert self.ephem is not None, "Ephemeris must be set to use in_earth method"
-        return self._cached_check("earth", ra, dec, time, self.earth_constraint)
+        return self._cached_check(
+            "earth", ra, dec, time, self.earth_constraint, target_roll=target_roll
+        )
 
     def in_eclipse(self, ra: float, dec: float, time: float) -> bool:
         assert self.ephem is not None, "Ephemeris must be set to use in_eclipse method"
@@ -252,13 +292,19 @@ class Constraint(ConfigModel):
             self._eclipse_constraint = rust_ephem.EclipseConstraint()
         return self._cached_check("eclipse", ra, dec, time, self._eclipse_constraint)
 
-    def in_moon(self, ra: float, dec: float, time: float) -> bool:
+    def in_moon(
+        self, ra: float, dec: float, time: float, target_roll: float | None = None
+    ) -> bool:
         if self.moon_constraint is None:
             return False
         assert self.ephem is not None, "Ephemeris must be set to use in_moon method"
-        return self._cached_check("moon", ra, dec, time, self.moon_constraint)
+        return self._cached_check(
+            "moon", ra, dec, time, self.moon_constraint, target_roll=target_roll
+        )
 
-    def in_star_tracker_hard(self, ra: float, dec: float, time: float) -> bool:
+    def in_star_tracker_hard(
+        self, ra: float, dec: float, time: float, target_roll: float | None = None
+    ) -> bool:
         if self.star_tracker_hard_constraint is None:
             return False
         assert self.ephem is not None, (
@@ -270,25 +316,47 @@ class Constraint(ConfigModel):
             dec,
             time,
             self.star_tracker_hard_constraint,
+            target_roll=target_roll,
         )
 
-    def in_constraint(self, ra: float, dec: float, utime: float) -> bool:
+    def in_star_tracker_soft(
+        self, ra: float, dec: float, time: float, target_roll: float | None = None
+    ) -> bool:
+        if self.star_tracker_soft_constraint is None:
+            return False
+        assert self.ephem is not None, (
+            "Ephemeris must be set to use in_star_tracker_soft method"
+        )
+        return self._cached_check(
+            "star_tracker_soft",
+            ra,
+            dec,
+            time,
+            self.star_tracker_soft_constraint,
+            target_roll=target_roll,
+        )
+
+    def in_constraint(
+        self, ra: float, dec: float, utime: float, target_roll: float | None = None
+    ) -> bool:
         """For a given time is a RA/Dec in occult?"""
         # Short-circuit evaluation for scalar times (most common case)
         # For array times, we need to compute all to properly OR the arrays
 
         # Check constraints in order of likelihood and return early if violated
-        if self.in_sun(ra, dec, utime):
+        if self.in_sun(ra, dec, utime, target_roll=target_roll):
             return True
-        if self.in_earth(ra, dec, utime):
+        if self.in_earth(ra, dec, utime, target_roll=target_roll):
             return True
-        if self.in_panel(ra, dec, utime):
+        if self.in_panel(ra, dec, utime, target_roll=target_roll):
             return True
-        if self.in_moon(ra, dec, utime):
+        if self.in_moon(ra, dec, utime, target_roll=target_roll):
             return True
-        if self.in_anti_sun(ra, dec, utime):
+        if self.in_anti_sun(ra, dec, utime, target_roll=target_roll):
             return True
-        if self.in_star_tracker_hard(ra, dec, utime):
+        if self.in_star_tracker_hard(ra, dec, utime, target_roll=target_roll):
+            return True
+        if self.in_star_tracker_soft(ra, dec, utime, target_roll=target_roll):
             return True
         return False
 
@@ -318,6 +386,7 @@ class Constraint(ConfigModel):
         ras: list[float],
         decs: list[float],
         utime: float,
+        target_roll: float | None = None,
     ) -> np.ndarray:
         """Check constraints for multiple pointings at a single time.
 
@@ -350,6 +419,7 @@ class Constraint(ConfigModel):
             self.moon_constraint,
             self.anti_sun_constraint,
             self.star_tracker_hard_constraint,
+            self.star_tracker_soft_constraint,
         ]
         for constraint_func in constraint_types:
             if constraint_func is None:
@@ -359,6 +429,7 @@ class Constraint(ConfigModel):
                 target_ras=ras,
                 target_decs=decs,
                 times=[dt],
+                target_roll=target_roll,
             )
             # Result shape is (n_candidates, 1), flatten to (n_candidates,)
             result_flat = np.asarray(result).flatten()
@@ -405,5 +476,7 @@ class DefaultConstraint(Constraint):
         if self.in_earth(ra, dec, utime):
             count += 2
         if self.in_star_tracker_hard(ra, dec, utime):
+            count += 2
+        if self.in_star_tracker_soft(ra, dec, utime):
             count += 2
         return count

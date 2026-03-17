@@ -1,6 +1,6 @@
 """Tests for conops.constraint module."""
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
@@ -42,6 +42,12 @@ class TestConstraintInit:
     def test_constraint_init_panel_constraint_defaults_to_none(self) -> None:
         """Test bare Constraint defaults to no panel constraint."""
         assert Constraint().panel_constraint is None
+
+    def test_constraint_init_star_tracker_soft_constraint_defaults_to_none(
+        self,
+    ) -> None:
+        """Test bare Constraint defaults to no star-tracker soft constraint."""
+        assert Constraint().star_tracker_soft_constraint is None
 
     def test_default_constraint_has_legacy_constraints(self) -> None:
         """Test DefaultConstraint preserves legacy non-None defaults."""
@@ -194,6 +200,37 @@ class TestInOccultMethod:
 
         assert result is True
 
+    @patch("conops.Constraint.in_star_tracker_soft")
+    @patch("conops.Constraint.in_star_tracker_hard")
+    @patch("conops.Constraint.in_panel")
+    @patch("conops.Constraint.in_moon")
+    @patch("conops.Constraint.in_earth")
+    @patch("conops.Constraint.in_anti_sun")
+    @patch("conops.Constraint.in_sun")
+    def test_in_constraint_star_tracker_soft_violation(
+        self,
+        mock_sun,
+        mock_antisun,
+        mock_earth,
+        mock_moon,
+        mock_panel,
+        mock_star_tracker_hard,
+        mock_star_tracker_soft,
+        constraint,
+    ):
+        """Test in_constraint returns True when soft star-tracker constraint is violated."""
+        mock_sun.return_value = False
+        mock_antisun.return_value = False
+        mock_earth.return_value = False
+        mock_moon.return_value = False
+        mock_panel.return_value = False
+        mock_star_tracker_hard.return_value = False
+        mock_star_tracker_soft.return_value = True
+
+        result = constraint.in_constraint(45.0, 30.0, 1700000000.0)
+
+        assert result is True
+
     @patch("conops.Constraint.in_panel")
     @patch("conops.Constraint.in_moon")
     @patch("conops.Constraint.in_earth")
@@ -301,6 +338,49 @@ class TestConstraintFloatTimeReturnsScalar:
 
         # Verify the constraint was called
         assert mock_in_constraint.called
+
+
+class TestConstraintRollPassthrough:
+    """Test roll passthrough to rust-ephem constraint APIs."""
+
+    @patch("rust_ephem.SunConstraint.in_constraint")
+    def test_in_sun_forwards_target_roll(
+        self, mock_in_constraint, constraint_with_ephem
+    ) -> None:
+        mock_in_constraint.return_value = False
+
+        _ = constraint_with_ephem.in_sun(
+            45.0,
+            30.0,
+            1700000000.0,
+            target_roll=12.5,
+        )
+
+        assert mock_in_constraint.call_args.kwargs["target_roll"] == 12.5
+
+    def test_in_constraint_batch_forwards_target_roll(
+        self, constraint_with_ephem
+    ) -> None:
+        mock_constraint = Mock()
+        mock_constraint.in_constraint_batch.return_value = np.zeros((2, 1), dtype=bool)
+        constraint_with_ephem.sun_constraint = mock_constraint
+        constraint_with_ephem.earth_constraint = None
+        constraint_with_ephem.panel_constraint = None
+        constraint_with_ephem.moon_constraint = None
+        constraint_with_ephem.anti_sun_constraint = None
+        constraint_with_ephem.star_tracker_hard_constraint = None
+        constraint_with_ephem.star_tracker_soft_constraint = None
+
+        _ = constraint_with_ephem.in_constraint_batch(
+            ras=[10.0, 20.0],
+            decs=[-5.0, 15.0],
+            utime=1700000000.0,
+            target_roll=22.0,
+        )
+
+        assert (
+            mock_constraint.in_constraint_batch.call_args.kwargs["target_roll"] == 22.0
+        )
 
     @patch("rust_ephem.AndConstraint.in_constraint")
     def test_in_panel_with_float_returns_scalar(

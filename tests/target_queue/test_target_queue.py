@@ -261,3 +261,17 @@ class TestSlewDistanceWeight:
 
         # Should still return first target (no penalty applied)
         assert target == queue_instance.targets[0]
+
+
+class TestQueueSelectionBehavior:
+    def test_get_without_star_trackers_preserves_existing_behavior(
+        self, queue_instance
+    ):
+        """Queue selection should behave as before when no ST subsystem is configured."""
+        utime = 1762924800.0
+        queue_instance.config.spacecraft_bus.star_trackers = None
+
+        with patch.object(queue_instance, "meritsort"):
+            target = queue_instance.get(ra=0, dec=0, utime=utime)
+
+        assert target == queue_instance.targets[0]

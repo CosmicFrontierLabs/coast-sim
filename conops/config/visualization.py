@@ -26,6 +26,8 @@ class VisualizationConfig(ConfigModel):
     n_grid_points: int = 100
     constraint_alpha: float = 0.3
     time_step_seconds: float = 60.0
+    optimal_roll_cache_sun_bucket_deg: float = 0.02
+    optimal_roll_cache_max_entries: int = 64
 
     # DITL timeline settings
     timeline_figsize: tuple[int, int] = (12, 5)

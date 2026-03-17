@@ -127,6 +127,7 @@ class PlanEntry:
             ephemeris=self.ephem,
             target_ra=self.ra,  # already in degrees
             target_dec=self.dec,
+            target_roll=self.roll,
         )
         # Construct the visibility windows
 

@@ -37,6 +37,7 @@ from pydantic import Field, field_validator
 from rust_ephem import AtLeastConstraint, EarthLimbConstraint, SunConstraint
 from rust_ephem.constraints import ConstraintConfig
 
+from ..common.enums import ACSMode
 from ..common.vector import radec2vec, rotvec, vec2radec, vecnorm
 from ._base import ConfigModel
 from .constraint import Constraint
@@ -169,7 +170,7 @@ class StarTrackerOrientation(ConfigModel):
     def transform_pointing(
         self, ra_deg: float, dec_deg: float, roll_deg: float = 0.0
     ) -> tuple[float, float]:
-        """Transform spacecraft frame pointing to star tracker's local frame.
+        """Transform spacecraft attitude to star-tracker inertial pointing.
 
         Given a pointing direction in the spacecraft frame (RA/Dec), this method
         computes what that same direction looks like from the star tracker's
@@ -193,24 +194,36 @@ class StarTrackerOrientation(ConfigModel):
             frame of reference to observe the spacecraft's input pointing direction.
 
         Example:
-            If star tracker boresight points along +X (default), and we point the
-            spacecraft at (RA=45°, Dec=30°) with roll=0°, we get back (45°, 30°).
-            If the same spacecraft pointing happens while roll=90°, the star tracker
-            frame sees a different (RA, Dec).
+            If the star tracker boresight points along +X (default), and we point the
+            spacecraft at (RA=45°, Dec=30°), the tracker boresight inertial direction
+            (and thus the returned (RA, Dec)) is unchanged by roll about +X; roll=0°
+            and roll=90° give the same (RA, Dec) for the boresight. Roll only changes
+            the apparent (RA, Dec) for trackers whose boresight is offset from +X.
         """
-        # Convert RA/Dec to vector in spacecraft frame
+        # Spacecraft boresight (+X body axis) in inertial coordinates.
         ra_rad = np.deg2rad(ra_deg)
         dec_rad = np.deg2rad(dec_deg)
-        v_sc = radec2vec(ra_rad, dec_rad)
+        x_hat = radec2vec(ra_rad, dec_rad)
 
-        # Apply spacecraft roll to get vector in spacecraft body frame
+        # Build the body Y/Z basis around boresight using sky north as reference.
+        ref = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        y0 = np.cross(ref, x_hat)
+        if np.linalg.norm(y0) < 1e-12:
+            # Near celestial poles, choose a different reference for numerical stability.
+            y0 = np.cross(np.array([0.0, 1.0, 0.0], dtype=np.float64), x_hat)
+        y0 = vecnorm(y0)
+        z0 = vecnorm(np.cross(x_hat, y0))
+
+        # Roll is a position-angle rotation about boresight (+X).
         roll_rad = np.deg2rad(roll_deg)
-        v_body = rotvec(1, roll_rad, v_sc)
+        c = np.cos(roll_rad)
+        s = np.sin(roll_rad)
+        y_hat = y0 * c - z0 * s
+        z_hat = y0 * s + z0 * c
 
-        # Transform to star tracker frame: columns of R are ST basis vectors in
-        # body frame, so R maps ST→body; R.T maps body→ST.
-        rot_matrix = self.to_rotation_matrix()
-        v_st = rot_matrix.T @ v_body
+        # Tracker boresight in inertial frame: linear combination of body axes.
+        b = np.asarray(self.boresight, dtype=np.float64)
+        v_st = b[0] * x_hat + b[1] * y_hat + b[2] * z_hat
 
         # Convert back to RA/Dec
         ra_st_rad, dec_st_rad = vec2radec(v_st)
@@ -354,6 +367,9 @@ class StarTrackerConfiguration(ConfigModel):
         combined: ConstraintConfig | None = None
 
         for st in self.star_trackers:
+            # Queue/schedule planning is science-mode driven.
+            if not st.requires_lock_in_mode(int(ACSMode.SCIENCE)):
+                continue
             if st.hard_constraint is None:
                 continue
 
@@ -388,9 +404,14 @@ class StarTrackerConfiguration(ConfigModel):
         constraints that the minimum functional requirement can no longer be met.
         """
         offset_constraints: list[ConstraintConfig] = []
-        total_trackers = len(self.star_trackers)
+        required_trackers = [
+            st
+            for st in self.star_trackers
+            if st.requires_lock_in_mode(int(ACSMode.SCIENCE))
+        ]
+        total_trackers = len(required_trackers)
 
-        for st in self.star_trackers:
+        for st in required_trackers:
             if st.soft_constraint is None:
                 continue
 
@@ -443,7 +464,12 @@ class StarTrackerConfiguration(ConfigModel):
         return len(self.star_trackers)
 
     def trackers_violating_hard_constraints(
-        self, ra_deg: float, dec_deg: float, utime: float, roll_deg: float = 0.0
+        self,
+        ra_deg: float,
+        dec_deg: float,
+        utime: float,
+        roll_deg: float = 0.0,
+        mode: int | None = None,
     ) -> int:
         """Count how many star trackers violate hard constraints.
 
@@ -458,12 +484,19 @@ class StarTrackerConfiguration(ConfigModel):
         """
         count = 0
         for st in self.star_trackers:
+            if not st.requires_lock_in_mode(mode):
+                continue
             if st.in_hard_constraint(ra_deg, dec_deg, utime, roll_deg):
                 count += 1
         return count
 
     def any_tracker_violating_soft_constraints(
-        self, ra_deg: float, dec_deg: float, utime: float, roll_deg: float = 0.0
+        self,
+        ra_deg: float,
+        dec_deg: float,
+        utime: float,
+        roll_deg: float = 0.0,
+        mode: int | None = None,
     ) -> bool:
         """Check if any star tracker violates soft constraints.
 
@@ -477,6 +510,8 @@ class StarTrackerConfiguration(ConfigModel):
             True if any star tracker violates soft constraints
         """
         for st in self.star_trackers:
+            if not st.requires_lock_in_mode(mode):
+                continue
             if st.in_soft_constraint(ra_deg, dec_deg, utime, roll_deg):
                 return True
         return False
@@ -519,11 +554,19 @@ class StarTrackerConfiguration(ConfigModel):
             # No star trackers configured - allow all pointings
             return True
 
-        # Hard constraints are absolute keep-outs: any violation invalidates the pointing.
-        if (
-            self.trackers_violating_hard_constraints(ra_deg, dec_deg, utime, roll_deg)
-            > 0
-        ):
+        required_trackers = [
+            st for st in self.star_trackers if st.requires_lock_in_mode(mode)
+        ]
+        if not required_trackers:
+            return True
+
+        # Hard constraints are enforced only for trackers that require lock in this mode.
+        hard_violations = sum(
+            1
+            for st in required_trackers
+            if st.in_hard_constraint(ra_deg, dec_deg, utime, roll_deg)
+        )
+        if hard_violations > 0:
             return False
 
         # Soft constraints represent performance degradation.
@@ -532,15 +575,20 @@ class StarTrackerConfiguration(ConfigModel):
         # still operational regardless of soft-constraint state.
         soft_violations = sum(
             1
-            for st in self.star_trackers
-            if st.requires_lock_in_mode(mode)
-            and st.in_soft_constraint(ra_deg, dec_deg, utime, roll_deg)
+            for st in required_trackers
+            if st.in_soft_constraint(ra_deg, dec_deg, utime, roll_deg)
         )
-        functional_trackers = len(self.star_trackers) - soft_violations
-        return functional_trackers >= self.min_functional_trackers
+        functional_trackers = len(required_trackers) - soft_violations
+        required_functional = min(self.min_functional_trackers, len(required_trackers))
+        return functional_trackers >= required_functional
 
     def check_soft_constraint_degradation(
-        self, ra_deg: float, dec_deg: float, utime: float, roll_deg: float = 0.0
+        self,
+        ra_deg: float,
+        dec_deg: float,
+        utime: float,
+        roll_deg: float = 0.0,
+        mode: int | None = None,
     ) -> bool:
         """Check if pointing results in any soft constraint violations.
 
@@ -556,7 +604,11 @@ class StarTrackerConfiguration(ConfigModel):
             True if any star tracker will operate at degraded performance
         """
         return self.any_tracker_violating_soft_constraints(
-            ra_deg, dec_deg, utime, roll_deg
+            ra_deg,
+            dec_deg,
+            utime,
+            roll_deg,
+            mode=mode,
         )
 
     def get_tracker_by_name(self, name: str) -> StarTracker | None:
