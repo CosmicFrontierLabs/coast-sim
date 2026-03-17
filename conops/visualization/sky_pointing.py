@@ -324,8 +324,16 @@ class SkyPointingController:
         # Cache per-point optimal roll maps; Sun geometry changes slowly so nearby
         # frames can share the same solution.
         self._optimal_roll_cache: dict[tuple[Any, ...], npt.NDArray[np.float64]] = {}
-        self._optimal_roll_cache_max_entries: int = 64
-        self._optimal_roll_cache_step_deg: float = 0.02
+        self._optimal_roll_cache_max_entries: int = (
+            int(self.config.optimal_roll_cache_max_entries)
+            if self.config is not None
+            else 64
+        )
+        self._optimal_roll_cache_step_deg: float = (
+            float(self.config.optimal_roll_cache_sun_bucket_deg)
+            if self.config is not None
+            else 0.02
+        )
 
         # Control widgets
         self.slider: Slider
