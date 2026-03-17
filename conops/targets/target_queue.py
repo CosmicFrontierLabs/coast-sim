@@ -123,13 +123,16 @@ class TargetQueue:
     ) -> Pointing | None:
         """Get the next best target to observe from the queue.
 
-        Given current position (ra, dec) and time, returns the next highest-merit
-        target that is visible for the minimum exposure time.
+        Given current position (ra, dec), roll, and time, returns the next
+        highest-merit target that is visible for the minimum exposure time.
 
         Args:
             ra: Current right ascension in degrees.
             dec: Current declination in degrees.
             utime: Current time in Unix seconds.
+            current_roll: Current spacecraft roll angle in degrees, used to
+                apply roll-aware star tracker filtering when checking target
+                visibility and attitude constraints.
 
         Returns:
             Next target to observe, or None if no suitable target found.
