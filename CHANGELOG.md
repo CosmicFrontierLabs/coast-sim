@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.2.0...v0.2.1) (2026-03-17)
+
+
+### Bug Fixes
+
+* bug in star tracker rendering and offsets with roll angle ([#108](https://github.com/CosmicFrontierLabs/coast-sim/issues/108)) ([fb837fd](https://github.com/CosmicFrontierLabs/coast-sim/commit/fb837fd6c7942ff5c349a13a4c2a57ad12bafc0f))
+
 ## [0.2.0](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.1.2...v0.2.0) (2026-03-10)
 
 
