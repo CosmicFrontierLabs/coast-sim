@@ -522,6 +522,8 @@ class QueueDITL(DITLMixin, DITLStats):
             recorder_fill_fraction=self.recorder.get_fill_fraction(),
             recorder_alert=self.recorder.get_alert_level(),
             sun_angle_deg=self._compute_sun_angle(utime, ra, dec),
+            earth_angle_deg=self._compute_earth_angle(utime, ra, dec),
+            moon_angle_deg=self._compute_moon_angle(utime, ra, dec),
             for_solid_angle_sr=(
                 self.constraint.instantaneous_field_of_regard(utime=utime)
                 if self.calculate_field_of_regard
@@ -787,7 +789,9 @@ class QueueDITL(DITLMixin, DITLStats):
         # Handle charging PPT constraint checks (regardless of mode)
         if self.ppt == self.charging_ppt:
             # Check constraints for charging PPT even if mode hasn't transitioned yet
-            if self.constraint.in_constraint(self.ppt.ra, self.ppt.dec, utime):
+            if self.constraint.in_constraint(
+                self.ppt.ra, self.ppt.dec, utime, target_roll=self.acs.roll
+            ):
                 constraint_name = self._get_constraint_name(
                     self.ppt.ra, self.ppt.dec, utime
                 )
@@ -818,9 +822,11 @@ class QueueDITL(DITLMixin, DITLStats):
         """Check if PPT should terminate due to constraints, completion, or timeout."""
         assert self.ppt is not None
 
-        if self.constraint.in_constraint(self.ppt.ra, self.ppt.dec, utime):
+        if self.constraint.in_constraint(
+            self.ppt.ra, self.ppt.dec, utime, target_roll=self.acs.roll
+        ):
             constraint_name = self._get_constraint_name(
-                self.ppt.ra, self.ppt.dec, utime
+                self.ppt.ra, self.ppt.dec, utime, roll=self.acs.roll
             )
             self._terminate_ppt(
                 utime,
@@ -866,16 +872,24 @@ class QueueDITL(DITLMixin, DITLStats):
         self.ppt = None
         self.acs.last_slew = None
 
-    def _get_constraint_name(self, ra: float, dec: float, utime: float) -> str:
+    def _get_constraint_name(
+        self, ra: float, dec: float, utime: float, roll: float | None = None
+    ) -> str:
         """Determine which constraint is violated."""
-        if self.constraint.in_earth(ra, dec, utime):
+        if self.constraint.in_earth(ra, dec, utime, target_roll=roll):
             return "Earth Limb"
-        elif self.constraint.in_moon(ra, dec, utime):
+        elif self.constraint.in_moon(ra, dec, utime, target_roll=roll):
             return "Moon"
-        elif self.constraint.in_sun(ra, dec, utime):
+        elif self.constraint.in_sun(ra, dec, utime, target_roll=roll):
             return "Sun"
-        elif self.constraint.in_panel(ra, dec, utime):
+        elif self.constraint.in_panel(ra, dec, utime, target_roll=roll):
             return "Panel"
+        elif self.constraint.in_anti_sun(ra, dec, utime, target_roll=roll):
+            return "Anti-Sun"
+        elif self.constraint.in_star_tracker_hard(ra, dec, utime, target_roll=roll):
+            return "ST Hard"
+        elif self.constraint.in_star_tracker_soft(ra, dec, utime, target_roll=roll):
+            return "ST Soft"
         return "Unknown"
 
     def _fetch_new_ppt(self, utime: float, ra: float, dec: float) -> None:
@@ -1118,6 +1132,34 @@ class QueueDITL(DITLMixin, DITLStats):
             return None
 
         return angular_separation(sun_ra, sun_dec, ra, dec)
+
+    def _compute_earth_angle(self, utime: float, ra: float, dec: float) -> float | None:
+        """Compute angular distance from pointing to the Earth in degrees."""
+        if self.ephem is None:
+            return None
+
+        try:
+            idx = self.ephem.index(dtutcfromtimestamp(utime))
+            earth_ra = self.ephem.earth_ra_deg[idx]
+            earth_dec = self.ephem.earth_dec_deg[idx]
+        except Exception:
+            return None
+
+        return angular_separation(earth_ra, earth_dec, ra, dec)
+
+    def _compute_moon_angle(self, utime: float, ra: float, dec: float) -> float | None:
+        """Compute angular distance from pointing to the Moon in degrees."""
+        if self.ephem is None:
+            return None
+
+        try:
+            idx = self.ephem.index(dtutcfromtimestamp(utime))
+            moon_ra = self.ephem.moon_ra_deg[idx]
+            moon_dec = self.ephem.moon_dec_deg[idx]
+        except Exception:
+            return None
+
+        return angular_separation(moon_ra, moon_dec, ra, dec)
 
     def _calculate_power_consumption(
         self, mode: ACSMode, in_eclipse: bool

@@ -73,6 +73,12 @@ class Housekeeping(BaseModel):
     sun_angle_deg: float | None = Field(
         default=None, description="Angular distance to Sun in degrees"
     )
+    earth_angle_deg: float | None = Field(
+        default=None, description="Angular distance to Earth in degrees"
+    )
+    moon_angle_deg: float | None = Field(
+        default=None, description="Angular distance to Moon in degrees"
+    )
     for_solid_angle_sr: float | None = Field(
         default=None,
         description="Instantaneous field-of-regard solid angle in steradians",
@@ -88,6 +94,9 @@ class Housekeeping(BaseModel):
     )
     star_tracker_functional_count: int | None = Field(
         default=None, description="Number of functional star trackers"
+    )
+    in_constraint: str | None = Field(
+        default=None, description="Name of constraint currently violating (if any)"
     )
 
     @classmethod

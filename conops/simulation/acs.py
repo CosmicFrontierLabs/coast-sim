@@ -390,7 +390,7 @@ class ACS:
             config=self.config,
             ra=slew.endra,
             dec=slew.enddec,
-            roll=roll if roll is not None else 0.0,
+            roll=roll if roll is not None else slew.endroll,
             obsid=slew.obsid,
         )
         target.isat = slew.obstype != ObsType.PPT
@@ -595,7 +595,10 @@ class ACS:
             and not isinstance(self.last_slew.at, bool)
             and self.last_slew.obstype == ObsType.PPT
             and self.constraint.in_constraint(
-                self.last_slew.at.ra, self.last_slew.at.dec, utime
+                self.last_slew.at.ra,
+                self.last_slew.at.dec,
+                utime,
+                target_roll=self.last_slew.at.roll,
             )
         ):
             assert self.last_slew.at is not None
@@ -610,6 +613,10 @@ class ACS:
                 true_constraints.append("Earth")
             if self.last_slew.at.in_panel(utime):
                 true_constraints.append("Panel")
+            if self.last_slew.at.in_star_tracker_hard(utime):
+                true_constraints.append("ST Hard")
+            if self.last_slew.at.in_star_tracker_soft(utime):
+                true_constraints.append("ST Soft")
 
             # Print only if there are true constraints
             if true_constraints:
