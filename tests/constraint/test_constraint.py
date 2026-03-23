@@ -177,7 +177,7 @@ class TestInOccultMethod:
         mock_moon.return_value = False
         mock_panel.return_value = False
 
-        result = constraint.in_constraint(45.0, 30.0, 1700000000.0)
+        result = constraint.in_constraint(45.0, 30.0, 1700000000.0, 2)
 
         assert result is False
 
@@ -196,7 +196,7 @@ class TestInOccultMethod:
         mock_moon.return_value = False
         mock_panel.return_value = False
 
-        result = constraint.in_constraint(45.0, 30.0, 1700000000.0)
+        result = constraint.in_constraint(45.0, 30.0, 1700000000.0, 2)
 
         assert result is True
 
@@ -227,7 +227,7 @@ class TestInOccultMethod:
         mock_star_tracker_hard.return_value = False
         mock_star_tracker_soft.return_value = True
 
-        result = constraint.in_constraint(45.0, 30.0, 1700000000.0)
+        result = constraint.in_constraint(45.0, 30.0, 1700000000.0, 2)
 
         assert result is True
 
@@ -246,7 +246,7 @@ class TestInOccultMethod:
         mock_moon.return_value = False
         mock_panel.return_value = False
 
-        result = constraint.in_constraint(45.0, 30.0, 1700000000.0)
+        result = constraint.in_constraint(45.0, 30.0, 1700000000.0, 2)
 
         assert result is True
 
@@ -267,7 +267,7 @@ class TestInOccultCountMethod:
         mock_antisun.return_value = False
         mock_earth.return_value = False
 
-        count = constraint.in_constraint_count(45.0, 30.0, 1700000000.0)
+        count = constraint.in_constraint_count(45.0, 30.0, 1700000000.0, 12)
 
         assert count == 0
 
@@ -284,7 +284,7 @@ class TestInOccultCountMethod:
         mock_antisun.return_value = False
         mock_earth.return_value = False
 
-        count = constraint.in_constraint_count(45.0, 30.0, 1700000000.0)
+        count = constraint.in_constraint_count(45.0, 30.0, 1700000000.0, 21)
 
         assert count == 2
 
@@ -547,7 +547,7 @@ class TestConstraintRollPassthrough:
         mock_antisun.return_value = True
         mock_earth.return_value = True
 
-        count = constraint.in_constraint_count(45.0, 30.0, 1700000000.0)
+        count = constraint.in_constraint_count(45.0, 30.0, 1700000000.0, 20)
 
         assert count == 8
 
@@ -637,7 +637,7 @@ class TestConstraintWithTimeObjects:
         mock_moon.return_value = False
         mock_panel.return_value = False
 
-        result = constraint.in_constraint(45.0, 30.0, time_list[0].timestamp())
+        result = constraint.in_constraint(45.0, 30.0, time_list[0].timestamp(), 10)
 
         assert isinstance(result, bool)
 
@@ -663,7 +663,7 @@ class TestConstraintWithTimeObjects:
         mock_moon.return_value = False
         mock_panel.return_value = False
 
-        result = constraint.in_constraint(45.0, 30.0, time_list[0].timestamp())
+        result = constraint.in_constraint(45.0, 30.0, time_list[0].timestamp(), 10)
 
         assert result  # sun violation
 
@@ -689,7 +689,7 @@ class TestConstraintWithTimeObjects:
         mock_moon.return_value = True
         mock_panel.return_value = False
 
-        result = constraint.in_constraint(45.0, 30.0, time_list[1].timestamp())
+        result = constraint.in_constraint(45.0, 30.0, time_list[1].timestamp(), 10)
 
         assert result  # moon violation
 
@@ -832,7 +832,7 @@ class TestConstraintEdgeCases:
         mock_moon.return_value = False
         mock_panel.return_value = True
 
-        result = constraint.in_constraint(45.0, 30.0, 1700000000.0)
+        result = constraint.in_constraint(45.0, 30.0, 1700000000.0, 2)
 
         assert result is True
 
@@ -851,7 +851,7 @@ class TestConstraintEdgeCases:
         mock_moon.return_value = False
         mock_panel.return_value = False
 
-        result = constraint.in_constraint(45.0, 30.0, 1700000000.0)
+        result = constraint.in_constraint(45.0, 30.0, 1700000000.0, 2)
 
         assert result is True
 
@@ -870,7 +870,7 @@ class TestConstraintEdgeCases:
         mock_moon.return_value = True
         mock_panel.return_value = False
 
-        result = constraint.in_constraint(45.0, 30.0, 1700000000.0)
+        result = constraint.in_constraint(45.0, 30.0, 1700000000.0, 2)
 
         assert result is True
 
@@ -889,7 +889,7 @@ class TestConstraintEdgeCases:
         mock_moon.return_value = False
         mock_panel.return_value = False
 
-        result = constraint.in_constraint(45.0, 30.0, 1700000000.0)
+        result = constraint.in_constraint(45.0, 30.0, 1700000000.0, 2)
 
         assert result is True
 
@@ -906,7 +906,7 @@ class TestConstraintEdgeCases:
         mock_antisun.return_value = False
         mock_earth.return_value = False
 
-        count = constraint.in_constraint_count(45.0, 30.0, 1700000000.0)
+        count = constraint.in_constraint_count(45.0, 30.0, 1700000000.0, 2)
 
         assert count == 2
 
@@ -923,7 +923,7 @@ class TestConstraintEdgeCases:
         mock_antisun.return_value = True
         mock_earth.return_value = False
 
-        count = constraint.in_constraint_count(45.0, 30.0, 1700000000.0)
+        count = constraint.in_constraint_count(45.0, 30.0, 1700000000.0, 2)
 
         assert count == 2
 
@@ -940,7 +940,7 @@ class TestConstraintEdgeCases:
         mock_antisun.return_value = False
         mock_earth.return_value = True
 
-        count = constraint.in_constraint_count(45.0, 30.0, 1700000000.0)
+        count = constraint.in_constraint_count(45.0, 30.0, 1700000000.0, 2)
 
         assert count == 2
 
@@ -1003,7 +1003,9 @@ class TestConstraintInSun:
         """Test that in_sun calls the underlying SunConstraint."""
         mock_in_constraint.return_value = True
 
-        result = constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0)
+        result = constraint_with_ephem.in_sun(
+            45.0, 30.0, 1700000000.0, target_roll=15.0
+        )
 
         assert result is True
         mock_in_constraint.assert_called_once()
@@ -1025,7 +1027,7 @@ class TestConstraintCaching:
         """Test that cache miss increments the miss counter."""
         mock_in_constraint.return_value = True
 
-        constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0)
+        constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0, target_roll=15.0)
 
         hits, misses = constraint_with_ephem.cache_stats()
         assert hits == 0
@@ -1039,9 +1041,9 @@ class TestConstraintCaching:
         mock_in_constraint.return_value = True
 
         # First call - cache miss
-        constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0)
+        constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0, target_roll=15.0)
         # Second call - cache hit
-        constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0)
+        constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0, target_roll=15.0)
 
         hits, misses = constraint_with_ephem.cache_stats()
         assert hits == 1
@@ -1054,8 +1056,12 @@ class TestConstraintCaching:
         """Test that cached result matches original result."""
         mock_in_constraint.return_value = True
 
-        result1 = constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0)
-        result2 = constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0)
+        result1 = constraint_with_ephem.in_sun(
+            45.0, 30.0, 1700000000.0, target_roll=15.0
+        )
+        result2 = constraint_with_ephem.in_sun(
+            45.0, 30.0, 1700000000.0, target_roll=15.0
+        )
 
         assert result1 is True
         assert result2 is True
@@ -1069,7 +1075,7 @@ class TestConstraintCaching:
         """Test that clear_cache clears the cache."""
         mock_in_constraint.return_value = True
 
-        constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0)
+        constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0, target_roll=15.0)
         assert len(constraint_with_ephem._cache) == 1
 
         constraint_with_ephem.clear_cache()
@@ -1082,8 +1088,8 @@ class TestConstraintCaching:
         """Test that different times create different cache entries."""
         mock_in_constraint.return_value = True
 
-        constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0)
-        constraint_with_ephem.in_sun(45.0, 30.0, 1700000100.0)
+        constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0, target_roll=15.0)
+        constraint_with_ephem.in_sun(45.0, 30.0, 1700000100.0, target_roll=15.0)
 
         hits, misses = constraint_with_ephem.cache_stats()
         assert hits == 0
@@ -1099,8 +1105,12 @@ class TestConstraintCaching:
         mock_earth.return_value = False
 
         # Check sun and earth at same position/time
-        sun_result = constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0)
-        earth_result = constraint_with_ephem.in_earth(45.0, 30.0, 1700000000.0)
+        sun_result = constraint_with_ephem.in_sun(
+            45.0, 30.0, 1700000000.0, target_roll=15.0
+        )
+        earth_result = constraint_with_ephem.in_earth(
+            45.0, 30.0, 1700000000.0, target_roll=15.0
+        )
 
         assert sun_result is True
         assert earth_result is False
@@ -1118,8 +1128,8 @@ class TestConstraintCaching:
 
         # Very slightly different RA values that should round to same key
         # Both round to 45.00 (2 decimal places)
-        constraint_with_ephem.in_sun(45.001, 30.0, 1700000000.0)
-        constraint_with_ephem.in_sun(45.004, 30.0, 1700000000.0)
+        constraint_with_ephem.in_sun(45.001, 30.0, 1700000000.0, target_roll=15.0)
+        constraint_with_ephem.in_sun(45.004, 30.0, 1700000000.0, target_roll=15.0)
 
         hits, misses = constraint_with_ephem.cache_stats()
         assert hits == 1  # Second call should hit cache

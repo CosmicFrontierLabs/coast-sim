@@ -283,7 +283,9 @@ class StarTracker(ConfigModel):
 
         # Transform pointing to star tracker frame
         ra_st, dec_st = self.orientation.transform_pointing(ra_deg, dec_deg, roll_deg)
-        return self.hard_constraint.in_constraint(ra_st, dec_st, utime)
+        return self.hard_constraint.in_constraint(
+            ra_st, dec_st, utime, target_roll=roll_deg
+        )
 
     def in_soft_constraint(
         self, ra_deg: float, dec_deg: float, utime: float, roll_deg: float = 0.0
@@ -304,7 +306,9 @@ class StarTracker(ConfigModel):
 
         # Transform pointing to star tracker frame
         ra_st, dec_st = self.orientation.transform_pointing(ra_deg, dec_deg, roll_deg)
-        return self.soft_constraint.in_constraint(ra_st, dec_st, utime)
+        return self.soft_constraint.in_constraint(
+            ra_st, dec_st, utime, target_roll=roll_deg
+        )
 
     def requires_lock_in_mode(self, mode: int | None = None) -> bool:
         """Check if this star tracker must have a lock in the given mode.

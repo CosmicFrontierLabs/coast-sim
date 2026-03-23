@@ -119,7 +119,7 @@ class MockConstraint(RealConstraint):
     # Allow assigning methods/attributes at runtime in tests (monkeypatching)
     model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
 
-    def in_constraint(self, utime, ra, dec):
+    def in_constraint(self, utime, ra, dec, target_roll=None):
         # Mock implementation that doesn't use rust_ephem
         return False
 

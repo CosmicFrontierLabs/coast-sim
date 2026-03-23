@@ -793,7 +793,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 self.ppt.ra, self.ppt.dec, utime, target_roll=self.acs.roll
             ):
                 constraint_name = self._get_constraint_name(
-                    self.ppt.ra, self.ppt.dec, utime
+                    self.ppt.ra, self.ppt.dec, utime, roll=self.acs.roll
                 )
                 self.log.log_event(
                     utime=utime,

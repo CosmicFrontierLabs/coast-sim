@@ -337,26 +337,30 @@ class Constraint(ConfigModel):
         )
 
     def in_constraint(
-        self, ra: float, dec: float, utime: float, target_roll: float | None = None
+        self, ra: float, dec: float, utime: float, target_roll: float
     ) -> bool:
         """For a given time is a RA/Dec in occult?"""
         # Short-circuit evaluation for scalar times (most common case)
         # For array times, we need to compute all to properly OR the arrays
 
         # Check constraints in order of likelihood and return early if violated
-        if self.in_sun(ra, dec, utime, target_roll=target_roll):
+        if self.in_sun(ra=ra, dec=dec, time=utime, target_roll=target_roll):
             return True
-        if self.in_earth(ra, dec, utime, target_roll=target_roll):
+        if self.in_earth(ra=ra, dec=dec, time=utime, target_roll=target_roll):
             return True
-        if self.in_panel(ra, dec, utime, target_roll=target_roll):
+        if self.in_panel(ra=ra, dec=dec, time=utime, target_roll=target_roll):
             return True
-        if self.in_moon(ra, dec, utime, target_roll=target_roll):
+        if self.in_moon(ra=ra, dec=dec, time=utime, target_roll=target_roll):
             return True
-        if self.in_anti_sun(ra, dec, utime, target_roll=target_roll):
+        if self.in_anti_sun(ra=ra, dec=dec, time=utime, target_roll=target_roll):
             return True
-        if self.in_star_tracker_hard(ra, dec, utime, target_roll=target_roll):
+        if self.in_star_tracker_hard(
+            ra=ra, dec=dec, time=utime, target_roll=target_roll
+        ):
             return True
-        if self.in_star_tracker_soft(ra, dec, utime, target_roll=target_roll):
+        if self.in_star_tracker_soft(
+            ra=ra, dec=dec, time=utime, target_roll=target_roll
+        ):
             return True
         return False
 
@@ -466,19 +470,23 @@ class DefaultConstraint(Constraint):
     )
 
     def in_constraint_count(
-        self, ra: float, dec: float, utime: float, target_roll: float | None = None
+        self, ra: float, dec: float, time: float, target_roll: float
     ) -> int:
         count = 0
-        if self.in_sun(ra, dec, utime, target_roll=target_roll):
+        if self.in_sun(ra=ra, dec=dec, time=time, target_roll=target_roll):
             count += 2
-        if self.in_moon(ra, dec, utime, target_roll=target_roll):
+        if self.in_moon(ra=ra, dec=dec, time=time, target_roll=target_roll):
             count += 2
-        if self.in_anti_sun(ra, dec, utime, target_roll=target_roll):
+        if self.in_anti_sun(ra=ra, dec=dec, time=time, target_roll=target_roll):
             count += 2
-        if self.in_earth(ra, dec, utime, target_roll=target_roll):
+        if self.in_earth(ra=ra, dec=dec, time=time, target_roll=target_roll):
             count += 2
-        if self.in_star_tracker_hard(ra, dec, utime, target_roll=target_roll):
+        if self.in_star_tracker_hard(
+            ra=ra, dec=dec, time=time, target_roll=target_roll
+        ):
             count += 2
-        if self.in_star_tracker_soft(ra, dec, utime, target_roll=target_roll):
+        if self.in_star_tracker_soft(
+            ra=ra, dec=dec, time=time, target_roll=target_roll
+        ):
             count += 2
         return count
