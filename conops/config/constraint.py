@@ -465,18 +465,20 @@ class DefaultConstraint(Constraint):
         description="Solar panel constraint configuration",
     )
 
-    def in_constraint_count(self, ra: float, dec: float, utime: float) -> int:
+    def in_constraint_count(
+        self, ra: float, dec: float, utime: float, target_roll: float | None = None
+    ) -> int:
         count = 0
-        if self.in_sun(ra, dec, utime):
+        if self.in_sun(ra, dec, utime, target_roll=target_roll):
             count += 2
-        if self.in_moon(ra, dec, utime):
+        if self.in_moon(ra, dec, utime, target_roll=target_roll):
             count += 2
-        if self.in_anti_sun(ra, dec, utime):
+        if self.in_anti_sun(ra, dec, utime, target_roll=target_roll):
             count += 2
-        if self.in_earth(ra, dec, utime):
+        if self.in_earth(ra, dec, utime, target_roll=target_roll):
             count += 2
-        if self.in_star_tracker_hard(ra, dec, utime):
+        if self.in_star_tracker_hard(ra, dec, utime, target_roll=target_roll):
             count += 2
-        if self.in_star_tracker_soft(ra, dec, utime):
+        if self.in_star_tracker_soft(ra, dec, utime, target_roll=target_roll):
             count += 2
         return count

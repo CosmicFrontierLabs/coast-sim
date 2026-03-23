@@ -241,7 +241,12 @@ class EmergencyCharging:
             return None, None
 
         # Validate optimal pointing
-        if not self.constraint.in_constraint(optimal_ra, optimal_dec, utime):
+        optimal_roll = optimum_roll(
+            optimal_ra, optimal_dec, utime, ephem, self.solar_panel
+        )
+        if not self.constraint.in_constraint(
+            optimal_ra, optimal_dec, utime, target_roll=optimal_roll
+        ):
             # Check if within slew limit
             if self.max_slew_deg is not None:
                 slew = angular_separation(
@@ -577,7 +582,10 @@ class EmergencyCharging:
 
         # Constraint violation (e.g., occultation)
         if self.constraint.in_constraint(
-            self.current_charging_ppt.ra, self.current_charging_ppt.dec, utime
+            self.current_charging_ppt.ra,
+            self.current_charging_ppt.dec,
+            utime,
+            target_roll=self.current_charging_ppt.roll,
         ):
             return "constraint"
 

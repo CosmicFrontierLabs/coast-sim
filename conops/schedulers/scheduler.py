@@ -100,11 +100,13 @@ class DumbScheduler:
 
                 # Evaluate constraints at each timestep in the observation window
                 time_window = self.ephem.timestamp[begin_idx:end_idx]
+                task_roll = task.roll if task.roll >= 0 else None
                 in_occult = [
                     self.constraint.in_constraint(
                         ra=task.ra,
                         dec=task.dec,
                         utime=t.timestamp(),
+                        target_roll=task_roll,
                     )
                     for t in time_window
                 ]
