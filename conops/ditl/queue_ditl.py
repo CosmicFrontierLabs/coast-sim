@@ -790,10 +790,18 @@ class QueueDITL(DITLMixin, DITLStats):
         if self.ppt == self.charging_ppt:
             # Check constraints for charging PPT even if mode hasn't transitioned yet
             if self.constraint.in_constraint(
-                self.ppt.ra, self.ppt.dec, utime, target_roll=self.acs.roll
+                self.ppt.ra,
+                self.ppt.dec,
+                utime,
+                target_roll=self.acs.roll,
+                acs_mode=self.acs.acsmode,
             ):
                 constraint_name = self._get_constraint_name(
-                    self.ppt.ra, self.ppt.dec, utime, roll=self.acs.roll
+                    self.ppt.ra,
+                    self.ppt.dec,
+                    utime,
+                    roll=self.acs.roll,
+                    mode=self.acs.acsmode,
                 )
                 self.log.log_event(
                     utime=utime,
@@ -823,10 +831,18 @@ class QueueDITL(DITLMixin, DITLStats):
         assert self.ppt is not None
 
         if self.constraint.in_constraint(
-            self.ppt.ra, self.ppt.dec, utime, target_roll=self.acs.roll
+            self.ppt.ra,
+            self.ppt.dec,
+            utime,
+            target_roll=self.acs.roll,
+            acs_mode=self.acs.acsmode,
         ):
             constraint_name = self._get_constraint_name(
-                self.ppt.ra, self.ppt.dec, utime, roll=self.acs.roll
+                self.ppt.ra,
+                self.ppt.dec,
+                utime,
+                roll=self.acs.roll,
+                mode=self.acs.acsmode,
             )
             self._terminate_ppt(
                 utime,
@@ -873,7 +889,12 @@ class QueueDITL(DITLMixin, DITLStats):
         self.acs.last_slew = None
 
     def _get_constraint_name(
-        self, ra: float, dec: float, utime: float, roll: float | None = None
+        self,
+        ra: float,
+        dec: float,
+        utime: float,
+        roll: float | None = None,
+        mode: int | None = None,
     ) -> str:
         """Determine which constraint is violated."""
         if self.constraint.in_earth(ra, dec, utime, target_roll=roll):
@@ -886,9 +907,13 @@ class QueueDITL(DITLMixin, DITLStats):
             return "Panel"
         elif self.constraint.in_anti_sun(ra, dec, utime, target_roll=roll):
             return "Anti-Sun"
-        elif self.constraint.in_star_tracker_hard(ra, dec, utime, target_roll=roll):
+        elif self.constraint.in_star_tracker_hard(
+            ra, dec, utime, target_roll=roll, acs_mode=mode
+        ):
             return "ST Hard"
-        elif self.constraint.in_star_tracker_soft(ra, dec, utime, target_roll=roll):
+        elif self.constraint.in_star_tracker_soft(
+            ra, dec, utime, target_roll=roll, acs_mode=mode
+        ):
             return "ST Soft"
         return "Unknown"
 

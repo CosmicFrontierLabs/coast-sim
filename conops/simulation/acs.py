@@ -613,9 +613,9 @@ class ACS:
                 true_constraints.append("Earth")
             if self.last_slew.at.in_panel(utime):
                 true_constraints.append("Panel")
-            if self.last_slew.at.in_star_tracker_hard(utime):
+            if self.last_slew.at.in_star_tracker_hard(utime, acs_mode=self.acsmode):
                 true_constraints.append("ST Hard")
-            if self.last_slew.at.in_star_tracker_soft(utime):
+            if self.last_slew.at.in_star_tracker_soft(utime, acs_mode=self.acsmode):
                 true_constraints.append("ST Soft")
 
             # Print only if there are true constraints

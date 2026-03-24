@@ -106,7 +106,7 @@ class DumbScheduler:
                         ra=task.ra,
                         dec=task.dec,
                         utime=t.timestamp(),
-                        target_roll=task.roll,
+                        target_roll=getattr(task, "roll", None),
                     )
                     for t in time_window
                 ]

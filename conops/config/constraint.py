@@ -7,6 +7,7 @@ from pydantic import ConfigDict, Field, PrivateAttr
 from rust_ephem.constraints import ConstraintConfig
 
 from ..common import dtutcfromtimestamp
+from ..common.enums import ACSMode
 from ._base import ConfigModel
 from .constants import (
     ANTISUN_OCCULT,
@@ -123,6 +124,15 @@ class Constraint(ConfigModel):
     star_tracker_soft_constraint: ConstraintConfig | None = Field(
         default=None,
         description="Star tracker soft exclusion constraint for scheduling",
+    )
+    star_tracker_enforce_modes: list[int] | None = Field(
+        default=None,
+        description=(
+            "ACS modes in which star tracker constraints are enforced. "
+            "None means enforce in all modes (conservative default). "
+            "E.g. [ACSMode.SCIENCE, ACSMode.CHARGING] to skip ST checks during "
+            "slews, passes, SAA, and safe mode."
+        ),
     )
 
     ephem: rust_ephem.Ephemeris | None = Field(
@@ -303,10 +313,18 @@ class Constraint(ConfigModel):
         )
 
     def in_star_tracker_hard(
-        self, ra: float, dec: float, time: float, target_roll: float | None = None
+        self,
+        ra: float,
+        dec: float,
+        time: float,
+        target_roll: float | None = None,
+        acs_mode: ACSMode | int | None = None,
     ) -> bool:
         if self.star_tracker_hard_constraint is None:
             return False
+        if acs_mode is not None and self.star_tracker_enforce_modes is not None:
+            if int(acs_mode) not in self.star_tracker_enforce_modes:
+                return False
         assert self.ephem is not None, (
             "Ephemeris must be set to use in_star_tracker_hard method"
         )
@@ -320,10 +338,18 @@ class Constraint(ConfigModel):
         )
 
     def in_star_tracker_soft(
-        self, ra: float, dec: float, time: float, target_roll: float | None = None
+        self,
+        ra: float,
+        dec: float,
+        time: float,
+        target_roll: float | None = None,
+        acs_mode: ACSMode | int | None = None,
     ) -> bool:
         if self.star_tracker_soft_constraint is None:
             return False
+        if acs_mode is not None and self.star_tracker_enforce_modes is not None:
+            if int(acs_mode) not in self.star_tracker_enforce_modes:
+                return False
         assert self.ephem is not None, (
             "Ephemeris must be set to use in_star_tracker_soft method"
         )
@@ -337,13 +363,14 @@ class Constraint(ConfigModel):
         )
 
     def in_constraint(
-        self, ra: float, dec: float, utime: float, target_roll: float
+        self,
+        ra: float,
+        dec: float,
+        utime: float,
+        target_roll: float | None = None,
+        acs_mode: ACSMode | int | None = None,
     ) -> bool:
         """For a given time is a RA/Dec in occult?"""
-        # Short-circuit evaluation for scalar times (most common case)
-        # For array times, we need to compute all to properly OR the arrays
-
-        # Check constraints in order of likelihood and return early if violated
         if self.in_sun(ra=ra, dec=dec, time=utime, target_roll=target_roll):
             return True
         if self.in_earth(ra=ra, dec=dec, time=utime, target_roll=target_roll):
@@ -355,11 +382,11 @@ class Constraint(ConfigModel):
         if self.in_anti_sun(ra=ra, dec=dec, time=utime, target_roll=target_roll):
             return True
         if self.in_star_tracker_hard(
-            ra=ra, dec=dec, time=utime, target_roll=target_roll
+            ra=ra, dec=dec, time=utime, target_roll=target_roll, acs_mode=acs_mode
         ):
             return True
         if self.in_star_tracker_soft(
-            ra=ra, dec=dec, time=utime, target_roll=target_roll
+            ra=ra, dec=dec, time=utime, target_roll=target_roll, acs_mode=acs_mode
         ):
             return True
         return False
@@ -470,7 +497,12 @@ class DefaultConstraint(Constraint):
     )
 
     def in_constraint_count(
-        self, ra: float, dec: float, time: float, target_roll: float
+        self,
+        ra: float,
+        dec: float,
+        time: float,
+        target_roll: float | None = None,
+        acs_mode: ACSMode | int | None = None,
     ) -> int:
         count = 0
         if self.in_sun(ra=ra, dec=dec, time=time, target_roll=target_roll):
@@ -482,11 +514,11 @@ class DefaultConstraint(Constraint):
         if self.in_earth(ra=ra, dec=dec, time=time, target_roll=target_roll):
             count += 2
         if self.in_star_tracker_hard(
-            ra=ra, dec=dec, time=time, target_roll=target_roll
+            ra=ra, dec=dec, time=time, target_roll=target_roll, acs_mode=acs_mode
         ):
             count += 2
         if self.in_star_tracker_soft(
-            ra=ra, dec=dec, time=time, target_roll=target_roll
+            ra=ra, dec=dec, time=time, target_roll=target_roll, acs_mode=acs_mode
         ):
             count += 2
         return count

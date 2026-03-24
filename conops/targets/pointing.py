@@ -81,16 +81,16 @@ class Pointing(PlanEntry):
             self.ra, self.dec, utime, target_roll=self.roll
         )
 
-    def in_star_tracker_hard(self, utime: float) -> bool:
+    def in_star_tracker_hard(self, utime: float, acs_mode: int | None = None) -> bool:
         """Is this target in star tracker hard constraint?"""
         return self.config.constraint.in_star_tracker_hard(
-            self.ra, self.dec, utime, target_roll=self.roll
+            self.ra, self.dec, utime, target_roll=self.roll, acs_mode=acs_mode
         )
 
-    def in_star_tracker_soft(self, utime: float) -> bool:
+    def in_star_tracker_soft(self, utime: float, acs_mode: int | None = None) -> bool:
         """Is this target in star tracker soft constraint?"""
         return self.config.constraint.in_star_tracker_soft(
-            self.ra, self.dec, utime, target_roll=self.roll
+            self.ra, self.dec, utime, target_roll=self.roll, acs_mode=acs_mode
         )
 
     def next_vis(self, utime: float) -> float | Literal[False]:
