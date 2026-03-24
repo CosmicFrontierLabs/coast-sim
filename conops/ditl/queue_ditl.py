@@ -794,14 +794,14 @@ class QueueDITL(DITLMixin, DITLStats):
                 self.ppt.dec,
                 utime,
                 target_roll=self.acs.roll,
-                acs_mode=self.acs.acsmode,
+                acs_mode=ACSMode.CHARGING,
             ):
                 constraint_name = self._get_constraint_name(
                     self.ppt.ra,
                     self.ppt.dec,
                     utime,
                     roll=self.acs.roll,
-                    mode=self.acs.acsmode,
+                    mode=ACSMode.CHARGING,
                 )
                 self.log.log_event(
                     utime=utime,
@@ -835,14 +835,14 @@ class QueueDITL(DITLMixin, DITLStats):
             self.ppt.dec,
             utime,
             target_roll=self.acs.roll,
-            acs_mode=self.acs.acsmode,
+            acs_mode=ACSMode.SCIENCE,
         ):
             constraint_name = self._get_constraint_name(
                 self.ppt.ra,
                 self.ppt.dec,
                 utime,
                 roll=self.acs.roll,
-                mode=self.acs.acsmode,
+                mode=ACSMode.SCIENCE,
             )
             self._terminate_ppt(
                 utime,

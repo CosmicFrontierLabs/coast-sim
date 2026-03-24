@@ -2743,10 +2743,10 @@ class TestQueueDITLCoverage:
 
             # Verify constraint check and termination
             mock_config.constraint.in_constraint.assert_called_once_with(
-                10.0, 20.0, 1000.0, target_roll=mock_acs.roll, acs_mode=mock_acs.acsmode
+                10.0, 20.0, 1000.0, target_roll=mock_acs.roll, acs_mode=ACSMode.CHARGING
             )
             mock_get_constraint.assert_called_once_with(
-                10.0, 20.0, 1000.0, roll=mock_acs.roll, mode=mock_acs.acsmode
+                10.0, 20.0, 1000.0, roll=mock_acs.roll, mode=ACSMode.CHARGING
             )
             mock_terminate.assert_called_once_with("constraint", 1000.0)
 

@@ -10,7 +10,7 @@ import rust_ephem
 from conops.config.battery import Battery
 
 from ..common import unixtime2date
-from ..common.enums import ObsType
+from ..common.enums import ACSMode, ObsType
 from ..common.vector import angular_separation
 from ..config import MissionConfig
 from .roll import optimum_roll
@@ -245,7 +245,11 @@ class EmergencyCharging:
             optimal_ra, optimal_dec, utime, ephem, self.solar_panel
         )
         if not self.constraint.in_constraint(
-            optimal_ra, optimal_dec, utime, target_roll=optimal_roll
+            optimal_ra,
+            optimal_dec,
+            utime,
+            target_roll=optimal_roll,
+            acs_mode=ACSMode.CHARGING,
         ):
             # Check if within slew limit
             if self.max_slew_deg is not None:
@@ -586,6 +590,7 @@ class EmergencyCharging:
             self.current_charging_ppt.dec,
             utime,
             target_roll=self.current_charging_ppt.roll,
+            acs_mode=ACSMode.CHARGING,
         ):
             return "constraint"
 
