@@ -204,7 +204,7 @@ class MissionConfig(ConfigModel):
         Args:
             filepath: Path where the YAML file will be written.
         """
-        config_dict = self.model_dump(mode="json", exclude_none=False)
+        config_dict = self.model_dump(mode="json", exclude_none=True)
 
         # Build annotated YAML with comments
         yaml_lines = []
