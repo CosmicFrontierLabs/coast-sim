@@ -125,7 +125,7 @@ class Constraint(ConfigModel):
         default=None,
         description="Star tracker soft exclusion constraint for scheduling",
     )
-    star_tracker_enforce_modes: list[int] | None = Field(
+    star_tracker_enforce_modes: list[ACSMode] | None = Field(
         default=None,
         description=(
             "ACS modes in which star tracker constraints are enforced. "

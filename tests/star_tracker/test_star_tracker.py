@@ -85,49 +85,55 @@ class TestStarTrackerConstraints:
 
 
 class TestStarTrackerModeLockRequirements:
-    """Test mode-dependent lock requirements."""
+    """Test mode-dependent lock requirements on StarTrackerConfiguration."""
 
     def test_requires_lock_all_modes(self):
-        """Star tracker requiring lock in all modes."""
-        st = StarTracker(
-            name="ST_AlwaysLock",
+        """Configuration requiring lock in all modes (default)."""
+        from conops.config import StarTrackerConfiguration
+
+        cfg = StarTrackerConfiguration(
+            star_trackers=[StarTracker(name="ST")],
             modes_require_lock=None,  # None = all modes
         )
-        assert st.requires_lock_in_mode(None)
-        assert st.requires_lock_in_mode(0)
-        assert st.requires_lock_in_mode(1)
-        assert st.requires_lock_in_mode(5)
+        assert cfg.requires_lock_in_mode(None)
+        assert cfg.requires_lock_in_mode(0)
+        assert cfg.requires_lock_in_mode(1)
+        assert cfg.requires_lock_in_mode(5)
 
-    def test_requires_lock_specific_modes(self, star_tracker_mode_dependent):
-        """Star tracker requiring lock only in specific modes."""
-        st = star_tracker_mode_dependent
+    def test_requires_lock_specific_modes(self, star_tracker_config_mode_dependent):
+        """Configuration requiring lock only in specific modes."""
+        cfg = star_tracker_config_mode_dependent
         # Should require lock in modes 0 and 2
-        assert st.requires_lock_in_mode(0)
-        assert st.requires_lock_in_mode(2)
+        assert cfg.requires_lock_in_mode(0)
+        assert cfg.requires_lock_in_mode(2)
         # Should not require lock in other modes
-        assert not st.requires_lock_in_mode(1)
-        assert not st.requires_lock_in_mode(3)
-        assert not st.requires_lock_in_mode(None)  # Nominal mode
+        assert not cfg.requires_lock_in_mode(1)
+        assert not cfg.requires_lock_in_mode(3)
+        assert not cfg.requires_lock_in_mode(None)  # Nominal mode
 
     def test_requires_lock_no_modes(self):
-        """Star tracker never requiring lock."""
-        st = StarTracker(
-            name="ST_NoLock",
+        """Configuration never requiring lock."""
+        from conops.config import StarTrackerConfiguration
+
+        cfg = StarTrackerConfiguration(
+            star_trackers=[StarTracker(name="ST")],
             modes_require_lock=[],  # Empty list = no modes
         )
-        assert not st.requires_lock_in_mode(None)
-        assert not st.requires_lock_in_mode(0)
-        assert not st.requires_lock_in_mode(1)
-        assert not st.requires_lock_in_mode(5)
+        assert not cfg.requires_lock_in_mode(None)
+        assert not cfg.requires_lock_in_mode(0)
+        assert not cfg.requires_lock_in_mode(1)
+        assert not cfg.requires_lock_in_mode(5)
 
     def test_requires_lock_nominal_mode_not_in_list(self):
-        """Nominal mode (None) should never be in lock requirement list."""
-        st = StarTracker(
-            name="ST_NominalMode",
+        """Nominal mode (None) is never treated as requiring lock when a list is set."""
+        from conops.config import StarTrackerConfiguration
+
+        cfg = StarTrackerConfiguration(
+            star_trackers=[StarTracker(name="ST")],
             modes_require_lock=[0, 1, 2],
         )
         # Nominal mode should not require lock
-        assert not st.requires_lock_in_mode(None)
+        assert not cfg.requires_lock_in_mode(None)
 
 
 class TestStarTrackerComputedConstraint:

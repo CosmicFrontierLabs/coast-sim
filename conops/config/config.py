@@ -145,9 +145,13 @@ class MissionConfig(ConfigModel):
             self.constraint.star_tracker_soft_constraint = (
                 star_trackers.startracker_constraint
             )
+            self.constraint.star_tracker_enforce_modes = (
+                star_trackers.modes_require_lock
+            )
         else:
             self.constraint.star_tracker_hard_constraint = None
             self.constraint.star_tracker_soft_constraint = None
+            self.constraint.star_tracker_enforce_modes = None
         self.constraint.invalidate_combined_constraint_cache()
         return self
 

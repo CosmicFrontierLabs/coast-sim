@@ -239,19 +239,12 @@ class StarTracker(ConfigModel):
         orientation: Orientation relative to spacecraft body frame
         hard_constraint: Hard constraint - star tracker cannot look in these directions
         soft_constraint: Soft constraint - star tracker works but may have degraded performance
-        modes_require_lock: List of operational modes (if any) that require this ST to have a lock.
-            Empty list means lock is not required in any mode. None means lock is
-            required in all modes. Examples:
-            - [0, 2]: lock required in modes 0 and 2
-            - []: lock never required
-            - None: lock required in all modes
     """
 
     name: str = "StarTracker"
     orientation: StarTrackerOrientation = Field(default_factory=StarTrackerOrientation)
     hard_constraint: Constraint | None = None
     soft_constraint: Constraint | None = None
-    modes_require_lock: list[int] | None = None
 
     def set_ephem(self, ephem: rust_ephem.Ephemeris) -> None:
         """Set ephemeris on constraint objects.
@@ -310,23 +303,6 @@ class StarTracker(ConfigModel):
             ra_st, dec_st, utime, target_roll=roll_deg
         )
 
-    def requires_lock_in_mode(self, mode: int | None = None) -> bool:
-        """Check if this star tracker must have a lock in the given mode.
-
-        Args:
-            mode: Operational mode. If None, uses nominal mode.
-
-        Returns:
-            True if lock is required in this mode, False otherwise
-        """
-        if self.modes_require_lock is None:
-            # None means required in all modes
-            return True
-        if mode is None:
-            # Nominal mode
-            return False
-        return mode in self.modes_require_lock
-
 
 class StarTrackerConfiguration(ConfigModel):
     """Configuration for star tracker subsystem on spacecraft.
@@ -338,6 +314,10 @@ class StarTrackerConfiguration(ConfigModel):
         min_functional_trackers: Minimum number of star trackers that must not violate hard
             constraints for pointing to be valid. If 0, hard constraints are not enforced.
             Default is 1 (at least one star tracker must be functional).
+        modes_require_lock: Operational modes that require star tracker lock. Applies to
+            all trackers uniformly. None means all modes require lock (conservative default).
+            Empty list means lock is never required. E.g. [0, 1] means lock required only
+            in modes 0 (SCIENCE) and 1 (SLEWING).
         startracker_constraint: Computed observing constraint built from all star
             tracker soft constraints, with boresight offsets applied.
     """
@@ -345,6 +325,24 @@ class StarTrackerConfiguration(ConfigModel):
     # FIXME: star_trackers.star_trackers
     star_trackers: list[StarTracker] = Field(default_factory=list)
     min_functional_trackers: int = 1
+    modes_require_lock: list[ACSMode] | None = None
+
+    def requires_lock_in_mode(self, mode: ACSMode | None = None) -> bool:
+        """Check whether star tracker lock is required in the given operational mode.
+
+        Args:
+            mode: Operational mode integer. If None, checks nominal/unspecified mode.
+
+        Returns:
+            True if lock is required in this mode, False otherwise.
+        """
+        if self.modes_require_lock is None:
+            # None means required in all modes
+            return True
+        if mode is None:
+            # Nominal mode not in an explicit list
+            return False
+        return mode in self.modes_require_lock
 
     @staticmethod
     def _boresight_to_euler_deg(
@@ -372,8 +370,8 @@ class StarTrackerConfiguration(ConfigModel):
 
         for st in self.star_trackers:
             # Queue/schedule planning is science-mode driven.
-            if not st.requires_lock_in_mode(int(ACSMode.SCIENCE)):
-                continue
+            if not self.requires_lock_in_mode(ACSMode.SCIENCE):
+                break
             if st.hard_constraint is None:
                 continue
 
@@ -408,11 +406,9 @@ class StarTrackerConfiguration(ConfigModel):
         constraints that the minimum functional requirement can no longer be met.
         """
         offset_constraints: list[ConstraintConfig] = []
-        required_trackers = [
-            st
-            for st in self.star_trackers
-            if st.requires_lock_in_mode(int(ACSMode.SCIENCE))
-        ]
+        if not self.requires_lock_in_mode(ACSMode.SCIENCE):
+            return None
+        required_trackers = self.star_trackers
         total_trackers = len(required_trackers)
 
         for st in required_trackers:
@@ -473,7 +469,7 @@ class StarTrackerConfiguration(ConfigModel):
         dec_deg: float,
         utime: float,
         roll_deg: float = 0.0,
-        mode: int | None = None,
+        mode: ACSMode | None = None,
     ) -> int:
         """Count how many star trackers violate hard constraints.
 
@@ -486,10 +482,10 @@ class StarTrackerConfiguration(ConfigModel):
         Returns:
             Number of star trackers that violate hard constraints
         """
+        if not self.requires_lock_in_mode(mode):
+            return 0
         count = 0
         for st in self.star_trackers:
-            if not st.requires_lock_in_mode(mode):
-                continue
             if st.in_hard_constraint(ra_deg, dec_deg, utime, roll_deg):
                 count += 1
         return count
@@ -500,7 +496,7 @@ class StarTrackerConfiguration(ConfigModel):
         dec_deg: float,
         utime: float,
         roll_deg: float = 0.0,
-        mode: int | None = None,
+        mode: ACSMode | None = None,
     ) -> bool:
         """Check if any star tracker violates soft constraints.
 
@@ -513,9 +509,9 @@ class StarTrackerConfiguration(ConfigModel):
         Returns:
             True if any star tracker violates soft constraints
         """
+        if not self.requires_lock_in_mode(mode):
+            return False
         for st in self.star_trackers:
-            if not st.requires_lock_in_mode(mode):
-                continue
             if st.in_soft_constraint(ra_deg, dec_deg, utime, roll_deg):
                 return True
         return False
@@ -526,7 +522,7 @@ class StarTrackerConfiguration(ConfigModel):
         dec_deg: float,
         utime: float,
         roll_deg: float = 0.0,
-        mode: int | None = None,
+        mode: ACSMode | None = None,
     ) -> bool:
         """Check if pointing is valid considering hard constraints and the
         minimum number of operational trackers.
@@ -548,7 +544,7 @@ class StarTrackerConfiguration(ConfigModel):
             utime: Unix timestamp
             roll_deg: Spacecraft roll angle in degrees. Default is 0.
             mode: Operational mode. Controls which trackers must have a lock
-                (see :attr:`~StarTracker.modes_require_lock`). Pass ``None``
+                (see :attr:`~StarTrackerConfiguration.modes_require_lock`). Pass ``None``
                 for nominal/unspecified mode.
 
         Returns:
@@ -558,32 +554,26 @@ class StarTrackerConfiguration(ConfigModel):
             # No star trackers configured - allow all pointings
             return True
 
-        required_trackers = [
-            st for st in self.star_trackers if st.requires_lock_in_mode(mode)
-        ]
-        if not required_trackers:
+        if not self.requires_lock_in_mode(mode):
             return True
 
-        # Hard constraints are enforced only for trackers that require lock in this mode.
+        # Hard constraints are absolute keep-outs.
         hard_violations = sum(
             1
-            for st in required_trackers
+            for st in self.star_trackers
             if st.in_hard_constraint(ra_deg, dec_deg, utime, roll_deg)
         )
         if hard_violations > 0:
             return False
 
         # Soft constraints represent performance degradation.
-        # A tracker is non-functional only when it is in its soft zone AND it
-        # requires a lock in this mode — a tracker that doesn't need a lock is
-        # still operational regardless of soft-constraint state.
         soft_violations = sum(
             1
-            for st in required_trackers
+            for st in self.star_trackers
             if st.in_soft_constraint(ra_deg, dec_deg, utime, roll_deg)
         )
-        functional_trackers = len(required_trackers) - soft_violations
-        required_functional = min(self.min_functional_trackers, len(required_trackers))
+        functional_trackers = len(self.star_trackers) - soft_violations
+        required_functional = min(self.min_functional_trackers, len(self.star_trackers))
         return functional_trackers >= required_functional
 
     def check_soft_constraint_degradation(
@@ -592,7 +582,7 @@ class StarTrackerConfiguration(ConfigModel):
         dec_deg: float,
         utime: float,
         roll_deg: float = 0.0,
-        mode: int | None = None,
+        mode: ACSMode | None = None,
     ) -> bool:
         """Check if pointing results in any soft constraint violations.
 

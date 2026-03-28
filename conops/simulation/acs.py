@@ -669,7 +669,7 @@ class ACS:
             current_dec,
             utime,
             current_roll,
-            mode=int(self.acsmode),
+            mode=self.acsmode,
         )
 
         # Check soft constraints
@@ -678,7 +678,7 @@ class ACS:
             current_dec,
             utime,
             current_roll,
-            mode=int(self.acsmode),
+            mode=self.acsmode,
         )
 
         # Update ACS state for Housekeeping telemetry
