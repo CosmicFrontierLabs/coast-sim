@@ -16,6 +16,7 @@ from ..common.enums import ACSCommandType
 from ..config import MissionConfig
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
+from ..simulation.roll import optimum_roll
 from ..simulation.slew import Slew
 from ..targets import Plan, Pointing, Queue
 from .ditl_log import DITLLog
@@ -943,14 +944,6 @@ class QueueDITL(DITLMixin, DITLStats):
         self.ppt = self.queue.get(ra, dec, utime)
 
         if self.ppt is not None:
-            self.log.log_event(
-                utime=utime,
-                event_type="QUEUE",
-                description=f"Fetched PPT: {self.ppt}",
-                obsid=self.ppt.obsid,
-                acs_mode=self.acs.acsmode,
-            )
-
             # Create and configure a Slew object
             slew = Slew(
                 config=self.config,
@@ -1013,6 +1006,14 @@ class QueueDITL(DITLMixin, DITLStats):
                 execution_time = visstart
 
             slew.slewstart = execution_time
+            slew.endroll = optimum_roll(
+                self.ppt.ra,
+                self.ppt.dec,
+                execution_time,
+                self.acs.ephem,
+                self.config.solar_panel,
+            )
+            self.ppt.roll = slew.endroll
             slew.calc_slewtime()
 
             # Verify slew won't overlap with a pass - check both start and end
@@ -1071,6 +1072,14 @@ class QueueDITL(DITLMixin, DITLStats):
             self.ppt.begin = int(execution_time)
             # Update PPT end time to ensure it has enough time for slew + max observation
             self.ppt.end = int(execution_time + slew.slewtime + self.ppt.ss_max)
+
+            self.log.log_event(
+                utime=utime,
+                event_type="QUEUE",
+                description=f"Fetched PPT: {self.ppt}",
+                obsid=self.ppt.obsid,
+                acs_mode=self.acs.acsmode,
+            )
 
             # Enqueue the slew command
             command = ACSCommand(

@@ -598,10 +598,14 @@ class ACS:
                 self.last_slew.at.ra,
                 self.last_slew.at.dec,
                 utime,
-                target_roll=self.last_slew.at.roll,
+                target_roll=self.roll,
             )
         ):
             assert self.last_slew.at is not None
+
+            # Update the roll on the target to reflect the current optimum roll
+            # (the stored roll was computed at schedule time and may be stale)
+            self.last_slew.at.roll = self.roll
 
             # Collect only the true constraints
             true_constraints = []

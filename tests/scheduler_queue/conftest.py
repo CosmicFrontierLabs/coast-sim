@@ -98,6 +98,7 @@ def mock_config():
 
     # Mock solar panel
     config.solar_panel = Mock()
+    config.solar_panel.panels = []
     config.solar_panel.optimal_charging_pointing = Mock(return_value=(45.0, 23.5))
     config.solar_panel.illumination_and_power = Mock(return_value=(0.5, 100.0))
 
