@@ -519,6 +519,8 @@ class DefaultConstraint(Constraint):
             count += 2
         if self.in_earth(ra=ra, dec=dec, time=time, target_roll=target_roll):
             count += 2
+        if self.in_panel(ra=ra, dec=dec, time=time, target_roll=target_roll):
+            count += 2
         if self.in_star_tracker_hard(
             ra=ra, dec=dec, time=time, target_roll=target_roll, acs_mode=acs_mode
         ):

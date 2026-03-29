@@ -254,35 +254,39 @@ class TestInOccultMethod:
 class TestInOccultCountMethod:
     """Test in_constraint_count method logic."""
 
+    @patch("conops.Constraint.in_panel")
     @patch("conops.Constraint.in_earth")
     @patch("conops.Constraint.in_anti_sun")
     @patch("conops.Constraint.in_moon")
     @patch("conops.Constraint.in_sun")
     def test_in_constraint_count_no_violations(
-        self, mock_sun, mock_moon, mock_antisun, mock_earth, constraint
+        self, mock_sun, mock_moon, mock_antisun, mock_earth, mock_panel, constraint
     ):
         """Test in_constraint_count with no violations."""
         mock_sun.return_value = False
         mock_moon.return_value = False
         mock_antisun.return_value = False
         mock_earth.return_value = False
+        mock_panel.return_value = False
 
         count = constraint.in_constraint_count(45.0, 30.0, 1700000000.0, 12)
 
         assert count == 0
 
+    @patch("conops.Constraint.in_panel")
     @patch("conops.Constraint.in_earth")
     @patch("conops.Constraint.in_anti_sun")
     @patch("conops.Constraint.in_moon")
     @patch("conops.Constraint.in_sun")
     def test_in_constraint_count_sun_only(
-        self, mock_sun, mock_moon, mock_antisun, mock_earth, constraint
+        self, mock_sun, mock_moon, mock_antisun, mock_earth, mock_panel, constraint
     ):
         """Test in_constraint_count with only sun violation."""
         mock_sun.return_value = True
         mock_moon.return_value = False
         mock_antisun.return_value = False
         mock_earth.return_value = False
+        mock_panel.return_value = False
 
         count = constraint.in_constraint_count(45.0, 30.0, 1700000000.0, 21)
 
@@ -534,21 +538,43 @@ class TestConstraintRollPassthrough:
         # Verify the constraint was called
         assert mock_in_constraint.called
 
+    @patch("conops.Constraint.in_panel")
     @patch("conops.Constraint.in_earth")
     @patch("conops.Constraint.in_anti_sun")
     @patch("conops.Constraint.in_moon")
     @patch("conops.Constraint.in_sun")
     def test_in_constraint_count_all_violations(
-        self, mock_sun, mock_moon, mock_antisun, mock_earth, constraint
+        self, mock_sun, mock_moon, mock_antisun, mock_earth, mock_panel, constraint
     ):
-        """Test in_constraint_count with all hard constraints violated."""
+        """Test in_constraint_count with all base constraints violated."""
         mock_sun.return_value = True
         mock_moon.return_value = True
         mock_antisun.return_value = True
         mock_earth.return_value = True
+        mock_panel.return_value = True
 
         count = constraint.in_constraint_count(45.0, 30.0, 1700000000.0, 20)
 
+        assert count == 10
+
+    @patch("conops.Constraint.in_panel")
+    @patch("conops.Constraint.in_earth")
+    @patch("conops.Constraint.in_anti_sun")
+    @patch("conops.Constraint.in_moon")
+    @patch("conops.Constraint.in_sun")
+    def test_in_constraint_count_panel_not_counted_when_not_violated(
+        self, mock_sun, mock_moon, mock_antisun, mock_earth, mock_panel, constraint
+    ):
+        """Test in_constraint_count: panel not violated → count is 8 for 4 other violations."""
+        mock_sun.return_value = True
+        mock_moon.return_value = True
+        mock_antisun.return_value = True
+        mock_earth.return_value = True
+        mock_panel.return_value = False
+
+        count = constraint.in_constraint_count(45.0, 30.0, 1700000000.0, 20)
+
+        # panel_constraint defaults to None in base Constraint, so in_panel returns False
         assert count == 8
 
 
@@ -893,52 +919,58 @@ class TestConstraintEdgeCases:
 
         assert result is True
 
+    @patch("conops.Constraint.in_panel")
     @patch("conops.Constraint.in_earth")
     @patch("conops.Constraint.in_anti_sun")
     @patch("conops.Constraint.in_moon")
     @patch("conops.Constraint.in_sun")
     def test_in_constraint_count_moon_only(
-        self, mock_sun, mock_moon, mock_antisun, mock_earth, constraint
+        self, mock_sun, mock_moon, mock_antisun, mock_earth, mock_panel, constraint
     ):
         """Test in_constraint_count with only moon violation."""
         mock_sun.return_value = False
         mock_moon.return_value = True
         mock_antisun.return_value = False
         mock_earth.return_value = False
+        mock_panel.return_value = False
 
         count = constraint.in_constraint_count(45.0, 30.0, 1700000000.0, 2)
 
         assert count == 2
 
+    @patch("conops.Constraint.in_panel")
     @patch("conops.Constraint.in_earth")
     @patch("conops.Constraint.in_anti_sun")
     @patch("conops.Constraint.in_moon")
     @patch("conops.Constraint.in_sun")
     def test_in_constraint_count_antisun_only(
-        self, mock_sun, mock_moon, mock_antisun, mock_earth, constraint
+        self, mock_sun, mock_moon, mock_antisun, mock_earth, mock_panel, constraint
     ):
         """Test in_constraint_count with only antisun violation."""
         mock_sun.return_value = False
         mock_moon.return_value = False
         mock_antisun.return_value = True
         mock_earth.return_value = False
+        mock_panel.return_value = False
 
         count = constraint.in_constraint_count(45.0, 30.0, 1700000000.0, 2)
 
         assert count == 2
 
+    @patch("conops.Constraint.in_panel")
     @patch("conops.Constraint.in_earth")
     @patch("conops.Constraint.in_anti_sun")
     @patch("conops.Constraint.in_moon")
     @patch("conops.Constraint.in_sun")
     def test_in_constraint_count_earth_only(
-        self, mock_sun, mock_moon, mock_antisun, mock_earth, constraint
+        self, mock_sun, mock_moon, mock_antisun, mock_earth, mock_panel, constraint
     ):
         """Test in_constraint_count with only earth violation."""
         mock_sun.return_value = False
         mock_moon.return_value = False
         mock_antisun.return_value = False
         mock_earth.return_value = True
+        mock_panel.return_value = False
 
         count = constraint.in_constraint_count(45.0, 30.0, 1700000000.0, 2)
 

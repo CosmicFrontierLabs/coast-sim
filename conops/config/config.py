@@ -123,10 +123,10 @@ class MissionConfig(ConfigModel):
             and has_star_trackers
             and star_trackers is not None
         ):
-            # Hard constraints are absolute keep-outs: any hard violation invalidates
-            # the pointing.  Fire RED the moment functional count drops below
-            # num_trackers (i.e. any tracker is in hard violation), and YELLOW
-            # one step earlier as a leading indicator.
+            # Fire RED the moment any tracker enters a hard constraint zone
+            # (functional_count drops below num_trackers) as an early warning.
+            # Fire YELLOW when enough trackers are out that critical redundancy is lost
+            # (functional_count drops below num_trackers - 1).
             num_trackers = star_trackers.num_trackers()
             red = num_trackers - 1  # any hard violation → RED
             yellow = num_trackers  # degraded-but-nominal → YELLOW (leading indicator)
