@@ -245,10 +245,6 @@ class EmergencyCharging:
             optimal_ra, optimal_dec, utime, ephem, self.solar_panel
         )
         if not self.constraint.in_constraint(
-            optimal_ra,
-            optimal_dec,
-            utime,
-        if self.constraint.in_constraint(
             optimal_ra, optimal_dec, utime, target_roll=optimal_roll
         ):
             # Optimal pointing satisfies constraints; now check slew limits
