@@ -123,13 +123,14 @@ class MissionConfig(ConfigModel):
             and has_star_trackers
             and star_trackers is not None
         ):
-            # Fire RED the moment any tracker enters a hard constraint zone
-            # (functional_count drops below num_trackers) as an early warning.
-            # Fire YELLOW when enough trackers are out that critical redundancy is lost
-            # (functional_count drops below num_trackers - 1).
+            # Any hard constraint violation is RED — star tracker hard constraints
+            # are health-and-safety keep-outs, so any violation is immediately critical.
+            # With direction="below", thresholds fire when value <= threshold, so
+            # num_trackers - 1 fires the moment any tracker enters a hard constraint
+            # (functional_count drops from num_trackers to num_trackers - 1).
             num_trackers = star_trackers.num_trackers()
+            yellow = num_trackers - 1  # any hard violation → YELLOW and RED
             red = num_trackers - 1  # any hard violation → RED
-            yellow = num_trackers  # degraded-but-nominal → YELLOW (leading indicator)
             self.fault_management.add_threshold(
                 name="star_tracker_functional_count",
                 yellow=yellow,
