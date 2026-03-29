@@ -505,6 +505,15 @@ class QueueDITL(DITLMixin, DITLStats):
         bus_power = self.power_bus[-1] if self.power_bus else None
         payload_power = self.power_payload[-1] if self.power_payload else None
 
+        violated = self.constraint.in_constraint(
+            ra, dec, utime, target_roll=roll, acs_mode=mode
+        )
+        in_constraint_name = (
+            self._get_constraint_name(ra, dec, utime, roll=roll, mode=mode)
+            if violated
+            else None
+        )
+
         return Housekeeping(
             timestamp=datetime.fromtimestamp(utime, tz=timezone.utc),
             ra=ra,
@@ -534,6 +543,7 @@ class QueueDITL(DITLMixin, DITLStats):
             star_tracker_hard_violations=self.acs.star_tracker_hard_violations,
             star_tracker_soft_violations=self.acs.star_tracker_soft_violations,
             star_tracker_functional_count=self.acs.star_tracker_functional_count,
+            in_constraint=in_constraint_name,
         )
 
     def _track_ppt_in_timeline(self) -> None:
