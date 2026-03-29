@@ -320,11 +320,17 @@ class Constraint(ConfigModel):
         target_roll: float | None = None,
         acs_mode: ACSMode | int | None = None,
     ) -> bool:
+        """Check if pointing violates a star tracker hard constraint.
+
+        Hard constraints are absolute health-and-safety keep-outs (e.g. blinding
+        the sensor with the Sun) and are **always** enforced regardless of
+        ``acs_mode`` or ``star_tracker_enforce_modes``.  The ``acs_mode``
+        parameter is accepted for API compatibility but has no effect here.
+        Use :meth:`in_star_tracker_soft` for the science-quality soft constraint
+        that is mode-gated.
+        """
         if self.star_tracker_hard_constraint is None:
             return False
-        if acs_mode is not None and self.star_tracker_enforce_modes is not None:
-            if int(acs_mode) not in self.star_tracker_enforce_modes:
-                return False
         assert self.ephem is not None, (
             "Ephemeris must be set to use in_star_tracker_hard method"
         )

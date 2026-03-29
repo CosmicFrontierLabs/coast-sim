@@ -311,13 +311,17 @@ class StarTrackerConfiguration(ConfigModel):
 
     Attributes:
         star_trackers: List of star trackers on the spacecraft
-        min_functional_trackers: Minimum number of star trackers that must not violate hard
-            constraints for pointing to be valid. If 0, hard constraints are not enforced.
-            Default is 1 (at least one star tracker must be functional).
-        modes_require_lock: Operational modes that require star tracker lock. Applies to
-            all trackers uniformly. None means all modes require lock (conservative default).
-            Empty list means lock is never required. E.g. [0, 1] means lock required only
-            in modes 0 (SCIENCE) and 1 (SLEWING).
+        min_functional_trackers: Minimum number of star trackers that must not violate
+            soft constraints for pointing to be valid (science-quality check). If 0,
+            soft constraints are not enforced. Default is 1.
+            Note: hard constraints are **always** enforced regardless of this value.
+        modes_require_lock: Operational modes that require star tracker lock quality
+            (i.e. where **soft** constraints are enforced as a science-quality check).
+            Hard constraints — absolute health-and-safety keep-outs — are always
+            enforced in every mode regardless of this setting.
+            None means soft constraints are enforced in all modes (conservative default).
+            Empty list means soft constraints are never enforced.
+            E.g. [ACSMode.SCIENCE] means soft constraints are only checked during science.
         startracker_constraint: Computed observing constraint built from all star
             tracker soft constraints, with boresight offsets applied.
     """
@@ -348,10 +352,17 @@ class StarTrackerConfiguration(ConfigModel):
     def _boresight_to_euler_deg(
         boresight: tuple[float, float, float],
     ) -> tuple[float, float, float]:
-        """Convert boresight unit vector to equivalent roll/pitch/yaw offsets.
+        """Convert boresight unit vector to azimuth/elevation angles for boresight_offset.
 
-        For a boresight vector, roll about +X is underdetermined; we set roll=0 and
-        derive pitch/yaw that rotate +X to the requested boresight.
+        Returns (roll=0, pitch, yaw) angles such that
+        ``boresight_offset(roll, pitch, yaw)`` of a constraint shifts the
+        constraint from its natural +X direction to the direction of
+        ``boresight`` in the spacecraft body frame.
+
+        Concretely: yaw is the azimuthal angle of the boresight in the body
+        xy-plane, and pitch is its elevation above that plane — the standard
+        spherical-coordinate decomposition that ``boresight_offset`` expects.
+        Roll about the boresight is underdetermined; we set it to 0.
         """
         x, y, z = vecnorm(np.asarray(boresight, dtype=np.float64))
         yaw_deg = float(np.rad2deg(np.arctan2(y, x)))
@@ -364,14 +375,13 @@ class StarTrackerConfiguration(ConfigModel):
         """Combined hard constraint from all star trackers.
 
         Hard constraints are OR-combined so that any hard violation from any
-        tracker excludes that pointing.
+        tracker excludes that pointing.  These are absolute health-and-safety
+        keep-outs (e.g. sensor blinding) and are always included in the combined
+        constraint regardless of ``modes_require_lock``.
         """
         combined: ConstraintConfig | None = None
 
         for st in self.star_trackers:
-            # Queue/schedule planning is science-mode driven.
-            if not self.requires_lock_in_mode(ACSMode.SCIENCE):
-                break
             if st.hard_constraint is None:
                 continue
 
@@ -473,17 +483,21 @@ class StarTrackerConfiguration(ConfigModel):
     ) -> int:
         """Count how many star trackers violate hard constraints.
 
+        Hard constraints are absolute health-and-safety keep-outs (e.g. blinding
+        a sensor with the Sun) and are **always** evaluated regardless of
+        ``modes_require_lock``.  The ``mode`` parameter is accepted for API
+        compatibility but has no effect here.
+
         Args:
             ra_deg: Right ascension in spacecraft frame, degrees
             dec_deg: Declination in spacecraft frame, degrees
             utime: Unix timestamp
             roll_deg: Spacecraft roll angle in degrees. Default is 0.
+            mode: Unused; accepted for API compatibility only.
 
         Returns:
             Number of star trackers that violate hard constraints
         """
-        if not self.requires_lock_in_mode(mode):
-            return 0
         count = 0
         for st in self.star_trackers:
             if st.in_hard_constraint(ra_deg, dec_deg, utime, roll_deg):
@@ -529,14 +543,14 @@ class StarTrackerConfiguration(ConfigModel):
 
         A pointing is valid when both conditions hold:
 
-        1. **No** star tracker is in a hard constraint (absolute keep-out; any
-           violation immediately invalidates the pointing regardless of redundancy).
+        1. **No** star tracker is in a hard constraint (absolute health-and-safety
+           keep-out; always enforced regardless of ``modes_require_lock``).
         2. The number of trackers counted as *functional* is at least
            ``min_functional_trackers``.  A tracker is considered non-functional
-           when it is both in its soft-constraint zone **and**
-           :meth:`~StarTracker.requires_lock_in_mode` returns ``True`` for
-           ``mode``.  Trackers that do not require a lock in the current mode
-           are always counted as functional regardless of soft-constraint state.
+           when it is in its soft-constraint zone **and** lock is required in the
+           current ``mode`` (per ``modes_require_lock``).  Soft constraints
+           represent science-quality degradation, not safety, so they are skipped
+           in modes where lock quality is not required.
 
         Args:
             ra_deg: Right ascension in spacecraft frame, degrees
@@ -554,10 +568,8 @@ class StarTrackerConfiguration(ConfigModel):
             # No star trackers configured - allow all pointings
             return True
 
-        if not self.requires_lock_in_mode(mode):
-            return True
-
-        # Hard constraints are absolute keep-outs.
+        # Hard constraints are absolute health-and-safety keep-outs — always
+        # enforced regardless of modes_require_lock.
         hard_violations = sum(
             1
             for st in self.star_trackers
@@ -566,7 +578,11 @@ class StarTrackerConfiguration(ConfigModel):
         if hard_violations > 0:
             return False
 
-        # Soft constraints represent performance degradation.
+        # Soft constraints represent science-quality degradation and are only
+        # enforced in modes where star tracker lock is required.
+        if not self.requires_lock_in_mode(mode):
+            return True
+
         soft_violations = sum(
             1
             for st in self.star_trackers
