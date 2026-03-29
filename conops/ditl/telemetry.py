@@ -96,7 +96,7 @@ class Housekeeping(BaseModel):
         default=None, description="Number of functional star trackers"
     )
     in_constraint: str | None = Field(
-        default=None, description="Name of constraint currently violating (if any)"
+        default=None, description="Name of currently violated constraint (if any)"
     )
 
     @classmethod
