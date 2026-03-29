@@ -43,7 +43,11 @@ Housekeeping records capture the complete spacecraft state at each simulation ti
        obsid=1001,                 # Current observation ID
        recorder_volume_gb=25.3,    # Data volume in recorder (Gb)
        recorder_fill_fraction=0.2, # Recorder fill level (0-1)
-       recorder_alert=0            # Recorder alert level (0/1/2)
+       recorder_alert=0,           # Recorder alert level (0/1/2)
+       sun_angle_deg=75.3,         # Angular distance to Sun in degrees
+       earth_angle_deg=62.1,       # Angular distance to Earth in degrees
+       moon_angle_deg=118.5,       # Angular distance to Moon in degrees
+       in_constraint=None,         # Name of violated constraint, or None
    )
 
 Housekeeping Fields
@@ -75,9 +79,19 @@ Housekeeping Fields
 
 **Constraint Geometry**
    - ``sun_angle_deg``: Angular distance from current pointing to Sun in degrees
+   - ``earth_angle_deg``: Angular distance from current pointing to Earth in degrees
+   - ``moon_angle_deg``: Angular distance from current pointing to Moon in degrees
+   - ``in_constraint``: Name of the constraint currently being violated (e.g. ``"Sun"``,
+     ``"Earth Limb"``, ``"Moon"``, ``"Panel"``, ``"Anti-Sun"``, ``"ST Hard"``, ``"ST Soft"``),
+     or ``None`` when no constraint is active.
    - ``for_solid_angle_sr``: Instantaneous field-of-regard solid angle in steradians.
      This value is optional and is ``None`` unless FOR calculation is enabled.
    - ``in_eclipse``: Whether spacecraft is in eclipse
+
+**Star Tracker Health**
+   - ``star_tracker_hard_violations``: Number of trackers violating their hard constraint
+   - ``star_tracker_soft_violations``: Whether any tracker is in its soft constraint zone
+   - ``star_tracker_functional_count``: Number of hard-constraint-clear trackers
 
 Payload Data
 ------------
@@ -124,6 +138,16 @@ The telemetry container provides convenient access to data fields:
    dec_values = telemetry.housekeeping.dec
    acs_modes = telemetry.housekeeping.acs_mode
    battery_levels = telemetry.housekeeping.battery_level
+
+   # Angular distances and constraint geometry
+   sun_angles = telemetry.housekeeping.sun_angle_deg
+   earth_angles = telemetry.housekeeping.earth_angle_deg
+   moon_angles = telemetry.housekeeping.moon_angle_deg
+   constraints = telemetry.housekeeping.in_constraint  # list of str|None
+
+   # Star tracker health
+   hard_violations = telemetry.housekeeping.star_tracker_hard_violations
+   functional_count = telemetry.housekeeping.star_tracker_functional_count
 
    # Access payload data
    data_timestamps = [pd.timestamp for pd in telemetry.data]
