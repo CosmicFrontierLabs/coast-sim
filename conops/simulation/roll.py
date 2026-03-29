@@ -16,10 +16,12 @@ def optimum_roll(
 ) -> float:
     """Calculate the optimum roll angle (degrees in [0,360)).
 
-    - If `solar_panel` is None: return closed-form optimum that minimizes the Sun's
-      Z-component in the body frame (good for side-mounted arrays).
-    - If provided: maximize weighted total power using actual panel normals, sizes,
-      and efficiencies by scanning roll in 1° increments.
+    - If `solar_panel` is None: return the closed-form optimum that **maximises
+      the Sun's Y-component** in the spacecraft body frame (i.e. maximises
+      illumination on a +Y-normal panel), obtained by differentiating
+      ``s_y(θ) = s_y0·cos(θ) − s_z0·sin(θ)`` and solving.
+    - If provided: maximise the total weighted power across all panels by
+      scanning roll in 1° increments.
     """
     # Fetch ephemeris index and Sun vector from pre-computed arrays
     index = ephem.index(dtutcfromtimestamp(utime))
@@ -60,17 +62,21 @@ def optimum_roll(
     w_vec = np.asarray(weights, dtype=float)  # shape (P,)
     s = np.asarray(s_body_0, dtype=float)  # shape (3,)
 
-    # For roll angle theta about X-axis, the rotated normal is:
-    # n'_x = n_x
-    # n'_y = n_y*cos(theta) - n_z*sin(theta)
-    # n'_z = n_y*sin(theta) + n_z*cos(theta)
-    # Illumination = n' · s_normalized
+    # For a spacecraft roll of θ about the body +X (boresight) axis the Sun
+    # vector expressed in the body frame evolves as (right-hand rule):
+    #   s_body_y(θ) = s_y · cos(θ) − s_z · sin(θ)
+    #   s_body_z(θ) = s_y · sin(θ) + s_z · cos(θ)
+    # (s_x is unchanged; s_y, s_z are the roll=0 body-frame components)
+    #
+    # Panel illumination = n · s_body(θ)  (panel normal n is fixed in the body frame):
+    #   illum(θ) = n_x·s_x + cos(θ)·(n_y·s_y + n_z·s_z) + sin(θ)·(n_z·s_y − n_y·s_z)
 
     # Normalize sun vector
     s_norm = s / np.linalg.norm(s)
 
-    # Precompute per-panel coefficients for rotation about X:
-    # illum(theta) = (nx*sx) + cos(theta)*(ny*sy + nz*sz) + sin(theta)*(ny*sz - nz*sy)
+    # Precompute per-panel coefficients:
+    #   illum(θ) = a + cos(θ)·b + sin(θ)·c
+    # where a = nx·sx, b = ny·sy + nz·sz, c = nz·sy − ny·sz
     a_coef = n_mat[:, 0] * s_norm[0]
     b_coef = n_mat[:, 1] * s_norm[1] + n_mat[:, 2] * s_norm[2]
     c_coef = n_mat[:, 2] * s_norm[1] - n_mat[:, 1] * s_norm[2]
