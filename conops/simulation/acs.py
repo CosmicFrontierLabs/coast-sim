@@ -476,6 +476,8 @@ class ACS:
         2. Processes any commands due for execution
         3. Updates the current ACS mode based on slew/pass state
         4. Calculates current RA/Dec pointing
+        5. Calculates current roll angle to optimize solar panel illumination
+        6. Checks current constraints using up-to-date pointing and roll
         """
         # Determine if the spacecraft is currently in eclipse
         self.in_eclipse = self.constraint.in_eclipse(ra=0, dec=0, time=utime)
@@ -486,14 +488,11 @@ class ACS:
         # Update ACS mode based on current state
         self._update_mode(utime)
 
-        # Check current constraints
-        self._check_constraints(utime)
-
         # Calculate current RA/Dec pointing
         self._calculate_pointing(utime)
 
         # Calculate roll angle to optimize solar panel illumination
-        # NOTE: This optimizes solar panel power generation. Consider pre-calculating if performance is an issue.
+        # NOTE: Must run after _calculate_pointing so self.ra/dec are current.
         self.roll = optimum_roll(
             self.ra,
             self.dec,
@@ -501,6 +500,9 @@ class ACS:
             self.ephem,
             self.solar_panel,
         )
+
+        # Check current constraints (must run after roll is updated)
+        self._check_constraints(utime)
 
         # Return current pointing
         if self.last_slew is not None:
