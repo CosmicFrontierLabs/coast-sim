@@ -248,10 +248,10 @@ class EmergencyCharging:
             optimal_ra,
             optimal_dec,
             utime,
-            target_roll=optimal_roll,
-            acs_mode=ACSMode.CHARGING,
+        if self.constraint.in_constraint(
+            optimal_ra, optimal_dec, utime, target_roll=optimal_roll
         ):
-            # Check if within slew limit
+            # Optimal pointing satisfies constraints; now check slew limits
             if self.max_slew_deg is not None:
                 slew = angular_separation(
                     current_ra, current_dec, optimal_ra, optimal_dec
