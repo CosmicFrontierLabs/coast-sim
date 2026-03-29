@@ -1431,15 +1431,12 @@ class TestGetConstraintName:
         queue_ditl.constraint.in_star_tracker_hard = Mock(return_value=False)
         queue_ditl.constraint.in_star_tracker_soft = Mock(return_value=False)
         _ = queue_ditl._get_constraint_name(ra, dec, utime)
-        queue_ditl.constraint.in_earth.assert_called_once_with(
-            ra, dec, utime, target_roll=None
-        )
-        queue_ditl.constraint.in_moon.assert_called_once_with(
-            ra, dec, utime, target_roll=None
-        )
+        # Sun is checked first; Earth and Moon are never reached
         queue_ditl.constraint.in_sun.assert_called_once_with(
             ra, dec, utime, target_roll=None
         )
+        queue_ditl.constraint.in_earth.assert_not_called()
+        queue_ditl.constraint.in_moon.assert_not_called()
 
     def test_get_constraint_name_panel_name(self, queue_ditl) -> None:
         ra, dec, utime = 13.0, 23.0, 4000.0
@@ -1460,18 +1457,17 @@ class TestGetConstraintName:
         queue_ditl.constraint.in_star_tracker_hard = Mock(return_value=False)
         queue_ditl.constraint.in_star_tracker_soft = Mock(return_value=False)
         _ = queue_ditl._get_constraint_name(ra, dec, utime)
-        queue_ditl.constraint.in_earth.assert_called_once_with(
-            ra, dec, utime, target_roll=None
-        )
-        queue_ditl.constraint.in_moon.assert_called_once_with(
-            ra, dec, utime, target_roll=None
-        )
+        # Order: Sun, Earth, Panel — Moon is never reached
         queue_ditl.constraint.in_sun.assert_called_once_with(
+            ra, dec, utime, target_roll=None
+        )
+        queue_ditl.constraint.in_earth.assert_called_once_with(
             ra, dec, utime, target_roll=None
         )
         queue_ditl.constraint.in_panel.assert_called_once_with(
             ra, dec, utime, target_roll=None
         )
+        queue_ditl.constraint.in_moon.assert_not_called()
 
     def test_get_constraint_name_unknown_name(self, queue_ditl) -> None:
         ra, dec, utime = 14.0, 24.0, 5000.0
@@ -1508,7 +1504,8 @@ class TestGetConstraintName:
             ra, dec, utime, target_roll=None
         )
 
-    def test_get_constraint_name_precedence_earth(self, queue_ditl) -> None:
+    def test_get_constraint_name_precedence_sun(self, queue_ditl) -> None:
+        """Sun has highest precedence when multiple constraints are simultaneously active."""
         ra, dec, utime = 15.0, 25.0, 6000.0
         queue_ditl.constraint.in_earth = Mock(return_value=True)
         queue_ditl.constraint.in_moon = Mock(return_value=True)
@@ -1518,10 +1515,11 @@ class TestGetConstraintName:
         queue_ditl.constraint.in_star_tracker_hard = Mock(return_value=False)
         queue_ditl.constraint.in_star_tracker_soft = Mock(return_value=False)
         name = queue_ditl._get_constraint_name(ra, dec, utime)
-        assert name == "Earth Limb"
-        queue_ditl.constraint.in_earth.assert_called_once_with(
+        assert name == "Sun"
+        queue_ditl.constraint.in_sun.assert_called_once_with(
             ra, dec, utime, target_roll=None
         )
+        queue_ditl.constraint.in_earth.assert_not_called()
 
 
 class TestCheckAndManagePasses:

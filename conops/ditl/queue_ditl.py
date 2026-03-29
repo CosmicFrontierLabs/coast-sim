@@ -897,15 +897,20 @@ class QueueDITL(DITLMixin, DITLStats):
         roll: float | None = None,
         mode: int | None = None,
     ) -> str:
-        """Determine which constraint is violated."""
-        if self.constraint.in_earth(ra, dec, utime, target_roll=roll):
-            return "Earth Limb"
-        elif self.constraint.in_moon(ra, dec, utime, target_roll=roll):
-            return "Moon"
-        elif self.constraint.in_sun(ra, dec, utime, target_roll=roll):
+        """Determine which constraint is violated.
+
+        Check order matches Constraint.in_constraint() so that when multiple
+        constraints are simultaneously active the reported name is consistent
+        with the one that actually triggered termination.
+        """
+        if self.constraint.in_sun(ra, dec, utime, target_roll=roll):
             return "Sun"
+        elif self.constraint.in_earth(ra, dec, utime, target_roll=roll):
+            return "Earth Limb"
         elif self.constraint.in_panel(ra, dec, utime, target_roll=roll):
             return "Panel"
+        elif self.constraint.in_moon(ra, dec, utime, target_roll=roll):
+            return "Moon"
         elif self.constraint.in_anti_sun(ra, dec, utime, target_roll=roll):
             return "Anti-Sun"
         elif self.constraint.in_star_tracker_hard(
