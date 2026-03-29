@@ -258,6 +258,16 @@ class HousekeepingList(list[Housekeeping]):
         return [hk.sun_angle_deg for hk in self]
 
     @property
+    def earth_angle_deg(self) -> list[float | None]:
+        """Get earth angle values from all housekeeping records."""
+        return [hk.earth_angle_deg for hk in self]
+
+    @property
+    def moon_angle_deg(self) -> list[float | None]:
+        """Get moon angle values from all housekeeping records."""
+        return [hk.moon_angle_deg for hk in self]
+
+    @property
     def for_solid_angle_sr(self) -> list[float | None]:
         """Get FOR solid-angle values from all housekeeping records."""
         return [hk.for_solid_angle_sr for hk in self]
@@ -281,6 +291,11 @@ class HousekeepingList(list[Housekeeping]):
     def star_tracker_functional_count(self) -> list[int | None]:
         """Get star tracker functional counts from all housekeeping records."""
         return [hk.star_tracker_functional_count for hk in self]
+
+    @property
+    def in_constraint(self) -> list[str | None]:
+        """Get violated constraint names from all housekeeping records."""
+        return [hk.in_constraint for hk in self]
 
 
 class Telemetry(BaseModel):

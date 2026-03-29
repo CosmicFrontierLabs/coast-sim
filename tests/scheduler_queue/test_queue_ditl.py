@@ -148,9 +148,11 @@ class TestScheduleGroundstationPasses:
 
 
 class TestDetermineMode:
-    """Test mode determination now driven by command handlers and _update_mode."""
+    """Test mode determination now handled by ACS.get_mode() - these tests use real ACS instance."""
 
-    def test_determine_mode_slewing(self, mock_config, mock_ephem) -> None:
+    def test_determine_mode_slewing(
+        self, mock_config: MissionConfig, mock_ephem: Mock
+    ) -> None:
         from conops import ACS, Constraint
 
         constraint = Constraint(ephem=None)
@@ -162,10 +164,9 @@ class TestDetermineMode:
         mock_slew.is_slewing = Mock(return_value=True)
         mock_slew.obstype = "PPT"
         acs.current_slew = mock_slew
-        acs.acsmode = ACSMode.SLEWING
 
-        acs._update_mode(1000.0)
-        assert acs.acsmode == ACSMode.SLEWING
+        mode = acs.get_mode(1000.0)
+        assert mode == ACSMode.SLEWING
 
     def test_determine_mode_pass(
         self, mock_config: MissionConfig, mock_ephem: Mock
@@ -184,7 +185,9 @@ class TestDetermineMode:
         mode = acs.get_mode(1000.0)
         assert mode == ACSMode.PASS
 
-    def test_determine_mode_saa(self, mock_config, mock_ephem) -> None:
+    def test_determine_mode_saa(
+        self, mock_config: MissionConfig, mock_ephem: Mock
+    ) -> None:
         from conops import ACS, Constraint
 
         constraint = Constraint(ephem=None)
@@ -196,13 +199,13 @@ class TestDetermineMode:
         object.__setattr__(acs, "saa", Mock())
         cast(Mock, acs.saa).insaa = Mock(return_value=True)
 
-        acs._update_mode(1000.0)
-        assert acs.acsmode == ACSMode.SAA
+        mode = acs.get_mode(1000.0)
+        assert mode == ACSMode.SAA
 
     def test_determine_mode_charging(
         self,
-        mock_config,
-        mock_ephem,
+        mock_config: MissionConfig,
+        mock_ephem: Mock,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from conops import ACS, Constraint
@@ -215,15 +218,18 @@ class TestDetermineMode:
 
         charging_slew = Mock()
         charging_slew.obstype = "CHARGE"
+        charging_slew.is_slewing = Mock(return_value=False)
+
         acs.current_slew = None
         acs.last_slew = charging_slew
         acs.saa = None
-        acs.acsmode = ACSMode.SCIENCE  # trigger re-entry from science+charge dwell
 
-        acs._update_mode(1000.0)
-        assert acs.acsmode == ACSMode.CHARGING
+        mode = acs.get_mode(1000.0)
+        assert mode == ACSMode.CHARGING
 
-    def test_determine_mode_science(self, mock_config, mock_ephem) -> None:
+    def test_determine_mode_science(
+        self, mock_config: MissionConfig, mock_ephem: Mock
+    ) -> None:
         from conops import ACS, Constraint
 
         constraint = Constraint(ephem=None)
@@ -234,8 +240,8 @@ class TestDetermineMode:
         acs.current_slew = None
         acs.saa = None
 
-        acs._update_mode(1000.0)
-        assert acs.acsmode == ACSMode.SCIENCE
+        mode = acs.get_mode(1000.0)
+        assert mode == ACSMode.SCIENCE
 
 
 class TestHandlePassMode:
