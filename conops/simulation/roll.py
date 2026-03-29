@@ -29,10 +29,11 @@ def optimum_roll(
     s_body_0 = scbodyvector(ra * DTOR, dec * DTOR, 0.0, sunvec)
 
     if solar_panel is None:
-        # Analytic optimum: choose roll that minimizes the Z-component of Sun
+        # Analytic optimum for side-mounted panel (0,1,0): max y_body = cos(θ)*y0 - sin(θ)*z0
+        # d/dθ = 0 → θ = atan2(-z0, y0)
         y0 = s_body_0[1]
         z0 = s_body_0[2]
-        roll_rad = np.arctan2(-y0, z0)
+        roll_rad = np.arctan2(-z0, y0)
         return float((roll_rad / DTOR) % 360.0)
 
     # Weighted optimization using actual panel geometry (vectorized)
@@ -41,7 +42,7 @@ def optimum_roll(
         # No panels configured — fall back to analytic
         y0 = s_body_0[1]
         z0 = s_body_0[2]
-        roll_rad = np.arctan2(-y0, z0)
+        roll_rad = np.arctan2(-z0, y0)
         return float((roll_rad / DTOR) % 360.0)
     base_normals = []
     weights = []  # max_power * efficiency
@@ -72,7 +73,7 @@ def optimum_roll(
     # illum(theta) = (nx*sx) + cos(theta)*(ny*sy + nz*sz) + sin(theta)*(ny*sz - nz*sy)
     a_coef = n_mat[:, 0] * s_norm[0]
     b_coef = n_mat[:, 1] * s_norm[1] + n_mat[:, 2] * s_norm[2]
-    c_coef = n_mat[:, 1] * s_norm[2] - n_mat[:, 2] * s_norm[1]
+    c_coef = n_mat[:, 2] * s_norm[1] - n_mat[:, 1] * s_norm[2]
 
     # Angles 0..359 degrees
     deg = np.arange(360.0, dtype=float)
@@ -117,10 +118,10 @@ def optimum_roll_sidemount(
     y0 = s_body_0[1]
     z0 = s_body_0[2]
 
-    # Rotate about X by roll to minimize z' = -sin(roll)*y0 + cos(roll)*z0
-    # d(z')/d(roll) = 0 -> cos(roll)*y0 + sin(roll)*z0 = 0
-    # => tan(roll) = -y0 / z0 -> roll = atan2(-y0, z0)
-    roll_rad = np.arctan2(-y0, z0)
+    # Maximize y_body = cos(roll)*y0 - sin(roll)*z0
+    # d/d(roll) = 0 -> -sin(roll)*y0 - cos(roll)*z0 = 0
+    # => tan(roll) = -z0 / y0 -> roll = atan2(-z0, y0)
+    roll_rad = np.arctan2(-z0, y0)
 
     # Return degrees in [0, 360)
     roll_deg = (roll_rad / DTOR) % 360.0
