@@ -142,6 +142,11 @@ class QueueDITL(DITLMixin, DITLStats):
             log=self.log,
         )
 
+        # Track whether the last PPT fetch attempt was unsuccessful (no target dispatched).
+        # Set True when the queue is empty or all candidates are rejected; False on
+        # successful dispatch; None during a pass (spacecraft is occupied).
+        self._ppt_unavailable: bool | None = None
+
     def get_acs_queue_status(self) -> dict[str, Any]:
         """
         Get the current status of the ACS command queue.
@@ -549,6 +554,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 else None
             ),
             in_constraint=in_constraint_name,
+            ppt_unavailable=self._ppt_unavailable,
         )
 
     def _track_ppt_in_timeline(self) -> None:
@@ -952,6 +958,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 description="Deferring PPT fetch - pass in progress",
                 acs_mode=self.acs.acsmode,
             )
+            self._ppt_unavailable = None
             return
 
         self.log.log_event(
@@ -989,6 +996,7 @@ class QueueDITL(DITLMixin, DITLStats):
                     obsid=self.ppt.obsid,
                     acs_mode=self.acs.acsmode,
                 )
+                self._ppt_unavailable = True
                 return
 
             # Initialize slew start positions from current ACS pointing
@@ -1056,6 +1064,7 @@ class QueueDITL(DITLMixin, DITLStats):
                             acs_mode=self.acs.acsmode,
                         )
                         self.ppt = None
+                        self._ppt_unavailable = True
                         return
 
             slew.endroll = optimum_roll(
@@ -1080,6 +1089,7 @@ class QueueDITL(DITLMixin, DITLStats):
                     acs_mode=self.acs.acsmode,
                 )
                 self.ppt = None
+                self._ppt_unavailable = True
                 return
             if self.acs.passrequests.current_pass(slew_end) is not None:
                 self.log.log_event(
@@ -1090,6 +1100,7 @@ class QueueDITL(DITLMixin, DITLStats):
                     acs_mode=self.acs.acsmode,
                 )
                 self.ppt = None
+                self._ppt_unavailable = True
                 return
 
             self.acs.slew_dists.append(slew.slewdist)
@@ -1119,6 +1130,7 @@ class QueueDITL(DITLMixin, DITLStats):
                         acs_mode=self.acs.acsmode,
                     )
                     self.ppt = None
+                    self._ppt_unavailable = True
                     return
 
             # Update PPT timing based on slew
@@ -1141,6 +1153,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 slew=slew,
             )
             self.acs.enqueue_command(command)
+            self._ppt_unavailable = False
 
             # Return the new target coordinates
             return
@@ -1151,6 +1164,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 description="No targets available from Queue",
                 acs_mode=self.acs.acsmode,
             )
+            self._ppt_unavailable = True
             return
 
     def _record_pointing_data(

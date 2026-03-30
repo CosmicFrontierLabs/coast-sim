@@ -138,6 +138,19 @@ class MissionConfig(ConfigModel):
                 direction="below",
             )
 
+        # Add ppt_unavailable threshold if not already present.
+        # bool True (=1.0) > 0.5 → YELLOW; False (=0.0) is nominal; red set
+        # above 1.0 so only YELLOW fires (no RED for this alert).
+        if not any(
+            t.name == "ppt_unavailable" for t in self.fault_management.thresholds
+        ):
+            self.fault_management.add_threshold(
+                name="ppt_unavailable",
+                yellow=0.5,
+                red=1.5,  # unreachable by bool — YELLOW-only alert
+                direction="above",
+            )
+
         # Propagate star tracker hard exclusions into mission-level planning constraint.
         if star_trackers is not None and has_star_trackers:
             self.constraint.star_tracker_hard_constraint = (

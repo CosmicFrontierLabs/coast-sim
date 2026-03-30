@@ -105,6 +105,14 @@ class Housekeeping(BaseModel):
     in_constraint: str | None = Field(
         default=None, description="Name of currently violated constraint (if any)"
     )
+    ppt_unavailable: bool | None = Field(
+        default=None,
+        description=(
+            "True when no PPT could be dispatched (queue empty or all candidates "
+            "rejected this step); False when a PPT slew was successfully enqueued; "
+            "None while a pass is in progress or before the first fetch attempt."
+        ),
+    )
 
     @classmethod
     def extract_field(cls, records: list["Housekeeping"], field_name: str) -> list[Any]:
