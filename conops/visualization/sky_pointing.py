@@ -566,7 +566,19 @@ class SkyPointingController:
         y_hat = y0 * c_r - z0 * s_r
         z_hat = y0 * s_r + z0 * c_r
 
-        st_colors = ["cyan", "lime", "orange", "hotpink", "white", "yellow"]
+        # Resolve per-tracker functional status from housekeeping telemetry.
+        # Green = functional (not in soft constraint), Red = degraded.
+        hk_records = (
+            list(self.ditl.telemetry.housekeeping)
+            if hasattr(self.ditl, "telemetry")
+            and hasattr(self.ditl.telemetry, "housekeeping")
+            else []
+        )
+        hk_status: list[bool] | None = None
+        if idx < len(hk_records):
+            hk_status = hk_records[idx].star_tracker_status
+
+        st_fallback_colors = ["cyan", "lime", "orange", "hotpink", "white", "yellow"]
 
         for i, st in enumerate(trackers):
             orientation = getattr(st, "orientation", None)
@@ -586,7 +598,10 @@ class SkyPointingController:
             st_ra_deg = (np.degrees(np.arctan2(v_st[1], v_st[0])) + 360.0) % 360.0
             st_dec_deg = np.degrees(np.arcsin(np.clip(v_st[2], -1.0, 1.0)))
 
-            color = st_colors[i % len(st_colors)]
+            if hk_status is not None and i < len(hk_status):
+                color = "limegreen" if hk_status[i] else "red"
+            else:
+                color = st_fallback_colors[i % len(st_fallback_colors)]
             st_name = getattr(st, "name", f"ST-{i + 1}")
             ra_plot = self._convert_ra_for_plotting(np.array([st_ra_deg]))[0]
 

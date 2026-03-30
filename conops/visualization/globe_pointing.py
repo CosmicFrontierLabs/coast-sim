@@ -380,6 +380,16 @@ def plot_sky_pointing_globe(
         dec = float(ditl.dec[idx])
         mc = _mode_color(idx)
 
+        # Per-tracker functional status from housekeeping telemetry (green/red).
+        hk_records = (
+            list(ditl.telemetry.housekeeping)
+            if hasattr(ditl, "telemetry") and hasattr(ditl.telemetry, "housekeeping")
+            else []
+        )
+        hk_status: list[bool] | None = None
+        if idx < len(hk_records):
+            hk_status = hk_records[idx].star_tracker_status
+
         st_positions = _build_st_boresights(ditl, idx)
 
         # Trace ordering (must match the initial trace list below):
@@ -416,7 +426,17 @@ def plot_sky_pointing_globe(
         for i in range(n_trackers):
             if i < len(st_positions):
                 st_ra, st_dec, _color, _name = st_positions[i]
-                traces.append({"lon": [_ra_to_lon(st_ra)], "lat": [st_dec]})
+                if hk_status is not None and i < len(hk_status):
+                    st_marker_color = "limegreen" if hk_status[i] else "red"
+                else:
+                    st_marker_color = _color
+                traces.append(
+                    {
+                        "lon": [_ra_to_lon(st_ra)],
+                        "lat": [st_dec],
+                        "marker": {"color": st_marker_color},
+                    }
+                )
             else:
                 traces.append({"lon": [], "lat": []})
 
@@ -590,8 +610,10 @@ def plot_sky_pointing_globe(
     # Star-tracker boresight traces (one per tracker)
     for i in range(n_trackers):
         st_name = getattr(raw_trackers[i], "name", f"ST-{i + 1}")
-        st_color = _st_colors[i % len(_st_colors)]
         td = init_data[7 + i] if 7 + i < len(init_data) else {"lon": [], "lat": []}
+        # Use the status-based color from frame 0 (green/red) if available;
+        # fall back to the fixed palette if the trace dict has no marker sub-dict.
+        st_color = td.get("marker", {}).get("color", _st_colors[i % len(_st_colors)])
         traces_fig.append(
             go.Scattergeo(
                 lon=td["lon"],
@@ -655,6 +677,7 @@ def plot_sky_pointing_globe(
     for fi, idx in enumerate(frame_indices):
         dt = dtutcfromtimestamp(utimes[idx])
         time_str = dt.strftime("%Y-%m-%d %H:%M UTC")
+        label_str = dt.strftime("%H:%M")
         fdata = _frame_traces(idx)
 
         frames.append(
@@ -675,7 +698,7 @@ def plot_sky_pointing_globe(
                         "transition": {"duration": 0},
                     },
                 ],
-                "label": time_str,
+                "label": label_str,
                 "method": "animate",
             }
         )
@@ -719,14 +742,16 @@ def plot_sky_pointing_globe(
             borderwidth=1,
             font=dict(color="white", size=11),
         ),
+        height=700,
+        width=700,
         margin=dict(l=0, r=0, t=50, b=80),
         updatemenus=[
             dict(
                 type="buttons",
                 showactive=False,
-                y=-0.07,
-                x=0.5,
-                xanchor="center",
+                y=0.0,
+                x=0.0,
+                xanchor="left",
                 yanchor="top",
                 pad=dict(t=0, r=10),
                 bgcolor="rgba(40,40,70,0.9)",
@@ -734,7 +759,7 @@ def plot_sky_pointing_globe(
                 font=dict(color="white"),
                 buttons=[
                     dict(
-                        label="▶ Play",
+                        label="▶ / ⏸",
                         method="animate",
                         args=[
                             None,
@@ -744,11 +769,7 @@ def plot_sky_pointing_globe(
                                 "transition": {"duration": 0},
                             },
                         ],
-                    ),
-                    dict(
-                        label="⏸ Pause",
-                        method="animate",
-                        args=[
+                        args2=[
                             [None],
                             {
                                 "frame": {"duration": 0, "redraw": False},
@@ -770,8 +791,8 @@ def plot_sky_pointing_globe(
                     font=dict(color="white", size=11),
                 ),
                 pad=dict(b=10, t=30),
-                len=0.88,
-                x=0.06,
+                len=0.82,
+                x=0.12,
                 y=0.0,
                 steps=slider_steps,
                 bgcolor="rgba(40,40,70,0.8)",
