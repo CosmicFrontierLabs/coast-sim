@@ -19,5 +19,6 @@ class ACSCommand(BaseModel):
     roll: float | None = None
     obsid: int | None = None
     obstype: str = "PPT"
+    reason: str | None = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)

@@ -33,9 +33,12 @@ def _roll_valid_mask(
     # BoresightOffsetConstraint (star-tracker keep-outs).
     if not constraint.ignore_roll:
         return None
-    dt = dtutcfromtimestamp(utime)
+    # Snap to the nearest ephemeris timestamp — roll_range() requires an exact
+    # match and utime may fall between grid points.
+    idx = ephem.index(dtutcfromtimestamp(utime))
+    snapped_dt = ephem.timestamp[idx]
     valid_ranges: list[tuple[float, float]] = constraint.constraint.roll_range(
-        time=dt, ephemeris=ephem, target_ra=ra, target_dec=dec
+        time=snapped_dt, ephemeris=ephem, target_ra=ra, target_dec=dec
     )
     if not valid_ranges:
         # Fully blocked at all rolls — return None and let caller fall back

@@ -185,7 +185,7 @@ class ACS:
                     utime
                 ),
                 ACSCommandType.ENTER_SAFE_MODE: lambda: self._handle_safe_mode_command(
-                    utime
+                    command, utime
                 ),
             }
 
@@ -239,14 +239,17 @@ class ACS:
         )
 
     # Handle Safe Mode Command
-    def _handle_safe_mode_command(self, utime: float) -> None:
+    def _handle_safe_mode_command(self, command: "ACSCommand", utime: float) -> None:
         """Handle ENTER_SAFE_MODE command.
 
         Once safe mode is entered, it cannot be exited. The spacecraft will
         point solar panels at the Sun and obey bus-level constraints.
         """
+        reason_str = f" - reason: {command.reason}" if command.reason else ""
         self._log_or_print(
-            utime, "SAFE", f"{unixtime2date(utime)}: Entering SAFE MODE - irreversible"
+            utime,
+            "SAFE",
+            f"{unixtime2date(utime)}: Entering SAFE MODE - irreversible{reason_str}",
         )
         self.in_safe_mode = True
         # Clear command queue to prevent any future commands from executing

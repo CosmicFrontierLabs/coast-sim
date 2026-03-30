@@ -495,9 +495,23 @@ class QueueDITL(DITLMixin, DITLStats):
                 self.config.fault_management.safe_mode_requested
                 and not self.acs.in_safe_mode
             ):
+                reason = None
+                events = getattr(self.config.fault_management, "events", [])
+                if isinstance(events, list):
+                    trigger_event = next(
+                        (
+                            e
+                            for e in reversed(events)
+                            if e.event_type == "safe_mode_trigger"
+                        ),
+                        None,
+                    )
+                    if trigger_event is not None:
+                        reason = trigger_event.cause
                 command = ACSCommand(
                     command_type=ACSCommandType.ENTER_SAFE_MODE,
                     execution_time=utime,
+                    reason=reason,
                 )
                 self.acs.enqueue_command(command)
 

@@ -115,14 +115,21 @@ class MissionConfig(ConfigModel):
         except AttributeError:
             has_star_trackers = False
 
-        if (
-            not any(
-                t.name == "star_tracker_functional_count"
+        existing_st_threshold = next(
+            (
+                t
                 for t in self.fault_management.thresholds
-            )
-            and has_star_trackers
-            and star_trackers is not None
-        ):
+                if t.name == "star_tracker_functional_count"
+            ),
+            None,
+        )
+        if existing_st_threshold is not None:
+            # Config-file-loaded thresholds default triggers_safe_mode=True; force
+            # it False — a tracker hard-constraint violation should alert but not
+            # safehold (the scheduler already avoids the zone; if we slewed into one
+            # it's a scheduling bug, not a spacecraft emergency).
+            existing_st_threshold.triggers_safe_mode = False
+        elif has_star_trackers and star_trackers is not None:
             # Any hard constraint violation is RED — star tracker hard constraints
             # are health-and-safety keep-outs, so any violation is immediately critical.
             # With direction="below", thresholds fire when value <= threshold, so
