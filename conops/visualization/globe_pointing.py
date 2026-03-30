@@ -334,13 +334,13 @@ def plot_sky_pointing_globe(
                     st_constraint_specs.append((_ci, _tier, _body, float(_mangle)))
 
     # n_st_circles = len(st_constraint_specs)
-    ignore_roll: bool = bool(
-        getattr(
-            getattr(getattr(ditl, "config", None), "constraint", None),
-            "ignore_roll",
-            False,
-        )
-    )
+    # ignore_roll: bool = bool(
+    #     getattr(
+    #         getattr(getattr(ditl, "config", None), "constraint", None),
+    #         "ignore_roll",
+    #         False,
+    #     )
+    # )
 
     def _mode_color(idx: int) -> str:
         m = ditl.mode[idx]
@@ -460,7 +460,7 @@ def plot_sky_pointing_globe(
                 traces.append({"lon": [], "lat": []})
                 continue
 
-            delta = st_boresight_offsets[tr_idx] if ignore_roll else 0.0
+            delta = 0.0  # circles are boresight exclusion radii, not spacecraft-pointing radii
             eff_r = delta + min_angle + extra_r
             if eff_r > 0:
                 c_lons, c_lats = _sky_circle_polygon(body_ra, body_dec, eff_r)

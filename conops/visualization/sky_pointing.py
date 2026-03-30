@@ -503,6 +503,9 @@ class SkyPointingController:
         # Plot star tracker boresight directions
         self._plot_star_tracker_boresights(utime)
 
+        # Plot hatched ST exclusion-zone circles around constrained bodies
+        self._plot_st_exclusion_circles(utime)
+
         # Set up the plot
         self._setup_plot_appearance(utime)
 
@@ -616,6 +619,168 @@ class SkyPointingController:
                 linestyle="none",
                 label=st_name,
                 zorder=6,
+            )
+
+    def _plot_st_exclusion_circles(self, utime: float) -> None:
+        """Draw hatched exclusion-zone circles around constrained bodies for each ST.
+
+        For each (tracker, tier, body) constraint spec, draws an analytical circle
+        of angular radius ``min_angle`` (plus Earth disk radius for Earth constraints)
+        centred on the corresponding celestial body.  This matches what
+        ``in_soft_constraint`` / ``in_hard_constraint`` test against the ST boresight
+        sky position.  Hard-constraint circles are shown with red diagonal hatching;
+        soft-constraint circles with magenta cross-hatching.  Both use a transparent
+        fill so they do not obscure the underlying constraint shading.
+        """
+        if not hasattr(self.ditl, "config") or not hasattr(
+            self.ditl.config, "spacecraft_bus"
+        ):
+            return
+        star_trackers = getattr(self.ditl.config.spacecraft_bus, "star_trackers", None)
+        if star_trackers is None or not hasattr(star_trackers, "star_trackers"):
+            return
+        raw_trackers = getattr(star_trackers, "star_trackers", [])
+        if not isinstance(raw_trackers, (list, tuple)) or not raw_trackers:
+            return
+        trackers: list[Any] = list(raw_trackers)
+
+        # Collect (tracker_idx, tier, body, min_angle) specs.
+        specs: list[tuple[int, str, str, float]] = []
+        for ci, st in enumerate(trackers):
+            for tier in ("hard", "soft"):
+                cobj = getattr(st, f"{tier}_constraint", None)
+                if cobj is None:
+                    continue
+                for body in ("sun", "earth", "moon"):
+                    bcfg = getattr(cobj, f"{body}_constraint", None)
+                    if bcfg is None:
+                        continue
+                    mangle = getattr(bcfg, "min_angle", None)
+                    if mangle is not None and float(mangle) > 0:
+                        specs.append((ci, tier, body, float(mangle)))
+        if not specs:
+            return
+
+        # Ephemeris body positions at this time step.
+        dt = dtutcfromtimestamp(utime)
+        ephem = self.ditl.constraint.ephem
+        if ephem is None:
+            return
+        ei = ephem.index(dt)
+        body_pos = {
+            "sun": (float(ephem.sun_ra_deg[ei]), float(ephem.sun_dec_deg[ei]), 0.0),
+            "moon": (float(ephem.moon_ra_deg[ei]), float(ephem.moon_dec_deg[ei]), 0.0),
+            "earth": (
+                float(ephem.earth_ra_deg[ei]),
+                float(ephem.earth_dec_deg[ei]),
+                float(ephem.earth_radius_deg[ei]),  # add physical disk
+            ),
+        }
+
+        # Sky grid (reuses the same resolution as other constraints).
+        n_ra = self.n_grid_points * 2
+        n_dec = self.n_grid_points
+        ra_grid_rad, dec_grid_rad, ra_flat, dec_flat = self._create_regular_sky_grid(
+            n_ra, n_dec
+        )
+        ra_flat_rad = np.deg2rad(ra_flat)
+        dec_flat_rad = np.deg2rad(dec_flat)
+
+        def _dist_mask(
+            body_ra_d: float, body_dec_d: float, radius_d: float
+        ) -> npt.NDArray[np.bool_]:
+            br = np.deg2rad(body_ra_d)
+            bd = np.deg2rad(body_dec_d)
+            cos_d = np.sin(dec_flat_rad) * np.sin(bd) + np.cos(dec_flat_rad) * np.cos(
+                bd
+            ) * np.cos(ra_flat_rad - br)
+            dist = np.degrees(np.arccos(np.clip(cos_d, -1.0, 1.0)))
+            return cast(npt.NDArray[np.bool_], dist <= radius_d)
+
+        # Accumulate union masks per tier.
+        # The hatched zones are boresight exclusion zones: a circle of radius
+        # min_angle (+ Earth disk) around each body, matching exactly what
+        # in_soft_constraint / in_hard_constraint tests against the boresight
+        # sky position.  The δ offset is NOT added here because the hexagon
+        # markers are already plotted at the boresight sky position — not at
+        # the spacecraft pointing direction.
+        hard_mask: npt.NDArray[np.bool_] | None = None
+        soft_mask: npt.NDArray[np.bool_] | None = None
+        for tr_idx, tier, body, min_angle in specs:
+            if body not in body_pos:
+                continue
+            body_ra, body_dec, extra_r = body_pos[body]
+            eff_r = min_angle + extra_r
+            if eff_r <= 0:
+                continue
+            m = _dist_mask(body_ra, body_dec, eff_r)
+            if tier == "hard":
+                hard_mask = m if hard_mask is None else (hard_mask | m)
+            else:
+                soft_mask = m if soft_mask is None else (soft_mask | m)
+
+        alpha = max(0.03, self.constraint_alpha * 0.2)
+
+        if hard_mask is not None and hard_mask.any():
+            mask_2d = hard_mask.reshape((n_dec, n_ra)).astype(float)
+            self.ax.contourf(
+                ra_grid_rad,
+                dec_grid_rad,
+                mask_2d,
+                levels=[0.5, 1.0],
+                hatches=["/////"],
+                colors=[mcolors.to_rgba("red", alpha)],
+                zorder=2,
+                alpha=alpha,
+            )
+            self.ax.contour(
+                ra_grid_rad,
+                dec_grid_rad,
+                mask_2d,
+                levels=[0.5],
+                colors=["red"],
+                linewidths=1.2,
+                linestyles=["--"],
+                zorder=2.1,
+            )
+            self.ax.plot(
+                [],
+                [],
+                linestyle="--",
+                color="red",
+                linewidth=1.5,
+                label="ST Hard Excl.",
+            )
+
+        if soft_mask is not None and soft_mask.any():
+            mask_2d = soft_mask.reshape((n_dec, n_ra)).astype(float)
+            self.ax.contourf(
+                ra_grid_rad,
+                dec_grid_rad,
+                mask_2d,
+                levels=[0.5, 1.0],
+                hatches=["xxxxx"],
+                colors=[mcolors.to_rgba("magenta", alpha)],
+                zorder=2,
+                alpha=alpha,
+            )
+            self.ax.contour(
+                ra_grid_rad,
+                dec_grid_rad,
+                mask_2d,
+                levels=[0.5],
+                colors=["magenta"],
+                linewidths=1.0,
+                linestyles=[":"],
+                zorder=2.1,
+            )
+            self.ax.plot(
+                [],
+                [],
+                linestyle=":",
+                color="magenta",
+                linewidth=1.5,
+                label="ST Soft Excl.",
             )
 
     def _find_time_index(self, utime: float) -> int:
