@@ -272,6 +272,11 @@ class FaultThreshold(ConfigModel):
         default=None,
         description="ACS modes where this parameter should be checked",
     )
+    triggers_safe_mode: bool = Field(
+        default=True,
+        description="Whether a RED classification triggers safe mode (default True). "
+        "Set False for monitoring-only thresholds that should alert but not safehold.",
+    )
 
     def classify(self, value: float) -> str:
         """Return nominal|yellow|red for the given value."""
@@ -428,7 +433,7 @@ class FaultManagement(ConfigModel):
                 st.red_seconds += step_size
             st.current = state
 
-            if state == "red":
+            if state == "red" and threshold.triggers_safe_mode:
                 self._trigger_safe_mode(
                     utime=utime,
                     name=name,
@@ -572,6 +577,7 @@ class FaultManagement(ConfigModel):
         red: float,
         direction: str = "below",
         acs_modes: list[ACSMode] | None = None,
+        triggers_safe_mode: bool = True,
     ) -> None:
         """Add a parameter threshold for fault monitoring.
 
@@ -582,6 +588,9 @@ class FaultManagement(ConfigModel):
             direction: 'below' or 'above' indicating fault direction
             acs_modes: ACS modes where this threshold should be checked.
                       None (default) means check in all modes.
+            triggers_safe_mode: If True (default), a RED classification triggers safe mode.
+                                Set False for monitor-only thresholds that should alert but
+                                not cause a safehold.
 
         Examples:
             >>> fm = FaultManagement()
@@ -609,6 +618,7 @@ class FaultManagement(ConfigModel):
                 red=red,
                 direction=direction,
                 acs_modes=acs_modes,
+                triggers_safe_mode=triggers_safe_mode,
             )
         )
 

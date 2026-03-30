@@ -136,6 +136,7 @@ class MissionConfig(ConfigModel):
                 yellow=yellow,
                 red=red,
                 direction="below",
+                triggers_safe_mode=False,
             )
 
         # Add ppt_unavailable threshold if not already present.
