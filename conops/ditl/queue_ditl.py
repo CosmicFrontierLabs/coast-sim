@@ -1030,8 +1030,13 @@ class QueueDITL(DITLMixin, DITLStats):
             if self.config.constraint.ignore_roll:
                 _constraint_obj = self.config.constraint.constraint
                 if _constraint_obj is not None:
+                    # Snap to the nearest ephemeris timestamp — roll_range() requires
+                    # an exact match and execution_time may be between grid points.
+                    _snapped_dt = self.acs.ephem.timestamp[
+                        self.acs.ephem.index(dtutcfromtimestamp(execution_time))
+                    ]
                     _valid_ranges = _constraint_obj.roll_range(
-                        time=dtutcfromtimestamp(execution_time),
+                        time=_snapped_dt,
                         ephemeris=self.acs.ephem,
                         target_ra=self.ppt.ra,
                         target_dec=self.ppt.dec,

@@ -25,6 +25,14 @@ def _roll_valid_mask(
     """
     if constraint is None or constraint.constraint is None:
         return None
+    # Only apply constraint masking when ignore_roll=True.
+    # With ignore_roll=False the scheduler already gated visibility on the
+    # solar-optimal roll satisfying constraints, so re-sweeping roll_range()
+    # at every ACS step (for every 60-second DITL tick) is unnecessary and
+    # expensive for constraints that include roll-dependent components like
+    # BoresightOffsetConstraint (star-tracker keep-outs).
+    if not constraint.ignore_roll:
+        return None
     dt = dtutcfromtimestamp(utime)
     valid_ranges: list[tuple[float, float]] = constraint.constraint.roll_range(
         time=dt, ephemeris=ephem, target_ra=ra, target_dec=dec
