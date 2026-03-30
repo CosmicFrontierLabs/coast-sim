@@ -134,6 +134,16 @@ class Constraint(ConfigModel):
             "slews, passes, SAA, and safe mode."
         ),
     )
+    ignore_roll: bool = Field(
+        default=False,
+        description=(
+            "When True, all constraint checks are performed with target_roll=None "
+            "regardless of the roll passed by the caller.  Setting this to True "
+            "causes rust-ephem to return False (visible) for any pointing that is "
+            "accessible at *some* roll angle, which is the correct semantics for "
+            "field-of-regard calculations where roll is a free parameter."
+        ),
+    )
 
     ephem: rust_ephem.Ephemeris | None = Field(
         default=None,
@@ -248,6 +258,39 @@ class Constraint(ConfigModel):
         combined = active_constraints[0]
         for component in active_constraints[1:]:
             combined = combined | component
+        return combined
+
+    @cached_property
+    def roll_independent_constraint(self) -> ConstraintConfig | None:
+        """Combined constraint from roll-independent components only.
+
+        Excludes star-tracker constraints (which are roll-dependent via
+        BoresightOffsetConstraint) so that the result can be passed to
+        ``ConstraintConfig.evaluate()`` without triggering the "visible only
+        if visible at ALL rolls" semantics that ``evaluate(target_roll=None)``
+        applies to roll-dependent constraints.
+
+        Used by ``PlanEntry.visibility()`` when ``ignore_roll=True`` to build
+        field-of-regard scheduling windows.  Note that this may over-accept
+        targets that genuinely have no valid roll under the star-tracker
+        constraints; those cases are caught correctly at observation time because
+        ``in_constraint(target_roll=None)`` uses the opposite (permissive) FOR
+        semantics — it returns True (violated) only when the constraint is
+        violated at every possible roll.
+        """
+        components = [
+            self.sun_constraint,
+            self.moon_constraint,
+            self.earth_constraint,
+            self.panel_constraint,
+            self.anti_sun_constraint,
+        ]
+        active = [c for c in components if c is not None]
+        if not active:
+            return None
+        combined = active[0]
+        for c in active[1:]:
+            combined = combined | c
         return combined
 
     def in_sun(

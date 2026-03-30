@@ -1021,12 +1021,39 @@ class QueueDITL(DITLMixin, DITLStats):
                 execution_time = visstart
 
             slew.slewstart = execution_time
+
+            # When ignore_roll=True, verify that a valid roll exists before slewing.
+            # optimum_roll() falls back to the unconstrained solar roll when
+            # roll_range() is empty (no roll satisfies all constraints), which
+            # would put star trackers into a constraint zone.  Skip the target
+            # instead so a better one can be selected.
+            if self.config.constraint.ignore_roll:
+                _constraint_obj = self.config.constraint.constraint
+                if _constraint_obj is not None:
+                    _valid_ranges = _constraint_obj.roll_range(
+                        time=dtutcfromtimestamp(execution_time),
+                        ephemeris=self.acs.ephem,
+                        target_ra=self.ppt.ra,
+                        target_dec=self.ppt.dec,
+                    )
+                    if not _valid_ranges:
+                        self.log.log_event(
+                            utime=utime,
+                            event_type="QUEUE",
+                            description=f"Target {self.ppt.obsid} skipped — no valid roll satisfies all constraints at this time",
+                            obsid=self.ppt.obsid,
+                            acs_mode=self.acs.acsmode,
+                        )
+                        self.ppt = None
+                        return
+
             slew.endroll = optimum_roll(
                 self.ppt.ra,
                 self.ppt.dec,
                 execution_time,
                 self.acs.ephem,
                 self.config.solar_panel,
+                self.config.constraint,
             )
             self.ppt.roll = slew.endroll
             slew.calc_slewtime()

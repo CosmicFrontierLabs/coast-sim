@@ -1166,3 +1166,110 @@ class TestConstraintCaching:
         hits, misses = constraint_with_ephem.cache_stats()
         assert hits == 1  # Second call should hit cache
         assert misses == 1
+
+
+class TestIgnoreRoll:
+    """Tests for Constraint.ignore_roll — forces target_roll=None on all checks."""
+
+    def test_ignore_roll_default_is_false(self, constraint_with_ephem) -> None:
+        """ignore_roll defaults to False."""
+        assert constraint_with_ephem.ignore_roll is False
+
+    @patch("rust_ephem.SunConstraint.in_constraint")
+    def test_ignore_roll_false_passes_roll_to_backend(
+        self, mock_in_constraint, constraint_with_ephem
+    ) -> None:
+        """When ignore_roll=False the supplied roll is forwarded."""
+        mock_in_constraint.return_value = False
+        constraint_with_ephem.ignore_roll = False
+
+        constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0, target_roll=42.0)
+
+        _, kwargs = mock_in_constraint.call_args
+        assert kwargs["target_roll"] == 42.0
+
+    @patch("rust_ephem.SunConstraint.in_constraint")
+    def test_ignore_roll_true_passes_actual_roll_to_backend(
+        self, mock_in_constraint, constraint_with_ephem
+    ) -> None:
+        """When ignore_roll=True the actual roll is still forwarded to the backend.
+
+        ignore_roll controls which roll is *chosen* (best solar within valid
+        constraint range), not whether the roll is supplied to constraint checks.
+        """
+        mock_in_constraint.return_value = False
+        constraint_with_ephem.ignore_roll = True
+
+        constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0, target_roll=42.0)
+
+        _, kwargs = mock_in_constraint.call_args
+        assert kwargs["target_roll"] == 42.0
+
+    @patch("rust_ephem.SunConstraint.in_constraint")
+    def test_ignore_roll_true_different_rolls_are_separate_cache_entries(
+        self, mock_in_constraint, constraint_with_ephem
+    ) -> None:
+        """With ignore_roll=True, different rolls produce different cache entries.
+
+        The actual roll value is always used in the cache key so that each
+        distinct roll is evaluated independently against the backend.
+        """
+        mock_in_constraint.return_value = True
+        constraint_with_ephem.ignore_roll = True
+
+        r1 = constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0, target_roll=0.0)
+        r2 = constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0, target_roll=90.0)
+        r3 = constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0, target_roll=180.0)
+
+        assert r1 is True
+        assert r2 is True
+        assert r3 is True
+        # Each distinct roll is a separate cache entry — 3 misses, 0 hits
+        hits, misses = constraint_with_ephem.cache_stats()
+        assert misses == 3
+        assert hits == 0
+
+    @patch("rust_ephem.SunConstraint.in_constraint")
+    def test_ignore_roll_false_different_rolls_are_separate_cache_entries(
+        self, mock_in_constraint, constraint_with_ephem
+    ) -> None:
+        """With ignore_roll=False, different rolls produce different cache entries."""
+        mock_in_constraint.return_value = False
+        constraint_with_ephem.ignore_roll = False
+
+        constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0, target_roll=0.0)
+        constraint_with_ephem.in_sun(45.0, 30.0, 1700000000.0, target_roll=90.0)
+
+        hits, misses = constraint_with_ephem.cache_stats()
+        assert misses == 2
+        assert hits == 0
+
+    @patch("rust_ephem.SunConstraint.in_constraint")
+    def test_ignore_roll_propagates_through_in_constraint(
+        self,
+        mock_sun_backend,
+        constraint_with_ephem,
+    ) -> None:
+        """ignore_roll=True does not suppress the roll forwarded to the backend."""
+        mock_sun_backend.return_value = True
+        constraint_with_ephem.ignore_roll = True
+
+        constraint_with_ephem.in_constraint(45.0, 30.0, 1700000000.0, target_roll=42.0)
+
+        _, kwargs = mock_sun_backend.call_args
+        assert kwargs["target_roll"] == 42.0
+
+    @patch("rust_ephem.SunConstraint.in_constraint")
+    def test_ignore_roll_false_does_not_strip_roll_in_in_constraint(
+        self,
+        mock_sun_backend,
+        constraint_with_ephem,
+    ) -> None:
+        """ignore_roll=False passes the supplied roll down to the backend."""
+        mock_sun_backend.return_value = True
+        constraint_with_ephem.ignore_roll = False
+
+        constraint_with_ephem.in_constraint(45.0, 30.0, 1700000000.0, target_roll=42.0)
+
+        _, kwargs = mock_sun_backend.call_args
+        assert kwargs["target_roll"] == 42.0

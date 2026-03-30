@@ -334,7 +334,9 @@ class ACS:
         slew.enddec = dec
         # If roll not provided, calculate optimal roll at target position
         if roll is None:
-            slew.endroll = optimum_roll(ra, dec, utime, self.ephem, self.solar_panel)
+            slew.endroll = optimum_roll(
+                ra, dec, utime, self.ephem, self.solar_panel, self.constraint
+            )
         else:
             slew.endroll = roll
         slew.obstype = obstype
@@ -499,6 +501,7 @@ class ACS:
             utime,
             self.ephem,
             self.solar_panel,
+            self.constraint,
         )
 
         # Check current constraints (must run after roll is updated)

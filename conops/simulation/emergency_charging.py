@@ -147,7 +147,7 @@ class EmergencyCharging:
 
         # Calculate optimal roll angle for solar panel pointing
         roll_angle = optimum_roll(
-            charging_ra, charging_dec, utime, ephem, self.solar_panel
+            charging_ra, charging_dec, utime, ephem, self.solar_panel, self.constraint
         )
 
         # Create the charging PPT
@@ -242,7 +242,7 @@ class EmergencyCharging:
 
         # Validate optimal pointing
         optimal_roll = optimum_roll(
-            optimal_ra, optimal_dec, utime, ephem, self.solar_panel
+            optimal_ra, optimal_dec, utime, ephem, self.solar_panel, self.constraint
         )
         if not self.constraint.in_constraint(
             optimal_ra, optimal_dec, utime, target_roll=optimal_roll
@@ -339,7 +339,9 @@ class EmergencyCharging:
                     continue  # Skip pointings beyond slew limit
 
             # Calculate optimal roll angle for this pointing
-            optimal_roll = optimum_roll(alt_ra, alt_dec, utime, ephem, self.solar_panel)
+            optimal_roll = optimum_roll(
+                alt_ra, alt_dec, utime, ephem, self.solar_panel, self.constraint
+            )
 
             # Calculate solar panel illumination for this pointing with optimal roll
             illumination = self.solar_panel.panel_illumination_fraction(

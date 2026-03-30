@@ -59,6 +59,7 @@ def mock_config():
     # Mock constraint
     config.constraint = Mock()
     config.constraint.ephem = DummyEphemeris()
+    config.constraint.constraint = None  # no combined rust-ephem constraint in tests
     config.constraint.panel_constraint = Mock()
     config.constraint.panel_constraint.solar_panel = Mock()
     config.constraint.in_constraint = Mock(return_value=False)
