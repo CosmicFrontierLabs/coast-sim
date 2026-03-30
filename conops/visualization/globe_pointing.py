@@ -742,8 +742,8 @@ def plot_sky_pointing_globe(
             borderwidth=1,
             font=dict(color="white", size=11),
         ),
-        height=700,
-        width=700,
+        height=600,
+        width=800,
         margin=dict(l=0, r=0, t=50, b=80),
         updatemenus=[
             dict(
