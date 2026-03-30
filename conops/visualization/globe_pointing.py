@@ -297,6 +297,51 @@ def plot_sky_pointing_globe(
     n_trackers = len(raw_trackers)
     _st_colors = ["cyan", "lime", "orange", "hotpink", "white", "yellow"]
 
+    # ------------------------------------------------------------------
+    # Pre-compute star-tracker boresight offsets and constraint specs
+    # ------------------------------------------------------------------
+    # δ = angular offset of each ST boresight from spacecraft +X (degrees).
+    # For ignore_roll=True the field-of-regard exclusion radius around a
+    # constrained body is exactly (δ + min_angle).
+    st_boresight_offsets: list[float] = []
+    for _st_raw in raw_trackers:
+        _orient = getattr(_st_raw, "orientation", None)
+        _b = getattr(_orient, "boresight", None) if _orient else None
+        if _b is not None:
+            _bv = np.asarray(_b, dtype=np.float64)
+            _bn = np.linalg.norm(_bv)
+            if _bn > 1e-12:
+                _bv = _bv / _bn
+            st_boresight_offsets.append(
+                float(np.degrees(np.arccos(np.clip(_bv[0], -1.0, 1.0))))
+            )
+        else:
+            st_boresight_offsets.append(0.0)
+
+    # (tracker_idx, tier, body, min_angle_deg)
+    st_constraint_specs: list[tuple[int, str, str, float]] = []
+    for _ci, _st_raw in enumerate(raw_trackers):
+        for _tier in ("hard", "soft"):
+            _cobj = getattr(_st_raw, f"{_tier}_constraint", None)
+            if _cobj is None:
+                continue
+            for _body in ("sun", "earth", "moon"):
+                _bcfg = getattr(_cobj, f"{_body}_constraint", None)
+                if _bcfg is None:
+                    continue
+                _mangle = getattr(_bcfg, "min_angle", None)
+                if _mangle is not None and float(_mangle) > 0:
+                    st_constraint_specs.append((_ci, _tier, _body, float(_mangle)))
+
+    # n_st_circles = len(st_constraint_specs)
+    ignore_roll: bool = bool(
+        getattr(
+            getattr(getattr(ditl, "config", None), "constraint", None),
+            "ignore_roll",
+            False,
+        )
+    )
+
     def _mode_color(idx: int) -> str:
         m = ditl.mode[idx]
         return mode_colors.get(m.name if hasattr(m, "name") else str(m), "red")
@@ -374,6 +419,34 @@ def plot_sky_pointing_globe(
                 traces.append({"lon": [_ra_to_lon(st_ra)], "lat": [st_dec]})
             else:
                 traces.append({"lon": [], "lat": []})
+
+        # --- ST constraint exclusion-zone circles ---
+        # For ignore_roll=True the field-of-regard exclusion zone around each
+        # constrained body is a circle of radius (δ + min_angle), where δ is the
+        # ST boresight's angular offset from the spacecraft +X axis.
+        # For ignore_roll=False we use the simpler min_angle circle around the body
+        # (approximate — visually shows where the boresight must not point).
+        for tr_idx, tier, body, min_angle in st_constraint_specs:
+            if body == "sun":
+                body_ra, body_dec = sun_ra, sun_dec
+                extra_r = 0.0
+            elif body == "earth":
+                body_ra, body_dec = earth_ra, earth_dec
+                extra_r = earth_disk_r  # add physical disk radius for Earth
+            elif body == "moon":
+                body_ra, body_dec = moon_ra, moon_dec
+                extra_r = 0.0
+            else:
+                traces.append({"lon": [], "lat": []})
+                continue
+
+            delta = st_boresight_offsets[tr_idx] if ignore_roll else 0.0
+            eff_r = delta + min_angle + extra_r
+            if eff_r > 0:
+                c_lons, c_lats = _sky_circle_polygon(body_ra, body_dec, eff_r)
+            else:
+                c_lons, c_lats = [], []
+            traces.append({"lon": c_lons, "lat": c_lats})
 
         return traces
 
@@ -532,6 +605,41 @@ def plot_sky_pointing_globe(
                 ),
                 name=st_name,
                 showlegend=True,
+            )
+        )
+
+    # Star-tracker constraint exclusion-zone circles (one per spec)
+    _st_legend_shown: set[str] = set()
+    for j, (tr_idx, tier, body, min_angle) in enumerate(st_constraint_specs):
+        _legend_key = tier
+        _show_legend = _legend_key not in _st_legend_shown
+        if _show_legend:
+            _st_legend_shown.add(_legend_key)
+
+        if tier == "hard":
+            fill_color = _to_rgba("red", constraint_alpha)
+            line_color = "red"
+            line_dash = "solid"
+            label = "ST Hard Cons."
+        else:
+            fill_color = _to_rgba("magenta", constraint_alpha * 0.7)
+            line_color = "magenta"
+            line_dash = "dot"
+            label = "ST Soft Cons."
+
+        ci = 7 + n_trackers + j
+        td_c = init_data[ci] if ci < len(init_data) else {"lon": [], "lat": []}
+        traces_fig.append(
+            go.Scattergeo(
+                lon=td_c["lon"],
+                lat=td_c["lat"],
+                mode="lines",
+                fill="toself",
+                fillcolor=fill_color,
+                line=dict(color=line_color, width=1, dash=line_dash),
+                name=label,
+                showlegend=_show_legend,
+                hoverinfo="skip",
             )
         )
 
