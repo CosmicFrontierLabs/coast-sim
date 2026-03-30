@@ -685,6 +685,13 @@ class ACS:
             current_roll,
             mode=self.acsmode,
         )
+        soft_violation_count = star_trackers.trackers_violating_soft_constraints(
+            current_ra,
+            current_dec,
+            utime,
+            current_roll,
+            mode=self.acsmode,
+        )
 
         # Update ACS state for Housekeeping telemetry
         self.star_tracker_hard_violations = (
@@ -696,10 +703,13 @@ class ACS:
             if isinstance(star_trackers.num_trackers(), int)
             else 0
         )
+        # Functional = not in soft constraint (i.e. tracking at full science quality).
+        # Hard-constraint violations are always faulted separately; a tracker
+        # being burned by the Sun is still "not soft-constrained" but the hard
+        # constraint system handles that separately.
         self.star_tracker_functional_count = (
-            num_trackers - self.star_tracker_hard_violations
-            if isinstance(num_trackers, int)
-            and isinstance(self.star_tracker_hard_violations, int)
+            num_trackers - soft_violation_count
+            if isinstance(num_trackers, int) and isinstance(soft_violation_count, int)
             else 0
         )
 

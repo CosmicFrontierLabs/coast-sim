@@ -374,12 +374,42 @@ class TestStarTrackerComputedConstraint:
             ),
         )
 
+        # Hard constraints are always OR: any single violation blocks the pointing.
         cfg = StarTrackerConfiguration(star_trackers=[st1, st2])
         c = cfg.startracker_hard_constraint
         assert c is not None
         assert c.type == "or"
         assert len(c.constraints) == 2
         assert all(child.type == "boresight_offset" for child in c.constraints)
+
+    def test_startracker_hard_constraint_min_functional_does_not_affect_hard(self):
+        """min_functional_trackers has no effect on hard constraints — they are always OR."""
+        from conops.config import Constraint, StarTrackerConfiguration
+
+        st1 = StarTracker(
+            name="ST1",
+            orientation=StarTrackerOrientation(boresight=(1.0, 0.0, 0.0)),
+            hard_constraint=Constraint(
+                sun_constraint=rust_ephem.SunConstraint(min_angle=20.0)
+            ),
+        )
+        st2 = StarTracker(
+            name="ST2",
+            orientation=StarTrackerOrientation(boresight=(0.0, 1.0, 0.0)),
+            hard_constraint=Constraint(
+                moon_constraint=rust_ephem.MoonConstraint(min_angle=10.0)
+            ),
+        )
+
+        # Even with min_functional_trackers=1 (one-of-two redundancy), hard
+        # constraints remain OR — any hard violation is always blocked.
+        cfg = StarTrackerConfiguration(
+            star_trackers=[st1, st2], min_functional_trackers=1
+        )
+        c = cfg.startracker_hard_constraint
+        assert c is not None
+        assert c.type == "or"
+        assert len(c.constraints) == 2
 
     def test_startracker_constraint_single_tracker_has_boresight_offset(self):
         from conops.config import Constraint, StarTrackerConfiguration

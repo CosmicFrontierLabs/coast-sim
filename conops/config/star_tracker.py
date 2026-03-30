@@ -311,10 +311,15 @@ class StarTrackerConfiguration(ConfigModel):
 
     Attributes:
         star_trackers: List of star trackers on the spacecraft
-        min_functional_trackers: Minimum number of star trackers that must not violate
-            soft constraints for pointing to be valid (science-quality check). If 0,
-            soft constraints are not enforced. Default is 1.
-            Note: hard constraints are **always** enforced regardless of this value.
+        min_functional_trackers: Minimum number of star trackers that must be
+            outside their **soft** constraint zone for the pointing to be
+            considered valid for science (i.e. operationally functional /
+            tracking well).  A tracker in its soft constraint is degraded but
+            not physically endangered.  If 0, soft constraints are not enforced.
+            Default is 1.
+            Hard constraints (physical safety keep-outs) are always OR-combined
+            and enforced unconditionally — ``min_functional_trackers`` does not
+            apply to them.
         modes_require_lock: Operational modes that require star tracker lock quality
             (i.e. where **soft** constraints are enforced as a science-quality check).
             Hard constraints — absolute health-and-safety keep-outs — are always
@@ -326,7 +331,6 @@ class StarTrackerConfiguration(ConfigModel):
             tracker soft constraints, with boresight offsets applied.
     """
 
-    # FIXME: star_trackers.star_trackers
     star_trackers: list[StarTracker] = Field(default_factory=list)
     min_functional_trackers: int = 1
     modes_require_lock: list[ACSMode] | None = None
@@ -374,10 +378,13 @@ class StarTrackerConfiguration(ConfigModel):
     def startracker_hard_constraint(self) -> ConstraintConfig | None:
         """Combined hard constraint from all star trackers.
 
-        Hard constraints are OR-combined so that any hard violation from any
-        tracker excludes that pointing.  These are absolute health-and-safety
-        keep-outs (e.g. sensor blinding) and are always included in the combined
-        constraint regardless of ``modes_require_lock``.
+        Hard constraints are OR-combined: if **any** tracker is in its hard
+        exclusion zone, the pointing is invalid.  These are absolute
+        health-and-safety keep-outs (sensor blinding, Earth-limb staring, etc.)
+        and are always enforced regardless of ``modes_require_lock``.
+
+        ``min_functional_trackers`` does **not** apply here — a tracker being
+        physically endangered is never acceptable, regardless of redundancy.
         """
         combined: ConstraintConfig | None = None
 
@@ -529,6 +536,40 @@ class StarTrackerConfiguration(ConfigModel):
             if st.in_soft_constraint(ra_deg, dec_deg, utime, roll_deg):
                 return True
         return False
+
+    def trackers_violating_soft_constraints(
+        self,
+        ra_deg: float,
+        dec_deg: float,
+        utime: float,
+        roll_deg: float = 0.0,
+        mode: ACSMode | None = None,
+    ) -> int:
+        """Count how many star trackers violate soft constraints.
+
+        A tracker violating its soft constraint is degraded — not operating at
+        full science quality.  This count drives ``star_tracker_functional_count``
+        in Housekeeping telemetry: a tracker that is in soft constraint is
+        *not* considered functional.
+
+        Args:
+            ra_deg: Right ascension in spacecraft frame, degrees
+            dec_deg: Declination in spacecraft frame, degrees
+            utime: Unix timestamp
+            roll_deg: Spacecraft roll angle in degrees. Default is 0.
+            mode: Operational mode; soft constraints are skipped in modes where
+                lock is not required (per ``modes_require_lock``).
+
+        Returns:
+            Number of star trackers violating soft constraints.
+        """
+        if not self.requires_lock_in_mode(mode):
+            return 0
+        count = 0
+        for st in self.star_trackers:
+            if st.in_soft_constraint(ra_deg, dec_deg, utime, roll_deg):
+                count += 1
+        return count
 
     def is_pointing_valid(
         self,
