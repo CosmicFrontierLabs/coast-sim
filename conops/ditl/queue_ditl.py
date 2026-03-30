@@ -961,6 +961,7 @@ class QueueDITL(DITLMixin, DITLStats):
             acs_mode=self.acs.acsmode,
         )
 
+        # Fetch the next PPT from the queue based on current pointing and time
         self.ppt = self.queue.get(ra, dec, utime)
 
         if self.ppt is not None:

@@ -28,6 +28,7 @@ license = "Apache-2.0"
 
 
 dependencies = [
+    "anywidget>=0.9.21",
     "astropy>=6",
     "matplotlib>=3.10",
     "numpy>=2",
