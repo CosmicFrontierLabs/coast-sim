@@ -49,6 +49,7 @@ class ACS:
     star_tracker_hard_violations: int
     star_tracker_soft_violations: bool
     star_tracker_functional_count: int
+    star_tracker_status: list[bool]
 
     def __init__(self, config: MissionConfig, log: "DITLLog | None" = None) -> None:
         """Initialize the Attitude Control System.
@@ -91,6 +92,7 @@ class ACS:
         self.star_tracker_hard_violations = 0
         self.star_tracker_soft_violations = False
         self.star_tracker_functional_count = 0
+        self.star_tracker_status: list[bool] = []
 
         # Command queue (sorted by execution_time)
         self.command_queue = []
@@ -712,6 +714,15 @@ class ACS:
             if isinstance(num_trackers, int) and isinstance(soft_violation_count, int)
             else 0
         )
+        # Per-tracker status: True = functional (not in soft constraint)
+        raw_st_list = getattr(star_trackers, "star_trackers", None)
+        if isinstance(raw_st_list, list):
+            self.star_tracker_status = [
+                not st.in_soft_constraint(current_ra, current_dec, utime, current_roll)
+                for st in raw_st_list
+            ]
+        else:
+            self.star_tracker_status = []
 
         # Log hard constraint violations
         if isinstance(hard_violations, int) and hard_violations > 0:

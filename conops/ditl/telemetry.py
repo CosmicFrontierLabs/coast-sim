@@ -95,6 +95,13 @@ class Housekeeping(BaseModel):
     star_tracker_functional_count: int | None = Field(
         default=None, description="Number of functional star trackers"
     )
+    star_tracker_status: list[bool] | None = Field(
+        default=None,
+        description=(
+            "Per-tracker functional status list (True = functional / not in soft constraint, "
+            "False = degraded).  Index order matches StarTrackerConfiguration.star_trackers."
+        ),
+    )
     in_constraint: str | None = Field(
         default=None, description="Name of currently violated constraint (if any)"
     )
@@ -291,6 +298,11 @@ class HousekeepingList(list[Housekeeping]):
     def star_tracker_functional_count(self) -> list[int | None]:
         """Get star tracker functional counts from all housekeeping records."""
         return [hk.star_tracker_functional_count for hk in self]
+
+    @property
+    def star_tracker_status(self) -> list[list[bool] | None]:
+        """Get per-tracker functional status from all housekeeping records."""
+        return [hk.star_tracker_status for hk in self]
 
     @property
     def in_constraint(self) -> list[str | None]:
