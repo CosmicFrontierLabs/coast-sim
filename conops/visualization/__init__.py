@@ -12,9 +12,10 @@ from .fault_management import (
     plot_fault_management_timeline,
     plot_fault_management_timeline_plotly,
 )
-from .globe_pointing import plot_sky_pointing_globe, plot_sky_pointing_plotly
+from .globe_pointing import plot_sky_pointing_globe
 from .sky_pointing import (
     plot_sky_pointing,
+    plot_sky_pointing_plotly,
     save_sky_pointing_frames,
     save_sky_pointing_movie,
 )

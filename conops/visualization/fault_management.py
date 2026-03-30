@@ -16,16 +16,20 @@ import plotly.graph_objects as go
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
+from ..common import ACSMode
 from ..config.visualization import VisualizationConfig
 
 if TYPE_CHECKING:
     from ..config.fault_management import FaultEvent, FaultManagement
+    from ..ditl import DITL, QueueDITL
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 _COLOR_YELLOW = "#FFD700"
 _COLOR_RED = "#FF4444"
 _COLOR_SAFE = "#AA44FF"  # safe_mode_trigger
 _COLOR_NOMINAL = "#44BB66"
+
+_ACS_MODE_NAMES: dict[int, str] = {m.value: m.name for m in ACSMode}
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -333,6 +337,7 @@ def plot_fault_management_timeline_plotly(
     t_end: float | None = None,
     x_axis: str = "hours",
     config: VisualizationConfig | None = None,
+    ditl: DITL | QueueDITL | None = None,
 ) -> go.Figure:
     """Plot a fault management event timeline using Plotly (interactive).
 
@@ -406,6 +411,14 @@ def plot_fault_management_timeline_plotly(
     y_map = {name: i for i, name in enumerate(row_names)}
     n_rows = len(row_names)
 
+    # ── ACS Mode row check ────────────────────────────────────────────────────
+    _has_acs = (
+        ditl is not None
+        and hasattr(ditl, "telemetry")
+        and bool(getattr(getattr(ditl, "telemetry", None), "housekeeping", None))
+    )
+    _acs_row_y = -1  # placed below all fault rows
+
     fig = go.Figure()
 
     # ── Alternating row backgrounds (matches matplotlib whitesmoke bands) ──────
@@ -423,6 +436,19 @@ def plot_fault_management_timeline_plotly(
                 line={"width": 0},
                 layer="below",
             )
+    if _has_acs:
+        fig.add_shape(
+            type="rect",
+            xref="paper",
+            yref="y",
+            x0=0,
+            x1=1,
+            y0=_acs_row_y - 0.4,
+            y1=_acs_row_y + 0.4,
+            fillcolor="rgba(235,235,235,1)",
+            line={"width": 0},
+            layer="below",
+        )
 
     # ── State-span bars ────────────────────────────────────────────────────────
     for s in _build_state_shapes_plotly(events, row_names, y_map, t0, x_axis, t_end):
@@ -491,9 +517,21 @@ def plot_fault_management_timeline_plotly(
             )
         )
 
+    # ── ACS Mode row ──────────────────────────────────────────────────────────
+    if _has_acs:
+        assert ditl is not None
+        acs_shapes, acs_scatter = _build_acs_mode_shapes_plotly(
+            ditl, _acs_row_y, t0, x_axis, config, t_end
+        )
+        for s in acs_shapes:
+            fig.add_shape(**s)
+        if acs_scatter is not None:
+            fig.add_trace(acs_scatter)
+
     # ── Layout ────────────────────────────────────────────────────────────────
     x_title = "UTC Time" if x_axis == "datetime" else "Elapsed Time (hours)"
-    height = max(350, n_rows * 70 + 150)
+    n_display_rows = n_rows + (1 if _has_acs else 0)
+    height = max(350, n_display_rows * 70 + 150)
 
     xaxis_cfg: dict[str, Any] = {
         "title": x_title,
@@ -516,9 +554,11 @@ def plot_fault_management_timeline_plotly(
         },
         yaxis={
             "title": "Parameter / Constraint",
-            "tickvals": list(range(n_rows)),
-            "ticktext": row_names,
-            "range": [-0.6, n_rows - 0.4],
+            "tickvals": ([-1] + list(range(n_rows)))
+            if _has_acs
+            else list(range(n_rows)),
+            "ticktext": (["ACS Mode"] + row_names) if _has_acs else row_names,
+            "range": [(-1.6 if _has_acs else -0.6), n_rows - 0.4],
             "showgrid": True,
             "gridcolor": "rgba(200,200,200,0.5)",
             "zeroline": False,
@@ -608,3 +648,97 @@ def _build_state_shapes_plotly(
             )
 
     return shapes
+
+
+def _build_acs_mode_shapes_plotly(
+    ditl: DITL | QueueDITL,
+    row_y: int,
+    t0: float,
+    x_axis: str,
+    config: VisualizationConfig,
+    t_end: float | None = None,
+) -> tuple[list[dict[str, Any]], go.Scatter | None]:
+    """Build shapes and a hover scatter trace for the ACS Mode row."""
+    hk = getattr(getattr(ditl, "telemetry", None), "housekeeping", None)
+    if hk is None:
+        return [], None
+
+    timestamps = hk.timestamp
+    modes = hk.acs_mode
+    if not timestamps or not modes:
+        return [], None
+
+    def _to_utime(ts: Any) -> float | None:
+        return ts.timestamp() if ts is not None else None
+
+    pairs: list[tuple[float, int]] = [
+        (u, m)
+        for u, m in (
+            (_to_utime(ts), int(mv) if mv is not None else None)
+            for ts, mv in zip(timestamps, modes)
+        )
+        if u is not None and m is not None
+    ]
+    if not pairs:
+        return [], None
+
+    shapes: list[dict[str, Any]] = []
+    seg_xs: list[Any] = []
+    seg_texts: list[str] = []
+
+    def _close_seg(mode: int, x0_utime: float, x1_utime: float) -> None:
+        color = config.mode_colors.get(_ACS_MODE_NAMES.get(mode, ""), "gray")
+        shapes.append(
+            {
+                "type": "rect",
+                "xref": "x",
+                "yref": "y",
+                "x0": _x_val_plotly(x0_utime, t0, x_axis),
+                "x1": _x_val_plotly(x1_utime, t0, x_axis),
+                "y0": row_y - 0.45,
+                "y1": row_y + 0.45,
+                "fillcolor": color,
+                "opacity": 1.0,
+                "line": {"width": 0},
+                "layer": "below",
+            }
+        )
+        seg_xs.append(_x_val_plotly(x0_utime, t0, x_axis))
+        seg_texts.append(
+            f"<b>ACS Mode: {_ACS_MODE_NAMES.get(mode, str(mode))}</b><br>"
+            f"Start: {_utime_to_datetime(x0_utime).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+        )
+
+    prev_mode: int | None = None
+    seg_start: float | None = None
+
+    for utime, mode_int in pairs:
+        if prev_mode is None:
+            prev_mode = mode_int
+            seg_start = utime
+        elif mode_int != prev_mode:
+            assert seg_start is not None
+            _close_seg(prev_mode, seg_start, utime)
+            prev_mode = mode_int
+            seg_start = utime
+
+    if prev_mode is not None and seg_start is not None:
+        end_utime = pairs[-1][0]
+        if t_end is not None:
+            end_utime = max(end_utime, t_end)
+        _close_seg(prev_mode, seg_start, end_utime)
+
+    if not seg_xs:
+        return shapes, None
+
+    scatter: go.Scatter = go.Scatter(
+        x=seg_xs,
+        y=[float(row_y)] * len(seg_xs),
+        mode="markers",
+        name="ACS Mode",
+        marker={"color": "rgba(0,0,0,0)", "size": 12},
+        text=seg_texts,
+        hoverinfo="text",
+        showlegend=False,
+    )
+    return shapes, scatter
