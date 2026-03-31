@@ -23,12 +23,7 @@ __all__ = [
     "annotate_slew_distances",
     "plot_data_management_telemetry",
     "plot_fault_management_timeline",
-    "plot_fault_management_timeline_plotly",
     "plot_sky_pointing",
-    "plot_sky_pointing_globe",
-    "plot_sky_pointing_plotly",
     "save_sky_pointing_frames",
     "save_sky_pointing_movie",
-    "plot_ditl_telemetry_plotly",
-    "plot_ditl_timeline_plotly",
 ]
