@@ -8,7 +8,7 @@ from matplotlib.font_manager import FontProperties
 from conops.ditl.ditl import DITL
 from conops.ditl.queue_ditl import QueueDITL
 
-from ..config.visualization import VisualizationConfig
+from ...config.visualization import VisualizationConfig
 
 
 def plot_data_management_telemetry(

@@ -23,11 +23,11 @@ from matplotlib.font_manager import FontProperties
 from matplotlib.patches import Circle
 from matplotlib.widgets import Button, Slider
 
-from ..common import dtutcfromtimestamp
-from ..config import DTOR
-from ..config.constants import EARTH_OCCULT, MOON_OCCULT, SUN_OCCULT
-from ..config.observation_categories import ObservationCategories
-from ..config.visualization import VisualizationConfig
+from ...common import dtutcfromtimestamp
+from ...config import DTOR
+from ...config.constants import EARTH_OCCULT, MOON_OCCULT, SUN_OCCULT
+from ...config.observation_categories import ObservationCategories
+from ...config.visualization import VisualizationConfig
 from .globe_pointing import (
     _build_st_boresights,
     _get_vis_config,
@@ -37,7 +37,7 @@ from .globe_pointing import (
 )
 
 if TYPE_CHECKING:
-    from ..ditl import DITL, QueueDITL
+    from ...ditl import DITL, QueueDITL
 
 
 def _get_visualization_config(

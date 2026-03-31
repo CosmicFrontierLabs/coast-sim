@@ -1,23 +1,20 @@
 """Visualization utilities for CONOPS simulations."""
 
-from .mpl.acs_mode_analysis import plot_acs_mode_distribution
-from .mpl.data_management import plot_data_management_telemetry
-from .mpl.ditl_telemetry import plot_ditl_telemetry
-from .mpl.ditl_timeline import (
+from .acs_mode_analysis import plot_acs_mode_distribution
+from .data_management import plot_data_management_telemetry
+from .ditl_telemetry import plot_ditl_telemetry
+from .ditl_timeline import (
     annotate_slew_distances,
     plot_ditl_timeline,
 )
-from .mpl.fault_management import plot_fault_management_timeline
-from .mpl.sky_pointing import (
+from .fault_management import (
+    plot_fault_management_timeline,
+)
+from .sky_pointing import (
     plot_sky_pointing,
     save_sky_pointing_frames,
     save_sky_pointing_movie,
 )
-from .plotly.ditl_telemetry import plot_ditl_telemetry_plotly
-from .plotly.ditl_timeline import plot_ditl_timeline_plotly
-from .plotly.fault_management import plot_fault_management_timeline_plotly
-from .plotly.globe_pointing import plot_sky_pointing_globe
-from .plotly.sky_pointing import plot_sky_pointing_plotly
 
 __all__ = [
     "plot_ditl_timeline",

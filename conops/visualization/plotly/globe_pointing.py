@@ -24,13 +24,13 @@ import matplotlib.colors as mcolors
 import numpy as np
 import plotly.graph_objects as go
 
-from ..common import dtutcfromtimestamp
-from ..config.constants import EARTH_OCCULT, MOON_OCCULT, SUN_OCCULT
-from ..config.observation_categories import ObservationCategories
-from ..config.visualization import VisualizationConfig
+from ...common import dtutcfromtimestamp
+from ...config.constants import EARTH_OCCULT, MOON_OCCULT, SUN_OCCULT
+from ...config.observation_categories import ObservationCategories
+from ...config.visualization import VisualizationConfig
 
 if TYPE_CHECKING:
-    from ..ditl import DITL, QueueDITL
+    from ...ditl import DITL, QueueDITL
 
 
 # ---------------------------------------------------------------------------

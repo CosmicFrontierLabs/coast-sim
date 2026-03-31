@@ -2,13 +2,15 @@
 
 import matplotlib.pyplot as plt
 
-from conops.visualization.data_management import plot_data_management_telemetry
+from conops.visualization import plot_data_management_telemetry
 
 
 class TestPlotDataManagementTelemetry:
     """Test plot_data_management_telemetry function."""
 
-    def test_plot_data_management_telemetry_returns_figure_and_axes(self, mock_ditl):
+    def test_plot_data_management_telemetry_returns_figure_and_axes(
+        self, mock_ditl
+    ) -> None:
         """Test that plot_data_management_telemetry returns a figure and axes."""
         fig, axes = plot_data_management_telemetry(mock_ditl)
 
@@ -19,7 +21,7 @@ class TestPlotDataManagementTelemetry:
         # Clean up
         plt.close(fig)
 
-    def test_plot_data_management_telemetry_custom_figsize(self, mock_ditl):
+    def test_plot_data_management_telemetry_custom_figsize(self, mock_ditl) -> None:
         """Test plot_data_management_telemetry with custom figsize."""
         figsize = (14, 12)
         fig, axes = plot_data_management_telemetry(mock_ditl, figsize=figsize)

@@ -8,11 +8,11 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.font_manager import FontProperties
 
-from ..common import normalize_acs_mode
-from ..config.visualization import VisualizationConfig
+from ...common import normalize_acs_mode
+from ...config.visualization import VisualizationConfig
 
 if TYPE_CHECKING:
-    from ..ditl.ditl_mixin import DITLMixin
+    from ...ditl.ditl_mixin import DITLMixin
 
 
 def plot_acs_mode_distribution(
