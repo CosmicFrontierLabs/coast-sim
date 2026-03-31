@@ -137,11 +137,12 @@ class Constraint(ConfigModel):
     ignore_roll: bool = Field(
         default=False,
         description=(
-            "When True, all constraint checks are performed with target_roll=None "
-            "regardless of the roll passed by the caller.  Setting this to True "
-            "causes rust-ephem to return False (visible) for any pointing that is "
-            "accessible at *some* roll angle, which is the correct semantics for "
-            "field-of-regard calculations where roll is a free parameter."
+            "When True, roll is intended to be treated as a free parameter for "
+            "constraint checks (e.g. callers may pass target_roll=None so that "
+            "rust-ephem returns False (visible) for any pointing that is accessible "
+            "at some roll angle). This field does not itself modify or override "
+            "the target_roll values passed by callers; it is a configuration flag "
+            "interpreted by higher-level logic."
         ),
     )
 
