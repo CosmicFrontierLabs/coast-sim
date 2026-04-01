@@ -28,6 +28,9 @@ class TestHousekeeping:
         assert hk.roll == 0.0  # Has default
         assert hk.acs_mode is None
         assert hk.for_solid_angle_sr is None
+        assert hk.earth_angle_deg is None
+        assert hk.moon_angle_deg is None
+        assert hk.in_constraint is None
 
     def test_housekeeping_creation_with_values(self) -> None:
         """Test creating Housekeeping with specific values."""
@@ -218,6 +221,101 @@ class TestTelemetry:
         assert tm.housekeeping.sun_angle_deg == [10.0, 20.0]
         assert tm.housekeeping.for_solid_angle_sr == [3.1, 2.8]
         assert tm.housekeeping.in_eclipse == [False, True]
+
+
+class TestHousekeepingNewFields:
+    """Test earth_angle_deg, moon_angle_deg, and in_constraint fields."""
+
+    def _make_ts(self, offset: float = 0.0) -> datetime:
+        return datetime.fromtimestamp(1000.0 + offset, tz=timezone.utc)
+
+    def test_new_fields_default_to_none(self) -> None:
+        """New fields are None when not supplied."""
+        hk = Housekeeping(timestamp=self._make_ts())
+        assert hk.earth_angle_deg is None
+        assert hk.moon_angle_deg is None
+        assert hk.in_constraint is None
+
+    def test_new_fields_round_trip(self) -> None:
+        """New fields survive a full construction → access round-trip."""
+        hk = Housekeeping(
+            timestamp=self._make_ts(),
+            earth_angle_deg=25.5,
+            moon_angle_deg=42.0,
+            in_constraint="Earth",
+        )
+        assert hk.earth_angle_deg == 25.5
+        assert hk.moon_angle_deg == 42.0
+        assert hk.in_constraint == "Earth"
+
+    def test_extract_field_earth_angle(self) -> None:
+        """extract_field works for earth_angle_deg."""
+        hk1 = Housekeeping(timestamp=self._make_ts(0), earth_angle_deg=10.0)
+        hk2 = Housekeeping(timestamp=self._make_ts(1), earth_angle_deg=None)
+        hk3 = Housekeeping(timestamp=self._make_ts(2), earth_angle_deg=30.0)
+        assert Housekeeping.extract_field([hk1, hk2, hk3], "earth_angle_deg") == [
+            10.0,
+            None,
+            30.0,
+        ]
+
+    def test_extract_field_moon_angle(self) -> None:
+        """extract_field works for moon_angle_deg."""
+        hk1 = Housekeeping(timestamp=self._make_ts(0), moon_angle_deg=5.0)
+        hk2 = Housekeeping(timestamp=self._make_ts(1), moon_angle_deg=15.0)
+        assert Housekeeping.extract_field([hk1, hk2], "moon_angle_deg") == [5.0, 15.0]
+
+    def test_extract_field_in_constraint(self) -> None:
+        """extract_field works for in_constraint."""
+        hk1 = Housekeeping(timestamp=self._make_ts(0), in_constraint="Sun")
+        hk2 = Housekeeping(timestamp=self._make_ts(1), in_constraint=None)
+        hk3 = Housekeeping(timestamp=self._make_ts(2), in_constraint="Moon")
+        assert Housekeeping.extract_field([hk1, hk2, hk3], "in_constraint") == [
+            "Sun",
+            None,
+            "Moon",
+        ]
+
+    def test_housekeeping_list_earth_angle_property(self) -> None:
+        """HousekeepingList.earth_angle_deg returns values from all records."""
+        hk1 = Housekeeping(timestamp=self._make_ts(0), earth_angle_deg=10.0)
+        hk2 = Housekeeping(timestamp=self._make_ts(1), earth_angle_deg=None)
+        hkl = HousekeepingList([hk1, hk2])
+        assert hkl.earth_angle_deg == [10.0, None]
+
+    def test_housekeeping_list_moon_angle_property(self) -> None:
+        """HousekeepingList.moon_angle_deg returns values from all records."""
+        hk1 = Housekeeping(timestamp=self._make_ts(0), moon_angle_deg=55.0)
+        hk2 = Housekeeping(timestamp=self._make_ts(1), moon_angle_deg=22.3)
+        hkl = HousekeepingList([hk1, hk2])
+        assert hkl.moon_angle_deg == [55.0, 22.3]
+
+    def test_housekeeping_list_in_constraint_property(self) -> None:
+        """HousekeepingList.in_constraint returns values from all records."""
+        hk1 = Housekeeping(timestamp=self._make_ts(0), in_constraint="Sun")
+        hk2 = Housekeeping(timestamp=self._make_ts(1), in_constraint=None)
+        hk3 = Housekeeping(timestamp=self._make_ts(2), in_constraint="Earth")
+        hkl = HousekeepingList([hk1, hk2, hk3])
+        assert hkl.in_constraint == ["Sun", None, "Earth"]
+
+    def test_telemetry_attribute_access_new_fields(self) -> None:
+        """New fields are accessible via Telemetry.housekeeping properties."""
+        hk1 = Housekeeping(
+            timestamp=self._make_ts(0),
+            earth_angle_deg=12.0,
+            moon_angle_deg=45.0,
+            in_constraint=None,
+        )
+        hk2 = Housekeeping(
+            timestamp=self._make_ts(1),
+            earth_angle_deg=None,
+            moon_angle_deg=55.0,
+            in_constraint="Moon",
+        )
+        tm = Telemetry(housekeeping=HousekeepingList([hk1, hk2]))
+        assert tm.housekeeping.earth_angle_deg == [12.0, None]
+        assert tm.housekeeping.moon_angle_deg == [45.0, 55.0]
+        assert tm.housekeeping.in_constraint == [None, "Moon"]
 
     def test_attribute_access_on_data(self) -> None:
         """Test attribute access on data list."""

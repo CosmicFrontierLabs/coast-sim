@@ -66,4 +66,4 @@ class DITLEvent(BaseModel):
 
     def __str__(self) -> str:
         """Format the event for display."""
-        return f"[{self.timestamp}] {self.description}"
+        return f"[{self.timestamp}] [{self.event_type}] [{self.acs_mode}] {self.description}"

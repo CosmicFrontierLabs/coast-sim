@@ -359,7 +359,7 @@ class TestDumbSchedulerConstraints:
     def test_constraint_with_all_times_valid_schedules(
         self, scheduler, mock_ephemeris, simple_target_factory
     ):
-        scheduler.constraint.in_constraint = lambda ra, dec, utime, hardonly=True: False
+        scheduler.constraint.in_constraint = lambda *args, **kwargs: False
         target = simple_target_factory(1, 45.0, 30.0, 600)
         scheduler.targlist.add_target(target)
         scheduler.schedule()

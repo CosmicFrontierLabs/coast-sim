@@ -5,11 +5,11 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pytest
 
-from conops.visualization.sky_pointing import (
-    SkyPointingController,
+from conops.visualization import (
     plot_sky_pointing,
     save_sky_pointing_frames,
 )
+from conops.visualization.mpl.sky_pointing import SkyPointingController
 
 
 @pytest.fixture
@@ -151,8 +151,8 @@ class TestPlotSkyPointing:
         with pytest.raises(ValueError, match="no ephemeris"):
             plot_sky_pointing(ditl)
 
-    @patch("conops.visualization.sky_pointing.SkyPointingController")
-    @patch("conops.visualization.sky_pointing.plt")
+    @patch("conops.visualization.mpl.sky_pointing.SkyPointingController")
+    @patch("conops.visualization.mpl.sky_pointing.plt")
     def test_plot_sky_pointing_creates_figure(
         self, mock_plt, mock_controller_class, mock_ditl
     ):
@@ -175,7 +175,7 @@ class TestPlotSkyPointing:
         # Should call add_controls since show_controls=True
         mock_controller.add_controls.assert_called_once()
 
-    @patch("conops.visualization.sky_pointing.plt")
+    @patch("conops.visualization.mpl.sky_pointing.plt")
     def test_plot_sky_pointing_without_controls(self, mock_plt, mock_ditl):
         """Test plot without interactive controls."""
         mock_fig = Mock()
@@ -185,7 +185,7 @@ class TestPlotSkyPointing:
         mock_plt.subplots.return_value = (mock_fig, mock_ax)
 
         with patch(
-            "conops.visualization.sky_pointing.SkyPointingController._plot_earth_disk"
+            "conops.visualization.mpl.sky_pointing.SkyPointingController._plot_earth_disk"
         ):
             fig, ax, controller = plot_sky_pointing(
                 mock_ditl,
@@ -200,7 +200,7 @@ class TestPlotSkyPointing:
 class TestSkyPointingController:
     """Test SkyPointingController class."""
 
-    @patch("conops.visualization.sky_pointing.plt")
+    @patch("conops.visualization.mpl.sky_pointing.plt")
     def test_controller_init(self, mock_plt, mock_ditl):
         """Test controller initialization."""
         mock_fig = Mock()
@@ -224,7 +224,7 @@ class TestSkyPointingController:
         assert controller.current_time_idx == 0
         assert controller.playing is False
 
-    @patch("conops.visualization.sky_pointing.plt")
+    @patch("conops.visualization.mpl.sky_pointing.plt")
     def test_find_time_index(self, mock_plt, mock_ditl):
         """Test finding time index."""
         mock_fig = Mock()
@@ -241,7 +241,7 @@ class TestSkyPointingController:
         idx = controller._find_time_index(middle_time)
         assert idx == 50
 
-    @patch("conops.visualization.sky_pointing.plt")
+    @patch("conops.visualization.mpl.sky_pointing.plt")
     def test_add_controls(self, mock_plt, mock_ditl):
         """Test adding control widgets."""
         mock_fig = Mock()
@@ -255,8 +255,8 @@ class TestSkyPointingController:
         )
 
         with (
-            patch("conops.visualization.sky_pointing.Slider"),
-            patch("conops.visualization.sky_pointing.Button"),
+            patch("conops.visualization.mpl.sky_pointing.Slider"),
+            patch("conops.visualization.mpl.sky_pointing.Button"),
         ):
             controller.add_controls()
 
@@ -265,7 +265,7 @@ class TestSkyPointingController:
             assert controller.prev_button is not None
             assert controller.next_button is not None
 
-    @patch("conops.visualization.sky_pointing.plt")
+    @patch("conops.visualization.mpl.sky_pointing.plt")
     def test_slider_change(self, mock_plt, mock_ditl):
         """Test slider value change."""
         mock_fig = Mock()
@@ -282,7 +282,7 @@ class TestSkyPointingController:
             assert controller.current_time_idx == 10
             mock_update.assert_called_once()
 
-    @patch("conops.visualization.sky_pointing.plt")
+    @patch("conops.visualization.mpl.sky_pointing.plt")
     def test_prev_button(self, mock_plt, mock_ditl):
         """Test previous button."""
         mock_fig = Mock()
@@ -301,7 +301,7 @@ class TestSkyPointingController:
             assert controller.current_time_idx == 9
             controller.slider.set_val.assert_called_with(9)
 
-    @patch("conops.visualization.sky_pointing.plt")
+    @patch("conops.visualization.mpl.sky_pointing.plt")
     def test_next_button(self, mock_plt, mock_ditl):
         """Test next button."""
         mock_fig = Mock()
@@ -320,7 +320,7 @@ class TestSkyPointingController:
             assert controller.current_time_idx == 11
             controller.slider.set_val.assert_called_with(11)
 
-    @patch("conops.visualization.sky_pointing.plt")
+    @patch("conops.visualization.mpl.sky_pointing.plt")
     def test_start_animation(self, mock_plt, mock_ditl):
         """Test starting animation."""
         mock_fig = Mock()
@@ -343,7 +343,7 @@ class TestSkyPointingController:
         assert controller.playing is True
         controller.play_button.label.set_text.assert_called_with("Pause")
 
-    @patch("conops.visualization.sky_pointing.plt")
+    @patch("conops.visualization.mpl.sky_pointing.plt")
     def test_stop_animation(self, mock_plt, mock_ditl):
         """Test stopping animation."""
         mock_fig = Mock()
@@ -370,9 +370,9 @@ class TestSkyPointingController:
 class TestSaveFrames:
     """Test save_sky_pointing_frames function."""
 
-    @patch("conops.visualization.sky_pointing.os")
-    @patch("conops.visualization.sky_pointing.plot_sky_pointing")
-    @patch("conops.visualization.sky_pointing.plt")
+    @patch("conops.visualization.mpl.sky_pointing.os")
+    @patch("conops.visualization.mpl.sky_pointing.plot_sky_pointing")
+    @patch("conops.visualization.mpl.sky_pointing.plt")
     def test_save_frames(self, mock_plt, mock_plot, mock_os, mock_ditl):
         """Test saving frames to directory."""
         mock_fig = Mock()
@@ -380,7 +380,7 @@ class TestSaveFrames:
         mock_plot.return_value = (mock_fig, mock_ax, None)
 
         with patch(
-            "conops.visualization.sky_pointing.SkyPointingController"
+            "conops.visualization.mpl.sky_pointing.SkyPointingController"
         ) as mock_controller_class:
             mock_controller = Mock()
             mock_controller_class.return_value = mock_controller
@@ -396,9 +396,9 @@ class TestSaveFrames:
             mock_os.makedirs.assert_called_once_with("./test_output", exist_ok=True)
             assert mock_fig.savefig.call_count == 10
 
-    @patch("conops.visualization.sky_pointing.os")
-    @patch("conops.visualization.sky_pointing.plot_sky_pointing")
-    @patch("conops.visualization.sky_pointing.plt")
+    @patch("conops.visualization.mpl.sky_pointing.os")
+    @patch("conops.visualization.mpl.sky_pointing.plot_sky_pointing")
+    @patch("conops.visualization.mpl.sky_pointing.plt")
     def test_save_frames_all(self, mock_plt, mock_plot, mock_os, mock_ditl):
         """Test saving all frames (interval=1)."""
         mock_fig = Mock()
@@ -406,7 +406,7 @@ class TestSaveFrames:
         mock_plot.return_value = (mock_fig, mock_ax, None)
 
         with patch(
-            "conops.visualization.sky_pointing.SkyPointingController"
+            "conops.visualization.mpl.sky_pointing.SkyPointingController"
         ) as mock_controller_class:
             mock_controller = Mock()
             mock_controller_class.return_value = mock_controller
@@ -424,7 +424,7 @@ class TestSaveFrames:
 class TestPlotElements:
     """Test individual plotting methods."""
 
-    @patch("conops.visualization.sky_pointing.plt")
+    @patch("conops.visualization.mpl.sky_pointing.plt")
     def test_plot_scheduled_observations_empty(self, mock_plt, mock_ditl):
         """Test plotting with no scheduled observations."""
         mock_ditl.plan = []
@@ -441,7 +441,7 @@ class TestPlotElements:
         controller._plot_scheduled_observations()
         mock_ax.scatter.assert_not_called()
 
-    @patch("conops.visualization.sky_pointing.plt")
+    @patch("conops.visualization.mpl.sky_pointing.plt")
     def test_plot_current_pointing(self, mock_plt, mock_ditl):
         """Test plotting current pointing."""
         mock_fig = Mock()

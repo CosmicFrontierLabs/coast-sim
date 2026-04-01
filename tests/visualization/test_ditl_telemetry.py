@@ -2,7 +2,7 @@
 
 import matplotlib.pyplot as plt
 
-from conops.visualization.ditl_telemetry import plot_ditl_telemetry
+from conops.visualization import plot_ditl_telemetry
 
 
 class TestPlotDitlTelemetry:

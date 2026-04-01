@@ -99,11 +99,11 @@ class TestStarTrackerConfigurationConstraintInteraction:
         # Create trackers with different orientations
         st1 = StarTracker(
             name="ST1",
-            orientation=StarTrackerOrientation(roll=0.0, pitch=0.0, yaw=0.0),
+            orientation=StarTrackerOrientation(boresight=(1.0, 0.0, 0.0)),
         )
         st2 = StarTracker(
             name="ST2",
-            orientation=StarTrackerOrientation(roll=45.0, pitch=0.0, yaw=0.0),
+            orientation=StarTrackerOrientation(boresight=(0.0, 1.0, 0.0)),
         )
 
         config = StarTrackerConfiguration(

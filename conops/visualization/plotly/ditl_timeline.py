@@ -1,0 +1,691 @@
+"""DITL Timeline Visualization
+
+Provides functions to create timeline plots similar to proposal figures,
+showing spacecraft operations including observations, slews, SAA passages,
+eclipses, and ground station passes.
+"""
+
+from datetime import datetime, timezone
+from typing import Any, cast
+
+import matplotlib.colors as mcolors
+import plotly.graph_objects as go
+from matplotlib.axes import Axes
+
+from conops.ditl.ditl import DITL
+from conops.ditl.queue_ditl import QueueDITL
+
+from ...common import ACSMode
+from ...config import ObservationCategories
+from ...config.visualization import VisualizationConfig
+
+# Mapping of matplotlib color names to CSS color names that Plotly accepts
+MATPLOTLIB_TO_PLOTLY_COLORS = {
+    "tab:blue": "blue",
+    "tab:orange": "orange",
+    "tab:green": "green",
+    "tab:red": "red",
+    "tab:purple": "purple",
+    "tab:brown": "brown",
+    "tab:pink": "pink",
+    "tab:gray": "gray",
+    "tab:grey": "gray",
+    "tab:olive": "olive",
+    "tab:cyan": "cyan",
+    "lightgray": "lightgray",
+    "black": "black",
+    "white": "white",
+}
+
+
+def _convert_matplotlib_color_to_plotly(color: str) -> str:
+    """Convert matplotlib color to Plotly-compatible color.
+
+    Parameters
+    ----------
+    color : str
+        Matplotlib color specification
+
+    Returns
+    -------
+    str
+        Plotly-compatible color
+    """
+    # Check if it's already a hex color
+    if color.startswith("#"):
+        return color
+
+    # Check if it's in our mapping
+    if color in MATPLOTLIB_TO_PLOTLY_COLORS:
+        return MATPLOTLIB_TO_PLOTLY_COLORS[color]
+
+    # Try to convert using matplotlib
+    try:
+        # Convert to hex
+        rgba = mcolors.to_rgba(color)
+        return f"rgba({int(rgba[0] * 255)},{int(rgba[1] * 255)},{int(rgba[2] * 255)},{rgba[3]})"
+    except (ValueError, TypeError):
+        # Fallback to blue
+        return "blue"
+
+
+def _extract_observations(
+    ditl: QueueDITL | DITL,
+    t_start: float,
+    offset_hours: float,
+    categories: ObservationCategories | None = None,
+) -> dict[str, list[tuple[float, float]]]:
+    """Extract observation segments grouped by type based on obsid.
+
+    Parameters
+    ----------
+    ditl : QueueDITL or DITL
+        The DITL simulation object.
+    t_start : float
+        Simulation start time in seconds.
+    offset_hours : float
+        Time offset in hours.
+    categories : ObservationCategories, optional
+        Configuration for observation categories. If None, uses default categories.
+    """
+    # Use provided categories or default
+    if categories is None:
+        categories = ObservationCategories.default_categories()
+
+    # Initialize observation dict with all category names
+    observations: dict[str, list[tuple[float, float]]] = {
+        name: [] for name in categories.get_all_category_names()
+    }
+
+    for ppt in ditl.plan:
+        # Calculate observation start and duration
+        obs_start = (ppt.begin + ppt.slewtime - t_start) / 3600 - offset_hours
+        obs_duration = (ppt.end - (ppt.begin + ppt.slewtime)) / 3600
+
+        # Skip if no duration or negative duration
+        if obs_duration <= 0:
+            continue
+
+        # Categorize by obsid using configuration
+        category = categories.get_category(ppt.obsid)
+        observations[category.name].append((obs_start, obs_duration))
+
+    return observations
+
+
+def _extract_slews(
+    ditl: QueueDITL | DITL, t_start: float, offset_hours: float
+) -> list[tuple[float, float]]:
+    """Extract slew segments from plan."""
+    slew_segments = []
+    for ppt in ditl.plan:
+        if ppt.slewtime > 0:
+            slew_start = (ppt.begin - t_start) / 3600 - offset_hours
+            slew_duration = ppt.slewtime / 3600
+            slew_segments.append((slew_start, slew_duration))
+    return slew_segments
+
+
+def _extract_safe_mode(
+    ditl: QueueDITL | DITL, t_start: float, offset_hours: float
+) -> list[tuple[float, float]]:
+    """Extract safe mode periods from mode timeline."""
+    if not hasattr(ditl, "telemetry") or not ditl.telemetry.housekeeping:
+        return []
+
+    safe_segments: list[tuple[float, float]] = []
+    in_safe = False
+    safe_start = 0.0
+
+    for i, mode_val in enumerate(ditl.telemetry.housekeeping.acs_mode):
+        # Check if in SAFE mode (mode value = 5)
+        if isinstance(mode_val, ACSMode):
+            is_safe = mode_val == ACSMode.SAFE
+        else:
+            is_safe = mode_val == ACSMode.SAFE.value
+
+        timestamp = ditl.telemetry.housekeeping.timestamp[i]
+        if timestamp is None:
+            continue
+
+        time_hours = (
+            timestamp - datetime.fromtimestamp(t_start, tz=timezone.utc)
+        ).total_seconds() / 3600 - offset_hours
+
+        if is_safe and not in_safe:
+            # Entering safe mode
+            in_safe = True
+            safe_start = time_hours
+        elif not is_safe and in_safe:
+            # Exiting safe mode
+            in_safe = False
+            safe_duration = time_hours - safe_start
+            safe_segments.append((safe_start, safe_duration))
+
+    # Handle safe mode extending to end of simulation
+    if in_safe:
+        end_time = ditl.telemetry.housekeeping.timestamp[-1]
+        if end_time is not None:
+            safe_duration = (
+                (
+                    end_time - datetime.fromtimestamp(t_start, tz=timezone.utc)
+                ).total_seconds()
+                / 3600
+                - offset_hours
+                - safe_start
+            )
+            safe_segments.append((safe_start, safe_duration))
+
+    return safe_segments
+
+
+def _extract_saa_passages(
+    ditl: QueueDITL | DITL, t_start: float, offset_hours: float
+) -> list[tuple[float, float]]:
+    """Extract SAA passage times from mode timeline."""
+    if not hasattr(ditl, "telemetry") or not ditl.telemetry.housekeeping:
+        return []
+
+    saa_segments: list[tuple[float, float]] = []
+    in_saa = False
+    saa_start = 0.0
+
+    for i, mode_val in enumerate(ditl.telemetry.housekeeping.acs_mode):
+        # Check if in SAA mode
+        if isinstance(mode_val, ACSMode):
+            is_saa = mode_val == ACSMode.SAA
+        else:
+            is_saa = mode_val == ACSMode.SAA.value
+
+        timestamp = ditl.telemetry.housekeeping.timestamp[i]
+        if timestamp is None:
+            continue
+
+        time_hours = (
+            timestamp - datetime.fromtimestamp(t_start, tz=timezone.utc)
+        ).total_seconds() / 3600 - offset_hours
+
+        if is_saa and not in_saa:
+            # Entering SAA
+            in_saa = True
+            saa_start = time_hours
+        elif not is_saa and in_saa:
+            # Exiting SAA
+            in_saa = False
+            saa_duration = time_hours - saa_start
+            saa_segments.append((saa_start, saa_duration))
+
+    # Handle SAA extending to end of simulation
+    if in_saa:
+        end_time = ditl.telemetry.housekeeping.timestamp[-1]
+        if end_time is not None:
+            saa_duration = (
+                (
+                    end_time - datetime.fromtimestamp(t_start, tz=timezone.utc)
+                ).total_seconds()
+                / 3600
+                - offset_hours
+                - saa_start
+            )
+            saa_segments.append((saa_start, saa_duration))
+
+    return saa_segments
+
+
+def _extract_eclipses(
+    ditl: QueueDITL | DITL, t_start: float, offset_hours: float
+) -> list[tuple[float, float]]:
+    """Extract eclipse periods from constraint or mode timeline."""
+    eclipse_segments: list[tuple[float, float]] = []
+
+    # Try to get eclipse info from the constraint if available
+    if (
+        hasattr(ditl, "constraint")
+        and ditl.constraint is not None
+        and hasattr(ditl, "telemetry")
+        and ditl.telemetry.housekeeping
+    ):
+        in_eclipse = False
+        eclipse_start = 0.0
+
+        for i, timestamp in enumerate(ditl.telemetry.housekeeping.timestamp):
+            if timestamp is None:
+                continue
+
+            time_hours = (
+                timestamp - datetime.fromtimestamp(t_start, tz=timezone.utc)
+            ).total_seconds() / 3600 - offset_hours
+
+            # Check if in eclipse using constraint
+            is_eclipsed = ditl.constraint.in_eclipse(
+                ra=0, dec=0, time=timestamp.timestamp()
+            )
+
+            if is_eclipsed and not in_eclipse:
+                # Entering eclipse
+                in_eclipse = True
+                eclipse_start = time_hours
+            elif not is_eclipsed and in_eclipse:
+                # Exiting eclipse
+                in_eclipse = False
+                eclipse_duration = time_hours - eclipse_start
+                eclipse_segments.append((eclipse_start, eclipse_duration))
+
+        # Handle eclipse extending to end of simulation
+        if in_eclipse:
+            end_time = ditl.telemetry.housekeeping.timestamp[-1]
+            if end_time is not None:
+                eclipse_duration = (
+                    (
+                        end_time - datetime.fromtimestamp(t_start, tz=timezone.utc)
+                    ).total_seconds()
+                    / 3600
+                    - offset_hours
+                    - eclipse_start
+                )
+                eclipse_segments.append((eclipse_start, eclipse_duration))
+
+    return eclipse_segments
+
+
+def _extract_ground_passes(
+    ditl: QueueDITL | DITL, t_start: float, offset_hours: float
+) -> list[tuple[float, float]]:
+    """Extract ground station pass times from ACS pass list."""
+    if not hasattr(ditl, "acs") or ditl.acs is None:
+        return []
+
+    gs_segments = []
+
+    # Check if ACS has pass requests (PassTimes object)
+    if hasattr(ditl.acs, "passrequests") and ditl.acs.passrequests:
+        pass_list = ditl.acs.passrequests
+        # PassTimes object has a passes attribute with the list
+        if hasattr(pass_list, "passes"):
+            for gs_pass in pass_list.passes:
+                if gs_pass.length is not None:
+                    pass_start = (gs_pass.begin - t_start) / 3600 - offset_hours
+                    pass_duration = gs_pass.length / 3600
+                    gs_segments.append((pass_start, pass_duration))
+
+    return gs_segments
+
+
+def annotate_slew_distances(
+    ax: Axes,
+    ditl: QueueDITL | DITL,
+    t_start: float,
+    offset_hours: float,
+    slew_indices: list[int],
+    font_family: str = "Helvetica",
+    font_size: int = 9,
+) -> Axes:
+    """Add annotations showing slew distances for specific slews.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        The axes to add annotations to.
+    ditl : QueueDITL or DITL
+        The DITL simulation object.
+    t_start : float
+        Simulation start time in Unix seconds.
+    offset_hours : float
+        Time offset in hours.
+    slew_indices : list of int
+        Indices in ditl.plan of slews to annotate.
+    font_family : str, optional
+        Font family for annotation text.
+    font_size : int, optional
+        Font size for annotation text.
+    """
+    connectionstyle = "angle,angleA=0,angleB=90,rad=0"
+
+    for idx in slew_indices:
+        if idx < len(ditl.plan):
+            ppt = ditl.plan[idx]
+            if ppt.slewtime > 0 and hasattr(ppt, "slewdist"):
+                slew_start = (ppt.begin - t_start) / 3600 - offset_hours
+
+                # Add arrow annotation
+                ax.annotate(
+                    "",
+                    (slew_start, 0.25),
+                    xycoords="data",
+                    xytext=(slew_start - 0.75, 0.14),
+                    textcoords="data",
+                    arrowprops=dict(
+                        arrowstyle="->",
+                        color="blue",
+                        shrinkA=5,
+                        shrinkB=5,
+                        patchA=None,
+                        patchB=None,
+                        connectionstyle=connectionstyle,
+                    ),
+                )
+
+                # Add distance text
+                ax.text(
+                    slew_start - 0.55,
+                    0.14,
+                    f"{ppt.slewdist:.0f}°",
+                    ha="right",
+                    va="center",
+                    fontsize=font_size,
+                    fontname=font_family,
+                )
+
+    return ax
+
+
+def plot_ditl_timeline_plotly(
+    ditl: DITL | QueueDITL,
+    offset_hours: float = 0.0,
+    orbit_period: float = 5762.0,
+    show_orbit_numbers: bool = True,
+    show_saa: bool = False,
+    font_family: str | None = None,
+    font_size: int | None = None,
+    observation_categories: ObservationCategories | None = None,
+    config: VisualizationConfig | None = None,
+    title: str = "DITL Timeline",
+) -> go.Figure:
+    """Create a Plotly DITL timeline showing spacecraft operations.
+
+    Creates an interactive timeline visualization showing:
+    - Orbit numbers (optional)
+    - Science observations (color-coded by obsid range)
+    - Slews and settling time
+    - Safe mode periods
+    - SAA passages
+    - Eclipses
+    - Ground station passes
+
+    Parameters
+    ----------
+    ditl : QueueDITL or DITL
+        The DITL simulation object with completed simulation data.
+    offset_hours : float, optional
+        Time offset in hours to shift the timeline (default: 0).
+    orbit_period : float, optional
+        Orbital period in seconds for orbit number display (default: 5762.0).
+    show_orbit_numbers : bool, optional
+        Whether to show orbit numbers at the top (default: True).
+    show_saa : bool, optional
+        Whether to show SAA passages (default: False).
+    font_family : str, optional
+        Font family to use for text. If None, uses config.font_family (default: 'Helvetica').
+    font_size : int, optional
+        Base font size for labels. If None, uses config.label_font_size (default: 11).
+    observation_categories : ObservationCategories, optional
+        Configuration for categorizing observations by target ID ranges.
+        If None, attempts to use ditl.config.observation_categories, then
+        falls back to default categories.
+    config : VisualizationConfig, optional
+        Visualization configuration settings. If None, uses ditl.config.visualization if available.
+    title : str, optional
+        Title for the plot (default: "DITL Timeline").
+
+    Returns
+    -------
+    fig : plotly.graph_objects.Figure
+        The created Plotly figure.
+
+    Examples
+    --------
+    >>> from conops import QueueDITL
+    >>> ditl = QueueDITL(config)
+    >>> ditl.calc()
+    >>> fig = plot_ditl_timeline_plotly(ditl)
+    >>> fig.show()
+    """
+    # Resolve config
+    if config is None:
+        if (
+            hasattr(ditl, "config")
+            and hasattr(ditl.config, "visualization")
+            and isinstance(ditl.config.visualization, VisualizationConfig)
+        ):
+            config = ditl.config.visualization
+        else:
+            config = VisualizationConfig()
+
+    # Set default font settings
+    if font_family is None:
+        font_family = config.font_family
+    if font_size is None:
+        font_size = config.label_font_size
+
+    # Extract simulation start time
+    if not ditl.plan or len(ditl.plan) == 0:
+        raise ValueError("DITL simulation has no pointings. Run calc() first.")
+
+    t_start = ditl.plan[0].begin
+
+    # Calculate timeline duration in hours
+    if hasattr(ditl, "utime") and len(ditl.utime) > 0:
+        duration_hours = (ditl.utime[-1] - ditl.utime[0]) / 3600.0
+    else:
+        duration_hours = 24.0
+
+    # Create figure
+    fig = go.Figure()
+
+    # Extract observation segments from plan by obsid ranges
+    if observation_categories is None:
+        if hasattr(ditl, "config") and hasattr(ditl.config, "observation_categories"):
+            observation_categories = ditl.config.observation_categories
+
+    observations_by_type = _extract_observations(
+        ditl, t_start, offset_hours, observation_categories
+    )
+
+    # Get color mapping from categories configuration
+    if observation_categories is None:
+        observation_categories = ObservationCategories.default_categories()
+
+    # Plot observations
+    labels_shown = set()
+    for obs_type, segments in observations_by_type.items():
+        if segments and obs_type != "Charging":
+            color = _convert_matplotlib_color_to_plotly(
+                observation_categories.get_category_color(obs_type)
+            )
+            label = f"{obs_type} Target" if obs_type != "Calibration" else obs_type
+
+            for i, (start, duration) in enumerate(segments):
+                # Only show legend for the first segment of each observation type
+                show_legend = label not in labels_shown
+                if show_legend:
+                    labels_shown.add(label)
+
+                fig.add_trace(
+                    go.Bar(
+                        x=[duration],
+                        y=cast(Any, ["Observations"]),
+                        orientation="h",
+                        marker_color=color,
+                        name=label,
+                        showlegend=show_legend,
+                        base=start,
+                        width=0.8,
+                        hovertemplate=f"{label}<br>Start: {start:.2f}h<br>Duration: {duration:.2f}h<extra></extra>",
+                    )
+                )
+
+    # Plot charging mode observations
+    segments = observations_by_type.get("Charging", [])
+    charging_color = _convert_matplotlib_color_to_plotly(
+        observation_categories.get_category_color("Charging")
+    )
+    for i, (start, duration) in enumerate(segments):
+        fig.add_trace(
+            go.Bar(
+                x=[duration],
+                y=cast(Any, ["Charging"]),
+                orientation="h",
+                marker_color=charging_color,
+                name="Battery Charging",
+                showlegend=(i == 0),
+                base=start,
+                width=0.8,
+                hovertemplate="Battery Charging<br>Start: %{base:.2f}h<br>Duration: %{x:.2f}h<extra></extra>",
+            )
+        )
+
+    # Plot slews
+    slew_segments = _extract_slews(ditl, t_start, offset_hours)
+    for i, (start, duration) in enumerate(slew_segments):
+        fig.add_trace(
+            go.Bar(
+                x=[duration],
+                y=cast(Any, ["Slewing"]),
+                orientation="h",
+                marker_color="gray",
+                name="Slew and Settle",
+                showlegend=(i == 0),
+                base=start,
+                width=0.8,
+                hovertemplate="Slew and Settle<br>Start: %{base:.2f}h<br>Duration: %{x:.2f}h<extra></extra>",
+            )
+        )
+
+    # Plot safe mode
+    safe_segments = _extract_safe_mode(ditl, t_start, offset_hours)
+    for i, (start, duration) in enumerate(safe_segments):
+        fig.add_trace(
+            go.Bar(
+                x=[duration],
+                y=cast(Any, ["Safe Mode"]),
+                orientation="h",
+                marker_color="red",
+                name="Safe Mode",
+                showlegend=(i == 0),
+                base=start,
+                width=0.8,
+                hovertemplate="Safe Mode<br>Start: %{base:.2f}h<br>Duration: %{x:.2f}h<extra></extra>",
+            )
+        )
+
+    # Plot SAA passages (if enabled)
+    if show_saa:
+        saa_segments = _extract_saa_passages(ditl, t_start, offset_hours)
+        for i, (start, duration) in enumerate(saa_segments):
+            fig.add_trace(
+                go.Bar(
+                    x=[duration],
+                    y=cast(Any, ["SAA"]),
+                    orientation="h",
+                    marker_color="orange",
+                    name="SAA",
+                    showlegend=(i == 0),
+                    base=start,
+                    width=0.8,
+                    hovertemplate="SAA<br>Start: %{base:.2f}h<br>Duration: %{x:.2f}h<extra></extra>",
+                )
+            )
+
+    # Plot eclipses
+    eclipse_segments = _extract_eclipses(ditl, t_start, offset_hours)
+    for i, (start, duration) in enumerate(eclipse_segments):
+        fig.add_trace(
+            go.Bar(
+                x=[duration],
+                y=cast(Any, ["Eclipse"]),
+                orientation="h",
+                marker_color="black",
+                name="Eclipse",
+                showlegend=(i == 0),
+                base=start,
+                width=0.8,
+                hovertemplate="Eclipse<br>Start: %{base:.2f}h<br>Duration: %{x:.2f}h<extra></extra>",
+            )
+        )
+
+    # Plot ground station passes
+    gs_segments = _extract_ground_passes(ditl, t_start, offset_hours)
+    for i, (start, duration) in enumerate(gs_segments):
+        fig.add_trace(
+            go.Bar(
+                x=[duration],
+                y=cast(Any, ["Ground Contact"]),
+                orientation="h",
+                marker_color="white",
+                marker_line_color="black",
+                marker_line_width=1,
+                name="Ground Contact",
+                showlegend=(i == 0),
+                base=start,
+                width=0.8,
+                hovertemplate="Ground Contact<br>Start: %{base:.2f}h<br>Duration: %{x:.2f}h<extra></extra>",
+            )
+        )
+
+    # Plot orbit markers if requested
+    if show_orbit_numbers:
+        num_orbits = int(duration_hours * 3600 / orbit_period) + 1
+        for i in range(num_orbits):
+            orbit_start = i * orbit_period / 3600
+            orbit_width = orbit_period / 3600
+
+            # Alternating colors (grey/white)
+            barcol = "lightgray" if i % 2 == 1 else "white"
+
+            # Add orbit bar
+            fig.add_trace(
+                go.Bar(
+                    x=[orbit_width],
+                    y=cast(Any, ["Orbit"]),
+                    orientation="h",
+                    marker_color=barcol,
+                    marker_line_color="black",
+                    marker_line_width=1,
+                    name="Orbit",
+                    showlegend=False,
+                    base=orbit_start,
+                    width=0.8,
+                    hovertemplate=f"Orbit {i + 1}<extra></extra>",
+                    text=f"{i + 1}",
+                    textposition="inside",
+                    textangle=0,
+                    textfont=dict(size=font_size, family=font_family, color="black"),
+                    insidetextanchor="middle",
+                )
+            )
+
+    # Build y-axis categories in the correct order
+    y_categories = ["Ground Contact", "Eclipse"]
+    if show_saa:
+        y_categories.insert(0, "SAA")
+    y_categories = ["Safe Mode"] + y_categories
+    y_categories = ["Charging", "Slewing", "Observations"] + y_categories
+    if show_orbit_numbers:
+        y_categories = ["Orbit"] + y_categories
+
+    # Update layout
+    fig.update_layout(
+        title=title,
+        xaxis_title="Time (hours)",
+        yaxis_title="Operation Type",
+        height=600,
+        showlegend=True,
+        barmode="overlay",  # Allow bars to overlap
+    )
+
+    # Update axes
+    fig.update_xaxes(
+        range=[-0.1, duration_hours + 0.1],
+        tickmode="linear",
+        tick0=0,
+        dtick=max(1, int(duration_hours / 6)),
+    )
+
+    fig.update_yaxes(
+        categoryorder="array",
+        categoryarray=y_categories[
+            ::-1
+        ],  # Reverse to match matplotlib order (top to bottom)
+    )
+
+    return fig

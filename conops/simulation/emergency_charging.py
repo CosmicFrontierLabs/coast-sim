@@ -10,7 +10,7 @@ import rust_ephem
 from conops.config.battery import Battery
 
 from ..common import unixtime2date
-from ..common.enums import ObsType
+from ..common.enums import ACSMode, ObsType
 from ..common.vector import angular_separation
 from ..config import MissionConfig
 from .roll import optimum_roll
@@ -147,7 +147,7 @@ class EmergencyCharging:
 
         # Calculate optimal roll angle for solar panel pointing
         roll_angle = optimum_roll(
-            charging_ra, charging_dec, utime, ephem, self.solar_panel
+            charging_ra, charging_dec, utime, ephem, self.solar_panel, self.constraint
         )
 
         # Create the charging PPT
@@ -241,8 +241,13 @@ class EmergencyCharging:
             return None, None
 
         # Validate optimal pointing
-        if not self.constraint.in_constraint(optimal_ra, optimal_dec, utime):
-            # Check if within slew limit
+        optimal_roll = optimum_roll(
+            optimal_ra, optimal_dec, utime, ephem, self.solar_panel, self.constraint
+        )
+        if not self.constraint.in_constraint(
+            optimal_ra, optimal_dec, utime, target_roll=optimal_roll
+        ):
+            # Optimal pointing satisfies constraints; now check slew limits
             if self.max_slew_deg is not None:
                 slew = angular_separation(
                     current_ra, current_dec, optimal_ra, optimal_dec
@@ -334,7 +339,9 @@ class EmergencyCharging:
                     continue  # Skip pointings beyond slew limit
 
             # Calculate optimal roll angle for this pointing
-            optimal_roll = optimum_roll(alt_ra, alt_dec, utime, ephem, self.solar_panel)
+            optimal_roll = optimum_roll(
+                alt_ra, alt_dec, utime, ephem, self.solar_panel, self.constraint
+            )
 
             # Calculate solar panel illumination for this pointing with optimal roll
             illumination = self.solar_panel.panel_illumination_fraction(
@@ -577,7 +584,11 @@ class EmergencyCharging:
 
         # Constraint violation (e.g., occultation)
         if self.constraint.in_constraint(
-            self.current_charging_ppt.ra, self.current_charging_ppt.dec, utime
+            self.current_charging_ppt.ra,
+            self.current_charging_ppt.dec,
+            utime,
+            target_roll=self.current_charging_ppt.roll,
+            acs_mode=ACSMode.CHARGING,
         ):
             return "constraint"
 

@@ -101,6 +101,7 @@ def create_statistics_test_config(ephem: DummyEphemeris | None = None) -> Missio
     battery.max_depth_of_discharge = 0.3
     constraint = Mock(spec=Constraint)
     constraint.ephem = ephem
+    constraint.constraint = None  # no combined rust-ephem constraint in tests
     ground_stations = Mock(spec=GroundStationRegistry)
 
     return MissionConfig(

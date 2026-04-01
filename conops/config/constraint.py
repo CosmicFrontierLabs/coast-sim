@@ -7,6 +7,7 @@ from pydantic import ConfigDict, Field, PrivateAttr
 from rust_ephem.constraints import ConstraintConfig
 
 from ..common import dtutcfromtimestamp
+from ..common.enums import ACSMode
 from ._base import ConfigModel
 from .constants import (
     ANTISUN_OCCULT,
@@ -124,6 +125,26 @@ class Constraint(ConfigModel):
         default=None,
         description="Star tracker soft exclusion constraint for scheduling",
     )
+    star_tracker_enforce_modes: list[ACSMode] | None = Field(
+        default=None,
+        description=(
+            "ACS modes in which star tracker constraints are enforced. "
+            "None means enforce in all modes (conservative default). "
+            "E.g. [ACSMode.SCIENCE, ACSMode.CHARGING] to skip ST checks during "
+            "slews, passes, SAA, and safe mode."
+        ),
+    )
+    ignore_roll: bool = Field(
+        default=False,
+        description=(
+            "When True, roll is intended to be treated as a free parameter for "
+            "constraint checks (e.g. callers may pass target_roll=None so that "
+            "rust-ephem returns False (visible) for any pointing that is accessible "
+            "at some roll angle). This field does not itself modify or override "
+            "the target_roll values passed by callers; it is a configuration flag "
+            "interpreted by higher-level logic."
+        ),
+    )
 
     ephem: rust_ephem.Ephemeris | None = Field(
         default=None,
@@ -240,6 +261,39 @@ class Constraint(ConfigModel):
             combined = combined | component
         return combined
 
+    @cached_property
+    def roll_independent_constraint(self) -> ConstraintConfig | None:
+        """Combined constraint from roll-independent components only.
+
+        Excludes star-tracker constraints (which are roll-dependent via
+        BoresightOffsetConstraint) so that the result can be passed to
+        ``ConstraintConfig.evaluate()`` without triggering the "visible only
+        if visible at ALL rolls" semantics that ``evaluate(target_roll=None)``
+        applies to roll-dependent constraints.
+
+        Used by ``PlanEntry.visibility()`` when ``ignore_roll=True`` to build
+        field-of-regard scheduling windows.  Note that this may over-accept
+        targets that genuinely have no valid roll under the star-tracker
+        constraints; those cases are caught correctly at observation time because
+        ``in_constraint(target_roll=None)`` uses the opposite (permissive) FOR
+        semantics — it returns True (violated) only when the constraint is
+        violated at every possible roll.
+        """
+        components = [
+            self.sun_constraint,
+            self.moon_constraint,
+            self.earth_constraint,
+            self.panel_constraint,
+            self.anti_sun_constraint,
+        ]
+        active = [c for c in components if c is not None]
+        if not active:
+            return None
+        combined = active[0]
+        for c in active[1:]:
+            combined = combined | c
+        return combined
+
     def in_sun(
         self, ra: float, dec: float, time: float, target_roll: float | None = None
     ) -> bool:
@@ -303,8 +357,22 @@ class Constraint(ConfigModel):
         )
 
     def in_star_tracker_hard(
-        self, ra: float, dec: float, time: float, target_roll: float | None = None
+        self,
+        ra: float,
+        dec: float,
+        time: float,
+        target_roll: float | None = None,
+        acs_mode: ACSMode | int | None = None,
     ) -> bool:
+        """Check if pointing violates a star tracker hard constraint.
+
+        Hard constraints are absolute health-and-safety keep-outs (e.g. blinding
+        the sensor with the Sun) and are **always** enforced regardless of
+        ``acs_mode`` or ``star_tracker_enforce_modes``.  The ``acs_mode``
+        parameter is accepted for API compatibility but has no effect here.
+        Use :meth:`in_star_tracker_soft` for the science-quality soft constraint
+        that is mode-gated.
+        """
         if self.star_tracker_hard_constraint is None:
             return False
         assert self.ephem is not None, (
@@ -320,10 +388,18 @@ class Constraint(ConfigModel):
         )
 
     def in_star_tracker_soft(
-        self, ra: float, dec: float, time: float, target_roll: float | None = None
+        self,
+        ra: float,
+        dec: float,
+        time: float,
+        target_roll: float | None = None,
+        acs_mode: ACSMode | int | None = None,
     ) -> bool:
         if self.star_tracker_soft_constraint is None:
             return False
+        if acs_mode is not None and self.star_tracker_enforce_modes is not None:
+            if int(acs_mode) not in self.star_tracker_enforce_modes:
+                return False
         assert self.ephem is not None, (
             "Ephemeris must be set to use in_star_tracker_soft method"
         )
@@ -337,26 +413,31 @@ class Constraint(ConfigModel):
         )
 
     def in_constraint(
-        self, ra: float, dec: float, utime: float, target_roll: float | None = None
+        self,
+        ra: float,
+        dec: float,
+        utime: float,
+        target_roll: float | None = None,
+        acs_mode: ACSMode | int | None = None,
     ) -> bool:
         """For a given time is a RA/Dec in occult?"""
-        # Short-circuit evaluation for scalar times (most common case)
-        # For array times, we need to compute all to properly OR the arrays
-
-        # Check constraints in order of likelihood and return early if violated
-        if self.in_sun(ra, dec, utime, target_roll=target_roll):
+        if self.in_sun(ra=ra, dec=dec, time=utime, target_roll=target_roll):
             return True
-        if self.in_earth(ra, dec, utime, target_roll=target_roll):
+        if self.in_earth(ra=ra, dec=dec, time=utime, target_roll=target_roll):
             return True
-        if self.in_panel(ra, dec, utime, target_roll=target_roll):
+        if self.in_panel(ra=ra, dec=dec, time=utime, target_roll=target_roll):
             return True
-        if self.in_moon(ra, dec, utime, target_roll=target_roll):
+        if self.in_moon(ra=ra, dec=dec, time=utime, target_roll=target_roll):
             return True
-        if self.in_anti_sun(ra, dec, utime, target_roll=target_roll):
+        if self.in_anti_sun(ra=ra, dec=dec, time=utime, target_roll=target_roll):
             return True
-        if self.in_star_tracker_hard(ra, dec, utime, target_roll=target_roll):
+        if self.in_star_tracker_hard(
+            ra=ra, dec=dec, time=utime, target_roll=target_roll, acs_mode=acs_mode
+        ):
             return True
-        if self.in_star_tracker_soft(ra, dec, utime, target_roll=target_roll):
+        if self.in_star_tracker_soft(
+            ra=ra, dec=dec, time=utime, target_roll=target_roll, acs_mode=acs_mode
+        ):
             return True
         return False
 
@@ -465,18 +546,31 @@ class DefaultConstraint(Constraint):
         description="Solar panel constraint configuration",
     )
 
-    def in_constraint_count(self, ra: float, dec: float, utime: float) -> int:
+    def in_constraint_count(
+        self,
+        ra: float,
+        dec: float,
+        time: float,
+        target_roll: float | None = None,
+        acs_mode: ACSMode | int | None = None,
+    ) -> int:
         count = 0
-        if self.in_sun(ra, dec, utime):
+        if self.in_sun(ra=ra, dec=dec, time=time, target_roll=target_roll):
             count += 2
-        if self.in_moon(ra, dec, utime):
+        if self.in_moon(ra=ra, dec=dec, time=time, target_roll=target_roll):
             count += 2
-        if self.in_anti_sun(ra, dec, utime):
+        if self.in_anti_sun(ra=ra, dec=dec, time=time, target_roll=target_roll):
             count += 2
-        if self.in_earth(ra, dec, utime):
+        if self.in_earth(ra=ra, dec=dec, time=time, target_roll=target_roll):
             count += 2
-        if self.in_star_tracker_hard(ra, dec, utime):
+        if self.in_panel(ra=ra, dec=dec, time=time, target_roll=target_roll):
             count += 2
-        if self.in_star_tracker_soft(ra, dec, utime):
+        if self.in_star_tracker_hard(
+            ra=ra, dec=dec, time=time, target_roll=target_roll, acs_mode=acs_mode
+        ):
+            count += 2
+        if self.in_star_tracker_soft(
+            ra=ra, dec=dec, time=time, target_roll=target_roll, acs_mode=acs_mode
+        ):
             count += 2
         return count

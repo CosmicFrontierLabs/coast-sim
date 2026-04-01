@@ -115,26 +115,48 @@ class MissionConfig(ConfigModel):
         except AttributeError:
             has_star_trackers = False
 
-        if (
-            not any(
-                t.name == "star_tracker_functional_count"
+        existing_st_threshold = next(
+            (
+                t
                 for t in self.fault_management.thresholds
-            )
-            and has_star_trackers
-            and star_trackers is not None
-        ):
-            # Hard constraints are absolute keep-outs: any hard violation invalidates
-            # the pointing.  Fire RED the moment functional count drops below
-            # num_trackers (i.e. any tracker is in hard violation), and YELLOW
-            # one step earlier as a leading indicator.
+                if t.name == "star_tracker_functional_count"
+            ),
+            None,
+        )
+        if existing_st_threshold is not None:
+            # Config-file-loaded thresholds default triggers_safe_mode=True; force
+            # it False — a tracker hard-constraint violation should alert but not
+            # safehold (the scheduler already avoids the zone; if we slewed into one
+            # it's a scheduling bug, not a spacecraft emergency).
+            existing_st_threshold.triggers_safe_mode = False
+        elif has_star_trackers and star_trackers is not None:
+            # Any hard constraint violation is RED — star tracker hard constraints
+            # are health-and-safety keep-outs, so any violation is immediately critical.
+            # With direction="below", thresholds fire when value <= threshold, so
+            # num_trackers - 1 fires the moment any tracker enters a hard constraint
+            # (functional_count drops from num_trackers to num_trackers - 1).
             num_trackers = star_trackers.num_trackers()
+            yellow = num_trackers - 1  # any hard violation → YELLOW and RED
             red = num_trackers - 1  # any hard violation → RED
-            yellow = num_trackers  # degraded-but-nominal → YELLOW (leading indicator)
             self.fault_management.add_threshold(
                 name="star_tracker_functional_count",
                 yellow=yellow,
                 red=red,
                 direction="below",
+                triggers_safe_mode=False,
+            )
+
+        # Add ppt_unavailable threshold if not already present.
+        # bool True (=1.0) > 0.5 → YELLOW; False (=0.0) is nominal; red set
+        # above 1.0 so only YELLOW fires (no RED for this alert).
+        if not any(
+            t.name == "ppt_unavailable" for t in self.fault_management.thresholds
+        ):
+            self.fault_management.add_threshold(
+                name="ppt_unavailable",
+                yellow=0.5,
+                red=1.5,  # unreachable by bool — YELLOW-only alert
+                direction="above",
             )
 
         # Propagate star tracker hard exclusions into mission-level planning constraint.
@@ -145,9 +167,13 @@ class MissionConfig(ConfigModel):
             self.constraint.star_tracker_soft_constraint = (
                 star_trackers.startracker_constraint
             )
+            self.constraint.star_tracker_enforce_modes = (
+                star_trackers.modes_require_lock
+            )
         else:
             self.constraint.star_tracker_hard_constraint = None
             self.constraint.star_tracker_soft_constraint = None
+            self.constraint.star_tracker_enforce_modes = None
         self.constraint.invalidate_combined_constraint_cache()
         return self
 
@@ -200,7 +226,7 @@ class MissionConfig(ConfigModel):
         Args:
             filepath: Path where the YAML file will be written.
         """
-        config_dict = self.model_dump(mode="json", exclude_none=False)
+        config_dict = self.model_dump(mode="json", exclude_none=True)
 
         # Build annotated YAML with comments
         yaml_lines = []

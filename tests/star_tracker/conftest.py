@@ -59,11 +59,14 @@ def star_tracker_with_soft_constraint(basic_orientation, basic_constraint):
 
 
 @pytest.fixture
-def star_tracker_mode_dependent(basic_orientation):
-    """Star tracker with mode-dependent lock requirements."""
-    return StarTracker(
+def star_tracker_config_mode_dependent(basic_orientation):
+    """Star tracker configuration with mode-dependent lock requirements."""
+    st = StarTracker(
         name="ST_ModeDependent",
         orientation=basic_orientation,
+    )
+    return StarTrackerConfiguration(
+        star_trackers=[st],
         modes_require_lock=[0, 2],  # Lock required in modes 0 and 2
     )
 

@@ -24,6 +24,7 @@ class MockConstraint:
 
     def __init__(self):
         self.ephem = MockEphemeris()
+        self.ignore_roll = False
         # Add a mock constraint object with evaluate method
         self.constraint = Mock()
         # Mock the evaluate return value

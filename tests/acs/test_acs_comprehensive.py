@@ -403,6 +403,9 @@ class TestPointing:
         mock_slew.at.in_sun = Mock(return_value=False)
         mock_slew.at.in_earth = Mock(return_value=True)
         mock_slew.at.in_panel = Mock(return_value=False)
+        mock_slew.at.in_star_tracker_hard = Mock(return_value=False)
+        mock_slew.at.in_star_tracker_soft = Mock(return_value=False)
+        mock_slew.at.roll = 0.0
 
         acs.last_slew = mock_slew
         acs.constraint.in_constraint = Mock(return_value=True)

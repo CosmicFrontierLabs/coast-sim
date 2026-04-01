@@ -147,12 +147,14 @@ class TestConfig:
             fault_management=fault_management,
         )
         config.init_fault_management_defaults()
-        # Should have battery_level (that we added) and recorder_fill_fraction (added by init)
-        assert len(fault_management.thresholds) == 2
+        # Should have battery_level (that we added), recorder_fill_fraction, and
+        # ppt_unavailable (both added by init)
+        assert len(fault_management.thresholds) == 3
         assert any(t.name == "battery_level" for t in fault_management.thresholds)
         assert any(
             t.name == "recorder_fill_fraction" for t in fault_management.thresholds
         )
+        assert any(t.name == "ppt_unavailable" for t in fault_management.thresholds)
         # Battery level should have our custom values, not defaults
         battery_threshold = next(
             t for t in fault_management.thresholds if t.name == "battery_level"
