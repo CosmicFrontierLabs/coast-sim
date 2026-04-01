@@ -22,7 +22,7 @@ jobs:
 
       - name: Git describe
         id: ghd
-        uses: proudust/gh-describe@v2
+        uses: proudust/gh-describe@v3
 
       - name: Build a binary wheel and a source tarball
         run: uv build
