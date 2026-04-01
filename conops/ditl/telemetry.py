@@ -99,7 +99,9 @@ class Housekeeping(BaseModel):
         default=None,
         description=(
             "Per-tracker functional status list (True = functional / not in soft constraint, "
-            "False = degraded).  Index order matches StarTrackerConfiguration.star_trackers."
+            "False = degraded). When lock is required in the current mode, each element reflects "
+            "whether that tracker is in soft constraint. When lock is not required, all elements "
+            "are True (soft constraints don't apply). Index order matches StarTrackerConfiguration.star_trackers."
         ),
     )
     in_constraint: str | None = Field(

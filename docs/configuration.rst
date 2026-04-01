@@ -402,14 +402,14 @@ The ACS monitors star tracker constraints at each timestep and records:
 
 * ``star_tracker_hard_violations``: Number of trackers violating their hard constraint (always monitored)
 * ``star_tracker_soft_violations``: Whether any tracker is in its soft constraint zone
-* ``star_tracker_functional_count``: Number of functional (hard-constraint-clear) trackers
+* ``star_tracker_functional_count``: Number of trackers at full science quality (not degraded by soft constraints)
 
 Hard violations are health-and-safety events and always cause a pointing-invalid result. Soft violations
 only affect pointing validity in modes listed in ``StarTrackerConfiguration.modes_require_lock``.
 
 When star trackers are configured, ``MissionConfig.init_fault_management_defaults()`` automatically adds
 a ``star_tracker_functional_count`` threshold (``direction="below"``, both yellow and red set to
-``num_trackers - 1``) so that any hard violation immediately triggers a RED fault alert.
+``num_trackers - 1``) so that degradation of any tracker to soft constraints triggers a fault alert.
 
 payload
 ~~~~~~~

@@ -125,19 +125,22 @@ class MissionConfig(ConfigModel):
         )
         if existing_st_threshold is not None:
             # Config-file-loaded thresholds default triggers_safe_mode=True; force
-            # it False — a tracker hard-constraint violation should alert but not
-            # safehold (the scheduler already avoids the zone; if we slewed into one
-            # it's a scheduling bug, not a spacecraft emergency).
+            # it False — tracker soft-constraint violations (degradation) should alert
+            # but not automatically enter safehold. Soft constraints indicate degraded
+            # tracking, not an emergency; hard-constraint violations are handled
+            # separately by the constraint system.
             existing_st_threshold.triggers_safe_mode = False
         elif has_star_trackers and star_trackers is not None:
-            # Any hard constraint violation is RED — star tracker hard constraints
-            # are health-and-safety keep-outs, so any violation is immediately critical.
+            # star_tracker_functional_count = num_trackers - soft_violation_count
+            # Soft violations mean a tracker is degraded (not at full science quality),
+            # but still operational. The threshold fires when too many trackers are
+            # degraded (in soft constraint). Hard-constraint violations are handled
+            # separately by the constraint system and don't fire safehold.
             # With direction="below", thresholds fire when value <= threshold, so
-            # num_trackers - 1 fires the moment any tracker enters a hard constraint
-            # (functional_count drops from num_trackers to num_trackers - 1).
+            # num_trackers - 1 fires when any tracker enters soft constraint.
             num_trackers = star_trackers.num_trackers()
-            yellow = num_trackers - 1  # any hard violation → YELLOW and RED
-            red = num_trackers - 1  # any hard violation → RED
+            yellow = num_trackers - 1  # any soft violation → YELLOW and RED
+            red = num_trackers - 1  # any soft violation → RED
             self.fault_management.add_threshold(
                 name="star_tracker_functional_count",
                 yellow=yellow,

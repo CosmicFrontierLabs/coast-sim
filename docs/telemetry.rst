@@ -91,7 +91,7 @@ Housekeeping Fields
 **Star Tracker Health**
    - ``star_tracker_hard_violations``: Number of trackers violating their hard constraint
    - ``star_tracker_soft_violations``: Whether any tracker is in its soft constraint zone
-   - ``star_tracker_functional_count``: Number of hard-constraint-clear trackers
+   - ``star_tracker_functional_count``: Number of trackers at full science quality (not in soft constraint)
 
 Payload Data
 ------------

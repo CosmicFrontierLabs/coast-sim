@@ -717,13 +717,23 @@ class ACS:
             if isinstance(num_trackers, int) and isinstance(soft_violation_count, int)
             else 0
         )
-        # Per-tracker status: True = functional (not in soft constraint)
+        # Per-tracker status: True = functional (not in soft constraint).
+        # Apply same mode gating as soft_violation_count: when lock is not required
+        # in the current mode, soft constraints don't apply, so all trackers report
+        # as functional to maintain consistency.
         raw_st_list = getattr(star_trackers, "star_trackers", None)
         if isinstance(raw_st_list, list):
-            self.star_tracker_status = [
-                not st.in_soft_constraint(current_ra, current_dec, utime, current_roll)
-                for st in raw_st_list
-            ]
+            if star_trackers.requires_lock_in_mode(self.acsmode):
+                # Lock required: report actual soft constraint status
+                self.star_tracker_status = [
+                    not st.in_soft_constraint(
+                        current_ra, current_dec, utime, current_roll
+                    )
+                    for st in raw_st_list
+                ]
+            else:
+                # Lock not required: all trackers are functionally available
+                self.star_tracker_status = [True] * len(raw_st_list)
         else:
             self.star_tracker_status = []
 
