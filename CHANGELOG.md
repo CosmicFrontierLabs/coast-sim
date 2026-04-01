@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.2.1...v0.2.2) (2026-04-01)
+
+
+### Bug Fixes
+
+* Star tracker visibility bugs ([#111](https://github.com/CosmicFrontierLabs/coast-sim/issues/111)) ([439227b](https://github.com/CosmicFrontierLabs/coast-sim/commit/439227b53f2f831ae293b37dd3a54f2e852ebf4a))
+
 ## [0.2.1](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.2.0...v0.2.1) (2026-03-17)
 
 
