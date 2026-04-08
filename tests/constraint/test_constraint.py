@@ -39,6 +39,10 @@ class TestConstraintInit:
         """Test bare Constraint defaults to no earth constraint."""
         assert Constraint().earth_constraint is None
 
+    def test_constraint_init_orbit_constraint_defaults_to_none(self) -> None:
+        """Test bare Constraint defaults to no orbit constraint."""
+        assert Constraint().orbit_constraint is None
+
     def test_constraint_init_panel_constraint_defaults_to_none(self) -> None:
         """Test bare Constraint defaults to no panel constraint."""
         assert Constraint().panel_constraint is None
@@ -82,6 +86,11 @@ class TestConstraintInit:
         """Test in_moon returns False when moon constraint is disabled."""
         constraint = Constraint(ephem=None)
         assert not constraint.in_moon(45.0, 30.0, 1700000000.0)
+
+    def test_constraint_in_orbit_noop_when_constraint_is_none(self) -> None:
+        """Test in_orbit returns False when orbit constraint is disabled."""
+        constraint = Constraint(ephem=None)
+        assert not constraint.in_orbit(45.0, 30.0, 1700000000.0)
 
 
 class TestConstraintProperties:

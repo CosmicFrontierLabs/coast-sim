@@ -175,6 +175,8 @@ def mock_ditl() -> Mock:
     anti_sun_constraint.in_constraint_batch = make_constraint_batch_mock()
     constraint_config.anti_sun_constraint = anti_sun_constraint
 
+    constraint_config.orbit_constraint = None
+
     panel_constraint = Mock()
     panel_constraint.in_constraint_batch = make_constraint_batch_mock()
     constraint_config.panel_constraint = panel_constraint

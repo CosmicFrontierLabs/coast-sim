@@ -110,9 +110,10 @@ class Constraint(ConfigModel):
         default=None,
         description="Earth constraint configuration",
     )
-    # FIXME: For now solar panel constraint is just constraining the spacecraft
-    # to be within >45 degrees of the sun and < 45 degrees from anti-sun,
-    # except in eclipse
+    orbit_constraint: ConstraintConfig | None = Field(
+        default=None,
+        description="Orbit constraint configuration",
+    )
     panel_constraint: ConstraintConfig | None = Field(
         default=None,
         description="Solar panel constraint configuration",
@@ -244,6 +245,7 @@ class Constraint(ConfigModel):
             self.sun_constraint,
             self.moon_constraint,
             self.earth_constraint,
+            self.orbit_constraint,
             self.panel_constraint,
             self.anti_sun_constraint,
             self.star_tracker_hard_constraint,
@@ -283,6 +285,7 @@ class Constraint(ConfigModel):
             self.sun_constraint,
             self.moon_constraint,
             self.earth_constraint,
+            self.orbit_constraint,
             self.panel_constraint,
             self.anti_sun_constraint,
         ]
@@ -354,6 +357,16 @@ class Constraint(ConfigModel):
         assert self.ephem is not None, "Ephemeris must be set to use in_moon method"
         return self._cached_check(
             "moon", ra, dec, time, self.moon_constraint, target_roll=target_roll
+        )
+
+    def in_orbit(
+        self, ra: float, dec: float, time: float, target_roll: float | None = None
+    ) -> bool:
+        if self.orbit_constraint is None:
+            return False
+        assert self.ephem is not None, "Ephemeris must be set to use in_orbit method"
+        return self._cached_check(
+            "orbit", ra, dec, time, self.orbit_constraint, target_roll=target_roll
         )
 
     def in_star_tracker_hard(
@@ -431,6 +444,8 @@ class Constraint(ConfigModel):
             return True
         if self.in_anti_sun(ra=ra, dec=dec, time=utime, target_roll=target_roll):
             return True
+        if self.in_orbit(ra=ra, dec=dec, time=utime, target_roll=target_roll):
+            return True
         if self.in_star_tracker_hard(
             ra=ra, dec=dec, time=utime, target_roll=target_roll, acs_mode=acs_mode
         ):
@@ -499,6 +514,7 @@ class Constraint(ConfigModel):
             self.panel_constraint,
             self.moon_constraint,
             self.anti_sun_constraint,
+            self.orbit_constraint,
             self.star_tracker_hard_constraint,
             self.star_tracker_soft_constraint,
         ]
@@ -560,6 +576,8 @@ class DefaultConstraint(Constraint):
         if self.in_moon(ra=ra, dec=dec, time=time, target_roll=target_roll):
             count += 2
         if self.in_anti_sun(ra=ra, dec=dec, time=time, target_roll=target_roll):
+            count += 2
+        if self.in_orbit(ra=ra, dec=dec, time=time, target_roll=target_roll):
             count += 2
         if self.in_earth(ra=ra, dec=dec, time=time, target_roll=target_roll):
             count += 2
