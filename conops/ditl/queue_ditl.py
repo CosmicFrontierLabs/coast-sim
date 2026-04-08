@@ -948,6 +948,8 @@ class QueueDITL(DITLMixin, DITLStats):
             return "Moon"
         elif self.constraint.in_anti_sun(ra, dec, utime, target_roll=roll):
             return "Anti-Sun"
+        elif self.constraint.in_orbit(ra, dec, utime, target_roll=roll):
+            return "Orbit"
         elif self.constraint.in_star_tracker_hard(
             ra, dec, utime, target_roll=roll, acs_mode=mode
         ):

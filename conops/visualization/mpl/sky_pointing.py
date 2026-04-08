@@ -935,6 +935,7 @@ class SkyPointingController:
             ("moon", self.ditl.config.constraint.moon_constraint),
             ("earth", self.ditl.config.constraint.earth_constraint),
             ("anti_sun", self.ditl.config.constraint.anti_sun_constraint),
+            ("orbit", self.ditl.config.constraint.orbit_constraint),
             ("panel", self.ditl.config.constraint.panel_constraint),
         ]
 
@@ -1046,6 +1047,13 @@ class SkyPointingController:
                 "orange",
                 (sun_ra + 180) % 360,
                 -sun_dec,
+            ),
+            (
+                "Orbit",
+                self.ditl.config.constraint.orbit_constraint,
+                "purple",
+                None,
+                None,
             ),
             (
                 "Panel",

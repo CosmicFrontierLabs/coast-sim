@@ -1477,6 +1477,7 @@ class TestGetConstraintName:
         queue_ditl.constraint.in_sun = Mock(return_value=False)
         queue_ditl.constraint.in_panel = Mock(return_value=False)
         queue_ditl.constraint.in_anti_sun = Mock(return_value=False)
+        queue_ditl.constraint.in_orbit = Mock(return_value=False)
         queue_ditl.constraint.in_star_tracker_hard = Mock(return_value=False)
         queue_ditl.constraint.in_star_tracker_soft = Mock(return_value=False)
         name = queue_ditl._get_constraint_name(ra, dec, utime)
@@ -1489,6 +1490,7 @@ class TestGetConstraintName:
         queue_ditl.constraint.in_sun = Mock(return_value=False)
         queue_ditl.constraint.in_panel = Mock(return_value=False)
         queue_ditl.constraint.in_anti_sun = Mock(return_value=False)
+        queue_ditl.constraint.in_orbit = Mock(return_value=False)
         queue_ditl.constraint.in_star_tracker_hard = Mock(return_value=False)
         queue_ditl.constraint.in_star_tracker_soft = Mock(return_value=False)
         _ = queue_ditl._get_constraint_name(ra, dec, utime)
@@ -1504,6 +1506,17 @@ class TestGetConstraintName:
         queue_ditl.constraint.in_panel.assert_called_once_with(
             ra, dec, utime, target_roll=None
         )
+
+    def test_get_constraint_name_orbit_name(self, queue_ditl) -> None:
+        ra, dec, utime = 14.0, 24.0, 5000.0
+        queue_ditl.constraint.in_earth = Mock(return_value=False)
+        queue_ditl.constraint.in_moon = Mock(return_value=False)
+        queue_ditl.constraint.in_sun = Mock(return_value=False)
+        queue_ditl.constraint.in_panel = Mock(return_value=False)
+        queue_ditl.constraint.in_anti_sun = Mock(return_value=False)
+        queue_ditl.constraint.in_orbit = Mock(return_value=True)
+        name = queue_ditl._get_constraint_name(ra, dec, utime)
+        assert name == "Orbit"
 
     def test_get_constraint_name_precedence_sun(self, queue_ditl) -> None:
         """Sun has highest precedence when multiple constraints are simultaneously active."""

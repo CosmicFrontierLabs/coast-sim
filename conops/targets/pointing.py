@@ -81,6 +81,12 @@ class Pointing(PlanEntry):
             self.ra, self.dec, utime, target_roll=self.roll
         )
 
+    def in_orbit(self, utime: float) -> bool:
+        """Is this target in Orbit constraint?"""
+        return self.config.constraint.in_orbit(
+            self.ra, self.dec, utime, target_roll=self.roll
+        )
+
     def in_star_tracker_hard(self, utime: float, acs_mode: int | None = None) -> bool:
         """Is this target in star tracker hard constraint?"""
         return self.config.constraint.in_star_tracker_hard(
