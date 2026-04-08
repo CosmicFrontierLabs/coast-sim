@@ -276,8 +276,23 @@ def plot_sky_pointing_plotly(
         )
 
     # ------------------------------------------------------------------
-    # Pre-compute ST constraint specs
+    # Pre-compute ST boresight offsets and ST constraint specs
     # ------------------------------------------------------------------
+    st_boresight_offsets: list[float] = []
+    for _st_raw in raw_trackers:
+        _orient = getattr(_st_raw, "orientation", None)
+        _b = getattr(_orient, "boresight", None) if _orient else None
+        if _b is not None:
+            _bv = np.asarray(_b, dtype=np.float64)
+            _bn = np.linalg.norm(_bv)
+            if _bn > 1e-12:
+                _bv = _bv / _bn
+            st_boresight_offsets.append(
+                float(np.degrees(np.arccos(np.clip(_bv[0], -1.0, 1.0))))
+            )
+        else:
+            st_boresight_offsets.append(0.0)
+
     st_constraint_specs: list[tuple[int, str, str, str, float]] = []
     for _ci, _st_raw in enumerate(raw_trackers):
         for _tier in ("hard", "soft"):
@@ -301,6 +316,31 @@ def plot_sky_pointing_plotly(
                             (_ci, _tier, _body, "max", float(_xangle))
                         )
 
+    ignore_roll: bool = bool(
+        getattr(
+            getattr(getattr(ditl, "config", None), "constraint", None),
+            "ignore_roll",
+            False,
+        )
+    )
+
+    # ------------------------------------------------------------------
+    # Orbit constraint — extract min/max angle and pre-compute RAM vectors
+    # ------------------------------------------------------------------
+    orbit_constraint = None
+    orbit_min_angle: float = 0.0
+    orbit_max_angle: float | None = None
+    if hasattr(ditl, "config") and hasattr(ditl.config, "constraint"):
+        orbit_constraint = getattr(ditl.config.constraint, "orbit_constraint", None)
+    if orbit_constraint is not None:
+        orbit_min_angle = float(getattr(orbit_constraint, "min_angle", 0.0))
+        _orbit_max_raw = getattr(orbit_constraint, "max_angle", None)
+        orbit_max_angle = float(_orbit_max_raw) if _orbit_max_raw is not None else None
+
+    _gcrs_vel: np.ndarray | None = None
+    if orbit_constraint is not None:
+        _gcrs_vel = np.asarray(ephem.gcrs_pv.velocity, dtype=np.float64)
+
     def _mode_color(idx: int) -> str:
         m = ditl.mode[idx]
         return mode_colors.get(m.name if hasattr(m, "name") else str(m), "red")
@@ -313,7 +353,10 @@ def plot_sky_pointing_plotly(
     #   6: Earth min excl polygon 7: Earth max excl polygon 8: Earth disk polygon
     #   9: Pointing marker
     #   10 … 9+n_trackers: ST boresight markers
-    #   10+n_trackers … : ST exclusion-zone circles
+    #   10+n_trackers … 9+n_trackers+n_st_specs: ST exclusion-zone circles
+    #   10+n_trackers+n_st_specs: Orbit RAM min exclusion [if configured]
+    #   11+n_trackers+n_st_specs: Orbit RAM max exclusion [if configured]
+    #   12+n_trackers+n_st_specs: RAM direction marker    [if configured]
     # ------------------------------------------------------------------
     def _frame_traces(idx: int) -> list[dict[str, Any]]:
         dt = dtutcfromtimestamp(utimes[idx])
@@ -458,7 +501,12 @@ def plot_sky_pointing_plotly(
                 continue
 
             if bound_kind == "min":
-                eff_r = angle + extra_r
+                if ignore_roll:
+                    # With free roll, tracker boresight can sweep a cone of half-angle
+                    # delta around +X, so the always-invalid cap shrinks by delta.
+                    eff_r = max(0.0, angle - st_boresight_offsets[tr_idx]) + extra_r
+                else:
+                    eff_r = angle + extra_r
                 center_ra, center_dec = body_ra, body_dec
             else:
                 eff_r = 180.0 - (angle + extra_r)
@@ -469,6 +517,50 @@ def plot_sky_pointing_plotly(
             else:
                 c_lons, c_lats = [], []
             traces.append({"lon": c_lons, "lat": c_lats})
+
+        if orbit_constraint is not None and _gcrs_vel is not None:
+            v = _gcrs_vel[ei].copy()
+            v_n = np.linalg.norm(v)
+            if v_n > 1e-12:
+                v = v / v_n
+            ram_ra_deg = (np.degrees(np.arctan2(v[1], v[0])) + 360.0) % 360.0
+            ram_dec_deg = float(np.degrees(np.arcsin(np.clip(v[2], -1.0, 1.0))))
+
+            if orbit_min_angle > 0:
+                oc_lons, oc_lats = _sky_circle_polygon(
+                    ram_ra_deg, ram_dec_deg, orbit_min_angle
+                )
+            else:
+                oc_lons, oc_lats = [], []
+
+            if orbit_max_angle is not None:
+                anti_ram_ra = (ram_ra_deg + 180.0) % 360.0
+                anti_ram_dec = -ram_dec_deg
+                oc_max_r = max(0.0, 180.0 - orbit_max_angle)
+                if oc_max_r > 0:
+                    oc_max_lons, oc_max_lats = _sky_circle_polygon(
+                        anti_ram_ra,
+                        anti_ram_dec,
+                        oc_max_r,
+                    )
+                else:
+                    oc_max_lons, oc_max_lats = [], []
+            else:
+                oc_max_lons, oc_max_lats = [], []
+
+            traces.append({"lon": oc_lons, "lat": oc_lats})
+            traces.append({"lon": oc_max_lons, "lat": oc_max_lats})
+            traces.append(
+                {
+                    "lon": [_ra_to_lon(ram_ra_deg)],
+                    "lat": [ram_dec_deg],
+                    "marker": {
+                        "color": "mediumpurple",
+                        "size": 12,
+                        "symbol": "circle",
+                    },
+                }
+            )
 
         return traces
 
@@ -685,6 +777,42 @@ def plot_sky_pointing_plotly(
                 showlegend=_show_legend,
                 hoverinfo="skip",
             )
+        )
+
+    if orbit_constraint is not None:
+        _oc_base = 10 + n_trackers + len(st_constraint_specs)
+        _oc_poly = (
+            init_data[_oc_base] if _oc_base < len(init_data) else {"lon": [], "lat": []}
+        )
+        _oc_max = (
+            init_data[_oc_base + 1]
+            if _oc_base + 1 < len(init_data)
+            else {"lon": [], "lat": []}
+        )
+        _oc_ram = (
+            init_data[_oc_base + 2]
+            if _oc_base + 2 < len(init_data)
+            else {"lon": [], "lat": []}
+        )
+        traces_fig.append(
+            _poly_trace(
+                _oc_poly,
+                "Orbit (RAM) min exclusion",
+                _to_rgba("mediumpurple", constraint_alpha),
+                "mediumpurple",
+            )
+        )
+        traces_fig.append(
+            _poly_trace(
+                _oc_max,
+                "Orbit (RAM) max exclusion",
+                _to_rgba(_lighten_color("mediumpurple", 0.25), constraint_alpha * 0.75),
+                _lighten_color("mediumpurple", 0.15),
+                showlegend=orbit_max_angle is not None,
+            )
+        )
+        traces_fig.append(
+            _marker_trace(_oc_ram, "RAM direction", "circle", "mediumpurple", 12)
         )
 
     animated_indices = list(range(1, len(traces_fig)))

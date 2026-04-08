@@ -380,24 +380,26 @@ def plot_sky_pointing_globe(
                             (_ci, _tier, _body, "max", float(_xangle))
                         )
 
-    # n_st_circles = len(st_constraint_specs)
-    # ignore_roll: bool = bool(
-    #     getattr(
-    #         getattr(getattr(ditl, "config", None), "constraint", None),
-    #         "ignore_roll",
-    #         False,
-    #     )
-    # )
+    ignore_roll: bool = bool(
+        getattr(
+            getattr(getattr(ditl, "config", None), "constraint", None),
+            "ignore_roll",
+            False,
+        )
+    )
 
     # ------------------------------------------------------------------
     # Orbit constraint — extract min/max angle and pre-compute RAM vectors
     # ------------------------------------------------------------------
     orbit_constraint = None
     orbit_min_angle: float = 0.0
+    orbit_max_angle: float | None = None
     if hasattr(ditl, "config") and hasattr(ditl.config, "constraint"):
         orbit_constraint = getattr(ditl.config.constraint, "orbit_constraint", None)
     if orbit_constraint is not None:
         orbit_min_angle = float(getattr(orbit_constraint, "min_angle", 0.0))
+        _orbit_max_raw = getattr(orbit_constraint, "max_angle", None)
+        orbit_max_angle = float(_orbit_max_raw) if _orbit_max_raw is not None else None
 
     # Pre-compute unit velocity vectors (RAM direction) for every ephemeris step.
     _gcrs_vel: np.ndarray | None = None
@@ -572,12 +574,16 @@ def plot_sky_pointing_globe(
                 traces.append({"lon": [], "lat": []})
                 continue
 
-            delta = 0.0  # circles are boresight exclusion radii, not spacecraft-pointing radii
             if bound_kind == "min":
-                eff_r = delta + angle + extra_r
+                if ignore_roll:
+                    # With free roll, tracker boresight can sweep a cone of half-angle
+                    # delta around +X, so the always-invalid cap shrinks by delta.
+                    eff_r = max(0.0, angle - st_boresight_offsets[tr_idx]) + extra_r
+                else:
+                    eff_r = angle + extra_r
                 center_ra, center_dec = body_ra, body_dec
             else:
-                eff_r = 180.0 - (delta + angle + extra_r)
+                eff_r = 180.0 - (angle + extra_r)
                 center_ra, center_dec = (body_ra + 180.0) % 360.0, -body_dec
 
             if eff_r > 0:
@@ -585,8 +591,6 @@ def plot_sky_pointing_globe(
             else:
                 c_lons, c_lats = [], []
             traces.append({"lon": c_lons, "lat": c_lats})
-
-        return traces
 
         # --- Orbit constraint (RAM direction) ---
         if orbit_constraint is not None and _gcrs_vel is not None:
@@ -602,7 +606,22 @@ def plot_sky_pointing_globe(
                 )
             else:
                 oc_lons, oc_lats = [], []
+            if orbit_max_angle is not None:
+                anti_ram_ra = (ram_ra_deg + 180.0) % 360.0
+                anti_ram_dec = -ram_dec_deg
+                oc_max_r = max(0.0, 180.0 - orbit_max_angle)
+                if oc_max_r > 0:
+                    oc_max_lons, oc_max_lats = _sky_circle_polygon(
+                        anti_ram_ra,
+                        anti_ram_dec,
+                        oc_max_r,
+                    )
+                else:
+                    oc_max_lons, oc_max_lats = [], []
+            else:
+                oc_max_lons, oc_max_lats = [], []
             traces.append({"lon": oc_lons, "lat": oc_lats})  # orbit excl. polygon
+            traces.append({"lon": oc_max_lons, "lat": oc_max_lats})  # orbit max excl.
             traces.append(
                 {  # RAM direction marker
                     "lon": [_ra_to_lon(ram_ra_deg)],
@@ -610,7 +629,7 @@ def plot_sky_pointing_globe(
                     "marker": {
                         "color": "mediumpurple",
                         "size": 12,
-                        "symbol": "diamond",
+                        "symbol": "circle",
                     },
                 }
             )
@@ -838,32 +857,44 @@ def plot_sky_pointing_globe(
 
         # Animated trace indices: everything except trace 0 (observations)
 
-        # Orbit constraint exclusion polygon + RAM direction marker
-        if orbit_constraint is not None:
-            _oc_base = 7 + n_trackers + len(st_constraint_specs)
-            _oc_poly = (
-                init_data[_oc_base]
-                if _oc_base < len(init_data)
-                else {"lon": [], "lat": []}
+    # Orbit constraint exclusion polygons + RAM direction marker
+    if orbit_constraint is not None:
+        _oc_base = 10 + n_trackers + len(st_constraint_specs)
+        _oc_poly = (
+            init_data[_oc_base] if _oc_base < len(init_data) else {"lon": [], "lat": []}
+        )
+        _oc_max = (
+            init_data[_oc_base + 1]
+            if _oc_base + 1 < len(init_data)
+            else {"lon": [], "lat": []}
+        )
+        _oc_ram = (
+            init_data[_oc_base + 2]
+            if _oc_base + 2 < len(init_data)
+            else {"lon": [], "lat": []}
+        )
+        traces_fig.append(
+            _poly_trace(
+                _oc_poly,
+                "Orbit (RAM) min excl.",
+                _to_rgba("mediumpurple", constraint_alpha),
+                "mediumpurple",
             )
-            _oc_ram = (
-                init_data[_oc_base + 1]
-                if _oc_base + 1 < len(init_data)
-                else {"lon": [], "lat": []}
+        )
+        traces_fig.append(
+            _poly_trace(
+                _oc_max,
+                "Orbit (RAM) max excl.",
+                _to_rgba(_lighten_color("mediumpurple", 0.25), constraint_alpha * 0.75),
+                _lighten_color("mediumpurple", 0.15),
+                showlegend=orbit_max_angle is not None,
             )
-            traces_fig.append(
-                _poly_trace(
-                    _oc_poly,
-                    "Orbit (RAM) excl.",
-                    _to_rgba("mediumpurple", constraint_alpha),
-                    "mediumpurple",
-                )
-            )
-            traces_fig.append(
-                _marker_trace(_oc_ram, "RAM direction", "diamond", "mediumpurple", 12)
-            )
+        )
+        traces_fig.append(
+            _marker_trace(_oc_ram, "RAM direction", "circle", "mediumpurple", 12)
+        )
 
-        # Animated trace indices: everything except trace 0 (observations)
+    # Animated trace indices: everything except trace 0 (observations)
     animated_indices = list(range(1, len(traces_fig)))
 
     # ------------------------------------------------------------------
