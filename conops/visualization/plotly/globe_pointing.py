@@ -217,6 +217,7 @@ def plot_sky_pointing_globe(
     - Earth physical disk (animated).
     - Current spacecraft pointing — star marker, colour = ACS mode (animated).
     - Star-tracker boresights — hexagon markers (animated, one per tracker).
+    - Orbit (RAM direction) exclusion zone — animated circle when configured.
 
     Parameters
     ----------
@@ -342,6 +343,21 @@ def plot_sky_pointing_globe(
     #     )
     # )
 
+    # ------------------------------------------------------------------
+    # Orbit constraint — extract min/max angle and pre-compute RAM vectors
+    # ------------------------------------------------------------------
+    orbit_constraint = None
+    orbit_min_angle: float = 0.0
+    if hasattr(ditl, "config") and hasattr(ditl.config, "constraint"):
+        orbit_constraint = getattr(ditl.config.constraint, "orbit_constraint", None)
+    if orbit_constraint is not None:
+        orbit_min_angle = float(getattr(orbit_constraint, "min_angle", 0.0))
+
+    # Pre-compute unit velocity vectors (RAM direction) for every ephemeris step.
+    _gcrs_vel: np.ndarray | None = None
+    if orbit_constraint is not None:
+        _gcrs_vel = np.asarray(ephem.gcrs_pv.velocity, dtype=np.float64)  # (n, 3)
+
     def _mode_color(idx: int) -> str:
         m = ditl.mode[idx]
         return mode_colors.get(m.name if hasattr(m, "name") else str(m), "red")
@@ -401,6 +417,9 @@ def plot_sky_pointing_globe(
         #   6: Earth disk polygon
         #   7: Pointing marker
         #   8 … 7+n_trackers: ST boresight markers
+        #   8+n_trackers … 7+n_trackers+n_st_specs: ST constraint circles
+        #   8+n_trackers+n_st_specs: Orbit exclusion polygon  [if orbit_constraint]
+        #   9+n_trackers+n_st_specs: RAM direction marker     [if orbit_constraint]
         traces: list[dict[str, Any]] = [
             {"lon": sun_lons, "lat": sun_lats},
             {
@@ -467,6 +486,35 @@ def plot_sky_pointing_globe(
             else:
                 c_lons, c_lats = [], []
             traces.append({"lon": c_lons, "lat": c_lats})
+
+        return traces
+
+        # --- Orbit constraint (RAM direction) ---
+        if orbit_constraint is not None and _gcrs_vel is not None:
+            v = _gcrs_vel[ei].copy()
+            v_n = np.linalg.norm(v)
+            if v_n > 1e-12:
+                v = v / v_n
+            ram_ra_deg = (np.degrees(np.arctan2(v[1], v[0])) + 360.0) % 360.0
+            ram_dec_deg = float(np.degrees(np.arcsin(np.clip(v[2], -1.0, 1.0))))
+            if orbit_min_angle > 0:
+                oc_lons, oc_lats = _sky_circle_polygon(
+                    ram_ra_deg, ram_dec_deg, orbit_min_angle
+                )
+            else:
+                oc_lons, oc_lats = [], []
+            traces.append({"lon": oc_lons, "lat": oc_lats})  # orbit excl. polygon
+            traces.append(
+                {  # RAM direction marker
+                    "lon": [_ra_to_lon(ram_ra_deg)],
+                    "lat": [ram_dec_deg],
+                    "marker": {
+                        "color": "mediumpurple",
+                        "size": 12,
+                        "symbol": "diamond",
+                    },
+                }
+            )
 
         return traces
 
@@ -665,7 +713,34 @@ def plot_sky_pointing_globe(
             )
         )
 
-    # Animated trace indices: everything except trace 0 (observations)
+        # Animated trace indices: everything except trace 0 (observations)
+
+        # Orbit constraint exclusion polygon + RAM direction marker
+        if orbit_constraint is not None:
+            _oc_base = 7 + n_trackers + len(st_constraint_specs)
+            _oc_poly = (
+                init_data[_oc_base]
+                if _oc_base < len(init_data)
+                else {"lon": [], "lat": []}
+            )
+            _oc_ram = (
+                init_data[_oc_base + 1]
+                if _oc_base + 1 < len(init_data)
+                else {"lon": [], "lat": []}
+            )
+            traces_fig.append(
+                _poly_trace(
+                    _oc_poly,
+                    "Orbit (RAM) excl.",
+                    _to_rgba("mediumpurple", constraint_alpha),
+                    "mediumpurple",
+                )
+            )
+            traces_fig.append(
+                _marker_trace(_oc_ram, "RAM direction", "diamond", "mediumpurple", 12)
+            )
+
+        # Animated trace indices: everything except trace 0 (observations)
     animated_indices = list(range(1, len(traces_fig)))
 
     # ------------------------------------------------------------------
