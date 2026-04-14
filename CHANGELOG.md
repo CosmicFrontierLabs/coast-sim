@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.2.2...v0.3.0) (2026-04-14)
+
+
+### Features
+
+* update in_constraint_batch api to match rust_ephem 0.8.0 ([#118](https://github.com/CosmicFrontierLabs/coast-sim/issues/118)) ([3d68eaa](https://github.com/CosmicFrontierLabs/coast-sim/commit/3d68eaadce11bb621da3f1961ce564dd27e8f5fc))
+
+
+### Bug Fixes
+
+* add orbit constraints to config ([#115](https://github.com/CosmicFrontierLabs/coast-sim/issues/115)) ([1be09d9](https://github.com/CosmicFrontierLabs/coast-sim/commit/1be09d93d10000e92ea59f0339fd7f92b41b340d))
+
 ## [0.2.2](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.2.1...v0.2.2) (2026-04-01)
 
 
