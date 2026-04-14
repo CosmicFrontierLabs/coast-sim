@@ -16,6 +16,7 @@ from ..common.enums import ACSCommandType
 from ..config import MissionConfig
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
+from ..simulation.roll import optimum_roll
 from ..simulation.slew import Slew
 from ..targets import Plan, Pointing, Queue
 from .ditl_log import DITLLog
@@ -140,6 +141,11 @@ class QueueDITL(DITLMixin, DITLStats):
             starting_obsid=999000,
             log=self.log,
         )
+
+        # Track whether the last PPT fetch attempt was unsuccessful (no target dispatched).
+        # Set True when the queue is empty or all candidates are rejected; False on
+        # successful dispatch; None during a pass (spacecraft is occupied).
+        self._ppt_unavailable: bool | None = None
 
     def get_acs_queue_status(self) -> dict[str, Any]:
         """
@@ -489,9 +495,23 @@ class QueueDITL(DITLMixin, DITLStats):
                 self.config.fault_management.safe_mode_requested
                 and not self.acs.in_safe_mode
             ):
+                reason = None
+                events = getattr(self.config.fault_management, "events", [])
+                if isinstance(events, list):
+                    trigger_event = next(
+                        (
+                            e
+                            for e in reversed(events)
+                            if e.event_type == "safe_mode_trigger"
+                        ),
+                        None,
+                    )
+                    if trigger_event is not None:
+                        reason = trigger_event.cause
                 command = ACSCommand(
                     command_type=ACSCommandType.ENTER_SAFE_MODE,
                     execution_time=utime,
+                    reason=reason,
                 )
                 self.acs.enqueue_command(command)
 
@@ -503,6 +523,15 @@ class QueueDITL(DITLMixin, DITLStats):
         total_power = self.power[-1] if self.power else None
         bus_power = self.power_bus[-1] if self.power_bus else None
         payload_power = self.power_payload[-1] if self.power_payload else None
+
+        violated = self.constraint.in_constraint(
+            ra, dec, utime, target_roll=roll, acs_mode=mode
+        )
+        in_constraint_name = (
+            self._get_constraint_name(ra, dec, utime, roll=roll, mode=mode)
+            if violated
+            else None
+        )
 
         return Housekeeping(
             timestamp=datetime.fromtimestamp(utime, tz=timezone.utc),
@@ -522,6 +551,8 @@ class QueueDITL(DITLMixin, DITLStats):
             recorder_fill_fraction=self.recorder.get_fill_fraction(),
             recorder_alert=self.recorder.get_alert_level(),
             sun_angle_deg=self._compute_sun_angle(utime, ra, dec),
+            earth_angle_deg=self._compute_earth_angle(utime, ra, dec),
+            moon_angle_deg=self._compute_moon_angle(utime, ra, dec),
             for_solid_angle_sr=(
                 self.constraint.instantaneous_field_of_regard(utime=utime)
                 if self.calculate_field_of_regard
@@ -531,6 +562,13 @@ class QueueDITL(DITLMixin, DITLStats):
             star_tracker_hard_violations=self.acs.star_tracker_hard_violations,
             star_tracker_soft_violations=self.acs.star_tracker_soft_violations,
             star_tracker_functional_count=self.acs.star_tracker_functional_count,
+            star_tracker_status=(
+                self.acs.star_tracker_status
+                if isinstance(self.acs.star_tracker_status, list)
+                else None
+            ),
+            in_constraint=in_constraint_name,
+            ppt_unavailable=self._ppt_unavailable,
         )
 
     def _track_ppt_in_timeline(self) -> None:
@@ -787,9 +825,19 @@ class QueueDITL(DITLMixin, DITLStats):
         # Handle charging PPT constraint checks (regardless of mode)
         if self.ppt == self.charging_ppt:
             # Check constraints for charging PPT even if mode hasn't transitioned yet
-            if self.constraint.in_constraint(self.ppt.ra, self.ppt.dec, utime):
+            if self.constraint.in_constraint(
+                self.ppt.ra,
+                self.ppt.dec,
+                utime,
+                target_roll=self.acs.roll,
+                acs_mode=ACSMode.CHARGING,
+            ):
                 constraint_name = self._get_constraint_name(
-                    self.ppt.ra, self.ppt.dec, utime
+                    self.ppt.ra,
+                    self.ppt.dec,
+                    utime,
+                    roll=self.acs.roll,
+                    mode=ACSMode.CHARGING,
                 )
                 self.log.log_event(
                     utime=utime,
@@ -818,9 +866,19 @@ class QueueDITL(DITLMixin, DITLStats):
         """Check if PPT should terminate due to constraints, completion, or timeout."""
         assert self.ppt is not None
 
-        if self.constraint.in_constraint(self.ppt.ra, self.ppt.dec, utime):
+        if self.constraint.in_constraint(
+            self.ppt.ra,
+            self.ppt.dec,
+            utime,
+            target_roll=self.acs.roll,
+            acs_mode=ACSMode.SCIENCE,
+        ):
             constraint_name = self._get_constraint_name(
-                self.ppt.ra, self.ppt.dec, utime
+                self.ppt.ra,
+                self.ppt.dec,
+                utime,
+                roll=self.acs.roll,
+                mode=ACSMode.SCIENCE,
             )
             self._terminate_ppt(
                 utime,
@@ -866,16 +924,40 @@ class QueueDITL(DITLMixin, DITLStats):
         self.ppt = None
         self.acs.last_slew = None
 
-    def _get_constraint_name(self, ra: float, dec: float, utime: float) -> str:
-        """Determine which constraint is violated."""
-        if self.constraint.in_earth(ra, dec, utime):
-            return "Earth Limb"
-        elif self.constraint.in_moon(ra, dec, utime):
-            return "Moon"
-        elif self.constraint.in_sun(ra, dec, utime):
+    def _get_constraint_name(
+        self,
+        ra: float,
+        dec: float,
+        utime: float,
+        roll: float | None = None,
+        mode: int | None = None,
+    ) -> str:
+        """Determine which constraint is violated.
+
+        Check order matches Constraint.in_constraint() so that when multiple
+        constraints are simultaneously active the reported name is consistent
+        with the one that actually triggered termination.
+        """
+        if self.constraint.in_sun(ra, dec, utime, target_roll=roll):
             return "Sun"
-        elif self.constraint.in_panel(ra, dec, utime):
+        elif self.constraint.in_earth(ra, dec, utime, target_roll=roll):
+            return "Earth Limb"
+        elif self.constraint.in_panel(ra, dec, utime, target_roll=roll):
             return "Panel"
+        elif self.constraint.in_moon(ra, dec, utime, target_roll=roll):
+            return "Moon"
+        elif self.constraint.in_anti_sun(ra, dec, utime, target_roll=roll):
+            return "Anti-Sun"
+        elif self.constraint.in_orbit(ra, dec, utime, target_roll=roll):
+            return "Orbit"
+        elif self.constraint.in_star_tracker_hard(
+            ra, dec, utime, target_roll=roll, acs_mode=mode
+        ):
+            return "ST Hard"
+        elif self.constraint.in_star_tracker_soft(
+            ra, dec, utime, target_roll=roll, acs_mode=mode
+        ):
+            return "ST Soft"
         return "Unknown"
 
     def _fetch_new_ppt(self, utime: float, ra: float, dec: float) -> None:
@@ -892,6 +974,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 description="Deferring PPT fetch - pass in progress",
                 acs_mode=self.acs.acsmode,
             )
+            self._ppt_unavailable = None
             return
 
         self.log.log_event(
@@ -901,17 +984,10 @@ class QueueDITL(DITLMixin, DITLStats):
             acs_mode=self.acs.acsmode,
         )
 
+        # Fetch the next PPT from the queue based on current pointing and time
         self.ppt = self.queue.get(ra, dec, utime)
 
         if self.ppt is not None:
-            self.log.log_event(
-                utime=utime,
-                event_type="QUEUE",
-                description=f"Fetched PPT: {self.ppt}",
-                obsid=self.ppt.obsid,
-                acs_mode=self.acs.acsmode,
-            )
-
             # Create and configure a Slew object
             slew = Slew(
                 config=self.config,
@@ -936,6 +1012,7 @@ class QueueDITL(DITLMixin, DITLStats):
                     obsid=self.ppt.obsid,
                     acs_mode=self.acs.acsmode,
                 )
+                self._ppt_unavailable = True
                 return
 
             # Initialize slew start positions from current ACS pointing
@@ -974,6 +1051,47 @@ class QueueDITL(DITLMixin, DITLStats):
                 execution_time = visstart
 
             slew.slewstart = execution_time
+
+            # When ignore_roll=True, verify that a valid roll exists before slewing.
+            # optimum_roll() falls back to the unconstrained solar roll when
+            # roll_range() is empty (no roll satisfies all constraints), which
+            # would put star trackers into a constraint zone.  Skip the target
+            # instead so a better one can be selected.
+            if self.config.constraint.ignore_roll:
+                _constraint_obj = self.config.constraint.constraint
+                if _constraint_obj is not None:
+                    # Snap to the nearest ephemeris timestamp — roll_range() requires
+                    # an exact match and execution_time may be between grid points.
+                    _snapped_dt = self.acs.ephem.timestamp[
+                        self.acs.ephem.index(dtutcfromtimestamp(execution_time))
+                    ]
+                    _valid_ranges = _constraint_obj.roll_range(
+                        time=_snapped_dt,
+                        ephemeris=self.acs.ephem,
+                        target_ra=self.ppt.ra,
+                        target_dec=self.ppt.dec,
+                    )
+                    if not _valid_ranges:
+                        self.log.log_event(
+                            utime=utime,
+                            event_type="QUEUE",
+                            description=f"Target {self.ppt.obsid} skipped — no valid roll satisfies all constraints at this time",
+                            obsid=self.ppt.obsid,
+                            acs_mode=self.acs.acsmode,
+                        )
+                        self.ppt = None
+                        self._ppt_unavailable = True
+                        return
+
+            slew.endroll = optimum_roll(
+                self.ppt.ra,
+                self.ppt.dec,
+                execution_time,
+                self.acs.ephem,
+                self.config.solar_panel,
+                self.config.constraint,
+            )
+            self.ppt.roll = slew.endroll
             slew.calc_slewtime()
 
             # Verify slew won't overlap with a pass - check both start and end
@@ -987,6 +1105,7 @@ class QueueDITL(DITLMixin, DITLStats):
                     acs_mode=self.acs.acsmode,
                 )
                 self.ppt = None
+                self._ppt_unavailable = True
                 return
             if self.acs.passrequests.current_pass(slew_end) is not None:
                 self.log.log_event(
@@ -997,6 +1116,7 @@ class QueueDITL(DITLMixin, DITLStats):
                     acs_mode=self.acs.acsmode,
                 )
                 self.ppt = None
+                self._ppt_unavailable = True
                 return
 
             self.acs.slew_dists.append(slew.slewdist)
@@ -1026,12 +1146,21 @@ class QueueDITL(DITLMixin, DITLStats):
                         acs_mode=self.acs.acsmode,
                     )
                     self.ppt = None
+                    self._ppt_unavailable = True
                     return
 
             # Update PPT timing based on slew
             self.ppt.begin = int(execution_time)
             # Update PPT end time to ensure it has enough time for slew + max observation
             self.ppt.end = int(execution_time + slew.slewtime + self.ppt.ss_max)
+
+            self.log.log_event(
+                utime=utime,
+                event_type="QUEUE",
+                description=f"Fetched PPT: {self.ppt}",
+                obsid=self.ppt.obsid,
+                acs_mode=self.acs.acsmode,
+            )
 
             # Enqueue the slew command
             command = ACSCommand(
@@ -1040,6 +1169,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 slew=slew,
             )
             self.acs.enqueue_command(command)
+            self._ppt_unavailable = False
 
             # Return the new target coordinates
             return
@@ -1050,6 +1180,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 description="No targets available from Queue",
                 acs_mode=self.acs.acsmode,
             )
+            self._ppt_unavailable = True
             return
 
     def _record_pointing_data(
@@ -1118,6 +1249,34 @@ class QueueDITL(DITLMixin, DITLStats):
             return None
 
         return angular_separation(sun_ra, sun_dec, ra, dec)
+
+    def _compute_earth_angle(self, utime: float, ra: float, dec: float) -> float | None:
+        """Compute angular distance from pointing to the Earth in degrees."""
+        if self.ephem is None:
+            return None
+
+        try:
+            idx = self.ephem.index(dtutcfromtimestamp(utime))
+            earth_ra = self.ephem.earth_ra_deg[idx]
+            earth_dec = self.ephem.earth_dec_deg[idx]
+        except Exception:
+            return None
+
+        return angular_separation(earth_ra, earth_dec, ra, dec)
+
+    def _compute_moon_angle(self, utime: float, ra: float, dec: float) -> float | None:
+        """Compute angular distance from pointing to the Moon in degrees."""
+        if self.ephem is None:
+            return None
+
+        try:
+            idx = self.ephem.index(dtutcfromtimestamp(utime))
+            moon_ra = self.ephem.moon_ra_deg[idx]
+            moon_dec = self.ephem.moon_dec_deg[idx]
+        except Exception:
+            return None
+
+        return angular_separation(moon_ra, moon_dec, ra, dec)
 
     def _calculate_power_consumption(
         self, mode: ACSMode, in_eclipse: bool

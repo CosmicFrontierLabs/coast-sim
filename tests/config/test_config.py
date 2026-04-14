@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
 
+import rust_ephem
 import yaml
 
 from conops import (
@@ -17,6 +18,7 @@ from conops import (
     SolarPanelSet,
     SpacecraftBus,
 )
+from conops.config import StarTracker, StarTrackerConfiguration, StarTrackerOrientation
 
 
 class TestConfig:
@@ -145,18 +147,46 @@ class TestConfig:
             fault_management=fault_management,
         )
         config.init_fault_management_defaults()
-        # Should have battery_level (that we added) and recorder_fill_fraction (added by init)
-        assert len(fault_management.thresholds) == 2
+        # Should have battery_level (that we added), recorder_fill_fraction, and
+        # ppt_unavailable (both added by init)
+        assert len(fault_management.thresholds) == 3
         assert any(t.name == "battery_level" for t in fault_management.thresholds)
         assert any(
             t.name == "recorder_fill_fraction" for t in fault_management.thresholds
         )
+        assert any(t.name == "ppt_unavailable" for t in fault_management.thresholds)
         # Battery level should have our custom values, not defaults
         battery_threshold = next(
             t for t in fault_management.thresholds if t.name == "battery_level"
         )
         assert battery_threshold.yellow == 0.5
         assert battery_threshold.red == 0.4
+
+    def test_init_fault_management_defaults_propagates_star_tracker_soft_and_hard(
+        self,
+    ) -> None:
+        """Test mission constraint receives both hard and soft star-tracker constraints."""
+        config = MissionConfig()
+        config.spacecraft_bus.star_trackers = StarTrackerConfiguration(
+            star_trackers=[
+                StarTracker(
+                    name="ST1",
+                    orientation=StarTrackerOrientation(boresight=(1.0, 0.0, 0.0)),
+                    hard_constraint=Constraint(
+                        sun_constraint=rust_ephem.SunConstraint(min_angle=10.0)
+                    ),
+                    soft_constraint=Constraint(
+                        earth_constraint=rust_ephem.EarthLimbConstraint(min_angle=5.0)
+                    ),
+                )
+            ],
+            min_functional_trackers=1,
+        )
+
+        config.init_fault_management_defaults()
+
+        assert config.constraint.star_tracker_hard_constraint is not None
+        assert config.constraint.star_tracker_soft_constraint is not None
 
     def test_from_json_file(self, tmp_path: Path) -> None:
         """Test loading Config from JSON file."""

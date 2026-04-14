@@ -130,7 +130,8 @@ Valid threshold names are the predefined ``Housekeeping`` fields. Commonly used 
 * ``power_usage`` / ``power_bus`` / ``power_payload``
 * ``panel_illumination``
 * ``recorder_fill_fraction`` / ``recorder_alert``
-* ``sun_angle_deg``
+* ``sun_angle_deg`` / ``earth_angle_deg`` / ``moon_angle_deg``
+* ``star_tracker_functional_count`` (automatically configured when star trackers are present)
 
 During fault checking, the current ACS mode is determined from:
 1. ``housekeeping.acs_mode`` (preferred)
@@ -330,7 +331,8 @@ The fault management system is automatically integrated into the ``QueueDITL`` s
    # Load config with fault_management section
    config = MissionConfig.from_json("config_with_fault_management.json")
 
-   # Initialize defaults (adds battery_level threshold if not present)
+   # Initialize defaults (adds battery_level, recorder_fill_fraction, and
+   # star_tracker_functional_count thresholds if not already present)
    config.init_fault_management_defaults()
 
    # Run simulation

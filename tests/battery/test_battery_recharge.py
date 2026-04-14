@@ -291,7 +291,9 @@ class TestEmergencyCharging:
             emergency_charging.constraint, "in_eclipse", lambda ra, dec, time: False
         )
         monkeypatch.setattr(
-            emergency_charging.constraint, "in_constraint", lambda ra, dec, time: False
+            emergency_charging.constraint,
+            "in_constraint",
+            lambda *args, **kwargs: False,
         )
         ppt = emergency_charging.create_charging_pointing(utime, mock_ephem)
         assert ppt is not None
@@ -363,7 +365,9 @@ class TestEmergencyCharging:
     def test_create_charging_pointing_constraint_violation_returns_alternative_ra(
         self, emergency_charging, mock_ephem, monkeypatch, utime
     ):
-        def mock_in_constraint(ra, dec, utime, hardonly=True):
+        def mock_in_constraint(
+            ra, dec, utime, hardonly=True, target_roll=None, acs_mode=None
+        ):
             return ra == 180.0
 
         emergency_charging.constraint.in_constraint = mock_in_constraint
@@ -910,7 +914,9 @@ class TestEmergencyCharging:
         optimal_dec = 0.0
         utime = 1700000000.0
 
-        def mock_in_constraint(ra, dec, utime_inner, hardonly=True):
+        def mock_in_constraint(
+            ra, dec, utime_inner, hardonly=True, target_roll=None, acs_mode=None
+        ):
             return abs(ra - optimal_ra) < 1e-6 and abs(dec - optimal_dec) < 1e-6
 
         mock_config.constraint.in_constraint = mock_in_constraint

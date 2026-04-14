@@ -113,7 +113,28 @@ class PlanEntry:
         assert self.ephem is not None, "Ephemeris must be set to calculate visibility"
 
         # Calculate the visibility of this target
-        combined_constraint = self.constraint.constraint
+        if self.constraint.ignore_roll:
+            # ignore_roll=True → field-of-regard scheduling.
+            #
+            # The combined constraint may include star-tracker components wrapped in
+            # BoresightOffsetConstraint, which are roll-dependent.  Calling
+            # evaluate(target_roll=None) on a roll-dependent constraint uses
+            # "visible only if visible at ALL rolls" semantics, which means nearly
+            # every target appears unschedulable — the opposite of what we want.
+            #
+            # For FOR scheduling we want "schedulable if visible at SOME roll".
+            # rust_ephem's evaluate() API cannot express that semantics directly for
+            # roll-dependent constraints without sweeping all roll angles.  Instead
+            # we compute windows using only the roll-independent components (sun,
+            # earth, moon, panel) and rely on the runtime in_constraint() checks —
+            # which DO use the correct FOR semantics (violated only if violated at
+            # ALL rolls) — to reject any observation that has no valid roll at all.
+            combined_constraint = self.constraint.roll_independent_constraint
+            effective_roll = None
+        else:
+            combined_constraint = self.constraint.constraint
+            effective_roll = self.roll
+
         if combined_constraint is None:
             self.windows = [
                 [
@@ -127,6 +148,7 @@ class PlanEntry:
             ephemeris=self.ephem,
             target_ra=self.ra,  # already in degrees
             target_dec=self.dec,
+            target_roll=effective_roll,
         )
         # Construct the visibility windows
 

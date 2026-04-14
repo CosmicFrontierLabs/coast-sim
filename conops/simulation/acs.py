@@ -49,6 +49,7 @@ class ACS:
     star_tracker_hard_violations: int
     star_tracker_soft_violations: bool
     star_tracker_functional_count: int
+    star_tracker_status: list[bool]
 
     def __init__(self, config: MissionConfig, log: "DITLLog | None" = None) -> None:
         """Initialize the Attitude Control System.
@@ -91,6 +92,7 @@ class ACS:
         self.star_tracker_hard_violations = 0
         self.star_tracker_soft_violations = False
         self.star_tracker_functional_count = 0
+        self.star_tracker_status: list[bool] = []
 
         # Command queue (sorted by execution_time)
         self.command_queue = []
@@ -183,7 +185,7 @@ class ACS:
                     utime
                 ),
                 ACSCommandType.ENTER_SAFE_MODE: lambda: self._handle_safe_mode_command(
-                    utime
+                    command, utime
                 ),
             }
 
@@ -237,14 +239,17 @@ class ACS:
         )
 
     # Handle Safe Mode Command
-    def _handle_safe_mode_command(self, utime: float) -> None:
+    def _handle_safe_mode_command(self, command: "ACSCommand", utime: float) -> None:
         """Handle ENTER_SAFE_MODE command.
 
         Once safe mode is entered, it cannot be exited. The spacecraft will
         point solar panels at the Sun and obey bus-level constraints.
         """
+        reason_str = f" - reason: {command.reason}" if command.reason else ""
         self._log_or_print(
-            utime, "SAFE", f"{unixtime2date(utime)}: Entering SAFE MODE - irreversible"
+            utime,
+            "SAFE",
+            f"{unixtime2date(utime)}: Entering SAFE MODE - irreversible{reason_str}",
         )
         self.in_safe_mode = True
         # Clear command queue to prevent any future commands from executing
@@ -334,7 +339,9 @@ class ACS:
         slew.enddec = dec
         # If roll not provided, calculate optimal roll at target position
         if roll is None:
-            slew.endroll = optimum_roll(ra, dec, utime, self.ephem, self.solar_panel)
+            slew.endroll = optimum_roll(
+                ra, dec, utime, self.ephem, self.solar_panel, self.constraint
+            )
         else:
             slew.endroll = roll
         slew.obstype = obstype
@@ -390,7 +397,7 @@ class ACS:
             config=self.config,
             ra=slew.endra,
             dec=slew.enddec,
-            roll=roll if roll is not None else 0.0,
+            roll=roll if roll is not None else slew.endroll,
             obsid=slew.obsid,
         )
         target.isat = slew.obstype != ObsType.PPT
@@ -476,6 +483,8 @@ class ACS:
         2. Processes any commands due for execution
         3. Updates the current ACS mode based on slew/pass state
         4. Calculates current RA/Dec pointing
+        5. Calculates current roll angle to optimize solar panel illumination
+        6. Checks current constraints using up-to-date pointing and roll
         """
         # Determine if the spacecraft is currently in eclipse
         self.in_eclipse = self.constraint.in_eclipse(ra=0, dec=0, time=utime)
@@ -486,21 +495,22 @@ class ACS:
         # Update ACS mode based on current state
         self._update_mode(utime)
 
-        # Check current constraints
-        self._check_constraints(utime)
-
         # Calculate current RA/Dec pointing
         self._calculate_pointing(utime)
 
         # Calculate roll angle to optimize solar panel illumination
-        # NOTE: This optimizes solar panel power generation. Consider pre-calculating if performance is an issue.
+        # NOTE: Must run after _calculate_pointing so self.ra/dec are current.
         self.roll = optimum_roll(
             self.ra,
             self.dec,
             utime,
             self.ephem,
             self.solar_panel,
+            self.constraint,
         )
+
+        # Check current constraints (must run after roll is updated)
+        self._check_constraints(utime)
 
         # Return current pointing
         if self.last_slew is not None:
@@ -595,10 +605,17 @@ class ACS:
             and not isinstance(self.last_slew.at, bool)
             and self.last_slew.obstype == ObsType.PPT
             and self.constraint.in_constraint(
-                self.last_slew.at.ra, self.last_slew.at.dec, utime
+                self.last_slew.at.ra,
+                self.last_slew.at.dec,
+                utime,
+                target_roll=self.roll,
             )
         ):
             assert self.last_slew.at is not None
+
+            # Update the roll on the target to reflect the current optimum roll
+            # (the stored roll was computed at schedule time and may be stale)
+            self.last_slew.at.roll = self.roll
 
             # Collect only the true constraints
             true_constraints = []
@@ -610,6 +627,10 @@ class ACS:
                 true_constraints.append("Earth")
             if self.last_slew.at.in_panel(utime):
                 true_constraints.append("Panel")
+            if self.last_slew.at.in_star_tracker_hard(utime, acs_mode=self.acsmode):
+                true_constraints.append("ST Hard")
+            if self.last_slew.at.in_star_tracker_soft(utime, acs_mode=self.acsmode):
+                true_constraints.append("ST Soft")
 
             # Print only if there are true constraints
             if true_constraints:
@@ -654,12 +675,27 @@ class ACS:
 
         # Check hard constraints
         hard_violations = star_trackers.trackers_violating_hard_constraints(
-            current_ra, current_dec, utime, current_roll
+            current_ra,
+            current_dec,
+            utime,
+            current_roll,
+            mode=self.acsmode,
         )
 
         # Check soft constraints
         soft_violations = star_trackers.any_tracker_violating_soft_constraints(
-            current_ra, current_dec, utime, current_roll
+            current_ra,
+            current_dec,
+            utime,
+            current_roll,
+            mode=self.acsmode,
+        )
+        soft_violation_count = star_trackers.trackers_violating_soft_constraints(
+            current_ra,
+            current_dec,
+            utime,
+            current_roll,
+            mode=self.acsmode,
         )
 
         # Update ACS state for Housekeeping telemetry
@@ -672,12 +708,24 @@ class ACS:
             if isinstance(star_trackers.num_trackers(), int)
             else 0
         )
+        # Functional = not in soft constraint (i.e. tracking at full science quality).
+        # Hard-constraint violations are always faulted separately; a tracker
+        # being burned by the Sun is still "not soft-constrained" but the hard
+        # constraint system handles that separately.
         self.star_tracker_functional_count = (
-            num_trackers - self.star_tracker_hard_violations
-            if isinstance(num_trackers, int)
-            and isinstance(self.star_tracker_hard_violations, int)
+            num_trackers - soft_violation_count
+            if isinstance(num_trackers, int) and isinstance(soft_violation_count, int)
             else 0
         )
+        # Per-tracker status: True = functional (not in soft constraint)
+        raw_st_list = getattr(star_trackers, "star_trackers", None)
+        if isinstance(raw_st_list, list):
+            self.star_tracker_status = [
+                not st.in_soft_constraint(current_ra, current_dec, utime, current_roll)
+                for st in raw_st_list
+            ]
+        else:
+            self.star_tracker_status = []
 
         # Log hard constraint violations
         if isinstance(hard_violations, int) and hard_violations > 0:

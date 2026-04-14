@@ -260,6 +260,11 @@ class DITL(DITLMixin, DITLStats):
                 star_tracker_hard_violations=self.acs.star_tracker_hard_violations,
                 star_tracker_soft_violations=self.acs.star_tracker_soft_violations,
                 star_tracker_functional_count=self.acs.star_tracker_functional_count,
+                star_tracker_status=(
+                    self.acs.star_tracker_status
+                    if isinstance(self.acs.star_tracker_status, list)
+                    else None
+                ),
             )
 
             # Check fault management thresholds and red limit constraints

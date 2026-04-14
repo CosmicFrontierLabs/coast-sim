@@ -77,6 +77,7 @@ def test_config_with_panels(mock_ephem_with_pv: Mock) -> tuple[Mock, SolarPanelS
     # Create constraint
     constraint = Mock()
     constraint.ephem = mock_ephem_with_pv
+    constraint.constraint = None  # no combined rust-ephem constraint in tests
     constraint.panel_constraint = Mock()
     constraint.in_constraint = Mock(return_value=False)
     constraint.in_eclipse = Mock(return_value=False)

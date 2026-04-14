@@ -59,20 +59,45 @@ class Pointing(PlanEntry):
 
     def in_sun(self, utime: float) -> bool:
         """Is this target in Sun constraint?"""
-        in_sun = self.config.constraint.in_sun(self.ra, self.dec, utime)
-        return in_sun
+        return self.config.constraint.in_sun(
+            self.ra, self.dec, utime, target_roll=self.roll
+        )
 
     def in_earth(self, utime: float) -> bool:
         """Is this target in Earth constraint?"""
-        return self.config.constraint.in_earth(self.ra, self.dec, utime)
+        return self.config.constraint.in_earth(
+            self.ra, self.dec, utime, target_roll=self.roll
+        )
 
     def in_moon(self, utime: float) -> bool:
         """Is this target in Moon constraint?"""
-        return self.config.constraint.in_moon(self.ra, self.dec, utime)
+        return self.config.constraint.in_moon(
+            self.ra, self.dec, utime, target_roll=self.roll
+        )
 
     def in_panel(self, utime: float) -> bool:
         """Is this target in Panel constraint?"""
-        return self.config.constraint.in_panel(self.ra, self.dec, utime)
+        return self.config.constraint.in_panel(
+            self.ra, self.dec, utime, target_roll=self.roll
+        )
+
+    def in_orbit(self, utime: float) -> bool:
+        """Is this target in Orbit constraint?"""
+        return self.config.constraint.in_orbit(
+            self.ra, self.dec, utime, target_roll=self.roll
+        )
+
+    def in_star_tracker_hard(self, utime: float, acs_mode: int | None = None) -> bool:
+        """Is this target in star tracker hard constraint?"""
+        return self.config.constraint.in_star_tracker_hard(
+            self.ra, self.dec, utime, target_roll=self.roll, acs_mode=acs_mode
+        )
+
+    def in_star_tracker_soft(self, utime: float, acs_mode: int | None = None) -> bool:
+        """Is this target in star tracker soft constraint?"""
+        return self.config.constraint.in_star_tracker_soft(
+            self.ra, self.dec, utime, target_roll=self.roll, acs_mode=acs_mode
+        )
 
     def next_vis(self, utime: float) -> float | Literal[False]:
         """When is this target visible next?"""

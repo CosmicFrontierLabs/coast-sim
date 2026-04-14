@@ -1,6 +1,8 @@
 """Test fixtures for queue subsystem tests."""
 
+from collections.abc import Callable, Generator
 from datetime import datetime, timedelta, timezone
+from typing import Any, Literal, cast
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -14,7 +16,7 @@ from conops.targets.plan import Plan
 class DummyEphemeris:
     """Minimal mock ephemeris for testing."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.step_size = 3600.0  # Use 1 hour steps for faster tests
         # Cover 2018 day 331 (Nov 27) for 1 day
         base_time = datetime(2018, 11, 27, tzinfo=timezone.utc)
@@ -36,7 +38,7 @@ class DummyEphemeris:
         self.sun_pv = Mock(position=np.array([[1.5e8, 0.0, 0.0]] * 25))
         self.gcrs_pv = Mock(position=np.array([[0.0, 0.0, 6378.0]] * 25))
 
-    def index(self, time):
+    def index(self, time: Any) -> Literal[0]:
         """Mock index method."""
         return 0
 
@@ -46,22 +48,25 @@ class DummyEphemeris:
 
 
 @pytest.fixture
-def mock_ephem():
+def mock_ephem() -> DummyEphemeris:
     """Create a mock ephemeris object."""
     return DummyEphemeris()
 
 
 @pytest.fixture
-def mock_config():
+def mock_config() -> Mock:
     """Create a mock config with all required subsystems."""
     config = Mock()
 
     # Mock constraint
     config.constraint = Mock()
     config.constraint.ephem = DummyEphemeris()
+    config.constraint.constraint = None  # no combined rust-ephem constraint in tests
     config.constraint.panel_constraint = Mock()
     config.constraint.panel_constraint.solar_panel = Mock()
+    config.constraint.orbit_constraint = None
     config.constraint.in_constraint = Mock(return_value=False)
+    config.constraint.in_orbit = Mock(return_value=False)
     config.constraint.instantaneous_field_of_regard = Mock(return_value=1.234)
 
     # Mock battery
@@ -98,6 +103,7 @@ def mock_config():
 
     # Mock solar panel
     config.solar_panel = Mock()
+    config.solar_panel.panels = []
     config.solar_panel.optimal_charging_pointing = Mock(return_value=(45.0, 23.5))
     config.solar_panel.illumination_and_power = Mock(return_value=(0.5, 100.0))
 
@@ -112,7 +118,7 @@ def mock_config():
 
 
 @pytest.fixture
-def queue_ditl(mock_config, mock_ephem):
+def queue_ditl(mock_config: Mock, mock_ephem: DummyEphemeris) -> QueueDITL:
     """Create a QueueDITL instance with mocked dependencies."""
     with (
         patch("conops.Queue") as mock_queue_class,
@@ -173,14 +179,18 @@ def queue_ditl(mock_config, mock_ephem):
         mock_queue.get = Mock(return_value=None)
         mock_queue_class.return_value = mock_queue
 
-        ditl = QueueDITL(config=mock_config, ephem=mock_ephem, queue=mock_queue)
+        ditl = QueueDITL(
+            config=mock_config,
+            ephem=cast(Any, mock_ephem),
+            queue=mock_queue,
+        )
         ditl.acs = mock_acs
 
         return ditl
 
 
 @pytest.fixture
-def mock_ephemeris():
+def mock_ephemeris() -> Mock:
     """Create a mock ephemeris object."""
     ephem = Mock()
     # 24 hours of data starting 2021-01-04
@@ -196,14 +206,14 @@ class MockPointing:
 
     def __init__(
         self,
-        targetid=1,
-        ra=45.0,
-        dec=30.0,
-        merit=100.0,
-        ss_min=300,
-        ss_max=600,
-        name="",
-    ):
+        targetid: int = 1,
+        ra: float = 45.0,
+        dec: float = 30.0,
+        merit: float = 100.0,
+        ss_min: int = 300,
+        ss_max: int = 600,
+        name: str = "",
+    ) -> None:
         self.targetid = targetid
         self.ra = ra
         self.dec = dec
@@ -217,19 +227,19 @@ class MockPointing:
         self.begin = 0
         self.end = 0
 
-    def calc_slewtime(self, ra_from, dec_from):
+    def calc_slewtime(self, ra_from: float, dec_from: float) -> None:
         """Calculate slew time from prior position."""
         dist = np.sqrt((self.ra - ra_from) ** 2 + (self.dec - dec_from) ** 2)
         self.slewtime = max(0, int(dist / 0.5))  # Slew rate of 0.5 deg/sec
 
-    def visible(self, start_time, end_time):
+    def visible(self, start_time: float, end_time: float) -> bool:
         """Check if target is visible during time window."""
         # Mock: always visible unless explicitly marked invisible
         return getattr(self, "_visible", True)
 
 
 @pytest.fixture
-def mock_queue(mock_ephemeris):
+def mock_queue(mock_ephemeris: Mock) -> Mock:
     """Create a mock queue with sample targets."""
     queue = Mock()
     queue.ephem = mock_ephemeris
@@ -244,7 +254,7 @@ def mock_queue(mock_ephemeris):
     queue.__len__ = Mock(return_value=len(queue.targets))
     queue.__getitem__ = Mock(side_effect=lambda i: queue.targets[i])
 
-    def mock_get(ra, dec, utime):
+    def mock_get(ra: float, dec: float, utime: float) -> MockPointing | None:
         """Mock get method that returns next available target."""
         for target in queue.targets:
             if not target.done and target.merit > 0:
@@ -252,10 +262,10 @@ def mock_queue(mock_ephemeris):
                 if target.visible(utime, utime + target.slewtime + target.ss_max):
                     target.begin = int(utime)
                     target.end = int(utime + target.slewtime + target.ss_max)
-                    return target
+                    return cast(MockPointing, target)
         return None
 
-    def mock_meritsort(ra, dec):
+    def mock_meritsort(ra: float, dec: float) -> None:
         """Mock meritsort to sort by merit."""
         queue.targets.sort(key=lambda x: x.merit, reverse=True)
 
@@ -267,22 +277,28 @@ def mock_queue(mock_ephemeris):
 
 
 @pytest.fixture
-def scheduler(mock_queue, mock_ephemeris):
+def scheduler(mock_queue: Mock, mock_ephemeris: Mock) -> DumbQueueScheduler:
     """Create a DumbQueueScheduler instance."""
     begin = datetime(2021, 1, 4, tzinfo=timezone.utc)
     end = begin + timedelta(days=1)
     scheduler = DumbQueueScheduler(queue=mock_queue, begin=begin, end=end)
     scheduler.queue.ephem = mock_ephemeris
     # Override get to return None for basic tests
-    scheduler.queue.get = Mock(return_value=None)
+    cast(Any, scheduler.queue).get = Mock(return_value=None)
     return scheduler
 
 
 @pytest.fixture
-def mock_pointing():
+def mock_pointing() -> Callable[..., Mock]:
     """Fixture to create a mock pointing object."""
 
-    def _mock_pointing(targetid, ra, dec, merit, ss_min=None):
+    def _mock_pointing(
+        targetid: int,
+        ra: float,
+        dec: float,
+        merit: float,
+        ss_min: int | None = None,
+    ) -> Mock:
         pointing = Mock()
         pointing.targetid = targetid
         pointing.ra = ra
@@ -297,10 +313,16 @@ def mock_pointing():
 
 
 @pytest.fixture
-def make_target(mock_pointing):
+def make_target(mock_pointing: Callable[..., Mock]) -> Callable[..., Any]:
     """Return a factory to create targets quickly."""
 
-    def _make(targetid=1, ra=45.0, dec=30.0, merit=100, ss_min=300):
+    def _make(
+        targetid: int = 1,
+        ra: float = 45.0,
+        dec: float = 30.0,
+        merit: float = 100,
+        ss_min: int = 300,
+    ) -> Any:
         t = mock_pointing(targetid=targetid, ra=ra, dec=dec, merit=merit, ss_min=ss_min)
         t.done = False
         return t
@@ -309,10 +331,10 @@ def make_target(mock_pointing):
 
 
 @pytest.fixture
-def make_targets(make_target):
+def make_targets(make_target: Callable[..., Any]) -> Callable[..., list[Any]]:
     """Return a factory to create a list of targets."""
 
-    def _make_many(count=3, start_ra=45.0):
+    def _make_many(count: int = 3, start_ra: float = 45.0) -> list[Any]:
         targets = []
         for i in range(count):
             ra = (start_ra + i * 45) % 360
@@ -326,18 +348,22 @@ def make_targets(make_target):
 
 
 @pytest.fixture
-def queue_get_from_list():
+def queue_get_from_list() -> Callable[..., list[tuple[float, float]]]:
     """
     Fixture returning a helper to set scheduler.queue.get to pop entries
     from a provided list. Returns the recorded positions list if tracking
     is enabled.
     """
 
-    def _set_queue_get(scheduler, targets, track_positions=False):
+    def _set_queue_get(
+        scheduler: Any,
+        targets: list[Any],
+        track_positions: bool = False,
+    ) -> list[tuple[float, float]]:
         call_count = {"count": 0}
-        positions = []
+        positions: list[tuple[float, float]] = []
 
-        def getter(ra, dec, utime):
+        def getter(ra: float, dec: float, utime: float) -> Any:
             if track_positions:
                 positions.append((ra, dec))
             if call_count["count"] < len(targets):
@@ -347,14 +373,14 @@ def queue_get_from_list():
                 return res
             return None
 
-        scheduler.queue.get = getter
+        cast(Any, scheduler.queue).get = getter
         return positions
 
     return _set_queue_get
 
 
 @pytest.fixture
-def scheduler_2022_100_len2(mock_queue):
+def scheduler_2022_100_len2(mock_queue: Mock) -> DumbQueueScheduler:
     plan = Plan()
     begin = datetime(2022, 4, 10, tzinfo=timezone.utc)
     end = begin + timedelta(days=2)
@@ -365,7 +391,7 @@ def scheduler_2022_100_len2(mock_queue):
 
 
 @pytest.fixture
-def standard_too_params():
+def standard_too_params() -> dict[str, Any]:
     """Standard TOO parameters used in many tests."""
     return {
         "obsid": 1000001,
@@ -378,13 +404,16 @@ def standard_too_params():
 
 
 @pytest.fixture
-def submitted_too(queue_ditl, standard_too_params):
+def submitted_too(
+    queue_ditl: QueueDITL,
+    standard_too_params: dict[str, Any],
+) -> Any:
     """A QueueDITL instance with a standard TOO already submitted."""
     return queue_ditl.submit_too(**standard_too_params)
 
 
 @pytest.fixture
-def low_merit_current_ppt(queue_ditl):
+def low_merit_current_ppt(queue_ditl: QueueDITL) -> Any:
     """Create a current pointing object with low merit for TOO interrupt tests."""
     from conops import Pointing
 
@@ -402,7 +431,7 @@ def low_merit_current_ppt(queue_ditl):
 
 
 @pytest.fixture
-def mock_pointing_visibility():
+def mock_pointing_visibility() -> Generator[Mock, None, None]:
     """Mock patch for Pointing.visibility method."""
     with patch("conops.targets.pointing.Pointing.visibility") as mock_visibility:
         mock_visibility.return_value = None  # visibility() just populates windows
@@ -410,7 +439,7 @@ def mock_pointing_visibility():
 
 
 @pytest.fixture
-def mock_pointing_visible():
+def mock_pointing_visible() -> Generator[Mock, None, None]:
     """Mock patch for Pointing.visible method."""
     with patch("conops.targets.pointing.Pointing.visible") as mock_visible:
         mock_visible.return_value = True  # Default to visible
@@ -418,21 +447,21 @@ def mock_pointing_visible():
 
 
 @pytest.fixture
-def mock_terminate_ppt():
+def mock_terminate_ppt() -> Generator[Mock, None, None]:
     """Mock patch for QueueDITL._terminate_ppt method."""
     with patch("conops.QueueDITL._terminate_ppt") as mock_terminate:
         yield mock_terminate
 
 
 @pytest.fixture
-def mock_fetch_new_ppt():
+def mock_fetch_new_ppt() -> Generator[Mock, None, None]:
     """Mock patch for QueueDITL._fetch_new_ppt method."""
     with patch("conops.QueueDITL._fetch_new_ppt") as mock_fetch:
         yield mock_fetch
 
 
 @pytest.fixture
-def basic_too_request():
+def basic_too_request() -> Any:
     """Create a basic TOORequest object with standard parameters."""
     from conops.ditl import TOORequest
 
@@ -447,7 +476,7 @@ def basic_too_request():
 
 
 @pytest.fixture
-def custom_too_request():
+def custom_too_request() -> Any:
     """Create a TOORequest object with custom submit_time and executed=True."""
     from conops.ditl import TOORequest
 
@@ -464,7 +493,7 @@ def custom_too_request():
 
 
 @pytest.fixture
-def unix_timestamp_too(queue_ditl):
+def unix_timestamp_too(queue_ditl: QueueDITL) -> Any:
     """A QueueDITL instance with a TOO submitted using Unix timestamp."""
     submit_time = 1640995200.0  # 2022-01-01 00:00:00 UTC
     return queue_ditl.submit_too(
@@ -480,11 +509,11 @@ def unix_timestamp_too(queue_ditl):
 
 @pytest.fixture
 def mock_too_interrupt_success(
-    mock_pointing_visibility,
-    mock_pointing_visible,
-    mock_terminate_ppt,
-    mock_fetch_new_ppt,
-):
+    mock_pointing_visibility: Mock,
+    mock_pointing_visible: Mock,
+    mock_terminate_ppt: Mock,
+    mock_fetch_new_ppt: Mock,
+) -> dict[str, Mock]:
     """Combined mock setup for successful TOO interrupt tests."""
     mock_pointing_visibility.return_value = None  # visibility() just populates windows
     mock_pointing_visible.return_value = True  # Target is visible
@@ -498,8 +527,10 @@ def mock_too_interrupt_success(
 
 @pytest.fixture
 def mock_too_interrupt_no_current_obs(
-    mock_pointing_visibility, mock_pointing_visible, mock_fetch_new_ppt
-):
+    mock_pointing_visibility: Mock,
+    mock_pointing_visible: Mock,
+    mock_fetch_new_ppt: Mock,
+) -> dict[str, Mock]:
     """Combined mock setup for TOO interrupt tests with no current observation."""
     mock_pointing_visibility.return_value = None  # visibility() just populates windows
     mock_pointing_visible.return_value = True  # Target is visible
@@ -511,7 +542,10 @@ def mock_too_interrupt_no_current_obs(
 
 
 @pytest.fixture
-def queue_ditl_no_queue_log(mock_config, mock_ephem):
+def queue_ditl_no_queue_log(
+    mock_config: Mock,
+    mock_ephem: DummyEphemeris,
+) -> QueueDITL:
     """Create a QueueDITL instance with a queue that has no log initially."""
     with (
         patch("conops.Queue") as mock_queue_class,
@@ -573,14 +607,21 @@ def queue_ditl_no_queue_log(mock_config, mock_ephem):
         mock_queue.log = None  # Explicitly set log to None
         mock_queue_class.return_value = mock_queue
 
-        ditl = QueueDITL(config=mock_config, ephem=mock_ephem, queue=mock_queue)
+        ditl = QueueDITL(
+            config=mock_config,
+            ephem=cast(Any, mock_ephem),
+            queue=mock_queue,
+        )
         ditl.acs = mock_acs
 
         return ditl
 
 
 @pytest.fixture
-def queue_ditl_acs_no_ephem(mock_config, mock_ephem):
+def queue_ditl_acs_no_ephem(
+    mock_config: Mock,
+    mock_ephem: DummyEphemeris,
+) -> QueueDITL:
     """Create a QueueDITL instance where ACS initially has no ephem."""
     with (
         patch("conops.Queue") as mock_queue_class,
@@ -640,7 +681,11 @@ def queue_ditl_acs_no_ephem(mock_config, mock_ephem):
         mock_queue.get = Mock(return_value=None)
         mock_queue_class.return_value = mock_queue
 
-        ditl = QueueDITL(config=mock_config, ephem=mock_ephem, queue=mock_queue)
+        ditl = QueueDITL(
+            config=mock_config,
+            ephem=cast(Any, mock_ephem),
+            queue=mock_queue,
+        )
         ditl.acs = mock_acs
 
         return ditl

@@ -144,6 +144,7 @@ The :class:`~conops.config.SpacecraftBus` defines the spacecraft bus subsystems.
 * ``communications`` (:class:`~conops.config.CommunicationsSystem`): Optional comms system
 * ``heater`` (:class:`~conops.config.Heater`): Optional thermal heater
 * ``data_generation`` (:class:`~conops.config.DataGeneration`): Bus-level data generation
+* ``star_trackers`` (:class:`~conops.config.StarTrackerConfiguration`): Optional star tracker configuration
 
 .. code-block:: python
 
@@ -289,6 +290,127 @@ simplifies this by generating unit normal vectors based on mount type and cant a
        conversion_efficiency=0.95,
    )
 
+star_tracker
+~~~~~~~~~~~~
+
+The :class:`~conops.config.StarTrackerConfiguration` configures the star tracker system.
+Star trackers provide attitude determination by identifying star fields and are subject
+to avoidance constraints (e.g., never look within N° of the Sun).
+
+**StarTrackerConfiguration Attributes:**
+
+* ``star_trackers`` (list[StarTracker]): Individual star tracker configurations
+* ``min_functional_trackers`` (int): Minimum trackers not in soft violation for pointing to be valid (science-quality check).
+  Hard constraints are always enforced regardless of this value.
+* ``modes_require_lock`` (list[ACSMode] | None): ACS modes in which star tracker **soft** constraints are enforced as a
+  science-quality check. ``None`` (default) enforces soft constraints in all modes. An empty list disables soft constraint
+  checks entirely. For example, ``[ACSMode.SCIENCE]`` only applies soft constraints during science observations.
+
+  .. note::
+
+     **Hard** constraints are absolute health-and-safety keep-outs (e.g. sensor blinding) and are *always* enforced in
+     every mode, regardless of ``modes_require_lock``. ``modes_require_lock`` only gates the science-quality **soft**
+     constraint checks.
+
+**StarTracker Attributes:**
+
+* ``name`` (str): Tracker identifier
+* ``orientation`` (:class:`~conops.config.StarTrackerOrientation`): Boresight direction in spacecraft body frame
+* ``hard_constraint`` (optional): Constraint defining regions where the tracker *cannot* operate (e.g. Sun avoidance).
+  Always enforced. Violations are recorded in the ``star_tracker_hard_violations`` telemetry field.
+* ``soft_constraint`` (optional): Constraint defining regions of degraded performance (science-quality check).
+  Enforced only in modes listed in ``StarTrackerConfiguration.modes_require_lock``. Violations are recorded in
+  ``star_tracker_soft_violations``.
+
+**StarTrackerOrientation Attributes:**
+
+* ``boresight`` (tuple[float, float, float]): Boresight direction as a unit vector in spacecraft body frame
+
+  - +x is the spacecraft pointing direction (forward/boresight)
+  - +y is the spacecraft "up" direction
+  - +z completes the right-handed coordinate system
+
+Star Tracker Vector Helper Function
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The :func:`~conops.config.star_tracker.create_star_tracker_vector` helper converts
+roll, pitch, and yaw Euler angles to a boresight vector, mirroring the solar panel
+helper:
+
+.. code-block:: python
+
+   from conops.config.star_tracker import create_star_tracker_vector
+
+   # Star tracker pointing along spacecraft boresight (+X)
+   boresight = create_star_tracker_vector(roll_deg=0, pitch_deg=0, yaw_deg=0)
+   # Result: (1.0, 0.0, 0.0)
+
+   # Star tracker rotated 90° in pitch to point "up" (+Z)
+   boresight = create_star_tracker_vector(roll_deg=0, pitch_deg=90, yaw_deg=0)
+
+   # Star tracker angled 45° to the side
+   boresight = create_star_tracker_vector(roll_deg=0, pitch_deg=0, yaw_deg=45)
+
+Euler angles use the ZYX convention: yaw about Z, then pitch about Y, then roll about X.
+
+**Example:**
+
+.. code-block:: python
+
+   from conops.config import (
+       SpacecraftBus,
+       StarTracker,
+       StarTrackerConfiguration,
+       StarTrackerOrientation,
+   )
+   from conops.config.star_tracker import create_star_tracker_vector
+   from conops.common import ACSMode
+   from rust_ephem import SunConstraint, EarthLimbConstraint
+
+   # Build two star trackers at different orientations
+   st1 = StarTracker(
+       name="ST1",
+       orientation=StarTrackerOrientation(
+           boresight=create_star_tracker_vector(pitch_deg=45),  # 45° off boresight
+       ),
+       hard_constraint=SunConstraint(min_angle=30.0),   # Always enforced: never look within 30° of Sun
+       soft_constraint=SunConstraint(min_angle=45.0),   # Science-quality: degraded within 45° of Sun
+   )
+
+   st2 = StarTracker(
+       name="ST2",
+       orientation=StarTrackerOrientation(
+           boresight=create_star_tracker_vector(pitch_deg=-45),  # Opposite side
+       ),
+       hard_constraint=SunConstraint(min_angle=30.0),
+   )
+
+   star_trackers = StarTrackerConfiguration(
+       star_trackers=[st1, st2],
+       min_functional_trackers=1,      # At least one must satisfy soft constraint
+       modes_require_lock=[ACSMode.SCIENCE],  # Enforce soft constraints in science mode only
+   )
+
+   # Attach to spacecraft bus
+   spacecraft_bus = SpacecraftBus(
+       name="Observatory Bus",
+       star_trackers=star_trackers,
+       # ... other bus fields ...
+   )
+
+The ACS monitors star tracker constraints at each timestep and records:
+
+* ``star_tracker_hard_violations``: Number of trackers violating their hard constraint (always monitored)
+* ``star_tracker_soft_violations``: Whether any tracker is in its soft constraint zone
+* ``star_tracker_functional_count``: Number of functional (hard-constraint-clear) trackers
+
+Hard violations are health-and-safety events and always cause a pointing-invalid result. Soft violations
+only affect pointing validity in modes listed in ``StarTrackerConfiguration.modes_require_lock``.
+
+When star trackers are configured, ``MissionConfig.init_fault_management_defaults()`` automatically adds
+a ``star_tracker_functional_count`` threshold (``direction="below"``, both yellow and red set to
+``num_trackers - 1``) so that any hard violation immediately triggers a RED fault alert.
+
 payload
 ~~~~~~~
 
@@ -296,7 +418,7 @@ The :class:`~conops.config.Payload` contains the science instruments.
 
 **Payload Attributes:**
 
-* ``payload`` (list[Instrument]): List of instrument configurations
+* ``instruments`` (list[Instrument]): List of instrument configurations
 
 **Instrument Attributes:**
 
@@ -310,7 +432,7 @@ The :class:`~conops.config.Payload` contains the science instruments.
    from conops.config import Payload, Instrument, PowerDraw, DataGeneration
 
    payload = Payload(
-       payload=[
+       instruments=[
            Instrument(
                name="X-ray Telescope",
                power_draw=PowerDraw(
@@ -630,13 +752,6 @@ Here is a complete example of creating a ``MissionConfig`` programmatically:
    # Create fault management with custom thresholds
    fault_management = FaultManagement()
    fault_management.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
-   fault_management.add_threshold(
-       "star_tracker_functional_count",
-       yellow=2.0,
-       red=1.0,
-       direction="below",
-       acs_modes=[ACSMode.SCIENCE]
-   )
 
    # Create the complete configuration
    config = MissionConfig(
@@ -677,7 +792,7 @@ Here is a complete example of creating a ``MissionConfig`` programmatically:
            conversion_efficiency=0.95
        ),
        payload=Payload(
-           payload=[
+           instruments=[
                Instrument(
                    name="Main Instrument",
                    power_draw=PowerDraw(nominal_power=100.0, peak_power=150.0),
@@ -724,25 +839,28 @@ based on the battery and recorder configuration:
 
 1. **battery_level**: Yellow at ``1.0 - max_depth_of_discharge``, Red 10% below that
 2. **recorder_fill_fraction**: Uses the recorder's ``yellow_threshold`` and ``red_threshold``
+3. **star_tracker_functional_count**: When star trackers are configured, both yellow and red are set to
+   ``num_trackers - 1`` with ``direction="below"``. This fires the moment any tracker enters a hard
+   constraint zone (``functional_count`` drops from ``num_trackers`` to ``num_trackers - 1``), making
+   any hard violation immediately critical. No threshold is added if no star trackers are configured.
 
-You can override these by adding custom thresholds to the ``FaultManagement`` instance.
-Custom thresholds can include ``acs_modes`` to restrict checking to specific Attitude Control System modes.
+You can override these by adding custom thresholds to the ``FaultManagement`` instance before calling
+``init_fault_management_defaults()`` (defaults are skipped if a threshold for that parameter already exists).
 
 .. code-block:: python
 
    from conops.config import MissionConfig, FaultManagement
    from conops.common import ACSMode
 
-   # Create config (automatically adds default thresholds)
+   # Create config (automatically adds default thresholds on first use)
    config = MissionConfig()
 
-   # Add custom thresholds programmatically
+   # Override the auto-configured battery threshold
    config.fault_management.add_threshold(
-       "star_tracker_functional_count",
-       yellow=2.0,
-       red=1.0,
+       "battery_level",
+       yellow=0.35,
+       red=0.25,
        direction="below",
-       acs_modes=[ACSMode.SCIENCE]
    )
 
 Using with DITL Simulation

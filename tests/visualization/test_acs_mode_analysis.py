@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from conops.common import ACSMode
 from conops.config.visualization import VisualizationConfig
 from conops.ditl.telemetry import Housekeeping, HousekeepingList, Telemetry
-from conops.visualization.acs_mode_analysis import plot_acs_mode_distribution
+from conops.visualization.mpl.acs_mode_analysis import plot_acs_mode_distribution
 
 
 class TestPlotAcsModeDistribution:

@@ -5,7 +5,7 @@ import tempfile
 
 import pytest
 
-from conops.visualization.sky_pointing import save_sky_pointing_movie
+from conops.visualization import save_sky_pointing_movie
 
 
 def test_save_sky_pointing_movie_invalid_format():
