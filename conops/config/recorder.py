@@ -63,8 +63,8 @@ class OnboardRecorder(ConfigModel):
     @classmethod
     def validate_current_volume(cls, v: float, info: Any) -> float:
         """Ensure current volume doesn't exceed capacity."""
-        # Access capacity from ValidationInfo if available
-        capacity: float = info.data.get("capacity_gb", 32.0)
+        data = info.data or {}
+        capacity: float = data.get("capacity_gb", 32.0)
         if v > capacity:
             return capacity
         return v
@@ -73,7 +73,8 @@ class OnboardRecorder(ConfigModel):
     @classmethod
     def validate_thresholds(cls, v: float, info: Any) -> float:
         """Ensure red threshold is greater than or equal to yellow threshold."""
-        yellow = info.data.get("yellow_threshold", 0.7)
+        data = info.data or {}
+        yellow = data.get("yellow_threshold", 0.7)
         if v < yellow:
             raise ValueError("red_threshold must be >= yellow_threshold")
         return v

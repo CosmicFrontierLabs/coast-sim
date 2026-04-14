@@ -482,7 +482,7 @@ class Constraint(ConfigModel):
         ras: list[float],
         decs: list[float],
         utime: float,
-        target_roll: float | None = None,
+        target_rolls: list[float] | None = None,
     ) -> np.ndarray:
         """Check constraints for multiple pointings at a single time.
 
@@ -493,12 +493,22 @@ class Constraint(ConfigModel):
             ras: List of right ascension values in degrees
             decs: List of declination values in degrees
             utime: Unix timestamp
+            target_rolls: Optional roll angles in degrees aligned element-wise with
+                ``ras`` and ``decs``
 
         Returns:
             Boolean array where True means constraint is violated
         """
         if not ras:
             return np.zeros(0, dtype=bool)
+
+        if len(ras) != len(decs):
+            raise ValueError("ras and decs must have the same length")
+
+        if target_rolls is not None and len(target_rolls) != len(ras):
+            raise ValueError(
+                "target_rolls must be None or have the same length as ras and decs"
+            )
 
         assert self.ephem is not None, (
             "Ephemeris must be set to use in_constraint_batch"
@@ -526,7 +536,7 @@ class Constraint(ConfigModel):
                 target_ras=ras,
                 target_decs=decs,
                 times=[dt],
-                target_roll=target_roll,
+                target_rolls=target_rolls,
             )
             # Result shape is (n_candidates, 1), flatten to (n_candidates,)
             result_flat = np.asarray(result).flatten()

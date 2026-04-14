@@ -1,6 +1,6 @@
 """Tests for conops.constraint module."""
 
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -371,16 +371,33 @@ class TestConstraintRollPassthrough:
 
         assert mock_in_constraint.call_args.kwargs["target_roll"] == 12.5
 
-    def test_in_constraint_batch_forwards_target_roll(
+    def test_in_constraint_batch_forwards_target_rolls(
         self, constraint_with_ephem
     ) -> None:
-        mock_constraint = Mock()
-        mock_constraint.in_constraint_batch.return_value = np.zeros((2, 1), dtype=bool)
+        class NewBatchConstraint:
+            def __init__(self) -> None:
+                self.target_rolls = None
+
+            def in_constraint_batch(
+                self,
+                ephemeris,
+                target_ras,
+                target_decs,
+                times,
+                indices=None,
+                target_rolls=None,
+                n_roll_samples=360,
+            ):
+                self.target_rolls = target_rolls
+                return np.zeros((len(target_ras), 1), dtype=bool)
+
+        mock_constraint = NewBatchConstraint()
         constraint_with_ephem.sun_constraint = mock_constraint
         constraint_with_ephem.earth_constraint = None
         constraint_with_ephem.panel_constraint = None
         constraint_with_ephem.moon_constraint = None
         constraint_with_ephem.anti_sun_constraint = None
+        constraint_with_ephem.orbit_constraint = None
         constraint_with_ephem.star_tracker_hard_constraint = None
         constraint_with_ephem.star_tracker_soft_constraint = None
 
@@ -388,12 +405,47 @@ class TestConstraintRollPassthrough:
             ras=[10.0, 20.0],
             decs=[-5.0, 15.0],
             utime=1700000000.0,
-            target_roll=22.0,
+            target_rolls=[22.0, 33.0],
         )
 
-        assert (
-            mock_constraint.in_constraint_batch.call_args.kwargs["target_roll"] == 22.0
-        )
+        assert mock_constraint.target_rolls == [22.0, 33.0]
+
+    def test_in_constraint_batch_rejects_mismatched_target_rolls(
+        self, constraint_with_ephem
+    ) -> None:
+        class NewBatchConstraint:
+            def in_constraint_batch(
+                self,
+                ephemeris,
+                target_ras,
+                target_decs,
+                times,
+                indices=None,
+                target_rolls=None,
+                n_roll_samples=360,
+            ):
+                return np.zeros((len(target_ras), 1), dtype=bool)
+
+        mock_constraint = NewBatchConstraint()
+        constraint_with_ephem.sun_constraint = mock_constraint
+        constraint_with_ephem.earth_constraint = None
+        constraint_with_ephem.panel_constraint = None
+        constraint_with_ephem.moon_constraint = None
+        constraint_with_ephem.anti_sun_constraint = None
+        constraint_with_ephem.orbit_constraint = None
+        constraint_with_ephem.star_tracker_hard_constraint = None
+        constraint_with_ephem.star_tracker_soft_constraint = None
+
+        with pytest.raises(
+            ValueError,
+            match="target_rolls must be None or have the same length",
+        ):
+            constraint_with_ephem.in_constraint_batch(
+                ras=[10.0, 20.0],
+                decs=[-5.0, 15.0],
+                utime=1700000000.0,
+                target_rolls=[22.0],
+            )
 
     @patch("rust_ephem.AndConstraint.in_constraint")
     def test_in_panel_with_float_returns_scalar(
