@@ -217,9 +217,44 @@ def plot_data_management_telemetry_plotly(
     # Layout
     # ------------------------------------------------------------------
     title = getattr(getattr(ditl, "config", None), "name", "DITL")
+    px_per_inch = 90
+    fig_width = int(config.data_telemetry_figsize[0] * px_per_inch)
+    fig_height = int(config.data_telemetry_figsize[1] * px_per_inch)
+
+    axis_title_font = dict(
+        family=config.font_family,
+        size=config.label_font_size,
+    )
+    axis_tick_font = dict(
+        family=config.font_family,
+        size=config.tick_font_size,
+    )
+
+    fig.update_xaxes(title_font=axis_title_font, tickfont=axis_tick_font)
+    fig.update_yaxes(title_font=axis_title_font, tickfont=axis_tick_font)
+
+    # Style all subplot and threshold annotations with the configured font.
+    fig.update_annotations(
+        font=dict(
+            family=config.font_family,
+            size=config.label_font_size,
+        )
+    )
+
     fig.update_layout(
-        height=900,
-        title_text=f"Data Management — {title}",
+        width=fig_width,
+        height=fig_height,
+        title=dict(
+            text=f"Data Management — {title}",
+            font=dict(
+                family=config.font_family,
+                size=config.title_font_size,
+            ),
+        ),
+        font=dict(
+            family=config.font_family,
+            size=config.label_font_size,
+        ),
         showlegend=True,
         legend=dict(
             orientation="h",
@@ -227,6 +262,10 @@ def plot_data_management_telemetry_plotly(
             y=1.02,
             xanchor="right",
             x=1,
+            font=dict(
+                family=config.font_family,
+                size=config.legend_font_size,
+            ),
         ),
     )
 
