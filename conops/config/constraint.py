@@ -624,6 +624,6 @@ class DefaultConstraint(Constraint):
             ra=ra, dec=dec, time=time, target_roll=target_roll, acs_mode=acs_mode
         ):
             count += 2
-        if self.in_radiator_hard(ra, dec, utime):
+        if self.in_radiator_hard(ra=ra, dec=dec, time=time, target_roll=target_roll):
             count += 2
         return count
