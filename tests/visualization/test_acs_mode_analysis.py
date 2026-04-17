@@ -4,11 +4,15 @@ from datetime import datetime, timezone
 from unittest.mock import Mock
 
 import matplotlib.pyplot as plt
+import plotly.graph_objects as go
 
 from conops.common import ACSMode
 from conops.config.visualization import VisualizationConfig
 from conops.ditl.telemetry import Housekeeping, HousekeepingList, Telemetry
 from conops.visualization.mpl.acs_mode_analysis import plot_acs_mode_distribution
+from conops.visualization.plotly.acs_mode_analysis import (
+    plot_acs_mode_distribution_plotly,
+)
 
 
 class TestPlotAcsModeDistribution:
@@ -96,3 +100,22 @@ class TestPlotAcsModeDistribution:
         assert isinstance(family, (list, tuple))
         assert "Courier" in family or family == ["Courier"]
         plt.close(fig)
+
+
+class TestPlotAcsModeDistributionPlotly:
+    """Test plot_acs_mode_distribution_plotly function."""
+
+    def test_plot_acs_mode_distribution_plotly_populates_pie_trace(self, mock_ditl):
+        """Test Plotly ACS mode distribution returns a figure with populated pie data."""
+        fig = plot_acs_mode_distribution_plotly(mock_ditl)
+
+        assert isinstance(fig, go.Figure)
+        assert len(fig.data) == 1
+
+        trace = fig.data[0]
+        assert trace.type == "pie"
+        assert trace.labels is not None
+        assert trace.values is not None
+        assert len(trace.labels) > 0
+        assert len(trace.values) > 0
+        assert sum(trace.values) == len(mock_ditl.telemetry.housekeeping)
