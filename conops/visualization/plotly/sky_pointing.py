@@ -17,6 +17,7 @@ from ...common import dtutcfromtimestamp
 from ...config.constants import EARTH_OCCULT, MOON_OCCULT, SUN_OCCULT
 from ...config.observation_categories import ObservationCategories
 from ...config.visualization import VisualizationConfig
+from ._helpers import lighten_color as _lighten_color
 from .globe_pointing import (
     _build_st_boresights,
     _get_vis_config,
@@ -112,33 +113,6 @@ def _gaussian_smooth(
     )
 
     return smoothed
-
-
-def _lighten_color(color: str, factor: float = 0.5) -> str:
-    """Lighten a color by blending with white.
-
-    Parameters
-    ----------
-    color : str
-        The color to lighten (hex, name, or RGB tuple).
-    factor : float
-        Lightening factor (0.0 = original color, 1.0 = white).
-
-    Returns
-    -------
-    str
-        The lightened color as hex string.
-    """
-    # Convert to RGB
-    rgb = mcolors.to_rgb(color)
-    # Blend with white
-    r, g, b = rgb
-    lightened = (
-        (1 - factor) * r + factor * 1.0,
-        (1 - factor) * g + factor * 1.0,
-        (1 - factor) * b + factor * 1.0,
-    )
-    return mcolors.to_hex(lightened)
 
 
 # ---------------------------------------------------------------------------

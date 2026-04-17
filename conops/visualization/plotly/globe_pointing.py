@@ -28,6 +28,7 @@ from ...common import dtutcfromtimestamp
 from ...config.constants import EARTH_OCCULT, MOON_OCCULT, SUN_OCCULT
 from ...config.observation_categories import ObservationCategories
 from ...config.visualization import VisualizationConfig
+from ._helpers import lighten_color as _lighten_color
 
 if TYPE_CHECKING:
     from ...ditl import DITL, QueueDITL
@@ -58,18 +59,6 @@ def _to_rgba(color: str, alpha: float) -> str:
     rgb = mcolors.to_rgb(color)
     r, g, b = int(rgb[0] * 255), int(rgb[1] * 255), int(rgb[2] * 255)
     return f"rgba({r},{g},{b},{alpha:.3f})"
-
-
-def _lighten_color(color: str, factor: float = 0.5) -> str:
-    """Lighten a color by blending with white."""
-    rgb = mcolors.to_rgb(color)
-    r, g, b = rgb
-    lightened = (
-        (1 - factor) * r + factor,
-        (1 - factor) * g + factor,
-        (1 - factor) * b + factor,
-    )
-    return mcolors.to_hex(lightened)
 
 
 def _ra_to_lon(ra_deg: float) -> float:
