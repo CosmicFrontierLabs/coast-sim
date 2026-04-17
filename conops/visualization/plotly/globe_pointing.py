@@ -855,8 +855,6 @@ def plot_sky_pointing_globe(
             )
         )
 
-        # Animated trace indices: everything except trace 0 (observations)
-
     # Orbit constraint exclusion polygons + RAM direction marker
     if orbit_constraint is not None:
         _oc_base = 10 + n_trackers + len(st_constraint_specs)
