@@ -937,6 +937,7 @@ class SkyPointingController:
             ("anti_sun", self.ditl.config.constraint.anti_sun_constraint),
             ("orbit", self.ditl.config.constraint.orbit_constraint),
             ("panel", self.ditl.config.constraint.panel_constraint),
+            ("radiator_hard", self.ditl.config.constraint.radiator_hard_constraint),
         ]
 
         # Add aggregated star-tracker constraints (if configured)
@@ -1059,6 +1060,13 @@ class SkyPointingController:
                 "Panel",
                 self.ditl.config.constraint.panel_constraint,
                 "green",
+                None,
+                None,
+            ),
+            (
+                "Radiator Hard",
+                self.ditl.config.constraint.radiator_hard_constraint,
+                "coral",
                 None,
                 None,
             ),
