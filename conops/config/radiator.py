@@ -18,20 +18,11 @@ from pydantic import Field, field_validator
 from rust_ephem.constraints import ConstraintConfig
 
 from ..common import dtutcfromtimestamp, scbodyvector
-from ..common.vector import radec2vec, vecnorm
+from ..common.vector import normal_to_euler_deg, radec2vec
 from ._base import ConfigModel
 from .constraint import Constraint
 
 STEFAN_BOLTZMANN_W_PER_M2_K4 = 5.670374419e-8
-
-
-def _normal_to_euler_deg(
-    normal: tuple[float, float, float],
-) -> tuple[float, float, float]:
-    x, y, z = vecnorm(np.asarray(normal, dtype=np.float64))
-    yaw_deg = float(np.rad2deg(np.arctan2(y, x)))
-    pitch_deg = float(np.rad2deg(np.arctan2(z, np.hypot(x, y))))
-    return 0.0, pitch_deg, yaw_deg
 
 
 class RadiatorOrientation(ConfigModel):
@@ -121,7 +112,7 @@ class Radiator(ConfigModel):
         if base_constraint is None:
             return None
 
-        roll_deg, pitch_deg, yaw_deg = _normal_to_euler_deg(self.orientation.normal)
+        roll_deg, pitch_deg, yaw_deg = normal_to_euler_deg(self.orientation.normal)
         return base_constraint.boresight_offset(
             roll_deg=roll_deg,
             pitch_deg=pitch_deg,

@@ -1008,7 +1008,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
             # Check if target is visible
             visstart = self.ppt.next_vis(utime)
-            if not visstart and slew.obstype == "PPT":
+            if not visstart and slew.obstype == ObsType.PPT:
                 self.log.log_event(
                     utime=utime,
                     event_type="SLEW",
@@ -1044,7 +1044,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 )
 
             # Wait for target visibility if constrained
-            if visstart and visstart > execution_time and slew.obstype == "PPT":
+            if visstart and visstart > execution_time and slew.obstype == ObsType.PPT:
                 self.log.log_event(
                     utime=utime,
                     event_type="SLEW",
