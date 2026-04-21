@@ -762,7 +762,15 @@ class ACS:
         """Check radiator constraints and compute Sun/Earth exposure metrics."""
         radiators = self.config.spacecraft_bus.radiators
 
-        if not hasattr(radiators, "num_radiators") or radiators.num_radiators() == 0:
+        if not hasattr(radiators, "num_radiators"):
+            return
+
+        try:
+            num_radiators = radiators.num_radiators()
+        except Exception:
+            return
+
+        if not isinstance(num_radiators, int) or num_radiators == 0:
             return
 
         current_ra = self.ra
@@ -777,9 +785,17 @@ class ACS:
             roll_deg=current_roll,
         )
 
+        if not isinstance(metrics, dict):
+            return
+
         per_radiator = metrics.get("per_radiator", [])
+        if not isinstance(per_radiator, list):
+            per_radiator = []
+
         self.radiator_hard_violations = sum(
-            1 for r in per_radiator if r.get("hard_violation")
+            1
+            for r in per_radiator
+            if isinstance(r, dict) and bool(r.get("hard_violation"))
         )
         sun_exposure_val = metrics.get("sun_exposure", 0.0)
         earth_exposure_val = metrics.get("earth_exposure", 0.0)

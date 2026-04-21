@@ -178,10 +178,9 @@ class MissionConfig(ConfigModel):
         radiators = None
         try:
             radiators = self.spacecraft_bus.radiators
-            has_radiators = (
-                hasattr(radiators, "num_radiators") and radiators.num_radiators() > 0
-            )
-        except AttributeError:
+            num_radiators = radiators.num_radiators()
+            has_radiators = isinstance(num_radiators, int) and num_radiators > 0
+        except (AttributeError, TypeError):
             has_radiators = False
 
         if radiators is not None and has_radiators:
