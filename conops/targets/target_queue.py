@@ -215,6 +215,7 @@ class TargetQueue:
                         radiators is not None
                         and hasattr(radiators, "num_radiators")
                         and radiators.num_radiators() > 0
+                        and self.ephem is not None
                     ):
                         metrics = radiators.exposure_metrics(
                             ra_deg=target.ra,

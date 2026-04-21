@@ -769,9 +769,6 @@ class ACS:
         current_dec = self.dec
         current_roll = self.roll
 
-        hard_violations = radiators.radiators_violating_hard_constraints(
-            current_ra, current_dec, utime, current_roll
-        )
         metrics = radiators.exposure_metrics(
             ra_deg=current_ra,
             dec_deg=current_dec,
@@ -780,8 +777,9 @@ class ACS:
             roll_deg=current_roll,
         )
 
-        self.radiator_hard_violations = (
-            hard_violations if isinstance(hard_violations, int) else 0
+        per_radiator = metrics.get("per_radiator", [])
+        self.radiator_hard_violations = sum(
+            1 for r in per_radiator if r.get("hard_violation")
         )
         sun_exposure_val = metrics.get("sun_exposure", 0.0)
         earth_exposure_val = metrics.get("earth_exposure", 0.0)

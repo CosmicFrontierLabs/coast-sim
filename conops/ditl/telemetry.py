@@ -329,6 +329,7 @@ class HousekeepingList(list[Housekeeping]):
         """Get violated constraint names from all housekeeping records."""
         return [hk.in_constraint for hk in self]
 
+    @property
     def radiator_hard_violations(self) -> list[int | None]:
         """Get radiator hard violation counts from all housekeeping records."""
         return [hk.radiator_hard_violations for hk in self]
