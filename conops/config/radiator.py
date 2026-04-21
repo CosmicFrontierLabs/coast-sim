@@ -347,7 +347,16 @@ class RadiatorConfiguration(ConfigModel):
         }
 
 
-class DefaultRadiatorConfiguration(RadiatorConfiguration):
-    """Default radiator configuration with no explicit radiators configured."""
+def _default_radiators() -> list[Radiator]:
+    return [
+        Radiator(
+            name="Default Radiator",
+            orientation=RadiatorOrientation(normal=(0.0, -1.0, 0.0)),
+        )
+    ]
 
-    radiators: list[Radiator] = Field(default_factory=list)
+
+class DefaultRadiatorConfiguration(RadiatorConfiguration):
+    """Default radiator configuration with a single radiator on the -Y face (opposite the default solar panel)."""
+
+    radiators: list[Radiator] = Field(default_factory=_default_radiators)
