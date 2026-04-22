@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import rust_ephem
 
@@ -762,15 +762,7 @@ class ACS:
         """Check radiator constraints and compute Sun/Earth exposure metrics."""
         radiators = self.config.spacecraft_bus.radiators
 
-        if not hasattr(radiators, "num_radiators"):
-            return
-
-        try:
-            num_radiators = radiators.num_radiators()
-        except Exception:
-            return
-
-        if not isinstance(num_radiators, int) or num_radiators == 0:
+        if radiators.num_radiators() == 0:
             return
 
         current_ra = self.ra
@@ -785,37 +777,15 @@ class ACS:
             roll_deg=current_roll,
         )
 
-        if not isinstance(metrics, dict):
-            return
-
-        per_radiator = metrics.get("per_radiator", [])
-        if not isinstance(per_radiator, list):
-            per_radiator = []
-
+        per_radiator = cast(
+            list[dict[str, float | str | bool]], metrics["per_radiator"]
+        )
         self.radiator_hard_violations = sum(
-            1
-            for r in per_radiator
-            if isinstance(r, dict) and bool(r.get("hard_violation"))
+            1 for r in per_radiator if bool(r.get("hard_violation"))
         )
-        sun_exposure_val = metrics.get("sun_exposure", 0.0)
-        earth_exposure_val = metrics.get("earth_exposure", 0.0)
-        heat_dissipation_val = metrics.get("heat_dissipation_w", 0.0)
-
-        self.radiator_sun_exposure = (
-            float(sun_exposure_val)
-            if isinstance(sun_exposure_val, (int, float))
-            else 0.0
-        )
-        self.radiator_earth_exposure = (
-            float(earth_exposure_val)
-            if isinstance(earth_exposure_val, (int, float))
-            else 0.0
-        )
-        self.radiator_heat_dissipation_w = (
-            float(heat_dissipation_val)
-            if isinstance(heat_dissipation_val, (int, float))
-            else 0.0
-        )
+        self.radiator_sun_exposure = cast(float, metrics["sun_exposure"])
+        self.radiator_earth_exposure = cast(float, metrics["earth_exposure"])
+        self.radiator_heat_dissipation_w = cast(float, metrics["heat_dissipation_w"])
 
         if self.radiator_hard_violations > 0:
             self._log_or_print(
