@@ -23,6 +23,7 @@ from ._base import ConfigModel
 from .constraint import Constraint
 
 STEFAN_BOLTZMANN_W_PER_M2_K4 = 5.670374419e-8
+_ECLIPSE_CONSTRAINT = rust_ephem.EclipseConstraint()
 
 
 class RadiatorOrientation(ConfigModel):
@@ -46,8 +47,6 @@ class RadiatorOrientation(ConfigModel):
 
 class Radiator(ConfigModel):
     """Configuration for a single body-mounted radiator panel."""
-
-    _eclipse_constraint = rust_ephem.EclipseConstraint()
 
     name: str = "Radiator"
     width_m: float = Field(default=1.0, gt=0.0)
@@ -185,7 +184,7 @@ class Radiator(ConfigModel):
             sun_unit = sun_body / sun_norm
             sun_exposure = max(0.0, float(np.dot(normal, sun_unit)))
 
-            in_eclipse = self._eclipse_constraint.in_constraint(
+            in_eclipse = _ECLIPSE_CONSTRAINT.in_constraint(
                 ephemeris=ephem,
                 target_ra=0.0,
                 target_dec=0.0,

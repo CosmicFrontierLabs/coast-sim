@@ -101,16 +101,17 @@ class TestRadiator:
         ephem.index = Mock(return_value=0)
 
         rad = Radiator(orientation=RadiatorOrientation(normal=(1.0, 0.0, 0.0)))
-        rad._eclipse_constraint = Mock()
-        rad._eclipse_constraint.in_constraint = Mock(return_value=True)
 
-        sun_exp, earth_exp = rad.exposure_factors(
-            ra_deg=0.0,
-            dec_deg=0.0,
-            utime=1000.0,
-            ephem=ephem,
-            roll_deg=0.0,
-        )
+        mock_ec = Mock()
+        mock_ec.in_constraint = Mock(return_value=True)
+        with patch("conops.config.radiator._ECLIPSE_CONSTRAINT", mock_ec):
+            sun_exp, earth_exp = rad.exposure_factors(
+                ra_deg=0.0,
+                dec_deg=0.0,
+                utime=1000.0,
+                ephem=ephem,
+                roll_deg=0.0,
+            )
 
         assert sun_exp == pytest.approx(0.0)
         assert earth_exp == pytest.approx(0.0)
@@ -125,13 +126,16 @@ class TestRadiator:
         ephem.index = Mock(return_value=0)
 
         rad = Radiator(orientation=RadiatorOrientation(normal=(1.0, 0.0, 0.0)))
-        rad._eclipse_constraint = Mock()
-        rad._eclipse_constraint.in_constraint = Mock(return_value=False)
 
+        mock_ec = Mock()
+        mock_ec.in_constraint = Mock(return_value=False)
         zero = np.zeros(3)
         normal_body = np.array([0.0, 0.0, 1.0])
-        with patch(
-            "conops.config.radiator.scbodyvector", side_effect=[zero, normal_body]
+        with (
+            patch("conops.config.radiator._ECLIPSE_CONSTRAINT", mock_ec),
+            patch(
+                "conops.config.radiator.scbodyvector", side_effect=[zero, normal_body]
+            ),
         ):
             sun_exp, earth_exp = rad.exposure_factors(
                 ra_deg=0.0, dec_deg=0.0, utime=1000.0, ephem=ephem, roll_deg=0.0
@@ -151,12 +155,15 @@ class TestRadiator:
         ephem.index = Mock(return_value=0)
 
         rad = Radiator(orientation=RadiatorOrientation(normal=(1.0, 0.0, 0.0)))
-        rad._eclipse_constraint = Mock()
-        rad._eclipse_constraint.in_constraint = Mock(return_value=False)
 
+        mock_ec = Mock()
+        mock_ec.in_constraint = Mock(return_value=False)
         sun_body = np.array([1.0, 0.0, 0.0])
         zero = np.zeros(3)
-        with patch("conops.config.radiator.scbodyvector", side_effect=[sun_body, zero]):
+        with (
+            patch("conops.config.radiator._ECLIPSE_CONSTRAINT", mock_ec),
+            patch("conops.config.radiator.scbodyvector", side_effect=[sun_body, zero]),
+        ):
             sun_exp, earth_exp = rad.exposure_factors(
                 ra_deg=0.0, dec_deg=0.0, utime=1000.0, ephem=ephem, roll_deg=0.0
             )
@@ -279,17 +286,17 @@ class TestRadiatorConfiguration:
         )
 
         # Keep sun exposure active for test determinism.
-        rad._eclipse_constraint = Mock()
-        rad._eclipse_constraint.in_constraint = Mock(return_value=False)
-
+        mock_ec = Mock()
+        mock_ec.in_constraint = Mock(return_value=False)
         cfg = RadiatorConfiguration(radiators=[rad])
-        metrics = cfg.exposure_metrics(
-            ra_deg=0.0,
-            dec_deg=0.0,
-            utime=1000.0,
-            ephem=ephem,
-            roll_deg=0.0,
-        )
+        with patch("conops.config.radiator._ECLIPSE_CONSTRAINT", mock_ec):
+            metrics = cfg.exposure_metrics(
+                ra_deg=0.0,
+                dec_deg=0.0,
+                utime=1000.0,
+                ephem=ephem,
+                roll_deg=0.0,
+            )
 
         sun_exp = metrics["sun_exposure"]
         earth_exp = metrics["earth_exposure"]
