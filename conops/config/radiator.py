@@ -22,6 +22,7 @@ from ..common import dtutcfromtimestamp, scbodyvector
 from ..common.vector import normal_to_euler_deg, radec2vec
 from ._base import ConfigModel
 from .constraint import Constraint
+from .geometry import PanelGeometry, compute_shadow_fraction
 
 STEFAN_BOLTZMANN_W_PER_M2_K4 = 5.670374419e-8
 _ECLIPSE_CONSTRAINT = rust_ephem.EclipseConstraint()
@@ -96,6 +97,23 @@ class Radiator(ConfigModel):
 
     hard_constraint: Constraint | None = None
 
+    geometry: PanelGeometry | None = Field(
+        default=None,
+        description=(
+            "Optional 3D geometry of this radiator panel. "
+            "Required for inter-component shadow computation. "
+            "``u × v`` should be consistent with ``orientation.normal``."
+        ),
+    )
+    shadowed_by: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of solar panels (SolarPanel.name) that can cast shadows onto this radiator. "
+            "Shadow computation is active only when both this radiator and the referenced panels "
+            "have geometry set."
+        ),
+    )
+
     @property
     def area_m2(self) -> float:
         return self.width_m * self.height_m
@@ -152,14 +170,30 @@ class Radiator(ConfigModel):
         sun_unit: npt.NDArray[np.float64] | None,
         earth_unit: npt.NDArray[np.float64] | None,
         in_eclipse: bool,
+        occluder_geometries: list[PanelGeometry] | None = None,
     ) -> tuple[float, float]:
-        """Return (sun_exposure, earth_exposure) given pre-computed body-frame unit vectors."""
+        """Return (sun_exposure, earth_exposure) given pre-computed body-frame unit vectors.
+
+        If ``occluder_geometries`` is non-empty and this radiator has ``geometry`` set,
+        the sun exposure is reduced by the fraction of the radiator face that falls in
+        shadow from the occluder panels.
+        """
         normal = np.asarray(self.orientation.normal, dtype=np.float64)
         sun_exposure = (
             0.0
             if (sun_unit is None or in_eclipse)
             else max(0.0, float(np.dot(normal, sun_unit)))
         )
+        if (
+            sun_exposure > 0.0
+            and sun_unit is not None
+            and occluder_geometries
+            and self.geometry is not None
+        ):
+            shadow = compute_shadow_fraction(
+                sun_unit, occluder_geometries, self.geometry
+            )
+            sun_exposure *= 1.0 - shadow
         earth_exposure = (
             0.0 if earth_unit is None else max(0.0, float(np.dot(normal, earth_unit)))
         )
@@ -172,8 +206,14 @@ class Radiator(ConfigModel):
         utime: float,
         ephem: rust_ephem.Ephemeris,
         roll_deg: float = 0.0,
+        occluder_geometries: list[PanelGeometry] | None = None,
     ) -> tuple[float, float]:
-        """Return (sun_exposure, earth_exposure) as geometric fractions in [0, 1]."""
+        """Return (sun_exposure, earth_exposure) as geometric fractions in [0, 1].
+
+        Args:
+            occluder_geometries: Optional list of panel geometries (e.g. solar panels) that
+                may cast shadows onto this radiator.  Only used when ``self.geometry`` is set.
+        """
         dt = dtutcfromtimestamp(utime)
         idx = ephem.index(dt)
         ra_rad, dec_rad, roll_rad = (
@@ -213,7 +253,7 @@ class Radiator(ConfigModel):
                 ephemeris=ephem, target_ra=0.0, target_dec=0.0, time=dt
             )
         )
-        return self._dot_exposure(sun_unit, earth_unit, in_eclipse)
+        return self._dot_exposure(sun_unit, earth_unit, in_eclipse, occluder_geometries)
 
     def heat_dissipation_w(self, sun_exposure: float, earth_exposure: float) -> float:
         """Compute net radiator heat flow in Watts.
@@ -306,8 +346,16 @@ class RadiatorConfiguration(ConfigModel):
         utime: float,
         ephem: rust_ephem.Ephemeris,
         roll_deg: float = 0.0,
+        solar_panel_geometries: dict[str, PanelGeometry] | None = None,
     ) -> dict[str, float | list[dict[str, float | str | bool]]]:
-        """Aggregate Sun/Earth exposure and heat dissipation metrics for all radiators."""
+        """Aggregate Sun/Earth exposure and heat dissipation metrics for all radiators.
+
+        Args:
+            solar_panel_geometries: Optional mapping of solar panel names to their
+                ``PanelGeometry``.  When provided, radiators whose ``shadowed_by`` list
+                references a panel name present in this dict will have their sun exposure
+                reduced by the computed shadow fraction.
+        """
         if not self.radiators:
             return {
                 "sun_exposure": 0.0,
@@ -365,7 +413,18 @@ class RadiatorConfiguration(ConfigModel):
         per_radiator: list[dict[str, float | str | bool]] = []
 
         for rad in self.radiators:
-            sun_exp, earth_exp = rad._dot_exposure(sun_unit, earth_unit, in_eclipse)
+            # Resolve which occluder panels apply to this radiator.
+            occluders: list[PanelGeometry] = []
+            if solar_panel_geometries and rad.shadowed_by:
+                occluders = [
+                    solar_panel_geometries[name]
+                    for name in rad.shadowed_by
+                    if name in solar_panel_geometries
+                ]
+
+            sun_exp, earth_exp = rad._dot_exposure(
+                sun_unit, earth_unit, in_eclipse, occluders or None
+            )
             heat_w = rad.heat_dissipation_w(sun_exp, earth_exp)
 
             sun_weighted += sun_exp * rad.area_m2

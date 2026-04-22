@@ -16,6 +16,7 @@ from .fault_management import (
     FaultState,
     FaultThreshold,
 )
+from .geometry import PanelGeometry, compute_shadow_fraction
 from .groundstation import GroundStation, GroundStationRegistry
 from .instrument import Instrument, Payload
 from .observation_categories import ObservationCategories, ObservationCategory
@@ -64,6 +65,8 @@ __all__ = [
     "OnboardRecorder",
     "Payload",
     "PowerDraw",
+    "PanelGeometry",
+    "compute_shadow_fraction",
     "Radiator",
     "RadiatorConfiguration",
     "DefaultRadiatorConfiguration",

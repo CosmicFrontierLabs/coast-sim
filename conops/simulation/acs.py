@@ -769,12 +769,24 @@ class ACS:
         current_dec = self.dec
         current_roll = self.roll
 
+        # Build solar panel geometry lookup so radiators can compute shadow fractions.
+        solar_panel_geometries = None
+        if self.config.solar_panel is not None:
+            geom_map = {
+                p.name: p.geometry
+                for p in self.config.solar_panel.panels
+                if p.geometry is not None
+            }
+            if geom_map:
+                solar_panel_geometries = geom_map
+
         metrics = radiators.exposure_metrics(
             ra_deg=current_ra,
             dec_deg=current_dec,
             utime=utime,
             ephem=self.ephem,
             roll_deg=current_roll,
+            solar_panel_geometries=solar_panel_geometries,
         )
 
         per_radiator = cast(
