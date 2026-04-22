@@ -333,25 +333,16 @@ class TestRadiatorConfiguration:
         ephem.earth_dec_deg = [0.0]
         ephem.index = Mock(return_value=0)
 
+        mock_ec = Mock()
+        mock_ec.in_constraint = Mock(return_value=False)
         rad = Radiator(name="R1")
         cfg = RadiatorConfiguration(radiators=[rad])
         with (
+            patch("conops.config.radiator._ECLIPSE_CONSTRAINT", mock_ec),
             patch.object(Radiator, "area_m2", new_callable=PropertyMock) as area_m2,
-            patch.object(
-                Radiator,
-                "exposure_factors",
-                return_value=(0.5, 0.25),
-            ),
-            patch.object(
-                Radiator,
-                "heat_dissipation_w",
-                return_value=10.0,
-            ),
-            patch.object(
-                Radiator,
-                "in_hard_constraint",
-                return_value=False,
-            ),
+            patch.object(Radiator, "_dot_exposure", return_value=(0.5, 0.25)),
+            patch.object(Radiator, "heat_dissipation_w", return_value=10.0),
+            patch.object(Radiator, "in_hard_constraint", return_value=False),
         ):
             area_m2.return_value = 0.0
             metrics = cfg.exposure_metrics(0.0, 0.0, 1000.0, ephem, 0.0)

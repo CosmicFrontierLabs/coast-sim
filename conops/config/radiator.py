@@ -13,6 +13,7 @@ from functools import cached_property
 from typing import cast
 
 import numpy as np
+import numpy.typing as npt
 import rust_ephem
 from pydantic import Field, field_validator
 from rust_ephem.constraints import ConstraintConfig
@@ -146,6 +147,24 @@ class Radiator(ConfigModel):
             ),
         )
 
+    def _dot_exposure(
+        self,
+        sun_unit: npt.NDArray[np.float64] | None,
+        earth_unit: npt.NDArray[np.float64] | None,
+        in_eclipse: bool,
+    ) -> tuple[float, float]:
+        """Return (sun_exposure, earth_exposure) given pre-computed body-frame unit vectors."""
+        normal = np.asarray(self.orientation.normal, dtype=np.float64)
+        sun_exposure = (
+            0.0
+            if (sun_unit is None or in_eclipse)
+            else max(0.0, float(np.dot(normal, sun_unit)))
+        )
+        earth_exposure = (
+            0.0 if earth_unit is None else max(0.0, float(np.dot(normal, earth_unit)))
+        )
+        return sun_exposure, earth_exposure
+
     def exposure_factors(
         self,
         ra_deg: float,
@@ -155,50 +174,46 @@ class Radiator(ConfigModel):
         roll_deg: float = 0.0,
     ) -> tuple[float, float]:
         """Return (sun_exposure, earth_exposure) as geometric fractions in [0, 1]."""
-        idx = ephem.index(dtutcfromtimestamp(utime))
-
-        # Inertial unit vectors from spacecraft to Sun/Earth centers.
-        sun_vec = radec2vec(
-            np.deg2rad(ephem.sun_ra_deg[idx]),
-            np.deg2rad(ephem.sun_dec_deg[idx]),
-        )
-        earth_vec = radec2vec(
-            np.deg2rad(ephem.earth_ra_deg[idx]),
-            np.deg2rad(ephem.earth_dec_deg[idx]),
+        dt = dtutcfromtimestamp(utime)
+        idx = ephem.index(dt)
+        ra_rad, dec_rad, roll_rad = (
+            np.deg2rad(ra_deg),
+            np.deg2rad(dec_deg),
+            np.deg2rad(roll_deg),
         )
 
         sun_body = scbodyvector(
-            np.deg2rad(ra_deg), np.deg2rad(dec_deg), np.deg2rad(roll_deg), sun_vec
+            ra_rad,
+            dec_rad,
+            roll_rad,
+            radec2vec(
+                np.deg2rad(ephem.sun_ra_deg[idx]), np.deg2rad(ephem.sun_dec_deg[idx])
+            ),
         )
         earth_body = scbodyvector(
-            np.deg2rad(ra_deg), np.deg2rad(dec_deg), np.deg2rad(roll_deg), earth_vec
+            ra_rad,
+            dec_rad,
+            roll_rad,
+            radec2vec(
+                np.deg2rad(ephem.earth_ra_deg[idx]),
+                np.deg2rad(ephem.earth_dec_deg[idx]),
+            ),
         )
-
-        normal = np.asarray(self.orientation.normal, dtype=np.float64)
 
         sun_norm = np.linalg.norm(sun_body)
         earth_norm = np.linalg.norm(earth_body)
-
-        sun_exposure = 0.0
-        if sun_norm > 0:
-            sun_unit = sun_body / sun_norm
-            sun_exposure = max(0.0, float(np.dot(normal, sun_unit)))
-
-            in_eclipse = _ECLIPSE_CONSTRAINT.in_constraint(
-                ephemeris=ephem,
-                target_ra=0.0,
-                target_dec=0.0,
-                time=dtutcfromtimestamp(utime),
+        sun_unit: npt.NDArray[np.float64] | None = (
+            sun_body / sun_norm if sun_norm > 0 else None
+        )
+        earth_unit: npt.NDArray[np.float64] | None = (
+            earth_body / earth_norm if earth_norm > 0 else None
+        )
+        in_eclipse = bool(
+            _ECLIPSE_CONSTRAINT.in_constraint(
+                ephemeris=ephem, target_ra=0.0, target_dec=0.0, time=dt
             )
-            if in_eclipse:
-                sun_exposure = 0.0
-
-        earth_exposure = 0.0
-        if earth_norm > 0:
-            earth_unit = earth_body / earth_norm
-            earth_exposure = max(0.0, float(np.dot(normal, earth_unit)))
-
-        return sun_exposure, earth_exposure
+        )
+        return self._dot_exposure(sun_unit, earth_unit, in_eclipse)
 
     def heat_dissipation_w(self, sun_exposure: float, earth_exposure: float) -> float:
         """Compute net radiator heat flow in Watts.
@@ -301,6 +316,45 @@ class RadiatorConfiguration(ConfigModel):
                 "per_radiator": [],
             }
 
+        # Compute time- and pointing-dependent quantities once for all radiators.
+        dt = dtutcfromtimestamp(utime)
+        idx = ephem.index(dt)
+        ra_rad, dec_rad, roll_rad = (
+            np.deg2rad(ra_deg),
+            np.deg2rad(dec_deg),
+            np.deg2rad(roll_deg),
+        )
+        sun_body = scbodyvector(
+            ra_rad,
+            dec_rad,
+            roll_rad,
+            radec2vec(
+                np.deg2rad(ephem.sun_ra_deg[idx]), np.deg2rad(ephem.sun_dec_deg[idx])
+            ),
+        )
+        earth_body = scbodyvector(
+            ra_rad,
+            dec_rad,
+            roll_rad,
+            radec2vec(
+                np.deg2rad(ephem.earth_ra_deg[idx]),
+                np.deg2rad(ephem.earth_dec_deg[idx]),
+            ),
+        )
+        sun_norm = np.linalg.norm(sun_body)
+        earth_norm = np.linalg.norm(earth_body)
+        sun_unit: npt.NDArray[np.float64] | None = (
+            sun_body / sun_norm if sun_norm > 0 else None
+        )
+        earth_unit: npt.NDArray[np.float64] | None = (
+            earth_body / earth_norm if earth_norm > 0 else None
+        )
+        in_eclipse = bool(
+            _ECLIPSE_CONSTRAINT.in_constraint(
+                ephemeris=ephem, target_ra=0.0, target_dec=0.0, time=dt
+            )
+        )
+
         area_total = sum(rad.area_m2 for rad in self.radiators)
         if area_total <= 0:
             area_total = 1.0
@@ -311,13 +365,7 @@ class RadiatorConfiguration(ConfigModel):
         per_radiator: list[dict[str, float | str | bool]] = []
 
         for rad in self.radiators:
-            sun_exp, earth_exp = rad.exposure_factors(
-                ra_deg=ra_deg,
-                dec_deg=dec_deg,
-                utime=utime,
-                ephem=ephem,
-                roll_deg=roll_deg,
-            )
+            sun_exp, earth_exp = rad._dot_exposure(sun_unit, earth_unit, in_eclipse)
             heat_w = rad.heat_dissipation_w(sun_exp, earth_exp)
 
             sun_weighted += sun_exp * rad.area_m2
