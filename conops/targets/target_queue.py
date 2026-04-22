@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import rust_ephem
@@ -41,11 +41,9 @@ class TargetQueue:
         self.log = log
         # Optional weight to penalize long slews when selecting next target
         self.slew_distance_weight = config.targets.slew_distance_weight
-        self.radiator_sun_exposure_weight = getattr(
-            config.targets, "radiator_sun_exposure_weight", 0.0
-        )
-        self.radiator_earth_exposure_weight = getattr(
-            config.targets, "radiator_earth_exposure_weight", 0.0
+        self.radiator_sun_exposure_weight = config.targets.radiator_sun_exposure_weight
+        self.radiator_earth_exposure_weight = (
+            config.targets.radiator_earth_exposure_weight
         )
 
     def __getitem__(self, number: int) -> Pointing:
@@ -205,18 +203,9 @@ class TargetQueue:
                     self.radiator_sun_exposure_weight > 0.0
                     or self.radiator_earth_exposure_weight > 0.0
                 ):
-                    if self.config is not None:
-                        radiators = getattr(
-                            self.config.spacecraft_bus, "radiators", None
-                        )
-                    else:
-                        radiators = None
-                    if (
-                        radiators is not None
-                        and hasattr(radiators, "num_radiators")
-                        and radiators.num_radiators() > 0
-                        and self.ephem is not None
-                    ):
+                    assert self.config is not None
+                    radiators = self.config.spacecraft_bus.radiators
+                    if radiators.num_radiators() > 0 and self.ephem is not None:
                         metrics = radiators.exposure_metrics(
                             ra_deg=target.ra,
                             dec_deg=target.dec,
@@ -224,8 +213,8 @@ class TargetQueue:
                             ephem=self.ephem,
                             roll_deg=getattr(target, "roll", 0.0),
                         )
-                        sun_exposure = float(metrics.get("sun_exposure", 0.0))
-                        earth_exposure = float(metrics.get("earth_exposure", 0.0))
+                        sun_exposure = cast(float, metrics.get("sun_exposure", 0.0))
+                        earth_exposure = cast(float, metrics.get("earth_exposure", 0.0))
                         score -= (
                             self.radiator_sun_exposure_weight * sun_exposure
                             + self.radiator_earth_exposure_weight * earth_exposure
