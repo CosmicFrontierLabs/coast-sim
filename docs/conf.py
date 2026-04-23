@@ -166,7 +166,7 @@ def autodoc_skip_member(app, what, name, obj, skip, options):
     # Skip objects that are imported from other modules (not defined here)
     # This prevents showing e.g. MissionConfig under conops.ditl.ditl when it's
     # only imported there, not defined in that module.
-    if what in ("class", "function", "exception"):
+    if what in ("module", "class", "function", "exception"):
         try:
             obj_module = getattr(obj, "__module__", None)
             if obj_module:
