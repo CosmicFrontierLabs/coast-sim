@@ -7,14 +7,20 @@ of a receiver panel is shadowed by one or more occluder panels for a given sun d
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import numpy.typing as npt
 from pydantic import Field, field_validator
 from shapely.geometry import Polygon
-from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
 from ._base import ConfigModel
+
+if TYPE_CHECKING:
+    from shapely.geometry.base import BaseGeometry
+
+__all__ = ["PanelGeometry", "compute_shadow_fraction"]
 
 
 class PanelGeometry(ConfigModel):
