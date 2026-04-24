@@ -535,6 +535,24 @@ class QueueDITL(DITLMixin, DITLStats):
             else None
         )
 
+        ei = self.ephem.index(dtutcfromtimestamp(utime))
+        _sun_bv = scbodyvector(
+            np.radians(ra),
+            np.radians(dec),
+            np.radians(roll),
+            radec2vec(
+                np.radians(float(self.ephem.sun_ra_deg[ei])),
+                np.radians(float(self.ephem.sun_dec_deg[ei])),
+            ),
+        )
+        sun_body_vector: list[float] = [
+            float(_sun_bv[0]),
+            float(_sun_bv[1]),
+            float(_sun_bv[2]),
+        ]
+        _pos = np.asarray(self.ephem.gcrs_pv.position[ei], dtype=np.float64)
+        earth_body_vector: list[float] = list(-_pos / np.linalg.norm(_pos))
+
         return Housekeeping(
             timestamp=datetime.fromtimestamp(utime, tz=timezone.utc),
             ra=ra,
@@ -575,8 +593,8 @@ class QueueDITL(DITLMixin, DITLStats):
             radiator_sun_exposure=self.acs.radiator_sun_exposure,
             radiator_earth_exposure=self.acs.radiator_earth_exposure,
             radiator_heat_dissipation_w=self.acs.radiator_heat_dissipation_w,
-            sun_body_vector=self._compute_body_vector(utime, ra, dec, roll, "sun"),
-            earth_body_vector=self._compute_body_vector(utime, ra, dec, roll, "earth"),
+            sun_body_vector=sun_body_vector,
+            earth_body_vector=earth_body_vector,
         )
 
     def _track_ppt_in_timeline(self) -> None:
@@ -1285,26 +1303,6 @@ class QueueDITL(DITLMixin, DITLStats):
             return None
 
         return angular_separation(moon_ra, moon_dec, ra, dec)
-
-    def _compute_body_vector(
-        self, utime: float, ra: float, dec: float, roll: float, body: str
-    ) -> list[float] | None:
-        """Return unit vector toward *body* in spacecraft body frame [x, y, z]."""
-        if self.ephem is None:
-            return None
-        try:
-            idx = self.ephem.index(dtutcfromtimestamp(utime))
-            if body == "sun":
-                body_ra = float(self.ephem.sun_ra_deg[idx])
-                body_dec = float(self.ephem.sun_dec_deg[idx])
-            else:
-                body_ra = float(self.ephem.earth_ra_deg[idx])
-                body_dec = float(self.ephem.earth_dec_deg[idx])
-        except Exception:
-            return None
-        eci = radec2vec(np.radians(body_ra), np.radians(body_dec))
-        bv = scbodyvector(np.radians(ra), np.radians(dec), np.radians(roll), eci)
-        return [float(bv[0]), float(bv[1]), float(bv[2])]
 
     def _calculate_power_consumption(
         self, mode: ACSMode, in_eclipse: bool
