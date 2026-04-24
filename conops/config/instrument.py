@@ -1,6 +1,7 @@
 from enum import Enum
 
-from pydantic import Field, model_validator
+import numpy as np
+from pydantic import Field, field_validator, model_validator
 
 from ._base import ConfigModel
 from .data_generator import DataGeneration
@@ -140,19 +141,29 @@ class Instrument(ConfigModel):
 
 
 class Telescope(Instrument):
-    """A telescope instrument with optical configuration.
+    """A telescope instrument with optical configuration and pointing direction.
 
-    Extends Instrument with the optical parameters of a telescope.
+    Extends Instrument with the optical parameters of a telescope and the
+    direction its boresight points in the spacecraft body frame.
     Telescope instances can be placed in Payload.instruments alongside
     any other Instrument subclass.
 
     Attributes:
         optics: Optical configuration (aperture, focal length, f-number,
             design type, tube length).
+        boresight: Unit vector in spacecraft body frame giving the telescope
+            pointing direction.  Body-frame axes are:
+
+            - +x — spacecraft forward / primary pointing direction
+            - +y — spacecraft "up"
+            - +z — completes the right-handed frame
+
+            Defaults to ``(1, 0, 0)`` (aligned with spacecraft boresight).
 
     Example:
         >>> scope = Telescope(
         ...     name="Primary Telescope",
+        ...     boresight=(1.0, 0.0, 0.0),
         ...     optics=TelescopeConfig(
         ...         aperture_m=0.6,
         ...         focal_length_m=6.0,
@@ -165,10 +176,29 @@ class Telescope(Instrument):
     """
 
     name: str = Field(default="Telescope", description="Instrument name/identifier")
+    boresight: tuple[float, float, float] = Field(
+        default=(1.0, 0.0, 0.0),
+        description=(
+            "Telescope boresight direction as a unit vector in spacecraft body frame. "
+            "+x is spacecraft forward, +y is up, +z completes the right-hand frame."
+        ),
+    )
     optics: TelescopeConfig = Field(
         default_factory=TelescopeConfig,
         description="Optical configuration of the telescope",
     )
+
+    @field_validator("boresight")
+    @classmethod
+    def _validate_unit_vector(
+        cls, v: tuple[float, float, float]
+    ) -> tuple[float, float, float]:
+        magnitude = float(np.sqrt(sum(x**2 for x in v)))
+        if magnitude < 0.99 or magnitude > 1.01:
+            raise ValueError(
+                f"Telescope boresight must be a unit vector (magnitude {magnitude:.4f})"
+            )
+        return v
 
 
 class Payload(ConfigModel):

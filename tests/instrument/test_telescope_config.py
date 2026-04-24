@@ -126,6 +126,29 @@ class TestTelescope:
         t = Telescope()
         assert t.name == "Telescope"
 
+    def test_default_boresight_is_plus_x(self) -> None:
+        t = Telescope()
+        assert t.boresight == (1.0, 0.0, 0.0)
+
+    def test_custom_boresight_accepted(self) -> None:
+        t = Telescope(boresight=(0.0, 1.0, 0.0))
+        assert t.boresight == (0.0, 1.0, 0.0)
+
+    def test_non_unit_boresight_raises(self) -> None:
+        with pytest.raises(ValueError, match="unit vector"):
+            Telescope(boresight=(1.0, 1.0, 0.0))
+
+    def test_zero_boresight_raises(self) -> None:
+        with pytest.raises(ValueError, match="unit vector"):
+            Telescope(boresight=(0.0, 0.0, 0.0))
+
+    def test_off_axis_boresight(self) -> None:
+        import math
+
+        v = (0.0, math.sin(math.radians(45)), math.cos(math.radians(45)))
+        t = Telescope(boresight=v)
+        assert t.boresight == pytest.approx(v, abs=1e-10)
+
     def test_default_optics_is_empty_config(self) -> None:
         t = Telescope()
         assert isinstance(t.optics, TelescopeConfig)
@@ -151,6 +174,7 @@ class TestTelescope:
     def test_json_round_trip(self) -> None:
         t = Telescope(
             name="Main Scope",
+            boresight=(0.0, 0.0, 1.0),
             optics=TelescopeConfig(
                 aperture_m=0.3,
                 focal_length_m=3.0,
@@ -160,6 +184,7 @@ class TestTelescope:
         )
         restored = Telescope.model_validate_json(t.model_dump_json())
         assert restored.name == "Main Scope"
+        assert restored.boresight == pytest.approx((0.0, 0.0, 1.0))
         assert restored.optics.aperture_m == pytest.approx(0.3)
         assert restored.optics.f_number == pytest.approx(10.0)
         assert restored.optics.telescope_type == TelescopeType.RITCHEY_CHRETIEN

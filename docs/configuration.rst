@@ -590,6 +590,9 @@ A ``Telescope`` can be placed directly in ``Payload.instruments`` alongside any 
 
 **Telescope Attributes** (in addition to Instrument fields):
 
+* ``boresight`` (tuple[float, float, float]): Unit vector in spacecraft body frame
+  giving the direction the telescope points.  Defaults to ``(1, 0, 0)`` (spacecraft
+  forward/primary boresight).  Must be a unit vector (magnitude within 1 %).
 * ``optics`` (:class:`~conops.config.TelescopeConfig`): Optical configuration
 
 **TelescopeConfig Attributes:**
@@ -650,9 +653,12 @@ A ``Telescope`` can be placed directly in ``Payload.instruments`` alongside any 
        DataGeneration,
    )
 
+   import math
+
    # f_number is derived automatically from aperture and focal length
    primary = Telescope(
        name="Primary Telescope",
+       boresight=(1.0, 0.0, 0.0),         # aligned with spacecraft boresight (default)
        power_draw=PowerDraw(nominal_power=80.0, peak_power=120.0),
        data_generation=DataGeneration(rate_gbps=0.5),
        optics=TelescopeConfig(
@@ -661,6 +667,14 @@ A ``Telescope`` can be placed directly in ``Payload.instruments`` alongside any 
            telescope_type=TelescopeType.RITCHEY_CHRETIEN,
            tube_length_m=1.2,
        ),
+   )
+
+   # Off-axis telescope: boresight 30° off spacecraft +X, rotated toward +Y
+   off_axis_boresight = (math.cos(math.radians(30)), math.sin(math.radians(30)), 0.0)
+   secondary = Telescope(
+       name="Secondary Telescope",
+       boresight=off_axis_boresight,
+       optics=TelescopeConfig(aperture_m=0.15, focal_length_m=1.5),
    )
 
    print(primary.optics.f_number)                     # 10.0
@@ -687,6 +701,7 @@ to the ``TelescopeConfig`` fields:
        "instruments": [
          {
            "name": "Primary Telescope",
+           "boresight": [1.0, 0.0, 0.0],
            "power_draw": { "nominal_power": 80.0, "peak_power": 120.0, "power_mode": {} },
            "data_generation": { "rate_gbps": 0.5, "per_observation_gb": 0.0 },
            "optics": {
