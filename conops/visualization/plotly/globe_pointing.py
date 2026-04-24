@@ -23,11 +23,27 @@ from typing import TYPE_CHECKING, Any
 import matplotlib.colors as mcolors
 import numpy as np
 import plotly.graph_objects as go
+import rust_ephem
 
 from ...common import dtutcfromtimestamp
-from ...config.constants import EARTH_OCCULT, MOON_OCCULT, SUN_OCCULT
 from ...config.observation_categories import ObservationCategories
 from ...config.visualization import VisualizationConfig
+from ._constraint_helpers import (
+    ConstraintPlotConfig,
+    build_body_polygon_traces,
+    build_optional_figure_traces,
+    build_tail_constraint_traces,
+    resolve_constraint_plot_config,
+)
+from ._helpers import (
+    _marker_trace,
+    _poly_trace,
+    _ra_to_lon,
+    _to_rgba,
+)
+from ._helpers import (
+    lighten_color as _lighten_color,
+)
 
 if TYPE_CHECKING:
     from ...ditl import DITL, QueueDITL
@@ -51,65 +67,6 @@ def _get_vis_config(
         else:
             config = VisualizationConfig()
     return config
-
-
-def _to_rgba(color: str, alpha: float) -> str:
-    """Convert a named / hex colour + alpha value to a Plotly ``rgba()`` string."""
-    rgb = mcolors.to_rgb(color)
-    r, g, b = int(rgb[0] * 255), int(rgb[1] * 255), int(rgb[2] * 255)
-    return f"rgba({r},{g},{b},{alpha:.3f})"
-
-
-def _ra_to_lon(ra_deg: float) -> float:
-    """Map RA (0–360 °) to Plotly scattergeo longitude (–180 … +180 °)."""
-    return float(ra_deg) - 180.0
-
-
-def _sky_circle_polygon(
-    ra0_deg: float,
-    dec0_deg: float,
-    r_deg: float,
-    n: int = 120,
-) -> tuple[list[float], list[float]]:
-    """Return (lons, lats) in degrees for a small-circle polygon on the sky.
-
-    Uses the standard spherical-offset formula.  The polygon is automatically
-    closed (last point == first point).
-
-    Parameters
-    ----------
-    ra0_deg, dec0_deg : float
-        Centre of the circle in RA/Dec (degrees).
-    r_deg : float
-        Angular radius of the circle (degrees).
-    n : int
-        Number of polygon vertices (more → smoother circle).
-
-    Returns
-    -------
-    lons : list[float]
-        Longitudes in [–180, 180] degrees (RA – 180°).
-    lats : list[float]
-        Latitudes in [–90, 90] degrees (= Dec).
-    """
-    ra0 = np.radians(ra0_deg)
-    dec0 = np.radians(dec0_deg)
-    r = np.radians(r_deg)
-
-    phi = np.linspace(0.0, 2.0 * np.pi, n + 1)  # +1 closes the polygon
-
-    sin_dec = np.sin(dec0) * np.cos(r) + np.cos(dec0) * np.sin(r) * np.cos(phi)
-    sin_dec = np.clip(sin_dec, -1.0, 1.0)
-    dec = np.arcsin(sin_dec)
-
-    y = np.sin(phi) * np.sin(r) * np.cos(dec0)
-    x = np.cos(r) - np.sin(dec0) * sin_dec
-    ra = ra0 + np.arctan2(y, x)
-
-    ra_deg_arr = np.degrees(ra) % 360.0
-    lons = (ra_deg_arr - 180.0).tolist()
-    lats = np.degrees(dec).tolist()
-    return lons, lats
 
 
 def _build_st_boresights(
@@ -215,9 +172,12 @@ def plot_sky_pointing_globe(
     - All scheduled observations (static scatter, colour-coded by category).
     - Sun / Moon / Earth exclusion-zone circles (animated).
     - Earth physical disk (animated).
+    - Anti-Sun direction marker and exclusion zone (animated, orange).
+    - Panel constraint exclusion zones (animated, green; hidden during eclipse).
+    - Orbit (RAM direction) exclusion zone — animated circle when configured.
     - Current spacecraft pointing — star marker, colour = ACS mode (animated).
     - Star-tracker boresights — hexagon markers (animated, one per tracker).
-    - Orbit (RAM direction) exclusion zone — animated circle when configured.
+    - Star-tracker body-exclusion-zone circles (animated, hard=red, soft=magenta).
 
     Parameters
     ----------
@@ -299,64 +259,10 @@ def plot_sky_pointing_globe(
     _st_colors = ["cyan", "lime", "orange", "hotpink", "white", "yellow"]
 
     # ------------------------------------------------------------------
-    # Pre-compute star-tracker boresight offsets and constraint specs
+    # Resolve constraint plotting configuration (once, not per frame)
     # ------------------------------------------------------------------
-    # δ = angular offset of each ST boresight from spacecraft +X (degrees).
-    # For ignore_roll=True the field-of-regard exclusion radius around a
-    # constrained body is exactly (δ + min_angle).
-    st_boresight_offsets: list[float] = []
-    for _st_raw in raw_trackers:
-        _orient = getattr(_st_raw, "orientation", None)
-        _b = getattr(_orient, "boresight", None) if _orient else None
-        if _b is not None:
-            _bv = np.asarray(_b, dtype=np.float64)
-            _bn = np.linalg.norm(_bv)
-            if _bn > 1e-12:
-                _bv = _bv / _bn
-            st_boresight_offsets.append(
-                float(np.degrees(np.arccos(np.clip(_bv[0], -1.0, 1.0))))
-            )
-        else:
-            st_boresight_offsets.append(0.0)
-
-    # (tracker_idx, tier, body, min_angle_deg)
-    st_constraint_specs: list[tuple[int, str, str, float]] = []
-    for _ci, _st_raw in enumerate(raw_trackers):
-        for _tier in ("hard", "soft"):
-            _cobj = getattr(_st_raw, f"{_tier}_constraint", None)
-            if _cobj is None:
-                continue
-            for _body in ("sun", "earth", "moon"):
-                _bcfg = getattr(_cobj, f"{_body}_constraint", None)
-                if _bcfg is None:
-                    continue
-                _mangle = getattr(_bcfg, "min_angle", None)
-                if _mangle is not None and float(_mangle) > 0:
-                    st_constraint_specs.append((_ci, _tier, _body, float(_mangle)))
-
-    # n_st_circles = len(st_constraint_specs)
-    # ignore_roll: bool = bool(
-    #     getattr(
-    #         getattr(getattr(ditl, "config", None), "constraint", None),
-    #         "ignore_roll",
-    #         False,
-    #     )
-    # )
-
-    # ------------------------------------------------------------------
-    # Orbit constraint — extract min/max angle and pre-compute RAM vectors
-    # ------------------------------------------------------------------
-    orbit_constraint = None
-    orbit_min_angle: float = 0.0
-    if hasattr(ditl, "config") and hasattr(ditl.config, "constraint"):
-        orbit_constraint = getattr(ditl.config.constraint, "orbit_constraint", None)
-    if orbit_constraint is not None:
-        orbit_min_angle = float(getattr(orbit_constraint, "min_angle", 0.0))
-
-    # Pre-compute unit velocity vectors (RAM direction) for every ephemeris step.
-    _gcrs_vel: np.ndarray | None = None
-    if orbit_constraint is not None:
-        _gcrs_vel = np.asarray(ephem.gcrs_pv.velocity, dtype=np.float64)  # (n, 3)
+    cc: ConstraintPlotConfig = resolve_constraint_plot_config(ditl, raw_trackers, ephem)
+    _eclipse_con = rust_ephem.EclipseConstraint()
 
     def _mode_color(idx: int) -> str:
         m = ditl.mode[idx]
@@ -365,6 +271,23 @@ def plot_sky_pointing_globe(
     # ------------------------------------------------------------------
     # Per-frame data builder
     # ------------------------------------------------------------------
+    # Trace ordering (0-indexed data items, one per animated trace):
+    # Let _B = 10+n_trackers+n_st_specs, _O = _B+(3 if orbit else 0),
+    #         _A = _O+(3 if anti_sun else 0)
+    #   0: Sun min excl   1: Sun max excl   2: Sun marker
+    #   3: Moon min excl  4: Moon max excl  5: Moon marker
+    #   6: Earth min excl 7: Earth max excl 8: Earth disk
+    #   9: Pointing marker
+    #   10 … 9+n_trackers: ST boresight markers
+    #   10+n_trackers … 9+n_trackers+n_st_specs: ST constraint circles
+    #   _B+0: Orbit RAM min excl    [if orbit configured]
+    #   _B+1: Orbit RAM max excl    [if orbit configured]
+    #   _B+2: RAM direction marker  [if orbit configured]
+    #   _O+0: Anti-Sun min excl     [if anti_sun configured]
+    #   _O+1: Anti-Sun max excl     [if anti_sun configured]
+    #   _O+2: Anti-Sun marker       [if anti_sun configured]
+    #   _A+0: Panel min excl        [if panel configured]
+    #   _A+1: Panel max excl        [if panel configured]
     def _frame_traces(idx: int) -> list[dict[str, Any]]:
         """Return a list of partial trace-data dicts for all animated traces."""
         dt = dtutcfromtimestamp(utimes[idx])
@@ -378,25 +301,10 @@ def plot_sky_pointing_globe(
         earth_dec = float(ephem.earth_dec_deg[ei])
         earth_disk_r = float(ephem.earth_radius_deg[ei])
 
-        # Constraint exclusion radii (approximate from defaults; Earth adds disk)
-        sun_r = float(SUN_OCCULT)
-        moon_r = float(MOON_OCCULT)
-        earth_excl_r = earth_disk_r + float(EARTH_OCCULT)
-
-        sun_lons, sun_lats = _sky_circle_polygon(sun_ra, sun_dec, sun_r)
-        moon_lons, moon_lats = _sky_circle_polygon(moon_ra, moon_dec, moon_r)
-        earth_excl_lons, earth_excl_lats = _sky_circle_polygon(
-            earth_ra, earth_dec, earth_excl_r
-        )
-        earth_disk_lons, earth_disk_lats = _sky_circle_polygon(
-            earth_ra, earth_dec, earth_disk_r
-        )
-
         ra = float(ditl.ra[idx])
         dec = float(ditl.dec[idx])
         mc = _mode_color(idx)
 
-        # Per-tracker functional status from housekeeping telemetry (green/red).
         hk_records = (
             list(ditl.telemetry.housekeeping)
             if hasattr(ditl, "telemetry") and hasattr(ditl.telemetry, "housekeeping")
@@ -408,47 +316,31 @@ def plot_sky_pointing_globe(
 
         st_positions = _build_st_boresights(ditl, idx)
 
-        # Trace ordering (must match the initial trace list below):
-        #   1: Sun exclusion polygon
-        #   2: Sun body marker
-        #   3: Moon exclusion polygon
-        #   4: Moon body marker
-        #   5: Earth exclusion polygon
-        #   6: Earth disk polygon
-        #   7: Pointing marker
-        #   8 … 7+n_trackers: ST boresight markers
-        #   8+n_trackers … 7+n_trackers+n_st_specs: ST constraint circles
-        #   8+n_trackers+n_st_specs: Orbit exclusion polygon  [if orbit_constraint]
-        #   9+n_trackers+n_st_specs: RAM direction marker     [if orbit_constraint]
-        traces: list[dict[str, Any]] = [
-            {"lon": sun_lons, "lat": sun_lats},
-            {
-                "lon": [_ra_to_lon(sun_ra)],
-                "lat": [sun_dec],
-                "marker": {"color": "yellow", "size": 16, "symbol": "circle"},
-            },
-            {"lon": moon_lons, "lat": moon_lats},
-            {
-                "lon": [_ra_to_lon(moon_ra)],
-                "lat": [moon_dec],
-                "marker": {"color": "lightgray", "size": 12, "symbol": "circle"},
-            },
-            {"lon": earth_excl_lons, "lat": earth_excl_lats},
-            {"lon": earth_disk_lons, "lat": earth_disk_lats},
+        traces = build_body_polygon_traces(
+            sun_ra,
+            sun_dec,
+            moon_ra,
+            moon_dec,
+            earth_ra,
+            earth_dec,
+            earth_disk_r,
+            cc.body_angle_cfg,
+        )
+        traces.append(
             {
                 "lon": [_ra_to_lon(ra)],
                 "lat": [dec],
                 "marker": {"color": mc, "size": 20, "symbol": "star"},
-            },
-        ]
-
+            }
+        )
         for i in range(n_trackers):
             if i < len(st_positions):
                 st_ra, st_dec, _color, _name = st_positions[i]
-                if hk_status is not None and i < len(hk_status):
-                    st_marker_color = "limegreen" if hk_status[i] else "red"
-                else:
-                    st_marker_color = _color
+                st_marker_color = (
+                    ("limegreen" if hk_status[i] else "red")
+                    if hk_status is not None and i < len(hk_status)
+                    else _color
+                )
                 traces.append(
                     {
                         "lon": [_ra_to_lon(st_ra)],
@@ -459,63 +351,22 @@ def plot_sky_pointing_globe(
             else:
                 traces.append({"lon": [], "lat": []})
 
-        # --- ST constraint exclusion-zone circles ---
-        # For ignore_roll=True the field-of-regard exclusion zone around each
-        # constrained body is a circle of radius (δ + min_angle), where δ is the
-        # ST boresight's angular offset from the spacecraft +X axis.
-        # For ignore_roll=False we use the simpler min_angle circle around the body
-        # (approximate — visually shows where the boresight must not point).
-        for tr_idx, tier, body, min_angle in st_constraint_specs:
-            if body == "sun":
-                body_ra, body_dec = sun_ra, sun_dec
-                extra_r = 0.0
-            elif body == "earth":
-                body_ra, body_dec = earth_ra, earth_dec
-                extra_r = earth_disk_r  # add physical disk radius for Earth
-            elif body == "moon":
-                body_ra, body_dec = moon_ra, moon_dec
-                extra_r = 0.0
-            else:
-                traces.append({"lon": [], "lat": []})
-                continue
-
-            delta = 0.0  # circles are boresight exclusion radii, not spacecraft-pointing radii
-            eff_r = delta + min_angle + extra_r
-            if eff_r > 0:
-                c_lons, c_lats = _sky_circle_polygon(body_ra, body_dec, eff_r)
-            else:
-                c_lons, c_lats = [], []
-            traces.append({"lon": c_lons, "lat": c_lats})
-
-        return traces
-
-        # --- Orbit constraint (RAM direction) ---
-        if orbit_constraint is not None and _gcrs_vel is not None:
-            v = _gcrs_vel[ei].copy()
-            v_n = np.linalg.norm(v)
-            if v_n > 1e-12:
-                v = v / v_n
-            ram_ra_deg = (np.degrees(np.arctan2(v[1], v[0])) + 360.0) % 360.0
-            ram_dec_deg = float(np.degrees(np.arcsin(np.clip(v[2], -1.0, 1.0))))
-            if orbit_min_angle > 0:
-                oc_lons, oc_lats = _sky_circle_polygon(
-                    ram_ra_deg, ram_dec_deg, orbit_min_angle
-                )
-            else:
-                oc_lons, oc_lats = [], []
-            traces.append({"lon": oc_lons, "lat": oc_lats})  # orbit excl. polygon
-            traces.append(
-                {  # RAM direction marker
-                    "lon": [_ra_to_lon(ram_ra_deg)],
-                    "lat": [ram_dec_deg],
-                    "marker": {
-                        "color": "mediumpurple",
-                        "size": 12,
-                        "symbol": "diamond",
-                    },
-                }
+        traces.extend(
+            build_tail_constraint_traces(
+                cc,
+                sun_ra,
+                sun_dec,
+                moon_ra,
+                moon_dec,
+                earth_ra,
+                earth_dec,
+                earth_disk_r,
+                ei,
+                dt,
+                _eclipse_con,
+                ephem,
             )
-
+        )
         return traces
 
     # ------------------------------------------------------------------
@@ -536,7 +387,6 @@ def plot_sky_pointing_globe(
                     base_color = cat.color
         except Exception:
             pass
-        # Plotly scattergeo rejects matplotlib `tab:*` names — normalise to hex.
         obs_colors.append(mcolors.to_hex(base_color))
         obs_texts.append(f"Obs {getattr(ppt, 'obsid', '')}")
 
@@ -546,48 +396,6 @@ def plot_sky_pointing_globe(
     init_idx = frame_indices[0]
     init_data = _frame_traces(init_idx)
     mc0 = _mode_color(init_idx)
-
-    def _poly_trace(
-        data: dict[str, Any],
-        name: str,
-        fill_color: str,
-        line_color: str,
-        showlegend: bool = True,
-    ) -> go.Scattergeo:
-        return go.Scattergeo(
-            lon=data["lon"],
-            lat=data["lat"],
-            mode="lines",
-            fill="toself",
-            fillcolor=fill_color,
-            line=dict(color=line_color, width=1),
-            name=name,
-            showlegend=showlegend,
-            hoverinfo="skip",
-        )
-
-    def _marker_trace(
-        data: dict[str, Any],
-        name: str,
-        symbol: str,
-        color: str,
-        size: int,
-        edge_color: str = "white",
-        showlegend: bool = True,
-    ) -> go.Scattergeo:
-        return go.Scattergeo(
-            lon=data["lon"],
-            lat=data["lat"],
-            mode="markers",
-            marker=dict(
-                symbol=symbol,
-                color=color,
-                size=size,
-                line=dict(color=edge_color, width=1),
-            ),
-            name=name,
-            showlegend=showlegend,
-        )
 
     traces_fig: list[Any] = [
         # --- Trace 0: static observations ---
@@ -606,43 +414,64 @@ def plot_sky_pointing_globe(
             name="Observations",
             showlegend=True,
         ),
-        # --- Trace 1: Sun exclusion polygon ---
+        # --- Traces 1–2: Sun exclusion polygons ---
         _poly_trace(
             init_data[0],
-            "Sun exclusion",
+            "Sun min exclusion",
             _to_rgba("gold", constraint_alpha),
             "gold",
         ),
-        # --- Trace 2: Sun body marker ---
-        _marker_trace(init_data[1], "Sun", "circle", "yellow", 16),
-        # --- Trace 3: Moon exclusion polygon ---
         _poly_trace(
-            init_data[2],
+            init_data[1],
+            "Sun max exclusion",
+            _to_rgba(_lighten_color("gold", 0.3), constraint_alpha * 0.8),
+            _lighten_color("gold", 0.2),
+            showlegend=cc.body_angle_cfg["sun"][1] is not None,
+        ),
+        # --- Trace 3: Sun body marker ---
+        _marker_trace(init_data[2], "Sun", "circle", "yellow", 16),
+        # --- Traces 4–5: Moon exclusion polygons ---
+        _poly_trace(
+            init_data[3],
             "Moon exclusion",
             _to_rgba("gray", constraint_alpha),
             "lightgray",
         ),
-        # --- Trace 4: Moon body marker ---
-        _marker_trace(init_data[3], "Moon", "circle", "lightgray", 12),
-        # --- Trace 5: Earth exclusion polygon (disk + limb avoidance) ---
         _poly_trace(
             init_data[4],
+            "Moon max exclusion",
+            _to_rgba(_lighten_color("gray", 0.25), constraint_alpha * 0.75),
+            _lighten_color("gray", 0.15),
+            showlegend=cc.body_angle_cfg["moon"][1] is not None,
+        ),
+        # --- Trace 6: Moon body marker ---
+        _marker_trace(init_data[5], "Moon", "circle", "lightgray", 12),
+        # --- Traces 7–8: Earth exclusion polygons ---
+        _poly_trace(
+            init_data[6],
             "Earth exclusion",
             _to_rgba("royalblue", constraint_alpha),
             "dodgerblue",
         ),
-        # --- Trace 6: Earth physical disk polygon ---
         _poly_trace(
-            init_data[5],
+            init_data[7],
+            "Earth max exclusion",
+            _to_rgba(_lighten_color("royalblue", 0.25), constraint_alpha * 0.75),
+            _lighten_color("royalblue", 0.15),
+            showlegend=cc.body_angle_cfg["earth"][1] is not None,
+        ),
+        # --- Trace 9: Earth physical disk polygon ---
+        _poly_trace(
+            init_data[8],
             "Earth disk",
             _to_rgba("darkblue", 0.75),
             "cornflowerblue",
             showlegend=True,
         ),
-        # --- Trace 7: Current pointing ---
+        # --- Trace 10: Current pointing ---
         go.Scattergeo(
-            lon=init_data[6]["lon"],
-            lat=init_data[6]["lat"],
+            lon=init_data[9]["lon"],
+            lat=init_data[9]["lat"],
             mode="markers",
             marker=dict(
                 symbol="star",
@@ -658,9 +487,7 @@ def plot_sky_pointing_globe(
     # Star-tracker boresight traces (one per tracker)
     for i in range(n_trackers):
         st_name = getattr(raw_trackers[i], "name", f"ST-{i + 1}")
-        td = init_data[7 + i] if 7 + i < len(init_data) else {"lon": [], "lat": []}
-        # Use the status-based color from frame 0 (green/red) if available;
-        # fall back to the fixed palette if the trace dict has no marker sub-dict.
+        td = init_data[10 + i] if 10 + i < len(init_data) else {"lon": [], "lat": []}
         st_color = td.get("marker", {}).get("color", _st_colors[i % len(_st_colors)])
         traces_fig.append(
             go.Scattergeo(
@@ -678,69 +505,12 @@ def plot_sky_pointing_globe(
             )
         )
 
-    # Star-tracker constraint exclusion-zone circles (one per spec)
-    _st_legend_shown: set[str] = set()
-    for j, (tr_idx, tier, body, min_angle) in enumerate(st_constraint_specs):
-        _legend_key = tier
-        _show_legend = _legend_key not in _st_legend_shown
-        if _show_legend:
-            _st_legend_shown.add(_legend_key)
+    # ST constraint circles, orbit, anti-sun, and panel traces
+    traces_fig.extend(
+        build_optional_figure_traces(cc, init_data, n_trackers, constraint_alpha)
+    )
 
-        if tier == "hard":
-            fill_color = _to_rgba("red", constraint_alpha)
-            line_color = "red"
-            line_dash = "solid"
-            label = "ST Hard Cons."
-        else:
-            fill_color = _to_rgba("magenta", constraint_alpha * 0.7)
-            line_color = "magenta"
-            line_dash = "dot"
-            label = "ST Soft Cons."
-
-        ci = 7 + n_trackers + j
-        td_c = init_data[ci] if ci < len(init_data) else {"lon": [], "lat": []}
-        traces_fig.append(
-            go.Scattergeo(
-                lon=td_c["lon"],
-                lat=td_c["lat"],
-                mode="lines",
-                fill="toself",
-                fillcolor=fill_color,
-                line=dict(color=line_color, width=1, dash=line_dash),
-                name=label,
-                showlegend=_show_legend,
-                hoverinfo="skip",
-            )
-        )
-
-        # Animated trace indices: everything except trace 0 (observations)
-
-        # Orbit constraint exclusion polygon + RAM direction marker
-        if orbit_constraint is not None:
-            _oc_base = 7 + n_trackers + len(st_constraint_specs)
-            _oc_poly = (
-                init_data[_oc_base]
-                if _oc_base < len(init_data)
-                else {"lon": [], "lat": []}
-            )
-            _oc_ram = (
-                init_data[_oc_base + 1]
-                if _oc_base + 1 < len(init_data)
-                else {"lon": [], "lat": []}
-            )
-            traces_fig.append(
-                _poly_trace(
-                    _oc_poly,
-                    "Orbit (RAM) excl.",
-                    _to_rgba("mediumpurple", constraint_alpha),
-                    "mediumpurple",
-                )
-            )
-            traces_fig.append(
-                _marker_trace(_oc_ram, "RAM direction", "diamond", "mediumpurple", 12)
-            )
-
-        # Animated trace indices: everything except trace 0 (observations)
+    # Animated trace indices: everything except trace 0 (observations)
     animated_indices = list(range(1, len(traces_fig)))
 
     # ------------------------------------------------------------------

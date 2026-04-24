@@ -12,50 +12,34 @@ import matplotlib.colors as mcolors
 import numpy as np
 import numpy.typing as npt
 import plotly.graph_objects as go
+import rust_ephem
 
 from ...common import dtutcfromtimestamp
-from ...config.constants import EARTH_OCCULT, MOON_OCCULT, SUN_OCCULT
 from ...config.observation_categories import ObservationCategories
 from ...config.visualization import VisualizationConfig
+from ._constraint_helpers import (
+    ConstraintPlotConfig,
+    build_body_polygon_traces,
+    build_optional_figure_traces,
+    build_tail_constraint_traces,
+    resolve_constraint_plot_config,
+)
+from ._helpers import (
+    _marker_trace,
+    _poly_trace,
+    _ra_to_lon,
+    _to_rgba,
+)
+from ._helpers import (
+    lighten_color as _lighten_color,
+)
 from .globe_pointing import (
     _build_st_boresights,
     _get_vis_config,
-    _ra_to_lon,
-    _sky_circle_polygon,
-    _to_rgba,
 )
 
 if TYPE_CHECKING:
     from ...ditl import DITL, QueueDITL
-
-
-def _get_visualization_config(
-    ditl: "DITL | QueueDITL", config: VisualizationConfig | None = None
-) -> VisualizationConfig:
-    """Get visualization configuration, with fallback to defaults.
-
-    Parameters
-    ----------
-    ditl : DITL or QueueDITL
-        The DITL simulation object.
-    config : VisualizationConfig, optional
-        Explicit config to use. If None, tries to get from ditl.config.visualization.
-
-    Returns
-    -------
-    VisualizationConfig
-        The configuration object to use.
-    """
-    if config is None:
-        if (
-            hasattr(ditl, "config")
-            and hasattr(ditl.config, "visualization")
-            and isinstance(ditl.config.visualization, VisualizationConfig)
-        ):
-            config = ditl.config.visualization
-        else:
-            config = VisualizationConfig()
-    return config
 
 
 def _gaussian_smooth(
@@ -114,33 +98,6 @@ def _gaussian_smooth(
     return smoothed
 
 
-def _lighten_color(color: str, factor: float = 0.5) -> str:
-    """Lighten a color by blending with white.
-
-    Parameters
-    ----------
-    color : str
-        The color to lighten (hex, name, or RGB tuple).
-    factor : float
-        Lightening factor (0.0 = original color, 1.0 = white).
-
-    Returns
-    -------
-    str
-        The lightened color as hex string.
-    """
-    # Convert to RGB
-    rgb = mcolors.to_rgb(color)
-    # Blend with white
-    r, g, b = rgb
-    lightened = (
-        (1 - factor) * r + factor * 1.0,
-        (1 - factor) * g + factor * 1.0,
-        (1 - factor) * b + factor * 1.0,
-    )
-    return mcolors.to_hex(lightened)
-
-
 # ---------------------------------------------------------------------------
 # Flat sky-map (Plotly/natural-earth) — Mollweide-style 2-D view
 # ---------------------------------------------------------------------------
@@ -167,6 +124,9 @@ def plot_sky_pointing_plotly(
     - All scheduled observations (static, colour-coded by category).
     - Sun / Moon / Earth exclusion-zone circles (animated).
     - Earth physical disk (animated).
+    - Anti-Sun direction marker and exclusion zone (animated, orange).
+    - Panel constraint exclusion zones (animated, green; hidden during eclipse).
+    - Orbit (RAM direction) exclusion zone (animated, when configured).
     - Current spacecraft pointing — star marker, colour = ACS mode (animated).
     - Star-tracker boresights — hexagon markers (animated).
     - Star-tracker body-exclusion-zone circles (animated, hard=red, soft=magenta).
@@ -251,21 +211,10 @@ def plot_sky_pointing_plotly(
     _st_colors = ["cyan", "lime", "orange", "hotpink", "white", "yellow"]
 
     # ------------------------------------------------------------------
-    # Pre-compute ST constraint specs
+    # Resolve constraint plotting configuration (once, not per frame)
     # ------------------------------------------------------------------
-    st_constraint_specs: list[tuple[int, str, str, float]] = []
-    for _ci, _st_raw in enumerate(raw_trackers):
-        for _tier in ("hard", "soft"):
-            _cobj = getattr(_st_raw, f"{_tier}_constraint", None)
-            if _cobj is None:
-                continue
-            for _body in ("sun", "earth", "moon"):
-                _bcfg = getattr(_cobj, f"{_body}_constraint", None)
-                if _bcfg is None:
-                    continue
-                _mangle = getattr(_bcfg, "min_angle", None)
-                if _mangle is not None and float(_mangle) > 0:
-                    st_constraint_specs.append((_ci, _tier, _body, float(_mangle)))
+    cc: ConstraintPlotConfig = resolve_constraint_plot_config(ditl, raw_trackers, ephem)
+    _eclipse_con = rust_ephem.EclipseConstraint()
 
     def _mode_color(idx: int) -> str:
         m = ditl.mode[idx]
@@ -273,13 +222,23 @@ def plot_sky_pointing_plotly(
 
     # ------------------------------------------------------------------
     # Per-frame data builder
+    # Let _B = 10+n_trackers+n_st_specs, _O = _B+(3 if orbit else 0),
+    #         _A = _O+(3 if anti_sun else 0)
     # trace ordering:
-    #   0: Sun excl polygon      1: Sun body marker
-    #   2: Moon excl polygon     3: Moon body marker
-    #   4: Earth excl polygon    5: Earth disk polygon
-    #   6: Pointing marker
-    #   7 … 6+n_trackers: ST boresight markers
-    #   7+n_trackers … : ST exclusion-zone circles
+    #   0: Sun min excl polygon   1: Sun max excl polygon   2: Sun body marker
+    #   3: Moon min excl polygon  4: Moon max excl polygon  5: Moon body marker
+    #   6: Earth min excl polygon 7: Earth max excl polygon 8: Earth disk polygon
+    #   9: Pointing marker
+    #   10 … 9+n_trackers: ST boresight markers
+    #   10+n_trackers … 9+n_trackers+n_st_specs: ST exclusion-zone circles
+    #   _B+0: Orbit RAM min exclusion     [if orbit configured]
+    #   _B+1: Orbit RAM max exclusion     [if orbit configured]
+    #   _B+2: RAM direction marker        [if orbit configured]
+    #   _O+0: Anti-Sun min excl polygon   [if anti_sun configured]
+    #   _O+1: Anti-Sun max excl polygon   [if anti_sun configured]
+    #   _O+2: Anti-Sun direction marker   [if anti_sun configured]
+    #   _A+0: Panel min excl polygon      [if panel configured]
+    #   _A+1: Panel max excl polygon      [if panel configured]
     # ------------------------------------------------------------------
     def _frame_traces(idx: int) -> list[dict[str, Any]]:
         dt = dtutcfromtimestamp(utimes[idx])
@@ -292,19 +251,6 @@ def plot_sky_pointing_plotly(
         earth_ra = float(ephem.earth_ra_deg[ei])
         earth_dec = float(ephem.earth_dec_deg[ei])
         earth_disk_r = float(ephem.earth_radius_deg[ei])
-
-        sun_r = float(SUN_OCCULT)
-        moon_r = float(MOON_OCCULT)
-        earth_excl_r = earth_disk_r + float(EARTH_OCCULT)
-
-        sun_lons, sun_lats = _sky_circle_polygon(sun_ra, sun_dec, sun_r)
-        moon_lons, moon_lats = _sky_circle_polygon(moon_ra, moon_dec, moon_r)
-        earth_excl_lons, earth_excl_lats = _sky_circle_polygon(
-            earth_ra, earth_dec, earth_excl_r
-        )
-        earth_disk_lons, earth_disk_lats = _sky_circle_polygon(
-            earth_ra, earth_dec, earth_disk_r
-        )
 
         ra = float(ditl.ra[idx])
         dec = float(ditl.dec[idx])
@@ -321,35 +267,31 @@ def plot_sky_pointing_plotly(
 
         st_positions = _build_st_boresights(ditl, idx)
 
-        traces: list[dict[str, Any]] = [
-            {"lon": sun_lons, "lat": sun_lats},
-            {
-                "lon": [_ra_to_lon(sun_ra)],
-                "lat": [sun_dec],
-                "marker": {"color": "yellow", "size": 16, "symbol": "circle"},
-            },
-            {"lon": moon_lons, "lat": moon_lats},
-            {
-                "lon": [_ra_to_lon(moon_ra)],
-                "lat": [moon_dec],
-                "marker": {"color": "lightgray", "size": 12, "symbol": "circle"},
-            },
-            {"lon": earth_excl_lons, "lat": earth_excl_lats},
-            {"lon": earth_disk_lons, "lat": earth_disk_lats},
+        traces = build_body_polygon_traces(
+            sun_ra,
+            sun_dec,
+            moon_ra,
+            moon_dec,
+            earth_ra,
+            earth_dec,
+            earth_disk_r,
+            cc.body_angle_cfg,
+        )
+        traces.append(
             {
                 "lon": [_ra_to_lon(ra)],
                 "lat": [dec],
                 "marker": {"color": mc, "size": 20, "symbol": "star"},
-            },
-        ]
-
+            }
+        )
         for i in range(n_trackers):
             if i < len(st_positions):
                 st_ra, st_dec, _color, _name = st_positions[i]
-                if hk_status is not None and i < len(hk_status):
-                    st_marker_color = "limegreen" if hk_status[i] else "red"
-                else:
-                    st_marker_color = _color
+                st_marker_color = (
+                    ("limegreen" if hk_status[i] else "red")
+                    if hk_status is not None and i < len(hk_status)
+                    else _color
+                )
                 traces.append(
                     {
                         "lon": [_ra_to_lon(st_ra)],
@@ -360,27 +302,22 @@ def plot_sky_pointing_plotly(
             else:
                 traces.append({"lon": [], "lat": []})
 
-        for tr_idx, tier, body, min_angle in st_constraint_specs:
-            if body == "sun":
-                body_ra, body_dec = sun_ra, sun_dec
-                extra_r = 0.0
-            elif body == "earth":
-                body_ra, body_dec = earth_ra, earth_dec
-                extra_r = earth_disk_r
-            elif body == "moon":
-                body_ra, body_dec = moon_ra, moon_dec
-                extra_r = 0.0
-            else:
-                traces.append({"lon": [], "lat": []})
-                continue
-
-            eff_r = min_angle + extra_r
-            if eff_r > 0:
-                c_lons, c_lats = _sky_circle_polygon(body_ra, body_dec, eff_r)
-            else:
-                c_lons, c_lats = [], []
-            traces.append({"lon": c_lons, "lat": c_lats})
-
+        traces.extend(
+            build_tail_constraint_traces(
+                cc,
+                sun_ra,
+                sun_dec,
+                moon_ra,
+                moon_dec,
+                earth_ra,
+                earth_dec,
+                earth_disk_r,
+                ei,
+                dt,
+                _eclipse_con,
+                ephem,
+            )
+        )
         return traces
 
     # ------------------------------------------------------------------
@@ -411,48 +348,6 @@ def plot_sky_pointing_plotly(
     init_data = _frame_traces(init_idx)
     mc0 = _mode_color(init_idx)
 
-    def _poly_trace(
-        data: dict[str, Any],
-        name: str,
-        fill_color: str,
-        line_color: str,
-        showlegend: bool = True,
-    ) -> go.Scattergeo:
-        return go.Scattergeo(
-            lon=data["lon"],
-            lat=data["lat"],
-            mode="lines",
-            fill="toself",
-            fillcolor=fill_color,
-            line=dict(color=line_color, width=1),
-            name=name,
-            showlegend=showlegend,
-            hoverinfo="skip",
-        )
-
-    def _marker_trace(
-        data: dict[str, Any],
-        name: str,
-        symbol: str,
-        color: str,
-        size: int,
-        edge_color: str = "white",
-        showlegend: bool = True,
-    ) -> go.Scattergeo:
-        return go.Scattergeo(
-            lon=data["lon"],
-            lat=data["lat"],
-            mode="markers",
-            marker=dict(
-                symbol=symbol,
-                color=color,
-                size=size,
-                line=dict(color=edge_color, width=1),
-            ),
-            name=name,
-            showlegend=showlegend,
-        )
-
     traces_fig: list[Any] = [
         # Trace 0: static observations
         go.Scattergeo(
@@ -470,42 +365,60 @@ def plot_sky_pointing_plotly(
             name="Observations",
             showlegend=True,
         ),
-        # Trace 1: Sun exclusion polygon
+        # Traces 1–2: Sun exclusion polygons
         _poly_trace(
             init_data[0],
-            "Sun exclusion",
+            "Sun min exclusion",
             _to_rgba("gold", constraint_alpha),
             "gold",
         ),
-        # Trace 2: Sun body marker
-        _marker_trace(init_data[1], "Sun", "circle", "yellow", 16),
-        # Trace 3: Moon exclusion polygon
         _poly_trace(
-            init_data[2],
+            init_data[1],
+            "Sun max exclusion",
+            _to_rgba(_lighten_color("gold", 0.3), constraint_alpha * 0.8),
+            _lighten_color("gold", 0.2),
+            showlegend=cc.body_angle_cfg["sun"][1] is not None,
+        ),
+        # Trace 3: Sun body marker
+        _marker_trace(init_data[2], "Sun", "circle", "yellow", 16),
+        # Traces 4–5: Moon exclusion polygons
+        _poly_trace(
+            init_data[3],
             "Moon exclusion",
             _to_rgba("gray", constraint_alpha),
             "lightgray",
         ),
-        # Trace 4: Moon body marker
-        _marker_trace(init_data[3], "Moon", "circle", "lightgray", 12),
-        # Trace 5: Earth exclusion polygon
         _poly_trace(
             init_data[4],
+            "Moon max exclusion",
+            _to_rgba(_lighten_color("gray", 0.25), constraint_alpha * 0.75),
+            _lighten_color("gray", 0.15),
+            showlegend=cc.body_angle_cfg["moon"][1] is not None,
+        ),
+        # Trace 6: Moon body marker
+        _marker_trace(init_data[5], "Moon", "circle", "lightgray", 12),
+        # Traces 7–8: Earth exclusion polygons
+        _poly_trace(
+            init_data[6],
             "Earth exclusion",
             _to_rgba("royalblue", constraint_alpha),
             "dodgerblue",
         ),
-        # Trace 6: Earth physical disk
         _poly_trace(
-            init_data[5],
-            "Earth disk",
-            _to_rgba("darkblue", 0.75),
-            "cornflowerblue",
+            init_data[7],
+            "Earth max exclusion",
+            _to_rgba(_lighten_color("royalblue", 0.25), constraint_alpha * 0.75),
+            _lighten_color("royalblue", 0.15),
+            showlegend=cc.body_angle_cfg["earth"][1] is not None,
         ),
-        # Trace 7: Pointing marker
+        # Trace 9: Earth physical disk
+        _poly_trace(
+            init_data[8], "Earth disk", _to_rgba("darkblue", 0.75), "cornflowerblue"
+        ),
+        # Trace 10: Pointing marker
         go.Scattergeo(
-            lon=init_data[6]["lon"],
-            lat=init_data[6]["lat"],
+            lon=init_data[9]["lon"],
+            lat=init_data[9]["lat"],
             mode="markers",
             marker=dict(
                 symbol="star",
@@ -521,7 +434,7 @@ def plot_sky_pointing_plotly(
     # ST boresight traces
     for i in range(n_trackers):
         st_name = getattr(raw_trackers[i], "name", f"ST-{i + 1}")
-        td = init_data[7 + i] if 7 + i < len(init_data) else {"lon": [], "lat": []}
+        td = init_data[10 + i] if 10 + i < len(init_data) else {"lon": [], "lat": []}
         st_color = td.get("marker", {}).get("color", _st_colors[i % len(_st_colors)])
         traces_fig.append(
             go.Scattergeo(
@@ -539,40 +452,10 @@ def plot_sky_pointing_plotly(
             )
         )
 
-    # ST constraint exclusion-zone circle traces
-    _st_legend_shown: set[str] = set()
-    for j, (tr_idx, tier, body, min_angle) in enumerate(st_constraint_specs):
-        _legend_key = tier
-        _show_legend = _legend_key not in _st_legend_shown
-        if _show_legend:
-            _st_legend_shown.add(_legend_key)
-
-        if tier == "hard":
-            fill_color = _to_rgba("red", constraint_alpha)
-            line_color = "red"
-            line_dash = "solid"
-            label = "ST Hard Cons."
-        else:
-            fill_color = _to_rgba("magenta", constraint_alpha * 0.7)
-            line_color = "magenta"
-            line_dash = "dot"
-            label = "ST Soft Cons."
-
-        ci = 7 + n_trackers + j
-        td_c = init_data[ci] if ci < len(init_data) else {"lon": [], "lat": []}
-        traces_fig.append(
-            go.Scattergeo(
-                lon=td_c["lon"],
-                lat=td_c["lat"],
-                mode="lines",
-                fill="toself",
-                fillcolor=fill_color,
-                line=dict(color=line_color, width=1, dash=line_dash),
-                name=label,
-                showlegend=_show_legend,
-                hoverinfo="skip",
-            )
-        )
+    # ST constraint circles, orbit, anti-sun, and panel traces
+    traces_fig.extend(
+        build_optional_figure_traces(cc, init_data, n_trackers, constraint_alpha)
+    )
 
     animated_indices = list(range(1, len(traces_fig)))
 
