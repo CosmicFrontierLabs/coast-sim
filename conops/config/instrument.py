@@ -1,5 +1,6 @@
 from enum import Enum
 from functools import cached_property
+from typing import Annotated, Any, Literal
 
 import numpy as np
 from pydantic import Field, field_validator, model_validator
@@ -111,6 +112,10 @@ class Instrument(ConfigModel):
         data_generation: Data generation characteristics.
     """
 
+    instrument_type: Literal["Instrument"] = Field(
+        default="Instrument",
+        description="Discriminator tag for polymorphic payload deserialization",
+    )
     name: str = Field(
         default="Default Instrument", description="Instrument name/identifier"
     )
@@ -179,6 +184,10 @@ class Telescope(Instrument):
         10.0
     """
 
+    instrument_type: Literal["Telescope"] = Field(  # type: ignore[assignment]
+        default="Telescope",
+        description="Discriminator tag for polymorphic payload deserialization",
+    )
     name: str = Field(default="Telescope", description="Instrument name/identifier")
     boresight: tuple[float, float, float] = Field(
         default=(1.0, 0.0, 0.0),
@@ -237,6 +246,15 @@ class Telescope(Instrument):
         )
 
 
+# Discriminated union used by Payload.instruments for round-trip JSON serialization.
+# Telescope must come first so Pydantic tries the more specific type first when
+# the discriminator tag is present.
+_AnyInstrument = Annotated[
+    Telescope | Instrument,
+    Field(discriminator="instrument_type"),
+]
+
+
 class Payload(ConfigModel):
     """A collection of instruments operated together as the spacecraft payload.
 
@@ -244,7 +262,30 @@ class Payload(ConfigModel):
         instruments: List of Instrument (or subclass) instances.
     """
 
-    instruments: list[Instrument] = [Instrument()]
+    instruments: list[_AnyInstrument] = [Instrument()]
+
+    @field_validator("instruments", mode="before")
+    @classmethod
+    def _inject_instrument_type(cls, v: Any) -> Any:
+        """Inject instrument_type tag for backwards-compatible JSON loading.
+
+        Old config files don't have the discriminator field. Detect Telescope
+        instances by the presence of their specific keys and tag accordingly.
+        """
+        if not isinstance(v, list):
+            return v
+        result = []
+        for item in v:
+            if isinstance(item, dict) and "instrument_type" not in item:
+                has_telescope_keys = "boresight" in item or "optics" in item
+                item = {
+                    **item,
+                    "instrument_type": "Telescope"
+                    if has_telescope_keys
+                    else "Instrument",
+                }
+            result.append(item)
+        return result
 
     def power(self, mode: int | None = None, in_eclipse: bool = False) -> float:
         """Get the total power draw for all instruments in the payload in the given mode.

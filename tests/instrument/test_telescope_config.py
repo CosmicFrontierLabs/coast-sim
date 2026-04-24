@@ -211,6 +211,62 @@ class TestTelescope:
         assert isinstance(payload.instruments[0], Telescope)
         assert type(payload.instruments[1]) is Instrument
 
+    def test_payload_json_round_trip_preserves_telescope(self) -> None:
+        scope = Telescope(
+            name="Primary Telescope",
+            boresight=(0.0, 0.0, 1.0),
+            optics=TelescopeConfig(
+                aperture_m=0.6,
+                focal_length_m=6.0,
+                telescope_type=TelescopeType.RITCHEY_CHRETIEN,
+            ),
+        )
+        cam = Instrument(name="Fine Guidance Sensor")
+        payload = Payload(instruments=[scope, cam])
+        restored = Payload.model_validate_json(payload.model_dump_json())
+        assert len(restored.instruments) == 2
+        assert isinstance(restored.instruments[0], Telescope)
+        assert type(restored.instruments[1]) is Instrument
+        t = restored.instruments[0]
+        assert isinstance(t, Telescope)
+        assert t.name == "Primary Telescope"
+        assert t.boresight == pytest.approx((0.0, 0.0, 1.0))
+        assert t.optics.aperture_m == pytest.approx(0.6)
+        assert t.optics.f_number == pytest.approx(10.0)
+        assert t.optics.telescope_type == TelescopeType.RITCHEY_CHRETIEN
+
+    def test_instrument_type_tag_on_instrument(self) -> None:
+        assert Instrument().instrument_type == "Instrument"
+
+    def test_instrument_type_tag_on_telescope(self) -> None:
+        assert Telescope().instrument_type == "Telescope"
+
+    def test_payload_json_round_trip_plain_instrument_no_tag_needed(self) -> None:
+        # Legacy JSON without instrument_type falls back to Instrument
+        import json
+
+        raw = json.dumps({"instruments": [{"name": "Sensor"}]})
+        payload = Payload.model_validate_json(raw)
+        assert type(payload.instruments[0]) is Instrument
+
+    def test_payload_json_round_trip_legacy_telescope_detected_by_keys(self) -> None:
+        # Legacy JSON with boresight/optics but no instrument_type → Telescope
+        import json
+
+        raw = json.dumps(
+            {
+                "instruments": [
+                    {
+                        "name": "Old Scope",
+                        "boresight": [1.0, 0.0, 0.0],
+                        "optics": {},
+                    }
+                ]
+            }
+        )
+        payload = Payload.model_validate_json(raw)
+        assert isinstance(payload.instruments[0], Telescope)
+
 
 class TestTelescopeConstraint:
     def _sun_constraint(self) -> Constraint:
