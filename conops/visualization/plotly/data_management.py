@@ -57,6 +57,14 @@ def plot_data_management_telemetry_plotly(
 
     times = list(ditl.telemetry.housekeeping.timestamp)
 
+    # Guard against missing attributes with defaults to avoid plotly errors.
+    _recorder = getattr(getattr(ditl, "config", None), "recorder", None)
+    capacity_gb: float | None = getattr(_recorder, "capacity_gb", None)
+    yellow_threshold: float | None = getattr(_recorder, "yellow_threshold", None)
+    red_threshold: float | None = getattr(_recorder, "red_threshold", None)
+    data_generated: list[float] = list(getattr(ditl, "data_generated_gb", []) or [])
+    data_downlinked: list[float] = list(getattr(ditl, "data_downlinked_gb", []) or [])
+
     fig = make_subplots(
         rows=5,
         cols=1,
@@ -74,8 +82,6 @@ def plot_data_management_telemetry_plotly(
     # ------------------------------------------------------------------
     # Panel 1 — Recorder volume
     # ------------------------------------------------------------------
-    capacity_gb = ditl.config.recorder.capacity_gb
-
     fig.add_trace(
         go.Scatter(
             x=times,
@@ -90,23 +96,21 @@ def plot_data_management_telemetry_plotly(
         row=1,
         col=1,
     )
-    fig.add_hline(
-        y=capacity_gb,
-        line_dash="dash",
-        line_color="red",
-        annotation_text=f"Capacity ({capacity_gb} Gb)",
-        annotation_position="top right",
-        row=1,
-        col=1,
-    )
+    if capacity_gb is not None:
+        fig.add_hline(
+            y=capacity_gb,
+            line_dash="dash",
+            line_color="red",
+            annotation_text=f"Capacity ({capacity_gb} Gb)",
+            annotation_position="top right",
+            row=1,
+            col=1,
+        )
     fig.update_yaxes(title_text="Volume (Gb)", row=1, col=1)
 
     # ------------------------------------------------------------------
     # Panel 2 — Fill fraction
     # ------------------------------------------------------------------
-    yellow_threshold = ditl.config.recorder.yellow_threshold
-    red_threshold = ditl.config.recorder.red_threshold
-
     fig.add_trace(
         go.Scatter(
             x=times,
@@ -121,24 +125,26 @@ def plot_data_management_telemetry_plotly(
         row=2,
         col=1,
     )
-    fig.add_hline(
-        y=yellow_threshold,
-        line_dash="dash",
-        line_color="orange",
-        annotation_text=f"Yellow ({yellow_threshold:.0%})",
-        annotation_position="top right",
-        row=2,
-        col=1,
-    )
-    fig.add_hline(
-        y=red_threshold,
-        line_dash="dash",
-        line_color="red",
-        annotation_text=f"Red ({red_threshold:.0%})",
-        annotation_position="top right",
-        row=2,
-        col=1,
-    )
+    if yellow_threshold is not None:
+        fig.add_hline(
+            y=yellow_threshold,
+            line_dash="dash",
+            line_color="orange",
+            annotation_text=f"Yellow ({yellow_threshold:.0%})",
+            annotation_position="top right",
+            row=2,
+            col=1,
+        )
+    if red_threshold is not None:
+        fig.add_hline(
+            y=red_threshold,
+            line_dash="dash",
+            line_color="red",
+            annotation_text=f"Red ({red_threshold:.0%})",
+            annotation_position="top right",
+            row=2,
+            col=1,
+        )
     fig.update_yaxes(title_text="Fill Fraction", range=[0, 1], row=2, col=1)
 
     # ------------------------------------------------------------------
@@ -147,7 +153,7 @@ def plot_data_management_telemetry_plotly(
     fig.add_trace(
         go.Scatter(
             x=times,
-            y=list(ditl.data_generated_gb),
+            y=data_generated,
             mode="lines",
             name="Data Generated",
             line=dict(color="mediumpurple", width=2),
@@ -164,7 +170,7 @@ def plot_data_management_telemetry_plotly(
     fig.add_trace(
         go.Scatter(
             x=times,
-            y=list(ditl.data_downlinked_gb),
+            y=data_downlinked,
             mode="lines",
             name="Data Downlinked",
             line=dict(color="darkcyan", width=2),
@@ -184,13 +190,10 @@ def plot_data_management_telemetry_plotly(
         (1, "Yellow Alert", "orange"),
         (2, "Red Alert", "red"),
     ]
-    _shown_alert_legend: set[str] = set()
     for level, label, color in _alert_cfg:
         mask = [i for i, a in enumerate(alert_levels) if a == level]
         if not mask:
             continue
-        _show = label not in _shown_alert_legend
-        _shown_alert_legend.add(label)
         fig.add_trace(
             go.Scatter(
                 x=[times[i] for i in mask],
@@ -198,7 +201,7 @@ def plot_data_management_telemetry_plotly(
                 mode="markers",
                 name=label,
                 marker=dict(color=color, size=6, opacity=0.7),
-                showlegend=_show,
+                showlegend=True,
                 legendgroup=label,
             ),
             row=5,
