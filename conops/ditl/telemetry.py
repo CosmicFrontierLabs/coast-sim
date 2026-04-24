@@ -125,6 +125,14 @@ class Housekeeping(BaseModel):
     radiator_heat_dissipation_w: float | None = Field(
         default=None, description="Total estimated radiator heat dissipation in watts"
     )
+    sun_body_vector: list[float] | None = Field(
+        default=None,
+        description="Unit vector toward the Sun in spacecraft body frame [x, y, z]",
+    )
+    earth_body_vector: list[float] | None = Field(
+        default=None,
+        description="Unit vector toward the Earth in spacecraft body frame [x, y, z]",
+    )
 
     @classmethod
     def extract_field(cls, records: list["Housekeeping"], field_name: str) -> list[Any]:
@@ -348,6 +356,16 @@ class HousekeepingList(list[Housekeeping]):
     def radiator_heat_dissipation_w(self) -> list[float | None]:
         """Get radiator heat dissipation estimates from all housekeeping records."""
         return [hk.radiator_heat_dissipation_w for hk in self]
+
+    @property
+    def sun_body_vector(self) -> list[list[float] | None]:
+        """Get Sun body-frame unit vectors from all housekeeping records."""
+        return [hk.sun_body_vector for hk in self]
+
+    @property
+    def earth_body_vector(self) -> list[list[float] | None]:
+        """Get Earth body-frame unit vectors from all housekeeping records."""
+        return [hk.earth_body_vector for hk in self]
 
 
 class Telemetry(BaseModel):

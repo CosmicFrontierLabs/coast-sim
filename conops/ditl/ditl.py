@@ -5,7 +5,7 @@ import rust_ephem
 
 from conops.targets.plan import Plan
 
-from ..common import angular_separation, dtutcfromtimestamp
+from ..common import angular_separation, dtutcfromtimestamp, radec2vec, scbodyvector
 from ..config import MissionConfig
 from .ditl_log import DITLLog
 from .ditl_mixin import DITLMixin
@@ -269,6 +269,12 @@ class DITL(DITLMixin, DITLStats):
                 radiator_sun_exposure=self.acs.radiator_sun_exposure,
                 radiator_earth_exposure=self.acs.radiator_earth_exposure,
                 radiator_heat_dissipation_w=self.acs.radiator_heat_dissipation_w,
+                sun_body_vector=self._compute_body_vector(
+                    self.utime[i], ra, dec, roll, "sun"
+                ),
+                earth_body_vector=self._compute_body_vector(
+                    self.utime[i], ra, dec, roll, "earth"
+                ),
             )
 
             # Check fault management thresholds and red limit constraints
@@ -326,6 +332,26 @@ class DITL(DITLMixin, DITLStats):
             return None
 
         return angular_separation(sun_ra, sun_dec, ra, dec)
+
+    def _compute_body_vector(
+        self, utime: float, ra: float, dec: float, roll: float, body: str
+    ) -> list[float] | None:
+        """Return unit vector toward *body* in spacecraft body frame [x, y, z]."""
+        if self.ephem is None:
+            return None
+        try:
+            idx = self.ephem.index(dtutcfromtimestamp(utime))
+            if body == "sun":
+                body_ra = float(self.ephem.sun_ra_deg[idx])
+                body_dec = float(self.ephem.sun_dec_deg[idx])
+            else:
+                body_ra = float(self.ephem.earth_ra_deg[idx])
+                body_dec = float(self.ephem.earth_dec_deg[idx])
+        except Exception:
+            return None
+        eci = radec2vec(np.radians(body_ra), np.radians(body_dec))
+        bv = scbodyvector(np.radians(ra), np.radians(dec), np.radians(roll), eci)
+        return [float(bv[0]), float(bv[1]), float(bv[2])]
 
 
 class DITLs:
