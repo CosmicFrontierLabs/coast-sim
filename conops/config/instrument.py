@@ -106,6 +106,7 @@ class Instrument(ConfigModel):
     """A spacecraft instrument with power consumption and data generation characteristics.
 
     Attributes:
+        instrument_type: Discriminator tag for polymorphic payload deserialization.
         name: Instrument name/identifier.
         power_draw: Power draw characteristics (nominal, peak, mode-specific).
         heater: Optional heater system.
@@ -158,6 +159,8 @@ class Telescope(Instrument):
     any other Instrument subclass.
 
     Attributes:
+        instrument_type: Discriminator tag for polymorphic payload deserialization.
+        name: Instrument name/identifier.
         optics: Optical configuration (aperture, focal length, f-number,
             design type, tube length).
         boresight: Unit vector in spacecraft body frame giving the telescope
@@ -168,6 +171,9 @@ class Telescope(Instrument):
             - +z — completes the right-handed frame
 
             Defaults to ``(1, 0, 0)`` (aligned with spacecraft boresight).
+        constraint: Optional pointing constraint in the telescope frame that is
+            transformed to the spacecraft body frame when evaluated.
+
 
     Example:
         >>> scope = Telescope(
