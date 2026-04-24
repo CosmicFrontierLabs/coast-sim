@@ -25,6 +25,32 @@ Instrument
    :show-inheritance:
    :special-members: __init__
 
+TelescopeType
+-------------
+
+.. autoclass:: conops.config.instrument.TelescopeType
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+TelescopeConfig
+---------------
+
+.. autoclass:: conops.config.instrument.TelescopeConfig
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+
+Telescope
+---------
+
+.. autoclass:: conops.config.instrument.Telescope
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+
 Payload
 -------
 

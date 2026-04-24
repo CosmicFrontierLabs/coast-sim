@@ -150,6 +150,10 @@ class Constraint(ConfigModel):
         default=None,
         description="Radiator hard exclusion constraint",
     )
+    telescope_hard_constraint: ConstraintConfig | None = Field(
+        default=None,
+        description="Telescope boresight-offset hard exclusion constraint",
+    )
 
     ephem: rust_ephem.Ephemeris | None = Field(
         default=None,
@@ -255,6 +259,7 @@ class Constraint(ConfigModel):
             self.star_tracker_hard_constraint,
             self.star_tracker_soft_constraint,
             self.radiator_hard_constraint,
+            self.telescope_hard_constraint,
         ]
         active_constraints = [
             component for component in constraint_components if component is not None
@@ -445,6 +450,21 @@ class Constraint(ConfigModel):
             target_roll=target_roll,
         )
 
+    def in_telescope_hard(
+        self, ra: float, dec: float, time: float, target_roll: float | None = None
+    ) -> bool:
+        if self.telescope_hard_constraint is None:
+            return False
+        assert self.ephem is not None, "Ephemeris must be set to use in_telescope_hard"
+        return self._cached_check(
+            "telescope_hard",
+            ra,
+            dec,
+            time,
+            self.telescope_hard_constraint,
+            target_roll=target_roll,
+        )
+
     def in_constraint(
         self,
         ra: float,
@@ -475,6 +495,8 @@ class Constraint(ConfigModel):
         ):
             return True
         if self.in_radiator_hard(ra, dec, utime, target_roll=target_roll):
+            return True
+        if self.in_telescope_hard(ra, dec, utime, target_roll=target_roll):
             return True
         return False
 
@@ -550,6 +572,7 @@ class Constraint(ConfigModel):
             self.star_tracker_hard_constraint,
             self.star_tracker_soft_constraint,
             self.radiator_hard_constraint,
+            self.telescope_hard_constraint,
         ]
         for constraint_func in constraint_types:
             if constraint_func is None:
@@ -625,5 +648,7 @@ class DefaultConstraint(Constraint):
         ):
             count += 2
         if self.in_radiator_hard(ra=ra, dec=dec, time=time, target_roll=target_roll):
+            count += 2
+        if self.in_telescope_hard(ra=ra, dec=dec, time=time, target_roll=target_roll):
             count += 2
         return count

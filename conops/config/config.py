@@ -4,6 +4,7 @@ from typing import Any
 
 import yaml
 from pydantic import Field, model_validator
+from rust_ephem.constraints import ConstraintConfig
 
 from ._base import ConfigModel
 from .battery import Battery
@@ -189,6 +190,13 @@ class MissionConfig(ConfigModel):
             )
         else:
             self.constraint.radiator_hard_constraint = None
+
+        telescope_constraint = self.payload.combined_telescope_spacecraft_constraint()
+        self.constraint.telescope_hard_constraint = (
+            telescope_constraint
+            if isinstance(telescope_constraint, ConstraintConfig)
+            else None
+        )
 
         self.constraint.invalidate_combined_constraint_cache()
         return self
