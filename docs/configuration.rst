@@ -544,7 +544,7 @@ The :class:`~conops.config.Payload` contains the science instruments.
 
 **Payload Attributes:**
 
-* ``instruments`` (list[Instrument]): List of instrument configurations
+* ``instruments`` (list[Instrument]): List of :class:`~conops.config.Instrument` (or subclass) instances
 
 **Instrument Attributes:**
 
@@ -560,7 +560,7 @@ The :class:`~conops.config.Payload` contains the science instruments.
    payload = Payload(
        instruments=[
            Instrument(
-               name="X-ray Telescope",
+               name="X-ray Detector",
                power_draw=PowerDraw(
                    nominal_power=100.0,
                    peak_power=150.0,
@@ -571,7 +571,7 @@ The :class:`~conops.config.Payload` contains the science instruments.
                ),
            ),
            Instrument(
-               name="Star Tracker",
+               name="Fine Guidance Sensor",
                power_draw=PowerDraw(nominal_power=15.0),
                data_generation=DataGeneration(
                    per_observation_gb=0.01,  # Fixed per observation
@@ -579,6 +579,127 @@ The :class:`~conops.config.Payload` contains the science instruments.
            ),
        ]
    )
+
+Telescope Instruments
+^^^^^^^^^^^^^^^^^^^^^
+
+:class:`~conops.config.Telescope` is a subclass of :class:`~conops.config.Instrument`
+that adds optical configuration via a nested :class:`~conops.config.TelescopeConfig`.
+A ``Telescope`` can be placed directly in ``Payload.instruments`` alongside any other
+``Instrument``.
+
+**Telescope Attributes** (in addition to Instrument fields):
+
+* ``optics`` (:class:`~conops.config.TelescopeConfig`): Optical configuration
+
+**TelescopeConfig Attributes:**
+
+* ``aperture_m`` (float | None): Clear aperture diameter in metres
+* ``focal_length_m`` (float | None): Effective focal length in metres
+* ``f_number`` (float | None): Focal ratio — auto-derived as ``focal_length_m / aperture_m``
+  when both are provided and ``f_number`` is omitted; validated for consistency when all
+  three are supplied
+* ``telescope_type`` (:class:`~conops.config.TelescopeType`): Optical design family
+* ``tube_length_m`` (float | None): Physical tube length in metres (useful for
+  folded or catadioptric designs where tube length differs from focal length)
+
+**TelescopeType values:**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Enum member
+     - Value
+   * - ``NEWTONIAN``
+     - ``"Newtonian"``
+   * - ``CASSEGRAIN``
+     - ``"Cassegrain"``
+   * - ``RITCHEY_CHRETIEN``
+     - ``"Ritchey-Chrétien"``
+   * - ``SCHMIDT_CASSEGRAIN``
+     - ``"Schmidt-Cassegrain"``
+   * - ``MAKSUTOV_CASSEGRAIN``
+     - ``"Maksutov-Cassegrain"``
+   * - ``KORSCH``
+     - ``"Korsch"``
+   * - ``GREGORIAN``
+     - ``"Gregorian"``
+   * - ``DALL_KIRKHAM``
+     - ``"Dall-Kirkham"``
+   * - ``TMA``
+     - ``"Three Mirror Anastigmat"``
+   * - ``REFRACTOR``
+     - ``"Refractor"``
+   * - ``OTHER``
+     - ``"Other"`` *(default)*
+
+``TelescopeConfig`` also exposes a read-only ``plate_scale_arcsec_per_um`` property
+(``206265 / focal_length_m_in_um``) for convenience, returning ``None`` when
+``focal_length_m`` is not set.
+
+.. code-block:: python
+
+   from conops.config import (
+       Payload,
+       Instrument,
+       Telescope,
+       TelescopeConfig,
+       TelescopeType,
+       PowerDraw,
+       DataGeneration,
+   )
+
+   # f_number is derived automatically from aperture and focal length
+   primary = Telescope(
+       name="Primary Telescope",
+       power_draw=PowerDraw(nominal_power=80.0, peak_power=120.0),
+       data_generation=DataGeneration(rate_gbps=0.5),
+       optics=TelescopeConfig(
+           aperture_m=0.6,
+           focal_length_m=6.0,             # f_number → 10.0 (auto-derived)
+           telescope_type=TelescopeType.RITCHEY_CHRETIEN,
+           tube_length_m=1.2,
+       ),
+   )
+
+   print(primary.optics.f_number)                     # 10.0
+   print(primary.optics.plate_scale_arcsec_per_um)    # ~3.44e-5 arcsec/µm
+
+   # Mix Telescope and plain Instrument in the same payload
+   payload = Payload(
+       instruments=[
+           primary,
+           Instrument(name="Fine Guidance Sensor", power_draw=PowerDraw(nominal_power=15.0)),
+       ]
+   )
+
+JSON Configuration
+^^^^^^^^^^^^^^^^^^
+
+``Telescope`` serialises cleanly to/from JSON. The ``optics`` block maps directly
+to the ``TelescopeConfig`` fields:
+
+.. code-block:: json
+
+   {
+     "payload": {
+       "instruments": [
+         {
+           "name": "Primary Telescope",
+           "power_draw": { "nominal_power": 80.0, "peak_power": 120.0, "power_mode": {} },
+           "data_generation": { "rate_gbps": 0.5, "per_observation_gb": 0.0 },
+           "optics": {
+             "aperture_m": 0.6,
+             "focal_length_m": 6.0,
+             "f_number": 10.0,
+             "telescope_type": "Ritchey-Chrétien",
+             "tube_length_m": 1.2
+           }
+         }
+       ]
+     }
+   }
 
 battery
 ~~~~~~~
@@ -1034,6 +1155,9 @@ For detailed API documentation, see:
 * :class:`~conops.config.SolarPanel`
 * :class:`~conops.config.Payload`
 * :class:`~conops.config.Instrument`
+* :class:`~conops.config.Telescope`
+* :class:`~conops.config.TelescopeConfig`
+* :class:`~conops.config.TelescopeType`
 * :class:`~conops.config.Battery`
 * :class:`~conops.config.Constraint`
 * :class:`~conops.config.GroundStationRegistry`
