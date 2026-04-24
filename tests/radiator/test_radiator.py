@@ -12,6 +12,7 @@ from conops.config import (
     RadiatorConfiguration,
     RadiatorOrientation,
 )
+from conops.config.geometry import PanelGeometry
 
 
 class TestRadiatorOrientation:
@@ -350,3 +351,153 @@ class TestRadiatorConfiguration:
         assert metrics["sun_exposure"] == pytest.approx(0.0)
         assert metrics["earth_exposure"] == pytest.approx(0.0)
         assert metrics["heat_dissipation_w"] == pytest.approx(10.0)
+
+
+class TestShadowedBy:
+    """Tests for the shadowed_by field — panel occlusion of radiator sun exposure."""
+
+    def _make_ephem(self) -> Mock:
+        ephem = Mock()
+        ephem.sun_ra_deg = [0.0]
+        ephem.sun_dec_deg = [0.0]
+        ephem.earth_ra_deg = [90.0]
+        ephem.earth_dec_deg = [0.0]
+        ephem.index = Mock(return_value=0)
+        return ephem
+
+    def _no_eclipse(self) -> Mock:
+        ec = Mock()
+        ec.in_constraint = Mock(return_value=False)
+        return ec
+
+    def test_shadowed_by_defaults_to_empty_list(self) -> None:
+        rad = Radiator()
+        assert rad.shadowed_by == []
+
+    def test_shadowed_by_round_trip(self) -> None:
+        rad = Radiator(shadowed_by=["SP1", "SP2"])
+        assert rad.shadowed_by == ["SP1", "SP2"]
+
+    def test_shadow_reduces_sun_exposure(self) -> None:
+        """When a named occluder panel fully covers the radiator, sun_exposure drops.
+
+        We patch scbodyvector so the sun body vector is +X — directly facing the
+        radiator normal — and use a large occluder that completely blocks it.
+        """
+        # Radiator: 2×2 in YZ plane at x=0, normal +X
+        rad_geom = PanelGeometry(
+            center_m=(0.0, 0.0, 0.0),
+            u=(0.0, 1.0, 0.0),
+            v=(0.0, 0.0, 1.0),
+            width_m=2.0,
+            height_m=2.0,
+        )
+        # Occluder: identical panel shifted in the +X direction so it can cast a shadow
+        panel_geom = PanelGeometry(
+            center_m=(1.0, 0.0, 0.0),
+            u=(0.0, 1.0, 0.0),
+            v=(0.0, 0.0, 1.0),
+            width_m=2.0,
+            height_m=2.0,
+        )
+        rad = Radiator(
+            name="R1",
+            orientation=RadiatorOrientation(normal=(1.0, 0.0, 0.0)),
+            geometry=rad_geom,
+            shadowed_by=["SP1"],
+            width_m=2.0,
+            height_m=2.0,
+        )
+        cfg = RadiatorConfiguration(radiators=[rad])
+
+        sun_body = np.array([1.0, 0.0, 0.0])  # directly faces +X radiator
+        earth_body = np.array([0.0, 0.0, -1.0])
+
+        with (
+            patch("conops.config.radiator._ECLIPSE_CONSTRAINT", self._no_eclipse()),
+            patch(
+                "conops.config.radiator.scbodyvector",
+                side_effect=[sun_body, earth_body, sun_body, earth_body],
+            ),
+        ):
+            metrics_no_shadow = cfg.exposure_metrics(
+                ra_deg=0.0,
+                dec_deg=0.0,
+                utime=1000.0,
+                ephem=self._make_ephem(),
+                roll_deg=0.0,
+                solar_panel_geometries=None,
+            )
+            metrics_shadowed = cfg.exposure_metrics(
+                ra_deg=0.0,
+                dec_deg=0.0,
+                utime=1000.0,
+                ephem=self._make_ephem(),
+                roll_deg=0.0,
+                solar_panel_geometries={"SP1": panel_geom},
+            )
+
+        assert isinstance(metrics_no_shadow["sun_exposure"], float)
+        assert isinstance(metrics_shadowed["sun_exposure"], float)
+        assert metrics_shadowed["sun_exposure"] < metrics_no_shadow["sun_exposure"]
+
+    def test_unknown_panel_name_in_shadowed_by_is_ignored(self) -> None:
+        """A panel name in shadowed_by that isn't in solar_panel_geometries is silently skipped."""
+        rad = Radiator(
+            name="R1",
+            orientation=RadiatorOrientation(normal=(1.0, 0.0, 0.0)),
+            shadowed_by=["MISSING_PANEL"],
+        )
+        cfg = RadiatorConfiguration(radiators=[rad])
+        # Provide an empty mapping — "MISSING_PANEL" won't be found, no error expected.
+        with patch("conops.config.radiator._ECLIPSE_CONSTRAINT", self._no_eclipse()):
+            metrics = cfg.exposure_metrics(
+                ra_deg=0.0,
+                dec_deg=0.0,
+                utime=1000.0,
+                ephem=self._make_ephem(),
+                roll_deg=0.0,
+                solar_panel_geometries={},
+            )
+        assert isinstance(metrics["sun_exposure"], float)
+
+    def test_shadow_not_applied_without_radiator_geometry(self) -> None:
+        """If the radiator has no geometry, shadowed_by has no effect on sun_exposure."""
+        panel_geom = PanelGeometry(
+            center_m=(0.0, 1.0, 0.0),
+            u=(1.0, 0.0, 0.0),
+            v=(0.0, 0.0, 1.0),
+            width_m=2.0,
+            height_m=2.0,
+        )
+        rad = Radiator(
+            name="R1",
+            orientation=RadiatorOrientation(normal=(0.0, 1.0, 0.0)),
+            geometry=None,
+            shadowed_by=["SP1"],
+            width_m=2.0,
+            height_m=2.0,
+        )
+        cfg = RadiatorConfiguration(radiators=[rad])
+
+        with patch("conops.config.radiator._ECLIPSE_CONSTRAINT", self._no_eclipse()):
+            metrics_with = cfg.exposure_metrics(
+                ra_deg=0.0,
+                dec_deg=0.0,
+                utime=1000.0,
+                ephem=self._make_ephem(),
+                roll_deg=0.0,
+                solar_panel_geometries={"SP1": panel_geom},
+            )
+            metrics_without = cfg.exposure_metrics(
+                ra_deg=0.0,
+                dec_deg=0.0,
+                utime=1000.0,
+                ephem=self._make_ephem(),
+                roll_deg=0.0,
+                solar_panel_geometries=None,
+            )
+
+        assert metrics_with["sun_exposure"] == pytest.approx(
+            metrics_without["sun_exposure"]
+        )

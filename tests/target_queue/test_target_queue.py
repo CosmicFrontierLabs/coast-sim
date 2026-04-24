@@ -306,3 +306,63 @@ class TestQueueSelectionBehavior:
             chosen = queue_instance.get(ra=0, dec=0, utime=utime)
 
         assert chosen == queue_instance.targets[1]
+
+    def test_zero_radiator_weights_use_fast_path(self, queue_instance):
+        """When both radiator weights are 0, exposure_metrics must not be called."""
+        utime = 1762924800.0
+        queue_instance.slew_distance_weight = 0.0
+        queue_instance.radiator_sun_exposure_weight = 0.0
+        queue_instance.radiator_earth_exposure_weight = 0.0
+
+        radiators = Mock()
+        radiators.num_radiators.return_value = 2
+        queue_instance.config.spacecraft_bus.radiators = radiators
+
+        with patch.object(queue_instance, "meritsort"):
+            queue_instance.get(ra=0, dec=0, utime=utime)
+
+        radiators.exposure_metrics.assert_not_called()
+
+    def test_earth_exposure_weight_influences_selection(self, queue_instance):
+        """Earth exposure weight should penalise targets with high earth exposure."""
+        utime = 1762924800.0
+        queue_instance.slew_distance_weight = 0.0
+        queue_instance.radiator_sun_exposure_weight = 0.0
+        queue_instance.radiator_earth_exposure_weight = 100.0
+
+        queue_instance.targets[0].merit = 100
+        queue_instance.targets[1].merit = 100
+        queue_instance.targets[0].ra = 0.0
+        queue_instance.targets[1].ra = 1.0
+
+        radiators = Mock()
+        radiators.num_radiators.return_value = 1
+
+        def _metrics(ra_deg, **kwargs):
+            if ra_deg == 0.0:
+                return {"sun_exposure": 0.0, "earth_exposure": 0.8}
+            return {"sun_exposure": 0.0, "earth_exposure": 0.1}
+
+        radiators.exposure_metrics.side_effect = _metrics
+        queue_instance.config.spacecraft_bus.radiators = radiators
+
+        with patch.object(queue_instance, "meritsort"):
+            chosen = queue_instance.get(ra=0, dec=0, utime=utime)
+
+        assert chosen == queue_instance.targets[1]
+
+    def test_radiator_scoring_skipped_when_no_radiators(self, queue_instance):
+        """When num_radiators() == 0, exposure_metrics should not be called."""
+        utime = 1762924800.0
+        queue_instance.slew_distance_weight = 0.0
+        queue_instance.radiator_sun_exposure_weight = 50.0
+        queue_instance.radiator_earth_exposure_weight = 50.0
+
+        radiators = Mock()
+        radiators.num_radiators.return_value = 0
+        queue_instance.config.spacecraft_bus.radiators = radiators
+
+        with patch.object(queue_instance, "meritsort"):
+            queue_instance.get(ra=0, dec=0, utime=utime)
+
+        radiators.exposure_metrics.assert_not_called()
