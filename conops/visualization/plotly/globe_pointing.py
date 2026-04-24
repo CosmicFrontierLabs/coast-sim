@@ -554,7 +554,9 @@ def plot_sky_pointing_globe(
     # Radiator hard constraint exclusion-zone circle traces
     n_st_specs = len(cc.st_constraint_specs)
     _rad_base = (
-        10 + n_trackers + n_st_specs
+        10
+        + n_trackers
+        + n_st_specs
         + (3 if cc.orbit_constraint is not None else 0)
         + (3 if cc.anti_sun_constraint_cfg is not None else 0)
         + (2 if cc.panel_constraint_cfg is not None else 0)
