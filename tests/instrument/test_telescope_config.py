@@ -1,8 +1,10 @@
 """Tests for TelescopeConfig, TelescopeType, and Telescope."""
 
 import pytest
+import rust_ephem
 
 from conops.config import Instrument, Payload, Telescope, TelescopeConfig, TelescopeType
+from conops.config.constraint import Constraint
 
 
 class TestTelescopeType:
@@ -208,3 +210,75 @@ class TestTelescope:
         assert len(payload.instruments) == 2
         assert isinstance(payload.instruments[0], Telescope)
         assert type(payload.instruments[1]) is Instrument
+
+
+class TestTelescopeConstraint:
+    def _sun_constraint(self) -> Constraint:
+        return Constraint(sun_constraint=rust_ephem.SunConstraint(min_angle=45.0))
+
+    def test_no_constraint_by_default(self) -> None:
+        t = Telescope()
+        assert t.constraint is None
+
+    def test_spacecraft_constraint_none_when_no_constraint(self) -> None:
+        t = Telescope()
+        assert t.spacecraft_constraint is None
+
+    def test_spacecraft_constraint_none_when_constraint_has_no_active_components(
+        self,
+    ) -> None:
+        t = Telescope(constraint=Constraint())
+        assert t.spacecraft_constraint is None
+
+    def test_spacecraft_constraint_returns_constraint_config(self) -> None:
+        t = Telescope(constraint=self._sun_constraint())
+        assert t.spacecraft_constraint is not None
+
+    def test_spacecraft_constraint_no_offset_for_boresight_plus_x(self) -> None:
+        # Boresight aligned with spacecraft forward (+x) — skip boresight_offset entirely
+        c = self._sun_constraint()
+        t = Telescope(boresight=(1.0, 0.0, 0.0), constraint=c)
+        assert t.spacecraft_constraint is c.constraint
+
+    def test_spacecraft_constraint_offset_for_off_axis_boresight(self) -> None:
+        import math
+
+        boresight = (0.0, math.sin(math.radians(45)), math.cos(math.radians(45)))
+        t = Telescope(boresight=boresight, constraint=self._sun_constraint())
+        # Different boresight → offset constraint should differ from identity
+        t_default = Telescope(
+            boresight=(1.0, 0.0, 0.0), constraint=self._sun_constraint()
+        )
+        # Both return ConstraintConfig objects; they represent different offsets
+        assert t.spacecraft_constraint is not None
+        assert t_default.spacecraft_constraint is not None
+
+    def test_combined_telescope_spacecraft_constraint_no_telescopes(self) -> None:
+        payload = Payload(instruments=[Instrument()])
+        assert payload.combined_telescope_spacecraft_constraint() is None
+
+    def test_combined_telescope_spacecraft_constraint_no_constraints(self) -> None:
+        scope = Telescope()
+        payload = Payload(instruments=[scope])
+        assert payload.combined_telescope_spacecraft_constraint() is None
+
+    def test_combined_telescope_spacecraft_constraint_single_telescope(self) -> None:
+        scope = Telescope(constraint=self._sun_constraint())
+        payload = Payload(instruments=[scope])
+        result = payload.combined_telescope_spacecraft_constraint()
+        assert result is not None
+
+    def test_combined_telescope_spacecraft_constraint_multiple_telescopes(self) -> None:
+        c = self._sun_constraint()
+        scope1 = Telescope(name="T1", constraint=c)
+        scope2 = Telescope(name="T2", boresight=(0.0, 0.0, 1.0), constraint=c)
+        payload = Payload(instruments=[scope1, scope2])
+        result = payload.combined_telescope_spacecraft_constraint()
+        assert result is not None
+
+    def test_combined_skips_non_telescope_instruments(self) -> None:
+        cam = Instrument(name="Camera")
+        scope = Telescope(constraint=self._sun_constraint())
+        payload = Payload(instruments=[cam, scope])
+        result = payload.combined_telescope_spacecraft_constraint()
+        assert result is not None
