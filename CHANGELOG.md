@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.3.0...v0.4.0) (2026-04-24)
+
+
+### Features
+
+* add radiator support ([#107](https://github.com/CosmicFrontierLabs/coast-sim/issues/107)) ([7c8b8a4](https://github.com/CosmicFrontierLabs/coast-sim/commit/7c8b8a4ef3950a090c8110efd5d5d263c6675a78))
+* add support for Telescope definition in payload ([#121](https://github.com/CosmicFrontierLabs/coast-sim/issues/121)) ([172d6f5](https://github.com/CosmicFrontierLabs/coast-sim/commit/172d6f534d37c24ead5df09e292f8551f3722f2c))
+
+
+### Bug Fixes
+
+* plotly visualization updates ([#114](https://github.com/CosmicFrontierLabs/coast-sim/issues/114)) ([3dd6f67](https://github.com/CosmicFrontierLabs/coast-sim/commit/3dd6f67f63c7c4818fed10f822ab437f73fec7c8))
+
 ## [0.3.0](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.2.2...v0.3.0) (2026-04-14)
 
 
