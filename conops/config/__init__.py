@@ -16,10 +16,17 @@ from .fault_management import (
     FaultState,
     FaultThreshold,
 )
+from .geometry import PanelGeometry, compute_shadow_fraction
 from .groundstation import GroundStation, GroundStationRegistry
 from .instrument import Instrument, Payload
 from .observation_categories import ObservationCategories, ObservationCategory
 from .power import PowerDraw
+from .radiator import (
+    DefaultRadiatorConfiguration,
+    Radiator,
+    RadiatorConfiguration,
+    RadiatorOrientation,
+)
 from .recorder import OnboardRecorder
 from .solar_panel import SolarPanel, SolarPanelSet, create_solar_panel_vector
 from .spacecraft_bus import SpacecraftBus
@@ -58,6 +65,12 @@ __all__ = [
     "OnboardRecorder",
     "Payload",
     "PowerDraw",
+    "PanelGeometry",
+    "compute_shadow_fraction",
+    "Radiator",
+    "RadiatorConfiguration",
+    "DefaultRadiatorConfiguration",
+    "RadiatorOrientation",
     "SolarPanel",
     "SolarPanelSet",
     "SpacecraftBus",

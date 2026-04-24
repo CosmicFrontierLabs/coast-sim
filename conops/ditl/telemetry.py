@@ -113,6 +113,26 @@ class Housekeeping(BaseModel):
             "None while a pass is in progress or before the first fetch attempt."
         ),
     )
+    radiator_hard_violations: int | None = Field(
+        default=None, description="Number of radiators violating hard constraints"
+    )
+    radiator_sun_exposure: float | None = Field(
+        default=None, description="Area-weighted radiator sun exposure (0-1)"
+    )
+    radiator_earth_exposure: float | None = Field(
+        default=None, description="Area-weighted radiator earth exposure (0-1)"
+    )
+    radiator_heat_dissipation_w: float | None = Field(
+        default=None, description="Total estimated radiator heat dissipation in watts"
+    )
+    sun_body_vector: list[float] | None = Field(
+        default=None,
+        description="Unit vector toward the Sun in spacecraft body frame [x, y, z]",
+    )
+    earth_body_vector: list[float] | None = Field(
+        default=None,
+        description="Unit vector toward the Earth in spacecraft body frame [x, y, z]",
+    )
 
     @classmethod
     def extract_field(cls, records: list["Housekeeping"], field_name: str) -> list[Any]:
@@ -316,6 +336,36 @@ class HousekeepingList(list[Housekeeping]):
     def in_constraint(self) -> list[str | None]:
         """Get violated constraint names from all housekeeping records."""
         return [hk.in_constraint for hk in self]
+
+    @property
+    def radiator_hard_violations(self) -> list[int | None]:
+        """Get radiator hard violation counts from all housekeeping records."""
+        return [hk.radiator_hard_violations for hk in self]
+
+    @property
+    def radiator_sun_exposure(self) -> list[float | None]:
+        """Get radiator sun exposure from all housekeeping records."""
+        return [hk.radiator_sun_exposure for hk in self]
+
+    @property
+    def radiator_earth_exposure(self) -> list[float | None]:
+        """Get radiator earth exposure from all housekeeping records."""
+        return [hk.radiator_earth_exposure for hk in self]
+
+    @property
+    def radiator_heat_dissipation_w(self) -> list[float | None]:
+        """Get radiator heat dissipation estimates from all housekeeping records."""
+        return [hk.radiator_heat_dissipation_w for hk in self]
+
+    @property
+    def sun_body_vector(self) -> list[list[float] | None]:
+        """Get Sun body-frame unit vectors from all housekeeping records."""
+        return [hk.sun_body_vector for hk in self]
+
+    @property
+    def earth_body_vector(self) -> list[list[float] | None]:
+        """Get Earth body-frame unit vectors from all housekeeping records."""
+        return [hk.earth_body_vector for hk in self]
 
 
 class Telemetry(BaseModel):

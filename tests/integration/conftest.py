@@ -101,6 +101,8 @@ def test_config_with_panels(mock_ephem_with_pv: Mock) -> tuple[Mock, SolarPanelS
     config.spacecraft_bus.attitude_control = Mock()
     config.spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))
     config.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
+    config.spacecraft_bus.radiators = Mock()
+    config.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
 
     return config, panel_set
 

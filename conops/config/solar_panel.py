@@ -9,6 +9,7 @@ from pydantic import Field, PrivateAttr
 from ..common import dtutcfromtimestamp
 from ..common.vector import vecnorm
 from ._base import ConfigModel
+from .geometry import PanelGeometry
 
 
 def get_ephemeris_indices(
@@ -72,6 +73,13 @@ class SolarPanel(ConfigModel):
     conversion_efficiency: float | None = Field(
         default=None,
         description="Optional per-panel efficiency (uses array-level if not specified)",
+    )
+    geometry: PanelGeometry | None = Field(
+        default=None,
+        description=(
+            "Optional 3D geometry for shadow computation. "
+            "When set, this panel can cast shadows onto radiators that list its name in shadowed_by."
+        ),
     )
 
     def panel_illumination_fraction(

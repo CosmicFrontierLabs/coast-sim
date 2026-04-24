@@ -161,6 +161,10 @@ def queue_ditl(mock_config: Mock, mock_ephem: DummyEphemeris) -> QueueDITL:
             star_tracker_hard_violations=0,
             star_tracker_soft_violations=False,
             star_tracker_functional_count=3,  # Assume 3 functional star trackers by default
+            radiator_hard_violations=0,
+            radiator_sun_exposure=0.0,
+            radiator_earth_exposure=0.0,
+            radiator_heat_dissipation_w=0.0,
         )
         # Mock the helper methods used in _fetch_new_ppt
         mock_target_request = Mock()

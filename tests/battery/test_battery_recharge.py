@@ -526,7 +526,7 @@ class TestEmergencyCharging:
         sun_dec = 45.0
         utime = 1700000000.0
 
-        def mock_in_constraint(ra, dec, utime, hardonly=True):
+        def mock_in_constraint(ra, dec, utime, hardonly=True, target_roll=None):
             return ra <= 180.0
 
         emergency_charging.constraint.in_constraint = mock_in_constraint
@@ -545,7 +545,7 @@ class TestEmergencyCharging:
         sun_dec = 45.0
         utime = 1700000000.0
 
-        def mock_in_constraint(ra, dec, utime, hardonly=True):
+        def mock_in_constraint(ra, dec, utime, hardonly=True, target_roll=None):
             return ra <= 180.0
 
         emergency_charging.constraint.in_constraint = mock_in_constraint
@@ -564,7 +564,7 @@ class TestEmergencyCharging:
         sun_dec = 45.0
         utime = 1700000000.0
 
-        def mock_in_constraint(ra, dec, utime, hardonly=True):
+        def mock_in_constraint(ra, dec, utime, hardonly=True, target_roll=None):
             return ra <= 180.0
 
         emergency_charging.constraint.in_constraint = mock_in_constraint
@@ -583,7 +583,7 @@ class TestEmergencyCharging:
         sun_dec = 45.0
         utime = 1700000000.0
 
-        def mock_in_constraint(ra, dec, utime, hardonly=True):
+        def mock_in_constraint(ra, dec, utime, hardonly=True, target_roll=None):
             return ra <= 180.0
 
         emergency_charging.constraint.in_constraint = mock_in_constraint

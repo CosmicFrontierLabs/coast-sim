@@ -145,6 +145,7 @@ The :class:`~conops.config.SpacecraftBus` defines the spacecraft bus subsystems.
 * ``heater`` (:class:`~conops.config.Heater`): Optional thermal heater
 * ``data_generation`` (:class:`~conops.config.DataGeneration`): Bus-level data generation
 * ``star_trackers`` (:class:`~conops.config.StarTrackerConfiguration`): Optional star tracker configuration
+* ``radiators`` (:class:`~conops.config.RadiatorConfiguration`): Optional body-mounted radiator configuration
 
 .. code-block:: python
 
@@ -410,6 +411,131 @@ only affect pointing validity in modes listed in ``StarTrackerConfiguration.mode
 When star trackers are configured, ``MissionConfig.init_fault_management_defaults()`` automatically adds
 a ``star_tracker_functional_count`` threshold (``direction="below"``, both yellow and red set to
 ``num_trackers - 1``) so that any hard violation immediately triggers a RED fault alert.
+
+radiators
+~~~~~~~~~
+
+The :class:`~conops.config.RadiatorConfiguration` models body-mounted radiators used
+for thermal rejection.
+
+Radiators in COASTSim have:
+
+* Hard keep-out constraints (optional) for invalid orientations.
+* Continuous Sun/Earth exposure metrics.
+* A first-order net heat-flow estimate used for optimization and analysis.
+
+Unlike star trackers, radiators do **not** use soft constraints or functional-count
+logic. A radiator always exists physically; geometry changes its net thermal behavior.
+
+**RadiatorConfiguration Attributes:**
+
+* ``radiators`` (list[Radiator]): Individual radiator panels
+
+**Radiator Attributes:**
+
+* ``name`` (str): Radiator identifier
+* ``width_m`` (float): Radiator width in meters
+* ``height_m`` (float): Radiator height in meters
+* ``orientation`` (:class:`~conops.config.RadiatorOrientation`): Outward radiator normal in spacecraft body frame
+* ``subsystem`` (str): Subsystem served by radiator (for example ``"payload"`` or ``"spacecraft_bus"``)
+* ``efficiency`` (float): Thermal efficiency factor [0, 1]
+* ``emissivity`` (float): Surface emissivity [0, 1]
+* ``absorptivity`` (float): Effective absorptivity [0, 1]
+* ``radiator_temperature_k`` (float): Representative radiator temperature in Kelvin
+* ``sink_temperature_k`` (float): Thermal sink/background temperature in Kelvin
+* ``solar_constant_w_per_m2`` (float): Solar constant term (W/m²), default 1361
+* ``earth_ir_flux_w_per_m2`` (float): Earth IR loading term (W/m²), default 237
+* ``dissipation_coefficient_w_per_m2`` (float): Emitted flux cap for model calibration/backward compatibility
+* ``sun_loading_factor`` (float): Weighting factor applied to Sun exposure term
+* ``earth_loading_factor`` (float): Weighting factor applied to Earth exposure term
+* ``hard_constraint`` (optional): Keep-out constraint for invalid radiator pointing
+
+**RadiatorOrientation Attributes:**
+
+* ``normal`` (tuple[float, float, float]): Unit vector in spacecraft body frame
+
+  - +x is spacecraft forward/boresight
+  - +y is spacecraft "up"
+  - +z completes right-handed frame
+
+**Example:**
+
+.. code-block:: python
+
+   import rust_ephem
+   from conops.config import (
+       MissionConfig,
+       Radiator,
+       RadiatorConfiguration,
+       RadiatorOrientation,
+   )
+
+   config = MissionConfig()
+
+   bus_radiator = Radiator(
+       name="BusRad+Y",
+       width_m=1.2,
+       height_m=0.8,
+       orientation=RadiatorOrientation(normal=(0.0, 1.0, 0.0)),
+       subsystem="spacecraft_bus",
+       efficiency=0.9,
+       emissivity=0.85,
+       absorptivity=0.2,
+       radiator_temperature_k=300.0,
+       sink_temperature_k=3.0,
+       solar_constant_w_per_m2=1361.0,
+       earth_ir_flux_w_per_m2=237.0,
+       dissipation_coefficient_w_per_m2=220.0,
+       sun_loading_factor=0.7,
+       earth_loading_factor=0.3,
+       hard_constraint=rust_ephem.SunConstraint(min_angle=20.0),
+   )
+
+   payload_radiator = Radiator(
+       name="PayloadRad-X",
+       width_m=0.6,
+       height_m=0.6,
+       orientation=RadiatorOrientation(normal=(-1.0, 0.0, 0.0)),
+       subsystem="payload",
+   )
+
+   config.spacecraft_bus.radiators = RadiatorConfiguration(
+       radiators=[bus_radiator, payload_radiator]
+   )
+
+Scheduler Optimization Weights
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Queue scheduling can penalize radiator exposure using target-selection weights:
+
+* ``config.targets.radiator_sun_exposure_weight``
+* ``config.targets.radiator_earth_exposure_weight``
+
+Higher values steer scheduling away from pointings that increase thermal loading on
+radiators. These are merit penalties, so tune relative to your target merit scale.
+
+Radiator Net Heat Model
+^^^^^^^^^^^^^^^^^^^^^^^
+
+COASTSim uses a first-order net-radiative model for each radiator:
+
+.. math::
+
+    Q_{net} = A\,\eta\,[\min(\epsilon\sigma(T_r^4 - T_s^4), C_d) - \alpha(S_0 f_{sun}E_{sun} + F_{earth} f_{earth}E_{earth})]
+
+Where:
+
+* :math:`S_0` is ``solar_constant_w_per_m2``
+* :math:`F_{earth}` is ``earth_ir_flux_w_per_m2``
+* :math:`E_{sun}, E_{earth}` are geometric exposure factors in [0, 1]
+* :math:`f_{sun}, f_{earth}` are loading weights
+* :math:`\alpha` is ``absorptivity`` and :math:`\epsilon` is ``emissivity``
+* :math:`C_d` is ``dissipation_coefficient_w_per_m2`` (emission cap)
+* :math:`\sigma` is the Stefan-Boltzmann constant
+* :math:`A` is radiator area and :math:`\eta` is ``efficiency``
+
+Positive :math:`Q_{net}` means net heat rejection (dumping heat).
+Negative :math:`Q_{net}` means net absorbed external radiative load.
 
 payload
 ~~~~~~~

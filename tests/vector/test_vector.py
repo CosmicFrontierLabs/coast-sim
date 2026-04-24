@@ -9,6 +9,7 @@ from conops import (
     scbodyvector,
     separation,
 )
+from conops.common.vector import normal_to_euler_deg
 
 
 class TestRadec2vec:
@@ -181,3 +182,29 @@ class TestRollOverAngle:
         diff2 = result2[2] - result2[1]
         assert abs(diff1) < 180, f"Expected short path for step 1, got {diff1}°"
         assert abs(diff2) < 180, f"Expected short path for step 2, got {diff2}°"
+
+
+class TestNormalToEulerDeg:
+    def test_normal_to_euler_plus_y(self) -> None:
+        roll, pitch, yaw = normal_to_euler_deg((0.0, 1.0, 0.0))
+        assert roll == pytest.approx(0.0)
+        assert pitch == pytest.approx(0.0)
+        assert yaw == pytest.approx(90.0)
+
+    def test_normal_to_euler_plus_z(self) -> None:
+        roll, pitch, yaw = normal_to_euler_deg((0.0, 0.0, 1.0))
+        assert roll == pytest.approx(0.0)
+        assert pitch == pytest.approx(90.0)
+        assert yaw == pytest.approx(0.0)
+
+    def test_normal_to_euler_minus_z(self) -> None:
+        roll, pitch, yaw = normal_to_euler_deg((0.0, 0.0, -1.0))
+        assert roll == pytest.approx(0.0)
+        assert pitch == pytest.approx(-90.0)
+        assert yaw == pytest.approx(0.0)
+
+    def test_normal_to_euler_normalizes_input(self) -> None:
+        roll, pitch, yaw = normal_to_euler_deg(np.array([0.0, 2.0, 0.0]))
+        assert roll == pytest.approx(0.0)
+        assert pitch == pytest.approx(0.0)
+        assert yaw == pytest.approx(90.0)

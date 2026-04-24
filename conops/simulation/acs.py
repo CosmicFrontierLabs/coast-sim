@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import rust_ephem
 
@@ -50,6 +50,10 @@ class ACS:
     star_tracker_soft_violations: bool
     star_tracker_functional_count: int
     star_tracker_status: list[bool]
+    radiator_hard_violations: int
+    radiator_sun_exposure: float
+    radiator_earth_exposure: float
+    radiator_heat_dissipation_w: float
 
     def __init__(self, config: MissionConfig, log: "DITLLog | None" = None) -> None:
         """Initialize the Attitude Control System.
@@ -93,6 +97,10 @@ class ACS:
         self.star_tracker_soft_violations = False
         self.star_tracker_functional_count = 0
         self.star_tracker_status: list[bool] = []
+        self.radiator_hard_violations = 0
+        self.radiator_sun_exposure = 0.0
+        self.radiator_earth_exposure = 0.0
+        self.radiator_heat_dissipation_w = 0.0
 
         # Command queue (sorted by execution_time)
         self.command_queue = []
@@ -650,6 +658,7 @@ class ACS:
 
         # Check star tracker constraints
         self._check_star_tracker_constraints(utime)
+        self._check_radiator_constraints(utime)
 
     def _check_star_tracker_constraints(self, utime: float) -> None:
         """Check and log star tracker constraint violations for current pointing.
@@ -747,6 +756,55 @@ class ACS:
                 "STAR_TRACKER_SOFT_CONSTRAINT",
                 f"STAR_TRACKER: SOFT_CONSTRAINT: RA={current_ra:.3f}° Dec={current_dec:.3f}° "
                 f"roll={current_roll:.3f}° - Degraded star tracker performance",
+            )
+
+    def _check_radiator_constraints(self, utime: float) -> None:
+        """Check radiator constraints and compute Sun/Earth exposure metrics."""
+        radiators = self.config.spacecraft_bus.radiators
+
+        if radiators.num_radiators() == 0:
+            return
+
+        current_ra = self.ra
+        current_dec = self.dec
+        current_roll = self.roll
+
+        # Build solar panel geometry lookup so radiators can compute shadow fractions.
+        solar_panel_geometries = None
+        if self.config.solar_panel is not None:
+            geom_map = {
+                p.name: p.geometry
+                for p in self.config.solar_panel.panels
+                if p.geometry is not None
+            }
+            if geom_map:
+                solar_panel_geometries = geom_map
+
+        metrics = radiators.exposure_metrics(
+            ra_deg=current_ra,
+            dec_deg=current_dec,
+            utime=utime,
+            ephem=self.ephem,
+            roll_deg=current_roll,
+            solar_panel_geometries=solar_panel_geometries,
+        )
+
+        per_radiator = cast(
+            list[dict[str, float | str | bool]], metrics["per_radiator"]
+        )
+        self.radiator_hard_violations = sum(
+            1 for r in per_radiator if bool(r.get("hard_violation"))
+        )
+        self.radiator_sun_exposure = cast(float, metrics["sun_exposure"])
+        self.radiator_earth_exposure = cast(float, metrics["earth_exposure"])
+        self.radiator_heat_dissipation_w = cast(float, metrics["heat_dissipation_w"])
+
+        if self.radiator_hard_violations > 0:
+            self._log_or_print(
+                utime,
+                "RADIATOR_HARD_CONSTRAINT",
+                f"RADIATOR: HARD_CONSTRAINT: RA={current_ra:.3f}° Dec={current_dec:.3f}° "
+                f"roll={current_roll:.3f}° violations={self.radiator_hard_violations}",
             )
 
     def _calculate_pointing(self, utime: float) -> None:

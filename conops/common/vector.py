@@ -174,3 +174,19 @@ def vec2radec(v: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     ra = np.arctan2(v[1], v[0]) % (2 * np.pi)
 
     return np.array([ra, dec])
+
+
+def normal_to_euler_deg(
+    normal: tuple[float, float, float] | npt.NDArray[np.float64],
+) -> tuple[float, float, float]:
+    """Convert a body-frame normal vector to (roll, pitch, yaw) in degrees.
+
+    The mapping is equivalent to the prior radiator-local helper:
+    - roll is fixed at 0 deg
+    - pitch = atan2(z, hypot(x, y))
+    - yaw = atan2(y, x)
+    """
+    x, y, z = vecnorm(np.asarray(normal, dtype=np.float64))
+    yaw_deg = float(np.rad2deg(np.arctan2(y, x)))
+    pitch_deg = float(np.rad2deg(np.arctan2(z, np.hypot(x, y))))
+    return 0.0, pitch_deg, yaw_deg

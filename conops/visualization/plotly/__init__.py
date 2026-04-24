@@ -11,6 +11,7 @@ from .fault_management import (
     plot_fault_management_timeline_plotly,
 )
 from .globe_pointing import plot_sky_pointing_globe
+from .radiator_telemetry import plot_radiator_telemetry_plotly
 from .sky_pointing import (
     plot_sky_pointing_plotly,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "plot_fault_management_timeline_plotly",
     "plot_sky_pointing_plotly",
     "plot_ditl_telemetry_plotly",
+    "plot_radiator_telemetry_plotly",
     "plot_ditl_timeline_plotly",
     "annotate_slew_distances",
     "plot_data_management_telemetry_plotly",

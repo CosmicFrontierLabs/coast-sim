@@ -10,6 +10,8 @@ from ..common import (
     ObsType,
     angular_separation,
     dtutcfromtimestamp,
+    radec2vec,
+    scbodyvector,
     unixtime2date,
 )
 from ..common.enums import ACSCommandType
@@ -533,6 +535,24 @@ class QueueDITL(DITLMixin, DITLStats):
             else None
         )
 
+        ei = self.ephem.index(dtutcfromtimestamp(utime))
+        _sun_bv = scbodyvector(
+            np.radians(ra),
+            np.radians(dec),
+            np.radians(roll),
+            radec2vec(
+                np.radians(float(self.ephem.sun_ra_deg[ei])),
+                np.radians(float(self.ephem.sun_dec_deg[ei])),
+            ),
+        )
+        sun_body_vector: list[float] = [
+            float(_sun_bv[0]),
+            float(_sun_bv[1]),
+            float(_sun_bv[2]),
+        ]
+        _pos = np.asarray(self.ephem.gcrs_pv.position[ei], dtype=np.float64)
+        earth_body_vector: list[float] = list(-_pos / np.linalg.norm(_pos))
+
         return Housekeeping(
             timestamp=datetime.fromtimestamp(utime, tz=timezone.utc),
             ra=ra,
@@ -569,6 +589,12 @@ class QueueDITL(DITLMixin, DITLStats):
             ),
             in_constraint=in_constraint_name,
             ppt_unavailable=self._ppt_unavailable,
+            radiator_hard_violations=self.acs.radiator_hard_violations,
+            radiator_sun_exposure=self.acs.radiator_sun_exposure,
+            radiator_earth_exposure=self.acs.radiator_earth_exposure,
+            radiator_heat_dissipation_w=self.acs.radiator_heat_dissipation_w,
+            sun_body_vector=sun_body_vector,
+            earth_body_vector=earth_body_vector,
         )
 
     def _track_ppt_in_timeline(self) -> None:
@@ -1004,7 +1030,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
             # Check if target is visible
             visstart = self.ppt.next_vis(utime)
-            if not visstart and slew.obstype == "PPT":
+            if not visstart and slew.obstype == ObsType.PPT:
                 self.log.log_event(
                     utime=utime,
                     event_type="SLEW",
@@ -1040,7 +1066,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 )
 
             # Wait for target visibility if constrained
-            if visstart and visstart > execution_time and slew.obstype == "PPT":
+            if visstart and visstart > execution_time and slew.obstype == ObsType.PPT:
                 self.log.log_event(
                     utime=utime,
                     event_type="SLEW",

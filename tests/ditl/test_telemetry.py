@@ -164,7 +164,10 @@ class TestTelemetry:
         hk = Housekeeping(
             timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc), ra=45.0
         )
-        pd = PayloadData(timestamp=1234567890.0, data_size_gb=1.5)
+        pd = PayloadData(
+            timestamp=datetime.fromtimestamp(1234567890.0, tz=timezone.utc),
+            data_size_gb=1.5,
+        )
         tm = Telemetry(housekeeping=HousekeepingList([hk]), data=[pd])
         assert len(tm.housekeeping) == 1
         assert len(tm.data) == 1
@@ -186,7 +189,12 @@ class TestTelemetry:
                 )
             ]
         )
-        tm.data = [PayloadData(timestamp=1234567890.0, data_size_gb=1.5)]
+        tm.data = [
+            PayloadData(
+                timestamp=datetime.fromtimestamp(1234567890.0, tz=timezone.utc),
+                data_size_gb=1.5,
+            )
+        ]
         assert isinstance(tm.housekeeping, HousekeepingList)
         assert isinstance(tm.data, list)
         assert tm.housekeeping.ra == [45.0]
@@ -203,6 +211,9 @@ class TestTelemetry:
             sun_angle_deg=10.0,
             for_solid_angle_sr=3.1,
             in_eclipse=False,
+            radiator_sun_exposure=0.2,
+            radiator_earth_exposure=0.4,
+            radiator_heat_dissipation_w=120.0,
         )
         hk2 = Housekeeping(
             timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
@@ -212,6 +223,9 @@ class TestTelemetry:
             sun_angle_deg=20.0,
             for_solid_angle_sr=2.8,
             in_eclipse=True,
+            radiator_sun_exposure=0.1,
+            radiator_earth_exposure=0.3,
+            radiator_heat_dissipation_w=150.0,
         )
         tm = Telemetry(housekeeping=HousekeepingList([hk1, hk2]))
 
@@ -221,6 +235,9 @@ class TestTelemetry:
         assert tm.housekeeping.sun_angle_deg == [10.0, 20.0]
         assert tm.housekeeping.for_solid_angle_sr == [3.1, 2.8]
         assert tm.housekeeping.in_eclipse == [False, True]
+        assert tm.housekeeping.radiator_sun_exposure == [0.2, 0.1]
+        assert tm.housekeeping.radiator_earth_exposure == [0.4, 0.3]
+        assert tm.housekeeping.radiator_heat_dissipation_w == [120.0, 150.0]
 
 
 class TestHousekeepingNewFields:
@@ -335,3 +352,60 @@ class TestHousekeepingNewFields:
         """Test that model config is properly set."""
         tm = Telemetry()
         assert tm.model_config["arbitrary_types_allowed"] is True
+
+
+class TestBodyVectorFields:
+    """Tests for sun_body_vector and earth_body_vector fields added in PR #107."""
+
+    def _ts(self) -> datetime:
+        return datetime.fromtimestamp(1000.0, tz=timezone.utc)
+
+    def test_body_vectors_default_to_none(self) -> None:
+        hk = Housekeeping(timestamp=self._ts())
+        assert hk.sun_body_vector is None
+        assert hk.earth_body_vector is None
+
+    def test_body_vectors_round_trip(self) -> None:
+        sbv = [0.707, 0.0, 0.707]
+        ebv = [0.0, -1.0, 0.0]
+        hk = Housekeeping(
+            timestamp=self._ts(),
+            sun_body_vector=sbv,
+            earth_body_vector=ebv,
+        )
+        assert hk.sun_body_vector == pytest.approx(sbv)
+        assert hk.earth_body_vector == pytest.approx(ebv)
+
+    def test_housekeeping_list_sun_body_vector_property(self) -> None:
+        sbv1 = [1.0, 0.0, 0.0]
+        sbv2 = [0.0, 1.0, 0.0]
+        hk1 = Housekeeping(timestamp=self._ts(), sun_body_vector=sbv1)
+        hk2 = Housekeeping(timestamp=self._ts(), sun_body_vector=sbv2)
+        hkl = HousekeepingList([hk1, hk2])
+        assert hkl.sun_body_vector == [sbv1, sbv2]
+
+    def test_housekeeping_list_earth_body_vector_property(self) -> None:
+        ebv1 = [0.0, 0.0, -1.0]
+        ebv2 = None
+        hk1 = Housekeeping(timestamp=self._ts(), earth_body_vector=ebv1)
+        hk2 = Housekeeping(timestamp=self._ts(), earth_body_vector=ebv2)
+        hkl = HousekeepingList([hk1, hk2])
+        assert hkl.earth_body_vector == [ebv1, None]
+
+    def test_extract_field_sun_body_vector(self) -> None:
+        sbv = [0.5, 0.5, 0.707]
+        hk = Housekeeping(timestamp=self._ts(), sun_body_vector=sbv)
+        result = Housekeeping.extract_field([hk], "sun_body_vector")
+        assert result == [sbv]
+
+    def test_telemetry_body_vectors_accessible(self) -> None:
+        sbv = [1.0, 0.0, 0.0]
+        ebv = [-1.0, 0.0, 0.0]
+        hk = Housekeeping(
+            timestamp=self._ts(),
+            sun_body_vector=sbv,
+            earth_body_vector=ebv,
+        )
+        tm = Telemetry(housekeeping=HousekeepingList([hk]))
+        assert tm.housekeeping.sun_body_vector == [sbv]
+        assert tm.housekeeping.earth_body_vector == [ebv]

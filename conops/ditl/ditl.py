@@ -5,7 +5,7 @@ import rust_ephem
 
 from conops.targets.plan import Plan
 
-from ..common import angular_separation, dtutcfromtimestamp
+from ..common import angular_separation, dtutcfromtimestamp, radec2vec, scbodyvector
 from ..config import MissionConfig
 from .ditl_log import DITLLog
 from .ditl_mixin import DITLMixin
@@ -232,6 +232,22 @@ class DITL(DITLMixin, DITLStats):
 
             # Create housekeeping telemetry record for fault checking
             sun_angle_deg = self._compute_sun_angle(self.utime[i], ra, dec)
+            _sun_bv = scbodyvector(
+                np.radians(ra),
+                np.radians(dec),
+                np.radians(roll),
+                radec2vec(
+                    np.radians(float(self.ephem.sun_ra_deg[i])),
+                    np.radians(float(self.ephem.sun_dec_deg[i])),
+                ),
+            )
+            sun_body_vector: list[float] = [
+                float(_sun_bv[0]),
+                float(_sun_bv[1]),
+                float(_sun_bv[2]),
+            ]
+            _pos = np.asarray(self.ephem.gcrs_pv.position[i], dtype=np.float64)
+            earth_body_vector: list[float] = list(-_pos / np.linalg.norm(_pos))
             for_solid_angle_sr = (
                 self.constraint.instantaneous_field_of_regard(utime=self.utime[i])
                 if self.calculate_field_of_regard
@@ -265,6 +281,12 @@ class DITL(DITLMixin, DITLStats):
                     if isinstance(self.acs.star_tracker_status, list)
                     else None
                 ),
+                radiator_hard_violations=self.acs.radiator_hard_violations,
+                radiator_sun_exposure=self.acs.radiator_sun_exposure,
+                radiator_earth_exposure=self.acs.radiator_earth_exposure,
+                radiator_heat_dissipation_w=self.acs.radiator_heat_dissipation_w,
+                sun_body_vector=sun_body_vector,
+                earth_body_vector=earth_body_vector,
             )
 
             # Check fault management thresholds and red limit constraints

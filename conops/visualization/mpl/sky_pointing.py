@@ -1062,6 +1062,13 @@ class SkyPointingController:
                 None,
                 None,
             ),
+            (
+                "Radiator Hard",
+                self.ditl.config.constraint.radiator_hard_constraint,
+                "coral",
+                None,
+                None,
+            ),
         ]
 
         for name, constraint_func, color, body_ra, body_dec in constraint_types:
@@ -1078,6 +1085,10 @@ class SkyPointingController:
 
         # Star tracker regions are evaluated with the current spacecraft roll.
         self._plot_roll_aware_star_tracker_constraints(utime)
+
+        # Radiator KOZ: project each radiator normal into sky coordinates, then
+        # evaluate the base sun/earth/moon constraints at those directions.
+        self._plot_radiator_koz_regions(utime)
 
     def _plot_roll_aware_star_tracker_constraints(self, utime: float) -> None:
         """Plot roll-aware star tracker hard/soft constraint regions."""
@@ -1102,6 +1113,125 @@ class SkyPointingController:
                 color="magenta",
                 constrained_flat=soft_mask,
             )
+
+    def _plot_radiator_koz_regions(self, utime: float) -> None:
+        """Plot radiator hard keep-out zones on the sky map.
+
+        For each configured radiator, projects its body-frame normal into sky
+        coordinates for each grid point and sampled roll, then evaluates hard
+        sun/earth/moon constraints at those directions.
+
+        A sky point is marked as blocked only if no sampled roll satisfies the
+        radiator hard constraints (field-of-regard semantics).
+        """
+        if not hasattr(self.ditl, "config") or not hasattr(
+            self.ditl.config, "spacecraft_bus"
+        ):
+            return
+        radiators_cfg = getattr(self.ditl.config.spacecraft_bus, "radiators", None)
+        if radiators_cfg is None or not hasattr(radiators_cfg, "radiators"):
+            return
+        raw_radiators: object = getattr(radiators_cfg, "radiators", [])
+        if not isinstance(raw_radiators, (list, tuple)) or not raw_radiators:
+            return
+
+        ephem = self.ditl.ephem
+        if ephem is None:
+            return
+        time_dt = dtutcfromtimestamp(utime)
+
+        n_ra = self.n_grid_points * 2
+        n_dec = self.n_grid_points
+        _, _, ra_flat, dec_flat = self._create_regular_sky_grid(n_ra, n_dec)
+
+        # Build body-frame basis at roll=0 for each sky grid point (same convention
+        # as _compute_roll_aware_star_tracker_mask).
+        ra_rad_g = np.deg2rad(ra_flat)
+        dec_rad_g = np.deg2rad(dec_flat)
+        cos_dec = np.cos(dec_rad_g)
+        x_hat = np.column_stack(
+            [cos_dec * np.cos(ra_rad_g), cos_dec * np.sin(ra_rad_g), np.sin(dec_rad_g)]
+        )
+        ref = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        y0 = np.cross(ref, x_hat)
+        y0_norm = np.linalg.norm(y0, axis=1)
+        pole_mask = y0_norm < 1e-12
+        if np.any(pole_mask):
+            alt_ref = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+            y0[pole_mask] = np.cross(alt_ref, x_hat[pole_mask])
+            y0_norm = np.linalg.norm(y0, axis=1)
+        y0 = y0 / y0_norm[:, None]
+        z0 = np.cross(x_hat, y0)
+        z0 = z0 / np.linalg.norm(z0, axis=1)[:, None]
+
+        def _eval_radiators(
+            y_hat: npt.NDArray[np.float64],
+            z_hat: npt.NDArray[np.float64],
+        ) -> npt.NDArray[np.bool_] | None:
+            """Return per-point hard-constraint violations for one roll basis."""
+            mask_roll = np.zeros(len(ra_flat), dtype=bool)
+            has_any_constraint = False
+
+            for rad in list(raw_radiators):
+                hc = getattr(rad, "hard_constraint", None)
+                if hc is None:
+                    continue
+                orientation = getattr(rad, "orientation", None)
+                if orientation is None:
+                    continue
+                normal = getattr(orientation, "normal", None)
+                if normal is None:
+                    continue
+
+                # Project radiator body-frame normal into sky coordinates.
+                b = np.asarray(normal, dtype=np.float64)
+                v_rad = b[0] * x_hat + b[1] * y_hat + b[2] * z_hat
+                ra_dir = (
+                    np.degrees(np.arctan2(v_rad[:, 1], v_rad[:, 0])) + 360.0
+                ) % 360.0
+                dec_dir = np.degrees(np.arcsin(np.clip(v_rad[:, 2], -1.0, 1.0)))
+
+                # Any radiator hard sub-constraint violation blocks this roll.
+                for attr in ("sun_constraint", "earth_constraint", "moon_constraint"):
+                    c = getattr(hc, attr, None)
+                    if c is None:
+                        continue
+                    result = c.in_constraint_batch(
+                        ephemeris=ephem,
+                        target_ras=ra_dir.tolist(),
+                        target_decs=dec_dir.tolist(),
+                        times=[time_dt],
+                    )[:, 0]
+                    mask_roll |= cast(
+                        npt.NDArray[np.bool_], np.asarray(result, dtype=bool)
+                    )
+                    has_any_constraint = True
+
+            if not has_any_constraint:
+                return None
+            return mask_roll
+
+        # Field-of-regard semantics: a point is blocked only if EVERY sampled
+        # roll violates at least one radiator hard constraint.
+        per_point_clear = np.zeros(len(ra_flat), dtype=bool)
+        has_any_roll_constraint = False
+        for roll_deg_s in np.linspace(0.0, 360.0, 36, endpoint=False):
+            rr = np.deg2rad(float(roll_deg_s))
+            c_s, s_s = float(np.cos(rr)), float(np.sin(rr))
+            y_hat_s = y0 * c_s - z0 * s_s
+            z_hat_s = y0 * s_s + z0 * c_s
+            mask = _eval_radiators(y_hat_s, z_hat_s)
+            if mask is None:
+                continue
+            has_any_roll_constraint = True
+            per_point_clear |= ~mask
+
+        if not has_any_roll_constraint:
+            return
+
+        blocked_mask = cast(npt.NDArray[np.bool_], ~per_point_clear)
+        if blocked_mask.any():
+            self._plot_constraint_mask("Radiator Hard", "coral", blocked_mask)
 
     def _compute_roll_aware_star_tracker_mask(
         self,

@@ -58,6 +58,8 @@ Spacecraft Components
    conops.solar_panel
    conops.instrument
    conops.recorder
+   conops.config.radiator
+   conops.config.geometry
 
 Orbit and Pointing
 ------------------

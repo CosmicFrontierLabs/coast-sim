@@ -10,6 +10,7 @@ from .ditl_timeline import (
 from .fault_management import (
     plot_fault_management_timeline,
 )
+from .radiator_telemetry import plot_radiator_telemetry
 from .sky_pointing import (
     plot_sky_pointing,
     save_sky_pointing_frames,
@@ -22,6 +23,7 @@ __all__ = [
     "plot_acs_mode_distribution",
     "annotate_slew_distances",
     "plot_data_management_telemetry",
+    "plot_radiator_telemetry",
     "plot_fault_management_timeline",
     "plot_sky_pointing",
     "save_sky_pointing_frames",

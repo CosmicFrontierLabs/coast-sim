@@ -28,6 +28,7 @@ from ._helpers import (
     _marker_trace,
     _poly_trace,
     _ra_to_lon,
+    _sky_circle_polygon,
     _to_rgba,
 )
 from ._helpers import (
@@ -216,6 +217,28 @@ def plot_sky_pointing_plotly(
     cc: ConstraintPlotConfig = resolve_constraint_plot_config(ditl, raw_trackers, ephem)
     _eclipse_con = rust_ephem.EclipseConstraint()
 
+    # ------------------------------------------------------------------
+    # Pre-compute radiator hard-constraint exclusion specs
+    # ------------------------------------------------------------------
+    radiator_constraint_specs: list[tuple[str, float]] = []  # (body, min_angle_deg)
+    _rad_bus = getattr(
+        getattr(getattr(ditl, "config", None), "spacecraft_bus", None),
+        "radiators",
+        None,
+    )
+    if _rad_bus is not None:
+        for _rad in getattr(_rad_bus, "radiators", []):
+            _hc = getattr(_rad, "hard_constraint", None)
+            if _hc is None:
+                continue
+            for _body in ("sun", "earth", "moon"):
+                _bcfg = getattr(_hc, f"{_body}_constraint", None)
+                if _bcfg is None:
+                    continue
+                _mangle = getattr(_bcfg, "min_angle", None)
+                if _mangle is not None and float(_mangle) > 0:
+                    radiator_constraint_specs.append((_body, float(_mangle)))
+
     def _mode_color(idx: int) -> str:
         m = ditl.mode[idx]
         return mode_colors.get(m.name if hasattr(m, "name") else str(m), "red")
@@ -239,6 +262,7 @@ def plot_sky_pointing_plotly(
     #   _O+2: Anti-Sun direction marker   [if anti_sun configured]
     #   _A+0: Panel min excl polygon      [if panel configured]
     #   _A+1: Panel max excl polygon      [if panel configured]
+    #   _A+2 … : Radiator hard exclusion-zone circles
     # ------------------------------------------------------------------
     def _frame_traces(idx: int) -> list[dict[str, Any]]:
         dt = dtutcfromtimestamp(utimes[idx])
@@ -318,6 +342,27 @@ def plot_sky_pointing_plotly(
                 ephem,
             )
         )
+
+        for body, min_angle in radiator_constraint_specs:
+            if body == "sun":
+                body_ra_r, body_dec_r = sun_ra, sun_dec
+                extra_r = 0.0
+            elif body == "earth":
+                body_ra_r, body_dec_r = earth_ra, earth_dec
+                extra_r = earth_disk_r
+            elif body == "moon":
+                body_ra_r, body_dec_r = moon_ra, moon_dec
+                extra_r = 0.0
+            else:
+                traces.append({"lon": [], "lat": []})
+                continue
+            eff_r = min_angle + extra_r
+            if eff_r > 0:
+                c_lons, c_lats = _sky_circle_polygon(body_ra_r, body_dec_r, eff_r)
+            else:
+                c_lons, c_lats = [], []
+            traces.append({"lon": c_lons, "lat": c_lats})
+
         return traces
 
     # ------------------------------------------------------------------
@@ -456,6 +501,35 @@ def plot_sky_pointing_plotly(
     traces_fig.extend(
         build_optional_figure_traces(cc, init_data, n_trackers, constraint_alpha)
     )
+
+    # Radiator hard constraint exclusion-zone circle traces
+    n_st_specs = len(cc.st_constraint_specs)
+    _rad_base = (
+        10
+        + n_trackers
+        + n_st_specs
+        + (3 if cc.orbit_constraint is not None else 0)
+        + (3 if cc.anti_sun_constraint_cfg is not None else 0)
+        + (2 if cc.panel_constraint_cfg is not None else 0)
+    )
+    _rad_legend_shown = False
+    for k, (body, min_angle) in enumerate(radiator_constraint_specs):
+        ci = _rad_base + k
+        td_r = init_data[ci] if ci < len(init_data) else {"lon": [], "lat": []}
+        traces_fig.append(
+            go.Scattergeo(
+                lon=td_r["lon"],
+                lat=td_r["lat"],
+                mode="lines",
+                fill="toself",
+                fillcolor=_to_rgba("coral", constraint_alpha),
+                line=dict(color="coral", width=1, dash="dash"),
+                name="Radiator KOZ",
+                showlegend=not _rad_legend_shown,
+                hoverinfo="skip",
+            )
+        )
+        _rad_legend_shown = True
 
     animated_indices = list(range(1, len(traces_fig)))
 

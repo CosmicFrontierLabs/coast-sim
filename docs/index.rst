@@ -22,6 +22,7 @@ optimize observation schedules, and validate operational constraints before laun
    communications
    data_management
    fault_management
+   radiator_shadowing
    target_of_opportunity
    plan_serialization
    api/modules
@@ -43,6 +44,7 @@ Features
 * **Ground Station Passes**: Communication window calculations and data downlink planning
 * **Attitude Control System**: Slew modeling, pointing accuracy, and settle time simulation
 * **Star Tracker Support**: Multi-tracker attitude determination with configurable hard/soft constraints and functional-count monitoring
+* **Radiator Thermal Modelling**: Body-mounted radiator geometry, hard keep-out constraints, Sun/Earth exposure-driven net heat-flow metrics, and inter-component panel shadowing
 * **South Atlantic Anomaly (SAA) Avoidance**: Radiation belt constraint handling
 * **DITL Generation**: Comprehensive day-in-the-life timeline simulation
 * **Instantaneous Field of Regard**: Optional computation of accessible sky solid angle at each simulation timestep

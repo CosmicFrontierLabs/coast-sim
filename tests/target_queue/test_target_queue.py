@@ -1,46 +1,46 @@
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from conops import Queue
 
 
 class TestQueueInitAndAppend:
-    def test_queue_init_targets_empty(self, mock_config):
+    def test_queue_init_targets_empty(self, mock_config) -> None:
         queue = Queue(config=mock_config)
         assert queue.targets == []
 
-    def test_queue_init_ephem_none(self, mock_config):
+    def test_queue_init_ephem_none(self, mock_config) -> None:
         queue = Queue(config=mock_config)
         assert queue.ephem is None
 
-    def test_queue_init_utime_none(self, mock_config):
+    def test_queue_init_utime_none(self, mock_config) -> None:
         queue = Queue(config=mock_config)
         assert queue.utime == 0.0
 
-    def test_queue_init_gs_none(self, mock_config):
+    def test_queue_init_gs_none(self, mock_config) -> None:
         queue = Queue(config=mock_config)
         assert queue.gs is None
 
-    def test_queue_append_len(self, mock_target, mock_config):
+    def test_queue_append_len(self, mock_target, mock_config) -> None:
         queue = Queue(config=mock_config)
         queue.append(mock_target)
         assert len(queue.targets) == 1
 
-    def test_queue_append_target_equals(self, mock_target, mock_config):
+    def test_queue_append_target_equals(self, mock_target, mock_config) -> None:
         queue = Queue(config=mock_config)
         queue.append(mock_target)
         assert queue.targets[0] == mock_target
 
 
 class TestQueueBasicOps:
-    def test_queue_len(self, queue_instance):
+    def test_queue_len(self, queue_instance) -> None:
         """Test the length of the queue."""
         assert len(queue_instance) == 5
 
-    def test_queue_getitem(self, queue_instance, mock_targets):
+    def test_queue_getitem(self, queue_instance, mock_targets) -> None:
         """Test getting an item from the queue."""
         assert queue_instance[2] == mock_targets[2]
 
-    def test_queue_reset_reset_called(self, queue_instance):
+    def test_queue_reset_reset_called(self, queue_instance) -> None:
         """Test resetting the queue calls reset() on each target."""
         for target in queue_instance.targets:
             target.done = True
@@ -50,7 +50,7 @@ class TestQueueBasicOps:
         for target in queue_instance.targets:
             target.reset.assert_called_once()
 
-    def test_queue_reset_targets_done_false(self, queue_instance):
+    def test_queue_reset_targets_done_false(self, queue_instance) -> None:
         """Test resetting the queue clears done flag on each target."""
         for target in queue_instance.targets:
             target.done = True
@@ -63,7 +63,9 @@ class TestQueueBasicOps:
 
 class TestMeritsort:
     @patch("numpy.random.random", side_effect=[0.1, 0.2, 0.3, 0.4, 0.5])
-    def test_meritsort_invisible_target_merit(self, mock_random, queue_instance):
+    def test_meritsort_invisible_target_merit(
+        self, mock_random, queue_instance
+    ) -> None:
         """The invisible target should get -900 + random penalty as merit."""
         invisible_target = queue_instance.targets[1]
         invisible_target.visible.return_value = False
@@ -275,3 +277,92 @@ class TestQueueSelectionBehavior:
             target = queue_instance.get(ra=0, dec=0, utime=utime)
 
         assert target == queue_instance.targets[0]
+
+    def test_radiator_exposure_penalty_prefers_cooler_target(self, queue_instance):
+        """Radiator exposure weights should steer selection toward lower-exposure targets."""
+        utime = 1762924800.0
+        queue_instance.slew_distance_weight = 0.0
+        queue_instance.radiator_sun_exposure_weight = 100.0
+        queue_instance.radiator_earth_exposure_weight = 0.0
+
+        # Make merit identical so only radiator penalty drives selection.
+        queue_instance.targets[0].merit = 100
+        queue_instance.targets[1].merit = 100
+        queue_instance.targets[0].ra = 0.0
+        queue_instance.targets[1].ra = 1.0
+
+        radiators = Mock()
+        radiators.num_radiators.return_value = 2
+
+        def _metrics(ra_deg, **kwargs):
+            if ra_deg == 0.0:
+                return {"sun_exposure": 0.9, "earth_exposure": 0.0}
+            return {"sun_exposure": 0.1, "earth_exposure": 0.0}
+
+        radiators.exposure_metrics.side_effect = _metrics
+        queue_instance.config.spacecraft_bus.radiators = radiators
+
+        with patch.object(queue_instance, "meritsort"):
+            chosen = queue_instance.get(ra=0, dec=0, utime=utime)
+
+        assert chosen == queue_instance.targets[1]
+
+    def test_zero_radiator_weights_use_fast_path(self, queue_instance):
+        """When both radiator weights are 0, exposure_metrics must not be called."""
+        utime = 1762924800.0
+        queue_instance.slew_distance_weight = 0.0
+        queue_instance.radiator_sun_exposure_weight = 0.0
+        queue_instance.radiator_earth_exposure_weight = 0.0
+
+        radiators = Mock()
+        radiators.num_radiators.return_value = 2
+        queue_instance.config.spacecraft_bus.radiators = radiators
+
+        with patch.object(queue_instance, "meritsort"):
+            queue_instance.get(ra=0, dec=0, utime=utime)
+
+        radiators.exposure_metrics.assert_not_called()
+
+    def test_earth_exposure_weight_influences_selection(self, queue_instance):
+        """Earth exposure weight should penalise targets with high earth exposure."""
+        utime = 1762924800.0
+        queue_instance.slew_distance_weight = 0.0
+        queue_instance.radiator_sun_exposure_weight = 0.0
+        queue_instance.radiator_earth_exposure_weight = 100.0
+
+        queue_instance.targets[0].merit = 100
+        queue_instance.targets[1].merit = 100
+        queue_instance.targets[0].ra = 0.0
+        queue_instance.targets[1].ra = 1.0
+
+        radiators = Mock()
+        radiators.num_radiators.return_value = 1
+
+        def _metrics(ra_deg, **kwargs):
+            if ra_deg == 0.0:
+                return {"sun_exposure": 0.0, "earth_exposure": 0.8}
+            return {"sun_exposure": 0.0, "earth_exposure": 0.1}
+
+        radiators.exposure_metrics.side_effect = _metrics
+        queue_instance.config.spacecraft_bus.radiators = radiators
+
+        with patch.object(queue_instance, "meritsort"):
+            chosen = queue_instance.get(ra=0, dec=0, utime=utime)
+
+        assert chosen == queue_instance.targets[1]
+
+    def test_radiator_scoring_skipped_when_no_radiators(self, queue_instance):
+        """When num_radiators() == 0, exposure_metrics should not be called."""
+        utime = 1762924800.0
+        queue_instance.slew_distance_weight = 0.0
+        queue_instance.radiator_sun_exposure_weight = 50.0
+        queue_instance.radiator_earth_exposure_weight = 50.0
+
+        radiators = Mock()
+        radiators.num_radiators.return_value = 0
+        queue_instance.config.spacecraft_bus.radiators = radiators
+
+        with patch.object(queue_instance, "meritsort"):
+            queue_instance.get(ra=0, dec=0, utime=utime)
+
+        radiators.exposure_metrics.assert_not_called()

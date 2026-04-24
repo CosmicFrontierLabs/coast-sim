@@ -66,6 +66,8 @@ def mock_config_roll(mock_ephem_roll, mock_constraint_roll):
     config.spacecraft_bus.attitude_control = Mock()
     config.spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))
     config.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
+    config.spacecraft_bus.radiators = Mock()
+    config.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
     return config
 
 
@@ -151,6 +153,8 @@ class TestACSRollCalculation:
             return_value=(45.0, [])
         )
         config1.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
+        config1.spacecraft_bus.radiators = Mock()
+        config1.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
 
         with patch("conops.simulation.passes.PassTimes"):
             acs1 = ACS(config=config1)
@@ -179,6 +183,8 @@ class TestACSRollCalculation:
             return_value=(45.0, [])
         )
         config2.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
+        config2.spacecraft_bus.radiators = Mock()
+        config2.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
 
         with patch("conops.simulation.passes.PassTimes"):
             acs2 = ACS(config=config2)
@@ -332,6 +338,8 @@ class TestACSRollEdgeCases:
             return_value=(45.0, [])
         )
         config.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
+        config.spacecraft_bus.radiators = Mock()
+        config.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
 
         with patch("conops.simulation.passes.PassTimes"):
             acs = ACS(config=config)
