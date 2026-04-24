@@ -15,54 +15,31 @@ import plotly.graph_objects as go
 import rust_ephem
 
 from ...common import dtutcfromtimestamp
-from ...config.constants import (
-    EARTH_OCCULT,
-    MOON_OCCULT,
-    PANEL_CONSTRAINT,
-    SUN_OCCULT,
-)
 from ...config.observation_categories import ObservationCategories
 from ...config.visualization import VisualizationConfig
-from ._helpers import lighten_color as _lighten_color
+from ._constraint_helpers import (
+    ConstraintPlotConfig,
+    build_body_polygon_traces,
+    build_optional_figure_traces,
+    build_tail_constraint_traces,
+    resolve_constraint_plot_config,
+)
+from ._helpers import (
+    _marker_trace,
+    _poly_trace,
+    _ra_to_lon,
+    _to_rgba,
+)
+from ._helpers import (
+    lighten_color as _lighten_color,
+)
 from .globe_pointing import (
     _build_st_boresights,
     _get_vis_config,
-    _ra_to_lon,
-    _sky_circle_polygon,
-    _to_rgba,
 )
 
 if TYPE_CHECKING:
     from ...ditl import DITL, QueueDITL
-
-
-def _get_visualization_config(
-    ditl: "DITL | QueueDITL", config: VisualizationConfig | None = None
-) -> VisualizationConfig:
-    """Get visualization configuration, with fallback to defaults.
-
-    Parameters
-    ----------
-    ditl : DITL or QueueDITL
-        The DITL simulation object.
-    config : VisualizationConfig, optional
-        Explicit config to use. If None, tries to get from ditl.config.visualization.
-
-    Returns
-    -------
-    VisualizationConfig
-        The configuration object to use.
-    """
-    if config is None:
-        if (
-            hasattr(ditl, "config")
-            and hasattr(ditl.config, "visualization")
-            and isinstance(ditl.config.visualization, VisualizationConfig)
-        ):
-            config = ditl.config.visualization
-        else:
-            config = VisualizationConfig()
-    return config
 
 
 def _gaussian_smooth(
@@ -234,129 +211,9 @@ def plot_sky_pointing_plotly(
     _st_colors = ["cyan", "lime", "orange", "hotpink", "white", "yellow"]
 
     # ------------------------------------------------------------------
-    # Resolve body-constraint plotting angles (min and max)
+    # Resolve constraint plotting configuration (once, not per frame)
     # ------------------------------------------------------------------
-    constraint_cfg = None
-    if hasattr(ditl, "config") and hasattr(ditl.config, "constraint"):
-        constraint_cfg = ditl.config.constraint
-
-    body_angle_cfg: dict[str, tuple[float, float | None]] = {
-        "sun": (float(SUN_OCCULT), None),
-        "moon": (float(MOON_OCCULT), None),
-        "earth": (float(EARTH_OCCULT), None),
-    }
-    for _body, _default in body_angle_cfg.items():
-        _cfg = (
-            getattr(constraint_cfg, f"{_body}_constraint", None)
-            if constraint_cfg is not None
-            else None
-        )
-        _min_angle = getattr(_cfg, "min_angle", _default[0])
-        _max_angle = getattr(_cfg, "max_angle", _default[1])
-        body_angle_cfg[_body] = (
-            float(_min_angle) if _min_angle is not None else _default[0],
-            float(_max_angle) if _max_angle is not None else None,
-        )
-
-    # ------------------------------------------------------------------
-    # Pre-compute ST boresight offsets and ST constraint specs
-    # ------------------------------------------------------------------
-    st_boresight_offsets: list[float] = []
-    for _st_raw in raw_trackers:
-        _orient = getattr(_st_raw, "orientation", None)
-        _b = getattr(_orient, "boresight", None) if _orient else None
-        if _b is not None:
-            _bv = np.asarray(_b, dtype=np.float64)
-            _bn = np.linalg.norm(_bv)
-            if _bn > 1e-12:
-                _bv = _bv / _bn
-            st_boresight_offsets.append(
-                float(np.degrees(np.arccos(np.clip(_bv[0], -1.0, 1.0))))
-            )
-        else:
-            st_boresight_offsets.append(0.0)
-
-    st_constraint_specs: list[tuple[int, str, str, str, float]] = []
-    for _ci, _st_raw in enumerate(raw_trackers):
-        for _tier in ("hard", "soft"):
-            _cobj = getattr(_st_raw, f"{_tier}_constraint", None)
-            if _cobj is None:
-                continue
-            for _body in ("sun", "earth", "moon"):
-                _bcfg = getattr(_cobj, f"{_body}_constraint", None)
-                if _bcfg is None:
-                    continue
-                _mangle = getattr(_bcfg, "min_angle", None)
-                if _mangle is not None and float(_mangle) > 0:
-                    st_constraint_specs.append(
-                        (_ci, _tier, _body, "min", float(_mangle))
-                    )
-                _xangle = getattr(_bcfg, "max_angle", None)
-                if _xangle is not None:
-                    _max_circle_r = 180.0 - float(_xangle)
-                    if _max_circle_r > 0:
-                        st_constraint_specs.append(
-                            (_ci, _tier, _body, "max", float(_xangle))
-                        )
-
-    ignore_roll: bool = bool(
-        getattr(
-            getattr(getattr(ditl, "config", None), "constraint", None),
-            "ignore_roll",
-            False,
-        )
-    )
-
-    # ------------------------------------------------------------------
-    # Orbit constraint — extract min/max angle and pre-compute RAM vectors
-    # ------------------------------------------------------------------
-    orbit_constraint = None
-    orbit_min_angle: float = 0.0
-    orbit_max_angle: float | None = None
-    if hasattr(ditl, "config") and hasattr(ditl.config, "constraint"):
-        orbit_constraint = getattr(ditl.config.constraint, "orbit_constraint", None)
-    if orbit_constraint is not None:
-        orbit_min_angle = float(getattr(orbit_constraint, "min_angle", 0.0))
-        _orbit_max_raw = getattr(orbit_constraint, "max_angle", None)
-        orbit_max_angle = float(_orbit_max_raw) if _orbit_max_raw is not None else None
-
-    _gcrs_vel: np.ndarray | None = None
-    if orbit_constraint is not None:
-        _gcrs_vel = np.asarray(ephem.gcrs_pv.velocity, dtype=np.float64)
-
-    # ------------------------------------------------------------------
-    # Anti-sun constraint — SunConstraint with max_angle defines a cap
-    # around the anti-sun direction (radius = 180 - max_angle)
-    # ------------------------------------------------------------------
-    anti_sun_constraint_cfg = None
-    if constraint_cfg is not None:
-        anti_sun_constraint_cfg = getattr(constraint_cfg, "anti_sun_constraint", None)
-    anti_sun_min_angle: float = 0.0
-    anti_sun_max_angle: float | None = None
-    if anti_sun_constraint_cfg is not None:
-        _as_min_raw = getattr(anti_sun_constraint_cfg, "min_angle", 0.0)
-        anti_sun_min_angle = float(_as_min_raw) if _as_min_raw is not None else 0.0
-        _as_max_raw = getattr(anti_sun_constraint_cfg, "max_angle", None)
-        anti_sun_max_angle = float(_as_max_raw) if _as_max_raw is not None else None
-
-    # ------------------------------------------------------------------
-    # Panel constraint — SunConstraint(min, max) & ~EclipseConstraint;
-    # only active when spacecraft is in sunlit orbit.  We approximate
-    # by extracting the sun-angle range and toggling per-frame on eclipse.
-    # ------------------------------------------------------------------
-    panel_constraint_cfg = None
-    if constraint_cfg is not None:
-        panel_constraint_cfg = getattr(constraint_cfg, "panel_constraint", None)
-    panel_min_angle: float = float(PANEL_CONSTRAINT)
-    panel_max_angle: float = float(180 - PANEL_CONSTRAINT)
-    if panel_constraint_cfg is not None:
-        _pc_min_raw = getattr(panel_constraint_cfg, "min_angle", None)
-        _pc_max_raw = getattr(panel_constraint_cfg, "max_angle", None)
-        if _pc_min_raw is not None:
-            panel_min_angle = float(_pc_min_raw)
-        if _pc_max_raw is not None:
-            panel_max_angle = float(_pc_max_raw)
-
+    cc: ConstraintPlotConfig = resolve_constraint_plot_config(ditl, raw_trackers, ephem)
     _eclipse_con = rust_ephem.EclipseConstraint()
 
     def _mode_color(idx: int) -> str:
@@ -395,65 +252,6 @@ def plot_sky_pointing_plotly(
         earth_dec = float(ephem.earth_dec_deg[ei])
         earth_disk_r = float(ephem.earth_radius_deg[ei])
 
-        def _constraint_polygons(
-            body_ra: float,
-            body_dec: float,
-            min_angle: float,
-            max_angle: float | None,
-            extra_r: float = 0.0,
-        ) -> tuple[list[float], list[float], list[float], list[float]]:
-            min_r = max(0.0, min_angle + extra_r)
-            if min_r > 0:
-                min_lons, min_lats = _sky_circle_polygon(body_ra, body_dec, min_r)
-            else:
-                min_lons, min_lats = [], []
-
-            if max_angle is not None:
-                # A max-angle violation from a body is equivalent to a cap around anti-body.
-                anti_body_ra = (body_ra + 180.0) % 360.0
-                anti_body_dec = -body_dec
-                max_r = max(0.0, 180.0 - (max_angle + extra_r))
-                if max_r > 0:
-                    max_lons, max_lats = _sky_circle_polygon(
-                        anti_body_ra,
-                        anti_body_dec,
-                        max_r,
-                    )
-                else:
-                    max_lons, max_lats = [], []
-            else:
-                max_lons, max_lats = [], []
-            return min_lons, min_lats, max_lons, max_lats
-
-        sun_min_angle, sun_max_angle = body_angle_cfg["sun"]
-        moon_min_angle, moon_max_angle = body_angle_cfg["moon"]
-        earth_min_angle, earth_max_angle = body_angle_cfg["earth"]
-
-        sun_lons, sun_lats, sun_max_lons, sun_max_lats = _constraint_polygons(
-            sun_ra,
-            sun_dec,
-            sun_min_angle,
-            sun_max_angle,
-        )
-        moon_lons, moon_lats, moon_max_lons, moon_max_lats = _constraint_polygons(
-            moon_ra,
-            moon_dec,
-            moon_min_angle,
-            moon_max_angle,
-        )
-        earth_excl_lons, earth_excl_lats, earth_max_lons, earth_max_lats = (
-            _constraint_polygons(
-                earth_ra,
-                earth_dec,
-                earth_min_angle,
-                earth_max_angle,
-                extra_r=earth_disk_r,
-            )
-        )
-        earth_disk_lons, earth_disk_lats = _sky_circle_polygon(
-            earth_ra, earth_dec, earth_disk_r
-        )
-
         ra = float(ditl.ra[idx])
         dec = float(ditl.dec[idx])
         mc = _mode_color(idx)
@@ -469,38 +267,31 @@ def plot_sky_pointing_plotly(
 
         st_positions = _build_st_boresights(ditl, idx)
 
-        traces: list[dict[str, Any]] = [
-            {"lon": sun_lons, "lat": sun_lats},
-            {"lon": sun_max_lons, "lat": sun_max_lats},
-            {
-                "lon": [_ra_to_lon(sun_ra)],
-                "lat": [sun_dec],
-                "marker": {"color": "yellow", "size": 16, "symbol": "circle"},
-            },
-            {"lon": moon_lons, "lat": moon_lats},
-            {"lon": moon_max_lons, "lat": moon_max_lats},
-            {
-                "lon": [_ra_to_lon(moon_ra)],
-                "lat": [moon_dec],
-                "marker": {"color": "lightgray", "size": 12, "symbol": "circle"},
-            },
-            {"lon": earth_excl_lons, "lat": earth_excl_lats},
-            {"lon": earth_max_lons, "lat": earth_max_lats},
-            {"lon": earth_disk_lons, "lat": earth_disk_lats},
+        traces = build_body_polygon_traces(
+            sun_ra,
+            sun_dec,
+            moon_ra,
+            moon_dec,
+            earth_ra,
+            earth_dec,
+            earth_disk_r,
+            cc.body_angle_cfg,
+        )
+        traces.append(
             {
                 "lon": [_ra_to_lon(ra)],
                 "lat": [dec],
                 "marker": {"color": mc, "size": 20, "symbol": "star"},
-            },
-        ]
-
+            }
+        )
         for i in range(n_trackers):
             if i < len(st_positions):
                 st_ra, st_dec, _color, _name = st_positions[i]
-                if hk_status is not None and i < len(hk_status):
-                    st_marker_color = "limegreen" if hk_status[i] else "red"
-                else:
-                    st_marker_color = _color
+                st_marker_color = (
+                    ("limegreen" if hk_status[i] else "red")
+                    if hk_status is not None and i < len(hk_status)
+                    else _color
+                )
                 traces.append(
                     {
                         "lon": [_ra_to_lon(st_ra)],
@@ -511,117 +302,22 @@ def plot_sky_pointing_plotly(
             else:
                 traces.append({"lon": [], "lat": []})
 
-        for tr_idx, tier, body, bound_kind, angle in st_constraint_specs:
-            if body == "sun":
-                body_ra, body_dec = sun_ra, sun_dec
-                extra_r = 0.0
-            elif body == "earth":
-                body_ra, body_dec = earth_ra, earth_dec
-                extra_r = earth_disk_r
-            elif body == "moon":
-                body_ra, body_dec = moon_ra, moon_dec
-                extra_r = 0.0
-            else:
-                traces.append({"lon": [], "lat": []})
-                continue
-
-            if bound_kind == "min":
-                if ignore_roll:
-                    # With free roll, tracker boresight can sweep a cone of half-angle
-                    # delta around +X, so the always-invalid cap shrinks by delta.
-                    eff_r = max(0.0, angle - st_boresight_offsets[tr_idx]) + extra_r
-                else:
-                    eff_r = angle + extra_r
-                center_ra, center_dec = body_ra, body_dec
-            else:
-                eff_r = 180.0 - (angle + extra_r)
-                center_ra, center_dec = (body_ra + 180.0) % 360.0, -body_dec
-
-            if eff_r > 0:
-                c_lons, c_lats = _sky_circle_polygon(center_ra, center_dec, eff_r)
-            else:
-                c_lons, c_lats = [], []
-            traces.append({"lon": c_lons, "lat": c_lats})
-
-        if orbit_constraint is not None and _gcrs_vel is not None:
-            v = _gcrs_vel[ei].copy()
-            v_n = np.linalg.norm(v)
-            if v_n > 1e-12:
-                v = v / v_n
-            ram_ra_deg = (np.degrees(np.arctan2(v[1], v[0])) + 360.0) % 360.0
-            ram_dec_deg = float(np.degrees(np.arcsin(np.clip(v[2], -1.0, 1.0))))
-
-            if orbit_min_angle > 0:
-                oc_lons, oc_lats = _sky_circle_polygon(
-                    ram_ra_deg, ram_dec_deg, orbit_min_angle
-                )
-            else:
-                oc_lons, oc_lats = [], []
-
-            if orbit_max_angle is not None:
-                anti_ram_ra = (ram_ra_deg + 180.0) % 360.0
-                anti_ram_dec = -ram_dec_deg
-                oc_max_r = max(0.0, 180.0 - orbit_max_angle)
-                if oc_max_r > 0:
-                    oc_max_lons, oc_max_lats = _sky_circle_polygon(
-                        anti_ram_ra,
-                        anti_ram_dec,
-                        oc_max_r,
-                    )
-                else:
-                    oc_max_lons, oc_max_lats = [], []
-            else:
-                oc_max_lons, oc_max_lats = [], []
-
-            traces.append({"lon": oc_lons, "lat": oc_lats})
-            traces.append({"lon": oc_max_lons, "lat": oc_max_lats})
-            traces.append(
-                {
-                    "lon": [_ra_to_lon(ram_ra_deg)],
-                    "lat": [ram_dec_deg],
-                    "marker": {
-                        "color": "mediumpurple",
-                        "size": 12,
-                        "symbol": "circle",
-                    },
-                }
+        traces.extend(
+            build_tail_constraint_traces(
+                cc,
+                sun_ra,
+                sun_dec,
+                moon_ra,
+                moon_dec,
+                earth_ra,
+                earth_dec,
+                earth_disk_r,
+                ei,
+                dt,
+                _eclipse_con,
+                ephem,
             )
-
-        # Anti-Sun constraint: circle around anti-sun direction when configured
-        if anti_sun_constraint_cfg is not None:
-            anti_sun_ra_v = (sun_ra + 180.0) % 360.0
-            anti_sun_dec_v = -sun_dec
-            as_min_lons, as_min_lats, as_max_lons, as_max_lats = _constraint_polygons(
-                sun_ra, sun_dec, anti_sun_min_angle, anti_sun_max_angle
-            )
-            traces.append({"lon": as_min_lons, "lat": as_min_lats})
-            traces.append({"lon": as_max_lons, "lat": as_max_lats})
-            traces.append(
-                {
-                    "lon": [_ra_to_lon(anti_sun_ra_v)],
-                    "lat": [anti_sun_dec_v],
-                    "marker": {"color": "orange", "size": 12, "symbol": "diamond"},
-                }
-            )
-
-        # Panel constraint: sun-angle circles active only in sunlit orbit
-        if panel_constraint_cfg is not None:
-            in_eclipse_now = bool(
-                _eclipse_con.in_constraint(
-                    ephemeris=ephem, target_ra=0.0, target_dec=0.0, time=dt
-                )
-            )
-            if not in_eclipse_now:
-                pc_min_lons, pc_min_lats, pc_max_lons, pc_max_lats = (
-                    _constraint_polygons(
-                        sun_ra, sun_dec, panel_min_angle, panel_max_angle
-                    )
-                )
-            else:
-                pc_min_lons, pc_min_lats, pc_max_lons, pc_max_lats = [], [], [], []
-            traces.append({"lon": pc_min_lons, "lat": pc_min_lats})
-            traces.append({"lon": pc_max_lons, "lat": pc_max_lats})
-
+        )
         return traces
 
     # ------------------------------------------------------------------
@@ -652,48 +348,6 @@ def plot_sky_pointing_plotly(
     init_data = _frame_traces(init_idx)
     mc0 = _mode_color(init_idx)
 
-    def _poly_trace(
-        data: dict[str, Any],
-        name: str,
-        fill_color: str,
-        line_color: str,
-        showlegend: bool = True,
-    ) -> go.Scattergeo:
-        return go.Scattergeo(
-            lon=data["lon"],
-            lat=data["lat"],
-            mode="lines",
-            fill="toself",
-            fillcolor=fill_color,
-            line=dict(color=line_color, width=1),
-            name=name,
-            showlegend=showlegend,
-            hoverinfo="skip",
-        )
-
-    def _marker_trace(
-        data: dict[str, Any],
-        name: str,
-        symbol: str,
-        color: str,
-        size: int,
-        edge_color: str = "white",
-        showlegend: bool = True,
-    ) -> go.Scattergeo:
-        return go.Scattergeo(
-            lon=data["lon"],
-            lat=data["lat"],
-            mode="markers",
-            marker=dict(
-                symbol=symbol,
-                color=color,
-                size=size,
-                line=dict(color=edge_color, width=1),
-            ),
-            name=name,
-            showlegend=showlegend,
-        )
-
     traces_fig: list[Any] = [
         # Trace 0: static observations
         go.Scattergeo(
@@ -711,61 +365,55 @@ def plot_sky_pointing_plotly(
             name="Observations",
             showlegend=True,
         ),
-        # Trace 1: Sun exclusion polygon
+        # Traces 1–2: Sun exclusion polygons
         _poly_trace(
             init_data[0],
             "Sun min exclusion",
             _to_rgba("gold", constraint_alpha),
             "gold",
         ),
-        # Trace 2: Sun max exclusion polygon (if configured)
         _poly_trace(
             init_data[1],
             "Sun max exclusion",
             _to_rgba(_lighten_color("gold", 0.3), constraint_alpha * 0.8),
             _lighten_color("gold", 0.2),
-            showlegend=body_angle_cfg["sun"][1] is not None,
+            showlegend=cc.body_angle_cfg["sun"][1] is not None,
         ),
         # Trace 3: Sun body marker
         _marker_trace(init_data[2], "Sun", "circle", "yellow", 16),
-        # Trace 4: Moon exclusion polygon
+        # Traces 4–5: Moon exclusion polygons
         _poly_trace(
             init_data[3],
             "Moon exclusion",
             _to_rgba("gray", constraint_alpha),
             "lightgray",
         ),
-        # Trace 5: Moon max exclusion polygon (if configured)
         _poly_trace(
             init_data[4],
             "Moon max exclusion",
             _to_rgba(_lighten_color("gray", 0.25), constraint_alpha * 0.75),
             _lighten_color("gray", 0.15),
-            showlegend=body_angle_cfg["moon"][1] is not None,
+            showlegend=cc.body_angle_cfg["moon"][1] is not None,
         ),
         # Trace 6: Moon body marker
         _marker_trace(init_data[5], "Moon", "circle", "lightgray", 12),
-        # Trace 7: Earth exclusion polygon
+        # Traces 7–8: Earth exclusion polygons
         _poly_trace(
             init_data[6],
             "Earth exclusion",
             _to_rgba("royalblue", constraint_alpha),
             "dodgerblue",
         ),
-        # Trace 8: Earth max exclusion polygon (if configured)
         _poly_trace(
             init_data[7],
             "Earth max exclusion",
             _to_rgba(_lighten_color("royalblue", 0.25), constraint_alpha * 0.75),
             _lighten_color("royalblue", 0.15),
-            showlegend=body_angle_cfg["earth"][1] is not None,
+            showlegend=cc.body_angle_cfg["earth"][1] is not None,
         ),
         # Trace 9: Earth physical disk
         _poly_trace(
-            init_data[8],
-            "Earth disk",
-            _to_rgba("darkblue", 0.75),
-            "cornflowerblue",
+            init_data[8], "Earth disk", _to_rgba("darkblue", 0.75), "cornflowerblue"
         ),
         # Trace 10: Pointing marker
         go.Scattergeo(
@@ -804,155 +452,10 @@ def plot_sky_pointing_plotly(
             )
         )
 
-    # ST constraint exclusion-zone circle traces
-    _st_legend_shown: set[str] = set()
-    for j, (tr_idx, tier, body, bound_kind, angle) in enumerate(st_constraint_specs):
-        _legend_key = f"{tier}_{bound_kind}"
-        _show_legend = _legend_key not in _st_legend_shown
-        if _show_legend:
-            _st_legend_shown.add(_legend_key)
-
-        if tier == "hard":
-            fill_color = _to_rgba("red", constraint_alpha)
-            line_color = "red"
-            line_dash = "solid" if bound_kind == "min" else "dash"
-            label = "ST Hard Min Cons." if bound_kind == "min" else "ST Hard Max Cons."
-        else:
-            fill_color = _to_rgba("magenta", constraint_alpha * 0.7)
-            line_color = "magenta"
-            line_dash = "dot" if bound_kind == "min" else "dashdot"
-            label = "ST Soft Min Cons." if bound_kind == "min" else "ST Soft Max Cons."
-
-        ci = 10 + n_trackers + j
-        td_c = init_data[ci] if ci < len(init_data) else {"lon": [], "lat": []}
-        traces_fig.append(
-            go.Scattergeo(
-                lon=td_c["lon"],
-                lat=td_c["lat"],
-                mode="lines",
-                fill="toself",
-                fillcolor=fill_color,
-                line=dict(color=line_color, width=1, dash=line_dash),
-                name=label,
-                showlegend=_show_legend,
-                hoverinfo="skip",
-            )
-        )
-
-    if orbit_constraint is not None:
-        _oc_base = 10 + n_trackers + len(st_constraint_specs)
-        _oc_poly = (
-            init_data[_oc_base] if _oc_base < len(init_data) else {"lon": [], "lat": []}
-        )
-        _oc_max = (
-            init_data[_oc_base + 1]
-            if _oc_base + 1 < len(init_data)
-            else {"lon": [], "lat": []}
-        )
-        _oc_ram = (
-            init_data[_oc_base + 2]
-            if _oc_base + 2 < len(init_data)
-            else {"lon": [], "lat": []}
-        )
-        traces_fig.append(
-            _poly_trace(
-                _oc_poly,
-                "Orbit (RAM) min exclusion",
-                _to_rgba("mediumpurple", constraint_alpha),
-                "mediumpurple",
-            )
-        )
-        traces_fig.append(
-            _poly_trace(
-                _oc_max,
-                "Orbit (RAM) max exclusion",
-                _to_rgba(_lighten_color("mediumpurple", 0.25), constraint_alpha * 0.75),
-                _lighten_color("mediumpurple", 0.15),
-                showlegend=orbit_max_angle is not None,
-            )
-        )
-        traces_fig.append(
-            _marker_trace(_oc_ram, "RAM direction", "circle", "mediumpurple", 12)
-        )
-
-    if anti_sun_constraint_cfg is not None:
-        _as_base = (
-            10
-            + n_trackers
-            + len(st_constraint_specs)
-            + (3 if orbit_constraint is not None else 0)
-        )
-        _as_min = (
-            init_data[_as_base] if _as_base < len(init_data) else {"lon": [], "lat": []}
-        )
-        _as_max = (
-            init_data[_as_base + 1]
-            if _as_base + 1 < len(init_data)
-            else {"lon": [], "lat": []}
-        )
-        _as_marker = (
-            init_data[_as_base + 2]
-            if _as_base + 2 < len(init_data)
-            else {"lon": [], "lat": []}
-        )
-        traces_fig.append(
-            _poly_trace(
-                _as_min,
-                "Anti-Sun min exclusion",
-                _to_rgba("darkorange", constraint_alpha),
-                "darkorange",
-                showlegend=anti_sun_min_angle > 0,
-            )
-        )
-        traces_fig.append(
-            _poly_trace(
-                _as_max,
-                "Anti-Sun exclusion",
-                _to_rgba("orange", constraint_alpha),
-                "orange",
-                showlegend=(
-                    anti_sun_max_angle is not None and (180.0 - anti_sun_max_angle) > 0
-                ),
-            )
-        )
-        traces_fig.append(
-            _marker_trace(_as_marker, "Anti-Sun", "diamond", "orange", 12)
-        )
-
-    if panel_constraint_cfg is not None:
-        _pc_base = (
-            10
-            + n_trackers
-            + len(st_constraint_specs)
-            + (3 if orbit_constraint is not None else 0)
-            + (3 if anti_sun_constraint_cfg is not None else 0)
-        )
-        _pc_min = (
-            init_data[_pc_base] if _pc_base < len(init_data) else {"lon": [], "lat": []}
-        )
-        _pc_max = (
-            init_data[_pc_base + 1]
-            if _pc_base + 1 < len(init_data)
-            else {"lon": [], "lat": []}
-        )
-        traces_fig.append(
-            _poly_trace(
-                _pc_min,
-                "Panel min exclusion",
-                _to_rgba("limegreen", constraint_alpha),
-                "limegreen",
-                showlegend=panel_min_angle > 0,
-            )
-        )
-        traces_fig.append(
-            _poly_trace(
-                _pc_max,
-                "Panel max exclusion",
-                _to_rgba("green", constraint_alpha * 0.8),
-                "green",
-                showlegend=(180.0 - panel_max_angle) > 0,
-            )
-        )
+    # ST constraint circles, orbit, anti-sun, and panel traces
+    traces_fig.extend(
+        build_optional_figure_traces(cc, init_data, n_trackers, constraint_alpha)
+    )
 
     animated_indices = list(range(1, len(traces_fig)))
 
