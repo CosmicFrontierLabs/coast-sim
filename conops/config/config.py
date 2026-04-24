@@ -191,9 +191,11 @@ class MissionConfig(ConfigModel):
         else:
             self.constraint.radiator_hard_constraint = None
 
-        _tele_c = self.payload.combined_telescope_spacecraft_constraint()
+        telescope_constraint = self.payload.combined_telescope_spacecraft_constraint()
         self.constraint.telescope_hard_constraint = (
-            _tele_c if isinstance(_tele_c, ConstraintConfig) else None
+            telescope_constraint
+            if isinstance(telescope_constraint, ConstraintConfig)
+            else None
         )
 
         self.constraint.invalidate_combined_constraint_cache()

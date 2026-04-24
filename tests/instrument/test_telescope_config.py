@@ -300,14 +300,14 @@ class TestTelescopeConstraint:
         import math
 
         boresight = (0.0, math.sin(math.radians(45)), math.cos(math.radians(45)))
-        t = Telescope(boresight=boresight, constraint=self._sun_constraint())
-        # Different boresight → offset constraint should differ from identity
-        t_default = Telescope(
-            boresight=(1.0, 0.0, 0.0), constraint=self._sun_constraint()
-        )
-        # Both return ConstraintConfig objects; they represent different offsets
+        c = self._sun_constraint()
+        t = Telescope(boresight=boresight, constraint=c)
+        t_default = Telescope(boresight=(1.0, 0.0, 0.0), constraint=c)
+        # +X boresight returns the base constraint object (identity short-circuit)
+        assert t_default.spacecraft_constraint is c.constraint
+        # Off-axis boresight returns a new, distinct boresight-offset object
         assert t.spacecraft_constraint is not None
-        assert t_default.spacecraft_constraint is not None
+        assert t.spacecraft_constraint is not c.constraint
 
     def test_combined_telescope_spacecraft_constraint_no_telescopes(self) -> None:
         payload = Payload(instruments=[Instrument()])
@@ -338,3 +338,47 @@ class TestTelescopeConstraint:
         payload = Payload(instruments=[cam, scope])
         result = payload.combined_telescope_spacecraft_constraint()
         assert result is not None
+
+    def test_invalidate_spacecraft_constraint_cache(self) -> None:
+        c = self._sun_constraint()
+        t = Telescope(boresight=(0.0, 0.0, 1.0), constraint=c)
+        first = t.spacecraft_constraint
+        assert first is not None
+        # Cache is populated; invalidate and verify a fresh object is returned
+        t.invalidate_spacecraft_constraint_cache()
+        second = t.spacecraft_constraint
+        assert second is not None
+        # After invalidation a new ConstraintConfig is computed (different object)
+        assert first is not second
+
+
+class TestTelescopeConstraintMissionConfig:
+    """Integration tests: Telescope.constraint propagates into MissionConfig."""
+
+    def test_telescope_constraint_propagates_to_mission_constraint(self) -> None:
+        from conops.config import MissionConfig
+        from conops.config.constraint import Constraint
+
+        scope = Telescope(
+            constraint=Constraint(
+                sun_constraint=rust_ephem.SunConstraint(min_angle=45.0)
+            )
+        )
+        payload = Payload(instruments=[scope])
+        config = MissionConfig(payload=payload)
+        assert config.constraint.telescope_hard_constraint is not None
+
+    def test_no_telescope_constraint_leaves_field_none(self) -> None:
+        from conops.config import MissionConfig
+
+        scope = Telescope()  # no constraint
+        payload = Payload(instruments=[scope])
+        config = MissionConfig(payload=payload)
+        assert config.constraint.telescope_hard_constraint is None
+
+    def test_plain_instrument_payload_leaves_telescope_field_none(self) -> None:
+        from conops.config import MissionConfig
+
+        payload = Payload(instruments=[Instrument()])
+        config = MissionConfig(payload=payload)
+        assert config.constraint.telescope_hard_constraint is None

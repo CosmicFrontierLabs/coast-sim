@@ -245,6 +245,14 @@ class Telescope(Instrument):
             yaw_deg=yaw_deg,
         )
 
+    def invalidate_spacecraft_constraint_cache(self) -> None:
+        """Invalidate cached spacecraft_constraint after boresight or constraint updates.
+
+        Call this whenever ``boresight`` or ``constraint`` is reassigned after
+        construction so that :attr:`spacecraft_constraint` is recomputed.
+        """
+        self.__dict__.pop("spacecraft_constraint", None)
+
 
 # Discriminated union used by Payload.instruments for round-trip JSON serialization.
 # Telescope must come first so Pydantic tries the more specific type first when

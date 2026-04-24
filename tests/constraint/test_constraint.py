@@ -1334,3 +1334,36 @@ class TestIgnoreRoll:
 
         _, kwargs = mock_sun_backend.call_args
         assert kwargs["target_roll"] == 42.0
+
+
+class TestInTelescopeHard:
+    """Test in_telescope_hard method."""
+
+    def test_no_constraint_returns_false(self) -> None:
+        c = Constraint()
+        assert c.in_telescope_hard(45.0, 30.0, 1700000000.0) is False
+
+    def test_requires_ephemeris_when_constraint_set(self) -> None:
+        import rust_ephem
+
+        c = Constraint(
+            telescope_hard_constraint=rust_ephem.SunConstraint(min_angle=45.0),
+            ephem=None,
+        )
+        with pytest.raises(AssertionError, match="Ephemeris must be set"):
+            c.in_telescope_hard(45.0, 30.0, 1700000000.0)
+
+    @patch("rust_ephem.SunConstraint.in_constraint")
+    def test_delegates_to_cached_check(self, mock_backend) -> None:
+        from unittest.mock import Mock
+
+        import rust_ephem
+
+        mock_backend.return_value = True
+        c = Constraint(
+            telescope_hard_constraint=rust_ephem.SunConstraint(min_angle=45.0),
+        )
+        c.ephem = Mock()  # assign post-construction (validate_assignment=False)
+        result = c.in_telescope_hard(45.0, 30.0, 1700000000.0)
+        assert result is True
+        assert mock_backend.called
