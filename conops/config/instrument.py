@@ -1,4 +1,6 @@
-from pydantic import Field
+from enum import Enum
+
+from pydantic import Field, model_validator
 
 from ._base import ConfigModel
 from .data_generator import DataGeneration
@@ -6,27 +8,102 @@ from .power import PowerDraw
 from .thermal import Heater
 
 
-class Instrument(ConfigModel):
-    """
-    A model representing a spacecraft instrument with power consumption characteristics.
+class TelescopeType(str, Enum):
+    """Optical design type of a telescope."""
 
-    This class defines an instrument's basic properties including its name and power
-    draw specifications. It provides methods to query power consumption in different
-    operational modes.
+    NEWTONIAN = "Newtonian"
+    CASSEGRAIN = "Cassegrain"
+    RITCHEY_CHRETIEN = "Ritchey-Chrétien"
+    SCHMIDT_CASSEGRAIN = "Schmidt-Cassegrain"
+    MAKSUTOV_CASSEGRAIN = "Maksutov-Cassegrain"
+    KORSCH = "Korsch"
+    GREGORIAN = "Gregorian"
+    DALL_KIRKHAM = "Dall-Kirkham"
+    TMA = "Three Mirror Anastigmat"
+    REFRACTOR = "Refractor"
+    OTHER = "Other"
+
+
+class TelescopeConfig(ConfigModel):
+    """Optical configuration for a telescope.
+
+    Groups the key optical parameters that characterise a telescope's
+    collecting power and imaging geometry.  The f-number is validated
+    against aperture and focal length when all three are provided.
 
     Attributes:
-        name (str): The name of the instrument. Defaults to "Default Instrument".
-        power_draw (PowerDraw): The power draw characteristics of the instrument,
-            including nominal power, peak power, and mode-specific power settings.
-            Defaults to a PowerDraw with 50W nominal and 100W peak power.
+        aperture_m: Clear aperture diameter in metres.
+        focal_length_m: Effective focal length in metres.
+        f_number: Focal ratio (focal_length / aperture).  Auto-derived when omitted.
+        telescope_type: Optical design family (e.g. Ritchey-Chrétien).
+        tube_length_m: Physical tube length in metres.  For folded or
+            catadioptric designs this is shorter than the focal length.
+    """
 
-    Methods:
-        power(mode): Returns the power draw for the specified operational mode.
+    aperture_m: float | None = Field(
+        default=None,
+        gt=0,
+        description="Clear aperture diameter in metres",
+    )
+    focal_length_m: float | None = Field(
+        default=None,
+        gt=0,
+        description="Effective focal length in metres",
+    )
+    f_number: float | None = Field(
+        default=None,
+        gt=0,
+        description="Focal ratio (focal_length / aperture).  Auto-derived when omitted.",
+    )
+    telescope_type: TelescopeType = Field(
+        default=TelescopeType.OTHER,
+        description="Optical design type of the telescope",
+    )
+    tube_length_m: float | None = Field(
+        default=None,
+        gt=0,
+        description="Physical tube length in metres",
+    )
 
-    Example:
-        >>> instrument = Instrument(name="Camera", power_draw=PowerDraw(nominal_power=75))
-        >>> instrument.power()
-        75.0
+    @model_validator(mode="after")
+    def _derive_or_validate_f_number(self) -> "TelescopeConfig":
+        """Derive f_number from aperture and focal_length, or validate consistency."""
+        a = self.aperture_m
+        fl = self.focal_length_m
+        fn = self.f_number
+
+        if a is not None and fl is not None:
+            computed = fl / a
+            if fn is None:
+                object.__setattr__(self, "f_number", round(computed, 6))
+            else:
+                tol = 1e-3
+                if abs(fn - computed) > tol:
+                    raise ValueError(
+                        f"f_number {fn} is inconsistent with focal_length_m {fl} "
+                        f"and aperture_m {a} (expected {computed:.4f})"
+                    )
+        return self
+
+    @property
+    def plate_scale_arcsec_per_um(self) -> float | None:
+        """Plate scale in arcseconds per micrometre at the focal plane.
+
+        Returns None if focal_length_m is not set.
+        """
+        if self.focal_length_m is None:
+            return None
+        return 206265.0 / (self.focal_length_m * 1e6)
+
+
+class Instrument(ConfigModel):
+    """A spacecraft instrument with power consumption and data generation characteristics.
+
+    Attributes:
+        name: Instrument name/identifier.
+        power_draw: Power draw characteristics (nominal, peak, mode-specific).
+        heater: Optional heater system.
+        data_generation: Data generation characteristics.
     """
 
     name: str = Field(
@@ -62,24 +139,43 @@ class Instrument(ConfigModel):
         return base_power + heater_power
 
 
-class Payload(ConfigModel):
-    """
-    The payload is a collection of instruments that can be operated together.
+class Telescope(Instrument):
+    """A telescope instrument with optical configuration.
 
-    This class manages multiple Instrument instances and provides aggregate
-    operations across all instruments in the payload.
+    Extends Instrument with the optical parameters of a telescope.
+    Telescope instances can be placed in Payload.instruments alongside
+    any other Instrument subclass.
 
     Attributes:
-        instruments (list[Instrument]): A list of Instrument objects. Defaults to
-            a single default Instrument instance.
-
-    Methods:
-        power(mode): Calculate the total power consumption across all instruments.
+        optics: Optical configuration (aperture, focal length, f-number,
+            design type, tube length).
 
     Example:
-        >>> payload = Payload(instruments=[instrument1, instrument2])
-        >>> payload.power()
-        125.0
+        >>> scope = Telescope(
+        ...     name="Primary Telescope",
+        ...     optics=TelescopeConfig(
+        ...         aperture_m=0.6,
+        ...         focal_length_m=6.0,
+        ...         telescope_type=TelescopeType.RITCHEY_CHRETIEN,
+        ...         tube_length_m=1.2,
+        ...     ),
+        ... )
+        >>> scope.optics.f_number
+        10.0
+    """
+
+    name: str = Field(default="Telescope", description="Instrument name/identifier")
+    optics: TelescopeConfig = Field(
+        default_factory=TelescopeConfig,
+        description="Optical configuration of the telescope",
+    )
+
+
+class Payload(ConfigModel):
+    """A collection of instruments operated together as the spacecraft payload.
+
+    Attributes:
+        instruments: List of Instrument (or subclass) instances.
     """
 
     instruments: list[Instrument] = [Instrument()]
