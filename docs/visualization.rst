@@ -35,6 +35,8 @@ The following plotting functions are available under `conops.visualization`:
 - `plot_ditl_timeline()` — timeline with orbit numbers, observations, slews, SAA, and eclipses.
 - `plot_sky_pointing()` — an interactive Mollweide sky projection with current pointing and constraints.
 - `save_sky_pointing_movie()` — export the entire DITL sky pointing visualization as a movie (MP4, AVI, or GIF).
+- `plot_spacecraft_3d()` — rotatable 3-D spacecraft model built directly from a ``MissionConfig`` (no simulation required).
+  See :doc:`spacecraft_3d_visualization` for full details.
 
 Examples and advanced usage
 ---------------------------
