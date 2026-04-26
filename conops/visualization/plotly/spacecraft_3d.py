@@ -82,7 +82,7 @@ def _box_mesh(
     center: tuple[float, float, float] = (0.0, 0.0, 0.0),
     color: str = _C_BUS,
     name: str = "Bus",
-    opacity: float = 0.88,
+    opacity: float = 1.0,
     show_legend: bool = True,
 ) -> go.Mesh3d:
     cx, cy, cz = center
@@ -128,7 +128,7 @@ def _flat_rect_mesh(
     height: float,
     color: str,
     name: str,
-    opacity: float = 0.88,
+    opacity: float = 1.0,
     show_legend: bool = True,
     legendgroup: str | None = None,
 ) -> go.Mesh3d:
@@ -143,8 +143,8 @@ def _flat_rect_mesh(
         y=pts[:, 1].tolist(),
         z=pts[:, 2].tolist(),
         i=[0, 0],
-        j=[1, 3],
-        k=[2, 2],
+        j=[1, 2],
+        k=[2, 3],
         color=color,
         opacity=opacity,
         name=name,
@@ -164,7 +164,7 @@ def _cylinder_mesh(
     color: str,
     name: str,
     n_theta: int = 32,
-    opacity: float = 0.90,
+    opacity: float = 1.0,
     show_legend: bool = True,
     legendgroup: str | None = None,
 ) -> go.Mesh3d:
@@ -212,7 +212,7 @@ def _disk_mesh(
     color: str,
     name: str,
     n_theta: int = 32,
-    opacity: float = 0.90,
+    opacity: float = 1.0,
     show_legend: bool = False,
     legendgroup: str | None = None,
 ) -> go.Mesh3d:
@@ -501,7 +501,6 @@ def plot_spacecraft_3d(
                 0.0,
                 color="rgb(8, 8, 15)",
                 name="Aperture opening",
-                opacity=0.95,
                 legendgroup="telescope",
             )
         )
@@ -610,7 +609,6 @@ def plot_spacecraft_3d(
                 ph + 0.04,
                 color=_C_SOLAR_FRAME,
                 name="Solar panel frame",
-                opacity=0.75,
                 show_legend=show_fr,
                 legendgroup="solar_frames",
             )
@@ -665,7 +663,6 @@ def plot_spacecraft_3d(
                 rh,
                 color=_C_RADIATOR,
                 name=rname,
-                opacity=0.85,
                 show_legend=show_r,
                 legendgroup="radiators",
             )
@@ -730,7 +727,6 @@ def plot_spacecraft_3d(
                 body_size,
                 color=_C_ST,
                 name=sname,
-                opacity=0.92,
                 show_legend=not st_legend_shown,
                 legendgroup="star_trackers",
             )
@@ -749,7 +745,6 @@ def plot_spacecraft_3d(
                 body_size * 0.6,
                 color=sc,
                 name=sname,
-                opacity=0.80,
                 show_legend=False,
                 legendgroup="star_trackers",
             )
