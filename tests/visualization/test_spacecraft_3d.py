@@ -482,6 +482,75 @@ class TestMultiplePanels:
 # ---------------------------------------------------------------------------
 # TestMultipleRadiators
 # ---------------------------------------------------------------------------
+# TestStarTrackerMounting
+# ---------------------------------------------------------------------------
+
+
+class TestStarTrackerMounting:
+    """Star trackers mount on the telescope tube when one is present; otherwise on the bus."""
+
+    @pytest.fixture
+    def config_with_telescope(self) -> MissionConfig:
+        return MissionConfig(
+            payload=Payload(
+                instruments=[
+                    Telescope(
+                        name="OTA",
+                        boresight=(1.0, 0.0, 0.0),
+                        optics=TelescopeConfig(aperture_m=0.5, tube_length_m=1.4),
+                    )
+                ]
+            )
+        )
+
+    def _st_body_mesh(self, fig: go.Figure) -> go.Mesh3d:
+        """Return the first star-tracker body Mesh3d."""
+        meshes = [
+            t for t in fig.data if isinstance(t, go.Mesh3d) and t.name == "StarTracker"
+        ]
+        assert meshes, "no StarTracker body mesh found"
+        return meshes[0]
+
+    def _center(self, mesh: go.Mesh3d) -> tuple[float, float, float]:
+        x = sum(mesh.x) / len(mesh.x)
+        y = sum(mesh.y) / len(mesh.y)
+        z = sum(mesh.z) / len(mesh.z)
+        return x, y, z
+
+    def test_no_telescope_star_tracker_near_bus_face(self) -> None:
+        fig = plot_spacecraft_3d(MissionConfig())
+        cx, cy, cz = self._center(self._st_body_mesh(fig))
+        # Default ST boresight is +X → lands on the +X bus face (half-dim = 1.0)
+        assert 0.9 < cx < 1.2, f"expected ST near +X bus face, got x={cx:.3f}"
+
+    def test_with_telescope_star_tracker_on_tube(
+        self, config_with_telescope: MissionConfig
+    ) -> None:
+        fig = plot_spacecraft_3d(config_with_telescope)
+        cx, cy, cz = self._center(self._st_body_mesh(fig))
+        # Tube starts at x=1.0, length=1.4, 65% along = x≈1.91
+        # ST must be clearly beyond the bus front face (x > 1.3)
+        assert cx > 1.3, f"expected ST on telescope tube (x > 1.3), got x={cx:.3f}"
+
+    def test_with_telescope_star_tracker_outside_baffle(
+        self, config_with_telescope: MissionConfig
+    ) -> None:
+        fig = plot_spacecraft_3d(config_with_telescope)
+        cx, cy, cz = self._center(self._st_body_mesh(fig))
+        # With aperture=0.5 → outer_r = 0.25+0.06 = 0.31; ST must be outside that
+        r_perp = math.sqrt(cy**2 + cz**2)
+        assert r_perp > 0.28, f"expected ST outside baffle radius, got r={r_perp:.3f}"
+
+    def test_with_telescope_trace_count_unchanged(
+        self, config_with_telescope: MissionConfig
+    ) -> None:
+        # Mounting location should not affect trace count
+        n_scope = len(plot_spacecraft_3d(config_with_telescope).data)
+        # default (21) + 7 telescope traces = 28
+        assert n_scope == 28
+
+
+# ---------------------------------------------------------------------------
 
 
 class TestMultipleRadiators:

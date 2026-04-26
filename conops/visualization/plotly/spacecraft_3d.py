@@ -417,6 +417,10 @@ def plot_spacecraft_3d(
     bus_hd: tuple[float, float, float] = bus_half_dims or (1.0, 0.55, 0.55)
     hx, hy, hz = bus_hd
 
+    # Telescope geometry captured during section 2; used for ST mounting in section 5.
+    # (tube_start, bore, outer_r, tube_len)
+    _scope_geom: tuple[np.ndarray, np.ndarray, float, float] | None = None
+
     # ------------------------------------------------------------------ #
     # 1. Spacecraft bus body                                               #
     # ------------------------------------------------------------------ #
@@ -455,6 +459,9 @@ def plot_spacecraft_3d(
 
         outer_r = aperture_r + 0.06  # baffle slightly wider than aperture
         scope_name = getattr(inst, "name", "Telescope")
+
+        # Save for star-tracker mounting below (last telescope wins if multiple).
+        _scope_geom = (tube_start, bore, outer_r, tube_len)
 
         # Outer baffle cylinder
         traces.append(
@@ -693,13 +700,27 @@ def plot_spacecraft_3d(
         b_vec = _unit(np.asarray(bore_raw, dtype=float))
         sc = st_colors[sidx % len(st_colors)]
 
-        # Place a small prism (box) on the bus face
-        c, u, v = _face_placement(b_vec, bus_hd, gap=0.0)
         body_size = 0.12
 
-        # Small square prism sticking out from bus face
-        prism_start = c
-        prism_end = c + b_vec * 0.08
+        if _scope_geom is not None:
+            # Mount on the telescope tube surface.
+            s_start, s_bore, s_outer_r, s_tube_len = _scope_geom
+            # Radial direction: component of boresight perpendicular to the tube axis.
+            b_perp = b_vec - float(np.dot(b_vec, s_bore)) * s_bore
+            radial = (
+                _unit(b_perp) if np.linalg.norm(b_perp) > 0.1 else _perp_pair(s_bore)[0]
+            )
+            # Position at 65 % along the tube, just outside the baffle surface.
+            c = s_start + s_bore * (s_tube_len * 0.65) + radial * (s_outer_r + 0.005)
+            u = s_bore  # span along tube
+            v = _unit(np.cross(s_bore, radial))  # span tangential to tube
+            prism_start = c
+            prism_end = c + radial * 0.08
+        else:
+            # No telescope — fall back to bus-face placement.
+            c, u, v = _face_placement(b_vec, bus_hd, gap=0.0)
+            prism_start = c
+            prism_end = c + b_vec * 0.08
         traces.append(
             _flat_rect_mesh(
                 (prism_start + prism_end) / 2,
@@ -716,10 +737,12 @@ def plot_spacecraft_3d(
         )
         st_legend_shown = True
 
-        # Front face of the star tracker (in tracker color = lens aperture)
+        # Front face of the star tracker (in tracker color = lens aperture).
+        # Offset slightly outward from the prism end in the mounting direction.
+        mount_dir = _unit(prism_end - prism_start)
         traces.append(
             _flat_rect_mesh(
-                prism_end + b_vec * 0.001,
+                prism_end + mount_dir * 0.001,
                 u,
                 v,
                 body_size * 0.6,
