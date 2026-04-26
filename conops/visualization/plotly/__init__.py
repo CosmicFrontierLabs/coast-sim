@@ -15,6 +15,7 @@ from .radiator_telemetry import plot_radiator_telemetry_plotly
 from .sky_pointing import (
     plot_sky_pointing_plotly,
 )
+from .spacecraft_3d import plot_spacecraft_3d
 
 __all__ = [
     "plot_sky_pointing_globe",
@@ -26,4 +27,5 @@ __all__ = [
     "annotate_slew_distances",
     "plot_data_management_telemetry_plotly",
     "plot_acs_mode_distribution_plotly",
+    "plot_spacecraft_3d",
 ]
