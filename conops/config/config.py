@@ -339,8 +339,9 @@ class MissionConfig(ConfigModel):
                         continue
 
                     field_value = content[field_name]
+                    field_annotation = self._resolve_annotation(field_info.annotation)
 
-                    # Add field description as comment
+                    # Add field description as a comment
                     if field_info.description:
                         lines.append(f"{ind}# {field_name}: {field_info.description}")
 
@@ -390,15 +391,26 @@ class MissionConfig(ConfigModel):
                             )
                     # Handle nested models
                     elif isinstance(field_value, dict) and hasattr(
-                        field_info.annotation, "model_fields"
+                        field_annotation, "model_fields"
                     ):
-                        lines.append(f"{ind}{field_name}:")
-                        self._add_annotated_yaml_content(
-                            lines,
-                            field_value,
-                            field_info.annotation,
-                            indent=indent + 1,
-                        )
+                        expected_keys = set(field_annotation.model_fields.keys())
+                        if set(field_value.keys()).issubset(expected_keys):
+                            lines.append(f"{ind}{field_name}:")
+                            self._add_annotated_yaml_content(
+                                lines,
+                                field_value,
+                                field_annotation,
+                                indent=indent + 1,
+                            )
+                        else:
+                            yaml_str = yaml.safe_dump(
+                                {field_name: field_value},
+                                default_flow_style=False,
+                                sort_keys=False,
+                            )
+                            for line in yaml_str.rstrip().split("\n"):
+                                if line:
+                                    lines.append(ind + line)
                     else:
                         # Scalar or non-pydantic value
                         yaml_str = yaml.safe_dump(
@@ -434,6 +446,28 @@ class MissionConfig(ConfigModel):
             )
             lines.append(ind + yaml_str.rstrip())
 
+    def _resolve_annotation(self, annotation: Any) -> Any:
+        """Unwrap Annotated and Union annotations to the underlying type."""
+        import types
+        import typing
+
+        if hasattr(typing, "get_origin") and hasattr(typing, "get_args"):
+            origin = typing.get_origin(annotation)
+            args = typing.get_args(annotation)
+
+            if origin is typing.Annotated and args:
+                return self._resolve_annotation(args[0])
+
+            if origin in (typing.Union, types.UnionType) and args:
+                # Prefer a pydantic model if one exists in the union.
+                for arg in args:
+                    resolved = self._resolve_annotation(arg)
+                    if hasattr(resolved, "model_fields"):
+                        return resolved
+                return self._resolve_annotation(args[0])
+
+        return annotation
+
     def _get_list_item_type(self, model_class: Any) -> Any:
         """Extract the item type from a list annotation.
 
@@ -443,7 +477,6 @@ class MissionConfig(ConfigModel):
         Returns:
             The item type, or None if not determinable
         """
-        # Try to get the origin and args from typing
         import typing
 
         if hasattr(typing, "get_origin") and hasattr(typing, "get_args"):
@@ -451,6 +484,6 @@ class MissionConfig(ConfigModel):
             args = typing.get_args(model_class)
 
             if origin is list and args:
-                return args[0]
+                return self._resolve_annotation(args[0])
 
         return None
