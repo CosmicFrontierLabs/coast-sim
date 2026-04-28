@@ -27,7 +27,7 @@ from .vector import (
     rotvec,
     scbodyvector,
     separation,
-    sun_avoiding_path,
+    sun_avoiding_waypoint,
 )
 
 __all__ = [
@@ -53,7 +53,7 @@ __all__ = [
     "rotvec",
     "scbodyvector",
     "separation",
-    "sun_avoiding_path",
+    "sun_avoiding_waypoint",
     "unixtime2date",
     "unixtime2yearday",
 ]

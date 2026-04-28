@@ -204,53 +204,58 @@ class TestCalcSlewtime:
 
     @pytest.mark.parametrize("distance", [np.nan, -5.0])
     def test_calc_slewtime_handles_invalid_distance(self, slew, acs_config, distance):
-        acs_config.predict_slew = Mock(
-            return_value=(distance, (np.array([0.0]), np.array([0.0])))
-        )
         acs_config.slew_time = Mock(return_value=0.0)
         slew.startra = 0.0
         slew.startdec = 0.0
         slew.endra = 10.0
         slew.enddec = 10.0
         slew.slewstart = 1700000000.0
+
+        def inject_bad_distance() -> None:
+            slew.slewdist = distance
+            slew.slewpath = ([0.0], [0.0])
+            slew._quat_roll_path = []
+
+        slew.predict_slew = inject_bad_distance
         with pytest.raises(ValueError, match="Invalid slew distance"):
             slew.calc_slewtime()
 
 
 class TestPredictSlew:
-    """Test predict_slew method."""
+    """Test predict_slew method (quaternion SLERP)."""
 
-    def test_predict_slew_calls_acs_predict_slew(self, slew_predict_setup):
-        slew, ra_path, dec_path = slew_predict_setup
-        slew.predict_slew()
-        slew.acs_config.predict_slew.assert_called_once_with(
-            45.0, 30.0, 90.0, 60.0, steps=100
+    def test_predict_slew_sets_slewdist_positive(self, slew_predict_setup):
+        slew_predict_setup.predict_slew()
+        assert slew_predict_setup.slewdist > 0
+
+    def test_predict_slew_sets_slewdist_approx(self, slew_predict_setup):
+        from conops.common import separation
+        from conops.config.constants import DTOR
+
+        expected = (
+            separation([45.0 * DTOR, 30.0 * DTOR], [90.0 * DTOR, 60.0 * DTOR]) / DTOR
         )
+        slew_predict_setup.predict_slew()
+        assert abs(slew_predict_setup.slewdist - expected) < 0.01
 
-    def test_predict_slew_sets_slewdist(self, slew_predict_setup):
-        slew, ra_path, dec_path = slew_predict_setup
-        slew.predict_slew()
-        assert slew.slewdist == 14.142
+    def test_predict_slew_path_length(self, slew_predict_setup):
+        slew_predict_setup.predict_slew()
+        assert len(slew_predict_setup.slewpath[0]) == 101
+        assert len(slew_predict_setup.slewpath[1]) == 101
 
-    def test_predict_slew_sets_path_ra_length(self, slew_predict_setup):
-        slew, ra_path, dec_path = slew_predict_setup
-        slew.predict_slew()
-        assert len(slew.slewpath[0]) == 20
+    def test_predict_slew_path_starts_at_start(self, slew_predict_setup):
+        slew_predict_setup.predict_slew()
+        assert abs(slew_predict_setup.slewpath[0][0] - 45.0) < 0.01
+        assert abs(slew_predict_setup.slewpath[1][0] - 30.0) < 0.01
 
-    def test_predict_slew_sets_path_dec_length(self, slew_predict_setup):
-        slew, ra_path, dec_path = slew_predict_setup
-        slew.predict_slew()
-        assert len(slew.slewpath[1]) == 20
+    def test_predict_slew_path_ends_at_end(self, slew_predict_setup):
+        slew_predict_setup.predict_slew()
+        assert abs(slew_predict_setup.slewpath[0][-1] - 90.0) < 0.01
+        assert abs(slew_predict_setup.slewpath[1][-1] - 60.0) < 0.01
 
-    def test_predict_slew_sets_path_ra_values(self, slew_predict_setup):
-        slew, ra_path, dec_path = slew_predict_setup
-        slew.predict_slew()
-        assert np.allclose(slew.slewpath[0], ra_path)
-
-    def test_predict_slew_sets_path_dec_values(self, slew_predict_setup):
-        slew, ra_path, dec_path = slew_predict_setup
-        slew.predict_slew()
-        assert np.allclose(slew.slewpath[1], dec_path)
+    def test_predict_slew_sets_roll_path(self, slew_predict_setup):
+        slew_predict_setup.predict_slew()
+        assert len(slew_predict_setup._quat_roll_path) == 101
 
 
 class TestSlewPathResolution:

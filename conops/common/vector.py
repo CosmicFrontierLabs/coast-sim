@@ -426,7 +426,7 @@ def _closest_approach_on_arc(
     return c, within
 
 
-def sun_avoiding_path(
+def sun_avoiding_waypoint(
     ra1: float,
     dec1: float,
     ra2: float,
@@ -434,33 +434,24 @@ def sun_avoiding_path(
     sun_ra: float,
     sun_dec: float,
     min_sun_angle: float,
-    steps: int = 100,
     margin_deg: float = 5.0,
-) -> tuple[list[float], list[float]]:
-    """Compute a slew path that avoids the Sun exclusion zone.
+) -> tuple[float, float] | None:
+    """Return a waypoint (RA, Dec) that routes a slew around the Sun, or None.
 
-    If the direct great-circle arc from (ra1, dec1) to (ra2, dec2) passes
-    within *min_sun_angle* degrees of the Sun at (sun_ra, sun_dec), a single
-    waypoint is inserted on the boundary of the exclusion zone + *margin_deg*
-    to route the spacecraft around the Sun.  If no violation is detected the
-    function falls back to a plain great-circle path.
+    If the direct great-circle arc from (ra1, dec1) to (ra2, dec2) would pass
+    within *min_sun_angle* degrees of the Sun, a single waypoint is returned
+    at angular distance (min_sun_angle + margin_deg) from the Sun.  Two
+    candidate waypoints (one on each side of the arc) are considered; the one
+    giving the shorter total detour is returned.
 
-    Waypoint geometry: the waypoint is placed at angular distance
-    (min_sun_angle + margin_deg) from the Sun, offset perpendicular to the
-    great-circle arc in the direction that avoids the Sun.  Two candidate
-    offsets are considered (one on each side of the arc) and the shorter
-    total detour is selected.
+    Returns None when no Sun violation is detected on the direct arc.
 
     Args:
         ra1, dec1:       Start pointing (degrees).
         ra2, dec2:       End pointing (degrees).
         sun_ra, sun_dec: Sun position (degrees).
         min_sun_angle:   Sun exclusion radius (degrees).
-        steps:           Number of waypoints in the output path.
         margin_deg:      Extra buffer beyond min_sun_angle for the waypoint.
-
-    Returns:
-        Tuple (ra_list, dec_list) of the computed path (degrees).
     """
     a = vecnorm(radec2vec(np.deg2rad(ra1), np.deg2rad(dec1)))
     b = vecnorm(radec2vec(np.deg2rad(ra2), np.deg2rad(dec2)))
@@ -468,32 +459,26 @@ def sun_avoiding_path(
 
     n = vecnorm(np.cross(a, b))
     if np.linalg.norm(n) < 1e-12:
-        # A and B are antipodal or identical – can't determine arc normal
-        return great_circle(ra1, dec1, ra2, dec2, steps)
+        return None
 
     c, within_arc = _closest_approach_on_arc(a, b, s)
     min_dist_deg = float(np.rad2deg(np.arccos(np.clip(float(np.dot(s, c)), -1.0, 1.0))))
 
     if not within_arc or min_dist_deg >= min_sun_angle:
-        return great_circle(ra1, dec1, ra2, dec2, steps)
+        return None
 
-    # Angular distance from S to the great circle (same as min_dist_deg)
     d_min_rad = np.deg2rad(min_dist_deg)
     threshold_rad = np.deg2rad(min_sun_angle + margin_deg)
-    beta = float(threshold_rad - d_min_rad)  # offset angle off the arc
+    beta = float(threshold_rad - d_min_rad)
 
-    # Perpendicular direction to the arc at C, pointing away from the Sun
     dot_sn = float(np.dot(s, n))
-    away_dir = -n if dot_sn > 0 else n  # unit vector, perpendicular to arc, away from S
+    away_dir = -n if dot_sn > 0 else n
 
-    # Two candidate waypoints:
-    #   W1: step β away from arc in the "away from sun" direction (shorter offset)
-    #   W2: step β+2*d_min away from arc in the "toward sun" direction (other side)
     beta2 = float(threshold_rad + d_min_rad)
     toward_dir = -away_dir
 
-    w1 = np.cos(beta) * c + np.sin(beta) * away_dir  # already unit (C ⊥ away_dir)
-    w2 = np.cos(beta2) * c + np.sin(beta2) * toward_dir  # already unit (C ⊥ toward_dir)
+    w1 = np.cos(beta) * c + np.sin(beta) * away_dir
+    w2 = np.cos(beta2) * c + np.sin(beta2) * toward_dir
 
     def path_length_deg(w: npt.NDArray[np.float64]) -> float:
         d1 = float(np.rad2deg(np.arccos(np.clip(float(np.dot(a, w)), -1.0, 1.0))))
@@ -502,10 +487,4 @@ def sun_avoiding_path(
 
     w = w1 if path_length_deg(w1) <= path_length_deg(w2) else w2
     w_ra_dec = vec2radec(w)
-    w_ra = float(np.rad2deg(w_ra_dec[0]))
-    w_dec = float(np.rad2deg(w_ra_dec[1]))
-
-    half = steps // 2
-    seg1_ra, seg1_dec = great_circle(ra1, dec1, w_ra, w_dec, half)
-    seg2_ra, seg2_dec = great_circle(w_ra, w_dec, ra2, dec2, max(steps - half, 1))
-    return seg1_ra + seg2_ra[1:], seg1_dec + seg2_dec[1:]
+    return float(np.rad2deg(w_ra_dec[0])), float(np.rad2deg(w_ra_dec[1]))

@@ -63,19 +63,15 @@ class Polarization(str, Enum):
 class SlewAlgorithm(str, Enum):
     """Algorithm used to compute spacecraft slew paths.
 
-    GREAT_CIRCLE: Shortest great-circle arc (existing behaviour). RA/Dec are
-        interpolated independently, roll linearly. Fast and adequate for most
-        slews that are far from the Sun.
+    QUATERNION (default): Full 3-DOF SLERP in SO(3).  Couples pointing and
+        roll changes through the shortest rotation path in quaternion space,
+        giving a physically accurate attitude trajectory.
 
-    QUATERNION: Full 3-DOF SLERP in SO(3).  Couples pointing and roll changes
-        through the shortest rotation path in quaternion space, giving a
-        physically more accurate attitude trajectory.
-
-    SUN_AVOIDING: Great-circle path with an automatic detour when the direct
-        arc would violate the configured Sun exclusion angle.  Falls back to
-        GREAT_CIRCLE when no violation is detected.
+    SUN_AVOIDING: Quaternion SLERP path with an automatic detour around the
+        configured Sun exclusion zone.  A single waypoint is inserted on the
+        exclusion boundary when the direct arc would violate the constraint;
+        falls back to plain QUATERNION when no violation is detected.
     """
 
-    GREAT_CIRCLE = "great_circle"
     QUATERNION = "quaternion"
     SUN_AVOIDING = "sun_avoiding"

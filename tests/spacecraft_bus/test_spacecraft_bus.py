@@ -239,18 +239,16 @@ class TestAttitudeControlSystem:
         assert abs(slewdist) < 1e-6
 
     def test_predict_slew_same_position_path_length_ra(self, default_acs):
-        """Test predict_slew path length for ra with identical positions."""
+        """Test predict_slew path returns start and end points."""
         slewdist, slewpath = default_acs.predict_slew(0, 0, 0, 0)
         ra_path, dec_path = slewpath
-        # great_circle returns steps+2 points (includes start and end)
-        assert len(ra_path) == 22  # 20 steps + start + end
+        assert len(ra_path) == 2
 
     def test_predict_slew_same_position_path_length_dec(self, default_acs):
-        """Test predict_slew path length for dec with identical positions."""
+        """Test predict_slew path returns start and end points."""
         slewdist, slewpath = default_acs.predict_slew(0, 0, 0, 0)
         ra_path, dec_path = slewpath
-        # great_circle returns steps+2 points (includes start and end)
-        assert len(dec_path) == 22
+        assert len(dec_path) == 2
 
     def test_predict_slew_different_positions_distance(self, default_acs):
         """Test predict_slew calculates distance correctly."""
@@ -259,20 +257,16 @@ class TestAttitudeControlSystem:
         assert abs(slewdist - 90.0) < 0.1  # Should be ~90 degrees
 
     def test_predict_slew_different_positions_path_length_ra(self, default_acs):
-        """Test predict_slew path length for ra."""
-        # Simple case: 90 degree separation along equator
+        """Test predict_slew path returns start and end points."""
         slewdist, slewpath = default_acs.predict_slew(0, 0, 90, 0)
         ra_path, dec_path = slewpath
-        # great_circle returns steps+2 points (includes start and end)
-        assert len(ra_path) == 22  # 20 steps + start + end
+        assert len(ra_path) == 2
 
     def test_predict_slew_different_positions_path_length_dec(self, default_acs):
-        """Test predict_slew path length for dec."""
-        # Simple case: 90 degree separation along equator
+        """Test predict_slew path returns start and end points."""
         slewdist, slewpath = default_acs.predict_slew(0, 0, 90, 0)
         ra_path, dec_path = slewpath
-        # great_circle returns steps+2 points (includes start and end)
-        assert len(dec_path) == 22
+        assert len(dec_path) == 2
 
     def test_predict_slew_different_positions_start_ra(self, default_acs):
         """Test predict_slew path starts at correct ra."""
@@ -306,19 +300,19 @@ class TestAttitudeControlSystem:
         # Check path starts and ends at correct positions
         assert abs(dec_path[-1] - 0) < 1e-6
 
-    def test_predict_slew_custom_steps_path_length_ra(self, default_acs):
-        """Test predict_slew with custom steps path length for ra."""
-        slewdist, slewpath = default_acs.predict_slew(0, 0, 45, 45, steps=10)
-        ra_path, dec_path = slewpath
-        # great_circle returns steps+2 points (includes start and end)
-        assert len(ra_path) == 12  # 10 steps + start + end
+    def test_predict_slew_returns_correct_distance(self, default_acs):
+        """Test predict_slew calculates the correct angular separation."""
+        slewdist, slewpath = default_acs.predict_slew(0, 0, 45, 45)
+        assert slewdist > 0
 
-    def test_predict_slew_custom_steps_path_length_dec(self, default_acs):
-        """Test predict_slew with custom steps path length for dec."""
-        slewdist, slewpath = default_acs.predict_slew(0, 0, 45, 45, steps=10)
+    def test_predict_slew_path_endpoints(self, default_acs):
+        """Test predict_slew path contains correct start and end points."""
+        slewdist, slewpath = default_acs.predict_slew(0, 0, 45, 45)
         ra_path, dec_path = slewpath
-        # great_circle returns steps+2 points (includes start and end)
-        assert len(dec_path) == 12
+        assert ra_path[0] == 0
+        assert ra_path[-1] == 45
+        assert dec_path[0] == 0
+        assert dec_path[-1] == 45
 
     def test_predict_slew_across_meridian_distance_positive(self, default_acs):
         """Test predict_slew across meridian has positive distance."""

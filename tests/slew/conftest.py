@@ -142,9 +142,6 @@ def slew_interp_start(slew):
 
 @pytest.fixture
 def slew_calc_setup(slew, acs_config):
-    acs_config.predict_slew = Mock(
-        return_value=(10.0, (np.array([0.0, 10.0]), np.array([0.0, 10.0])))
-    )
     acs_config.slew_time = Mock(return_value=50.0)
     slew.startra = 0.0
     slew.startdec = 0.0
@@ -156,9 +153,6 @@ def slew_calc_setup(slew, acs_config):
 
 @pytest.fixture
 def slew_calc_setup_alt(slew, acs_config):
-    acs_config.predict_slew = Mock(
-        return_value=(5.0, (np.array([0.0, 5.0]), np.array([0.0, 5.0])))
-    )
     acs_config.slew_time = Mock(return_value=30.0)
     slew.startra = 0.0
     slew.startdec = 0.0
@@ -169,12 +163,11 @@ def slew_calc_setup_alt(slew, acs_config):
 
 
 @pytest.fixture
-def slew_predict_setup(slew, acs_config):
-    ra_path = np.linspace(45.0, 90.0, 20)
-    dec_path = np.linspace(30.0, 60.0, 20)
-    acs_config.predict_slew = Mock(return_value=(14.142, (ra_path, dec_path)))
+def slew_predict_setup(slew):
     slew.startra = 45.0
     slew.startdec = 30.0
+    slew.startroll = 0.0
     slew.endra = 90.0
     slew.enddec = 60.0
-    return slew, ra_path, dec_path
+    slew.endroll = 0.0
+    return slew

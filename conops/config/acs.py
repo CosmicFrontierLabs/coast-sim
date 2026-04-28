@@ -1,7 +1,7 @@
 import numpy as np
 from pydantic import Field
 
-from ..common import great_circle, separation
+from ..common import separation
 from ..common.enums import SlewAlgorithm
 from ._base import ConfigModel
 from .constants import DTOR
@@ -28,12 +28,11 @@ class AttitudeControlSystem(ConfigModel):
         default=120.0, description="Time to settle after slew completion in seconds"
     )
     slew_algorithm: SlewAlgorithm = Field(
-        default=SlewAlgorithm.GREAT_CIRCLE,
+        default=SlewAlgorithm.QUATERNION,
         description=(
             "Algorithm used to compute slew paths. "
-            "'great_circle' (default): shortest great-circle arc. "
-            "'quaternion': full SO(3) SLERP coupling pointing and roll. "
-            "'sun_avoiding': great-circle with automatic Sun-exclusion detour."
+            "'quaternion' (default): full SO(3) SLERP coupling pointing and roll. "
+            "'sun_avoiding': quaternion SLERP with automatic Sun-exclusion detour."
         ),
     )
 
@@ -109,16 +108,14 @@ class AttitudeControlSystem(ConfigModel):
         startdec: float,
         endra: float,
         enddec: float,
-        steps: int = 20,
     ) -> tuple[float, tuple[list[float], list[float]]]:
-        """Calculate great circle slew distance and path.
+        """Calculate slew distance and endpoint path for scheduling purposes.
 
         Args:
             startra: Starting RA in degrees
             startdec: Starting Dec in degrees
             endra: Ending RA in degrees
             enddec: Ending Dec in degrees
-            steps: Number of steps in the path
 
         Returns:
             Tuple of (slew_distance, slew_path) where slew_path is (ra_array, dec_array)
@@ -127,5 +124,8 @@ class AttitudeControlSystem(ConfigModel):
             separation([startra * DTOR, startdec * DTOR], [endra * DTOR, enddec * DTOR])
             / DTOR
         )
-        slewpath = great_circle(startra, startdec, endra, enddec, steps)
+        slewpath: tuple[list[float], list[float]] = (
+            [startra, endra],
+            [startdec, enddec],
+        )
         return slewdist, slewpath
