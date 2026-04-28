@@ -4,16 +4,26 @@ import numpy as np
 import rust_ephem
 
 from ..common import roll_over_angle, unixtime2date
-from ..common.enums import ObsType
+from ..common.common import dtutcfromtimestamp
+from ..common.enums import ObsType, SlewAlgorithm
+from ..common.vector import (
+    sun_avoiding_path,
+)
 from ..config import AttitudeControlSystem, Constraint, MissionConfig
+from ..config.constants import SUN_OCCULT
 
 if TYPE_CHECKING:
     from ..targets.pointing import Pointing
 
 
 class Slew:
-    """Class defines a Spacecraft Slew. Calculates slew time and slew
-    path (currently great circle only from simplicity)"""
+    """Class defines a Spacecraft Slew. Calculates slew time and slew path.
+
+    Supports three path algorithms selected via the ACS configuration:
+    - GREAT_CIRCLE: shortest great-circle arc (default, legacy behaviour).
+    - QUATERNION: full SO(3) SLERP coupling pointing and roll changes.
+    - SUN_AVOIDING: great-circle with automatic detour around the Sun.
+    """
 
     ephem: rust_ephem.Ephemeris
     constraint: Constraint
@@ -36,6 +46,8 @@ class Slew:
     slewrequest: float
     at: "Pointing | None"  # In quotes to avoid circular import
     acs_config: AttitudeControlSystem
+    # Quaternion SLERP: intermediate roll values along the path
+    _quat_roll_path: list[float]
 
     def __init__(
         self,
@@ -70,6 +82,7 @@ class Slew:
         self.obsid = 0
         self.mode = 0
         self.at = None  # What's the target associated with this slew?
+        self._quat_roll_path: list[float] = []  # roll path for QUATERNION algorithm
 
     def __str__(self) -> str:
         return f"Slew from {self.startra:.3f},{self.startdec:.3f},{self.startroll:.3f}° to {self.endra:.3f},{self.enddec:.3f},{self.endroll:.3f}° @ {unixtime2date(self.slewstart)}"
@@ -92,15 +105,14 @@ class Slew:
         """Return RA/Dec at time using bang-bang slew profile when configured.
 
         If an AttitudeControlSystem config is present, advance along the
-        great-circle path according to bang-bang kinematics (accel → cruise → decel).
-        Otherwise, fall back to legacy linear time interpolation.
+        pre-computed path according to bang-bang kinematics (accel → cruise → decel).
+        The path may be a great-circle arc, quaternion SLERP, or sun-avoiding arc
+        depending on the configured slew algorithm.
         """
-        # Time since slew start
         t = utime - self.slewstart
         if t <= 0:
             return self.startra, self.startdec
 
-        # If we don't have a computed path yet, or no ACS config, use legacy behavior
         has_path = (
             hasattr(self, "slewpath")
             and isinstance(self.slewpath, (tuple, list))
@@ -109,10 +121,7 @@ class Slew:
         )
 
         if not self.acs_config or not has_path or self.slewdist <= 0:
-            # No valid path, return start position
-            ra = self.startra
-            dec = self.startdec
-            return ra, dec
+            return self.startra, self.startdec
 
         total_dist = float(self.slewdist)
         motion_time = self.acs_config.motion_time(total_dist)
@@ -120,14 +129,10 @@ class Slew:
         s = self.acs_config.s_of_t(total_dist, tau)
         f = 0.0 if total_dist == 0 else max(0.0, min(1.0, s / total_dist))
 
-        # Interpolate along the great-circle path using fraction f
         ra_path, dec_path = self.slewpath
         n = len(ra_path)
-        # Protect against pathological small N
         if n <= 1:
-            ra = float(ra_path[0]) % 360
-            dec = float(dec_path[0])
-            return ra, dec
+            return float(ra_path[0]) % 360, float(dec_path[0])
 
         idx = f * (n - 1)
         x = np.arange(n, dtype=float)
@@ -137,27 +142,40 @@ class Slew:
         return ra, dec
 
     def slew_roll(self, utime: float) -> float:
-        """Return roll angle at time using linear interpolation during slew."""
-        # Time since slew start
+        """Return roll angle at time during slew.
+
+        For the QUATERNION algorithm the roll is drawn from the precomputed
+        SLERP path so it is properly coupled to the pointing change.  All other
+        algorithms fall back to shortest-path linear interpolation.
+        """
         t = utime - self.slewstart
         if t <= 0:
             return self.startroll
-
-        # If no slew time calculated, return start roll
         if self.slewtime <= 0:
             return self.startroll
 
-        # Linear interpolation between start and end roll
+        # QUATERNION: use the stored roll path from the SLERP computation
+        if (
+            self.acs_config.slew_algorithm == SlewAlgorithm.QUATERNION
+            and self._quat_roll_path
+        ):
+            total_dist = float(self.slewdist)
+            motion_time = self.acs_config.motion_time(total_dist)
+            tau = max(0.0, min(float(t), motion_time))
+            s = self.acs_config.s_of_t(total_dist, tau)
+            f = 0.0 if total_dist == 0 else max(0.0, min(1.0, s / total_dist))
+            n = len(self._quat_roll_path)
+            idx = f * (n - 1)
+            rolls = roll_over_angle(self._quat_roll_path)
+            return float(np.interp(idx, np.arange(n, dtype=float), rolls)) % 360
+
+        # Default: shortest-path linear interpolation
         f = max(0.0, min(1.0, t / self.slewtime))
         roll_diff = self.endroll - self.startroll
-
-        # Handle roll angle wrapping (roll is periodic every 360 degrees)
-        # Choose the shortest path
         if roll_diff > 180:
             roll_diff -= 360
         elif roll_diff < -180:
             roll_diff += 360
-
         return (self.startroll + f * roll_diff) % 360
 
     def calc_slewtime(self) -> float:
@@ -183,11 +201,113 @@ class Slew:
         return self.slewtime
 
     def predict_slew(self) -> None:
-        """Calculate great circle slew distance and path using ACS configuration."""
+        """Compute slew distance and path according to the configured algorithm.
 
-        # Use 100 steps for the path to ensure accurate interpolation.
-        # With fewer steps, linear RA/Dec interpolation between coarse points
-        # can cause apparent rates to exceed the configured max near celestial poles.
-        self.slewdist, self.slewpath = self.acs_config.predict_slew(
-            self.startra, self.startdec, self.endra, self.enddec, steps=100
+        GREAT_CIRCLE (default):
+            Shortest great-circle arc – identical to the original behaviour.
+
+        QUATERNION:
+            Full SO(3) SLERP.  The RA/Dec path is derived from the boresight
+            component of the SLERP; roll is stored separately in
+            _quat_roll_path so slew_roll() can return the coupled value.
+
+        SUN_AVOIDING:
+            Great-circle arc with an automatic detour when the direct path
+            would cross within the configured Sun exclusion angle.  Falls back
+            to a plain great-circle path if no violation is detected.
+
+        In all cases self.slewdist is the total angular distance (degrees) and
+        self.slewpath is the (ra_list, dec_list) path used for interpolation.
+        """
+        # Use 100 steps for accurate interpolation (avoids pole-crossing artefacts).
+        steps = 100
+        algorithm = self.acs_config.slew_algorithm
+
+        if algorithm == SlewAlgorithm.QUATERNION:
+            self._predict_slew_quaternion(steps)
+        elif algorithm == SlewAlgorithm.SUN_AVOIDING:
+            self._predict_slew_sun_avoiding(steps)
+        else:
+            # GREAT_CIRCLE (default)
+            self.slewdist, self.slewpath = self.acs_config.predict_slew(
+                self.startra, self.startdec, self.endra, self.enddec, steps=steps
+            )
+            self._quat_roll_path = []
+
+    def _predict_slew_quaternion(self, steps: int) -> None:
+        """Compute slew path via full quaternion SLERP."""
+        from ..common.vector import quaternion_slew_path
+
+        ras, decs, rolls = quaternion_slew_path(
+            self.startra,
+            self.startdec,
+            self.startroll,
+            self.endra,
+            self.enddec,
+            self.endroll,
+            steps=steps,
         )
+        self.slewpath = (ras, decs)
+        self._quat_roll_path = rolls
+        # Great-circle distance is still the correct metric for slew time
+        from ..common import separation
+        from ..config.constants import DTOR
+
+        self.slewdist = (
+            separation(
+                [self.startra * DTOR, self.startdec * DTOR],
+                [self.endra * DTOR, self.enddec * DTOR],
+            )
+            / DTOR
+        )
+
+    def _predict_slew_sun_avoiding(self, steps: int) -> None:
+        """Compute sun-avoiding slew path, falling back to great-circle if no violation."""
+        # Get sun position at slew start time from the ephemeris
+        try:
+            idx = self.ephem.index(dtutcfromtimestamp(self.slewstart))
+            sun_ra = float(self.ephem.sun_ra_deg[idx])
+            sun_dec = float(self.ephem.sun_dec_deg[idx])
+        except Exception:
+            # If ephemeris lookup fails, fall back to great-circle
+            self.slewdist, self.slewpath = self.acs_config.predict_slew(
+                self.startra, self.startdec, self.endra, self.enddec, steps=steps
+            )
+            self._quat_roll_path = []
+            return
+
+        # Determine the sun exclusion angle from the constraint config
+        min_sun_angle = float(SUN_OCCULT)
+        sc = self.constraint.sun_constraint
+        if sc is not None:
+            raw = getattr(sc, "min_angle", None)
+            if raw is not None:
+                min_sun_angle = float(raw)
+
+        ra_path, dec_path = sun_avoiding_path(
+            self.startra,
+            self.startdec,
+            self.endra,
+            self.enddec,
+            sun_ra,
+            sun_dec,
+            min_sun_angle,
+            steps=steps,
+        )
+        self.slewpath = (ra_path, dec_path)
+        self._quat_roll_path = []
+
+        # Total arc length along the (possibly detoured) path
+        total_dist = 0.0
+        from ..common import separation
+        from ..config.constants import DTOR
+
+        for i in range(len(ra_path) - 1):
+            total_dist += (
+                separation(
+                    [ra_path[i] * DTOR, dec_path[i] * DTOR],
+                    [ra_path[i + 1] * DTOR, dec_path[i + 1] * DTOR],
+                )
+                / DTOR
+            )
+        self.slewdist = total_dist

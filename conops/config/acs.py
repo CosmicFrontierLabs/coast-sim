@@ -2,6 +2,7 @@ import numpy as np
 from pydantic import Field
 
 from ..common import great_circle, separation
+from ..common.enums import SlewAlgorithm
 from ._base import ConfigModel
 from .constants import DTOR
 
@@ -25,6 +26,15 @@ class AttitudeControlSystem(ConfigModel):
     )
     settle_time: float = Field(
         default=120.0, description="Time to settle after slew completion in seconds"
+    )
+    slew_algorithm: SlewAlgorithm = Field(
+        default=SlewAlgorithm.GREAT_CIRCLE,
+        description=(
+            "Algorithm used to compute slew paths. "
+            "'great_circle' (default): shortest great-circle arc. "
+            "'quaternion': full SO(3) SLERP coupling pointing and roll. "
+            "'sun_avoiding': great-circle with automatic Sun-exclusion detour."
+        ),
     )
 
     def motion_time(self, angle_deg: float) -> float:
