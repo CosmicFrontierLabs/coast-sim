@@ -15,6 +15,7 @@ from ..common import (
     unixtime2date,
 )
 from ..common.enums import ACSCommandType
+from ..common.vector import attitude_to_quat
 from ..config import MissionConfig
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
@@ -556,6 +557,7 @@ class QueueDITL(DITLMixin, DITLStats):
         nominal_roll = optimum_roll(ra, dec, utime, self.ephem, self.config.solar_panel)
         roll_offset_deg = (roll - nominal_roll + 180.0) % 360.0 - 180.0
 
+        _q = attitude_to_quat(ra, dec, roll)
         return Housekeeping(
             timestamp=datetime.fromtimestamp(utime, tz=timezone.utc),
             ra=ra,
@@ -599,6 +601,10 @@ class QueueDITL(DITLMixin, DITLStats):
             radiator_heat_dissipation_w=self.acs.radiator_heat_dissipation_w,
             sun_body_vector=sun_body_vector,
             earth_body_vector=earth_body_vector,
+            quat_w=float(_q[0]),
+            quat_x=float(_q[1]),
+            quat_y=float(_q[2]),
+            quat_z=float(_q[3]),
         )
 
     def _track_ppt_in_timeline(self) -> None:

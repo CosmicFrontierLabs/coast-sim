@@ -35,6 +35,10 @@ class Housekeeping(BaseModel):
         sun_angle_deg: Angular distance from pointing to the Sun in degrees
         for_solid_angle_sr: Instantaneous field-of-regard solid angle in steradians
         in_eclipse: Whether spacecraft is in eclipse
+        quat_w: Attitude quaternion scalar component (w)
+        quat_x: Attitude quaternion vector component (x)
+        quat_y: Attitude quaternion vector component (y)
+        quat_z: Attitude quaternion vector component (z)
     """
 
     timestamp: datetime = Field(description="UTC timestamp")
@@ -143,6 +147,18 @@ class Housekeeping(BaseModel):
     earth_body_vector: list[float] | None = Field(
         default=None,
         description="Unit vector toward the Earth in spacecraft body frame [x, y, z]",
+    )
+    quat_w: float | None = Field(
+        default=None, description="Attitude quaternion scalar component w"
+    )
+    quat_x: float | None = Field(
+        default=None, description="Attitude quaternion vector component x"
+    )
+    quat_y: float | None = Field(
+        default=None, description="Attitude quaternion vector component y"
+    )
+    quat_z: float | None = Field(
+        default=None, description="Attitude quaternion vector component z"
     )
 
     @classmethod
@@ -382,6 +398,26 @@ class HousekeepingList(list[Housekeeping]):
     def earth_body_vector(self) -> list[list[float] | None]:
         """Get Earth body-frame unit vectors from all housekeeping records."""
         return [hk.earth_body_vector for hk in self]
+
+    @property
+    def quat_w(self) -> list[float | None]:
+        """Get attitude quaternion w components from all housekeeping records."""
+        return [hk.quat_w for hk in self]
+
+    @property
+    def quat_x(self) -> list[float | None]:
+        """Get attitude quaternion x components from all housekeeping records."""
+        return [hk.quat_x for hk in self]
+
+    @property
+    def quat_y(self) -> list[float | None]:
+        """Get attitude quaternion y components from all housekeeping records."""
+        return [hk.quat_y for hk in self]
+
+    @property
+    def quat_z(self) -> list[float | None]:
+        """Get attitude quaternion z components from all housekeeping records."""
+        return [hk.quat_z for hk in self]
 
 
 class Telemetry(BaseModel):

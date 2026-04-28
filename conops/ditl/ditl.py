@@ -6,6 +6,7 @@ import rust_ephem
 from conops.targets.plan import Plan
 
 from ..common import angular_separation, dtutcfromtimestamp, radec2vec, scbodyvector
+from ..common.vector import attitude_to_quat
 from ..config import MissionConfig
 from ..simulation.roll import optimum_roll
 from .ditl_log import DITLLog
@@ -258,6 +259,7 @@ class DITL(DITLMixin, DITLStats):
                 if self.calculate_field_of_regard
                 else None
             )
+            _q = attitude_to_quat(ra, dec, roll)
             hk = Housekeeping(
                 timestamp=datetime.fromtimestamp(self.utime[i], tz=timezone.utc),
                 ra=ra,
@@ -293,6 +295,10 @@ class DITL(DITLMixin, DITLStats):
                 radiator_heat_dissipation_w=self.acs.radiator_heat_dissipation_w,
                 sun_body_vector=sun_body_vector,
                 earth_body_vector=earth_body_vector,
+                quat_w=float(_q[0]),
+                quat_x=float(_q[1]),
+                quat_y=float(_q[2]),
+                quat_z=float(_q[3]),
             )
 
             # Check fault management thresholds and red limit constraints
