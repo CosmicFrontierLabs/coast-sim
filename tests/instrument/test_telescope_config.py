@@ -1,5 +1,7 @@
 """Tests for TelescopeConfig, TelescopeType, and Telescope."""
 
+import pathlib
+
 import pytest
 import rust_ephem
 
@@ -281,7 +283,7 @@ class TestTelescope:
         assert t.optics.telescope_type == TelescopeType.TMA
 
     def test_config_alias_serializes_correctly_to_yaml(
-        self, tmp_path: pytest.TempPathFactory
+        self, tmp_path: pathlib.Path
     ) -> None:
         from conops.config import MissionConfig
 
@@ -424,3 +426,45 @@ class TestTelescopeConstraintMissionConfig:
         payload = Payload(instruments=[Instrument()])
         config = MissionConfig(payload=payload)
         assert config.constraint.telescope_hard_constraint is None
+
+    def test_off_axis_telescope_constraint_appears_in_roll_dependent_constraint(
+        self,
+    ) -> None:
+        # Off-axis boresight forces boresight_offset() → BoresightOffsetConstraint leaf.
+        # roll_dependent_constraint should tree-walk telescope_hard_constraint and find it.
+        from conops.config import MissionConfig
+
+        scope = Telescope(
+            boresight=(0.0, 0.0, 1.0),
+            constraint=Constraint(
+                sun_constraint=rust_ephem.SunConstraint(min_angle=45.0)
+            ),
+        )
+        payload = Payload(instruments=[scope])
+        config = MissionConfig(payload=payload)
+        assert config.constraint.telescope_hard_constraint is not None
+        assert config.constraint.roll_dependent_constraint is not None
+
+    def test_on_axis_telescope_constraint_not_in_roll_dependent_constraint(
+        self,
+    ) -> None:
+        # Default boresight (1,0,0) — spacecraft_constraint returns the base SunConstraint
+        # directly, with no boresight_offset wrapper.  The tree walk finds no
+        # BoresightOffsetConstraint leaves, so roll_dependent_constraint is None
+        # (assuming no star-tracker or radiator constraints are configured).
+        from conops.config import MissionConfig
+        from conops.config.spacecraft_bus import SpacecraftBus
+        from conops.config.star_tracker import StarTrackerConfiguration
+
+        scope = Telescope(
+            boresight=(1.0, 0.0, 0.0),
+            constraint=Constraint(
+                sun_constraint=rust_ephem.SunConstraint(min_angle=45.0)
+            ),
+        )
+        payload = Payload(instruments=[scope])
+        # Use a bus with no star trackers so the only potential source is the telescope
+        bus = SpacecraftBus(star_trackers=StarTrackerConfiguration(star_trackers=[]))
+        config = MissionConfig(payload=payload, spacecraft_bus=bus)
+        assert config.constraint.telescope_hard_constraint is not None
+        assert config.constraint.roll_dependent_constraint is None

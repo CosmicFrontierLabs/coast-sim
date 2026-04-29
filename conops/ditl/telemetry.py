@@ -19,7 +19,7 @@ class Housekeeping(BaseModel):
         ra: Right ascension in degrees
         dec: Declination in degrees
         roll: Roll angle in degrees
-        roll_offset_deg: Signed offset from the solar-optimal roll (degrees, [-180, 180))
+        roll_offset_deg: Signed offset from the solar-optimal roll (degrees, [-180, 180)); meaningful only during SCIENCE mode
         acs_mode: Current ACS mode (SCIENCE, SLEWING, SAFE, SAA, etc.)
         panel_illumination: Solar panel illumination fraction (0-1)
         power_usage: Total power usage in W
@@ -45,7 +45,10 @@ class Housekeeping(BaseModel):
         default=None,
         description=(
             "Signed offset (degrees, wrapped to [-180, 180)) from the unconstrained "
-            "roll that maximally illuminates the solar panels"
+            "solar-optimal roll. Populated every tick; only operationally meaningful "
+            "as a power-penalty proxy during SCIENCE mode (values during slews and "
+            "other transitional modes reflect interpolated roll and have no power "
+            "interpretation)."
         ),
     )
     acs_mode: ACSMode | int | None = Field(default=None, description="ACS mode")
