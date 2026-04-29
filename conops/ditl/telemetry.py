@@ -19,6 +19,7 @@ class Housekeeping(BaseModel):
         ra: Right ascension in degrees
         dec: Declination in degrees
         roll: Roll angle in degrees
+        roll_offset_deg: Signed offset from the solar-optimal roll (degrees, [-180, 180)); meaningful only during SCIENCE mode
         acs_mode: Current ACS mode (SCIENCE, SLEWING, SAFE, SAA, etc.)
         panel_illumination: Solar panel illumination fraction (0-1)
         power_usage: Total power usage in W
@@ -40,6 +41,16 @@ class Housekeeping(BaseModel):
     ra: float | None = Field(default=None, description="Right ascension in degrees")
     dec: float | None = Field(default=None, description="Declination in degrees")
     roll: float | None = Field(default=0.0, description="Roll angle in degrees")
+    roll_offset_deg: float | None = Field(
+        default=None,
+        description=(
+            "Signed offset (degrees, wrapped to [-180, 180)) from the unconstrained "
+            "solar-optimal roll. Populated every tick; only operationally meaningful "
+            "as a power-penalty proxy during SCIENCE mode (values during slews and "
+            "other transitional modes reflect interpolated roll and have no power "
+            "interpretation)."
+        ),
+    )
     acs_mode: ACSMode | int | None = Field(default=None, description="ACS mode")
     panel_illumination: float | None = Field(
         default=None, description="Solar panel illumination fraction (0-1)"
@@ -226,6 +237,11 @@ class HousekeepingList(list[Housekeeping]):
     def roll(self) -> list[float | None]:
         """Get roll values from all housekeeping records."""
         return [hk.roll for hk in self]
+
+    @property
+    def roll_offset_deg(self) -> list[float | None]:
+        """Get roll offset from solar-optimal values from all housekeeping records."""
+        return [hk.roll_offset_deg for hk in self]
 
     @property
     def acs_mode(self) -> list[ACSMode | int | None]:

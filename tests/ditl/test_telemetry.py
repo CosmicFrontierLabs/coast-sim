@@ -354,6 +354,72 @@ class TestHousekeepingNewFields:
         assert tm.model_config["arbitrary_types_allowed"] is True
 
 
+class TestRollOffsetDeg:
+    """Tests for the roll_offset_deg housekeeping field."""
+
+    def _ts(self) -> datetime:
+        return datetime.fromtimestamp(1000.0, tz=timezone.utc)
+
+    def test_roll_offset_deg_defaults_to_none(self) -> None:
+        hk = Housekeeping(timestamp=self._ts())
+        assert hk.roll_offset_deg is None
+
+    def test_roll_offset_deg_round_trip(self) -> None:
+        hk = Housekeeping(timestamp=self._ts(), roll_offset_deg=15.0)
+        assert hk.roll_offset_deg == pytest.approx(15.0)
+
+    def test_roll_offset_deg_negative(self) -> None:
+        hk = Housekeeping(timestamp=self._ts(), roll_offset_deg=-90.0)
+        assert hk.roll_offset_deg == pytest.approx(-90.0)
+
+    def test_roll_offset_deg_boundary_values(self) -> None:
+        # The wrap formula produces values in [-180, 180)
+        hk_lo = Housekeeping(timestamp=self._ts(), roll_offset_deg=-180.0)
+        hk_hi = Housekeeping(timestamp=self._ts(), roll_offset_deg=179.9)
+        assert hk_lo.roll_offset_deg == pytest.approx(-180.0)
+        assert hk_hi.roll_offset_deg == pytest.approx(179.9)
+
+    def test_housekeeping_list_roll_offset_deg_property(self) -> None:
+        hk1 = Housekeeping(timestamp=self._ts(), roll_offset_deg=10.0)
+        hk2 = Housekeeping(timestamp=self._ts(), roll_offset_deg=None)
+        hk3 = Housekeeping(timestamp=self._ts(), roll_offset_deg=-45.0)
+        hkl = HousekeepingList([hk1, hk2, hk3])
+        assert hkl.roll_offset_deg == [10.0, None, -45.0]
+
+    def test_roll_offset_wrap_formula_zero(self) -> None:
+        # When actual roll == nominal roll the offset is 0
+        roll, nominal = 45.0, 45.0
+        offset = (roll - nominal + 180.0) % 360.0 - 180.0
+        assert offset == pytest.approx(0.0)
+        hk = Housekeeping(timestamp=self._ts(), roll_offset_deg=offset)
+        assert hk.roll_offset_deg == pytest.approx(0.0)
+
+    def test_roll_offset_wrap_formula_wraps_to_negative(self) -> None:
+        # roll=350, nominal=10 → difference is -20 (not +340)
+        roll, nominal = 350.0, 10.0
+        offset = (roll - nominal + 180.0) % 360.0 - 180.0
+        assert offset == pytest.approx(-20.0)
+        hk = Housekeeping(timestamp=self._ts(), roll_offset_deg=offset)
+        assert hk.roll_offset_deg == pytest.approx(-20.0)
+
+    def test_roll_offset_wrap_formula_wraps_to_positive(self) -> None:
+        # roll=10, nominal=350 → difference is +20 (not -340)
+        roll, nominal = 10.0, 350.0
+        offset = (roll - nominal + 180.0) % 360.0 - 180.0
+        assert offset == pytest.approx(20.0)
+
+    def test_extract_field_roll_offset_deg(self) -> None:
+        hk1 = Housekeeping(timestamp=self._ts(), roll_offset_deg=5.0)
+        hk2 = Housekeeping(timestamp=self._ts(), roll_offset_deg=-15.0)
+        result = Housekeeping.extract_field([hk1, hk2], "roll_offset_deg")
+        assert result == pytest.approx([5.0, -15.0])
+
+    def test_telemetry_roll_offset_deg_accessible(self) -> None:
+        hk = Housekeeping(timestamp=self._ts(), roll_offset_deg=30.0)
+        tm = Telemetry(housekeeping=HousekeepingList([hk]))
+        assert tm.housekeeping.roll_offset_deg == [pytest.approx(30.0)]
+
+
 class TestBodyVectorFields:
     """Tests for sun_body_vector and earth_body_vector fields added in PR #107."""
 

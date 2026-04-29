@@ -3,7 +3,7 @@ from functools import cached_property
 from typing import Annotated, Any, Literal
 
 import numpy as np
-from pydantic import Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from rust_ephem.constraints import ConstraintConfig
 
 from ..common.vector import normal_to_euler_deg
@@ -204,6 +204,7 @@ class Telescope(Instrument):
     )
     optics: TelescopeConfig = Field(
         default_factory=TelescopeConfig,
+        validation_alias=AliasChoices("optics", "config"),
         description="Optical configuration of the telescope",
     )
 
@@ -291,7 +292,9 @@ class Payload(ConfigModel):
         result = []
         for item in v:
             if isinstance(item, dict) and "instrument_type" not in item:
-                has_telescope_keys = "boresight" in item or "optics" in item
+                has_telescope_keys = (
+                    "boresight" in item or "optics" in item or "config" in item
+                )
                 item = {
                     **item,
                     "instrument_type": "Telescope"

@@ -1,5 +1,7 @@
 """Tests for TelescopeConfig, TelescopeType, and Telescope."""
 
+import pathlib
+
 import pytest
 import rust_ephem
 
@@ -267,6 +269,48 @@ class TestTelescope:
         payload = Payload.model_validate_json(raw)
         assert isinstance(payload.instruments[0], Telescope)
 
+    def test_config_alias_accepted_for_optics(self) -> None:
+        tc = TelescopeConfig(
+            aperture_m=0.5,
+            f_number=12,
+            tube_length_m=1.0,
+            telescope_type=TelescopeType.TMA,
+        )
+        t = Telescope(name="Optical Imager", config=tc)
+        assert t.optics.aperture_m == pytest.approx(0.5)
+        assert t.optics.f_number == pytest.approx(12.0)
+        assert t.optics.tube_length_m == pytest.approx(1.0)
+        assert t.optics.telescope_type == TelescopeType.TMA
+
+    def test_config_alias_serializes_correctly_to_yaml(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        from conops.config import MissionConfig
+
+        tc = TelescopeConfig(
+            aperture_m=0.5,
+            f_number=12,
+            tube_length_m=1.0,
+            telescope_type=TelescopeType.TMA,
+        )
+        scope = Telescope(name="Optical Imager", config=tc)
+        payload = Payload(instruments=[scope])
+        config = MissionConfig(payload=payload)
+        yaml_path = tmp_path / "test.yaml"
+        config.to_yaml_file(str(yaml_path))
+        content = yaml_path.read_text()
+        assert "aperture_m: 0.5" in content
+        assert "f_number: 12.0" in content
+        assert "tube_length_m: 1.0" in content
+        assert "Three Mirror Anastigmat" in content
+
+    def test_payload_legacy_config_key_detected_as_telescope(self) -> None:
+        import json
+
+        raw = json.dumps({"instruments": [{"name": "Old Scope", "config": {}}]})
+        payload = Payload.model_validate_json(raw)
+        assert isinstance(payload.instruments[0], Telescope)
+
 
 class TestTelescopeConstraint:
     def _sun_constraint(self) -> Constraint:
@@ -382,3 +426,45 @@ class TestTelescopeConstraintMissionConfig:
         payload = Payload(instruments=[Instrument()])
         config = MissionConfig(payload=payload)
         assert config.constraint.telescope_hard_constraint is None
+
+    def test_off_axis_telescope_constraint_appears_in_roll_dependent_constraint(
+        self,
+    ) -> None:
+        # Off-axis boresight forces boresight_offset() → BoresightOffsetConstraint leaf.
+        # roll_dependent_constraint should tree-walk telescope_hard_constraint and find it.
+        from conops.config import MissionConfig
+
+        scope = Telescope(
+            boresight=(0.0, 0.0, 1.0),
+            constraint=Constraint(
+                sun_constraint=rust_ephem.SunConstraint(min_angle=45.0)
+            ),
+        )
+        payload = Payload(instruments=[scope])
+        config = MissionConfig(payload=payload)
+        assert config.constraint.telescope_hard_constraint is not None
+        assert config.constraint.roll_dependent_constraint is not None
+
+    def test_on_axis_telescope_constraint_not_in_roll_dependent_constraint(
+        self,
+    ) -> None:
+        # Default boresight (1,0,0) — spacecraft_constraint returns the base SunConstraint
+        # directly, with no boresight_offset wrapper.  The tree walk finds no
+        # BoresightOffsetConstraint leaves, so roll_dependent_constraint is None
+        # (assuming no star-tracker or radiator constraints are configured).
+        from conops.config import MissionConfig
+        from conops.config.spacecraft_bus import SpacecraftBus
+        from conops.config.star_tracker import StarTrackerConfiguration
+
+        scope = Telescope(
+            boresight=(1.0, 0.0, 0.0),
+            constraint=Constraint(
+                sun_constraint=rust_ephem.SunConstraint(min_angle=45.0)
+            ),
+        )
+        payload = Payload(instruments=[scope])
+        # Use a bus with no star trackers so the only potential source is the telescope
+        bus = SpacecraftBus(star_trackers=StarTrackerConfiguration(star_trackers=[]))
+        config = MissionConfig(payload=payload, spacecraft_bus=bus)
+        assert config.constraint.telescope_hard_constraint is not None
+        assert config.constraint.roll_dependent_constraint is None

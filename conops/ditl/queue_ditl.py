@@ -553,11 +553,15 @@ class QueueDITL(DITLMixin, DITLStats):
         _pos = np.asarray(self.ephem.gcrs_pv.position[ei], dtype=np.float64)
         earth_body_vector: list[float] = list(-_pos / np.linalg.norm(_pos))
 
+        nominal_roll = optimum_roll(ra, dec, utime, self.ephem, self.config.solar_panel)
+        roll_offset_deg = (roll - nominal_roll + 180.0) % 360.0 - 180.0
+
         return Housekeeping(
             timestamp=datetime.fromtimestamp(utime, tz=timezone.utc),
             ra=ra,
             dec=dec,
             roll=roll,
+            roll_offset_deg=roll_offset_deg,
             acs_mode=mode,
             panel_illumination=panel_illumination,
             power_usage=total_power,

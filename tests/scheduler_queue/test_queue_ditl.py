@@ -213,6 +213,7 @@ class TestDetermineMode:
         constraint = Mock(spec=Constraint)
         constraint.ephem = mock_ephem
         constraint.constraint = None  # no combined rust-ephem constraint in tests
+        constraint.roll_dependent_constraint = None
         mock_config.constraint = constraint
         acs = ACS(config=mock_config)
         monkeypatch.setattr(acs.constraint, "in_eclipse", lambda ra, dec, time: False)

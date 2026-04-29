@@ -245,6 +245,8 @@ class Constraint(ConfigModel):
     def invalidate_combined_constraint_cache(self) -> None:
         """Invalidate cached combined constraint after component updates."""
         self.__dict__.pop("constraint", None)
+        self.__dict__.pop("roll_independent_constraint", None)
+        self.__dict__.pop("roll_dependent_constraint", None)
 
     @cached_property
     def constraint(self) -> ConstraintConfig | None:
@@ -304,6 +306,49 @@ class Constraint(ConfigModel):
             return None
         combined = active[0]
         for c in active[1:]:
+            combined = combined | c
+        return combined
+
+    @cached_property
+    def roll_dependent_constraint(self) -> ConstraintConfig | None:
+        """Combined constraint from roll-dependent components only.
+
+        Walks the constraint trees of the boresight-offset-capable fields and
+        collects every ``BoresightOffsetConstraint`` leaf node, then OR-combines
+        them.  Only ``BoresightOffsetConstraint`` implements ``roll_range()``
+        correctly; ``AtLeastConstraint`` returns ``True`` for ``_is_roll_dependent``
+        but has an unimplemented ``roll_range()``, so we filter by concrete type
+        rather than the flag.
+
+        Roll-independent constraints (sun/earth/moon/panel on the main boresight)
+        contain no ``BoresightOffsetConstraint`` nodes and are therefore excluded
+        automatically.
+        """
+        from rust_ephem.constraints import BoresightOffsetConstraint
+
+        def _collect(c: ConstraintConfig) -> list[ConstraintConfig]:
+            if isinstance(c, BoresightOffsetConstraint):
+                return [c]
+            nodes: list[ConstraintConfig] = []
+            if hasattr(c, "constraints"):
+                for sub in c.constraints:
+                    nodes.extend(_collect(sub))
+            return nodes
+
+        leaves: list[ConstraintConfig] = []
+        for field in (
+            self.star_tracker_hard_constraint,
+            self.star_tracker_soft_constraint,
+            self.radiator_hard_constraint,
+            self.telescope_hard_constraint,
+        ):
+            if field is not None:
+                leaves.extend(_collect(field))
+
+        if not leaves:
+            return None
+        combined: ConstraintConfig = leaves[0]
+        for c in leaves[1:]:
             combined = combined | c
         return combined
 

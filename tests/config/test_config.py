@@ -18,7 +18,16 @@ from conops import (
     SolarPanelSet,
     SpacecraftBus,
 )
-from conops.config import StarTracker, StarTrackerConfiguration, StarTrackerOrientation
+from conops.config import (
+    DataGeneration,
+    PowerDraw,
+    StarTracker,
+    StarTrackerConfiguration,
+    StarTrackerOrientation,
+    Telescope,
+    TelescopeConfig,
+    TelescopeType,
+)
 
 
 class TestConfig:
@@ -256,6 +265,55 @@ class TestConfig:
         assert "Units Legend:" in content
         # Check that data was written (name value may or may not have quotes depending on YAML dumper)
         assert "name: Test Config" in content or 'name: "Test Config"' in content
+
+    def test_to_yaml_file_payload_telescope_includes_instrument_type_and_nested_fields(
+        self, tmp_path: Path
+    ) -> None:
+        """Test that Telescope payload items serialize with expected nested fields."""
+        payload = Payload(
+            instruments=[
+                Telescope(
+                    name="Primary Telescope",
+                    power_draw=PowerDraw(nominal_power=10.0, peak_power=20.0),
+                    data_generation=DataGeneration(
+                        rate_gbps=0.5, per_observation_gb=1.2
+                    ),
+                    optics=TelescopeConfig(
+                        aperture_m=0.6,
+                        focal_length_m=6.0,
+                        telescope_type=TelescopeType.RITCHEY_CHRETIEN,
+                    ),
+                )
+            ]
+        )
+        config = MissionConfig(name="Test Config", payload=payload)
+        file_path = tmp_path / "payload.yaml"
+        config.to_yaml_file(str(file_path))
+        assert file_path.exists()
+        content = file_path.read_text()
+        assert "instrument_type: Telescope" in content
+        assert "power_draw:" in content
+        assert "data_generation:" in content
+        assert "optics:" in content
+
+    def test_to_yaml_file_constraint_serializes_nested_constraint_fields(
+        self, tmp_path: Path
+    ) -> None:
+        """Test that nested Constraint objects are fully serialized to YAML."""
+        config = MissionConfig(
+            name="Test Config",
+            constraint=Constraint(
+                sun_constraint=rust_ephem.SunConstraint(min_angle=50.0)
+            ),
+        )
+        file_path = tmp_path / "constraint.yaml"
+        config.to_yaml_file(str(file_path))
+        assert file_path.exists()
+        content = file_path.read_text()
+        assert "constraint:" in content
+        assert "star_tracker_soft_constraint:" in content
+        assert "constraints:" in content
+        assert "boresight_offset" in content
 
     def test_yaml_roundtrip(self, tmp_path: Path) -> None:
         """Test that YAML save and load maintains data integrity."""

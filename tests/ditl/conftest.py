@@ -105,6 +105,7 @@ def create_statistics_test_config(ephem: DummyEphemeris | None = None) -> Missio
     constraint = Mock(spec=Constraint)
     constraint.ephem = ephem
     constraint.constraint = None  # no combined rust-ephem constraint in tests
+    constraint.roll_dependent_constraint = None
     ground_stations = Mock(spec=GroundStationRegistry)
 
     return MissionConfig(
@@ -252,6 +253,7 @@ def mock_config_detailed():
     config.solar_panel.panel_illumination_fraction = Mock(return_value=0.5)
     config.solar_panel.illumination_and_power = Mock(return_value=(0.5, 100.0))
     config.solar_panel.optimal_charging_pointing = Mock(return_value=(45.0, 23.5))
+    config.solar_panel.panels = []  # empty → optimum_roll uses analytic path
 
     # Mock ground stations
     config.ground_stations = Mock()
