@@ -85,9 +85,6 @@ class DITLMixin:
         self.config.constraint.star_tracker_soft_constraint = (
             self.config.spacecraft_bus.star_trackers.startracker_constraint
         )
-        self.config.constraint.star_tracker_roll_constraint = (
-            self.config.spacecraft_bus.star_trackers.startracker_roll_constraint
-        )
         self.config.constraint.radiator_hard_constraint = (
             self.config.spacecraft_bus.radiators.radiator_hard_constraint
         )

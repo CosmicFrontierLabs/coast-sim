@@ -126,14 +126,6 @@ class Constraint(ConfigModel):
         default=None,
         description="Star tracker soft exclusion constraint for scheduling",
     )
-    star_tracker_roll_constraint: ConstraintConfig | None = Field(
-        default=None,
-        description=(
-            "OR combination of all star tracker boresight-offset constraints used "
-            "for roll optimisation. Uses OrConstraint (not AtLeastConstraint) so that "
-            "roll_range() returns meaningful intervals."
-        ),
-    )
     star_tracker_enforce_modes: list[ACSMode] | None = Field(
         default=None,
         description=(
@@ -321,22 +313,42 @@ class Constraint(ConfigModel):
     def roll_dependent_constraint(self) -> ConstraintConfig | None:
         """Combined constraint from roll-dependent components only.
 
-        Includes only constraints whose valid-roll range varies with spacecraft roll:
-        star-tracker keep-outs, radiator exclusions, and telescope boresight offsets.
-        Roll-independent constraints (sun/earth/moon/panel on the main boresight) are
-        excluded because their ``roll_range()`` returns ``[]``, which an
-        ``OrConstraint`` misinterprets as "no valid rolls" rather than "unconstrained".
+        Walks the constraint trees of the boresight-offset-capable fields and
+        collects every ``BoresightOffsetConstraint`` leaf node, then OR-combines
+        them.  Only ``BoresightOffsetConstraint`` implements ``roll_range()``
+        correctly; ``AtLeastConstraint`` returns ``True`` for ``_is_roll_dependent``
+        but has an unimplemented ``roll_range()``, so we filter by concrete type
+        rather than the flag.
+
+        Roll-independent constraints (sun/earth/moon/panel on the main boresight)
+        contain no ``BoresightOffsetConstraint`` nodes and are therefore excluded
+        automatically.
         """
-        components = [
-            self.star_tracker_roll_constraint,
+        from rust_ephem.constraints import BoresightOffsetConstraint
+
+        def _collect(c: ConstraintConfig) -> list[ConstraintConfig]:
+            if isinstance(c, BoresightOffsetConstraint):
+                return [c]
+            nodes: list[ConstraintConfig] = []
+            if hasattr(c, "constraints"):
+                for sub in c.constraints:
+                    nodes.extend(_collect(sub))
+            return nodes
+
+        leaves: list[ConstraintConfig] = []
+        for field in (
+            self.star_tracker_hard_constraint,
+            self.star_tracker_soft_constraint,
             self.radiator_hard_constraint,
             self.telescope_hard_constraint,
-        ]
-        active = [c for c in components if c is not None]
-        if not active:
+        ):
+            if field is not None:
+                leaves.extend(_collect(field))
+
+        if not leaves:
             return None
-        combined = active[0]
-        for c in active[1:]:
+        combined: ConstraintConfig = leaves[0]
+        for c in leaves[1:]:
             combined = combined | c
         return combined
 
