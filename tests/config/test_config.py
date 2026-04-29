@@ -21,12 +21,12 @@ from conops import (
 from conops.config import (
     DataGeneration,
     PowerDraw,
-    Telescope,
-    TelescopeConfig,
-    TelescopeType,
     StarTracker,
     StarTrackerConfiguration,
     StarTrackerOrientation,
+    Telescope,
+    TelescopeConfig,
+    TelescopeType,
 )
 
 
@@ -275,7 +275,9 @@ class TestConfig:
                 Telescope(
                     name="Primary Telescope",
                     power_draw=PowerDraw(nominal_power=10.0, peak_power=20.0),
-                    data_generation=DataGeneration(rate_gbps=0.5, per_observation_gb=1.2),
+                    data_generation=DataGeneration(
+                        rate_gbps=0.5, per_observation_gb=1.2
+                    ),
                     optics=TelescopeConfig(
                         aperture_m=0.6,
                         focal_length_m=6.0,
