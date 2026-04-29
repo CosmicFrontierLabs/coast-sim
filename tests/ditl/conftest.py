@@ -91,9 +91,11 @@ def create_statistics_test_config(ephem: DummyEphemeris | None = None) -> Missio
     spacecraft_bus.star_trackers = Mock()
     spacecraft_bus.star_trackers.set_ephem = Mock()
     spacecraft_bus.star_trackers.num_trackers = Mock(return_value=0)
+    spacecraft_bus.star_trackers.star_trackers = []
     spacecraft_bus.radiators = Mock()
     spacecraft_bus.radiators.set_ephem = Mock()
     spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
+    spacecraft_bus.radiators.radiators = []
     spacecraft_bus.boresight_axis = "+X"
 
     solar_panel = Mock(spec=SolarPanelSet)
