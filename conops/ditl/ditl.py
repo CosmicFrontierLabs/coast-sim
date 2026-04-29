@@ -7,6 +7,7 @@ from conops.targets.plan import Plan
 
 from ..common import angular_separation, dtutcfromtimestamp, radec2vec, scbodyvector
 from ..config import MissionConfig
+from ..simulation.roll import optimum_roll
 from .ditl_log import DITLLog
 from .ditl_mixin import DITLMixin
 from .ditl_stats import DITLStats
@@ -231,6 +232,10 @@ class DITL(DITLMixin, DITLStats):
             self.obsid[i] = obsid
 
             # Create housekeeping telemetry record for fault checking
+            nominal_roll = optimum_roll(
+                ra, dec, self.utime[i], self.ephem, self.solar_panel
+            )
+            roll_offset_deg = (roll - nominal_roll + 180.0) % 360.0 - 180.0
             sun_angle_deg = self._compute_sun_angle(self.utime[i], ra, dec)
             _sun_bv = scbodyvector(
                 np.radians(ra),
@@ -258,6 +263,7 @@ class DITL(DITLMixin, DITLStats):
                 ra=ra,
                 dec=dec,
                 roll=roll,
+                roll_offset_deg=roll_offset_deg,
                 acs_mode=mode,
                 panel_illumination=panel_illumination,
                 power_usage=power_usage,
