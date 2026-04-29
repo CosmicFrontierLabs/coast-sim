@@ -463,6 +463,35 @@ class StarTrackerConfiguration(ConfigModel):
             constraints=offset_constraints,
         )
 
+    @cached_property
+    def startracker_roll_constraint(self) -> ConstraintConfig | None:
+        """OR combination of all star tracker boresight-offset constraints for roll optimisation.
+
+        Unlike ``startracker_constraint`` (which uses ``AtLeastConstraint`` for the
+        soft-constraint scheduling logic), this property uses a plain ``OrConstraint``
+        so that ``roll_range()`` is implemented and returns meaningful intervals.
+        Both hard and soft per-tracker constraints are included: any roll that would
+        bring any tracker inside its exclusion zone is marked invalid.
+        """
+        combined: ConstraintConfig | None = None
+        for st in self.star_trackers:
+            for tracker_constraint in (st.hard_constraint, st.soft_constraint):
+                if tracker_constraint is None:
+                    continue
+                base = tracker_constraint.constraint
+                if base is None:
+                    continue
+                roll_deg, pitch_deg, yaw_deg = self._boresight_to_euler_deg(
+                    st.orientation.boresight
+                )
+                offset = base.boresight_offset(
+                    roll_deg=roll_deg,
+                    pitch_deg=pitch_deg,
+                    yaw_deg=yaw_deg,
+                )
+                combined = offset if combined is None else combined | offset
+        return combined
+
     def set_ephem(self, ephem: rust_ephem.Ephemeris) -> None:
         """Set ephemeris on all star tracker constraint objects.
 

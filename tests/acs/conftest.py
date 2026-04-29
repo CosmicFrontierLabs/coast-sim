@@ -47,6 +47,7 @@ def mock_constraint(mock_ephem: DummyEphemeris) -> Mock:
     constraint = Mock(spec=Constraint)
     constraint.ephem = mock_ephem
     constraint.constraint = None  # no combined rust-ephem constraint in tests
+    constraint.roll_dependent_constraint = None
     constraint.panel_constraint = Mock()
     constraint.panel_constraint.solar_panel = None
     constraint.in_constraint = Mock(return_value=False)

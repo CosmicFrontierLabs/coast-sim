@@ -267,6 +267,48 @@ class TestTelescope:
         payload = Payload.model_validate_json(raw)
         assert isinstance(payload.instruments[0], Telescope)
 
+    def test_config_alias_accepted_for_optics(self) -> None:
+        tc = TelescopeConfig(
+            aperture_m=0.5,
+            f_number=12,
+            tube_length_m=1.0,
+            telescope_type=TelescopeType.TMA,
+        )
+        t = Telescope(name="Optical Imager", config=tc)
+        assert t.optics.aperture_m == pytest.approx(0.5)
+        assert t.optics.f_number == pytest.approx(12.0)
+        assert t.optics.tube_length_m == pytest.approx(1.0)
+        assert t.optics.telescope_type == TelescopeType.TMA
+
+    def test_config_alias_serializes_correctly_to_yaml(
+        self, tmp_path: pytest.TempPathFactory
+    ) -> None:
+        from conops.config import MissionConfig
+
+        tc = TelescopeConfig(
+            aperture_m=0.5,
+            f_number=12,
+            tube_length_m=1.0,
+            telescope_type=TelescopeType.TMA,
+        )
+        scope = Telescope(name="Optical Imager", config=tc)
+        payload = Payload(instruments=[scope])
+        config = MissionConfig(payload=payload)
+        yaml_path = tmp_path / "test.yaml"
+        config.to_yaml_file(str(yaml_path))
+        content = yaml_path.read_text()
+        assert "aperture_m: 0.5" in content
+        assert "f_number: 12.0" in content
+        assert "tube_length_m: 1.0" in content
+        assert "Three Mirror Anastigmat" in content
+
+    def test_payload_legacy_config_key_detected_as_telescope(self) -> None:
+        import json
+
+        raw = json.dumps({"instruments": [{"name": "Old Scope", "config": {}}]})
+        payload = Payload.model_validate_json(raw)
+        assert isinstance(payload.instruments[0], Telescope)
+
 
 class TestTelescopeConstraint:
     def _sun_constraint(self) -> Constraint:

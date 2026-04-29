@@ -52,6 +52,7 @@ def mock_constraint():
     constraint = Mock(spec=Constraint)
     constraint.in_constraint = Mock(return_value=False)
     constraint.constraint = None  # no combined rust-ephem constraint in tests
+    constraint.roll_dependent_constraint = None
     constraint.ephem = Mock()  # Add ephem for Pointing initialization
     # Add panel_constraint with solar_panel for EmergencyCharging initialization
     constraint.panel_constraint = Mock()
@@ -102,6 +103,7 @@ def mock_config(mock_ephem):
     constraint = Mock(spec=Constraint)
     constraint.ephem = mock_ephem
     constraint.constraint = None  # no combined rust-ephem constraint in tests
+    constraint.roll_dependent_constraint = None
     constraint.in_constraint = Mock(return_value=False)
     constraint.in_constraint_batch = Mock(
         side_effect=lambda ras, decs, utime: np.zeros(len(ras), dtype=bool)

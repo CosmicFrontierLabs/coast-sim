@@ -126,6 +126,14 @@ class Constraint(ConfigModel):
         default=None,
         description="Star tracker soft exclusion constraint for scheduling",
     )
+    star_tracker_roll_constraint: ConstraintConfig | None = Field(
+        default=None,
+        description=(
+            "OR combination of all star tracker boresight-offset constraints used "
+            "for roll optimisation. Uses OrConstraint (not AtLeastConstraint) so that "
+            "roll_range() returns meaningful intervals."
+        ),
+    )
     star_tracker_enforce_modes: list[ACSMode] | None = Field(
         default=None,
         description=(
@@ -245,6 +253,8 @@ class Constraint(ConfigModel):
     def invalidate_combined_constraint_cache(self) -> None:
         """Invalidate cached combined constraint after component updates."""
         self.__dict__.pop("constraint", None)
+        self.__dict__.pop("roll_independent_constraint", None)
+        self.__dict__.pop("roll_dependent_constraint", None)
 
     @cached_property
     def constraint(self) -> ConstraintConfig | None:
@@ -298,6 +308,29 @@ class Constraint(ConfigModel):
             self.orbit_constraint,
             self.panel_constraint,
             self.anti_sun_constraint,
+        ]
+        active = [c for c in components if c is not None]
+        if not active:
+            return None
+        combined = active[0]
+        for c in active[1:]:
+            combined = combined | c
+        return combined
+
+    @cached_property
+    def roll_dependent_constraint(self) -> ConstraintConfig | None:
+        """Combined constraint from roll-dependent components only.
+
+        Includes only constraints whose valid-roll range varies with spacecraft roll:
+        star-tracker keep-outs, radiator exclusions, and telescope boresight offsets.
+        Roll-independent constraints (sun/earth/moon/panel on the main boresight) are
+        excluded because their ``roll_range()`` returns ``[]``, which an
+        ``OrConstraint`` misinterprets as "no valid rolls" rather than "unconstrained".
+        """
+        components = [
+            self.star_tracker_roll_constraint,
+            self.radiator_hard_constraint,
+            self.telescope_hard_constraint,
         ]
         active = [c for c in components if c is not None]
         if not active:

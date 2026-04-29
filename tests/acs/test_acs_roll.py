@@ -41,6 +41,7 @@ def mock_constraint_roll(mock_ephem_roll):
     constraint = Mock()
     constraint.ephem = mock_ephem_roll
     constraint.constraint = None  # no combined rust-ephem constraint in tests
+    constraint.roll_dependent_constraint = None
     constraint.panel_constraint = Mock()
     constraint.panel_constraint.solar_panel = None
     constraint.in_constraint = Mock(return_value=False)
@@ -133,6 +134,7 @@ class TestACSRollCalculation:
         constraint1 = Mock()
         constraint1.ephem = ephem1
         constraint1.constraint = None  # no combined rust-ephem constraint in tests
+        constraint1.roll_dependent_constraint = None
         constraint1.panel_constraint = Mock()
         constraint1.panel_constraint.solar_panel = None
         constraint1.in_constraint = Mock(return_value=False)
@@ -163,6 +165,7 @@ class TestACSRollCalculation:
         constraint2 = Mock()
         constraint2.ephem = ephem2
         constraint2.constraint = None  # no combined rust-ephem constraint in tests
+        constraint2.roll_dependent_constraint = None
         constraint2.panel_constraint = Mock()
         constraint2.panel_constraint.solar_panel = None
         constraint2.in_constraint = Mock(return_value=False)
@@ -318,6 +321,7 @@ class TestACSRollEdgeCases:
         constraint = Mock()
         constraint.ephem = ephem
         constraint.constraint = None  # no combined rust-ephem constraint in tests
+        constraint.roll_dependent_constraint = None
         constraint.panel_constraint = Mock()
         constraint.panel_constraint.solar_panel = None
         constraint.in_constraint = Mock(return_value=False)

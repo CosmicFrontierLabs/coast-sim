@@ -23,7 +23,7 @@ def _roll_valid_mask(
     every roll (fall back to unconstrained), or when every roll is valid
     (shortcut: no restriction needed).
     """
-    if constraint is None or constraint.constraint is None:
+    if constraint is None or constraint.roll_dependent_constraint is None:
         return None
     # Only apply constraint masking when ignore_roll=True.
     # With ignore_roll=False the scheduler already gated visibility on the
@@ -37,8 +37,14 @@ def _roll_valid_mask(
     # match and utime may fall between grid points.
     idx = ephem.index(dtutcfromtimestamp(utime))
     snapped_dt = ephem.timestamp[idx]
-    valid_ranges: list[tuple[float, float]] = constraint.constraint.roll_range(
-        time=snapped_dt, ephemeris=ephem, target_ra=ra, target_dec=dec
+    # Use only roll-dependent sub-constraints (star trackers, radiators, telescope
+    # offsets). Roll-independent constraints (sun/earth/moon on the main boresight)
+    # return [] from roll_range(), which OrConstraint misinterprets as "no valid
+    # rolls" when combined via |.
+    valid_ranges: list[tuple[float, float]] = (
+        constraint.roll_dependent_constraint.roll_range(
+            time=snapped_dt, ephemeris=ephem, target_ra=ra, target_dec=dec
+        )
     )
     if not valid_ranges:
         # Fully blocked at all rolls — return None and let caller fall back
