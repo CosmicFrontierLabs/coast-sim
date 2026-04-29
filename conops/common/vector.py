@@ -2,6 +2,49 @@ import numpy as np
 import numpy.typing as npt
 from pyproj import Geod
 
+# Permutation matrices P such that v_user = P @ v_internal, where "internal"
+# is the fixed +X-boresight body frame used by scbodyvector().
+# Each P maps the internal +X (boresight) to the labelled axis in user's frame
+# and is a proper rotation (det = +1).
+_BORESIGHT_PERMUTATIONS: dict[str, npt.NDArray[np.float64]] = {
+    "+X": np.eye(3, dtype=np.float64),
+    # Cyclic: internal X→user Y, Y→Z, Z→X
+    "+Y": np.array([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+    # Cyclic: internal X→user Z, Y→X, Z→Y
+    "+Z": np.array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]]),
+    # Ry(180°): X→-X, Y→Y, Z→-Z
+    "-X": np.array([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]]),
+    # Rz(-90°): X→-Y, Y→X, Z→Z
+    "-Y": np.array([[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]),
+    # Ry(90°): X→-Z, Y→Y, Z→X  (row-vector form gives [0,0,-1] for e_x)
+    "-Z": np.array([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]]),
+}
+
+
+def boresight_axis_permutation(boresight_axis: str) -> npt.NDArray[np.float64]:
+    """Return the 3×3 permutation matrix P for the given boresight axis.
+
+    ``v_user = P @ v_internal`` converts a body-frame vector from the internal
+    ``+X``-boresight convention (as returned by :func:`scbodyvector`) to the
+    user's body-frame where the named axis is the boresight.
+
+    The inverse transform (user → internal) is ``P.T @ v_user``.
+
+    Args:
+        boresight_axis: One of ``"+X"``, ``"+Y"``, ``"+Z"``, ``"-X"``,
+            ``"-Y"``, ``"-Z"``.
+
+    Returns:
+        A (3, 3) orthogonal matrix with determinant +1.
+    """
+    try:
+        return _BORESIGHT_PERMUTATIONS[boresight_axis]
+    except KeyError:
+        raise ValueError(
+            f"Unknown boresight_axis {boresight_axis!r}. "
+            f"Must be one of {list(_BORESIGHT_PERMUTATIONS)}"
+        )
+
 
 def radec2vec(ra: float, dec: float) -> npt.NDArray[np.float64]:
     """Convert RA/Dec angle (in radians) to a vector"""

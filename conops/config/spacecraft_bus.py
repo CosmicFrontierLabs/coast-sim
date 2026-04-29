@@ -1,5 +1,6 @@
-from pydantic import Field
+from pydantic import Field, model_validator
 
+from ..common.enums import BoresightAxis
 from ._base import ConfigModel
 from .acs import AttitudeControlSystem
 from .communications import CommunicationsSystem
@@ -12,6 +13,16 @@ from .thermal import Heater
 
 class SpacecraftBus(ConfigModel):
     name: str = Field(default="Default Bus", description="Name of the spacecraft bus")
+    boresight_axis: BoresightAxis = Field(
+        default=BoresightAxis.PLUS_X,
+        description=(
+            "Spacecraft body axis that is the primary pointing/boresight direction. "
+            "All body-frame vectors in the config (panel normals, star tracker boresights, "
+            "radiator normals) are defined in this coordinate system. "
+            "Default is '+X' (historical COASTSim convention). "
+            "Common alternatives: '+Z' for nadir-pointing Earth-observation buses."
+        ),
+    )
     power_draw: PowerDraw = Field(
         default_factory=PowerDraw,
         description="Power draw specifications for bus systems",
@@ -38,6 +49,19 @@ class SpacecraftBus(ConfigModel):
         default_factory=DefaultRadiatorConfiguration,
         description="Body-mounted radiator configuration",
     )
+
+    @model_validator(mode="after")
+    def _propagate_boresight_axis(self) -> "SpacecraftBus":
+        """Propagate boresight_axis to subsystems that need it for frame conversions."""
+        ba = str(self.boresight_axis)
+        # Star trackers: propagate to the configuration object and each orientation
+        self.star_trackers._boresight_axis = ba
+        for st in self.star_trackers.star_trackers:
+            st.orientation._boresight_axis = ba
+        # Radiators: propagate to each radiator object
+        for rad in self.radiators.radiators:
+            rad._boresight_axis = ba
+        return self
 
     def power(self, mode: int | None = None, in_eclipse: bool = False) -> float:
         """Get the power draw for the spacecraft bus in the given mode.

@@ -272,7 +272,9 @@ class ACS:
         # Use solar panel optimal pointing to maximize power generation
         if self.solar_panel is not None:
             safe_ra, safe_dec = self.solar_panel.optimal_charging_pointing(
-                utime, self.ephem
+                utime,
+                self.ephem,
+                boresight_axis=str(self.config.spacecraft_bus.boresight_axis),
             )
         else:
             # Fallback: point directly at Sun if no solar panel config
@@ -348,7 +350,13 @@ class ACS:
         # If roll not provided, calculate optimal roll at target position
         if roll is None:
             slew.endroll = optimum_roll(
-                ra, dec, utime, self.ephem, self.solar_panel, self.constraint
+                ra,
+                dec,
+                utime,
+                self.ephem,
+                self.solar_panel,
+                self.constraint,
+                boresight_axis=str(self.config.spacecraft_bus.boresight_axis),
             )
         else:
             slew.endroll = roll
@@ -515,6 +523,7 @@ class ACS:
             self.ephem,
             self.solar_panel,
             self.constraint,
+            boresight_axis=str(self.config.spacecraft_bus.boresight_axis),
         )
 
         # Check current constraints (must run after roll is updated)
@@ -832,7 +841,9 @@ class ACS:
         # Use solar panel optimal pointing if available
         if self.solar_panel is not None:
             target_ra, target_dec = self.solar_panel.optimal_charging_pointing(
-                utime, self.ephem
+                utime,
+                self.ephem,
+                boresight_axis=str(self.config.spacecraft_bus.boresight_axis),
             )
         else:
             # Fallback: point directly at Sun if no solar panel config and that

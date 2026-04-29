@@ -127,8 +127,11 @@ class EmergencyCharging:
             return None
 
         # Get optimal charging pointing from solar panel
+        _ba = str(self.config.spacecraft_bus.boresight_axis)
         optimal_ra, optimal_dec = self.solar_panel.optimal_charging_pointing(
-            utime, ephem
+            utime,
+            ephem,
+            boresight_axis=_ba,
         )
 
         # Find valid pointing that doesn't violate constraints
@@ -147,7 +150,13 @@ class EmergencyCharging:
 
         # Calculate optimal roll angle for solar panel pointing
         roll_angle = optimum_roll(
-            charging_ra, charging_dec, utime, ephem, self.solar_panel, self.constraint
+            charging_ra,
+            charging_dec,
+            utime,
+            ephem,
+            self.solar_panel,
+            self.constraint,
+            boresight_axis=_ba,
         )
 
         # Create the charging PPT
@@ -242,7 +251,13 @@ class EmergencyCharging:
 
         # Validate optimal pointing
         optimal_roll = optimum_roll(
-            optimal_ra, optimal_dec, utime, ephem, self.solar_panel, self.constraint
+            optimal_ra,
+            optimal_dec,
+            utime,
+            ephem,
+            self.solar_panel,
+            self.constraint,
+            boresight_axis=str(self.config.spacecraft_bus.boresight_axis),
         )
         if not self.constraint.in_constraint(
             optimal_ra, optimal_dec, utime, target_roll=optimal_roll
@@ -339,13 +354,25 @@ class EmergencyCharging:
                     continue  # Skip pointings beyond slew limit
 
             # Calculate optimal roll angle for this pointing
+            _ba2 = str(self.config.spacecraft_bus.boresight_axis)
             optimal_roll = optimum_roll(
-                alt_ra, alt_dec, utime, ephem, self.solar_panel, self.constraint
+                alt_ra,
+                alt_dec,
+                utime,
+                ephem,
+                self.solar_panel,
+                self.constraint,
+                boresight_axis=_ba2,
             )
 
             # Calculate solar panel illumination for this pointing with optimal roll
             illumination = self.solar_panel.panel_illumination_fraction(
-                time=utime, ra=alt_ra, dec=alt_dec, ephem=ephem, roll=optimal_roll
+                time=utime,
+                ra=alt_ra,
+                dec=alt_dec,
+                ephem=ephem,
+                roll=optimal_roll,
+                boresight_axis=_ba2,
             )
 
             # Ensure we have a float (should be scalar for single time)

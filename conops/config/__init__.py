@@ -1,3 +1,4 @@
+from ..common import BoresightAxis
 from .acs import AttitudeControlSystem
 from .battery import Battery
 from .communications import (
@@ -42,6 +43,7 @@ from .thermal import Heater
 from .visualization import VisualizationConfig
 
 __all__ = [
+    "BoresightAxis",
     "AntennaPointing",
     "AttitudeControlSystem",
     "BandCapability",
