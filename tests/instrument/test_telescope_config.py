@@ -5,7 +5,14 @@ import pathlib
 import pytest
 import rust_ephem
 
-from conops.config import Instrument, MissionConfig, Payload, Telescope, TelescopeConfig, TelescopeType
+from conops.config import (
+    Instrument,
+    MissionConfig,
+    Payload,
+    Telescope,
+    TelescopeConfig,
+    TelescopeType,
+)
 from conops.config.constraint import Constraint
 
 

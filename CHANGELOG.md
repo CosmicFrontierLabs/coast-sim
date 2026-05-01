@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.4.0...v0.4.1) (2026-04-29)
+
+
+### Bug Fixes
+
+* fixes to annotation of YAML, fix roll constraints bug ([#126](https://github.com/CosmicFrontierLabs/coast-sim/issues/126)) ([10536bb](https://github.com/CosmicFrontierLabs/coast-sim/commit/10536bb2e138659ed4079ad2342ecd4372cb26b9))
+
 ## [0.4.0](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.3.0...v0.4.0) (2026-04-24)
 
 
