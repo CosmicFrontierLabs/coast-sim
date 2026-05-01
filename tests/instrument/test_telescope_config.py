@@ -5,7 +5,7 @@ import pathlib
 import pytest
 import rust_ephem
 
-from conops.config import Instrument, Payload, Telescope, TelescopeConfig, TelescopeType
+from conops.config import Instrument, MissionConfig, Payload, Telescope, TelescopeConfig, TelescopeType
 from conops.config.constraint import Constraint
 
 
@@ -285,7 +285,6 @@ class TestTelescope:
     def test_config_alias_serializes_correctly_to_yaml(
         self, tmp_path: pathlib.Path
     ) -> None:
-        from conops.config import MissionConfig
 
         tc = TelescopeConfig(
             aperture_m=0.5,
@@ -400,7 +399,6 @@ class TestTelescopeConstraintMissionConfig:
     """Integration tests: Telescope.constraint propagates into MissionConfig."""
 
     def test_telescope_constraint_propagates_to_mission_constraint(self) -> None:
-        from conops.config import MissionConfig
         from conops.config.constraint import Constraint
 
         scope = Telescope(
@@ -413,7 +411,6 @@ class TestTelescopeConstraintMissionConfig:
         assert config.constraint.telescope_hard_constraint is not None
 
     def test_no_telescope_constraint_leaves_field_none(self) -> None:
-        from conops.config import MissionConfig
 
         scope = Telescope()  # no constraint
         payload = Payload(instruments=[scope])
@@ -421,7 +418,6 @@ class TestTelescopeConstraintMissionConfig:
         assert config.constraint.telescope_hard_constraint is None
 
     def test_plain_instrument_payload_leaves_telescope_field_none(self) -> None:
-        from conops.config import MissionConfig
 
         payload = Payload(instruments=[Instrument()])
         config = MissionConfig(payload=payload)
@@ -432,7 +428,6 @@ class TestTelescopeConstraintMissionConfig:
     ) -> None:
         # Off-axis boresight forces boresight_offset() → BoresightOffsetConstraint leaf.
         # roll_dependent_constraint should tree-walk telescope_hard_constraint and find it.
-        from conops.config import MissionConfig
 
         scope = Telescope(
             boresight=(0.0, 0.0, 1.0),
@@ -452,7 +447,6 @@ class TestTelescopeConstraintMissionConfig:
         # directly, with no boresight_offset wrapper.  The tree walk finds no
         # BoresightOffsetConstraint leaves, so roll_dependent_constraint is None
         # (assuming no star-tracker or radiator constraints are configured).
-        from conops.config import MissionConfig
         from conops.config.spacecraft_bus import SpacecraftBus
         from conops.config.star_tracker import StarTrackerConfiguration
 
