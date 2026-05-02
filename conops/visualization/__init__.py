@@ -22,6 +22,7 @@ from .plotly.fault_management import plot_fault_management_timeline_plotly
 from .plotly.globe_pointing import plot_sky_pointing_globe
 from .plotly.radiator_telemetry import plot_radiator_telemetry_plotly
 from .plotly.sky_pointing import plot_sky_pointing_plotly
+from .plotly.spacecraft_3d import plot_spacecraft_3d
 
 __all__ = [
     "plot_ditl_timeline",
@@ -42,4 +43,5 @@ __all__ = [
     "plot_ditl_timeline_plotly",
     "plot_data_management_telemetry_plotly",
     "plot_acs_mode_distribution_plotly",
+    "plot_spacecraft_3d",
 ]

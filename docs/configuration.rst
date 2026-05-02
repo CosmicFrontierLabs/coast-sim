@@ -662,8 +662,8 @@ A ``Telescope`` can be placed directly in ``Payload.instruments`` alongside any 
        power_draw=PowerDraw(nominal_power=80.0, peak_power=120.0),
        data_generation=DataGeneration(rate_gbps=0.5),
        optics=TelescopeConfig(
-           aperture_m=0.6,
-           focal_length_m=6.0,             # f_number → 10.0 (auto-derived)
+           aperture_m=0.5,
+           focal_length_m=3.5,             # f_number → 7.0 (auto-derived)
            telescope_type=TelescopeType.RITCHEY_CHRETIEN,
            tube_length_m=1.2,
        ),
@@ -705,9 +705,9 @@ to the ``TelescopeConfig`` fields:
            "power_draw": { "nominal_power": 80.0, "peak_power": 120.0, "power_mode": {} },
            "data_generation": { "rate_gbps": 0.5, "per_observation_gb": 0.0 },
            "optics": {
-             "aperture_m": 0.6,
-             "focal_length_m": 6.0,
-             "f_number": 10.0,
+             "aperture_m": 0.5,
+             "focal_length_m": 3.5,
+             "f_number": 7.0,
              "telescope_type": "Ritchey-Chrétien",
              "tube_length_m": 1.2
            }
