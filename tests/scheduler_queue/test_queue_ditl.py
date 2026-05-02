@@ -1172,6 +1172,41 @@ class TestCalcMethod:
         assert hk.for_solid_angle_sr is None
         mock_for.assert_not_called()
 
+    def test_create_housekeeping_record_populates_quaternion(self, queue_ditl) -> None:
+        """Housekeeping helper should populate quaternion fields from attitude."""
+        import numpy as np
+
+        from conops.common.vector import attitude_to_quat
+
+        ra, dec, roll = 45.0, 30.0, 10.0
+
+        hk = queue_ditl._create_housekeeping_record(
+            utime=1000.0,
+            ra=ra,
+            dec=dec,
+            roll=roll,
+            mode=ACSMode.SCIENCE,
+        )
+
+        # Compute expected quaternion
+        expected_quat = attitude_to_quat(ra, dec, roll)
+
+        # Verify quaternion fields are populated
+        assert hk.quat_w is not None
+        assert hk.quat_x is not None
+        assert hk.quat_y is not None
+        assert hk.quat_z is not None
+
+        # Verify quaternion values match expected
+        assert abs(hk.quat_w - float(expected_quat[0])) < 1e-10
+        assert abs(hk.quat_x - float(expected_quat[1])) < 1e-10
+        assert abs(hk.quat_y - float(expected_quat[2])) < 1e-10
+        assert abs(hk.quat_z - float(expected_quat[3])) < 1e-10
+
+        # Verify quaternion is normalized
+        quat_norm = np.sqrt(hk.quat_w**2 + hk.quat_x**2 + hk.quat_y**2 + hk.quat_z**2)
+        assert abs(quat_norm - 1.0) < 1e-10
+
     def test_track_ppt_in_timeline_closes_placeholder_end_times(
         self, queue_ditl
     ) -> None:
