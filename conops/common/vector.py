@@ -406,7 +406,25 @@ def constraint_avoiding_waypoint(
     routes around the constraint.  Two candidate waypoints (one on each side of
     the arc) are considered; the one giving the shorter total detour is returned.
 
-    Returns None when no constraint violation is detected on the direct arc.
+    **Antipodal Points**: For 180° separations where infinitely many great circles
+    exist, an arbitrary plane is chosen and waypoints are computed perpendicular
+    to it. This allows constraint avoidance even for antipodal slews, rather than
+    forcing fallback to a direct path through the exclusion zone.
+
+    **Validation**: The returned waypoint and its connecting arcs (start→waypoint,
+    waypoint→end) are validated to ensure they do not violate the constraint. If
+    no valid waypoint can be found, None is returned even when a violation exists
+    on the direct arc. This ensures "constraint-avoiding" paths actually avoid
+    the constraint.
+
+    **Limitations**: Single-waypoint routing cannot avoid all constraint geometries.
+    Wide or irregular constraint regions may require multiple waypoints or more
+    sophisticated routing strategies. When this function returns None, the caller
+    should use an alternative slew strategy (e.g., direct QUATERNION path).
+
+    Returns None when:
+    - Start and end points are identical (no slew needed), OR
+    - A violation exists but no valid single-waypoint route can be found
 
     Args:
         ra1, dec1:       Start pointing (degrees).
@@ -418,21 +436,41 @@ def constraint_avoiding_waypoint(
         samples:         Number of points to sample along the arc for violation check.
 
     Returns:
-        (waypoint_ra, waypoint_dec) in degrees if a violation is found, None otherwise.
+        (waypoint_ra, waypoint_dec) in degrees if a validated waypoint is found,
+        None otherwise.
     """
     a = vecnorm(radec2vec(np.deg2rad(ra1), np.deg2rad(dec1)))
     b = vecnorm(radec2vec(np.deg2rad(ra2), np.deg2rad(dec2)))
 
-    n = vecnorm(np.cross(a, b))
-    if np.linalg.norm(n) < 1e-12:
-        # Start and end are identical or antipodal
+    # Compute angular separation
+    total_angle = float(np.arccos(np.clip(float(np.dot(a, b)), -1.0, 1.0)))
+
+    # Handle degenerate cases
+    if total_angle < 1e-6:
+        # Points are essentially identical - no slew needed
         return None
+
+    # Compute great circle plane normal
+    n = vecnorm(np.cross(a, b))
+    n_norm = np.linalg.norm(n)
+
+    if n_norm < 1e-12:
+        # Points are antipodal (180° separation)
+        # Any great circle works - choose one perpendicular to a convenient axis
+        # Use the axis with smallest component of 'a' to maximize numerical stability
+        abs_a = np.abs(a)
+        if abs_a[0] <= abs_a[1] and abs_a[0] <= abs_a[2]:
+            perp = np.array([1.0, 0.0, 0.0])
+        elif abs_a[1] <= abs_a[2]:
+            perp = np.array([0.0, 1.0, 0.0])
+        else:
+            perp = np.array([0.0, 0.0, 1.0])
+        n = vecnorm(np.cross(a, perp))
 
     # Sample the direct arc to detect violations
     # Use SLERP for uniform angular spacing
-    total_angle = float(np.arccos(np.clip(float(np.dot(a, b)), -1.0, 1.0)))
     if total_angle < 1e-6:
-        # Arc too short to matter
+        # Arc too short to matter (already checked above, but kept for safety)
         return None
 
     # Sample the arc and check for violations
@@ -488,9 +526,64 @@ def constraint_avoiding_waypoint(
         d2 = float(np.rad2deg(np.arccos(np.clip(float(np.dot(w, b)), -1.0, 1.0))))
         return d1 + d2
 
-    # Choose the waypoint with the shorter total path
-    w = w1 if path_length_deg(w1) <= path_length_deg(w2) else w2
+    def validate_waypoint(w: npt.NDArray[np.float64]) -> bool:
+        """Validate that waypoint w and its connecting arcs are constraint-free."""
+        # Convert waypoint to RA/Dec
+        w_radec = vec2radec(w)
+        w_ra = float(np.rad2deg(w_radec[0]))
+        w_dec = float(np.rad2deg(w_radec[1]))
 
-    # Convert back to RA/Dec in degrees
-    w_ra_dec = vec2radec(w)
-    return float(np.rad2deg(w_ra_dec[0])), float(np.rad2deg(w_ra_dec[1]))
+        # Check waypoint itself
+        if constraint_check_fn(w_ra, w_dec, time):
+            return False
+
+        # Check start→waypoint arc
+        angle_aw = float(np.arccos(np.clip(float(np.dot(a, w)), -1.0, 1.0)))
+        if angle_aw > 1e-6:
+            for i in range(1, samples):  # Skip endpoints
+                t = i / samples
+                if angle_aw < 0.01:
+                    sample_vec = vecnorm(a + t * (w - a))
+                else:
+                    sin_angle = np.sin(angle_aw)
+                    sample_vec = (
+                        np.sin((1 - t) * angle_aw) * a + np.sin(t * angle_aw) * w
+                    ) / sin_angle
+                sample_radec = vec2radec(sample_vec)
+                sample_ra = float(np.rad2deg(sample_radec[0]))
+                sample_dec = float(np.rad2deg(sample_radec[1]))
+                if constraint_check_fn(sample_ra, sample_dec, time):
+                    return False
+
+        # Check waypoint→end arc
+        angle_wb = float(np.arccos(np.clip(float(np.dot(w, b)), -1.0, 1.0)))
+        if angle_wb > 1e-6:
+            for i in range(1, samples):  # Skip endpoints
+                t = i / samples
+                if angle_wb < 0.01:
+                    sample_vec = vecnorm(w + t * (b - w))
+                else:
+                    sin_angle = np.sin(angle_wb)
+                    sample_vec = (
+                        np.sin((1 - t) * angle_wb) * w + np.sin(t * angle_wb) * b
+                    ) / sin_angle
+                sample_radec = vec2radec(sample_vec)
+                sample_ra = float(np.rad2deg(sample_radec[0]))
+                sample_dec = float(np.rad2deg(sample_radec[1]))
+                if constraint_check_fn(sample_ra, sample_dec, time):
+                    return False
+
+        return True
+
+    # Choose the waypoint with the shorter total path that passes validation
+    candidates = [(w1, path_length_deg(w1)), (w2, path_length_deg(w2))]
+    candidates.sort(key=lambda x: x[1])  # Sort by path length
+
+    for w, _ in candidates:
+        if validate_waypoint(w):
+            # Convert back to RA/Dec in degrees
+            w_ra_dec = vec2radec(w)
+            return float(np.rad2deg(w_ra_dec[0])), float(np.rad2deg(w_ra_dec[1]))
+
+    # If both waypoints fail validation, return None (fallback to direct path)
+    return None
