@@ -9,10 +9,9 @@ from ..common.enums import ObsType, SlewAlgorithm
 from ..common.vector import (
     constraint_avoiding_waypoint,
     quaternion_slew_path,
-    sun_avoiding_waypoint,
 )
 from ..config import AttitudeControlSystem, Constraint, MissionConfig
-from ..config.constants import DTOR, SUN_OCCULT
+from ..config.constants import DTOR
 
 if TYPE_CHECKING:
     from ..targets.pointing import Pointing
@@ -23,7 +22,7 @@ class Slew:
 
     Supports two path algorithms selected via the ACS configuration:
     - QUATERNION (default): full SO(3) SLERP coupling pointing and roll changes.
-    - SUN_AVOIDING: quaternion SLERP with automatic detour around the Sun.
+    - CONSTRAINT_AVOIDING: generalized constraint-avoiding SLERP.
     """
 
     ephem: rust_ephem.Ephemeris
@@ -200,11 +199,6 @@ class Slew:
             component of the SLERP; roll is stored in _quat_roll_path so
             slew_roll() returns the properly coupled value.
 
-        SUN_AVOIDING:
-            Quaternion SLERP with an automatic detour when the direct arc
-            would cross within the configured Sun exclusion angle.  Falls back
-            to plain QUATERNION when no violation is detected.
-
         CONSTRAINT_AVOIDING:
             Generalized constraint-avoiding SLERP using the combined rust-ephem
             constraint configuration.  Routes around any combination of Sun,
@@ -215,9 +209,7 @@ class Slew:
         self.slewpath is the (ra_list, dec_list) path used for interpolation.
         """
         steps = 100
-        if self.acs_config.slew_algorithm == SlewAlgorithm.SUN_AVOIDING:
-            self._predict_slew_sun_avoiding(steps)
-        elif self.acs_config.slew_algorithm == SlewAlgorithm.CONSTRAINT_AVOIDING:
+        if self.acs_config.slew_algorithm == SlewAlgorithm.CONSTRAINT_AVOIDING:
             self._predict_slew_constraint_avoiding(steps)
         else:
             self._predict_slew_quaternion(steps)
@@ -246,103 +238,6 @@ class Slew:
             / DTOR
         )
 
-    def _predict_slew_sun_avoiding(self, steps: int) -> None:
-        """Compute sun-avoiding slew path using quaternion SLERP segments.
-
-        If the direct arc violates the Sun exclusion zone, a waypoint is
-        inserted and the path is built from two consecutive SLERP segments.
-        Falls back to plain quaternion SLERP when no violation is detected.
-        """
-        # Get sun position at slew start time from the ephemeris
-        try:
-            idx = self.ephem.index(dtutcfromtimestamp(self.slewstart))
-            sun_ra = float(self.ephem.sun_ra_deg[idx])
-            sun_dec = float(self.ephem.sun_dec_deg[idx])
-        except Exception:
-            self._predict_slew_quaternion(steps)
-            return
-
-        # Determine the sun exclusion angle from the constraint config
-        min_sun_angle = float(SUN_OCCULT)
-        sc = self.constraint.sun_constraint
-        if sc is not None:
-            raw = getattr(sc, "min_angle", None)
-            if raw is not None:
-                min_sun_angle = float(raw)
-
-        waypoint = sun_avoiding_waypoint(
-            self.startra,
-            self.startdec,
-            self.endra,
-            self.enddec,
-            sun_ra,
-            sun_dec,
-            min_sun_angle,
-        )
-
-        if waypoint is None:
-            # No violation – plain quaternion SLERP
-            self._predict_slew_quaternion(steps)
-            return
-
-        w_ra, w_dec = waypoint
-
-        # Estimate roll at waypoint by linear interpolation of the total arc fraction
-        dist1 = (
-            separation(
-                [self.startra * DTOR, self.startdec * DTOR],
-                [w_ra * DTOR, w_dec * DTOR],
-            )
-            / DTOR
-        )
-        dist2 = (
-            separation(
-                [w_ra * DTOR, w_dec * DTOR],
-                [self.endra * DTOR, self.enddec * DTOR],
-            )
-            / DTOR
-        )
-        total = dist1 + dist2
-        frac = dist1 / total if total > 0 else 0.5
-        roll_diff = self.endroll - self.startroll
-        if roll_diff > 180:
-            roll_diff -= 360
-        elif roll_diff < -180:
-            roll_diff += 360
-        w_roll = (self.startroll + frac * roll_diff) % 360
-
-        # Build two SLERP segments; split steps proportionally
-        steps1 = max(1, round(steps * frac))
-        steps2 = max(1, steps - steps1)
-
-        ras1, decs1, rolls1 = quaternion_slew_path(
-            self.startra,
-            self.startdec,
-            self.startroll,
-            w_ra,
-            w_dec,
-            w_roll,
-            steps=steps1,
-        )
-        ras2, decs2, rolls2 = quaternion_slew_path(
-            w_ra,
-            w_dec,
-            w_roll,
-            self.endra,
-            self.enddec,
-            self.endroll,
-            steps=steps2,
-        )
-
-        # Concatenate (drop duplicate waypoint at segment junction)
-        all_ras = ras1 + ras2[1:]
-        all_decs = decs1 + decs2[1:]
-        all_rolls = rolls1 + rolls2[1:]
-
-        self.slewpath = (all_ras, all_decs)
-        self._quat_roll_path = all_rolls
-        self.slewdist = dist1 + dist2
-
     def _predict_slew_constraint_avoiding(self, steps: int) -> None:
         """Compute constraint-avoiding slew path using quaternion SLERP segments.
 
@@ -368,6 +263,9 @@ class Slew:
             # Round time to nearest ephemeris step to ensure it exists in ephemeris
             # rust-ephem's in_constraint requires exact timestamp matches
             step_size = getattr(self.ephem, "step_size", 60)
+            # Handle case where step_size is a Mock object (in tests)
+            if not isinstance(step_size, (int, float)):
+                step_size = 60
             rounded_time = round(time / step_size) * step_size
             dt = dtutcfromtimestamp(rounded_time)
             return bool(

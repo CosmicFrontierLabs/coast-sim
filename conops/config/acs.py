@@ -35,7 +35,6 @@ class AttitudeControlSystem(ConfigModel):
         description=(
             "Algorithm used to compute slew paths. "
             "'quaternion' (default): full SO(3) SLERP coupling pointing and roll. "
-            "'sun_avoiding': quaternion SLERP with automatic Sun-exclusion detour. "
             "'constraint_avoiding': quaternion SLERP with automatic detour around "
             "any configured slew constraint (uses slew_constraint if set, otherwise "
             "falls back to the spacecraft's general pointing constraint)."

@@ -67,11 +67,6 @@ class SlewAlgorithm(str, Enum):
         roll changes through the shortest rotation path in quaternion space,
         giving a physically accurate attitude trajectory.
 
-    SUN_AVOIDING: Quaternion SLERP path with an automatic detour around the
-        configured Sun exclusion zone.  A single waypoint is inserted on the
-        exclusion boundary when the direct arc would violate the constraint;
-        falls back to plain QUATERNION when no violation is detected.
-
     CONSTRAINT_AVOIDING: Generalized constraint-avoiding SLERP using the
         combined rust-ephem constraint configuration.  Routes around any
         combination of Sun, Earth, Moon, and other exclusion zones.  Falls
@@ -80,5 +75,4 @@ class SlewAlgorithm(str, Enum):
     """
 
     QUATERNION = "quaternion"
-    SUN_AVOIDING = "sun_avoiding"
     CONSTRAINT_AVOIDING = "constraint_avoiding"

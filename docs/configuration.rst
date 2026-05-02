@@ -158,7 +158,6 @@ The :class:`~conops.config.AttitudeControlSystem` defines slew performance and p
 * ``slew_algorithm`` (:class:`~conops.common.enums.SlewAlgorithm`): Algorithm for computing slew paths:
 
   - ``QUATERNION`` (default): Full 3-DOF SLERP coupling pointing and roll changes
-  - ``SUN_AVOIDING``: Quaternion SLERP with automatic Sun-exclusion detour
   - ``CONSTRAINT_AVOIDING``: Routes around any configured constraints (Sun, Earth, Moon, etc.)
 
 * ``slew_constraint`` (ConstraintConfig | None): Optional rust-ephem constraint for slew path planning. When set and ``slew_algorithm`` is ``CONSTRAINT_AVOIDING``, this constraint is used instead of the spacecraft's general pointing constraint. This allows different safety margins for slewing vs. science pointing.
