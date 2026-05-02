@@ -15,6 +15,7 @@ from ..common import (
     unixtime2date,
 )
 from ..common.enums import ACSCommandType
+from ..common.vector import boresight_axis_permutation
 from ..config import MissionConfig
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
@@ -545,6 +546,9 @@ class QueueDITL(DITLMixin, DITLStats):
                 np.radians(float(self.ephem.sun_dec_deg[ei])),
             ),
         )
+        _ba = self.config.boresight_axis
+        if _ba != "+X":
+            _sun_bv = boresight_axis_permutation(_ba) @ _sun_bv
         sun_body_vector: list[float] = [
             float(_sun_bv[0]),
             float(_sun_bv[1]),
@@ -553,7 +557,14 @@ class QueueDITL(DITLMixin, DITLStats):
         _pos = np.asarray(self.ephem.gcrs_pv.position[ei], dtype=np.float64)
         earth_body_vector: list[float] = list(-_pos / np.linalg.norm(_pos))
 
-        nominal_roll = optimum_roll(ra, dec, utime, self.ephem, self.config.solar_panel)
+        nominal_roll = optimum_roll(
+            ra,
+            dec,
+            utime,
+            self.ephem,
+            self.config.solar_panel,
+            boresight_axis=_ba,
+        )
         roll_offset_deg = (roll - nominal_roll + 180.0) % 360.0 - 180.0
 
         return Housekeeping(
@@ -1120,6 +1131,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 self.acs.ephem,
                 self.config.solar_panel,
                 self.config.constraint,
+                boresight_axis=self.config.boresight_axis,
             )
             self.ppt.roll = slew.endroll
             slew.calc_slewtime()
@@ -1259,7 +1271,12 @@ class QueueDITL(DITLMixin, DITLStats):
         """Calculate solar panel illumination and power generation."""
         panel_illumination, panel_power = (
             self.config.solar_panel.illumination_and_power(
-                time=self.utime[i], ra=ra, dec=dec, ephem=self.ephem, roll=roll
+                time=self.utime[i],
+                ra=ra,
+                dec=dec,
+                ephem=self.ephem,
+                roll=roll,
+                boresight_axis=self.config.boresight_axis,
             )
         )
         assert isinstance(panel_illumination, float)

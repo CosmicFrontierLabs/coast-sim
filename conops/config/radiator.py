@@ -15,11 +15,11 @@ from typing import cast
 import numpy as np
 import numpy.typing as npt
 import rust_ephem
-from pydantic import Field, field_validator
+from pydantic import Field, PrivateAttr, field_validator
 from rust_ephem.constraints import ConstraintConfig
 
 from ..common import dtutcfromtimestamp, scbodyvector
-from ..common.vector import normal_to_euler_deg, radec2vec
+from ..common.vector import boresight_axis_permutation, normal_to_euler_deg, radec2vec
 from ._base import ConfigModel
 from .constraint import Constraint
 from .geometry import PanelGeometry, compute_shadow_fraction
@@ -97,6 +97,9 @@ class Radiator(ConfigModel):
 
     hard_constraint: Constraint | None = None
 
+    # Set by SpacecraftBus.model_validator; not user-facing.
+    _boresight_axis: str = PrivateAttr(default="+X")
+
     geometry: PanelGeometry | None = Field(
         default=None,
         description=(
@@ -130,7 +133,14 @@ class Radiator(ConfigModel):
         if base_constraint is None:
             return None
 
-        roll_deg, pitch_deg, yaw_deg = normal_to_euler_deg(self.orientation.normal)
+        # Convert radiator normal from user's body frame to internal +X-boresight
+        # frame before computing the boresight_offset angles, because rust-ephem
+        # measures offsets from its natural +X axis.
+        p_mat = boresight_axis_permutation(self._boresight_axis)
+        normal_internal = p_mat.T @ np.asarray(
+            self.orientation.normal, dtype=np.float64
+        )
+        roll_deg, pitch_deg, yaw_deg = normal_to_euler_deg(normal_internal)
         return base_constraint.boresight_offset(
             roll_deg=roll_deg,
             pitch_deg=pitch_deg,
@@ -178,7 +188,11 @@ class Radiator(ConfigModel):
         the sun exposure is reduced by the fraction of the radiator face that falls in
         shadow from the occluder panels.
         """
-        normal = np.asarray(self.orientation.normal, dtype=np.float64)
+        # Convert radiator normal from user's body frame to the internal +X-boresight
+        # frame so that it is compatible with sun_unit / earth_unit which come from
+        # scbodyvector() (always in internal frame).
+        p_mat = boresight_axis_permutation(self._boresight_axis)
+        normal = p_mat.T @ np.asarray(self.orientation.normal, dtype=np.float64)
         sun_exposure = (
             0.0
             if (sun_unit is None or in_eclipse)

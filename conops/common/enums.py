@@ -1,6 +1,26 @@
 from enum import Enum, auto
 
 
+class BoresightAxis(str, Enum):
+    """Spacecraft body axis that is the primary pointing/boresight direction.
+
+    Determines which body-frame axis aligns with the target when the spacecraft
+    is "pointing at" a given (RA, Dec).  The default is ``+X``, which is the
+    historical COASTSim convention.  Other common values are ``+Z`` (nadir-pointing
+    Earth-observation buses) and ``+Y``.
+    """
+
+    PLUS_X = "+X"
+    PLUS_Y = "+Y"
+    PLUS_Z = "+Z"
+    MINUS_X = "-X"
+    MINUS_Y = "-Y"
+    MINUS_Z = "-Z"
+
+    def __str__(self) -> str:
+        return self.value
+
+
 class ACSMode(int, Enum):
     """Spacecraft ACS Modes"""
 

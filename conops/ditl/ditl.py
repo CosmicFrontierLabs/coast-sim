@@ -6,6 +6,7 @@ import rust_ephem
 from conops.targets.plan import Plan
 
 from ..common import angular_separation, dtutcfromtimestamp, radec2vec, scbodyvector
+from ..common.vector import boresight_axis_permutation
 from ..config import MissionConfig
 from ..simulation.roll import optimum_roll
 from .ditl_log import DITLLog
@@ -208,7 +209,12 @@ class DITL(DITLMixin, DITLStats):
 
             # Calculate solar panel illumination and power (more efficient than separate calls)
             panel_illumination, panel_power = self.solar_panel.illumination_and_power(
-                time=self.utime[i], ra=ra, dec=dec, ephem=self.ephem, roll=roll
+                time=self.utime[i],
+                ra=ra,
+                dec=dec,
+                ephem=self.ephem,
+                roll=roll,
+                boresight_axis=self.config.boresight_axis,
             )
             assert isinstance(panel_illumination, float)
             assert isinstance(panel_power, float)
@@ -233,7 +239,12 @@ class DITL(DITLMixin, DITLStats):
 
             # Create housekeeping telemetry record for fault checking
             nominal_roll = optimum_roll(
-                ra, dec, self.utime[i], self.ephem, self.solar_panel
+                ra,
+                dec,
+                self.utime[i],
+                self.ephem,
+                self.solar_panel,
+                boresight_axis=self.config.boresight_axis,
             )
             roll_offset_deg = (roll - nominal_roll + 180.0) % 360.0 - 180.0
             sun_angle_deg = self._compute_sun_angle(self.utime[i], ra, dec)
@@ -246,6 +257,9 @@ class DITL(DITLMixin, DITLStats):
                     np.radians(float(self.ephem.sun_dec_deg[i])),
                 ),
             )
+            _ba = self.config.boresight_axis
+            if _ba != "+X":
+                _sun_bv = boresight_axis_permutation(_ba) @ _sun_bv
             sun_body_vector: list[float] = [
                 float(_sun_bv[0]),
                 float(_sun_bv[1]),
