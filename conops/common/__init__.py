@@ -18,6 +18,7 @@ from .enums import (
 from .vector import (
     angular_separation,
     attitude_to_quat,
+    constraint_avoiding_waypoint,
     great_circle,
     quat_slerp,
     quat_to_attitude,
@@ -40,6 +41,7 @@ __all__ = [
     "SlewAlgorithm",
     "angular_separation",
     "attitude_to_quat",
+    "constraint_avoiding_waypoint",
     "dtutcfromtimestamp",
     "givename",
     "great_circle",

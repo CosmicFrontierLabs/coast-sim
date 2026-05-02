@@ -1,5 +1,6 @@
 import numpy as np
-from pydantic import Field
+from pydantic import ConfigDict, Field
+from rust_ephem.constraints import ConstraintConfig
 
 from ..common import separation
 from ..common.enums import SlewAlgorithm
@@ -14,6 +15,8 @@ class AttitudeControlSystem(ConfigModel):
     Defines slew performance characteristics including acceleration,
     maximum slew rate, accuracy, and settling time.
     """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
 
     slew_acceleration: float = Field(
         default=0.5, description="Maximum angular acceleration in degrees/second²"
@@ -32,7 +35,21 @@ class AttitudeControlSystem(ConfigModel):
         description=(
             "Algorithm used to compute slew paths. "
             "'quaternion' (default): full SO(3) SLERP coupling pointing and roll. "
-            "'sun_avoiding': quaternion SLERP with automatic Sun-exclusion detour."
+            "'sun_avoiding': quaternion SLERP with automatic Sun-exclusion detour. "
+            "'constraint_avoiding': quaternion SLERP with automatic detour around "
+            "any configured slew constraint (uses slew_constraint if set, otherwise "
+            "falls back to the spacecraft's general pointing constraint)."
+        ),
+    )
+    slew_constraint: ConstraintConfig | None = Field(
+        default=None,
+        description=(
+            "Optional rust-ephem ConstraintConfig for slew path planning. "
+            "When set and slew_algorithm is CONSTRAINT_AVOIDING, this constraint "
+            "is used to determine waypoints during slews. If None, the spacecraft's "
+            "general pointing constraint is used instead. This allows different "
+            "constraints for slewing vs. science pointing (e.g., stricter Earth limb "
+            "avoidance during slews, or relaxed Sun angle limits for quick transits)."
         ),
     )
 

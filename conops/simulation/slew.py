@@ -7,6 +7,7 @@ from ..common import roll_over_angle, unixtime2date
 from ..common.common import dtutcfromtimestamp
 from ..common.enums import ObsType, SlewAlgorithm
 from ..common.vector import (
+    constraint_avoiding_waypoint,
     sun_avoiding_waypoint,
 )
 from ..config import AttitudeControlSystem, Constraint, MissionConfig
@@ -203,12 +204,20 @@ class Slew:
             would cross within the configured Sun exclusion angle.  Falls back
             to plain QUATERNION when no violation is detected.
 
+        CONSTRAINT_AVOIDING:
+            Generalized constraint-avoiding SLERP using the combined rust-ephem
+            constraint configuration.  Routes around any combination of Sun,
+            Earth, Moon, and other exclusion zones.  Falls back to QUATERNION
+            when no constraint violation is detected on the direct arc.
+
         In all cases self.slewdist is the total angular distance (degrees) and
         self.slewpath is the (ra_list, dec_list) path used for interpolation.
         """
         steps = 100
         if self.acs_config.slew_algorithm == SlewAlgorithm.SUN_AVOIDING:
             self._predict_slew_sun_avoiding(steps)
+        elif self.acs_config.slew_algorithm == SlewAlgorithm.CONSTRAINT_AVOIDING:
+            self._predict_slew_constraint_avoiding(steps)
         else:
             self._predict_slew_quaternion(steps)
 
@@ -271,6 +280,118 @@ class Slew:
             sun_ra,
             sun_dec,
             min_sun_angle,
+        )
+
+        if waypoint is None:
+            # No violation – plain quaternion SLERP
+            self._predict_slew_quaternion(steps)
+            return
+
+        w_ra, w_dec = waypoint
+
+        # Estimate roll at waypoint by linear interpolation of the total arc fraction
+        from ..common import separation
+        from ..config.constants import DTOR
+
+        dist1 = (
+            separation(
+                [self.startra * DTOR, self.startdec * DTOR],
+                [w_ra * DTOR, w_dec * DTOR],
+            )
+            / DTOR
+        )
+        dist2 = (
+            separation(
+                [w_ra * DTOR, w_dec * DTOR],
+                [self.endra * DTOR, self.enddec * DTOR],
+            )
+            / DTOR
+        )
+        total = dist1 + dist2
+        frac = dist1 / total if total > 0 else 0.5
+        roll_diff = self.endroll - self.startroll
+        if roll_diff > 180:
+            roll_diff -= 360
+        elif roll_diff < -180:
+            roll_diff += 360
+        w_roll = (self.startroll + frac * roll_diff) % 360
+
+        # Build two SLERP segments; split steps proportionally
+        steps1 = max(1, round(steps * frac))
+        steps2 = max(1, steps - steps1)
+
+        from ..common.vector import quaternion_slew_path
+
+        ras1, decs1, rolls1 = quaternion_slew_path(
+            self.startra,
+            self.startdec,
+            self.startroll,
+            w_ra,
+            w_dec,
+            w_roll,
+            steps=steps1,
+        )
+        ras2, decs2, rolls2 = quaternion_slew_path(
+            w_ra,
+            w_dec,
+            w_roll,
+            self.endra,
+            self.enddec,
+            self.endroll,
+            steps=steps2,
+        )
+
+        # Concatenate (drop duplicate waypoint at segment junction)
+        all_ras = ras1 + ras2[1:]
+        all_decs = decs1 + decs2[1:]
+        all_rolls = rolls1 + rolls2[1:]
+
+        self.slewpath = (all_ras, all_decs)
+        self._quat_roll_path = all_rolls
+        self.slewdist = dist1 + dist2
+
+    def _predict_slew_constraint_avoiding(self, steps: int) -> None:
+        """Compute constraint-avoiding slew path using quaternion SLERP segments.
+
+        Uses the ACS slew_constraint if configured, otherwise falls back to the
+        spacecraft's general pointing constraint.  If any constraint is violated
+        (Sun, Earth, Moon, etc.), a waypoint is inserted and the path is built
+        from two consecutive SLERP segments.  Falls back to plain quaternion SLERP
+        when no violation is detected.
+        """
+        # Determine which constraint to use: ACS slew_constraint or spacecraft constraint
+        slew_constraint = (
+            self.acs_config.slew_constraint
+            if hasattr(self.acs_config, "slew_constraint")
+            and self.acs_config.slew_constraint is not None
+            else self.constraint.constraint
+        )
+
+        # Create a constraint check function for the waypoint algorithm
+        def check_constraint(ra: float, dec: float, time: float) -> bool:
+            """Return True if the constraint is violated at this pointing."""
+            if slew_constraint is None:
+                return False
+            # Call the constraint directly with the ephemeris
+            dt = dtutcfromtimestamp(time)
+            return bool(
+                slew_constraint.in_constraint(
+                    ephemeris=self.ephem,
+                    target_ra=ra,
+                    target_dec=dec,
+                    time=dt,
+                    target_roll=None,
+                )
+            )
+
+        # Use the generalized constraint-avoiding waypoint algorithm
+        waypoint = constraint_avoiding_waypoint(
+            self.startra,
+            self.startdec,
+            self.endra,
+            self.enddec,
+            self.slewstart,
+            check_constraint,
         )
 
         if waypoint is None:

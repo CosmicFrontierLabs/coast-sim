@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 import numpy as np
 import numpy.typing as npt
 from pyproj import Geod
@@ -486,5 +488,112 @@ def sun_avoiding_waypoint(
         return d1 + d2
 
     w = w1 if path_length_deg(w1) <= path_length_deg(w2) else w2
+    w_ra_dec = vec2radec(w)
+    return float(np.rad2deg(w_ra_dec[0])), float(np.rad2deg(w_ra_dec[1]))
+
+
+def constraint_avoiding_waypoint(
+    ra1: float,
+    dec1: float,
+    ra2: float,
+    dec2: float,
+    time: float,
+    constraint_check_fn: Callable[[float, float, float], bool],
+    margin_deg: float = 5.0,
+    samples: int = 50,
+) -> tuple[float, float] | None:
+    """Return a waypoint (RA, Dec) that routes a slew around constraint violations.
+
+    If the direct great-circle arc from (ra1, dec1) to (ra2, dec2) would violate
+    the provided constraint at the given time, a single waypoint is computed that
+    routes around the constraint.  Two candidate waypoints (one on each side of
+    the arc) are considered; the one giving the shorter total detour is returned.
+
+    Returns None when no constraint violation is detected on the direct arc.
+
+    Args:
+        ra1, dec1:       Start pointing (degrees).
+        ra2, dec2:       End pointing (degrees).
+        time:            Unix timestamp for constraint evaluation.
+        constraint_check_fn: Callable with signature (ra, dec, time) -> bool
+                         that returns True if constraint is violated.
+        margin_deg:      Extra buffer beyond the constraint boundary (degrees).
+        samples:         Number of points to sample along the arc for violation check.
+
+    Returns:
+        (waypoint_ra, waypoint_dec) in degrees if a violation is found, None otherwise.
+    """
+    a = vecnorm(radec2vec(np.deg2rad(ra1), np.deg2rad(dec1)))
+    b = vecnorm(radec2vec(np.deg2rad(ra2), np.deg2rad(dec2)))
+
+    n = vecnorm(np.cross(a, b))
+    if np.linalg.norm(n) < 1e-12:
+        # Start and end are identical or antipodal
+        return None
+
+    # Sample the direct arc to detect violations
+    # Use SLERP for uniform angular spacing
+    total_angle = float(np.arccos(np.clip(float(np.dot(a, b)), -1.0, 1.0)))
+    if total_angle < 1e-6:
+        # Arc too short to matter
+        return None
+
+    # Sample the arc and check for violations
+    violation_found = False
+    closest_violator = None
+
+    for i in range(samples + 1):
+        t = i / samples
+        # SLERP between start and end vectors
+        if total_angle < 0.01:
+            # Near-identical points, use linear interpolation
+            sample_vec = vecnorm(a + t * (b - a))
+        else:
+            sin_total = np.sin(total_angle)
+            sample_vec = (
+                np.sin((1 - t) * total_angle) * a + np.sin(t * total_angle) * b
+            ) / sin_total
+
+        sample_radec = vec2radec(sample_vec)
+        sample_ra = float(np.rad2deg(sample_radec[0]))
+        sample_dec = float(np.rad2deg(sample_radec[1]))
+
+        # Check if this point violates the constraint
+        if constraint_check_fn(sample_ra, sample_dec, time):
+            violation_found = True
+            # Track the point with minimum distance from the arc plane
+            # (for now, just use the first violation)
+            if closest_violator is None:
+                closest_violator = sample_vec
+            break
+
+    if not violation_found or closest_violator is None:
+        return None
+
+    # A violation was found. Compute waypoints perpendicular to the arc plane.
+    # Use the closest violator as the reference point on the arc
+    c = vecnorm(closest_violator)
+
+    # Compute two candidate waypoints: one on each side of the arc plane
+    # Offset by margin_deg from the current position
+    offset_rad = np.deg2rad(margin_deg)
+
+    # Two perpendicular directions relative to the arc plane
+    away_dir1 = vecnorm(np.cross(n, c))
+    away_dir2 = -away_dir1
+
+    w1 = vecnorm(np.cos(offset_rad) * c + np.sin(offset_rad) * away_dir1)
+    w2 = vecnorm(np.cos(offset_rad) * c + np.sin(offset_rad) * away_dir2)
+
+    def path_length_deg(w: npt.NDArray[np.float64]) -> float:
+        """Calculate total path length through waypoint w."""
+        d1 = float(np.rad2deg(np.arccos(np.clip(float(np.dot(a, w)), -1.0, 1.0))))
+        d2 = float(np.rad2deg(np.arccos(np.clip(float(np.dot(w, b)), -1.0, 1.0))))
+        return d1 + d2
+
+    # Choose the waypoint with the shorter total path
+    w = w1 if path_length_deg(w1) <= path_length_deg(w2) else w2
+
+    # Convert back to RA/Dec in degrees
     w_ra_dec = vec2radec(w)
     return float(np.rad2deg(w_ra_dec[0])), float(np.rad2deg(w_ra_dec[1]))

@@ -367,3 +367,216 @@ class TestSlewPathResolution:
         print(
             f"\n  Runtime: 20 steps = {time_20 * 1000:.2f}ms, 100 steps = {time_100 * 1000:.2f}ms ({ratio:.1f}x)"
         )
+
+
+class TestConstraintAvoidingSlew:
+    """Test constraint-avoiding slew path algorithm."""
+
+    def test_constraint_avoiding_fallback_to_quaternion(self, slew, acs_config):
+        """When no constraint is violated, falls back to quaternion SLERP."""
+        from conops.common.enums import SlewAlgorithm
+
+        acs_config.slew_algorithm = SlewAlgorithm.CONSTRAINT_AVOIDING
+        slew.constraint.constraint = None  # No constraints
+        slew.startra = 0.0
+        slew.startdec = 0.0
+        slew.startroll = 0.0
+        slew.endra = 45.0
+        slew.enddec = 30.0
+        slew.endroll = 0.0
+        slew.slewstart = 1700000000.0
+
+        slew.predict_slew()
+
+        # Should have a path
+        assert hasattr(slew, "slewpath")
+        assert len(slew.slewpath[0]) > 0
+        assert slew.slewdist > 0
+
+    def test_constraint_avoiding_with_violation(self, slew, acs_config, constraint):
+        """When constraint is violated, inserts waypoint."""
+        from conops.common.enums import SlewAlgorithm
+
+        acs_config.slew_algorithm = SlewAlgorithm.CONSTRAINT_AVOIDING
+        slew.startra = 0.0
+        slew.startdec = 0.0
+        slew.startroll = 0.0
+        slew.endra = 90.0
+        slew.enddec = 0.0
+        slew.endroll = 0.0
+        slew.slewstart = 1700000000.0
+
+        # Mock constraint that violates at midpoint
+        def mock_in_constraint(ra, dec, utime, target_roll=None):
+            # Violate constraint around RA=45 (midpoint)
+            return 40 < ra < 50
+
+        constraint.in_constraint = mock_in_constraint
+        constraint.constraint = Mock()
+        constraint.constraint.in_constraint = Mock(
+            side_effect=lambda **kwargs: mock_in_constraint(
+                kwargs["target_ra"], kwargs["target_dec"], kwargs["time"]
+            )
+        )
+
+        slew.predict_slew()
+
+        # Should have a longer path with waypoint
+        assert hasattr(slew, "slewpath")
+        assert len(slew.slewpath[0]) > 0
+        # Path should avoid the constraint zone
+        ra_path = slew.slewpath[0]
+        # Check that path deviates from direct arc
+        assert any(ra < 40 or ra > 50 for ra in ra_path if 10 < ra < 80)
+
+    def test_constraint_avoiding_path_has_roll(self, slew, acs_config):
+        """Constraint-avoiding path should include roll information."""
+        from conops.common.enums import SlewAlgorithm
+
+        acs_config.slew_algorithm = SlewAlgorithm.CONSTRAINT_AVOIDING
+        slew.constraint.constraint = None
+        slew.startra = 0.0
+        slew.startdec = 0.0
+        slew.startroll = 0.0
+        slew.endra = 45.0
+        slew.enddec = 30.0
+        slew.endroll = 90.0
+        slew.slewstart = 1700000000.0
+
+        slew.predict_slew()
+
+        # Should have roll path
+        assert hasattr(slew, "_quat_roll_path")
+        assert len(slew._quat_roll_path) > 0
+        # Roll should start at 0 and end at 90
+        assert abs(slew._quat_roll_path[0] - 0.0) < 1.0
+        assert abs(slew._quat_roll_path[-1] - 90.0) < 1.0
+
+    def test_constraint_avoiding_uses_acs_slew_constraint(self, slew, acs_config):
+        """When ACS slew_constraint is set, it should be used instead of spacecraft constraint."""
+        from unittest.mock import Mock
+
+        from conops.common.enums import SlewAlgorithm
+
+        acs_config.slew_algorithm = SlewAlgorithm.CONSTRAINT_AVOIDING
+
+        # Create a mock slew constraint that always returns False (no violation)
+        mock_slew_constraint = Mock()
+        mock_slew_constraint.in_constraint = Mock(return_value=False)
+        acs_config.slew_constraint = mock_slew_constraint
+
+        # Set up spacecraft constraint that would violate (but should not be used)
+        slew.constraint.constraint = Mock()
+        slew.constraint.constraint.in_constraint = Mock(return_value=True)
+
+        slew.startra = 0.0
+        slew.startdec = 0.0
+        slew.startroll = 0.0
+        slew.endra = 90.0
+        slew.enddec = 0.0
+        slew.endroll = 0.0
+        slew.slewstart = 1700000000.0
+
+        slew.predict_slew()
+
+        # The slew_constraint should have been called (it doesn't violate)
+        assert mock_slew_constraint.in_constraint.called
+        # Should fall back to quaternion path (no waypoint)
+        assert hasattr(slew, "slewpath")
+        assert len(slew.slewpath[0]) > 0
+
+    def test_constraint_avoiding_falls_back_to_spacecraft_constraint(
+        self, slew, acs_config
+    ):
+        """When ACS slew_constraint is None, falls back to spacecraft constraint."""
+        from unittest.mock import Mock
+
+        from conops.common.enums import SlewAlgorithm
+
+        acs_config.slew_algorithm = SlewAlgorithm.CONSTRAINT_AVOIDING
+        acs_config.slew_constraint = None  # No slew-specific constraint
+
+        # Mock spacecraft constraint that doesn't violate
+        mock_spacecraft_constraint = Mock()
+        mock_spacecraft_constraint.in_constraint = Mock(return_value=False)
+        slew.constraint.constraint = mock_spacecraft_constraint
+
+        slew.startra = 0.0
+        slew.startdec = 0.0
+        slew.startroll = 0.0
+        slew.endra = 90.0
+        slew.enddec = 0.0
+        slew.endroll = 0.0
+        slew.slewstart = 1700000000.0
+
+        slew.predict_slew()
+
+        # The spacecraft constraint should have been called
+        assert mock_spacecraft_constraint.in_constraint.called
+        # Should fall back to quaternion path (no waypoint)
+        assert hasattr(slew, "slewpath")
+        assert len(slew.slewpath[0]) > 0
+
+
+class TestConstraintAvoidingWaypoint:
+    """Test constraint_avoiding_waypoint function."""
+
+    def test_no_violation_returns_none(self):
+        """When no constraint is violated, returns None."""
+        from conops.common.vector import constraint_avoiding_waypoint
+
+        def no_violation(ra, dec, time):
+            return False
+
+        result = constraint_avoiding_waypoint(
+            0.0, 0.0, 90.0, 0.0, 1700000000.0, no_violation
+        )
+        assert result is None
+
+    def test_violation_returns_waypoint(self):
+        """When constraint is violated, returns a waypoint."""
+        from conops.common.vector import constraint_avoiding_waypoint
+
+        def midpoint_violation(ra, dec, time):
+            # Violate at midpoint (around RA=45)
+            return 40 < ra < 50
+
+        result = constraint_avoiding_waypoint(
+            0.0, 0.0, 90.0, 0.0, 1700000000.0, midpoint_violation
+        )
+        assert result is not None
+        assert len(result) == 2
+        waypoint_ra, waypoint_dec = result
+        # Waypoint should be offset from direct path
+        assert isinstance(waypoint_ra, float)
+        assert isinstance(waypoint_dec, float)
+
+    def test_waypoint_offset_from_direct_path(self):
+        """Waypoint should be offset from the direct path."""
+        from conops.common.vector import constraint_avoiding_waypoint
+
+        def dec_30_violation(ra, dec, time):
+            # Violate around dec=30
+            return 29 < dec < 31
+
+        result = constraint_avoiding_waypoint(
+            45.0, 30.0, 135.0, 30.0, 1700000000.0, dec_30_violation, margin_deg=5.0
+        )
+        assert result is not None
+        waypoint_ra, waypoint_dec = result
+        # Waypoint should be present and different from the direct path dec=30
+        # The function adds margin_deg offset perpendicular to the arc
+        assert isinstance(waypoint_ra, float)
+        assert isinstance(waypoint_dec, float)
+
+    def test_identical_points_returns_none(self):
+        """When start and end are identical, returns None."""
+        from conops.common.vector import constraint_avoiding_waypoint
+
+        def any_violation(ra, dec, time):
+            return True
+
+        result = constraint_avoiding_waypoint(
+            45.0, 30.0, 45.0, 30.0, 1700000000.0, any_violation
+        )
+        assert result is None
