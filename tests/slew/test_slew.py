@@ -229,12 +229,29 @@ class TestPredictSlew:
         assert slew_predict_setup.slewdist > 0
 
     def test_predict_slew_sets_slewdist_approx(self, slew_predict_setup):
-        from conops.common import separation
-        from conops.config.constants import DTOR
+        """Slew distance should be the quaternion angular distance."""
+        import numpy as np
 
-        expected = (
-            separation([45.0 * DTOR, 30.0 * DTOR], [90.0 * DTOR, 60.0 * DTOR]) / DTOR
+        from conops.common.vector import attitude_to_quat
+
+        # Compute expected quaternion angular distance
+        q1 = attitude_to_quat(
+            slew_predict_setup.startra,
+            slew_predict_setup.startdec,
+            slew_predict_setup.startroll,
         )
+        q2 = attitude_to_quat(
+            slew_predict_setup.endra,
+            slew_predict_setup.enddec,
+            slew_predict_setup.endroll,
+        )
+        dot = float(np.dot(q1, q2))
+        if dot < 0:
+            dot = -dot
+        dot = min(dot, 1.0)
+        theta_rad = np.arccos(dot)
+        expected = float(np.rad2deg(2 * theta_rad))
+
         slew_predict_setup.predict_slew()
         assert abs(slew_predict_setup.slewdist - expected) < 0.01
 
@@ -256,6 +273,171 @@ class TestPredictSlew:
     def test_predict_slew_sets_roll_path(self, slew_predict_setup):
         slew_predict_setup.predict_slew()
         assert len(slew_predict_setup._quat_roll_path) == 101
+
+
+class TestPureRollManeuver:
+    """Test quaternion slew algorithm with pure roll maneuvers.
+
+    Pure roll maneuvers (where RA/Dec remain constant but roll changes) are
+    critical edge cases that test the quaternion SLERP path/timing coupling.
+    The great-circle distance is 0, but the spacecraft still needs time to
+    rotate about the boresight axis.
+    """
+
+    def test_pure_roll_zero_radec_distance(self, slew_predict_setup):
+        """Pure roll maneuver should have non-zero quaternion distance matching roll change."""
+        slew_predict_setup.startra = 45.0
+        slew_predict_setup.startdec = 30.0
+        slew_predict_setup.startroll = 0.0
+        slew_predict_setup.endra = 45.0
+        slew_predict_setup.enddec = 30.0
+        slew_predict_setup.endroll = 90.0
+
+        slew_predict_setup.predict_slew()
+
+        # Quaternion distance should equal the roll change (90°)
+        assert abs(slew_predict_setup.slewdist - 90.0) < 0.1
+
+    def test_pure_roll_has_roll_path(self, slew_predict_setup):
+        """Pure roll maneuver should generate a roll path."""
+        slew_predict_setup.startra = 45.0
+        slew_predict_setup.startdec = 30.0
+        slew_predict_setup.startroll = 0.0
+        slew_predict_setup.endra = 45.0
+        slew_predict_setup.enddec = 30.0
+        slew_predict_setup.endroll = 90.0
+
+        slew_predict_setup.predict_slew()
+
+        # Should have roll path from SLERP
+        assert hasattr(slew_predict_setup, "_quat_roll_path")
+        assert len(slew_predict_setup._quat_roll_path) == 101
+
+    def test_pure_roll_path_starts_and_ends_correctly(self, slew_predict_setup):
+        """Roll path should start at 0° and end at 90°."""
+        slew_predict_setup.startra = 45.0
+        slew_predict_setup.startdec = 30.0
+        slew_predict_setup.startroll = 0.0
+        slew_predict_setup.endra = 45.0
+        slew_predict_setup.enddec = 30.0
+        slew_predict_setup.endroll = 90.0
+
+        slew_predict_setup.predict_slew()
+
+        # Check roll path endpoints
+        assert abs(slew_predict_setup._quat_roll_path[0] - 0.0) < 0.1
+        assert abs(slew_predict_setup._quat_roll_path[-1] - 90.0) < 0.1
+
+    def test_pure_roll_path_is_monotonic(self, slew_predict_setup):
+        """Roll path should monotonically increase from 0° to 90°."""
+        slew_predict_setup.startra = 45.0
+        slew_predict_setup.startdec = 30.0
+        slew_predict_setup.startroll = 0.0
+        slew_predict_setup.endra = 45.0
+        slew_predict_setup.enddec = 30.0
+        slew_predict_setup.endroll = 90.0
+
+        slew_predict_setup.predict_slew()
+
+        # Check that roll increases monotonically
+        roll_path = slew_predict_setup._quat_roll_path
+        for i in range(len(roll_path) - 1):
+            # Allow small numerical noise
+            assert roll_path[i + 1] >= roll_path[i] - 0.1
+
+    def test_pure_roll_180_degree_rotation(self, slew_predict_setup):
+        """180° roll maneuver should work correctly."""
+        slew_predict_setup.startra = 45.0
+        slew_predict_setup.startdec = 30.0
+        slew_predict_setup.startroll = 0.0
+        slew_predict_setup.endra = 45.0
+        slew_predict_setup.enddec = 30.0
+        slew_predict_setup.endroll = 180.0
+
+        slew_predict_setup.predict_slew()
+
+        # Check roll path endpoints
+        assert abs(slew_predict_setup._quat_roll_path[0] - 0.0) < 0.1
+        assert abs(slew_predict_setup._quat_roll_path[-1] - 180.0) < 0.1
+        # Quaternion distance should equal the roll change (180°)
+        assert abs(slew_predict_setup.slewdist - 180.0) < 0.1
+
+    def test_pure_roll_wraps_around_360(self, slew_predict_setup):
+        """Roll maneuver from 350° to 10° should take shortest path (20° total)."""
+        slew_predict_setup.startra = 45.0
+        slew_predict_setup.startdec = 30.0
+        slew_predict_setup.startroll = 350.0
+        slew_predict_setup.endra = 45.0
+        slew_predict_setup.enddec = 30.0
+        slew_predict_setup.endroll = 10.0
+
+        slew_predict_setup.predict_slew()
+
+        # Should have a valid roll path
+        assert len(slew_predict_setup._quat_roll_path) == 101
+
+        # The quaternion path might use negative angles, so normalize everything
+        roll_path_normalized = [(r % 360) for r in slew_predict_setup._quat_roll_path]
+
+        # Start should be near 350° or equivalent
+        assert (
+            abs(roll_path_normalized[0] - 350.0) < 1.0
+            or abs(roll_path_normalized[0] - 10.0) < 1.0
+        )
+
+        # End should be near 10°
+        assert abs(roll_path_normalized[-1] - 10.0) < 1.0
+
+        # Slew distance should be ~20° (shortest path), not ~340°
+        assert slew_predict_setup.slewdist < 25.0
+
+    def test_pure_roll_radec_path_constant(self, slew_predict_setup):
+        """RA/Dec should remain constant throughout pure roll maneuver."""
+        slew_predict_setup.startra = 45.0
+        slew_predict_setup.startdec = 30.0
+        slew_predict_setup.startroll = 0.0
+        slew_predict_setup.endra = 45.0
+        slew_predict_setup.enddec = 30.0
+        slew_predict_setup.endroll = 90.0
+
+        slew_predict_setup.predict_slew()
+
+        # RA/Dec path should be essentially constant
+        ra_path, dec_path = slew_predict_setup.slewpath
+        for ra in ra_path:
+            assert abs(ra - 45.0) < 0.1
+        for dec in dec_path:
+            assert abs(dec - 30.0) < 0.1
+
+    def test_pure_roll_slew_roll_method(self, slew_predict_setup, acs_config):
+        """slew_roll() should interpolate correctly during pure roll maneuver."""
+        # Set up ACS config for bang-bang motion
+        acs_config.motion_time = Mock(return_value=100.0)
+        acs_config.s_of_t = Mock(side_effect=lambda dist, t: t / 100.0 * dist)
+
+        slew_predict_setup.startra = 45.0
+        slew_predict_setup.startdec = 30.0
+        slew_predict_setup.startroll = 0.0
+        slew_predict_setup.endra = 45.0
+        slew_predict_setup.enddec = 30.0
+        slew_predict_setup.endroll = 90.0
+        slew_predict_setup.slewstart = 1700000000.0
+
+        slew_predict_setup.predict_slew()
+        slew_predict_setup.slewtime = 100.0
+        slew_predict_setup.slewend = slew_predict_setup.slewstart + 100.0
+
+        # At start: should be 0°
+        roll_start = slew_predict_setup.slew_roll(1700000000.0)
+        assert abs(roll_start - 0.0) < 1.0
+
+        # At end: should be 90°
+        roll_end = slew_predict_setup.slew_roll(1700000100.0)
+        assert abs(roll_end - 90.0) < 1.0
+
+        # At midpoint: should be around 45°
+        roll_mid = slew_predict_setup.slew_roll(1700000050.0)
+        assert 40.0 < roll_mid < 50.0
 
 
 class TestSlewPathResolution:

@@ -7,6 +7,7 @@ from ..common import roll_over_angle, separation, unixtime2date
 from ..common.common import dtutcfromtimestamp
 from ..common.enums import ObsType, SlewAlgorithm
 from ..common.vector import (
+    attitude_to_quat,
     constraint_avoiding_waypoint,
     quaternion_slew_path,
 )
@@ -228,15 +229,22 @@ class Slew:
         )
         self.slewpath = (ras, decs)
         self._quat_roll_path = rolls
-        # Great-circle distance is still the correct metric for slew time
 
-        self.slewdist = (
-            separation(
-                [self.startra * DTOR, self.startdec * DTOR],
-                [self.endra * DTOR, self.enddec * DTOR],
-            )
-            / DTOR
-        )
+        # Compute quaternion angular distance (accounts for both pointing and roll)
+        # This is more accurate than great-circle distance for maneuvers with roll changes
+        q1 = attitude_to_quat(self.startra, self.startdec, self.startroll)
+        q2 = attitude_to_quat(self.endra, self.enddec, self.endroll)
+
+        # Quaternion dot product (ensure shortest path)
+        dot = float(np.dot(q1, q2))
+        if dot < 0:
+            dot = -dot
+        dot = min(dot, 1.0)  # Clamp for numerical stability
+
+        # Angular distance in SO(3): theta = arccos(dot)
+        # For unit quaternions, the rotation angle is 2*arccos(q·q')
+        theta_rad = np.arccos(dot)
+        self.slewdist = float(np.rad2deg(2 * theta_rad))
 
     def _predict_slew_constraint_avoiding(self, steps: int) -> None:
         """Compute constraint-avoiding slew path using quaternion SLERP segments.
