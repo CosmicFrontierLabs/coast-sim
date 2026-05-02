@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.4.1...v0.5.0) (2026-05-02)
+
+
+### Features
+
+* **slew:** add alternate slew algorithms ([#125](https://github.com/CosmicFrontierLabs/coast-sim/issues/125)) ([5658dc6](https://github.com/CosmicFrontierLabs/coast-sim/commit/5658dc6e6cd880f28a53996c048086193f1582b4))
+
+
+### Bug Fixes
+
+* **tests:** import refactoring ([#131](https://github.com/CosmicFrontierLabs/coast-sim/issues/131)) ([9f90a26](https://github.com/CosmicFrontierLabs/coast-sim/commit/9f90a2611407eb6dfa15f268859f9daf9874aff3))
+
 ## [0.4.1](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.4.0...v0.4.1) (2026-04-29)
 
 
