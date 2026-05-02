@@ -3,15 +3,16 @@ from typing import TYPE_CHECKING
 import numpy as np
 import rust_ephem
 
-from ..common import roll_over_angle, unixtime2date
+from ..common import roll_over_angle, separation, unixtime2date
 from ..common.common import dtutcfromtimestamp
 from ..common.enums import ObsType, SlewAlgorithm
 from ..common.vector import (
     constraint_avoiding_waypoint,
+    quaternion_slew_path,
     sun_avoiding_waypoint,
 )
 from ..config import AttitudeControlSystem, Constraint, MissionConfig
-from ..config.constants import SUN_OCCULT
+from ..config.constants import DTOR, SUN_OCCULT
 
 if TYPE_CHECKING:
     from ..targets.pointing import Pointing
@@ -223,7 +224,6 @@ class Slew:
 
     def _predict_slew_quaternion(self, steps: int) -> None:
         """Compute slew path via full quaternion SLERP."""
-        from ..common.vector import quaternion_slew_path
 
         ras, decs, rolls = quaternion_slew_path(
             self.startra,
@@ -237,8 +237,6 @@ class Slew:
         self.slewpath = (ras, decs)
         self._quat_roll_path = rolls
         # Great-circle distance is still the correct metric for slew time
-        from ..common import separation
-        from ..config.constants import DTOR
 
         self.slewdist = (
             separation(
@@ -290,9 +288,6 @@ class Slew:
         w_ra, w_dec = waypoint
 
         # Estimate roll at waypoint by linear interpolation of the total arc fraction
-        from ..common import separation
-        from ..config.constants import DTOR
-
         dist1 = (
             separation(
                 [self.startra * DTOR, self.startdec * DTOR],
@@ -319,8 +314,6 @@ class Slew:
         # Build two SLERP segments; split steps proportionally
         steps1 = max(1, round(steps * frac))
         steps2 = max(1, steps - steps1)
-
-        from ..common.vector import quaternion_slew_path
 
         ras1, decs1, rolls1 = quaternion_slew_path(
             self.startra,
@@ -372,8 +365,11 @@ class Slew:
             """Return True if the constraint is violated at this pointing."""
             if slew_constraint is None:
                 return False
-            # Call the constraint directly with the ephemeris
-            dt = dtutcfromtimestamp(time)
+            # Round time to nearest ephemeris step to ensure it exists in ephemeris
+            # rust-ephem's in_constraint requires exact timestamp matches
+            step_size = getattr(self.ephem, "step_size", 60)
+            rounded_time = round(time / step_size) * step_size
+            dt = dtutcfromtimestamp(rounded_time)
             return bool(
                 slew_constraint.in_constraint(
                     ephemeris=self.ephem,
@@ -402,8 +398,6 @@ class Slew:
         w_ra, w_dec = waypoint
 
         # Estimate roll at waypoint by linear interpolation of the total arc fraction
-        from ..common import separation
-        from ..config.constants import DTOR
 
         dist1 = (
             separation(
@@ -431,8 +425,6 @@ class Slew:
         # Build two SLERP segments; split steps proportionally
         steps1 = max(1, round(steps * frac))
         steps2 = max(1, steps - steps1)
-
-        from ..common.vector import quaternion_slew_path
 
         ras1, decs1, rolls1 = quaternion_slew_path(
             self.startra,
