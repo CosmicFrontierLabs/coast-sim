@@ -1,10 +1,13 @@
 """Unit tests for telemetry.py."""
 
+import math
 from datetime import datetime, timezone
 
 import pytest
 
 from conops.common.enums import ACSMode
+from conops.common.vector import attitude_to_quat, quat_to_attitude
+from conops.ditl.ditl import DITL
 from conops.ditl.telemetry import (
     Housekeeping,
     HousekeepingList,
@@ -475,3 +478,200 @@ class TestBodyVectorFields:
         tm = Telemetry(housekeeping=HousekeepingList([hk]))
         assert tm.housekeeping.sun_body_vector == [sbv]
         assert tm.housekeeping.earth_body_vector == [ebv]
+
+
+class TestQuaternionFields:
+    """Tests for quat_w/x/y/z attitude quaternion fields."""
+
+    def _ts(self, offset: float = 0.0) -> datetime:
+        return datetime.fromtimestamp(1000.0 + offset, tz=timezone.utc)
+
+    # ------------------------------------------------------------------
+    # Field defaults
+    # ------------------------------------------------------------------
+
+    def test_quaternion_fields_default_to_none(self) -> None:
+        hk = Housekeeping(timestamp=self._ts())
+        assert hk.quat_w is None
+        assert hk.quat_x is None
+        assert hk.quat_y is None
+        assert hk.quat_z is None
+
+    # ------------------------------------------------------------------
+    # Round-trip: store known values, read them back
+    # ------------------------------------------------------------------
+
+    def test_quaternion_fields_round_trip(self) -> None:
+        hk = Housekeeping(
+            timestamp=self._ts(),
+            quat_w=0.9239,
+            quat_x=0.3827,
+            quat_y=0.0,
+            quat_z=0.0,
+        )
+        assert hk.quat_w == pytest.approx(0.9239)
+        assert hk.quat_x == pytest.approx(0.3827)
+        assert hk.quat_y == pytest.approx(0.0)
+        assert hk.quat_z == pytest.approx(0.0)
+
+    # ------------------------------------------------------------------
+    # Values agree with attitude_to_quat()
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "ra, dec, roll",
+        [
+            (0.0, 0.0, 0.0),
+            (45.0, 30.0, 15.0),
+            (270.0, -45.0, 90.0),
+            (359.9, 89.0, 180.0),
+        ],
+    )
+    def test_quaternion_matches_attitude_to_quat(
+        self, ra: float, dec: float, roll: float
+    ) -> None:
+        q = attitude_to_quat(ra, dec, roll)
+        hk = Housekeeping(
+            timestamp=self._ts(),
+            ra=ra,
+            dec=dec,
+            roll=roll,
+            quat_w=float(q[0]),
+            quat_x=float(q[1]),
+            quat_y=float(q[2]),
+            quat_z=float(q[3]),
+        )
+        assert hk.quat_w == pytest.approx(float(q[0]), abs=1e-9)
+        assert hk.quat_x == pytest.approx(float(q[1]), abs=1e-9)
+        assert hk.quat_y == pytest.approx(float(q[2]), abs=1e-9)
+        assert hk.quat_z == pytest.approx(float(q[3]), abs=1e-9)
+
+    @pytest.mark.parametrize(
+        "ra, dec, roll",
+        [
+            (0.0, 0.0, 0.0),
+            (45.0, 30.0, 15.0),
+            (270.0, -45.0, 90.0),
+        ],
+    )
+    def test_stored_quaternion_is_unit(
+        self, ra: float, dec: float, roll: float
+    ) -> None:
+        q = attitude_to_quat(ra, dec, roll)
+        hk = Housekeeping(
+            timestamp=self._ts(),
+            quat_w=float(q[0]),
+            quat_x=float(q[1]),
+            quat_y=float(q[2]),
+            quat_z=float(q[3]),
+        )
+        norm = math.sqrt(
+            hk.quat_w**2 + hk.quat_x**2 + hk.quat_y**2 + hk.quat_z**2  # type: ignore[operator]
+        )
+        assert norm == pytest.approx(1.0, abs=1e-9)
+
+    def test_quaternion_round_trips_to_attitude(self) -> None:
+        ra_in, dec_in, roll_in = 123.4, -22.5, 47.0
+        q = attitude_to_quat(ra_in, dec_in, roll_in)
+        hk = Housekeeping(
+            timestamp=self._ts(),
+            quat_w=float(q[0]),
+            quat_x=float(q[1]),
+            quat_y=float(q[2]),
+            quat_z=float(q[3]),
+        )
+        import numpy as np
+
+        q_back = np.array([hk.quat_w, hk.quat_x, hk.quat_y, hk.quat_z])
+        ra_out, dec_out, roll_out = quat_to_attitude(q_back)
+        assert ra_out == pytest.approx(ra_in, abs=1e-6)
+        assert dec_out == pytest.approx(dec_in, abs=1e-6)
+        assert roll_out == pytest.approx(roll_in, abs=1e-6)
+
+    # ------------------------------------------------------------------
+    # HousekeepingList property access
+    # ------------------------------------------------------------------
+
+    def test_housekeeping_list_quat_properties(self) -> None:
+        q1 = attitude_to_quat(0.0, 0.0, 0.0)
+        q2 = attitude_to_quat(90.0, 45.0, 0.0)
+        hk1 = Housekeeping(
+            timestamp=self._ts(0),
+            quat_w=float(q1[0]),
+            quat_x=float(q1[1]),
+            quat_y=float(q1[2]),
+            quat_z=float(q1[3]),
+        )
+        hk2 = Housekeeping(
+            timestamp=self._ts(1),
+            quat_w=float(q2[0]),
+            quat_x=float(q2[1]),
+            quat_y=float(q2[2]),
+            quat_z=float(q2[3]),
+        )
+        hkl = HousekeepingList([hk1, hk2])
+        assert hkl.quat_w == [pytest.approx(float(q1[0])), pytest.approx(float(q2[0]))]
+        assert hkl.quat_x == [pytest.approx(float(q1[1])), pytest.approx(float(q2[1]))]
+        assert hkl.quat_y == [pytest.approx(float(q1[2])), pytest.approx(float(q2[2]))]
+        assert hkl.quat_z == [pytest.approx(float(q1[3])), pytest.approx(float(q2[3]))]
+
+    def test_housekeeping_list_quat_none_passthrough(self) -> None:
+        hk = Housekeeping(timestamp=self._ts())
+        hkl = HousekeepingList([hk])
+        assert hkl.quat_w == [None]
+        assert hkl.quat_x == [None]
+        assert hkl.quat_y == [None]
+        assert hkl.quat_z == [None]
+
+    # ------------------------------------------------------------------
+    # extract_field
+    # ------------------------------------------------------------------
+
+    def test_extract_field_quat_w(self) -> None:
+        q = attitude_to_quat(45.0, 0.0, 0.0)
+        hk1 = Housekeeping(timestamp=self._ts(0), quat_w=float(q[0]))
+        hk2 = Housekeeping(timestamp=self._ts(1), quat_w=None)
+        result = Housekeeping.extract_field([hk1, hk2], "quat_w")
+        assert result[0] == pytest.approx(float(q[0]))
+        assert result[1] is None
+
+    # ------------------------------------------------------------------
+    # Telemetry container access
+    # ------------------------------------------------------------------
+
+    def test_telemetry_quat_accessible(self) -> None:
+        q = attitude_to_quat(30.0, 10.0, 5.0)
+        hk = Housekeeping(
+            timestamp=self._ts(),
+            quat_w=float(q[0]),
+            quat_x=float(q[1]),
+            quat_y=float(q[2]),
+            quat_z=float(q[3]),
+        )
+        tm = Telemetry(housekeeping=HousekeepingList([hk]))
+        assert tm.housekeeping.quat_w[0] == pytest.approx(float(q[0]))
+        assert tm.housekeeping.quat_x[0] == pytest.approx(float(q[1]))
+        assert tm.housekeeping.quat_y[0] == pytest.approx(float(q[2]))
+        assert tm.housekeeping.quat_z[0] == pytest.approx(float(q[3]))
+
+    # ------------------------------------------------------------------
+    # Integration: DITL simulation loop writes quaternion values
+    # ------------------------------------------------------------------
+
+    def test_ditl_simulation_writes_quaternion(self, ditl: DITL) -> None:  # type: ignore[name-defined]
+        """After calc(), every housekeeping record has a non-None unit quaternion."""
+        ditl.acs.pointing.return_value = (45.0, 30.0, 15.0, 1)
+        ditl.calc()
+        hk = ditl.telemetry.housekeeping[0]
+        assert hk.quat_w is not None
+        assert hk.quat_x is not None
+        assert hk.quat_y is not None
+        assert hk.quat_z is not None
+        norm = math.sqrt(hk.quat_w**2 + hk.quat_x**2 + hk.quat_y**2 + hk.quat_z**2)
+        assert norm == pytest.approx(1.0, abs=1e-6)
+        # Values must agree with attitude_to_quat for the same attitude
+        q_expected = attitude_to_quat(45.0, 30.0, 15.0)
+        assert hk.quat_w == pytest.approx(float(q_expected[0]), abs=1e-6)
+        assert hk.quat_x == pytest.approx(float(q_expected[1]), abs=1e-6)
+        assert hk.quat_y == pytest.approx(float(q_expected[2]), abs=1e-6)
+        assert hk.quat_z == pytest.approx(float(q_expected[3]), abs=1e-6)

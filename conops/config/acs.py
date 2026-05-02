@@ -1,7 +1,9 @@
 import numpy as np
-from pydantic import Field
+from pydantic import ConfigDict, Field
+from rust_ephem.constraints import ConstraintConfig
 
-from ..common import great_circle, separation
+from ..common import separation
+from ..common.enums import SlewAlgorithm
 from ._base import ConfigModel
 from .constants import DTOR
 
@@ -14,6 +16,8 @@ class AttitudeControlSystem(ConfigModel):
     maximum slew rate, accuracy, and settling time.
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+
     slew_acceleration: float = Field(
         default=0.5, description="Maximum angular acceleration in degrees/second²"
     )
@@ -25,6 +29,27 @@ class AttitudeControlSystem(ConfigModel):
     )
     settle_time: float = Field(
         default=120.0, description="Time to settle after slew completion in seconds"
+    )
+    slew_algorithm: SlewAlgorithm = Field(
+        default=SlewAlgorithm.QUATERNION,
+        description=(
+            "Algorithm used to compute slew paths. "
+            "'quaternion' (default): full SO(3) SLERP coupling pointing and roll. "
+            "'constraint_avoiding': quaternion SLERP with automatic detour around "
+            "any configured slew constraint (uses slew_constraint if set, otherwise "
+            "falls back to the spacecraft's general pointing constraint)."
+        ),
+    )
+    slew_constraint: ConstraintConfig | None = Field(
+        default=None,
+        description=(
+            "Optional rust-ephem ConstraintConfig for slew path planning. "
+            "When set and slew_algorithm is CONSTRAINT_AVOIDING, this constraint "
+            "is used to determine waypoints during slews. If None, the spacecraft's "
+            "general pointing constraint is used instead. This allows different "
+            "constraints for slewing vs. science pointing (e.g., stricter Earth limb "
+            "avoidance during slews, or relaxed Sun angle limits for quick transits)."
+        ),
     )
 
     def motion_time(self, angle_deg: float) -> float:
@@ -99,16 +124,14 @@ class AttitudeControlSystem(ConfigModel):
         startdec: float,
         endra: float,
         enddec: float,
-        steps: int = 20,
     ) -> tuple[float, tuple[list[float], list[float]]]:
-        """Calculate great circle slew distance and path.
+        """Calculate slew distance and endpoint path for scheduling purposes.
 
         Args:
             startra: Starting RA in degrees
             startdec: Starting Dec in degrees
             endra: Ending RA in degrees
             enddec: Ending Dec in degrees
-            steps: Number of steps in the path
 
         Returns:
             Tuple of (slew_distance, slew_path) where slew_path is (ra_array, dec_array)
@@ -117,5 +140,8 @@ class AttitudeControlSystem(ConfigModel):
             separation([startra * DTOR, startdec * DTOR], [endra * DTOR, enddec * DTOR])
             / DTOR
         )
-        slewpath = great_circle(startra, startdec, endra, enddec, steps)
+        slewpath: tuple[list[float], list[float]] = (
+            [startra, endra],
+            [startdec, enddec],
+        )
         return slewdist, slewpath

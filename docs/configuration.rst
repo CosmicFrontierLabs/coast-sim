@@ -147,9 +147,26 @@ The :class:`~conops.config.SpacecraftBus` defines the spacecraft bus subsystems.
 * ``star_trackers`` (:class:`~conops.config.StarTrackerConfiguration`): Optional star tracker configuration
 * ``radiators`` (:class:`~conops.config.RadiatorConfiguration`): Optional body-mounted radiator configuration
 
+**AttitudeControlSystem Configuration:**
+
+The :class:`~conops.config.AttitudeControlSystem` defines slew performance and path algorithms:
+
+* ``slew_acceleration`` (float): Maximum angular acceleration in deg/s²
+* ``max_slew_rate`` (float): Maximum slew rate in deg/s
+* ``slew_accuracy`` (float): Pointing accuracy after slew completion in degrees
+* ``settle_time`` (float): Time to settle after slew completion in seconds
+* ``slew_algorithm`` (:class:`~conops.common.enums.SlewAlgorithm`): Algorithm for computing slew paths:
+
+  - ``QUATERNION`` (default): Full 3-DOF SLERP coupling pointing and roll changes
+  - ``CONSTRAINT_AVOIDING``: Routes around any configured constraints (Sun, Earth, Moon, etc.)
+
+* ``slew_constraint`` (ConstraintConfig | None): Optional rust-ephem constraint for slew path planning. When set and ``slew_algorithm`` is ``CONSTRAINT_AVOIDING``, this constraint is used instead of the spacecraft's general pointing constraint. This allows different safety margins for slewing vs. science pointing.
+
 .. code-block:: python
 
    from conops.config import SpacecraftBus, PowerDraw, AttitudeControlSystem, Heater
+   from conops.common.enums import SlewAlgorithm
+   import rust_ephem
 
    spacecraft_bus = SpacecraftBus(
        name="Observatory Bus",
@@ -164,6 +181,11 @@ The :class:`~conops.config.SpacecraftBus` defines the spacecraft bus subsystems.
            max_slew_rate=0.3,       # deg/s - maximum slew rate
            slew_accuracy=0.01,      # deg - pointing accuracy
            settle_time=10.0,        # seconds - time to settle after slew
+           slew_algorithm=SlewAlgorithm.CONSTRAINT_AVOIDING,  # Avoid all constraints
+           slew_constraint=(  # Optional: separate constraint for slewing
+               rust_ephem.SunConstraint(min_angle=30.0)  # Relaxed Sun angle during slews
+               | rust_ephem.EarthLimbConstraint(min_angle=20.0)  # Relaxed Earth limb during slews
+           ),
        ),
        heater=Heater(
            name="Bus Heaters",

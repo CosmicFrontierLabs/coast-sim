@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 import numpy as np
 import numpy.typing as npt
 from pyproj import Geod
@@ -190,3 +192,361 @@ def normal_to_euler_deg(
     yaw_deg = float(np.rad2deg(np.arctan2(y, x)))
     pitch_deg = float(np.rad2deg(np.arctan2(z, np.hypot(x, y))))
     return 0.0, pitch_deg, yaw_deg
+
+
+# ---------------------------------------------------------------------------
+# Quaternion utilities
+# ---------------------------------------------------------------------------
+# Convention: q = [w, x, y, z] (scalar-first).
+# Attitude quaternion represents the rotation from ECI to spacecraft body
+# frame, matching the direction-cosine convention used in scbodyvector():
+#   R = R_x(-roll) @ R_y(dec) @ R_z(-ra)   (all angles in radians)
+# Body X = boresight, Body Z = "up" (defines roll).
+
+
+def _quat_to_rot(q: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Convert quaternion [w, x, y, z] to 3×3 rotation matrix."""
+    q = q / np.linalg.norm(q)
+    w, x, y, z = float(q[0]), float(q[1]), float(q[2]), float(q[3])
+    return np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ],
+        dtype=np.float64,
+    )
+
+
+def attitude_to_quat(
+    ra_deg: float, dec_deg: float, roll_deg: float
+) -> npt.NDArray[np.float64]:
+    """Convert spacecraft attitude (RA, Dec, Roll) in degrees to quaternion [w, x, y, z].
+
+    The attitude quaternion encodes the rotation R = R_x(-roll) @ R_y(dec) @ R_z(-ra)
+    that transforms ECI vectors into spacecraft body frame.
+    """
+    ra = np.deg2rad(ra_deg)
+    dec = np.deg2rad(dec_deg)
+    roll = np.deg2rad(roll_deg)
+    # Elementary rotation quaternions (axis-angle: q = [cos(θ/2), axis*sin(θ/2)])
+    q_z = np.array(
+        [np.cos(ra / 2), 0.0, 0.0, -np.sin(ra / 2)], dtype=np.float64
+    )  # R_z(-ra)
+    q_y = np.array(
+        [np.cos(dec / 2), 0.0, np.sin(dec / 2), 0.0], dtype=np.float64
+    )  # R_y(+dec)
+    q_x = np.array(
+        [np.cos(roll / 2), -np.sin(roll / 2), 0.0, 0.0], dtype=np.float64
+    )  # R_x(-roll)
+    # Compose: q = q_x ⊗ q_y ⊗ q_z  (rightmost applied first)
+    return _quat_mul(_quat_mul(q_x, q_y), q_z)
+
+
+def _quat_mul(
+    a: npt.NDArray[np.float64], b: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """Quaternion product a ⊗ b, both [w, x, y, z]."""
+    aw, ax, ay, az = float(a[0]), float(a[1]), float(a[2]), float(a[3])
+    bw, bx, by, bz = float(b[0]), float(b[1]), float(b[2]), float(b[3])
+    return np.array(
+        [
+            aw * bw - ax * bx - ay * by - az * bz,
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+        ],
+        dtype=np.float64,
+    )
+
+
+def quat_to_attitude(q: npt.NDArray[np.float64]) -> tuple[float, float, float]:
+    """Convert quaternion [w, x, y, z] to (RA, Dec, Roll) in degrees.
+
+    Inverse of attitude_to_quat().
+    """
+    rot = _quat_to_rot(q)
+    # Row 0 of rot is the boresight (body X) direction in ECI
+    bx, by, bz = float(rot[0, 0]), float(rot[0, 1]), float(rot[0, 2])
+    dec_rad = float(np.arcsin(np.clip(bz, -1.0, 1.0)))
+    ra_rad = float(np.arctan2(by, bx)) % (2 * np.pi)
+
+    # Row 2 of rot is the body-Z (up) direction in ECI
+    b = np.array([bx, by, bz])
+    body_z_eci = np.array([float(rot[2, 0]), float(rot[2, 1]), float(rot[2, 2])])
+    north = np.array([0.0, 0.0, 1.0])
+    n_proj = north - np.dot(north, b) * b
+    n_norm = float(np.linalg.norm(n_proj))
+    if n_norm < 1e-10:
+        # Boresight near celestial pole – use RA=0 direction as reference
+        north = np.array([1.0, 0.0, 0.0])
+        n_proj = north - np.dot(north, b) * b
+        n_norm = float(np.linalg.norm(n_proj))
+    n_hat = n_proj / n_norm
+    e_hat = np.cross(b, n_hat)  # east direction in boresight-perpendicular plane
+    roll_rad = float(np.arctan2(np.dot(body_z_eci, e_hat), np.dot(body_z_eci, n_hat)))
+
+    return (
+        float(np.rad2deg(ra_rad)),
+        float(np.rad2deg(dec_rad)),
+        float(np.rad2deg(roll_rad)),
+    )
+
+
+def quat_slerp(
+    q1: npt.NDArray[np.float64], q2: npt.NDArray[np.float64], t: float
+) -> npt.NDArray[np.float64]:
+    """Spherical linear interpolation between two attitude quaternions.
+
+    Args:
+        q1: Start quaternion [w, x, y, z].
+        q2: End quaternion [w, x, y, z].
+        t:  Interpolation parameter in [0, 1].
+
+    Returns:
+        Interpolated unit quaternion.
+    """
+    q1 = q1 / np.linalg.norm(q1)
+    q2 = q2 / np.linalg.norm(q2)
+    dot = float(np.dot(q1, q2))
+    # Always take the shorter arc through SO(3)
+    if dot < 0.0:
+        q2 = -q2
+        dot = -dot
+    dot = min(dot, 1.0)
+    if dot > 0.9995:
+        # Quaternions nearly identical – linear blend then normalise
+        result: npt.NDArray[np.float64] = q1 + t * (q2 - q1)
+        return result / float(np.linalg.norm(result))
+    theta_0 = float(np.arccos(dot))
+    sin_theta_0 = float(np.sin(theta_0))
+    interp: npt.NDArray[np.float64] = (
+        np.sin((1.0 - t) * theta_0) * q1 + np.sin(t * theta_0) * q2
+    ) / sin_theta_0
+    return interp
+
+
+def quaternion_slew_path(
+    ra1: float,
+    dec1: float,
+    roll1: float,
+    ra2: float,
+    dec2: float,
+    roll2: float,
+    steps: int = 100,
+) -> tuple[list[float], list[float], list[float]]:
+    """Compute a slew path via quaternion SLERP.
+
+    Returns uniformly-spaced intermediate attitudes (including endpoints) as
+    separate RA, Dec, and Roll lists (all in degrees).
+    """
+    q1 = attitude_to_quat(ra1, dec1, roll1)
+    q2 = attitude_to_quat(ra2, dec2, roll2)
+    ras, decs, rolls = [], [], []
+    for i in range(steps + 1):
+        t = i / steps
+        q = quat_slerp(q1, q2, t)
+        ra, dec, roll = quat_to_attitude(q)
+        ras.append(ra)
+        decs.append(dec)
+        rolls.append(roll)
+    return ras, decs, rolls
+
+
+# ---------------------------------------------------------------------------
+# Constraint-avoiding slew path
+# ---------------------------------------------------------------------------
+
+
+def constraint_avoiding_waypoint(
+    ra1: float,
+    dec1: float,
+    ra2: float,
+    dec2: float,
+    time: float,
+    constraint_check_fn: Callable[[float, float, float], bool],
+    margin_deg: float = 5.0,
+    samples: int = 50,
+) -> tuple[float, float] | None:
+    """Return a waypoint (RA, Dec) that routes a slew around constraint violations.
+
+    If the direct great-circle arc from (ra1, dec1) to (ra2, dec2) would violate
+    the provided constraint at the given time, a single waypoint is computed that
+    routes around the constraint.  Two candidate waypoints (one on each side of
+    the arc) are considered; the one giving the shorter total detour is returned.
+
+    **Antipodal Points**: For 180° separations where infinitely many great circles
+    exist, an arbitrary plane is chosen and waypoints are computed perpendicular
+    to it. This allows constraint avoidance even for antipodal slews, rather than
+    forcing fallback to a direct path through the exclusion zone.
+
+    **Validation**: The returned waypoint and its connecting arcs (start→waypoint,
+    waypoint→end) are validated to ensure they do not violate the constraint. If
+    no valid waypoint can be found, None is returned even when a violation exists
+    on the direct arc. This ensures "constraint-avoiding" paths actually avoid
+    the constraint.
+
+    **Limitations**: Single-waypoint routing cannot avoid all constraint geometries.
+    Wide or irregular constraint regions may require multiple waypoints or more
+    sophisticated routing strategies. When this function returns None, the caller
+    should use an alternative slew strategy (e.g., direct QUATERNION path).
+
+    Returns None when:
+    - Start and end points are identical (no slew needed), OR
+    - A violation exists but no valid single-waypoint route can be found
+
+    Args:
+        ra1, dec1:       Start pointing (degrees).
+        ra2, dec2:       End pointing (degrees).
+        time:            Unix timestamp for constraint evaluation.
+        constraint_check_fn: Callable with signature (ra, dec, time) -> bool
+                         that returns True if constraint is violated.
+        margin_deg:      Extra buffer beyond the constraint boundary (degrees).
+        samples:         Number of points to sample along the arc for violation check.
+
+    Returns:
+        (waypoint_ra, waypoint_dec) in degrees if a validated waypoint is found,
+        None otherwise.
+    """
+    a = vecnorm(radec2vec(np.deg2rad(ra1), np.deg2rad(dec1)))
+    b = vecnorm(radec2vec(np.deg2rad(ra2), np.deg2rad(dec2)))
+
+    # Compute angular separation
+    total_angle = float(np.arccos(np.clip(float(np.dot(a, b)), -1.0, 1.0)))
+
+    # Handle degenerate cases
+    if total_angle < 1e-6:
+        # Points are essentially identical - no slew needed
+        return None
+
+    # Compute great circle plane normal
+    n = vecnorm(np.cross(a, b))
+    n_norm = np.linalg.norm(n)
+
+    if n_norm < 1e-12:
+        # Points are antipodal (180° separation)
+        # Any great circle works - choose one perpendicular to a convenient axis
+        # Use the axis with smallest component of 'a' to maximize numerical stability
+        abs_a = np.abs(a)
+        if abs_a[0] <= abs_a[1] and abs_a[0] <= abs_a[2]:
+            perp = np.array([1.0, 0.0, 0.0])
+        elif abs_a[1] <= abs_a[2]:
+            perp = np.array([0.0, 1.0, 0.0])
+        else:
+            perp = np.array([0.0, 0.0, 1.0])
+        n = vecnorm(np.cross(a, perp))
+
+    # Sample the arc and check for violations
+    violation_found = False
+    closest_violator = None
+
+    for i in range(samples + 1):
+        t = i / samples
+        # SLERP between start and end vectors
+        if total_angle < 0.01:
+            # Near-identical points, use linear interpolation
+            sample_vec = vecnorm(a + t * (b - a))
+        else:
+            sin_total = np.sin(total_angle)
+            sample_vec = (
+                np.sin((1 - t) * total_angle) * a + np.sin(t * total_angle) * b
+            ) / sin_total
+
+        sample_radec = vec2radec(sample_vec)
+        sample_ra = float(np.rad2deg(sample_radec[0]))
+        sample_dec = float(np.rad2deg(sample_radec[1]))
+
+        # Check if this point violates the constraint
+        if constraint_check_fn(sample_ra, sample_dec, time):
+            violation_found = True
+            # Track the point with minimum distance from the arc plane
+            # (for now, just use the first violation)
+            if closest_violator is None:
+                closest_violator = sample_vec
+            break
+
+    if not violation_found or closest_violator is None:
+        return None
+
+    # A violation was found. Compute waypoints perpendicular to the arc plane.
+    # Use the closest violator as the reference point on the arc
+    c = vecnorm(closest_violator)
+
+    # Compute two candidate waypoints: one on each side of the arc plane
+    # Offset by margin_deg from the current position
+    offset_rad = np.deg2rad(margin_deg)
+
+    # Two perpendicular directions relative to the arc plane
+    away_dir1 = vecnorm(np.cross(n, c))
+    away_dir2 = -away_dir1
+
+    w1 = vecnorm(np.cos(offset_rad) * c + np.sin(offset_rad) * away_dir1)
+    w2 = vecnorm(np.cos(offset_rad) * c + np.sin(offset_rad) * away_dir2)
+
+    def path_length_deg(w: npt.NDArray[np.float64]) -> float:
+        """Calculate total path length through waypoint w."""
+        d1 = float(np.rad2deg(np.arccos(np.clip(float(np.dot(a, w)), -1.0, 1.0))))
+        d2 = float(np.rad2deg(np.arccos(np.clip(float(np.dot(w, b)), -1.0, 1.0))))
+        return d1 + d2
+
+    def validate_waypoint(w: npt.NDArray[np.float64]) -> bool:
+        """Validate that waypoint w and its connecting arcs are constraint-free."""
+        # Convert waypoint to RA/Dec
+        w_radec = vec2radec(w)
+        w_ra = float(np.rad2deg(w_radec[0]))
+        w_dec = float(np.rad2deg(w_radec[1]))
+
+        # Check waypoint itself
+        if constraint_check_fn(w_ra, w_dec, time):
+            return False
+
+        # Check start→waypoint arc
+        angle_aw = float(np.arccos(np.clip(float(np.dot(a, w)), -1.0, 1.0)))
+        if angle_aw > 1e-6:
+            for i in range(1, samples):  # Skip endpoints
+                t = i / samples
+                if angle_aw < 0.01:
+                    sample_vec = vecnorm(a + t * (w - a))
+                else:
+                    sin_angle = np.sin(angle_aw)
+                    sample_vec = (
+                        np.sin((1 - t) * angle_aw) * a + np.sin(t * angle_aw) * w
+                    ) / sin_angle
+                sample_radec = vec2radec(sample_vec)
+                sample_ra = float(np.rad2deg(sample_radec[0]))
+                sample_dec = float(np.rad2deg(sample_radec[1]))
+                if constraint_check_fn(sample_ra, sample_dec, time):
+                    return False
+
+        # Check waypoint→end arc
+        angle_wb = float(np.arccos(np.clip(float(np.dot(w, b)), -1.0, 1.0)))
+        if angle_wb > 1e-6:
+            for i in range(1, samples):  # Skip endpoints
+                t = i / samples
+                if angle_wb < 0.01:
+                    sample_vec = vecnorm(w + t * (b - w))
+                else:
+                    sin_angle = np.sin(angle_wb)
+                    sample_vec = (
+                        np.sin((1 - t) * angle_wb) * w + np.sin(t * angle_wb) * b
+                    ) / sin_angle
+                sample_radec = vec2radec(sample_vec)
+                sample_ra = float(np.rad2deg(sample_radec[0]))
+                sample_dec = float(np.rad2deg(sample_radec[1]))
+                if constraint_check_fn(sample_ra, sample_dec, time):
+                    return False
+
+        return True
+
+    # Choose the waypoint with the shorter total path that passes validation
+    candidates = [(w1, path_length_deg(w1)), (w2, path_length_deg(w2))]
+    candidates.sort(key=lambda x: x[1])  # Sort by path length
+
+    for w, _ in candidates:
+        if validate_waypoint(w):
+            # Convert back to RA/Dec in degrees
+            w_ra_dec = vec2radec(w)
+            return float(np.rad2deg(w_ra_dec[0])), float(np.rad2deg(w_ra_dec[1]))
+
+    # If both waypoints fail validation, return None (fallback to direct path)
+    return None

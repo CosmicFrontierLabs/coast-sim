@@ -195,5 +195,5 @@ class PlanEntry:
     def predict_slew(self, lastra: float, lastdec: float) -> None:
         """Calculate great circle slew distance and path using ACS configuration."""
         self.slewdist, self.slewpath = self.acs_config.predict_slew(
-            lastra, lastdec, self.ra, self.dec, steps=20
+            lastra, lastdec, self.ra, self.dec
         )

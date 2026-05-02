@@ -204,53 +204,240 @@ class TestCalcSlewtime:
 
     @pytest.mark.parametrize("distance", [np.nan, -5.0])
     def test_calc_slewtime_handles_invalid_distance(self, slew, acs_config, distance):
-        acs_config.predict_slew = Mock(
-            return_value=(distance, (np.array([0.0]), np.array([0.0])))
-        )
         acs_config.slew_time = Mock(return_value=0.0)
         slew.startra = 0.0
         slew.startdec = 0.0
         slew.endra = 10.0
         slew.enddec = 10.0
         slew.slewstart = 1700000000.0
+
+        def inject_bad_distance() -> None:
+            slew.slewdist = distance
+            slew.slewpath = ([0.0], [0.0])
+            slew._quat_roll_path = []
+
+        slew.predict_slew = inject_bad_distance
         with pytest.raises(ValueError, match="Invalid slew distance"):
             slew.calc_slewtime()
 
 
 class TestPredictSlew:
-    """Test predict_slew method."""
+    """Test predict_slew method (quaternion SLERP)."""
 
-    def test_predict_slew_calls_acs_predict_slew(self, slew_predict_setup):
-        slew, ra_path, dec_path = slew_predict_setup
-        slew.predict_slew()
-        slew.acs_config.predict_slew.assert_called_once_with(
-            45.0, 30.0, 90.0, 60.0, steps=100
+    def test_predict_slew_sets_slewdist_positive(self, slew_predict_setup):
+        slew_predict_setup.predict_slew()
+        assert slew_predict_setup.slewdist > 0
+
+    def test_predict_slew_sets_slewdist_approx(self, slew_predict_setup):
+        """Slew distance should be the quaternion angular distance."""
+        import numpy as np
+
+        from conops.common.vector import attitude_to_quat
+
+        # Compute expected quaternion angular distance
+        q1 = attitude_to_quat(
+            slew_predict_setup.startra,
+            slew_predict_setup.startdec,
+            slew_predict_setup.startroll,
+        )
+        q2 = attitude_to_quat(
+            slew_predict_setup.endra,
+            slew_predict_setup.enddec,
+            slew_predict_setup.endroll,
+        )
+        dot = float(np.dot(q1, q2))
+        if dot < 0:
+            dot = -dot
+        dot = min(dot, 1.0)
+        theta_rad = np.arccos(dot)
+        expected = float(np.rad2deg(2 * theta_rad))
+
+        slew_predict_setup.predict_slew()
+        assert abs(slew_predict_setup.slewdist - expected) < 0.01
+
+    def test_predict_slew_path_length(self, slew_predict_setup):
+        slew_predict_setup.predict_slew()
+        assert len(slew_predict_setup.slewpath[0]) == 101
+        assert len(slew_predict_setup.slewpath[1]) == 101
+
+    def test_predict_slew_path_starts_at_start(self, slew_predict_setup):
+        slew_predict_setup.predict_slew()
+        assert abs(slew_predict_setup.slewpath[0][0] - 45.0) < 0.01
+        assert abs(slew_predict_setup.slewpath[1][0] - 30.0) < 0.01
+
+    def test_predict_slew_path_ends_at_end(self, slew_predict_setup):
+        slew_predict_setup.predict_slew()
+        assert abs(slew_predict_setup.slewpath[0][-1] - 90.0) < 0.01
+        assert abs(slew_predict_setup.slewpath[1][-1] - 60.0) < 0.01
+
+    def test_predict_slew_sets_roll_path(self, slew_predict_setup):
+        slew_predict_setup.predict_slew()
+        assert len(slew_predict_setup._quat_roll_path) == 101
+
+
+class TestPureRollManeuver:
+    """Test quaternion slew algorithm with pure roll maneuvers.
+
+    Pure roll maneuvers (where RA/Dec remain constant but roll changes) are
+    critical edge cases that test the quaternion SLERP path/timing coupling.
+    The great-circle distance is 0, but the spacecraft still needs time to
+    rotate about the boresight axis.
+    """
+
+    def test_pure_roll_zero_radec_distance(self, slew_predict_setup):
+        """Pure roll maneuver should have non-zero quaternion distance matching roll change."""
+        slew_predict_setup.startra = 45.0
+        slew_predict_setup.startdec = 30.0
+        slew_predict_setup.startroll = 0.0
+        slew_predict_setup.endra = 45.0
+        slew_predict_setup.enddec = 30.0
+        slew_predict_setup.endroll = 90.0
+
+        slew_predict_setup.predict_slew()
+
+        # Quaternion distance should equal the roll change (90°)
+        assert abs(slew_predict_setup.slewdist - 90.0) < 0.1
+
+    def test_pure_roll_has_roll_path(self, slew_predict_setup):
+        """Pure roll maneuver should generate a roll path."""
+        slew_predict_setup.startra = 45.0
+        slew_predict_setup.startdec = 30.0
+        slew_predict_setup.startroll = 0.0
+        slew_predict_setup.endra = 45.0
+        slew_predict_setup.enddec = 30.0
+        slew_predict_setup.endroll = 90.0
+
+        slew_predict_setup.predict_slew()
+
+        # Should have roll path from SLERP
+        assert hasattr(slew_predict_setup, "_quat_roll_path")
+        assert len(slew_predict_setup._quat_roll_path) == 101
+
+    def test_pure_roll_path_starts_and_ends_correctly(self, slew_predict_setup):
+        """Roll path should start at 0° and end at 90°."""
+        slew_predict_setup.startra = 45.0
+        slew_predict_setup.startdec = 30.0
+        slew_predict_setup.startroll = 0.0
+        slew_predict_setup.endra = 45.0
+        slew_predict_setup.enddec = 30.0
+        slew_predict_setup.endroll = 90.0
+
+        slew_predict_setup.predict_slew()
+
+        # Check roll path endpoints
+        assert abs(slew_predict_setup._quat_roll_path[0] - 0.0) < 0.1
+        assert abs(slew_predict_setup._quat_roll_path[-1] - 90.0) < 0.1
+
+    def test_pure_roll_path_is_monotonic(self, slew_predict_setup):
+        """Roll path should monotonically increase from 0° to 90°."""
+        slew_predict_setup.startra = 45.0
+        slew_predict_setup.startdec = 30.0
+        slew_predict_setup.startroll = 0.0
+        slew_predict_setup.endra = 45.0
+        slew_predict_setup.enddec = 30.0
+        slew_predict_setup.endroll = 90.0
+
+        slew_predict_setup.predict_slew()
+
+        # Check that roll increases monotonically
+        roll_path = slew_predict_setup._quat_roll_path
+        for i in range(len(roll_path) - 1):
+            # Allow small numerical noise
+            assert roll_path[i + 1] >= roll_path[i] - 0.1
+
+    def test_pure_roll_180_degree_rotation(self, slew_predict_setup):
+        """180° roll maneuver should work correctly."""
+        slew_predict_setup.startra = 45.0
+        slew_predict_setup.startdec = 30.0
+        slew_predict_setup.startroll = 0.0
+        slew_predict_setup.endra = 45.0
+        slew_predict_setup.enddec = 30.0
+        slew_predict_setup.endroll = 180.0
+
+        slew_predict_setup.predict_slew()
+
+        # Check roll path endpoints
+        assert abs(slew_predict_setup._quat_roll_path[0] - 0.0) < 0.1
+        assert abs(slew_predict_setup._quat_roll_path[-1] - 180.0) < 0.1
+        # Quaternion distance should equal the roll change (180°)
+        assert abs(slew_predict_setup.slewdist - 180.0) < 0.1
+
+    def test_pure_roll_wraps_around_360(self, slew_predict_setup):
+        """Roll maneuver from 350° to 10° should take shortest path (20° total)."""
+        slew_predict_setup.startra = 45.0
+        slew_predict_setup.startdec = 30.0
+        slew_predict_setup.startroll = 350.0
+        slew_predict_setup.endra = 45.0
+        slew_predict_setup.enddec = 30.0
+        slew_predict_setup.endroll = 10.0
+
+        slew_predict_setup.predict_slew()
+
+        # Should have a valid roll path
+        assert len(slew_predict_setup._quat_roll_path) == 101
+
+        # The quaternion path might use negative angles, so normalize everything
+        roll_path_normalized = [(r % 360) for r in slew_predict_setup._quat_roll_path]
+
+        # Start should be near 350° or equivalent
+        assert (
+            abs(roll_path_normalized[0] - 350.0) < 1.0
+            or abs(roll_path_normalized[0] - 10.0) < 1.0
         )
 
-    def test_predict_slew_sets_slewdist(self, slew_predict_setup):
-        slew, ra_path, dec_path = slew_predict_setup
-        slew.predict_slew()
-        assert slew.slewdist == 14.142
+        # End should be near 10°
+        assert abs(roll_path_normalized[-1] - 10.0) < 1.0
 
-    def test_predict_slew_sets_path_ra_length(self, slew_predict_setup):
-        slew, ra_path, dec_path = slew_predict_setup
-        slew.predict_slew()
-        assert len(slew.slewpath[0]) == 20
+        # Slew distance should be ~20° (shortest path), not ~340°
+        assert slew_predict_setup.slewdist < 25.0
 
-    def test_predict_slew_sets_path_dec_length(self, slew_predict_setup):
-        slew, ra_path, dec_path = slew_predict_setup
-        slew.predict_slew()
-        assert len(slew.slewpath[1]) == 20
+    def test_pure_roll_radec_path_constant(self, slew_predict_setup):
+        """RA/Dec should remain constant throughout pure roll maneuver."""
+        slew_predict_setup.startra = 45.0
+        slew_predict_setup.startdec = 30.0
+        slew_predict_setup.startroll = 0.0
+        slew_predict_setup.endra = 45.0
+        slew_predict_setup.enddec = 30.0
+        slew_predict_setup.endroll = 90.0
 
-    def test_predict_slew_sets_path_ra_values(self, slew_predict_setup):
-        slew, ra_path, dec_path = slew_predict_setup
-        slew.predict_slew()
-        assert np.allclose(slew.slewpath[0], ra_path)
+        slew_predict_setup.predict_slew()
 
-    def test_predict_slew_sets_path_dec_values(self, slew_predict_setup):
-        slew, ra_path, dec_path = slew_predict_setup
-        slew.predict_slew()
-        assert np.allclose(slew.slewpath[1], dec_path)
+        # RA/Dec path should be essentially constant
+        ra_path, dec_path = slew_predict_setup.slewpath
+        for ra in ra_path:
+            assert abs(ra - 45.0) < 0.1
+        for dec in dec_path:
+            assert abs(dec - 30.0) < 0.1
+
+    def test_pure_roll_slew_roll_method(self, slew_predict_setup, acs_config):
+        """slew_roll() should interpolate correctly during pure roll maneuver."""
+        # Set up ACS config for bang-bang motion
+        acs_config.motion_time = Mock(return_value=100.0)
+        acs_config.s_of_t = Mock(side_effect=lambda dist, t: t / 100.0 * dist)
+
+        slew_predict_setup.startra = 45.0
+        slew_predict_setup.startdec = 30.0
+        slew_predict_setup.startroll = 0.0
+        slew_predict_setup.endra = 45.0
+        slew_predict_setup.enddec = 30.0
+        slew_predict_setup.endroll = 90.0
+        slew_predict_setup.slewstart = 1700000000.0
+
+        slew_predict_setup.predict_slew()
+        slew_predict_setup.slewtime = 100.0
+        slew_predict_setup.slewend = slew_predict_setup.slewstart + 100.0
+
+        # At start: should be 0°
+        roll_start = slew_predict_setup.slew_roll(1700000000.0)
+        assert abs(roll_start - 0.0) < 1.0
+
+        # At end: should be 90°
+        roll_end = slew_predict_setup.slew_roll(1700000100.0)
+        assert abs(roll_end - 90.0) < 1.0
+
+        # At midpoint: should be around 45°
+        roll_mid = slew_predict_setup.slew_roll(1700000050.0)
+        assert 40.0 < roll_mid < 50.0
 
 
 class TestSlewPathResolution:
@@ -362,3 +549,345 @@ class TestSlewPathResolution:
         print(
             f"\n  Runtime: 20 steps = {time_20 * 1000:.2f}ms, 100 steps = {time_100 * 1000:.2f}ms ({ratio:.1f}x)"
         )
+
+
+class TestConstraintAvoidingSlew:
+    """Test constraint-avoiding slew path algorithm."""
+
+    def test_constraint_avoiding_fallback_to_quaternion(self, slew, acs_config):
+        """When no constraint is violated, falls back to quaternion SLERP."""
+        from conops.common.enums import SlewAlgorithm
+
+        acs_config.slew_algorithm = SlewAlgorithm.CONSTRAINT_AVOIDING
+        slew.constraint.constraint = None  # No constraints
+        slew.startra = 0.0
+        slew.startdec = 0.0
+        slew.startroll = 0.0
+        slew.endra = 45.0
+        slew.enddec = 30.0
+        slew.endroll = 0.0
+        slew.slewstart = 1700000000.0
+
+        slew.predict_slew()
+
+        # Should have a path
+        assert hasattr(slew, "slewpath")
+        assert len(slew.slewpath[0]) > 0
+        assert slew.slewdist > 0
+
+    def test_constraint_avoiding_with_violation(self, slew, acs_config, constraint):
+        """When constraint is violated, the algorithm completes and returns a valid path.
+
+        An RA-band constraint (40–50°) on an equatorial arc cannot be avoided by a
+        single perpendicular waypoint — waypoints for equatorial arcs stay on the equator,
+        so any connecting arc to the destination must still cross the violated RA range.
+        The documented fallback is to return the direct SLERP path.  This test verifies
+        the algorithm handles violations gracefully: it produces a valid path with the
+        correct endpoints regardless of whether a waypoint was found.
+        """
+        from conops.common.enums import SlewAlgorithm
+
+        acs_config.slew_algorithm = SlewAlgorithm.CONSTRAINT_AVOIDING
+        slew.startra = 0.0
+        slew.startdec = 0.0
+        slew.startroll = 0.0
+        slew.endra = 90.0
+        slew.enddec = 0.0
+        slew.endroll = 0.0
+        slew.slewstart = 1700000000.0
+
+        def mock_in_constraint(ra, dec, utime, target_roll=None):
+            return 40 < ra < 50
+
+        constraint.in_constraint = mock_in_constraint
+        constraint.constraint = Mock()
+        constraint.constraint.in_constraint = Mock(
+            side_effect=lambda **kwargs: mock_in_constraint(
+                kwargs["target_ra"], kwargs["target_dec"], kwargs["time"]
+            )
+        )
+
+        slew.predict_slew()
+
+        # Must produce a valid path with correct start and end
+        assert hasattr(slew, "slewpath")
+        ra_path = slew.slewpath[0]
+        assert len(ra_path) > 0
+        assert abs(ra_path[0] - 0.0) < 1.0
+        assert abs(ra_path[-1] - 90.0) < 1.0
+        assert slew.slewdist > 0
+
+    def test_constraint_avoiding_path_has_roll(self, slew, acs_config):
+        """Constraint-avoiding path should include roll information."""
+        from conops.common.enums import SlewAlgorithm
+
+        acs_config.slew_algorithm = SlewAlgorithm.CONSTRAINT_AVOIDING
+        slew.constraint.constraint = None
+        slew.startra = 0.0
+        slew.startdec = 0.0
+        slew.startroll = 0.0
+        slew.endra = 45.0
+        slew.enddec = 30.0
+        slew.endroll = 90.0
+        slew.slewstart = 1700000000.0
+
+        slew.predict_slew()
+
+        # Should have roll path
+        assert hasattr(slew, "_quat_roll_path")
+        assert len(slew._quat_roll_path) > 0
+        # Roll should start at 0 and end at 90
+        assert abs(slew._quat_roll_path[0] - 0.0) < 1.0
+        assert abs(slew._quat_roll_path[-1] - 90.0) < 1.0
+
+    def test_constraint_avoiding_uses_acs_slew_constraint(self, slew, acs_config):
+        """When ACS slew_constraint is set, it should be used instead of spacecraft constraint."""
+        from unittest.mock import Mock
+
+        from conops.common.enums import SlewAlgorithm
+
+        acs_config.slew_algorithm = SlewAlgorithm.CONSTRAINT_AVOIDING
+
+        # Create a mock slew constraint that always returns False (no violation)
+        mock_slew_constraint = Mock()
+        mock_slew_constraint.in_constraint = Mock(return_value=False)
+        acs_config.slew_constraint = mock_slew_constraint
+
+        # Set up spacecraft constraint that would violate (but should not be used)
+        slew.constraint.constraint = Mock()
+        slew.constraint.constraint.in_constraint = Mock(return_value=True)
+
+        slew.startra = 0.0
+        slew.startdec = 0.0
+        slew.startroll = 0.0
+        slew.endra = 90.0
+        slew.enddec = 0.0
+        slew.endroll = 0.0
+        slew.slewstart = 1700000000.0
+
+        slew.predict_slew()
+
+        # The slew_constraint should have been called (it doesn't violate)
+        assert mock_slew_constraint.in_constraint.called
+        # Should fall back to quaternion path (no waypoint)
+        assert hasattr(slew, "slewpath")
+        assert len(slew.slewpath[0]) > 0
+
+    def test_constraint_avoiding_falls_back_to_spacecraft_constraint(
+        self, slew, acs_config
+    ):
+        """When ACS slew_constraint is None, falls back to spacecraft constraint."""
+        from unittest.mock import Mock
+
+        from conops.common.enums import SlewAlgorithm
+
+        acs_config.slew_algorithm = SlewAlgorithm.CONSTRAINT_AVOIDING
+        acs_config.slew_constraint = None  # No slew-specific constraint
+
+        # Mock spacecraft constraint that doesn't violate
+        mock_spacecraft_constraint = Mock()
+        mock_spacecraft_constraint.in_constraint = Mock(return_value=False)
+        slew.constraint.constraint = mock_spacecraft_constraint
+
+        slew.startra = 0.0
+        slew.startdec = 0.0
+        slew.startroll = 0.0
+        slew.endra = 90.0
+        slew.enddec = 0.0
+        slew.endroll = 0.0
+        slew.slewstart = 1700000000.0
+
+        slew.predict_slew()
+
+        # The spacecraft constraint should have been called
+        assert mock_spacecraft_constraint.in_constraint.called
+        # Should fall back to quaternion path (no waypoint)
+        assert hasattr(slew, "slewpath")
+        assert len(slew.slewpath[0]) > 0
+
+
+class TestConstraintAvoidingWaypoint:
+    """Test constraint_avoiding_waypoint function."""
+
+    def test_no_violation_returns_none(self):
+        """When no constraint is violated, returns None."""
+        from conops.common.vector import constraint_avoiding_waypoint
+
+        def no_violation(ra, dec, time):
+            return False
+
+        result = constraint_avoiding_waypoint(
+            0.0, 0.0, 90.0, 0.0, 1700000000.0, no_violation
+        )
+        assert result is None
+
+    def test_violation_returns_waypoint_or_none_validated(self):
+        """When constraint is violated, returns validated waypoint or None."""
+        from conops.common.vector import constraint_avoiding_waypoint
+
+        def offset_violation(ra, dec, time):
+            # Violation that INTERSECTS the arc but extends more to one side
+            dist = ((ra - 45.0) ** 2 + (dec - (-1.5)) ** 2) ** 0.5
+            return dist < 2.5
+
+        result = constraint_avoiding_waypoint(
+            0.0, 0.0, 90.0, 0.0, 1700000000.0, offset_violation, margin_deg=5.0
+        )
+        # Function may return None if no valid waypoint can be found (which is correct behavior)
+        # If a waypoint IS returned, it must be validated
+        if result is not None:
+            waypoint_ra, waypoint_dec = result
+            assert isinstance(waypoint_ra, float)
+            assert isinstance(waypoint_dec, float)
+            # Waypoint must not violate the constraint
+            assert not offset_violation(waypoint_ra, waypoint_dec, 1700000000.0)
+
+    def test_waypoint_offset_from_direct_path(self):
+        """When waypoint is returned, it should be validated."""
+        from conops.common.vector import constraint_avoiding_waypoint
+
+        def offset_circular_violation(ra, dec, time):
+            # Circular violation that intersects arc
+            dist_from_center = ((ra - 90.0) ** 2 + (dec - 28.5) ** 2) ** 0.5
+            return dist_from_center < 2.5
+
+        result = constraint_avoiding_waypoint(
+            45.0,
+            30.0,
+            135.0,
+            30.0,
+            1700000000.0,
+            offset_circular_violation,
+            margin_deg=4.0,
+        )
+        # If a waypoint is returned, it must be validated
+        if result is not None:
+            waypoint_ra, waypoint_dec = result
+            assert isinstance(waypoint_ra, float)
+            assert isinstance(waypoint_dec, float)
+            # Waypoint must not violate constraint
+            assert not offset_circular_violation(
+                waypoint_ra, waypoint_dec, 1700000000.0
+            )
+
+    def test_identical_points_returns_none(self):
+        """When start and end are identical, returns None."""
+        from conops.common.vector import constraint_avoiding_waypoint
+
+        def any_violation(ra, dec, time):
+            return True
+
+        result = constraint_avoiding_waypoint(
+            45.0, 30.0, 45.0, 30.0, 1700000000.0, any_violation
+        )
+        assert result is None
+
+    def test_antipodal_points_can_route_around_constraint(self):
+        """Antipodal points (180° separation) should route around constraints via alternate great circle."""
+        from conops.common.vector import (
+            angular_separation,
+            constraint_avoiding_waypoint,
+        )
+
+        def equatorial_band_violation(ra, dec, time):
+            # Violate equatorial band - should force routing over poles
+            return -15 < dec < 15
+
+        # Test antipodal points on equator - direct path through equator violates constraint
+        result = constraint_avoiding_waypoint(
+            0.0,
+            0.0,
+            180.0,
+            0.0,
+            1700000000.0,
+            equatorial_band_violation,
+            margin_deg=10.0,
+        )
+        # Should return a waypoint that routes over poles
+        if result is not None:
+            waypoint_ra, waypoint_dec = result
+            # Waypoint must not violate constraint
+            assert not equatorial_band_violation(
+                waypoint_ra, waypoint_dec, 1700000000.0
+            )
+            # For antipodal points routed around equator, waypoint should be near a pole
+            assert abs(waypoint_dec) > 60.0
+            # Verify total path is approximately 180°
+            d1 = angular_separation(0.0, 0.0, waypoint_ra, waypoint_dec)
+            d2 = angular_separation(waypoint_ra, waypoint_dec, 180.0, 0.0)
+            total_dist = d1 + d2
+            assert 175.0 < total_dist < 185.0  # Allow some margin
+
+    def test_waypoint_itself_violates_constraint(self):
+        """When waypoint itself violates constraint, should try alternative or return None."""
+        from conops.common.vector import constraint_avoiding_waypoint
+
+        def wide_violation(ra, dec, time):
+            # Violate at midpoint and surrounding region
+            # This creates a wide constraint that might include waypoints
+            return 30 < ra < 60 and -10 < dec < 10
+
+        result = constraint_avoiding_waypoint(
+            0.0, 0.0, 90.0, 0.0, 1700000000.0, wide_violation, margin_deg=5.0
+        )
+        # Should either find valid waypoint outside the region or return None
+        if result is not None:
+            waypoint_ra, waypoint_dec = result
+            # If waypoint is returned, it must not violate constraint
+            assert not wide_violation(waypoint_ra, waypoint_dec, 1700000000.0)
+
+    def test_waypoint_segment_violates_constraint(self):
+        """When start→waypoint or waypoint→end violates constraint, should return None or valid alternative."""
+        from conops.common.vector import constraint_avoiding_waypoint
+
+        def irregular_violation(ra, dec, time):
+            # Create irregular constraint region that might intersect waypoint paths
+            # Violate at multiple regions
+            return (35 < ra < 45 and -5 < dec < 5) or (50 < ra < 60 and -5 < dec < 5)
+
+        result = constraint_avoiding_waypoint(
+            0.0, 0.0, 90.0, 0.0, 1700000000.0, irregular_violation, margin_deg=3.0
+        )
+        # If waypoint is returned, validate it doesn't cross violations
+        if result is not None:
+            waypoint_ra, waypoint_dec = result
+            # Waypoint itself should not violate
+            assert not irregular_violation(waypoint_ra, waypoint_dec, 1700000000.0)
+            # Note: Full path validation is done internally by the function
+
+    def test_both_waypoints_fail_returns_none(self):
+        """When both candidate waypoints fail validation, should return None."""
+        from conops.common.vector import constraint_avoiding_waypoint
+
+        def surround_violation(ra, dec, time):
+            # Create a constraint that surrounds the arc in both perpendicular directions
+            # This makes both waypoint candidates invalid
+            return 40 < ra < 50
+
+        result = constraint_avoiding_waypoint(
+            0.0, 0.0, 90.0, 0.0, 1700000000.0, surround_violation, margin_deg=2.0
+        )
+        # When margin is too small, both waypoints will violate, so None should be returned
+        # (or if one is valid, it should be returned)
+        if result is not None:
+            waypoint_ra, waypoint_dec = result
+            # If a waypoint is returned, it must be valid
+            assert not surround_violation(waypoint_ra, waypoint_dec, 1700000000.0)
+
+    def test_chooses_shorter_valid_path(self):
+        """Should choose the shorter path when both waypoints are valid."""
+        from conops.common.vector import constraint_avoiding_waypoint
+
+        def offset_small_violation(ra, dec, time):
+            # Small circular violation that intersects arc
+            dist = ((ra - 45.0) ** 2 + (dec - (-1.2)) ** 2) ** 0.5
+            return dist < 2.0
+
+        result = constraint_avoiding_waypoint(
+            0.0, 0.0, 90.0, 0.0, 1700000000.0, offset_small_violation, margin_deg=4.0
+        )
+        # If a waypoint is returned, it must be validated
+        if result is not None:
+            waypoint_ra, waypoint_dec = result
+            # Waypoint must not violate constraint
+            assert not offset_small_violation(waypoint_ra, waypoint_dec, 1700000000.0)

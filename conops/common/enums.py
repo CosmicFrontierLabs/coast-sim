@@ -58,3 +58,21 @@ class Polarization(str, Enum):
     CIRCULAR_RIGHT = "circular_right"  # RHCP
     CIRCULAR_LEFT = "circular_left"  # LHCP
     DUAL = "dual"  # Supports multiple polarizations
+
+
+class SlewAlgorithm(str, Enum):
+    """Algorithm used to compute spacecraft slew paths.
+
+    QUATERNION (default): Full 3-DOF SLERP in SO(3).  Couples pointing and
+        roll changes through the shortest rotation path in quaternion space,
+        giving a physically accurate attitude trajectory.
+
+    CONSTRAINT_AVOIDING: Generalized constraint-avoiding SLERP using the
+        combined rust-ephem constraint configuration.  Routes around any
+        combination of Sun, Earth, Moon, and other exclusion zones.  Falls
+        back to QUATERNION when no constraint violation is detected on the
+        direct arc.
+    """
+
+    QUATERNION = "quaternion"
+    CONSTRAINT_AVOIDING = "constraint_avoiding"
