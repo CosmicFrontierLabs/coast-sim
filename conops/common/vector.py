@@ -204,37 +204,6 @@ def normal_to_euler_deg(
 # Body X = boresight, Body Z = "up" (defines roll).
 
 
-def _rot_to_quat(rot: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-    """Convert a 3×3 rotation matrix to quaternion [w, x, y, z] (Shepperd)."""
-    trace = rot[0, 0] + rot[1, 1] + rot[2, 2]
-    if trace > 0:
-        s = 0.5 / float(np.sqrt(trace + 1.0))
-        w = 0.25 / s
-        x = (rot[2, 1] - rot[1, 2]) * s
-        y = (rot[0, 2] - rot[2, 0]) * s
-        z = (rot[1, 0] - rot[0, 1]) * s
-    elif rot[0, 0] > rot[1, 1] and rot[0, 0] > rot[2, 2]:
-        s = 2.0 * float(np.sqrt(1.0 + rot[0, 0] - rot[1, 1] - rot[2, 2]))
-        w = (rot[2, 1] - rot[1, 2]) / s
-        x = 0.25 * s
-        y = (rot[0, 1] + rot[1, 0]) / s
-        z = (rot[0, 2] + rot[2, 0]) / s
-    elif rot[1, 1] > rot[2, 2]:
-        s = 2.0 * float(np.sqrt(1.0 + rot[1, 1] - rot[0, 0] - rot[2, 2]))
-        w = (rot[0, 2] - rot[2, 0]) / s
-        x = (rot[0, 1] + rot[1, 0]) / s
-        y = 0.25 * s
-        z = (rot[1, 2] + rot[2, 1]) / s
-    else:
-        s = 2.0 * float(np.sqrt(1.0 + rot[2, 2] - rot[0, 0] - rot[1, 1]))
-        w = (rot[1, 0] - rot[0, 1]) / s
-        x = (rot[0, 2] + rot[2, 0]) / s
-        y = (rot[1, 2] + rot[2, 1]) / s
-        z = 0.25 * s
-    q = np.array([w, x, y, z], dtype=np.float64)
-    return q / np.linalg.norm(q)
-
-
 def _quat_to_rot(q: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     """Convert quaternion [w, x, y, z] to 3×3 rotation matrix."""
     q = q / np.linalg.norm(q)
@@ -466,12 +435,6 @@ def constraint_avoiding_waypoint(
         else:
             perp = np.array([0.0, 0.0, 1.0])
         n = vecnorm(np.cross(a, perp))
-
-    # Sample the direct arc to detect violations
-    # Use SLERP for uniform angular spacing
-    if total_angle < 1e-6:
-        # Arc too short to matter (already checked above, but kept for safety)
-        return None
 
     # Sample the arc and check for violations
     violation_found = False

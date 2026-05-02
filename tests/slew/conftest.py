@@ -10,7 +10,9 @@ from conops import Slew
 
 @pytest.fixture
 def ephem():
-    return Mock()
+    mock = Mock()
+    mock.step_size = 60
+    return mock
 
 
 @pytest.fixture

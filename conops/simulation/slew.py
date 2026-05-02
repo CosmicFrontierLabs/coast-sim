@@ -3,8 +3,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import rust_ephem
 
-from ..common import roll_over_angle, separation, unixtime2date
-from ..common.common import dtutcfromtimestamp
+from ..common import dtutcfromtimestamp, roll_over_angle, separation, unixtime2date
 from ..common.enums import ObsType, SlewAlgorithm
 from ..common.vector import (
     attitude_to_quat,
@@ -258,8 +257,7 @@ class Slew:
         # Determine which constraint to use: ACS slew_constraint or spacecraft constraint
         slew_constraint = (
             self.acs_config.slew_constraint
-            if hasattr(self.acs_config, "slew_constraint")
-            and self.acs_config.slew_constraint is not None
+            if self.acs_config.slew_constraint is not None
             else self.constraint.constraint
         )
 
@@ -270,10 +268,7 @@ class Slew:
                 return False
             # Round time to nearest ephemeris step to ensure it exists in ephemeris
             # rust-ephem's in_constraint requires exact timestamp matches
-            step_size = getattr(self.ephem, "step_size", 60)
-            # Handle case where step_size is a Mock object (in tests)
-            if not isinstance(step_size, (int, float)):
-                step_size = 60
+            step_size: float = getattr(self.ephem, "step_size", 60)
             rounded_time = round(time / step_size) * step_size
             dt = dtutcfromtimestamp(rounded_time)
             return bool(
