@@ -717,6 +717,71 @@ class TestFetchNewPPT:
         # Command should be enqueued
         cast(Mock, queue_ditl.acs.enqueue_command).assert_called_once()
 
+    def test_fetch_ppt_rejects_when_locked_roll_violates_constraint_in_window(
+        self, queue_ditl
+    ) -> None:
+        """Locked roll that violates a constraint inside the ss_min window skips target.
+
+        Expected outcome:
+        - No slew command enqueued
+        - ppt cleared (None)
+        - _ppt_unavailable set to True
+        - log event describing the locked-roll violation emitted
+        """
+        mock_ppt = Mock()
+        mock_ppt.ra = 45.0
+        mock_ppt.dec = 30.0
+        mock_ppt.obsid = 1001
+        mock_ppt.next_vis = Mock(return_value=1000.0)
+        mock_ppt.ss_max = 3600.0
+        mock_ppt.ss_min = 300.0
+        cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
+
+        # No blocking pass
+        cast(Mock, queue_ditl.acs.passrequests).current_pass = Mock(return_value=None)
+        cast(Mock, queue_ditl.acs.passrequests).next_pass = Mock(return_value=None)
+
+        # Constraint reports a violation for every timestamp in the window
+        queue_ditl.constraint.in_constraint = Mock(return_value=True)
+
+        queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        # No slew should be enqueued
+        cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
+        # PPT should be cleared
+        assert queue_ditl.ppt is None
+        # Unavailable flag should be set so the caller does not retry immediately
+        assert queue_ditl._ppt_unavailable is True
+        # A log event describing the locked-roll rejection should have been emitted
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "locked roll" in log_text
+        assert str(mock_ppt.obsid) in log_text
+
+    def test_fetch_ppt_accepts_when_locked_roll_satisfies_constraint_in_window(
+        self, queue_ditl
+    ) -> None:
+        """Target is accepted when locked roll clears all constraints across ss_min window."""
+        mock_ppt = Mock()
+        mock_ppt.ra = 45.0
+        mock_ppt.dec = 30.0
+        mock_ppt.obsid = 1002
+        mock_ppt.next_vis = Mock(return_value=1000.0)
+        mock_ppt.ss_max = 3600.0
+        mock_ppt.ss_min = 300.0
+        cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
+
+        # No blocking pass
+        cast(Mock, queue_ditl.acs.passrequests).current_pass = Mock(return_value=None)
+        cast(Mock, queue_ditl.acs.passrequests).next_pass = Mock(return_value=None)
+
+        # Constraint reports no violation (default for the fixture, but explicit here)
+        queue_ditl.constraint.in_constraint = Mock(return_value=False)
+
+        queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        assert queue_ditl.ppt is mock_ppt
+        cast(Mock, queue_ditl.acs.enqueue_command).assert_called_once()
+
 
 class TestRecordSpacecraftState:
     """Test _record_spacecraft_state helper method."""
