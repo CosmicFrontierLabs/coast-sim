@@ -958,7 +958,10 @@ class QueueDITL(DITLMixin, DITLStats):
             self.ppt.done = True
 
         self.ppt = None
-        self.acs.last_slew = None
+        # Do NOT clear last_slew here. The spacecraft is physically still pointing
+        # at the science target; clearing last_slew would cause pointing() to call
+        # optimum_roll() and jump the roll on the next tick. Roll stays locked to
+        # last_slew.endroll until the next executed slew replaces last_slew.
 
     def _get_constraint_name(
         self,
@@ -1129,6 +1132,40 @@ class QueueDITL(DITLMixin, DITLStats):
             )
             self.ppt.roll = slew.endroll
             slew.calc_slewtime()
+
+            # Validate that the locked roll satisfies constraints for at least
+            # ss_min seconds after slew completion.  The ACS holds roll constant
+            # during observations, so a roll that is immediately constrained
+            # would cause the observation to be terminated before any science
+            # is collected.  Skip the target now rather than wasting a slew.
+            obs_start_time = execution_time + slew.slewtime
+            obs_val_end = obs_start_time + self.ppt.ss_min
+            ephem = self.acs.ephem
+            begin_idx = ephem.index(dtutcfromtimestamp(obs_start_time))
+            end_idx = ephem.index(dtutcfromtimestamp(obs_val_end)) + 1
+            for t in ephem.timestamp[begin_idx:end_idx]:
+                t_unix = t.timestamp() if hasattr(t, "timestamp") else float(t)
+                if self.constraint.in_constraint(
+                    self.ppt.ra,
+                    self.ppt.dec,
+                    t_unix,
+                    target_roll=slew.endroll,
+                    acs_mode=ACSMode.SCIENCE,
+                ):
+                    self.log.log_event(
+                        utime=utime,
+                        event_type="QUEUE",
+                        description=(
+                            f"Target {self.ppt.obsid} skipped — locked roll "
+                            f"{slew.endroll:.1f}° violates constraint "
+                            f"within minimum observation window (at t+{t_unix - obs_start_time:.0f}s)"
+                        ),
+                        obsid=self.ppt.obsid,
+                        acs_mode=self.acs.acsmode,
+                    )
+                    self.ppt = None
+                    self._ppt_unavailable = True
+                    return
 
             # Verify slew won't overlap with a pass - check both start and end
             slew_end = execution_time + slew.slewtime

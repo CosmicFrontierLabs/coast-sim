@@ -506,16 +506,49 @@ class ACS:
         # Calculate current RA/Dec pointing
         self._calculate_pointing(utime)
 
-        # Calculate roll angle to optimize solar panel illumination
+        # Calculate roll angle.
         # NOTE: Must run after _calculate_pointing so self.ra/dec are current.
-        self.roll = optimum_roll(
-            self.ra,
-            self.dec,
-            utime,
-            self.ephem,
-            self.solar_panel,
-            self.constraint,
-        )
+        #
+        # Roll is locked to the value computed at scheduling time (slew.endroll)
+        # once the spacecraft has settled at a science pointing.  Tracking the
+        # solar-optimal roll during an observation is physically unrealistic and
+        # would violate constraints that were validated at scheduling time.
+        #
+        # Exceptions:
+        #   - Actively slewing: interpolate roll along the pre-computed SLERP path.
+        #   - Emergency charging / safe mode: continuously track the solar-optimal
+        #     roll so that power generation is maximised as the Sun moves.
+        #   - No executed slew yet (slewstart == 0, initial boundary condition):
+        #     compute optimal roll as a reasonable starting condition.
+        if self._is_actively_slewing(utime) and self.current_slew is not None:
+            self.roll = self.current_slew.slew_roll(utime)
+        elif self._is_in_charging_mode(utime) or self.in_safe_mode:
+            self.roll = optimum_roll(
+                self.ra,
+                self.dec,
+                utime,
+                self.ephem,
+                self.solar_panel,
+                self.constraint,
+            )
+        elif (
+            self.last_slew is not None
+            and isinstance(self.last_slew, Slew)
+            and getattr(self.last_slew, "slewstart", 0) > 0
+            and hasattr(self.last_slew, "endroll")
+        ):
+            # Settled at a pointing after a real slew: lock roll to endroll.
+            self.roll = self.last_slew.endroll
+        else:
+            # Initial state before any slew has executed: use optimal roll.
+            self.roll = optimum_roll(
+                self.ra,
+                self.dec,
+                utime,
+                self.ephem,
+                self.solar_panel,
+                self.constraint,
+            )
 
         # Check current constraints (must run after roll is updated)
         self._check_constraints(utime)
@@ -621,8 +654,7 @@ class ACS:
         ):
             assert self.last_slew.at is not None
 
-            # Update the roll on the target to reflect the current optimum roll
-            # (the stored roll was computed at schedule time and may be stale)
+            # Keep the target's stored roll in sync with the ACS locked roll.
             self.last_slew.at.roll = self.roll
 
             # Collect only the true constraints

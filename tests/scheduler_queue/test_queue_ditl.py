@@ -507,6 +507,7 @@ class TestFetchNewPPT:
         mock_ppt.obsid = 1001
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.ss_min = 300.0
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
         queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
         assert queue_ditl.ppt is mock_ppt
@@ -525,6 +526,7 @@ class TestFetchNewPPT:
         mock_ppt.obsid = 1001
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.ss_min = 300.0
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
         queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
         cast(Mock, queue_ditl.acs.enqueue_command).assert_called_once()
@@ -544,6 +546,7 @@ class TestFetchNewPPT:
         mock_ppt.obsid = 1001
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.ss_min = 300.0
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
         queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
         # Check the log instead of print output
@@ -971,6 +974,7 @@ class TestCalcMethod:
         mock_ppt.done = False
         mock_ppt.next_vis = Mock(return_value=1543276800.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.ss_min = 300.0
         mock_ppt.copy = Mock(return_value=Mock())
         mock_ppt.copy.return_value.begin = 1543622400
         mock_ppt.copy.return_value.end = 1543629600
@@ -1069,6 +1073,7 @@ class TestCalcMethod:
         mock_ppt.done = False
         mock_ppt.next_vis = Mock(return_value=1543276800.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.ss_min = 300.0
         mock_ppt.copy = Mock(return_value=Mock())
         mock_ppt.copy.return_value.begin = 1543622400
         mock_ppt.copy.return_value.end = 1543708800
@@ -1292,6 +1297,7 @@ class TestCalcMethod:
         mock_ppt.obsid = 1001
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.ss_min = 300.0
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
 
         # Create a mock current slew that's still slewing
@@ -1323,6 +1329,7 @@ class TestCalcMethod:
         # Set next_vis to a time after the current time (1000.0)
         mock_ppt.next_vis = Mock(return_value=1200.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.ss_min = 300.0
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
         queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
 

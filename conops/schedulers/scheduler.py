@@ -5,6 +5,7 @@ import rust_ephem
 
 from ..common import dtutcfromtimestamp
 from ..config import MissionConfig
+from ..simulation.roll import optimum_roll
 from ..simulation.saa import SAA
 from ..targets import Plan, PlanEntry, TargetList
 
@@ -94,11 +95,27 @@ class DumbScheduler:
                 obs_start = current_time
                 obs_end = current_time + task.exptime + slewtime
 
+                # Compute the roll that will be locked for this observation.
+                # The ACS computes optimum_roll at the slew execution time and
+                # then holds it constant throughout the observation; replicate
+                # that here so the scheduler validates the same fixed roll.
+                solar_panel = (
+                    self.config.solar_panel if self.config is not None else None
+                )
+                obs_roll = optimum_roll(
+                    task.ra,
+                    task.dec,
+                    obs_start,
+                    self.ephem,
+                    solar_panel,
+                    self.constraint,
+                )
+
                 # Get ephemeris time indices for observation window
                 begin_idx = self.ephem.index(dtutcfromtimestamp(obs_start))
                 end_idx = self.ephem.index(dtutcfromtimestamp(obs_end)) + 1
 
-                # Evaluate constraints at each timestep in the observation window
+                # Evaluate constraints at each timestep using the fixed roll.
                 time_window = self.ephem.timestamp[begin_idx:end_idx]
 
                 in_occult = [
@@ -106,7 +123,7 @@ class DumbScheduler:
                         ra=task.ra,
                         dec=task.dec,
                         utime=t.timestamp(),
-                        target_roll=getattr(task, "roll", None),
+                        target_roll=obs_roll,
                     )
                     for t in time_window
                 ]
