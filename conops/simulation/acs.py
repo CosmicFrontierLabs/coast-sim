@@ -506,49 +506,8 @@ class ACS:
         # Calculate current RA/Dec pointing
         self._calculate_pointing(utime)
 
-        # Calculate roll angle.
-        # NOTE: Must run after _calculate_pointing so self.ra/dec are current.
-        #
-        # Roll is locked to the value computed at scheduling time (slew.endroll)
-        # once the spacecraft has settled at a science pointing.  Tracking the
-        # solar-optimal roll during an observation is physically unrealistic and
-        # would violate constraints that were validated at scheduling time.
-        #
-        # Exceptions:
-        #   - Actively slewing: interpolate roll along the pre-computed SLERP path.
-        #   - Emergency charging / safe mode: continuously track the solar-optimal
-        #     roll so that power generation is maximised as the Sun moves.
-        #   - No executed slew yet (slewstart == 0, initial boundary condition):
-        #     compute optimal roll as a reasonable starting condition.
-        if self._is_actively_slewing(utime) and self.current_slew is not None:
-            self.roll = self.current_slew.slew_roll(utime)
-        elif self._is_in_charging_mode(utime) or self.in_safe_mode:
-            self.roll = optimum_roll(
-                self.ra,
-                self.dec,
-                utime,
-                self.ephem,
-                self.solar_panel,
-                self.constraint,
-            )
-        elif (
-            self.last_slew is not None
-            and isinstance(self.last_slew, Slew)
-            and getattr(self.last_slew, "slewstart", 0) > 0
-            and hasattr(self.last_slew, "endroll")
-        ):
-            # Settled at a pointing after a real slew: lock roll to endroll.
-            self.roll = self.last_slew.endroll
-        else:
-            # Initial state before any slew has executed: use optimal roll.
-            self.roll = optimum_roll(
-                self.ra,
-                self.dec,
-                utime,
-                self.ephem,
-                self.solar_panel,
-                self.constraint,
-            )
+        # Calculate roll angle (must run after _calculate_pointing so ra/dec are current).
+        self.roll = self._compute_roll(utime)
 
         # Check current constraints (must run after roll is updated)
         self._check_constraints(utime)
@@ -603,6 +562,32 @@ class ACS:
     def _is_actively_slewing(self, utime: float) -> bool:
         """Check if spacecraft is currently executing a slew."""
         return self.current_slew is not None and self.current_slew.is_slewing(utime)
+
+    def _compute_roll(self, utime: float) -> float:
+        """Return the roll angle for the current timestep.
+
+        - During a slew: interpolate along the SLERP path.
+        - Charging / safe mode: track solar-optimal roll continuously.
+        - Settled at a science pointing: lock to the roll computed at scheduling
+          time (slew.endroll) so constraints validated by the scheduler hold.
+        - Initial boundary condition (no real slew yet): use optimal roll.
+        """
+        if self._is_actively_slewing(utime) and self.current_slew is not None:
+            return self.current_slew.slew_roll(utime)
+        if self._is_in_charging_mode(utime) or self.in_safe_mode:
+            return optimum_roll(
+                self.ra, self.dec, utime, self.ephem, self.solar_panel, self.constraint
+            )
+        if (
+            self.last_slew is not None
+            and isinstance(self.last_slew, Slew)
+            and getattr(self.last_slew, "slewstart", 0) > 0
+            and hasattr(self.last_slew, "endroll")
+        ):
+            return self.last_slew.endroll
+        return optimum_roll(
+            self.ra, self.dec, utime, self.ephem, self.solar_panel, self.constraint
+        )
 
     def _is_in_charging_mode(self, utime: float) -> bool:
         """Check if spacecraft is in charging mode (dwelling at charge pointing).
