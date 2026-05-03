@@ -94,6 +94,16 @@ def mock_ephemeris():
     ephem.ephtime = mock_ephtime
     ephem.step_size = 60  # seconds
 
+    # Add position arrays needed by optimum_roll (shape: [n_steps, 3])
+    n_steps = len(ephem.utime)
+    sun_pos = np.zeros((n_steps, 3))
+    sun_pos[:, 0] = 1.496e8  # Sun ~1 AU in +X direction (km)
+    gcrs_pos = np.zeros((n_steps, 3))
+    ephem.sun_pv = Mock()
+    ephem.sun_pv.position = sun_pos
+    ephem.gcrs_pv = Mock()
+    ephem.gcrs_pv.position = gcrs_pos
+
     return ephem
 
 

@@ -330,6 +330,7 @@ class TestPointing:
         mock_slew.obstype = "PPT"
         mock_slew.obsid = 100
         mock_slew.ra_dec = Mock(return_value=(45.0, 30.0))
+        mock_slew.slew_roll = Mock(return_value=45.0)
         mock_slew.at = None
 
         acs.last_slew = mock_slew
@@ -351,6 +352,7 @@ class TestPointing:
         mock_pass.obstype = "GSP"
         mock_pass.obsid = 200
         mock_pass.ra_dec = Mock(return_value=(45.0, 30.0))
+        mock_pass.slew_roll = Mock(return_value=45.0)
 
         acs.last_slew = mock_pass
         acs.current_slew = mock_pass
