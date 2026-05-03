@@ -1139,10 +1139,17 @@ class QueueDITL(DITLMixin, DITLStats):
             # would cause the observation to be terminated before any science
             # is collected.  Skip the target now rather than wasting a slew.
             obs_start_time = execution_time + slew.slewtime
-            obs_val_end = obs_start_time + self.ppt.ss_min
             ephem = self.acs.ephem
-            begin_idx = ephem.index(dtutcfromtimestamp(obs_start_time))
-            end_idx = ephem.index(dtutcfromtimestamp(obs_val_end)) + 1
+            ephem_end = (
+                ephem.timestamp[-1].timestamp()
+                if hasattr(ephem.timestamp[-1], "timestamp")
+                else float(ephem.timestamp[-1])
+            )
+            obs_val_end = min(obs_start_time + self.ppt.ss_min, ephem_end)
+            begin_idx = max(0, ephem.index(dtutcfromtimestamp(obs_start_time)))
+            end_idx = min(
+                len(ephem.timestamp), ephem.index(dtutcfromtimestamp(obs_val_end)) + 1
+            )
             for t in ephem.timestamp[begin_idx:end_idx]:
                 t_unix = t.timestamp() if hasattr(t, "timestamp") else float(t)
                 if self.constraint.in_constraint(
