@@ -85,9 +85,8 @@ class PlanEntry:
     @property
     def exposure(self) -> int:  # (),excludesaa=False):
         self.insaa = 0
-        return int(
-            self.end - self.begin - self.slewtime - self.insaa
-        )  # always an integer number of seconds
+        exposure = self.end - self.begin - self.slewtime - self.insaa
+        return max(0, int(exposure))  # always an integer number of seconds
 
     @exposure.setter
     def exposure(self, value: int) -> None:

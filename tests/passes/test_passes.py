@@ -12,6 +12,7 @@ from conops import (
     PassTimes,
 )
 from conops.config import AttitudeControlSystem
+from conops.simulation.passes import pass_slew_trigger_buffer
 
 
 class TestPassInitialization:
@@ -156,6 +157,10 @@ class TestPassMethods:
 
 class TestPassTimeToSlew:
     """Test Pass.time_to_slew method."""
+
+    def test_pass_slew_trigger_buffer_is_two_ephemeris_steps(self):
+        assert pass_slew_trigger_buffer(60.0) == 120.0
+        assert pass_slew_trigger_buffer(-60.0) == 0.0
 
     def test_time_to_slew_no_pass_profile(self, basic_pass_mock):
         """Test time_to_slew returns False when pass has no ra/dec profile."""

@@ -2,6 +2,7 @@
 
 import json
 import pathlib
+from unittest.mock import Mock
 
 import pytest
 
@@ -297,3 +298,32 @@ class TestPlanSchema:
         assert schema.entries == []
         assert schema.start == 0.0
         assert schema.end == 0.0
+
+    def test_from_plan_clamps_negative_exposure(self, tmp_path):
+        """Generated JSON should not contain negative exposure for truncated entries."""
+        from conops.targets.plan import Plan
+        from conops.targets.plan_entry import PlanEntry
+
+        config = Mock()
+        config.constraint = Mock()
+        config.constraint.ephem = Mock()
+        config.spacecraft_bus = Mock()
+        config.spacecraft_bus.attitude_control = Mock()
+
+        entry = PlanEntry(config=config)
+        entry.obstype = "AT"
+        entry.begin = 1000.0
+        entry.end = 1060.0
+        entry.slewtime = 224
+        entry.insaa = 0
+
+        plan = Plan()
+        plan.append(entry)
+
+        schema = PlanSchema.from_plan(plan)
+        assert schema.entries[0].exposure == 0
+
+        dest = tmp_path / "plan.json"
+        schema.save(dest)
+        raw = json.loads(dest.read_text())
+        assert raw["entries"][0]["exposure"] == 0

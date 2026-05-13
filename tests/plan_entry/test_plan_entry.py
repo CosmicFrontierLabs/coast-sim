@@ -136,6 +136,15 @@ class TestExposureProperty:
         assert exposure == 90  # 1100 - 1000 - 10
         assert plan_entry.insaa == 0
 
+    def test_exposure_clamps_when_window_is_shorter_than_slew(self, plan_entry):
+        """Exposure should not go negative for an aborted/no-collect entry."""
+        plan_entry.begin = 1000
+        plan_entry.end = 1060
+        plan_entry.slewtime = 224
+
+        exposure = plan_entry.exposure
+        assert exposure == 0
+
     # def test_exposure_with_saa_overlap(self, plan_entry):
     #     """Test exposure with SAA overlap."""
     #     plan_entry.begin = 1000
