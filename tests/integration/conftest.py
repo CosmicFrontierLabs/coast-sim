@@ -114,6 +114,8 @@ def test_config_with_panels(mock_ephem_with_pv: Mock) -> tuple[Mock, SolarPanelS
             else AttitudeConstraintPolicy.HARD_KEEPOUT
         )
     )
+    config.spacecraft_bus.boresight_axis = "+X"
+    config.boresight_axis = "+X"
 
     return config, panel_set
 

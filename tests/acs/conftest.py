@@ -94,6 +94,8 @@ def mock_config(mock_ephem: DummyEphemeris, mock_constraint: Mock) -> Mock:
             else AttitudeConstraintPolicy.HARD_KEEPOUT
         )
     )
+    config.spacecraft_bus.boresight_axis = "+X"
+    config.boresight_axis = "+X"
     return config
 
 

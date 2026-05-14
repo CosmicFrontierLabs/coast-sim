@@ -75,6 +75,8 @@ def mock_config_roll(mock_ephem_roll, mock_constraint_roll):
     config.attitude_constraint_policy_for_mode = Mock(
         return_value=AttitudeConstraintPolicy.HARD_KEEPOUT
     )
+    config.spacecraft_bus.boresight_axis = "+X"
+    config.boresight_axis = "+X"
     return config
 
 
@@ -169,6 +171,8 @@ class TestACSRollCalculation:
         config1.attitude_constraint_policy_for_mode = Mock(
             return_value=AttitudeConstraintPolicy.HARD_KEEPOUT
         )
+        config1.spacecraft_bus.boresight_axis = "+X"
+        config1.boresight_axis = "+X"
 
         with patch("conops.simulation.passes.PassTimes"):
             acs1 = ACS(config=config1)
@@ -206,6 +210,8 @@ class TestACSRollCalculation:
         config2.attitude_constraint_policy_for_mode = Mock(
             return_value=AttitudeConstraintPolicy.HARD_KEEPOUT
         )
+        config2.spacecraft_bus.boresight_axis = "+X"
+        config2.boresight_axis = "+X"
 
         with patch("conops.simulation.passes.PassTimes"):
             acs2 = ACS(config=config2)
@@ -368,6 +374,8 @@ class TestACSRollEdgeCases:
         config.attitude_constraint_policy_for_mode = Mock(
             return_value=AttitudeConstraintPolicy.HARD_KEEPOUT
         )
+        config.spacecraft_bus.boresight_axis = "+X"
+        config.boresight_axis = "+X"
 
         with patch("conops.simulation.passes.PassTimes"):
             acs = ACS(config=config)

@@ -4,6 +4,7 @@ import numpy as np
 import rust_ephem
 
 from ..common import dtutcfromtimestamp, scbodyvector
+from ..common.vector import boresight_axis_permutation
 from ..config import DTOR, Constraint, SolarPanelSet
 
 """Roll computation helpers."""
@@ -71,6 +72,7 @@ def optimum_roll(
     ephem: rust_ephem.Ephemeris,
     solar_panel: SolarPanelSet | None = None,
     constraint: Constraint | None = None,
+    boresight_axis: str = "+X",
 ) -> float:
     """Calculate the optimum roll angle (degrees in [0,360)).
 
@@ -131,8 +133,16 @@ def optimum_roll(
         weights.append(p.max_power * eff)
 
     # Convert lists to arrays
-    n_mat = np.asarray(base_normals, dtype=float)  # shape (P,3)
+    n_mat = np.asarray(base_normals, dtype=float)  # shape (P,3) in user's frame
     w_vec = np.asarray(weights, dtype=float)  # shape (P,)
+
+    # Convert panel normals from user's body frame to the internal +X-boresight
+    # frame.  scbodyvector() always returns vectors in the internal frame, so
+    # the illumination dot-products below must use consistent coordinates.
+    # n_internal[i] = P^T @ n_user[i]; in matrix form: N_int = N_user @ P.
+    if boresight_axis != "+X":
+        p_mat = boresight_axis_permutation(boresight_axis)
+        n_mat = n_mat @ p_mat  # shape (P,3) now in internal frame
 
     # For a spacecraft roll of θ about the body +X (boresight) axis the Sun
     # vector expressed in the body frame evolves as (right-hand rule):
@@ -179,7 +189,11 @@ def optimum_roll(
 
 
 def optimum_roll_sidemount(
-    ra: float, dec: float, utime: float, ephem: rust_ephem.Ephemeris
+    ra: float,
+    dec: float,
+    utime: float,
+    ephem: rust_ephem.Ephemeris,
+    boresight_axis: str = "+X",
 ) -> float:
     """Calculate the optimum Roll angle (in degrees) for a given Ra, Dec
     and Unix Time"""

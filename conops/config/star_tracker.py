@@ -33,12 +33,18 @@ from functools import cached_property
 import numpy as np
 import numpy.typing as npt
 import rust_ephem
-from pydantic import Field, field_validator
+from pydantic import Field, PrivateAttr, field_validator
 from rust_ephem import AtLeastConstraint, EarthLimbConstraint, SunConstraint
 from rust_ephem.constraints import ConstraintConfig
 
 from ..common.enums import ACSMode
-from ..common.vector import radec2vec, rotvec, vec2radec, vecnorm
+from ..common.vector import (
+    boresight_axis_permutation,
+    radec2vec,
+    rotvec,
+    vec2radec,
+    vecnorm,
+)
 from ._base import ConfigModel
 from .constraint import Constraint
 
@@ -102,6 +108,9 @@ class StarTrackerOrientation(ConfigModel):
         default=(1.0, 0.0, 0.0),
         description="Star tracker boresight direction as unit vector in body frame",
     )
+
+    # Set by SpacecraftBus.model_validator; not user-facing.
+    _boresight_axis: str = PrivateAttr(default="+X")
 
     @field_validator("boresight")
     @classmethod
@@ -200,12 +209,13 @@ class StarTrackerOrientation(ConfigModel):
             and roll=90° give the same (RA, Dec) for the boresight. Roll only changes
             the apparent (RA, Dec) for trackers whose boresight is offset from +X.
         """
-        # Spacecraft boresight (+X body axis) in inertial coordinates.
+        # Spacecraft boresight in inertial coordinates (always the pointing direction).
         ra_rad = np.deg2rad(ra_deg)
         dec_rad = np.deg2rad(dec_deg)
         x_hat = radec2vec(ra_rad, dec_rad)
 
-        # Build the body Y/Z basis around boresight using sky north as reference.
+        # Build the internal body Y/Z basis (internal +X = boresight) around the
+        # pointing direction using sky north as a reference.
         ref = np.array([0.0, 0.0, 1.0], dtype=np.float64)
         y0 = np.cross(ref, x_hat)
         if np.linalg.norm(y0) < 1e-12:
@@ -214,16 +224,19 @@ class StarTrackerOrientation(ConfigModel):
         y0 = vecnorm(y0)
         z0 = vecnorm(np.cross(x_hat, y0))
 
-        # Roll is a position-angle rotation about boresight (+X).
+        # Roll is a rotation about the boresight axis.
         roll_rad = np.deg2rad(roll_deg)
         c = np.cos(roll_rad)
         s = np.sin(roll_rad)
         y_hat = y0 * c - z0 * s
         z_hat = y0 * s + z0 * c
 
-        # Tracker boresight in inertial frame: linear combination of body axes.
-        b = np.asarray(self.boresight, dtype=np.float64)
-        v_st = b[0] * x_hat + b[1] * y_hat + b[2] * z_hat
+        # Convert star tracker boresight from user's body frame to the internal
+        # (+X-boresight) frame, then project onto the inertial body-frame axes.
+        b_user = np.asarray(self.boresight, dtype=np.float64)
+        p_mat = boresight_axis_permutation(self._boresight_axis)
+        b_int = p_mat.T @ b_user  # user frame → internal frame
+        v_st = b_int[0] * x_hat + b_int[1] * y_hat + b_int[2] * z_hat
 
         # Convert back to RA/Dec
         ra_st_rad, dec_st_rad = vec2radec(v_st)
@@ -335,6 +348,9 @@ class StarTrackerConfiguration(ConfigModel):
     min_functional_trackers: int = 1
     modes_require_lock: list[ACSMode] | None = None
 
+    # Set by SpacecraftBus.model_validator; not user-facing.
+    _boresight_axis: str = PrivateAttr(default="+X")
+
     def requires_lock_in_mode(self, mode: ACSMode | None = None) -> bool:
         """Check whether star tracker lock is required in the given operational mode.
 
@@ -355,20 +371,24 @@ class StarTrackerConfiguration(ConfigModel):
     @staticmethod
     def _boresight_to_euler_deg(
         boresight: tuple[float, float, float],
+        boresight_axis: str = "+X",
     ) -> tuple[float, float, float]:
         """Convert boresight unit vector to azimuth/elevation angles for boresight_offset.
 
-        Returns (roll=0, pitch, yaw) angles such that
-        ``boresight_offset(roll, pitch, yaw)`` of a constraint shifts the
-        constraint from its natural +X direction to the direction of
-        ``boresight`` in the spacecraft body frame.
+        The ``boresight`` vector is given in the **user's** body frame (as
+        configured).  It is first converted to the internal +X-boresight frame
+        before computing the Euler angles, because rust-ephem's
+        ``boresight_offset`` always measures offsets from its natural +X axis.
 
-        Concretely: yaw is the azimuthal angle of the boresight in the body
-        xy-plane, and pitch is its elevation above that plane — the standard
-        spherical-coordinate decomposition that ``boresight_offset`` expects.
-        Roll about the boresight is underdetermined; we set it to 0.
+        Returns (roll=0, pitch, yaw) angles such that
+        ``boresight_offset(roll, pitch, yaw)`` shifts the constraint from the
+        natural +X direction to the direction of ``boresight`` in the internal
+        body frame.
         """
-        x, y, z = vecnorm(np.asarray(boresight, dtype=np.float64))
+        b_user = np.asarray(boresight, dtype=np.float64)
+        p_mat = boresight_axis_permutation(boresight_axis)
+        b_int = vecnorm(p_mat.T @ b_user)  # convert user frame → internal frame
+        x, y, z = b_int
         yaw_deg = float(np.rad2deg(np.arctan2(y, x)))
         pitch_deg = float(np.rad2deg(np.arctan2(z, np.hypot(x, y))))
         roll_deg = 0.0
@@ -397,7 +417,7 @@ class StarTrackerConfiguration(ConfigModel):
                 continue
 
             roll_deg, pitch_deg, yaw_deg = self._boresight_to_euler_deg(
-                st.orientation.boresight
+                st.orientation.boresight, self._boresight_axis
             )
             offset_constraint = base_constraint.boresight_offset(
                 roll_deg=roll_deg,
@@ -436,7 +456,7 @@ class StarTrackerConfiguration(ConfigModel):
             if base_constraint is None:
                 continue
             roll_deg, pitch_deg, yaw_deg = self._boresight_to_euler_deg(
-                st.orientation.boresight
+                st.orientation.boresight, self._boresight_axis
             )
             offset_constraint = base_constraint.boresight_offset(
                 roll_deg=roll_deg,
