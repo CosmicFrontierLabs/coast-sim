@@ -522,6 +522,8 @@ class QueueDITL(DITLMixin, DITLStats):
     def _science_collection_time(
         self, entry: PlanEntry, end_time: float | None = None
     ) -> float | None:
+        """Calculate the effective science collection time for a given plan
+        entry."""
         if entry.obstype != ObsType.AT:
             return None
         end = end_time if end_time is not None else float(entry.end)
@@ -533,12 +535,17 @@ class QueueDITL(DITLMixin, DITLStats):
         )
 
     def _is_short_science_entry(self, entry: PlanEntry) -> bool:
+        """Determine if a science observation entry failed to meet the minimum
+        snapshot requirement."""
         collection_time = self._science_collection_time(entry)
         if collection_time is None:
             return False
         return collection_time < max(0.0, float(entry.ss_min))
 
     def _close_last_plan_entry(self, end_time: float) -> None:
+        """Close the last plan entry in the timeline by setting its end time.
+        If it's a science observation that didn't meet the minimum snapshot
+        requirement, log it and remove it from the plan."""
         if len(self.plan) == 0:
             return
         self.plan[-1].end = end_time
