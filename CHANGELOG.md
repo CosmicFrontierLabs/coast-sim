@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.0](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.4.1...v0.5.0) (2026-05-14)
+
+
+### Features
+
+* **slew:** add alternate slew algorithms ([#125](https://github.com/CosmicFrontierLabs/coast-sim/issues/125)) ([5658dc6](https://github.com/CosmicFrontierLabs/coast-sim/commit/5658dc6e6cd880f28a53996c048086193f1582b4))
+
+
+### Bug Fixes
+
+* revert change to notebook ([49a5b29](https://github.com/CosmicFrontierLabs/coast-sim/commit/49a5b29211eb8e24fcb09902ee017aae1c9e6114))
+* **roll:** fix bug where roll angle was changing during observation ([#134](https://github.com/CosmicFrontierLabs/coast-sim/issues/134)) ([936572c](https://github.com/CosmicFrontierLabs/coast-sim/commit/936572c116389d05d0268571d91eab271d68a269))
+* **tests:** import refactoring ([#131](https://github.com/CosmicFrontierLabs/coast-sim/issues/131)) ([9f90a26](https://github.com/CosmicFrontierLabs/coast-sim/commit/9f90a2611407eb6dfa15f268859f9daf9874aff3))
+* under-collected science plan entries ([#136](https://github.com/CosmicFrontierLabs/coast-sim/issues/136)) ([49a5b29](https://github.com/CosmicFrontierLabs/coast-sim/commit/49a5b29211eb8e24fcb09902ee017aae1c9e6114))
+
 ## [0.4.1](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.4.0...v0.4.1) (2026-04-29)
 
 
