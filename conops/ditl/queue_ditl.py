@@ -1056,9 +1056,7 @@ class QueueDITL(DITLMixin, DITLStats):
         return "Unknown"
 
     def _simulation_end_deadline(self) -> float:
-        """Calculate the simulation end deadline, which is either the
-        configured end time or the end of the current PPT, whichever is sooner.
-        """
+        """Return the Unix timestamp for the end of the simulation."""
         return self.uend if self.uend > 0.0 else self.end.timestamp()
 
     def _current_ppt_visibility_deadline(self, slew_end: float) -> float | None:
