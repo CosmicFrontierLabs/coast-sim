@@ -71,6 +71,11 @@ class PlanEntrySchema(BaseModel):
     done: bool = False
     exposure: int = 0
 
+    @staticmethod
+    def _computed_exposure(entry: PlanEntry) -> int:
+        exposure = entry.end - entry.begin - entry.slewtime - entry.insaa
+        return max(0, int(exposure))
+
     @field_validator("begin", "end", mode="before")
     @classmethod
     def _coerce_time(cls, v: Any) -> float:
@@ -107,7 +112,7 @@ class PlanEntrySchema(BaseModel):
                 "exporig": data._exporig,
                 "isat": getattr(data, "isat", False),
                 "done": getattr(data, "done", False),
-                "exposure": data.end - data.begin - data.slewtime - data.insaa,
+                "exposure": cls._computed_exposure(data),
             }
         return data
 

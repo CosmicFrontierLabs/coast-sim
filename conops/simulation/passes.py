@@ -11,6 +11,11 @@ from ..config import Constraint, GroundStationRegistry, MissionConfig
 from ..config.constants import DTOR
 
 
+def pass_slew_trigger_buffer(step_size: float) -> float:
+    """Return how early pass handling can trigger a slew, in seconds."""
+    return max(0.0, 2.0 * float(step_size))
+
+
 class Pass(BaseModel):
     """A groundstation pass consisting of the dwell phase.
 
@@ -258,9 +263,7 @@ class Pass(BaseModel):
         # Determine if we need to start slewing now
         time_until_slew = (self.begin - slewtime) - utime
 
-        # If we are within 2 ephem steps of needing to slew, return True
-        # FIXME: Is this buffer necessary?
-        if time_until_slew <= self.ephem.step_size * 2:
+        if time_until_slew <= pass_slew_trigger_buffer(self.ephem.step_size):
             return True
         else:
             return False

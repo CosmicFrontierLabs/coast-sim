@@ -435,10 +435,14 @@ class TestManagePPTLifecycle:
         mock_ppt.ra = 10.0
         mock_ppt.dec = 20.0
         mock_ppt.end = 2000.0
+        mock_ppt.obsid = 1001
         queue_ditl.ppt = mock_ppt
         queue_ditl.charging_ppt = None
+        cast(Mock, queue_ditl.constraint).in_constraint = Mock(return_value=True)
         queue_ditl._manage_ppt_lifecycle(1000.0, ACSMode.SLEWING)
         assert mock_ppt.exptime == 300.0
+        assert queue_ditl.ppt is mock_ppt
+        cast(Mock, queue_ditl.constraint).in_constraint.assert_not_called()
 
     def test_manage_ppt_becomes_constrained_terminates(
         self, queue_ditl: QueueDITL
@@ -508,6 +512,7 @@ class TestFetchNewPPT:
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 300.0
+        mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
         queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
         assert queue_ditl.ppt is mock_ppt
@@ -527,6 +532,7 @@ class TestFetchNewPPT:
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 300.0
+        mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
         queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
         cast(Mock, queue_ditl.acs.enqueue_command).assert_called_once()
@@ -547,6 +553,7 @@ class TestFetchNewPPT:
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 300.0
+        mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
         queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
         # Check the log instead of print output
@@ -650,6 +657,7 @@ class TestFetchNewPPT:
         self, queue_ditl: QueueDITL
     ) -> None:
         """Test target rejection when there's not enough time before next pass."""
+        queue_ditl.ephem.step_size = 60
         # Setup mock PPT with minimum observation time requirement
         mock_ppt = Mock()
         mock_ppt.ra = 45.0
@@ -658,7 +666,9 @@ class TestFetchNewPPT:
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 500.0  # Requires 500 seconds
+        mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
+        queue_ditl.queue.targets = [mock_ppt]
 
         # No current pass
         cast(Mock, queue_ditl.acs.passrequests).current_pass = Mock(return_value=None)
@@ -684,10 +694,45 @@ class TestFetchNewPPT:
         assert "available before pass" in log_text
         assert str(mock_ppt.obsid) in log_text
 
+    def test_fetch_ppt_rejects_when_pass_slew_buffer_consumes_minimum_collect(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Pass admission should include the early trigger used by pass slews."""
+        queue_ditl.ephem.step_size = 60
+
+        mock_ppt = Mock()
+        mock_ppt.ra = 45.0
+        mock_ppt.dec = 30.0
+        mock_ppt.obsid = 1001
+        mock_ppt.next_vis = Mock(return_value=1000.0)
+        mock_ppt.ss_max = 3600.0
+        mock_ppt.ss_min = 200.0
+        mock_ppt.windows = [[0.0, 1e12]]
+        cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
+        queue_ditl.queue.targets = [mock_ppt]
+
+        cast(Mock, queue_ditl.acs.passrequests).current_pass = Mock(return_value=None)
+
+        mock_next_pass = Mock()
+        mock_next_pass.begin = 1450.0
+        mock_next_pass.gsstartra = 100.0
+        mock_next_pass.gsstartdec = 50.0
+        cast(Mock, queue_ditl.acs.passrequests).next_pass = Mock(
+            return_value=mock_next_pass
+        )
+
+        queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        assert queue_ditl.ppt is None
+        cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "rejected - only 130s available before pass" in log_text
+
     def test_fetch_ppt_accepts_with_sufficient_observation_time(
         self, queue_ditl
     ) -> None:
         """Test target acceptance when there's enough time before next pass."""
+        queue_ditl.ephem.step_size = 60
         # Setup mock PPT
         mock_ppt = Mock()
         mock_ppt.ra = 45.0
@@ -696,6 +741,7 @@ class TestFetchNewPPT:
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 100.0  # Requires 100 seconds
+        mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
 
         # No current pass
@@ -717,6 +763,62 @@ class TestFetchNewPPT:
         # Command should be enqueued
         cast(Mock, queue_ditl.acs.enqueue_command).assert_called_once()
 
+    def test_fetch_ppt_retries_when_top_target_cannot_collect(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Reject an infeasible top target and commit the next feasible target."""
+        queue_ditl.ephem.step_size = 60
+        bad_ppt = Mock()
+        bad_ppt.ra = 45.0
+        bad_ppt.dec = 30.0
+        bad_ppt.obsid = 1001
+        bad_ppt.done = False
+        bad_ppt.windows = []
+        bad_ppt.visible = Mock(return_value=[1000.0, 5000.0])
+        bad_ppt.next_vis = Mock(return_value=1000.0)
+        bad_ppt.ss_max = 3600.0
+        bad_ppt.ss_min = 300.0
+
+        good_ppt = Mock()
+        good_ppt.ra = 46.0
+        good_ppt.dec = 31.0
+        good_ppt.obsid = 1002
+        good_ppt.done = False
+        good_ppt.windows = []
+        good_ppt.visible = Mock(return_value=[1000.0, 5000.0])
+        good_ppt.next_vis = Mock(return_value=1000.0)
+        good_ppt.ss_max = 3600.0
+        good_ppt.ss_min = 30.0
+
+        targets = [bad_ppt, good_ppt]
+        queue_ditl.queue.targets = targets
+
+        def get_next_not_done(ra: float, dec: float, utime: float) -> Mock | None:
+            return next((target for target in targets if not target.done), None)
+
+        cast(Mock, queue_ditl.queue).get = Mock(side_effect=get_next_not_done)
+        cast(Mock, queue_ditl.acs.passrequests).current_pass = Mock(return_value=None)
+
+        mock_next_pass = Mock()
+        mock_next_pass.begin = 1400.0
+        mock_next_pass.gsstartra = 100.0
+        mock_next_pass.gsstartdec = 50.0
+        cast(Mock, queue_ditl.acs.passrequests).next_pass = Mock(
+            return_value=mock_next_pass
+        )
+
+        queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        assert queue_ditl.ppt is good_ppt
+        assert bad_ppt.done is False
+        cast(Mock, queue_ditl.acs.enqueue_command).assert_called_once()
+        command = cast(Mock, queue_ditl.acs.enqueue_command).call_args[0][0]
+        assert command.slew.obsid == good_ppt.obsid
+
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "Target 1001 rejected" in log_text
+        assert "available before pass" in log_text
+
     def test_fetch_ppt_rejects_when_locked_roll_violates_constraint_in_window(
         self, queue_ditl
     ) -> None:
@@ -735,6 +837,7 @@ class TestFetchNewPPT:
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 300.0
+        mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
 
         # No blocking pass
@@ -768,6 +871,7 @@ class TestFetchNewPPT:
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 300.0
+        mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
 
         # No blocking pass
@@ -1040,9 +1144,11 @@ class TestCalcMethod:
         mock_ppt.next_vis = Mock(return_value=1543276800.0)
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 300.0
+        mock_ppt.windows = [[0.0, 1e12]]
         mock_ppt.copy = Mock(return_value=Mock())
         mock_ppt.copy.return_value.begin = 1543622400
         mock_ppt.copy.return_value.end = 1543629600
+        mock_ppt.copy.return_value.obstype = "PPT"
 
         queue_ditl.queue.get = Mock(side_effect=[mock_ppt] + [None] * 1500)
         queue_ditl.calc()
@@ -1123,6 +1229,114 @@ class TestCalcMethod:
         ]
         assert "START_BATTERY_CHARGE" in command_types
 
+    def test_initiate_charging_leaves_short_science_target_retryable(
+        self, queue_ditl
+    ) -> None:
+        science_ppt = Mock()
+        science_ppt.obstype = "AT"
+        science_ppt.begin = 1000.0
+        science_ppt.end = 1000.0 + 86400
+        science_ppt.slewtime = 200.0
+        science_ppt.insaa = 0.0
+        science_ppt.ss_min = 300.0
+        science_ppt.done = False
+        science_ppt.ra = 10.0
+        science_ppt.dec = 20.0
+        science_ppt.obsid = 1001
+
+        charging_ppt = Mock()
+        charging_ppt.ra = 100.0
+        charging_ppt.dec = 50.0
+        charging_ppt.obsid = 999001
+        charging_ppt.roll = 0.0
+
+        def interrupt_for_charging(utime, ephem, ra, dec, current_ppt):
+            current_ppt.end = utime
+            current_ppt.done = True
+            return charging_ppt
+
+        queue_ditl.ppt = science_ppt
+        queue_ditl.emergency_charging.initiate_emergency_charging = Mock(
+            side_effect=interrupt_for_charging
+        )
+
+        queue_ditl._initiate_charging(1250.0, 10.0, 20.0)
+
+        assert science_ppt.done is False
+        assert queue_ditl.ppt is charging_ppt
+        queue_ditl.acs.enqueue_command.assert_called_once()
+
+    def test_calc_drops_short_science_entry_when_charging_interrupts(
+        self, queue_ditl
+    ) -> None:
+        from datetime import timedelta
+
+        begin = queue_ditl.ephem.timestamp[0]
+        queue_ditl.begin = begin
+        queue_ditl.end = begin + timedelta(seconds=180)
+        queue_ditl.ephem.step_size = 60
+        queue_ditl.ephem.timestamp = [
+            begin + timedelta(seconds=i * 60) for i in range(4)
+        ]
+        queue_ditl.step_size = 60
+        queue_ditl.battery.battery_alert = True
+        queue_ditl.acs.get_mode = Mock(return_value=ACSMode.SCIENCE)
+        queue_ditl.acs.pointing = Mock(return_value=(10.0, 20.0, 0.0, 1001))
+
+        science_entry = Mock()
+        science_entry.obstype = "AT"
+        science_entry.begin = begin.timestamp()
+        science_entry.end = begin.timestamp() + 86400
+        science_entry.slewtime = 120.0
+        science_entry.insaa = 0.0
+        science_entry.ss_min = 300.0
+        science_entry.done = False
+        science_entry.ra = 10.0
+        science_entry.dec = 20.0
+        science_entry.obsid = 1001
+        science_entry.exptime = 1000
+        science_copy = Mock()
+        science_copy.obstype = science_entry.obstype
+        science_copy.begin = science_entry.begin
+        science_copy.end = science_entry.end
+        science_copy.slewtime = science_entry.slewtime
+        science_copy.insaa = science_entry.insaa
+        science_copy.ss_min = science_entry.ss_min
+        science_copy.obsid = science_entry.obsid
+        science_entry.copy = Mock(return_value=science_copy)
+
+        charging_entry = Mock()
+        charging_entry.obstype = "CHARGE"
+        charging_entry.begin = begin.timestamp()
+        charging_entry.end = begin.timestamp() + 86400
+        charging_entry.slewtime = 0.0
+        charging_entry.ra = 100.0
+        charging_entry.dec = 50.0
+        charging_entry.obsid = 999001
+        charging_entry.roll = 0.0
+        charging_entry.copy = Mock(return_value=charging_entry)
+
+        def interrupt_for_charging(utime, ephem, ra, dec, current_ppt):
+            current_ppt.end = utime
+            current_ppt.done = True
+            return charging_entry
+
+        queue_ditl.ppt = science_entry
+        queue_ditl.emergency_charging.should_initiate_charging = Mock(return_value=True)
+        queue_ditl.emergency_charging.initiate_emergency_charging = Mock(
+            side_effect=interrupt_for_charging
+        )
+
+        assert queue_ditl.calc() is True
+
+        science_entries = [
+            entry
+            for entry in queue_ditl.plan
+            if getattr(entry, "obstype", None) == "AT"
+        ]
+        assert science_entries == []
+        assert science_entry.done is False
+
     def test_calc_closes_final_ppt_end_set(self, queue_ditl) -> None:
         queue_ditl.year = 2018
         queue_ditl.day = 331
@@ -1139,9 +1353,11 @@ class TestCalcMethod:
         mock_ppt.next_vis = Mock(return_value=1543276800.0)
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 300.0
+        mock_ppt.windows = [[0.0, 1e12]]
         mock_ppt.copy = Mock(return_value=Mock())
         mock_ppt.copy.return_value.begin = 1543622400
         mock_ppt.copy.return_value.end = 1543708800
+        mock_ppt.copy.return_value.obstype = "PPT"
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
         queue_ditl.calc()
         if queue_ditl.plan:
@@ -1287,6 +1503,7 @@ class TestCalcMethod:
         mock_previous_ppt = Mock(spec=PlanEntry)
         mock_previous_ppt.begin = 1000.0
         mock_previous_ppt.end = 1000.0 + 86400 + 100  # Placeholder end time
+        mock_previous_ppt.obstype = "PPT"
         mock_previous_ppt.copy = Mock(return_value=mock_previous_ppt)
 
         # Create current PPT
@@ -1308,6 +1525,62 @@ class TestCalcMethod:
         )  # Should be set to current PPT begin time
         assert len(queue_ditl.plan) == 2  # Should have both PPTs now
 
+    def test_track_ppt_drops_science_entry_closed_before_collect(
+        self, queue_ditl
+    ) -> None:
+        """A science entry truncated before slew completion is not kept as AT."""
+        previous_ppt = Mock()
+        previous_ppt.obstype = "AT"
+        previous_ppt.begin = 1000.0
+        previous_ppt.end = 1000.0 + 86400 + 100
+        previous_ppt.slewtime = 224.0
+        previous_ppt.insaa = 0.0
+        previous_ppt.ss_min = 300
+        previous_ppt.obsid = 1001
+
+        current_ppt = Mock()
+        current_ppt.begin = 1060.0
+        current_ppt.end = 3000.0
+        current_ppt.copy = Mock(return_value=current_ppt)
+
+        queue_ditl.plan = [previous_ppt]
+        queue_ditl.ppt = current_ppt
+
+        queue_ditl._track_ppt_in_timeline()
+
+        assert previous_ppt not in queue_ditl.plan
+        assert queue_ditl.plan == [current_ppt]
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "Dropping under-collected science entry 1001" in log_text
+        assert "collected 0s" in log_text
+
+    def test_track_ppt_drops_science_entry_below_ss_min(self, queue_ditl) -> None:
+        """A science entry with less than ss_min collection is not kept as AT."""
+        previous_ppt = Mock()
+        previous_ppt.obstype = "AT"
+        previous_ppt.begin = 1000.0
+        previous_ppt.end = 1000.0 + 86400 + 100
+        previous_ppt.slewtime = 100.0
+        previous_ppt.insaa = 0.0
+        previous_ppt.ss_min = 300.0
+        previous_ppt.obsid = 1002
+
+        current_ppt = Mock()
+        current_ppt.begin = 1350.0
+        current_ppt.end = 3000.0
+        current_ppt.copy = Mock(return_value=current_ppt)
+
+        queue_ditl.plan = [previous_ppt]
+        queue_ditl.ppt = current_ppt
+
+        queue_ditl._track_ppt_in_timeline()
+
+        assert previous_ppt not in queue_ditl.plan
+        assert queue_ditl.plan == [current_ppt]
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "Dropping under-collected science entry 1002" in log_text
+        assert "collected 250s of required 300s" in log_text
+
     def test_close_ppt_timeline_if_needed_closes_when_ppt_none(
         self, queue_ditl
     ) -> None:
@@ -1318,6 +1591,7 @@ class TestCalcMethod:
         mock_ppt = Mock(spec=PlanEntry)
         mock_ppt.begin = 1000.0
         mock_ppt.end = 1000.0 + 86400 + 100  # Placeholder end time
+        mock_ppt.obstype = "PPT"
 
         # Set up plan with the PPT and set current ppt to None
         queue_ditl.plan = [mock_ppt]
@@ -1338,6 +1612,7 @@ class TestCalcMethod:
         mock_ppt.begin = 1000.0
         mock_ppt.end = 2000.0
         mock_ppt.obsid = 1001  # Add obsid attribute
+        mock_ppt.obstype = "PPT"
 
         # Set up the PPT
         queue_ditl.plan = [mock_ppt]
@@ -1363,6 +1638,7 @@ class TestCalcMethod:
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 300.0
+        mock_ppt.windows = [[0.0, 1e12]]
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
 
         # Create a mock current slew that's still slewing
@@ -1395,6 +1671,7 @@ class TestCalcMethod:
         mock_ppt.next_vis = Mock(return_value=1200.0)
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 300.0
+        mock_ppt.windows = [[0.0, 1e12]]
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
         queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
 
@@ -1417,6 +1694,7 @@ class TestCalcMethod:
         mock_ppt = Mock(spec=PlanEntry)
         mock_ppt.begin = 1000.0
         mock_ppt.end = 2000.0
+        mock_ppt.obstype = "PPT"
 
         # Set up the PPT
         queue_ditl.plan = [mock_ppt]
@@ -1438,6 +1716,7 @@ class TestCalcMethod:
         mock_charging_ppt = Mock(spec=PlanEntry)
         mock_charging_ppt.begin = 1000.0
         mock_charging_ppt.end = 2000.0
+        mock_charging_ppt.obstype = "PPT"
 
         # Set up the charging PPT
         queue_ditl.plan = [mock_charging_ppt]

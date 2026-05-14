@@ -19,9 +19,10 @@ from ..common.vector import attitude_to_quat
 from ..config import MissionConfig
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
+from ..simulation.passes import pass_slew_trigger_buffer
 from ..simulation.roll import optimum_roll
 from ..simulation.slew import Slew
-from ..targets import Plan, Pointing, Queue
+from ..targets import Plan, PlanEntry, Pointing, Queue
 from .ditl_log import DITLLog
 from .ditl_mixin import DITLMixin
 from .ditl_stats import DITLStats
@@ -447,7 +448,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
         # Make sure the last PPT of the day ends (if any)
         if self.plan:
-            self.plan[-1].end = utime
+            self._close_last_plan_entry(utime)
 
         return True
 
@@ -517,6 +518,52 @@ class QueueDITL(DITLMixin, DITLStats):
                     reason=reason,
                 )
                 self.acs.enqueue_command(command)
+
+    def _science_collection_time(
+        self, entry: PlanEntry, end_time: float | None = None
+    ) -> float | None:
+        """Calculate the effective science collection time for a given plan
+        entry."""
+        if entry.obstype != ObsType.AT:
+            return None
+        end = end_time if end_time is not None else float(entry.end)
+        return (
+            end
+            - entry.begin
+            - max(0.0, float(entry.slewtime))
+            - max(0.0, float(entry.insaa))
+        )
+
+    def _is_short_science_entry(self, entry: PlanEntry) -> bool:
+        """Determine if a science observation entry failed to meet the minimum
+        snapshot requirement."""
+        collection_time = self._science_collection_time(entry)
+        if collection_time is None:
+            return False
+        return collection_time < max(0.0, float(entry.ss_min))
+
+    def _close_last_plan_entry(self, end_time: float) -> None:
+        """Close the last plan entry in the timeline by setting its end time.
+        If it's a science observation that didn't meet the minimum snapshot
+        requirement, log it and remove it from the plan."""
+        if len(self.plan) == 0:
+            return
+        self.plan[-1].end = end_time
+        if self._is_short_science_entry(self.plan[-1]):
+            entry = self.plan[-1]
+            collection_time = self._science_collection_time(entry)
+            collected = max(0.0, collection_time or 0.0)
+            self.log.log_event(
+                utime=end_time,
+                event_type="QUEUE",
+                description=(
+                    f"Dropping under-collected science entry {entry.obsid} - "
+                    f"collected {collected:.0f}s of required {float(entry.ss_min):.0f}s"
+                ),
+                obsid=entry.obsid,
+                acs_mode=self.acs.acsmode,
+            )
+            self.plan.pop()
 
     def _create_housekeeping_record(
         self, utime: float, ra: float, dec: float, roll: float, mode: ACSMode
@@ -619,7 +666,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 # Charging PPTs use exactly 86400, science obs use larger values
                 if last_entry.end >= last_entry.begin + 86400:
                     # Set end to the begin time of new PPT (no gap between entries)
-                    self.plan[-1].end = self.ppt.begin
+                    self._close_last_plan_entry(self.ppt.begin)
 
             self.plan.append(self.ppt.copy())
 
@@ -634,7 +681,7 @@ class QueueDITL(DITLMixin, DITLStats):
             # Check if end time looks like a placeholder (>= 86400 seconds from begin)
             # Charging PPTs use exactly 86400, science obs use larger values
             if last_entry.end >= last_entry.begin + 86400:
-                self.plan[-1].end = utime
+                self._close_last_plan_entry(utime)
 
     def _handle_mode_operations(
         self, mode: ACSMode, utime: float, ra: float, dec: float
@@ -679,12 +726,18 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _initiate_charging(self, utime: float, ra: float, dec: float) -> None:
         """Initiate emergency charging by creating charging PPT and sending command to ACS."""
+        interrupted_ppt = self.ppt
         self.charging_ppt = self.emergency_charging.initiate_emergency_charging(
             utime, self.ephem, ra, dec, self.ppt
         )
 
         # If charging PPT created successfully, send command to ACS and replace current PPT
         if self.charging_ppt is not None:
+            if interrupted_ppt is not None and self._is_short_science_entry(
+                interrupted_ppt
+            ):
+                interrupted_ppt.done = False
+
             command = ACSCommand(
                 command_type=ACSCommandType.START_BATTERY_CHARGE,
                 execution_time=utime,
@@ -885,6 +938,9 @@ class QueueDITL(DITLMixin, DITLStats):
                 self._terminate_emergency_charging("constraint", utime)
             return
 
+        if mode == ACSMode.SLEWING:
+            return
+
         # Decrement exposure time when actively observing
         if mode == ACSMode.SCIENCE:
             self._decrement_exposure_time()
@@ -952,7 +1008,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
         # Update plan timeline with actual end time
         if len(self.plan) > 0:
-            self.plan[-1].end = utime
+            self._close_last_plan_entry(utime)
 
         if mark_done:
             self.ppt.done = True
@@ -998,6 +1054,117 @@ class QueueDITL(DITLMixin, DITLStats):
         ):
             return "ST Soft"
         return "Unknown"
+
+    def _simulation_end_deadline(self) -> float:
+        """Return the Unix timestamp for the end of the simulation."""
+        return self.uend if self.uend > 0.0 else self.end.timestamp()
+
+    def _current_ppt_visibility_deadline(self, slew_end: float) -> float | None:
+        """Calculate the end of the current PPT visibility window, if any, after the slew ends."""
+        assert self.ppt is not None
+        if not self.ppt.windows:
+            return None
+        for window in self.ppt.windows:
+            if window[0] <= slew_end <= window[1]:
+                return window[1]
+        return slew_end
+
+    def _next_pass_science_deadline(self, slew_end: float) -> float | None:
+        """Calculate the next pass deadline after the slew ends, accounting for
+        slew time to the pass start."""
+        assert self.ppt is not None
+        next_pass = self.acs.passrequests.next_pass(slew_end)
+        if next_pass is None:
+            return None
+
+        pass_slew_dist = angular_separation(
+            self.ppt.ra, self.ppt.dec, next_pass.gsstartra, next_pass.gsstartdec
+        )
+        acs_cfg = self.config.spacecraft_bus.attitude_control
+        pass_slew_time = float(acs_cfg.slew_time(pass_slew_dist))
+
+        return next_pass.begin - pass_slew_time - self._pass_slew_trigger_buffer()
+
+    def _pass_slew_trigger_buffer(self) -> float:
+        return pass_slew_trigger_buffer(self.ephem.step_size)
+
+    def _next_science_deadline(self, slew_end: float) -> tuple[float, str]:
+        """Determine the next science deadline after the slew ends, which could
+        be the end of the current visibility window, the next pass, or the end
+        of the simulation."""
+        deadlines: list[tuple[float, str]] = [
+            (self._simulation_end_deadline(), "simulation end")
+        ]
+
+        visibility_end = self._current_ppt_visibility_deadline(slew_end)
+        if visibility_end is not None:
+            deadlines.append((visibility_end, "visibility window"))
+
+        pass_deadline = self._next_pass_science_deadline(slew_end)
+        if pass_deadline is not None:
+            deadlines.append((pass_deadline, "pass"))
+
+        return min(deadlines, key=lambda item: item[0])
+
+    def _can_retry_without_current_ppt(self) -> bool:
+        """Sanity check to see if we can retry fetching a new PPT without just
+        returning the same one"""
+        return len(self.queue.targets) > 1
+
+    def _retry_fetch_without_current_ppt(
+        self, utime: float, ra: float, dec: float
+    ) -> None:
+        """
+        Retry fetching a new PPT without the current one, if possible. If
+        the current PPT is the only one in the queue, mark PPT as unavailable.
+        """
+        rejected_ppt = self.ppt
+        if rejected_ppt is None or not self._can_retry_without_current_ppt():
+            self.ppt = None
+            self._ppt_unavailable = True
+            return
+
+        was_done = rejected_ppt.done
+        rejected_ppt.done = True
+        self.ppt = None
+        try:
+            self._fetch_new_ppt(utime, ra, dec)
+        finally:
+            rejected_ppt.done = was_done
+
+    def _reject_current_ppt_if_insufficient_collect_time(
+        self, slew_end: float, utime: float, ra: float, dec: float
+    ) -> bool:
+        """Check if the current PPT has enough time to collect before the next
+        science deadline."""
+        assert self.ppt is not None
+        if self.ppt.ss_min <= 0:
+            return False
+
+        # Check if there's enough time to collect before the next science
+        # deadline (visibility window end, next pass, or simulation end)
+        deadline, reason = self._next_science_deadline(slew_end)
+        available_collect_time = deadline - slew_end
+        if available_collect_time >= self.ppt.ss_min:
+            return False
+
+        # If not enough time to collect, reject this target and try fetching
+        # another one
+        ss_min = self.ppt.ss_min
+        obsid = self.ppt.obsid
+        self.log.log_event(
+            utime=utime,
+            event_type="QUEUE",
+            description=(
+                f"Target {obsid} rejected - only "
+                f"{available_collect_time:.0f}s available before {reason} "
+                f"(need {ss_min:.0f}s)"
+            ),
+            obsid=obsid,
+            acs_mode=self.acs.acsmode,
+        )
+        self._retry_fetch_without_current_ppt(utime, ra, dec)
+        return True
 
     def _fetch_new_ppt(self, utime: float, ra: float, dec: float) -> None:
         """Fetch a new pointing target from the queue and enqueue slew command."""
@@ -1199,35 +1366,12 @@ class QueueDITL(DITLMixin, DITLStats):
                 self._ppt_unavailable = True
                 return
 
+            if self._reject_current_ppt_if_insufficient_collect_time(
+                slew_end, utime, ra, dec
+            ):
+                return
+
             self.acs.slew_dists.append(slew.slewdist)
-
-            # Check if there's enough observation time before the next pass
-            slew_end_time = slew.slewstart + slew.slewtime
-            next_pass = self.acs.passrequests.next_pass(slew_end_time)
-            if next_pass is not None:
-                # Calculate when we need to start slewing to the pass
-                time_to_pass_slew = next_pass.begin - slew_end_time
-                # Estimate slew time to pass start position using existing utilities
-                pass_slew_dist = angular_separation(
-                    self.ppt.ra, self.ppt.dec, next_pass.gsstartra, next_pass.gsstartdec
-                )
-                acs_cfg = self.config.spacecraft_bus.attitude_control
-                pass_slew_time = acs_cfg.slew_time(pass_slew_dist)
-
-                # Available observation time = time until pass - slew time to pass
-                available_obs_time = time_to_pass_slew - pass_slew_time
-                if available_obs_time < self.ppt.ss_min:
-                    self.log.log_event(
-                        utime=utime,
-                        event_type="QUEUE",
-                        description=f"Target {self.ppt.obsid} rejected - only {available_obs_time:.0f}s "
-                        f"available before pass (need {self.ppt.ss_min}s)",
-                        obsid=self.ppt.obsid,
-                        acs_mode=self.acs.acsmode,
-                    )
-                    self.ppt = None
-                    self._ppt_unavailable = True
-                    return
 
             # Update PPT timing based on slew
             self.ppt.begin = int(execution_time)
@@ -1385,7 +1529,7 @@ class QueueDITL(DITLMixin, DITLStats):
         if self.ppt is not None and self.ppt != self.charging_ppt:
             # Update plan timeline with actual end time
             if len(self.plan) > 0:
-                self.plan[-1].end = utime
+                self._close_last_plan_entry(utime)
             self.ppt.end = utime
             self.ppt.done = True
             self.ppt = None
@@ -1395,7 +1539,7 @@ class QueueDITL(DITLMixin, DITLStats):
         if self.charging_ppt is not None:
             # Update plan timeline with actual end time
             if len(self.plan) > 0:
-                self.plan[-1].end = utime
+                self._close_last_plan_entry(utime)
             self.charging_ppt.end = utime
             self.charging_ppt.done = True
             self.charging_ppt = None

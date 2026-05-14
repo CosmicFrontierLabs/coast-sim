@@ -61,6 +61,9 @@ class Plan:
     def append(self, ppt: PlanEntry) -> None:
         self.entries.append(ppt)
 
+    def pop(self) -> PlanEntry:
+        return self.entries.pop()
+
     def save(self, path: str | Path, *, indent: int = 2) -> Path:
         """Serialise the plan to a JSON file.
 
