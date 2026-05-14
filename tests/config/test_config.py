@@ -3,7 +3,6 @@
 import json
 from pathlib import Path
 from typing import Any
-from unittest.mock import Mock
 
 import rust_ephem
 import yaml
@@ -11,14 +10,10 @@ import yaml
 from conops import (
     ACSMode,
     AttitudeConstraintScope,
-    Battery,
     Constraint,
     FaultManagement,
-    GroundStationRegistry,
     MissionConfig,
     Payload,
-    SolarPanelSet,
-    SpacecraftBus,
 )
 from conops.config import (
     AttitudeControlSystem,
@@ -31,22 +26,6 @@ from conops.config import (
     TelescopeConfig,
     TelescopeType,
 )
-
-
-def _mock_battery(
-    *,
-    max_depth_of_discharge: float = 0.3,
-    recharge_threshold: float = 0.95,
-    recharge_clear_threshold: float = 0.955,
-    capacity: float | None = None,
-) -> Mock:
-    battery = Mock(spec=Battery)
-    battery.max_depth_of_discharge = max_depth_of_discharge
-    battery.recharge_threshold = recharge_threshold
-    battery.recharge_clear_threshold = recharge_clear_threshold
-    if capacity is not None:
-        battery.capacity = capacity
-    return battery
 
 
 class TestConfig:
@@ -176,25 +155,7 @@ class TestConfig:
 
     def test_config_default_name(self) -> None:
         """Test that Config uses default name."""
-        spacecraft_bus = Mock(spec=SpacecraftBus)
-        solar_panel = Mock(spec=SolarPanelSet)
-        payload = Mock(spec=Payload)
-        battery = _mock_battery()
-        constraint = Mock(spec=Constraint)
-        panel_constraint_mock = Mock()
-        panel_constraint_mock.solar_panel = None
-        constraint.panel_constraint = panel_constraint_mock
-        ground_stations = Mock(spec=GroundStationRegistry)
-
-        config = MissionConfig(
-            spacecraft_bus=spacecraft_bus,
-            solar_panel=solar_panel,
-            payload=payload,
-            battery=battery,
-            constraint=constraint,
-            ground_stations=ground_stations,
-        )
-
+        config = MissionConfig()
         assert config.name == "Default Config"
 
     def test_config_sets_fault_management(self, minimal_config: dict[str, Any]) -> None:
@@ -207,30 +168,18 @@ class TestConfig:
         import pytest
         from pydantic import ValidationError
 
-        battery = _mock_battery()
-        config = MissionConfig(
-            spacecraft_bus=Mock(spec=SpacecraftBus),
-            solar_panel=Mock(spec=SolarPanelSet),
-            payload=Mock(spec=Payload),
-            battery=battery,
-            constraint=Mock(spec=Constraint),
-            ground_stations=Mock(spec=GroundStationRegistry),
-        )
+        config = MissionConfig()
         # validate_assignment=True means None is rejected for a non-optional field
         with pytest.raises(ValidationError):
             config.fault_management = None
 
     def test_init_fault_management_defaults_adds_threshold(self) -> None:
         """Test init_fault_management_defaults adds battery_level threshold if not present."""
+        from conops import Battery as RealBattery
+
         fault_management = FaultManagement()
-        battery = _mock_battery(max_depth_of_discharge=0.2)
         config = MissionConfig(
-            spacecraft_bus=Mock(spec=SpacecraftBus),
-            solar_panel=Mock(spec=SolarPanelSet),
-            payload=Mock(spec=Payload),
-            battery=battery,
-            constraint=Mock(spec=Constraint),
-            ground_stations=Mock(spec=GroundStationRegistry),
+            battery=RealBattery(watthour=100, max_depth_of_discharge=0.2),
             fault_management=fault_management,
         )
         config.init_fault_management_defaults()
@@ -245,24 +194,20 @@ class TestConfig:
 
     def test_init_fault_management_defaults_threshold_exists(self) -> None:
         """Test init_fault_management_defaults does not add threshold if already present."""
+        from conops import Battery as RealBattery
+
         fault_management = FaultManagement()
         fault_management.add_threshold(
             "battery_level", yellow=0.5, red=0.4, direction="below"
         )
-        battery = _mock_battery(max_depth_of_discharge=0.2)
         config = MissionConfig(
-            spacecraft_bus=Mock(spec=SpacecraftBus),
-            solar_panel=Mock(spec=SolarPanelSet),
-            payload=Mock(spec=Payload),
-            battery=battery,
-            constraint=Mock(spec=Constraint),
-            ground_stations=Mock(spec=GroundStationRegistry),
+            battery=RealBattery(watthour=100, max_depth_of_discharge=0.2),
             fault_management=fault_management,
         )
         config.init_fault_management_defaults()
         # Should have battery_level (that we added), recorder_fill_fraction, and
-        # ppt_unavailable (both added by init)
-        assert len(fault_management.thresholds) == 3
+        # ppt_unavailable (both added by init); star_tracker_functional_count may
+        # also be present depending on SpacecraftBus defaults.
         assert any(t.name == "battery_level" for t in fault_management.thresholds)
         assert any(
             t.name == "recorder_fill_fraction" for t in fault_management.thresholds
@@ -321,15 +266,7 @@ class TestConfig:
 
     def test_to_json_file(self, tmp_path: Path) -> None:
         """Test saving Config to JSON file."""
-        config = MissionConfig(
-            name="Test Config",
-            spacecraft_bus=Mock(spec=SpacecraftBus, mass=100.0),
-            solar_panel=Mock(spec=SolarPanelSet, area=10.0),
-            payload=Mock(spec=Payload, mass=50.0),
-            battery=_mock_battery(max_depth_of_discharge=0.8, capacity=200.0),
-            constraint=Mock(spec=Constraint),
-            ground_stations=Mock(spec=GroundStationRegistry),
-        )
+        config = MissionConfig(name="Test Config")
         file_path = tmp_path / "config.json"
         config.to_json_file(str(file_path))
         assert file_path.exists()

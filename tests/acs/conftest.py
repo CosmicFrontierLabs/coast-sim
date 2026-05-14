@@ -104,6 +104,8 @@ def mock_config(
             AttitudeConstraintScope.GROUND_CONTACT,
         ]
     )
+    config.spacecraft_bus.boresight_axis = "+X"
+    config.boresight_axis = "+X"
     return config
 
 
