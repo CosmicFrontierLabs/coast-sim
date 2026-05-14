@@ -512,6 +512,7 @@ class TestFetchNewPPT:
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 300.0
+        mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
         queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
         assert queue_ditl.ppt is mock_ppt
@@ -531,6 +532,7 @@ class TestFetchNewPPT:
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 300.0
+        mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
         queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
         cast(Mock, queue_ditl.acs.enqueue_command).assert_called_once()
@@ -551,6 +553,7 @@ class TestFetchNewPPT:
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 300.0
+        mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
         queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
         # Check the log instead of print output
@@ -663,7 +666,9 @@ class TestFetchNewPPT:
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 500.0  # Requires 500 seconds
+        mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
+        queue_ditl.queue.targets = [mock_ppt]
 
         # No current pass
         cast(Mock, queue_ditl.acs.passrequests).current_pass = Mock(return_value=None)
@@ -702,7 +707,9 @@ class TestFetchNewPPT:
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 200.0
+        mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
+        queue_ditl.queue.targets = [mock_ppt]
 
         cast(Mock, queue_ditl.acs.passrequests).current_pass = Mock(return_value=None)
 
@@ -734,6 +741,7 @@ class TestFetchNewPPT:
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 100.0  # Requires 100 seconds
+        mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
 
         # No current pass
@@ -829,6 +837,7 @@ class TestFetchNewPPT:
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 300.0
+        mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
 
         # No blocking pass
@@ -862,6 +871,7 @@ class TestFetchNewPPT:
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 300.0
+        mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
 
         # No blocking pass
@@ -1134,9 +1144,11 @@ class TestCalcMethod:
         mock_ppt.next_vis = Mock(return_value=1543276800.0)
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 300.0
+        mock_ppt.windows = [[0.0, 1e12]]
         mock_ppt.copy = Mock(return_value=Mock())
         mock_ppt.copy.return_value.begin = 1543622400
         mock_ppt.copy.return_value.end = 1543629600
+        mock_ppt.copy.return_value.obstype = "PPT"
 
         queue_ditl.queue.get = Mock(side_effect=[mock_ppt] + [None] * 1500)
         queue_ditl.calc()
@@ -1290,6 +1302,7 @@ class TestCalcMethod:
         science_copy.slewtime = science_entry.slewtime
         science_copy.insaa = science_entry.insaa
         science_copy.ss_min = science_entry.ss_min
+        science_copy.obsid = science_entry.obsid
         science_entry.copy = Mock(return_value=science_copy)
 
         charging_entry = Mock()
@@ -1340,9 +1353,11 @@ class TestCalcMethod:
         mock_ppt.next_vis = Mock(return_value=1543276800.0)
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 300.0
+        mock_ppt.windows = [[0.0, 1e12]]
         mock_ppt.copy = Mock(return_value=Mock())
         mock_ppt.copy.return_value.begin = 1543622400
         mock_ppt.copy.return_value.end = 1543708800
+        mock_ppt.copy.return_value.obstype = "PPT"
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
         queue_ditl.calc()
         if queue_ditl.plan:
@@ -1488,6 +1503,7 @@ class TestCalcMethod:
         mock_previous_ppt = Mock(spec=PlanEntry)
         mock_previous_ppt.begin = 1000.0
         mock_previous_ppt.end = 1000.0 + 86400 + 100  # Placeholder end time
+        mock_previous_ppt.obstype = "PPT"
         mock_previous_ppt.copy = Mock(return_value=mock_previous_ppt)
 
         # Create current PPT
@@ -1518,6 +1534,8 @@ class TestCalcMethod:
         previous_ppt.begin = 1000.0
         previous_ppt.end = 1000.0 + 86400 + 100
         previous_ppt.slewtime = 224.0
+        previous_ppt.insaa = 0.0
+        previous_ppt.ss_min = 300
         previous_ppt.obsid = 1001
 
         current_ppt = Mock()
@@ -1573,6 +1591,7 @@ class TestCalcMethod:
         mock_ppt = Mock(spec=PlanEntry)
         mock_ppt.begin = 1000.0
         mock_ppt.end = 1000.0 + 86400 + 100  # Placeholder end time
+        mock_ppt.obstype = "PPT"
 
         # Set up plan with the PPT and set current ppt to None
         queue_ditl.plan = [mock_ppt]
@@ -1593,6 +1612,7 @@ class TestCalcMethod:
         mock_ppt.begin = 1000.0
         mock_ppt.end = 2000.0
         mock_ppt.obsid = 1001  # Add obsid attribute
+        mock_ppt.obstype = "PPT"
 
         # Set up the PPT
         queue_ditl.plan = [mock_ppt]
@@ -1618,6 +1638,7 @@ class TestCalcMethod:
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 300.0
+        mock_ppt.windows = [[0.0, 1e12]]
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
 
         # Create a mock current slew that's still slewing
@@ -1650,6 +1671,7 @@ class TestCalcMethod:
         mock_ppt.next_vis = Mock(return_value=1200.0)
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 300.0
+        mock_ppt.windows = [[0.0, 1e12]]
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
         queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
 
@@ -1672,6 +1694,7 @@ class TestCalcMethod:
         mock_ppt = Mock(spec=PlanEntry)
         mock_ppt.begin = 1000.0
         mock_ppt.end = 2000.0
+        mock_ppt.obstype = "PPT"
 
         # Set up the PPT
         queue_ditl.plan = [mock_ppt]
@@ -1693,6 +1716,7 @@ class TestCalcMethod:
         mock_charging_ppt = Mock(spec=PlanEntry)
         mock_charging_ppt.begin = 1000.0
         mock_charging_ppt.end = 2000.0
+        mock_charging_ppt.obstype = "PPT"
 
         # Set up the charging PPT
         queue_ditl.plan = [mock_charging_ppt]

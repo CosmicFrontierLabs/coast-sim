@@ -22,7 +22,7 @@ from ..simulation.emergency_charging import EmergencyCharging
 from ..simulation.passes import pass_slew_trigger_buffer
 from ..simulation.roll import optimum_roll
 from ..simulation.slew import Slew
-from ..targets import Plan, Pointing, Queue
+from ..targets import Plan, PlanEntry, Pointing, Queue
 from .ditl_log import DITLLog
 from .ditl_mixin import DITLMixin
 from .ditl_stats import DITLStats
@@ -520,46 +520,29 @@ class QueueDITL(DITLMixin, DITLStats):
                 self.acs.enqueue_command(command)
 
     @staticmethod
-    def _is_science_entry(entry: Any) -> bool:
-        if getattr(entry, "obstype", None) not in (ObsType.AT, "AT"):
-            return False
-        return True
+    def _is_science_entry(entry: PlanEntry) -> bool:
+        return entry.obstype == ObsType.AT
 
-    @classmethod
+    @staticmethod
     def _science_collection_time(
-        cls, entry: Any, end_time: float | None = None
+        entry: PlanEntry, end_time: float | None = None
     ) -> float | None:
-        if not cls._is_science_entry(entry):
+        if entry.obstype != ObsType.AT:
             return None
-        begin = cls._float_or_none(getattr(entry, "begin", None))
-        raw_end = getattr(entry, "end", None) if end_time is None else end_time
-        end = cls._float_or_none(raw_end)
-        slewtime = cls._float_or_none(getattr(entry, "slewtime", None))
-        insaa = cls._float_or_none(getattr(entry, "insaa", 0.0))
-        if begin is None or end is None or slewtime is None:
-            return None
-        if insaa is None:
-            insaa = 0.0
-        return end - begin - max(0.0, slewtime) - max(0.0, insaa)
+        end = end_time if end_time is not None else float(entry.end)
+        return (
+            end
+            - entry.begin
+            - max(0.0, float(entry.slewtime))
+            - max(0.0, float(entry.insaa))
+        )
 
-    @classmethod
-    def _is_short_science_entry(cls, entry: Any) -> bool:
-        collection_time = cls._science_collection_time(entry)
+    @staticmethod
+    def _is_short_science_entry(entry: PlanEntry) -> bool:
+        collection_time = QueueDITL._science_collection_time(entry)
         if collection_time is None:
             return False
-
-        ss_min = cls._float_or_none(getattr(entry, "ss_min", None))
-        if ss_min is None:
-            return collection_time <= 0.0
-        return collection_time < max(0.0, ss_min)
-
-    def _pop_last_plan_entry(self) -> None:
-        entries = getattr(self.plan, "entries", None)
-        if entries is not None:
-            entries.pop()
-            return
-        pop = getattr(self.plan, "pop")
-        pop()
+        return collection_time < max(0.0, float(entry.ss_min))
 
     def _close_last_plan_entry(self, end_time: float) -> None:
         if len(self.plan) == 0:
@@ -569,22 +552,17 @@ class QueueDITL(DITLMixin, DITLStats):
             entry = self.plan[-1]
             collection_time = self._science_collection_time(entry)
             collected = max(0.0, collection_time or 0.0)
-            ss_min = self._float_or_none(getattr(entry, "ss_min", None))
-            required_text = f" of required {ss_min:.0f}s" if ss_min is not None else ""
-            raw_obsid = getattr(entry, "obsid", None)
-            obsid = raw_obsid if isinstance(raw_obsid, int) else None
-            obsid_text = obsid if obsid is not None else "unknown"
             self.log.log_event(
                 utime=end_time,
                 event_type="QUEUE",
                 description=(
-                    f"Dropping under-collected science entry {obsid_text} - "
-                    f"collected {collected:.0f}s{required_text}"
+                    f"Dropping under-collected science entry {entry.obsid} - "
+                    f"collected {collected:.0f}s of required {float(entry.ss_min):.0f}s"
                 ),
-                obsid=obsid,
-                acs_mode=getattr(self.acs, "acsmode", None),
+                obsid=entry.obsid,
+                acs_mode=self.acs.acsmode,
             )
-            self._pop_last_plan_entry()
+            self.plan.pop()
 
     def _create_housekeeping_record(
         self, utime: float, ra: float, dec: float, roll: float, mode: ACSMode
@@ -1076,87 +1054,45 @@ class QueueDITL(DITLMixin, DITLStats):
             return "ST Soft"
         return "Unknown"
 
-    @staticmethod
-    def _float_or_none(value: Any) -> float | None:
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
-
-    def _simulation_end_deadline(self) -> float | None:
-        if getattr(self, "uend", 0.0):
-            return float(self.uend)
-        try:
-            return float(self.end.timestamp())
-        except Exception:
-            return None
+    def _simulation_end_deadline(self) -> float:
+        return self.uend if self.uend > 0.0 else self.end.timestamp()
 
     def _current_ppt_visibility_deadline(self, slew_end: float) -> float | None:
+        """Calculate the end of the current PPT visibility window, if any, after the slew ends."""
         assert self.ppt is not None
-        windows = getattr(self.ppt, "windows", None)
-        if isinstance(windows, (tuple, list)) and windows:
-            for window in windows:
-                if not isinstance(window, (tuple, list)) or len(window) < 2:
-                    continue
-                start = self._float_or_none(window[0])
-                end = self._float_or_none(window[1])
-                if start is None or end is None:
-                    continue
-                if start <= slew_end <= end:
-                    return end
-            return slew_end
-
-        visible = getattr(self.ppt, "visible", None)
-        if not callable(visible):
+        if not self.ppt.windows:
             return None
-        try:
-            vis_window = visible(slew_end, slew_end)
-        except Exception:
-            return None
-        if vis_window is False:
-            return slew_end
-        if isinstance(vis_window, (tuple, list)) and len(vis_window) >= 2:
-            return self._float_or_none(vis_window[1])
-        return None
+        for window in self.ppt.windows:
+            if window[0] <= slew_end <= window[1]:
+                return window[1]
+        return slew_end
 
     def _next_pass_science_deadline(self, slew_end: float) -> float | None:
+        """Calculate the next pass deadline after the slew ends, accounting for
+        slew time to the pass start."""
         assert self.ppt is not None
         next_pass = self.acs.passrequests.next_pass(slew_end)
         if next_pass is None:
             return None
 
-        pass_begin = self._float_or_none(getattr(next_pass, "begin", None))
-        if pass_begin is None:
-            return None
+        pass_slew_dist = angular_separation(
+            self.ppt.ra, self.ppt.dec, next_pass.gsstartra, next_pass.gsstartdec
+        )
+        acs_cfg = self.config.spacecraft_bus.attitude_control
+        pass_slew_time = float(acs_cfg.slew_time(pass_slew_dist))
 
-        try:
-            pass_slew_dist = angular_separation(
-                self.ppt.ra,
-                self.ppt.dec,
-                next_pass.gsstartra,
-                next_pass.gsstartdec,
-            )
-            acs_cfg = self.config.spacecraft_bus.attitude_control
-            pass_slew_time = float(acs_cfg.slew_time(pass_slew_dist))
-        except Exception:
-            pass_slew_time = 0.0
-
-        return pass_begin - pass_slew_time - self._pass_slew_trigger_buffer()
+        return next_pass.begin - pass_slew_time - self._pass_slew_trigger_buffer()
 
     def _pass_slew_trigger_buffer(self) -> float:
-        step_size = self._float_or_none(getattr(self.ephem, "step_size", None))
-        if step_size is None:
-            return 0.0
-        return pass_slew_trigger_buffer(step_size)
+        return pass_slew_trigger_buffer(self.ephem.step_size)
 
-    def _next_science_deadline(
-        self, slew_end: float
-    ) -> tuple[float | None, str | None]:
-        deadlines: list[tuple[float, str]] = []
-
-        sim_end = self._simulation_end_deadline()
-        if sim_end is not None:
-            deadlines.append((sim_end, "simulation end"))
+    def _next_science_deadline(self, slew_end: float) -> tuple[float, str]:
+        """Determine the next science deadline after the slew ends, which could
+        be the end of the current visibility window, the next pass, or the end
+        of the simulation."""
+        deadlines: list[tuple[float, str]] = [
+            (self._simulation_end_deadline(), "simulation end")
+        ]
 
         visibility_end = self._current_ppt_visibility_deadline(slew_end)
         if visibility_end is not None:
@@ -1166,28 +1102,27 @@ class QueueDITL(DITLMixin, DITLStats):
         if pass_deadline is not None:
             deadlines.append((pass_deadline, "pass"))
 
-        if not deadlines:
-            return None, None
         return min(deadlines, key=lambda item: item[0])
 
     def _can_retry_without_current_ppt(self) -> bool:
-        targets = getattr(self.queue, "targets", None)
-        return isinstance(targets, list) and len(targets) > 1
+        """Sanity check to see if we can retry fetching a new PPT without just
+        returning the same one"""
+        return len(self.queue.targets) > 1
 
     def _retry_fetch_without_current_ppt(
         self, utime: float, ra: float, dec: float
     ) -> None:
+        """
+        Retry fetching a new PPT without the current one, if possible. If
+        the current PPT is the only one in the queue, mark PPT as unavailable.
+        """
         rejected_ppt = self.ppt
         if rejected_ppt is None or not self._can_retry_without_current_ppt():
             self.ppt = None
             self._ppt_unavailable = True
             return
 
-        try:
-            was_done = bool(rejected_ppt.done)
-        except Exception:
-            was_done = False
-
+        was_done = rejected_ppt.done
         rejected_ppt.done = True
         self.ppt = None
         try:
@@ -1198,29 +1133,32 @@ class QueueDITL(DITLMixin, DITLStats):
     def _reject_current_ppt_if_insufficient_collect_time(
         self, slew_end: float, utime: float, ra: float, dec: float
     ) -> bool:
+        """Check if the current PPT has enough time to collect before the next
+        science deadline."""
         assert self.ppt is not None
-        ss_min = self._float_or_none(getattr(self.ppt, "ss_min", None))
-        if ss_min is None or ss_min <= 0:
+        if self.ppt.ss_min <= 0:
             return False
 
+        # Check if there's enough time to collect before the next science
+        # deadline (visibility window end, next pass, or simulation end)
         deadline, reason = self._next_science_deadline(slew_end)
-        if deadline is None:
-            return False
-
         available_collect_time = deadline - slew_end
-        if available_collect_time >= ss_min:
+        if available_collect_time >= self.ppt.ss_min:
             return False
 
-        reason_label = reason or "hard boundary"
+        # If not enough time to collect, reject this target and try fetching
+        # another one
+        ss_min = self.ppt.ss_min
+        obsid = self.ppt.obsid
         self.log.log_event(
             utime=utime,
             event_type="QUEUE",
             description=(
-                f"Target {self.ppt.obsid} rejected - only "
-                f"{available_collect_time:.0f}s available before {reason_label} "
+                f"Target {obsid} rejected - only "
+                f"{available_collect_time:.0f}s available before {reason} "
                 f"(need {ss_min:.0f}s)"
             ),
-            obsid=self.ppt.obsid,
+            obsid=obsid,
             acs_mode=self.acs.acsmode,
         )
         self._retry_fetch_without_current_ppt(utime, ra, dec)
