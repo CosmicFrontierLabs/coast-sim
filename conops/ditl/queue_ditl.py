@@ -519,13 +519,8 @@ class QueueDITL(DITLMixin, DITLStats):
                 )
                 self.acs.enqueue_command(command)
 
-    @staticmethod
-    def _is_science_entry(entry: PlanEntry) -> bool:
-        return entry.obstype == ObsType.AT
-
-    @staticmethod
     def _science_collection_time(
-        entry: PlanEntry, end_time: float | None = None
+        self, entry: PlanEntry, end_time: float | None = None
     ) -> float | None:
         if entry.obstype != ObsType.AT:
             return None
@@ -537,9 +532,8 @@ class QueueDITL(DITLMixin, DITLStats):
             - max(0.0, float(entry.insaa))
         )
 
-    @staticmethod
-    def _is_short_science_entry(entry: PlanEntry) -> bool:
-        collection_time = QueueDITL._science_collection_time(entry)
+    def _is_short_science_entry(self, entry: PlanEntry) -> bool:
+        collection_time = self._science_collection_time(entry)
         if collection_time is None:
             return False
         return collection_time < max(0.0, float(entry.ss_min))
@@ -1055,6 +1049,9 @@ class QueueDITL(DITLMixin, DITLStats):
         return "Unknown"
 
     def _simulation_end_deadline(self) -> float:
+        """Calculate the simulation end deadline, which is either the
+        configured end time or the end of the current PPT, whichever is sooner.
+        """
         return self.uend if self.uend > 0.0 else self.end.timestamp()
 
     def _current_ppt_visibility_deadline(self, slew_end: float) -> float | None:
