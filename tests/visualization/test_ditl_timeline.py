@@ -402,6 +402,26 @@ class TestPlotDitlTimeline:
 
         assert fig.layout.title.text == title
 
+    def test_plot_ditl_timeline_plotly_hover_templates_resolve_times(
+        self, mock_ditl_with_ephem: Mock
+    ) -> None:
+        """Test Plotly hover text includes concrete start and duration values."""
+        fig = plot_ditl_timeline_plotly(mock_ditl_with_ephem)
+
+        hovertemplates = [
+            trace.hovertemplate
+            for trace in fig.data
+            if getattr(trace, "hovertemplate", None)
+        ]
+
+        assert hovertemplates
+        assert not any("%{base" in template for template in hovertemplates)
+        assert not any("%{x" in template for template in hovertemplates)
+        assert any(
+            "Slew and Settle<br>Start: 0.50h<br>Duration: 0.03h" in template
+            for template in hovertemplates
+        )
+
 
 class TestAnnotateSlewDistances:
     """Test annotate_slew_distances function."""

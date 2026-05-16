@@ -69,6 +69,11 @@ def _convert_matplotlib_color_to_plotly(color: str) -> str:
         return "blue"
 
 
+def _bar_hover_template(label: str, start: float, duration: float) -> str:
+    """Build hover text for a single timeline bar."""
+    return f"{label}<br>Start: {start:.2f}h<br>Duration: {duration:.2f}h<extra></extra>"
+
+
 def _extract_observations(
     ditl: QueueDITL | DITL,
     t_start: float,
@@ -510,7 +515,7 @@ def plot_ditl_timeline_plotly(
                         showlegend=show_legend,
                         base=start,
                         width=0.8,
-                        hovertemplate=f"{label}<br>Start: {start:.2f}h<br>Duration: {duration:.2f}h<extra></extra>",
+                        hovertemplate=_bar_hover_template(label, start, duration),
                     )
                 )
 
@@ -530,7 +535,7 @@ def plot_ditl_timeline_plotly(
                 showlegend=(i == 0),
                 base=start,
                 width=0.8,
-                hovertemplate="Battery Charging<br>Start: %{base:.2f}h<br>Duration: %{x:.2f}h<extra></extra>",
+                hovertemplate=_bar_hover_template("Battery Charging", start, duration),
             )
         )
 
@@ -547,7 +552,7 @@ def plot_ditl_timeline_plotly(
                 showlegend=(i == 0),
                 base=start,
                 width=0.8,
-                hovertemplate="Slew and Settle<br>Start: %{base:.2f}h<br>Duration: %{x:.2f}h<extra></extra>",
+                hovertemplate=_bar_hover_template("Slew and Settle", start, duration),
             )
         )
 
@@ -564,7 +569,7 @@ def plot_ditl_timeline_plotly(
                 showlegend=(i == 0),
                 base=start,
                 width=0.8,
-                hovertemplate="Safe Mode<br>Start: %{base:.2f}h<br>Duration: %{x:.2f}h<extra></extra>",
+                hovertemplate=_bar_hover_template("Safe Mode", start, duration),
             )
         )
 
@@ -582,7 +587,7 @@ def plot_ditl_timeline_plotly(
                     showlegend=(i == 0),
                     base=start,
                     width=0.8,
-                    hovertemplate="SAA<br>Start: %{base:.2f}h<br>Duration: %{x:.2f}h<extra></extra>",
+                    hovertemplate=_bar_hover_template("SAA", start, duration),
                 )
             )
 
@@ -599,7 +604,7 @@ def plot_ditl_timeline_plotly(
                 showlegend=(i == 0),
                 base=start,
                 width=0.8,
-                hovertemplate="Eclipse<br>Start: %{base:.2f}h<br>Duration: %{x:.2f}h<extra></extra>",
+                hovertemplate=_bar_hover_template("Eclipse", start, duration),
             )
         )
 
@@ -618,7 +623,7 @@ def plot_ditl_timeline_plotly(
                 showlegend=(i == 0),
                 base=start,
                 width=0.8,
-                hovertemplate="Ground Contact<br>Start: %{base:.2f}h<br>Duration: %{x:.2f}h<extra></extra>",
+                hovertemplate=_bar_hover_template("Ground Contact", start, duration),
             )
         )
 
