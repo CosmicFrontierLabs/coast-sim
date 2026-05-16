@@ -70,22 +70,29 @@ class PlanEntrySchema(BaseModel):
     isat: bool = False
     done: bool = False
     exposure: int = 0
+    station: str | None = None
+    contact_begin: float | None = None
+    contact_end: float | None = None
 
     @staticmethod
     def _computed_exposure(entry: PlanEntry) -> int:
         exposure = entry.end - entry.begin - entry.slewtime - entry.insaa
         return max(0, int(exposure))
 
-    @field_validator("begin", "end", mode="before")
+    @field_validator("begin", "end", "contact_begin", "contact_end", mode="before")
     @classmethod
-    def _coerce_time(cls, v: Any) -> float:
+    def _coerce_time(cls, v: Any) -> float | None:
         """Accept Unix timestamps (float/int) or ISO-8601 strings."""
+        if v is None:
+            return None
         if isinstance(v, str):
             return datetime.fromisoformat(v).timestamp()
         return float(v)
 
-    @field_serializer("begin", "end")
-    def _serialize_time(self, v: float) -> str:
+    @field_serializer("begin", "end", "contact_begin", "contact_end")
+    def _serialize_time(self, v: float | None) -> str | None:
+        if v is None:
+            return None
         return datetime.fromtimestamp(v, tz=timezone.utc).isoformat()
 
     @model_validator(mode="before")
@@ -113,6 +120,9 @@ class PlanEntrySchema(BaseModel):
                 "isat": getattr(data, "isat", False),
                 "done": getattr(data, "done", False),
                 "exposure": cls._computed_exposure(data),
+                "station": getattr(data, "station", None),
+                "contact_begin": getattr(data, "contact_begin", None),
+                "contact_end": getattr(data, "contact_end", None),
             }
         return data
 
@@ -296,7 +306,7 @@ class PlanSchema(BaseModel):
         else:
             schema = self
             dest.parent.mkdir(parents=True, exist_ok=True)
-        payload = schema.model_dump(mode="json")
+        payload = schema.model_dump(mode="json", exclude_none=True)
         dest.write_text(json.dumps(payload, indent=indent), encoding="utf-8")
         return dest.resolve()
 

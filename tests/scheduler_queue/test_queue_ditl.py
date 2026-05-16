@@ -6,8 +6,10 @@ from unittest.mock import Mock, patch
 import pytest
 
 from conops import ACSCommandType, ACSMode, Pass, QueueDITL
+from conops.common.enums import ObsType
 from conops.config.config import MissionConfig
 from conops.ditl.telemetry import Housekeeping
+from conops.targets import PlanEntry, PlanSchema
 
 
 class TestQueueDITLInitialization:
@@ -1983,7 +1985,7 @@ class TestCheckAndManagePasses:
         """Test that START_PASS is issued when entering a pass."""
         utime = 1000.0
         ra, dec = 10.0, 20.0
-        pass_obj = Mock()
+        pass_obj = Pass(station="GS_TEST", begin=950.0, length=600.0)
         queue_ditl.acs.passrequests.current_pass = Mock(return_value=pass_obj)
         queue_ditl.acs.acsmode = ACSMode.SCIENCE  # Not in pass yet
         queue_ditl._check_and_manage_passes(utime, ra, dec)
@@ -1995,7 +1997,7 @@ class TestCheckAndManagePasses:
         """Test that START_PASS command is enqueued when entering pass."""
         utime = 1000.0
         ra, dec = 10.0, 20.0
-        pass_obj = Mock()
+        pass_obj = Pass(station="GS_TEST", begin=950.0, length=600.0)
         queue_ditl.acs.passrequests.current_pass = Mock(return_value=pass_obj)
         queue_ditl.acs.acsmode = ACSMode.SCIENCE  # Not in pass yet
         queue_ditl._check_and_manage_passes(utime, ra, dec)
@@ -2007,7 +2009,7 @@ class TestCheckAndManagePasses:
         """Test START_PASS command has correct type and execution time."""
         utime = 1000.0
         ra, dec = 10.0, 20.0
-        pass_obj = Mock()
+        pass_obj = Pass(station="GS_TEST", begin=950.0, length=600.0)
         queue_ditl.acs.passrequests.current_pass = Mock(return_value=pass_obj)
         queue_ditl.acs.acsmode = ACSMode.SCIENCE  # Not in pass yet
         queue_ditl._check_and_manage_passes(utime, ra, dec)
@@ -2138,13 +2140,13 @@ class TestCheckAndManagePasses:
         utime = 1000.0
         ra, dec = 10.0, 20.0
 
-        # Create a mock pass object
-        pass_obj = Mock()
-        pass_obj.station = "GS_TEST"
-        pass_obj.begin = 1100.0
-        pass_obj.gsstartra = 100.0
-        pass_obj.gsstartdec = 50.0
-        pass_obj.time_to_slew = Mock(return_value=True)
+        pass_obj = Pass(
+            station="GS_TEST",
+            begin=1100.0,
+            length=600.0,
+            gsstartra=100.0,
+            gsstartdec=50.0,
+        )
 
         # Mock the pass request methods
         queue_ditl.acs.passrequests.current_pass = Mock(return_value=None)
@@ -2152,7 +2154,8 @@ class TestCheckAndManagePasses:
         queue_ditl.acs.acsmode = ACSMode.SCIENCE
 
         # Call the method
-        queue_ditl._check_and_manage_passes(utime, ra, dec)
+        with patch.object(Pass, "time_to_slew", return_value=True):
+            queue_ditl._check_and_manage_passes(utime, ra, dec)
 
         # Verify a slew command was enqueued
         queue_ditl.acs.enqueue_command.assert_called_once()
@@ -2170,6 +2173,250 @@ class TestCheckAndManagePasses:
         # Verify slew points to the pass start position
         assert command.slew.endra == pass_obj.gsstartra
         assert command.slew.enddec == pass_obj.gsstartdec
+
+    def test_check_and_manage_passes_exports_gsp_plan_entry_for_pass_slew(
+        self, queue_ditl, tmp_path
+    ) -> None:
+        """Pass slew reservation should create an exported GSP plan entry."""
+        utime = 1000.0
+        ra, dec = 10.0, 20.0
+
+        pass_obj = Pass(
+            station="GS_TEST",
+            begin=1100.0,
+            length=600.0,
+            gsstartra=100.0,
+            gsstartdec=50.0,
+            obsid=4242,
+        )
+
+        queue_ditl.acs.passrequests.current_pass = Mock(return_value=None)
+        queue_ditl.acs.passrequests.next_pass = Mock(return_value=pass_obj)
+        queue_ditl.acs.acsmode = ACSMode.SCIENCE
+
+        with patch.object(Pass, "time_to_slew", return_value=True):
+            queue_ditl._check_and_manage_passes(utime, ra, dec)
+            queue_ditl._check_and_manage_passes(utime, ra, dec)
+
+        gsp_entries = [
+            entry for entry in queue_ditl.plan if entry.obstype == ObsType.GSP
+        ]
+        assert len(gsp_entries) == 1
+        entry = gsp_entries[0]
+        assert entry.name == "GS_TEST_PASS"
+        assert entry.begin == utime
+        assert entry.slewtime == 100
+        assert entry.end == pass_obj.end
+        assert entry.exposure == 600
+        assert entry.exptime == 600
+        assert entry.station == "GS_TEST"
+        assert entry.contact_begin == pass_obj.begin
+        assert entry.contact_end == pass_obj.end
+
+        schema = PlanSchema.from_plan(queue_ditl.plan)
+        assert schema.entries[0].obstype == ObsType.GSP
+        assert schema.entries[0].station == "GS_TEST"
+        assert schema.entries[0].contact_begin == pass_obj.begin
+        saved_path = schema.save(tmp_path / "plan.json")
+        assert '"obstype": "GSP"' in saved_path.read_text()
+        assert '"station": "GS_TEST"' in saved_path.read_text()
+
+    def test_check_and_manage_passes_records_gsp_after_pass_slew_command_enqueue(
+        self, queue_ditl
+    ) -> None:
+        """A GSP plan entry should only be recorded after the pass command path."""
+        utime = 1000.0
+        pass_obj = Pass(
+            station="GS_TEST",
+            begin=1100.0,
+            length=600.0,
+            gsstartra=100.0,
+            gsstartdec=50.0,
+        )
+        enqueued_commands = []
+
+        def enqueue_command(command) -> None:
+            assert not any(entry.obstype == ObsType.GSP for entry in queue_ditl.plan)
+            enqueued_commands.append(command)
+
+        queue_ditl.acs.enqueue_command.side_effect = enqueue_command
+        queue_ditl.acs.passrequests.current_pass = Mock(return_value=None)
+        queue_ditl.acs.passrequests.next_pass = Mock(return_value=pass_obj)
+        queue_ditl.acs.acsmode = ACSMode.SCIENCE
+        queue_ditl.acs.in_safe_mode = False
+
+        with patch.object(Pass, "time_to_slew", return_value=True):
+            queue_ditl._check_and_manage_passes(utime, 10.0, 20.0)
+
+        assert enqueued_commands[0].command_type == ACSCommandType.SLEW_TO_TARGET
+        gsp_entries = [
+            entry for entry in queue_ditl.plan if entry.obstype == ObsType.GSP
+        ]
+        assert len(gsp_entries) == 1
+
+    def test_check_and_manage_passes_safe_mode_does_not_export_gsp(
+        self, queue_ditl
+    ) -> None:
+        """SAFE mode should not create a plan entry for a pass ACS will not command."""
+        pass_obj = Pass(
+            station="GS_TEST",
+            begin=1100.0,
+            length=600.0,
+            gsstartra=100.0,
+            gsstartdec=50.0,
+        )
+        queue_ditl.acs.acsmode = ACSMode.SAFE
+        queue_ditl.acs.in_safe_mode = True
+        queue_ditl.acs.passrequests.current_pass = Mock(return_value=pass_obj)
+        queue_ditl.acs.passrequests.next_pass = Mock(return_value=pass_obj)
+
+        with patch.object(Pass, "time_to_slew", return_value=True):
+            queue_ditl._check_and_manage_passes(1000.0, 10.0, 20.0)
+
+        queue_ditl.acs.enqueue_command.assert_not_called()
+        queue_ditl.acs.passrequests.current_pass.assert_not_called()
+        queue_ditl.acs.passrequests.next_pass.assert_not_called()
+        assert list(queue_ditl.plan) == []
+
+    def test_check_and_manage_passes_gsp_terminates_active_ppt_once(
+        self, queue_ditl
+    ) -> None:
+        """Reserving a pass should end active science and not re-add it later."""
+        utime = 1000.0
+        ra, dec = 10.0, 20.0
+        ppt = PlanEntry(config=queue_ditl.config)
+        ppt.name = "SCIENCE"
+        ppt.obstype = ObsType.AT
+        ppt.begin = 900.0
+        ppt.end = 5000.0
+        ppt.slewtime = 0
+        ppt.ss_min = 10
+        queue_ditl.ppt = ppt
+        queue_ditl.plan.append(ppt)
+
+        pass_obj = Pass(
+            station="GS_TEST",
+            begin=1100.0,
+            length=600.0,
+            gsstartra=100.0,
+            gsstartdec=50.0,
+        )
+        queue_ditl.acs.passrequests.current_pass = Mock(return_value=None)
+        queue_ditl.acs.passrequests.next_pass = Mock(return_value=pass_obj)
+        queue_ditl.acs.acsmode = ACSMode.SCIENCE
+
+        with patch.object(Pass, "time_to_slew", return_value=True):
+            queue_ditl._check_and_manage_passes(utime, ra, dec)
+
+        assert queue_ditl.ppt is None
+        assert [entry.obstype for entry in queue_ditl.plan] == [ObsType.AT, ObsType.GSP]
+        assert queue_ditl.plan[0].end == utime
+
+        queue_ditl._track_ppt_in_timeline()
+        assert [entry.obstype for entry in queue_ditl.plan] == [ObsType.AT, ObsType.GSP]
+
+        queue_ditl.queue.get.reset_mock()
+        queue_ditl._handle_science_mode(utime, ra, dec, ACSMode.SCIENCE)
+        queue_ditl.queue.get.assert_not_called()
+
+    def test_check_and_manage_passes_skips_overlapping_unselected_pass(
+        self, queue_ditl
+    ) -> None:
+        """Overlapping pass opportunities should not become accidental tail contacts."""
+        selected_pass = Pass(
+            station="SGS",
+            begin=1000.0,
+            length=600.0,
+            gsstartra=100.0,
+            gsstartdec=50.0,
+        )
+        overlapping_pass = Pass(
+            station="TRO",
+            begin=1050.0,
+            length=600.0,
+            gsstartra=120.0,
+            gsstartdec=60.0,
+        )
+        assert queue_ditl._record_gsp_plan_entry(selected_pass, reserved_begin=900.0)
+
+        queue_ditl.acs.enqueue_command.reset_mock()
+        queue_ditl.acs.passrequests.current_pass = Mock(return_value=overlapping_pass)
+        queue_ditl.acs.acsmode = ACSMode.SCIENCE
+
+        queue_ditl._check_and_manage_passes(1600.0, 10.0, 20.0)
+
+        gsp_entries = [
+            entry for entry in queue_ditl.plan if entry.obstype == ObsType.GSP
+        ]
+        assert len(gsp_entries) == 1
+        assert gsp_entries[0].station == "SGS"
+        queue_ditl.acs.enqueue_command.assert_not_called()
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "Skipping overlapping pass opportunity for TRO" in log_text
+
+    def test_check_and_manage_passes_ends_commanded_pass_before_overlap(
+        self, queue_ditl
+    ) -> None:
+        """An overlapping opportunity should not keep the commanded pass open."""
+        selected_pass = Pass(
+            station="SGS",
+            begin=1000.0,
+            length=600.0,
+            gsstartra=100.0,
+            gsstartdec=50.0,
+        )
+        overlapping_pass = Pass(
+            station="TRO",
+            begin=1050.0,
+            length=600.0,
+            gsstartra=120.0,
+            gsstartdec=60.0,
+        )
+        assert queue_ditl._record_gsp_plan_entry(selected_pass, reserved_begin=900.0)
+
+        queue_ditl.acs.acsmode = ACSMode.PASS
+        queue_ditl.acs.current_pass = selected_pass
+        queue_ditl.acs.passrequests.current_pass = Mock(return_value=overlapping_pass)
+
+        queue_ditl._check_and_manage_passes(1601.0, 10.0, 20.0)
+
+        cmd = queue_ditl.acs.enqueue_command.call_args[0][0]
+        assert cmd.command_type == ACSCommandType.END_PASS
+        gsp_entries = [
+            entry for entry in queue_ditl.plan if entry.obstype == ObsType.GSP
+        ]
+        assert len(gsp_entries) == 1
+        assert gsp_entries[0].station == "SGS"
+
+    def test_check_and_manage_passes_exports_gsp_plan_entry_when_pass_starts(
+        self, queue_ditl
+    ) -> None:
+        """Entering an active pass should export GSP even if no prep slew was reserved."""
+        utime = 1000.0
+        ra, dec = 10.0, 20.0
+        pass_obj = Pass(
+            station="GS_ACTIVE",
+            begin=950.0,
+            length=600.0,
+            gsstartra=80.0,
+            gsstartdec=30.0,
+            obsid=3131,
+        )
+
+        queue_ditl.acs.passrequests.current_pass = Mock(return_value=pass_obj)
+        queue_ditl.acs.acsmode = ACSMode.SCIENCE
+
+        queue_ditl._check_and_manage_passes(utime, ra, dec)
+
+        entry = queue_ditl.plan[0]
+        assert entry.obstype == ObsType.GSP
+        assert entry.name == "GS_ACTIVE_PASS"
+        assert entry.begin == utime
+        assert entry.slewtime == 0
+        assert entry.end == pass_obj.end
+        assert entry.exposure == 550
+        assert entry.exptime == 550
+        assert entry.contact_begin == pass_obj.begin
 
     def test_check_and_manage_passes_skip_slew_when_already_slewing(
         self, queue_ditl
@@ -2920,6 +3167,7 @@ class TestQueueDITLCoverage:
             from conops import ACSMode
 
             mock_acs.acsmode = ACSMode.SCIENCE
+            mock_acs.in_safe_mode = False
             mock_acs_class.return_value = mock_acs
 
             # Mock solar panel
@@ -2981,6 +3229,7 @@ class TestQueueDITLCoverage:
             from conops import ACSMode
 
             mock_acs.acsmode = ACSMode.SCIENCE
+            mock_acs.in_safe_mode = False
             mock_acs_class.return_value = mock_acs
 
             # Mock solar panel
@@ -3045,6 +3294,7 @@ class TestQueueDITLCoverage:
             from conops import ACSMode
 
             mock_acs.acsmode = ACSMode.SCIENCE
+            mock_acs.in_safe_mode = False
             mock_acs_class.return_value = mock_acs
 
             # Mock solar panel

@@ -102,6 +102,27 @@ class TestPlanEntrySchema:
         ):
             assert key in dumped, f"Missing key: {key}"
 
+    def test_gsp_contact_metadata_roundtrips(self):
+        entry = PlanEntrySchema(
+            **dict(
+                _ENTRY_DICT,
+                obstype="GSP",
+                station="TRO",
+                contact_begin=1_000_120.0,
+                contact_end=1_000_720.0,
+            )
+        )
+
+        dumped = entry.model_dump(mode="json")
+        assert dumped["station"] == "TRO"
+        assert dumped["contact_begin"] == "1970-01-12T13:48:40+00:00"
+        assert dumped["contact_end"] == "1970-01-12T13:58:40+00:00"
+
+        reloaded = PlanEntrySchema(**dumped)
+        assert reloaded.station == "TRO"
+        assert reloaded.contact_begin == pytest.approx(1_000_120.0)
+        assert reloaded.contact_end == pytest.approx(1_000_720.0)
+
 
 # ── PlanSchema ─────────────────────────────────────────────────────────────────
 
@@ -202,6 +223,9 @@ class TestPlanSchema:
         assert isinstance(entry["begin"], str), "begin should be an ISO-8601 string"
         assert isinstance(entry["end"], str), "end should be an ISO-8601 string"
         assert "T" in entry["begin"]
+        assert "station" not in entry
+        assert "contact_begin" not in entry
+        assert "contact_end" not in entry
 
     def test_load_existing_example_json(self):
         """Load a plan JSON file produced by a previous version (backward compat)."""

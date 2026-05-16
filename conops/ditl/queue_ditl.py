@@ -19,7 +19,7 @@ from ..common.vector import attitude_to_quat
 from ..config import MissionConfig
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
-from ..simulation.passes import pass_slew_trigger_buffer
+from ..simulation.passes import Pass, pass_slew_trigger_buffer
 from ..simulation.roll import optimum_roll
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing, Queue
@@ -150,6 +150,7 @@ class QueueDITL(DITLMixin, DITLStats):
         # Set True when the queue is empty or all candidates are rejected; False on
         # successful dispatch; None during a pass (spacecraft is occupied).
         self._ppt_unavailable: bool | None = None
+        self._planned_gsp_keys: set[tuple[str, float, float]] = set()
 
     def get_acs_queue_status(self) -> dict[str, Any]:
         """
@@ -713,6 +714,9 @@ class QueueDITL(DITLMixin, DITLStats):
 
         # Fetch new PPT if none is active
         if self.ppt is None:
+            if self._gsp_activity_in_progress(utime):
+                self._ppt_unavailable = None
+                return
             self._fetch_new_ppt(utime, ra, dec)
 
     def _should_initiate_charging(self, utime: float) -> bool:
@@ -797,12 +801,133 @@ class QueueDITL(DITLMixin, DITLStats):
                     description="No groundstation passes scheduled.",
                 )
 
+    @staticmethod
+    def _ground_pass_times(gspass: Pass) -> tuple[float, float]:
+        return float(gspass.begin), float(gspass.end)
+
+    def _ground_pass_key(self, gspass: Pass) -> tuple[str, float, float]:
+        pass_begin, pass_end = self._ground_pass_times(gspass)
+        return gspass.station, pass_begin, pass_end
+
+    def _overlaps_planned_gsp(self, gspass: Pass) -> bool:
+        pass_begin, pass_end = self._ground_pass_times(gspass)
+        return any(
+            entry.obstype == ObsType.GSP
+            and pass_begin < float(entry.end)
+            and pass_end > float(entry.begin)
+            for entry in self.plan
+        )
+
+    def _gsp_activity_in_progress(self, utime: float) -> bool:
+        return any(
+            entry.obstype == ObsType.GSP
+            and float(entry.begin) <= utime < float(entry.end)
+            for entry in self.plan
+        )
+
+    def _terminate_active_ppt_for_gsp(self, utime: float) -> None:
+        if self.ppt is None:
+            return
+        if self.ppt == self.charging_ppt:
+            self._terminate_charging_ppt(utime)
+        else:
+            self._terminate_science_ppt_for_pass(utime)
+
+    def _gsp_plan_entry_allowed(self, gspass: Pass, reserved_begin: float) -> bool:
+        """Check whether this pass should be represented in the exported plan."""
+        key = self._ground_pass_key(gspass)
+        if key in self._planned_gsp_keys:
+            return True
+
+        if self._overlaps_planned_gsp(gspass):
+            self.log.log_event(
+                utime=reserved_begin,
+                event_type="PASS",
+                description=f"Skipping overlapping pass opportunity for {gspass.station}",
+                obsid=gspass.obsid,
+                acs_mode=self.acs.acsmode,
+            )
+            return False
+
+        return True
+
+    def _record_gsp_plan_entry(self, gspass: Pass, reserved_begin: float) -> bool:
+        """Record an accepted ground-station pass command in the exported plan."""
+        key = self._ground_pass_key(gspass)
+        if key in self._planned_gsp_keys:
+            return True
+
+        station, pass_begin, pass_end = key
+        entry_begin = float(reserved_begin)
+
+        self._terminate_active_ppt_for_gsp(entry_begin)
+
+        if len(self.plan) > 0:
+            last_entry = self.plan[-1]
+            if last_entry.obstype != ObsType.GSP and last_entry.end > entry_begin:
+                self._close_last_plan_entry(entry_begin)
+
+        entry = PlanEntry(config=self.config)
+        entry.name = f"{station}_PASS"
+        entry.ra = float(gspass.gsstartra)
+        entry.dec = float(gspass.gsstartdec)
+        entry.begin = entry_begin
+        entry.end = pass_end
+        entry.slewtime = max(0, int(round(pass_begin - entry_begin)))
+        entry.obsid = int(gspass.obsid)
+        entry.obstype = ObsType.GSP
+        entry.ss_min = 0
+        contact_duration = max(0, int(round(pass_end - entry_begin - entry.slewtime)))
+        entry.ss_max = contact_duration
+        entry.exptime = contact_duration
+        entry.station = station
+        entry.contact_begin = pass_begin
+        entry.contact_end = pass_end
+
+        self.plan.append(entry)
+        self._planned_gsp_keys.add(key)
+        self.log.log_event(
+            utime=entry_begin,
+            event_type="PASS",
+            description=(
+                f"Added GSP plan entry for {station} pass from "
+                f"{unixtime2date(entry_begin)} to {unixtime2date(pass_end)}"
+            ),
+            obsid=entry.obsid,
+            acs_mode=self.acs.acsmode,
+        )
+        return True
+
     def _check_and_manage_passes(self, utime: float, ra: float, dec: float) -> None:
         """Check pass timing and send appropriate commands to ACS."""
+
+        if self.acs.in_safe_mode or self.acs.acsmode == ACSMode.SAFE:
+            return
+
+        commanded_pass = self.acs.current_pass
+        if (
+            self.acs.acsmode == ACSMode.PASS
+            and commanded_pass is not None
+            and not commanded_pass.in_pass(utime)
+        ):
+            self.log.log_event(
+                utime=utime,
+                event_type="PASS",
+                description="Commanded pass ended, commanding ACS to end pass",
+                acs_mode=self.acs.acsmode,
+            )
+            command = ACSCommand(
+                command_type=ACSCommandType.END_PASS,
+                execution_time=utime,
+            )
+            self.acs.enqueue_command(command)
+            return
 
         # Check if we're in a pass, if yes, command ACS to start the pass
         current_pass = self.acs.passrequests.current_pass(utime)
         if current_pass is not None and self.acs.acsmode != ACSMode.PASS:
+            if not self._gsp_plan_entry_allowed(current_pass, reserved_begin=utime):
+                return
             self.log.log_event(
                 utime=utime,
                 event_type="PASS",
@@ -814,6 +939,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 execution_time=utime,
             )
             self.acs.enqueue_command(command)
+            self._record_gsp_plan_entry(current_pass, reserved_begin=utime)
             return
 
         # Check if a pass just ended, if yes, command ACS to end the pass.
@@ -849,6 +975,8 @@ class QueueDITL(DITLMixin, DITLStats):
 
         # Check if it's time to start slewing for the next pass
         if next_pass.time_to_slew(utime=utime, ra=ra, dec=dec):
+            if not self._gsp_plan_entry_allowed(next_pass, reserved_begin=utime):
+                return
             # If it's time to slew, enqueue the slew command
             self.log.log_event(
                 utime=utime,
@@ -873,6 +1001,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 slew=slew,
             )
             self.acs.enqueue_command(command)
+            self._record_gsp_plan_entry(next_pass, reserved_begin=utime)
             return
 
     def _handle_pass_mode(self, utime: float) -> None:
