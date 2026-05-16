@@ -801,27 +801,20 @@ class QueueDITL(DITLMixin, DITLStats):
                     description="No groundstation passes scheduled.",
                 )
 
-    @staticmethod
-    def _ground_pass_times(gspass: Pass) -> tuple[float, float]:
-        return float(gspass.begin), float(gspass.end)
-
     def _ground_pass_key(self, gspass: Pass) -> tuple[str, float, float]:
-        pass_begin, pass_end = self._ground_pass_times(gspass)
-        return gspass.station, pass_begin, pass_end
+        return gspass.station, gspass.begin, gspass.end
 
     def _overlaps_planned_gsp(self, gspass: Pass) -> bool:
-        pass_begin, pass_end = self._ground_pass_times(gspass)
         return any(
             entry.obstype == ObsType.GSP
-            and pass_begin < float(entry.end)
-            and pass_end > float(entry.begin)
+            and gspass.begin < entry.end
+            and gspass.end > entry.begin
             for entry in self.plan
         )
 
     def _gsp_activity_in_progress(self, utime: float) -> bool:
         return any(
-            entry.obstype == ObsType.GSP
-            and float(entry.begin) <= utime < float(entry.end)
+            entry.obstype == ObsType.GSP and entry.begin <= utime < entry.end
             for entry in self.plan
         )
 
@@ -858,26 +851,27 @@ class QueueDITL(DITLMixin, DITLStats):
             return True
 
         station, pass_begin, pass_end = key
-        entry_begin = float(reserved_begin)
 
-        self._terminate_active_ppt_for_gsp(entry_begin)
+        self._terminate_active_ppt_for_gsp(reserved_begin)
 
         if len(self.plan) > 0:
             last_entry = self.plan[-1]
-            if last_entry.obstype != ObsType.GSP and last_entry.end > entry_begin:
-                self._close_last_plan_entry(entry_begin)
+            if last_entry.obstype != ObsType.GSP and last_entry.end > reserved_begin:
+                self._close_last_plan_entry(reserved_begin)
 
         entry = PlanEntry(config=self.config)
         entry.name = f"{station}_PASS"
-        entry.ra = float(gspass.gsstartra)
-        entry.dec = float(gspass.gsstartdec)
-        entry.begin = entry_begin
+        entry.ra = gspass.gsstartra
+        entry.dec = gspass.gsstartdec
+        entry.begin = reserved_begin
         entry.end = pass_end
-        entry.slewtime = max(0, int(round(pass_begin - entry_begin)))
-        entry.obsid = int(gspass.obsid)
+        entry.slewtime = max(0, int(round(pass_begin - reserved_begin)))
+        entry.obsid = gspass.obsid
         entry.obstype = ObsType.GSP
         entry.ss_min = 0
-        contact_duration = max(0, int(round(pass_end - entry_begin - entry.slewtime)))
+        contact_duration = max(
+            0, int(round(pass_end - reserved_begin - entry.slewtime))
+        )
         entry.ss_max = contact_duration
         entry.exptime = contact_duration
         entry.station = station
@@ -887,11 +881,11 @@ class QueueDITL(DITLMixin, DITLStats):
         self.plan.append(entry)
         self._planned_gsp_keys.add(key)
         self.log.log_event(
-            utime=entry_begin,
+            utime=reserved_begin,
             event_type="PASS",
             description=(
                 f"Added GSP plan entry for {station} pass from "
-                f"{unixtime2date(entry_begin)} to {unixtime2date(pass_end)}"
+                f"{unixtime2date(reserved_begin)} to {unixtime2date(pass_end)}"
             ),
             obsid=entry.obsid,
             acs_mode=self.acs.acsmode,
