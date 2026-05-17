@@ -288,6 +288,48 @@ Example:
    # Spacecraft: S @ 10 Mbps, X @ 150 Mbps
    # Effective rate: 150 Mbps (X-band, SC limited)
 
+Ground Station Pass (GSP) Plan Entries
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+When :class:`~conops.ditl.queue_ditl.QueueDITL` executes a Day-In-The-Life simulation,
+commanded ground station passes are automatically exported as ``GSP`` plan entries in the
+observation plan. These entries capture:
+
+* **Station identification**: Which ground station is used (``station`` field)
+* **Contact window**: Actual pass start/end times (``contact_begin``, ``contact_end``)
+* **Preparation time**: Slew time to point at the station before contact begins
+* **Deconfliction**: When multiple stations are simultaneously visible, the system selects
+  the pass with the highest expected data volume (downlink rate × duration)
+
+**Key behavior:**
+
+* GSP entries are created only for passes the spacecraft actually commands and executes
+* Overlapping pass opportunities are automatically deconflicted; the highest-value pass is selected
+* Passes are not commanded (and no GSP entry is created) when the spacecraft is in SAFE mode
+* GSP entries are excluded from science observation timelines in visualization plots
+
+**Example workflow:**
+
+.. code-block:: python
+
+   from conops import QueueDITL, MissionConfig
+   from conops.ephemeris import TLEEphemeris
+
+   # Run DITL with ground station passes
+   ditl = QueueDITL(config=config, ephem=ephem, queue=queue)
+   ditl.calc()
+
+   # Export plan with GSP entries
+   ditl.plan.save("observation_plan.json")
+
+   # GSP entries appear in the saved plan with obstype="GSP"
+   for entry in ditl.plan:
+       if entry.obstype == ObsType.GSP:
+           print(f"Ground pass: {entry.station} from "
+                 f"{entry.contact_begin} to {entry.contact_end}")
+
+See :doc:`plan_serialization` for details on the GSP entry format and serialization.
+
 Implementation Notes
 --------------------
 
