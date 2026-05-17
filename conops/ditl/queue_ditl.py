@@ -794,6 +794,16 @@ class QueueDITL(DITLMixin, DITLStats):
                         event_type="PASS",
                         description=f"Scheduled pass: {p}",
                     )
+                dropped_passes = self.acs.passrequests.dropped_overlapping_passes
+                for dropped, selected in dropped_passes:
+                    self.log.log_event(
+                        utime=self.ustart,
+                        event_type="PASS",
+                        description=(
+                            f"Skipped overlapping pass opportunity: {dropped} "
+                            f"overlaps selected pass {selected}"
+                        ),
+                    )
             else:
                 self.log.log_event(
                     utime=self.ustart,

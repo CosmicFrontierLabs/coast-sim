@@ -148,6 +148,29 @@ class TestScheduleGroundstationPasses:
         assert "Pass 1" in log_text
         assert "Pass 2" in log_text
 
+    def test_schedule_passes_logs_skipped_overlapping_passes(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.acs.passrequests.passes = []
+
+        selected = Mock()
+        selected.__str__ = Mock(return_value="Selected pass")
+        dropped = Mock()
+        dropped.__str__ = Mock(return_value="Dropped pass")
+
+        def populate_passes(year: int, day: int, length: int) -> None:
+            queue_ditl.acs.passrequests.passes = [selected]
+            queue_ditl.acs.passrequests.dropped_overlapping_passes = [
+                (dropped, selected)
+            ]
+
+        cast(Mock, queue_ditl.acs.passrequests.get).side_effect = populate_passes
+        queue_ditl._schedule_groundstation_passes()
+
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "Skipped overlapping pass opportunity: Dropped pass" in log_text
+        assert "overlaps selected pass Selected pass" in log_text
+
 
 class TestDetermineMode:
     """Test mode determination now handled by ACS.get_mode() - these tests use real ACS instance."""

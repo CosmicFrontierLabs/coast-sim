@@ -11,7 +11,7 @@ from conops import (
     Pass,
     PassTimes,
 )
-from conops.config import AttitudeControlSystem
+from conops.config import AttitudeControlSystem, BandCapability, GroundStation
 from conops.simulation.passes import pass_slew_trigger_buffer
 
 
@@ -419,6 +419,77 @@ class TestPassTimes:
         with patch("numpy.random.random", return_value=0.95):
             scheduled = pt.request_passes(req_gsnum=10, gsprob=0.9)
             assert len(scheduled) == 0
+
+    def test_deconflict_overlapping_passes_prefers_more_data_volume(
+        self, mock_constraint, mock_config
+    ):
+        """Overlapping station opportunities should reduce to one commanded pass."""
+        stations = GroundStationRegistry()
+        stations.add(
+            GroundStation(
+                code="LOW",
+                name="Low rate",
+                latitude_deg=0.0,
+                longitude_deg=0.0,
+                bands=[BandCapability(band="S", downlink_rate_mbps=10.0)],
+            )
+        )
+        stations.add(
+            GroundStation(
+                code="HIGH",
+                name="High rate",
+                latitude_deg=1.0,
+                longitude_deg=1.0,
+                bands=[BandCapability(band="S", downlink_rate_mbps=50.0)],
+            )
+        )
+        mock_config.ground_stations = stations
+        pt = PassTimes(config=mock_config)
+
+        low = Pass(config=mock_config, station="LOW", begin=1000.0, length=600.0)
+        high = Pass(config=mock_config, station="HIGH", begin=1050.0, length=480.0)
+        later = Pass(config=mock_config, station="LOW", begin=1530.0, length=600.0)
+        pt.passes = [low, high, later]
+
+        pt._deconflict_overlapping_passes()
+
+        assert pt.passes == [high, later]
+        assert pt.dropped_overlapping_passes == [(low, high)]
+
+    def test_deconflict_overlapping_passes_prefers_earlier_start_on_tie(
+        self, mock_constraint, mock_config
+    ):
+        """Equal-value overlapping opportunities should keep the earlier pass."""
+        stations = GroundStationRegistry()
+        stations.add(
+            GroundStation(
+                code="A",
+                name="Station A",
+                latitude_deg=0.0,
+                longitude_deg=0.0,
+                bands=[BandCapability(band="S", downlink_rate_mbps=10.0)],
+            )
+        )
+        stations.add(
+            GroundStation(
+                code="B",
+                name="Station B",
+                latitude_deg=1.0,
+                longitude_deg=1.0,
+                bands=[BandCapability(band="S", downlink_rate_mbps=10.0)],
+            )
+        )
+        mock_config.ground_stations = stations
+        pt = PassTimes(config=mock_config)
+
+        earlier = Pass(config=mock_config, station="A", begin=1000.0, length=600.0)
+        later = Pass(config=mock_config, station="B", begin=1050.0, length=600.0)
+        pt.passes = [earlier, later]
+
+        pt._deconflict_overlapping_passes()
+
+        assert pt.passes == [earlier]
+        assert pt.dropped_overlapping_passes == [(later, earlier)]
 
     def test_get_requires_ephemeris(self, mock_constraint, mock_config):
         """Test PassTimes initialization requires ephemeris."""

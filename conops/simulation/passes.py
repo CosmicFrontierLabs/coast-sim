@@ -291,6 +291,7 @@ class PassTimes:
 
         self.config = config
         self.passes = []
+        self.dropped_overlapping_passes: list[tuple[Pass, Pass]] = []
         self.length = 1
 
         # Ground stations registry from config
@@ -333,6 +334,35 @@ class PassTimes:
                 sched.extend([gspass])
                 last = sched[-1].begin
         return sched
+
+    def _station_downlink_rate_mbps(self, gspass: Pass) -> float:
+        try:
+            rate = self.ground_stations.get(gspass.station).get_overall_max_downlink()
+        except KeyError:
+            return 0.0
+        return 0.0 if rate is None else rate
+
+    def _pass_selection_key(self, gspass: Pass) -> tuple[float, float, float]:
+        rate = self._station_downlink_rate_mbps(gspass)
+        return (rate * gspass.length, gspass.length, -gspass.begin)
+
+    def _deconflict_overlapping_passes(self) -> None:
+        selected: list[Pass] = []
+        self.dropped_overlapping_passes = []
+
+        for gspass in sorted(self.passes, key=lambda x: x.begin, reverse=False):
+            if not selected or selected[-1].end <= gspass.begin:
+                selected.append(gspass)
+                continue
+
+            incumbent = selected[-1]
+            if self._pass_selection_key(gspass) > self._pass_selection_key(incumbent):
+                selected[-1] = gspass
+                self.dropped_overlapping_passes.append((incumbent, gspass))
+            else:
+                self.dropped_overlapping_passes.append((gspass, incumbent))
+
+        self.passes = selected
 
     def get(self, year: int, day: int, length: int = 1) -> None:
         """Calculate the passes using rust_ephem GroundEphemeris for vectorized operations."""
@@ -506,3 +536,4 @@ class PassTimes:
 
         # Order the passes by time
         self.passes.sort(key=lambda x: x.begin, reverse=False)
+        self._deconflict_overlapping_passes()

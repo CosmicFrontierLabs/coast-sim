@@ -129,6 +129,7 @@ def queue_ditl(mock_config: Mock, mock_ephem: DummyEphemeris) -> QueueDITL:
         # Mock PassTimes
         mock_pt = Mock()
         mock_pt.passes = []
+        mock_pt.dropped_overlapping_passes = []
         mock_pt.get = Mock()
         mock_pt.check_pass_timing = Mock(
             return_value={"start_pass": None, "end_pass": False, "updated_pass": None}
