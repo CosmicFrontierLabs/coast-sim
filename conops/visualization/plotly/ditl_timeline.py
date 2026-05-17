@@ -15,7 +15,7 @@ from matplotlib.axes import Axes
 from conops.ditl.ditl import DITL
 from conops.ditl.queue_ditl import QueueDITL
 
-from ...common import ACSMode
+from ...common import ACSMode, ObsType
 from ...config import ObservationCategories
 from ...config.visualization import VisualizationConfig
 
@@ -103,6 +103,9 @@ def _extract_observations(
     }
 
     for ppt in ditl.plan:
+        if ppt.obstype == ObsType.GSP:
+            continue
+
         # Calculate observation start and duration
         obs_start = (ppt.begin + ppt.slewtime - t_start) / 3600 - offset_hours
         obs_duration = (ppt.end - (ppt.begin + ppt.slewtime)) / 3600

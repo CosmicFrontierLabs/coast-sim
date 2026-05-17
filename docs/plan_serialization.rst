@@ -104,6 +104,30 @@ The JSON file contains a metadata envelope followed by the entry list.
          "isat": false,
          "done": true,
          "exposure": 880
+       },
+       {
+         "name": "SGS_PASS",
+         "ra": 120.0,
+         "dec": 45.0,
+         "roll": 0.0,
+         "begin": "2025-12-01T00:18:00+00:00",
+         "end": "2025-12-01T00:28:00+00:00",
+         "merit": 101.0,
+         "slewtime": 120,
+         "insaa": 0,
+         "obsid": 65535,
+         "obstype": "GSP",
+         "slewdist": 5.2,
+         "ss_min": 45.0,
+         "ss_max": 180.0,
+         "exptime": 480,
+         "exporig": 600,
+         "isat": false,
+         "done": true,
+         "exposure": 480,
+         "station": "SGS",
+         "contact_begin": "2025-12-01T00:20:00+00:00",
+         "contact_end": "2025-12-01T00:28:00+00:00"
        }
      ]
    }
@@ -211,6 +235,65 @@ Entry Fields
    * - ``exposure``
      - int
      - Net science exposure time: ``end − begin − slewtime − insaa`` (seconds).
+   * - ``station``
+     - string | null
+     - Ground station code for ``GSP`` (Ground Station Pass) entries. Only present for
+       ``obstype="GSP"``. Identifies which station is used for the commanded pass.
+   * - ``contact_begin``
+     - string | null
+     - ISO-8601 UTC timestamp of when the ground station contact window begins. Only present
+       for ``obstype="GSP"``. This is the actual pass start time; ``begin`` is the reservation
+       time (which may include slew preparation).
+   * - ``contact_end``
+     - string | null
+     - ISO-8601 UTC timestamp of when the ground station contact window ends. Only present
+       for ``obstype="GSP"``. Typically matches ``end``.
+
+Ground Station Pass (GSP) Entries
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Ground station pass entries (``obstype="GSP"``) represent commanded communication windows
+with ground stations. Unlike science observations, these entries capture the reservation
+and execution of data downlink passes.
+
+**Key characteristics of GSP entries:**
+
+* **Automatic creation**: Created by :class:`~conops.ditl.queue_ditl.QueueDITL` when the
+  spacecraft enters a ground station visibility window.
+* **Pass reservation**: The ``begin`` time marks when the spacecraft reserves the window
+  (potentially including slew preparation), while ``contact_begin`` marks the actual start
+  of the ground station contact.
+* **Metadata fields**: The ``station``, ``contact_begin``, and ``contact_end`` fields are
+  only present for GSP entries (``null`` or omitted for other observation types).
+* **Deconfliction**: When multiple ground stations are visible simultaneously, COASTSim
+  automatically selects the pass with the highest expected data volume (downlink rate × duration).
+  Dropped overlapping opportunities are logged but not exported to the plan.
+* **Visualization**: GSP entries are excluded from the science observation bands in
+  :func:`~conops.visualization.mpl.ditl_timeline.plot_ditl_timeline` and
+  :func:`~conops.visualization.plotly.ditl_timeline.plot_ditl_timeline`.
+  Ground station passes are still shown in the timeline's dedicated "Ground Contact" row.
+* **Safe mode**: No GSP entries are created when the spacecraft is in SAFE mode.
+
+**Example GSP entry:**
+
+.. code-block:: json
+
+   {
+     "name": "TRO_PASS",
+     "obstype": "GSP",
+     "station": "TRO",
+     "begin": "2025-12-01T12:00:00+00:00",
+     "contact_begin": "2025-12-01T12:02:00+00:00",
+     "contact_end": "2025-12-01T12:12:00+00:00",
+     "end": "2025-12-01T12:12:00+00:00",
+     "slewtime": 120,
+     "exptime": 600,
+     "obsid": 65535
+   }
+
+In this example, the spacecraft begins reserving the pass window at 12:00:00 (``begin``),
+uses 2 minutes for slew preparation (``slewtime``), and the actual ground station contact
+runs from 12:02:00 to 12:12:00 (``contact_begin`` to ``contact_end``).
 
 .. _auto-versioning:
 

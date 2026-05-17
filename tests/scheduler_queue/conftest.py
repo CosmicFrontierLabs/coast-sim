@@ -129,6 +129,7 @@ def queue_ditl(mock_config: Mock, mock_ephem: DummyEphemeris) -> QueueDITL:
         # Mock PassTimes
         mock_pt = Mock()
         mock_pt.passes = []
+        mock_pt.dropped_overlapping_passes = []
         mock_pt.get = Mock()
         mock_pt.check_pass_timing = Mock(
             return_value={"start_pass": None, "end_pass": False, "updated_pass": None}
@@ -156,6 +157,7 @@ def queue_ditl(mock_config: Mock, mock_ephem: DummyEphemeris) -> QueueDITL:
 
         mock_acs.acsmode = ACSMode.SCIENCE
         mock_acs.get_mode = Mock(return_value=ACSMode.SCIENCE)
+        mock_acs.in_safe_mode = False
         mock_acs.in_eclipse = False
         # Add star tracker attributes for Housekeeping telemetry
         mock_acs.configure_mock(
@@ -587,6 +589,7 @@ def queue_ditl_no_queue_log(
 
         mock_acs.acsmode = ACSMode.SCIENCE
         mock_acs.get_mode = Mock(return_value=ACSMode.SCIENCE)
+        mock_acs.in_safe_mode = False
         mock_acs.in_eclipse = False
         # Add star tracker attributes for Housekeeping telemetry
         mock_acs.configure_mock(
@@ -662,6 +665,7 @@ def queue_ditl_acs_no_ephem(
 
         mock_acs.acsmode = ACSMode.SCIENCE
         mock_acs.get_mode = Mock(return_value=ACSMode.SCIENCE)
+        mock_acs.in_safe_mode = False
         mock_acs.in_eclipse = False
         # Add star tracker attributes for Housekeeping telemetry
         mock_acs.configure_mock(

@@ -25,6 +25,9 @@ class PlanEntry:
     merit: float
     saa: SAA | None
     slewpath: tuple[list[float], list[float]]
+    station: str | None
+    contact_begin: float | None
+    contact_end: float | None
 
     def __init__(
         self,
@@ -51,6 +54,9 @@ class PlanEntry:
         self.insaa = 0
         self.end = 0
         self.obsid = 0
+        self.station = None
+        self.contact_begin = None
+        self.contact_end = None
 
         self.saa = None
         self.merit = 101

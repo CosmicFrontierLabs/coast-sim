@@ -198,6 +198,59 @@ During a ground station pass in DITL simulation:
    time_step = 60  # seconds
    data_downlinked = downlink_rate_gbps * time_step  # 6.0 Gb
 
+Ground Station Pass Plan Entries
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Starting with version 0.2.0, :class:`~conops.ditl.queue_ditl.QueueDITL` automatically
+creates plan entries for commanded ground station passes. These ``GSP`` (Ground Station Pass)
+entries appear in the exported observation plan alongside science observations.
+
+**Pass Deconfliction**
+
+When multiple ground stations are visible simultaneously (overlapping pass windows),
+COASTSim automatically selects the pass with the highest expected data volume:
+
+.. code-block:: python
+
+   # Selection metric: downlink_rate × pass_duration
+   # Prefers: higher data volume > longer pass > earlier start time
+
+Overlapping opportunities that are not selected are logged but not executed, preventing
+accidental "tail contacts" where a second pass starts during an ongoing pass.
+
+**Pass Metadata**
+
+Each GSP entry includes:
+
+* ``station``: Ground station code (e.g., ``"SGS"``, ``"TRO"``)
+* ``contact_begin``: Actual pass start time
+* ``contact_end``: Actual pass end time
+* ``slewtime``: Time spent slewing to point at the station
+
+The GSP entry's ``begin`` time marks when the spacecraft reserves the pass window
+(potentially including slew preparation), while ``contact_begin`` marks when data
+downlink actually starts.
+
+**Example:**
+
+.. code-block:: python
+
+   from conops import QueueDITL
+
+   ditl = QueueDITL(config=config, ephem=ephem, queue=queue)
+   ditl.calc()
+
+   # Find ground station passes in the plan
+   for entry in ditl.plan:
+       if entry.obstype == ObsType.GSP:
+           downlink_time = entry.contact_end - entry.contact_begin
+           rate = config.ground_stations.get(entry.station).get_overall_max_downlink()
+           volume = rate * downlink_time / 1000.0  # Convert to Gb
+           print(f"{entry.station}: {downlink_time}s at {rate} Mbps = {volume:.1f} Gb")
+
+See :doc:`plan_serialization` for complete details on GSP entry format and
+:doc:`communications` for pass selection behavior.
+
 Integration with DITL
 ----------------------
 

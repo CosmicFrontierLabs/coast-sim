@@ -280,6 +280,42 @@ class TestPlotDitlTimeline:
         # Clean up
         plt.close(fig)
 
+    def test_gsp_entries_are_not_extracted_as_observations(self) -> None:
+        """Ground-station passes should not be plotted as science observations."""
+        from conops.common import ObsType
+        from conops.visualization.mpl.ditl_timeline import (
+            _extract_observations as extract_mpl_observations,
+        )
+        from conops.visualization.plotly.ditl_timeline import (
+            _extract_observations as extract_plotly_observations,
+        )
+
+        science_entry = Mock(
+            obstype=ObsType.AT,
+            begin=0.0,
+            end=600.0,
+            slewtime=60.0,
+            obsid=10000,
+        )
+        gsp_entry = Mock(
+            obstype=ObsType.GSP,
+            begin=600.0,
+            end=1200.0,
+            slewtime=120.0,
+            obsid=65535,
+        )
+        ditl = Mock(plan=[science_entry, gsp_entry])
+
+        for extract_observations in (
+            extract_mpl_observations,
+            extract_plotly_observations,
+        ):
+            observations = extract_observations(ditl, t_start=0.0, offset_hours=0.0)
+            segments = [
+                segment for category in observations.values() for segment in category
+            ]
+            assert segments == [(1 / 60, 0.15)]
+
     def test_plot_ditl_timeline_show_saa(self, mock_ditl_with_ephem: Mock) -> None:
         """Test plot_ditl_timeline with SAA passages shown."""
         fig, ax = plot_ditl_timeline(mock_ditl_with_ephem, show_saa=True)
