@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.5.0...v0.6.0) (2026-05-17)
+
+
+### Features
+
+* represent commanded ground-station passes as plan activities ([#139](https://github.com/CosmicFrontierLabs/coast-sim/issues/139)) ([a3ae04b](https://github.com/CosmicFrontierLabs/coast-sim/commit/a3ae04b623944381a2e479ca9c87adab029be4ac))
+
+
+### Bug Fixes
+
+* render plotly timeline hover times ([#137](https://github.com/CosmicFrontierLabs/coast-sim/issues/137)) ([7fa6a1d](https://github.com/CosmicFrontierLabs/coast-sim/commit/7fa6a1d0c761caafb1114ebbb708e75bb3051601))
+
 ## [0.5.0](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.4.1...v0.5.0) (2026-05-14)
 
 
