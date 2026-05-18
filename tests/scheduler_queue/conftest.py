@@ -148,10 +148,12 @@ def queue_ditl(mock_config: Mock, mock_ephem: DummyEphemeris) -> QueueDITL:
         mock_acs.enqueue_command = Mock()
         mock_acs.passrequests = mock_pt
         mock_acs.slew_dists = []
+        mock_acs.executed_commands = []
         mock_acs.last_slew = None
         mock_acs.current_slew = None  # No active slew by default
         mock_acs.ra = 0.0  # Current pointing RA
         mock_acs.dec = 0.0  # Current pointing Dec
+        mock_acs.roll = 0.0  # Current roll angle
         # Set acsmode to a real ACSMode enum value for logging
         from conops import ACSMode
 

@@ -305,11 +305,13 @@ class ACS:
         slew.slewstart = utime
         slew.calc_slewtime()
 
+        slewdist = float(getattr(slew, "slewdist", 0.0))
         self._log_or_print(
             utime,
             "SLEW",
             f"{unixtime2date(utime)}: Starting slew from RA={self.ra:.2f} Dec={self.dec:.2f} "
-            f"to RA={slew.endra:.2f} Dec={slew.enddec:.2f} (duration: {slew.slewtime:.1f}s)",
+            f"to RA={slew.endra:.2f} Dec={slew.enddec:.2f} "
+            f"(duration: {slew.slewtime:.1f}s, distance: {slewdist:.1f} deg)",
         )
 
         self.current_slew = slew
