@@ -161,6 +161,12 @@ class ACS:
             )
             return
 
+        if command.command_type in (
+            ACSCommandType.SLEW_TO_TARGET,
+            ACSCommandType.START_PASS,
+        ):
+            self._cancel_pending_slew_commands(command)
+
         self.command_queue.append(command)
         self.command_queue.sort(key=lambda cmd: cmd.execution_time)
         self._log_or_print(
@@ -168,6 +174,49 @@ class ACS:
             "ACS",
             f"{unixtime2date(command.execution_time)}: Enqueued {command.command_type.name} command for execution  (queue size: {len(self.command_queue)})",
         )
+
+    def _cancel_pending_slew_commands(self, replacement: ACSCommand) -> None:
+        """Drop queued target slews superseded by a newer attitude decision."""
+        pending_slews = [
+            command
+            for command in self.command_queue
+            if command.command_type == ACSCommandType.SLEW_TO_TARGET
+        ]
+        if not pending_slews:
+            return
+
+        self.command_queue = [
+            command
+            for command in self.command_queue
+            if command.command_type != ACSCommandType.SLEW_TO_TARGET
+        ]
+        replacement_label = self._command_label(replacement)
+        for canceled in pending_slews:
+            canceled_obsid = self._command_obsid(canceled)
+            self._log_or_print(
+                replacement.execution_time,
+                "ACS",
+                (
+                    f"{unixtime2date(replacement.execution_time)}: Canceled pending "
+                    f"SLEW_TO_TARGET command scheduled for "
+                    f"{unixtime2date(canceled.execution_time)} "
+                    f"(obsid={canceled_obsid}) - superseded by "
+                    f"{replacement_label}"
+                ),
+            )
+
+    @classmethod
+    def _command_label(cls, command: ACSCommand) -> str:
+        obsid = cls._command_obsid(command)
+        if obsid is None:
+            return command.command_type.name
+        return f"{command.command_type.name} obsid={obsid}"
+
+    @staticmethod
+    def _command_obsid(command: ACSCommand) -> int | None:
+        if command.slew is not None:
+            return getattr(command.slew, "obsid", command.obsid)
+        return command.obsid
 
     def _process_commands(self, utime: float) -> None:
         """Process all commands scheduled for execution at or before current time."""

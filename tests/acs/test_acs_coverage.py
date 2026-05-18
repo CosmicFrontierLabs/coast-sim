@@ -2,7 +2,7 @@
 
 from unittest.mock import Mock, patch
 
-from conops import ACSCommand, ACSCommandType, ACSMode, Pass, Slew
+from conops import ACSCommand, ACSCommandType, ACSMode, DITLLog, Pass, Slew
 
 
 class TestExecuteCommandCoverage:
@@ -109,6 +109,81 @@ class TestExecuteCommandCoverage:
         with patch.object(acs, "_start_slew") as mock_start_slew:
             acs._start_pass(command, 1514764800.0)
             mock_start_slew.assert_not_called()
+
+
+class TestEnqueueCommandQueueManagement:
+    """Test command-queue replacement behavior."""
+
+    def _make_slew_command(self, execution_time: float, obsid: int) -> ACSCommand:
+        slew = Mock(spec=Slew)
+        slew.obsid = obsid
+        slew.obstype = "PPT"
+        return ACSCommand(
+            command_type=ACSCommandType.SLEW_TO_TARGET,
+            execution_time=execution_time,
+            slew=slew,
+        )
+
+    def test_new_slew_cancels_pending_slew_command(self, acs) -> None:
+        acs.log = DITLLog()
+        stale_return = self._make_slew_command(1514767440.0, 10019)
+        end_pass = ACSCommand(
+            command_type=ACSCommandType.END_PASS,
+            execution_time=1514767200.0,
+        )
+        replacement = self._make_slew_command(1514767260.0, 10053)
+        acs.command_queue = [stale_return, end_pass]
+
+        acs.enqueue_command(replacement)
+
+        assert all(command is not stale_return for command in acs.command_queue)
+        assert any(command is end_pass for command in acs.command_queue)
+        assert any(command is replacement for command in acs.command_queue)
+        assert [command.execution_time for command in acs.command_queue] == [
+            1514767200.0,
+            1514767260.0,
+        ]
+
+        log_text = "\n".join(event.description for event in acs.log.events)
+        assert "Canceled pending SLEW_TO_TARGET" in log_text
+        assert "obsid=10019" in log_text
+        assert "obsid=10053" in log_text
+
+    def test_non_slew_command_preserves_pending_slew_command(self, acs) -> None:
+        pending_slew = self._make_slew_command(1514767440.0, 10019)
+        end_pass = ACSCommand(
+            command_type=ACSCommandType.END_PASS,
+            execution_time=1514767200.0,
+        )
+        acs.command_queue = [pending_slew]
+
+        acs.enqueue_command(end_pass)
+
+        assert any(command is pending_slew for command in acs.command_queue)
+        assert any(command is end_pass for command in acs.command_queue)
+        assert [command.execution_time for command in acs.command_queue] == [
+            1514767200.0,
+            1514767440.0,
+        ]
+
+    def test_start_pass_cancels_pending_slew_command(self, acs) -> None:
+        acs.log = DITLLog()
+        stale_return = self._make_slew_command(1514767440.0, 10019)
+        start_pass = ACSCommand(
+            command_type=ACSCommandType.START_PASS,
+            execution_time=1514767200.0,
+        )
+        acs.command_queue = [stale_return]
+
+        acs.enqueue_command(start_pass)
+
+        assert all(command is not stale_return for command in acs.command_queue)
+        assert acs.command_queue == [start_pass]
+
+        log_text = "\n".join(event.description for event in acs.log.events)
+        assert "Canceled pending SLEW_TO_TARGET" in log_text
+        assert "obsid=10019" in log_text
+        assert "superseded by START_PASS" in log_text
 
 
 class TestStartSlewCoverage:
