@@ -73,6 +73,10 @@ class PlanEntrySchema(BaseModel):
     station: str | None = None
     contact_begin: float | None = None
     contact_end: float | None = None
+    track_start_ra: float | None = None
+    track_start_dec: float | None = None
+    track_end_ra: float | None = None
+    track_end_dec: float | None = None
 
     @staticmethod
     def _computed_exposure(entry: PlanEntry) -> int:
@@ -123,6 +127,10 @@ class PlanEntrySchema(BaseModel):
                 "station": getattr(data, "station", None),
                 "contact_begin": getattr(data, "contact_begin", None),
                 "contact_end": getattr(data, "contact_end", None),
+                "track_start_ra": getattr(data, "track_start_ra", None),
+                "track_start_dec": getattr(data, "track_start_dec", None),
+                "track_end_ra": getattr(data, "track_end_ra", None),
+                "track_end_dec": getattr(data, "track_end_dec", None),
             }
         return data
 

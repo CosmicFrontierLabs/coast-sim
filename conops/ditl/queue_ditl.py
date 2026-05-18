@@ -887,6 +887,10 @@ class QueueDITL(DITLMixin, DITLStats):
         entry.station = station
         entry.contact_begin = pass_begin
         entry.contact_end = pass_end
+        entry.track_start_ra = gspass.gsstartra
+        entry.track_start_dec = gspass.gsstartdec
+        entry.track_end_ra = gspass.gsendra
+        entry.track_end_dec = gspass.gsenddec
 
         self.plan.append(entry)
         self._planned_gsp_keys.add(key)

@@ -28,6 +28,10 @@ class PlanEntry:
     station: str | None
     contact_begin: float | None
     contact_end: float | None
+    track_start_ra: float | None
+    track_start_dec: float | None
+    track_end_ra: float | None
+    track_end_dec: float | None
 
     def __init__(
         self,
@@ -57,6 +61,10 @@ class PlanEntry:
         self.station = None
         self.contact_begin = None
         self.contact_end = None
+        self.track_start_ra = None
+        self.track_start_dec = None
+        self.track_end_ra = None
+        self.track_end_dec = None
 
         self.saa = None
         self.merit = 101

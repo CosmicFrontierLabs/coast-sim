@@ -127,7 +127,11 @@ The JSON file contains a metadata envelope followed by the entry list.
          "exposure": 480,
          "station": "SGS",
          "contact_begin": "2025-12-01T00:20:00+00:00",
-         "contact_end": "2025-12-01T00:28:00+00:00"
+         "contact_end": "2025-12-01T00:28:00+00:00",
+         "track_start_ra": 120.0,
+         "track_start_dec": 45.0,
+         "track_end_ra": 231.67,
+         "track_end_dec": -0.38
        }
      ]
    }
@@ -248,6 +252,26 @@ Entry Fields
      - string | null
      - ISO-8601 UTC timestamp of when the ground station contact window ends. Only present
        for ``obstype="GSP"``. Typically matches ``end``.
+   * - ``track_start_ra``
+     - float | null
+     - Ground-station tracking right ascension at ``contact_begin`` in degrees. Only present
+       for ``obstype="GSP"``. For GSP entries, ``ra`` uses the same pass-start convention.
+   * - ``track_start_dec``
+     - float | null
+     - Ground-station tracking declination at ``contact_begin`` in degrees. Only present
+       for ``obstype="GSP"``. For GSP entries, ``dec`` uses the same pass-start convention.
+   * - ``track_end_ra``
+     - float | null
+     - Ground-station tracking right ascension used by ACS at pass end, in degrees. This is
+       derived from the final tracking sample and matches ``Pass.ra_dec(contact_end)``. Only
+       present for ``obstype="GSP"``. Use this with ``track_end_dec`` when inspecting slews
+       after a pass.
+   * - ``track_end_dec``
+     - float | null
+     - Ground-station tracking declination used by ACS at pass end, in degrees. This is
+       derived from the final tracking sample and matches ``Pass.ra_dec(contact_end)``. Only
+       present for ``obstype="GSP"``. Use this with ``track_end_ra`` when inspecting slews
+       after a pass.
 
 Ground Station Pass (GSP) Entries
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -265,6 +289,12 @@ and execution of data downlink passes.
   of the ground station contact.
 * **Metadata fields**: The ``station``, ``contact_begin``, and ``contact_end`` fields are
   only present for GSP entries (``null`` or omitted for other observation types).
+* **Tracking attitude**: GSP entries track the ground station through the contact. The
+  generic ``ra`` and ``dec`` fields are the pass-start pointing, matching
+  ``track_start_ra`` and ``track_start_dec``. Use ``track_end_ra`` and
+  ``track_end_dec`` to inspect the spacecraft pointing at the end of the pass. The end
+  fields are derived from the final tracking sample, matching ACS
+  ``Pass.ra_dec(contact_end)`` behavior.
 * **Deconfliction**: When multiple ground stations are visible simultaneously, COASTSim
   automatically selects the pass with the highest expected data volume (downlink rate × duration).
   Dropped overlapping opportunities are logged but not exported to the plan.
@@ -286,6 +316,10 @@ and execution of data downlink passes.
      "contact_begin": "2025-12-01T12:02:00+00:00",
      "contact_end": "2025-12-01T12:12:00+00:00",
      "end": "2025-12-01T12:12:00+00:00",
+     "track_start_ra": 120.0,
+     "track_start_dec": 45.0,
+     "track_end_ra": 231.67,
+     "track_end_dec": -0.38,
      "slewtime": 120,
      "exptime": 600,
      "obsid": 65535
