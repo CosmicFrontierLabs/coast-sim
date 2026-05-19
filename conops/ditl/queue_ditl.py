@@ -700,9 +700,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
     @staticmethod
     def _entry_matches_slew(entry: PlanEntry, slew: Slew) -> bool:
-        return entry.obstype == ObsType.AT and getattr(entry, "obsid", None) == getattr(
-            slew, "obsid", None
-        )
+        return entry.obstype == ObsType.AT and entry.obsid == slew.obsid
 
     def _sync_slew_metadata(self, slew: Slew) -> None:
         if slew.obstype != ObsType.PPT:
