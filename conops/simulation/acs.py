@@ -205,9 +205,9 @@ class ACS:
                 ),
             )
 
-    @classmethod
-    def _command_label(cls, command: ACSCommand) -> str:
-        obsid = cls._command_obsid(command)
+    @staticmethod
+    def _command_label(command: ACSCommand) -> str:
+        obsid = ACS._command_obsid(command)
         if obsid is None:
             return command.command_type.name
         return f"{command.command_type.name} obsid={obsid}"
