@@ -45,6 +45,7 @@ from .ditl import (
     DITLMixin,
     DITLs,
     DITLStats,
+    PlanExecutionMismatchError,
     QueueDITL,
     TOORequest,
 )
@@ -118,6 +119,7 @@ __all__ = [
     "PassTimes",
     "Plan",
     "PlanEntry",
+    "PlanExecutionMismatchError",
     "plot_ditl_timeline",
     "plot_fault_management_timeline",
     "plot_fault_management_timeline_plotly",

@@ -387,6 +387,31 @@ class TestPointing:
         assert dec == 30.0
 
     @patch("conops.optimum_roll")
+    def test_pointing_current_pass_reports_pass_obsid(self, mock_roll, acs) -> None:
+        """Active pass tracking should report the pass obsid, not stale science."""
+        mock_roll.return_value = 0.0
+
+        current_pass = Mock(spec=Pass)
+        current_pass.in_pass = Mock(return_value=True)
+        current_pass.ra_dec = Mock(return_value=(50.0, 35.0))
+        current_pass.obsid = 0xFFFF
+
+        stale_science = Mock()
+        stale_science.obsid = 101
+        stale_science.ra_dec = Mock(return_value=(10.0, 20.0))
+        stale_science.obstype = "PPT"
+        stale_science.is_slewing = Mock(return_value=False)
+
+        acs.current_pass = current_pass
+        acs.last_slew = stale_science
+
+        ra, dec, _, obsid = acs.pointing(1514765000.0)
+
+        assert obsid == 0xFFFF
+        assert ra == 50.0
+        assert dec == 35.0
+
+    @patch("conops.optimum_roll")
     def test_pointing_with_constraint_violation(
         self, mock_roll, acs, mock_constraint
     ) -> None:

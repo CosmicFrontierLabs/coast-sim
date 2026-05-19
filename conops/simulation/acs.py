@@ -564,6 +564,8 @@ class ACS:
         self._check_constraints(utime)
 
         # Return current pointing
+        if self.current_pass is not None:
+            return self.ra, self.dec, self.roll, self.current_pass.obsid
         if self.last_slew is not None:
             return self.ra, self.dec, self.roll, self.last_slew.obsid
         else:
