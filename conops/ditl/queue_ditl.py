@@ -608,6 +608,11 @@ class QueueDITL(DITLMixin, DITLStats):
     def _science_start_time(self, entry: PlanEntry) -> float:
         return float(entry.begin) + max(0.0, float(getattr(entry, "slewtime", 0.0)))
 
+    def _window_indices(self, start: float, end: float) -> range:
+        lo = max(0, int(self.ephem.index(dtutcfromtimestamp(start))))
+        hi = int(self.ephem.index(dtutcfromtimestamp(end)))
+        return range(lo, hi)
+
     def _execution_mismatch(
         self,
         utime: float,
@@ -675,10 +680,8 @@ class QueueDITL(DITLMixin, DITLStats):
 
         samples = 0
         science_samples = 0
-        for i, utime in enumerate(self.utime):
-            if not (start <= utime < end):
-                continue
-
+        for i in self._window_indices(start, end):
+            utime = self.utime[i]
             samples += 1
             mode = self._mode_at_index(i)
             if mode == ACSMode.SAA:
@@ -767,10 +770,8 @@ class QueueDITL(DITLMixin, DITLStats):
                 )
             )
 
-        for i, utime in enumerate(self.utime):
-            if not (start <= utime < end):
-                continue
-
+        for i in self._window_indices(start, end):
+            utime = self.utime[i]
             mode = self._mode_at_index(i)
             if mode != ACSMode.PASS:
                 mismatches.append(
