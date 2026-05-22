@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from conops import ACSCommandType, ACSMode, Pass, QueueDITL
+from conops import ACS, ACSCommand, ACSCommandType, ACSMode, Pass, QueueDITL, Slew
 from conops.common.enums import ObsType
 from conops.config.config import MissionConfig
 from conops.ditl.telemetry import Housekeeping
@@ -567,6 +567,189 @@ class TestFetchNewPPT:
         assert command.slew.endra == 45.0
         assert command.slew.enddec == 30.0
         assert command.slew.obsid == 1001
+
+    def test_fetch_ppt_copies_command_slew_metadata_to_target(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        mock_ppt = Mock()
+        mock_ppt.ra = 45.0
+        mock_ppt.dec = 30.0
+        mock_ppt.obsid = 1001
+        mock_ppt.next_vis = Mock(return_value=1000.0)
+        mock_ppt.ss_max = 3600.0
+        mock_ppt.ss_min = 300.0
+        mock_ppt.windows = [[0.0, 1e12]]
+        mock_ppt.slewtime = 12
+        mock_ppt.slewdist = 3.0
+        queue_ditl.acs.roll = 25.0
+        cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
+
+        queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        command = cast(Mock, queue_ditl.acs.enqueue_command).call_args[0][0]
+        assert mock_ppt.begin == command.slew.slewstart
+        assert mock_ppt.roll == command.slew.endroll
+        assert mock_ppt.slewtime == int(round(command.slew.slewtime))
+        assert mock_ppt.slewdist == pytest.approx(command.slew.slewdist)
+
+    def test_sync_acs_slew_metadata_updates_exported_plan_entry(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        target = PlanEntry(config=queue_ditl.config)
+        target.obstype = ObsType.AT
+        target.obsid = 1001
+        target.ss_max = 3600.0
+        target.begin = 1000.0
+        target.end = 1000.0 + 86400.0
+        target.slewtime = 5
+        target.slewdist = 2.0
+
+        entry = target.copy()
+        entry.slewtime = 1
+        entry.slewdist = 1.0
+        queue_ditl.plan.append(entry)
+        queue_ditl.ppt = target
+
+        slew = Slew(config=queue_ditl.config)
+        slew.obstype = ObsType.PPT
+        slew.obsid = target.obsid
+        slew.at = target
+        slew.slewstart = 1000.0
+        slew.startra = 10.0
+        slew.startdec = 20.0
+        slew.startroll = 25.0
+        slew.endra = 45.0
+        slew.enddec = 30.0
+        slew.endroll = 70.0
+        slew.calc_slewtime()
+        queue_ditl.acs.executed_commands = []
+        queue_ditl.acs.current_slew = slew
+
+        queue_ditl._sync_acs_slew_metadata()
+
+        assert target.slewtime == int(round(slew.slewtime))
+        assert target.slewdist == pytest.approx(slew.slewdist)
+        assert entry.slewtime == int(round(slew.slewtime))
+        assert entry.slewdist == pytest.approx(slew.slewdist)
+        assert entry.end == int(slew.slewstart + slew.slewtime + entry.ss_max)
+
+    def test_exported_slew_metadata_matches_acs_slew_event(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        acs = ACS(config=queue_ditl.config, log=queue_ditl.log)
+        acs.ra = 10.0
+        acs.dec = 20.0
+        acs.roll = 25.0
+        queue_ditl.acs = acs
+
+        target = PlanEntry(config=queue_ditl.config)
+        target.obstype = ObsType.AT
+        target.obsid = 1001
+        target.ss_max = 3600.0
+        target.begin = 1000.0
+        target.end = 1000.0 + 86400.0
+        target.slewtime = 5
+        target.slewdist = 2.0
+        queue_ditl.plan.append(target.copy())
+        queue_ditl.ppt = target
+
+        slew = Slew(config=queue_ditl.config)
+        slew.obstype = ObsType.PPT
+        slew.obsid = target.obsid
+        slew.at = target
+        slew.endra = 45.0
+        slew.enddec = 30.0
+        slew.endroll = 70.0
+
+        acs._start_slew(slew, 1000.0)
+        queue_ditl._sync_acs_slew_metadata()
+
+        entry = queue_ditl.plan[0]
+        slew_event = next(
+            event
+            for event in queue_ditl.log.events
+            if event.event_type == "SLEW" and "Starting slew" in event.description
+        )
+        assert entry.slewtime == int(round(slew.slewtime))
+        assert entry.slewdist == pytest.approx(slew.slewdist)
+        assert f"duration: {float(entry.slewtime):.1f}s" in slew_event.description
+        assert f"distance: {entry.slewdist:.1f} deg" in slew_event.description
+
+    def test_syncs_each_executed_science_slew_command(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        entries = []
+        slews = []
+        for index, obsid in enumerate((1001, 1002)):
+            entry = PlanEntry(config=queue_ditl.config)
+            entry.obstype = ObsType.AT
+            entry.obsid = obsid
+            entry.ss_max = 3600.0
+            entry.begin = 940.0
+            entry.end = entry.begin + 86400.0
+            entry.slewtime = 5
+            entry.slewdist = 2.0
+            queue_ditl.plan.append(entry)
+            entries.append(entry)
+
+            slew = Slew(config=queue_ditl.config)
+            slew.obstype = ObsType.PPT
+            slew.obsid = obsid
+            slew.slewstart = 1000.0
+            slew.startra = 10.0
+            slew.startdec = 20.0
+            slew.startroll = 25.0
+            slew.endra = 45.0 + index
+            slew.enddec = 30.0 + index
+            slew.endroll = 70.0 + index
+            slew.calc_slewtime()
+            slews.append(slew)
+
+        queue_ditl.acs.executed_commands = [
+            ACSCommand(
+                command_type=ACSCommandType.SLEW_TO_TARGET,
+                execution_time=slew.slewstart,
+                slew=slew,
+            )
+            for slew in slews
+        ]
+        queue_ditl.acs.current_slew = slews[-1]
+
+        queue_ditl._sync_acs_slew_metadata()
+
+        for entry, slew in zip(entries, slews):
+            assert entry.begin == int(slew.slewstart)
+            assert entry.slewtime == int(round(slew.slewtime))
+            assert entry.slewdist == pytest.approx(slew.slewdist)
+            assert entry.roll == pytest.approx(slew.endroll)
+
+    def test_rejected_ppt_keeps_queue_estimate_metadata(self, queue_ditl) -> None:
+        mock_ppt = Mock()
+        mock_ppt.ra = 45.0
+        mock_ppt.dec = 30.0
+        mock_ppt.obsid = 1001
+        mock_ppt.next_vis = Mock(return_value=1000.0)
+        mock_ppt.ss_max = 3600.0
+        mock_ppt.ss_min = 300.0
+        mock_ppt.windows = [[0.0, 1e12]]
+        mock_ppt.begin = 10.0
+        mock_ppt.end = 20.0
+        mock_ppt.roll = 5.0
+        mock_ppt.slewtime = 12
+        mock_ppt.slewdist = 3.0
+        cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
+        cast(Mock, queue_ditl.acs.passrequests).current_pass = Mock(return_value=None)
+        cast(Mock, queue_ditl.acs.passrequests).next_pass = Mock(return_value=None)
+        queue_ditl.constraint.in_constraint = Mock(return_value=True)
+
+        queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
+        assert mock_ppt.begin == 10.0
+        assert mock_ppt.end == 20.0
+        assert mock_ppt.roll == 5.0
+        assert mock_ppt.slewtime == 12
+        assert mock_ppt.slewdist == 3.0
 
     def test_fetch_ppt_prints_messages(
         self, queue_ditl: QueueDITL, capsys: pytest.CaptureFixture[str]
@@ -1671,6 +1854,9 @@ class TestCalcMethod:
         mock_current_slew.is_slewing = Mock(return_value=True)
         mock_current_slew.slewstart = 900.0
         mock_current_slew.slewtime = 200.0
+        mock_current_slew.endra = 12.0
+        mock_current_slew.enddec = 22.0
+        mock_current_slew.endroll = 32.0
         queue_ditl.acs.last_slew = mock_current_slew
         queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
 

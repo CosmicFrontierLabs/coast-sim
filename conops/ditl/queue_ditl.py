@@ -151,6 +151,7 @@ class QueueDITL(DITLMixin, DITLStats):
         # successful dispatch; None during a pass (spacecraft is occupied).
         self._ppt_unavailable: bool | None = None
         self._planned_gsp_keys: set[tuple[str, float, float]] = set()
+        self._synced_executed_slew_count = 0
 
     def get_acs_queue_status(self) -> dict[str, Any]:
         """
@@ -414,6 +415,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
             # Get current pointing and mode from ACS
             ra, dec, roll, obsid = self.acs.pointing(utime)
+            self._sync_acs_slew_metadata()
             mode = self.acs.get_mode(utime)
 
             # Check pass timing and manage passes
@@ -683,6 +685,58 @@ class QueueDITL(DITLMixin, DITLStats):
             # Charging PPTs use exactly 86400, science obs use larger values
             if last_entry.end >= last_entry.begin + 86400:
                 self._close_last_plan_entry(utime)
+
+    @staticmethod
+    def _apply_slew_metadata(
+        entry: PlanEntry, slew: Slew, *, update_end: bool = False
+    ) -> None:
+        entry.begin = int(slew.slewstart)
+        entry.slewtime = int(round(slew.slewtime))
+        entry.slewdist = float(slew.slewdist)
+        entry.slewpath = slew.slewpath
+        entry.roll = float(slew.endroll)
+        if update_end:
+            entry.end = int(slew.slewstart + slew.slewtime + entry.ss_max)
+
+    @staticmethod
+    def _entry_matches_slew(entry: PlanEntry, slew: Slew) -> bool:
+        return entry.obstype == ObsType.AT and entry.obsid == slew.obsid
+
+    def _sync_slew_metadata(self, slew: Slew) -> None:
+        if slew.obstype != ObsType.PPT:
+            return
+
+        if self.ppt is not None and self._entry_matches_slew(self.ppt, slew):
+            self._apply_slew_metadata(self.ppt, slew, update_end=True)
+
+        for entry in reversed(list(self.plan)):
+            if self._entry_matches_slew(entry, slew):
+                update_end = entry.end >= entry.begin + 86400
+                self._apply_slew_metadata(entry, slew, update_end=update_end)
+                return
+
+    def _sync_acs_slew_metadata(self) -> None:
+        """Copy ACS science slew metadata onto exported plan entries."""
+        new_commands = self.acs.executed_commands[self._synced_executed_slew_count :]
+        for command in new_commands:
+            if command.command_type == ACSCommandType.SLEW_TO_TARGET:
+                slew = command.slew
+                if isinstance(slew, Slew):
+                    self._sync_slew_metadata(slew)
+        self._synced_executed_slew_count = len(self.acs.executed_commands)
+
+        if isinstance(self.acs.current_slew, Slew):
+            self._sync_slew_metadata(self.acs.current_slew)
+
+    def _expected_slew_start_attitude(
+        self, utime: float, execution_time: float
+    ) -> tuple[float, float, float]:
+        active_slew = self.acs.last_slew
+        if isinstance(active_slew, Slew) and active_slew.is_slewing(utime):
+            slewend = active_slew.slewstart + active_slew.slewtime
+            if execution_time >= slewend:
+                return active_slew.endra, active_slew.enddec, active_slew.endroll
+        return self.acs.ra, self.acs.dec, self.acs.roll
 
     def _handle_mode_operations(
         self, mode: ACSMode, utime: float, ra: float, dec: float
@@ -1354,10 +1408,6 @@ class QueueDITL(DITLMixin, DITLStats):
                 self._ppt_unavailable = True
                 return
 
-            # Initialize slew start positions from current ACS pointing
-            slew.startra = self.acs.ra
-            slew.startdec = self.acs.dec
-
             # Calculate slew timing
             execution_time = utime
 
@@ -1390,6 +1440,9 @@ class QueueDITL(DITLMixin, DITLStats):
                 execution_time = visstart
 
             slew.slewstart = execution_time
+            slew.startra, slew.startdec, slew.startroll = (
+                self._expected_slew_start_attitude(utime, execution_time)
+            )
 
             # When ignore_roll=True, verify that a valid roll exists before slewing.
             # optimum_roll() falls back to the unconstrained solar roll when
@@ -1430,7 +1483,6 @@ class QueueDITL(DITLMixin, DITLStats):
                 self.config.solar_panel,
                 self.config.constraint,
             )
-            self.ppt.roll = slew.endroll
             slew.calc_slewtime()
 
             # Validate that the locked roll satisfies constraints for at least
@@ -1504,12 +1556,8 @@ class QueueDITL(DITLMixin, DITLStats):
             ):
                 return
 
+            self._apply_slew_metadata(self.ppt, slew, update_end=True)
             self.acs.slew_dists.append(slew.slewdist)
-
-            # Update PPT timing based on slew
-            self.ppt.begin = int(execution_time)
-            # Update PPT end time to ensure it has enough time for slew + max observation
-            self.ppt.end = int(execution_time + slew.slewtime + self.ppt.ss_max)
 
             self.log.log_event(
                 utime=utime,
