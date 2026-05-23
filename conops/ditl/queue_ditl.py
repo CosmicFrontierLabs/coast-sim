@@ -1088,10 +1088,15 @@ class QueueDITL(DITLMixin, DITLStats):
 
         # If charging PPT created successfully, send command to ACS and replace current PPT
         if self.charging_ppt is not None:
-            if interrupted_ppt is not None and self._is_short_science_entry(
-                interrupted_ppt
-            ):
-                interrupted_ppt.done = False
+            if interrupted_ppt is not None:
+                if (
+                    len(self.plan) > 0
+                    and self._entry_obstype(self.plan[-1]) == ObsType.AT
+                    and int(self.plan[-1].obsid) == int(interrupted_ppt.obsid)
+                ):
+                    self._close_last_plan_entry(utime)
+                if self._is_short_science_entry(interrupted_ppt):
+                    interrupted_ppt.done = False
 
             command = ACSCommand(
                 command_type=ACSCommandType.START_BATTERY_CHARGE,
