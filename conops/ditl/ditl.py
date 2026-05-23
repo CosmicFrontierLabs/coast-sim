@@ -341,6 +341,7 @@ class DITL(DITLMixin, DITLStats):
                 )
                 self.telemetry.data.append(pd)
 
+        self._attach_attitude_timeseries_to_plan()
         return True
 
     def _compute_sun_angle(self, utime: float, ra: float, dec: float) -> float | None:

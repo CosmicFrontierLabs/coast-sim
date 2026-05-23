@@ -8,6 +8,7 @@ import pytest
 
 from conops import Plan, PlanEntry
 from conops.common.enums import ObsType
+from conops.targets import AttitudeSampleSchema, AttitudeTimeseriesSchema
 
 
 def _make_plan_entry(obsid: int, begin: float, end: float) -> PlanEntry:
@@ -219,6 +220,33 @@ class TestPlanSaveLoad:
         assert "end" in raw
         assert raw["num_entries"] == 2
         assert len(raw["entries"]) == 2
+
+    def test_save_writes_attitude_timeseries_companion(self, tmp_path):
+        """Plan.save() writes the attached executed-attitude companion file."""
+        plan = _make_plan(1)
+        plan.attitude_timeseries = AttitudeTimeseriesSchema(
+            samples=[
+                AttitudeSampleSchema(
+                    utime=1_000_000.0,
+                    timestamp="1970-01-12T13:46:40+00:00",
+                    ra=11.0,
+                    dec=-19.0,
+                    roll=0.0,
+                    mode="SCIENCE",
+                    obsid=0,
+                )
+            ]
+        )
+        dest = tmp_path / "plan.json"
+
+        plan.save(dest)
+
+        raw = json.loads(dest.read_text())
+        attitude_path = tmp_path / raw["attitude_timeseries_file"]
+        assert attitude_path.exists()
+        attitude_raw = json.loads(attitude_path.read_text())
+        assert attitude_raw["plan_file"] == "plan.json"
+        assert attitude_raw["samples"][0]["obsid"] == 0
 
     def test_save_times_are_iso_strings(self, tmp_path):
         """start, end, and entry begin/end are serialised as ISO-8601 strings."""

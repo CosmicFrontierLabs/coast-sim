@@ -142,6 +142,58 @@ class PlanEntrySchema(BaseModel):
         return data
 
 
+class AttitudeSampleSchema(BaseModel):
+    """A single executed spacecraft attitude sample for plan inspection."""
+
+    utime: float
+    timestamp: str
+    ra: float | None = None
+    dec: float | None = None
+    roll: float | None = None
+    mode: str | None = None
+    obsid: int | None = None
+    quat_w: float | None = None
+    quat_x: float | None = None
+    quat_y: float | None = None
+    quat_z: float | None = None
+
+
+class AttitudeTimeseriesSchema(BaseModel):
+    """Continuous executed spacecraft attitude timeline tied to a plan file."""
+
+    version: int = 0
+    coast_sim_version: str = Field(default_factory=lambda: __version__)
+    created_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+    plan_file: str | None = None
+    plan_version: int | None = None
+    plan_start: float | None = None
+    plan_end: float | None = None
+    num_samples: int = 0
+    samples: list[AttitudeSampleSchema] = Field(default_factory=list)
+
+    @field_validator("plan_start", "plan_end", mode="before")
+    @classmethod
+    def _coerce_optional_time(cls, v: Any) -> float | None:
+        if v is None:
+            return None
+        if isinstance(v, str):
+            return datetime.fromisoformat(v).timestamp()
+        return float(v)
+
+    @field_serializer("plan_start", "plan_end")
+    def _serialize_optional_time(self, v: float | None) -> str | None:
+        if v is None:
+            return None
+        return datetime.fromtimestamp(v, tz=timezone.utc).isoformat()
+
+    @model_validator(mode="after")
+    def _reconcile_metadata(self) -> AttitudeTimeseriesSchema:
+        self.num_samples = len(self.samples)
+        return self
+
+
 class PlanSchema(BaseModel):
     """Top-level schema for a serialised :class:`~conops.targets.Plan`.
 
@@ -167,6 +219,9 @@ class PlanSchema(BaseModel):
         Total number of plan entries.
     entries:
         The serialised plan entries.
+    attitude_timeseries_file:
+        Optional sibling JSON file containing the executed attitude samples
+        associated with this exact plan export.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -179,7 +234,11 @@ class PlanSchema(BaseModel):
     start: float = 0.0
     end: float = 0.0
     num_entries: int = 0
+    attitude_timeseries_file: str | None = None
     entries: list[PlanEntrySchema] = Field(default_factory=list)
+    attitude_timeseries: AttitudeTimeseriesSchema | None = Field(
+        default=None, exclude=True
+    )
 
     @field_validator("start", "end", mode="before")
     @classmethod
@@ -221,6 +280,7 @@ class PlanSchema(BaseModel):
                 "end": entries[-1].end if entries else 0.0,
                 "num_entries": len(entries),
                 "entries": entries,
+                "attitude_timeseries": getattr(data, "attitude_timeseries", None),
             }
         return data
 
@@ -292,6 +352,10 @@ class PlanSchema(BaseModel):
         ]
         return max(versions) + 1 if versions else 0
 
+    @staticmethod
+    def _attitude_timeseries_path(plan_path: Path) -> Path:
+        return plan_path.with_name(f"{plan_path.stem}_attitude_timeseries.json")
+
     def save(self, path: str | Path, *, indent: int = 2) -> Path:
         """Serialise the plan to a JSON file.
 
@@ -321,8 +385,31 @@ class PlanSchema(BaseModel):
         else:
             schema = self
             dest.parent.mkdir(parents=True, exist_ok=True)
+
+        attitude_timeseries = schema.attitude_timeseries
+        if attitude_timeseries is not None:
+            attitude_path = self._attitude_timeseries_path(dest)
+            schema = schema.model_copy(
+                update={"attitude_timeseries_file": attitude_path.name}
+            )
+            attitude_timeseries = attitude_timeseries.model_copy(
+                update={
+                    "plan_file": dest.name,
+                    "plan_version": schema.version,
+                    "plan_start": schema.start,
+                    "plan_end": schema.end,
+                }
+            )
+            attitude_payload = attitude_timeseries.model_dump(
+                mode="json", exclude_none=True
+            )
+            attitude_path.write_text(
+                json.dumps(attitude_payload, indent=indent), encoding="utf-8"
+            )
+
         payload = schema.model_dump(mode="json", exclude_none=True)
         dest.write_text(json.dumps(payload, indent=indent), encoding="utf-8")
+
         return dest.resolve()
 
     @classmethod

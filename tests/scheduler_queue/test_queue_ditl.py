@@ -1,6 +1,7 @@
 """Unit tests for QueueDITL class."""
 
-from datetime import datetime
+import json
+from datetime import datetime, timezone
 from typing import cast
 from unittest.mock import Mock, patch
 
@@ -35,6 +36,39 @@ class TestQueueDITLInitialization:
             ditl = QueueDITL(config=mock_config)
             assert ditl.ppt is None
             assert ditl.charging_ppt is None
+
+    def test_attach_attitude_timeseries_to_plan(
+        self, queue_ditl: QueueDITL, tmp_path
+    ) -> None:
+        queue_ditl.telemetry.housekeeping.append(
+            Housekeeping(
+                timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                ra=12.0,
+                dec=-4.0,
+                roll=30.0,
+                acs_mode=ACSMode.SLEWING,
+                obsid=4242,
+                quat_w=1.0,
+                quat_x=0.0,
+                quat_y=0.0,
+                quat_z=0.0,
+            )
+        )
+
+        queue_ditl._attach_attitude_timeseries_to_plan()
+
+        attitude = queue_ditl.plan.attitude_timeseries
+        assert attitude is not None
+        assert attitude.num_samples == 1
+        sample = attitude.samples[0]
+        assert sample.mode == "SLEWING"
+        assert sample.obsid == 4242
+        assert sample.ra == pytest.approx(12.0)
+
+        plan_path = queue_ditl.plan.save(tmp_path / "plan.json")
+        raw = json.loads(plan_path.read_text())
+        assert raw["attitude_timeseries_file"] == "plan_attitude_timeseries.json"
+        assert (tmp_path / "plan_attitude_timeseries.json").exists()
 
     def test_initialization_pointing_lists_empty(
         self, mock_config: MissionConfig
