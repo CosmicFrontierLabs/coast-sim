@@ -2605,7 +2605,7 @@ class TestCheckAndManagePasses:
 
         pass_obj = Pass(
             station="GS_TEST",
-            begin=1100.0,
+            begin=1200.0,
             length=600.0,
             gsstartra=100.0,
             gsstartdec=50.0,
@@ -2649,7 +2649,7 @@ class TestCheckAndManagePasses:
 
         pass_obj = Pass(
             station="GS_TEST",
-            begin=1100.0,
+            begin=1200.0,
             length=600.0,
             gsstartra=100.0,
             gsstartdec=50.0,
@@ -2674,9 +2674,14 @@ class TestCheckAndManagePasses:
         ]
         assert len(gsp_entries) == 1
         entry = gsp_entries[0]
+        command = queue_ditl.acs.enqueue_command.call_args[0][0]
         assert entry.name == "GS_TEST_PASS"
         assert entry.begin == utime
         assert entry.slewtime == 100
+        assert command.slew.slewdist == pytest.approx(entry.slewdist)
+        assert command.slew.slewtime == pytest.approx(entry.slewtime)
+        assert entry.slewdist > 0
+        assert entry.contact_begin - entry.begin - entry.slewtime == 100
         assert entry.end == pass_obj.end
         assert entry.exposure == 600
         assert entry.exptime == 600
@@ -2693,6 +2698,9 @@ class TestCheckAndManagePasses:
 
         schema = PlanSchema.from_plan(queue_ditl.plan)
         assert schema.entries[0].obstype == ObsType.GSP
+        assert schema.entries[0].slewtime == entry.slewtime
+        assert schema.entries[0].slewdist == pytest.approx(entry.slewdist)
+        assert schema.entries[0].exposure == 600
         assert schema.entries[0].station == "GS_TEST"
         assert schema.entries[0].contact_begin == pass_obj.begin
         assert schema.entries[0].track_start_ra == pytest.approx(pass_obj.gsstartra)
@@ -2738,6 +2746,43 @@ class TestCheckAndManagePasses:
             entry for entry in queue_ditl.plan if entry.obstype == ObsType.GSP
         ]
         assert len(gsp_entries) == 1
+
+    def test_executed_gsp_slew_updates_exported_slew_metadata(self, queue_ditl) -> None:
+        """GSP plan slew metadata should follow the ACS-executed slew."""
+        pass_obj = Pass(
+            station="GS_TEST",
+            begin=1100.0,
+            length=600.0,
+            gsstartra=100.0,
+            gsstartdec=50.0,
+            obsid=4242,
+        )
+        pass_obj.utime = [pass_obj.begin, pass_obj.end - 60.0]
+        pass_obj.ra = [pass_obj.gsstartra, pass_obj.gsendra]
+        pass_obj.dec = [pass_obj.gsstartdec, pass_obj.gsenddec]
+        queue_ditl.acs.passrequests.current_pass = Mock(return_value=None)
+        queue_ditl.acs.passrequests.next_pass = Mock(return_value=pass_obj)
+        queue_ditl.acs.acsmode = ACSMode.SCIENCE
+
+        with patch.object(Pass, "time_to_slew", return_value=True):
+            queue_ditl._check_and_manage_passes(1000.0, 10.0, 20.0)
+
+        entry = next(entry for entry in queue_ditl.plan if entry.obstype == ObsType.GSP)
+        command = queue_ditl.acs.enqueue_command.call_args[0][0]
+        executed_begin = entry.begin + 10.0
+        executed_duration = entry.slewtime + 7.0
+        executed_distance = entry.slewdist + 5.0
+        command.slew.slewstart = executed_begin
+        command.slew.slewtime = executed_duration
+        command.slew.slewdist = executed_distance
+        queue_ditl.acs.executed_commands = [command]
+
+        queue_ditl._sync_acs_slew_metadata()
+
+        assert entry.begin == int(executed_begin)
+        assert entry.slewtime == int(round(executed_duration))
+        assert entry.slewdist == pytest.approx(executed_distance)
+        assert entry.exposure == 600
 
     def test_check_and_manage_passes_safe_mode_does_not_export_gsp(
         self, queue_ditl
@@ -2898,6 +2943,7 @@ class TestCheckAndManagePasses:
         assert entry.name == "GS_ACTIVE_PASS"
         assert entry.begin == utime
         assert entry.slewtime == 0
+        assert entry.slewdist == 0.0
         assert entry.end == pass_obj.end
         assert entry.exposure == 550
         assert entry.exptime == 550
