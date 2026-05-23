@@ -1667,6 +1667,7 @@ class TestCalcMethod:
             return charging_ppt
 
         queue_ditl.ppt = science_ppt
+        queue_ditl.plan = [science_ppt]
         queue_ditl.emergency_charging.initiate_emergency_charging = Mock(
             side_effect=interrupt_for_charging
         )
@@ -1674,6 +1675,7 @@ class TestCalcMethod:
         queue_ditl._initiate_charging(1250.0, 10.0, 20.0)
 
         assert science_ppt.done is False
+        assert science_ppt not in queue_ditl.plan
         assert queue_ditl.ppt is charging_ppt
         queue_ditl.acs.enqueue_command.assert_called_once()
 
