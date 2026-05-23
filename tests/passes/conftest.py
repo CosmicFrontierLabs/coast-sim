@@ -8,6 +8,7 @@ import pytest
 from rust_ephem import TLEEphemeris
 
 from conops import Constraint, MissionConfig, Pass
+from conops.common.enums import SlewAlgorithm
 from conops.config import (
     AttitudeControlSystem,
     Battery,
@@ -194,6 +195,7 @@ def acs_mock():
     acs = Mock(spec=AttitudeControlSystem)
     acs.predict_slew.return_value = (0.1, None)
     acs.slew_time.return_value = 100.0
+    acs.slew_algorithm = SlewAlgorithm.QUATERNION
     return acs
 
 
