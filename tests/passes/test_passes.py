@@ -11,6 +11,7 @@ from conops import (
     Pass,
     PassTimes,
 )
+from conops.common.enums import ObsType
 from conops.config import AttitudeControlSystem, BandCapability, GroundStation
 from conops.simulation.passes import pass_slew_trigger_buffer
 
@@ -35,6 +36,22 @@ class TestPassInitialization:
         assert p.begin == base_begin
         assert p.length == 480.0
         assert p.obsid == 0xFFFF
+        assert p.obstype is ObsType.GSP
+
+    def test_pass_obstype_accepts_serialized_value(
+        self, mock_config, mock_acs_config, base_begin
+    ):
+        mock_config.spacecraft_bus.attitude_control = mock_acs_config
+        p = Pass(
+            config=mock_config,
+            ephem=None,
+            station="SGS",
+            begin=base_begin,
+            length=480.0,
+            obstype="GSP",
+        )
+
+        assert p.obstype is ObsType.GSP
 
     def test_pass_creation_full(
         self,

@@ -5,7 +5,7 @@ import rust_ephem
 from pydantic import BaseModel, Field
 
 from ..common import ics_date_conv, unixtime2date
-from ..common.enums import AntennaType
+from ..common.enums import AntennaType, ObsType
 from ..common.vector import radec2vec, rotvec, separation, vec2radec
 from ..config import Constraint, GroundStationRegistry, MissionConfig
 from ..config.constants import DTOR
@@ -34,7 +34,7 @@ class Pass(BaseModel):
     length: float
 
     # What type of observation is this, a Ground Station Pass (GSP)
-    obstype: str = "GSP"
+    obstype: ObsType = ObsType.GSP
 
     # Ground station pointing vectors (start/end of contact)
     gsstartra: float = 0.0

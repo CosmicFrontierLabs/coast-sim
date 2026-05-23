@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from conops import PlanEntry
+from conops.common.enums import ObsType
 
 
 class MockSAA:
@@ -56,7 +57,7 @@ class TestPlanEntryInit:
         assert pe.obsid == 0
         assert pe.merit == 101
         assert pe.windows == []
-        assert pe.obstype == "PPT"
+        assert pe.obstype == ObsType.PPT
         assert pe.slewpath == ([], [])
         assert pe.slewdist == 0.0
 

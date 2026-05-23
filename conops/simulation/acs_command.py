@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict
 
-from ..common import ACSCommandType
+from ..common import ACSCommandType, ObsType
 
 if TYPE_CHECKING:
     from .slew import Slew
@@ -18,7 +18,7 @@ class ACSCommand(BaseModel):
     dec: float | None = None
     roll: float | None = None
     obsid: int | None = None
-    obstype: str = "PPT"
+    obstype: ObsType = ObsType.PPT
     reason: str | None = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
