@@ -1,5 +1,6 @@
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import rust_ephem
@@ -52,6 +53,22 @@ class TOORequest(BaseModel):
     name: str
     submit_time: float = 0.0
     executed: bool = False
+
+
+class PlanExecutionMismatchError(RuntimeError):
+    """Raised when an exported plan entry does not match executed ACS telemetry."""
+
+
+@dataclass(frozen=True)
+class PlanExecutionMismatch:
+    """A single mismatch between an exported plan entry and ACS telemetry."""
+
+    utime: float
+    message: str
+    obsid: int | None = None
+
+    def __str__(self) -> str:
+        return self.message
 
 
 class QueueDITL(DITLMixin, DITLStats):
@@ -453,6 +470,8 @@ class QueueDITL(DITLMixin, DITLStats):
         if self.plan:
             self._close_last_plan_entry(utime)
 
+        self._assert_plan_matches_execution()
+
         return True
 
     def _handle_data_management(self, utime: float, mode: ACSMode) -> None:
@@ -544,6 +563,284 @@ class QueueDITL(DITLMixin, DITLStats):
         if collection_time is None:
             return False
         return collection_time < max(0.0, float(entry.ss_min))
+
+    def _entry_obstype(self, entry: PlanEntry) -> ObsType | None:
+        obstype = getattr(entry, "obstype", None)
+        if isinstance(obstype, ObsType):
+            return obstype
+        try:
+            return ObsType(obstype)
+        except (TypeError, ValueError):
+            return None
+
+    def _mode_at_index(self, index: int) -> ACSMode | None:
+        mode = self.mode[index]
+        if isinstance(mode, ACSMode):
+            return mode
+        try:
+            return ACSMode(mode)
+        except (TypeError, ValueError):
+            return None
+
+    def _plan_execution_tolerance_deg(self) -> float:
+        acs_config = self.config.spacecraft_bus.attitude_control
+        try:
+            tolerance = float(acs_config.slew_accuracy)
+        except (TypeError, ValueError):
+            tolerance = 0.01
+        return tolerance if tolerance > 0 else 0.01
+
+    def _telemetry_length_mismatch(self) -> PlanExecutionMismatch | None:
+        lengths = {
+            "utime": len(self.utime),
+            "ra": len(self.ra),
+            "dec": len(self.dec),
+            "obsid": len(self.obsid),
+            "mode": len(self.mode),
+        }
+        if len(set(lengths.values())) == 1:
+            return None
+        return PlanExecutionMismatch(
+            utime=self.uend or self.ustart,
+            message=f"telemetry_length_mismatch: {lengths}",
+        )
+
+    def _science_start_time(self, entry: PlanEntry) -> float:
+        return float(entry.begin) + max(0.0, float(getattr(entry, "slewtime", 0.0)))
+
+    def _window_indices(self, start: float, end: float) -> range:
+        lo = max(0, int(self.ephem.index(dtutcfromtimestamp(start))))
+        hi = int(self.ephem.index(dtutcfromtimestamp(end)))
+        return range(lo, hi)
+
+    def _execution_mismatch(
+        self,
+        utime: float,
+        interval: str,
+        mismatch_type: str,
+        detail: str,
+        obsid: int | None = None,
+    ) -> PlanExecutionMismatch:
+        return PlanExecutionMismatch(
+            utime=utime,
+            message=f"{unixtime2date(utime)} {interval} {mismatch_type}: {detail}",
+            obsid=obsid,
+        )
+
+    def _mode_mismatch(
+        self,
+        entry: PlanEntry,
+        utime: float,
+        actual_mode: ACSMode | None,
+        expected_mode: ACSMode,
+        interval: str,
+    ) -> PlanExecutionMismatch:
+        return self._execution_mismatch(
+            utime,
+            interval,
+            "mode_mismatch",
+            f"obsid {entry.obsid} expected {expected_mode} got {actual_mode}",
+            obsid=int(entry.obsid),
+        )
+
+    def _obsid_mismatch(
+        self, entry: PlanEntry, utime: float, actual_obsid: int, interval: str
+    ) -> PlanExecutionMismatch:
+        return self._execution_mismatch(
+            utime,
+            interval,
+            "obsid_mismatch",
+            f"expected {int(entry.obsid)} got {int(actual_obsid)}",
+            obsid=int(entry.obsid),
+        )
+
+    def _pointing_mismatch(
+        self,
+        entry: PlanEntry,
+        utime: float,
+        error_deg: float,
+        interval: str,
+    ) -> PlanExecutionMismatch:
+        return self._execution_mismatch(
+            utime,
+            interval,
+            "pointing_mismatch",
+            f"obsid {int(entry.obsid)} error {error_deg:.3f} deg",
+            obsid=int(entry.obsid),
+        )
+
+    def _validate_science_entry_execution(
+        self, entry: PlanEntry, tolerance_deg: float
+    ) -> list[PlanExecutionMismatch]:
+        start = self._science_start_time(entry)
+        end = float(entry.end)
+        mismatches: list[PlanExecutionMismatch] = []
+        if end <= start:
+            return mismatches
+
+        samples = 0
+        science_samples = 0
+        for i in self._window_indices(start, end):
+            utime = self.utime[i]
+            samples += 1
+            mode = self._mode_at_index(i)
+            if mode == ACSMode.SAA:
+                continue
+            if mode != ACSMode.SCIENCE:
+                mismatches.append(
+                    self._mode_mismatch(entry, utime, mode, ACSMode.SCIENCE, "science")
+                )
+                continue
+
+            science_samples += 1
+            if int(self.obsid[i]) != int(entry.obsid):
+                mismatches.append(
+                    self._obsid_mismatch(entry, utime, self.obsid[i], "science")
+                )
+
+            error_deg = angular_separation(
+                float(self.ra[i]), float(self.dec[i]), float(entry.ra), float(entry.dec)
+            )
+            if error_deg > tolerance_deg:
+                mismatches.append(
+                    self._pointing_mismatch(entry, utime, error_deg, "science")
+                )
+
+        if samples > 0 and science_samples == 0:
+            mismatches.append(
+                self._execution_mismatch(
+                    start,
+                    "science",
+                    "no_science_execution",
+                    f"obsid {int(entry.obsid)}",
+                    obsid=int(entry.obsid),
+                )
+            )
+        return mismatches
+
+    def _matching_pass_for_entry(self, entry: PlanEntry) -> Pass | None:
+        passrequests = getattr(self.acs, "passrequests", None)
+        passes = getattr(passrequests, "passes", None)
+        if not isinstance(passes, list):
+            return None
+
+        station = getattr(entry, "station", None)
+        contact_begin = getattr(entry, "contact_begin", None)
+        contact_end = getattr(entry, "contact_end", None)
+        for gspass in passes:
+            if station is not None and gspass.station != station:
+                continue
+            begin_matches = (
+                contact_begin is None
+                or abs(float(gspass.begin) - float(contact_begin)) <= 1e-6
+            )
+            end_matches = (
+                contact_end is None
+                or abs(float(gspass.end) - float(contact_end)) <= 1e-6
+            )
+            if begin_matches and end_matches:
+                return cast(Pass, gspass)
+        return None
+
+    def _validate_gsp_entry_execution(
+        self, entry: PlanEntry, tolerance_deg: float
+    ) -> list[PlanExecutionMismatch]:
+        contact_begin = getattr(entry, "contact_begin", None)
+        contact_end = getattr(entry, "contact_end", None)
+        start = (
+            float(contact_begin)
+            if contact_begin is not None
+            else self._science_start_time(entry)
+        )
+        end = float(contact_end) if contact_end is not None else float(entry.end)
+        mismatches: list[PlanExecutionMismatch] = []
+        if end <= start:
+            return mismatches
+
+        gspass = self._matching_pass_for_entry(entry)
+        missing_profile = gspass is None or not gspass.ra or not gspass.dec
+        if missing_profile:
+            mismatches.append(
+                self._execution_mismatch(
+                    start,
+                    "contact",
+                    "pass_profile_missing",
+                    f"obsid {int(entry.obsid)} station {getattr(entry, 'station', None)}",
+                    obsid=int(entry.obsid),
+                )
+            )
+
+        for i in self._window_indices(start, end):
+            utime = self.utime[i]
+            mode = self._mode_at_index(i)
+            if mode != ACSMode.PASS:
+                mismatches.append(
+                    self._mode_mismatch(entry, utime, mode, ACSMode.PASS, "contact")
+                )
+
+            if int(self.obsid[i]) != int(entry.obsid):
+                mismatches.append(
+                    self._obsid_mismatch(entry, utime, self.obsid[i], "contact")
+                )
+
+            if missing_profile:
+                continue
+            assert gspass is not None
+            expected_ra, expected_dec = gspass.ra_dec(utime)
+            if expected_ra is None or expected_dec is None:
+                continue
+
+            error_deg = angular_separation(
+                float(self.ra[i]),
+                float(self.dec[i]),
+                float(expected_ra),
+                float(expected_dec),
+            )
+            if error_deg > tolerance_deg:
+                mismatches.append(
+                    self._pointing_mismatch(entry, utime, error_deg, "contact")
+                )
+        return mismatches
+
+    def validate_plan_matches_execution(self) -> list[PlanExecutionMismatch]:
+        """Return plan/ACS mismatches over exported science and contact intervals."""
+        mismatch = self._telemetry_length_mismatch()
+        if mismatch is not None:
+            return [mismatch]
+
+        tolerance_deg = self._plan_execution_tolerance_deg()
+        mismatches: list[PlanExecutionMismatch] = []
+        for entry in self.plan:
+            obstype = self._entry_obstype(entry)
+            if obstype in (ObsType.AT, ObsType.TOO):
+                mismatches.extend(
+                    self._validate_science_entry_execution(entry, tolerance_deg)
+                )
+            elif obstype == ObsType.GSP:
+                mismatches.extend(
+                    self._validate_gsp_entry_execution(entry, tolerance_deg)
+                )
+        return mismatches
+
+    def _assert_plan_matches_execution(self) -> None:
+        mismatches = self.validate_plan_matches_execution()
+        if not mismatches:
+            return
+
+        examples = "; ".join(str(mismatch) for mismatch in mismatches[:5])
+        message = (
+            f"Plan execution validation failed with {len(mismatches)} mismatch(es): "
+            f"{examples}"
+        )
+        first = mismatches[0]
+        self.log.log_event(
+            utime=first.utime,
+            event_type="ERROR",
+            description=message,
+            obsid=first.obsid,
+            acs_mode=self.acs.acsmode,
+        )
+        raise PlanExecutionMismatchError(message)
 
     def _close_last_plan_entry(self, end_time: float) -> None:
         """Close the last plan entry in the timeline by setting its end time.
@@ -1057,6 +1354,7 @@ class QueueDITL(DITLMixin, DITLStats):
             slew.endra = next_pass.gsstartra
             slew.enddec = next_pass.gsstartdec
             slew.obstype = ObsType.GSP  # Ground Station Pass slew
+            slew.obsid = next_pass.obsid
             command = ACSCommand(
                 command_type=ACSCommandType.SLEW_TO_TARGET,
                 execution_time=utime,

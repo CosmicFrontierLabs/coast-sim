@@ -1,11 +1,21 @@
 """Unit tests for QueueDITL class."""
 
+from datetime import datetime
 from typing import cast
 from unittest.mock import Mock, patch
 
 import pytest
 
-from conops import ACS, ACSCommand, ACSCommandType, ACSMode, Pass, QueueDITL, Slew
+from conops import (
+    ACS,
+    ACSCommand,
+    ACSCommandType,
+    ACSMode,
+    Pass,
+    PlanExecutionMismatchError,
+    QueueDITL,
+    Slew,
+)
 from conops.common.enums import ObsType
 from conops.config.config import MissionConfig
 from conops.ditl.telemetry import Housekeeping
@@ -1300,6 +1310,199 @@ class TestRecordSpacecraftState:
         queue_ditl.battery.charge.assert_called_once_with(100.0, 60)
 
 
+class TestPlanExecutionValidation:
+    """Plan entries must match executed ACS telemetry before export."""
+
+    def _index_telemetry_by_time(self, queue_ditl: QueueDITL) -> None:
+        utimes = [float(utime) for utime in queue_ditl.utime]
+
+        def index(time: datetime) -> int:
+            timestamp = time.timestamp()
+            return min(
+                range(len(utimes)),
+                key=lambda i: abs(utimes[i] - timestamp),
+            )
+
+        queue_ditl.ephem.index = index
+
+    def _science_entry(self, queue_ditl: QueueDITL) -> PlanEntry:
+        entry = PlanEntry(config=queue_ditl.config)
+        entry.obstype = ObsType.AT
+        entry.obsid = 42
+        entry.ra = 10.0
+        entry.dec = 20.0
+        entry.begin = 1000.0
+        entry.slewtime = 60.0
+        entry.end = 1300.0
+        entry.ss_min = 60.0
+        return entry
+
+    def test_validation_passes_for_matching_science_execution(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        entry = self._science_entry(queue_ditl)
+        queue_ditl.plan.append(entry)
+        queue_ditl.utime = [1000.0, 1060.0, 1120.0, 1180.0, 1240.0, 1300.0]
+        queue_ditl.mode = [
+            ACSMode.SLEWING,
+            ACSMode.SCIENCE,
+            ACSMode.SCIENCE,
+            ACSMode.SCIENCE,
+            ACSMode.SCIENCE,
+            ACSMode.SCIENCE,
+        ]
+        queue_ditl.obsid = [0, 42, 42, 42, 42, 42]
+        queue_ditl.ra = [0.0, 10.0, 10.0, 10.0, 10.0, 10.0]
+        queue_ditl.dec = [0.0, 20.0, 20.0, 20.0, 20.0, 20.0]
+        self._index_telemetry_by_time(queue_ditl)
+
+        assert queue_ditl.validate_plan_matches_execution() == []
+
+    def test_validation_fails_for_stale_science_obsid(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        entry = self._science_entry(queue_ditl)
+        queue_ditl.plan.append(entry)
+        queue_ditl.utime = [1000.0, 1060.0, 1120.0, 1300.0]
+        queue_ditl.mode = [
+            ACSMode.SLEWING,
+            ACSMode.SCIENCE,
+            ACSMode.SCIENCE,
+            ACSMode.SCIENCE,
+        ]
+        queue_ditl.obsid = [0, 10454, 10454, 10454]
+        queue_ditl.ra = [0.0, 10.0, 10.0, 10.0]
+        queue_ditl.dec = [0.0, 20.0, 20.0, 20.0]
+        self._index_telemetry_by_time(queue_ditl)
+
+        with pytest.raises(PlanExecutionMismatchError, match="obsid_mismatch"):
+            queue_ditl._assert_plan_matches_execution()
+
+    def test_validation_fails_for_science_pointing_mismatch(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        entry = self._science_entry(queue_ditl)
+        queue_ditl.plan.append(entry)
+        queue_ditl.utime = [1000.0, 1060.0, 1120.0, 1300.0]
+        queue_ditl.mode = [
+            ACSMode.SLEWING,
+            ACSMode.SCIENCE,
+            ACSMode.SCIENCE,
+            ACSMode.SCIENCE,
+        ]
+        queue_ditl.obsid = [0, 42, 42, 42]
+        queue_ditl.ra = [0.0, 40.0, 40.0, 40.0]
+        queue_ditl.dec = [0.0, 20.0, 20.0, 20.0]
+        self._index_telemetry_by_time(queue_ditl)
+
+        with pytest.raises(PlanExecutionMismatchError, match="pointing_mismatch"):
+            queue_ditl._assert_plan_matches_execution()
+
+    def test_validation_fails_for_contact_mode_mismatch(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        entry = PlanEntry(config=queue_ditl.config)
+        entry.obstype = ObsType.GSP
+        entry.obsid = 0xFFFF
+        entry.station = "TRO"
+        entry.begin = 900.0
+        entry.slewtime = 100.0
+        entry.contact_begin = 1000.0
+        entry.contact_end = 1180.0
+        entry.end = 1180.0
+        queue_ditl.plan.append(entry)
+        queue_ditl.utime = [900.0, 1000.0, 1060.0, 1120.0, 1180.0]
+        queue_ditl.mode = [
+            ACSMode.SLEWING,
+            ACSMode.PASS,
+            ACSMode.SCIENCE,
+            ACSMode.PASS,
+            ACSMode.PASS,
+        ]
+        queue_ditl.obsid = [0, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF]
+        queue_ditl.ra = [0.0, 10.0, 10.0, 10.0, 10.0]
+        queue_ditl.dec = [0.0, 20.0, 20.0, 20.0, 20.0]
+        self._index_telemetry_by_time(queue_ditl)
+
+        with pytest.raises(PlanExecutionMismatchError, match="mode_mismatch"):
+            queue_ditl._assert_plan_matches_execution()
+
+    def test_validation_fails_when_contact_profile_missing(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        entry = PlanEntry(config=queue_ditl.config)
+        entry.obstype = ObsType.GSP
+        entry.obsid = 0xFFFF
+        entry.station = "TRO"
+        entry.begin = 900.0
+        entry.slewtime = 100.0
+        entry.contact_begin = 1000.0
+        entry.contact_end = 1180.0
+        entry.end = 1180.0
+        queue_ditl.plan.append(entry)
+        queue_ditl.utime = [1000.0, 1060.0, 1120.0, 1180.0]
+        queue_ditl.mode = [ACSMode.PASS, ACSMode.PASS, ACSMode.PASS, ACSMode.PASS]
+        queue_ditl.obsid = [0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF]
+        queue_ditl.ra = [10.0, 10.0, 10.0, 10.0]
+        queue_ditl.dec = [20.0, 20.0, 20.0, 20.0]
+        self._index_telemetry_by_time(queue_ditl)
+
+        with pytest.raises(PlanExecutionMismatchError, match="pass_profile_missing"):
+            queue_ditl._assert_plan_matches_execution()
+
+    def test_validation_fails_for_contact_pointing_mismatch(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        entry = PlanEntry(config=queue_ditl.config)
+        entry.obstype = ObsType.GSP
+        entry.obsid = 0xFFFF
+        entry.station = "TRO"
+        entry.begin = 900.0
+        entry.slewtime = 100.0
+        entry.contact_begin = 1000.0
+        entry.contact_end = 1180.0
+        entry.end = 1180.0
+        queue_ditl.plan.append(entry)
+        pass_obj = Pass(
+            station="TRO",
+            begin=1000.0,
+            length=180.0,
+            obsid=0xFFFF,
+            utime=[1000.0, 1060.0, 1120.0, 1180.0],
+            ra=[10.0, 11.0, 12.0, 13.0],
+            dec=[20.0, 21.0, 22.0, 23.0],
+        )
+        queue_ditl.acs.passrequests.passes = [pass_obj]
+        queue_ditl.utime = [1000.0, 1060.0, 1120.0, 1180.0]
+        queue_ditl.mode = [ACSMode.PASS, ACSMode.PASS, ACSMode.PASS, ACSMode.PASS]
+        queue_ditl.obsid = [0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF]
+        queue_ditl.ra = [10.0, 40.0, 12.0, 13.0]
+        queue_ditl.dec = [20.0, 21.0, 22.0, 23.0]
+        self._index_telemetry_by_time(queue_ditl)
+
+        with pytest.raises(PlanExecutionMismatchError, match="pointing_mismatch"):
+            queue_ditl._assert_plan_matches_execution()
+
+    def test_calc_validates_plan_before_return(
+        self, queue_ditl: QueueDITL, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        called = False
+
+        def assert_plan_matches_execution() -> None:
+            nonlocal called
+            called = True
+
+        monkeypatch.setattr(
+            queue_ditl,
+            "_assert_plan_matches_execution",
+            assert_plan_matches_execution,
+        )
+        queue_ditl.step_size = 3600
+
+        assert queue_ditl.calc() is True
+        assert called is True
+
+
 class TestCalcMethod:
     """Test main calc method integration."""
 
@@ -2382,6 +2585,7 @@ class TestCheckAndManagePasses:
         # Verify slew points to the pass start position
         assert command.slew.endra == pass_obj.gsstartra
         assert command.slew.enddec == pass_obj.gsstartdec
+        assert command.slew.obsid == pass_obj.obsid
 
     def test_check_and_manage_passes_exports_gsp_plan_entry_for_pass_slew(
         self, queue_ditl, tmp_path
