@@ -1358,6 +1358,23 @@ class TestPlanExecutionValidation:
 
         assert queue_ditl.validate_plan_matches_execution() == []
 
+    def test_validation_uses_samples_inside_scheduled_interval(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        entry = self._science_entry(queue_ditl)
+        entry.begin = 970.0
+        entry.slewtime = 60.0
+        entry.end = 1120.0
+        queue_ditl.plan.append(entry)
+        queue_ditl.utime = [1000.0, 1060.0, 1120.0]
+        queue_ditl.mode = [ACSMode.SCIENCE, ACSMode.SCIENCE, ACSMode.SCIENCE]
+        queue_ditl.obsid = [999, 42, 999]
+        queue_ditl.ra = [99.0, 10.0, 99.0]
+        queue_ditl.dec = [99.0, 20.0, 99.0]
+        self._index_telemetry_by_time(queue_ditl)
+
+        assert queue_ditl.validate_plan_matches_execution() == []
+
     def test_validation_fails_for_stale_science_obsid(
         self, queue_ditl: QueueDITL
     ) -> None:

@@ -1,3 +1,4 @@
+from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, cast
@@ -609,8 +610,8 @@ class QueueDITL(DITLMixin, DITLStats):
         return float(entry.begin) + max(0.0, float(getattr(entry, "slewtime", 0.0)))
 
     def _window_indices(self, start: float, end: float) -> range:
-        lo = max(0, int(self.ephem.index(dtutcfromtimestamp(start))))
-        hi = int(self.ephem.index(dtutcfromtimestamp(end)))
+        lo = max(0, bisect_left(self.utime, start))
+        hi = min(len(self.utime), bisect_left(self.utime, end))
         return range(lo, hi)
 
     def _execution_mismatch(
