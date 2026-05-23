@@ -1242,37 +1242,37 @@ class TestBatteryChargingMethods:
             acs._start_battery_charge(command, 1514764800.0)
             mock_enqueue_command.assert_not_called()
 
-    def test_end_battery_charge_calls_enqueue_command_with_last_ppt(self, acs) -> None:
+    def test_end_battery_charge_does_not_return_to_last_ppt(self, acs) -> None:
         mock_ppt = Mock(spec=Slew)
         mock_ppt.endra = 45.0
         mock_ppt.enddec = 30.0
         mock_ppt.obsid = 100
         acs.last_ppt = mock_ppt
 
-        with (
-            patch.object(acs, "enqueue_command") as mock_enqueue_command,
-            patch(
-                "conops.Pointing.visibility",
-                new=lambda self, *args, **kwargs: (
-                    setattr(self, "windows", [[1514764800.0, 1514764900.0]]),
-                    0,
-                )[-1],
-            ),
-            patch("conops.Pointing.next_vis", return_value=1514764800.0),
-        ):
-            acs.config.spacecraft_bus.attitude_control.predict_slew.return_value = (
-                0.0,
-                (Mock(), Mock()),
-            )
-            acs.config.spacecraft_bus.attitude_control.slew_time.return_value = 10.0
+        with patch.object(acs, "_enqueue_slew") as mock_enqueue_slew:
             acs._end_battery_charge(1514764800.0)
-            # Check that enqueue_command was called with a SLEW_TO_TARGET command
-            assert mock_enqueue_command.call_count == 1
-            enqueued_command = mock_enqueue_command.call_args[0][0]
-            assert enqueued_command.command_type == ACSCommandType.SLEW_TO_TARGET
-            assert enqueued_command.slew.endra == 45.0
-            assert enqueued_command.slew.enddec == 30.0
-            assert enqueued_command.slew.obsid == 100
+
+        mock_enqueue_slew.assert_not_called()
+
+    def test_end_battery_charge_keeps_pending_target_slew(self, acs) -> None:
+        mock_ppt = Mock(spec=Slew)
+        mock_ppt.endra = 45.0
+        mock_ppt.enddec = 30.0
+        mock_ppt.obsid = 100
+        acs.last_ppt = mock_ppt
+        pending_slew = Mock(spec=Slew)
+        pending_command = ACSCommand(
+            command_type=ACSCommandType.SLEW_TO_TARGET,
+            execution_time=1514764860.0,
+            slew=pending_slew,
+        )
+        acs.command_queue = [pending_command]
+
+        with patch.object(acs, "_enqueue_slew") as mock_enqueue_slew:
+            acs._end_battery_charge(1514764800.0)
+
+        mock_enqueue_slew.assert_not_called()
+        assert acs.command_queue == [pending_command]
 
     def test_end_battery_charge_no_last_ppt_does_not_enqueue_command(self, acs) -> None:
         acs.last_ppt = None

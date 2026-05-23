@@ -1054,10 +1054,7 @@ class ACS:
             )
 
     def _end_battery_charge(self, utime: float) -> None:
-        """Handle END_BATTERY_CHARGE command execution.
-
-        Terminates charging mode by returning to previous science pointing.
-        """
+        """Handle END_BATTERY_CHARGE command execution."""
         self._log_or_print(utime, "CHARGING", "Ending battery charge")
 
         # Clear the charging slew state immediately so _is_in_charging_mode returns False
@@ -1065,16 +1062,11 @@ class ACS:
         if self.last_slew is not None and self.last_slew.obstype == ObsType.CHARGE:
             self.last_slew = None
 
-        # Return to the previous science PPT if one exists
+        # Queue-driven scheduling owns the next science target. Returning to the
+        # previous PPT here can resurrect a closed observation after charging.
         if self.last_ppt is not None:
             self._log_or_print(
                 utime,
                 "CHARGING",
-                f"Returning to last PPT at RA={self.last_ppt.endra:.2f} Dec={self.last_ppt.enddec:.2f} obsid={self.last_ppt.obsid}",
-            )
-            self._enqueue_slew(
-                self.last_ppt.endra,
-                self.last_ppt.enddec,
-                self.last_ppt.obsid,
-                utime,
+                "Charge complete; awaiting next target command",
             )
