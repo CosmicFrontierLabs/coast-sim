@@ -2599,7 +2599,7 @@ class TestCheckAndManagePasses:
         assert command.command_type == ACSCommandType.SLEW_TO_TARGET
 
         # Verify the slew has GSP obstype marker
-        assert command.slew.obstype == "GSP"
+        assert command.slew.obstype == ObsType.GSP
 
         # Verify slew points to the pass start position
         assert command.slew.endra == pass_obj.gsstartra

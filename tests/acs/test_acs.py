@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from conops import ACS, ACSMode
+from conops.common.enums import ObsType
 
 
 class DummyEphemeris:
@@ -38,7 +39,7 @@ class TestACSInitialization:
         assert acs.ra == 180.0  # Earth-opposite nadir pointing
         assert acs.dec == 0.0
         assert acs.roll == 0.0
-        assert acs.obstype == "PPT"
+        assert acs.obstype == ObsType.PPT
         assert acs.last_slew is not None  # Initialized with boundary condition slew
         assert acs.last_ppt is None
         assert acs.acsmode == 0
@@ -63,9 +64,9 @@ class TestACSAttributes:
 
     def test_obstype_attribute(self, acs) -> None:
         """Test obstype attribute."""
-        assert acs.obstype == "PPT"
-        acs.obstype = "GSP"
-        assert acs.obstype == "GSP"
+        assert acs.obstype == ObsType.PPT
+        acs.obstype = ObsType.GSP
+        assert acs.obstype == ObsType.GSP
 
     def test_constraint_attribute(self, acs, mock_constraint) -> None:
         """Test constraint attribute."""

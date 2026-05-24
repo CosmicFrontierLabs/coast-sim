@@ -3,6 +3,7 @@
 from unittest.mock import Mock
 
 from conops import ACSCommand, ACSCommandType, ACSMode
+from conops.common.enums import ObsType
 
 
 class TestSafeModeInitialization:
@@ -21,6 +22,23 @@ class TestSafeModeInitialization:
     def test_enter_safe_mode_command_exists(self):
         """Test that ENTER_SAFE_MODE command type exists."""
         assert hasattr(ACSCommandType, "ENTER_SAFE_MODE")
+
+    def test_acs_command_obstype_uses_obstype(self):
+        command = ACSCommand(
+            command_type=ACSCommandType.SLEW_TO_TARGET,
+            execution_time=1000.0,
+        )
+
+        assert command.obstype is ObsType.PPT
+
+    def test_acs_command_obstype_accepts_serialized_value(self):
+        command = ACSCommand(
+            command_type=ACSCommandType.SLEW_TO_TARGET,
+            execution_time=1000.0,
+            obstype="GSP",
+        )
+
+        assert command.obstype is ObsType.GSP
 
 
 class TestSafeModeRequest:

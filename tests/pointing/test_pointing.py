@@ -1,4 +1,5 @@
 from conops import Pointing
+from conops.common.enums import ObsType
 
 from .conftest import DummyConstraint
 
@@ -91,7 +92,7 @@ class TestPointing:
         assert pointing.constraint is constraint
 
     def test_obstype_at(self, pointing: Pointing) -> None:
-        assert pointing.obstype == "AT"
+        assert pointing.obstype == ObsType.AT
 
     def test_ra_zero(self, pointing: Pointing) -> None:
         assert pointing.ra == 0.0
