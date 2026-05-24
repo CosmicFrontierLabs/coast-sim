@@ -21,7 +21,7 @@ from ..common.vector import attitude_to_quat
 from ..config import MissionConfig
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
-from ..simulation.passes import Pass, pass_slew_trigger_buffer
+from ..simulation.passes import GSP_TRACK_ROLL, Pass, pass_slew_trigger_buffer
 from ..simulation.roll import optimum_roll
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing, Queue
@@ -437,7 +437,11 @@ class QueueDITL(DITLMixin, DITLStats):
             mode = self.acs.get_mode(utime)
 
             # Check pass timing and manage passes
-            self._check_and_manage_passes(utime, ra, dec)
+            pass_command_due = self._check_and_manage_passes(utime, ra, dec, roll)
+            if pass_command_due:
+                ra, dec, roll, obsid = self.acs.pointing(utime)
+                self._sync_acs_slew_metadata()
+                mode = self.acs.get_mode(utime)
 
             # Handle spacecraft operations based on current mode
             self._handle_mode_operations(mode, utime, ra, dec)
@@ -1263,11 +1267,13 @@ class QueueDITL(DITLMixin, DITLStats):
         )
         return True
 
-    def _check_and_manage_passes(self, utime: float, ra: float, dec: float) -> None:
+    def _check_and_manage_passes(
+        self, utime: float, ra: float, dec: float, roll: float = 0.0
+    ) -> bool:
         """Check pass timing and send appropriate commands to ACS."""
 
         if self.acs.in_safe_mode or self.acs.acsmode == ACSMode.SAFE:
-            return
+            return False
 
         commanded_pass = self.acs.current_pass
         if (
@@ -1286,13 +1292,13 @@ class QueueDITL(DITLMixin, DITLStats):
                 execution_time=utime,
             )
             self.acs.enqueue_command(command)
-            return
+            return True
 
         # Check if we're in a pass, if yes, command ACS to start the pass
         current_pass = self.acs.passrequests.current_pass(utime)
         if current_pass is not None and self.acs.acsmode != ACSMode.PASS:
             if not self._gsp_plan_entry_allowed(current_pass, reserved_begin=utime):
-                return
+                return False
             self.log.log_event(
                 utime=utime,
                 event_type="PASS",
@@ -1305,7 +1311,7 @@ class QueueDITL(DITLMixin, DITLStats):
             )
             self.acs.enqueue_command(command)
             self._record_gsp_plan_entry(current_pass, reserved_begin=utime)
-            return
+            return True
 
         # Check if a pass just ended, if yes, command ACS to end the pass.
         # FIXME: This works but isn't super clean.
@@ -1324,24 +1330,24 @@ class QueueDITL(DITLMixin, DITLStats):
                 execution_time=utime,
             )
             self.acs.enqueue_command(command)
-            return
+            return True
 
         # Check to see if it's time to slew to the next pass
         # Skip if already in PASS or SLEWING mode - can't interrupt a slew mid-motion.
         # Pass-aware scheduling in _fetch_new_ppt prevents conflicts.
         if self.acs.acsmode in (ACSMode.PASS, ACSMode.SLEWING):
-            return
+            return False
 
         next_pass = self.acs.passrequests.next_pass(utime)
 
         # If there's no next pass, nothing to do
         if next_pass is None:
-            return
+            return False
 
         # Check if it's time to start slewing for the next pass
-        if next_pass.time_to_slew(utime=utime, ra=ra, dec=dec):
+        if next_pass.time_to_slew(utime=utime, ra=ra, dec=dec, roll=roll):
             if not self._gsp_plan_entry_allowed(next_pass, reserved_begin=utime):
-                return
+                return False
             # If it's time to slew, enqueue the slew command
             self.log.log_event(
                 utime=utime,
@@ -1357,8 +1363,10 @@ class QueueDITL(DITLMixin, DITLStats):
 
             slew.startra = ra
             slew.startdec = dec
+            slew.startroll = roll
             slew.endra = next_pass.gsstartra
             slew.enddec = next_pass.gsstartdec
+            slew.endroll = GSP_TRACK_ROLL
             slew.obstype = ObsType.GSP  # Ground Station Pass slew
             slew.obsid = next_pass.obsid
             command = ACSCommand(
@@ -1368,7 +1376,9 @@ class QueueDITL(DITLMixin, DITLStats):
             )
             self.acs.enqueue_command(command)
             self._record_gsp_plan_entry(next_pass, reserved_begin=utime)
-            return
+            return True
+
+        return False
 
     def _handle_pass_mode(self, utime: float) -> None:
         """Handle spacecraft behavior during ground station passes."""

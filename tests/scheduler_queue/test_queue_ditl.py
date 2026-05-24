@@ -19,6 +19,7 @@ from conops import (
 from conops.common.enums import ObsType
 from conops.config.config import MissionConfig
 from conops.ditl.telemetry import Housekeeping
+from conops.simulation.passes import GSP_TRACK_ROLL
 from conops.targets import PlanEntry, PlanSchema
 
 
@@ -1601,6 +1602,37 @@ class TestCalcMethod:
         queue_ditl.calc()
         assert ACSMode.PASS in queue_ditl.mode
 
+    def test_calc_processes_due_pass_command_same_step(self, queue_ditl) -> None:
+        queue_ditl.year = 2018
+        queue_ditl.day = 331
+        queue_ditl.length = 1
+        queue_ditl.step_size = 3600
+        queue_ditl.acs.pointing = Mock(
+            side_effect=[
+                (0.0, 0.0, 0.0, 0),
+                (10.0, 20.0, 0.0, 0xFFFF),
+            ]
+            + [(10.0, 20.0, 0.0, 0xFFFF)] * 24
+        )
+        queue_ditl.acs.get_mode = Mock(return_value=ACSMode.PASS)
+        queue_ditl._assert_plan_matches_execution = Mock()
+        pass_checks = 0
+
+        def check_and_manage_passes(
+            utime: float, ra: float, dec: float, roll: float = 0.0
+        ) -> bool:
+            nonlocal pass_checks
+            pass_checks += 1
+            return pass_checks == 1
+
+        queue_ditl._check_and_manage_passes = check_and_manage_passes
+
+        queue_ditl.calc()
+
+        assert queue_ditl.acs.pointing.call_count == 25
+        assert queue_ditl.ra[0] == 10.0
+        assert queue_ditl.obsid[0] == 0xFFFF
+
     def test_calc_handles_emergency_charging_initiates(self, queue_ditl) -> None:
         queue_ditl.year = 2018
         queue_ditl.day = 331
@@ -2569,7 +2601,7 @@ class TestCheckAndManagePasses:
     ) -> None:
         """Test that slew to ground station pass is marked with GSP obstype."""
         utime = 1000.0
-        ra, dec = 10.0, 20.0
+        ra, dec, roll = 10.0, 20.0, 42.0
 
         pass_obj = Pass(
             station="GS_TEST",
@@ -2586,7 +2618,7 @@ class TestCheckAndManagePasses:
 
         # Call the method
         with patch.object(Pass, "time_to_slew", return_value=True):
-            queue_ditl._check_and_manage_passes(utime, ra, dec)
+            queue_ditl._check_and_manage_passes(utime, ra, dec, roll)
 
         # Verify a slew command was enqueued
         queue_ditl.acs.enqueue_command.assert_called_once()
@@ -2602,6 +2634,8 @@ class TestCheckAndManagePasses:
         assert command.slew.obstype == ObsType.GSP
 
         # Verify slew points to the pass start position
+        assert command.slew.startroll == roll
+        assert command.slew.endroll == GSP_TRACK_ROLL
         assert command.slew.endra == pass_obj.gsstartra
         assert command.slew.enddec == pass_obj.gsstartdec
         assert command.slew.obsid == pass_obj.obsid

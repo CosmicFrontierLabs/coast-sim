@@ -13,7 +13,7 @@ from conops import (
 )
 from conops.common.enums import ObsType
 from conops.config import AttitudeControlSystem, BandCapability, GroundStation
-from conops.simulation.passes import pass_slew_trigger_buffer
+from conops.simulation.passes import GSP_TRACK_ROLL, pass_slew_trigger_buffer
 
 
 class TestPassInitialization:
@@ -286,6 +286,76 @@ class TestPassTimeToSlew:
         # utime same as previous; with slew_time=50 -> time_until_slew = 150 > 120 (buffer)
         result = p.time_to_slew(1514764600.0, ra=0.0, dec=0.0)
         assert result is False
+
+    def test_time_to_slew_includes_roll_distance(
+        self,
+        mock_config,
+        mock_constraint,
+        create_ephem,
+        base_begin,
+    ):
+        begin_dt = datetime(2025, 8, 15, 0, 0, 0, tzinfo=timezone.utc)
+        end_dt = datetime(2025, 8, 15, 0, 15, 0, tzinfo=timezone.utc)
+        ephem = create_ephem(begin_dt, end_dt, step_size=60)
+
+        mock_config.constraint = mock_constraint
+        p = Pass(
+            config=mock_config,
+            ephem=ephem,
+            station="SGS",
+            begin=base_begin,
+            length=600.0,
+        )
+        p.utime = [base_begin, base_begin + 60.0]
+        p.ra = [10.0, 10.0]
+        p.dec = [20.0, 20.0]
+
+        assert p.time_to_slew(base_begin - 600.0, ra=10.0, dec=20.0, roll=0.0) is False
+        assert p.time_to_slew(base_begin - 600.0, ra=10.0, dec=20.0, roll=180.0) is True
+
+    def test_slew_time_to_target_uses_gsp_track_roll(
+        self,
+        mock_config,
+        mock_constraint,
+        create_ephem,
+        base_begin,
+    ):
+        begin_dt = datetime(2025, 8, 15, 0, 0, 0, tzinfo=timezone.utc)
+        end_dt = datetime(2025, 8, 15, 0, 15, 0, tzinfo=timezone.utc)
+        ephem = create_ephem(begin_dt, end_dt, step_size=60)
+
+        mock_config.constraint = mock_constraint
+        p = Pass(
+            config=mock_config,
+            ephem=ephem,
+            station="SGS",
+            begin=base_begin,
+            length=600.0,
+        )
+        captured = {}
+
+        def calc_slewtime(slew):
+            captured["startroll"] = slew.startroll
+            captured["endroll"] = slew.endroll
+            return 123.0
+
+        with patch(
+            "conops.simulation.passes.Slew.calc_slewtime",
+            autospec=True,
+            side_effect=calc_slewtime,
+        ):
+            slewtime = p._slew_time_to_target(
+                base_begin - 600.0,
+                ra=10.0,
+                dec=20.0,
+                roll=42.0,
+                target_ra=30.0,
+                target_dec=40.0,
+            )
+
+        assert slewtime == 123.0
+        assert captured["startroll"] == pytest.approx(42.0)
+        assert captured["endroll"] == pytest.approx(GSP_TRACK_ROLL)
 
     def test_time_to_slew_raises_value_error_when_no_acs_config(
         self, mock_config, mock_constraint, create_ephem, base_begin

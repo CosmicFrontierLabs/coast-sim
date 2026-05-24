@@ -9,6 +9,10 @@ from ..common.enums import AntennaType, ObsType
 from ..common.vector import radec2vec, rotvec, separation, vec2radec
 from ..config import Constraint, GroundStationRegistry, MissionConfig
 from ..config.constants import DTOR
+from .slew import Slew
+
+# Current ground-pass model tracks RA/Dec while holding a fixed roll.
+GSP_TRACK_ROLL = 0.0
 
 
 def pass_slew_trigger_buffer(step_size: float) -> float:
@@ -227,7 +231,32 @@ class Pass(BaseModel):
         rate_mbps = self.get_data_rate(band, direction)
         return rate_mbps * self.length  # Mbps * seconds = Megabits
 
-    def time_to_slew(self, utime: float, ra: float, dec: float) -> bool:
+    def _slew_time_to_target(
+        self,
+        utime: float,
+        ra: float,
+        dec: float,
+        roll: float,
+        target_ra: float,
+        target_dec: float,
+    ) -> float:
+        assert self.config is not None, "Config must be set for Pass class"
+        if self.config.spacecraft_bus.attitude_control is None:
+            raise ValueError("ACS config must be set to calculate slew time")
+
+        slew = Slew(config=self.config)
+        slew.startra = ra
+        slew.startdec = dec
+        slew.startroll = roll
+        slew.endra = target_ra
+        slew.enddec = target_dec
+        slew.endroll = GSP_TRACK_ROLL
+        slew.slewstart = utime
+        return slew.calc_slewtime()
+
+    def time_to_slew(
+        self, utime: float, ra: float, dec: float, roll: float = 0.0
+    ) -> bool:
         """Determine whether to begin slewing for this pass.
 
         Calculates the slew time between current RA/Dec and the appropriate pointing of the pass.
@@ -249,17 +278,9 @@ class Pass(BaseModel):
                 return False
             target_ra, target_dec = self.ra[0], self.dec[0]
 
-        # Using ACS config, calculate slew time
-        if self.config.spacecraft_bus.attitude_control is not None:
-            slewdist, _ = self.config.spacecraft_bus.attitude_control.predict_slew(
-                startra=ra,
-                startdec=dec,
-                endra=target_ra,
-                enddec=target_dec,
-            )
-            slewtime = self.config.spacecraft_bus.attitude_control.slew_time(slewdist)
-        else:
-            raise ValueError("ACS config must be set to calculate slew time")
+        slewtime = self._slew_time_to_target(
+            utime, ra, dec, roll, target_ra, target_dec
+        )
         # Determine if we need to start slewing now
         time_until_slew = (self.begin - slewtime) - utime
 
