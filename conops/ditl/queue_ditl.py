@@ -676,6 +676,45 @@ class QueueDITL(DITLMixin, DITLStats):
             obsid=int(entry.obsid),
         )
 
+    def _validate_plan_entry_structure(self) -> list[PlanExecutionMismatch]:
+        mismatches: list[PlanExecutionMismatch] = []
+        previous_begin: float | None = None
+        for index, entry in enumerate(self.plan):
+            obstype = self._entry_obstype(entry)
+            if obstype is None or obstype == ObsType.PPT:
+                continue
+            begin = float(entry.begin)
+            end = float(entry.end)
+            obsid = int(entry.obsid) if entry.obsid is not None else None
+            if end < begin:
+                mismatches.append(
+                    self._execution_mismatch(
+                        begin,
+                        "plan",
+                        "invalid_interval",
+                        (
+                            f"entry {index} obsid {obsid} ends before it begins "
+                            f"({end:.0f} < {begin:.0f})"
+                        ),
+                        obsid=obsid,
+                    )
+                )
+            if previous_begin is not None and begin < previous_begin:
+                mismatches.append(
+                    self._execution_mismatch(
+                        begin,
+                        "plan",
+                        "non_monotonic_begin",
+                        (
+                            f"entry {index} obsid {obsid} begins before previous "
+                            f"entry ({begin:.0f} < {previous_begin:.0f})"
+                        ),
+                        obsid=obsid,
+                    )
+                )
+            previous_begin = begin
+        return mismatches
+
     def _validate_science_entry_execution(
         self, entry: PlanEntry, tolerance_deg: float
     ) -> list[PlanExecutionMismatch]:
@@ -816,7 +855,10 @@ class QueueDITL(DITLMixin, DITLStats):
             return [mismatch]
 
         tolerance_deg = self._plan_execution_tolerance_deg()
-        mismatches: list[PlanExecutionMismatch] = []
+        mismatches = self._validate_plan_entry_structure()
+        if mismatches:
+            return mismatches
+
         for entry in self.plan:
             obstype = self._entry_obstype(entry)
             if obstype in (ObsType.AT, ObsType.TOO):
@@ -1004,7 +1046,15 @@ class QueueDITL(DITLMixin, DITLStats):
 
     @staticmethod
     def _entry_matches_science_slew(entry: PlanEntry, slew: Slew) -> bool:
-        return entry.obstype == ObsType.AT and entry.obsid == slew.obsid
+        if entry.obstype != ObsType.AT or entry.obsid != slew.obsid:
+            return False
+
+        entry_begin = float(entry.begin)
+        entry_end = float(entry.end)
+        slew_start = float(slew.slewstart)
+        has_placeholder_end = entry_end >= entry_begin + 86400
+        matches_slew_start = abs(entry_begin - slew_start) <= 1e-6
+        return has_placeholder_end or matches_slew_start
 
     def _sync_gsp_slew_metadata(self, slew: Slew) -> None:
         entry = self._gsp_slew_plan_entries.get(slew)
