@@ -98,6 +98,13 @@ class PlanEntry:
 
     @property
     def exposure(self) -> int:  # (),excludesaa=False):
+        if (
+            self.obstype == ObsType.GSP
+            and self.contact_begin is not None
+            and self.contact_end is not None
+        ):
+            contact_start = max(float(self.contact_begin), float(self.begin))
+            return max(0, int(self.contact_end - contact_start))
         self.insaa = 0
         exposure = self.end - self.begin - self.slewtime - self.insaa
         return max(0, int(exposure))  # always an integer number of seconds

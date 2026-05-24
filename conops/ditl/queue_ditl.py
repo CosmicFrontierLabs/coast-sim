@@ -169,6 +169,7 @@ class QueueDITL(DITLMixin, DITLStats):
         # successful dispatch; None during a pass (spacecraft is occupied).
         self._ppt_unavailable: bool | None = None
         self._planned_gsp_keys: set[tuple[str, float, float]] = set()
+        self._gsp_slew_plan_entries: dict[Slew, PlanEntry] = {}
         self._synced_executed_slew_count = 0
 
     def get_acs_queue_status(self) -> dict[str, Any]:
@@ -1001,18 +1002,29 @@ class QueueDITL(DITLMixin, DITLStats):
             entry.end = int(slew.slewstart + slew.slewtime + entry.ss_max)
 
     @staticmethod
-    def _entry_matches_slew(entry: PlanEntry, slew: Slew) -> bool:
+    def _entry_matches_science_slew(entry: PlanEntry, slew: Slew) -> bool:
         return entry.obstype == ObsType.AT and entry.obsid == slew.obsid
 
+    def _sync_gsp_slew_metadata(self, slew: Slew) -> None:
+        entry = self._gsp_slew_plan_entries.get(slew)
+        if entry is not None:
+            entry.begin = int(slew.slewstart)
+            entry.slewtime = int(round(slew.slewtime))
+            entry.slewdist = float(slew.slewdist)
+
     def _sync_slew_metadata(self, slew: Slew) -> None:
+        if slew.obstype == ObsType.GSP:
+            self._sync_gsp_slew_metadata(slew)
+            return
+
         if slew.obstype != ObsType.PPT:
             return
 
-        if self.ppt is not None and self._entry_matches_slew(self.ppt, slew):
+        if self.ppt is not None and self._entry_matches_science_slew(self.ppt, slew):
             self._apply_slew_metadata(self.ppt, slew, update_end=True)
 
         for entry in reversed(list(self.plan)):
-            if self._entry_matches_slew(entry, slew):
+            if self._entry_matches_science_slew(entry, slew):
                 update_end = entry.end >= entry.begin + 86400
                 self._apply_slew_metadata(entry, slew, update_end=update_end)
                 return
@@ -1215,7 +1227,9 @@ class QueueDITL(DITLMixin, DITLStats):
 
         return True
 
-    def _record_gsp_plan_entry(self, gspass: Pass, reserved_begin: float) -> bool:
+    def _record_gsp_plan_entry(
+        self, gspass: Pass, reserved_begin: float, slew: Slew | None = None
+    ) -> bool:
         """Record an accepted ground-station pass command in the exported plan."""
         key = self._ground_pass_key(gspass)
         if key in self._planned_gsp_keys:
@@ -1236,13 +1250,17 @@ class QueueDITL(DITLMixin, DITLStats):
         entry.dec = gspass.gsstartdec
         entry.begin = reserved_begin
         entry.end = pass_end
-        entry.slewtime = max(0, int(round(pass_begin - reserved_begin)))
+        entry.slewtime = (
+            int(round(slew.slewtime))
+            if slew is not None
+            else max(0, int(round(pass_begin - reserved_begin)))
+        )
+        if slew is not None:
+            entry.slewdist = float(slew.slewdist)
         entry.obsid = gspass.obsid
         entry.obstype = ObsType.GSP
         entry.ss_min = 0
-        contact_duration = max(
-            0, int(round(pass_end - reserved_begin - entry.slewtime))
-        )
+        contact_duration = max(0, int(round(pass_end - max(pass_begin, entry.begin))))
         entry.ss_max = contact_duration
         entry.exptime = contact_duration
         entry.station = station
@@ -1254,6 +1272,8 @@ class QueueDITL(DITLMixin, DITLStats):
         entry.track_end_dec = gspass.gsenddec
 
         self.plan.append(entry)
+        if slew is not None:
+            self._gsp_slew_plan_entries[slew] = entry
         self._planned_gsp_keys.add(key)
         self.log.log_event(
             utime=reserved_begin,
@@ -1364,18 +1384,20 @@ class QueueDITL(DITLMixin, DITLStats):
             slew.startra = ra
             slew.startdec = dec
             slew.startroll = roll
+            slew.slewstart = utime
             slew.endra = next_pass.gsstartra
             slew.enddec = next_pass.gsstartdec
             slew.endroll = GSP_TRACK_ROLL
             slew.obstype = ObsType.GSP  # Ground Station Pass slew
             slew.obsid = next_pass.obsid
+            slew.calc_slewtime()
             command = ACSCommand(
                 command_type=ACSCommandType.SLEW_TO_TARGET,
                 execution_time=utime,
                 slew=slew,
             )
             self.acs.enqueue_command(command)
-            self._record_gsp_plan_entry(next_pass, reserved_begin=utime)
+            self._record_gsp_plan_entry(next_pass, reserved_begin=utime, slew=slew)
             return True
 
         return False

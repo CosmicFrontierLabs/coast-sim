@@ -6,6 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from conops.common.enums import ObsType
 from conops.targets import PlanEntrySchema, PlanSchema
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -367,3 +368,29 @@ class TestPlanSchema:
         schema.save(dest)
         raw = json.loads(dest.read_text())
         assert raw["entries"][0]["exposure"] == 0
+
+    def test_from_plan_computes_exposure_without_mutating_entry(self) -> None:
+        """Serialising a plan should not modify the source PlanEntry."""
+        from conops.targets.plan import Plan
+        from conops.targets.plan_entry import PlanEntry
+
+        config = Mock()
+        config.constraint = Mock()
+        config.constraint.ephem = Mock()
+        config.spacecraft_bus = Mock()
+        config.spacecraft_bus.attitude_control = Mock()
+
+        entry = PlanEntry(config=config)
+        entry.obstype = ObsType.AT
+        entry.begin = 1000.0
+        entry.end = 1200.0
+        entry.slewtime = 50
+        entry.insaa = 30
+
+        plan = Plan()
+        plan.append(entry)
+
+        schema = PlanSchema.from_plan(plan)
+
+        assert schema.entries[0].exposure == 120
+        assert entry.insaa == 30

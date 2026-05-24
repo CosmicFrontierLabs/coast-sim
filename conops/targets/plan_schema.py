@@ -80,6 +80,13 @@ class PlanEntrySchema(BaseModel):
 
     @staticmethod
     def _computed_exposure(entry: PlanEntry) -> int:
+        if (
+            entry.obstype == ObsType.GSP
+            and entry.contact_begin is not None
+            and entry.contact_end is not None
+        ):
+            contact_start = max(float(entry.contact_begin), float(entry.begin))
+            return max(0, int(entry.contact_end - contact_start))
         exposure = entry.end - entry.begin - entry.slewtime - entry.insaa
         return max(0, int(exposure))
 
