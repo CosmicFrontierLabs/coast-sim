@@ -65,6 +65,8 @@ from .simulation import (
     optimum_roll_sidemount,
 )
 from .targets import (
+    AttitudeSampleSchema,
+    AttitudeTimeseriesSchema,
     Plan,
     PlanEntry,
     Pointing,
@@ -86,6 +88,8 @@ __all__ = [
     "ACSCommand",
     "ACSCommandType",
     "ACSMode",
+    "AttitudeSampleSchema",
+    "AttitudeTimeseriesSchema",
     "AttitudeControlSystem",
     "Battery",
     "ChargeState",

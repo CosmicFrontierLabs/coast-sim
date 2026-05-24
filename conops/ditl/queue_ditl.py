@@ -477,6 +477,7 @@ class QueueDITL(DITLMixin, DITLStats):
             self._close_last_plan_entry(utime)
 
         self._assert_plan_matches_execution()
+        self._attach_attitude_timeseries_to_plan()
 
         return True
 

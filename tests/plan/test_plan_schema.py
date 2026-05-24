@@ -7,7 +7,12 @@ from unittest.mock import Mock
 import pytest
 
 from conops.common.enums import ObsType
-from conops.targets import PlanEntrySchema, PlanSchema
+from conops.targets import (
+    AttitudeSampleSchema,
+    AttitudeTimeseriesSchema,
+    PlanEntrySchema,
+    PlanSchema,
+)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -204,6 +209,42 @@ class TestPlanSchema:
         assert "T" in raw["start"]  # sanity-check ISO format
         assert isinstance(raw["entries"], list)
         assert len(raw["entries"]) == 1
+
+    def test_save_writes_linked_attitude_timeseries(self, tmp_path):
+        schema = _make_schema(1)
+        schema.attitude_timeseries = AttitudeTimeseriesSchema(
+            samples=[
+                AttitudeSampleSchema(
+                    utime=1_000_000.0,
+                    timestamp="1970-01-12T13:46:40+00:00",
+                    ra=12.0,
+                    dec=-4.0,
+                    roll=30.0,
+                    mode="SCIENCE",
+                    obsid=99,
+                    quat_w=1.0,
+                    quat_x=0.0,
+                    quat_y=0.0,
+                    quat_z=0.0,
+                )
+            ]
+        )
+        dest = tmp_path / "plan.json"
+
+        schema.save(dest)
+
+        raw = json.loads(dest.read_text())
+        assert raw["attitude_timeseries_file"] == "plan_attitude_timeseries.json"
+        assert "attitude_timeseries" not in raw
+
+        attitude_path = tmp_path / raw["attitude_timeseries_file"]
+        attitude_raw = json.loads(attitude_path.read_text())
+        assert attitude_raw["plan_file"] == "plan.json"
+        assert attitude_raw["plan_version"] == raw["version"]
+        assert attitude_raw["plan_start"] == raw["start"]
+        assert attitude_raw["plan_end"] == raw["end"]
+        assert attitude_raw["num_samples"] == 1
+        assert attitude_raw["samples"][0]["mode"] == "SCIENCE"
 
     def test_entry_fields_in_json(self, tmp_path):
         schema = _make_schema(1)

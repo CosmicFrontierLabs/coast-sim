@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 import matplotlib.pyplot as plt
 import rust_ephem
@@ -136,6 +136,45 @@ class DITLMixin:
         self.spacecraft_bus = self.config.spacecraft_bus
         self.payload = self.config.payload
         self.recorder = self.config.recorder
+
+    @staticmethod
+    def _attitude_mode_name(mode: ACSMode | int | None) -> str | None:
+        if mode is None:
+            return None
+        if isinstance(mode, ACSMode):
+            return mode.name
+        try:
+            return ACSMode(int(mode)).name
+        except (TypeError, ValueError):
+            return str(mode)
+
+    def _attach_attitude_timeseries_to_plan(self) -> None:
+        """Attach the executed attitude timeline to the current plan for export."""
+        from ..targets import AttitudeSampleSchema, AttitudeTimeseriesSchema
+
+        samples = []
+        for hk in self.telemetry.housekeeping:
+            if hk.timestamp.tzinfo is None:
+                timestamp = hk.timestamp.replace(tzinfo=timezone.utc)
+            else:
+                timestamp = hk.timestamp.astimezone(timezone.utc)
+            samples.append(
+                AttitudeSampleSchema(
+                    utime=timestamp.timestamp(),
+                    timestamp=timestamp.isoformat(),
+                    ra=hk.ra,
+                    dec=hk.dec,
+                    roll=hk.roll,
+                    mode=self._attitude_mode_name(hk.acs_mode),
+                    obsid=hk.obsid,
+                    quat_w=hk.quat_w,
+                    quat_x=hk.quat_x,
+                    quat_y=hk.quat_y,
+                    quat_z=hk.quat_z,
+                )
+            )
+
+        self.plan.attitude_timeseries = AttitudeTimeseriesSchema(samples=samples)
 
     def plot(self) -> None:
         """Plot DITL timeline.

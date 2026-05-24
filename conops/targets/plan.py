@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from .plan_entry import PlanEntry
 
 if TYPE_CHECKING:
-    from .plan_schema import PlanSchema
+    from .plan_schema import AttitudeTimeseriesSchema, PlanSchema
 
 
 class TargetList:
@@ -38,6 +38,7 @@ class Plan:
 
     def __init__(self) -> None:
         self.entries = list()
+        self.attitude_timeseries: AttitudeTimeseriesSchema | None = None
 
     def __getitem__(self, number: int) -> PlanEntry:
         return self.entries[number]
