@@ -483,29 +483,43 @@ class TestPassTimes:
 
     def test_request_passes(self, mock_constraint, mock_config):
         """Test request_passes returns passes at requested rate."""
-        pt = PassTimes(config=mock_config)
+        pt = PassTimes(config=mock_config, rng=Mock(random=Mock(return_value=0.5)))
         # Create passes every ~4 hours
         for i in range(6):
             p = Mock()
             p.begin = i * 14400.0  # Every 4 hours
             pt.passes.append(p)
 
-        with patch("numpy.random.random", return_value=0.5):
-            scheduled = pt.request_passes(req_gsnum=6, gsprob=0.9)
-            assert len(scheduled) > 0
+        scheduled = pt.request_passes(req_gsnum=6, gsprob=0.9)
+        assert len(scheduled) > 0
 
     def test_request_passes_probability(self, mock_constraint, mock_config):
         """Test request_passes respects probability."""
-        pt = PassTimes(config=mock_config)
+        pt = PassTimes(config=mock_config, rng=Mock(random=Mock(return_value=0.95)))
         for i in range(10):
             p = Mock()
             p.begin = i * 20000.0
             pt.passes.append(p)
 
         # All random values > 0.9, should not schedule any
-        with patch("numpy.random.random", return_value=0.95):
-            scheduled = pt.request_passes(req_gsnum=10, gsprob=0.9)
-            assert len(scheduled) == 0
+        scheduled = pt.request_passes(req_gsnum=10, gsprob=0.9)
+        assert len(scheduled) == 0
+
+    def test_request_passes_seeded_rng_is_repeatable(
+        self, mock_constraint, mock_config
+    ):
+        """A configured seed should make probability-based pass requests repeatable."""
+        mock_config.random_seed = 42
+
+        def scheduled_begins() -> list[float]:
+            pt = PassTimes(config=mock_config)
+            for i in range(10):
+                p = Mock()
+                p.begin = i * 20000.0
+                pt.passes.append(p)
+            return [p.begin for p in pt.request_passes(req_gsnum=10, gsprob=0.5)]
+
+        assert scheduled_begins() == scheduled_begins()
 
     def test_deconflict_overlapping_passes_prefers_more_data_volume(
         self, mock_constraint, mock_config

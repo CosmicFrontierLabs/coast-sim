@@ -1,4 +1,6 @@
 import time
+from numbers import Integral
+from typing import Protocol
 
 import numpy as np
 import rust_ephem
@@ -18,6 +20,17 @@ GSP_TRACK_ROLL = 0.0
 def pass_slew_trigger_buffer(step_size: float) -> float:
     """Return how early pass handling can trigger a slew, in seconds."""
     return max(0.0, 2.0 * float(step_size))
+
+
+def _config_random_seed(config: MissionConfig) -> int | None:
+    seed = getattr(config, "random_seed", None)
+    if seed is None or isinstance(seed, bool) or not isinstance(seed, Integral):
+        return None
+    return int(seed)
+
+
+class RandomSource(Protocol):
+    def random(self) -> float: ...
 
 
 class Pass(BaseModel):
@@ -302,6 +315,7 @@ class PassTimes:
     def __init__(
         self,
         config: MissionConfig,
+        rng: RandomSource | None = None,
     ):
         self.constraint = config.constraint
         assert self.constraint is not None, "Constraint must be set for PassTimes class"
@@ -311,6 +325,11 @@ class PassTimes:
         self.ephem = self.constraint.ephem
 
         self.config = config
+        self.rng = (
+            rng
+            if rng is not None
+            else np.random.default_rng(_config_random_seed(config))
+        )
         self.passes = []
         self.dropped_overlapping_passes: list[tuple[Pass, Pass]] = []
         self.length = 1
@@ -325,6 +344,9 @@ class PassTimes:
         self.minelev = 10.0
         self.minlen = 8 * 60  # 10 mins
         self.schedule_chance = 1.0  # base chance of getting a pass
+
+    def _random(self) -> float:
+        return float(self.rng.random())
 
     def __getitem__(self, number: int) -> Pass:
         return self.passes[number]
@@ -351,7 +373,9 @@ class PassTimes:
         sched = list()
         last = 0.0
         for gspass in self.passes:
-            if gspass.begin - last > mean_between and np.random.random() < gsprob:
+            if gspass.begin - last <= mean_between:
+                continue
+            if gsprob >= 1.0 or (gsprob > 0.0 and self._random() < gsprob):
                 sched.extend([gspass])
                 last = sched[-1].begin
         return sched
@@ -495,8 +519,10 @@ class PassTimes:
                     combined_prob = self.schedule_chance * getattr(
                         station, "schedule_probability", 1.0
                     )
-                    rand_val = np.random.random()
-                    if rand_val <= combined_prob:
+                    should_schedule = combined_prob >= 1.0 or (
+                        combined_prob > 0.0 and self._random() <= combined_prob
+                    )
+                    if should_schedule:
                         # Schedule this pass if the dice roll allows it
                         gspass = Pass(
                             config=self.config,

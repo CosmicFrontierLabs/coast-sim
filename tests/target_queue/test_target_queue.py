@@ -62,20 +62,16 @@ class TestQueueBasicOps:
 
 
 class TestMeritsort:
-    @patch("numpy.random.random", side_effect=[0.1, 0.2, 0.3, 0.4, 0.5])
-    def test_meritsort_invisible_target_merit(
-        self, mock_random, queue_instance
-    ) -> None:
-        """The invisible target should get -900 + random penalty as merit."""
+    def test_meritsort_invisible_target_merit(self, queue_instance) -> None:
+        """The invisible target should get the hidden-target merit."""
         invisible_target = queue_instance.targets[1]
         invisible_target.visible.return_value = False
 
         queue_instance.meritsort()
 
-        assert invisible_target.merit == -900 + 0.2
+        assert invisible_target.merit == -900
 
-    @patch("numpy.random.random", side_effect=[0.1, 0.2, 0.3, 0.4, 0.5])
-    def test_meritsort_sorted_descending(self, mock_random, queue_instance):
+    def test_meritsort_sorted_descending(self, queue_instance):
         """Check that the targets are sorted by merit descending."""
         queue_instance.meritsort()
         for i in range(len(queue_instance.targets) - 1):
@@ -83,8 +79,7 @@ class TestMeritsort:
                 queue_instance.targets[i].merit >= queue_instance.targets[i + 1].merit
             )
 
-    @patch("numpy.random.random", side_effect=[0.1, 0.2, 0.3, 0.4, 0.5])
-    def test_meritsort_invisible_target_last(self, mock_random, queue_instance):
+    def test_meritsort_invisible_target_last(self, queue_instance):
         """Invisible target should be last after sort (lowest merit)."""
         invisible_target = queue_instance.targets[1]
         invisible_target.visible.return_value = False
@@ -92,6 +87,16 @@ class TestMeritsort:
         queue_instance.meritsort()
 
         assert queue_instance.targets[-1] is invisible_target
+
+    def test_meritsort_keeps_equal_merit_order(self, queue_instance):
+        """Equal-merit targets should be deterministic."""
+        for target in queue_instance.targets:
+            target.fom = 100
+
+        expected = list(queue_instance.targets)
+        queue_instance.meritsort()
+
+        assert queue_instance.targets == expected
 
 
 class TestGetTarget:

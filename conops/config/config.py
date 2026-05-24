@@ -26,6 +26,10 @@ class MissionConfig(ConfigModel):
     """
 
     name: str = Field(default="Default Config", description="Mission name/identifier")
+    random_seed: int | None = Field(
+        default=None,
+        description="Optional seed for stochastic planning decisions.",
+    )
     spacecraft_bus: SpacecraftBus = Field(
         default_factory=SpacecraftBus,
         description="Spacecraft Bus Configuration. Defines the main spacecraft platform including power, attitude control, and communications",
