@@ -30,6 +30,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    computed_field,
     field_serializer,
     field_validator,
     model_validator,
@@ -170,8 +171,12 @@ class AttitudeTimeseriesSchema(BaseModel):
     plan_version: int | None = None
     plan_start: float | None = None
     plan_end: float | None = None
-    num_samples: int = 0
     samples: list[AttitudeSampleSchema] = Field(default_factory=list)
+
+    @computed_field  # type:ignore[prop-decorator]
+    @property
+    def num_samples(self) -> int:
+        return len(self.samples)
 
     @field_validator("plan_start", "plan_end", mode="before")
     @classmethod
@@ -187,11 +192,6 @@ class AttitudeTimeseriesSchema(BaseModel):
         if v is None:
             return None
         return datetime.fromtimestamp(v, tz=timezone.utc).isoformat()
-
-    @model_validator(mode="after")
-    def _reconcile_metadata(self) -> AttitudeTimeseriesSchema:
-        self.num_samples = len(self.samples)
-        return self
 
 
 class PlanSchema(BaseModel):
@@ -233,12 +233,16 @@ class PlanSchema(BaseModel):
     )
     start: float = 0.0
     end: float = 0.0
-    num_entries: int = 0
     attitude_timeseries_file: str | None = None
     entries: list[PlanEntrySchema] = Field(default_factory=list)
     attitude_timeseries: AttitudeTimeseriesSchema | None = Field(
         default=None, exclude=True
     )
+
+    @computed_field  # type:ignore[prop-decorator]
+    @property
+    def num_entries(self) -> int:
+        return len(self.entries)
 
     @field_validator("start", "end", mode="before")
     @classmethod
@@ -285,21 +289,13 @@ class PlanSchema(BaseModel):
         return data
 
     @model_validator(mode="after")
-    def _reconcile_metadata(self) -> PlanSchema:
-        """Keep num_entries, start, and end consistent with the entries list.
-
-        This corrects metadata that may be missing or stale in legacy JSON
-        files (e.g. files written before ``num_entries`` / ``start`` / ``end``
-        were stored, or files whose entry list was modified after creation).
-        """
-        self.num_entries = len(self.entries)
+    def _correct_legacy_bounds(self) -> PlanSchema:
+        """Fill start/end from entries when absent in legacy JSON files."""
         if self.entries:
-            computed_start = self.entries[0].begin
-            computed_end = self.entries[-1].end
             if self.start == 0.0:
-                self.start = computed_start
+                self.start = self.entries[0].begin
             if self.end == 0.0:
-                self.end = computed_end
+                self.end = self.entries[-1].end
         return self
 
     # ── Convenience constructors ───────────────────────────────────────────────
