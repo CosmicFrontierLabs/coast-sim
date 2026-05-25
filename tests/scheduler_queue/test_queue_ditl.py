@@ -768,6 +768,34 @@ class TestFetchNewPPT:
             assert entry.slewdist == pytest.approx(slew.slewdist)
             assert entry.roll == pytest.approx(slew.endroll)
 
+    def test_sync_slew_metadata_does_not_rewrite_closed_duplicate_obsid(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        entry = PlanEntry(config=queue_ditl.config)
+        entry.obstype = ObsType.AT
+        entry.obsid = 1001
+        entry.begin = 1000.0
+        entry.end = 1300.0
+        entry.slewtime = 60
+        entry.slewdist = 10.0
+        queue_ditl.plan.append(entry)
+
+        slew = Slew(config=queue_ditl.config)
+        slew.obstype = ObsType.PPT
+        slew.obsid = entry.obsid
+        slew.slewstart = 5000.0
+        slew.slewtime = 120.0
+        slew.slewdist = 50.0
+        slew.endroll = 40.0
+        queue_ditl.acs.current_slew = slew
+
+        queue_ditl._sync_acs_slew_metadata()
+
+        assert entry.begin == 1000.0
+        assert entry.end == 1300.0
+        assert entry.slewtime == 60
+        assert entry.slewdist == 10.0
+
     def test_rejected_ppt_keeps_queue_estimate_metadata(self, queue_ditl) -> None:
         mock_ppt = Mock()
         mock_ppt.ra = 45.0
@@ -1429,6 +1457,44 @@ class TestPlanExecutionValidation:
 
         with pytest.raises(PlanExecutionMismatchError, match="obsid_mismatch"):
             queue_ditl._assert_plan_matches_execution()
+
+    def test_validation_fails_for_entry_end_before_begin(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        entry = self._science_entry(queue_ditl)
+        entry.begin = 1300.0
+        entry.end = 1200.0
+        queue_ditl.plan.append(entry)
+
+        mismatches = queue_ditl.validate_plan_matches_execution()
+
+        assert any("invalid_interval" in str(m) for m in mismatches)
+
+    def test_validation_fails_for_zero_duration_entry(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        entry = self._science_entry(queue_ditl)
+        entry.begin = 1200.0
+        entry.end = 1200.0
+        queue_ditl.plan.append(entry)
+
+        mismatches = queue_ditl.validate_plan_matches_execution()
+
+        assert any("invalid_interval" in str(m) for m in mismatches)
+
+    def test_validation_fails_for_non_monotonic_plan_entries(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        first = self._science_entry(queue_ditl)
+        second = self._science_entry(queue_ditl)
+        second.obsid = 43
+        second.begin = first.begin - 60.0
+        second.end = first.end + 60.0
+        queue_ditl.plan.extend([first, second])
+
+        mismatches = queue_ditl.validate_plan_matches_execution()
+
+        assert any("non_monotonic_begin" in str(m) for m in mismatches)
 
     def test_validation_fails_for_science_pointing_mismatch(
         self, queue_ditl: QueueDITL
