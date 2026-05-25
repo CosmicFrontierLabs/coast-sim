@@ -88,15 +88,19 @@ class TestMeritsort:
 
         assert queue_instance.targets[-1] is invisible_target
 
-    def test_meritsort_keeps_equal_merit_order(self, queue_instance):
-        """Equal-merit targets should be deterministic."""
-        for target in queue_instance.targets:
+    def test_meritsort_uses_deterministic_equal_merit_tie_break(self, queue_instance):
+        """Equal-merit targets should not depend on original queue order."""
+        for index, target in enumerate(queue_instance.targets):
             target.fom = 100
+            target.obsid = 1000 + index
 
-        expected = list(queue_instance.targets)
+        queue_instance.meritsort()
+        expected_obsids = [target.obsid for target in queue_instance.targets]
+
+        queue_instance.targets.reverse()
         queue_instance.meritsort()
 
-        assert queue_instance.targets == expected
+        assert [target.obsid for target in queue_instance.targets] == expected_obsids
 
 
 class TestGetTarget:

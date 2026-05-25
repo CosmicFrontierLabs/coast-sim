@@ -1805,15 +1805,18 @@ class QueueDITL(DITLMixin, DITLStats):
                         target_dec=self.ppt.dec,
                     )
                     if not _valid_ranges:
+                        obsid = self.ppt.obsid
                         self.log.log_event(
                             utime=utime,
                             event_type="QUEUE",
-                            description=f"Target {self.ppt.obsid} skipped — no valid roll satisfies all constraints at this time",
-                            obsid=self.ppt.obsid,
+                            description=(
+                                f"Target {obsid} skipped - no valid roll satisfies "
+                                "all constraints at this time"
+                            ),
+                            obsid=obsid,
                             acs_mode=self.acs.acsmode,
                         )
-                        self.ppt = None
-                        self._ppt_unavailable = True
+                        self._retry_fetch_without_current_ppt(utime, ra, dec)
                         return
 
             slew.endroll = optimum_roll(
@@ -1852,19 +1855,19 @@ class QueueDITL(DITLMixin, DITLStats):
                     target_roll=slew.endroll,
                     acs_mode=ACSMode.SCIENCE,
                 ):
+                    obsid = self.ppt.obsid
                     self.log.log_event(
                         utime=utime,
                         event_type="QUEUE",
                         description=(
-                            f"Target {self.ppt.obsid} skipped — locked roll "
+                            f"Target {obsid} skipped - locked roll "
                             f"{slew.endroll:.1f}° violates constraint "
                             f"within minimum observation window (at t+{t_unix - obs_start_time:.0f}s)"
                         ),
-                        obsid=self.ppt.obsid,
+                        obsid=obsid,
                         acs_mode=self.acs.acsmode,
                     )
-                    self.ppt = None
-                    self._ppt_unavailable = True
+                    self._retry_fetch_without_current_ppt(utime, ra, dec)
                     return
 
             # Verify slew won't overlap with a pass - check both start and end
