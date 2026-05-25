@@ -1862,8 +1862,7 @@ class QueueDITL(DITLMixin, DITLStats):
                             obsid=self.ppt.obsid,
                             acs_mode=self.acs.acsmode,
                         )
-                        self.ppt = None
-                        self._ppt_unavailable = True
+                        self._retry_fetch_without_current_ppt(utime, ra, dec)
                         return
 
             slew.endroll = optimum_roll(
@@ -1913,8 +1912,7 @@ class QueueDITL(DITLMixin, DITLStats):
                         obsid=self.ppt.obsid,
                         acs_mode=self.acs.acsmode,
                     )
-                    self.ppt = None
-                    self._ppt_unavailable = True
+                    self._retry_fetch_without_current_ppt(utime, ra, dec)
                     return
 
             # Verify slew won't overlap with a pass - check both start and end

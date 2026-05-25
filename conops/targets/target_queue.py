@@ -1,3 +1,4 @@
+import hashlib
 from typing import Any, cast
 
 import numpy as np
@@ -20,6 +21,7 @@ class TargetQueue:
     constraint: Constraint | None
     acs_config: AttitudeControlSystem | None
     config: MissionConfig | None
+    random_seed: int
 
     def __init__(
         self,
@@ -45,6 +47,7 @@ class TargetQueue:
         self.radiator_earth_exposure_weight = (
             config.targets.radiator_earth_exposure_weight
         )
+        self.random_seed = config.random_seed if config.random_seed is not None else 0
 
     def __getitem__(self, number: int) -> Pointing:
         return self.targets[number]
@@ -112,9 +115,21 @@ class TargetQueue:
                 target.merit = -900
                 continue
 
-        # Sort by merit (highest first). Python's sort is stable, so equal-merit
-        # targets keep the checked-in queue order instead of using random noise.
-        self.targets.sort(key=lambda x: x.merit, reverse=True)
+        self.targets.sort(
+            key=lambda target: (target.merit, self._target_tie_breaker(target)),
+            reverse=True,
+        )
+
+    def _target_tie_breaker(self, target: Pointing) -> int:
+        """Return a deterministic tie-break value for equal-merit targets."""
+        identifier = getattr(target, "obsid", None)
+        if identifier is None:
+            identifier = getattr(target, "targetid", None)
+        if identifier is None:
+            identifier = getattr(target, "name", "")
+        payload = f"{self.random_seed}:{identifier}".encode()
+        digest = hashlib.blake2b(payload, digest_size=8).digest()
+        return int.from_bytes(digest, "big")
 
     def get(
         self,

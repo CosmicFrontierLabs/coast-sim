@@ -811,6 +811,7 @@ class TestFetchNewPPT:
         mock_ppt.slewtime = 12
         mock_ppt.slewdist = 3.0
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
+        queue_ditl.queue.targets = [mock_ppt]
         cast(Mock, queue_ditl.acs.passrequests).current_pass = Mock(return_value=None)
         cast(Mock, queue_ditl.acs.passrequests).next_pass = Mock(return_value=None)
         queue_ditl.constraint.in_constraint = Mock(return_value=True)
@@ -1120,6 +1121,7 @@ class TestFetchNewPPT:
         mock_ppt.ss_min = 300.0
         mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
+        queue_ditl.queue.targets = [mock_ppt]
 
         # No blocking pass
         cast(Mock, queue_ditl.acs.passrequests).current_pass = Mock(return_value=None)
@@ -1140,6 +1142,55 @@ class TestFetchNewPPT:
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "locked roll" in log_text
         assert str(mock_ppt.obsid) in log_text
+
+    def test_fetch_ppt_retries_when_locked_roll_rejects_top_target(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Try the next candidate when downstream roll validation rejects the first."""
+        bad_ppt = Mock()
+        bad_ppt.ra = 45.0
+        bad_ppt.dec = 30.0
+        bad_ppt.obsid = 1001
+        bad_ppt.done = False
+        bad_ppt.next_vis = Mock(return_value=1000.0)
+        bad_ppt.ss_max = 3600.0
+        bad_ppt.ss_min = 300.0
+        bad_ppt.windows = [[0.0, 1e12]]
+
+        good_ppt = Mock()
+        good_ppt.ra = 46.0
+        good_ppt.dec = 31.0
+        good_ppt.obsid = 1002
+        good_ppt.done = False
+        good_ppt.next_vis = Mock(return_value=1000.0)
+        good_ppt.ss_max = 3600.0
+        good_ppt.ss_min = 300.0
+        good_ppt.windows = [[0.0, 1e12]]
+
+        targets = [bad_ppt, good_ppt]
+        queue_ditl.queue.targets = targets
+
+        def get_next_not_done(ra: float, dec: float, utime: float) -> Mock | None:
+            return next((target for target in targets if not target.done), None)
+
+        cast(Mock, queue_ditl.queue).get = Mock(side_effect=get_next_not_done)
+        cast(Mock, queue_ditl.acs.passrequests).current_pass = Mock(return_value=None)
+        cast(Mock, queue_ditl.acs.passrequests).next_pass = Mock(return_value=None)
+        queue_ditl.constraint.in_constraint = Mock(
+            side_effect=lambda ra, *args, **kwargs: ra == bad_ppt.ra
+        )
+
+        queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        assert queue_ditl.ppt is good_ppt
+        assert bad_ppt.done is False
+        cast(Mock, queue_ditl.acs.enqueue_command).assert_called_once()
+        command = cast(Mock, queue_ditl.acs.enqueue_command).call_args[0][0]
+        assert command.slew.obsid == good_ppt.obsid
+
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "Target 1001 skipped" in log_text
+        assert "locked roll" in log_text
 
     def test_fetch_ppt_accepts_when_locked_roll_satisfies_constraint_in_window(
         self, queue_ditl
