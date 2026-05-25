@@ -58,6 +58,12 @@ Housekeeping Fields
    - ``ra``: Right ascension in degrees
    - ``dec``: Declination in degrees
    - ``roll``: Roll angle in degrees
+   - ``roll_offset_deg``: Signed offset from the solar-optimal roll in degrees (range
+     [-180, 180)); meaningful only during SCIENCE mode.
+   - ``quat_w``: Attitude quaternion scalar component (w)
+   - ``quat_x``: Attitude quaternion vector component (x)
+   - ``quat_y``: Attitude quaternion vector component (y)
+   - ``quat_z``: Attitude quaternion vector component (z)
 
 **ACS State**
    - ``acs_mode``: Current ACS mode (SCIENCE, SLEWING, SAFE, SAA, etc.)
@@ -87,11 +93,6 @@ Housekeeping Fields
    - ``for_solid_angle_sr``: Instantaneous field-of-regard solid angle in steradians.
      This value is optional and is ``None`` unless FOR calculation is enabled.
    - ``in_eclipse``: Whether spacecraft is in eclipse
-
-**Star Tracker Health**
-   - ``star_tracker_hard_violations``: Number of trackers violating their hard constraint
-   - ``star_tracker_soft_violations``: Whether any tracker is in its soft constraint zone
-   - ``star_tracker_functional_count``: Number of hard-constraint-clear trackers
 
 **Star Tracker and Radiator State**
    - ``star_tracker_hard_violations``: Number of star trackers in hard keep-out zones
