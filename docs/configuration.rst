@@ -131,6 +131,30 @@ Example:
 
    config = MissionConfig(name="STROBE-X Observatory")
 
+random_seed
+~~~~~~~~~~~
+
+An optional integer seed for stochastic planning decisions.
+
+.. code-block:: python
+
+   random_seed: int | None = None
+
+When set, COASTSim uses this value to seed the random-number generators that break
+scheduling ties and select ground-station pass opportunities.  Identical seeds produce
+identical plans across runs with the same inputs, making simulation results reproducible
+and regression-testable.
+
+When ``None`` (the default), system-time entropy is used, so each run may produce
+different orderings when targets have equal merit or multiple ground stations are visible
+simultaneously.
+
+Example:
+
+.. code-block:: python
+
+   config = MissionConfig(name="Reproducible Run", random_seed=42)
+
 spacecraft_bus
 ~~~~~~~~~~~~~~
 
