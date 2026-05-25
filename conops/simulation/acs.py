@@ -23,6 +23,9 @@ if TYPE_CHECKING:
     from ..targets import Pointing
 
 
+IDLE_OBSID = 0
+
+
 class ACS:
     """
     Queue-driven state machine for spacecraft Attitude Control System (ACS).
@@ -54,6 +57,7 @@ class ACS:
     radiator_sun_exposure: float
     radiator_earth_exposure: float
     radiator_heat_dissipation_w: float
+    science_observation_active: bool
 
     def __init__(self, config: MissionConfig, log: "DITLLog | None" = None) -> None:
         """Initialize the Attitude Control System.
@@ -88,7 +92,8 @@ class ACS:
         # Current state
         self.roll = 0.0
         self.obstype = ObsType.PPT
-        self.acsmode = ACSMode.SCIENCE  # Start in science/pointing mode
+        self.acsmode = ACSMode.IDLE
+        self.science_observation_active = False
         self.in_eclipse = False  # Initialize eclipse state
         self.in_safe_mode = False  # Safe mode flag - once True, cannot be exited
 
@@ -276,7 +281,7 @@ class ACS:
     def _end_pass(self, utime: float) -> None:
         """Handle the END_PASS command to command the end of a groundstation pass."""
         self.current_pass = None
-        self.acsmode = ACSMode.SCIENCE
+        self.acsmode = ACSMode.IDLE
 
         # Clear any stale slew that was issued during the pass. Such slews have
         # start positions from pass tracking that don't reflect where the
@@ -368,11 +373,18 @@ class ACS:
 
         # Update last_ppt if this is a science pointing
         if self._is_science_pointing(slew):
+            self.science_observation_active = True
             self.last_ppt = slew
+        else:
+            self.science_observation_active = False
 
     def _is_science_pointing(self, slew: Slew) -> bool:
         """Check if slew represents a science pointing (not a pass)."""
         return slew.obstype == ObsType.PPT and isinstance(slew, Slew)
+
+    def end_science_observation(self) -> None:
+        """Mark the current held attitude as no longer collecting science."""
+        self.science_observation_active = False
 
     def _enqueue_slew(
         self,
@@ -567,9 +579,16 @@ class ACS:
         if self.current_pass is not None:
             return self.ra, self.dec, self.roll, self.current_pass.obsid
         if self.last_slew is not None:
+            if self._is_science_pointing(self.last_slew):
+                obsid = (
+                    self.last_slew.obsid
+                    if self.science_observation_active
+                    else IDLE_OBSID
+                )
+                return self.ra, self.dec, self.roll, obsid
             return self.ra, self.dec, self.roll, self.last_slew.obsid
         else:
-            return self.ra, self.dec, self.roll, 1
+            return self.ra, self.dec, self.roll, IDLE_OBSID
 
     def get_mode(self, utime: float) -> ACSMode:
         """Determine current spacecraft mode based on ACS state and external factors.
@@ -610,7 +629,14 @@ class ACS:
         if self.saa is not None and self.saa.insaa(utime):
             return ACSMode.SAA
 
-        return ACSMode.SCIENCE
+        if self.last_slew is not None:
+            if self._is_science_pointing(self.last_slew):
+                return (
+                    ACSMode.SCIENCE if self.science_observation_active else ACSMode.IDLE
+                )
+            return ACSMode.IDLE
+
+        return ACSMode.SCIENCE if self.science_observation_active else ACSMode.IDLE
 
     def _is_actively_slewing(self, utime: float) -> bool:
         """Check if spacecraft is currently executing a slew."""
@@ -724,8 +750,6 @@ class ACS:
                         " ".join(true_constraints),
                     ),
                 )
-            # Note: acsmode remains SCIENCE - the DITL will decide if charging is needed
-
         # Check star tracker constraints
         self._check_star_tracker_constraints(utime)
         self._check_radiator_constraints(utime)
@@ -1061,6 +1085,7 @@ class ACS:
         # This prevents staying in CHARGING mode while slewing back to science
         if self.last_slew is not None and self.last_slew.obstype == ObsType.CHARGE:
             self.last_slew = None
+        self.science_observation_active = False
 
         # Queue-driven scheduling owns the next science target. Returning to the
         # previous PPT here can resurrect a closed observation after charging.
