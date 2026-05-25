@@ -20,6 +20,7 @@ from conops import (
 from conops.common.enums import ObsType
 from conops.config.config import MissionConfig
 from conops.ditl.telemetry import Housekeeping
+from conops.simulation.acs import IDLE_OBSID
 from conops.simulation.passes import GSP_TRACK_ROLL
 from conops.targets import PlanEntry, PlanSchema
 
@@ -313,7 +314,21 @@ class TestDetermineMode:
         acs.saa = None
 
         mode = acs.get_mode(1000.0)
+        assert mode == ACSMode.IDLE
+
+        science_slew = Slew(config=mock_config)
+        science_slew.obstype = ObsType.PPT
+        science_slew.obsid = 42
+        science_slew.slewstart = 0.0
+        science_slew.slewend = 0.0
+        acs.last_slew = science_slew
+        acs.science_observation_active = True
+        mode = acs.get_mode(2000.0)
         assert mode == ACSMode.SCIENCE
+
+        acs.end_science_observation()
+        mode = acs.get_mode(1000.0)
+        assert mode == ACSMode.IDLE
 
 
 class TestHandlePassMode:
@@ -1463,7 +1478,7 @@ class TestPlanExecutionValidation:
             ACSMode.SCIENCE,
             ACSMode.SCIENCE,
             ACSMode.SCIENCE,
-            ACSMode.SCIENCE,
+            ACSMode.IDLE,
         ]
         queue_ditl.obsid = [0, 42, 42, 42, 42, 42]
         queue_ditl.ra = [0.0, 10.0, 10.0, 10.0, 10.0, 10.0]
@@ -1481,13 +1496,102 @@ class TestPlanExecutionValidation:
         entry.end = 1120.0
         queue_ditl.plan.append(entry)
         queue_ditl.utime = [1000.0, 1060.0, 1120.0]
-        queue_ditl.mode = [ACSMode.SCIENCE, ACSMode.SCIENCE, ACSMode.SCIENCE]
+        queue_ditl.mode = [ACSMode.IDLE, ACSMode.SCIENCE, ACSMode.IDLE]
         queue_ditl.obsid = [999, 42, 999]
         queue_ditl.ra = [99.0, 10.0, 99.0]
         queue_ditl.dec = [99.0, 20.0, 99.0]
         self._index_telemetry_by_time(queue_ditl)
 
         assert queue_ditl.validate_plan_matches_execution() == []
+
+    def test_terminating_ppt_marks_held_attitude_idle(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        entry = self._science_entry(queue_ditl)
+        queue_ditl.ppt = entry
+
+        real_acs = ACS(config=queue_ditl.config)
+        queue_ditl.acs = real_acs
+        science_slew = Slew(config=queue_ditl.config)
+        science_slew.obstype = ObsType.PPT
+        science_slew.obsid = entry.obsid
+        science_slew.slewstart = 1000.0
+        science_slew.slewend = 1100.0
+        science_slew.slewtime = 100.0
+        science_slew.startra = 0.0
+        science_slew.startdec = 0.0
+        science_slew.endra = entry.ra
+        science_slew.enddec = entry.dec
+        real_acs.last_slew = science_slew
+        real_acs.science_observation_active = True
+
+        queue_ditl._terminate_ppt(1300.0, reason="Target constrained")
+
+        assert queue_ditl.ppt is None
+        assert real_acs.science_observation_active is False
+        assert real_acs.get_mode(1300.0) == ACSMode.IDLE
+        real_acs._check_constraints = Mock()
+        real_acs._check_star_tracker_constraints = Mock()
+        real_acs._check_radiator_constraints = Mock()
+        assert real_acs.pointing(1300.0)[3] == IDLE_OBSID
+
+    def test_validation_fails_for_unplanned_science_execution(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        entry = self._science_entry(queue_ditl)
+        queue_ditl.plan.append(entry)
+        queue_ditl.utime = [1060.0, 1120.0, 1300.0, 1360.0]
+        queue_ditl.mode = [
+            ACSMode.SCIENCE,
+            ACSMode.SCIENCE,
+            ACSMode.IDLE,
+            ACSMode.SCIENCE,
+        ]
+        queue_ditl.obsid = [42, 42, 1, 42]
+        queue_ditl.ra = [10.0, 10.0, 10.0, 10.0]
+        queue_ditl.dec = [20.0, 20.0, 20.0, 20.0]
+        self._index_telemetry_by_time(queue_ditl)
+
+        mismatches = queue_ditl.validate_plan_matches_execution()
+
+        assert any("unplanned_science" in str(m) for m in mismatches)
+
+    def test_validation_fails_for_science_constraint_violation(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        entry = self._science_entry(queue_ditl)
+        queue_ditl.plan.append(entry)
+        queue_ditl.utime = [1060.0, 1120.0]
+        queue_ditl.mode = [ACSMode.SCIENCE, ACSMode.SCIENCE]
+        queue_ditl.obsid = [42, 42]
+        queue_ditl.ra = [10.0, 10.0]
+        queue_ditl.dec = [20.0, 20.0]
+        queue_ditl.constraint.in_constraint = Mock(side_effect=[False, True])
+        queue_ditl._get_constraint_name = Mock(return_value="Earth Limb")  # type: ignore[method-assign]
+        self._index_telemetry_by_time(queue_ditl)
+
+        mismatches = queue_ditl.validate_plan_matches_execution()
+
+        assert any("constraint_violation" in str(m) for m in mismatches)
+
+    def test_execution_coverage_uses_full_gsp_entry_window(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        entry = PlanEntry(config=queue_ditl.config)
+        entry.obstype = ObsType.GSP
+        entry.obsid = 0xFFFF
+        entry.station = "TRO"
+        entry.begin = 900.0
+        entry.slewtime = 100.0
+        entry.contact_begin = 1000.0
+        entry.contact_end = 1180.0
+        entry.end = 1180.0
+        queue_ditl.plan.append(entry)
+        queue_ditl.utime = [900.0, 960.0, 1180.0]
+        queue_ditl.mode = [ACSMode.PASS, ACSMode.PASS, ACSMode.PASS]
+        queue_ditl.obsid = [0xFFFF, 0xFFFF, 0xFFFF]
+
+        assert queue_ditl._validate_execution_is_planned() == []
 
     def test_validation_fails_for_stale_science_obsid(
         self, queue_ditl: QueueDITL
@@ -1741,6 +1845,7 @@ class TestCalcMethod:
         queue_ditl.length = 1
         queue_ditl.step_size = 3600
         queue_ditl.acs.get_mode = Mock(return_value=ACSMode.PASS)
+        queue_ditl._assert_plan_matches_execution = Mock()
         result = queue_ditl.calc()
         assert result is True
 
@@ -1750,6 +1855,7 @@ class TestCalcMethod:
         queue_ditl.length = 1
         queue_ditl.step_size = 3600
         queue_ditl.acs.get_mode = Mock(return_value=ACSMode.PASS)
+        queue_ditl._assert_plan_matches_execution = Mock()
         queue_ditl.calc()
         assert ACSMode.PASS in queue_ditl.mode
 
@@ -1895,6 +2001,7 @@ class TestCalcMethod:
         queue_ditl.battery.battery_alert = True
         queue_ditl.acs.get_mode = Mock(return_value=ACSMode.SCIENCE)
         queue_ditl.acs.pointing = Mock(return_value=(10.0, 20.0, 0.0, 1001))
+        queue_ditl._assert_plan_matches_execution = Mock()
 
         science_entry = Mock()
         science_entry.obstype = "AT"

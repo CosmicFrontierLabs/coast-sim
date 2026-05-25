@@ -676,6 +676,17 @@ class QueueDITL(DITLMixin, DITLStats):
             obsid=int(entry.obsid),
         )
 
+    def _constraint_mismatch(
+        self, entry: PlanEntry, utime: float, constraint_name: str
+    ) -> PlanExecutionMismatch:
+        return self._execution_mismatch(
+            utime,
+            "science",
+            "constraint_violation",
+            f"obsid {int(entry.obsid)} violates {constraint_name}",
+            obsid=int(entry.obsid),
+        )
+
     def _validate_plan_entry_structure(self) -> list[PlanExecutionMismatch]:
         mismatches: list[PlanExecutionMismatch] = []
         previous_begin: float | None = None
@@ -752,6 +763,29 @@ class QueueDITL(DITLMixin, DITLStats):
                     self._pointing_mismatch(entry, utime, error_deg, "science")
                 )
 
+            roll = (
+                float(self.roll[i])
+                if i < len(self.roll)
+                else float(getattr(entry, "roll", 0.0))
+            )
+            if self.constraint.in_constraint(
+                float(self.ra[i]),
+                float(self.dec[i]),
+                utime,
+                target_roll=roll,
+                acs_mode=ACSMode.SCIENCE,
+            ):
+                constraint_name = self._get_constraint_name(
+                    float(self.ra[i]),
+                    float(self.dec[i]),
+                    utime,
+                    roll=roll,
+                    mode=ACSMode.SCIENCE,
+                )
+                mismatches.append(
+                    self._constraint_mismatch(entry, utime, constraint_name)
+                )
+
         if samples > 0 and science_samples == 0:
             mismatches.append(
                 self._execution_mismatch(
@@ -762,6 +796,59 @@ class QueueDITL(DITLMixin, DITLStats):
                     obsid=int(entry.obsid),
                 )
             )
+        return mismatches
+
+    def _science_entry_covering_sample(
+        self, utime: float, obsid: int
+    ) -> PlanEntry | None:
+        for entry in self.plan:
+            obstype = self._entry_obstype(entry)
+            if obstype not in (ObsType.AT, ObsType.TOO):
+                continue
+            if int(entry.obsid) != int(obsid):
+                continue
+            if float(entry.begin) <= utime < float(entry.end):
+                return entry
+        return None
+
+    def _gsp_entry_covering_sample(self, utime: float, obsid: int) -> PlanEntry | None:
+        for entry in self.plan:
+            if self._entry_obstype(entry) != ObsType.GSP:
+                continue
+            if int(entry.obsid) != int(obsid):
+                continue
+            if float(entry.begin) <= utime <= float(entry.end):
+                return entry
+        return None
+
+    def _validate_execution_is_planned(self) -> list[PlanExecutionMismatch]:
+        mismatches: list[PlanExecutionMismatch] = []
+        for i, utime in enumerate(self.utime):
+            mode = self._mode_at_index(i)
+            if mode == ACSMode.SCIENCE:
+                obsid = int(self.obsid[i])
+                if self._science_entry_covering_sample(utime, obsid) is None:
+                    mismatches.append(
+                        self._execution_mismatch(
+                            utime,
+                            "execution",
+                            "unplanned_science",
+                            f"obsid {obsid} has no matching exported science entry",
+                            obsid=obsid,
+                        )
+                    )
+            elif mode == ACSMode.PASS:
+                obsid = int(self.obsid[i])
+                if self._gsp_entry_covering_sample(utime, obsid) is None:
+                    mismatches.append(
+                        self._execution_mismatch(
+                            utime,
+                            "execution",
+                            "unplanned_contact",
+                            f"obsid {obsid} has no matching exported GSP entry",
+                            obsid=obsid,
+                        )
+                    )
         return mismatches
 
     def _matching_pass_for_entry(self, entry: PlanEntry) -> Pass | None:
@@ -869,6 +956,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 mismatches.extend(
                     self._validate_gsp_entry_execution(entry, tolerance_deg)
                 )
+        mismatches.extend(self._validate_execution_is_planned())
         return mismatches
 
     def _assert_plan_matches_execution(self) -> None:
@@ -1592,6 +1680,7 @@ class QueueDITL(DITLMixin, DITLStats):
             self.ppt.done = True
 
         self.ppt = None
+        self.acs.end_science_observation()
         # Do NOT clear last_slew here. The spacecraft is physically still pointing
         # at the science target; clearing last_slew would cause pointing() to call
         # optimum_roll() and jump the roll on the next tick. Roll stays locked to

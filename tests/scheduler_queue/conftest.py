@@ -157,8 +157,8 @@ def queue_ditl(mock_config: Mock, mock_ephem: DummyEphemeris) -> QueueDITL:
         # Set acsmode to a real ACSMode enum value for logging
         from conops import ACSMode
 
-        mock_acs.acsmode = ACSMode.SCIENCE
-        mock_acs.get_mode = Mock(return_value=ACSMode.SCIENCE)
+        mock_acs.acsmode = ACSMode.IDLE
+        mock_acs.get_mode = Mock(return_value=ACSMode.IDLE)
         mock_acs.in_safe_mode = False
         mock_acs.in_eclipse = False
         # Add star tracker attributes for Housekeeping telemetry
@@ -589,8 +589,8 @@ def queue_ditl_no_queue_log(
         # Set acsmode to a real ACSMode enum value for logging
         from conops import ACSMode
 
-        mock_acs.acsmode = ACSMode.SCIENCE
-        mock_acs.get_mode = Mock(return_value=ACSMode.SCIENCE)
+        mock_acs.acsmode = ACSMode.IDLE
+        mock_acs.get_mode = Mock(return_value=ACSMode.IDLE)
         mock_acs.in_safe_mode = False
         mock_acs.in_eclipse = False
         # Add star tracker attributes for Housekeeping telemetry
@@ -665,8 +665,8 @@ def queue_ditl_acs_no_ephem(
         # Set acsmode to a real ACSMode enum value for logging
         from conops import ACSMode
 
-        mock_acs.acsmode = ACSMode.SCIENCE
-        mock_acs.get_mode = Mock(return_value=ACSMode.SCIENCE)
+        mock_acs.acsmode = ACSMode.IDLE
+        mock_acs.get_mode = Mock(return_value=ACSMode.IDLE)
         mock_acs.in_safe_mode = False
         mock_acs.in_eclipse = False
         # Add star tracker attributes for Housekeeping telemetry

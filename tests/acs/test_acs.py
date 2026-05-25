@@ -42,7 +42,7 @@ class TestACSInitialization:
         assert acs.obstype == ObsType.PPT
         assert acs.last_slew is not None  # Initialized with boundary condition slew
         assert acs.last_ppt is None
-        assert acs.acsmode == 0
+        assert acs.acsmode == ACSMode.IDLE
         assert acs.current_pass is None
         assert acs.slew_dists == []
 
@@ -101,8 +101,8 @@ class TestACSStateManagement:
     """Test ACS state management."""
 
     def test_acsmode_initial(self, acs) -> None:
-        """Test default acsmode is SCIENCE."""
-        assert acs.acsmode == ACSMode.SCIENCE
+        """Test default acsmode is IDLE."""
+        assert acs.acsmode == ACSMode.IDLE
 
     def test_acsmode_set_slewing(self, acs) -> None:
         """Test setting acsmode to SLEWING."""

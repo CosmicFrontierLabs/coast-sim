@@ -12,7 +12,7 @@ class TestSafeModeInitialization:
     def test_acs_initializes_not_in_safe_mode(self, acs):
         """Test that ACS initializes with safe mode flag set to False."""
         assert acs.in_safe_mode is False
-        assert acs.acsmode == ACSMode.SCIENCE
+        assert acs.acsmode == ACSMode.IDLE
 
     def test_safe_mode_enum_exists(self):
         """Test that SAFE mode exists in ACSMode enum."""

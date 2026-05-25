@@ -10,6 +10,7 @@ class ACSMode(int, Enum):
     PASS = 3
     CHARGING = 4
     SAFE = 5
+    IDLE = 6
 
 
 class ChargeState(int, Enum):

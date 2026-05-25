@@ -435,6 +435,7 @@ class TestPointing:
         mock_slew.at.roll = 0.0
 
         acs.last_slew = mock_slew
+        acs.science_observation_active = True
         acs.constraint.in_constraint = Mock(return_value=True)
 
         ra, dec, roll, obsid = acs.pointing(1514764800.0)
@@ -485,7 +486,7 @@ class TestPointing:
         # After pass ends
         ra, dec, roll, obsid = acs.pointing(1514765500.0)
 
-        assert acs.acsmode == ACSMode.SCIENCE
+        assert acs.acsmode == ACSMode.IDLE
 
 
 class TestRequestPass:

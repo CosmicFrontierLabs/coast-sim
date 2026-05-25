@@ -20,9 +20,9 @@ class TestExecuteCommandCoverage:
 
         # Directly call _end_pass
         acs._end_pass(1514764800.0)
-        # Verify currentpass is cleared and mode is set to SCIENCE
+        # Verify currentpass is cleared and mode is set to IDLE
         assert acs.current_pass is None
-        assert acs.acsmode == ACSMode.SCIENCE
+        assert acs.acsmode == ACSMode.IDLE
 
     def test_end_pass_clears_currentpass(self, acs) -> None:
         mock_ppt = Mock(spec=Slew)
@@ -35,9 +35,9 @@ class TestExecuteCommandCoverage:
 
         acs._end_pass(1514764800.0)
         assert acs.current_pass is None
-        assert acs.acsmode == ACSMode.SCIENCE
+        assert acs.acsmode == ACSMode.IDLE
 
-    def test_end_pass_sets_mode_science(self, acs) -> None:
+    def test_end_pass_sets_mode_idle(self, acs) -> None:
         mock_ppt = Mock(spec=Slew)
         mock_ppt.endra = 45.0
         mock_ppt.enddec = 30.0
@@ -47,7 +47,7 @@ class TestExecuteCommandCoverage:
         acs.acsmode = ACSMode.PASS
 
         acs._end_pass(1514764800.0)
-        assert acs.acsmode == ACSMode.SCIENCE
+        assert acs.acsmode == ACSMode.IDLE
 
     def test_end_pass_no_last_ppt_clears_currentpass(self, acs) -> None:
         acs.last_ppt = None
@@ -57,13 +57,13 @@ class TestExecuteCommandCoverage:
         acs._end_pass(1514764800.0)
         assert acs.current_pass is None
 
-    def test_end_pass_no_last_ppt_sets_mode_science(self, acs) -> None:
+    def test_end_pass_no_last_ppt_sets_mode_idle(self, acs) -> None:
         acs.last_ppt = None
         acs.current_pass = Mock(spec=Pass)
         acs.acsmode = ACSMode.PASS
 
         acs._end_pass(1514764800.0)
-        assert acs.acsmode == ACSMode.SCIENCE
+        assert acs.acsmode == ACSMode.IDLE
 
     def test_execute_null_slew_does_not_start(self, acs) -> None:
         command = ACSCommand(
@@ -428,7 +428,7 @@ class TestEndPassCoverage:
             acs._end_pass(1514764800.0)
             assert acs.current_pass is None
 
-    def test_end_pass_sets_mode_science_on_end(self, acs) -> None:
+    def test_end_pass_sets_mode_idle_on_end(self, acs) -> None:
         mock_ppt = Mock(spec=Slew)
         mock_ppt.endra = 45.0
         mock_ppt.enddec = 30.0
@@ -440,7 +440,7 @@ class TestEndPassCoverage:
 
         with patch.object(acs, "enqueue_command", return_value=True):
             acs._end_pass(1514764800.0)
-            assert acs.acsmode == ACSMode.SCIENCE
+            assert acs.acsmode == ACSMode.IDLE
 
     def test_end_pass_with_no_last_ppt_clears_currentpass(self, acs) -> None:
         acs.last_ppt = None
@@ -450,13 +450,13 @@ class TestEndPassCoverage:
         acs._end_pass(1514764800.0)
         assert acs.current_pass is None
 
-    def test_end_pass_with_no_last_ppt_sets_mode_science(self, acs) -> None:
+    def test_end_pass_with_no_last_ppt_sets_mode_idle(self, acs) -> None:
         acs.last_ppt = None
         acs.current_pass = Mock(spec=Pass)
         acs.acsmode = ACSMode.PASS
 
         acs._end_pass(1514764800.0)
-        assert acs.acsmode == ACSMode.SCIENCE
+        assert acs.acsmode == ACSMode.IDLE
 
     def test_end_pass_no_last_ppt_does_not_enqueue_slew(self, acs) -> None:
         acs.last_ppt = None
@@ -486,8 +486,8 @@ class TestEndPassCoverage:
         assert acs.last_slew is None
         # Pass should be cleared
         assert acs.current_pass is None
-        # Mode should be SCIENCE
-        assert acs.acsmode == ACSMode.SCIENCE
+        # Mode should be IDLE
+        assert acs.acsmode == ACSMode.IDLE
 
     def test_end_pass_preserves_fresh_slew(self, acs) -> None:
         """Test that _end_pass preserves slews that start in the future (fresh slews)."""
@@ -509,8 +509,8 @@ class TestEndPassCoverage:
         assert acs.last_slew is mock_slew
         # Pass should still be cleared
         assert acs.current_pass is None
-        # Mode should be SCIENCE
-        assert acs.acsmode == ACSMode.SCIENCE
+        # Mode should be IDLE
+        assert acs.acsmode == ACSMode.IDLE
 
     def test_end_pass_handles_no_slew(self, acs) -> None:
         """Test that _end_pass works correctly when there's no last_slew."""
@@ -527,7 +527,7 @@ class TestEndPassCoverage:
         # Everything should work as expected
         assert acs.last_slew is None
         assert acs.current_pass is None
-        assert acs.acsmode == ACSMode.SCIENCE
+        assert acs.acsmode == ACSMode.IDLE
 
     def test_end_pass_clears_slew_starting_exactly_at_current_time(self, acs) -> None:
         """Test edge case where slew starts exactly at current time."""
