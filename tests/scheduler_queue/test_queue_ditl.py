@@ -1524,15 +1524,15 @@ class TestPlanExecutionValidation:
         science_slew.enddec = entry.dec
         real_acs.last_slew = science_slew
         real_acs.science_observation_active = True
+        real_acs._check_constraints = Mock()
+        real_acs._check_star_tracker_constraints = Mock()
+        real_acs._check_radiator_constraints = Mock()
 
         queue_ditl._terminate_ppt(1300.0, reason="Target constrained")
 
         assert queue_ditl.ppt is None
         assert real_acs.science_observation_active is False
         assert real_acs.get_mode(1300.0) == ACSMode.IDLE
-        real_acs._check_constraints = Mock()
-        real_acs._check_star_tracker_constraints = Mock()
-        real_acs._check_radiator_constraints = Mock()
         assert real_acs.pointing(1300.0)[3] == IDLE_OBSID
 
     def test_validation_fails_for_unplanned_science_execution(
