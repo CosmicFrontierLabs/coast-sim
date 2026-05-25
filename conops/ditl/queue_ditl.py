@@ -18,7 +18,7 @@ from ..common import (
 )
 from ..common.enums import ACSCommandType
 from ..common.vector import attitude_to_quat
-from ..config import MissionConfig
+from ..config import DAY_SECONDS, MissionConfig
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
 from ..simulation.passes import GSP_TRACK_ROLL, Pass, pass_slew_trigger_buffer
@@ -686,15 +686,15 @@ class QueueDITL(DITLMixin, DITLStats):
             begin = float(entry.begin)
             end = float(entry.end)
             obsid = int(entry.obsid) if entry.obsid is not None else None
-            if end < begin:
+            if end <= begin:
                 mismatches.append(
                     self._execution_mismatch(
                         begin,
                         "plan",
                         "invalid_interval",
                         (
-                            f"entry {index} obsid {obsid} ends before it begins "
-                            f"({end:.0f} < {begin:.0f})"
+                            f"entry {index} obsid {obsid} ends at or before it begins "
+                            f"({end:.0f} <= {begin:.0f})"
                         ),
                         obsid=obsid,
                     )
@@ -1011,9 +1011,9 @@ class QueueDITL(DITLMixin, DITLStats):
             # Before adding new PPT, close the previous one if it has placeholder end time
             if len(self.plan) > 0:
                 last_entry = self.plan[-1]
-                # Check if end time looks like a placeholder (>= 86400 seconds from begin)
-                # Charging PPTs use exactly 86400, science obs use larger values
-                if last_entry.end >= last_entry.begin + 86400:
+                # Check if end time looks like a placeholder (>= one day from begin).
+                # Charging PPTs use exactly one day, science obs use larger values.
+                if last_entry.end >= last_entry.begin + DAY_SECONDS:
                     # Set end to the begin time of new PPT (no gap between entries)
                     self._close_last_plan_entry(self.ppt.begin)
 
@@ -1027,9 +1027,9 @@ class QueueDITL(DITLMixin, DITLStats):
         """
         if self.ppt is None and len(self.plan) > 0:
             last_entry = self.plan[-1]
-            # Check if end time looks like a placeholder (>= 86400 seconds from begin)
-            # Charging PPTs use exactly 86400, science obs use larger values
-            if last_entry.end >= last_entry.begin + 86400:
+            # Check if end time looks like a placeholder (>= one day from begin).
+            # Charging PPTs use exactly one day, science obs use larger values.
+            if last_entry.end >= last_entry.begin + DAY_SECONDS:
                 self._close_last_plan_entry(utime)
 
     @staticmethod
@@ -1052,7 +1052,7 @@ class QueueDITL(DITLMixin, DITLStats):
         entry_begin = float(entry.begin)
         entry_end = float(entry.end)
         slew_start = float(slew.slewstart)
-        has_placeholder_end = entry_end >= entry_begin + 86400
+        has_placeholder_end = entry_end >= entry_begin + DAY_SECONDS
         matches_slew_start = abs(entry_begin - slew_start) <= 1e-6
         return has_placeholder_end or matches_slew_start
 
@@ -1076,7 +1076,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
         for entry in reversed(list(self.plan)):
             if self._entry_matches_science_slew(entry, slew):
-                update_end = entry.end >= entry.begin + 86400
+                update_end = entry.end >= entry.begin + DAY_SECONDS
                 self._apply_slew_metadata(entry, slew, update_end=update_end)
                 return
 

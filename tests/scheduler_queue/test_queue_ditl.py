@@ -1470,6 +1470,18 @@ class TestPlanExecutionValidation:
 
         assert any("invalid_interval" in str(m) for m in mismatches)
 
+    def test_validation_fails_for_zero_duration_entry(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        entry = self._science_entry(queue_ditl)
+        entry.begin = 1200.0
+        entry.end = 1200.0
+        queue_ditl.plan.append(entry)
+
+        mismatches = queue_ditl.validate_plan_matches_execution()
+
+        assert any("invalid_interval" in str(m) for m in mismatches)
+
     def test_validation_fails_for_non_monotonic_plan_entries(
         self, queue_ditl: QueueDITL
     ) -> None:
