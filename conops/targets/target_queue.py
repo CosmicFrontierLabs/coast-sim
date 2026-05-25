@@ -112,11 +112,8 @@ class TargetQueue:
                 target.merit = -900
                 continue
 
-        # Add randomness to break ties
-        for target in self.targets:
-            target.merit += np.random.random()
-
-        # Sort by merit (highest first)
+        # Sort by merit (highest first). Python's sort is stable, so equal-merit
+        # targets keep the checked-in queue order instead of using random noise.
         self.targets.sort(key=lambda x: x.merit, reverse=True)
 
     def get(
