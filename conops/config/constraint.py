@@ -154,7 +154,6 @@ class Constraint(ConfigModel):
         default=None,
         description="Telescope boresight-offset hard exclusion constraint",
     )
-
     ephem: rust_ephem.Ephemeris | None = Field(
         default=None,
         exclude=True,

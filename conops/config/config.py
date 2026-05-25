@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from enum import Enum
 from typing import Any
 
 import yaml
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from rust_ephem.constraints import ConstraintConfig
 
+from ..common.enums import ACSMode
 from ._base import ConfigModel
 from .battery import Battery
 from .constraint import Constraint, DefaultConstraint
@@ -20,6 +22,48 @@ from .targets import TargetConfig
 from .visualization import VisualizationConfig
 
 
+class AttitudeConstraintPolicy(str, Enum):
+    """Constraint validation policy applied to executed attitude samples."""
+
+    FULL_MISSION = "full_mission"
+    HARD_KEEPOUT = "hard_keepout"
+    NONE = "none"
+
+
+def _default_attitude_constraint_policy() -> dict[str, AttitudeConstraintPolicy]:
+    return {
+        ACSMode.SCIENCE.name: AttitudeConstraintPolicy.FULL_MISSION,
+        ACSMode.CHARGING.name: AttitudeConstraintPolicy.FULL_MISSION,
+        ACSMode.SLEWING.name: AttitudeConstraintPolicy.HARD_KEEPOUT,
+        ACSMode.PASS.name: AttitudeConstraintPolicy.HARD_KEEPOUT,
+        ACSMode.SAA.name: AttitudeConstraintPolicy.HARD_KEEPOUT,
+        ACSMode.SAFE.name: AttitudeConstraintPolicy.HARD_KEEPOUT,
+        ACSMode.IDLE.name: AttitudeConstraintPolicy.HARD_KEEPOUT,
+    }
+
+
+def _mode_name(mode: ACSMode | int | str) -> str:
+    if isinstance(mode, ACSMode):
+        return mode.name
+    if isinstance(mode, int):
+        return ACSMode(mode).name
+    raw = mode.strip().upper()
+    if raw in ACSMode.__members__:
+        return raw
+    return ACSMode(int(raw)).name
+
+
+def _normalize_attitude_constraint_policy(
+    value: dict[ACSMode | int | str, AttitudeConstraintPolicy | str] | None,
+) -> dict[str, AttitudeConstraintPolicy]:
+    policies = _default_attitude_constraint_policy()
+    if value is None:
+        return policies
+    for mode, policy in value.items():
+        policies[_mode_name(mode)] = AttitudeConstraintPolicy(policy)
+    return policies
+
+
 class MissionConfig(ConfigModel):
     """
     Configuration class for the spacecraft and its subsystems.
@@ -29,6 +73,14 @@ class MissionConfig(ConfigModel):
     random_seed: int | None = Field(
         default=None,
         description="Optional seed for stochastic planning decisions.",
+    )
+    attitude_constraint_policy: dict[str, AttitudeConstraintPolicy] = Field(
+        default_factory=_default_attitude_constraint_policy,
+        description=(
+            "Constraint validation policy by ACS mode for executed attitude samples. "
+            "Values are 'full_mission', 'hard_keepout', or 'none'. Omitted modes "
+            "use the default policy."
+        ),
     )
     spacecraft_bus: SpacecraftBus = Field(
         default_factory=SpacecraftBus,
@@ -75,6 +127,21 @@ class MissionConfig(ConfigModel):
         default_factory=TargetConfig,
         description="Target Configuration. Defines observational targets and scheduling parameters",
     )
+
+    @field_validator("attitude_constraint_policy", mode="before")
+    @classmethod
+    def _validate_attitude_constraint_policy(
+        cls,
+        value: dict[ACSMode | int | str, AttitudeConstraintPolicy | str] | None,
+    ) -> dict[str, AttitudeConstraintPolicy]:
+        return _normalize_attitude_constraint_policy(value)
+
+    def attitude_constraint_policy_for_mode(
+        self, mode: ACSMode | int
+    ) -> AttitudeConstraintPolicy:
+        return self.attitude_constraint_policy.get(
+            _mode_name(mode), AttitudeConstraintPolicy.NONE
+        )
 
     @model_validator(mode="after")
     def init_fault_management_defaults(self) -> MissionConfig:
