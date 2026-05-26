@@ -1039,8 +1039,11 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _close_last_plan_entry(self, end_time: float) -> None:
         """Close the last plan entry in the timeline by setting its end time.
-        If it's a science observation that didn't meet the minimum snapshot
-        requirement, log it and remove it from the plan."""
+
+        Science entries with no collection are removed. Short entries with
+        executed science collection remain in the plan so the export matches
+        ACS telemetry.
+        """
         if len(self.plan) == 0:
             return
         self.plan[-1].end = end_time
@@ -1048,17 +1051,30 @@ class QueueDITL(DITLMixin, DITLStats):
             entry = self.plan[-1]
             collection_time = self._science_collection_time(entry)
             collected = max(0.0, collection_time or 0.0)
+            if collected <= 0.0:
+                self.log.log_event(
+                    utime=end_time,
+                    event_type="QUEUE",
+                    description=(
+                        f"Dropping under-collected science entry {entry.obsid} - "
+                        f"collected {collected:.0f}s of required {float(entry.ss_min):.0f}s"
+                    ),
+                    obsid=entry.obsid,
+                    acs_mode=self.acs.acsmode,
+                )
+                self.plan.pop()
+                return
+
             self.log.log_event(
                 utime=end_time,
                 event_type="QUEUE",
                 description=(
-                    f"Dropping under-collected science entry {entry.obsid} - "
+                    f"Keeping under-collected science entry {entry.obsid} - "
                     f"collected {collected:.0f}s of required {float(entry.ss_min):.0f}s"
                 ),
                 obsid=entry.obsid,
                 acs_mode=self.acs.acsmode,
             )
-            self.plan.pop()
 
     def _create_housekeeping_record(
         self, utime: float, ra: float, dec: float, roll: float, mode: ACSMode
@@ -1268,6 +1284,8 @@ class QueueDITL(DITLMixin, DITLStats):
         # Check for battery alert and initiate emergency charging if needed
         if self._should_initiate_charging(utime):
             self._initiate_charging(utime, ra, dec)
+            if self.charging_ppt is not None:
+                return
 
         # Check for TOO interrupts (before managing PPT lifecycle)
         # This allows TOOs to preempt ongoing observations
@@ -1311,6 +1329,7 @@ class QueueDITL(DITLMixin, DITLStats):
                     self._close_last_plan_entry(utime)
                 if self._is_short_science_entry(interrupted_ppt):
                     interrupted_ppt.done = False
+                self.acs.end_science_observation()
 
             command = ACSCommand(
                 command_type=ACSCommandType.START_BATTERY_CHARGE,

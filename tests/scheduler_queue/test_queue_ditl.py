@@ -2184,9 +2184,12 @@ class TestCalcMethod:
         queue_ditl._initiate_charging(1250.0, 10.0, 20.0)
 
         assert science_ppt.done is False
-        assert science_ppt not in queue_ditl.plan
+        assert science_ppt in queue_ditl.plan
         assert queue_ditl.ppt is charging_ppt
+        queue_ditl.acs.end_science_observation.assert_called_once()
         queue_ditl.acs.enqueue_command.assert_called_once()
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "Keeping under-collected science entry 1001" in log_text
 
     def test_calc_drops_short_science_entry_when_charging_interrupts(
         self, queue_ditl
@@ -2477,8 +2480,8 @@ class TestCalcMethod:
         assert "Dropping under-collected science entry 1001" in log_text
         assert "collected 0s" in log_text
 
-    def test_track_ppt_drops_science_entry_below_ss_min(self, queue_ditl) -> None:
-        """A science entry with less than ss_min collection is not kept as AT."""
+    def test_track_ppt_keeps_under_collected_science_entry(self, queue_ditl) -> None:
+        """A science entry with executed collection remains in the plan."""
         previous_ppt = Mock()
         previous_ppt.obstype = "AT"
         previous_ppt.begin = 1000.0
@@ -2498,10 +2501,9 @@ class TestCalcMethod:
 
         queue_ditl._track_ppt_in_timeline()
 
-        assert previous_ppt not in queue_ditl.plan
-        assert queue_ditl.plan == [current_ppt]
+        assert queue_ditl.plan == [previous_ppt, current_ppt]
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
-        assert "Dropping under-collected science entry 1002" in log_text
+        assert "Keeping under-collected science entry 1002" in log_text
         assert "collected 250s of required 300s" in log_text
 
     def test_close_ppt_timeline_if_needed_closes_when_ppt_none(
@@ -4245,6 +4247,52 @@ class TestQueueDITLCoverage:
                 # Verify that PPT lifecycle management and fetching were NOT called
                 mock_manage_ppt.assert_not_called()
                 mock_fetch_ppt.assert_not_called()
+
+    def test_charging_interrupt_return_early(self, queue_ditl: QueueDITL) -> None:
+        """Starting emergency charging stops science-mode work for the timestep."""
+        charging_ppt = Mock()
+
+        def initiate_charging(utime: float, ra: float, dec: float) -> None:
+            queue_ditl.charging_ppt = charging_ppt
+
+        with (
+            patch.object(
+                queue_ditl, "_should_initiate_charging", return_value=True
+            ) as should_initiate,
+            patch.object(
+                queue_ditl, "_initiate_charging", side_effect=initiate_charging
+            ) as initiate,
+            patch.object(queue_ditl, "_check_too_interrupt") as check_too,
+            patch.object(queue_ditl, "_manage_ppt_lifecycle") as manage_ppt,
+            patch.object(queue_ditl, "_fetch_new_ppt") as fetch_ppt,
+        ):
+            queue_ditl._handle_science_mode(1000.0, 0.0, 0.0, ACSMode.SCIENCE)
+
+        should_initiate.assert_called_once_with(1000.0)
+        initiate.assert_called_once_with(1000.0, 0.0, 0.0)
+        check_too.assert_not_called()
+        manage_ppt.assert_not_called()
+        fetch_ppt.assert_not_called()
+
+    def test_failed_charging_initiation_continues_science_mode(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        with (
+            patch.object(
+                queue_ditl, "_should_initiate_charging", return_value=True
+            ) as should_initiate,
+            patch.object(queue_ditl, "_initiate_charging") as initiate,
+            patch.object(
+                queue_ditl, "_check_too_interrupt", return_value=False
+            ) as check_too,
+            patch.object(queue_ditl, "_manage_ppt_lifecycle") as manage_ppt,
+        ):
+            queue_ditl._handle_science_mode(1000.0, 0.0, 0.0, ACSMode.SCIENCE)
+
+        should_initiate.assert_called_once_with(1000.0)
+        initiate.assert_called_once_with(1000.0, 0.0, 0.0)
+        check_too.assert_called_once_with(1000.0, 0.0, 0.0)
+        manage_ppt.assert_called_once_with(1000.0, ACSMode.SCIENCE)
 
     def test_pass_ending_logic_triggered(self, mock_config, mock_ephem) -> None:
         """Test pass ending logic when previous pass existed but current doesn't (lines 631-642)."""
