@@ -12,6 +12,7 @@ from conops import (
     ACSCommand,
     ACSCommandType,
     ACSMode,
+    AttitudeConstraintPolicy,
     Pass,
     PlanExecutionMismatchError,
     QueueDITL,
@@ -1444,6 +1445,8 @@ class TestPlanExecutionValidation:
 
     def _index_telemetry_by_time(self, queue_ditl: QueueDITL) -> None:
         utimes = [float(utime) for utime in queue_ditl.utime]
+        if not queue_ditl.roll:
+            queue_ditl.roll = [0.0] * len(utimes)
 
         def index(time: datetime) -> int:
             timestamp = time.timestamp()
@@ -1573,6 +1576,206 @@ class TestPlanExecutionValidation:
         mismatches = queue_ditl.validate_plan_matches_execution()
 
         assert any("constraint_violation" in str(m) for m in mismatches)
+
+    def test_validation_fails_for_charging_constraint_violation(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.utime = [1060.0]
+        queue_ditl.mode = [ACSMode.CHARGING]
+        queue_ditl.obsid = [999001]
+        queue_ditl.ra = [40.0]
+        queue_ditl.dec = [10.0]
+        queue_ditl.roll = [5.0]
+        queue_ditl.constraint.in_constraint = Mock(return_value=True)
+        queue_ditl.constraint.in_sun = Mock(return_value=True)
+        self._index_telemetry_by_time(queue_ditl)
+
+        mismatches = queue_ditl.validate_plan_matches_execution()
+
+        assert any("mode CHARGING" in str(m) for m in mismatches)
+        assert any("Sun" in str(m) for m in mismatches)
+        queue_ditl.constraint.in_constraint.assert_called_once_with(
+            40.0, 10.0, 1060.0, target_roll=5.0, acs_mode=ACSMode.CHARGING
+        )
+
+    def test_validation_uses_hard_constraints_only_for_pass(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        entry = PlanEntry(config=queue_ditl.config)
+        entry.obstype = ObsType.GSP
+        entry.obsid = 0xFFFF
+        entry.station = "TRO"
+        entry.begin = 1000.0
+        entry.contact_begin = 1000.0
+        entry.contact_end = 1120.0
+        entry.end = 1120.0
+        queue_ditl.plan.append(entry)
+        queue_ditl.acs.passrequests.passes = [
+            Pass(
+                station="TRO",
+                begin=1000.0,
+                length=120.0,
+                obsid=0xFFFF,
+                utime=[1000.0, 1060.0],
+                ra=[10.0, 11.0],
+                dec=[20.0, 21.0],
+            )
+        ]
+        queue_ditl.utime = [1000.0, 1060.0]
+        queue_ditl.mode = [ACSMode.PASS, ACSMode.PASS]
+        queue_ditl.obsid = [0xFFFF, 0xFFFF]
+        queue_ditl.ra = [10.0, 11.0]
+        queue_ditl.dec = [20.0, 21.0]
+        queue_ditl.roll = [0.0, 10.0]
+        queue_ditl.constraint.in_constraint = Mock(return_value=True)
+        self._index_telemetry_by_time(queue_ditl)
+
+        assert queue_ditl.validate_plan_matches_execution() == []
+        queue_ditl.constraint.in_constraint.assert_not_called()
+
+    def test_validation_uses_configured_full_constraint_policy_for_pass(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        entry = PlanEntry(config=queue_ditl.config)
+        entry.obstype = ObsType.GSP
+        entry.obsid = 0xFFFF
+        entry.station = "TRO"
+        entry.begin = 1000.0
+        entry.contact_begin = 1000.0
+        entry.contact_end = 1060.0
+        entry.end = 1060.0
+        queue_ditl.plan.append(entry)
+        queue_ditl.acs.passrequests.passes = [
+            Pass(
+                station="TRO",
+                begin=1000.0,
+                length=60.0,
+                obsid=0xFFFF,
+                utime=[1000.0],
+                ra=[10.0],
+                dec=[20.0],
+            )
+        ]
+        queue_ditl.utime = [1000.0]
+        queue_ditl.mode = [ACSMode.PASS]
+        queue_ditl.obsid = [0xFFFF]
+        queue_ditl.ra = [10.0]
+        queue_ditl.dec = [20.0]
+        queue_ditl.roll = [15.0]
+        queue_ditl.config.attitude_constraint_policy_for_mode = Mock(
+            return_value=AttitudeConstraintPolicy.FULL_MISSION
+        )
+        queue_ditl.constraint.in_constraint = Mock(return_value=True)
+        queue_ditl.constraint.in_sun = Mock(return_value=True)
+        self._index_telemetry_by_time(queue_ditl)
+
+        mismatches = queue_ditl.validate_plan_matches_execution()
+
+        assert any("mode PASS" in str(m) for m in mismatches)
+        assert any("Sun" in str(m) for m in mismatches)
+        assert any("full_mission" in str(m) for m in mismatches)
+        queue_ditl.constraint.in_constraint.assert_called_once_with(
+            10.0, 20.0, 1000.0, target_roll=15.0, acs_mode=ACSMode.PASS
+        )
+
+    def test_validation_fails_for_pass_hard_constraint_violation(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        entry = PlanEntry(config=queue_ditl.config)
+        entry.obstype = ObsType.GSP
+        entry.obsid = 0xFFFF
+        entry.station = "TRO"
+        entry.begin = 1000.0
+        entry.contact_begin = 1000.0
+        entry.contact_end = 1060.0
+        entry.end = 1060.0
+        queue_ditl.plan.append(entry)
+        queue_ditl.acs.passrequests.passes = [
+            Pass(
+                station="TRO",
+                begin=1000.0,
+                length=60.0,
+                obsid=0xFFFF,
+                utime=[1000.0],
+                ra=[10.0],
+                dec=[20.0],
+            )
+        ]
+        queue_ditl.utime = [1000.0]
+        queue_ditl.mode = [ACSMode.PASS]
+        queue_ditl.obsid = [0xFFFF]
+        queue_ditl.ra = [10.0]
+        queue_ditl.dec = [20.0]
+        queue_ditl.roll = [15.0]
+        queue_ditl.constraint.in_star_tracker_hard = Mock(return_value=True)
+        self._index_telemetry_by_time(queue_ditl)
+
+        mismatches = queue_ditl.validate_plan_matches_execution()
+
+        assert any("mode PASS" in str(m) for m in mismatches)
+        assert any("ST Hard" in str(m) for m in mismatches)
+        queue_ditl.constraint.in_star_tracker_hard.assert_called_once_with(
+            10.0, 20.0, 1000.0, target_roll=15.0, acs_mode=ACSMode.PASS
+        )
+
+    def test_validation_uses_configured_hard_policy_for_charging(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.utime = [1060.0]
+        queue_ditl.mode = [ACSMode.CHARGING]
+        queue_ditl.obsid = [999001]
+        queue_ditl.ra = [40.0]
+        queue_ditl.dec = [10.0]
+        queue_ditl.roll = [5.0]
+        queue_ditl.config.attitude_constraint_policy_for_mode = Mock(
+            return_value=AttitudeConstraintPolicy.HARD_KEEPOUT
+        )
+        queue_ditl.constraint.in_constraint = Mock(return_value=True)
+        queue_ditl.constraint.in_radiator_hard = Mock(return_value=True)
+        self._index_telemetry_by_time(queue_ditl)
+
+        mismatches = queue_ditl.validate_plan_matches_execution()
+
+        assert any("mode CHARGING" in str(m) for m in mismatches)
+        assert any("Radiator Hard" in str(m) for m in mismatches)
+        assert any("hard_keepout" in str(m) for m in mismatches)
+        queue_ditl.constraint.in_constraint.assert_not_called()
+
+    def test_validation_fails_for_unknown_attitude_mode(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.utime = [1000.0]
+        queue_ditl.mode = [999]
+        queue_ditl.obsid = [IDLE_OBSID]
+        queue_ditl.ra = [10.0]
+        queue_ditl.dec = [20.0]
+        queue_ditl.roll = [30.0]
+        self._index_telemetry_by_time(queue_ditl)
+
+        mismatches = queue_ditl.validate_plan_matches_execution()
+
+        assert any("unknown_mode" in str(m) for m in mismatches)
+        assert any("mode 999" in str(m) for m in mismatches)
+
+    @pytest.mark.parametrize(
+        "mode", [ACSMode.SLEWING, ACSMode.SAA, ACSMode.SAFE, ACSMode.IDLE]
+    )
+    def test_validation_fails_for_hard_constraint_violation_in_non_activity_modes(
+        self, queue_ditl: QueueDITL, mode: ACSMode
+    ) -> None:
+        queue_ditl.utime = [1000.0]
+        queue_ditl.mode = [mode]
+        queue_ditl.obsid = [IDLE_OBSID]
+        queue_ditl.ra = [10.0]
+        queue_ditl.dec = [20.0]
+        queue_ditl.roll = [30.0]
+        queue_ditl.constraint.in_radiator_hard = Mock(return_value=True)
+        self._index_telemetry_by_time(queue_ditl)
+
+        mismatches = queue_ditl.validate_plan_matches_execution()
+
+        assert any(f"mode {mode.name}" in str(m) for m in mismatches)
+        assert any("Radiator Hard" in str(m) for m in mismatches)
 
     def test_execution_coverage_uses_full_gsp_entry_window(
         self, queue_ditl: QueueDITL

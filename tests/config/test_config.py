@@ -9,6 +9,8 @@ import rust_ephem
 import yaml
 
 from conops import (
+    ACSMode,
+    AttitudeConstraintPolicy,
     Battery,
     Constraint,
     FaultManagement,
@@ -64,6 +66,37 @@ class TestConfig:
         assert (
             minimal_config["config"].ground_stations
             == minimal_config["ground_stations"]
+        )
+
+    def test_attitude_constraint_policy_defaults_by_mode(self) -> None:
+        """Test executed attitude validation policy defaults."""
+        config = MissionConfig()
+        assert (
+            config.attitude_constraint_policy_for_mode(ACSMode.SCIENCE)
+            == AttitudeConstraintPolicy.FULL_MISSION
+        )
+        assert (
+            config.attitude_constraint_policy_for_mode(ACSMode.PASS)
+            == AttitudeConstraintPolicy.HARD_KEEPOUT
+        )
+
+    def test_attitude_constraint_policy_accepts_mode_name_overrides(self) -> None:
+        """Test mission config can override one ACS mode by name."""
+        config = MissionConfig(
+            attitude_constraint_policy={"PASS": "full_mission", "CHARGING": "none"}
+        )
+
+        assert (
+            config.attitude_constraint_policy_for_mode(ACSMode.PASS)
+            == AttitudeConstraintPolicy.FULL_MISSION
+        )
+        assert (
+            config.attitude_constraint_policy_for_mode(ACSMode.CHARGING)
+            == AttitudeConstraintPolicy.NONE
+        )
+        assert (
+            config.attitude_constraint_policy_for_mode(ACSMode.SCIENCE)
+            == AttitudeConstraintPolicy.FULL_MISSION
         )
 
     def test_config_default_name(self) -> None:

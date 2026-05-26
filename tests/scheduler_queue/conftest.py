@@ -9,7 +9,13 @@ import numpy as np
 import pytest
 from astropy.time import Time  # type: ignore[import-untyped]
 
-from conops import DAY_SECONDS, DumbQueueScheduler, QueueDITL
+from conops import (
+    DAY_SECONDS,
+    ACSMode,
+    AttitudeConstraintPolicy,
+    DumbQueueScheduler,
+    QueueDITL,
+)
 from conops.targets.plan import Plan
 
 
@@ -67,7 +73,23 @@ def mock_config() -> Mock:
     config.constraint.panel_constraint.solar_panel = Mock()
     config.constraint.orbit_constraint = None
     config.constraint.in_constraint = Mock(return_value=False)
+    config.constraint.in_sun = Mock(return_value=False)
+    config.constraint.in_earth = Mock(return_value=False)
+    config.constraint.in_panel = Mock(return_value=False)
+    config.constraint.in_moon = Mock(return_value=False)
+    config.constraint.in_anti_sun = Mock(return_value=False)
     config.constraint.in_orbit = Mock(return_value=False)
+    config.constraint.in_star_tracker_hard = Mock(return_value=False)
+    config.constraint.in_star_tracker_soft = Mock(return_value=False)
+    config.constraint.in_radiator_hard = Mock(return_value=False)
+    config.constraint.in_telescope_hard = Mock(return_value=False)
+    config.attitude_constraint_policy_for_mode = Mock(
+        side_effect=lambda mode: (
+            AttitudeConstraintPolicy.FULL_MISSION
+            if ACSMode(int(mode)) in (ACSMode.SCIENCE, ACSMode.CHARGING)
+            else AttitudeConstraintPolicy.HARD_KEEPOUT
+        )
+    )
     config.constraint.instantaneous_field_of_regard = Mock(return_value=1.234)
 
     # Mock battery

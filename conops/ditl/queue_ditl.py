@@ -18,7 +18,7 @@ from ..common import (
 )
 from ..common.enums import ACSCommandType
 from ..common.vector import attitude_to_quat
-from ..config import DAY_SECONDS, MissionConfig
+from ..config import DAY_SECONDS, AttitudeConstraintPolicy, MissionConfig
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
 from ..simulation.passes import GSP_TRACK_ROLL, Pass, pass_slew_trigger_buffer
@@ -602,6 +602,7 @@ class QueueDITL(DITLMixin, DITLStats):
             "utime": len(self.utime),
             "ra": len(self.ra),
             "dec": len(self.dec),
+            "roll": len(self.roll),
             "obsid": len(self.obsid),
             "mode": len(self.mode),
         }
@@ -676,15 +677,32 @@ class QueueDITL(DITLMixin, DITLStats):
             obsid=int(entry.obsid),
         )
 
-    def _constraint_mismatch(
-        self, entry: PlanEntry, utime: float, constraint_name: str
+    def _attitude_constraint_mismatch(
+        self, index: int, constraint_name: str, policy: str
     ) -> PlanExecutionMismatch:
+        mode = self._mode_at_index(index)
+        obsid = int(self.obsid[index])
         return self._execution_mismatch(
-            utime,
-            "science",
+            self.utime[index],
+            "attitude",
             "constraint_violation",
-            f"obsid {int(entry.obsid)} violates {constraint_name}",
-            obsid=int(entry.obsid),
+            (
+                f"mode {mode.name if mode is not None else self.mode[index]} "
+                f"obsid {obsid} violates {constraint_name} ({policy}); "
+                f"ra={float(self.ra[index]):.3f} "
+                f"dec={float(self.dec[index]):.3f} "
+                f"roll={float(self.roll[index]):.3f}"
+            ),
+            obsid=obsid,
+        )
+
+    def _unknown_mode_mismatch(self, index: int) -> PlanExecutionMismatch:
+        return self._execution_mismatch(
+            self.utime[index],
+            "attitude",
+            "unknown_mode",
+            f"cannot apply constraint policy for mode {self.mode[index]}",
+            obsid=int(self.obsid[index]),
         )
 
     def _validate_plan_entry_structure(self) -> list[PlanExecutionMismatch]:
@@ -763,29 +781,6 @@ class QueueDITL(DITLMixin, DITLStats):
                     self._pointing_mismatch(entry, utime, error_deg, "science")
                 )
 
-            roll = (
-                float(self.roll[i])
-                if i < len(self.roll)
-                else float(getattr(entry, "roll", 0.0))
-            )
-            if self.constraint.in_constraint(
-                float(self.ra[i]),
-                float(self.dec[i]),
-                utime,
-                target_roll=roll,
-                acs_mode=ACSMode.SCIENCE,
-            ):
-                constraint_name = self._get_constraint_name(
-                    float(self.ra[i]),
-                    float(self.dec[i]),
-                    utime,
-                    roll=roll,
-                    mode=ACSMode.SCIENCE,
-                )
-                mismatches.append(
-                    self._constraint_mismatch(entry, utime, constraint_name)
-                )
-
         if samples > 0 and science_samples == 0:
             mismatches.append(
                 self._execution_mismatch(
@@ -849,6 +844,68 @@ class QueueDITL(DITLMixin, DITLStats):
                             obsid=obsid,
                         )
                     )
+        return mismatches
+
+    def _hard_attitude_constraint_name(
+        self,
+        ra: float,
+        dec: float,
+        utime: float,
+        roll: float,
+        mode: ACSMode,
+    ) -> str | None:
+        if self.constraint.in_star_tracker_hard(
+            ra, dec, utime, target_roll=roll, acs_mode=mode
+        ):
+            return "ST Hard"
+        if self.constraint.in_radiator_hard(ra, dec, utime, target_roll=roll):
+            return "Radiator Hard"
+        if self.constraint.in_telescope_hard(ra, dec, utime, target_roll=roll):
+            return "Telescope Hard"
+        return None
+
+    def _attitude_constraint_name_for_sample(
+        self, index: int, mode: ACSMode
+    ) -> tuple[str, str] | None:
+        """Return the violated constraint name and policy for one attitude sample."""
+        ra = float(self.ra[index])
+        dec = float(self.dec[index])
+        roll = float(self.roll[index])
+        utime = self.utime[index]
+        policy = self.config.attitude_constraint_policy_for_mode(mode)
+        if policy == AttitudeConstraintPolicy.NONE:
+            return None
+        if policy == AttitudeConstraintPolicy.FULL_MISSION:
+            if self.constraint.in_constraint(
+                ra, dec, utime, target_roll=roll, acs_mode=mode
+            ):
+                return (
+                    self._get_constraint_name(ra, dec, utime, roll=roll, mode=mode),
+                    policy.value,
+                )
+            return None
+        if policy == AttitudeConstraintPolicy.HARD_KEEPOUT:
+            name = self._hard_attitude_constraint_name(ra, dec, utime, roll, mode)
+            if name is not None:
+                return name, policy.value
+        return None
+
+    def _validate_attitude_constraints(self) -> list[PlanExecutionMismatch]:
+        mismatches: list[PlanExecutionMismatch] = []
+        for i in range(len(self.utime)):
+            mode = self._mode_at_index(i)
+            if mode is None:
+                mismatches.append(self._unknown_mode_mismatch(i))
+                continue
+
+            violation = self._attitude_constraint_name_for_sample(i, mode)
+            if violation is None:
+                continue
+
+            constraint_name, policy = violation
+            mismatches.append(
+                self._attitude_constraint_mismatch(i, constraint_name, policy)
+            )
         return mismatches
 
     def _matching_pass_for_entry(self, entry: PlanEntry) -> Pass | None:
@@ -956,6 +1013,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 mismatches.extend(
                     self._validate_gsp_entry_execution(entry, tolerance_deg)
                 )
+        mismatches.extend(self._validate_attitude_constraints())
         mismatches.extend(self._validate_execution_is_planned())
         return mismatches
 
@@ -1720,6 +1778,10 @@ class QueueDITL(DITLMixin, DITLStats):
             ra, dec, utime, target_roll=roll, acs_mode=mode
         ):
             return "ST Soft"
+        elif self.constraint.in_radiator_hard(ra, dec, utime, target_roll=roll):
+            return "Radiator Hard"
+        elif self.constraint.in_telescope_hard(ra, dec, utime, target_roll=roll):
+            return "Telescope Hard"
         return "Unknown"
 
     def _simulation_end_deadline(self) -> float:
