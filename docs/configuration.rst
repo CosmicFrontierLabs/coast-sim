@@ -155,6 +155,141 @@ Example:
 
    config = MissionConfig(name="Reproducible Run", random_seed=42)
 
+attitude_constraint_policy
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Controls which constraints are checked against the executed attitude timeline during
+post-run plan validation.
+
+.. code-block:: python
+
+   attitude_constraint_policy: dict[str, AttitudeConstraintPolicy] = <mode-specific defaults>
+
+**Background**
+
+At the end of every :meth:`~conops.ditl.queue_ditl.QueueDITL.run`, COASTSim compares
+the exported plan against the ACS telemetry it actually produced — a step called *plan
+execution validation*.  One part of that validation scans every attitude sample in the
+telemetry and checks whether the spacecraft was pointing somewhere it shouldn't have been.
+
+Not all modes are held to the same standard.  During ``SCIENCE`` mode a pointing
+violation is unambiguously a simulation bug.  During ``SLEWING`` the spacecraft is
+actively rotating between targets and may briefly sweep through a soft-constraint zone
+by design — flagging that as an error would produce false positives.  The
+``attitude_constraint_policy`` map lets you express, per ACS mode, exactly how strict
+you want that check to be.
+
+If any sample fails its policy check, a
+:class:`~conops.ditl.queue_ditl.PlanExecutionMismatch` is recorded and
+:meth:`~conops.ditl.queue_ditl.QueueDITL.run` raises
+:exc:`~conops.ditl.queue_ditl.PlanExecutionMismatchError` before returning.  The error
+message includes the first few violations — mode, obsid, RA/Dec/roll, and the constraint
+name — to aid debugging.
+
+**Hard keep-outs vs. full mission constraints**
+
+COASTSim's constraint system has two tiers:
+
+* **Full mission constraints** — the complete set of keep-outs the spacecraft must
+  respect during normal science operations: minimum Sun angle, Moon and Earth limb
+  avoidance, solar-panel illumination requirement, and the star-tracker, radiator, and
+  telescope hard constraints listed below.  Violating any of these during science would
+  degrade or invalidate the observation.
+
+* **Hard keep-outs** — a strict health-and-safety subset that must never be violated
+  regardless of mode: star tracker hard constraint (sensor blinding risk), radiator hard
+  constraint (thermal damage risk), and telescope hard constraint (structural or optical
+  damage risk).  These are always instrument-protection limits, not science-quality
+  limits.
+
+The ``HARD_KEEPOUT`` policy enforces the second tier only, which is appropriate for
+transient modes (slewing, SAA, safe) where soft science-quality limits legitimately do
+not apply.
+
+**Policy values** (:class:`~conops.config.AttitudeConstraintPolicy`):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 75
+
+   * - Value
+     - Behaviour
+   * - ``"full_mission"``
+     - The complete mission constraint (Sun, Moon, Earth limb, star tracker, radiator,
+       telescope) is evaluated.  Any violation is flagged.
+   * - ``"hard_keepout"``
+     - Only the three hard keep-outs are checked: star tracker hard constraint,
+       radiator hard constraint, and telescope hard constraint.  Science-quality soft
+       constraints (Sun angle, Moon, Earth limb, etc.) are intentionally ignored.
+   * - ``"none"``
+     - No constraint checking is performed for this mode.  Use this when the mode
+       genuinely has no pointing restrictions (rare) or when you need to suppress
+       false positives during development.
+
+**Default policy per ACS mode:**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 30 50
+
+   * - ACS Mode
+     - Default Policy
+     - Rationale
+   * - ``SCIENCE``
+     - ``full_mission``
+     - Science observations must satisfy all pointing constraints.
+   * - ``CHARGING``
+     - ``full_mission``
+     - Emergency charging still obeys the full mission keep-out.
+   * - ``SLEWING``
+     - ``hard_keepout``
+     - Slews may briefly sweep through soft-constraint zones by design; hard
+       health-and-safety limits are still enforced.
+   * - ``PASS``
+     - ``hard_keepout``
+     - Ground-station tracking may transit soft zones during the arc; hard limits apply.
+   * - ``SAA``
+     - ``hard_keepout``
+     - SAA transits relax science constraints but not instrument-protection limits.
+   * - ``SAFE``
+     - ``hard_keepout``
+     - Safe-mode pointing relaxes science constraints but not instrument-protection limits.
+   * - ``IDLE``
+     - ``hard_keepout``
+     - Idle attitude relaxes science constraints but not instrument-protection limits.
+
+**Overriding the policy for individual modes:**
+
+Pass a partial dict — only the modes you specify are overridden; all others keep their
+defaults.  Keys can be :class:`~conops.common.ACSMode` enum members, their integer
+values, or their string names.
+
+.. code-block:: python
+
+   from conops.config import MissionConfig, AttitudeConstraintPolicy
+   from conops.common import ACSMode
+
+   config = MissionConfig(
+       attitude_constraint_policy={
+           # Relax SLEWING to no check when using a separate, less restrictive
+           # slew constraint already enforced by the ACS slew algorithm.
+           ACSMode.SLEWING: AttitudeConstraintPolicy.NONE,
+           # Promote SAFE mode to full validation for a strict mission context.
+           "SAFE": AttitudeConstraintPolicy.FULL_MISSION,
+       }
+   )
+
+**YAML configuration:**
+
+When loading a config from YAML, use the mode name string as the key and the policy
+string as the value.  Omitted modes retain their defaults.
+
+.. code-block:: yaml
+
+   attitude_constraint_policy:
+     SLEWING: none
+     SAFE: full_mission
+
 spacecraft_bus
 ~~~~~~~~~~~~~~
 
@@ -1211,6 +1346,7 @@ API Reference
 For detailed API documentation, see:
 
 * :class:`~conops.config.MissionConfig`
+* :class:`~conops.config.AttitudeConstraintPolicy`
 * :class:`~conops.config.SpacecraftBus`
 * :class:`~conops.config.SolarPanelSet`
 * :class:`~conops.config.SolarPanel`
