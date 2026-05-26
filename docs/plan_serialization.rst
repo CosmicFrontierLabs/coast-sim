@@ -169,6 +169,11 @@ Metadata Fields
    * - ``num_entries``
      - int
      - Total number of entries in the file.
+   * - ``attitude_timeseries_file``
+     - string | null
+     - Filename (no path) of the sibling attitude-timeseries JSON file written alongside
+       this plan, or ``null`` / absent when no timeseries was exported.
+       See :ref:`attitude-timeseries` for the file format.
 
 Entry Fields
 ~~~~~~~~~~~~
@@ -238,7 +243,9 @@ Entry Fields
      - ``true`` if the observation completed successfully.
    * - ``exposure``
      - int
-     - Net science exposure time: ``end − begin − slewtime − insaa`` (seconds).
+     - Net science exposure time in seconds. For ``AT``/``PPT``/``TOO`` entries:
+       ``end − begin − slewtime − insaa``. For ``GSP`` entries: the actual downlink
+       contact duration, computed as ``contact_end − max(contact_begin, begin)``.
    * - ``station``
      - string | null
      - Ground station code for ``GSP`` (Ground Station Pass) entries. Only present for
@@ -340,6 +347,162 @@ scans the directory for existing files matching
 (or ``0`` if no matching files exist).  Saving to an explicit file path
 leaves ``version`` unchanged.
 
+.. _attitude-timeseries:
+
+Attitude Timeseries
+~~~~~~~~~~~~~~~~~~~
+
+Both :class:`~conops.ditl.ditl.DITL` and :class:`~conops.ditl.queue_ditl.QueueDITL`
+automatically attach the executed spacecraft attitude timeline to the plan at the end of
+``calc()``/``run()``.  When the plan is then saved, this timeseries is written to a sibling
+JSON file alongside the main plan file.
+
+**File naming**: the sibling file is placed in the same directory as the plan and named
+``<plan_stem>_attitude_timeseries.json``.  For example, if the plan is saved as
+``plan_20251201T000000Z_20251201T235900Z_v3.json`` the attitude file is
+``plan_20251201T000000Z_20251201T235900Z_v3_attitude_timeseries.json``.
+
+The plan file records the sibling filename in the ``attitude_timeseries_file`` metadata
+field so that consumers can locate it without scanning the directory.
+
+**Attitude Timeseries File Format**
+
+.. code-block:: json
+
+   {
+     "version": 0,
+     "coast_sim_version": "0.6.1",
+     "created_at": "2025-12-01T00:00:00+00:00",
+     "plan_file": "plan_20251201T000000Z_20251201T235900Z_v3.json",
+     "plan_version": 3,
+     "plan_start": "2025-12-01T00:00:00+00:00",
+     "plan_end": "2025-12-01T23:59:00+00:00",
+     "num_samples": 2,
+     "samples": [
+       {
+         "utime": 1748736000.0,
+         "timestamp": "2025-12-01T00:00:00+00:00",
+         "ra": 83.82,
+         "dec": -5.39,
+         "roll": 0.0,
+         "mode": "SCIENCE",
+         "obsid": 1001,
+         "quat_w": 0.9998,
+         "quat_x": 0.0050,
+         "quat_y": -0.0120,
+         "quat_z": 0.0150
+       },
+       {
+         "utime": 1748736060.0,
+         "timestamp": "2025-12-01T00:01:00+00:00",
+         "ra": 83.82,
+         "dec": -5.39,
+         "roll": 0.0,
+         "mode": "SCIENCE",
+         "obsid": 1001,
+         "quat_w": 0.9998,
+         "quat_x": 0.0051,
+         "quat_y": -0.0121,
+         "quat_z": 0.0151
+       }
+     ]
+   }
+
+**Attitude Timeseries Metadata Fields**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 15 60
+
+   * - Field
+     - Type
+     - Description
+   * - ``version``
+     - int
+     - Schema format version (currently always ``0``).
+   * - ``coast_sim_version``
+     - string
+     - COASTSim package version that produced the file.
+   * - ``created_at``
+     - string
+     - ISO-8601 UTC timestamp of when the file was created.
+   * - ``plan_file``
+     - string | null
+     - Filename of the associated plan JSON file.
+   * - ``plan_version``
+     - int | null
+     - ``version`` value of the associated plan.
+   * - ``plan_start``
+     - string | null
+     - ISO-8601 UTC timestamp matching the plan's ``start`` field.
+   * - ``plan_end``
+     - string | null
+     - ISO-8601 UTC timestamp matching the plan's ``end`` field.
+   * - ``num_samples``
+     - int
+     - Number of attitude samples in ``samples``.
+
+**Attitude Sample Fields**
+
+Each element of ``samples`` is an :class:`~conops.targets.plan_schema.AttitudeSampleSchema`:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 15 15 70
+
+   * - Field
+     - Type
+     - Description
+   * - ``utime``
+     - float
+     - Unix timestamp (seconds since epoch, UTC).
+   * - ``timestamp``
+     - string
+     - ISO-8601 UTC timestamp — human-readable form of ``utime``.
+   * - ``ra``
+     - float | null
+     - Right ascension of the spacecraft boresight in degrees (J2000).
+   * - ``dec``
+     - float | null
+     - Declination of the spacecraft boresight in degrees (J2000).
+   * - ``roll``
+     - float | null
+     - Spacecraft roll angle in degrees.
+   * - ``mode``
+     - string | null
+     - ACS mode name at this sample (e.g. ``"SCIENCE"``, ``"SLEWING"``, ``"PASS"``).
+   * - ``obsid``
+     - int | null
+     - Observation ID active at this sample.
+   * - ``quat_w``
+     - float | null
+     - Spacecraft attitude quaternion W component.
+   * - ``quat_x``
+     - float | null
+     - Spacecraft attitude quaternion X component.
+   * - ``quat_y``
+     - float | null
+     - Spacecraft attitude quaternion Y component.
+   * - ``quat_z``
+     - float | null
+     - Spacecraft attitude quaternion Z component.
+
+**Loading the Attitude Timeseries**
+
+.. code-block:: python
+
+   from conops.targets import PlanSchema, AttitudeTimeseriesSchema
+   from pathlib import Path
+
+   schema = PlanSchema.load("plan_20251201T000000Z_20251201T235900Z_v3.json")
+
+   if schema.attitude_timeseries_file:
+       plan_dir = Path("plan_20251201T000000Z_20251201T235900Z_v3.json").parent
+       timeseries_path = plan_dir / schema.attitude_timeseries_file
+       raw = __import__("json").loads(timeseries_path.read_text())
+       timeseries = AttitudeTimeseriesSchema.model_validate(raw)
+       print(f"Loaded {timeseries.num_samples} attitude samples")
+
 Backward Compatibility
 ----------------------
 
@@ -372,6 +535,16 @@ API Reference
    :show-inheritance:
 
 .. autoclass:: conops.targets.plan_schema.PlanSchema
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. autoclass:: conops.targets.plan_schema.AttitudeTimeseriesSchema
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. autoclass:: conops.targets.plan_schema.AttitudeSampleSchema
    :members:
    :undoc-members:
    :show-inheritance:
