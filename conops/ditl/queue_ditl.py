@@ -21,7 +21,7 @@ from ..common.vector import attitude_to_quat
 from ..config import DAY_SECONDS, AttitudeConstraintPolicy, MissionConfig
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
-from ..simulation.passes import GSP_TRACK_ROLL, Pass, pass_slew_trigger_buffer
+from ..simulation.passes import Pass, pass_slew_trigger_buffer
 from ..simulation.roll import optimum_roll
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing, Queue
@@ -976,16 +976,23 @@ class QueueDITL(DITLMixin, DITLStats):
             if missing_profile:
                 continue
             assert gspass is not None
-            expected_ra, expected_dec = gspass.ra_dec(utime)
+            expected_ra, expected_dec, expected_roll = gspass.attitude_at(utime)
             if expected_ra is None or expected_dec is None:
                 continue
 
-            error_deg = angular_separation(
-                float(self.ra[i]),
-                float(self.dec[i]),
-                float(expected_ra),
-                float(expected_dec),
+            actual_quat = attitude_to_quat(
+                float(self.ra[i]), float(self.dec[i]), float(self.roll[i])
             )
+            expected_quat = attitude_to_quat(
+                float(expected_ra), float(expected_dec), float(expected_roll)
+            )
+            dot = min(1.0, abs(float(np.dot(actual_quat, expected_quat))))
+            error_deg = float(np.rad2deg(2.0 * np.arccos(dot)))
+            antenna_error = gspass.antenna_pointing_error(
+                float(self.ra[i]), float(self.dec[i]), float(self.roll[i]), utime
+            )
+            if antenna_error is not None:
+                error_deg = max(error_deg, antenna_error)
             if error_deg > tolerance_deg:
                 mismatches.append(
                     self._pointing_mismatch(entry, utime, error_deg, "contact")
@@ -1208,6 +1215,7 @@ class QueueDITL(DITLMixin, DITLStats):
             entry.begin = int(slew.slewstart)
             entry.slewtime = int(round(slew.slewtime))
             entry.slewdist = float(slew.slewdist)
+            entry.roll = float(slew.endroll)
 
     def _sync_slew_metadata(self, slew: Slew) -> None:
         if slew.obstype == ObsType.GSP:
@@ -1445,6 +1453,7 @@ class QueueDITL(DITLMixin, DITLStats):
         entry.name = f"{station}_PASS"
         entry.ra = gspass.gsstartra
         entry.dec = gspass.gsstartdec
+        entry.roll = gspass.gsstartroll
         entry.begin = reserved_begin
         entry.end = pass_end
         entry.slewtime = (
@@ -1465,8 +1474,10 @@ class QueueDITL(DITLMixin, DITLStats):
         entry.contact_end = pass_end
         entry.track_start_ra = gspass.gsstartra
         entry.track_start_dec = gspass.gsstartdec
+        entry.track_start_roll = gspass.gsstartroll
         entry.track_end_ra = gspass.gsendra
         entry.track_end_dec = gspass.gsenddec
+        entry.track_end_roll = gspass.gsendroll
 
         self.plan.append(entry)
         if slew is not None:
@@ -1584,7 +1595,7 @@ class QueueDITL(DITLMixin, DITLStats):
             slew.slewstart = utime
             slew.endra = next_pass.gsstartra
             slew.enddec = next_pass.gsstartdec
-            slew.endroll = GSP_TRACK_ROLL
+            slew.endroll = next_pass.gsstartroll
             slew.obstype = ObsType.GSP  # Ground Station Pass slew
             slew.obsid = next_pass.obsid
             slew.calc_slewtime()

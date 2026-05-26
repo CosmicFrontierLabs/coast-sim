@@ -2,7 +2,7 @@
 
 from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from ..common.enums import AntennaType, Polarization
 from ._base import ConfigModel
@@ -61,15 +61,22 @@ class AntennaPointing(ConfigModel):
     )
 
     # Fixed antenna pointing (body-fixed direction)
+    fixed_boresight_body: tuple[float, float, float] = Field(
+        default=(-1.0, 0.0, 0.0),
+        description=(
+            "Fixed antenna boresight as a unit vector in spacecraft body frame. "
+            "Default -X preserves the legacy ground-station-pass convention."
+        ),
+    )
     fixed_azimuth_deg: float = Field(
         default=0.0,
-        description="Azimuth angle in spacecraft body frame (deg). 0=nadir, 180=zenith",
+        description="Legacy fixed antenna azimuth metadata (deg)",
         ge=0.0,
         le=360.0,
     )
     fixed_elevation_deg: float = Field(
         default=0.0,
-        description="Elevation angle in spacecraft body frame (deg)",
+        description="Legacy fixed antenna elevation metadata (deg)",
         ge=-90.0,
         le=90.0,
     )
@@ -82,13 +89,17 @@ class AntennaPointing(ConfigModel):
         le=180.0,
     )
 
-    def is_nadir_pointing(self) -> bool:
-        """Check if antenna is nadir-pointing (opposite of telescope)."""
-        return (
-            self.antenna_type == AntennaType.FIXED
-            and self.fixed_azimuth_deg == 0.0
-            and self.fixed_elevation_deg == 0.0
-        )
+    @field_validator("fixed_boresight_body")
+    @classmethod
+    def validate_fixed_boresight_body(
+        cls, v: tuple[float, float, float]
+    ) -> tuple[float, float, float]:
+        magnitude = sum(component * component for component in v) ** 0.5
+        if magnitude < 0.99 or magnitude > 1.01:
+            raise ValueError(
+                f"Fixed antenna boresight must be a unit vector. Got magnitude {magnitude}"
+            )
+        return v
 
 
 class CommunicationsSystem(ConfigModel):

@@ -22,7 +22,6 @@ from conops.common.enums import ObsType
 from conops.config.config import MissionConfig
 from conops.ditl.telemetry import Housekeeping
 from conops.simulation.acs import IDLE_OBSID
-from conops.simulation.passes import GSP_TRACK_ROLL
 from conops.targets import PlanEntry, PlanSchema
 
 
@@ -1619,6 +1618,7 @@ class TestPlanExecutionValidation:
                 utime=[1000.0, 1060.0],
                 ra=[10.0, 11.0],
                 dec=[20.0, 21.0],
+                roll=[0.0, 10.0],
             )
         ]
         queue_ditl.utime = [1000.0, 1060.0]
@@ -3070,6 +3070,7 @@ class TestCheckAndManagePasses:
             length=600.0,
             gsstartra=100.0,
             gsstartdec=50.0,
+            gsstartroll=37.0,
         )
 
         # Mock the pass request methods
@@ -3096,7 +3097,7 @@ class TestCheckAndManagePasses:
 
         # Verify slew points to the pass start position
         assert command.slew.startroll == roll
-        assert command.slew.endroll == GSP_TRACK_ROLL
+        assert command.slew.endroll == pass_obj.gsstartroll
         assert command.slew.endra == pass_obj.gsstartra
         assert command.slew.enddec == pass_obj.gsstartdec
         assert command.slew.obsid == pass_obj.obsid
@@ -3114,13 +3115,16 @@ class TestCheckAndManagePasses:
             length=600.0,
             gsstartra=100.0,
             gsstartdec=50.0,
+            gsstartroll=37.0,
             gsendra=115.0,
             gsenddec=42.0,
+            gsendroll=41.0,
             obsid=4242,
         )
         pass_obj.utime = [pass_obj.begin, pass_obj.end - 60.0]
         pass_obj.ra = [pass_obj.gsstartra, pass_obj.gsendra]
         pass_obj.dec = [pass_obj.gsstartdec, pass_obj.gsenddec]
+        pass_obj.roll = [pass_obj.gsstartroll, pass_obj.gsendroll]
 
         queue_ditl.acs.passrequests.current_pass = Mock(return_value=None)
         queue_ditl.acs.passrequests.next_pass = Mock(return_value=pass_obj)
@@ -3151,11 +3155,14 @@ class TestCheckAndManagePasses:
         assert entry.contact_end == pass_obj.end
         assert entry.ra == pytest.approx(pass_obj.gsstartra)
         assert entry.dec == pytest.approx(pass_obj.gsstartdec)
+        assert entry.roll == pytest.approx(pass_obj.gsstartroll)
         assert entry.track_start_ra == pytest.approx(pass_obj.gsstartra)
         assert entry.track_start_dec == pytest.approx(pass_obj.gsstartdec)
-        pass_end_ra, pass_end_dec = pass_obj.ra_dec(pass_obj.end)
+        assert entry.track_start_roll == pytest.approx(pass_obj.gsstartroll)
+        pass_end_ra, pass_end_dec, pass_end_roll = pass_obj.attitude_at(pass_obj.end)
         assert entry.track_end_ra == pytest.approx(pass_end_ra)
         assert entry.track_end_dec == pytest.approx(pass_end_dec)
+        assert entry.track_end_roll == pytest.approx(pass_end_roll)
 
         schema = PlanSchema.from_plan(queue_ditl.plan)
         assert schema.entries[0].obstype == ObsType.GSP
@@ -3166,14 +3173,18 @@ class TestCheckAndManagePasses:
         assert schema.entries[0].contact_begin == pass_obj.begin
         assert schema.entries[0].track_start_ra == pytest.approx(pass_obj.gsstartra)
         assert schema.entries[0].track_start_dec == pytest.approx(pass_obj.gsstartdec)
+        assert schema.entries[0].track_start_roll == pytest.approx(pass_obj.gsstartroll)
         assert schema.entries[0].track_end_ra == pytest.approx(pass_end_ra)
         assert schema.entries[0].track_end_dec == pytest.approx(pass_end_dec)
+        assert schema.entries[0].track_end_roll == pytest.approx(pass_end_roll)
         saved_path = schema.save(tmp_path / "plan.json")
         saved_json = saved_path.read_text()
         assert '"obstype": "GSP"' in saved_json
         assert '"station": "GS_TEST"' in saved_json
         assert '"track_start_ra": 100.0' in saved_json
+        assert '"track_start_roll": 37.0' in saved_json
         assert '"track_end_ra": 115.0' in saved_json
+        assert '"track_end_roll": 41.0' in saved_json
 
     def test_check_and_manage_passes_records_gsp_after_pass_slew_command_enqueue(
         self, queue_ditl
