@@ -12,6 +12,7 @@ from conops import (
 )
 from conops.common import (
     attitude_for_body_vector_tracking,
+    attitude_from_body_axes,
     body_vector_to_eci,
     scbodyvector,
 )
@@ -152,8 +153,11 @@ class TestBodyVectorTrackingAttitude:
         target = np.array([0.3, -0.4, 0.8660254])
         target = target / np.linalg.norm(target)
 
-        ra, dec, roll = attitude_for_body_vector_tracking(body_vector, target)
+        attitude = attitude_for_body_vector_tracking(body_vector, target)
+        assert attitude is not None
+        ra, dec, roll = attitude
         tracked = body_vector_to_eci(ra, dec, roll, body_vector)
+        assert tracked is not None
         target_in_body = scbodyvector(
             np.deg2rad(ra), np.deg2rad(dec), np.deg2rad(roll), target
         )
@@ -184,6 +188,7 @@ class TestBodyVectorTrackingAttitude:
         ra, dec, roll = attitude
 
         inertial_vector = body_vector_to_eci(ra, dec, roll, body_vector)
+        assert inertial_vector is not None
         recovered_body_vector = scbodyvector(
             np.deg2rad(ra),
             np.deg2rad(dec),
@@ -197,10 +202,50 @@ class TestBodyVectorTrackingAttitude:
         target = np.array([0.3, -0.4, 0.8660254])
         target = target / np.linalg.norm(target)
 
-        ra, dec, roll = attitude_for_body_vector_tracking((-1.0, 0.0, 0.0), target)
+        attitude = attitude_for_body_vector_tracking((-1.0, 0.0, 0.0), target)
+        assert attitude is not None
+        ra, dec, roll = attitude
         minus_x = body_vector_to_eci(ra, dec, roll, (-1.0, 0.0, 0.0))
         plus_x = body_vector_to_eci(ra, dec, roll, (1.0, 0.0, 0.0))
+        assert minus_x is not None
+        assert plus_x is not None
 
         assert np.dot(minus_x, target) == pytest.approx(1.0, abs=1e-9)
         assert np.dot(plus_x, -target) == pytest.approx(1.0, abs=1e-9)
         assert roll == pytest.approx(0.0, abs=1e-9)
+
+    def test_tracking_skips_zero_reference_vectors(self):
+        target = np.array([0.3, -0.4, 0.8660254])
+        target = target / np.linalg.norm(target)
+
+        attitude = attitude_for_body_vector_tracking(
+            (0.0, 1.0, 0.0),
+            target,
+            reference_body=(0.0, 0.0, 0.0),
+            reference_eci=(0.0, 0.0, 0.0),
+        )
+
+        assert attitude is not None
+        ra, dec, roll = attitude
+        tracked = body_vector_to_eci(ra, dec, roll, (0.0, 1.0, 0.0))
+        assert tracked is not None
+        assert np.dot(tracked, target) == pytest.approx(1.0, abs=1e-9)
+
+    def test_attitude_from_body_axes_handles_parallel_z_reference(self):
+        attitude = attitude_from_body_axes((1.0, 0.0, 0.0), (1.0, 0.0, 0.0))
+
+        assert attitude is not None
+        ra, dec, roll = attitude
+        body_x = body_vector_to_eci(ra, dec, roll, (1.0, 0.0, 0.0))
+        assert body_x is not None
+        assert body_x == pytest.approx((1.0, 0.0, 0.0), abs=1e-9)
+
+    def test_degenerate_tracking_vectors_return_none(self):
+        target = np.array([0.3, -0.4, 0.8660254])
+        target = target / np.linalg.norm(target)
+
+        assert attitude_for_body_vector_tracking((0.0, 0.0, 0.0), target) is None
+        assert (
+            attitude_for_body_vector_tracking((1.0, 0.0, 0.0), (0.0, 0.0, 0.0)) is None
+        )
+        assert body_vector_to_eci(0.0, 0.0, 0.0, (0.0, 0.0, 0.0)) is None

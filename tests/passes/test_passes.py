@@ -198,7 +198,9 @@ class TestPassMethods:
         target_dec = 20.0
         target_vec = radec2vec(np.deg2rad(target_ra), np.deg2rad(target_dec))
         antenna = (0.0, 1.0, 0.0)
-        ra, dec, roll = attitude_for_body_vector_tracking(antenna, target_vec)
+        attitude = attitude_for_body_vector_tracking(antenna, target_vec)
+        assert attitude is not None
+        ra, dec, roll = attitude
 
         basic_pass.antenna_boresight_body = antenna
         basic_pass.utime = [basic_pass.begin]
@@ -208,6 +210,15 @@ class TestPassMethods:
         error = basic_pass.antenna_pointing_error(ra, dec, roll, basic_pass.begin)
 
         assert error == pytest.approx(0.0, abs=1e-8)
+
+    def test_empty_profile_returns_no_pointing(self, basic_pass):
+        """An empty pass profile does not imply pass-start pointing exists."""
+        assert basic_pass.ra_dec(basic_pass.begin) == (None, None)
+        assert basic_pass.attitude_at(basic_pass.begin) == (
+            None,
+            None,
+            basic_pass.gsstartroll,
+        )
 
 
 class TestPassTimeToSlew:

@@ -194,55 +194,54 @@ def normal_to_euler_deg(
     return 0.0, pitch_deg, yaw_deg
 
 
-def _unit_vector(
-    vector: tuple[float, float, float] | npt.NDArray[np.float64], name: str
-) -> npt.NDArray[np.float64]:
+def _unit_vector_or_none(
+    vector: tuple[float, float, float] | npt.NDArray[np.float64],
+) -> npt.NDArray[np.float64] | None:
     arr = np.asarray(vector, dtype=np.float64)
     norm = float(np.linalg.norm(arr))
     if norm < 1e-12:
-        raise ValueError(f"{name} must be non-zero")
+        return None
     return arr / norm
 
 
 def _perpendicular_reference(
     axis: npt.NDArray[np.float64],
     preferred: tuple[float, float, float] | npt.NDArray[np.float64],
-) -> npt.NDArray[np.float64]:
+) -> npt.NDArray[np.float64] | None:
     for candidate in (
         preferred,
         (0.0, 0.0, 1.0),
         (0.0, 1.0, 0.0),
         (1.0, 0.0, 0.0),
     ):
-        ref = _unit_vector(candidate, "reference vector")
+        ref = _unit_vector_or_none(candidate)
+        if ref is None:
+            continue
         projected = ref - float(np.dot(ref, axis)) * axis
-        norm = float(np.linalg.norm(projected))
-        if norm >= 1e-12:
-            return projected / norm
-    raise ValueError("could not find a reference vector perpendicular to axis")
+        projected_unit = _unit_vector_or_none(projected)
+        if projected_unit is not None:
+            return projected_unit
+    return None
 
 
 def attitude_from_body_axes(
     body_x_eci: tuple[float, float, float] | npt.NDArray[np.float64],
     body_z_eci: tuple[float, float, float] | npt.NDArray[np.float64],
-) -> tuple[float, float, float]:
+) -> tuple[float, float, float] | None:
     """Convert body +X/+Z inertial axes to RA, Dec, and roll in degrees."""
 
-    x_axis = _unit_vector(body_x_eci, "body_x_eci")
-    z_axis_raw = _unit_vector(body_z_eci, "body_z_eci")
-    z_axis = z_axis_raw - float(np.dot(z_axis_raw, x_axis)) * x_axis
-    z_axis = _unit_vector(z_axis, "body_z_eci projected perpendicular to body_x_eci")
+    x_axis = _unit_vector_or_none(body_x_eci)
+    if x_axis is None:
+        return None
+    z_axis = _perpendicular_reference(x_axis, body_z_eci)
+    if z_axis is None:
+        return None
 
     ra_rad, dec_rad = vec2radec(x_axis)
 
-    north = np.array([0.0, 0.0, 1.0], dtype=np.float64)
-    n_proj = north - float(np.dot(north, x_axis)) * x_axis
-    n_norm = float(np.linalg.norm(n_proj))
-    if n_norm < 1e-10:
-        north = np.array([1.0, 0.0, 0.0], dtype=np.float64)
-        n_proj = north - float(np.dot(north, x_axis)) * x_axis
-        n_norm = float(np.linalg.norm(n_proj))
-    n_hat = n_proj / n_norm
+    n_hat = _perpendicular_reference(x_axis, (0.0, 0.0, 1.0))
+    if n_hat is None:
+        return None
     y_hat = np.cross(n_hat, x_axis)
     roll_rad = float(np.arctan2(np.dot(z_axis, y_hat), np.dot(z_axis, n_hat)))
     roll_deg = float(np.rad2deg(roll_rad) % 360.0)
@@ -261,7 +260,7 @@ def body_vector_to_eci(
     dec_deg: float,
     roll_deg: float,
     body_vector: tuple[float, float, float] | npt.NDArray[np.float64],
-) -> npt.NDArray[np.float64]:
+) -> npt.NDArray[np.float64] | None:
     """Return a body-frame vector expressed in ECI for an RA/Dec/roll attitude.
 
     This is the inverse of the ``scbodyvector`` body-frame transform.
@@ -281,7 +280,9 @@ def body_vector_to_eci(
     y_hat = y0 * c - z0 * s
     z_hat = y0 * s + z0 * c
 
-    body = _unit_vector(body_vector, "body_vector")
+    body = _unit_vector_or_none(body_vector)
+    if body is None:
+        return None
     result: npt.NDArray[np.float64] = np.asarray(
         body[0] * x_hat + body[1] * y_hat + body[2] * z_hat,
         dtype=np.float64,
@@ -303,7 +304,7 @@ def attitude_for_body_vector_tracking(
         0.0,
         1.0,
     ),
-) -> tuple[float, float, float]:
+) -> tuple[float, float, float] | None:
     """Return RA/Dec/roll that points ``body_vector`` at ``target_eci``.
 
     The remaining rotation about ``target_eci`` is chosen by keeping
@@ -311,11 +312,15 @@ def attitude_for_body_vector_tracking(
     projected perpendicular to the tracking axis.
     """
 
-    body_axis = _unit_vector(body_vector, "body_vector")
-    target_axis = _unit_vector(target_eci, "target_eci")
+    body_axis = _unit_vector_or_none(body_vector)
+    target_axis = _unit_vector_or_none(target_eci)
+    if body_axis is None or target_axis is None:
+        return None
 
     body_ref = _perpendicular_reference(body_axis, reference_body)
     eci_ref = _perpendicular_reference(target_axis, reference_eci)
+    if body_ref is None or eci_ref is None:
+        return None
 
     body_cross = np.cross(body_axis, body_ref)
     eci_cross = np.cross(target_axis, eci_ref)

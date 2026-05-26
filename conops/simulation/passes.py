@@ -122,11 +122,11 @@ class Pass(BaseModel):
     def ra_dec(self, utime: float) -> tuple[float | None, float | None]:
         """Return the RA/Dec of the spacecraft during a groundstation pass.
         Note: If utime is outside the pass, returns the earliest or latest
-        RA/Dec in the pass."""
+        RA/Dec in the pass. If no profile is available, returns None values."""
 
         idx = self._profile_index(utime)
         if idx is None:
-            return self.gsstartra, self.gsstartdec
+            return None, None
         return self.ra[idx], self.dec[idx]
 
     def roll_at(self, utime: float) -> float:
@@ -270,6 +270,8 @@ class Pass(BaseModel):
         antenna_vec = body_vector_to_eci(
             spacecraft_ra, spacecraft_dec, roll, self.antenna_boresight_body
         )
+        if antenna_vec is None:
+            return None
         target_vec = radec2vec(target_ra * DTOR, target_dec * DTOR)
         dot = float(np.dot(antenna_vec, target_vec))
         dot = float(np.clip(dot, -1.0, 1.0))
@@ -601,12 +603,18 @@ class PassTimes:
                         target_vectors = -gs_to_sat_unit[start_idx:end_idx]
                         target_ra, target_dec = np.degrees(vec2radec(target_vectors.T))
                         antenna_boresight = self._gsp_antenna_boresight_body()
-                        attitude_profile = [
-                            attitude_for_body_vector_tracking(
+                        attitude_profile: list[tuple[float, float, float]] = []
+                        profile_valid = True
+                        for target_vector in target_vectors:
+                            attitude = attitude_for_body_vector_tracking(
                                 antenna_boresight, target_vector
                             )
-                            for target_vector in target_vectors
-                        ]
+                            if attitude is None:
+                                profile_valid = False
+                                break
+                            attitude_profile.append(attitude)
+                        if not profile_valid or not attitude_profile:
+                            continue
                         track_ra = [attitude[0] for attitude in attitude_profile]
                         track_dec = [attitude[1] for attitude in attitude_profile]
                         track_roll = [attitude[2] for attitude in attitude_profile]
