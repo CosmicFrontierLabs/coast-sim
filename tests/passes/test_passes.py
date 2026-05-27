@@ -501,6 +501,18 @@ class TestPassTimes:
 
         assert pt._gsp_antenna_boresight_body() == (0.0, 1.0, 0.0)
 
+    @pytest.mark.parametrize("antenna_type", [AntennaType.OMNI, AntennaType.GIMBALED])
+    def test_gsp_antenna_boresight_undefined_for_non_fixed_antennas(
+        self, mock_constraint, mock_config, antenna_type
+    ):
+        """Non-fixed antennas do not imply a spacecraft body-frame boresight."""
+        mock_config.spacecraft_bus.communications = CommunicationsSystem(
+            antenna_pointing=AntennaPointing(antenna_type=antenna_type)
+        )
+        pt = PassTimes(config=mock_config)
+
+        assert pt._gsp_antenna_boresight_body() is None
+
     def test_passtimes_requires_ephemeris(self, mock_config):
         """Test PassTimes requires ephemeris."""
         constraint = Mock(spec=Constraint)

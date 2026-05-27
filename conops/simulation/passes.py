@@ -467,13 +467,13 @@ class PassTimes:
         rate = self._station_downlink_rate_mbps(gspass)
         return (rate * gspass.length, gspass.length, -gspass.begin)
 
-    def _gsp_antenna_boresight_body(self) -> tuple[float, float, float]:
+    def _gsp_antenna_boresight_body(self) -> tuple[float, float, float] | None:
         communications = getattr(self.config.spacecraft_bus, "communications", None)
         if communications is None:
             return LEGACY_GSP_ANTENNA_BODY_VECTOR
         antenna = communications.antenna_pointing
         if antenna.antenna_type != AntennaType.FIXED:
-            return LEGACY_GSP_ANTENNA_BODY_VECTOR
+            return None
         boresight = antenna.fixed_boresight_body
         return (float(boresight[0]), float(boresight[1]), float(boresight[2]))
 
@@ -603,6 +603,8 @@ class PassTimes:
                         target_vectors = -gs_to_sat_unit[start_idx:end_idx]
                         target_ra, target_dec = np.degrees(vec2radec(target_vectors.T))
                         antenna_boresight = self._gsp_antenna_boresight_body()
+                        if antenna_boresight is None:
+                            continue
                         attitude_profile: list[tuple[float, float, float]] = []
                         profile_valid = True
                         for target_vector in target_vectors:

@@ -62,8 +62,13 @@ Defines how the antenna is mounted and pointed.
 * ``fixed_boresight_body``: Fixed antenna boresight as a unit vector in spacecraft body frame.
   The default ``(-1, 0, 0)`` preserves the legacy ground-station-pass tracking convention.
 * ``fixed_azimuth_deg`` / ``fixed_elevation_deg``: Legacy metadata fields. Use
-  ``fixed_boresight_body`` for GSP attitude generation.
+  ``fixed_boresight_body`` for GSP attitude generation. Nonzero values are accepted
+  with a deprecation warning and do not affect generated GSP attitudes.
 * ``gimbal_range_deg``: Angular range for gimbaled antennas (from boresight)
+
+Only ``FIXED`` antennas currently drive spacecraft attitude during generated
+ground-station-pass profiles. ``OMNI`` and ``GIMBALED`` antennas do not imply a
+body-frame tracking vector.
 
 Polarization
 ^^^^^^^^^^^^

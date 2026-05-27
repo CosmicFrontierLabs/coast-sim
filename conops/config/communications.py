@@ -1,5 +1,6 @@
 """Communications system configuration for spacecraft downlink and uplink."""
 
+import warnings
 from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -100,6 +101,19 @@ class AntennaPointing(ConfigModel):
                 f"Fixed antenna boresight must be a unit vector. Got magnitude {magnitude}"
             )
         return v
+
+    @model_validator(mode="after")
+    def warn_legacy_azimuth_elevation(self) -> "AntennaPointing":
+        if self.fixed_azimuth_deg != 0.0 or self.fixed_elevation_deg != 0.0:
+            warnings.warn(
+                "AntennaPointing.fixed_azimuth_deg and fixed_elevation_deg are "
+                "legacy metadata fields and no longer affect GSP attitude "
+                "generation. Set fixed_boresight_body explicitly to the desired "
+                "body-frame unit vector.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        return self
 
 
 class CommunicationsSystem(ConfigModel):

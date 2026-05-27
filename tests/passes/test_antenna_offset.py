@@ -123,16 +123,17 @@ class TestPassWithAntennaOffset:
     def test_pass_with_offset_antenna(self, mock_config, constraint, ephem):
         """Test Pass with offset fixed antenna."""
         # Create antenna pointing 45 degrees in azimuth and elevation
-        comms = CommunicationsSystem(
-            name="Offset Antenna",
-            band_capabilities=[BandCapability(band="X", downlink_rate_mbps=150.0)],
-            antenna_pointing=AntennaPointing(
-                antenna_type=AntennaType.FIXED,
-                fixed_azimuth_deg=45.0,
-                fixed_elevation_deg=30.0,
-            ),
-            pointing_accuracy_deg=10.0,
-        )
+        with pytest.warns(DeprecationWarning, match="legacy metadata fields"):
+            comms = CommunicationsSystem(
+                name="Offset Antenna",
+                band_capabilities=[BandCapability(band="X", downlink_rate_mbps=150.0)],
+                antenna_pointing=AntennaPointing(
+                    antenna_type=AntennaType.FIXED,
+                    fixed_azimuth_deg=45.0,
+                    fixed_elevation_deg=30.0,
+                ),
+                pointing_accuracy_deg=10.0,
+            )
 
         begin = datetime(2025, 8, 15, 12, 0, 0, tzinfo=timezone.utc)
         original_ra, original_dec = 45.0, 25.0
@@ -231,16 +232,17 @@ class TestPassWithAntennaOffset:
 
     def test_pass_pointing_profile_offset(self, mock_config, constraint, ephem):
         """Test that full pointing profile is offset for fixed antenna."""
-        comms = CommunicationsSystem(
-            name="Offset Antenna",
-            band_capabilities=[BandCapability(band="X", downlink_rate_mbps=150.0)],
-            antenna_pointing=AntennaPointing(
-                antenna_type=AntennaType.FIXED,
-                fixed_azimuth_deg=30.0,
-                fixed_elevation_deg=20.0,
-            ),
-            pointing_accuracy_deg=10.0,
-        )
+        with pytest.warns(DeprecationWarning, match="legacy metadata fields"):
+            comms = CommunicationsSystem(
+                name="Offset Antenna",
+                band_capabilities=[BandCapability(band="X", downlink_rate_mbps=150.0)],
+                antenna_pointing=AntennaPointing(
+                    antenna_type=AntennaType.FIXED,
+                    fixed_azimuth_deg=30.0,
+                    fixed_elevation_deg=20.0,
+                ),
+                pointing_accuracy_deg=10.0,
+            )
 
         begin = datetime(2025, 8, 15, 12, 0, 0, tzinfo=timezone.utc)
         mock_config.constraint = constraint

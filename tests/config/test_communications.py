@@ -67,6 +67,18 @@ class TestAntennaPointing:
         assert pointing.antenna_type == AntennaType.FIXED
         assert pointing.fixed_boresight_body == (0.0, 1.0, 0.0)
 
+    def test_legacy_azimuth_elevation_warns(self):
+        """Legacy azimuth/elevation fields remain accepted with a warning."""
+        with pytest.warns(DeprecationWarning, match="legacy metadata fields"):
+            pointing = AntennaPointing(
+                antenna_type=AntennaType.FIXED,
+                fixed_azimuth_deg=45.0,
+                fixed_elevation_deg=30.0,
+            )
+
+        assert pointing.fixed_azimuth_deg == 45.0
+        assert pointing.fixed_elevation_deg == 30.0
+
     def test_gimbaled_antenna(self):
         """Test gimbaled antenna configuration."""
         pointing = AntennaPointing(
