@@ -2656,6 +2656,37 @@ class TestCalcMethod:
         assert mock_charging_ppt.end == 1500.0
         assert queue_ditl.charging_ppt is None
 
+    def test_terminate_charging_ppt_clears_ppt_when_same_object(
+        self, queue_ditl
+    ) -> None:
+        """Regression: self.ppt is cleared when it aliases the charging PPT.
+
+        Without the fix, the orphaned ppt causes _track_ppt_in_timeline to append
+        a zero-duration entry (begin==end) on the next step → invalid_interval mismatch.
+        """
+        mock_ppt = Mock(spec=PlanEntry)
+        queue_ditl.charging_ppt = mock_ppt
+        queue_ditl.ppt = mock_ppt
+
+        queue_ditl._terminate_charging_ppt(1000.0)
+
+        assert queue_ditl.ppt is None
+        plan_len = len(queue_ditl.plan)
+        queue_ditl._track_ppt_in_timeline()
+        assert len(queue_ditl.plan) == plan_len
+
+    def test_terminate_charging_ppt_does_not_clear_unrelated_ppt(
+        self, queue_ditl
+    ) -> None:
+        """_terminate_charging_ppt must not clear self.ppt when it is a different object."""
+        mock_science_ppt = Mock(spec=PlanEntry)
+        queue_ditl.charging_ppt = Mock(spec=PlanEntry)
+        queue_ditl.ppt = mock_science_ppt
+
+        queue_ditl._terminate_charging_ppt(1500.0)
+
+        assert queue_ditl.ppt is mock_science_ppt
+
     def test_setup_simulation_timing_fails_with_invalid_ephemeris_range(
         self, queue_ditl, capsys
     ):
