@@ -2274,6 +2274,8 @@ class QueueDITL(DITLMixin, DITLStats):
                 self._close_last_plan_entry(utime)
             self.charging_ppt.end = utime
             self.charging_ppt.done = True
+            if self.ppt is self.charging_ppt:
+                self.ppt = None
             self.charging_ppt = None
             self.acs.last_slew = None
 
