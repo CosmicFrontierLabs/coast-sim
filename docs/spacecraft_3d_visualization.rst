@@ -90,7 +90,8 @@ Custom Ritchey-Chrétien telescope
                name="Primary",
                boresight=(1.0, 0.0, 0.0),
                optics=TelescopeConfig(
-                   aperture_m=0.6,
+                   aperture_m=0.5,
+                   focal_length_m=3.5,
                    tube_length_m=1.6,
                    telescope_type=TelescopeType.RITCHEY_CHRETIEN,
                ),
