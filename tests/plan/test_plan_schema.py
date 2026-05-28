@@ -118,8 +118,10 @@ class TestPlanEntrySchema:
                 contact_end=1_000_720.0,
                 track_start_ra=12.5,
                 track_start_dec=-4.25,
+                track_start_roll=11.0,
                 track_end_ra=48.75,
                 track_end_dec=9.5,
+                track_end_roll=13.0,
             )
         )
 
@@ -129,8 +131,10 @@ class TestPlanEntrySchema:
         assert dumped["contact_end"] == "1970-01-12T13:58:40+00:00"
         assert dumped["track_start_ra"] == pytest.approx(12.5)
         assert dumped["track_start_dec"] == pytest.approx(-4.25)
+        assert dumped["track_start_roll"] == pytest.approx(11.0)
         assert dumped["track_end_ra"] == pytest.approx(48.75)
         assert dumped["track_end_dec"] == pytest.approx(9.5)
+        assert dumped["track_end_roll"] == pytest.approx(13.0)
 
         reloaded = PlanEntrySchema(**dumped)
         assert reloaded.station == "TRO"
@@ -138,8 +142,10 @@ class TestPlanEntrySchema:
         assert reloaded.contact_end == pytest.approx(1_000_720.0)
         assert reloaded.track_start_ra == pytest.approx(12.5)
         assert reloaded.track_start_dec == pytest.approx(-4.25)
+        assert reloaded.track_start_roll == pytest.approx(11.0)
         assert reloaded.track_end_ra == pytest.approx(48.75)
         assert reloaded.track_end_dec == pytest.approx(9.5)
+        assert reloaded.track_end_roll == pytest.approx(13.0)
 
 
 # ── PlanSchema ─────────────────────────────────────────────────────────────────
@@ -282,8 +288,10 @@ class TestPlanSchema:
         assert "contact_end" not in entry
         assert "track_start_ra" not in entry
         assert "track_start_dec" not in entry
+        assert "track_start_roll" not in entry
         assert "track_end_ra" not in entry
         assert "track_end_dec" not in entry
+        assert "track_end_roll" not in entry
 
     def test_load_existing_example_json(self):
         """Load a plan JSON file produced by a previous version (backward compat)."""

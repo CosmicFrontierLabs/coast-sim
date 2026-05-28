@@ -267,18 +267,26 @@ Entry Fields
      - float | null
      - Ground-station tracking declination at ``contact_begin`` in degrees. Only present
        for ``obstype="GSP"``. For GSP entries, ``dec`` uses the same pass-start convention.
+   * - ``track_start_roll``
+     - float | null
+     - Ground-station tracking roll at ``contact_begin`` in degrees. Only present
+       for ``obstype="GSP"``. For GSP entries, ``roll`` uses the same pass-start convention.
    * - ``track_end_ra``
      - float | null
      - Ground-station tracking right ascension used by ACS at pass end, in degrees. This is
-       derived from the final tracking sample and matches ``Pass.ra_dec(contact_end)``. Only
+       derived from the final tracking sample and matches ``Pass.attitude_at(contact_end)``. Only
        present for ``obstype="GSP"``. Use this with ``track_end_dec`` when inspecting slews
        after a pass.
    * - ``track_end_dec``
      - float | null
      - Ground-station tracking declination used by ACS at pass end, in degrees. This is
-       derived from the final tracking sample and matches ``Pass.ra_dec(contact_end)``. Only
+       derived from the final tracking sample and matches ``Pass.attitude_at(contact_end)``. Only
        present for ``obstype="GSP"``. Use this with ``track_end_ra`` when inspecting slews
        after a pass.
+   * - ``track_end_roll``
+     - float | null
+     - Ground-station tracking roll used by ACS at pass end, in degrees. This is derived
+       from the final tracking sample and matches ``Pass.attitude_at(contact_end)``.
 
 Ground Station Pass (GSP) Entries
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -297,11 +305,11 @@ and execution of data downlink passes.
 * **Metadata fields**: The ``station``, ``contact_begin``, and ``contact_end`` fields are
   only present for GSP entries (``null`` or omitted for other observation types).
 * **Tracking attitude**: GSP entries track the ground station through the contact. The
-  generic ``ra`` and ``dec`` fields are the pass-start pointing, matching
-  ``track_start_ra`` and ``track_start_dec``. Use ``track_end_ra`` and
-  ``track_end_dec`` to inspect the spacecraft pointing at the end of the pass. The end
-  fields are derived from the final tracking sample, matching ACS
-  ``Pass.ra_dec(contact_end)`` behavior.
+  generic ``ra``, ``dec``, and ``roll`` fields are the pass-start attitude, matching
+  ``track_start_ra``, ``track_start_dec``, and ``track_start_roll``. Use ``track_end_ra``,
+  ``track_end_dec``, and ``track_end_roll`` to inspect the spacecraft attitude at the end
+  of the pass. The end fields are derived from the final tracking sample, matching ACS
+  ``Pass.attitude_at(contact_end)`` behavior.
 * **Deconfliction**: When multiple ground stations are visible simultaneously, COASTSim
   automatically selects the pass with the highest expected data volume (downlink rate × duration).
   Dropped overlapping opportunities are logged but not exported to the plan.
@@ -325,8 +333,10 @@ and execution of data downlink passes.
      "end": "2025-12-01T12:12:00+00:00",
      "track_start_ra": 120.0,
      "track_start_dec": 45.0,
+     "track_start_roll": 12.4,
      "track_end_ra": 231.67,
      "track_end_dec": -0.38,
+     "track_end_roll": 18.2,
      "slewtime": 120,
      "exptime": 600,
      "obsid": 65535

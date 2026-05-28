@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
+import numpy as np
 import pytest
 
 from conops import (
@@ -11,9 +12,16 @@ from conops import (
     Pass,
     PassTimes,
 )
-from conops.common.enums import ObsType
-from conops.config import AttitudeControlSystem, BandCapability, GroundStation
-from conops.simulation.passes import GSP_TRACK_ROLL, pass_slew_trigger_buffer
+from conops.common import attitude_for_body_vector_tracking, radec2vec
+from conops.common.enums import AntennaType, ObsType
+from conops.config import (
+    AntennaPointing,
+    AttitudeControlSystem,
+    BandCapability,
+    CommunicationsSystem,
+    GroundStation,
+)
+from conops.simulation.passes import pass_slew_trigger_buffer
 
 
 class TestPassInitialization:
@@ -171,6 +179,47 @@ class TestPassMethods:
         assert ra == 12.0
         assert dec == 22.0
 
+    def test_attitude_lookup_includes_roll(self, basic_pass, three_step_utime):
+        """Test attitude_at returns RA, Dec, and roll from profile."""
+        basic_pass.utime = three_step_utime
+        basic_pass.ra = [10.0, 12.0, 14.0]
+        basic_pass.dec = [20.0, 22.0, 24.0]
+        basic_pass.roll = [1.0, 2.0, 3.0]
+
+        ra, dec, roll = basic_pass.attitude_at(1514764900.0)
+
+        assert ra == 12.0
+        assert dec == 22.0
+        assert roll == 2.0
+
+    def test_antenna_pointing_error_uses_body_vector(self, basic_pass):
+        """A side-mounted antenna can point at the station even when +X does not."""
+        target_ra = 30.0
+        target_dec = 20.0
+        target_vec = radec2vec(np.deg2rad(target_ra), np.deg2rad(target_dec))
+        antenna = (0.0, 1.0, 0.0)
+        attitude = attitude_for_body_vector_tracking(antenna, target_vec)
+        assert attitude is not None
+        ra, dec, roll = attitude
+
+        basic_pass.antenna_boresight_body = antenna
+        basic_pass.utime = [basic_pass.begin]
+        basic_pass.station_ra = [target_ra]
+        basic_pass.station_dec = [target_dec]
+
+        error = basic_pass.antenna_pointing_error(ra, dec, roll, basic_pass.begin)
+
+        assert error == pytest.approx(0.0, abs=1e-8)
+
+    def test_empty_profile_returns_no_pointing(self, basic_pass):
+        """An empty pass profile does not imply pass-start pointing exists."""
+        assert basic_pass.ra_dec(basic_pass.begin) == (None, None)
+        assert basic_pass.attitude_at(basic_pass.begin) == (
+            None,
+            None,
+            basic_pass.gsstartroll,
+        )
+
 
 class TestPassTimeToSlew:
     """Test Pass.time_to_slew method."""
@@ -313,7 +362,7 @@ class TestPassTimeToSlew:
         assert p.time_to_slew(base_begin - 600.0, ra=10.0, dec=20.0, roll=0.0) is False
         assert p.time_to_slew(base_begin - 600.0, ra=10.0, dec=20.0, roll=180.0) is True
 
-    def test_slew_time_to_target_uses_gsp_track_roll(
+    def test_slew_time_to_target_uses_pass_target_roll(
         self,
         mock_config,
         mock_constraint,
@@ -351,11 +400,12 @@ class TestPassTimeToSlew:
                 roll=42.0,
                 target_ra=30.0,
                 target_dec=40.0,
+                target_roll=37.0,
             )
 
         assert slewtime == 123.0
         assert captured["startroll"] == pytest.approx(42.0)
-        assert captured["endroll"] == pytest.approx(GSP_TRACK_ROLL)
+        assert captured["endroll"] == pytest.approx(37.0)
 
     def test_time_to_slew_raises_value_error_when_no_acs_config(
         self, mock_config, mock_constraint, create_ephem, base_begin
@@ -436,6 +486,32 @@ class TestPassTimes:
         mock_config.ground_stations = custom_gs
         pt = PassTimes(config=mock_config)
         assert pt.ground_stations is custom_gs
+
+    def test_gsp_antenna_boresight_uses_fixed_config(
+        self, mock_constraint, mock_config
+    ):
+        """Fixed GSP attitudes use the configured antenna body vector."""
+        mock_config.spacecraft_bus.communications = CommunicationsSystem(
+            antenna_pointing=AntennaPointing(
+                antenna_type=AntennaType.FIXED,
+                fixed_boresight_body=(0.0, 1.0, 0.0),
+            )
+        )
+        pt = PassTimes(config=mock_config)
+
+        assert pt._gsp_antenna_boresight_body() == (0.0, 1.0, 0.0)
+
+    @pytest.mark.parametrize("antenna_type", [AntennaType.OMNI, AntennaType.GIMBALED])
+    def test_gsp_antenna_boresight_undefined_for_non_fixed_antennas(
+        self, mock_constraint, mock_config, antenna_type
+    ):
+        """Non-fixed antennas do not imply a spacecraft body-frame boresight."""
+        mock_config.spacecraft_bus.communications = CommunicationsSystem(
+            antenna_pointing=AntennaPointing(antenna_type=antenna_type)
+        )
+        pt = PassTimes(config=mock_config)
+
+        assert pt._gsp_antenna_boresight_body() is None
 
     def test_passtimes_requires_ephemeris(self, mock_config):
         """Test PassTimes requires ephemeris."""

@@ -657,6 +657,8 @@ class ACS:
             return optimum_roll(
                 self.ra, self.dec, utime, self.ephem, self.solar_panel, self.constraint
             )
+        if self.current_pass is not None and self.current_pass.in_pass(utime):
+            return self.current_pass.roll_at(utime)
         if (
             self.last_slew is not None
             and isinstance(self.last_slew, Slew)
@@ -908,7 +910,9 @@ class ACS:
             self._calculate_safe_mode_pointing(utime)
         # If we are in a groundstations pass
         elif self.current_pass is not None:
-            self.ra, self.dec = self.current_pass.ra_dec(utime)  # type: ignore[assignment]
+            pass_ra, pass_dec = self.current_pass.ra_dec(utime)
+            if pass_ra is not None and pass_dec is not None:
+                self.ra, self.dec = pass_ra, pass_dec
         # If we are actively slewing
         elif self.last_slew is not None:
             self.ra, self.dec = self.last_slew.ra_dec(utime)

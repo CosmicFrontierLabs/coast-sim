@@ -1,4 +1,4 @@
-"""Tests for Pass antenna pointing offset functionality."""
+"""Tests for legacy Pass antenna pointing offset helpers."""
 
 from datetime import datetime, timezone
 
@@ -17,7 +17,7 @@ from conops.simulation import Pass
 
 
 class TestAntennaPointingOffset:
-    """Test antenna pointing offset calculations."""
+    """Test legacy antenna pointing offset calculations."""
 
     def test_apply_antenna_offset_zero(self):
         """Test that zero offset returns original pointing."""
@@ -86,8 +86,8 @@ class TestPassWithAntennaOffset:
         return constraint
 
     def test_pass_with_nadir_antenna_offset(self, mock_config, constraint, ephem):
-        """Test Pass with nadir-pointing antenna (most common case)."""
-        # Create nadir-pointing antenna (0, 0 = default, points away from telescope)
+        """Test Pass with legacy zero-offset antenna metadata."""
+        # Legacy zero azimuth/elevation metadata preserves the pass fields.
         comms = CommunicationsSystem(
             name="Nadir Antenna",
             band_capabilities=[BandCapability(band="S", downlink_rate_mbps=10.0)],
@@ -123,16 +123,17 @@ class TestPassWithAntennaOffset:
     def test_pass_with_offset_antenna(self, mock_config, constraint, ephem):
         """Test Pass with offset fixed antenna."""
         # Create antenna pointing 45 degrees in azimuth and elevation
-        comms = CommunicationsSystem(
-            name="Offset Antenna",
-            band_capabilities=[BandCapability(band="X", downlink_rate_mbps=150.0)],
-            antenna_pointing=AntennaPointing(
-                antenna_type=AntennaType.FIXED,
-                fixed_azimuth_deg=45.0,
-                fixed_elevation_deg=30.0,
-            ),
-            pointing_accuracy_deg=10.0,
-        )
+        with pytest.warns(DeprecationWarning, match="legacy metadata fields"):
+            comms = CommunicationsSystem(
+                name="Offset Antenna",
+                band_capabilities=[BandCapability(band="X", downlink_rate_mbps=150.0)],
+                antenna_pointing=AntennaPointing(
+                    antenna_type=AntennaType.FIXED,
+                    fixed_azimuth_deg=45.0,
+                    fixed_elevation_deg=30.0,
+                ),
+                pointing_accuracy_deg=10.0,
+            )
 
         begin = datetime(2025, 8, 15, 12, 0, 0, tzinfo=timezone.utc)
         original_ra, original_dec = 45.0, 25.0
@@ -152,8 +153,7 @@ class TestPassWithAntennaOffset:
         )
 
         # Pointing should be different from original due to antenna offset
-        # Note: The offset is applied in PassTimes.get(), not in Pass.__init__
-        # So we need to manually verify the offset calculation
+        # The legacy offset helper is not applied in Pass.__init__.
         adjusted_ra, adjusted_dec = Pass.apply_antenna_offset(
             original_ra, original_dec, 45.0, 30.0
         )
@@ -232,16 +232,17 @@ class TestPassWithAntennaOffset:
 
     def test_pass_pointing_profile_offset(self, mock_config, constraint, ephem):
         """Test that full pointing profile is offset for fixed antenna."""
-        comms = CommunicationsSystem(
-            name="Offset Antenna",
-            band_capabilities=[BandCapability(band="X", downlink_rate_mbps=150.0)],
-            antenna_pointing=AntennaPointing(
-                antenna_type=AntennaType.FIXED,
-                fixed_azimuth_deg=30.0,
-                fixed_elevation_deg=20.0,
-            ),
-            pointing_accuracy_deg=10.0,
-        )
+        with pytest.warns(DeprecationWarning, match="legacy metadata fields"):
+            comms = CommunicationsSystem(
+                name="Offset Antenna",
+                band_capabilities=[BandCapability(band="X", downlink_rate_mbps=150.0)],
+                antenna_pointing=AntennaPointing(
+                    antenna_type=AntennaType.FIXED,
+                    fixed_azimuth_deg=30.0,
+                    fixed_elevation_deg=20.0,
+                ),
+                pointing_accuracy_deg=10.0,
+            )
 
         begin = datetime(2025, 8, 15, 12, 0, 0, tzinfo=timezone.utc)
         mock_config.constraint = constraint
@@ -265,8 +266,7 @@ class TestPassWithAntennaOffset:
         gs_pass.ra = original_ra.copy()
         gs_pass.dec = original_dec.copy()
 
-        # Verify offset would be applied by PassTimes.get()
-        # In Pass.__init__, values remain unchanged
+        # In Pass.__init__, values remain unchanged.
         for i in range(len(gs_pass.ra)):
             assert gs_pass.ra[i] == original_ra[i]  # Not yet offset in __init__
             assert gs_pass.dec[i] == original_dec[i]

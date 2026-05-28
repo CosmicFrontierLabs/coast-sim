@@ -8,13 +8,21 @@ from pydantic import BaseModel, Field
 
 from ..common import ics_date_conv, unixtime2date
 from ..common.enums import AntennaType, ObsType
-from ..common.vector import radec2vec, rotvec, separation, vec2radec
+from ..common.vector import (
+    attitude_for_body_vector_tracking,
+    body_vector_to_eci,
+    radec2vec,
+    rotvec,
+    separation,
+    vec2radec,
+)
 from ..config import Constraint, GroundStationRegistry, MissionConfig
 from ..config.constants import DTOR
 from .slew import Slew
 
-# Current ground-pass model tracks RA/Dec while holding a fixed roll.
+# Legacy ground-pass roll for profiles without explicit roll samples.
 GSP_TRACK_ROLL = 0.0
+LEGACY_GSP_ANTENNA_BODY_VECTOR = (-1.0, 0.0, 0.0)
 
 
 def pass_slew_trigger_buffer(step_size: float) -> float:
@@ -54,15 +62,21 @@ class Pass(BaseModel):
     obstype: ObsType = ObsType.GSP
 
     # Ground station pointing vectors (start/end of contact)
+    antenna_boresight_body: tuple[float, float, float] = LEGACY_GSP_ANTENNA_BODY_VECTOR
     gsstartra: float = 0.0
     gsstartdec: float = 0.0
+    gsstartroll: float = GSP_TRACK_ROLL
     gsendra: float = 0.0
     gsenddec: float = 0.0
+    gsendroll: float = GSP_TRACK_ROLL
 
     # Recorded pointing profile during the pass dwell
     utime: list[float] = Field(default_factory=list)
     ra: list[float] = Field(default_factory=list)
     dec: list[float] = Field(default_factory=list)
+    roll: list[float] = Field(default_factory=list)
+    station_ra: list[float] = Field(default_factory=list)
+    station_dec: list[float] = Field(default_factory=list)
 
     # Scheduling / status
     slewrequired: float = 0.0
@@ -96,26 +110,56 @@ class Pass(BaseModel):
 
         return timetopassstring
 
-    def ra_dec(self, utime: float) -> tuple[float | None, float | None]:
-        """Return the RA/Dec of the Spacecraft during a groundstation pass.
-        Note: If utime is outside the pass, returns the earliest or latest
-        RA/Dec in the pass."""
+    def _profile_index(self, utime: float) -> int | None:
+        if not self.utime:
+            return None
 
-        # Find the closest time index
-        idx = np.searchsorted(self.utime, utime)
-        # searchsorted will return length if utime is beyond the end
+        idx = int(np.searchsorted(self.utime, utime))
         if idx >= len(self.utime):
-            return self.ra[-1], self.dec[-1]
+            return len(self.utime) - 1
+        return idx
+
+    def ra_dec(self, utime: float) -> tuple[float | None, float | None]:
+        """Return the RA/Dec of the spacecraft during a groundstation pass.
+        Note: If utime is outside the pass, returns the earliest or latest
+        RA/Dec in the pass. If no profile is available, returns None values."""
+
+        idx = self._profile_index(utime)
+        if idx is None:
+            return None, None
         return self.ra[idx], self.dec[idx]
+
+    def roll_at(self, utime: float) -> float:
+        """Return the spacecraft roll during a groundstation pass."""
+
+        idx = self._profile_index(utime)
+        if idx is None or not self.roll:
+            return self.gsstartroll
+        return self.roll[idx]
+
+    def attitude_at(self, utime: float) -> tuple[float | None, float | None, float]:
+        """Return RA, Dec, and roll during a groundstation pass."""
+
+        ra, dec = self.ra_dec(utime)
+        return ra, dec, self.roll_at(utime)
+
+    def station_ra_dec(self, utime: float) -> tuple[float | None, float | None]:
+        """Return the spacecraft-to-ground-station line of sight."""
+
+        idx = self._profile_index(utime)
+        if idx is None or not self.station_ra or not self.station_dec:
+            return None, None
+        return self.station_ra[idx], self.station_dec[idx]
 
     @staticmethod
     def apply_antenna_offset(
         ra: float, dec: float, azimuth_deg: float, elevation_deg: float
     ) -> tuple[float, float]:
-        """Apply antenna pointing offset to RA/Dec.
+        """Apply a legacy antenna pointing offset to RA/Dec.
 
-        For a fixed antenna pointing at (azimuth, elevation) in the spacecraft body frame,
-        calculate the adjusted RA/Dec that the antenna actually points toward.
+        This helper is retained for compatibility with older tests and callers.
+        Ground-station-pass attitude generation uses fixed body-frame antenna
+        boresight vectors instead.
 
         Args:
             ra: Original right ascension (degrees)
@@ -174,7 +218,11 @@ class Pass(BaseModel):
         )
 
     def can_communicate(
-        self, spacecraft_ra: float, spacecraft_dec: float, utime: float | None = None
+        self,
+        spacecraft_ra: float,
+        spacecraft_dec: float,
+        utime: float | None = None,
+        spacecraft_roll: float = 0.0,
     ) -> bool:
         """Check if communication is possible given spacecraft pointing.
 
@@ -182,6 +230,7 @@ class Pass(BaseModel):
             spacecraft_ra: Current spacecraft RA (degrees)
             spacecraft_dec: Current spacecraft Dec (degrees)
             utime: Time during pass (optional, uses begin if None)
+            spacecraft_roll: Spacecraft roll angle in degrees
 
         Returns:
             True if communication is possible, False otherwise
@@ -198,13 +247,35 @@ class Pass(BaseModel):
         if target_ra is None or target_dec is None:
             return False
 
-        # Calculate pointing error
-        error = self.pointing_error(
-            spacecraft_ra, spacecraft_dec, target_ra, target_dec
+        error = self.antenna_pointing_error(
+            spacecraft_ra, spacecraft_dec, spacecraft_roll, utime
         )
+        if error is None:
+            error = self.pointing_error(
+                spacecraft_ra, spacecraft_dec, target_ra, target_dec
+            )
 
         # Check if within acceptable range
         return self.config.spacecraft_bus.communications.can_communicate(error)
+
+    def antenna_pointing_error(
+        self, spacecraft_ra: float, spacecraft_dec: float, roll: float, utime: float
+    ) -> float | None:
+        """Return fixed antenna pointing error to the station line of sight."""
+
+        target_ra, target_dec = self.station_ra_dec(utime)
+        if target_ra is None or target_dec is None:
+            return None
+
+        antenna_vec = body_vector_to_eci(
+            spacecraft_ra, spacecraft_dec, roll, self.antenna_boresight_body
+        )
+        if antenna_vec is None:
+            return None
+        target_vec = radec2vec(target_ra * DTOR, target_dec * DTOR)
+        dot = float(np.dot(antenna_vec, target_vec))
+        dot = float(np.clip(dot, -1.0, 1.0))
+        return float(np.rad2deg(np.arccos(dot)))
 
     def get_data_rate(self, band: str, direction: str = "downlink") -> float:
         """Get data rate for this pass in the specified band.
@@ -252,6 +323,7 @@ class Pass(BaseModel):
         roll: float,
         target_ra: float,
         target_dec: float,
+        target_roll: float,
     ) -> float:
         assert self.config is not None, "Config must be set for Pass class"
         if self.config.spacecraft_bus.attitude_control is None:
@@ -263,7 +335,7 @@ class Pass(BaseModel):
         slew.startroll = roll
         slew.endra = target_ra
         slew.enddec = target_dec
-        slew.endroll = GSP_TRACK_ROLL
+        slew.endroll = target_roll
         slew.slewstart = utime
         return slew.calc_slewtime()
 
@@ -282,17 +354,21 @@ class Pass(BaseModel):
         # Determine target pointing: if we're late, target where pass currently is
         if utime >= self.begin:
             # We're late - target current pass position
-            target_ra, target_dec = self.ra_dec(utime)
+            target_ra, target_dec, target_roll = self.attitude_at(utime)
             if target_ra is None or target_dec is None:
                 return False
         else:
             # On time - target pass start
             if not self.ra or not self.dec:
                 return False
-            target_ra, target_dec = self.ra[0], self.dec[0]
+            target_ra, target_dec, target_roll = (
+                self.ra[0],
+                self.dec[0],
+                self.roll[0] if self.roll else self.gsstartroll,
+            )
 
         slewtime = self._slew_time_to_target(
-            utime, ra, dec, roll, target_ra, target_dec
+            utime, ra, dec, roll, target_ra, target_dec, target_roll
         )
         # Determine if we need to start slewing now
         time_until_slew = (self.begin - slewtime) - utime
@@ -391,6 +467,16 @@ class PassTimes:
         rate = self._station_downlink_rate_mbps(gspass)
         return (rate * gspass.length, gspass.length, -gspass.begin)
 
+    def _gsp_antenna_boresight_body(self) -> tuple[float, float, float] | None:
+        communications = getattr(self.config.spacecraft_bus, "communications", None)
+        if communications is None:
+            return LEGACY_GSP_ANTENNA_BODY_VECTOR
+        antenna = communications.antenna_pointing
+        if antenna.antenna_type != AntennaType.FIXED:
+            return None
+        boresight = antenna.fixed_boresight_body
+        return (float(boresight[0]), float(boresight[1]), float(boresight[2]))
+
     def _deconflict_overlapping_passes(self) -> None:
         selected: list[Pass] = []
         self.dropped_overlapping_passes = []
@@ -439,16 +525,6 @@ class PassTimes:
                 begin=begin_time,
                 end=end_time,
                 step_size=self.ephem.step_size,
-            )
-
-            # Calculate satellite RA/Dec as seen from ground station
-            sat_ra, sat_dec = np.degrees(
-                vec2radec(
-                    (
-                        self.ephem.gcrs_pv.position[startindex:endindex]
-                        - gs_ephem.gcrs_pv.position
-                    ).T
-                )
             )
 
             # Fast vectorized approach: compute Earth limb constraint directly
@@ -524,15 +600,39 @@ class PassTimes:
                     )
                     if should_schedule:
                         # Schedule this pass if the dice roll allows it
+                        target_vectors = -gs_to_sat_unit[start_idx:end_idx]
+                        target_ra, target_dec = np.degrees(vec2radec(target_vectors.T))
+                        antenna_boresight = self._gsp_antenna_boresight_body()
+                        if antenna_boresight is None:
+                            continue
+                        attitude_profile: list[tuple[float, float, float]] = []
+                        profile_valid = True
+                        for target_vector in target_vectors:
+                            attitude = attitude_for_body_vector_tracking(
+                                antenna_boresight, target_vector
+                            )
+                            if attitude is None:
+                                profile_valid = False
+                                break
+                            attitude_profile.append(attitude)
+                        if not profile_valid or not attitude_profile:
+                            continue
+                        track_ra = [attitude[0] for attitude in attitude_profile]
+                        track_dec = [attitude[1] for attitude in attitude_profile]
+                        track_roll = [attitude[2] for attitude in attitude_profile]
+
                         gspass = Pass(
                             config=self.config,
                             ephem=self.ephem,
                             station=station.code,
                             begin=passstart,
-                            gsstartra=sat_ra[start_idx],
-                            gsstartdec=sat_dec[start_idx],
-                            gsendra=sat_ra[end_idx - 1],
-                            gsenddec=sat_dec[end_idx - 1],
+                            antenna_boresight_body=antenna_boresight,
+                            gsstartra=track_ra[0],
+                            gsstartdec=track_dec[0],
+                            gsstartroll=track_roll[0],
+                            gsendra=track_ra[-1],
+                            gsenddec=track_dec[-1],
+                            gsendroll=track_roll[-1],
                             length=passlen,
                         )
 
@@ -540,44 +640,11 @@ class PassTimes:
                         gspass.utime = timestamp_unix[
                             startindex + start_idx : startindex + end_idx
                         ].tolist()
-                        gspass.ra = sat_ra[start_idx:end_idx].tolist()
-                        gspass.dec = sat_dec[start_idx:end_idx].tolist()
-
-                        # Apply antenna pointing offset for fixed antennas
-                        if (
-                            gspass.config is not None
-                            and gspass.config.spacecraft_bus.communications is not None
-                            and gspass.config.spacecraft_bus.communications.antenna_pointing.antenna_type
-                            == AntennaType.FIXED
-                        ):
-                            antenna = gspass.config.spacecraft_bus.communications.antenna_pointing
-                            # Adjust start/end pointing
-                            gspass.gsstartra, gspass.gsstartdec = (
-                                Pass.apply_antenna_offset(
-                                    gspass.gsstartra,
-                                    gspass.gsstartdec,
-                                    antenna.fixed_azimuth_deg,
-                                    antenna.fixed_elevation_deg,
-                                )
-                            )
-                            gspass.gsendra, gspass.gsenddec = Pass.apply_antenna_offset(
-                                gspass.gsendra,
-                                gspass.gsenddec,
-                                antenna.fixed_azimuth_deg,
-                                antenna.fixed_elevation_deg,
-                            )
-                            # Adjust full pointing profile
-                            adjusted_pointing = [
-                                Pass.apply_antenna_offset(
-                                    ra_val,
-                                    dec_val,
-                                    antenna.fixed_azimuth_deg,
-                                    antenna.fixed_elevation_deg,
-                                )
-                                for ra_val, dec_val in zip(gspass.ra, gspass.dec)
-                            ]
-                            gspass.ra = [pt[0] for pt in adjusted_pointing]
-                            gspass.dec = [pt[1] for pt in adjusted_pointing]
+                        gspass.ra = track_ra
+                        gspass.dec = track_dec
+                        gspass.roll = track_roll
+                        gspass.station_ra = target_ra.tolist()
+                        gspass.station_dec = target_dec.tolist()
 
                         self.passes.append(gspass)
 

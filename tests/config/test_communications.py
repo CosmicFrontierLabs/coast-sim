@@ -51,27 +51,33 @@ class TestAntennaPointing:
         """Test omnidirectional antenna configuration."""
         pointing = AntennaPointing(antenna_type=AntennaType.OMNI)
         assert pointing.antenna_type == AntennaType.OMNI
-        assert not pointing.is_nadir_pointing()
 
-    def test_fixed_nadir_pointing(self):
-        """Test fixed nadir-pointing antenna (default)."""
+    def test_fixed_antenna_default_boresight_is_legacy_minus_x(self):
+        """Test fixed -X antenna (legacy default)."""
+        pointing = AntennaPointing(antenna_type=AntennaType.FIXED)
+        assert pointing.antenna_type == AntennaType.FIXED
+        assert pointing.fixed_boresight_body == (-1.0, 0.0, 0.0)
+
+    def test_fixed_antenna_accepts_non_minus_x_boresight(self):
+        """Test fixed antenna not pointing along -X."""
         pointing = AntennaPointing(
             antenna_type=AntennaType.FIXED,
-            fixed_azimuth_deg=0.0,
-            fixed_elevation_deg=0.0,
+            fixed_boresight_body=(0.0, 1.0, 0.0),
         )
         assert pointing.antenna_type == AntennaType.FIXED
-        assert pointing.is_nadir_pointing()
+        assert pointing.fixed_boresight_body == (0.0, 1.0, 0.0)
 
-    def test_fixed_non_nadir_pointing(self):
-        """Test fixed antenna not pointing nadir."""
-        pointing = AntennaPointing(
-            antenna_type=AntennaType.FIXED,
-            fixed_azimuth_deg=180.0,
-            fixed_elevation_deg=0.0,
-        )
-        assert pointing.antenna_type == AntennaType.FIXED
-        assert not pointing.is_nadir_pointing()  # Zenith pointing
+    def test_legacy_azimuth_elevation_warns(self):
+        """Legacy azimuth/elevation fields remain accepted with a warning."""
+        with pytest.warns(DeprecationWarning, match="legacy metadata fields"):
+            pointing = AntennaPointing(
+                antenna_type=AntennaType.FIXED,
+                fixed_azimuth_deg=45.0,
+                fixed_elevation_deg=30.0,
+            )
+
+        assert pointing.fixed_azimuth_deg == 45.0
+        assert pointing.fixed_elevation_deg == 30.0
 
     def test_gimbaled_antenna(self):
         """Test gimbaled antenna configuration."""
@@ -80,7 +86,6 @@ class TestAntennaPointing:
         )
         assert pointing.antenna_type == AntennaType.GIMBALED
         assert pointing.gimbal_range_deg == 30.0
-        assert not pointing.is_nadir_pointing()
 
     def test_antenna_pointing_validation(self):
         """Test validation of antenna pointing angles."""
@@ -95,6 +100,13 @@ class TestAntennaPointing:
         # Gimbal range must be 0-180
         with pytest.raises(Exception):
             AntennaPointing(antenna_type=AntennaType.GIMBALED, gimbal_range_deg=200.0)
+
+        # Fixed antenna boresight must be a unit vector
+        with pytest.raises(Exception):
+            AntennaPointing(
+                antenna_type=AntennaType.FIXED,
+                fixed_boresight_body=(2.0, 0.0, 0.0),
+            )
 
 
 class TestPolarization:
@@ -292,8 +304,8 @@ class TestCommunicationsIntegration:
         assert comms.can_communicate(2.0)
         assert not comms.can_communicate(5.0)
 
-    def test_nadir_pointing_s_band(self):
-        """Test a nadir-pointing S-band system (typical for LEO)."""
+    def test_fixed_s_band_uses_explicit_boresight(self):
+        """Test a fixed -X S-band system."""
         comms = CommunicationsSystem(
             name="LEO S-band",
             band_capabilities=[
@@ -301,14 +313,13 @@ class TestCommunicationsIntegration:
             ],
             antenna_pointing=AntennaPointing(
                 antenna_type=AntennaType.FIXED,
-                fixed_azimuth_deg=0.0,
-                fixed_elevation_deg=0.0,
+                fixed_boresight_body=(-1.0, 0.0, 0.0),
             ),
             polarization=Polarization.CIRCULAR_RIGHT,
             pointing_accuracy_deg=10.0,
         )
 
-        assert comms.antenna_pointing.is_nadir_pointing()
+        assert comms.antenna_pointing.fixed_boresight_body == (-1.0, 0.0, 0.0)
         assert comms.get_downlink_rate("S") == 5.0
         assert comms.can_communicate(9.0)
         assert not comms.can_communicate(11.0)

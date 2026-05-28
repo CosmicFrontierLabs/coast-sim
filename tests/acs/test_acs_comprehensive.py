@@ -394,6 +394,7 @@ class TestPointing:
         current_pass = Mock(spec=Pass)
         current_pass.in_pass = Mock(return_value=True)
         current_pass.ra_dec = Mock(return_value=(50.0, 35.0))
+        current_pass.roll_at = Mock(return_value=12.0)
         current_pass.obsid = 0xFFFF
 
         stale_science = Mock()

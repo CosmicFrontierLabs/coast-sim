@@ -17,7 +17,10 @@ from .enums import (
 )
 from .vector import (
     angular_separation,
+    attitude_for_body_vector_tracking,
+    attitude_from_body_axes,
     attitude_to_quat,
+    body_vector_to_eci,
     constraint_avoiding_waypoint,
     great_circle,
     quat_slerp,
@@ -39,7 +42,10 @@ __all__ = [
     "Polarization",
     "SlewAlgorithm",
     "angular_separation",
+    "attitude_for_body_vector_tracking",
+    "attitude_from_body_axes",
     "attitude_to_quat",
+    "body_vector_to_eci",
     "constraint_avoiding_waypoint",
     "dtutcfromtimestamp",
     "givename",

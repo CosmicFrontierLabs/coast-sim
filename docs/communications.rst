@@ -59,9 +59,16 @@ Defines how the antenna is mounted and pointed.
 **Fields:**
 
 * ``antenna_type``: Type of antenna mounting
-* ``fixed_azimuth_deg``: Azimuth in spacecraft body frame (0° = nadir, 180° = zenith)
-* ``fixed_elevation_deg``: Elevation angle in body frame
+* ``fixed_boresight_body``: Fixed antenna boresight as a unit vector in spacecraft body frame.
+  The default ``(-1, 0, 0)`` preserves the legacy ground-station-pass tracking convention.
+* ``fixed_azimuth_deg`` / ``fixed_elevation_deg``: Legacy metadata fields. Use
+  ``fixed_boresight_body`` for GSP attitude generation. Nonzero values are accepted
+  with a deprecation warning and do not affect generated GSP attitudes.
 * ``gimbal_range_deg``: Angular range for gimbaled antennas (from boresight)
+
+Only ``FIXED`` antennas currently drive spacecraft attitude during generated
+ground-station-pass profiles. ``OMNI`` and ``GIMBALED`` antennas do not imply a
+body-frame tracking vector.
 
 Polarization
 ^^^^^^^^^^^^
@@ -112,7 +119,7 @@ Python Mission Configuration
        Polarization,
    )
 
-   # LEO satellite with nadir-pointing S-band (using defaults)
+   # LEO satellite with body-fixed -X S-band (using defaults)
    leo_comms = CommunicationsSystem(
        name="LEO S-band",
        band_capabilities=[
@@ -120,8 +127,7 @@ Python Mission Configuration
        ],
        antenna_pointing=AntennaPointing(
            antenna_type=AntennaType.FIXED,
-           fixed_azimuth_deg=0.0,  # Nadir pointing
-           fixed_elevation_deg=0.0,
+           fixed_boresight_body=(-1.0, 0.0, 0.0),
        ),
        polarization=Polarization.CIRCULAR_RIGHT,
        pointing_accuracy_deg=10.0,
@@ -227,7 +233,7 @@ Common Configurations
 
 See ``examples/example_communications_configs.json`` for complete examples:
 
-* LEO S-band (nadir-pointing)
+* LEO S-band (body-fixed -X)
 * High-rate X-band (gimbaled)
 * Dual S/X-band
 * Deep space Ka-band
