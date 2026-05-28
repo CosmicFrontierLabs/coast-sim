@@ -3,6 +3,7 @@
 from unittest.mock import Mock, patch
 
 from conops import ACSCommand, ACSCommandType, ACSMode, DITLLog, Pass, Slew
+from conops.common import ObsType
 
 
 class TestExecuteCommandCoverage:
@@ -769,106 +770,20 @@ class TestExecuteCommandLogging:
 class TestGetModeCharging:
     """Test get_mode for CHARGING mode."""
 
-    def test_get_mode_returns_slewing_when_in_eclipse(self, acs, monkeypatch) -> None:
+    def test_get_mode_returns_slewing_for_active_charge_slew(self, acs) -> None:
         mock_slew = Mock(spec=Slew)
-        mock_slew.obstype = "CHARGE"
+        mock_slew.obstype = ObsType.CHARGE
         mock_slew.is_slewing = Mock(return_value=True)
         acs.current_slew = mock_slew
-
-        mock_ephem = Mock()
-        from datetime import datetime, timezone
-
-        mock_ephem.timestamp = [datetime.fromtimestamp(1514764800.0, tz=timezone.utc)]
-        mock_ephem.sun = [Mock()]
-        mock_ephem.earth = [Mock()]
-        mock_ephem.earth_radius_angle = [1.0]
-        mock_ephem.in_eclipse = Mock(return_value=True)
-        acs.ephem = mock_ephem
-
-        # Mock constraint.in_eclipse to return True (in eclipse)
-        monkeypatch.setattr(acs.constraint, "in_eclipse", lambda ra, dec, time: True)
-
-        # Set ACS in_eclipse state to True
-        acs.in_eclipse = True
 
         mode = acs.get_mode(1514764800.0)
         assert mode == ACSMode.SLEWING
-
-    def test_get_mode_calls_in_eclipse_for_charging(self, acs, monkeypatch) -> None:
-        mock_slew = Mock(spec=Slew)
-        mock_slew.obstype = "CHARGE"
-        mock_slew.is_slewing = Mock(return_value=True)
-        acs.current_slew = mock_slew
-
-        mock_ephem = Mock()
-        from datetime import datetime, timezone
-
-        mock_ephem.timestamp = [datetime.fromtimestamp(1514764800.0, tz=timezone.utc)]
-        mock_ephem.sun = [Mock()]
-        mock_ephem.earth = [Mock()]
-        mock_ephem.earth_radius_angle = [1.0]
-        mock_ephem.in_eclipse = Mock(return_value=True)
-        acs.ephem = mock_ephem
-
-        # Mock constraint.in_eclipse
-        mock_in_eclipse = Mock(return_value=True)
-        monkeypatch.setattr(acs.constraint, "in_eclipse", mock_in_eclipse)
-
-        _ = acs.get_mode(1514764800.0)
-
-    def test_get_mode_returns_charging_in_sunlight_while_slewing(
-        self, acs, monkeypatch
-    ):
-        mock_slew = Mock(spec=Slew)
-        mock_slew.obstype = "CHARGE"
-        mock_slew.is_slewing = Mock(return_value=True)
-        acs.current_slew = mock_slew
-
-        mock_ephem = Mock()
-        from datetime import datetime, timezone
-
-        mock_ephem.timestamp = [datetime.fromtimestamp(1514764800.0, tz=timezone.utc)]
-        mock_ephem.sun = [Mock()]
-        mock_ephem.earth = [Mock()]
-        mock_ephem.earth_radius_angle = [1.0]
-        mock_ephem.in_eclipse = Mock(return_value=False)
-        acs.ephem = mock_ephem
-
-        # Mock constraint.in_eclipse to return False (in sunlight)
-        monkeypatch.setattr(acs.constraint, "in_eclipse", lambda ra, dec, time: False)
-
-        mode = acs.get_mode(1514764800.0)
-        assert mode == ACSMode.CHARGING
-
-    def test_get_mode_calls_in_eclipse_for_sunlight_slewing(
-        self, acs, monkeypatch
-    ) -> None:
-        mock_slew = Mock(spec=Slew)
-        mock_slew.obstype = "CHARGE"
-        mock_slew.is_slewing = Mock(return_value=True)
-        acs.current_slew = mock_slew
-
-        mock_ephem = Mock()
-        from datetime import datetime, timezone
-
-        mock_ephem.timestamp = [datetime.fromtimestamp(1514764800.0, tz=timezone.utc)]
-        mock_ephem.sun = [Mock()]
-        mock_ephem.earth = [Mock()]
-        mock_ephem.earth_radius_angle = [1.0]
-        mock_ephem.in_eclipse = Mock(return_value=False)
-        acs.ephem = mock_ephem
-
-        # Mock constraint.in_eclipse
-        mock_in_eclipse = Mock(return_value=False)
-        monkeypatch.setattr(acs.constraint, "in_eclipse", mock_in_eclipse)
-
-        _ = acs.get_mode(1514764800.0)
 
     def test_get_mode_charging_in_dwell_when_not_slewing(
         self, acs, monkeypatch
     ) -> None:
         mock_slew = Mock(spec=Slew)
-        mock_slew.obstype = "CHARGE"
+        mock_slew.obstype = ObsType.CHARGE
         mock_slew.is_slewing = Mock(return_value=False)
         acs.last_slew = mock_slew
         acs.current_slew = mock_slew
@@ -897,7 +812,7 @@ class TestIsInChargingMode:
         self, acs, monkeypatch
     ):
         mock_slew = Mock(spec=Slew)
-        mock_slew.obstype = "CHARGE"
+        mock_slew.obstype = ObsType.CHARGE
         mock_slew.is_slewing = Mock(return_value=False)
         acs.last_slew = mock_slew
         acs.current_slew = mock_slew
@@ -1197,7 +1112,7 @@ class TestBatteryChargingMethods:
             assert enqueued_command.slew.endra == 45.0
             assert enqueued_command.slew.enddec == 30.0
             assert enqueued_command.slew.obsid == 0xBEEF
-            assert enqueued_command.slew.obstype == "CHARGE"
+            assert enqueued_command.slew.obstype == ObsType.CHARGE
 
     def test_start_battery_charge_logs(self, acs) -> None:
         command = ACSCommand(

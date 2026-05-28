@@ -605,12 +605,6 @@ class ACS:
             assert self.current_slew is not None, (
                 "Current slew must be set when actively slewing"
             )
-            # Check if slewing for charging - but only report CHARGING if in sunlight
-            if self.current_slew.obstype == ObsType.CHARGE:
-                # Check eclipse state - no point being in CHARGING mode during eclipse
-                if self.in_eclipse:
-                    return ACSMode.SLEWING  # In eclipse, treat as normal slew
-                return ACSMode.CHARGING
             return (
                 ACSMode.PASS
                 if self.current_slew.obstype == ObsType.GSP
