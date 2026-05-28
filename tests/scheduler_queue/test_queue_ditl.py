@@ -2656,6 +2656,92 @@ class TestCalcMethod:
         assert mock_charging_ppt.end == 1500.0
         assert queue_ditl.charging_ppt is None
 
+    def test_terminate_charging_ppt_clears_ppt_when_same_object(
+        self, queue_ditl
+    ) -> None:
+        """Regression: self.ppt must be cleared when it points to the charging PPT.
+
+        If a charging PPT is created and immediately terminated (e.g. its target
+        is constrained on the same simulation step), self.ppt is left pointing at
+        the orphaned entry.  On the next step _track_ppt_in_timeline appends it
+        to the plan with begin==end, producing an invalid_interval mismatch.
+        """
+        from conops.targets import PlanEntry
+
+        mock_charging_ppt = Mock(spec=PlanEntry)
+        mock_charging_ppt.begin = 1000.0
+        mock_charging_ppt.end = 2000.0
+        mock_charging_ppt.obstype = "PPT"
+
+        queue_ditl.plan = [mock_charging_ppt]
+        queue_ditl.charging_ppt = mock_charging_ppt
+        queue_ditl.ppt = mock_charging_ppt  # same object — the bug scenario
+
+        queue_ditl._terminate_charging_ppt(1000.0)  # terminated at creation time
+
+        assert queue_ditl.ppt is None
+
+    def test_terminate_charging_ppt_does_not_clear_unrelated_ppt(
+        self, queue_ditl
+    ) -> None:
+        """_terminate_charging_ppt must not clear self.ppt when it is a different object."""
+        from conops.targets import PlanEntry
+
+        mock_charging_ppt = Mock(spec=PlanEntry)
+        mock_charging_ppt.begin = 1000.0
+        mock_charging_ppt.end = 2000.0
+        mock_charging_ppt.obstype = "PPT"
+
+        mock_science_ppt = Mock(spec=PlanEntry)
+
+        queue_ditl.plan = [mock_charging_ppt]
+        queue_ditl.charging_ppt = mock_charging_ppt
+        queue_ditl.ppt = mock_science_ppt  # different object
+
+        queue_ditl._terminate_charging_ppt(1500.0)
+
+        assert queue_ditl.ppt is mock_science_ppt  # unrelated ppt must be untouched
+
+    def test_no_zero_duration_plan_entry_when_charging_ppt_immediately_terminated(
+        self, queue_ditl
+    ) -> None:
+        """Regression: _track_ppt_in_timeline must not append a zero-duration charging entry.
+
+        Sequence under test:
+          1. A charging PPT is created at T (begin=T, end=T) after immediate termination.
+          2. self.ppt was left pointing at it (the old bug).
+          3. _track_ppt_in_timeline is called on the next step.
+        After the fix, self.ppt is None so nothing is appended.
+        """
+        from conops.targets import PlanEntry
+
+        utime = 5000.0
+
+        # A science PPT already in the plan (begin well before utime)
+        science_ppt = Mock(spec=PlanEntry)
+        science_ppt.begin = 4000.0
+        science_ppt.end = utime  # closed at the same step charging was initiated
+        science_ppt.obstype = "AT"
+        from conops.targets.plan import Plan
+
+        queue_ditl.plan = Plan()
+        queue_ditl.plan.append(science_ppt)
+
+        # Simulate a charging PPT that was created and immediately terminated at utime
+        charging_ppt = Mock(spec=PlanEntry)
+        charging_ppt.begin = int(utime)
+        charging_ppt.end = int(utime)  # zero-duration — terminated same step
+        charging_ppt.done = True
+        charging_ppt.obstype = "CHARGE"
+
+        # After the fix self.ppt is cleared; verify _track_ppt_in_timeline is a no-op
+        queue_ditl.ppt = None
+        queue_ditl.charging_ppt = None
+
+        plan_len_before = len(queue_ditl.plan)
+        queue_ditl._track_ppt_in_timeline()
+        assert len(queue_ditl.plan) == plan_len_before
+
     def test_setup_simulation_timing_fails_with_invalid_ephemeris_range(
         self, queue_ditl, capsys
     ):
