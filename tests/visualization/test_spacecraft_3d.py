@@ -414,6 +414,32 @@ class TestTelescope:
         ]
         assert len(component_boresight) == 0
 
+    def test_telescope_no_optics_uses_default_aperture(self) -> None:
+        config = MissionConfig(
+            payload=Payload(
+                instruments=[Telescope(name="BareScope", boresight=(1.0, 0.0, 0.0))]
+            )
+        )
+        fig = plot_spacecraft_3d(config)
+        assert any("BareScope" in (t.name or "") for t in fig.data)
+
+    def test_telescope_optics_no_aperture_uses_default_aperture(self) -> None:
+        from conops.config.instrument import TelescopeConfig
+
+        config = MissionConfig(
+            payload=Payload(
+                instruments=[
+                    Telescope(
+                        name="NoAperScope",
+                        boresight=(1.0, 0.0, 0.0),
+                        optics=TelescopeConfig(focal_length_m=3.5),
+                    )
+                ]
+            )
+        )
+        fig = plot_spacecraft_3d(config)
+        assert any("NoAperScope" in (t.name or "") for t in fig.data)
+
 
 # ---------------------------------------------------------------------------
 # TestMultiplePanels
