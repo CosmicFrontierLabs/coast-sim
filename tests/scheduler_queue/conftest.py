@@ -168,6 +168,7 @@ def queue_ditl(mock_config: Mock, mock_ephem: DummyEphemeris) -> QueueDITL:
         mock_acs.saa = None
         mock_acs.pointing = Mock(return_value=(0.0, 0.0, 0.0, 0))
         mock_acs.enqueue_command = Mock()
+        mock_acs.command_queue = []
         mock_acs.passrequests = mock_pt
         mock_acs.slew_dists = []
         mock_acs.executed_commands = []
@@ -602,6 +603,7 @@ def queue_ditl_no_queue_log(
         mock_acs.saa = None
         mock_acs.pointing = Mock(return_value=(0.0, 0.0, 0.0, 0))
         mock_acs.enqueue_command = Mock()
+        mock_acs.command_queue = []
         mock_acs.passrequests = mock_pt
         mock_acs.slew_dists = []
         mock_acs.last_slew = None
@@ -678,6 +680,7 @@ def queue_ditl_acs_no_ephem(
         mock_acs.saa = None
         mock_acs.pointing = Mock(return_value=(0.0, 0.0, 0.0, 0))
         mock_acs.enqueue_command = Mock()
+        mock_acs.command_queue = []
         mock_acs.passrequests = mock_pt
         mock_acs.slew_dists = []
         mock_acs.last_slew = None
