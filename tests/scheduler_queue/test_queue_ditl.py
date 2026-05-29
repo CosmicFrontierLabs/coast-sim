@@ -3595,6 +3595,67 @@ class TestGetACSQueueStatus:
         assert status == expected
 
 
+class TestSameTickACSCommands:
+    """Regression tests for commands queued after the tick's first ACS update."""
+
+    def test_calc_processes_same_tick_ppt_command_before_recording(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """A PPT command enqueued for ``utime`` executes before telemetry is recorded."""
+        queue_ditl.begin = queue_ditl.ephem.timestamp[0]
+        queue_ditl.end = queue_ditl.ephem.timestamp[1]
+        utime = queue_ditl.begin.timestamp()
+        queue_ditl.ephem.step_size = 3600
+        queue_ditl.acs.command_queue = []
+        queue_ditl.acs.get_mode = Mock(return_value=ACSMode.SLEWING)
+
+        next_ppt = PlanEntry(config=queue_ditl.config)
+        next_ppt.begin = utime
+        next_ppt.end = utime + 600.0
+        next_ppt.obsid = 1002
+        next_ppt.ra = 11.0
+        next_ppt.dec = 22.0
+
+        due_command = ACSCommand(
+            command_type=ACSCommandType.SLEW_TO_TARGET,
+            execution_time=utime,
+        )
+
+        def handle_mode_operations(
+            mode: ACSMode, current_time: float, ra: float, dec: float
+        ) -> None:
+            queue_ditl.ppt = next_ppt
+            queue_ditl.acs.command_queue = [due_command]
+
+        def pointing(current_time: float) -> tuple[float, float, float, int]:
+            if queue_ditl.acs.command_queue:
+                queue_ditl.acs.command_queue = []
+                return 11.0, 22.0, 33.0, 1002
+            return 1.0, 2.0, 3.0, IDLE_OBSID
+
+        queue_ditl.acs.pointing = Mock(side_effect=pointing)
+
+        with (
+            patch.object(
+                queue_ditl,
+                "_handle_mode_operations",
+                side_effect=handle_mode_operations,
+            ),
+            patch.object(queue_ditl, "_assert_plan_matches_execution"),
+            patch.object(queue_ditl, "_attach_attitude_timeseries_to_plan"),
+        ):
+            assert queue_ditl.calc() is True
+
+        assert queue_ditl.acs.pointing.call_count == 2
+        assert [(entry.begin, entry.obsid) for entry in queue_ditl.plan] == [
+            (utime, 1002)
+        ]
+        assert queue_ditl.ra == [11.0]
+        assert queue_ditl.dec == [22.0]
+        assert queue_ditl.roll == [33.0]
+        assert queue_ditl.obsid == [1002]
+
+
 class TestTOOFunctionality:
     """Test Target of Opportunity (TOO) functionality in QueueDITL."""
 

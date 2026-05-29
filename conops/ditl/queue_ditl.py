@@ -447,6 +447,10 @@ class QueueDITL(DITLMixin, DITLStats):
             # Handle spacecraft operations based on current mode
             self._handle_mode_operations(mode, utime, ra, dec)
 
+            same_tick_pointing = self._process_due_acs_commands(utime)
+            if same_tick_pointing is not None:
+                ra, dec, roll, obsid = same_tick_pointing
+
             # Close PPT timeline segment if no active observation
             self._close_ppt_timeline_if_needed(utime)
 
@@ -1171,6 +1175,25 @@ class QueueDITL(DITLMixin, DITLStats):
                     self._close_last_plan_entry(self.ppt.begin)
 
             self.plan.append(self.ppt.copy())
+
+    def _process_due_acs_commands(
+        self, utime: float
+    ) -> tuple[float, float, float, int] | None:
+        """Process ACS commands queued for the current tick.
+
+        QueueDITL may enqueue a command after the tick's first ACS update.  If
+        that command is due now, re-enter ACS at the same timestamp so exported
+        plan entries start when the simulator actually commanded the slew.
+        """
+        if not (
+            self.acs.command_queue and self.acs.command_queue[0].execution_time <= utime
+        ):
+            return None
+
+        pointing = self.acs.pointing(utime)
+        self._sync_acs_slew_metadata()
+        self._track_ppt_in_timeline()
+        return pointing
 
     def _close_ppt_timeline_if_needed(self, utime: float) -> None:
         """Close the last PPT segment in timeline if no active observation.
