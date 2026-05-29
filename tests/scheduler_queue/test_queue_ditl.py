@@ -1,7 +1,7 @@
 """Unit tests for QueueDITL class."""
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import cast
 from unittest.mock import Mock, patch
 
@@ -18,11 +18,11 @@ from conops import (
     QueueDITL,
     Slew,
 )
-from conops.common.enums import ObsType
+from conops.common.enums import ObsType, SlewAlgorithm
 from conops.config.config import MissionConfig
 from conops.ditl.telemetry import Housekeeping
 from conops.simulation.acs import IDLE_OBSID
-from conops.targets import PlanEntry, PlanSchema
+from conops.targets import PlanEntry, PlanSchema, Pointing
 
 
 class TestQueueDITLInitialization:
@@ -1979,6 +1979,135 @@ class TestPlanExecutionValidation:
         assert called is True
 
 
+class TestClosedLoopPlanGeneration:
+    """Closed-loop QueueDITL regressions with real ACS state transitions."""
+
+    @staticmethod
+    def _configure_short_ephemeris(
+        mock_ephem: Mock, begin: datetime, end: datetime
+    ) -> None:
+        mock_ephem.step_size = 60
+        mock_ephem.timestamp = [begin + timedelta(minutes=i) for i in range(9)]
+        mock_ephem.begin = begin
+        mock_ephem.end = end
+        mock_ephem.earth_ra_deg = [0.0] * len(mock_ephem.timestamp)
+        mock_ephem.earth_dec_deg = [0.0] * len(mock_ephem.timestamp)
+        mock_ephem.sun_ra_deg = [45.0] * len(mock_ephem.timestamp)
+        mock_ephem.sun_dec_deg = [23.5] * len(mock_ephem.timestamp)
+
+    @staticmethod
+    def _configure_closed_loop_config(mock_config: Mock, mock_ephem: Mock) -> None:
+        mock_config.constraint.ephem = mock_ephem
+        mock_config.constraint.ignore_roll = False
+        mock_config.constraint.in_constraint = Mock(return_value=False)
+        mock_config.constraint.in_eclipse = Mock(return_value=False)
+        mock_config.constraint.roll_dependent_constraint = None
+        mock_config.constraint.constraint = None
+        mock_config.fault_management = None
+
+        attitude_control = mock_config.spacecraft_bus.attitude_control
+        attitude_control.slew_algorithm = SlewAlgorithm.QUATERNION
+        attitude_control.slew_time = Mock(return_value=60.0)
+        attitude_control.motion_time = Mock(return_value=60.0)
+        attitude_control.s_of_t = Mock(
+            side_effect=lambda angle, t: min(
+                float(angle), float(angle) * max(0.0, min(float(t), 60.0)) / 60.0
+            )
+        )
+        mock_config.spacecraft_bus.star_trackers.num_trackers = Mock(return_value=0)
+        mock_config.spacecraft_bus.star_trackers.startracker_hard_constraint = None
+        mock_config.spacecraft_bus.star_trackers.startracker_constraint = None
+        mock_config.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
+        mock_config.spacecraft_bus.radiators.radiator_hard_constraint = None
+        mock_config.battery.battery_alert = True
+        mock_config.battery.battery_level = 0.5
+
+    def test_charge_interrupted_science_execution_remains_planned(
+        self, mock_config: Mock, mock_ephem: Mock, tmp_path
+    ) -> None:
+        """A short science dwell that ACS executes must remain in the plan."""
+        begin = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        end = begin + timedelta(minutes=8)
+        self._configure_short_ephemeris(mock_ephem, begin, end)
+        self._configure_closed_loop_config(mock_config, mock_ephem)
+
+        target = Pointing(
+            config=mock_config,
+            ra=20.0,
+            dec=5.0,
+            obsid=1001,
+            name="closed_loop_science",
+            exptime=900,
+            ss_min=300,
+            ss_max=900,
+        )
+        target.windows = [[begin.timestamp(), end.timestamp()]]
+
+        queue = Mock()
+        queue.log = None
+        queue.targets = [target]
+        dispatched = False
+
+        def get_target(ra: float, dec: float, utime: float) -> Pointing | None:
+            nonlocal dispatched
+            if dispatched:
+                return None
+            dispatched = True
+            return target
+
+        queue.get = Mock(side_effect=get_target)
+
+        ditl = QueueDITL(
+            config=mock_config,
+            ephem=mock_ephem,
+            begin=begin,
+            end=end,
+            queue=queue,
+        )
+        ditl.acs.passrequests.passes = []
+        ditl.acs.passrequests.dropped_overlapping_passes = []
+        ditl.acs.passrequests.get = Mock()
+
+        charge_start = begin.timestamp() + 120.0
+        ditl.emergency_charging.should_initiate_charging = Mock(
+            side_effect=lambda utime, ephem, battery_alert: utime >= charge_start
+        )
+
+        assert ditl.calc() is True
+
+        science_samples = [
+            (utime, obsid)
+            for utime, mode, obsid in zip(ditl.utime, ditl.mode, ditl.obsid)
+            if mode == ACSMode.SCIENCE and obsid == 1001
+        ]
+        assert science_samples == [(begin.timestamp() + 60.0, 1001)]
+
+        science_entries = [
+            entry
+            for entry in ditl.plan
+            if entry.obstype == ObsType.AT and entry.obsid == 1001
+        ]
+        assert len(science_entries) == 1
+        assert science_entries[0].exposure == 60
+        assert science_entries[0].exposure < science_entries[0].ss_min
+        assert ditl.validate_plan_matches_execution() == []
+
+        plan_path = ditl.plan.save(tmp_path / "closed_loop_plan.json")
+        schema = PlanSchema.load(plan_path)
+        exported_science = [
+            entry
+            for entry in schema.entries
+            if entry.obstype == "AT" and entry.obsid == 1001
+        ]
+        assert len(exported_science) == 1
+        assert exported_science[0].exposure == 60
+        assert (
+            schema.attitude_timeseries_file
+            == "closed_loop_plan_attitude_timeseries.json"
+        )
+        assert (tmp_path / schema.attitude_timeseries_file).exists()
+
+
 class TestCalcMethod:
     """Test main calc method integration."""
 
@@ -2285,6 +2414,59 @@ class TestCalcMethod:
         queue_ditl.calc()
         if queue_ditl.plan:
             assert queue_ditl.plan[-1].end > 0
+
+    def test_calc_closes_final_ppt_at_simulation_end(self, queue_ditl) -> None:
+        begin = queue_ditl.ephem.timestamp[0]
+        end = queue_ditl.ephem.timestamp[1]
+        queue_ditl.begin = begin
+        queue_ditl.end = end
+        queue_ditl.step_size = 3600
+        queue_ditl.acs.get_mode = Mock(return_value=ACSMode.SCIENCE)
+        queue_ditl.acs.pointing = Mock(return_value=(10.0, 20.0, 0.0, 1001))
+        queue_ditl._assert_plan_matches_execution = Mock()
+
+        ppt = PlanEntry(config=queue_ditl.config)
+        ppt.obstype = ObsType.AT
+        ppt.begin = begin.timestamp()
+        ppt.end = begin.timestamp() + 86400.0
+        ppt.slewtime = 0.0
+        ppt.insaa = 0.0
+        ppt.ss_min = 0.0
+        ppt.obsid = 1001
+        ppt.ra = 10.0
+        ppt.dec = 20.0
+        ppt.exptime = 3600
+        queue_ditl.ppt = ppt
+
+        assert queue_ditl.calc() is True
+
+        assert queue_ditl.plan[-1].end == end.timestamp()
+
+    def test_constrained_charging_does_not_close_previous_science_entry(
+        self, queue_ditl
+    ) -> None:
+        science_end = 1000.0
+        charge_end = 1600.0
+
+        science_entry = PlanEntry(config=queue_ditl.config)
+        science_entry.obstype = ObsType.AT
+        science_entry.obsid = 1001
+        science_entry.begin = 0.0
+        science_entry.end = science_end
+        queue_ditl.plan.append(science_entry)
+
+        charging_entry = PlanEntry(config=queue_ditl.config)
+        charging_entry.obstype = ObsType.CHARGE
+        charging_entry.obsid = 999000
+        queue_ditl.charging_ppt = charging_entry
+        queue_ditl.ppt = charging_entry
+
+        queue_ditl._terminate_charging_ppt(charge_end)
+
+        assert queue_ditl.plan[-1].obsid == 1001
+        assert queue_ditl.plan[-1].end == science_end
+        assert charging_entry.end == charge_end
+        assert charging_entry.done is True
 
     def test_calc_handles_naive_datetimes(self, queue_ditl) -> None:
         """Test calc method handles naive datetimes by making them UTC."""
@@ -3620,6 +3802,9 @@ class TestSameTickACSCommands:
             command_type=ACSCommandType.SLEW_TO_TARGET,
             execution_time=utime,
         )
+        active_slew = Slew(config=queue_ditl.config)
+        active_slew.obstype = ObsType.PPT
+        active_slew.obsid = 1002
 
         def handle_mode_operations(
             mode: ACSMode, current_time: float, ra: float, dec: float
@@ -3630,6 +3815,8 @@ class TestSameTickACSCommands:
         def pointing(current_time: float) -> tuple[float, float, float, int]:
             if queue_ditl.acs.command_queue:
                 queue_ditl.acs.command_queue = []
+                queue_ditl.acs.current_slew = active_slew
+                queue_ditl.acs.last_slew = active_slew
                 return 11.0, 22.0, 33.0, 1002
             return 1.0, 2.0, 3.0, IDLE_OBSID
 
@@ -3654,6 +3841,49 @@ class TestSameTickACSCommands:
         assert queue_ditl.dec == [22.0]
         assert queue_ditl.roll == [33.0]
         assert queue_ditl.obsid == [1002]
+
+    def test_process_due_commands_clears_ppt_when_slew_is_canceled(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        utime = 1000.0
+        previous_entry = PlanEntry(config=queue_ditl.config)
+        previous_entry.obstype = ObsType.AT
+        previous_entry.obsid = 1001
+        previous_entry.begin = 0.0
+        previous_entry.end = 900.0
+        queue_ditl.plan.append(previous_entry)
+
+        canceled_ppt = PlanEntry(config=queue_ditl.config)
+        canceled_ppt.obstype = ObsType.AT
+        canceled_ppt.obsid = 10545
+        canceled_ppt.begin = utime
+        canceled_ppt.end = utime + 86400.0
+        queue_ditl.ppt = canceled_ppt
+
+        due_command = ACSCommand(
+            command_type=ACSCommandType.SLEW_TO_TARGET,
+            execution_time=utime,
+        )
+        queue_ditl.acs.command_queue = [due_command]
+        charge_slew = Slew(config=queue_ditl.config)
+        charge_slew.obstype = ObsType.CHARGE
+        charge_slew.obsid = 999000
+
+        def pointing(current_time: float) -> tuple[float, float, float, int]:
+            queue_ditl.acs.command_queue = []
+            queue_ditl.acs.current_slew = charge_slew
+            queue_ditl.acs.last_slew = charge_slew
+            return 1.0, 2.0, 3.0, 999000
+
+        queue_ditl.acs.pointing = Mock(side_effect=pointing)
+
+        assert queue_ditl._process_due_acs_commands(utime) == (1.0, 2.0, 3.0, 999000)
+
+        assert queue_ditl.ppt is None
+        assert list(queue_ditl.plan) == [previous_entry]
+        assert previous_entry.end == 900.0
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "Clearing PPT 10545" in log_text
 
 
 class TestTOOFunctionality:

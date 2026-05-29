@@ -478,7 +478,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
         # Make sure the last PPT of the day ends (if any)
         if self.plan:
-            self._close_last_plan_entry(utime)
+            self._close_last_plan_entry(self.uend)
 
         self._assert_plan_matches_execution()
         self._attach_attitude_timeseries_to_plan()
@@ -1050,8 +1050,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _close_last_plan_entry(self, end_time: float) -> None:
         """Close the last plan entry in the timeline by setting its end time.
-        If it's a science observation that didn't meet the minimum snapshot
-        requirement, log it and remove it from the plan."""
+        Drop under-collected science entries only when ACS never executed them."""
         if len(self.plan) == 0:
             return
         self.plan[-1].end = end_time
@@ -1059,6 +1058,19 @@ class QueueDITL(DITLMixin, DITLStats):
             entry = self.plan[-1]
             collection_time = self._science_collection_time(entry)
             collected = max(0.0, collection_time or 0.0)
+            if self._has_executed_science_sample(entry):
+                self.log.log_event(
+                    utime=end_time,
+                    event_type="QUEUE",
+                    description=(
+                        f"Keeping under-collected science entry {entry.obsid} - "
+                        f"ACS executed science for {collected:.0f}s of required "
+                        f"{float(entry.ss_min):.0f}s"
+                    ),
+                    obsid=entry.obsid,
+                    acs_mode=self.acs.acsmode,
+                )
+                return
             self.log.log_event(
                 utime=end_time,
                 event_type="QUEUE",
@@ -1070,6 +1082,16 @@ class QueueDITL(DITLMixin, DITLStats):
                 acs_mode=self.acs.acsmode,
             )
             self.plan.pop()
+
+    def _has_executed_science_sample(self, entry: PlanEntry) -> bool:
+        """Return whether telemetry already recorded science for this plan entry."""
+        obsid = int(entry.obsid)
+        begin = float(entry.begin)
+        end = float(entry.end)
+        return any(
+            begin <= utime < end and mode == ACSMode.SCIENCE and sample_obsid == obsid
+            for utime, mode, sample_obsid in zip(self.utime, self.mode, self.obsid)
+        )
 
     def _create_housekeeping_record(
         self, utime: float, ra: float, dec: float, roll: float, mode: ACSMode
@@ -1192,8 +1214,45 @@ class QueueDITL(DITLMixin, DITLStats):
 
         pointing = self.acs.pointing(utime)
         self._sync_acs_slew_metadata()
+        self._clear_canceled_ppt(utime)
         self._track_ppt_in_timeline()
         return pointing
+
+    @staticmethod
+    def _slew_matches_obsid(slew: Slew | None, obsid: int) -> bool:
+        return isinstance(slew, Slew) and int(slew.obsid) == obsid
+
+    def _ppt_has_pending_or_active_slew(self, obsid: int) -> bool:
+        if self._slew_matches_obsid(self.acs.current_slew, obsid):
+            return True
+        if self._slew_matches_obsid(self.acs.last_slew, obsid):
+            return True
+        return any(
+            command.command_type == ACSCommandType.SLEW_TO_TARGET
+            and self._slew_matches_obsid(command.slew, obsid)
+            for command in self.acs.command_queue
+        )
+
+    def _clear_canceled_ppt(self, utime: float) -> None:
+        """Clear a just-selected science PPT whose ACS slew was canceled."""
+        if self.ppt is None or self.ppt is self.charging_ppt:
+            return
+        obstype = self._entry_obstype(self.ppt)
+        if obstype not in (ObsType.AT, ObsType.TOO):
+            return
+
+        obsid = int(self.ppt.obsid)
+        if self._ppt_has_pending_or_active_slew(obsid):
+            return
+
+        self.log.log_event(
+            utime=utime,
+            event_type="QUEUE",
+            description=f"Clearing PPT {obsid} - ACS slew was canceled before execution",
+            obsid=obsid,
+            acs_mode=self.acs.acsmode,
+        )
+        self.ppt = None
 
     def _close_ppt_timeline_if_needed(self, utime: float) -> None:
         """Close the last PPT segment in timeline if no active observation.
@@ -2292,8 +2351,10 @@ class QueueDITL(DITLMixin, DITLStats):
     def _terminate_charging_ppt(self, utime: float) -> None:
         """Terminate the current charging PPT if active."""
         if self.charging_ppt is not None:
-            # Update plan timeline with actual end time
-            if len(self.plan) > 0:
+            if len(self.plan) > 0 and (
+                self.plan[-1] is self.charging_ppt
+                or int(self.plan[-1].obsid) == int(self.charging_ppt.obsid)
+            ):
                 self._close_last_plan_entry(utime)
             self.charging_ppt.end = utime
             self.charging_ppt.done = True
