@@ -2,13 +2,10 @@
 
 import json
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import cast
 from unittest.mock import Mock, patch
 
-import numpy as np
 import pytest
-from rust_ephem import TLEEphemeris
 
 from conops import (
     ACS,
@@ -26,6 +23,7 @@ from conops.config.config import MissionConfig
 from conops.ditl.telemetry import Housekeeping
 from conops.simulation.acs import IDLE_OBSID
 from conops.targets import PlanEntry, PlanSchema, Pointing
+from scripts.scan_queue_ditl_seeds import run_seeded_example_plan
 
 
 class TestQueueDITLInitialization:
@@ -2158,27 +2156,7 @@ class TestClosedLoopPlanGeneration:
 
     def test_seeded_example_plan_generation_matches_execution(self, tmp_path) -> None:
         """Run a representative seeded QueueDITL plan through export validation."""
-        seed = 5
-        config = MissionConfig(random_seed=seed)
-        ephemeris = TLEEphemeris(
-            begin=datetime(2025, 12, 1, 0, 0, 0),
-            end=datetime(2025, 12, 2, 0, 0, 0),
-            step_size=60,
-            tle=str(Path("examples/example.tle")),
-        )
-        config.constraint.ignore_roll = True
-
-        ditl = QueueDITL(config=config, ephem=ephemeris)
-        rng = np.random.default_rng(seed)
-        for index in range(1000):
-            ditl.queue.add(
-                ra=rng.uniform(0, 360),
-                dec=rng.uniform(-90, 90),
-                exptime=1000,
-                obsid=10000 + index,
-            )
-
-        assert ditl.calc() is True
+        ditl = run_seeded_example_plan(seed=5, target_count=1000)
         assert len(ditl.plan) > 0
         assert ditl.validate_plan_matches_execution() == []
 

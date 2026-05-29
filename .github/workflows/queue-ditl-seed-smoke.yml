@@ -1,0 +1,73 @@
+name: QueueDITL Engine Seed Smoke
+
+on:
+  schedule:
+    - cron: "37 9 * * *"
+  workflow_dispatch:
+    inputs:
+      start_seed:
+        description: First seed to scan
+        required: false
+        default: "0"
+      seed_count:
+        description: Number of seeds to scan
+        required: false
+        default: "32"
+      target_count:
+        description: Number of generated targets per seed
+        required: false
+        default: "1000"
+      max_failures:
+        description: Stop each shard after this many failures
+        required: false
+        default: "10"
+
+permissions:
+  contents: read
+
+jobs:
+  seed-scan:
+    name: Seed smoke shard ${{ matrix.shard_index }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard_index: [0, 1, 2, 3]
+    env:
+      START_SEED: ${{ github.event.inputs.start_seed || '0' }}
+      SEED_COUNT: ${{ github.event.inputs.seed_count || '32' }}
+      TARGET_COUNT: ${{ github.event.inputs.target_count || '1000' }}
+      MAX_FAILURES: ${{ github.event.inputs.max_failures || '10' }}
+      SHARD_COUNT: "4"
+      OUTPUT_DIR: seed-scan-results/shard-${{ matrix.shard_index }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          activate-environment: true
+          python-version: "3.12"
+
+      - name: Install package
+        run: uv pip install .[test]
+
+      - name: Run seed scan
+        run: >-
+          python scripts/scan_queue_ditl_seeds.py
+          --start-seed "$START_SEED"
+          --seed-count "$SEED_COUNT"
+          --target-count "$TARGET_COUNT"
+          --shard-index "${{ matrix.shard_index }}"
+          --shard-count "$SHARD_COUNT"
+          --max-failures "$MAX_FAILURES"
+          --output-dir "$OUTPUT_DIR"
+
+      - name: Upload seed scan results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: seed-scan-shard-${{ matrix.shard_index }}
+          path: seed-scan-results/
+          if-no-files-found: ignore
