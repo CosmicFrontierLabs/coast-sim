@@ -171,6 +171,8 @@ class QueueDITL(DITLMixin, DITLStats):
         self._planned_gsp_keys: set[tuple[str, float, float]] = set()
         self._gsp_slew_plan_entries: dict[Slew, PlanEntry] = {}
         self._synced_executed_slew_count = 0
+        self._temporary_rejected_ppts: list[tuple[Any, bool]] | None = None
+        self._retry_ppt_fetch_requested = False
 
     def get_acs_queue_status(self) -> dict[str, Any]:
         """
@@ -476,8 +478,8 @@ class QueueDITL(DITLMixin, DITLStats):
             # Fault management checks (e.g., battery level thresholds)
             self._handle_fault_management(utime, hk)
 
-        # Make sure the last PPT of the day ends (if any)
-        if self.plan:
+        # Make sure an active PPT ends at the simulation boundary.
+        if self.plan and self.ppt is not None:
             self._close_last_plan_entry(self.uend)
 
         self._assert_plan_matches_execution()
@@ -1949,6 +1951,12 @@ class QueueDITL(DITLMixin, DITLStats):
         was_done = rejected_ppt.done
         rejected_ppt.done = True
         self.ppt = None
+
+        if self._temporary_rejected_ppts is not None:
+            self._temporary_rejected_ppts.append((rejected_ppt, was_done))
+            self._retry_ppt_fetch_requested = True
+            return
+
         try:
             self._fetch_new_ppt(utime, ra, dec)
         finally:
@@ -1988,8 +1996,27 @@ class QueueDITL(DITLMixin, DITLStats):
         self._retry_fetch_without_current_ppt(utime, ra, dec)
         return True
 
-    def _fetch_new_ppt(self, utime: float, ra: float, dec: float) -> None:
+    def _fetch_new_ppt(
+        self, utime: float, ra: float, dec: float, *, _fetch_loop_active: bool = False
+    ) -> None:
         """Fetch a new pointing target from the queue and enqueue slew command."""
+        if not _fetch_loop_active:
+            self._temporary_rejected_ppts = []
+            self._retry_ppt_fetch_requested = False
+            try:
+                while True:
+                    self._retry_ppt_fetch_requested = False
+                    self._fetch_new_ppt(utime, ra, dec, _fetch_loop_active=True)
+                    if self._retry_ppt_fetch_requested:
+                        continue
+                    return
+            finally:
+                temporary_rejections = self._temporary_rejected_ppts or []
+                for rejected_ppt, was_done in temporary_rejections:
+                    rejected_ppt.done = was_done
+                self._temporary_rejected_ppts = None
+                self._retry_ppt_fetch_requested = False
+
         # Don't issue science slews during an active pass - this prevents the
         # teleportation bug where a slew is issued with start position from the
         # pass tracking, but the spacecraft continues following the pass instead.

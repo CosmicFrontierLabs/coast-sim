@@ -2,10 +2,13 @@
 
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import cast
 from unittest.mock import Mock, patch
 
+import numpy as np
 import pytest
+from rust_ephem import TLEEphemeris
 
 from conops import (
     ACS,
@@ -1116,6 +1119,52 @@ class TestFetchNewPPT:
         assert "Target 1001 rejected" in log_text
         assert "available before pass" in log_text
 
+    def test_fetch_ppt_retries_many_rejected_targets_without_recursion(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Large queues of infeasible targets should not recurse through the stack."""
+        queue_ditl.ephem.step_size = 60
+
+        targets = []
+        for index in range(1100):
+            target = Mock()
+            target.ra = 45.0
+            target.dec = 30.0
+            target.obsid = 1000 + index
+            target.done = False
+            target.next_vis = Mock(return_value=1000.0)
+            target.ss_max = 3600.0
+            target.ss_min = 300.0
+            target.windows = [[0.0, 1100.0]]
+            targets.append(target)
+
+        good_ppt = Mock()
+        good_ppt.ra = 46.0
+        good_ppt.dec = 31.0
+        good_ppt.obsid = 9999
+        good_ppt.done = False
+        good_ppt.next_vis = Mock(return_value=1000.0)
+        good_ppt.ss_max = 3600.0
+        good_ppt.ss_min = 30.0
+        good_ppt.windows = [[0.0, 5000.0]]
+        targets.append(good_ppt)
+
+        queue_ditl.queue.targets = targets
+
+        def get_next_not_done(ra: float, dec: float, utime: float) -> Mock | None:
+            return next((target for target in targets if not target.done), None)
+
+        cast(Mock, queue_ditl.queue).get = Mock(side_effect=get_next_not_done)
+        cast(Mock, queue_ditl.acs.passrequests).current_pass = Mock(return_value=None)
+        cast(Mock, queue_ditl.acs.passrequests).next_pass = Mock(return_value=None)
+
+        queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        assert queue_ditl.ppt is good_ppt
+        assert all(target.done is False for target in targets)
+        assert queue_ditl._temporary_rejected_ppts is None
+        cast(Mock, queue_ditl.acs.enqueue_command).assert_called_once()
+
     def test_fetch_ppt_rejects_when_locked_roll_violates_constraint_in_window(
         self, queue_ditl
     ) -> None:
@@ -2107,6 +2156,41 @@ class TestClosedLoopPlanGeneration:
         )
         assert (tmp_path / schema.attitude_timeseries_file).exists()
 
+    def test_seeded_example_plan_generation_matches_execution(self, tmp_path) -> None:
+        """Run a representative seeded QueueDITL plan through export validation."""
+        seed = 5
+        config = MissionConfig(random_seed=seed)
+        ephemeris = TLEEphemeris(
+            begin=datetime(2025, 12, 1, 0, 0, 0),
+            end=datetime(2025, 12, 2, 0, 0, 0),
+            step_size=60,
+            tle=str(Path("examples/example.tle")),
+        )
+        config.constraint.ignore_roll = True
+
+        ditl = QueueDITL(config=config, ephem=ephemeris)
+        rng = np.random.default_rng(seed)
+        for index in range(1000):
+            ditl.queue.add(
+                ra=rng.uniform(0, 360),
+                dec=rng.uniform(-90, 90),
+                exptime=1000,
+                obsid=10000 + index,
+            )
+
+        assert ditl.calc() is True
+        assert len(ditl.plan) > 0
+        assert ditl.validate_plan_matches_execution() == []
+
+        plan_path = ditl.plan.save(tmp_path / "seeded_example_plan.json")
+        schema = PlanSchema.load(plan_path)
+        assert len(schema.entries) == len(ditl.plan)
+        assert (
+            schema.attitude_timeseries_file
+            == "seeded_example_plan_attitude_timeseries.json"
+        )
+        assert (tmp_path / schema.attitude_timeseries_file).exists()
+
 
 class TestCalcMethod:
     """Test main calc method integration."""
@@ -2435,12 +2519,39 @@ class TestCalcMethod:
         ppt.obsid = 1001
         ppt.ra = 10.0
         ppt.dec = 20.0
-        ppt.exptime = 3600
+        ppt.exptime = 7200
         queue_ditl.ppt = ppt
 
         assert queue_ditl.calc() is True
 
         assert queue_ditl.plan[-1].end == end.timestamp()
+
+    def test_calc_does_not_extend_closed_final_plan_entry(self, queue_ditl) -> None:
+        begin = queue_ditl.ephem.timestamp[0]
+        end = queue_ditl.ephem.timestamp[1]
+        queue_ditl.begin = begin
+        queue_ditl.end = end
+        queue_ditl.step_size = 3600
+        queue_ditl.ppt = None
+        queue_ditl.acs.get_mode = Mock(return_value=ACSMode.IDLE)
+        queue_ditl.acs.pointing = Mock(return_value=(10.0, 20.0, 0.0, IDLE_OBSID))
+        queue_ditl._assert_plan_matches_execution = Mock()
+
+        closed_end = begin.timestamp() + 300.0
+        entry = PlanEntry(config=queue_ditl.config)
+        entry.obstype = ObsType.AT
+        entry.begin = begin.timestamp()
+        entry.end = closed_end
+        entry.obsid = 1001
+        entry.ra = 10.0
+        entry.dec = 20.0
+        entry.exptime = 300
+        entry.slewtime = 0
+        queue_ditl.plan.append(entry)
+
+        assert queue_ditl.calc() is True
+
+        assert queue_ditl.plan[-1].end == closed_end
 
     def test_constrained_charging_does_not_close_previous_science_entry(
         self, queue_ditl
