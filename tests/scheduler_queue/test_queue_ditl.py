@@ -3508,6 +3508,71 @@ class TestCheckAndManagePasses:
         ]
         assert len(gsp_entries) == 1
 
+    def test_pass_end_extends_gsp_entry_but_preserves_contact_end(
+        self, queue_ditl
+    ) -> None:
+        """The exported GSP interval should cover executed pass exit."""
+        pass_obj = Pass(
+            station="GS_TEST",
+            begin=1100.0,
+            length=600.0,
+            gsstartra=100.0,
+            gsstartdec=50.0,
+            obsid=4242,
+        )
+        reserved_begin = 1000.0
+        executed_end = pass_obj.end + queue_ditl.ephem.step_size
+
+        queue_ditl._record_gsp_plan_entry(pass_obj, reserved_begin=reserved_begin)
+        entry = next(entry for entry in queue_ditl.plan if entry.obstype == ObsType.GSP)
+        assert entry.end == pass_obj.end
+
+        def current_pass(utime: float) -> Pass | None:
+            if utime == executed_end - queue_ditl.ephem.step_size:
+                return pass_obj
+            return None
+
+        queue_ditl.acs.passrequests.current_pass = Mock(side_effect=current_pass)
+        queue_ditl.acs.acsmode = ACSMode.IDLE
+        queue_ditl.acs.in_safe_mode = False
+
+        assert queue_ditl._check_and_manage_passes(executed_end, 10.0, 20.0)
+
+        command = queue_ditl.acs.enqueue_command.call_args[0][0]
+        assert command.command_type == ACSCommandType.END_PASS
+        assert entry.end == executed_end
+        assert entry.contact_end == pass_obj.end
+        assert entry.exposure == 600
+
+    def test_commanded_pass_end_extends_gsp_entry_but_preserves_contact_end(
+        self, queue_ditl
+    ) -> None:
+        """The active PASS-mode exit path should close the exported interval."""
+        pass_obj = Pass(
+            station="GS_TEST",
+            begin=1100.0,
+            length=600.0,
+            gsstartra=100.0,
+            gsstartdec=50.0,
+            obsid=4242,
+        )
+        reserved_begin = 1000.0
+        executed_end = pass_obj.end + queue_ditl.ephem.step_size
+
+        queue_ditl._record_gsp_plan_entry(pass_obj, reserved_begin=reserved_begin)
+        entry = next(entry for entry in queue_ditl.plan if entry.obstype == ObsType.GSP)
+        queue_ditl.acs.current_pass = pass_obj
+        queue_ditl.acs.acsmode = ACSMode.PASS
+        queue_ditl.acs.in_safe_mode = False
+
+        assert queue_ditl._check_and_manage_passes(executed_end, 10.0, 20.0)
+
+        command = queue_ditl.acs.enqueue_command.call_args[0][0]
+        assert command.command_type == ACSCommandType.END_PASS
+        assert entry.end == executed_end
+        assert entry.contact_end == pass_obj.end
+        assert entry.exposure == 600
+
     def test_executed_gsp_slew_updates_exported_slew_metadata(self, queue_ditl) -> None:
         """GSP plan slew metadata should follow the ACS-executed slew."""
         pass_obj = Pass(
