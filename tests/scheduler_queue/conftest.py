@@ -96,6 +96,7 @@ def mock_config() -> Mock:
     config.battery = Mock()
     config.battery.battery_level = 0.8
     config.battery.battery_alert = False
+    config.battery.below_minimum_charge_level = False
     config.battery.charge_state = 0  # NOT_CHARGING
     config.battery.drain = Mock()
     config.battery.charge = Mock()

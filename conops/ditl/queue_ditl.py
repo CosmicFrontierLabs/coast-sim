@@ -2064,11 +2064,11 @@ class QueueDITL(DITLMixin, DITLStats):
             self._retry_ppt_fetch_requested = False
 
     def _fetch_new_ppt_inner(self, utime: float, ra: float, dec: float) -> None:
-        if self.battery.battery_alert:
+        if self.battery.below_minimum_charge_level:
             self.log.log_event(
                 utime=utime,
                 event_type="QUEUE",
-                description="Deferring PPT fetch - battery alert active",
+                description="Deferring PPT fetch - battery below minimum charge level",
                 acs_mode=self.acs.acsmode,
             )
             self._ppt_unavailable = None
