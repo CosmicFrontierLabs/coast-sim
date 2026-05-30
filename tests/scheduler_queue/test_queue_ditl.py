@@ -965,6 +965,55 @@ class TestFetchNewPPT:
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "Deferring PPT fetch - pass in progress" in log_text
 
+    def test_fetch_ppt_defers_while_battery_alert_active(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Battery-alert state should block new science dispatch."""
+        queue_ditl.battery.battery_alert = True
+
+        queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        assert queue_ditl.ppt is None
+        cast(Mock, queue_ditl.queue.get).assert_not_called()
+        cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "Deferring PPT fetch - battery alert active" in log_text
+
+    def test_science_completion_does_not_fetch_new_ppt_during_battery_alert(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Do not start another target when charge is pending but unavailable."""
+        utime = 1000.0
+        science = PlanEntry(config=queue_ditl.config)
+        science.obstype = ObsType.AT
+        science.obsid = 1001
+        science.ra = 10.0
+        science.dec = 20.0
+        science.begin = utime - 600.0
+        science.end = utime + 86400.0
+        science.slewtime = 0.0
+        science.insaa = 0.0
+        science.ss_min = 300.0
+        science.exptime = 0.0
+        science.done = False
+
+        queue_ditl.ppt = science
+        queue_ditl.plan.append(science)
+        queue_ditl.battery.battery_alert = True
+        queue_ditl.emergency_charging.should_initiate_charging = Mock(
+            return_value=False
+        )
+
+        queue_ditl._handle_science_mode(utime, science.ra, science.dec, ACSMode.SCIENCE)
+
+        assert queue_ditl.ppt is None
+        assert science.done is True
+        cast(Mock, queue_ditl.queue.get).assert_not_called()
+        cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "Exposure complete, ending observation" in log_text
+        assert "Deferring PPT fetch - battery alert active" in log_text
+
     def test_fetch_ppt_rejects_slew_execution_during_pass(
         self, queue_ditl: QueueDITL
     ) -> None:

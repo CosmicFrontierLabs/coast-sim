@@ -2064,6 +2064,16 @@ class QueueDITL(DITLMixin, DITLStats):
             self._retry_ppt_fetch_requested = False
 
     def _fetch_new_ppt_inner(self, utime: float, ra: float, dec: float) -> None:
+        if self.battery.battery_alert:
+            self.log.log_event(
+                utime=utime,
+                event_type="QUEUE",
+                description="Deferring PPT fetch - battery alert active",
+                acs_mode=self.acs.acsmode,
+            )
+            self._ppt_unavailable = None
+            return
+
         # Don't issue science slews during an active pass - this prevents the
         # teleportation bug where a slew is issued with start position from the
         # pass tracking, but the spacecraft continues following the pass instead.
