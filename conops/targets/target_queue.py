@@ -213,6 +213,13 @@ class TargetQueue:
 
         # Select targets from queue
         targets = [t for t in self.targets if t.merit > 0 and not t.done]
+        score_candidates = (
+            self.slew_distance_weight != 0.0
+            or self.slew_time_weight != 0.0
+            or self.collection_time_weight != 0.0
+            or self.radiator_sun_exposure_weight != 0.0
+            or self.radiator_earth_exposure_weight != 0.0
+        )
 
         msg = (
             f"{unixtime2date(self.utime)} Searching {len(targets)} targets in queue..."
@@ -236,7 +243,12 @@ class TargetQueue:
             if target.exptime is not None and target.exptime < target.ss_min:
                 continue
 
-            self._estimate_slew(target, ra, dec, slew_estimator)
+            self._estimate_slew(
+                target,
+                ra,
+                dec,
+                slew_estimator if score_candidates else None,
+            )
 
             # Calculate observation window
             endtime = utime + target.slewtime + target.ss_min
@@ -254,16 +266,8 @@ class TargetQueue:
                 target.begin = int(utime)
                 target.end = int(utime + target.slewtime + target.ss_max)
                 # If no slew weighting, return first visible target (fast path)
-                if (
-                    self.slew_distance_weight == 0.0
-                    and self.slew_time_weight == 0.0
-                    and self.collection_time_weight == 0.0
-                ):
-                    if (
-                        self.radiator_sun_exposure_weight == 0.0
-                        and self.radiator_earth_exposure_weight == 0.0
-                    ):
-                        return target
+                if not score_candidates:
+                    return target
                 # Otherwise, score all visible targets and pick best
                 slewdist = getattr(target, "slewdist", 0.0)
                 slew_minutes = float(target.slewtime) / 60.0

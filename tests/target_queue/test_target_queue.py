@@ -437,6 +437,26 @@ class TestCollectionTimeWeight:
         attitude_expensive_target.calc_slewtime.assert_not_called()
         attitude_cheap_target.calc_slewtime.assert_not_called()
 
+    def test_slew_estimator_is_skipped_when_scoring_disabled(self, queue_instance):
+        """The default fast path should not pay for attitude-aware estimates."""
+        utime = 1762924800.0
+        target = queue_instance.targets[0]
+        target.merit = 100
+
+        estimator = Mock(return_value=TargetSlewEstimate(slewtime=300.0, slewdist=0.0))
+
+        with patch.object(queue_instance, "meritsort"):
+            selected = queue_instance.get(
+                ra=0,
+                dec=0,
+                utime=utime,
+                slew_estimator=estimator,
+            )
+
+        assert selected == target
+        estimator.assert_not_called()
+        target.calc_slewtime.assert_called_once()
+
 
 class TestQueueSelectionBehavior:
     def test_get_without_star_trackers_preserves_existing_behavior(
