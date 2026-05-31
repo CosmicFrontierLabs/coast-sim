@@ -1961,7 +1961,31 @@ class QueueDITL(DITLMixin, DITLStats):
     def _pass_slew_trigger_buffer(self) -> float:
         return pass_slew_trigger_buffer(self.ephem.step_size)
 
-    def _next_science_deadline(self, slew_end: float) -> tuple[float, str]:
+    @staticmethod
+    def _ephem_timestamp_to_utime(timestamp: Any) -> float:
+        if hasattr(timestamp, "timestamp"):
+            return float(timestamp.timestamp())
+        return float(timestamp)
+
+    def _next_charge_science_deadline(self, current_time: float) -> float | None:
+        """Return when pending battery recharge can next preempt science."""
+        if not self.battery.battery_alert or self.charging_ppt is not None:
+            return None
+
+        if not self.constraint.in_eclipse(ra=0, dec=0, time=current_time):
+            return current_time
+
+        for timestamp in self.ephem.timestamp:
+            utime = self._ephem_timestamp_to_utime(timestamp)
+            if utime <= current_time:
+                continue
+            if not self.constraint.in_eclipse(ra=0, dec=0, time=utime):
+                return utime
+        return None
+
+    def _next_science_deadline(
+        self, slew_end: float, current_time: float | None = None
+    ) -> tuple[float, str]:
         """Determine the next science deadline after the slew ends, which could
         be the end of the current visibility window, the next pass, or the end
         of the simulation."""
@@ -1976,6 +2000,12 @@ class QueueDITL(DITLMixin, DITLStats):
         pass_deadline = self._next_pass_science_deadline(slew_end)
         if pass_deadline is not None:
             deadlines.append((pass_deadline, "pass"))
+
+        charge_deadline = self._next_charge_science_deadline(
+            current_time if current_time is not None else slew_end
+        )
+        if charge_deadline is not None:
+            deadlines.append((charge_deadline, "charge opportunity"))
 
         return min(deadlines, key=lambda item: item[0])
 
@@ -2022,7 +2052,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
         # Check if there's enough time to collect before the next science
         # deadline (visibility window end, next pass, or simulation end)
-        deadline, reason = self._next_science_deadline(slew_end)
+        deadline, reason = self._next_science_deadline(slew_end, current_time=utime)
         available_collect_time = deadline - slew_end
         if available_collect_time >= self.ppt.ss_min:
             return False

@@ -83,6 +83,7 @@ def mock_config() -> Mock:
     config.constraint.in_star_tracker_soft = Mock(return_value=False)
     config.constraint.in_radiator_hard = Mock(return_value=False)
     config.constraint.in_telescope_hard = Mock(return_value=False)
+    config.constraint.in_eclipse = Mock(return_value=False)
     config.attitude_constraint_policy_for_mode = Mock(
         side_effect=lambda mode: (
             AttitudeConstraintPolicy.FULL_MISSION
