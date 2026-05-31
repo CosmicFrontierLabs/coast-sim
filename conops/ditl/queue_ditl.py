@@ -24,7 +24,7 @@ from ..simulation.emergency_charging import EmergencyCharging
 from ..simulation.passes import Pass, pass_slew_trigger_buffer
 from ..simulation.roll import optimum_roll
 from ..simulation.slew import Slew
-from ..targets import Plan, PlanEntry, Pointing, Queue
+from ..targets import Plan, PlanEntry, Pointing, Queue, TargetSlewEstimate
 from .ditl_log import DITLLog
 from .ditl_mixin import DITLMixin
 from .ditl_stats import DITLStats
@@ -1932,26 +1932,32 @@ class QueueDITL(DITLMixin, DITLStats):
         """Return the Unix timestamp for the end of the simulation."""
         return self.uend if self.uend > 0.0 else self.end.timestamp()
 
-    def _current_ppt_visibility_deadline(self, slew_end: float) -> float | None:
+    def _current_ppt_visibility_deadline(
+        self, slew_end: float, target: Pointing | None = None
+    ) -> float | None:
         """Calculate the end of the current PPT visibility window, if any, after the slew ends."""
-        assert self.ppt is not None
-        if not self.ppt.windows:
+        ppt = target or self.ppt
+        assert ppt is not None
+        if not ppt.windows:
             return None
-        for window in self.ppt.windows:
+        for window in ppt.windows:
             if window[0] <= slew_end <= window[1]:
                 return window[1]
         return slew_end
 
-    def _next_pass_science_deadline(self, slew_end: float) -> float | None:
+    def _next_pass_science_deadline(
+        self, slew_end: float, target: Pointing | None = None
+    ) -> float | None:
         """Calculate the next pass deadline after the slew ends, accounting for
         slew time to the pass start."""
-        assert self.ppt is not None
+        ppt = target or self.ppt
+        assert ppt is not None
         next_pass = self.acs.passrequests.next_pass(slew_end)
         if next_pass is None:
             return None
 
         pass_slew_dist = angular_separation(
-            self.ppt.ra, self.ppt.dec, next_pass.gsstartra, next_pass.gsstartdec
+            ppt.ra, ppt.dec, next_pass.gsstartra, next_pass.gsstartdec
         )
         acs_cfg = self.config.spacecraft_bus.attitude_control
         pass_slew_time = float(acs_cfg.slew_time(pass_slew_dist))
@@ -1992,7 +1998,7 @@ class QueueDITL(DITLMixin, DITLStats):
         return None
 
     def _next_science_deadline(
-        self, slew_end: float, current_time: float
+        self, slew_end: float, current_time: float, target: Pointing | None = None
     ) -> tuple[float, str]:
         """Determine the next science deadline after the slew ends, which could
         be the end of the current visibility window, the next pass, or the end
@@ -2001,11 +2007,11 @@ class QueueDITL(DITLMixin, DITLStats):
             (self._simulation_end_deadline(), "simulation end")
         ]
 
-        visibility_end = self._current_ppt_visibility_deadline(slew_end)
+        visibility_end = self._current_ppt_visibility_deadline(slew_end, target=target)
         if visibility_end is not None:
             deadlines.append((visibility_end, "visibility window"))
 
-        pass_deadline = self._next_pass_science_deadline(slew_end)
+        pass_deadline = self._next_pass_science_deadline(slew_end, target=target)
         if pass_deadline is not None:
             deadlines.append((pass_deadline, "pass"))
 
@@ -2014,6 +2020,61 @@ class QueueDITL(DITLMixin, DITLStats):
             deadlines.append((charge_deadline, "charge opportunity"))
 
         return min(deadlines, key=lambda item: item[0])
+
+    def _ppt_slew_execution_time(self, utime: float) -> float:
+        if (
+            self.acs.last_slew is not None
+            and isinstance(self.acs.last_slew, Slew)
+            and self.acs.last_slew.is_slewing(utime)
+        ):
+            return self.acs.last_slew.slewstart + self.acs.last_slew.slewtime
+        return utime
+
+    def _new_ppt_slew(self, target: Pointing, utime: float) -> Slew:
+        slew = Slew(config=self.config)
+        slew.ephem = self.acs.ephem
+        slew.slewrequest = utime
+        slew.endra = target.ra
+        slew.enddec = target.dec
+        slew.obstype = ObsType.PPT
+        slew.obsid = target.obsid
+        slew.at = target
+        return slew
+
+    def _complete_ppt_slew(
+        self,
+        slew: Slew,
+        target: Pointing,
+        utime: float,
+        execution_time: float,
+    ) -> None:
+        slew.slewstart = execution_time
+        slew.startra, slew.startdec, slew.startroll = (
+            self._expected_slew_start_attitude(utime, execution_time)
+        )
+        slew.endroll = optimum_roll(
+            target.ra,
+            target.dec,
+            execution_time,
+            self.acs.ephem,
+            self.config.solar_panel,
+            self.config.constraint,
+        )
+        slew.calc_slewtime()
+
+    def _estimate_ppt_slew(self, target: Pointing, utime: float) -> TargetSlewEstimate:
+        slew = self._new_ppt_slew(target, utime)
+        self._complete_ppt_slew(
+            slew,
+            target,
+            utime,
+            self._ppt_slew_execution_time(utime),
+        )
+        return TargetSlewEstimate(
+            slewtime=float(slew.slewtime),
+            slewdist=float(slew.slewdist),
+            slewpath=slew.slewpath,
+        )
 
     def _can_retry_without_current_ppt(self) -> bool:
         """Sanity check to see if we can retry fetching a new PPT without just
@@ -2133,22 +2194,20 @@ class QueueDITL(DITLMixin, DITLStats):
         )
 
         # Fetch the next PPT from the queue based on current pointing and time
-        self.ppt = self.queue.get(ra, dec, utime)
+        self.ppt = self.queue.get(
+            ra,
+            dec,
+            utime,
+            collection_deadline=lambda target, slew_end: self._next_science_deadline(
+                slew_end,
+                current_time=utime,
+                target=target,
+            )[0],
+            slew_estimator=lambda target: self._estimate_ppt_slew(target, utime),
+        )
 
         if self.ppt is not None:
-            # Create and configure a Slew object
-            slew = Slew(
-                config=self.config,
-            )
-            slew.ephem = self.acs.ephem
-            slew.slewrequest = utime
-            slew.endra = self.ppt.ra
-            slew.enddec = self.ppt.dec
-            slew.obstype = ObsType.PPT
-            slew.obsid = self.ppt.obsid
-
-            # Use the PPT from the queue which already has visibility calculated
-            slew.at = self.ppt
+            slew = self._new_ppt_slew(self.ppt, utime)
 
             # Check if target is visible
             visstart = self.ppt.next_vis(utime)
@@ -2164,17 +2223,10 @@ class QueueDITL(DITLMixin, DITLStats):
                 return
 
             # Calculate slew timing
-            execution_time = utime
+            execution_time = self._ppt_slew_execution_time(utime)
 
             # Wait for current slew to finish if in progress
-            if (
-                self.acs.last_slew is not None
-                and isinstance(self.acs.last_slew, Slew)
-                and self.acs.last_slew.is_slewing(utime)
-            ):
-                execution_time = (
-                    self.acs.last_slew.slewstart + self.acs.last_slew.slewtime
-                )
+            if execution_time > utime:
                 self.log.log_event(
                     utime=utime,
                     event_type="SLEW",
@@ -2193,11 +2245,6 @@ class QueueDITL(DITLMixin, DITLStats):
                     acs_mode=self.acs.acsmode,
                 )
                 execution_time = visstart
-
-            slew.slewstart = execution_time
-            slew.startra, slew.startdec, slew.startroll = (
-                self._expected_slew_start_attitude(utime, execution_time)
-            )
 
             # When ignore_roll=True, verify that a valid roll exists before slewing.
             # optimum_roll() falls back to the unconstrained solar roll when
@@ -2229,15 +2276,7 @@ class QueueDITL(DITLMixin, DITLStats):
                         self._retry_fetch_without_current_ppt(utime, ra, dec)
                         return
 
-            slew.endroll = optimum_roll(
-                self.ppt.ra,
-                self.ppt.dec,
-                execution_time,
-                self.acs.ephem,
-                self.config.solar_panel,
-                self.config.constraint,
-            )
-            slew.calc_slewtime()
+            self._complete_ppt_slew(slew, self.ppt, utime, execution_time)
 
             # Validate that the locked roll satisfies constraints for at least
             # ss_min seconds after slew completion.  The ACS holds roll constant

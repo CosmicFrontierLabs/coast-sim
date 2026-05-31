@@ -74,6 +74,7 @@ from .targets import (
     Queue,
     TargetList,
     TargetQueue,
+    TargetSlewEstimate,
 )
 from .visualization import (
     annotate_slew_distances,
@@ -147,6 +148,7 @@ __all__ = [
     "SpacecraftBus",
     "TargetList",
     "TargetQueue",
+    "TargetSlewEstimate",
     "TOORequest",
     "unixtime2date",
     "unixtime2yearday",

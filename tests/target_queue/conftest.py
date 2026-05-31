@@ -26,7 +26,7 @@ def mock_target():
         target.done = False
 
     target.reset = Mock(side_effect=reset_func)
-    target.visible.return_value = True
+    target.visible.return_value = [1762924800.0, 1763011200.0]
     target.calc_slewtime = Mock(return_value=10)
     return target
 
@@ -54,7 +54,7 @@ def mock_targets(mock_target):
             return reset_func
 
         t.reset = Mock(side_effect=create_reset_func(t))
-        t.visible.return_value = True
+        t.visible.return_value = [1762924800.0, 1763011200.0]
         t.calc_slewtime = Mock(return_value=10)
         targets.append(t)
     return targets
@@ -69,6 +69,8 @@ def mock_config():
     config.attitude_control = Mock()
     config.targets = Mock()
     config.targets.slew_distance_weight = 0.0
+    config.targets.slew_time_weight = 0.0
+    config.targets.collection_time_weight = 0.0
     config.targets.radiator_sun_exposure_weight = 0.0
     config.targets.radiator_earth_exposure_weight = 0.0
     return config

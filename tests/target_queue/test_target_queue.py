@@ -1,6 +1,6 @@
 from unittest.mock import Mock, patch
 
-from conops import Queue
+from conops import Queue, TargetSlewEstimate
 
 
 class TestQueueInitAndAppend:
@@ -272,6 +272,170 @@ class TestSlewDistanceWeight:
 
         # Should still return first target (no penalty applied)
         assert target == queue_instance.targets[0]
+
+
+class TestCollectionTimeWeight:
+    """Tests for collection time reward in target selection."""
+
+    def test_positive_weight_prefers_longer_collection_window(self, queue_instance):
+        """Collection time can choose a longer useful observation over a shorter slew."""
+        utime = 1762924800.0
+        queue_instance.slew_distance_weight = 0.1
+        queue_instance.collection_time_weight = 1.0
+
+        close_target = queue_instance.targets[0]
+        close_target.merit = 100
+        close_target.slewdist = 0.0
+        close_target.calc_slewtime.return_value = 10
+        close_target.exptime = 1500
+        close_target.ss_max = 1500
+        close_target.visible.return_value = [utime, utime + 400]
+
+        longer_target = queue_instance.targets[1]
+        longer_target.merit = 100
+        longer_target.slewdist = 30.0
+        longer_target.calc_slewtime.return_value = 20
+        longer_target.exptime = 1500
+        longer_target.ss_max = 1500
+        longer_target.visible.return_value = [utime, utime + 1700]
+
+        for target in queue_instance.targets[2:]:
+            target.visible.return_value = False
+
+        with patch.object(queue_instance, "meritsort"):
+            target = queue_instance.get(ra=0, dec=0, utime=utime)
+
+        assert target == longer_target
+
+    def test_collection_time_is_capped_by_remaining_exposure(self, queue_instance):
+        """The collection reward should not exceed remaining target exposure."""
+        utime = 1762924800.0
+        target = queue_instance.targets[0]
+        target.slewtime = 20
+        target.exptime = 300
+        target.ss_max = 1000
+
+        collection_seconds = queue_instance._candidate_collection_seconds(
+            target=target,
+            visibility_window=[utime, utime + 2000],
+            utime=utime,
+        )
+
+        assert collection_seconds == 300
+
+    def test_collection_time_is_capped_by_deadline(self, queue_instance):
+        """Collection reward should use the earliest downstream science deadline."""
+        utime = 1762924800.0
+        target = queue_instance.targets[0]
+        target.slewtime = 20
+        target.exptime = 1000
+        target.ss_max = 1000
+
+        collection_seconds = queue_instance._candidate_collection_seconds(
+            target=target,
+            visibility_window=[utime, utime + 2000],
+            utime=utime,
+            deadline=utime + 500,
+        )
+
+        assert collection_seconds == 480
+
+    def test_deadline_skips_target_that_cannot_meet_minimum_snapshot(
+        self, queue_instance
+    ):
+        """A downstream deadline should keep infeasible targets out of scoring."""
+        utime = 1762924800.0
+        queue_instance.slew_distance_weight = 0.1
+        queue_instance.collection_time_weight = 1.0
+
+        infeasible_target = queue_instance.targets[0]
+        infeasible_target.merit = 100
+        infeasible_target.slewdist = 0.0
+        infeasible_target.calc_slewtime.return_value = 10
+        infeasible_target.ss_min = 300
+        infeasible_target.exptime = 1500
+        infeasible_target.ss_max = 1500
+        infeasible_target.visible.return_value = [utime, utime + 1700]
+
+        feasible_target = queue_instance.targets[1]
+        feasible_target.merit = 100
+        feasible_target.slewdist = 40.0
+        feasible_target.calc_slewtime.return_value = 20
+        feasible_target.ss_min = 300
+        feasible_target.exptime = 1500
+        feasible_target.ss_max = 1500
+        feasible_target.visible.return_value = [utime, utime + 1700]
+
+        for target in queue_instance.targets[2:]:
+            target.visible.return_value = False
+
+        def deadline(target, slew_end):
+            if target is infeasible_target:
+                return slew_end + 120
+            return slew_end + 900
+
+        with patch.object(queue_instance, "meritsort"):
+            target = queue_instance.get(
+                ra=0,
+                dec=0,
+                utime=utime,
+                collection_deadline=deadline,
+            )
+
+        assert target == feasible_target
+
+    def test_slew_time_weight_penalizes_longer_slews(self, queue_instance):
+        """Slew time can be scored directly as an opportunity cost."""
+        utime = 1762924800.0
+        queue_instance.slew_time_weight = 10.0
+
+        quick_target = queue_instance.targets[0]
+        quick_target.merit = 100
+        quick_target.calc_slewtime.return_value = 30
+
+        slow_target = queue_instance.targets[1]
+        slow_target.merit = 100
+        slow_target.calc_slewtime.return_value = 300
+
+        for target in queue_instance.targets[2:]:
+            target.visible.return_value = False
+
+        with patch.object(queue_instance, "meritsort"):
+            target = queue_instance.get(ra=0, dec=0, utime=utime)
+
+        assert target == quick_target
+
+    def test_slew_estimator_drives_scored_slew_cost(self, queue_instance):
+        """Selection should use caller-provided attitude-aware slew estimates."""
+        utime = 1762924800.0
+        queue_instance.slew_distance_weight = 1.0
+        queue_instance.slew_time_weight = 1.0
+
+        attitude_expensive_target = queue_instance.targets[0]
+        attitude_expensive_target.merit = 100
+
+        attitude_cheap_target = queue_instance.targets[1]
+        attitude_cheap_target.merit = 100
+
+        for target in queue_instance.targets[2:]:
+            target.visible.return_value = False
+
+        def estimate(target):
+            if target is attitude_expensive_target:
+                return TargetSlewEstimate(slewtime=300.0, slewdist=100.0)
+            return TargetSlewEstimate(slewtime=30.0, slewdist=10.0)
+
+        with patch.object(queue_instance, "meritsort"):
+            target = queue_instance.get(
+                ra=0,
+                dec=0,
+                utime=utime,
+                slew_estimator=estimate,
+            )
+
+        assert target == attitude_cheap_target
+        attitude_expensive_target.calc_slewtime.assert_not_called()
+        attitude_cheap_target.calc_slewtime.assert_not_called()
 
 
 class TestQueueSelectionBehavior:

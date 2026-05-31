@@ -7,7 +7,7 @@ from .plan_schema import (
     PlanSchema,
 )
 from .pointing import Pointing
-from .target_queue import Queue, TargetQueue
+from .target_queue import Queue, TargetQueue, TargetSlewEstimate
 
 __all__ = [
     "PlanEntry",
@@ -20,4 +20,5 @@ __all__ = [
     "TargetList",
     "Queue",
     "TargetQueue",
+    "TargetSlewEstimate",
 ]

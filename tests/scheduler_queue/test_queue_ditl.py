@@ -3,7 +3,7 @@
 import json
 from datetime import datetime, timezone
 from typing import cast
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 import pytest
 
@@ -605,6 +605,8 @@ class TestFetchNewPPT:
             10.0,
             20.0,
             1000.0,
+            collection_deadline=ANY,
+            slew_estimator=ANY,
         )
 
     def test_fetch_ppt_enqueues_slew_command(
@@ -1365,7 +1367,9 @@ class TestFetchNewPPT:
         targets = [bad_ppt, good_ppt]
         queue_ditl.queue.targets = targets
 
-        def get_next_not_done(ra: float, dec: float, utime: float) -> Mock | None:
+        def get_next_not_done(
+            ra: float, dec: float, utime: float, **_: object
+        ) -> Mock | None:
             return next((target for target in targets if not target.done), None)
 
         cast(Mock, queue_ditl.queue).get = Mock(side_effect=get_next_not_done)
@@ -1506,7 +1510,9 @@ class TestFetchNewPPT:
         targets = [bad_ppt, good_ppt]
         queue_ditl.queue.targets = targets
 
-        def get_next_not_done(ra: float, dec: float, utime: float) -> Mock | None:
+        def get_next_not_done(
+            ra: float, dec: float, utime: float, **_: object
+        ) -> Mock | None:
             return next((target for target in targets if not target.done), None)
 
         cast(Mock, queue_ditl.queue).get = Mock(side_effect=get_next_not_done)

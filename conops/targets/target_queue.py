@@ -1,4 +1,6 @@
 import hashlib
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, cast
 
 import numpy as np
@@ -8,6 +10,15 @@ from ..common import unixtime2date
 from ..config import AttitudeControlSystem, Constraint, MissionConfig
 from ..ditl.ditl_log import DITLLog
 from . import Pointing
+
+
+@dataclass(frozen=True)
+class TargetSlewEstimate:
+    """Estimated slew cost used for target selection."""
+
+    slewtime: float
+    slewdist: float
+    slewpath: tuple[list[float], list[float]] | None = None
 
 
 class TargetQueue:
@@ -43,6 +54,8 @@ class TargetQueue:
         self.log = log
         # Optional weight to penalize long slews when selecting next target
         self.slew_distance_weight = config.targets.slew_distance_weight
+        self.slew_time_weight = config.targets.slew_time_weight
+        self.collection_time_weight = config.targets.collection_time_weight
         self.radiator_sun_exposure_weight = config.targets.radiator_sun_exposure_weight
         self.radiator_earth_exposure_weight = (
             config.targets.radiator_earth_exposure_weight
@@ -131,11 +144,49 @@ class TargetQueue:
         digest = hashlib.blake2b(payload, digest_size=8).digest()
         return int.from_bytes(digest, "big")
 
+    def _candidate_collection_seconds(
+        self,
+        target: Pointing,
+        visibility_window: list[float],
+        utime: float,
+        deadline: float | None = None,
+    ) -> float:
+        """Estimate useful science collection available after the slew."""
+        collection_start = utime + float(target.slewtime)
+        collection_end = float(visibility_window[1])
+        if deadline is not None:
+            collection_end = min(collection_end, float(deadline))
+        window_seconds = max(0.0, collection_end - collection_start)
+        max_snapshot = float(target.ss_max)
+        remaining_exposure = target.exptime
+        if remaining_exposure is None:
+            return min(window_seconds, max_snapshot)
+        return min(window_seconds, float(remaining_exposure), max_snapshot)
+
+    def _estimate_slew(
+        self,
+        target: Pointing,
+        ra: float,
+        dec: float,
+        slew_estimator: Callable[[Pointing], TargetSlewEstimate] | None,
+    ) -> None:
+        if slew_estimator is None:
+            target.slewtime = target.calc_slewtime(ra, dec)
+            return
+
+        estimate = slew_estimator(target)
+        target.slewtime = round(estimate.slewtime)
+        target.slewdist = estimate.slewdist
+        if estimate.slewpath is not None:
+            target.slewpath = estimate.slewpath
+
     def get(
         self,
         ra: float,
         dec: float,
         utime: float,
+        collection_deadline: Callable[[Pointing, float], float | None] | None = None,
+        slew_estimator: Callable[[Pointing], TargetSlewEstimate] | None = None,
     ) -> Pointing | None:
         """Get the next best target to observe from the queue.
 
@@ -146,9 +197,10 @@ class TargetQueue:
             ra: Current right ascension in degrees.
             dec: Current declination in degrees.
             utime: Current time in Unix seconds.
-            current_roll: Current spacecraft roll angle in degrees, used to
-                apply roll-aware star tracker filtering when checking target
-                visibility and attitude constraints.
+            collection_deadline: Optional callback returning the latest time
+                science may be collected for a candidate target after its slew.
+            slew_estimator: Optional callback returning attitude-aware slew
+                cost for a candidate target.
 
         Returns:
             Next target to observe, or None if no suitable target found.
@@ -184,7 +236,7 @@ class TargetQueue:
             if target.exptime is not None and target.exptime < target.ss_min:
                 continue
 
-            target.slewtime = target.calc_slewtime(ra, dec)
+            self._estimate_slew(target, ra, dec, slew_estimator)
 
             # Calculate observation window
             endtime = utime + target.slewtime + target.ss_min
@@ -197,11 +249,16 @@ class TargetQueue:
                 endtime = last_unix
 
             # Check if target is visible for full observation
-            if target.visible(utime, endtime):
+            visibility_window = target.visible(utime, endtime)
+            if visibility_window:
                 target.begin = int(utime)
                 target.end = int(utime + target.slewtime + target.ss_max)
                 # If no slew weighting, return first visible target (fast path)
-                if self.slew_distance_weight == 0.0:
+                if (
+                    self.slew_distance_weight == 0.0
+                    and self.slew_time_weight == 0.0
+                    and self.collection_time_weight == 0.0
+                ):
                     if (
                         self.radiator_sun_exposure_weight == 0.0
                         and self.radiator_earth_exposure_weight == 0.0
@@ -209,7 +266,30 @@ class TargetQueue:
                         return target
                 # Otherwise, score all visible targets and pick best
                 slewdist = getattr(target, "slewdist", 0.0)
-                score = target.merit - self.slew_distance_weight * slewdist
+                slew_minutes = float(target.slewtime) / 60.0
+                score = (
+                    target.merit
+                    - self.slew_distance_weight * slewdist
+                    - self.slew_time_weight * slew_minutes
+                )
+                slew_end = utime + float(target.slewtime)
+                deadline = (
+                    collection_deadline(target, slew_end)
+                    if collection_deadline is not None
+                    else None
+                )
+                collection_seconds = self._candidate_collection_seconds(
+                    target=target,
+                    visibility_window=visibility_window,
+                    utime=utime,
+                    deadline=deadline,
+                )
+                if collection_deadline is not None and collection_seconds < float(
+                    target.ss_min
+                ):
+                    continue
+                collection_minutes = collection_seconds / 60.0
+                score += self.collection_time_weight * collection_minutes
 
                 if (
                     self.radiator_sun_exposure_weight > 0.0
