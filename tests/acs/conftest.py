@@ -6,7 +6,14 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pytest
 
-from conops import ACS, AttitudeControlSystem, Constraint, SpacecraftBus
+from conops import (
+    ACS,
+    ACSMode,
+    AttitudeConstraintPolicy,
+    AttitudeControlSystem,
+    Constraint,
+    SpacecraftBus,
+)
 from conops.config.solar_panel import SolarPanel, SolarPanelSet
 
 
@@ -51,6 +58,9 @@ def mock_constraint(mock_ephem: DummyEphemeris) -> Mock:
     constraint.panel_constraint = Mock()
     constraint.panel_constraint.solar_panel = None
     constraint.in_constraint = Mock(return_value=False)
+    constraint.in_star_tracker_hard = Mock(return_value=False)
+    constraint.in_radiator_hard = Mock(return_value=False)
+    constraint.in_telescope_hard = Mock(return_value=False)
     constraint.in_eclipse = Mock(return_value=False)
     return constraint
 
@@ -77,6 +87,13 @@ def mock_config(mock_ephem: DummyEphemeris, mock_constraint: Mock) -> Mock:
     config.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
     config.spacecraft_bus.radiators = Mock()
     config.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
+    config.attitude_constraint_policy_for_mode = Mock(
+        side_effect=lambda mode: (
+            AttitudeConstraintPolicy.FULL_MISSION
+            if ACSMode(int(mode)) in (ACSMode.SCIENCE, ACSMode.CHARGING)
+            else AttitudeConstraintPolicy.HARD_KEEPOUT
+        )
+    )
     return config
 
 

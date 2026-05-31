@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pytest
 
-from conops import ACS, ACSMode
+from conops import ACS, ACSMode, AttitudeConstraintPolicy
 from conops.config.solar_panel import SolarPanel, SolarPanelSet
 
 
@@ -45,6 +45,9 @@ def mock_constraint_roll(mock_ephem_roll):
     constraint.panel_constraint = Mock()
     constraint.panel_constraint.solar_panel = None
     constraint.in_constraint = Mock(return_value=False)
+    constraint.in_star_tracker_hard = Mock(return_value=False)
+    constraint.in_radiator_hard = Mock(return_value=False)
+    constraint.in_telescope_hard = Mock(return_value=False)
     constraint.in_eclipse = Mock(return_value=False)
     return constraint
 
@@ -69,6 +72,9 @@ def mock_config_roll(mock_ephem_roll, mock_constraint_roll):
     config.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
     config.spacecraft_bus.radiators = Mock()
     config.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
+    config.attitude_constraint_policy_for_mode = Mock(
+        return_value=AttitudeConstraintPolicy.HARD_KEEPOUT
+    )
     return config
 
 
@@ -138,6 +144,9 @@ class TestACSRollCalculation:
         constraint1.panel_constraint = Mock()
         constraint1.panel_constraint.solar_panel = None
         constraint1.in_constraint = Mock(return_value=False)
+        constraint1.in_star_tracker_hard = Mock(return_value=False)
+        constraint1.in_radiator_hard = Mock(return_value=False)
+        constraint1.in_telescope_hard = Mock(return_value=False)
         constraint1.in_eclipse = Mock(return_value=False)
 
         config1 = Mock()
@@ -157,6 +166,9 @@ class TestACSRollCalculation:
         config1.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
         config1.spacecraft_bus.radiators = Mock()
         config1.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
+        config1.attitude_constraint_policy_for_mode = Mock(
+            return_value=AttitudeConstraintPolicy.HARD_KEEPOUT
+        )
 
         with patch("conops.simulation.passes.PassTimes"):
             acs1 = ACS(config=config1)
@@ -169,6 +181,9 @@ class TestACSRollCalculation:
         constraint2.panel_constraint = Mock()
         constraint2.panel_constraint.solar_panel = None
         constraint2.in_constraint = Mock(return_value=False)
+        constraint2.in_star_tracker_hard = Mock(return_value=False)
+        constraint2.in_radiator_hard = Mock(return_value=False)
+        constraint2.in_telescope_hard = Mock(return_value=False)
         constraint2.in_eclipse = Mock(return_value=False)
 
         config2 = Mock()
@@ -188,6 +203,9 @@ class TestACSRollCalculation:
         config2.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
         config2.spacecraft_bus.radiators = Mock()
         config2.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
+        config2.attitude_constraint_policy_for_mode = Mock(
+            return_value=AttitudeConstraintPolicy.HARD_KEEPOUT
+        )
 
         with patch("conops.simulation.passes.PassTimes"):
             acs2 = ACS(config=config2)
@@ -325,6 +343,9 @@ class TestACSRollEdgeCases:
         constraint.panel_constraint = Mock()
         constraint.panel_constraint.solar_panel = None
         constraint.in_constraint = Mock(return_value=False)
+        constraint.in_star_tracker_hard = Mock(return_value=False)
+        constraint.in_radiator_hard = Mock(return_value=False)
+        constraint.in_telescope_hard = Mock(return_value=False)
         constraint.in_eclipse = Mock(return_value=False)
 
         config = Mock()
@@ -344,6 +365,9 @@ class TestACSRollEdgeCases:
         config.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
         config.spacecraft_bus.radiators = Mock()
         config.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
+        config.attitude_constraint_policy_for_mode = Mock(
+            return_value=AttitudeConstraintPolicy.HARD_KEEPOUT
+        )
 
         with patch("conops.simulation.passes.PassTimes"):
             acs = ACS(config=config)

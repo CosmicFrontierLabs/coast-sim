@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from astropy.time import Time  # type: ignore[import-untyped]
 
-from conops import SolarPanel, SolarPanelSet
+from conops import ACSMode, AttitudeConstraintPolicy, SolarPanel, SolarPanelSet
 
 
 @pytest.fixture(autouse=True)
@@ -81,6 +81,9 @@ def test_config_with_panels(mock_ephem_with_pv: Mock) -> tuple[Mock, SolarPanelS
     constraint.roll_dependent_constraint = None
     constraint.panel_constraint = Mock()
     constraint.in_constraint = Mock(return_value=False)
+    constraint.in_star_tracker_hard = Mock(return_value=False)
+    constraint.in_radiator_hard = Mock(return_value=False)
+    constraint.in_telescope_hard = Mock(return_value=False)
     constraint.in_eclipse = Mock(return_value=False)
 
     # Create solar panels
@@ -104,6 +107,13 @@ def test_config_with_panels(mock_ephem_with_pv: Mock) -> tuple[Mock, SolarPanelS
     config.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
     config.spacecraft_bus.radiators = Mock()
     config.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
+    config.attitude_constraint_policy_for_mode = Mock(
+        side_effect=lambda mode: (
+            AttitudeConstraintPolicy.FULL_MISSION
+            if ACSMode(int(mode)) in (ACSMode.SCIENCE, ACSMode.CHARGING)
+            else AttitudeConstraintPolicy.HARD_KEEPOUT
+        )
+    )
 
     return config, panel_set
 

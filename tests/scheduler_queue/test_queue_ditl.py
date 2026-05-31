@@ -2183,6 +2183,31 @@ class TestPlanExecutionValidation:
         assert any(f"mode {mode.name}" in str(m) for m in mismatches)
         assert any("Radiator Hard" in str(m) for m in mismatches)
 
+    def test_validation_fails_for_idle_full_constraint_violation(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.utime = [1000.0]
+        queue_ditl.mode = [ACSMode.IDLE]
+        queue_ditl.obsid = [IDLE_OBSID]
+        queue_ditl.ra = [10.0]
+        queue_ditl.dec = [20.0]
+        queue_ditl.roll = [30.0]
+        queue_ditl.config.attitude_constraint_policy_for_mode = Mock(
+            return_value=AttitudeConstraintPolicy.FULL_MISSION
+        )
+        queue_ditl.constraint.in_constraint = Mock(return_value=True)
+        queue_ditl.constraint.in_earth = Mock(return_value=True)
+        self._index_telemetry_by_time(queue_ditl)
+
+        mismatches = queue_ditl.validate_plan_matches_execution()
+
+        assert any("mode IDLE" in str(m) for m in mismatches)
+        assert any("Earth" in str(m) for m in mismatches)
+        assert any("full_mission" in str(m) for m in mismatches)
+        queue_ditl.constraint.in_constraint.assert_called_once_with(
+            10.0, 20.0, 1000.0, target_roll=30.0, acs_mode=ACSMode.IDLE
+        )
+
     def test_execution_coverage_uses_full_gsp_entry_window(
         self, queue_ditl: QueueDITL
     ) -> None:
@@ -2587,6 +2612,30 @@ class TestCalcMethod:
         assert queue_ditl.acs.pointing.call_count == 25
         assert queue_ditl.ra[0] == 10.0
         assert queue_ditl.obsid[0] == 0xFFFF
+
+    def test_refresh_after_operations_requeries_attitude_when_mode_changes(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.acs.get_mode = Mock(return_value=ACSMode.IDLE)
+        queue_ditl.acs.pointing = Mock(return_value=(11.0, 22.0, 33.0, IDLE_OBSID))
+
+        ra, dec, roll, obsid, mode = queue_ditl._refresh_pointing_after_operations(
+            ACSMode.SCIENCE,
+            1000.0,
+            1.0,
+            2.0,
+            3.0,
+            42,
+        )
+
+        assert (ra, dec, roll, obsid, mode) == (
+            11.0,
+            22.0,
+            33.0,
+            IDLE_OBSID,
+            ACSMode.IDLE,
+        )
+        queue_ditl.acs.pointing.assert_called_once_with(1000.0)
 
     def test_calc_handles_emergency_charging_initiates(self, queue_ditl) -> None:
         queue_ditl.year = 2018
