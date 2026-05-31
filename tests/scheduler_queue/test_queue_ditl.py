@@ -1285,6 +1285,24 @@ class TestFetchNewPPT:
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "rejected - only 80s available before charge opportunity" in log_text
 
+    def test_charge_science_deadline_checks_eclipse_on_ephemeris_grid(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Fractional slew-end times should not be sent to ephemeris constraints."""
+        queue_ditl.ephem.timestamp = [
+            datetime.fromtimestamp(1000.0 + 60.0 * index, timezone.utc)
+            for index in range(3)
+        ]
+        queue_ditl.battery.battery_alert = True
+        queue_ditl.constraint.in_eclipse = Mock(return_value=False)
+
+        deadline = queue_ditl._next_charge_science_deadline(1001.5)
+
+        assert deadline == 1001.5
+        queue_ditl.constraint.in_eclipse.assert_called_once_with(
+            ra=0, dec=0, time=1060.0
+        )
+
     def test_fetch_ppt_accepts_when_pending_charge_allows_minimum_collect(
         self, queue_ditl: QueueDITL
     ) -> None:

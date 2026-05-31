@@ -1967,12 +1967,20 @@ class QueueDITL(DITLMixin, DITLStats):
             return float(timestamp.timestamp())
         return float(timestamp)
 
+    def _ephem_utime_at_or_after(self, utime: float) -> float:
+        timestamps = [self._ephem_timestamp_to_utime(ts) for ts in self.ephem.timestamp]
+        index = bisect_left(timestamps, utime)
+        if index >= len(timestamps):
+            return timestamps[-1]
+        return timestamps[index]
+
     def _next_charge_science_deadline(self, current_time: float) -> float | None:
         """Return when pending battery recharge can next preempt science."""
         if not self.battery.battery_alert or self.charging_ppt is not None:
             return None
 
-        if not self.constraint.in_eclipse(ra=0, dec=0, time=current_time):
+        constraint_time = self._ephem_utime_at_or_after(current_time)
+        if not self.constraint.in_eclipse(ra=0, dec=0, time=constraint_time):
             return current_time
 
         for timestamp in self.ephem.timestamp:
