@@ -687,13 +687,51 @@ logic. A radiator always exists physically; geometry changes its net thermal beh
 Scheduler Optimization Weights
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Queue scheduling can penalize radiator exposure using target-selection weights:
+Queue scheduling can combine target merit with configurable optimization weights.
+All weights default to ``0.0``. When every weight is zero, the queue keeps the
+legacy fast path: targets are sorted by merit and the first visible target is
+selected without the extra scoring pass.
 
-* ``config.targets.radiator_sun_exposure_weight``
-* ``config.targets.radiator_earth_exposure_weight``
+When any weight is non-zero, visible candidates are scored as:
 
-Higher values steer scheduling away from pointings that increase thermal loading on
-radiators. These are merit penalties, so tune relative to your target merit scale.
+.. code-block:: text
+
+   score =
+       target.merit
+       - slew_distance_weight * slew_distance_degrees
+       - slew_time_weight * slew_minutes
+       + collection_time_weight * collection_minutes
+       - radiator_sun_exposure_weight * sun_exposure
+       - radiator_earth_exposure_weight * earth_exposure
+
+The available weights are:
+
+* ``config.targets.slew_distance_weight`` - Merit penalty per degree of slew.
+  This favors nearby pointings when candidates have similar target merit.
+* ``config.targets.slew_time_weight`` - Merit penalty per minute of estimated
+  slew time. In ``QueueDITL`` this uses the same attitude-aware
+  :class:`~conops.simulation.Slew` calculation used when the selected slew is
+  executed.
+* ``config.targets.collection_time_weight`` - Merit reward per minute of useful
+  science collection. Collection time is capped by the target visibility window,
+  remaining target exposure, and ``ss_max``. In ``QueueDITL`` it is also capped
+  by the next science deadline, such as the next ground-station pass handoff or
+  the simulation end. If that downstream deadline leaves less than ``ss_min`` of
+  collection time, the candidate is skipped.
+* ``config.targets.radiator_sun_exposure_weight`` - Merit penalty per unit of
+  radiator Sun exposure.
+* ``config.targets.radiator_earth_exposure_weight`` - Merit penalty per unit of
+  radiator Earth exposure.
+
+The radiator exposure values are area-weighted fractions in ``[0, 1]`` when
+radiators are configured. Higher values steer scheduling away from pointings
+that increase thermal loading on radiators.
+
+All weights operate in merit units, so tune them relative to the target merit
+scale. For example, if normal target merits are around ``100``, then
+``collection_time_weight = 1.0`` gives a ten-minute candidate a ``10`` point
+reward, while ``slew_time_weight = 1.0`` gives a ten-minute slew a ``10`` point
+penalty.
 
 Radiator Net Heat Model
 ^^^^^^^^^^^^^^^^^^^^^^^
