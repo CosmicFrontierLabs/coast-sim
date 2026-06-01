@@ -171,6 +171,7 @@ class QueueDITL(DITLMixin, DITLStats):
         self._planned_gsp_keys: set[tuple[str, float, float]] = set()
         self._gsp_slew_plan_entries: dict[Slew, PlanEntry] = {}
         self._synced_executed_slew_count = 0
+        self._dropped_science_windows: list[tuple[float, float, int]] = []
 
     def get_acs_queue_status(self) -> dict[str, Any]:
         """
@@ -424,6 +425,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
         # Set up simulation length from begin/end datetimes
         simlen = int((self.end - self.begin).total_seconds() / self.step_size)
+        self._dropped_science_windows.clear()
 
         # DITL loop
         for i in range(simlen):
@@ -823,6 +825,8 @@ class QueueDITL(DITLMixin, DITLStats):
             if mode == ACSMode.SCIENCE:
                 obsid = int(self.obsid[i])
                 if self._science_entry_covering_sample(utime, obsid) is None:
+                    if self._in_dropped_science_window(utime, obsid):
+                        continue
                     mismatches.append(
                         self._execution_mismatch(
                             utime,
@@ -845,6 +849,12 @@ class QueueDITL(DITLMixin, DITLStats):
                         )
                     )
         return mismatches
+
+    def _in_dropped_science_window(self, utime: float, obsid: int) -> bool:
+        return any(
+            dropped_obsid == obsid and start <= utime < end
+            for start, end, dropped_obsid in self._dropped_science_windows
+        )
 
     def _hard_attitude_constraint_name(
         self,
@@ -1066,6 +1076,9 @@ class QueueDITL(DITLMixin, DITLStats):
         self.plan[-1].end = end_time
         if self._is_short_science_entry(self.plan[-1]):
             entry = self.plan[-1]
+            self._dropped_science_windows.append(
+                (float(entry.begin), float(entry.end), int(entry.obsid))
+            )
             collection_time = self._science_collection_time(entry)
             collected = max(0.0, collection_time or 0.0)
             self.log.log_event(

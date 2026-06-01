@@ -1599,6 +1599,22 @@ class TestPlanExecutionValidation:
 
         assert any("unplanned_science" in str(m) for m in mismatches)
 
+    def test_validation_ignores_intentionally_dropped_science_windows(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.utime = [1060.0, 1120.0, 1300.0]
+        queue_ditl.mode = [ACSMode.SCIENCE, ACSMode.SCIENCE, ACSMode.IDLE]
+        queue_ditl.obsid = [42, 42, 0]
+        queue_ditl.ra = [10.0, 10.0, 0.0]
+        queue_ditl.dec = [20.0, 20.0, 0.0]
+        queue_ditl.roll = [0.0, 0.0, 0.0]
+        queue_ditl._dropped_science_windows = [(1000.0, 1240.0, 42)]
+        self._index_telemetry_by_time(queue_ditl)
+
+        mismatches = queue_ditl.validate_plan_matches_execution()
+
+        assert not any("unplanned_science" in str(m) for m in mismatches)
+
     def test_validation_fails_for_science_constraint_violation(
         self, queue_ditl: QueueDITL
     ) -> None:
