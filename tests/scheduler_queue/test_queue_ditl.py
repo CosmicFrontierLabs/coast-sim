@@ -22,7 +22,7 @@ from conops.common.enums import ObsType
 from conops.config.config import MissionConfig
 from conops.ditl.telemetry import Housekeeping
 from conops.simulation.acs import IDLE_OBSID
-from conops.targets import PlanEntry, PlanSchema
+from conops.targets import Plan, PlanEntry, PlanSchema
 
 
 class TestQueueDITLInitialization:
@@ -1614,6 +1614,57 @@ class TestPlanExecutionValidation:
         mismatches = queue_ditl.validate_plan_matches_execution()
 
         assert not any("unplanned_science" in str(m) for m in mismatches)
+
+    def test_validation_dropped_window_does_not_mask_other_obsids(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.utime = [1060.0]
+        queue_ditl.mode = [ACSMode.SCIENCE]
+        queue_ditl.obsid = [43]
+        queue_ditl.ra = [10.0]
+        queue_ditl.dec = [20.0]
+        queue_ditl.roll = [0.0]
+        queue_ditl._dropped_science_windows = [(1000.0, 1240.0, 42)]
+        self._index_telemetry_by_time(queue_ditl)
+
+        mismatches = queue_ditl.validate_plan_matches_execution()
+
+        assert any("unplanned_science" in str(m) for m in mismatches)
+
+    def test_validation_dropped_window_does_not_mask_outside_time_range(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.utime = [1300.0]
+        queue_ditl.mode = [ACSMode.SCIENCE]
+        queue_ditl.obsid = [42]
+        queue_ditl.ra = [10.0]
+        queue_ditl.dec = [20.0]
+        queue_ditl.roll = [0.0]
+        queue_ditl._dropped_science_windows = [(1000.0, 1240.0, 42)]
+        self._index_telemetry_by_time(queue_ditl)
+
+        mismatches = queue_ditl.validate_plan_matches_execution()
+
+        assert any("unplanned_science" in str(m) for m in mismatches)
+
+    def test_close_last_plan_entry_records_dropped_science_window(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        entry = PlanEntry(config=queue_ditl.config)
+        entry.obstype = ObsType.AT
+        entry.obsid = 42
+        entry.begin = 1000.0
+        entry.slewtime = 100
+        entry.insaa = 0
+        entry.ss_min = 300
+        entry.end = entry.begin + 86400.0
+        queue_ditl.plan = Plan()
+        queue_ditl.plan.append(entry)
+
+        queue_ditl._close_last_plan_entry(1200.0)
+
+        assert len(queue_ditl.plan) == 0
+        assert (1000.0, 1200.0, 42) in queue_ditl._dropped_science_windows
 
     def test_validation_fails_for_science_constraint_violation(
         self, queue_ditl: QueueDITL
