@@ -1084,12 +1084,21 @@ class ACS:
         yet — letting it execute on the next step would start a charge slew (and
         cancel any science slew queued in the meantime) for a charge session that
         was already abandoned.  Returns True if such a pending command was removed.
+
+        QueueDITL invariant: _initiate_charging (the only enqueue site) is gated
+        on charging_ppt is None, and charging_ppt is not cleared until
+        _terminate_charging_ppt runs.  Therefore at most one START_BATTERY_CHARGE
+        can be in the queue at any time; the assert below enforces this.
         """
         pending = [
             command
             for command in self.command_queue
             if command.command_type == ACSCommandType.START_BATTERY_CHARGE
         ]
+        assert len(pending) <= 1, (
+            f"Invariant violated: {len(pending)} START_BATTERY_CHARGE commands "
+            "in queue; expected at most 1"
+        )
         if not pending:
             return False
         self.command_queue = [

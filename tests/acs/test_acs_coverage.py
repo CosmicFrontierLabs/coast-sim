@@ -2,6 +2,8 @@
 
 from unittest.mock import Mock, patch
 
+import pytest
+
 from conops import ACSCommand, ACSCommandType, ACSMode, DITLLog, Pass, Slew
 from conops.common import ObsType
 
@@ -213,6 +215,21 @@ class TestEnqueueCommandQueueManagement:
 
         assert canceled is False
         assert acs.command_queue == [pending_slew]
+
+    def test_cancel_pending_battery_charge_asserts_on_duplicate(self, acs) -> None:
+        """Two START_BATTERY_CHARGE commands violate the QueueDITL invariant."""
+        charge1 = ACSCommand(
+            command_type=ACSCommandType.START_BATTERY_CHARGE,
+            execution_time=1514767200.0,
+        )
+        charge2 = ACSCommand(
+            command_type=ACSCommandType.START_BATTERY_CHARGE,
+            execution_time=1514767260.0,
+        )
+        acs.command_queue = [charge1, charge2]
+
+        with pytest.raises(AssertionError, match="Invariant violated"):
+            acs.cancel_pending_battery_charge(1514767200.0)
 
 
 class TestStartSlewCoverage:
