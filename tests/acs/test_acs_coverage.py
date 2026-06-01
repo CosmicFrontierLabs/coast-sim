@@ -2,6 +2,8 @@
 
 from unittest.mock import Mock, patch
 
+import pytest
+
 from conops import ACSCommand, ACSCommandType, ACSMode, DITLLog, Pass, Slew
 from conops.common import ObsType
 
@@ -185,6 +187,49 @@ class TestEnqueueCommandQueueManagement:
         assert "Canceled pending SLEW_TO_TARGET" in log_text
         assert "obsid=10019" in log_text
         assert "superseded by START_PASS" in log_text
+
+    def test_cancel_pending_battery_charge_removes_unexecuted_start(self, acs) -> None:
+        acs.log = DITLLog()
+        start_charge = ACSCommand(
+            command_type=ACSCommandType.START_BATTERY_CHARGE,
+            execution_time=1514767200.0,
+        )
+        pending_slew = self._make_slew_command(1514767260.0, 10019)
+        acs.command_queue = [start_charge, pending_slew]
+
+        canceled = acs.cancel_pending_battery_charge(1514767200.0)
+
+        assert canceled is True
+        assert all(
+            command.command_type != ACSCommandType.START_BATTERY_CHARGE
+            for command in acs.command_queue
+        )
+        # the unrelated pending slew is left intact
+        assert any(command is pending_slew for command in acs.command_queue)
+
+    def test_cancel_pending_battery_charge_noop_when_none_pending(self, acs) -> None:
+        pending_slew = self._make_slew_command(1514767260.0, 10019)
+        acs.command_queue = [pending_slew]
+
+        canceled = acs.cancel_pending_battery_charge(1514767200.0)
+
+        assert canceled is False
+        assert acs.command_queue == [pending_slew]
+
+    def test_cancel_pending_battery_charge_asserts_on_duplicate(self, acs) -> None:
+        """Two START_BATTERY_CHARGE commands violate the QueueDITL invariant."""
+        charge1 = ACSCommand(
+            command_type=ACSCommandType.START_BATTERY_CHARGE,
+            execution_time=1514767200.0,
+        )
+        charge2 = ACSCommand(
+            command_type=ACSCommandType.START_BATTERY_CHARGE,
+            execution_time=1514767260.0,
+        )
+        acs.command_queue = [charge1, charge2]
+
+        with pytest.raises(AssertionError, match="Invariant violated"):
+            acs.cancel_pending_battery_charge(1514767200.0)
 
 
 class TestStartSlewCoverage:

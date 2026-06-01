@@ -171,6 +171,7 @@ class QueueDITL(DITLMixin, DITLStats):
         self._planned_gsp_keys: set[tuple[str, float, float]] = set()
         self._gsp_slew_plan_entries: dict[Slew, PlanEntry] = {}
         self._synced_executed_slew_count = 0
+        self._dropped_science_windows: list[tuple[float, float, int]] = []
 
     def get_acs_queue_status(self) -> dict[str, Any]:
         """
@@ -424,6 +425,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
         # Set up simulation length from begin/end datetimes
         simlen = int((self.end - self.begin).total_seconds() / self.step_size)
+        self._dropped_science_windows.clear()
 
         # DITL loop
         for i in range(simlen):
@@ -823,6 +825,8 @@ class QueueDITL(DITLMixin, DITLStats):
             if mode == ACSMode.SCIENCE:
                 obsid = int(self.obsid[i])
                 if self._science_entry_covering_sample(utime, obsid) is None:
+                    if self._in_dropped_science_window(utime, obsid):
+                        continue
                     mismatches.append(
                         self._execution_mismatch(
                             utime,
@@ -845,6 +849,12 @@ class QueueDITL(DITLMixin, DITLStats):
                         )
                     )
         return mismatches
+
+    def _in_dropped_science_window(self, utime: float, obsid: int) -> bool:
+        return any(
+            dropped_obsid == obsid and start <= utime < end
+            for start, end, dropped_obsid in self._dropped_science_windows
+        )
 
     def _hard_attitude_constraint_name(
         self,
@@ -1050,9 +1060,25 @@ class QueueDITL(DITLMixin, DITLStats):
         requirement, log it and remove it from the plan."""
         if len(self.plan) == 0:
             return
+        entry = self.plan[-1]
+        entry_begin = float(entry.begin)
+        entry_end = float(entry.end)
+        # An entry's end is finalized the moment its activity actually stops.
+        # Later close calls — the end-of-simulation sweep, an emergency-charge
+        # teardown, etc. — must never push that end *later* over the idle/slew
+        # gap that followed, or the plan would claim science/activity that never
+        # executed.  Closing a still-open entry (placeholder end ~ begin + a day)
+        # or trimming a finalized one earlier (e.g. to free room for a ground
+        # station pass) is still allowed.
+        is_open = entry_end >= entry_begin + DAY_SECONDS
+        if not is_open and end_time >= entry_end:
+            return
         self.plan[-1].end = end_time
         if self._is_short_science_entry(self.plan[-1]):
             entry = self.plan[-1]
+            self._dropped_science_windows.append(
+                (float(entry.begin), float(entry.end), int(entry.obsid))
+            )
             collection_time = self._science_collection_time(entry)
             collected = max(0.0, collection_time or 0.0)
             self.log.log_event(
@@ -1206,8 +1232,28 @@ class QueueDITL(DITLMixin, DITLStats):
         entry_end = float(entry.end)
         slew_start = float(slew.slewstart)
         has_placeholder_end = entry_end >= entry_begin + DAY_SECONDS
-        matches_slew_start = abs(entry_begin - slew_start) <= 1e-6
-        return has_placeholder_end or matches_slew_start
+        if has_placeholder_end:
+            return True
+
+        # The executed slew is recomputed when it actually runs: `_start_slew`
+        # resets `slewstart` to the current step and recalculates `slewtime` from
+        # the real attitude.  That actual start almost never equals the predicted
+        # start recorded on the entry at enqueue time (the command is processed at
+        # least one step later, and may be delayed further for visibility/chaining).
+        # Re-sync whenever the slew actually begins within the window the entry
+        # already occupies, so stale predicted timing is corrected.
+        #
+        # Safety: a retry of the same obsid cannot start inside the closed window.
+        # An entry is closed at the simulation step that interrupts/ends it
+        # (entry.end = t_close).  Any subsequent slew for the same obsid is
+        # scheduled at utime >= t_close, so slew_start >= entry_end, which makes
+        # the condition below false.  Simulation time is strictly monotonic and
+        # _fetch_new_ppt only schedules slews at utime or later, so this boundary
+        # holds by construction.
+        if entry_begin <= slew_start < entry_end:
+            return True
+
+        return abs(entry_begin - slew_start) <= 1e-6
 
     def _sync_gsp_slew_metadata(self, slew: Slew) -> None:
         entry = self._gsp_slew_plan_entries.get(slew)
@@ -2269,8 +2315,18 @@ class QueueDITL(DITLMixin, DITLStats):
     def _terminate_charging_ppt(self, utime: float) -> None:
         """Terminate the current charging PPT if active."""
         if self.charging_ppt is not None:
-            # Update plan timeline with actual end time
-            if len(self.plan) > 0:
+            # Update plan timeline with actual end time, but only when the last
+            # plan entry actually belongs to this charging PPT.  A charging PPT
+            # that is immediately constrained is terminated before it is ever
+            # tracked into the plan, so `plan[-1]` is still the previous (already
+            # closed) science entry; closing it here would wrongly extend that
+            # observation's end past when it really stopped.  Match on obsid, the
+            # same guard `_initiate_charging` uses for the interrupted science PPT.
+            if (
+                len(self.plan) > 0
+                and self.plan[-1].obsid is not None
+                and int(self.plan[-1].obsid) == int(self.charging_ppt.obsid)
+            ):
                 self._close_last_plan_entry(utime)
             self.charging_ppt.end = utime
             self.charging_ppt.done = True
@@ -2296,11 +2352,16 @@ class QueueDITL(DITLMixin, DITLStats):
             acs_mode=self.acs.acsmode,
         )
 
-        # Clean up charging state - send END_BATTERY_CHARGE command to ACS
-        command = ACSCommand(
-            command_type=ACSCommandType.END_BATTERY_CHARGE,
-            execution_time=utime,
-        )
-        self.acs.enqueue_command(command)
+        # Clean up charging state.  If the START_BATTERY_CHARGE for this session
+        # has not executed yet (charging was abandoned in the same step it was
+        # initiated), cancel it outright: there is no charge to end, and letting
+        # it fire would start a charge slew that cancels the next science slew.
+        # Otherwise send END_BATTERY_CHARGE to stop the active charge.
+        if not self.acs.cancel_pending_battery_charge(utime):
+            command = ACSCommand(
+                command_type=ACSCommandType.END_BATTERY_CHARGE,
+                execution_time=utime,
+            )
+            self.acs.enqueue_command(command)
         self._terminate_charging_ppt(utime)
         self.emergency_charging.terminate_current_charging(utime)
