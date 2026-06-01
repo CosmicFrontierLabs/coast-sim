@@ -852,6 +852,45 @@ class TestFetchNewPPT:
         assert entry.slewdist == pytest.approx(slew.slewdist)
         assert entry.roll == pytest.approx(slew.endroll)
 
+    def test_sync_slew_metadata_retry_at_entry_end_does_not_match_closed_entry(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """A retry slew starting exactly at entry.end must not re-sync the old entry.
+
+        Invariant: _fetch_new_ppt schedules slews at utime >= t_close, where
+        t_close == entry.end for the interrupted observation.  Therefore the
+        earliest a retry can start is slew_start == entry.end, which is excluded
+        by the strict `< entry_end` bound in _entry_matches_science_slew.
+        """
+        entry = PlanEntry(config=queue_ditl.config)
+        entry.obstype = ObsType.AT
+        entry.obsid = 1001
+        entry.begin = 1000.0
+        entry.end = 1300.0  # closed at the interrupt time
+        entry.slewtime = 60
+        entry.slewdist = 10.0
+        queue_ditl.plan.append(entry)
+
+        # Retry slew for the same obsid, scheduled at utime == entry.end
+        # (the tightest reuse that the invariant forbids landing inside the window).
+        slew = Slew(config=queue_ditl.config)
+        slew.obstype = ObsType.PPT
+        slew.obsid = entry.obsid
+        slew.slewstart = 1300.0  # exactly at entry_end — not inside [begin, end)
+        slew.slewtime = 120.0
+        slew.slewdist = 50.0
+        slew.slewpath = None
+        slew.endroll = 40.0
+        queue_ditl.acs.current_slew = slew
+
+        queue_ditl._sync_acs_slew_metadata()
+
+        # Old closed entry must be untouched.
+        assert entry.begin == 1000.0
+        assert entry.end == 1300.0
+        assert entry.slewtime == 60
+        assert entry.slewdist == 10.0
+
     def test_rejected_ppt_keeps_queue_estimate_metadata(self, queue_ditl) -> None:
         mock_ppt = Mock()
         mock_ppt.ra = 45.0

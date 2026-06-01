@@ -1241,9 +1241,15 @@ class QueueDITL(DITLMixin, DITLStats):
         # start recorded on the entry at enqueue time (the command is processed at
         # least one step later, and may be delayed further for visibility/chaining).
         # Re-sync whenever the slew actually begins within the window the entry
-        # already occupies, so stale predicted timing is corrected.  A later,
-        # separate re-observation of the same obsid starts well after this entry's
-        # end, so it still cannot overwrite an already-closed entry.
+        # already occupies, so stale predicted timing is corrected.
+        #
+        # Safety: a retry of the same obsid cannot start inside the closed window.
+        # An entry is closed at the simulation step that interrupts/ends it
+        # (entry.end = t_close).  Any subsequent slew for the same obsid is
+        # scheduled at utime >= t_close, so slew_start >= entry_end, which makes
+        # the condition below false.  Simulation time is strictly monotonic and
+        # _fetch_new_ppt only schedules slews at utime or later, so this boundary
+        # holds by construction.
         if entry_begin <= slew_start < entry_end:
             return True
 
