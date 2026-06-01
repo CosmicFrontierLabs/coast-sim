@@ -811,6 +811,47 @@ class TestFetchNewPPT:
         assert entry.slewtime == 60
         assert entry.slewdist == 10.0
 
+    def test_sync_slew_metadata_resyncs_drifted_executed_slew(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """The executed slew re-syncs its own entry even when its actual start
+        drifts from the predicted start recorded at enqueue.
+
+        `_start_slew` resets `slewstart` to the step it actually runs (at least one
+        step after the predicted `execution_time`) and recalculates `slewtime`, so
+        the closed (non-placeholder) entry no longer matches the predicted start.
+        The entry must still be updated to the actual executed timing so the
+        exported plan matches execution.
+        """
+        entry = PlanEntry(config=queue_ditl.config)
+        entry.obstype = ObsType.AT
+        entry.obsid = 1001
+        entry.ss_max = 3600.0
+        # Predicted timing recorded at enqueue.
+        entry.begin = 1000.0
+        entry.slewtime = 60
+        entry.slewdist = 10.0
+        entry.end = entry.begin + entry.slewtime + entry.ss_max
+        queue_ditl.plan.append(entry)
+
+        # Actual executed slew: started one step later and recomputed.
+        slew = Slew(config=queue_ditl.config)
+        slew.obstype = ObsType.PPT
+        slew.obsid = entry.obsid
+        slew.slewstart = 1060.0
+        slew.slewtime = 240.0
+        slew.slewdist = 33.0
+        slew.slewpath = None
+        slew.endroll = 70.0
+        queue_ditl.acs.current_slew = slew
+
+        queue_ditl._sync_acs_slew_metadata()
+
+        assert entry.begin == int(slew.slewstart)
+        assert entry.slewtime == int(round(slew.slewtime))
+        assert entry.slewdist == pytest.approx(slew.slewdist)
+        assert entry.roll == pytest.approx(slew.endroll)
+
     def test_rejected_ppt_keeps_queue_estimate_metadata(self, queue_ditl) -> None:
         mock_ppt = Mock()
         mock_ppt.ra = 45.0
@@ -1982,6 +2023,68 @@ class TestPlanExecutionValidation:
 class TestCalcMethod:
     """Test main calc method integration."""
 
+    def test_close_last_plan_entry_does_not_re_extend_finalized_entry(
+        self, queue_ditl
+    ) -> None:
+        """Regression: a finalized entry's end must not be pushed later.
+
+        When the last observation ends before the simulation does and nothing
+        runs after it, the end-of-sim `_close_last_plan_entry(final_utime)` must
+        not stretch that already-closed entry over the trailing idle interval
+        (which would make the plan claim science that did not execute).
+        """
+        from conops.targets import PlanEntry
+
+        entry = PlanEntry(config=queue_ditl.config)
+        entry.obstype = ObsType.AT
+        entry.obsid = 10214
+        entry.begin = 1000.0
+        entry.slewtime = 60.0
+        entry.ss_min = 60.0
+        entry.end = 1240.0  # already closed at the real (early) end
+        queue_ditl.plan = [entry]
+
+        # End-of-sim sweep tries to close at a later timestep.
+        queue_ditl._close_last_plan_entry(1480.0)
+
+        assert entry.end == 1240.0
+
+    def test_close_last_plan_entry_may_trim_finalized_entry_earlier(
+        self, queue_ditl
+    ) -> None:
+        """A finalized entry may still be trimmed earlier (e.g. for a GS pass)."""
+        from conops.targets import PlanEntry
+
+        entry = PlanEntry(config=queue_ditl.config)
+        entry.obstype = ObsType.AT
+        entry.obsid = 10214
+        entry.begin = 1000.0
+        entry.slewtime = 60.0
+        entry.ss_min = 60.0
+        entry.end = 1480.0
+        queue_ditl.plan = [entry]
+
+        queue_ditl._close_last_plan_entry(1300.0)
+
+        assert entry.end == 1300.0
+
+    def test_close_last_plan_entry_closes_open_entry(self, queue_ditl) -> None:
+        """An open (placeholder-end) entry is closed at the requested time."""
+        from conops.targets import PlanEntry
+
+        entry = PlanEntry(config=queue_ditl.config)
+        entry.obstype = ObsType.AT
+        entry.obsid = 10214
+        entry.begin = 1000.0
+        entry.slewtime = 60.0
+        entry.ss_min = 60.0
+        entry.end = 1000.0 + 86400  # placeholder / still open
+        queue_ditl.plan = [entry]
+
+        queue_ditl._close_last_plan_entry(1480.0)
+
+        assert entry.end == 1480.0
+
     def test_calc_requires_ephemeris(self, queue_ditl) -> None:
         queue_ditl.ephem = None
         with pytest.raises(AssertionError, match="Ephemeris must be set"):
@@ -2164,6 +2267,19 @@ class TestCalcMethod:
         science_ppt.dec = 20.0
         science_ppt.obsid = 1001
 
+        # The plan entry is a separate, still-open copy of the active PPT (real
+        # code appends self.ppt.copy() in _track_ppt_in_timeline).  Its end is a
+        # placeholder until the interrupt closes it, so closing at the interrupt
+        # time is a first close, not a forbidden re-extension.
+        plan_entry = Mock()
+        plan_entry.obstype = "AT"
+        plan_entry.begin = 1000.0
+        plan_entry.end = 1000.0 + 86400
+        plan_entry.slewtime = 200.0
+        plan_entry.insaa = 0.0
+        plan_entry.ss_min = 300.0
+        plan_entry.obsid = 1001
+
         charging_ppt = Mock()
         charging_ppt.ra = 100.0
         charging_ppt.dec = 50.0
@@ -2176,7 +2292,7 @@ class TestCalcMethod:
             return charging_ppt
 
         queue_ditl.ppt = science_ppt
-        queue_ditl.plan = [science_ppt]
+        queue_ditl.plan = [plan_entry]
         queue_ditl.emergency_charging.initiate_emergency_charging = Mock(
             side_effect=interrupt_for_charging
         )
@@ -2184,7 +2300,8 @@ class TestCalcMethod:
         queue_ditl._initiate_charging(1250.0, 10.0, 20.0)
 
         assert science_ppt.done is False
-        assert science_ppt not in queue_ditl.plan
+        # The under-collected entry (50s collected < 300s required) is dropped.
+        assert plan_entry not in queue_ditl.plan
         assert queue_ditl.ppt is charging_ppt
         queue_ditl.acs.enqueue_command.assert_called_once()
 
@@ -2643,8 +2760,10 @@ class TestCalcMethod:
         mock_charging_ppt.begin = 1000.0
         mock_charging_ppt.end = 2000.0
         mock_charging_ppt.obstype = "PPT"
+        mock_charging_ppt.obsid = 999000
 
-        # Set up the charging PPT
+        # Set up the charging PPT as the last plan entry, so terminating it
+        # closes its own entry (obsid matches charging_ppt.obsid).
         queue_ditl.plan = [mock_charging_ppt]
         queue_ditl.charging_ppt = mock_charging_ppt
 
@@ -2654,6 +2773,39 @@ class TestCalcMethod:
         # Check that done was set to True and other updates happened
         assert mock_charging_ppt.done is True
         assert mock_charging_ppt.end == 1500.0
+        assert queue_ditl.charging_ppt is None
+
+    def test_terminate_charging_ppt_does_not_extend_prior_science_entry(
+        self, queue_ditl
+    ) -> None:
+        """Regression: terminating an untracked charging PPT must not re-close the
+        previous (already closed) science entry.
+
+        An emergency-charging PPT that is immediately constrained is terminated
+        before `_track_ppt_in_timeline` ever appends it, so `plan[-1]` is still the
+        previous science observation, which was already closed at its real end.
+        `_terminate_charging_ppt` must leave that entry's `end` untouched rather
+        than extending it to the charging-termination time (which would overlap the
+        IDLE/SLEW that followed and trip plan/execution validation).
+        """
+        from conops.targets import PlanEntry
+
+        science_entry = PlanEntry(config=queue_ditl.config)
+        science_entry.obstype = ObsType.AT
+        science_entry.obsid = 10668
+        science_entry.begin = 1000.0
+        science_entry.end = 1480.0  # already closed at its real end
+        queue_ditl.plan = [science_entry]
+
+        charging_ppt = PlanEntry(config=queue_ditl.config)
+        charging_ppt.obsid = 999000
+        charging_ppt.begin = 1480.0
+        charging_ppt.end = 1480.0 + 86400.0
+        queue_ditl.charging_ppt = charging_ppt
+
+        queue_ditl._terminate_charging_ppt(2000.0)
+
+        assert science_entry.end == 1480.0
         assert queue_ditl.charging_ppt is None
 
     def test_terminate_charging_ppt_clears_ppt_when_same_object(
