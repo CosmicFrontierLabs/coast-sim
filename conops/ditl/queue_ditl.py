@@ -163,6 +163,8 @@ class QueueDITL(DITLMixin, DITLStats):
             starting_obsid=999000,
             log=self.log,
         )
+        self._temporary_rejected_ppts: list[tuple[Any, bool]] | None = None
+        self._retry_ppt_fetch_requested = False
 
         # Track whether the last PPT fetch attempt was unsuccessful (no target dispatched).
         # Set True when the queue is empty or all candidates are rejected; False on
@@ -478,9 +480,9 @@ class QueueDITL(DITLMixin, DITLStats):
             # Fault management checks (e.g., battery level thresholds)
             self._handle_fault_management(utime, hk)
 
-        # Make sure the last PPT of the day ends (if any)
-        if self.plan:
-            self._close_last_plan_entry(utime)
+        # Make sure an active PPT ends at the simulation boundary.
+        if self.plan and self.ppt is not None:
+            self._close_last_plan_entry(self.uend)
 
         self._assert_plan_matches_execution()
         self._attach_attitude_timeseries_to_plan()
@@ -1219,8 +1221,45 @@ class QueueDITL(DITLMixin, DITLStats):
 
         pointing = self.acs.pointing(utime)
         self._sync_acs_slew_metadata()
+        self._clear_canceled_ppt(utime)
         self._track_ppt_in_timeline()
         return pointing
+
+    @staticmethod
+    def _slew_matches_obsid(slew: Slew | None, obsid: int) -> bool:
+        return isinstance(slew, Slew) and int(slew.obsid) == obsid
+
+    def _ppt_has_pending_or_active_slew(self, obsid: int) -> bool:
+        if self._slew_matches_obsid(self.acs.current_slew, obsid):
+            return True
+        if self._slew_matches_obsid(self.acs.last_slew, obsid):
+            return True
+        return any(
+            command.command_type == ACSCommandType.SLEW_TO_TARGET
+            and self._slew_matches_obsid(command.slew, obsid)
+            for command in self.acs.command_queue
+        )
+
+    def _clear_canceled_ppt(self, utime: float) -> None:
+        """Clear a just-selected science PPT whose ACS slew was canceled."""
+        if self.ppt is None or self.ppt is self.charging_ppt:
+            return
+        obstype = self._entry_obstype(self.ppt)
+        if obstype not in (ObsType.AT, ObsType.TOO):
+            return
+
+        obsid = int(self.ppt.obsid)
+        if self._ppt_has_pending_or_active_slew(obsid):
+            return
+
+        self.log.log_event(
+            utime=utime,
+            event_type="QUEUE",
+            description=f"Clearing PPT {obsid} - ACS slew was canceled before execution",
+            obsid=obsid,
+            acs_mode=self.acs.acsmode,
+        )
+        self.ppt = None
 
     def _close_ppt_timeline_if_needed(self, utime: float) -> None:
         """Close the last PPT segment in timeline if no active observation.
@@ -1961,6 +2000,12 @@ class QueueDITL(DITLMixin, DITLStats):
         was_done = rejected_ppt.done
         rejected_ppt.done = True
         self.ppt = None
+
+        if self._temporary_rejected_ppts is not None:
+            self._temporary_rejected_ppts.append((rejected_ppt, was_done))
+            self._retry_ppt_fetch_requested = True
+            return
+
         try:
             self._fetch_new_ppt(utime, ra, dec)
         finally:
@@ -2000,8 +2045,27 @@ class QueueDITL(DITLMixin, DITLStats):
         self._retry_fetch_without_current_ppt(utime, ra, dec)
         return True
 
-    def _fetch_new_ppt(self, utime: float, ra: float, dec: float) -> None:
+    def _fetch_new_ppt(
+        self, utime: float, ra: float, dec: float, *, _fetch_loop_active: bool = False
+    ) -> None:
         """Fetch a new pointing target from the queue and enqueue slew command."""
+        if not _fetch_loop_active:
+            self._temporary_rejected_ppts = []
+            self._retry_ppt_fetch_requested = False
+            try:
+                while True:
+                    self._retry_ppt_fetch_requested = False
+                    self._fetch_new_ppt(utime, ra, dec, _fetch_loop_active=True)
+                    if self._retry_ppt_fetch_requested:
+                        continue
+                    return
+            finally:
+                temporary_rejections = self._temporary_rejected_ppts or []
+                for rejected_ppt, was_done in temporary_rejections:
+                    rejected_ppt.done = was_done
+                self._temporary_rejected_ppts = None
+                self._retry_ppt_fetch_requested = False
+
         # Don't issue science slews during an active pass - this prevents the
         # teleportation bug where a slew is issued with start position from the
         # pass tracking, but the spacecraft continues following the pass instead.
