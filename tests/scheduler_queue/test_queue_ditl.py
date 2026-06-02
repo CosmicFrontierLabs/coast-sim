@@ -1196,6 +1196,52 @@ class TestFetchNewPPT:
         assert "Target 1001 rejected" in log_text
         assert "available before pass" in log_text
 
+    def test_fetch_ppt_retries_many_rejected_targets_without_recursion(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Large queues of infeasible targets should not recurse through the stack."""
+        queue_ditl.ephem.step_size = 60
+
+        targets = []
+        for index in range(1100):
+            target = Mock()
+            target.ra = 45.0
+            target.dec = 30.0
+            target.obsid = 1000 + index
+            target.done = False
+            target.next_vis = Mock(return_value=1000.0)
+            target.ss_max = 3600.0
+            target.ss_min = 300.0
+            target.windows = [[0.0, 1100.0]]
+            targets.append(target)
+
+        good_ppt = Mock()
+        good_ppt.ra = 46.0
+        good_ppt.dec = 31.0
+        good_ppt.obsid = 9999
+        good_ppt.done = False
+        good_ppt.next_vis = Mock(return_value=1000.0)
+        good_ppt.ss_max = 3600.0
+        good_ppt.ss_min = 30.0
+        good_ppt.windows = [[0.0, 5000.0]]
+        targets.append(good_ppt)
+
+        queue_ditl.queue.targets = targets
+
+        def get_next_not_done(ra: float, dec: float, utime: float) -> Mock | None:
+            return next((target for target in targets if not target.done), None)
+
+        cast(Mock, queue_ditl.queue).get = Mock(side_effect=get_next_not_done)
+        cast(Mock, queue_ditl.acs.passrequests).current_pass = Mock(return_value=None)
+        cast(Mock, queue_ditl.acs.passrequests).next_pass = Mock(return_value=None)
+
+        queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        assert queue_ditl.ppt is good_ppt
+        assert all(target.done is False for target in targets)
+        assert queue_ditl._temporary_rejected_ppts is None
+        cast(Mock, queue_ditl.acs.enqueue_command).assert_called_once()
+
     def test_fetch_ppt_rejects_when_locked_roll_violates_constraint_in_window(
         self, queue_ditl
     ) -> None:
@@ -2213,6 +2259,33 @@ class TestCalcMethod:
         assert len(queue_ditl.mode) == 24
         assert len(queue_ditl.ra) == 24
         assert len(queue_ditl.dec) == 24
+
+    def test_calc_closes_final_ppt_at_simulation_end(self, queue_ditl) -> None:
+        begin = queue_ditl.ephem.timestamp[0]
+        end = queue_ditl.ephem.timestamp[1]
+        queue_ditl.begin = begin
+        queue_ditl.end = end
+        queue_ditl.step_size = 3600
+        queue_ditl.acs.get_mode = Mock(return_value=ACSMode.SCIENCE)
+        queue_ditl.acs.pointing = Mock(return_value=(10.0, 20.0, 0.0, 1001))
+        queue_ditl._assert_plan_matches_execution = Mock()
+
+        ppt = PlanEntry(config=queue_ditl.config)
+        ppt.obstype = ObsType.AT
+        ppt.begin = begin.timestamp()
+        ppt.end = begin.timestamp() + 86400.0
+        ppt.slewtime = 0.0
+        ppt.insaa = 0.0
+        ppt.ss_min = 0.0
+        ppt.obsid = 1001
+        ppt.ra = 10.0
+        ppt.dec = 20.0
+        ppt.exptime = 7200
+        queue_ditl.ppt = ppt
+
+        assert queue_ditl.calc() is True
+
+        assert queue_ditl.plan[-1].end == end.timestamp()
 
     def test_calc_sets_acs_ephemeris(self, queue_ditl) -> None:
         queue_ditl.acs.ephem = None
@@ -3943,6 +4016,9 @@ class TestSameTickACSCommands:
             command_type=ACSCommandType.SLEW_TO_TARGET,
             execution_time=utime,
         )
+        active_slew = Slew(config=queue_ditl.config)
+        active_slew.obstype = ObsType.PPT
+        active_slew.obsid = 1002
 
         def handle_mode_operations(
             mode: ACSMode, current_time: float, ra: float, dec: float
@@ -3953,6 +4029,8 @@ class TestSameTickACSCommands:
         def pointing(current_time: float) -> tuple[float, float, float, int]:
             if queue_ditl.acs.command_queue:
                 queue_ditl.acs.command_queue = []
+                queue_ditl.acs.current_slew = active_slew
+                queue_ditl.acs.last_slew = active_slew
                 return 11.0, 22.0, 33.0, 1002
             return 1.0, 2.0, 3.0, IDLE_OBSID
 
@@ -4000,6 +4078,9 @@ class TestSameTickACSCommands:
         science.roll = 24.0
         science.begin = utime
         science.end = utime + 600.0
+        science_slew = Slew(config=queue_ditl.config)
+        science_slew.obstype = ObsType.PPT
+        science_slew.obsid = science.obsid
 
         queue_ditl.plan = [charge]
         queue_ditl.ppt = charge
@@ -4019,6 +4100,7 @@ class TestSameTickACSCommands:
                 ACSCommand(
                     command_type=ACSCommandType.SLEW_TO_TARGET,
                     execution_time=current_time,
+                    slew=science_slew,
                 )
             )
 
@@ -4026,6 +4108,8 @@ class TestSameTickACSCommands:
             assert current_time == utime
             queue_ditl.acs.executed_commands.extend(queue_ditl.acs.command_queue)
             queue_ditl.acs.command_queue = []
+            queue_ditl.acs.current_slew = science_slew
+            queue_ditl.acs.last_slew = science_slew
             return science.ra, science.dec, science.roll, science.obsid
 
         queue_ditl.acs.enqueue_command = Mock(side_effect=enqueue)
@@ -4051,6 +4135,49 @@ class TestSameTickACSCommands:
             (ObsType.AT, utime, utime + 600.0),
         ]
         assert queue_ditl.plan[0].end == queue_ditl.plan[1].begin
+
+    def test_process_due_commands_clears_ppt_when_slew_is_canceled(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        utime = 1000.0
+        previous_entry = PlanEntry(config=queue_ditl.config)
+        previous_entry.obstype = ObsType.AT
+        previous_entry.obsid = 1001
+        previous_entry.begin = 0.0
+        previous_entry.end = 900.0
+        queue_ditl.plan.append(previous_entry)
+
+        canceled_ppt = PlanEntry(config=queue_ditl.config)
+        canceled_ppt.obstype = ObsType.AT
+        canceled_ppt.obsid = 10545
+        canceled_ppt.begin = utime
+        canceled_ppt.end = utime + 86400.0
+        queue_ditl.ppt = canceled_ppt
+
+        due_command = ACSCommand(
+            command_type=ACSCommandType.SLEW_TO_TARGET,
+            execution_time=utime,
+        )
+        queue_ditl.acs.command_queue = [due_command]
+        charge_slew = Slew(config=queue_ditl.config)
+        charge_slew.obstype = ObsType.CHARGE
+        charge_slew.obsid = 999000
+
+        def pointing(current_time: float) -> tuple[float, float, float, int]:
+            queue_ditl.acs.command_queue = []
+            queue_ditl.acs.current_slew = charge_slew
+            queue_ditl.acs.last_slew = charge_slew
+            return 1.0, 2.0, 3.0, 999000
+
+        queue_ditl.acs.pointing = Mock(side_effect=pointing)
+
+        assert queue_ditl._process_due_acs_commands(utime) == (1.0, 2.0, 3.0, 999000)
+
+        assert queue_ditl.ppt is None
+        assert list(queue_ditl.plan) == [previous_entry]
+        assert previous_entry.end == 900.0
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "Clearing PPT 10545" in log_text
 
 
 class TestTOOFunctionality:
