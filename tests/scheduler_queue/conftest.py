@@ -83,6 +83,7 @@ def mock_config() -> Mock:
     config.constraint.in_star_tracker_soft = Mock(return_value=False)
     config.constraint.in_radiator_hard = Mock(return_value=False)
     config.constraint.in_telescope_hard = Mock(return_value=False)
+    config.constraint.in_eclipse = Mock(return_value=False)
     config.attitude_constraint_policy_for_mode = Mock(
         side_effect=lambda mode: (
             AttitudeConstraintPolicy.FULL_MISSION
@@ -96,6 +97,7 @@ def mock_config() -> Mock:
     config.battery = Mock()
     config.battery.battery_level = 0.8
     config.battery.battery_alert = False
+    config.battery.below_minimum_charge_level = False
     config.battery.charge_state = 0  # NOT_CHARGING
     config.battery.drain = Mock()
     config.battery.charge = Mock()

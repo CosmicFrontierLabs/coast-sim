@@ -965,6 +965,116 @@ class TestFetchNewPPT:
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "Deferring PPT fetch - pass in progress" in log_text
 
+    def test_fetch_ppt_continues_while_recharge_alert_above_minimum_charge(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Recharge-alert state should not block new science dispatch."""
+        queue_ditl.battery.battery_alert = True
+        queue_ditl.battery.below_minimum_charge_level = False
+        cast(Mock, queue_ditl.queue).get = Mock(return_value=None)
+
+        queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        assert queue_ditl.ppt is None
+        cast(Mock, queue_ditl.queue.get).assert_called_once_with(10.0, 20.0, 1000.0)
+        cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "Fetching new PPT from Queue" in log_text
+        assert (
+            "Deferring PPT fetch - battery below minimum charge level" not in log_text
+        )
+
+    def test_fetch_ppt_defers_below_minimum_charge_level(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Do not start a new science target below the battery operating floor."""
+        queue_ditl.battery.below_minimum_charge_level = True
+
+        queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        assert queue_ditl.ppt is None
+        cast(Mock, queue_ditl.queue.get).assert_not_called()
+        cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "Deferring PPT fetch - battery below minimum charge level" in log_text
+
+    def test_science_completion_fetches_new_ppt_during_recharge_alert(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Recharge-alert state alone does not block the next target."""
+        utime = 1000.0
+        science = PlanEntry(config=queue_ditl.config)
+        science.obstype = ObsType.AT
+        science.obsid = 1001
+        science.ra = 10.0
+        science.dec = 20.0
+        science.begin = utime - 600.0
+        science.end = utime + 86400.0
+        science.slewtime = 0.0
+        science.insaa = 0.0
+        science.ss_min = 300.0
+        science.exptime = 0.0
+        science.done = False
+
+        queue_ditl.ppt = science
+        queue_ditl.plan.append(science)
+        queue_ditl.battery.battery_alert = True
+        queue_ditl.battery.below_minimum_charge_level = False
+        queue_ditl.emergency_charging.should_initiate_charging = Mock(
+            return_value=False
+        )
+        cast(Mock, queue_ditl.queue).get = Mock(return_value=None)
+
+        queue_ditl._handle_science_mode(utime, science.ra, science.dec, ACSMode.SCIENCE)
+
+        assert queue_ditl.ppt is None
+        assert science.done is True
+        cast(Mock, queue_ditl.queue.get).assert_called_once_with(
+            science.ra, science.dec, utime
+        )
+        cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "Exposure complete, ending observation" in log_text
+        assert "Fetching new PPT from Queue" in log_text
+        assert (
+            "Deferring PPT fetch - battery below minimum charge level" not in log_text
+        )
+
+    def test_science_completion_does_not_fetch_new_ppt_below_minimum_charge(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Do not start another target below the battery operating floor."""
+        utime = 1000.0
+        science = PlanEntry(config=queue_ditl.config)
+        science.obstype = ObsType.AT
+        science.obsid = 1001
+        science.ra = 10.0
+        science.dec = 20.0
+        science.begin = utime - 600.0
+        science.end = utime + 86400.0
+        science.slewtime = 0.0
+        science.insaa = 0.0
+        science.ss_min = 300.0
+        science.exptime = 0.0
+        science.done = False
+
+        queue_ditl.ppt = science
+        queue_ditl.plan.append(science)
+        queue_ditl.battery.below_minimum_charge_level = True
+        queue_ditl.emergency_charging.should_initiate_charging = Mock(
+            return_value=False
+        )
+
+        queue_ditl._handle_science_mode(utime, science.ra, science.dec, ACSMode.SCIENCE)
+
+        assert queue_ditl.ppt is None
+        assert science.done is True
+        cast(Mock, queue_ditl.queue.get).assert_not_called()
+        cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "Exposure complete, ending observation" in log_text
+        assert "Deferring PPT fetch - battery below minimum charge level" in log_text
+
     def test_fetch_ppt_rejects_slew_execution_during_pass(
         self, queue_ditl: QueueDITL
     ) -> None:
@@ -1138,6 +1248,91 @@ class TestFetchNewPPT:
         # PPT should be set
         assert queue_ditl.ppt is mock_ppt
         # Command should be enqueued
+        cast(Mock, queue_ditl.acs.enqueue_command).assert_called_once()
+
+    def test_fetch_ppt_rejects_when_pending_charge_prevents_minimum_collect(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Pending recharge should be a collection deadline once sunlight returns."""
+        queue_ditl.ephem.step_size = 60
+        queue_ditl.ephem.timestamp = [
+            datetime.fromtimestamp(1000.0 + 60.0 * index, timezone.utc)
+            for index in range(6)
+        ]
+        queue_ditl.battery.battery_alert = True
+        queue_ditl.battery.below_minimum_charge_level = False
+        queue_ditl.constraint.in_eclipse = Mock(
+            side_effect=lambda ra, dec, time: time < 1180.0
+        )
+
+        mock_ppt = Mock()
+        mock_ppt.ra = 45.0
+        mock_ppt.dec = 30.0
+        mock_ppt.obsid = 1001
+        mock_ppt.next_vis = Mock(return_value=1000.0)
+        mock_ppt.ss_max = 3600.0
+        mock_ppt.ss_min = 300.0
+        mock_ppt.windows = [[0.0, 1e12]]
+        cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
+        queue_ditl.queue.targets = [mock_ppt]
+        cast(Mock, queue_ditl.acs.passrequests).current_pass = Mock(return_value=None)
+        cast(Mock, queue_ditl.acs.passrequests).next_pass = Mock(return_value=None)
+
+        queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        assert queue_ditl.ppt is None
+        cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "rejected - only 80s available before charge opportunity" in log_text
+
+    def test_charge_science_deadline_checks_eclipse_on_ephemeris_grid(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Fractional slew-end times should not be sent to ephemeris constraints."""
+        queue_ditl.ephem.timestamp = [
+            datetime.fromtimestamp(1000.0 + 60.0 * index, timezone.utc)
+            for index in range(3)
+        ]
+        queue_ditl.battery.battery_alert = True
+        queue_ditl.constraint.in_eclipse = Mock(return_value=False)
+
+        deadline = queue_ditl._next_charge_science_deadline(1001.5)
+
+        assert deadline == 1060.0
+        queue_ditl.constraint.in_eclipse.assert_called_once_with(
+            ra=0, dec=0, time=1060.0
+        )
+
+    def test_fetch_ppt_accepts_when_pending_charge_allows_minimum_collect(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Recharge-alert state can still schedule science that clears ss_min."""
+        queue_ditl.ephem.step_size = 60
+        queue_ditl.ephem.timestamp = [
+            datetime.fromtimestamp(1000.0 + 60.0 * index, timezone.utc)
+            for index in range(6)
+        ]
+        queue_ditl.battery.battery_alert = True
+        queue_ditl.battery.below_minimum_charge_level = False
+        queue_ditl.constraint.in_eclipse = Mock(
+            side_effect=lambda ra, dec, time: time < 1180.0
+        )
+
+        mock_ppt = Mock()
+        mock_ppt.ra = 45.0
+        mock_ppt.dec = 30.0
+        mock_ppt.obsid = 1001
+        mock_ppt.next_vis = Mock(return_value=1000.0)
+        mock_ppt.ss_max = 3600.0
+        mock_ppt.ss_min = 60.0
+        mock_ppt.windows = [[0.0, 1e12]]
+        cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
+        cast(Mock, queue_ditl.acs.passrequests).current_pass = Mock(return_value=None)
+        cast(Mock, queue_ditl.acs.passrequests).next_pass = Mock(return_value=None)
+
+        queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        assert queue_ditl.ppt is mock_ppt
         cast(Mock, queue_ditl.acs.enqueue_command).assert_called_once()
 
     def test_fetch_ppt_retries_when_top_target_cannot_collect(

@@ -72,11 +72,8 @@ class Battery(ConfigModel):
     @property
     def battery_alert(self) -> bool:
         """Is the battery in an alert status caused by discharge"""
-        # Calculate minimum allowed charge level from max depth of discharge
-        min_charge_level = 1.0 - self.max_depth_of_discharge
-
         # Depth of discharge > max_depth_of_discharge, start an emergency recharge state
-        if self.battery_level < min_charge_level:
+        if self.below_minimum_charge_level:
             self.emergency_recharge = True
             return True
 
@@ -87,6 +84,16 @@ class Battery(ConfigModel):
         else:
             self.emergency_recharge = False
             return False
+
+    @property
+    def minimum_charge_level(self) -> float:
+        """Minimum allowed state of charge before the depth-of-discharge limit is exceeded."""
+        return 1.0 - self.max_depth_of_discharge
+
+    @property
+    def below_minimum_charge_level(self) -> bool:
+        """True when state of charge is below the configured depth-of-discharge floor."""
+        return self.battery_level < self.minimum_charge_level
 
     def charge(self, power: float, period: float) -> None:
         """Charge the battery with <power> Watts for <period> seconds"""

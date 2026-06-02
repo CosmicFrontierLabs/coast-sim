@@ -1961,7 +1961,39 @@ class QueueDITL(DITLMixin, DITLStats):
     def _pass_slew_trigger_buffer(self) -> float:
         return pass_slew_trigger_buffer(self.ephem.step_size)
 
-    def _next_science_deadline(self, slew_end: float) -> tuple[float, str]:
+    @staticmethod
+    def _ephem_timestamp_to_utime(timestamp: Any) -> float:
+        if hasattr(timestamp, "timestamp"):
+            return float(timestamp.timestamp())
+        return float(timestamp)
+
+    def _ephem_utime_at_or_after(self, utime: float) -> float:
+        timestamps = [self._ephem_timestamp_to_utime(ts) for ts in self.ephem.timestamp]
+        index = bisect_left(timestamps, utime)
+        if index >= len(timestamps):
+            return timestamps[-1]
+        return timestamps[index]
+
+    def _next_charge_science_deadline(self, current_time: float) -> float | None:
+        """Return when pending battery recharge can next preempt science."""
+        if not self.battery.battery_alert or self.charging_ppt is not None:
+            return None
+
+        constraint_time = self._ephem_utime_at_or_after(current_time)
+        if not self.constraint.in_eclipse(ra=0, dec=0, time=constraint_time):
+            return constraint_time
+
+        for timestamp in self.ephem.timestamp:
+            utime = self._ephem_timestamp_to_utime(timestamp)
+            if utime <= current_time:
+                continue
+            if not self.constraint.in_eclipse(ra=0, dec=0, time=utime):
+                return utime
+        return None
+
+    def _next_science_deadline(
+        self, slew_end: float, current_time: float
+    ) -> tuple[float, str]:
         """Determine the next science deadline after the slew ends, which could
         be the end of the current visibility window, the next pass, or the end
         of the simulation."""
@@ -1976,6 +2008,10 @@ class QueueDITL(DITLMixin, DITLStats):
         pass_deadline = self._next_pass_science_deadline(slew_end)
         if pass_deadline is not None:
             deadlines.append((pass_deadline, "pass"))
+
+        charge_deadline = self._next_charge_science_deadline(current_time)
+        if charge_deadline is not None:
+            deadlines.append((charge_deadline, "charge opportunity"))
 
         return min(deadlines, key=lambda item: item[0])
 
@@ -2022,7 +2058,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
         # Check if there's enough time to collect before the next science
         # deadline (visibility window end, next pass, or simulation end)
-        deadline, reason = self._next_science_deadline(slew_end)
+        deadline, reason = self._next_science_deadline(slew_end, current_time=utime)
         available_collect_time = deadline - slew_end
         if available_collect_time >= self.ppt.ss_min:
             return False
@@ -2064,6 +2100,16 @@ class QueueDITL(DITLMixin, DITLStats):
             self._retry_ppt_fetch_requested = False
 
     def _fetch_new_ppt_inner(self, utime: float, ra: float, dec: float) -> None:
+        if self.battery.below_minimum_charge_level:
+            self.log.log_event(
+                utime=utime,
+                event_type="QUEUE",
+                description="Deferring PPT fetch - battery below minimum charge level",
+                acs_mode=self.acs.acsmode,
+            )
+            self._ppt_unavailable = None
+            return
+
         # Don't issue science slews during an active pass - this prevents the
         # teleportation bug where a slew is issued with start position from the
         # pass tracking, but the spacecraft continues following the pass instead.
