@@ -978,7 +978,13 @@ class TestFetchNewPPT:
         queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
 
         assert queue_ditl.ppt is None
-        cast(Mock, queue_ditl.queue.get).assert_called_once_with(10.0, 20.0, 1000.0)
+        cast(Mock, queue_ditl.queue.get).assert_called_once_with(
+            10.0,
+            20.0,
+            1000.0,
+            collection_deadline=ANY,
+            slew_estimator=ANY,
+        )
         cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "Fetching new PPT from Queue" in log_text
@@ -1032,7 +1038,11 @@ class TestFetchNewPPT:
         assert queue_ditl.ppt is None
         assert science.done is True
         cast(Mock, queue_ditl.queue.get).assert_called_once_with(
-            science.ra, science.dec, utime
+            science.ra,
+            science.dec,
+            utime,
+            collection_deadline=ANY,
+            slew_estimator=ANY,
         )
         cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
@@ -1427,7 +1437,9 @@ class TestFetchNewPPT:
 
         queue_ditl.queue.targets = targets
 
-        def get_next_not_done(ra: float, dec: float, utime: float) -> Mock | None:
+        def get_next_not_done(
+            ra: float, dec: float, utime: float, **_: object
+        ) -> Mock | None:
             return next((target for target in targets if not target.done), None)
 
         cast(Mock, queue_ditl.queue).get = Mock(side_effect=get_next_not_done)
