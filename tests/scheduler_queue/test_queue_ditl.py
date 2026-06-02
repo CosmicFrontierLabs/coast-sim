@@ -3918,6 +3918,141 @@ class TestGetACSQueueStatus:
         assert status == expected
 
 
+class TestSameTickACSCommands:
+    """Regression tests for commands queued after the tick's first ACS update."""
+
+    def test_calc_processes_same_tick_ppt_command_before_recording(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """A PPT command enqueued for ``utime`` executes before telemetry is recorded."""
+        queue_ditl.begin = queue_ditl.ephem.timestamp[0]
+        queue_ditl.end = queue_ditl.ephem.timestamp[1]
+        utime = queue_ditl.begin.timestamp()
+        queue_ditl.ephem.step_size = 3600
+        queue_ditl.acs.command_queue = []
+        queue_ditl.acs.get_mode = Mock(return_value=ACSMode.SLEWING)
+
+        next_ppt = PlanEntry(config=queue_ditl.config)
+        next_ppt.begin = utime
+        next_ppt.end = utime + 600.0
+        next_ppt.obsid = 1002
+        next_ppt.ra = 11.0
+        next_ppt.dec = 22.0
+
+        due_command = ACSCommand(
+            command_type=ACSCommandType.SLEW_TO_TARGET,
+            execution_time=utime,
+        )
+
+        def handle_mode_operations(
+            mode: ACSMode, current_time: float, ra: float, dec: float
+        ) -> None:
+            queue_ditl.ppt = next_ppt
+            queue_ditl.acs.command_queue = [due_command]
+
+        def pointing(current_time: float) -> tuple[float, float, float, int]:
+            if queue_ditl.acs.command_queue:
+                queue_ditl.acs.command_queue = []
+                return 11.0, 22.0, 33.0, 1002
+            return 1.0, 2.0, 3.0, IDLE_OBSID
+
+        queue_ditl.acs.pointing = Mock(side_effect=pointing)
+
+        with (
+            patch.object(
+                queue_ditl,
+                "_handle_mode_operations",
+                side_effect=handle_mode_operations,
+            ),
+            patch.object(queue_ditl, "_assert_plan_matches_execution"),
+            patch.object(queue_ditl, "_attach_attitude_timeseries_to_plan"),
+        ):
+            assert queue_ditl.calc() is True
+
+        assert queue_ditl.acs.pointing.call_count == 2
+        assert [(entry.begin, entry.obsid) for entry in queue_ditl.plan] == [
+            (utime, 1002)
+        ]
+        assert queue_ditl.ra == [11.0]
+        assert queue_ditl.dec == [22.0]
+        assert queue_ditl.roll == [33.0]
+        assert queue_ditl.obsid == [1002]
+
+    def test_charge_handoff_has_no_plan_gap(self, queue_ditl: QueueDITL) -> None:
+        """Charge termination and the next science slew share the same plan boundary."""
+        utime = queue_ditl.ephem.timestamp[0].timestamp()
+        charge = PlanEntry(config=queue_ditl.config)
+        charge.obstype = ObsType.CHARGE
+        charge.name = "EMERGENCY_CHARGE_999001"
+        charge.obsid = 999001
+        charge.ra = 252.0
+        charge.dec = -7.0
+        charge.roll = 223.0
+        charge.begin = utime - 300.0
+        charge.end = utime + 86400.0
+
+        science = PlanEntry(config=queue_ditl.config)
+        science.obstype = ObsType.AT
+        science.name = "pointing_10001"
+        science.obsid = 10001
+        science.ra = 142.0
+        science.dec = -46.0
+        science.roll = 24.0
+        science.begin = utime
+        science.end = utime + 600.0
+
+        queue_ditl.plan = [charge]
+        queue_ditl.ppt = charge
+        queue_ditl.charging_ppt = charge
+        queue_ditl.acs.ra = charge.ra
+        queue_ditl.acs.dec = charge.dec
+        queue_ditl.acs.roll = charge.roll
+        queue_ditl.acs.command_queue = []
+
+        def enqueue(command: ACSCommand) -> None:
+            queue_ditl.acs.command_queue.append(command)
+
+        def fetch_new_ppt(current_time: float, ra: float, dec: float) -> None:
+            assert current_time == utime
+            queue_ditl.ppt = science
+            queue_ditl.acs.enqueue_command(
+                ACSCommand(
+                    command_type=ACSCommandType.SLEW_TO_TARGET,
+                    execution_time=current_time,
+                )
+            )
+
+        def pointing(current_time: float) -> tuple[float, float, float, int]:
+            assert current_time == utime
+            queue_ditl.acs.executed_commands.extend(queue_ditl.acs.command_queue)
+            queue_ditl.acs.command_queue = []
+            return science.ra, science.dec, science.roll, science.obsid
+
+        queue_ditl.acs.enqueue_command = Mock(side_effect=enqueue)
+        queue_ditl.acs.pointing = Mock(side_effect=pointing)
+        queue_ditl.emergency_charging.check_termination = Mock(
+            return_value="battery_recharged"
+        )
+        queue_ditl.emergency_charging.terminate_current_charging = Mock()
+
+        with patch.object(queue_ditl, "_fetch_new_ppt", side_effect=fetch_new_ppt):
+            queue_ditl._handle_charging_mode(utime)
+            assert queue_ditl._process_due_acs_commands(utime) == (
+                science.ra,
+                science.dec,
+                science.roll,
+                science.obsid,
+            )
+
+        assert [
+            (entry.obstype, entry.begin, entry.end) for entry in queue_ditl.plan
+        ] == [
+            (ObsType.CHARGE, utime - 300.0, utime),
+            (ObsType.AT, utime, utime + 600.0),
+        ]
+        assert queue_ditl.plan[0].end == queue_ditl.plan[1].begin
+
+
 class TestTOOFunctionality:
     """Test Target of Opportunity (TOO) functionality in QueueDITL."""
 
