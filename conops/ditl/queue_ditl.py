@@ -1541,6 +1541,30 @@ class QueueDITL(DITLMixin, DITLStats):
         )
         return True
 
+    def _planned_gsp_entry(self, gspass: Pass) -> PlanEntry | None:
+        station, pass_begin, pass_end = self._ground_pass_key(gspass)
+        for entry in reversed(self.plan):
+            if self._entry_obstype(entry) != ObsType.GSP:
+                continue
+            contact_begin = getattr(entry, "contact_begin", None)
+            contact_end = getattr(entry, "contact_end", None)
+            if (
+                getattr(entry, "station", None) == station
+                and contact_begin is not None
+                and contact_end is not None
+                and abs(float(contact_begin) - pass_begin) <= 1e-6
+                and abs(float(contact_end) - pass_end) <= 1e-6
+            ):
+                return entry
+        return None
+
+    def _close_gsp_plan_entry(self, gspass: Pass, executed_end: float) -> None:
+        entry = self._planned_gsp_entry(gspass)
+        if entry is None:
+            return
+        if entry.end < executed_end:
+            entry.end = executed_end
+
     def _check_and_manage_passes(
         self, utime: float, ra: float, dec: float, roll: float = 0.0
     ) -> bool:
@@ -1561,6 +1585,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 description="Commanded pass ended, commanding ACS to end pass",
                 acs_mode=self.acs.acsmode,
             )
+            self._close_gsp_plan_entry(commanded_pass, utime)
             command = ACSCommand(
                 command_type=ACSCommandType.END_PASS,
                 execution_time=utime,
@@ -1589,16 +1614,15 @@ class QueueDITL(DITLMixin, DITLStats):
 
         # Check if a pass just ended, if yes, command ACS to end the pass.
         # FIXME: This works but isn't super clean.
-        if (
-            self.acs.passrequests.current_pass(utime - self.ephem.step_size)
-            and current_pass is None
-        ):
+        previous_pass = self.acs.passrequests.current_pass(utime - self.ephem.step_size)
+        if previous_pass and current_pass is None:
             self.log.log_event(
                 utime=utime,
                 event_type="PASS",
                 description="Pass ended, commanding ACS to end pass",
                 acs_mode=self.acs.acsmode,
             )
+            self._close_gsp_plan_entry(previous_pass, utime)
             command = ACSCommand(
                 command_type=ACSCommandType.END_PASS,
                 execution_time=utime,
