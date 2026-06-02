@@ -2045,27 +2045,25 @@ class QueueDITL(DITLMixin, DITLStats):
         self._retry_fetch_without_current_ppt(utime, ra, dec)
         return True
 
-    def _fetch_new_ppt(
-        self, utime: float, ra: float, dec: float, *, _fetch_loop_active: bool = False
-    ) -> None:
+    def _fetch_new_ppt(self, utime: float, ra: float, dec: float) -> None:
         """Fetch a new pointing target from the queue and enqueue slew command."""
-        if not _fetch_loop_active:
-            self._temporary_rejected_ppts = []
-            self._retry_ppt_fetch_requested = False
-            try:
-                while True:
-                    self._retry_ppt_fetch_requested = False
-                    self._fetch_new_ppt(utime, ra, dec, _fetch_loop_active=True)
-                    if self._retry_ppt_fetch_requested:
-                        continue
-                    return
-            finally:
-                temporary_rejections = self._temporary_rejected_ppts or []
-                for rejected_ppt, was_done in temporary_rejections:
-                    rejected_ppt.done = was_done
-                self._temporary_rejected_ppts = None
+        self._temporary_rejected_ppts = []
+        self._retry_ppt_fetch_requested = False
+        try:
+            while True:
                 self._retry_ppt_fetch_requested = False
+                self._fetch_new_ppt_inner(utime, ra, dec)
+                if self._retry_ppt_fetch_requested:
+                    continue
+                return
+        finally:
+            temporary_rejections = self._temporary_rejected_ppts or []
+            for rejected_ppt, was_done in temporary_rejections:
+                rejected_ppt.done = was_done
+            self._temporary_rejected_ppts = None
+            self._retry_ppt_fetch_requested = False
 
+    def _fetch_new_ppt_inner(self, utime: float, ra: float, dec: float) -> None:
         # Don't issue science slews during an active pass - this prevents the
         # teleportation bug where a slew is issued with start position from the
         # pass tracking, but the spacecraft continues following the pass instead.
