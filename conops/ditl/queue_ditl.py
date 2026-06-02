@@ -1981,7 +1981,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
         constraint_time = self._ephem_utime_at_or_after(current_time)
         if not self.constraint.in_eclipse(ra=0, dec=0, time=constraint_time):
-            return current_time
+            return constraint_time
 
         for timestamp in self.ephem.timestamp:
             utime = self._ephem_timestamp_to_utime(timestamp)
@@ -1992,7 +1992,7 @@ class QueueDITL(DITLMixin, DITLStats):
         return None
 
     def _next_science_deadline(
-        self, slew_end: float, current_time: float | None = None
+        self, slew_end: float, current_time: float
     ) -> tuple[float, str]:
         """Determine the next science deadline after the slew ends, which could
         be the end of the current visibility window, the next pass, or the end
@@ -2009,9 +2009,7 @@ class QueueDITL(DITLMixin, DITLStats):
         if pass_deadline is not None:
             deadlines.append((pass_deadline, "pass"))
 
-        charge_deadline = self._next_charge_science_deadline(
-            current_time if current_time is not None else slew_end
-        )
+        charge_deadline = self._next_charge_science_deadline(current_time)
         if charge_deadline is not None:
             deadlines.append((charge_deadline, "charge opportunity"))
 

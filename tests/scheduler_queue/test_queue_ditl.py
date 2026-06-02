@@ -1298,7 +1298,7 @@ class TestFetchNewPPT:
 
         deadline = queue_ditl._next_charge_science_deadline(1001.5)
 
-        assert deadline == 1001.5
+        assert deadline == 1060.0
         queue_ditl.constraint.in_eclipse.assert_called_once_with(
             ra=0, dec=0, time=1060.0
         )
