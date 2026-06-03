@@ -2132,7 +2132,7 @@ class TestPlanExecutionValidation:
         queue_ditl._get_constraint_name = Mock(return_value="Earth Limb")  # type: ignore[method-assign]
         self._index_telemetry_by_time(queue_ditl)
 
-        mismatches = queue_ditl.validate_plan_matches_execution()
+        mismatches = queue_ditl.validate_attitude_constraints()
 
         assert any("constraint_violation" in str(m) for m in mismatches)
 
@@ -2149,7 +2149,7 @@ class TestPlanExecutionValidation:
         queue_ditl.constraint.in_sun = Mock(return_value=True)
         self._index_telemetry_by_time(queue_ditl)
 
-        mismatches = queue_ditl.validate_plan_matches_execution()
+        mismatches = queue_ditl.validate_attitude_constraints()
 
         assert any("mode CHARGING" in str(m) for m in mismatches)
         assert any("Sun" in str(m) for m in mismatches)
@@ -2229,7 +2229,7 @@ class TestPlanExecutionValidation:
         queue_ditl.constraint.in_sun = Mock(return_value=True)
         self._index_telemetry_by_time(queue_ditl)
 
-        mismatches = queue_ditl.validate_plan_matches_execution()
+        mismatches = queue_ditl.validate_attitude_constraints()
 
         assert any("mode PASS" in str(m) for m in mismatches)
         assert any("Sun" in str(m) for m in mismatches)
@@ -2313,7 +2313,7 @@ class TestPlanExecutionValidation:
         queue_ditl.roll = [30.0]
         self._index_telemetry_by_time(queue_ditl)
 
-        mismatches = queue_ditl.validate_plan_matches_execution()
+        mismatches = queue_ditl.validate_attitude_constraints()
 
         assert any("unknown_mode" in str(m) for m in mismatches)
         assert any("mode 999" in str(m) for m in mismatches)

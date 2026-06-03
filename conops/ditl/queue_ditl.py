@@ -904,7 +904,17 @@ class QueueDITL(DITLMixin, DITLStats):
             return None
         return None
 
-    def _validate_attitude_constraints(self) -> list[PlanExecutionMismatch]:
+    def validate_attitude_constraints(self) -> list[PlanExecutionMismatch]:
+        """Check post-simulation attitude constraint compliance.
+
+        This is a scheduling quality check, separate from plan-execution fidelity.
+        It reports telemetry samples where the commanded attitude violated a soft
+        or full-mission constraint (e.g. Sun, Moon, ST Soft during SCIENCE mode).
+
+        Hard constraint violations (ST Hard, Radiator Hard, Telescope Hard) are
+        excluded here; they are operational faults handled by FaultManagement at
+        runtime rather than post-simulation scheduling errors.
+        """
         mismatches: list[PlanExecutionMismatch] = []
         for i in range(len(self.utime)):
             mode = self._mode_at_index(i)
@@ -1034,7 +1044,6 @@ class QueueDITL(DITLMixin, DITLStats):
                 mismatches.extend(
                     self._validate_gsp_entry_execution(entry, tolerance_deg)
                 )
-        mismatches.extend(self._validate_attitude_constraints())
         mismatches.extend(self._validate_execution_is_planned())
         return mismatches
 
