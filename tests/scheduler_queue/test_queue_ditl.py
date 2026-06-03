@@ -2238,9 +2238,12 @@ class TestPlanExecutionValidation:
             10.0, 20.0, 1000.0, target_roll=15.0, acs_mode=ACSMode.PASS
         )
 
-    def test_validation_fails_for_pass_hard_constraint_violation(
+    def test_st_hard_violation_during_pass_is_not_a_validation_mismatch(
         self, queue_ditl: QueueDITL
     ) -> None:
+        # ST Hard violations are runtime fault events, not post-simulation validation
+        # mismatches. HARD_KEEPOUT policy (used during PASS) should not generate a
+        # PlanExecutionMismatch for star-tracker hard constraint violations.
         entry = PlanEntry(config=queue_ditl.config)
         entry.obstype = ObsType.GSP
         entry.obsid = 0xFFFF
@@ -2272,11 +2275,7 @@ class TestPlanExecutionValidation:
 
         mismatches = queue_ditl.validate_plan_matches_execution()
 
-        assert any("mode PASS" in str(m) for m in mismatches)
-        assert any("ST Hard" in str(m) for m in mismatches)
-        queue_ditl.constraint.in_star_tracker_hard.assert_called_once_with(
-            10.0, 20.0, 1000.0, target_roll=15.0, acs_mode=ACSMode.PASS
-        )
+        assert not any("ST Hard" in str(m) for m in mismatches)
 
     def test_validation_uses_configured_hard_policy_for_charging(
         self, queue_ditl: QueueDITL
