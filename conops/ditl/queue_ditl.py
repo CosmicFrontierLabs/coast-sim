@@ -1399,10 +1399,9 @@ class QueueDITL(DITLMixin, DITLStats):
         return ra, dec, roll, obsid, self.acs.get_mode(utime)
 
     def _has_due_acs_command(self, utime: float) -> bool:
-        command_queue = getattr(self.acs, "command_queue", None)
-        if not isinstance(command_queue, list):
-            return False
-        return any(command.execution_time <= utime for command in command_queue)
+        return any(
+            command.execution_time <= utime for command in self.acs.command_queue
+        )
 
     def _handle_science_mode(
         self, utime: float, ra: float, dec: float, mode: ACSMode

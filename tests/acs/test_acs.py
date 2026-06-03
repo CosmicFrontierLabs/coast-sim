@@ -5,7 +5,7 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from conops import ACS, ACSMode, AttitudeConstraintPolicy
+from conops import ACS, ACSCommandType, ACSMode, AttitudeConstraintPolicy
 from conops.common.enums import ObsType
 from conops.simulation.acs import IDLE_OBSID
 from conops.simulation.slew import Slew
@@ -226,6 +226,25 @@ class TestACSStateManagement:
 
         assert (ra, dec, roll, obsid) == (10.0, 20.0, 5.0, IDLE_OBSID)
         acs.constraint.in_constraint.assert_not_called()
+
+    def test_pointing_requests_safe_mode_when_no_idle_attitude_is_safe(
+        self, acs, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """IDLE enforcement should safe-mode instead of crashing on no safe hold."""
+        acs.config.attitude_constraint_policy_for_mode = Mock(
+            return_value=AttitudeConstraintPolicy.FULL_MISSION
+        )
+        acs.config.fault_management.events = []
+        monkeypatch.setattr("conops.simulation.acs.optimum_roll", lambda *args: 5.0)
+        acs.constraint.in_constraint = Mock(return_value=True)
+
+        ra, dec, roll, obsid = acs.pointing(1000.0)
+
+        assert (ra, dec, roll, obsid) == (acs.ra, acs.dec, acs.roll, IDLE_OBSID)
+        assert acs.command_queue[-1].command_type == ACSCommandType.ENTER_SAFE_MODE
+        assert acs.command_queue[-1].execution_time == 1000.0
+        assert acs.config.fault_management.events[-1].event_type == "safe_mode_trigger"
+        assert acs.config.fault_management.events[-1].name == "idle_attitude_constraint"
 
 
 class TestACSPassRequestManagement:

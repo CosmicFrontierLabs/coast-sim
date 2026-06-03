@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import rust_ephem
 
@@ -11,7 +11,7 @@ from ..common import (
     unixtime2yearday,
 )
 from ..common.vector import angular_separation
-from ..config import AttitudeConstraintPolicy, MissionConfig
+from ..config import AttitudeConstraintPolicy, FaultEvent, MissionConfig
 from ..simulation.passes import PassTimes
 from ..simulation.roll import optimum_roll
 from .acs_command import ACSCommand
@@ -24,7 +24,12 @@ if TYPE_CHECKING:
     from ..targets import Pointing
 
 
+def assert_never(value: NoReturn) -> NoReturn:
+    raise AssertionError(f"Expected code to be unreachable, but got: {value!r}")
+
+
 IDLE_OBSID = 0
+IDLE_SAFE_ATTITUDE_GRID_STEP_DEG = 15
 
 
 class ACS:
@@ -688,12 +693,29 @@ class ACS:
 
         safe_attitude = self._find_constraint_safe_idle_attitude(utime, policy)
         if safe_attitude is None:
-            msg = (
-                f"{unixtime2date(utime)}: No constraint-safe IDLE attitude found "
-                f"from RA={self.ra:.2f} Dec={self.dec:.2f}"
+            cause = (
+                "No constraint-safe IDLE attitude found "
+                f"(RA={self.ra:.2f} Dec={self.dec:.2f} policy={policy.value}); "
+                "requesting safe mode"
             )
-            self._log_or_print(utime, "ERROR", msg)
-            raise RuntimeError(msg)
+            self._log_or_print(utime, "ERROR", f"{unixtime2date(utime)}: {cause}")
+            fm = getattr(self.config, "fault_management", None)
+            if fm is not None:
+                fm.events.append(
+                    FaultEvent(
+                        utime=utime,
+                        event_type="safe_mode_trigger",
+                        name="idle_attitude_constraint",
+                        cause=cause,
+                        metadata={
+                            "ra": self.ra,
+                            "dec": self.dec,
+                            "policy": policy.value,
+                        },
+                    )
+                )
+            self.request_safe_mode(utime)
+            return
 
         ra, dec, roll = safe_attitude
         self._hold_idle_attitude(ra, dec, roll, utime)
@@ -748,7 +770,9 @@ class ACS:
             )
         if policy == AttitudeConstraintPolicy.HARD_KEEPOUT:
             return self._idle_attitude_violates_hard_keepout(ra, dec, roll, utime)
-        return False
+        if policy == AttitudeConstraintPolicy.NONE:
+            return False
+        assert_never(policy)
 
     def _idle_attitude_violates_hard_keepout(
         self, ra: float, dec: float, roll: float, utime: float
@@ -765,7 +789,7 @@ class ACS:
 
     @staticmethod
     def _idle_safe_roll_candidates(optimal_roll: float) -> list[float]:
-        """Try the solar-optimal roll first, then nearby 15 degree alternatives."""
+        """Try the solar-optimal roll first, then nearby grid-step alternatives."""
         rolls: list[float] = []
 
         def add(roll: float) -> None:
@@ -778,7 +802,9 @@ class ACS:
                 rolls.append(normalized)
 
         add(optimal_roll)
-        for offset in range(0, 360, 15):
+        for offset in range(
+            IDLE_SAFE_ATTITUDE_GRID_STEP_DEG, 360, IDLE_SAFE_ATTITUDE_GRID_STEP_DEG
+        ):
             add(optimal_roll + offset)
             add(optimal_roll - offset)
         return rolls
@@ -815,11 +841,11 @@ class ACS:
             pass
 
         grid: list[tuple[float, float]] = []
-        for dec in (-90, -75, -60, -45, -30, -15, 0, 15, 30, 45, 60, 75, 90):
+        for dec in range(-90, 91, IDLE_SAFE_ATTITUDE_GRID_STEP_DEG):
             if abs(dec) == 90:
                 grid.append((0.0, float(dec)))
                 continue
-            for ra in range(0, 360, 15):
+            for ra in range(0, 360, IDLE_SAFE_ATTITUDE_GRID_STEP_DEG):
                 grid.append((float(ra), float(dec)))
         grid.sort(
             key=lambda candidate: angular_separation(
