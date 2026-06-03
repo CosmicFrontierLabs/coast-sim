@@ -2277,9 +2277,12 @@ class TestPlanExecutionValidation:
 
         assert not any("ST Hard" in str(m) for m in mismatches)
 
-    def test_validation_uses_configured_hard_policy_for_charging(
+    def test_hard_keepout_policy_generates_no_validation_mismatches(
         self, queue_ditl: QueueDITL
     ) -> None:
+        # Hard constraint violations (Radiator Hard, Telescope Hard, ST Hard) are
+        # runtime FaultEvents, not post-simulation validation mismatches.  A mode
+        # using HARD_KEEPOUT policy should never produce a PlanExecutionMismatch.
         queue_ditl.utime = [1060.0]
         queue_ditl.mode = [ACSMode.CHARGING]
         queue_ditl.obsid = [999001]
@@ -2295,9 +2298,8 @@ class TestPlanExecutionValidation:
 
         mismatches = queue_ditl.validate_plan_matches_execution()
 
-        assert any("mode CHARGING" in str(m) for m in mismatches)
-        assert any("Radiator Hard" in str(m) for m in mismatches)
-        assert any("hard_keepout" in str(m) for m in mismatches)
+        assert not any("Radiator Hard" in str(m) for m in mismatches)
+        assert not any("hard_keepout" in str(m) for m in mismatches)
         queue_ditl.constraint.in_constraint.assert_not_called()
 
     def test_validation_fails_for_unknown_attitude_mode(
@@ -2319,9 +2321,11 @@ class TestPlanExecutionValidation:
     @pytest.mark.parametrize(
         "mode", [ACSMode.SLEWING, ACSMode.SAA, ACSMode.SAFE, ACSMode.IDLE]
     )
-    def test_validation_fails_for_hard_constraint_violation_in_non_activity_modes(
+    def test_hard_constraint_violation_in_non_activity_modes_is_not_a_validation_mismatch(
         self, queue_ditl: QueueDITL, mode: ACSMode
     ) -> None:
+        # Modes using HARD_KEEPOUT policy never generate validation mismatches;
+        # hard constraint violations are runtime FaultEvents.
         queue_ditl.utime = [1000.0]
         queue_ditl.mode = [mode]
         queue_ditl.obsid = [IDLE_OBSID]
@@ -2333,8 +2337,7 @@ class TestPlanExecutionValidation:
 
         mismatches = queue_ditl.validate_plan_matches_execution()
 
-        assert any(f"mode {mode.name}" in str(m) for m in mismatches)
-        assert any("Radiator Hard" in str(m) for m in mismatches)
+        assert not any("Radiator Hard" in str(m) for m in mismatches)
 
     def test_validation_fails_for_idle_full_constraint_violation(
         self, queue_ditl: QueueDITL

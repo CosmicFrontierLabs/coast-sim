@@ -878,22 +878,6 @@ class QueueDITL(DITLMixin, DITLStats):
             for start, end, dropped_obsid in self._dropped_science_windows
         )
 
-    def _hard_attitude_constraint_name(
-        self,
-        ra: float,
-        dec: float,
-        utime: float,
-        roll: float,
-        mode: ACSMode,
-    ) -> str | None:
-        # ST Hard is omitted here: violations are dispatched as FaultEvents by
-        # fault management at runtime, not as post-simulation validation mismatches.
-        if self.constraint.in_radiator_hard(ra, dec, utime, target_roll=roll):
-            return "Radiator Hard"
-        if self.constraint.in_telescope_hard(ra, dec, utime, target_roll=roll):
-            return "Telescope Hard"
-        return None
-
     def _attitude_constraint_name_for_sample(
         self, index: int, mode: ACSMode
     ) -> tuple[str, str] | None:
@@ -909,15 +893,15 @@ class QueueDITL(DITLMixin, DITLStats):
             if self.constraint.in_constraint(
                 ra, dec, utime, target_roll=roll, acs_mode=mode
             ):
-                name = self._get_constraint_name(ra, dec, utime, roll=roll, mode=mode)
-                if name == "ST Hard":
-                    return None  # Dispatched as a runtime FaultEvent, not a validation mismatch
-                return name, policy.value
+                return (
+                    self._get_constraint_name(ra, dec, utime, roll=roll, mode=mode),
+                    policy.value,
+                )
             return None
         if policy == AttitudeConstraintPolicy.HARD_KEEPOUT:
-            hard_name = self._hard_attitude_constraint_name(ra, dec, utime, roll, mode)
-            if hard_name is not None:
-                return hard_name, policy.value
+            # Hard constraint violations during slews/passes/idle are operational
+            # faults dispatched as FaultEvents at runtime, not planning mismatches.
+            return None
         return None
 
     def _validate_attitude_constraints(self) -> list[PlanExecutionMismatch]:
