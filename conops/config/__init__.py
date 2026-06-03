@@ -15,6 +15,7 @@ from .fault_management import (
     FaultManagement,
     FaultState,
     FaultThreshold,
+    StarTrackerHardFaultConfig,
 )
 from .geometry import PanelGeometry, compute_shadow_fraction
 from .groundstation import GroundStation, GroundStationRegistry
@@ -57,6 +58,7 @@ __all__ = [
     "FaultManagement",
     "FaultThreshold",
     "FaultState",
+    "StarTrackerHardFaultConfig",
     "GroundStation",
     "GroundStationRegistry",
     "Heater",
