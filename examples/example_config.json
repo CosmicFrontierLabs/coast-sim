@@ -414,6 +414,10 @@
         "default_color": "tab:purple"
     },
     "targets": {
-        "slew_distance_weight": 0.0
+        "slew_distance_weight": 0.0,
+        "slew_time_weight": 0.0,
+        "collection_time_weight": 0.0,
+        "radiator_sun_exposure_weight": 0.0,
+        "radiator_earth_exposure_weight": 0.0
     }
 }

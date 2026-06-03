@@ -138,6 +138,8 @@ def mock_config() -> Mock:
     # Optional scheduling parameters (via TargetConfig)
     config.targets = Mock()
     config.targets.slew_distance_weight = 0.0
+    config.targets.slew_time_weight = 0.0
+    config.targets.collection_time_weight = 0.0
 
     return config
 

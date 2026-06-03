@@ -449,5 +449,13 @@ observation_categories:
 
 # Target Configuration. Defines observational targets and scheduling parameters
 targets:
-  # slew_distance_weight: Weight to penalize long slews when selecting next target
+  # slew_distance_weight: Merit penalty per degree of slew distance when selecting next target
   slew_distance_weight: 0.0
+  # slew_time_weight: Merit penalty per minute of estimated slew time
+  slew_time_weight: 0.0
+  # collection_time_weight: Merit reward per minute of useful science collection time
+  collection_time_weight: 0.0
+  # radiator_sun_exposure_weight: Merit penalty per unit radiator Sun exposure
+  radiator_sun_exposure_weight: 0.0
+  # radiator_earth_exposure_weight: Merit penalty per unit radiator Earth exposure
+  radiator_earth_exposure_weight: 0.0
