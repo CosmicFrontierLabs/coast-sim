@@ -538,6 +538,46 @@ class FaultManagement(ConfigModel):
                     # Reset continuous violation counter when constraint is satisfied
                     fault_state.continuous_violation_seconds = 0.0
 
+        # Check star tracker hard constraint violations from ACS state.
+        # These are runtime constraint faults, not threshold faults.
+        st_hard_violations = getattr(acs, "star_tracker_hard_violations", 0) or 0
+        if isinstance(st_hard_violations, int):
+            st_state = self.ensure_state("star_tracker_hard")
+            was_in_violation = st_state.in_violation
+            now_in_violation = st_hard_violations > 0
+
+            if now_in_violation and not was_in_violation:
+                self.events.append(
+                    FaultEvent(
+                        utime=utime,
+                        event_type="constraint_violation",
+                        name="star_tracker_hard",
+                        cause=f"Star tracker hard constraint violated ({st_hard_violations} tracker(s) in exclusion zone)",
+                        metadata={
+                            "hard_violations": st_hard_violations,
+                            "ra": ra,
+                            "dec": dec,
+                        },
+                    )
+                )
+            elif not now_in_violation and was_in_violation:
+                self.events.append(
+                    FaultEvent(
+                        utime=utime,
+                        event_type="constraint_violation",
+                        name="star_tracker_hard",
+                        cause="Star tracker hard constraint cleared",
+                        metadata={"ra": ra, "dec": dec},
+                    )
+                )
+
+            st_state.in_violation = now_in_violation
+            if now_in_violation:
+                st_state.red_seconds += step_size
+                st_state.continuous_violation_seconds += step_size
+            else:
+                st_state.continuous_violation_seconds = 0.0
+
         return classifications
 
     def statistics(self) -> dict[str, dict[str, float | str | bool]]:

@@ -886,10 +886,8 @@ class QueueDITL(DITLMixin, DITLStats):
         roll: float,
         mode: ACSMode,
     ) -> str | None:
-        if self.constraint.in_star_tracker_hard(
-            ra, dec, utime, target_roll=roll, acs_mode=mode
-        ):
-            return "ST Hard"
+        # ST Hard is omitted here: violations are dispatched as FaultEvents by
+        # fault management at runtime, not as post-simulation validation mismatches.
         if self.constraint.in_radiator_hard(ra, dec, utime, target_roll=roll):
             return "Radiator Hard"
         if self.constraint.in_telescope_hard(ra, dec, utime, target_roll=roll):
@@ -911,15 +909,15 @@ class QueueDITL(DITLMixin, DITLStats):
             if self.constraint.in_constraint(
                 ra, dec, utime, target_roll=roll, acs_mode=mode
             ):
-                return (
-                    self._get_constraint_name(ra, dec, utime, roll=roll, mode=mode),
-                    policy.value,
-                )
+                name = self._get_constraint_name(ra, dec, utime, roll=roll, mode=mode)
+                if name == "ST Hard":
+                    return None  # Dispatched as a runtime FaultEvent, not a validation mismatch
+                return name, policy.value
             return None
         if policy == AttitudeConstraintPolicy.HARD_KEEPOUT:
-            name = self._hard_attitude_constraint_name(ra, dec, utime, roll, mode)
-            if name is not None:
-                return name, policy.value
+            hard_name = self._hard_attitude_constraint_name(ra, dec, utime, roll, mode)
+            if hard_name is not None:
+                return hard_name, policy.value
         return None
 
     def _validate_attitude_constraints(self) -> list[PlanExecutionMismatch]:
