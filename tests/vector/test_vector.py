@@ -3,6 +3,7 @@ import pytest
 
 from conops import (
     great_circle,
+    quaternion_attitude_distance,
     radec2vec,
     roll_over_angle,
     rotvec,
@@ -10,6 +11,16 @@ from conops import (
     separation,
 )
 from conops.common.vector import normal_to_euler_deg
+
+
+class TestQuaternionAttitudeDistance:
+    def test_same_attitude_zero_distance(self) -> None:
+        distance = quaternion_attitude_distance(10.0, -20.0, 30.0, 10.0, -20.0, 30.0)
+        assert distance == pytest.approx(0.0, abs=1e-5)
+
+    def test_pure_roll_distance(self) -> None:
+        distance = quaternion_attitude_distance(0.0, 0.0, 0.0, 0.0, 0.0, 90.0)
+        assert distance == pytest.approx(90.0)
 
 
 class TestRadec2vec:

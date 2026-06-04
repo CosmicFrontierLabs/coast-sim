@@ -382,6 +382,21 @@ def attitude_to_quat(
     return _quat_mul(_quat_mul(q_x, q_y), q_z)
 
 
+def quaternion_attitude_distance(
+    ra1: float,
+    dec1: float,
+    roll1: float,
+    ra2: float,
+    dec2: float,
+    roll2: float,
+) -> float:
+    """Return the shortest angular distance between two attitudes in degrees."""
+    q1 = attitude_to_quat(ra1, dec1, roll1)
+    q2 = attitude_to_quat(ra2, dec2, roll2)
+    dot = float(np.clip(abs(np.dot(q1, q2)), 0.0, 1.0))
+    return float(np.rad2deg(2.0 * np.arccos(dot)))
+
+
 def _quat_mul(
     a: npt.NDArray[np.float64], b: npt.NDArray[np.float64]
 ) -> npt.NDArray[np.float64]:

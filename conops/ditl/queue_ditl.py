@@ -17,7 +17,7 @@ from ..common import (
     unixtime2date,
 )
 from ..common.enums import ACSCommandType
-from ..common.vector import attitude_to_quat
+from ..common.vector import attitude_to_quat, quaternion_attitude_distance
 from ..config import DAY_SECONDS, AttitudeConstraintPolicy, MissionConfig
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
@@ -2063,18 +2063,30 @@ class QueueDITL(DITLMixin, DITLStats):
         slew.calc_slewtime()
 
     def _estimate_ppt_slew(self, target: Pointing, utime: float) -> TargetSlewEstimate:
-        slew = self._new_ppt_slew(target, utime)
-        self._complete_ppt_slew(
-            slew,
-            target,
-            utime,
-            self._ppt_slew_execution_time(utime),
+        execution_time = self._ppt_slew_execution_time(utime)
+        startra, startdec, startroll = self._expected_slew_start_attitude(
+            utime, execution_time
         )
-        return TargetSlewEstimate(
-            slewtime=float(slew.slewtime),
-            slewdist=float(slew.slewdist),
-            slewpath=slew.slewpath,
+        endroll = optimum_roll(
+            target.ra,
+            target.dec,
+            execution_time,
+            self.acs.ephem,
+            self.config.solar_panel,
+            self.config.constraint,
         )
+        slewdist = quaternion_attitude_distance(
+            startra,
+            startdec,
+            startroll,
+            target.ra,
+            target.dec,
+            endroll,
+        )
+        slewtime = round(
+            self.config.spacecraft_bus.attitude_control.slew_time(slewdist)
+        )
+        return TargetSlewEstimate(slewtime=float(slewtime), slewdist=slewdist)
 
     def _can_retry_without_current_ppt(self) -> bool:
         """Sanity check to see if we can retry fetching a new PPT without just

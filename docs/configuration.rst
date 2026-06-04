@@ -709,9 +709,11 @@ The available weights are:
 * ``config.targets.slew_distance_weight`` - Merit penalty per degree of slew.
   This favors nearby pointings when candidates have similar target merit.
 * ``config.targets.slew_time_weight`` - Merit penalty per minute of estimated
-  slew time. In ``QueueDITL`` this uses the same attitude-aware
-  :class:`~conops.simulation.Slew` calculation used when the selected slew is
-  executed.
+  slew time. ``QueueDITL`` candidate scoring uses a lightweight quaternion
+  attitude-distance estimate and the configured ACS slew-time curve, without
+  materializing the full slew path for every candidate. Once a target is
+  selected, ``QueueDITL`` computes the full attitude-aware
+  :class:`~conops.simulation.Slew` before enqueueing the command.
 * ``config.targets.collection_time_weight`` - Merit reward per minute of useful
   science collection. Collection time is capped by the target visibility window,
   remaining target exposure, and ``ss_max``. In ``QueueDITL`` it is also capped
