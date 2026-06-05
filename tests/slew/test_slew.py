@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from conops import Slew
+from conops.common.enums import ObsType
 
 
 class TestSlewInit:
@@ -64,6 +65,30 @@ class TestSlewInit:
         mock_config.spacecraft_bus.attitude_control = None
         with pytest.raises(AssertionError, match="ACS config must be set"):
             Slew(config=mock_config)
+
+    def test_idle_hold_builds_zero_duration_idle_slew(self, mock_config):
+        hold = Slew.idle_hold(
+            config=mock_config,
+            ra=12.0,
+            dec=-34.0,
+            roll=56.0,
+            utime=1234.0,
+        )
+
+        assert hold.slewrequest == 1234.0
+        assert hold.slewstart == 1234.0
+        assert hold.slewend == 1234.0
+        assert hold.slewtime == 0.0
+        assert hold.slewdist == 0.0
+        assert hold.startra == 12.0
+        assert hold.startdec == -34.0
+        assert hold.startroll == 56.0
+        assert hold.endra == 12.0
+        assert hold.enddec == -34.0
+        assert hold.endroll == 56.0
+        assert hold.obstype == ObsType.IDLE
+        assert hold.obsid == 0
+        assert hold.at is None
 
 
 class TestSlewStr:

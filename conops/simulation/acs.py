@@ -819,34 +819,28 @@ class ACS:
         add(self.ra, self.dec)
 
         if self.solar_panel is not None:
-            try:
-                solar_ra, solar_dec = self.solar_panel.optimal_charging_pointing(
-                    utime, self.ephem
-                )
-                add(float(solar_ra), float(solar_dec))
-            except (AttributeError, TypeError, ValueError):
-                pass
+            solar_ra, solar_dec = self.solar_panel.optimal_charging_pointing(
+                utime, self.ephem
+            )
+            add(float(solar_ra), float(solar_dec))
 
-        try:
-            index = self.ephem.index(dtutcfromtimestamp(utime))
-            add(
-                (180.0 + float(self.ephem.earth_ra_deg[index])) % 360.0,
-                -float(self.ephem.earth_dec_deg[index]),
-            )
-            add(
-                (180.0 + float(self.ephem.sun_ra_deg[index])) % 360.0,
-                -float(self.ephem.sun_dec_deg[index]),
-            )
-        except (AttributeError, IndexError, TypeError, ValueError):
-            pass
+        index = self.ephem.index(dtutcfromtimestamp(utime))
+        add(
+            (180.0 + float(self.ephem.earth_ra_deg[index])) % 360.0,
+            -float(self.ephem.earth_dec_deg[index]),
+        )
+        add(
+            (180.0 + float(self.ephem.sun_ra_deg[index])) % 360.0,
+            -float(self.ephem.sun_dec_deg[index]),
+        )
 
         grid: list[tuple[float, float]] = []
         for dec in range(-90, 91, IDLE_SAFE_ATTITUDE_GRID_STEP_DEG):
             if abs(dec) == 90:
                 grid.append((0.0, float(dec)))
                 continue
-            for ra in range(0, 360, IDLE_SAFE_ATTITUDE_GRID_STEP_DEG):
-                grid.append((float(ra), float(dec)))
+            for grid_ra in range(0, 360, IDLE_SAFE_ATTITUDE_GRID_STEP_DEG):
+                grid.append((float(grid_ra), float(dec)))
         grid.sort(
             key=lambda candidate: angular_separation(
                 self.ra, self.dec, candidate[0], candidate[1]
@@ -856,34 +850,19 @@ class ACS:
 
         candidates: list[tuple[float, float]] = []
         seen: set[tuple[float, float]] = set()
-        for ra, dec in raw_candidates:
-            key = (round(ra, 6), round(dec, 6))
+        for candidate_ra, candidate_dec in raw_candidates:
+            key = (round(candidate_ra, 6), round(candidate_dec, 6))
             if key in seen:
                 continue
             seen.add(key)
-            candidates.append((ra, dec))
+            candidates.append((candidate_ra, candidate_dec))
         return candidates
 
     def _hold_idle_attitude(
         self, ra: float, dec: float, roll: float, utime: float
     ) -> None:
         """Install a zero-duration IDLE hold so future ticks keep the safe attitude."""
-        hold = Slew(config=self.config)
-        hold.ephem = self.ephem
-        hold.slewrequest = utime
-        hold.slewstart = utime
-        hold.slewend = utime
-        hold.slewtime = 0.0
-        hold.slewdist = 0.0
-        hold.startra = ra
-        hold.startdec = dec
-        hold.startroll = roll
-        hold.endra = ra
-        hold.enddec = dec
-        hold.endroll = roll
-        hold.obstype = ObsType.IDLE
-        hold.obsid = IDLE_OBSID
-        hold.at = None
+        hold = Slew.idle_hold(self.config, ra, dec, roll, utime)
 
         self.current_slew = None
         self.last_slew = hold
