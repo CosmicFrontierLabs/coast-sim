@@ -226,6 +226,8 @@ class PlanSchema(BaseModel):
     attitude_timeseries_file:
         Optional sibling JSON file containing the executed attitude samples
         associated with this exact plan export.
+    metadata:
+        Optional producer-specific plan provenance and validation metadata.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -238,6 +240,7 @@ class PlanSchema(BaseModel):
     start: float = 0.0
     end: float = 0.0
     attitude_timeseries_file: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
     entries: list[PlanEntrySchema] = Field(default_factory=list)
     attitude_timeseries: AttitudeTimeseriesSchema | None = Field(
         default=None, exclude=True
@@ -287,6 +290,7 @@ class PlanSchema(BaseModel):
                 "start": entries[0].begin if entries else 0.0,
                 "end": entries[-1].end if entries else 0.0,
                 "num_entries": len(entries),
+                "metadata": getattr(data, "metadata", {}) or {},
                 "entries": entries,
                 "attitude_timeseries": getattr(data, "attitude_timeseries", None),
             }
@@ -408,6 +412,8 @@ class PlanSchema(BaseModel):
             )
 
         payload = schema.model_dump(mode="json", exclude_none=True)
+        if not payload.get("metadata"):
+            payload.pop("metadata", None)
         dest.write_text(json.dumps(payload, indent=indent), encoding="utf-8")
 
         return dest.resolve()

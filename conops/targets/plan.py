@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .plan_entry import PlanEntry
 
@@ -39,6 +39,7 @@ class Plan:
     def __init__(self) -> None:
         self.entries = list()
         self.attitude_timeseries: AttitudeTimeseriesSchema | None = None
+        self.metadata: dict[str, Any] = {}
 
     def __getitem__(self, number: int) -> PlanEntry:
         return self.entries[number]
