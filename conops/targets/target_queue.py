@@ -199,6 +199,47 @@ class TargetQueue:
         )
         return collection_seconds >= float(target.ss_min)
 
+    def _score_upper_bound_pruning_is_safe(self) -> bool:
+        """Return True when configured weights make the score bound conservative."""
+        return (
+            self.slew_distance_weight >= 0.0
+            and self.slew_time_weight >= 0.0
+            and self.collection_time_weight >= 0.0
+            and self.radiator_sun_exposure_weight >= 0.0
+            and self.radiator_earth_exposure_weight >= 0.0
+        )
+
+    def _candidate_score_upper_bound(
+        self,
+        target: Pointing,
+        utime: float,
+        last_unix: float,
+    ) -> float:
+        """Calculate a conservative best possible score before slew estimation.
+
+        This ignores all nonnegative penalties and assumes zero slew. If that
+        optimistic score cannot beat the current best score, the real score
+        cannot either.
+        """
+        zero_slew_endtime = utime + float(target.ss_min)
+        if zero_slew_endtime > last_unix:
+            zero_slew_endtime = last_unix
+
+        visibility_window = target.visible(utime, zero_slew_endtime)
+        if not visibility_window:
+            return -np.inf
+
+        upper_bound = float(target.merit)
+        if self.collection_time_weight > 0.0:
+            collection_seconds = self._candidate_collection_seconds(
+                target=target,
+                visibility_window=visibility_window,
+                utime=utime,
+                slewtime=0.0,
+            )
+            upper_bound += self.collection_time_weight * (collection_seconds / 60.0)
+        return upper_bound
+
     def _estimate_slew(
         self,
         target: Pointing,
@@ -273,6 +314,9 @@ class TargetQueue:
         best_target = None
         best_score = -np.inf
         last_unix = self.ephem.timestamp[-1].timestamp()
+        prune_by_score_bound = (
+            score_candidates and self._score_upper_bound_pruning_is_safe()
+        )
 
         # Check each candidate target
         for target in targets:
@@ -287,6 +331,15 @@ class TargetQueue:
                 collection_deadline=collection_deadline if score_candidates else None,
             ):
                 continue
+
+            if prune_by_score_bound:
+                upper_bound = self._candidate_score_upper_bound(
+                    target=target,
+                    utime=utime,
+                    last_unix=last_unix,
+                )
+                if upper_bound <= best_score:
+                    continue
 
             self._estimate_slew(
                 target,

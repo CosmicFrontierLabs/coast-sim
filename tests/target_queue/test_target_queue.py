@@ -484,6 +484,109 @@ class TestCollectionTimeWeight:
         assert selected == target
         target.calc_slewtime.assert_called_once_with(0, 0)
 
+    def test_score_bound_skips_candidate_that_cannot_beat_best(self, queue_instance):
+        """Candidates whose optimistic score cannot win should skip slew scoring."""
+        utime = 1762924800.0
+        queue_instance.slew_distance_weight = 1.0
+
+        best_target = queue_instance.targets[0]
+        best_target.merit = 100
+        best_target.visible.return_value = [utime, utime + 1000]
+
+        beaten_target = queue_instance.targets[1]
+        beaten_target.merit = 90
+        beaten_target.visible.return_value = [utime, utime + 1000]
+
+        for target in queue_instance.targets[2:]:
+            target.merit = 80
+            target.visible.return_value = [utime, utime + 1000]
+
+        estimator = Mock(return_value=TargetSlewEstimate(slewtime=0.0, slewdist=0.0))
+
+        with patch.object(queue_instance, "meritsort"):
+            target = queue_instance.get(
+                ra=0,
+                dec=0,
+                utime=utime,
+                slew_estimator=estimator,
+            )
+
+        assert target == best_target
+        estimator.assert_called_once_with(best_target)
+        beaten_target.calc_slewtime.assert_not_called()
+
+    def test_score_bound_still_scores_candidate_that_could_beat_best(
+        self, queue_instance
+    ):
+        """Collection reward upper bound must keep possible winners in scoring."""
+        utime = 1762924800.0
+        queue_instance.slew_distance_weight = 1.0
+        queue_instance.collection_time_weight = 10.0
+
+        short_target = queue_instance.targets[0]
+        short_target.merit = 100
+        short_target.ss_max = 60
+        short_target.exptime = 60
+        short_target.visible.return_value = [utime, utime + 60]
+
+        long_target = queue_instance.targets[1]
+        long_target.merit = 90
+        long_target.ss_max = 300
+        long_target.exptime = 300
+        long_target.visible.return_value = [utime, utime + 300]
+
+        for target in queue_instance.targets[2:]:
+            target.visible.return_value = False
+
+        estimator = Mock(return_value=TargetSlewEstimate(slewtime=0.0, slewdist=0.0))
+
+        with patch.object(queue_instance, "meritsort"):
+            target = queue_instance.get(
+                ra=0,
+                dec=0,
+                utime=utime,
+                slew_estimator=estimator,
+            )
+
+        assert target == long_target
+        estimator.assert_any_call(short_target)
+        estimator.assert_any_call(long_target)
+
+    def test_score_bound_pruning_is_disabled_for_negative_weights(self, queue_instance):
+        """Negative weights can reward costs, so they must keep full scoring."""
+        utime = 1762924800.0
+        queue_instance.slew_distance_weight = -1.0
+
+        nominal_target = queue_instance.targets[0]
+        nominal_target.merit = 100
+        nominal_target.visible.return_value = [utime, utime + 1000]
+
+        rewarded_target = queue_instance.targets[1]
+        rewarded_target.merit = 90
+        rewarded_target.visible.return_value = [utime, utime + 1000]
+
+        for target in queue_instance.targets[2:]:
+            target.visible.return_value = False
+
+        def estimate(target):
+            if target is rewarded_target:
+                return TargetSlewEstimate(slewtime=0.0, slewdist=20.0)
+            return TargetSlewEstimate(slewtime=0.0, slewdist=0.0)
+
+        estimator = Mock(side_effect=estimate)
+
+        with patch.object(queue_instance, "meritsort"):
+            target = queue_instance.get(
+                ra=0,
+                dec=0,
+                utime=utime,
+                slew_estimator=estimator,
+            )
+
+        assert target == rewarded_target
+        estimator.assert_any_call(nominal_target)
+        estimator.assert_any_call(rewarded_target)
+
     def test_slew_time_weight_penalizes_longer_slews(self, queue_instance):
         """Slew time can be scored directly as an opportunity cost."""
         utime = 1762924800.0
