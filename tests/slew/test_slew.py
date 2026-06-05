@@ -230,27 +230,16 @@ class TestPredictSlew:
 
     def test_predict_slew_sets_slewdist_approx(self, slew_predict_setup):
         """Slew distance should be the quaternion angular distance."""
-        import numpy as np
+        from conops.common.vector import quaternion_attitude_distance
 
-        from conops.common.vector import attitude_to_quat
-
-        # Compute expected quaternion angular distance
-        q1 = attitude_to_quat(
+        expected = quaternion_attitude_distance(
             slew_predict_setup.startra,
             slew_predict_setup.startdec,
             slew_predict_setup.startroll,
-        )
-        q2 = attitude_to_quat(
             slew_predict_setup.endra,
             slew_predict_setup.enddec,
             slew_predict_setup.endroll,
         )
-        dot = float(np.dot(q1, q2))
-        if dot < 0:
-            dot = -dot
-        dot = min(dot, 1.0)
-        theta_rad = np.arccos(dot)
-        expected = float(np.rad2deg(2 * theta_rad))
 
         slew_predict_setup.predict_slew()
         assert abs(slew_predict_setup.slewdist - expected) < 0.01

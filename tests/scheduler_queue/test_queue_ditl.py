@@ -609,6 +609,40 @@ class TestFetchNewPPT:
             slew_estimator=ANY,
         )
 
+    def test_estimate_ppt_slew_uses_quaternion_distance_without_full_path(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.acs.ra = 10.0
+        queue_ditl.acs.dec = 20.0
+        queue_ditl.acs.roll = 30.0
+        cast(Mock, queue_ditl.config.spacecraft_bus.attitude_control).slew_time = Mock(
+            side_effect=lambda distance: distance * 2.0
+        )
+        target = Mock()
+        target.ra = 45.0
+        target.dec = -10.0
+
+        with (
+            patch("conops.ditl.queue_ditl.optimum_roll", return_value=70.0),
+            patch(
+                "conops.ditl.queue_ditl.quaternion_attitude_distance",
+                return_value=12.5,
+            ) as distance,
+            patch(
+                "conops.ditl.queue_ditl.Slew.calc_slewtime",
+                side_effect=AssertionError("candidate scoring must stay cheap"),
+            ),
+        ):
+            estimate = queue_ditl._estimate_ppt_slew(target, 1000.0)
+
+        distance.assert_called_once_with(10.0, 20.0, 30.0, 45.0, -10.0, 70.0)
+        assert estimate.slewdist == pytest.approx(12.5)
+        assert estimate.slewtime == pytest.approx(25.0)
+        slew_time = cast(
+            Mock, queue_ditl.config.spacecraft_bus.attitude_control.slew_time
+        )
+        slew_time.assert_called_once_with(12.5)
+
     def test_fetch_ppt_enqueues_slew_command(
         self, queue_ditl: QueueDITL, capsys: pytest.CaptureFixture[str]
     ) -> None:
