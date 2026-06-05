@@ -331,6 +331,9 @@ class Pass(BaseModel):
             raise ValueError("ACS config must be set to calculate slew time")
 
         acs_config = self.config.spacecraft_bus.attitude_control
+        # This scalar shortcut is equivalent to Slew.calc_slewtime() only for
+        # quaternion slews. Constraint-avoiding and future slew algorithms keep
+        # the full path unless their scalar equivalence has been proven.
         if acs_config.slew_algorithm == SlewAlgorithm.QUATERNION:
             slewdist = quaternion_attitude_distance(
                 ra,
