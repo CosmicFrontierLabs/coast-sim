@@ -384,6 +384,106 @@ class TestCollectionTimeWeight:
 
         assert target == feasible_target
 
+    def test_zero_slew_prefilter_skips_impossible_visibility_before_slew_estimate(
+        self, queue_instance
+    ):
+        """Do not estimate slew when even zero slew cannot fit the visibility window."""
+        utime = 1762924800.0
+        queue_instance.slew_time_weight = 1.0
+
+        impossible_target = queue_instance.targets[0]
+        impossible_target.merit = 100
+        impossible_target.visible.return_value = False
+
+        feasible_target = queue_instance.targets[1]
+        feasible_target.merit = 90
+        feasible_target.visible.return_value = [utime, utime + 1000]
+
+        for target in queue_instance.targets[2:]:
+            target.visible.return_value = False
+
+        estimator = Mock(return_value=TargetSlewEstimate(slewtime=10.0, slewdist=1.0))
+
+        with patch.object(queue_instance, "meritsort"):
+            target = queue_instance.get(
+                ra=0,
+                dec=0,
+                utime=utime,
+                slew_estimator=estimator,
+            )
+
+        assert target == feasible_target
+        estimator.assert_called_once_with(feasible_target)
+        impossible_target.calc_slewtime.assert_not_called()
+
+    def test_zero_slew_prefilter_skips_impossible_deadline_before_slew_estimate(
+        self, queue_instance
+    ):
+        """Do not estimate slew when zero slew cannot satisfy the deadline."""
+        utime = 1762924800.0
+        queue_instance.slew_time_weight = 1.0
+
+        impossible_target = queue_instance.targets[0]
+        impossible_target.merit = 100
+        impossible_target.ss_min = 300
+        impossible_target.exptime = 1500
+        impossible_target.ss_max = 1500
+        impossible_target.visible.return_value = [utime, utime + 1000]
+
+        feasible_target = queue_instance.targets[1]
+        feasible_target.merit = 90
+        feasible_target.ss_min = 300
+        feasible_target.exptime = 1500
+        feasible_target.ss_max = 1500
+        feasible_target.visible.return_value = [utime, utime + 1000]
+
+        for target in queue_instance.targets[2:]:
+            target.visible.return_value = False
+
+        def deadline(target, _slew_end):
+            if target is impossible_target:
+                return utime + 120
+            return utime + 900
+
+        estimator = Mock(return_value=TargetSlewEstimate(slewtime=10.0, slewdist=1.0))
+
+        with patch.object(queue_instance, "meritsort"):
+            target = queue_instance.get(
+                ra=0,
+                dec=0,
+                utime=utime,
+                collection_deadline=deadline,
+                slew_estimator=estimator,
+            )
+
+        assert target == feasible_target
+        estimator.assert_called_once_with(feasible_target)
+        impossible_target.calc_slewtime.assert_not_called()
+
+    def test_deadline_prefilter_is_skipped_when_scoring_disabled(self, queue_instance):
+        """Preserve the unscored fast path, which ignores collection deadlines."""
+        utime = 1762924800.0
+        target = queue_instance.targets[0]
+        target.merit = 100
+        target.ss_min = 300
+        target.exptime = 1500
+        target.ss_max = 1500
+        target.visible.return_value = [utime, utime + 1000]
+
+        def deadline(_target, _slew_end):
+            return utime + 120
+
+        with patch.object(queue_instance, "meritsort"):
+            selected = queue_instance.get(
+                ra=0,
+                dec=0,
+                utime=utime,
+                collection_deadline=deadline,
+            )
+
+        assert selected == target
+        target.calc_slewtime.assert_called_once_with(0, 0)
+
     def test_slew_time_weight_penalizes_longer_slews(self, queue_instance):
         """Slew time can be scored directly as an opportunity cost."""
         utime = 1762924800.0
