@@ -126,6 +126,9 @@ class QueueDITL(DITLMixin, DITLStats):
         self.in_eclipse = list()
         self._ephem_utime_cache: list[float] | None = None
         self._ephem_utime_cache_source: Any | None = None
+        self._ppt_optimum_roll_cache: dict[
+            tuple[float, float, float, int, int, int], float
+        ] = {}
         # Subsystem power tracking
         self.power_bus = list()
         self.power_payload = list()
@@ -2095,7 +2098,23 @@ class QueueDITL(DITLMixin, DITLStats):
         slew.startra, slew.startdec, slew.startroll = (
             self._expected_slew_start_attitude(utime, execution_time)
         )
-        slew.endroll = optimum_roll(
+        slew.endroll = self._ppt_optimum_roll(target, execution_time)
+        slew.calc_slewtime()
+
+    def _ppt_optimum_roll(self, target: Pointing, execution_time: float) -> float:
+        key = (
+            float(target.ra),
+            float(target.dec),
+            float(execution_time),
+            id(self.acs.ephem),
+            id(self.config.solar_panel),
+            id(self.config.constraint),
+        )
+        cached = self._ppt_optimum_roll_cache.get(key)
+        if cached is not None:
+            return cached
+
+        roll = optimum_roll(
             target.ra,
             target.dec,
             execution_time,
@@ -2103,21 +2122,15 @@ class QueueDITL(DITLMixin, DITLStats):
             self.config.solar_panel,
             self.config.constraint,
         )
-        slew.calc_slewtime()
+        self._ppt_optimum_roll_cache[key] = roll
+        return roll
 
     def _estimate_ppt_slew(self, target: Pointing, utime: float) -> TargetSlewEstimate:
         execution_time = self._ppt_slew_execution_time(utime)
         startra, startdec, startroll = self._expected_slew_start_attitude(
             utime, execution_time
         )
-        endroll = optimum_roll(
-            target.ra,
-            target.dec,
-            execution_time,
-            self.acs.ephem,
-            self.config.solar_panel,
-            self.config.constraint,
-        )
+        endroll = self._ppt_optimum_roll(target, execution_time)
         slewdist = quaternion_attitude_distance(
             startra,
             startdec,

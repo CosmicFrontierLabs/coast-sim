@@ -643,6 +643,38 @@ class TestFetchNewPPT:
         )
         slew_time.assert_called_once_with(12.5)
 
+    def test_estimate_ppt_slew_reuses_optimum_roll_cache(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.acs.ra = 10.0
+        queue_ditl.acs.dec = 20.0
+        queue_ditl.acs.roll = 30.0
+        target = Mock()
+        target.ra = 45.0
+        target.dec = -10.0
+
+        with (
+            patch(
+                "conops.ditl.queue_ditl.optimum_roll",
+                return_value=70.0,
+            ) as roll,
+            patch(
+                "conops.ditl.queue_ditl.quaternion_attitude_distance",
+                return_value=12.5,
+            ),
+        ):
+            queue_ditl._estimate_ppt_slew(target, 1000.0)
+            queue_ditl._estimate_ppt_slew(target, 1000.0)
+
+        roll.assert_called_once_with(
+            target.ra,
+            target.dec,
+            1000.0,
+            queue_ditl.acs.ephem,
+            queue_ditl.config.solar_panel,
+            queue_ditl.config.constraint,
+        )
+
     def test_fetch_ppt_enqueues_slew_command(
         self, queue_ditl: QueueDITL, capsys: pytest.CaptureFixture[str]
     ) -> None:
