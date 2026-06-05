@@ -84,6 +84,33 @@ class Slew:
         self.at = None  # What's the target associated with this slew?
         self._quat_roll_path: list[float] = []  # roll path for QUATERNION algorithm
 
+    @classmethod
+    def idle_hold(
+        cls,
+        config: MissionConfig,
+        ra: float,
+        dec: float,
+        roll: float,
+        utime: float,
+    ) -> "Slew":
+        """Create a zero-duration IDLE hold at the given attitude."""
+        hold = cls(config=config)
+        hold.slewrequest = utime
+        hold.slewstart = utime
+        hold.slewend = utime
+        hold.slewtime = 0.0
+        hold.slewdist = 0.0
+        hold.startra = ra
+        hold.startdec = dec
+        hold.startroll = roll
+        hold.endra = ra
+        hold.enddec = dec
+        hold.endroll = roll
+        hold.obstype = ObsType.IDLE
+        hold.obsid = 0
+        hold.at = None
+        return hold
+
     def __str__(self) -> str:
         return f"Slew from {self.startra:.3f},{self.startdec:.3f},{self.startroll:.3f}° to {self.endra:.3f},{self.enddec:.3f},{self.endroll:.3f}° @ {unixtime2date(self.slewstart)}"
 

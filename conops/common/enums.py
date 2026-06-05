@@ -41,6 +41,7 @@ class ObsType(str, Enum):
     SAFE = "SAFE"  # Safe-mode pointing
     CHARGE = "CHARGE"  # Battery-charging / sun-pointing maneuver
     GSP = "GSP"  # Ground Station Pass
+    IDLE = "IDLE"  # Constraint-safe idle hold
 
 
 class AntennaType(str, Enum):

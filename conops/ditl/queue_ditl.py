@@ -460,9 +460,12 @@ class QueueDITL(DITLMixin, DITLStats):
             # Close PPT timeline segment if no active observation
             self._close_ppt_timeline_if_needed(utime)
 
-            # Re-query mode after operations to capture any newly enqueued commands
-            # This prevents 1-step mode gaps when commands are enqueued during this step
-            mode = self.acs.get_mode(utime)
+            # Re-query attitude after operations when they changed mode or queued
+            # an immediate command. This keeps IDLE telemetry from inheriting the
+            # stale science attitude after an observation terminates.
+            ra, dec, roll, obsid, mode = self._refresh_pointing_after_operations(
+                mode, utime, ra, dec, roll, obsid
+            )
 
             # Record pointing and mode
             self._record_pointing_data(ra, dec, roll, obsid, mode)
@@ -1379,6 +1382,28 @@ class QueueDITL(DITLMixin, DITLStats):
         else:
             # Science or SAA modes: handle observations and battery management
             self._handle_science_mode(utime, ra, dec, mode)
+
+    def _refresh_pointing_after_operations(
+        self,
+        previous_mode: ACSMode,
+        utime: float,
+        ra: float,
+        dec: float,
+        roll: float,
+        obsid: int,
+    ) -> tuple[float, float, float, int, ACSMode]:
+        mode = self.acs.get_mode(utime)
+        if mode == previous_mode and not self._has_due_acs_command(utime):
+            return ra, dec, roll, obsid, mode
+
+        ra, dec, roll, obsid = self.acs.pointing(utime)
+        self._sync_acs_slew_metadata()
+        return ra, dec, roll, obsid, self.acs.get_mode(utime)
+
+    def _has_due_acs_command(self, utime: float) -> bool:
+        return any(
+            command.execution_time <= utime for command in self.acs.command_queue
+        )
 
     def _handle_science_mode(
         self, utime: float, ra: float, dec: float, mode: ACSMode

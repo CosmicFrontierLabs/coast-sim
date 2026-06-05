@@ -204,7 +204,9 @@ COASTSim's constraint system has two tiers:
 
 The ``HARD_KEEPOUT`` policy enforces the second tier only, which is appropriate for
 transient modes (slewing, SAA, safe) where soft science-quality limits legitimately do
-not apply.
+not apply. ``IDLE`` uses this policy by default, and the ACS also uses the configured
+``IDLE`` policy at runtime when deciding whether an idle hold must be moved to a safer
+attitude before telemetry is recorded.
 
 **Policy values** (:class:`~conops.config.AttitudeConstraintPolicy`):
 
@@ -256,7 +258,8 @@ not apply.
      - Safe-mode pointing relaxes science constraints but not instrument-protection limits.
    * - ``IDLE``
      - ``hard_keepout``
-     - Idle attitude relaxes science constraints but not instrument-protection limits.
+     - Idle holds may persist, so hard health-and-safety limits are enforced; missions
+       that require science-quality idle holds can override this to ``full_mission``.
 
 **Overriding the policy for individual modes:**
 

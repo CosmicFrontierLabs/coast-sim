@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import rust_ephem
 
@@ -10,7 +10,8 @@ from ..common import (
     unixtime2date,
     unixtime2yearday,
 )
-from ..config import MissionConfig
+from ..common.vector import angular_separation
+from ..config import AttitudeConstraintPolicy, FaultEvent, MissionConfig
 from ..simulation.passes import PassTimes
 from ..simulation.roll import optimum_roll
 from .acs_command import ACSCommand
@@ -23,7 +24,12 @@ if TYPE_CHECKING:
     from ..targets import Pointing
 
 
+def assert_never(value: NoReturn) -> NoReturn:
+    raise AssertionError(f"Expected code to be unreachable, but got: {value!r}")
+
+
 IDLE_OBSID = 0
+IDLE_SAFE_ATTITUDE_GRID_STEP_DEG = 15
 
 
 class ACS:
@@ -572,6 +578,11 @@ class ACS:
         # Calculate roll angle (must run after _calculate_pointing so ra/dec are current).
         self.roll = self._compute_roll(utime)
 
+        # Idle is an executed attitude, not a constraint-free gap. If a completed
+        # observation is being held after science ends, move the hold to an
+        # attitude that satisfies the configured IDLE policy before recording.
+        self._enforce_idle_constraint_safe_attitude(utime)
+
         # Check current constraints (must run after roll is updated)
         self._check_constraints(utime)
 
@@ -663,6 +674,202 @@ class ACS:
         return optimum_roll(
             self.ra, self.dec, utime, self.ephem, self.solar_panel, self.constraint
         )
+
+    def _enforce_idle_constraint_safe_attitude(self, utime: float) -> None:
+        """Replace unsafe idle holds with an attitude that satisfies IDLE policy."""
+        if self.acsmode != ACSMode.IDLE:
+            return
+        if self.current_pass is not None or self.in_safe_mode:
+            return
+
+        policy = self._idle_attitude_policy()
+        if policy == AttitudeConstraintPolicy.NONE:
+            return
+
+        if not self._idle_attitude_violates_policy(
+            self.ra, self.dec, self.roll, utime, policy
+        ):
+            return
+
+        safe_attitude = self._find_constraint_safe_idle_attitude(utime, policy)
+        if safe_attitude is None:
+            cause = (
+                "No constraint-safe IDLE attitude found "
+                f"(RA={self.ra:.2f} Dec={self.dec:.2f} policy={policy.value}); "
+                "requesting safe mode"
+            )
+            self._log_or_print(utime, "ERROR", f"{unixtime2date(utime)}: {cause}")
+            fm = getattr(self.config, "fault_management", None)
+            if fm is not None:
+                fm.events.append(
+                    FaultEvent(
+                        utime=utime,
+                        event_type="safe_mode_trigger",
+                        name="idle_attitude_constraint",
+                        cause=cause,
+                        metadata={
+                            "ra": self.ra,
+                            "dec": self.dec,
+                            "policy": policy.value,
+                        },
+                    )
+                )
+            self.request_safe_mode(utime)
+            return
+
+        ra, dec, roll = safe_attitude
+        self._hold_idle_attitude(ra, dec, roll, utime)
+        self._log_or_print(
+            utime,
+            "ACS",
+            f"{unixtime2date(utime)}: IDLE attitude constrained; holding safe attitude "
+            f"RA={ra:.2f} Dec={dec:.2f} Roll={roll:.2f}",
+        )
+
+    def _find_constraint_safe_idle_attitude(
+        self, utime: float, policy: AttitudeConstraintPolicy
+    ) -> tuple[float, float, float] | None:
+        """Find a deterministic nearby attitude that satisfies IDLE policy."""
+        candidates = self._idle_safe_attitude_candidates(utime)
+        for candidate_ra, candidate_dec in candidates:
+            optimal_roll = optimum_roll(
+                candidate_ra,
+                candidate_dec,
+                utime,
+                self.ephem,
+                self.solar_panel,
+                self.constraint,
+            )
+            for candidate_roll in self._idle_safe_roll_candidates(optimal_roll):
+                if not self._idle_attitude_violates_policy(
+                    candidate_ra,
+                    candidate_dec,
+                    candidate_roll,
+                    utime,
+                    policy,
+                ):
+                    return candidate_ra, candidate_dec, candidate_roll
+        return None
+
+    def _idle_attitude_policy(self) -> AttitudeConstraintPolicy:
+        return AttitudeConstraintPolicy(
+            self.config.attitude_constraint_policy_for_mode(ACSMode.IDLE)
+        )
+
+    def _idle_attitude_violates_policy(
+        self,
+        ra: float,
+        dec: float,
+        roll: float,
+        utime: float,
+        policy: AttitudeConstraintPolicy,
+    ) -> bool:
+        if policy == AttitudeConstraintPolicy.FULL_MISSION:
+            return self.constraint.in_constraint(
+                ra, dec, utime, target_roll=roll, acs_mode=ACSMode.IDLE
+            )
+        if policy == AttitudeConstraintPolicy.HARD_KEEPOUT:
+            return self._idle_attitude_violates_hard_keepout(ra, dec, roll, utime)
+        if policy == AttitudeConstraintPolicy.NONE:
+            return False
+        assert_never(policy)
+
+    def _idle_attitude_violates_hard_keepout(
+        self, ra: float, dec: float, roll: float, utime: float
+    ) -> bool:
+        if self.constraint.in_star_tracker_hard(
+            ra, dec, utime, target_roll=roll, acs_mode=ACSMode.IDLE
+        ):
+            return True
+        if self.constraint.in_radiator_hard(ra, dec, utime, target_roll=roll):
+            return True
+        if self.constraint.in_telescope_hard(ra, dec, utime, target_roll=roll):
+            return True
+        return False
+
+    @staticmethod
+    def _idle_safe_roll_candidates(optimal_roll: float) -> list[float]:
+        """Try the solar-optimal roll first, then nearby grid-step alternatives."""
+        rolls: list[float] = []
+
+        def add(roll: float) -> None:
+            normalized = roll % 360.0
+            is_new = all(
+                abs(((normalized - existing + 180.0) % 360.0) - 180.0) > 1e-6
+                for existing in rolls
+            )
+            if is_new:
+                rolls.append(normalized)
+
+        add(optimal_roll)
+        for offset in range(
+            IDLE_SAFE_ATTITUDE_GRID_STEP_DEG, 360, IDLE_SAFE_ATTITUDE_GRID_STEP_DEG
+        ):
+            add(optimal_roll + offset)
+            add(optimal_roll - offset)
+        return rolls
+
+    def _idle_safe_attitude_candidates(self, utime: float) -> list[tuple[float, float]]:
+        """Generate deterministic IDLE hold candidates, nearest current attitude first."""
+        raw_candidates: list[tuple[float, float]] = []
+
+        def add(ra: float, dec: float) -> None:
+            raw_candidates.append((ra % 360.0, max(-90.0, min(90.0, dec))))
+
+        add(self.ra, self.dec)
+
+        if self.solar_panel is not None:
+            solar_ra, solar_dec = self.solar_panel.optimal_charging_pointing(
+                utime, self.ephem
+            )
+            add(float(solar_ra), float(solar_dec))
+
+        index = self.ephem.index(dtutcfromtimestamp(utime))
+        add(
+            (180.0 + float(self.ephem.earth_ra_deg[index])) % 360.0,
+            -float(self.ephem.earth_dec_deg[index]),
+        )
+        add(
+            (180.0 + float(self.ephem.sun_ra_deg[index])) % 360.0,
+            -float(self.ephem.sun_dec_deg[index]),
+        )
+
+        grid: list[tuple[float, float]] = []
+        for dec in range(-90, 91, IDLE_SAFE_ATTITUDE_GRID_STEP_DEG):
+            if abs(dec) == 90:
+                grid.append((0.0, float(dec)))
+                continue
+            for grid_ra in range(0, 360, IDLE_SAFE_ATTITUDE_GRID_STEP_DEG):
+                grid.append((float(grid_ra), float(dec)))
+        grid.sort(
+            key=lambda candidate: angular_separation(
+                self.ra, self.dec, candidate[0], candidate[1]
+            )
+        )
+        raw_candidates.extend(grid)
+
+        candidates: list[tuple[float, float]] = []
+        seen: set[tuple[float, float]] = set()
+        for candidate_ra, candidate_dec in raw_candidates:
+            key = (round(candidate_ra, 6), round(candidate_dec, 6))
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append((candidate_ra, candidate_dec))
+        return candidates
+
+    def _hold_idle_attitude(
+        self, ra: float, dec: float, roll: float, utime: float
+    ) -> None:
+        """Install a zero-duration IDLE hold so future ticks keep the safe attitude."""
+        hold = Slew.idle_hold(self.config, ra, dec, roll, utime)
+
+        self.current_slew = None
+        self.last_slew = hold
+        self.science_observation_active = False
+        self.ra = ra
+        self.dec = dec
+        self.roll = roll
 
     def _is_in_charging_mode(self, utime: float) -> bool:
         """Check if spacecraft is in charging mode (dwelling at charge pointing).

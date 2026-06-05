@@ -79,6 +79,10 @@ class TestConfig:
             config.attitude_constraint_policy_for_mode(ACSMode.PASS)
             == AttitudeConstraintPolicy.HARD_KEEPOUT
         )
+        assert (
+            config.attitude_constraint_policy_for_mode(ACSMode.IDLE)
+            == AttitudeConstraintPolicy.HARD_KEEPOUT
+        )
 
     def test_attitude_constraint_policy_accepts_mode_name_overrides(self) -> None:
         """Test mission config can override one ACS mode by name."""
