@@ -124,6 +124,8 @@ class QueueDITL(DITLMixin, DITLStats):
         self.panel_power = list()
         # Eclipse tracking
         self.in_eclipse = list()
+        self._ephem_utime_cache: list[float] | None = None
+        self._ephem_utime_cache_source: Any | None = None
         # Subsystem power tracking
         self.power_bus = list()
         self.power_payload = list()
@@ -1973,8 +1975,21 @@ class QueueDITL(DITLMixin, DITLStats):
             return float(timestamp.timestamp())
         return float(timestamp)
 
+    def _ephem_utimes(self) -> list[float]:
+        timestamps = self.ephem.timestamp
+        if (
+            self._ephem_utime_cache is None
+            or self._ephem_utime_cache_source is not timestamps
+            or len(self._ephem_utime_cache) != len(timestamps)
+        ):
+            self._ephem_utime_cache = [
+                self._ephem_timestamp_to_utime(ts) for ts in timestamps
+            ]
+            self._ephem_utime_cache_source = timestamps
+        return self._ephem_utime_cache
+
     def _ephem_utime_at_or_after(self, utime: float) -> float:
-        timestamps = [self._ephem_timestamp_to_utime(ts) for ts in self.ephem.timestamp]
+        timestamps = self._ephem_utimes()
         index = bisect_left(timestamps, utime)
         if index >= len(timestamps):
             return timestamps[-1]
@@ -1985,14 +2000,17 @@ class QueueDITL(DITLMixin, DITLStats):
         if not self.battery.battery_alert or self.charging_ppt is not None:
             return None
 
-        constraint_time = self._ephem_utime_at_or_after(current_time)
+        timestamps = self._ephem_utimes()
+        index = bisect_left(timestamps, current_time)
+        if index >= len(timestamps):
+            index = len(timestamps) - 1
+
+        constraint_time = timestamps[index]
         if not self.constraint.in_eclipse(ra=0, dec=0, time=constraint_time):
             return constraint_time
 
-        for timestamp in self.ephem.timestamp:
-            utime = self._ephem_timestamp_to_utime(timestamp)
-            if utime <= current_time:
-                continue
+        for next_index in range(index + 1, len(timestamps)):
+            utime = timestamps[next_index]
             if not self.constraint.in_eclipse(ra=0, dec=0, time=utime):
                 return utime
         return None

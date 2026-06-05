@@ -1349,6 +1349,53 @@ class TestFetchNewPPT:
             ra=0, dec=0, time=1060.0
         )
 
+    def test_charge_science_deadline_reuses_ephemeris_utime_cache(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Repeated deadline checks should not rebuild ephemeris timestamps."""
+
+        class CountingTimestamp:
+            def __init__(self, utime: float) -> None:
+                self.utime = utime
+                self.calls = 0
+
+            def timestamp(self) -> float:
+                self.calls += 1
+                return self.utime
+
+        timestamps = [
+            CountingTimestamp(1000.0),
+            CountingTimestamp(1060.0),
+            CountingTimestamp(1120.0),
+        ]
+        queue_ditl.ephem.timestamp = timestamps
+        queue_ditl.battery.battery_alert = True
+        queue_ditl.constraint.in_eclipse = Mock(return_value=False)
+
+        assert queue_ditl._next_charge_science_deadline(1001.5) == 1060.0
+        assert queue_ditl._next_charge_science_deadline(1001.5) == 1060.0
+        assert [timestamp.calls for timestamp in timestamps] == [1, 1, 1]
+
+    def test_charge_science_deadline_refreshes_ephemeris_utime_cache(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Replacing the ephemeris timestamp sequence should refresh cached utimes."""
+        queue_ditl.ephem.timestamp = [
+            datetime.fromtimestamp(1000.0, timezone.utc),
+            datetime.fromtimestamp(1060.0, timezone.utc),
+        ]
+        queue_ditl.battery.battery_alert = True
+        queue_ditl.constraint.in_eclipse = Mock(return_value=False)
+
+        assert queue_ditl._next_charge_science_deadline(1001.5) == 1060.0
+
+        queue_ditl.ephem.timestamp = [
+            datetime.fromtimestamp(2000.0, timezone.utc),
+            datetime.fromtimestamp(2060.0, timezone.utc),
+        ]
+
+        assert queue_ditl._next_charge_science_deadline(1001.5) == 2000.0
+
     def test_fetch_ppt_accepts_when_pending_charge_allows_minimum_collect(
         self, queue_ditl: QueueDITL
     ) -> None:
