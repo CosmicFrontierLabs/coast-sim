@@ -343,11 +343,6 @@ class Pass(BaseModel):
                 target_dec,
                 target_roll,
             )
-            if np.isnan(slewdist) or slewdist < 0:
-                raise ValueError(
-                    f"Invalid slew distance: {slewdist} "
-                    f"(start={ra},{dec} end={target_ra},{target_dec})"
-                )
             return round(acs_config.slew_time(slewdist))
 
         slew = Slew(config=self.config)
