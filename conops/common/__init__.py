@@ -15,11 +15,6 @@ from .enums import (
     Polarization,
     SlewAlgorithm,
 )
-from .orbit import (
-    WGS72_EARTH_MU_M3_S2,
-    classical_elements_from_tle,
-    true_anomaly_from_mean_anomaly,
-)
 from .vector import (
     angular_separation,
     attitude_for_body_vector_tracking,
@@ -47,13 +42,11 @@ __all__ = [
     "ObsType",
     "Polarization",
     "SlewAlgorithm",
-    "WGS72_EARTH_MU_M3_S2",
     "angular_separation",
     "attitude_for_body_vector_tracking",
     "attitude_from_body_axes",
     "attitude_to_quat",
     "body_vector_to_eci",
-    "classical_elements_from_tle",
     "constraint_avoiding_waypoint",
     "dtutcfromtimestamp",
     "givename",
@@ -69,7 +62,6 @@ __all__ = [
     "rotvec",
     "scbodyvector",
     "separation",
-    "true_anomaly_from_mean_anomaly",
     "unixtime2date",
     "unixtime2yearday",
 ]
