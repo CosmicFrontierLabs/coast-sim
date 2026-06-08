@@ -369,6 +369,55 @@ This allows for:
 
 Set ``time_threshold_seconds`` to ``null`` to create monitoring-only constraints that track violations but never trigger safe mode.
 
+Star Tracker Hard Monitoring
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Monitor star tracker hard-constraint violations using standard thresholds on
+``star_tracker_hard_violations``.
+
+Recommended configuration:
+
+* ``direction="above"``
+* ``yellow=0.5`` and ``red=0.5`` so any non-zero hard violation is RED
+* ``triggers_safe_mode`` controls whether safe mode is requested
+* ``safe_mode_delay_seconds`` sets how long RED must persist before triggering
+
+Example:
+
+.. code-block:: python
+
+     from conops.config.fault_management import FaultManagement
+
+     fm = FaultManagement(safe_mode_on_red=True)
+     fm.add_threshold(
+             "star_tracker_hard_violations",
+             yellow=0.5,
+             red=0.5,
+             direction="above",
+             triggers_safe_mode=True,
+             safe_mode_delay_seconds=30.0,
+     )
+
+JSON configuration:
+
+.. code-block:: json
+
+     {
+         "fault_management": {
+             "safe_mode_on_red": true,
+             "thresholds": [
+                 {
+                     "name": "star_tracker_hard_violations",
+                     "yellow": 0.5,
+                     "red": 0.5,
+                     "direction": "above",
+                     "triggers_safe_mode": true,
+                     "safe_mode_delay_seconds": 30.0
+                 }
+             ]
+         }
+     }
+
 Example Configuration File
 ---------------------------
 
