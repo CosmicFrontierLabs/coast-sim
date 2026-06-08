@@ -150,9 +150,12 @@ class TargetQueue:
         visibility_window: list[float],
         utime: float,
         deadline: float | None = None,
+        slewtime: float | None = None,
     ) -> float:
         """Estimate useful science collection available after the slew."""
-        collection_start = utime + float(target.slewtime)
+        collection_start = utime + float(
+            target.slewtime if slewtime is None else slewtime
+        )
         collection_end = float(visibility_window[1])
         if deadline is not None:
             collection_end = min(collection_end, float(deadline))
@@ -162,6 +165,39 @@ class TargetQueue:
         if remaining_exposure is None:
             return min(window_seconds, max_snapshot)
         return min(window_seconds, float(remaining_exposure), max_snapshot)
+
+    def _can_fit_min_snapshot_with_zero_slew(
+        self,
+        target: Pointing,
+        utime: float,
+        last_unix: float,
+        collection_deadline: Callable[[Pointing, float], float | None] | None = None,
+    ) -> bool:
+        """Check if a candidate can fit under the current rules with no slew.
+
+        This is only an impossibility filter. If zero slew cannot fit the
+        immediate visibility/deadline window, any nonnegative slew also cannot.
+        """
+        zero_slew_endtime = utime + float(target.ss_min)
+        if zero_slew_endtime > last_unix:
+            zero_slew_endtime = last_unix
+
+        visibility_window = target.visible(utime, zero_slew_endtime)
+        if not visibility_window:
+            return False
+
+        if collection_deadline is None:
+            return True
+
+        deadline = collection_deadline(target, utime)
+        collection_seconds = self._candidate_collection_seconds(
+            target=target,
+            visibility_window=visibility_window,
+            utime=utime,
+            deadline=deadline,
+            slewtime=0.0,
+        )
+        return collection_seconds >= float(target.ss_min)
 
     def _estimate_slew(
         self,
@@ -236,11 +272,20 @@ class TargetQueue:
             print(msg)
         best_target = None
         best_score = -np.inf
+        last_unix = self.ephem.timestamp[-1].timestamp()
 
         # Check each candidate target
         for target in targets:
             # Skip targets with remaining exposure less than minimum snapshot
             if target.exptime is not None and target.exptime < target.ss_min:
+                continue
+
+            if not self._can_fit_min_snapshot_with_zero_slew(
+                target=target,
+                utime=utime,
+                last_unix=last_unix,
+                collection_deadline=collection_deadline if score_candidates else None,
+            ):
                 continue
 
             self._estimate_slew(
@@ -252,9 +297,6 @@ class TargetQueue:
 
             # Calculate observation window
             endtime = utime + target.slewtime + target.ss_min
-
-            # Use timestamp for the end-of-ephemeris bound
-            last_unix = self.ephem.timestamp[-1].timestamp()
 
             # If the end time exceeds ephemeris, clamp it
             if endtime > last_unix:
