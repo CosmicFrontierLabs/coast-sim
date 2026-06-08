@@ -200,6 +200,32 @@ class TestPlanSchema:
         assert loaded.start == pytest.approx(original.start)
         assert loaded.end == pytest.approx(original.end)
 
+    def test_save_and_load_roundtrip_metadata(self, tmp_path):
+        original = _make_schema(1)
+        original.metadata = {
+            "ephemeris": {
+                "source": "TLE",
+                "classical_elements": {"SemimajorAxis_m": 6_900_000.0},
+            }
+        }
+        dest = tmp_path / "plan.json"
+
+        original.save(dest)
+
+        raw = json.loads(dest.read_text())
+        assert raw["metadata"] == original.metadata
+        loaded = PlanSchema.load(dest)
+        assert loaded.metadata == original.metadata
+
+    def test_save_omits_empty_metadata(self, tmp_path):
+        schema = _make_schema(1)
+        dest = tmp_path / "plan.json"
+
+        schema.save(dest)
+
+        raw = json.loads(dest.read_text())
+        assert "metadata" not in raw
+
     def test_save_produces_valid_json(self, tmp_path):
         schema = _make_schema(1)
         dest = tmp_path / "plan.json"
@@ -388,6 +414,16 @@ class TestPlanSchema:
         assert schema.entries == []
         assert schema.start == 0.0
         assert schema.end == 0.0
+
+    def test_from_plan_preserves_metadata(self):
+        from conops.targets.plan import Plan
+
+        plan = Plan()
+        plan.metadata = {"generator": {"name": "test"}}
+
+        schema = PlanSchema.from_plan(plan)
+
+        assert schema.metadata == plan.metadata
 
     def test_from_plan_clamps_negative_exposure(self, tmp_path):
         """Generated JSON should not contain negative exposure for truncated entries."""

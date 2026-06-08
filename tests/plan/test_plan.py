@@ -221,6 +221,17 @@ class TestPlanSaveLoad:
         assert raw["num_entries"] == 2
         assert len(raw["entries"]) == 2
 
+    def test_save_json_contains_plan_metadata_when_present(self, tmp_path):
+        """Plan.save() preserves producer-specific top-level metadata."""
+        plan = _make_plan(1)
+        plan.metadata = {"ephemeris": {"source": "TLE", "norad_id": 12345}}
+        dest = tmp_path / "plan.json"
+
+        plan.save(dest)
+
+        raw = json.loads(dest.read_text())
+        assert raw["metadata"] == plan.metadata
+
     def test_save_writes_attitude_timeseries_companion(self, tmp_path):
         """Plan.save() writes the attached executed-attitude companion file."""
         plan = _make_plan(1)
@@ -317,9 +328,11 @@ class TestPlanSaveLoad:
         """start, end, and version survive a save/load roundtrip."""
 
         plan = _make_plan(2)
+        plan.metadata = {"generator": {"name": "unit-test"}}
         dest = tmp_path / "plan.json"
         plan.save(dest)
         loaded = Plan.load(dest)
         assert loaded.start == pytest.approx(plan.entries[0].begin)
         assert loaded.end == pytest.approx(plan.entries[-1].end)
         assert isinstance(loaded.version, int)
+        assert loaded.metadata == plan.metadata
