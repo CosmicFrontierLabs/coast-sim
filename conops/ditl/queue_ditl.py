@@ -72,6 +72,14 @@ class PlanExecutionMismatch:
         return self.message
 
 
+@dataclass(frozen=True)
+class _ScienceDeadlineInputs:
+    """Target-independent deadline components for one scheduler fetch."""
+
+    simulation_end: float
+    charge_deadline: float | None
+
+
 class QueueDITL(DITLMixin, DITLStats):
     """
     Class to run a Day In The Life (DITL) simulation based on a target
@@ -2043,14 +2051,28 @@ class QueueDITL(DITLMixin, DITLStats):
                 return utime
         return None
 
+    def _science_deadline_inputs(self, current_time: float) -> _ScienceDeadlineInputs:
+        """Calculate deadline inputs that are stable during one queue fetch."""
+        return _ScienceDeadlineInputs(
+            simulation_end=self._simulation_end_deadline(),
+            charge_deadline=self._next_charge_science_deadline(current_time),
+        )
+
     def _next_science_deadline(
-        self, slew_end: float, current_time: float, target: Pointing | None = None
+        self,
+        slew_end: float,
+        current_time: float,
+        target: Pointing | None = None,
+        deadline_inputs: _ScienceDeadlineInputs | None = None,
     ) -> tuple[float, str]:
         """Determine the next science deadline after the slew ends, which could
         be the end of the current visibility window, the next pass, or the end
         of the simulation."""
+        if deadline_inputs is None:
+            deadline_inputs = self._science_deadline_inputs(current_time)
+
         deadlines: list[tuple[float, str]] = [
-            (self._simulation_end_deadline(), "simulation end")
+            (deadline_inputs.simulation_end, "simulation end")
         ]
 
         visibility_end = self._current_ppt_visibility_deadline(slew_end, target=target)
@@ -2061,9 +2083,8 @@ class QueueDITL(DITLMixin, DITLStats):
         if pass_deadline is not None:
             deadlines.append((pass_deadline, "pass"))
 
-        charge_deadline = self._next_charge_science_deadline(current_time)
-        if charge_deadline is not None:
-            deadlines.append((charge_deadline, "charge opportunity"))
+        if deadline_inputs.charge_deadline is not None:
+            deadlines.append((deadline_inputs.charge_deadline, "charge opportunity"))
 
         return min(deadlines, key=lambda item: item[0])
 
@@ -2261,16 +2282,29 @@ class QueueDITL(DITLMixin, DITLStats):
             acs_mode=self.acs.acsmode,
         )
 
-        # Fetch the next PPT from the queue based on current pointing and time
+        # Fetch the next PPT from the queue based on current pointing and time.
+        # These deadline inputs are target-independent for one queue fetch, but
+        # build them lazily so unscored queue modes do not pay for them.
+        deadline_inputs: _ScienceDeadlineInputs | None = None
+
+        def collection_deadline(target: Pointing, slew_end: float) -> float:
+            nonlocal deadline_inputs
+            if deadline_inputs is None:
+                deadline_inputs = self._science_deadline_inputs(utime)
+            # The cached inputs cover only fetch-wide pieces; each callback
+            # still evaluates target-specific visibility and pass deadlines.
+            return self._next_science_deadline(
+                slew_end,
+                current_time=utime,
+                target=target,
+                deadline_inputs=deadline_inputs,
+            )[0]
+
         self.ppt = self.queue.get(
             ra,
             dec,
             utime,
-            collection_deadline=lambda target, slew_end: self._next_science_deadline(
-                slew_end,
-                current_time=utime,
-                target=target,
-            )[0],
+            collection_deadline=collection_deadline,
             slew_estimator=lambda target: self._estimate_ppt_slew(target, utime),
         )
 

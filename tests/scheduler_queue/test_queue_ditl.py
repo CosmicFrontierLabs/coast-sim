@@ -609,6 +609,47 @@ class TestFetchNewPPT:
             slew_estimator=ANY,
         )
 
+    def test_fetch_ppt_reuses_charge_deadline_for_candidate_scoring(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Target scoring should not recalculate fetch-wide charge deadlines."""
+        queue_ditl.uend = 10_000.0
+        observed_deadlines = []
+        targets = []
+        for obsid in (1001, 1002):
+            target = Mock()
+            target.ra = 40.0 + obsid
+            target.dec = 10.0
+            target.windows = [[0.0, 1e12]]
+            targets.append(target)
+
+        def queue_get(*_args, collection_deadline, **_kwargs):
+            observed_deadlines.append(collection_deadline(targets[0], 1100.0))
+            observed_deadlines.append(collection_deadline(targets[1], 1200.0))
+            return None
+
+        cast(Mock, queue_ditl.queue).get = Mock(side_effect=queue_get)
+        with patch.object(
+            queue_ditl, "_next_charge_science_deadline", return_value=1500.0
+        ) as charge_deadline:
+            queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        charge_deadline.assert_called_once_with(1000.0)
+        assert observed_deadlines == [1500.0, 1500.0]
+
+    def test_fetch_ppt_does_not_build_deadline_inputs_until_scoring_uses_them(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Unscored queue paths should not pay to build deadline inputs."""
+        cast(Mock, queue_ditl.queue).get = Mock(return_value=None)
+
+        with patch.object(
+            queue_ditl, "_next_charge_science_deadline", return_value=1500.0
+        ) as charge_deadline:
+            queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        charge_deadline.assert_not_called()
+
     def test_estimate_ppt_slew_uses_quaternion_distance_without_full_path(
         self, queue_ditl: QueueDITL
     ) -> None:
