@@ -1045,6 +1045,7 @@ class QueueDITL(DITLMixin, DITLStats):
                     self._validate_gsp_entry_execution(entry, tolerance_deg)
                 )
         mismatches.extend(self._validate_execution_is_planned())
+        mismatches.extend(self.validate_attitude_constraints())
         return mismatches
 
     def _assert_plan_matches_execution(self) -> None:
