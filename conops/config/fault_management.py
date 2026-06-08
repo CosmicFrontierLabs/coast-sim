@@ -170,7 +170,7 @@ class FaultEvent:
 
 @dataclass
 class FaultState:
-    """Tracks constraint violations (both red limit and regular thresholds).
+    """Tracks constraint violations and threshold state durations.
 
     Attributes:
         in_violation: Whether currently violating the constraint
@@ -178,6 +178,7 @@ class FaultState:
         current: Current state for threshold-based faults (nominal/yellow/red)
         yellow_seconds: Time spent in yellow state (for threshold-based faults)
         red_seconds: Time spent in red state (for threshold-based faults)
+        continuous_red_seconds: Current continuous RED duration for thresholds
     """
 
     in_violation: bool = False
@@ -185,6 +186,7 @@ class FaultState:
     current: str = "nominal"  # Fault status: nominal | yellow | red
     yellow_seconds: float = 0.0  # Number of seconds in yellow state
     red_seconds: float = 0.0  # Number of seconds in red state
+    continuous_red_seconds: float = 0.0  # Continuous RED duration for thresholds
 
 
 class FaultConstraint(ConfigModel):
@@ -277,6 +279,12 @@ class FaultThreshold(ConfigModel):
         description="Whether a RED classification triggers safe mode (default True). "
         "Set False for monitoring-only thresholds that should alert but not safehold.",
     )
+    safe_mode_delay_seconds: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Continuous RED duration required before triggering safe mode. "
+        "0.0 triggers immediately on RED.",
+    )
 
     def classify(self, value: float) -> str:
         """Return nominal|yellow|red for the given value."""
@@ -292,31 +300,6 @@ class FaultThreshold(ConfigModel):
             if value >= self.yellow:
                 return "yellow"
             return "nominal"
-
-
-class StarTrackerHardFaultConfig(ConfigModel):
-    """Fault monitoring configuration for star tracker hard constraint violations.
-
-    Each simulation cycle the ACS computes how many star trackers are inside
-    their hard exclusion zones.  When that count is non-zero this monitor
-    records a constraint_violation FaultEvent and accumulates the continuous
-    violation duration.  If the duration exceeds time_threshold_seconds a safe
-    mode request is issued (subject to the global safe_mode_on_red flag).
-
-    Attributes:
-        time_threshold_seconds: Maximum continuous violation time before
-            triggering safe mode.  None disables automatic safe mode.
-
-    Example:
-        >>> # Trigger safe mode if any star tracker is in hard exclusion for
-        >>> # more than 30 seconds
-        >>> st_fault = StarTrackerHardFaultConfig(time_threshold_seconds=30.0)
-    """
-
-    time_threshold_seconds: float | None = Field(
-        default=None,
-        description="Maximum continuous violation time before safe mode trigger. None means no automatic safe mode.",
-    )
 
 
 class FaultManagement(ConfigModel):
@@ -336,11 +319,6 @@ class FaultManagement(ConfigModel):
     red_limit_constraints: list[FaultConstraint] = Field(
         default_factory=list,
         description="List of spacecraft-level red limit constraints",
-    )
-    star_tracker_hard: StarTrackerHardFaultConfig | None = Field(
-        default=None,
-        description="Fault monitoring for star tracker hard constraint violations. "
-        "When set, constraint violations become FaultEvents and can trigger safe mode.",
     )
     states: dict[str, FaultState] = Field(
         default_factory=dict,
@@ -461,20 +439,26 @@ class FaultManagement(ConfigModel):
                 st.yellow_seconds += step_size
             elif state == "red":
                 st.red_seconds += step_size
+                st.continuous_red_seconds += step_size
+            else:
+                st.continuous_red_seconds = 0.0
             st.current = state
 
             if state == "red" and threshold.triggers_safe_mode:
-                self._trigger_safe_mode(
-                    utime=utime,
-                    name=name,
-                    cause=f"RED threshold exceeded for {name}",
-                    metadata={
-                        "value": val,
-                        "red_threshold": threshold.red,
-                        "direction": threshold.direction,
-                    },
-                    acs=acs,
-                )
+                if st.continuous_red_seconds >= threshold.safe_mode_delay_seconds:
+                    self._trigger_safe_mode(
+                        utime=utime,
+                        name=name,
+                        cause=f"RED threshold exceeded for {name}",
+                        metadata={
+                            "value": val,
+                            "red_threshold": threshold.red,
+                            "direction": threshold.direction,
+                            "continuous_red_seconds": st.continuous_red_seconds,
+                            "safe_mode_delay_seconds": threshold.safe_mode_delay_seconds,
+                        },
+                        acs=acs,
+                    )
 
         # Check spacecraft-level red limit constraints if ephemeris and pointing provided
         if (
@@ -568,69 +552,6 @@ class FaultManagement(ConfigModel):
                     # Reset continuous violation counter when constraint is satisfied
                     fault_state.continuous_violation_seconds = 0.0
 
-        # Check star tracker hard constraint violations from ACS state.
-        if self.star_tracker_hard is not None:
-            st_hard_violations = getattr(acs, "star_tracker_hard_violations", 0) or 0
-            if isinstance(st_hard_violations, int):
-                st_state = self.ensure_state("star_tracker_hard")
-                was_in_violation = st_state.in_violation
-                now_in_violation = st_hard_violations > 0
-
-                if now_in_violation and not was_in_violation:
-                    self.events.append(
-                        FaultEvent(
-                            utime=utime,
-                            event_type="constraint_violation",
-                            name="star_tracker_hard",
-                            cause=f"Star tracker hard constraint violated ({st_hard_violations} tracker(s) in exclusion zone)",
-                            metadata={
-                                "hard_violations": st_hard_violations,
-                                "ra": ra,
-                                "dec": dec,
-                            },
-                        )
-                    )
-                elif not now_in_violation and was_in_violation:
-                    self.events.append(
-                        FaultEvent(
-                            utime=utime,
-                            event_type="constraint_violation",
-                            name="star_tracker_hard",
-                            cause="Star tracker hard constraint cleared",
-                            metadata={
-                                "total_violation_seconds": st_state.continuous_violation_seconds,
-                                "ra": ra,
-                                "dec": dec,
-                            },
-                        )
-                    )
-
-                st_state.in_violation = now_in_violation
-                if now_in_violation:
-                    st_state.red_seconds += step_size
-                    st_state.continuous_violation_seconds += step_size
-
-                    if (
-                        self.star_tracker_hard.time_threshold_seconds is not None
-                        and st_state.continuous_violation_seconds
-                        >= self.star_tracker_hard.time_threshold_seconds
-                    ):
-                        self._trigger_safe_mode(
-                            utime=utime,
-                            name="star_tracker_hard",
-                            cause="Star tracker hard constraint violation exceeded time threshold",
-                            metadata={
-                                "hard_violations": st_hard_violations,
-                                "continuous_violation_seconds": st_state.continuous_violation_seconds,
-                                "time_threshold_seconds": self.star_tracker_hard.time_threshold_seconds,
-                                "ra": ra,
-                                "dec": dec,
-                            },
-                            acs=acs,
-                        )
-                else:
-                    st_state.continuous_violation_seconds = 0.0
-
         return classifications
 
     def statistics(self) -> dict[str, dict[str, float | str | bool]]:
@@ -645,8 +566,6 @@ class FaultManagement(ConfigModel):
         stats: dict[str, dict[str, float | str | bool]] = {}
 
         constraint_names = {c.name for c in self.red_limit_constraints}
-        if self.star_tracker_hard is not None:
-            constraint_names.add("star_tracker_hard")
 
         for name, st in self.states.items():
             if name in constraint_names:
@@ -672,6 +591,7 @@ class FaultManagement(ConfigModel):
         direction: str = "below",
         acs_modes: list[ACSMode] | None = None,
         triggers_safe_mode: bool = True,
+        safe_mode_delay_seconds: float = 0.0,
     ) -> None:
         """Add a parameter threshold for fault monitoring.
 
@@ -685,6 +605,8 @@ class FaultManagement(ConfigModel):
             triggers_safe_mode: If True (default), a RED classification triggers safe mode.
                                 Set False for monitor-only thresholds that should alert but
                                 not cause a safehold.
+            safe_mode_delay_seconds: Continuous RED duration required before safe mode.
+                                     0.0 (default) triggers immediately on RED.
 
         Examples:
             >>> fm = FaultManagement()
@@ -713,6 +635,7 @@ class FaultManagement(ConfigModel):
                 direction=direction,
                 acs_modes=acs_modes,
                 triggers_safe_mode=triggers_safe_mode,
+                safe_mode_delay_seconds=safe_mode_delay_seconds,
             )
         )
 

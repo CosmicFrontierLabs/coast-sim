@@ -625,6 +625,78 @@ class TestSafeModeTriggering:
         )
         assert final_event_count == initial_event_count
 
+    def test_threshold_safe_mode_delay_seconds(self, acs_stub: Mock) -> None:
+        """Test RED thresholds can delay safe mode triggering by continuous duration."""
+        fm = FaultManagement(safe_mode_on_red=True)
+        fm.add_threshold(
+            "power_usage",
+            yellow=50.0,
+            red=60.0,
+            direction="above",
+            safe_mode_delay_seconds=2.0,
+        )
+
+        # First red sample is below delay.
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
+            power_usage=65.0,
+        )
+        fm.check(hk, acs=acs_stub)
+        assert not fm.safe_mode_requested
+
+        # Second consecutive red sample reaches delay and triggers safe mode.
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1060.0, tz=timezone.utc),
+            power_usage=65.0,
+        )
+        fm.check(hk, acs=acs_stub)
+        assert fm.safe_mode_requested
+
+    def test_threshold_safe_mode_delay_resets_when_red_clears(
+        self, acs_stub: Mock
+    ) -> None:
+        """Test delay requires continuous RED time and resets after non-RED samples."""
+        fm = FaultManagement(safe_mode_on_red=True)
+        fm.add_threshold(
+            "power_usage",
+            yellow=50.0,
+            red=60.0,
+            direction="above",
+            safe_mode_delay_seconds=2.0,
+        )
+
+        # Red for one cycle - not enough to trigger.
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
+            power_usage=65.0,
+        )
+        fm.check(hk, acs=acs_stub)
+        assert not fm.safe_mode_requested
+
+        # Clear RED state (nominal), which should reset continuous RED timer.
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1060.0, tz=timezone.utc),
+            power_usage=40.0,
+        )
+        fm.check(hk, acs=acs_stub)
+        assert not fm.safe_mode_requested
+
+        # First RED cycle after reset: still below delay.
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1120.0, tz=timezone.utc),
+            power_usage=65.0,
+        )
+        fm.check(hk, acs=acs_stub)
+        assert not fm.safe_mode_requested
+
+        # Second consecutive RED cycle after reset reaches delay and triggers.
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1180.0, tz=timezone.utc),
+            power_usage=65.0,
+        )
+        fm.check(hk, acs=acs_stub)
+        assert fm.safe_mode_requested
+
 
 class TestThresholdTransitionEvents:
     """Test event logging for threshold transitions."""
