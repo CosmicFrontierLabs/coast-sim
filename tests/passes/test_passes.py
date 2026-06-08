@@ -13,7 +13,7 @@ from conops import (
     PassTimes,
 )
 from conops.common import attitude_for_body_vector_tracking, radec2vec
-from conops.common.enums import AntennaType, ObsType
+from conops.common.enums import AntennaType, ObsType, SlewAlgorithm
 from conops.config import (
     AntennaPointing,
     AttitudeControlSystem,
@@ -362,7 +362,7 @@ class TestPassTimeToSlew:
         assert p.time_to_slew(base_begin - 600.0, ra=10.0, dec=20.0, roll=0.0) is False
         assert p.time_to_slew(base_begin - 600.0, ra=10.0, dec=20.0, roll=180.0) is True
 
-    def test_slew_time_to_target_uses_pass_target_roll(
+    def test_slew_time_to_target_quaternion_uses_pass_target_roll(
         self,
         mock_config,
         mock_constraint,
@@ -374,6 +374,65 @@ class TestPassTimeToSlew:
         ephem = create_ephem(begin_dt, end_dt, step_size=60)
 
         mock_config.constraint = mock_constraint
+        p = Pass(
+            config=mock_config,
+            ephem=ephem,
+            station="SGS",
+            begin=base_begin,
+            length=600.0,
+        )
+
+        def slew_time(_acs_config, distance):
+            return 123.0
+
+        with (
+            patch(
+                "conops.simulation.passes.quaternion_attitude_distance",
+                return_value=12.5,
+            ) as distance,
+            patch(
+                "conops.config.acs.AttitudeControlSystem.slew_time",
+                autospec=True,
+                side_effect=slew_time,
+            ) as slew_time_mock,
+            patch(
+                "conops.simulation.passes.Slew.calc_slewtime",
+                side_effect=AssertionError(
+                    "quaternion trigger estimate should be cheap"
+                ),
+            ),
+        ):
+            slewtime = p._slew_time_to_target(
+                base_begin - 600.0,
+                ra=10.0,
+                dec=20.0,
+                roll=42.0,
+                target_ra=30.0,
+                target_dec=40.0,
+                target_roll=37.0,
+            )
+
+        assert slewtime == 123.0
+        distance.assert_called_once_with(10.0, 20.0, 42.0, 30.0, 40.0, 37.0)
+        slew_time_mock.assert_called_once_with(
+            mock_config.spacecraft_bus.attitude_control, 12.5
+        )
+
+    def test_slew_time_to_target_constraint_avoiding_uses_full_slew(
+        self,
+        mock_config,
+        mock_constraint,
+        create_ephem,
+        base_begin,
+    ):
+        begin_dt = datetime(2025, 8, 15, 0, 0, 0, tzinfo=timezone.utc)
+        end_dt = datetime(2025, 8, 15, 0, 15, 0, tzinfo=timezone.utc)
+        ephem = create_ephem(begin_dt, end_dt, step_size=60)
+
+        mock_config.constraint = mock_constraint
+        mock_config.spacecraft_bus.attitude_control.slew_algorithm = (
+            SlewAlgorithm.CONSTRAINT_AVOIDING
+        )
         p = Pass(
             config=mock_config,
             ephem=ephem,

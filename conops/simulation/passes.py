@@ -7,10 +7,11 @@ import rust_ephem
 from pydantic import BaseModel, Field
 
 from ..common import ics_date_conv, unixtime2date
-from ..common.enums import AntennaType, ObsType
+from ..common.enums import AntennaType, ObsType, SlewAlgorithm
 from ..common.vector import (
     attitude_for_body_vector_tracking,
     body_vector_to_eci,
+    quaternion_attitude_distance,
     radec2vec,
     rotvec,
     separation,
@@ -328,6 +329,21 @@ class Pass(BaseModel):
         assert self.config is not None, "Config must be set for Pass class"
         if self.config.spacecraft_bus.attitude_control is None:
             raise ValueError("ACS config must be set to calculate slew time")
+
+        acs_config = self.config.spacecraft_bus.attitude_control
+        # This scalar shortcut is equivalent to Slew.calc_slewtime() only for
+        # quaternion slews. Constraint-avoiding and future slew algorithms keep
+        # the full path unless their scalar equivalence has been proven.
+        if acs_config.slew_algorithm == SlewAlgorithm.QUATERNION:
+            slewdist = quaternion_attitude_distance(
+                ra,
+                dec,
+                roll,
+                target_ra,
+                target_dec,
+                target_roll,
+            )
+            return round(acs_config.slew_time(slewdist))
 
         slew = Slew(config=self.config)
         slew.startra = ra
