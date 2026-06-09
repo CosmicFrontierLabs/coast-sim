@@ -339,7 +339,7 @@ def attitude_for_body_vector_tracking(
 # Convention: q = [w, x, y, z] (scalar-first).
 # Attitude quaternion represents the rotation from ECI to spacecraft body
 # frame, matching the direction-cosine convention used in scbodyvector():
-#   R = R_x(-roll) @ R_y(dec) @ R_z(-ra)   (all angles in radians)
+#   R = R_x(+roll) @ R_y(dec) @ R_z(-ra)   (all angles in radians)
 # Body X = boresight, Body Z = "up" (defines roll).
 
 
@@ -362,7 +362,7 @@ def attitude_to_quat(
 ) -> npt.NDArray[np.float64]:
     """Convert spacecraft attitude (RA, Dec, Roll) in degrees to quaternion [w, x, y, z].
 
-    The attitude quaternion encodes the rotation R = R_x(-roll) @ R_y(dec) @ R_z(-ra)
+    The attitude quaternion encodes the rotation R = R_x(+roll) @ R_y(dec) @ R_z(-ra)
     that transforms ECI vectors into spacecraft body frame.
     """
     ra = np.deg2rad(ra_deg)
@@ -376,8 +376,8 @@ def attitude_to_quat(
         [np.cos(dec / 2), 0.0, np.sin(dec / 2), 0.0], dtype=np.float64
     )  # R_y(+dec)
     q_x = np.array(
-        [np.cos(roll / 2), -np.sin(roll / 2), 0.0, 0.0], dtype=np.float64
-    )  # R_x(-roll)
+        [np.cos(roll / 2), np.sin(roll / 2), 0.0, 0.0], dtype=np.float64
+    )  # R_x(+roll)
     # Compose: q = q_x ⊗ q_y ⊗ q_z  (rightmost applied first)
     return _quat_mul(_quat_mul(q_x, q_y), q_z)
 
@@ -437,8 +437,8 @@ def quat_to_attitude(q: npt.NDArray[np.float64]) -> tuple[float, float, float]:
         n_proj = north - np.dot(north, b) * b
         n_norm = float(np.linalg.norm(n_proj))
     n_hat = n_proj / n_norm
-    e_hat = np.cross(b, n_hat)  # east direction in boresight-perpendicular plane
-    roll_rad = float(np.arctan2(np.dot(body_z_eci, e_hat), np.dot(body_z_eci, n_hat)))
+    y_hat = np.cross(n_hat, b)
+    roll_rad = float(np.arctan2(np.dot(body_z_eci, y_hat), np.dot(body_z_eci, n_hat)))
 
     return (
         float(np.rad2deg(ra_rad)),
