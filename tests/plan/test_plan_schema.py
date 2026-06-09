@@ -5,13 +5,18 @@ import pathlib
 from unittest.mock import Mock
 
 import pytest
+from pydantic import ValidationError
 
 from conops.common.enums import ObsType
+from conops.common.vector import attitude_to_quat
 from conops.targets import (
+    AttitudePointingSchema,
+    AttitudeRotationSchema,
     AttitudeSampleSchema,
     AttitudeTimeseriesSchema,
     PlanEntrySchema,
     PlanSchema,
+    TargetAttitudeSchema,
 )
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -108,6 +113,76 @@ class TestPlanEntrySchema:
         ):
             assert key in dumped, f"Missing key: {key}"
 
+    def test_static_entries_export_generic_target_attitude(self):
+        entry = PlanEntrySchema(**dict(_ENTRY_DICT, ra=15.0, dec=45.0, roll=10.0))
+
+        dumped = entry.model_dump(mode="json")
+
+        attitude = dumped["target_attitude"]
+        assert attitude["frame"] == "GCRS"
+        assert attitude["body_frame"] == "COAST_BODY"
+        assert attitude["rotation"]["representation"] == "quaternion"
+        assert attitude["rotation"]["direction"] == "inertial_to_body"
+        assert attitude["rotation"]["order"] == "wxyz"
+        assert attitude["rotation"]["values"] == pytest.approx(
+            attitude_to_quat(15.0, 45.0, 10.0).tolist()
+        )
+        assert attitude["pointing"] == {
+            "ra_deg": 15.0,
+            "dec_deg": 45.0,
+            "roll_deg": 10.0,
+            "boresight_axis": "+X",
+            "roll_axis": "+X",
+            "roll_source": "planned",
+        }
+
+    def test_target_attitude_metadata_fields_are_typed_literals(self):
+        rotation = AttitudeRotationSchema(values=(1.0, 0.0, 0.0, 0.0))
+        pointing = AttitudePointingSchema(
+            ra_deg=15.0,
+            dec_deg=45.0,
+            roll_deg=10.0,
+            boresight_axis="+Z",
+        )
+
+        attitude = TargetAttitudeSchema(rotation=rotation, pointing=pointing)
+
+        assert attitude.rotation.representation == "quaternion"
+        assert attitude.pointing.boresight_axis == "+Z"
+
+        with pytest.raises(ValidationError):
+            AttitudeRotationSchema(
+                representation="matrix",
+                values=(1.0, 0.0, 0.0, 0.0),
+            )
+        with pytest.raises(ValidationError):
+            AttitudePointingSchema(
+                ra_deg=15.0,
+                dec_deg=45.0,
+                roll_deg=10.0,
+                boresight_axis="Z",
+            )
+        with pytest.raises(ValidationError):
+            TargetAttitudeSchema(
+                frame="ICRF",
+                rotation=rotation,
+                pointing=pointing,
+            )
+
+    def test_unconstrained_roll_sentinel_exports_zero_roll_attitude(self):
+        entry = PlanEntrySchema(**dict(_ENTRY_DICT, roll=-1.0))
+
+        attitude = entry.model_dump(mode="json")["target_attitude"]
+
+        assert attitude["rotation"]["values"] == pytest.approx(
+            attitude_to_quat(_ENTRY_DICT["ra"], _ENTRY_DICT["dec"], 0.0).tolist()
+        )
+        assert attitude["pointing"]["roll_deg"] == 0.0
+        assert (
+            attitude["pointing"]["roll_source"]
+            == "defaulted_from_unconstrained_sentinel"
+        )
+
     def test_gsp_contact_metadata_roundtrips(self):
         entry = PlanEntrySchema(
             **dict(
@@ -146,6 +221,13 @@ class TestPlanEntrySchema:
         assert reloaded.track_end_ra == pytest.approx(48.75)
         assert reloaded.track_end_dec == pytest.approx(9.5)
         assert reloaded.track_end_roll == pytest.approx(13.0)
+
+    def test_dynamic_pass_entries_do_not_export_fixed_target_attitude(self):
+        entry = PlanEntrySchema(**dict(_ENTRY_DICT, obstype="GSP"))
+
+        dumped = entry.model_dump(mode="json", exclude_none=True)
+
+        assert "target_attitude" not in dumped
 
 
 # ── PlanSchema ─────────────────────────────────────────────────────────────────
@@ -225,6 +307,18 @@ class TestPlanSchema:
 
         raw = json.loads(dest.read_text())
         assert "metadata" not in raw
+
+    def test_save_writes_target_attitude_for_static_entries(self, tmp_path):
+        schema = _make_schema(1)
+        dest = tmp_path / "plan.json"
+
+        schema.save(dest)
+
+        raw = json.loads(dest.read_text())
+        attitude = raw["entries"][0]["target_attitude"]
+        assert attitude["rotation"]["direction"] == "inertial_to_body"
+        assert attitude["rotation"]["order"] == "wxyz"
+        assert attitude["pointing"]["boresight_axis"] == "+X"
 
     def test_save_produces_valid_json(self, tmp_path):
         schema = _make_schema(1)
