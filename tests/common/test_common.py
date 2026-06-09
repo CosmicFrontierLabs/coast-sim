@@ -16,6 +16,7 @@ from conops.common import (
     body_vector_to_eci,
     scbodyvector,
 )
+from conops.common.vector import _quat_to_rot, attitude_to_quat
 
 
 class TestACSMode:
@@ -197,6 +198,35 @@ class TestBodyVectorTrackingAttitude:
         )
 
         assert recovered_body_vector == pytest.approx(body_vector, abs=1e-9)
+
+    @pytest.mark.parametrize(
+        "attitude",
+        [
+            (0.0, 0.0, 90.0),
+            (45.0, 30.0, 15.0),
+            (120.0, -20.0, 275.0),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "body_vector",
+        [
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, 1.0),
+            (1.0 / np.sqrt(2.0), 1.0 / np.sqrt(2.0), 0.0),
+        ],
+    )
+    def test_attitude_quaternion_matches_body_vector_to_eci(
+        self, attitude, body_vector
+    ):
+        ra, dec, roll = attitude
+        q = attitude_to_quat(ra, dec, roll)
+        eci_to_body = _quat_to_rot(q)
+        quat_body_to_eci = eci_to_body.T @ np.asarray(body_vector, dtype=np.float64)
+
+        expected = body_vector_to_eci(ra, dec, roll, body_vector)
+        assert expected is not None
+        assert quat_body_to_eci == pytest.approx(expected, abs=1e-9)
 
     def test_legacy_minus_x_tracking_keeps_zero_roll(self):
         target = np.array([0.3, -0.4, 0.8660254])
