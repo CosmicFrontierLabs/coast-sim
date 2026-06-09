@@ -1,5 +1,6 @@
 from .plan import Plan, TargetList
 from .plan_entry import PlanEntry
+from .plan_metadata import attach_tle_plan_metadata, tle_plan_metadata
 from .plan_schema import (
     AttitudeSampleSchema,
     AttitudeTimeseriesSchema,
@@ -21,4 +22,6 @@ __all__ = [
     "Queue",
     "TargetQueue",
     "TargetSlewEstimate",
+    "attach_tle_plan_metadata",
+    "tle_plan_metadata",
 ]
