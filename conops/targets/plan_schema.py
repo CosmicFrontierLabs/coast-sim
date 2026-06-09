@@ -24,7 +24,7 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar, Literal
 
 from pydantic import (
     BaseModel,
@@ -38,8 +38,41 @@ from pydantic import (
 
 from .._version import __version__
 from ..common.enums import ObsType
+from ..common.vector import attitude_to_quat
 from .plan import Plan
 from .plan_entry import PlanEntry
+
+BodyAxis = Literal["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
+RollSource = Literal["planned", "defaulted_from_unconstrained_sentinel"]
+
+
+class AttitudeRotationSchema(BaseModel):
+    """Generic attitude rotation representation."""
+
+    representation: Literal["quaternion"] = "quaternion"
+    direction: Literal["inertial_to_body"] = "inertial_to_body"
+    order: Literal["wxyz"] = "wxyz"
+    values: tuple[float, float, float, float]
+
+
+class AttitudePointingSchema(BaseModel):
+    """Pointing parameters used to generate a target attitude."""
+
+    ra_deg: float
+    dec_deg: float
+    roll_deg: float
+    boresight_axis: BodyAxis = "+X"
+    roll_axis: BodyAxis = "+X"
+    roll_source: RollSource = "planned"
+
+
+class TargetAttitudeSchema(BaseModel):
+    """Commanded target attitude for a fixed-attitude plan entry."""
+
+    frame: Literal["GCRS"] = "GCRS"
+    body_frame: Literal["COAST_BODY"] = "COAST_BODY"
+    rotation: AttitudeRotationSchema
+    pointing: AttitudePointingSchema
 
 
 class PlanEntrySchema(BaseModel):
@@ -51,6 +84,9 @@ class PlanEntrySchema(BaseModel):
     """
 
     model_config = ConfigDict(from_attributes=True)
+    _STATIC_TARGET_OBSTYPES: ClassVar[frozenset[ObsType]] = frozenset(
+        {ObsType.PPT, ObsType.AT, ObsType.TOO}
+    )
 
     name: str = ""
     ra: float = 0.0
@@ -108,6 +144,37 @@ class PlanEntrySchema(BaseModel):
         if v is None:
             return None
         return datetime.fromtimestamp(v, tz=timezone.utc).isoformat()
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def target_attitude(self) -> TargetAttitudeSchema | None:
+        """Fixed target attitude generated from COAST's RA/Dec/Roll convention."""
+        if self.obstype not in self._STATIC_TARGET_OBSTYPES:
+            return None
+
+        roll_deg = float(self.roll)
+        roll_source: RollSource = "planned"
+        if roll_deg == -1.0:
+            roll_deg = 0.0
+            roll_source = "defaulted_from_unconstrained_sentinel"
+
+        quat = attitude_to_quat(self.ra, self.dec, roll_deg)
+        return TargetAttitudeSchema(
+            rotation=AttitudeRotationSchema(
+                values=(
+                    float(quat[0]),
+                    float(quat[1]),
+                    float(quat[2]),
+                    float(quat[3]),
+                )
+            ),
+            pointing=AttitudePointingSchema(
+                ra_deg=float(self.ra),
+                dec_deg=float(self.dec),
+                roll_deg=roll_deg,
+                roll_source=roll_source,
+            ),
+        )
 
     @model_validator(mode="before")
     @classmethod
