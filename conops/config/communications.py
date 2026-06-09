@@ -12,7 +12,7 @@ from ._base import ConfigModel
 class BandCapability(ConfigModel):
     """Defines a communication band's data rate capabilities."""
 
-    band: Literal["S", "X", "Ka", "Ku", "L", "C", "K"]  # Common spacecraft bands
+    band: Literal["UHF", "S", "X", "Ka", "Ku", "L", "C", "K"]  # Common bands
     uplink_rate_mbps: float = Field(
         default=0.0, description="Uplink data rate in Mbps", ge=0.0
     )

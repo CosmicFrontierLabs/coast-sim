@@ -39,9 +39,16 @@ class TestBandCapability:
 
     def test_supported_bands(self):
         """Test all supported band types."""
-        for band_type in ["S", "X", "Ka", "Ku", "L", "C", "K"]:
+        for band_type in ["UHF", "S", "X", "Ka", "Ku", "L", "C", "K"]:
             band = BandCapability(band=band_type, downlink_rate_mbps=10.0)
             assert band.band == band_type
+
+    def test_uhf_requires_explicit_rates(self):
+        """Test UHF is supported but does not assume generic default rates."""
+        band = BandCapability(band="UHF")
+        assert band.band == "UHF"
+        assert band.uplink_rate_mbps == 0.0
+        assert band.downlink_rate_mbps == 0.0
 
 
 class TestAntennaPointing:

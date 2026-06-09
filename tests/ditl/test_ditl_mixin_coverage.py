@@ -166,3 +166,12 @@ def test_get_effective_data_rate_branches(mock_config):
     )
     # Effective per band: S=min(5,10)=5, X=min(50,40)=40, Ka excluded (0)
     assert mixin._get_effective_data_rate(station) == 40.0
+
+    # UHF is a supported comms band and participates in compatibility matching.
+    station.bands = ["UHF"]
+    station.supported_bands = Mock(return_value=["UHF"])
+    station.get_downlink_rate = Mock(return_value=0.0384)
+    mock_config.spacecraft_bus.communications.get_downlink_rate = Mock(
+        return_value=0.0192
+    )
+    assert mixin._get_effective_data_rate(station) == 0.0192
