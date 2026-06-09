@@ -41,7 +41,7 @@ from ..common.enums import ObsType
 from ..common.vector import attitude_to_quat
 from .plan import Plan
 from .plan_entry import PlanEntry
-from .plan_metadata import PlanSchemaMetadata
+from .plan_metadata import PlanMetadata
 
 BodyAxis = Literal["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
 RollSource = Literal["planned", "defaulted_from_unconstrained_sentinel"]
@@ -308,7 +308,7 @@ class PlanSchema(BaseModel):
     start: float = 0.0
     end: float = 0.0
     attitude_timeseries_file: str | None = None
-    metadata: PlanSchemaMetadata | None = None
+    metadata: PlanMetadata | None = None
     entries: list[PlanEntrySchema] = Field(default_factory=list)
     attitude_timeseries: AttitudeTimeseriesSchema | None = Field(
         default=None, exclude=True

@@ -32,7 +32,15 @@ class TLEEphemerisMetadata(BaseModel):
 
 
 class PlanMetadata(BaseModel):
-    ephemeris: TLEEphemerisMetadata
+    """Top-level metadata envelope persisted under ``PlanSchema.metadata``.
+
+    ``ephemeris`` is typed when present, while producer-specific fields remain
+    supported via ``extra=allow``.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    ephemeris: TLEEphemerisMetadata | None = None
 
     @classmethod
     def from_tle_record(
@@ -60,15 +68,3 @@ class PlanMetadata(BaseModel):
                 classical_elements=classical_elements(),
             )
         )
-
-
-class PlanSchemaMetadata(BaseModel):
-    """Top-level metadata envelope persisted under ``PlanSchema.metadata``.
-
-    ``ephemeris`` is typed when present, while producer-specific fields remain
-    supported via ``extra=allow``.
-    """
-
-    model_config = ConfigDict(extra="allow")
-
-    ephemeris: TLEEphemerisMetadata | None = None

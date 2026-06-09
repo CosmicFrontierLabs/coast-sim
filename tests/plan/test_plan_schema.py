@@ -20,7 +20,7 @@ from conops.targets import (
     PlanSchema,
     TargetAttitudeSchema,
 )
-from conops.targets.plan_metadata import PlanMetadata, PlanSchemaMetadata
+from conops.targets.plan_metadata import PlanMetadata
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -301,7 +301,7 @@ class TestPlanSchema:
 
     def test_save_and_load_roundtrip_metadata(self, tmp_path):
         original = _make_schema(1)
-        original.metadata = PlanSchemaMetadata.model_validate(
+        original.metadata = PlanMetadata.model_validate(
             {
                 "ephemeris": {
                     "source": "TLE",
@@ -543,11 +543,11 @@ class TestPlanSchema:
 
         plan = Plan()
         schema = PlanSchema.from_plan(plan)
-        schema.metadata = PlanSchemaMetadata.model_validate(
+        schema.metadata = PlanMetadata.model_validate(
             {"generator": {"name": "unit-test"}}
         )
 
-        schema.metadata = PlanSchemaMetadata.model_validate(
+        schema.metadata = PlanMetadata.model_validate(
             {
                 **(schema.metadata.model_dump(mode="json") if schema.metadata else {}),
                 **PlanMetadata.from_tle_record(

@@ -9,7 +9,7 @@ import pytest
 from conops import Plan, PlanEntry
 from conops.common.enums import ObsType
 from conops.targets import AttitudeSampleSchema, AttitudeTimeseriesSchema
-from conops.targets.plan_metadata import PlanSchemaMetadata
+from conops.targets.plan_metadata import PlanMetadata
 
 
 def _make_plan_entry(obsid: int, begin: float, end: float) -> PlanEntry:
@@ -241,7 +241,7 @@ class TestPlanSaveLoad:
         plan.save(dest)
 
         raw = json.loads(dest.read_text())
-        expected = PlanSchemaMetadata.model_validate(plan.metadata).model_dump(
+        expected = PlanMetadata.model_validate(plan.metadata).model_dump(
             mode="json", exclude_none=True
         )
         assert raw["metadata"] == expected
