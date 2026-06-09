@@ -206,7 +206,7 @@ placement:
 
 1. Dot-product the component normal against the six bus face normals.
 2. Select the face with the largest dot product.
-3. Place the component centre just outside that face (3 mm gap) and orient the
+3. Place the component centre just outside that face (gap is component-specific; e.g. 20 mm for solar panels and 5 mm for radiators) and orient the
    panel spanning directions perpendicular to the face normal.
 
 Solar panel size is estimated from ``max_power`` assuming 150 W/m² (solar

@@ -11,8 +11,9 @@ Coordinate system (spacecraft body frame)
   +Z  completes the right-handed system
 
 Component placement rules
+Component placement rules
 --------------------------
-  Telescope   – cylinder extending in the boresight direction from the +X bus face.
+  Telescope   – cylinder extending in the boresight direction from the bus surface.
   Solar panels – use ``PanelGeometry.center_m`` when present; otherwise placed
                  on the bus face whose outward normal best matches the panel normal.
   Radiators   – placed on the bus face whose outward normal best matches the
@@ -305,7 +306,7 @@ def _arrow_traces(
         legendgroup=legendgroup,
         sizemode="absolute",
         sizeref=cone_sz,
-        anchor="tail",
+        anchor="tip",
         hoverinfo="name",
     )
     return [line, cone]
@@ -452,11 +453,14 @@ def plot_spacecraft_3d(
         # Outer baffle tube starts at the +X face of the bus
         # (projected along boresight to the face)
         # Approximate: place the tube starting at the bus face in the boresight direction
-        face_offset: float = max(
-            hx * abs(bore[0]), hy * abs(bore[1]), hz * abs(bore[2])
-        )
+        eps = 1e-12
+        t_candidates = [
+            hx / abs(bore[0]) if abs(bore[0]) > eps else math.inf,
+            hy / abs(bore[1]) if abs(bore[1]) > eps else math.inf,
+            hz / abs(bore[2]) if abs(bore[2]) > eps else math.inf,
+        ]
+        face_offset: float = min(t_candidates)
         tube_start = bore * face_offset
-
         outer_r = aperture_r + 0.06  # baffle slightly wider than aperture
         scope_name = getattr(inst, "name", "Telescope")
 
