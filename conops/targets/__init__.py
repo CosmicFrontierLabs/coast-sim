@@ -3,6 +3,7 @@ from .plan_entry import PlanEntry
 from .plan_metadata import (
     PlanMetadata,
     TLEEphemerisMetadata,
+    attach_tle_plan_metadata,
 )
 from .plan_schema import (
     AttitudePointingSchema,
@@ -33,4 +34,5 @@ __all__ = [
     "TargetSlewEstimate",
     "PlanMetadata",
     "TLEEphemerisMetadata",
+    "attach_tle_plan_metadata",
 ]

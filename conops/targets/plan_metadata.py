@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .plan import Plan
+
 
 def _format_utc_datetime(value: datetime) -> str:
     if value.tzinfo is None:
@@ -68,3 +70,26 @@ class PlanMetadata(BaseModel):
                 classical_elements=classical_elements(),
             )
         )
+
+
+def attach_tle_plan_metadata(
+    plan: Plan,
+    tle_record: Any,
+    tle_file: str | Path | None = None,
+    *,
+    source: str = "TLE",
+) -> None:
+    """Attach TLE metadata to ``plan.metadata`` while preserving existing keys."""
+    existing = PlanMetadata.model_validate(getattr(plan, "metadata", None) or {})
+    ephemeris_metadata = PlanMetadata.from_tle_record(
+        tle_record=tle_record,
+        tle_file=tle_file,
+        source=source,
+    )
+
+    plan.metadata = PlanMetadata.model_validate(
+        {
+            **existing.model_dump(mode="json", exclude_none=True),
+            **ephemeris_metadata.model_dump(mode="json", exclude_none=True),
+        }
+    ).model_dump(mode="json", exclude_none=True)

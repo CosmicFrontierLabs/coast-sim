@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
 
 import pytest
 from rust_ephem.tle import TLERecord
 
-from conops.targets import Plan, PlanMetadata
+from conops.targets import Plan, PlanMetadata, attach_tle_plan_metadata
 
 _TLE1 = "1 43613U 18070A   26060.00000000  .00000000  00000-0  00000-0 0  9991"
 _TLE2 = "2 43613  97.7898  39.6457 0016466  83.3495 116.0254 15.13083683    09"
@@ -46,17 +45,13 @@ def test_plan_metadata_from_tle_record_uses_rust_ephem_elements(
     assert elements["RightAscension_deg"] == pytest.approx(39.6457)
 
 
-def test_plan_metadata_manual_merge_preserves_existing_metadata(
+def test_attach_tle_plan_metadata_preserves_existing_metadata(
     tle_record: TLERecord,
 ) -> None:
     plan = Plan()
     plan.metadata = {"producer": {"name": "mission-generator"}}
 
-    existing: dict[str, Any] = plan.metadata or {}
-    plan.metadata = {
-        **existing,
-        **PlanMetadata.from_tle_record(tle_record=tle_record).model_dump(mode="json"),
-    }
+    attach_tle_plan_metadata(plan, tle_record=tle_record)
 
     assert plan.metadata["producer"] == {"name": "mission-generator"}
     assert plan.metadata["ephemeris"]["classical_elements"] == (
