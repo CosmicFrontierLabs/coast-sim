@@ -2,10 +2,12 @@
 
 import json
 import pathlib
+from datetime import datetime, timezone
 from unittest.mock import Mock
 
 import pytest
 from pydantic import ValidationError
+from rust_ephem.tle import TLERecord
 
 from conops.common.enums import ObsType
 from conops.common.vector import attitude_to_quat
@@ -18,6 +20,7 @@ from conops.targets import (
     PlanSchema,
     TargetAttitudeSchema,
 )
+from conops.targets.plan_metadata import PlanMetadata, PlanSchemaMetadata
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -62,6 +65,20 @@ def _make_schema(n: int = 2) -> PlanSchema:
         end=entries[-1]["end"],
         num_entries=n,
         entries=[PlanEntrySchema(**e) for e in entries],
+    )
+
+
+_TLE1 = "1 43613U 18070A   26060.00000000  .00000000  00000-0  00000-0 0  9991"
+_TLE2 = "2 43613  97.7898  39.6457 0016466  83.3495 116.0254 15.13083683    09"
+
+
+@pytest.fixture
+def tle_record() -> TLERecord:
+    return TLERecord(
+        name="Aperture-1",
+        line1=_TLE1,
+        line2=_TLE2,
+        epoch=datetime(2026, 3, 1, tzinfo=timezone.utc),
     )
 
 
@@ -284,20 +301,32 @@ class TestPlanSchema:
 
     def test_save_and_load_roundtrip_metadata(self, tmp_path):
         original = _make_schema(1)
-        original.metadata = {
-            "ephemeris": {
-                "source": "TLE",
-                "classical_elements": {"SemimajorAxis_m": 6_900_000.0},
+        original.metadata = PlanSchemaMetadata.model_validate(
+            {
+                "ephemeris": {
+                    "source": "TLE",
+                    "tle_name": "Aperture-1",
+                    "tle_epoch_utc": "2026-03-01T00:00:00Z",
+                    "norad_id": 43613,
+                    "line1": "1 43613U 18070A   26060.00000000  .00000000  00000-0  00000-0 0  9991",
+                    "line2": "2 43613  97.7898  39.6457 0016466  83.3495 116.0254 15.13083683    09",
+                    "classical_elements": {"SemimajorAxis_m": 6_900_000.0},
+                }
             }
-        }
+        )
         dest = tmp_path / "plan.json"
 
         original.save(dest)
 
         raw = json.loads(dest.read_text())
-        assert raw["metadata"] == original.metadata
+        assert raw["metadata"] == original.metadata.model_dump(
+            mode="json", exclude_none=True
+        )
         loaded = PlanSchema.load(dest)
-        assert loaded.metadata == original.metadata
+        assert loaded.metadata is not None
+        assert loaded.metadata.model_dump(
+            mode="json", exclude_none=True
+        ) == original.metadata.model_dump(mode="json", exclude_none=True)
 
     def test_save_omits_empty_metadata(self, tmp_path):
         schema = _make_schema(1)
@@ -509,6 +538,31 @@ class TestPlanSchema:
         assert schema.start == 0.0
         assert schema.end == 0.0
 
+    def test_from_plan_manual_tle_metadata_merge(self, tle_record: TLERecord):
+        from conops.targets.plan import Plan
+
+        plan = Plan()
+        schema = PlanSchema.from_plan(plan)
+        schema.metadata = PlanSchemaMetadata.model_validate(
+            {"generator": {"name": "unit-test"}}
+        )
+
+        schema.metadata = PlanSchemaMetadata.model_validate(
+            {
+                **(schema.metadata.model_dump(mode="json") if schema.metadata else {}),
+                **PlanMetadata.from_tle_record(
+                    tle_record=tle_record,
+                    tle_file="tle/example.tle",
+                ).model_dump(mode="json"),
+            }
+        )
+
+        metadata = schema.metadata.model_dump(mode="json") if schema.metadata else {}
+        assert metadata["generator"] == {"name": "unit-test"}
+        assert metadata["ephemeris"]["source"] == "TLE"
+        assert metadata["ephemeris"]["norad_id"] == 43613
+        assert metadata["ephemeris"]["tle_file"] == "tle/example.tle"
+
     def test_from_plan_preserves_metadata(self):
         from conops.targets.plan import Plan
 
@@ -517,7 +571,10 @@ class TestPlanSchema:
 
         schema = PlanSchema.from_plan(plan)
 
-        assert schema.metadata == plan.metadata
+        assert schema.metadata is not None
+        assert (
+            schema.metadata.model_dump(mode="json", exclude_none=True) == plan.metadata
+        )
 
     def test_from_plan_clamps_negative_exposure(self, tmp_path):
         """Generated JSON should not contain negative exposure for truncated entries."""

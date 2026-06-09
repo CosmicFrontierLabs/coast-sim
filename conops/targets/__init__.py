@@ -1,6 +1,10 @@
 from .plan import Plan, TargetList
 from .plan_entry import PlanEntry
-from .plan_metadata import attach_tle_plan_metadata, tle_plan_metadata
+from .plan_metadata import (
+    PlanMetadata,
+    PlanSchemaMetadata,
+    TLEEphemerisMetadata,
+)
 from .plan_schema import (
     AttitudePointingSchema,
     AttitudeRotationSchema,
@@ -28,6 +32,7 @@ __all__ = [
     "Queue",
     "TargetQueue",
     "TargetSlewEstimate",
-    "attach_tle_plan_metadata",
-    "tle_plan_metadata",
+    "PlanMetadata",
+    "PlanSchemaMetadata",
+    "TLEEphemerisMetadata",
 ]

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 
 import pytest
 from rust_ephem.tle import TLERecord
 
-from conops.targets import Plan, attach_tle_plan_metadata, tle_plan_metadata
+from conops.targets import Plan, PlanMetadata
 
 _TLE1 = "1 43613U 18070A   26060.00000000  .00000000  00000-0  00000-0 0  9991"
 _TLE2 = "2 43613  97.7898  39.6457 0016466  83.3495 116.0254 15.13083683    09"
@@ -21,11 +22,13 @@ def tle_record() -> TLERecord:
     )
 
 
-def test_tle_plan_metadata_uses_rust_ephem_elements(tle_record: TLERecord) -> None:
-    metadata = tle_plan_metadata(
+def test_plan_metadata_from_tle_record_uses_rust_ephem_elements(
+    tle_record: TLERecord,
+) -> None:
+    metadata = PlanMetadata.from_tle_record(
         tle_record=tle_record,
         tle_file="TLEs/Aperture-1_TLE_20260301.tle",
-    )
+    ).model_dump(mode="json")
 
     ephemeris = metadata["ephemeris"]
     assert ephemeris["source"] == "TLE"
@@ -43,13 +46,17 @@ def test_tle_plan_metadata_uses_rust_ephem_elements(tle_record: TLERecord) -> No
     assert elements["RightAscension_deg"] == pytest.approx(39.6457)
 
 
-def test_attach_tle_plan_metadata_preserves_existing_metadata(
+def test_plan_metadata_manual_merge_preserves_existing_metadata(
     tle_record: TLERecord,
 ) -> None:
     plan = Plan()
     plan.metadata = {"producer": {"name": "mission-generator"}}
 
-    attach_tle_plan_metadata(plan, tle_record=tle_record)
+    existing: dict[str, Any] = plan.metadata or {}
+    plan.metadata = {
+        **existing,
+        **PlanMetadata.from_tle_record(tle_record=tle_record).model_dump(mode="json"),
+    }
 
     assert plan.metadata["producer"] == {"name": "mission-generator"}
     assert plan.metadata["ephemeris"]["classical_elements"] == (
@@ -57,7 +64,7 @@ def test_attach_tle_plan_metadata_preserves_existing_metadata(
     )
 
 
-def test_tle_plan_metadata_requires_rust_ephem_element_api() -> None:
+def test_plan_metadata_requires_rust_ephem_element_api() -> None:
     class OldRecord:
         name = "legacy"
         epoch = datetime(2026, 3, 1, tzinfo=timezone.utc)
@@ -66,4 +73,4 @@ def test_tle_plan_metadata_requires_rust_ephem_element_api() -> None:
         line2 = _TLE2
 
     with pytest.raises(TypeError, match="rust-ephem >= 0.11"):
-        tle_plan_metadata(OldRecord())
+        PlanMetadata.from_tle_record(OldRecord())
