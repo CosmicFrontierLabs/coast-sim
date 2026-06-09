@@ -9,7 +9,7 @@ The Communications System configuration defines the onboard communications capab
 Key Features
 ------------
 
-* **Multiple frequency bands**: S, X, Ka, Ku, L, C, K bands
+* **Multiple frequency bands**: UHF, S, X, Ka, Ku, L, C, K bands
 * **Flexible antenna types**: Omnidirectional, fixed, and gimbaled antennas
 * **Per-band data rates**: Independent uplink and downlink rates for each frequency band
 * **Standard defaults**: Automatic rate assignment based on common band characteristics
@@ -27,7 +27,7 @@ Defines the capabilities for a specific frequency band.
 
 **Fields:**
 
-* ``band``: Frequency band identifier (``"S"``, ``"X"``, ``"Ka"``, ``"Ku"``, ``"L"``, ``"C"``, ``"K"``)
+* ``band``: Frequency band identifier (``"UHF"``, ``"S"``, ``"X"``, ``"Ka"``, ``"Ku"``, ``"L"``, ``"C"``, ``"K"``)
 * ``uplink_rate_mbps``: Uplink data rate in Mbps (≥ 0)
 * ``downlink_rate_mbps``: Downlink data rate in Mbps (≥ 0)
 
@@ -43,7 +43,8 @@ When only the ``band`` is specified, standard defaults are automatically applied
 * **C-band**: uplink 2.0 Mbps, downlink 20.0 Mbps
 * **K-band**: uplink 15.0 Mbps, downlink 200.0 Mbps
 
-Explicitly specified values override these defaults.
+UHF has no generic default rate; specify mission-specific uplink and downlink
+rates explicitly. Explicitly specified values override all defaults.
 
 AntennaPointing
 ^^^^^^^^^^^^^^^
