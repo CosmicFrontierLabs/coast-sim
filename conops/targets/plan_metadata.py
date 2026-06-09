@@ -16,15 +16,15 @@ def _format_utc_datetime(value: datetime) -> str:
 
 
 class TLEEphemerisMetadata(BaseModel):
-    source: str = "TLE"
+    source: str | None = "TLE"
     tle_file: str | None = None
-    tle_name: str
-    tle_epoch_utc: str
-    norad_id: int
-    line1: str
-    line2: str
-    classical_elements: dict[str, float]
-    classical_elements_note: str = Field(
+    tle_name: str | None = None
+    tle_epoch_utc: str | None = None
+    norad_id: int | None = None
+    line1: str | None = None
+    line2: str | None = None
+    classical_elements: dict[str, float] | None = None
+    classical_elements_note: str | None = Field(
         default=(
             "TLE mean elements at the TLE epoch; RightAscension_deg is RAAN. "
             "SemimajorAxis_m is derived from TLE mean motion, and "
