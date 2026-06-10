@@ -437,6 +437,7 @@ class FaultManagement(ConfigModel):
 
             if state == "yellow":
                 st.yellow_seconds += step_size
+                st.continuous_red_seconds = 0.0
             elif state == "red":
                 st.red_seconds += step_size
                 st.continuous_red_seconds += step_size
