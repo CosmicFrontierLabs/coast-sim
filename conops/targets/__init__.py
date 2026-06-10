@@ -1,8 +1,8 @@
 from .plan import Plan, TargetList
 from .plan_entry import PlanEntry
 from .plan_metadata import (
+    EphemerisMetadata,
     PlanMetadata,
-    TLEEphemerisMetadata,
     attach_tle_plan_metadata,
 )
 from .plan_schema import (
@@ -32,7 +32,7 @@ __all__ = [
     "Queue",
     "TargetQueue",
     "TargetSlewEstimate",
+    "EphemerisMetadata",
     "PlanMetadata",
-    "TLEEphemerisMetadata",
     "attach_tle_plan_metadata",
 ]

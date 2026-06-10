@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from .plan import Plan
 
@@ -15,7 +15,9 @@ def _format_utc_datetime(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-class TLEEphemerisMetadata(BaseModel):
+class EphemerisMetadata(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     source: str | None = "TLE"
     tle_file: str | None = None
     tle_name: str | None = None
@@ -24,13 +26,14 @@ class TLEEphemerisMetadata(BaseModel):
     line1: str | None = None
     line2: str | None = None
     classical_elements: dict[str, float] | None = None
-    classical_elements_note: str | None = Field(
-        default=(
-            "TLE mean elements at the TLE epoch; RightAscension_deg is RAAN. "
-            "SemimajorAxis_m is derived from TLE mean motion, and "
-            "TrueAnomaly_deg is derived from TLE mean anomaly."
-        )
-    )
+    classical_elements_note: str | None = None
+
+
+TLE_CLASSICAL_ELEMENTS_NOTE = (
+    "TLE mean elements at the TLE epoch; RightAscension_deg is RAAN. "
+    "SemimajorAxis_m is derived from TLE mean motion, and "
+    "TrueAnomaly_deg is derived from TLE mean anomaly."
+)
 
 
 class PlanMetadata(BaseModel):
@@ -42,7 +45,7 @@ class PlanMetadata(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    ephemeris: TLEEphemerisMetadata | None = None
+    ephemeris: EphemerisMetadata | None = None
 
     @classmethod
     def from_tle_record(
@@ -59,7 +62,7 @@ class PlanMetadata(BaseModel):
             )
 
         return cls(
-            ephemeris=TLEEphemerisMetadata(
+            ephemeris=EphemerisMetadata(
                 source=source,
                 tle_file=str(tle_file) if tle_file is not None else None,
                 tle_name=tle_record.name,
@@ -68,6 +71,7 @@ class PlanMetadata(BaseModel):
                 line1=tle_record.line1,
                 line2=tle_record.line2,
                 classical_elements=classical_elements(),
+                classical_elements_note=TLE_CLASSICAL_ELEMENTS_NOTE,
             )
         )
 

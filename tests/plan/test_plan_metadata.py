@@ -69,3 +69,13 @@ def test_plan_metadata_requires_rust_ephem_element_api() -> None:
 
     with pytest.raises(TypeError, match="rust-ephem >= 0.11"):
         PlanMetadata.from_tle_record(OldRecord())
+
+
+def test_plan_metadata_preserves_non_tle_ephemeris_payload() -> None:
+    metadata = PlanMetadata.model_validate(
+        {"ephemeris": {"source": "SPICE", "kernel": "example.bsp"}}
+    ).model_dump(mode="json", exclude_none=True)
+
+    assert metadata["ephemeris"]["source"] == "SPICE"
+    assert metadata["ephemeris"]["kernel"] == "example.bsp"
+    assert "classical_elements_note" not in metadata["ephemeris"]
