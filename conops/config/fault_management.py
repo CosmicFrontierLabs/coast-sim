@@ -446,6 +446,9 @@ class FaultManagement(ConfigModel):
             st.current = state
 
             if state == "red" and threshold.triggers_safe_mode:
+                # With delay=0.0, continuous_red_seconds is also 0.0 on the first
+                # RED sample (step_size=0 for the initial call), so 0.0 >= 0.0
+                # fires immediately as intended.
                 if st.continuous_red_seconds >= threshold.safe_mode_delay_seconds:
                     self._trigger_safe_mode(
                         utime=utime,
