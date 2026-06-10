@@ -440,15 +440,20 @@ class FaultManagement(ConfigModel):
                 st.continuous_red_seconds = 0.0
             elif state == "red":
                 st.red_seconds += step_size
-                st.continuous_red_seconds += step_size
+                if previous_state == "red":
+                    st.continuous_red_seconds += step_size
+                else:
+                    # Just entered RED — reset so the delay is measured from the
+                    # transition point, not the start of this sample.
+                    st.continuous_red_seconds = 0.0
             else:
                 st.continuous_red_seconds = 0.0
             st.current = state
 
             if state == "red" and threshold.triggers_safe_mode:
-                # With delay=0.0, continuous_red_seconds is also 0.0 on the first
-                # RED sample (step_size=0 for the initial call), so 0.0 >= 0.0
-                # fires immediately as intended.
+                # delay=0.0: first RED sample resets continuous_red_seconds to 0.0
+                # and 0.0 >= 0.0 fires immediately. With delay>0, safe mode triggers
+                # only after that many seconds of sustained RED have elapsed post-entry.
                 if st.continuous_red_seconds >= threshold.safe_mode_delay_seconds:
                     self._trigger_safe_mode(
                         utime=utime,
@@ -513,7 +518,12 @@ class FaultManagement(ConfigModel):
                     # Accumulate violation time
                     fault_state.current = "red"
                     fault_state.red_seconds += step_size
-                    fault_state.continuous_violation_seconds += step_size
+                    if previous_violation_state:
+                        fault_state.continuous_violation_seconds += step_size
+                    else:
+                        # Just entered violation — reset so the threshold is measured
+                        # from the transition point, not the start of this sample.
+                        fault_state.continuous_violation_seconds = 0.0
 
                     # Check if we've exceeded the time threshold
                     if (
