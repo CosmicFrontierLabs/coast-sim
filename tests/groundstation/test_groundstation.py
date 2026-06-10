@@ -2,6 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from conops import GroundStation
+from conops.config import BandCapability
 
 
 class TestGroundStationAntennaFields:
@@ -16,6 +17,37 @@ class TestGroundStationAntennaFields:
     def test_default_overall_max_downlink_none(self):
         gs = GroundStation(code="X", name="X", latitude_deg=0.0, longitude_deg=0.0)
         assert gs.get_overall_max_downlink() is None
+
+    def test_default_schedule_for_tracking_true(self):
+        gs = GroundStation(code="X", name="X", latitude_deg=0.0, longitude_deg=0.0)
+        assert gs.schedule_for_tracking is True
+
+    def test_supports_uplink_and_downlink_reflect_configured_rates(self):
+        uplink_only = GroundStation(
+            code="UL",
+            name="Uplink",
+            latitude_deg=0.0,
+            longitude_deg=0.0,
+            bands=[
+                BandCapability(band="S", uplink_rate_mbps=2.0, downlink_rate_mbps=0.0)
+            ],
+        )
+        downlink_only = GroundStation(
+            code="DL",
+            name="Downlink",
+            latitude_deg=0.0,
+            longitude_deg=0.0,
+            bands=[
+                BandCapability(
+                    band="Ka", uplink_rate_mbps=0.0, downlink_rate_mbps=58.64
+                )
+            ],
+        )
+
+        assert uplink_only.supports_uplink is True
+        assert uplink_only.supports_downlink is False
+        assert downlink_only.supports_uplink is False
+        assert downlink_only.supports_downlink is True
 
 
 class TestGroundStation:

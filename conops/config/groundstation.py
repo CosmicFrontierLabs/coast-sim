@@ -25,6 +25,14 @@ class GroundStation(ConfigModel):
         le=1.0,
         description="Probability of scheduling a pass when available",
     )
+    schedule_for_tracking: bool = Field(
+        default=True,
+        description=(
+            "Whether visible passes from this station may be scheduled as "
+            "spacecraft-tracking ground-station passes. Set false for "
+            "uplink-only contacts that should not drive GSP attitude planning."
+        ),
+    )
     # Moved from Antenna
     bands: list[BandCapability] = Field(
         default_factory=list,
@@ -53,6 +61,16 @@ class GroundStation(ConfigModel):
             rates = [bc.downlink_rate_mbps for bc in self.bands]
             return max(rates) if rates else 0.0
         return None
+
+    @property
+    def supports_downlink(self) -> bool:
+        """Return whether this station has any configured downlink capability."""
+        return any(bc.downlink_rate_mbps > 0.0 for bc in self.bands)
+
+    @property
+    def supports_uplink(self) -> bool:
+        """Return whether this station has any configured uplink capability."""
+        return any(bc.uplink_rate_mbps > 0.0 for bc in self.bands)
 
 
 class GroundStationRegistry(ConfigModel):

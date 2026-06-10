@@ -530,8 +530,12 @@ class PassTimes:
         begin_time = timestamps[0]
         end_time = timestamps[-1]
 
-        # Process each ground station
+        # Process stations that are allowed to drive spacecraft GSP tracking. RF
+        # uplink/downlink capability is modeled separately on each station.
         for station in self.ground_stations.stations:
+            if not getattr(station, "schedule_for_tracking", True):
+                continue
+
             # Create GroundEphemeris for this station (vectorized ground station ephemeris)
 
             gs_ephem = rust_ephem.GroundEphemeris(

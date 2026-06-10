@@ -572,6 +572,35 @@ class TestPassTimes:
 
         assert pt._gsp_antenna_boresight_body() is None
 
+    def test_get_skips_stations_not_scheduled_for_tracking(
+        self, mock_constraint, mock_config
+    ):
+        """RF-capable stations can be excluded from spacecraft GSP tracking."""
+        stations = GroundStationRegistry()
+        stations.add(
+            GroundStation(
+                code="RF",
+                name="RF-capable non-tracking station",
+                latitude_deg=0.0,
+                longitude_deg=0.0,
+                schedule_probability=1.0,
+                schedule_for_tracking=False,
+                bands=[
+                    BandCapability(
+                        band="S", uplink_rate_mbps=2.0, downlink_rate_mbps=10.0
+                    )
+                ],
+            )
+        )
+        mock_config.ground_stations = stations
+        pt = PassTimes(config=mock_config)
+
+        with patch("conops.simulation.passes.rust_ephem.GroundEphemeris") as gs_ephem:
+            pt.get(year=2025, day=227, length=1)
+
+        gs_ephem.assert_not_called()
+        assert pt.passes == []
+
     def test_passtimes_requires_ephemeris(self, mock_config):
         """Test PassTimes requires ephemeris."""
         constraint = Mock(spec=Constraint)
