@@ -1,5 +1,10 @@
 from .plan import Plan, TargetList
 from .plan_entry import PlanEntry
+from .plan_metadata import (
+    EphemerisMetadata,
+    PlanMetadata,
+    attach_tle_plan_metadata,
+)
 from .plan_schema import (
     AttitudePointingSchema,
     AttitudeRotationSchema,
@@ -27,4 +32,7 @@ __all__ = [
     "Queue",
     "TargetQueue",
     "TargetSlewEstimate",
+    "EphemerisMetadata",
+    "PlanMetadata",
+    "attach_tle_plan_metadata",
 ]

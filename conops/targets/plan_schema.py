@@ -41,6 +41,7 @@ from ..common.enums import ObsType
 from ..common.vector import attitude_to_quat
 from .plan import Plan
 from .plan_entry import PlanEntry
+from .plan_metadata import PlanMetadata
 
 BodyAxis = Literal["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
 RollSource = Literal["planned", "defaulted_from_unconstrained_sentinel"]
@@ -307,7 +308,7 @@ class PlanSchema(BaseModel):
     start: float = 0.0
     end: float = 0.0
     attitude_timeseries_file: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: PlanMetadata | None = None
     entries: list[PlanEntrySchema] = Field(default_factory=list)
     attitude_timeseries: AttitudeTimeseriesSchema | None = Field(
         default=None, exclude=True
@@ -356,8 +357,7 @@ class PlanSchema(BaseModel):
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "start": entries[0].begin if entries else 0.0,
                 "end": entries[-1].end if entries else 0.0,
-                "num_entries": len(entries),
-                "metadata": getattr(data, "metadata", {}) or {},
+                "metadata": getattr(data, "metadata", None) or None,
                 "entries": entries,
                 "attitude_timeseries": getattr(data, "attitude_timeseries", None),
             }
@@ -479,8 +479,6 @@ class PlanSchema(BaseModel):
             )
 
         payload = schema.model_dump(mode="json", exclude_none=True)
-        if not payload.get("metadata"):
-            payload.pop("metadata", None)
         dest.write_text(json.dumps(payload, indent=indent), encoding="utf-8")
 
         return dest.resolve()

@@ -9,6 +9,7 @@ import pytest
 from conops import Plan, PlanEntry
 from conops.common.enums import ObsType
 from conops.targets import AttitudeSampleSchema, AttitudeTimeseriesSchema
+from conops.targets.plan_metadata import PlanMetadata
 
 
 def _make_plan_entry(obsid: int, begin: float, end: float) -> PlanEntry:
@@ -224,13 +225,26 @@ class TestPlanSaveLoad:
     def test_save_json_contains_plan_metadata_when_present(self, tmp_path):
         """Plan.save() preserves producer-specific top-level metadata."""
         plan = _make_plan(1)
-        plan.metadata = {"ephemeris": {"source": "TLE", "norad_id": 12345}}
+        plan.metadata = {
+            "ephemeris": {
+                "source": "TLE",
+                "tle_name": "Aperture-1",
+                "tle_epoch_utc": "2026-03-01T00:00:00Z",
+                "norad_id": 12345,
+                "line1": "1 43613U 18070A   26060.00000000  .00000000  00000-0  00000-0 0  9991",
+                "line2": "2 43613  97.7898  39.6457 0016466  83.3495 116.0254 15.13083683    09",
+                "classical_elements": {"SemimajorAxis_m": 6_900_000.0},
+            }
+        }
         dest = tmp_path / "plan.json"
 
         plan.save(dest)
 
         raw = json.loads(dest.read_text())
-        assert raw["metadata"] == plan.metadata
+        expected = PlanMetadata.model_validate(plan.metadata).model_dump(
+            mode="json", exclude_none=True
+        )
+        assert raw["metadata"] == expected
 
     def test_save_writes_attitude_timeseries_companion(self, tmp_path):
         """Plan.save() writes the attached executed-attitude companion file."""
@@ -335,4 +349,7 @@ class TestPlanSaveLoad:
         assert loaded.start == pytest.approx(plan.entries[0].begin)
         assert loaded.end == pytest.approx(plan.entries[-1].end)
         assert isinstance(loaded.version, int)
-        assert loaded.metadata == plan.metadata
+        assert loaded.metadata is not None
+        assert (
+            loaded.metadata.model_dump(mode="json", exclude_none=True) == plan.metadata
+        )
