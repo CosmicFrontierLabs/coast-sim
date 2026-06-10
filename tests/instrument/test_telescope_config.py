@@ -49,6 +49,10 @@ class TestTelescopeConfigFnumber:
         tc = TelescopeConfig(aperture_m=0.5, focal_length_m=5.0)
         assert tc.f_number == pytest.approx(10.0)
 
+    def test_f_number_derived_for_f7_0p5m_aperture(self) -> None:
+        tc = TelescopeConfig(aperture_m=0.5, focal_length_m=3.5)
+        assert tc.f_number == pytest.approx(7.0)
+
     def test_explicit_consistent_f_number_accepted(self) -> None:
         tc = TelescopeConfig(aperture_m=0.5, focal_length_m=5.0, f_number=10.0)
         assert tc.f_number == pytest.approx(10.0)

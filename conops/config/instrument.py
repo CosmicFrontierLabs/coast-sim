@@ -180,14 +180,14 @@ class Telescope(Instrument):
         ...     name="Primary Telescope",
         ...     boresight=(1.0, 0.0, 0.0),
         ...     optics=TelescopeConfig(
-        ...         aperture_m=0.6,
-        ...         focal_length_m=6.0,
+        ...         aperture_m=0.5,
+        ...         focal_length_m=3.5,              # f/7 telescope
         ...         telescope_type=TelescopeType.RITCHEY_CHRETIEN,
         ...         tube_length_m=1.2,
         ...     ),
         ... )
         >>> scope.optics.f_number
-        10.0
+        7.0
     """
 
     instrument_type: Literal["Telescope"] = Field(  # type: ignore[assignment]
