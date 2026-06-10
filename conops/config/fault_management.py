@@ -170,7 +170,7 @@ class FaultEvent:
 
 @dataclass
 class FaultState:
-    """Tracks constraint violations (both red limit and regular thresholds).
+    """Tracks constraint violations and threshold state durations.
 
     Attributes:
         in_violation: Whether currently violating the constraint
@@ -178,6 +178,7 @@ class FaultState:
         current: Current state for threshold-based faults (nominal/yellow/red)
         yellow_seconds: Time spent in yellow state (for threshold-based faults)
         red_seconds: Time spent in red state (for threshold-based faults)
+        continuous_red_seconds: Current continuous RED duration for thresholds
     """
 
     in_violation: bool = False
@@ -185,6 +186,7 @@ class FaultState:
     current: str = "nominal"  # Fault status: nominal | yellow | red
     yellow_seconds: float = 0.0  # Number of seconds in yellow state
     red_seconds: float = 0.0  # Number of seconds in red state
+    continuous_red_seconds: float = 0.0  # Continuous RED duration for thresholds
 
 
 class FaultConstraint(ConfigModel):
@@ -276,6 +278,12 @@ class FaultThreshold(ConfigModel):
         default=True,
         description="Whether a RED classification triggers safe mode (default True). "
         "Set False for monitoring-only thresholds that should alert but not safehold.",
+    )
+    safe_mode_delay_seconds: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Continuous RED duration required before triggering safe mode. "
+        "0.0 triggers immediately on RED.",
     )
 
     def classify(self, value: float) -> str:
@@ -429,22 +437,37 @@ class FaultManagement(ConfigModel):
 
             if state == "yellow":
                 st.yellow_seconds += step_size
+                st.continuous_red_seconds = 0.0
             elif state == "red":
                 st.red_seconds += step_size
+                if previous_state == "red":
+                    st.continuous_red_seconds += step_size
+                else:
+                    # Just entered RED — reset so the delay is measured from the
+                    # transition point, not the start of this sample.
+                    st.continuous_red_seconds = 0.0
+            else:
+                st.continuous_red_seconds = 0.0
             st.current = state
 
             if state == "red" and threshold.triggers_safe_mode:
-                self._trigger_safe_mode(
-                    utime=utime,
-                    name=name,
-                    cause=f"RED threshold exceeded for {name}",
-                    metadata={
-                        "value": val,
-                        "red_threshold": threshold.red,
-                        "direction": threshold.direction,
-                    },
-                    acs=acs,
-                )
+                # delay=0.0: first RED sample resets continuous_red_seconds to 0.0
+                # and 0.0 >= 0.0 fires immediately. With delay>0, safe mode triggers
+                # only after that many seconds of sustained RED have elapsed post-entry.
+                if st.continuous_red_seconds >= threshold.safe_mode_delay_seconds:
+                    self._trigger_safe_mode(
+                        utime=utime,
+                        name=name,
+                        cause=f"RED threshold exceeded for {name}",
+                        metadata={
+                            "value": val,
+                            "red_threshold": threshold.red,
+                            "direction": threshold.direction,
+                            "continuous_red_seconds": st.continuous_red_seconds,
+                            "safe_mode_delay_seconds": threshold.safe_mode_delay_seconds,
+                        },
+                        acs=acs,
+                    )
 
         # Check spacecraft-level red limit constraints if ephemeris and pointing provided
         if (
@@ -495,7 +518,12 @@ class FaultManagement(ConfigModel):
                     # Accumulate violation time
                     fault_state.current = "red"
                     fault_state.red_seconds += step_size
-                    fault_state.continuous_violation_seconds += step_size
+                    if previous_violation_state:
+                        fault_state.continuous_violation_seconds += step_size
+                    else:
+                        # Just entered violation — reset so the threshold is measured
+                        # from the transition point, not the start of this sample.
+                        fault_state.continuous_violation_seconds = 0.0
 
                     # Check if we've exceeded the time threshold
                     if (
@@ -551,17 +579,16 @@ class FaultManagement(ConfigModel):
         """
         stats: dict[str, dict[str, float | str | bool]] = {}
 
+        constraint_names = {c.name for c in self.red_limit_constraints}
+
         for name, st in self.states.items():
-            # Check if this is a red limit constraint or special constraint
-            if any(c.name == name for c in self.red_limit_constraints):
-                # Red limit constraint stats
+            if name in constraint_names:
                 stats[name] = {
                     "in_violation": st.in_violation,
                     "red_seconds": st.red_seconds,
                     "continuous_violation_seconds": st.continuous_violation_seconds,
                 }
             else:
-                # Threshold-based parameter stats
                 stats[name] = {
                     "yellow_seconds": st.yellow_seconds,
                     "red_seconds": st.red_seconds,
@@ -578,6 +605,7 @@ class FaultManagement(ConfigModel):
         direction: str = "below",
         acs_modes: list[ACSMode] | None = None,
         triggers_safe_mode: bool = True,
+        safe_mode_delay_seconds: float = 0.0,
     ) -> None:
         """Add a parameter threshold for fault monitoring.
 
@@ -591,6 +619,8 @@ class FaultManagement(ConfigModel):
             triggers_safe_mode: If True (default), a RED classification triggers safe mode.
                                 Set False for monitor-only thresholds that should alert but
                                 not cause a safehold.
+            safe_mode_delay_seconds: Continuous RED duration required before safe mode.
+                                     0.0 (default) triggers immediately on RED.
 
         Examples:
             >>> fm = FaultManagement()
@@ -619,6 +649,7 @@ class FaultManagement(ConfigModel):
                 direction=direction,
                 acs_modes=acs_modes,
                 triggers_safe_mode=triggers_safe_mode,
+                safe_mode_delay_seconds=safe_mode_delay_seconds,
             )
         )
 

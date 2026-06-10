@@ -275,7 +275,9 @@ class TestFaultManagementRedLimits:
             constraint=constraint_sun_90,
             time_threshold_seconds=300.0,
         )
-        for i in range(4):  # 4 * 60 = 240 seconds < 300 second threshold
+        for i in range(
+            4
+        ):  # entry resets to 0; 3 * 60 = 180 seconds < 300 second threshold
             hk = Housekeeping(
                 timestamp=ephem.timestamp[i],
                 ra=0.0,

@@ -878,24 +878,6 @@ class QueueDITL(DITLMixin, DITLStats):
             for start, end, dropped_obsid in self._dropped_science_windows
         )
 
-    def _hard_attitude_constraint_name(
-        self,
-        ra: float,
-        dec: float,
-        utime: float,
-        roll: float,
-        mode: ACSMode,
-    ) -> str | None:
-        if self.constraint.in_star_tracker_hard(
-            ra, dec, utime, target_roll=roll, acs_mode=mode
-        ):
-            return "ST Hard"
-        if self.constraint.in_radiator_hard(ra, dec, utime, target_roll=roll):
-            return "Radiator Hard"
-        if self.constraint.in_telescope_hard(ra, dec, utime, target_roll=roll):
-            return "Telescope Hard"
-        return None
-
     def _attitude_constraint_name_for_sample(
         self, index: int, mode: ACSMode
     ) -> tuple[str, str] | None:
@@ -917,12 +899,24 @@ class QueueDITL(DITLMixin, DITLStats):
                 )
             return None
         if policy == AttitudeConstraintPolicy.HARD_KEEPOUT:
-            name = self._hard_attitude_constraint_name(ra, dec, utime, roll, mode)
-            if name is not None:
-                return name, policy.value
+            # All hard constraint violations (ST Hard, Radiator Hard, Telescope Hard)
+            # are operational faults dispatched as FaultEvents at runtime, not
+            # post-simulation planning mismatches. This applies to every mode that
+            # uses HARD_KEEPOUT (SLEWING, PASS, CHARGING, SAA, SAFE, IDLE).
+            return None
         return None
 
-    def _validate_attitude_constraints(self) -> list[PlanExecutionMismatch]:
+    def validate_attitude_constraints(self) -> list[PlanExecutionMismatch]:
+        """Check post-simulation attitude constraint compliance.
+
+        This is a scheduling quality check, separate from plan-execution fidelity.
+        It reports telemetry samples where the commanded attitude violated a soft
+        or full-mission constraint (e.g. Sun, Moon, ST Soft during SCIENCE mode).
+
+        Hard constraint violations (ST Hard, Radiator Hard, Telescope Hard) are
+        excluded here; they are operational faults handled by FaultManagement at
+        runtime rather than post-simulation scheduling errors.
+        """
         mismatches: list[PlanExecutionMismatch] = []
         for i in range(len(self.utime)):
             mode = self._mode_at_index(i)
@@ -1052,8 +1046,8 @@ class QueueDITL(DITLMixin, DITLStats):
                 mismatches.extend(
                     self._validate_gsp_entry_execution(entry, tolerance_deg)
                 )
-        mismatches.extend(self._validate_attitude_constraints())
         mismatches.extend(self._validate_execution_is_planned())
+        mismatches.extend(self.validate_attitude_constraints())
         return mismatches
 
     def _assert_plan_matches_execution(self) -> None:
