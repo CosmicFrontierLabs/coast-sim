@@ -79,3 +79,21 @@ def test_plan_metadata_preserves_non_tle_ephemeris_payload() -> None:
     assert metadata["ephemeris"]["source"] == "SPICE"
     assert metadata["ephemeris"]["kernel"] == "example.bsp"
     assert "classical_elements_note" not in metadata["ephemeris"]
+
+
+def test_plan_metadata_preserves_missing_source_ephemeris_payload() -> None:
+    metadata = PlanMetadata.model_validate(
+        {"ephemeris": {"kernel": "example.bsp"}}
+    ).model_dump(mode="json", exclude_none=True)
+
+    assert metadata["ephemeris"]["kernel"] == "example.bsp"
+    assert "source" not in metadata["ephemeris"]
+    assert "classical_elements_note" not in metadata["ephemeris"]
+
+
+def test_plan_metadata_preserves_empty_ephemeris_payload() -> None:
+    metadata = PlanMetadata.model_validate({"ephemeris": {}}).model_dump(
+        mode="json", exclude_none=True
+    )
+
+    assert metadata["ephemeris"] == {}

@@ -18,7 +18,7 @@ def _format_utc_datetime(value: datetime) -> str:
 class EphemerisMetadata(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    source: str | None = "TLE"
+    source: str | None = None
     tle_file: str | None = None
     tle_name: str | None = None
     tle_epoch_utc: str | None = None
