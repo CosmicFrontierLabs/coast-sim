@@ -896,14 +896,15 @@ class QueueDITL(DITLMixin, DITLStats):
             return "Telescope Hard"
         return None
 
-    def _attitude_constraint_name_for_sample(
-        self, index: int, mode: ACSMode
+    def _attitude_constraint_name_for_attitude(
+        self,
+        ra: float,
+        dec: float,
+        roll: float,
+        utime: float,
+        mode: ACSMode,
     ) -> tuple[str, str] | None:
-        """Return the violated constraint name and policy for one attitude sample."""
-        ra = float(self.ra[index])
-        dec = float(self.dec[index])
-        roll = float(self.roll[index])
-        utime = self.utime[index]
+        """Return the violated constraint name and policy for one attitude."""
         policy = self.config.attitude_constraint_policy_for_mode(mode)
         if policy == AttitudeConstraintPolicy.NONE:
             return None
@@ -921,6 +922,18 @@ class QueueDITL(DITLMixin, DITLStats):
             if name is not None:
                 return name, policy.value
         return None
+
+    def _attitude_constraint_name_for_sample(
+        self, index: int, mode: ACSMode
+    ) -> tuple[str, str] | None:
+        """Return the violated constraint name and policy for one recorded sample."""
+        return self._attitude_constraint_name_for_attitude(
+            float(self.ra[index]),
+            float(self.dec[index]),
+            float(self.roll[index]),
+            self.utime[index],
+            mode,
+        )
 
     def _validate_attitude_constraints(self) -> list[PlanExecutionMismatch]:
         mismatches: list[PlanExecutionMismatch] = []
@@ -1451,12 +1464,50 @@ class QueueDITL(DITLMixin, DITLStats):
     def _initiate_charging(self, utime: float, ra: float, dec: float) -> None:
         """Initiate emergency charging by creating charging PPT and sending command to ACS."""
         interrupted_ppt = self.ppt
+        interrupted_state = (
+            (interrupted_ppt.end, interrupted_ppt.done)
+            if interrupted_ppt is not None
+            else None
+        )
         self.charging_ppt = self.emergency_charging.initiate_emergency_charging(
             utime, self.ephem, ra, dec, self.ppt
         )
 
         # If charging PPT created successfully, send command to ACS and replace current PPT
         if self.charging_ppt is not None:
+            slew = Slew(config=self.config)
+            slew.ephem = self.acs.ephem
+            slew.slewrequest = utime
+            slew.slewstart = utime
+            slew.startra = ra
+            slew.startdec = dec
+            slew.startroll = self.acs.roll
+            slew.endra = self.charging_ppt.ra
+            slew.enddec = self.charging_ppt.dec
+            slew.endroll = self.charging_ppt.roll
+            slew.obstype = ObsType.CHARGE
+            slew.obsid = self.charging_ppt.obsid
+            slew.at = self.charging_ppt
+            slew.calc_slewtime()
+            violation = self._slew_attitude_constraint_violation(slew, ACSMode.SLEWING)
+            if violation is not None:
+                violation_time, constraint_name, policy = violation
+                self.log.log_event(
+                    utime=utime,
+                    event_type="CHARGING",
+                    description=(
+                        f"Skipping emergency charge slew - path violates "
+                        f"{constraint_name} ({policy}) at {unixtime2date(violation_time)}"
+                    ),
+                    obsid=self.charging_ppt.obsid,
+                    acs_mode=self.acs.acsmode,
+                )
+                if interrupted_ppt is not None and interrupted_state is not None:
+                    interrupted_ppt.end, interrupted_ppt.done = interrupted_state
+                self.emergency_charging.current_charging_ppt = None
+                self.charging_ppt = None
+                return
+
             if interrupted_ppt is not None:
                 if (
                     len(self.plan) > 0
@@ -1527,6 +1578,19 @@ class QueueDITL(DITLMixin, DITLStats):
                         description=(
                             f"Skipped overlapping pass opportunity: {dropped} "
                             f"overlaps selected pass {selected}"
+                        ),
+                    )
+                constraint_dropped_passes = getattr(
+                    self.acs.passrequests, "dropped_constraint_passes", []
+                )
+                if not isinstance(constraint_dropped_passes, list):
+                    constraint_dropped_passes = []
+                for dropped in constraint_dropped_passes:
+                    self.log.log_event(
+                        utime=self.ustart,
+                        event_type="PASS",
+                        description=(
+                            f"Skipped constraint-unsafe pass opportunity: {dropped}"
                         ),
                     )
             else:
@@ -1770,6 +1834,20 @@ class QueueDITL(DITLMixin, DITLStats):
             slew.obstype = ObsType.GSP  # Ground Station Pass slew
             slew.obsid = next_pass.obsid
             slew.calc_slewtime()
+            violation = self._slew_attitude_constraint_violation(slew, ACSMode.PASS)
+            if violation is not None:
+                violation_time, constraint_name, policy = violation
+                self.log.log_event(
+                    utime=utime,
+                    event_type="PASS",
+                    description=(
+                        f"Skipping pass slew to {next_pass.station} - path violates "
+                        f"{constraint_name} ({policy}) at {unixtime2date(violation_time)}"
+                    ),
+                    obsid=next_pass.obsid,
+                    acs_mode=self.acs.acsmode,
+                )
+                return False
             command = ACSCommand(
                 command_type=ACSCommandType.SLEW_TO_TARGET,
                 execution_time=utime,
@@ -1982,6 +2060,34 @@ class QueueDITL(DITLMixin, DITLStats):
             if window[0] <= slew_end <= window[1]:
                 return window[1]
         return slew_end
+
+    def _slew_attitude_constraint_violation(
+        self, slew: Slew, mode: ACSMode
+    ) -> tuple[float, str, str] | None:
+        """Return first policy violation along a planned slew path, if any."""
+        if slew.slewtime <= 0:
+            return None
+
+        for sample_utime in self._ephem_utimes():
+            if sample_utime < slew.slewstart:
+                continue
+            if sample_utime >= slew.slewend:
+                break
+
+            sample_ra, sample_dec = slew.ra_dec(sample_utime)
+            sample_roll = slew.slew_roll(sample_utime)
+            violation = self._attitude_constraint_name_for_attitude(
+                float(sample_ra),
+                float(sample_dec),
+                float(sample_roll),
+                sample_utime,
+                mode,
+            )
+            if violation is not None:
+                constraint_name, policy = violation
+                return sample_utime, constraint_name, policy
+
+        return None
 
     def _next_pass_science_deadline(
         self, slew_end: float, target: Pointing | None = None
@@ -2379,6 +2485,21 @@ class QueueDITL(DITLMixin, DITLStats):
                         return
 
             self._complete_ppt_slew(slew, self.ppt, utime, execution_time)
+            violation = self._slew_attitude_constraint_violation(slew, ACSMode.SLEWING)
+            if violation is not None:
+                violation_time, constraint_name, policy = violation
+                self.log.log_event(
+                    utime=utime,
+                    event_type="QUEUE",
+                    description=(
+                        f"Target {self.ppt.obsid} skipped - slew path violates "
+                        f"{constraint_name} ({policy}) at {unixtime2date(violation_time)}"
+                    ),
+                    obsid=self.ppt.obsid,
+                    acs_mode=self.acs.acsmode,
+                )
+                self._retry_fetch_without_current_ppt(utime, ra, dec)
+                return
 
             # Validate that the locked roll satisfies constraints for at least
             # ss_min seconds after slew completion.  The ACS holds roll constant

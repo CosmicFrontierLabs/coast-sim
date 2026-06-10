@@ -34,11 +34,11 @@ def _default_attitude_constraint_policy() -> dict[str, AttitudeConstraintPolicy]
     return {
         ACSMode.SCIENCE.name: AttitudeConstraintPolicy.FULL_MISSION,
         ACSMode.CHARGING.name: AttitudeConstraintPolicy.FULL_MISSION,
-        ACSMode.SLEWING.name: AttitudeConstraintPolicy.HARD_KEEPOUT,
-        ACSMode.PASS.name: AttitudeConstraintPolicy.HARD_KEEPOUT,
-        ACSMode.SAA.name: AttitudeConstraintPolicy.HARD_KEEPOUT,
-        ACSMode.SAFE.name: AttitudeConstraintPolicy.HARD_KEEPOUT,
-        ACSMode.IDLE.name: AttitudeConstraintPolicy.HARD_KEEPOUT,
+        ACSMode.SLEWING.name: AttitudeConstraintPolicy.FULL_MISSION,
+        ACSMode.PASS.name: AttitudeConstraintPolicy.FULL_MISSION,
+        ACSMode.SAA.name: AttitudeConstraintPolicy.FULL_MISSION,
+        ACSMode.SAFE.name: AttitudeConstraintPolicy.FULL_MISSION,
+        ACSMode.IDLE.name: AttitudeConstraintPolicy.FULL_MISSION,
     }
 
 
