@@ -62,10 +62,12 @@ class GroundStation(ConfigModel):
             return max(rates) if rates else 0.0
         return None
 
+    @property
     def supports_downlink(self) -> bool:
         """Return whether this station has any configured downlink capability."""
         return any(bc.downlink_rate_mbps > 0.0 for bc in self.bands)
 
+    @property
     def supports_uplink(self) -> bool:
         """Return whether this station has any configured uplink capability."""
         return any(bc.uplink_rate_mbps > 0.0 for bc in self.bands)

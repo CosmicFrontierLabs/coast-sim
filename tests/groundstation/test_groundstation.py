@@ -44,10 +44,10 @@ class TestGroundStationAntennaFields:
             ],
         )
 
-        assert uplink_only.supports_uplink() is True
-        assert uplink_only.supports_downlink() is False
-        assert downlink_only.supports_uplink() is False
-        assert downlink_only.supports_downlink() is True
+        assert uplink_only.supports_uplink is True
+        assert uplink_only.supports_downlink is False
+        assert downlink_only.supports_uplink is False
+        assert downlink_only.supports_downlink is True
 
 
 class TestGroundStation:
