@@ -899,8 +899,10 @@ class QueueDITL(DITLMixin, DITLStats):
                 )
             return None
         if policy == AttitudeConstraintPolicy.HARD_KEEPOUT:
-            # Hard constraint violations during slews/passes/idle are operational
-            # faults dispatched as FaultEvents at runtime, not planning mismatches.
+            # All hard constraint violations (ST Hard, Radiator Hard, Telescope Hard)
+            # are operational faults dispatched as FaultEvents at runtime, not
+            # post-simulation planning mismatches. This applies to every mode that
+            # uses HARD_KEEPOUT (SLEWING, PASS, CHARGING, SAA, SAFE, IDLE).
             return None
         return None
 
