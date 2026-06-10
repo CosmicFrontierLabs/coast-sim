@@ -188,6 +188,12 @@ def base_config() -> MissionConfig:
     spacecraft_bus.attitude_control = Mock()
     spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))
     spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
+    spacecraft_bus.boresight_axis = "+X"
+    spacecraft_bus.star_trackers = Mock()
+    spacecraft_bus.star_trackers.star_trackers = []
+    spacecraft_bus.star_trackers.num_trackers = Mock(return_value=0)
+    spacecraft_bus.radiators = Mock()
+    spacecraft_bus.radiators.radiators = []
 
     solar_panel = Mock(spec=SolarPanelSet)
     solar_panel.optimal_charging_pointing = Mock(return_value=(45.0, 23.5))

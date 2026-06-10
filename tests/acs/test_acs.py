@@ -187,7 +187,7 @@ class TestACSStateManagement:
             return_value=AttitudeConstraintPolicy.FULL_MISSION
         )
 
-        monkeypatch.setattr("conops.simulation.acs.optimum_roll", lambda *args: 5.0)
+        monkeypatch.setattr("conops.simulation.acs.optimum_roll", lambda *args, **kwargs: 5.0)
         acs.constraint.in_constraint = Mock(side_effect=[True, False])
 
         ra, dec, roll, obsid = acs.pointing(1000.0)
@@ -218,7 +218,7 @@ class TestACSStateManagement:
             return_value=AttitudeConstraintPolicy.HARD_KEEPOUT
         )
 
-        monkeypatch.setattr("conops.simulation.acs.optimum_roll", lambda *args: 5.0)
+        monkeypatch.setattr("conops.simulation.acs.optimum_roll", lambda *args, **kwargs: 5.0)
         acs.constraint.in_constraint = Mock(return_value=True)
         acs.constraint.in_star_tracker_hard = Mock(side_effect=[True, False])
 
@@ -235,7 +235,7 @@ class TestACSStateManagement:
             return_value=AttitudeConstraintPolicy.FULL_MISSION
         )
         acs.config.fault_management.events = []
-        monkeypatch.setattr("conops.simulation.acs.optimum_roll", lambda *args: 5.0)
+        monkeypatch.setattr("conops.simulation.acs.optimum_roll", lambda *args, **kwargs: 5.0)
         acs.constraint.in_constraint = Mock(return_value=True)
 
         ra, dec, roll, obsid = acs.pointing(1000.0)

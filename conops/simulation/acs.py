@@ -332,7 +332,9 @@ class ACS:
         # Use solar panel optimal pointing to maximize power generation
         if self.solar_panel is not None:
             safe_ra, safe_dec = self.solar_panel.optimal_charging_pointing(
-                utime, self.ephem
+                utime,
+                self.ephem,
+                boresight_axis=str(self.config.spacecraft_bus.boresight_axis),
             )
         else:
             # Fallback: point directly at Sun if no solar panel config
@@ -417,7 +419,13 @@ class ACS:
         # If roll not provided, calculate optimal roll at target position
         if roll is None:
             slew.endroll = optimum_roll(
-                ra, dec, utime, self.ephem, self.solar_panel, self.constraint
+                ra,
+                dec,
+                utime,
+                self.ephem,
+                self.solar_panel,
+                self.constraint,
+                boresight_axis=str(self.config.spacecraft_bus.boresight_axis),
             )
         else:
             slew.endroll = roll
@@ -660,7 +668,13 @@ class ACS:
             return self.current_slew.slew_roll(utime)
         if self._is_in_charging_mode(utime) or self.in_safe_mode:
             return optimum_roll(
-                self.ra, self.dec, utime, self.ephem, self.solar_panel, self.constraint
+                self.ra,
+                self.dec,
+                utime,
+                self.ephem,
+                self.solar_panel,
+                self.constraint,
+                boresight_axis=str(self.config.spacecraft_bus.boresight_axis),
             )
         if self.current_pass is not None and self.current_pass.in_pass(utime):
             return self.current_pass.roll_at(utime)
@@ -672,7 +686,13 @@ class ACS:
         ):
             return self.last_slew.endroll
         return optimum_roll(
-            self.ra, self.dec, utime, self.ephem, self.solar_panel, self.constraint
+            self.ra,
+            self.dec,
+            utime,
+            self.ephem,
+            self.solar_panel,
+            self.constraint,
+            boresight_axis=str(self.config.spacecraft_bus.boresight_axis),
         )
 
     def _enforce_idle_constraint_safe_attitude(self, utime: float) -> None:
@@ -1131,7 +1151,9 @@ class ACS:
         # Use solar panel optimal pointing if available
         if self.solar_panel is not None:
             target_ra, target_dec = self.solar_panel.optimal_charging_pointing(
-                utime, self.ephem
+                utime,
+                self.ephem,
+                boresight_axis=str(self.config.spacecraft_bus.boresight_axis),
             )
         else:
             # Fallback: point directly at Sun if no solar panel config and that
