@@ -29,6 +29,7 @@ from .slew import Slew
 # Legacy ground-pass roll for profiles without explicit roll samples.
 GSP_TRACK_ROLL = 0.0
 LEGACY_GSP_ANTENNA_BODY_VECTOR = (-1.0, 0.0, 0.0)
+GSP_TRACK_PHASE_STEP_DEG = 5.0
 
 
 def pass_slew_trigger_buffer(step_size: float) -> float:
@@ -41,6 +42,50 @@ def _config_random_seed(config: MissionConfig) -> int | None:
     if seed is None or isinstance(seed, bool) or not isinstance(seed, Integral):
         return None
     return int(seed)
+
+
+def _unit_vector_or_none(vector: np.ndarray) -> np.ndarray | None:
+    norm = float(np.linalg.norm(vector))
+    if norm < 1e-12:
+        return None
+    return vector / norm
+
+
+def _perpendicular_reference(axis: np.ndarray) -> np.ndarray | None:
+    for candidate in (
+        np.array([0.0, 0.0, 1.0], dtype=float),
+        np.array([1.0, 0.0, 0.0], dtype=float),
+        np.array([0.0, 1.0, 0.0], dtype=float),
+    ):
+        projected = candidate - float(np.dot(candidate, axis)) * axis
+        reference = _unit_vector_or_none(projected)
+        if reference is not None:
+            return reference
+    return None
+
+
+def _rotate_about_axis(
+    vector: np.ndarray, axis: np.ndarray, angle_deg: float
+) -> np.ndarray:
+    angle_rad = np.deg2rad(angle_deg)
+    rotated = (
+        vector * np.cos(angle_rad)
+        + np.cross(axis, vector) * np.sin(angle_rad)
+        + axis * float(np.dot(axis, vector)) * (1.0 - np.cos(angle_rad))
+    )
+    return np.asarray(rotated, dtype=float)
+
+
+def _tracking_phase_reference_eci(
+    target_vector: np.ndarray, phase_deg: float
+) -> np.ndarray | None:
+    target_axis = _unit_vector_or_none(np.asarray(target_vector, dtype=float))
+    if target_axis is None:
+        return None
+    reference = _perpendicular_reference(target_axis)
+    if reference is None:
+        return None
+    return _rotate_about_axis(reference, target_axis, phase_deg)
 
 
 class RandomSource(Protocol):
@@ -537,6 +582,64 @@ class PassTimes:
             )
         )
 
+    def _gsp_tracking_phase_candidates(self) -> list[float]:
+        candidates = [0.0]
+        offset = GSP_TRACK_PHASE_STEP_DEG
+        while offset <= 180.0:
+            candidates.append(float(offset))
+            if offset < 180.0:
+                candidates.append(float(360.0 - offset))
+            offset += GSP_TRACK_PHASE_STEP_DEG
+        return candidates
+
+    def _tracking_attitude_profile_for_phase(
+        self,
+        antenna_boresight: tuple[float, float, float],
+        target_vectors: np.ndarray,
+        phase_deg: float,
+    ) -> list[tuple[float, float, float]] | None:
+        attitude_profile: list[tuple[float, float, float]] = []
+        for target_vector in target_vectors:
+            reference_eci = _tracking_phase_reference_eci(target_vector, phase_deg)
+            if reference_eci is None:
+                return None
+            attitude = attitude_for_body_vector_tracking(
+                antenna_boresight,
+                target_vector,
+                reference_eci=reference_eci,
+            )
+            if attitude is None:
+                return None
+            attitude_profile.append(attitude)
+        return attitude_profile
+
+    def _constraint_safe_tracking_attitude_profile(
+        self,
+        antenna_boresight: tuple[float, float, float],
+        target_vectors: np.ndarray,
+        track_utime: list[float],
+    ) -> tuple[list[tuple[float, float, float]], bool] | None:
+        fallback_profile: list[tuple[float, float, float]] | None = None
+        for phase_deg in self._gsp_tracking_phase_candidates():
+            attitude_profile = self._tracking_attitude_profile_for_phase(
+                antenna_boresight, target_vectors, phase_deg
+            )
+            if attitude_profile is None:
+                continue
+            if fallback_profile is None:
+                fallback_profile = attitude_profile
+            track_ra = [attitude[0] for attitude in attitude_profile]
+            track_dec = [attitude[1] for attitude in attitude_profile]
+            track_roll = [attitude[2] for attitude in attitude_profile]
+            if not self._pass_profile_violates_policy(
+                track_utime, track_ra, track_dec, track_roll
+            ):
+                return attitude_profile, True
+
+        if fallback_profile is None:
+            return None
+        return fallback_profile, False
+
     def _deconflict_overlapping_passes(self) -> None:
         selected: list[Pass] = []
         self.dropped_overlapping_passes = []
@@ -667,27 +770,23 @@ class PassTimes:
                         # Schedule this pass if the dice roll allows it
                         target_vectors = -gs_to_sat_unit[start_idx:end_idx]
                         target_ra, target_dec = np.degrees(vec2radec(target_vectors.T))
-                        antenna_boresight = self._gsp_antenna_boresight_body()
-                        if antenna_boresight is None:
-                            continue
-                        attitude_profile: list[tuple[float, float, float]] = []
-                        profile_valid = True
-                        for target_vector in target_vectors:
-                            attitude = attitude_for_body_vector_tracking(
-                                antenna_boresight, target_vector
-                            )
-                            if attitude is None:
-                                profile_valid = False
-                                break
-                            attitude_profile.append(attitude)
-                        if not profile_valid or not attitude_profile:
-                            continue
-                        track_ra = [attitude[0] for attitude in attitude_profile]
-                        track_dec = [attitude[1] for attitude in attitude_profile]
-                        track_roll = [attitude[2] for attitude in attitude_profile]
                         track_utime = timestamp_unix[
                             startindex + start_idx : startindex + end_idx
                         ].tolist()
+                        antenna_boresight = self._gsp_antenna_boresight_body()
+                        if antenna_boresight is None:
+                            continue
+                        profile_result = (
+                            self._constraint_safe_tracking_attitude_profile(
+                                antenna_boresight, target_vectors, track_utime
+                            )
+                        )
+                        if profile_result is None:
+                            continue
+                        attitude_profile, profile_safe = profile_result
+                        track_ra = [attitude[0] for attitude in attitude_profile]
+                        track_dec = [attitude[1] for attitude in attitude_profile]
+                        track_roll = [attitude[2] for attitude in attitude_profile]
 
                         gspass = Pass(
                             config=self.config,
@@ -712,9 +811,7 @@ class PassTimes:
                         gspass.station_ra = target_ra.tolist()
                         gspass.station_dec = target_dec.tolist()
 
-                        if self._pass_profile_violates_policy(
-                            track_utime, track_ra, track_dec, track_roll
-                        ):
+                        if not profile_safe:
                             self.dropped_constraint_passes.append(gspass)
                             continue
 
