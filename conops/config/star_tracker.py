@@ -403,6 +403,7 @@ class StarTrackerConfiguration(ConfigModel):
                 roll_deg=roll_deg,
                 pitch_deg=pitch_deg,
                 yaw_deg=yaw_deg,
+                roll_clockwise=True,
             )
 
             if combined is None:
@@ -442,6 +443,7 @@ class StarTrackerConfiguration(ConfigModel):
                 roll_deg=roll_deg,
                 pitch_deg=pitch_deg,
                 yaw_deg=yaw_deg,
+                roll_clockwise=True,
             )
             offset_constraints.append(offset_constraint)
 
