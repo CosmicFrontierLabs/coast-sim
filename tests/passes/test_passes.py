@@ -680,6 +680,77 @@ class TestPassTimes:
         assert profile_safe is True
         assert profile[0][1] < -1.0
 
+    def test_constraint_safe_tracking_profile_uses_dynamic_phase_path(
+        self, mock_constraint, mock_config
+    ):
+        """GSP roll can move between safe phases when no fixed phase is safe."""
+        mock_config.spacecraft_bus.attitude_control = AttitudeControlSystem(
+            max_slew_rate=5.0,
+            slew_acceleration=5.0,
+            settle_time=0.0,
+        )
+        pt = PassTimes(config=mock_config)
+        pt._gsp_tracking_phase_candidates = Mock(return_value=[0.0, 90.0])
+        pt._tracking_attitude_profile_for_phase = Mock(
+            side_effect=lambda antenna, targets, phase_deg: [
+                (phase_deg, 0.0, phase_deg) for _target in targets
+            ]
+        )
+        mock_constraint.in_constraint = Mock(
+            side_effect=lambda ra, dec, utime, **kwargs: (
+                not (
+                    (utime == 1000.0 and kwargs["target_roll"] == 0.0)
+                    or (utime == 1060.0 and kwargs["target_roll"] == 90.0)
+                )
+            )
+        )
+
+        result = pt._constraint_safe_tracking_attitude_profile(
+            antenna_boresight=(0.0, 1.0, 0.0),
+            target_vectors=np.array([[0.0, 1.0, 0.0], [0.0, 1.0, 0.0]], dtype=float),
+            track_utime=[1000.0, 1060.0],
+        )
+
+        assert result is not None
+        profile, profile_safe = result
+        assert profile_safe is True
+        assert [attitude[2] for attitude in profile] == [0.0, 90.0]
+
+    def test_constraint_safe_tracking_profile_rejects_infeasible_dynamic_phase_path(
+        self, mock_constraint, mock_config
+    ):
+        """A moving GSP roll path must fit within ACS motion limits."""
+        mock_config.spacecraft_bus.attitude_control = AttitudeControlSystem(
+            max_slew_rate=0.1,
+            slew_acceleration=0.1,
+            settle_time=0.0,
+        )
+        pt = PassTimes(config=mock_config)
+        pt._gsp_tracking_phase_candidates = Mock(return_value=[0.0, 180.0])
+        pt._tracking_attitude_profile_for_phase = Mock(
+            side_effect=lambda antenna, targets, phase_deg: [
+                (phase_deg, 0.0, phase_deg) for _target in targets
+            ]
+        )
+        mock_constraint.in_constraint = Mock(
+            side_effect=lambda ra, dec, utime, **kwargs: (
+                not (
+                    (utime == 1000.0 and kwargs["target_roll"] == 0.0)
+                    or (utime == 1060.0 and kwargs["target_roll"] == 180.0)
+                )
+            )
+        )
+
+        result = pt._constraint_safe_tracking_attitude_profile(
+            antenna_boresight=(0.0, 1.0, 0.0),
+            target_vectors=np.array([[0.0, 1.0, 0.0], [0.0, 1.0, 0.0]], dtype=float),
+            track_utime=[1000.0, 1060.0],
+        )
+
+        assert result is not None
+        _profile, profile_safe = result
+        assert profile_safe is False
+
     def test_passtimes_requires_ephemeris(self, mock_config):
         """Test PassTimes requires ephemeris."""
         constraint = Mock(spec=Constraint)
