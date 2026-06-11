@@ -13,9 +13,10 @@ from conops import (
     PassTimes,
 )
 from conops.common import attitude_for_body_vector_tracking, radec2vec
-from conops.common.enums import AntennaType, ObsType, SlewAlgorithm
+from conops.common.enums import ACSMode, AntennaType, ObsType, SlewAlgorithm
 from conops.config import (
     AntennaPointing,
+    AttitudeConstraintPolicy,
     AttitudeControlSystem,
     BandCapability,
     CommunicationsSystem,
@@ -527,6 +528,7 @@ class TestPassTimes:
         assert pt.config is mock_config
         assert pt.passes == []
         assert pt.length == 1
+        assert pt.dropped_constraint_passes == []
         assert pt.minelev == 10.0
         assert pt.minlen == 480
         assert pt.schedule_chance == 1.0
@@ -600,6 +602,33 @@ class TestPassTimes:
 
         gs_ephem.assert_not_called()
         assert pt.passes == []
+
+    def test_pass_profile_uses_full_mission_policy(self, mock_constraint, mock_config):
+        """PASS profiles should be filtered by the configured full mission policy."""
+        pt = PassTimes(config=mock_config)
+        mock_constraint.in_constraint = Mock(return_value=True)
+
+        assert pt._pass_profile_violates_policy([1000.0], [10.0], [20.0], [30.0])
+        mock_constraint.in_constraint.assert_called_once_with(
+            10.0, 20.0, 1000.0, target_roll=30.0, acs_mode=ACSMode.PASS
+        )
+
+    def test_pass_profile_respects_hard_keepout_override(
+        self, mock_constraint, mock_config
+    ):
+        """PASS profiles still honor explicit hard-keepout policy overrides."""
+        mock_config.attitude_constraint_policy = {
+            ACSMode.PASS.name: AttitudeConstraintPolicy.HARD_KEEPOUT
+        }
+        pt = PassTimes(config=mock_config)
+        mock_constraint.in_constraint = Mock(return_value=True)
+        mock_constraint.in_star_tracker_hard = Mock(return_value=True)
+
+        assert pt._pass_profile_violates_policy([1000.0], [10.0], [20.0], [30.0])
+        mock_constraint.in_constraint.assert_not_called()
+        mock_constraint.in_star_tracker_hard.assert_called_once_with(
+            10.0, 20.0, 1000.0, target_roll=30.0, acs_mode=ACSMode.PASS
+        )
 
     def test_passtimes_requires_ephemeris(self, mock_config):
         """Test PassTimes requires ephemeris."""

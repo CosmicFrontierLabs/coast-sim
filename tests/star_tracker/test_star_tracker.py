@@ -381,6 +381,7 @@ class TestStarTrackerComputedConstraint:
         assert c.type == "or"
         assert len(c.constraints) == 2
         assert all(child.type == "boresight_offset" for child in c.constraints)
+        assert all(child.roll_clockwise for child in c.constraints)
 
     def test_startracker_hard_constraint_min_functional_does_not_affect_hard(self):
         """min_functional_trackers has no effect on hard constraints — they are always OR."""
@@ -432,6 +433,7 @@ class TestStarTrackerComputedConstraint:
         assert c.constraints[0].roll_deg == pytest.approx(0.0)
         assert c.constraints[0].pitch_deg == pytest.approx(0.0)
         assert c.constraints[0].yaw_deg == pytest.approx(90.0)
+        assert c.constraints[0].roll_clockwise is True
 
     def test_startracker_constraint_multiple_soft_constraints_at_least_combined(self):
         from conops.config import Constraint, StarTrackerConfiguration
@@ -458,6 +460,7 @@ class TestStarTrackerComputedConstraint:
         assert c.min_violated == 2
         assert len(c.constraints) == 2
         assert all(child.type == "boresight_offset" for child in c.constraints)
+        assert all(child.roll_clockwise for child in c.constraints)
 
     def test_startracker_constraint_respects_min_functional_trackers_threshold(self):
         from conops.config import Constraint, StarTrackerConfiguration
@@ -486,6 +489,74 @@ class TestStarTrackerComputedConstraint:
         assert c.type == "at_least"
         assert c.min_violated == 1
         assert len(c.constraints) == 2
+
+    def test_combined_soft_constraint_matches_trackers_at_nonzero_roll(self):
+        """Combined planning constraint must match per-tracker telemetry checks."""
+        from datetime import datetime
+        from pathlib import Path
+
+        tle_path = Path(__file__).parents[2] / "examples" / "example.tle"
+        if not tle_path.exists():
+            pytest.skip("example.tle not available")
+
+        ephem = rust_ephem.TLEEphemeris(
+            begin=datetime(2025, 12, 1, 0, 0, 0),
+            end=datetime(2025, 12, 1, 1, 0, 0),
+            step_size=60,
+            tle=str(tle_path),
+        )
+        soft_constraint = Constraint(
+            sun_constraint=rust_ephem.SunConstraint(min_angle=22.0),
+            earth_constraint=rust_ephem.EarthLimbConstraint(min_angle=10.0),
+        )
+        cfg = StarTrackerConfiguration(
+            star_trackers=[
+                StarTracker(
+                    name="STR_pY",
+                    orientation=StarTrackerOrientation(
+                        boresight=(2**-0.5, 2**-0.5, 0.0)
+                    ),
+                    soft_constraint=soft_constraint,
+                ),
+                StarTracker(
+                    name="STR_nY",
+                    orientation=StarTrackerOrientation(
+                        boresight=(2**-0.5, -(2**-0.5), 0.0)
+                    ),
+                    soft_constraint=soft_constraint,
+                ),
+            ],
+            min_functional_trackers=2,
+            modes_require_lock=[0],
+        )
+        for tracker in cfg.star_trackers:
+            tracker.set_ephem(ephem)
+
+        combined = cfg.startracker_constraint
+        assert combined is not None
+        sample_time = ephem.timestamp[0]
+        sample_utime = sample_time.timestamp()
+        cases = [
+            (0.0, -60.0, -30.0),
+            (0.0, -60.0, 30.0),
+            (0.0, -45.0, -150.0),
+            (0.0, -45.0, 150.0),
+        ]
+
+        for ra, dec, roll in cases:
+            per_tracker_violations = sum(
+                tracker.in_soft_constraint(ra, dec, sample_utime, roll)
+                for tracker in cfg.star_trackers
+            )
+            expected = per_tracker_violations >= 1
+            actual = combined.in_constraint(
+                ephemeris=ephem,
+                target_ra=ra,
+                target_dec=dec,
+                time=sample_time,
+                target_roll=roll,
+            )
+            assert bool(actual) is expected
 
     def test_startracker_constraint_none_when_threshold_unreachable_from_soft_only(
         self,
