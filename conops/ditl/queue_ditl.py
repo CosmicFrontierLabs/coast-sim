@@ -1563,37 +1563,42 @@ class QueueDITL(DITLMixin, DITLStats):
             # Calculate length in days from begin/end
             length = int((self.end - self.begin).total_seconds() / 86400)
             self.acs.passrequests.get(year, day, length)
-            if self.acs.passrequests.passes:
-                for p in self.acs.passrequests.passes:
-                    self.log.log_event(
-                        utime=self.ustart,
-                        event_type="PASS",
-                        description=f"Scheduled pass: {p}",
-                    )
-                dropped_passes = self.acs.passrequests.dropped_overlapping_passes
-                for dropped, selected in dropped_passes:
-                    self.log.log_event(
-                        utime=self.ustart,
-                        event_type="PASS",
-                        description=(
-                            f"Skipped overlapping pass opportunity: {dropped} "
-                            f"overlaps selected pass {selected}"
-                        ),
-                    )
-                constraint_dropped_passes = getattr(
-                    self.acs.passrequests, "dropped_constraint_passes", []
+            scheduled_passes = self.acs.passrequests.passes or []
+            for p in scheduled_passes:
+                self.log.log_event(
+                    utime=self.ustart,
+                    event_type="PASS",
+                    description=f"Scheduled pass: {p}",
                 )
-                if not isinstance(constraint_dropped_passes, list):
-                    constraint_dropped_passes = []
-                for dropped in constraint_dropped_passes:
-                    self.log.log_event(
-                        utime=self.ustart,
-                        event_type="PASS",
-                        description=(
-                            f"Skipped constraint-unsafe pass opportunity: {dropped}"
-                        ),
-                    )
-            else:
+
+            dropped_passes = getattr(
+                self.acs.passrequests, "dropped_overlapping_passes", []
+            )
+            if not isinstance(dropped_passes, list):
+                dropped_passes = []
+            for dropped, selected in dropped_passes:
+                self.log.log_event(
+                    utime=self.ustart,
+                    event_type="PASS",
+                    description=(
+                        f"Skipped overlapping pass opportunity: {dropped} "
+                        f"overlaps selected pass {selected}"
+                    ),
+                )
+
+            constraint_dropped_passes = getattr(
+                self.acs.passrequests, "dropped_constraint_passes", []
+            )
+            if not isinstance(constraint_dropped_passes, list):
+                constraint_dropped_passes = []
+            for dropped in constraint_dropped_passes:
+                self.log.log_event(
+                    utime=self.ustart,
+                    event_type="PASS",
+                    description=f"Skipped constraint-unsafe pass opportunity: {dropped}",
+                )
+
+            if not scheduled_passes:
                 self.log.log_event(
                     utime=self.ustart,
                     event_type="INFO",

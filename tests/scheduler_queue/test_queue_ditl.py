@@ -217,6 +217,28 @@ class TestScheduleGroundstationPasses:
         assert "Skipped overlapping pass opportunity: Dropped pass" in log_text
         assert "overlaps selected pass Selected pass" in log_text
 
+    def test_schedule_passes_logs_constraint_drops_when_no_pass_survives(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.acs.passrequests.passes = []
+
+        dropped = Mock()
+        dropped.__str__ = Mock(return_value="Constraint dropped pass")
+
+        def populate_drops(year: int, day: int, length: int) -> None:
+            queue_ditl.acs.passrequests.passes = []
+            queue_ditl.acs.passrequests.dropped_constraint_passes = [dropped]
+
+        cast(Mock, queue_ditl.acs.passrequests.get).side_effect = populate_drops
+        queue_ditl._schedule_groundstation_passes()
+
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert (
+            "Skipped constraint-unsafe pass opportunity: Constraint dropped pass"
+            in log_text
+        )
+        assert "No groundstation passes scheduled" in log_text
+
 
 class TestDetermineMode:
     """Test mode determination now handled by ACS.get_mode() - these tests use real ACS instance."""
