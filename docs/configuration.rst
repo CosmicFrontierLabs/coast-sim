@@ -186,25 +186,29 @@ If any sample fails its policy check, a
 message includes the first few violations — mode, obsid, RA/Dec/roll, and the constraint
 name — to aid debugging.
 
-**Hard keep-outs vs. full mission constraints**
+**Planner admission guarantees vs. FM-monitored runtime conditions**
 
-COASTSim's constraint system has two tiers:
+Not every constraint violation is a scheduling failure.  The policy per mode encodes
+which violations the planner claims to prevent vs. which ones are expected operational
+behaviour handled by Fault Management at runtime:
 
-* **Full mission constraints** — the complete set of keep-outs the spacecraft must
-  respect during normal science operations: minimum Sun angle, Moon and Earth limb
-  avoidance, solar-panel illumination requirement, and the star-tracker, radiator, and
-  telescope hard constraints listed below.  Violating any of these during science would
-  degrade or invalidate the observation.
+* **Planner admission guarantee** — a constraint the scheduler evaluates via
+  ``in_constraint()`` before accepting an attitude into the plan.  If telemetry shows
+  a violation in one of these modes, the planner broke its contract and the simulation
+  records a :class:`~conops.ditl.queue_ditl.PlanExecutionMismatch`.  This covers the
+  complete mission constraint set: Sun, Moon, Earth limb, solar-panel illumination,
+  star-tracker hard and soft, radiator hard, and telescope hard.
 
-* **Hard keep-outs** — a strict health-and-safety subset that must never be violated
-  regardless of mode: star tracker hard constraint (sensor blinding risk), radiator hard
-  constraint (thermal damage risk), and telescope hard constraint (structural or optical
-  damage risk).  These are always instrument-protection limits, not science-quality
-  limits.
+* **FM-monitored runtime condition** — a violation that the ACS controller or
+  attitude-manoeuvre algorithm does not promise to avoid (e.g. a slew path that
+  momentarily sweeps through a hard keepout zone, or a ground-station tracking arc
+  that transits a soft constraint region).  The simulation's Fault Management system
+  dispatches a :class:`~conops.config.fault_management.FaultEvent` in real time; the
+  post-simulation validator does *not* raise a mismatch.
 
-The ``HARD_KEEPOUT`` policy enforces the second tier only, which is appropriate for
-transient modes (slewing, SAA, safe) where soft science-quality limits legitimately do
-not apply. ``IDLE`` uses this policy by default, and the ACS also uses the configured
+``HARD_KEEPOUT`` is the policy for modes where no keepout avoidance is guaranteed by
+the planner — the controller is free to transit constraint zones and FM handles any
+violations.  ``IDLE`` uses this policy by default, and the ACS also uses the configured
 ``IDLE`` policy at runtime when deciding whether an idle hold must be moved to a safer
 attitude before telemetry is recorded.
 
@@ -220,9 +224,11 @@ attitude before telemetry is recorded.
      - The complete mission constraint (Sun, Moon, Earth limb, star tracker, radiator,
        telescope) is evaluated.  Any violation is flagged.
    * - ``"hard_keepout"``
-     - Only the three hard keep-outs are checked: star tracker hard constraint,
-       radiator hard constraint, and telescope hard constraint.  Science-quality soft
-       constraints (Sun angle, Moon, Earth limb, etc.) are intentionally ignored.
+     - No post-simulation validation checks are performed.  The planner makes no
+       keepout avoidance guarantee in these modes; any constraint violations are
+       FM-monitored runtime events (``FaultEvent``), not planning mismatches.
+       Science-quality soft constraints and hard health-and-safety limits are both
+       outside the planner's admission contract for these modes.
    * - ``"none"``
      - No constraint checking is performed for this mode.  Use this when the mode
        genuinely has no pointing restrictions (rare) or when you need to suppress
@@ -245,21 +251,26 @@ attitude before telemetry is recorded.
      - Emergency charging still obeys the full mission keep-out.
    * - ``SLEWING``
      - ``hard_keepout``
-     - Slews may briefly sweep through soft-constraint zones by design; hard
-       health-and-safety limits are still enforced.
+     - The slew algorithm does not guarantee keepout avoidance; the path may sweep
+       through constraint zones.  Hard violations during slews are FM runtime events,
+       not planning mismatches.
    * - ``PASS``
      - ``hard_keepout``
-     - Ground-station tracking may transit soft zones during the arc; hard limits apply.
+     - Ground-station tracking geometry is driven by the arc, not by keepout avoidance.
+       Constraint violations during a pass are FM runtime events, not planning mismatches.
    * - ``SAA``
      - ``hard_keepout``
-     - SAA transits relax science constraints but not instrument-protection limits.
+     - SAA transit attitude is constrained by orbital mechanics, not by keepout
+       avoidance.  Violations are FM runtime events.
    * - ``SAFE``
      - ``hard_keepout``
-     - Safe-mode pointing relaxes science constraints but not instrument-protection limits.
+     - Safe-mode attitude is chosen for power, not constraint compliance.  Violations
+       are FM runtime events, not planning mismatches.
    * - ``IDLE``
      - ``hard_keepout``
-     - Idle holds may persist, so hard health-and-safety limits are enforced; missions
-       that require science-quality idle holds can override this to ``full_mission``.
+     - Idle hold attitude may not satisfy all constraints; FM monitors health limits.
+       Missions that need full constraint compliance during idle can override to
+       ``full_mission``.
 
 **Overriding the policy for individual modes:**
 

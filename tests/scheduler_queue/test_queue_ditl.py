@@ -2280,9 +2280,9 @@ class TestPlanExecutionValidation:
     def test_hard_keepout_policy_generates_no_validation_mismatches(
         self, queue_ditl: QueueDITL
     ) -> None:
-        # Hard constraint violations (Radiator Hard, Telescope Hard, ST Hard) are
-        # runtime FaultEvents, not post-simulation validation mismatches.  A mode
-        # using HARD_KEEPOUT policy should never produce a PlanExecutionMismatch.
+        # In HARD_KEEPOUT modes the planner makes no keepout avoidance guarantee,
+        # so constraint violations are FM runtime events, not planning mismatches.
+        # (Note: in FULL_MISSION modes, hard violations ARE planning mismatches.)
         queue_ditl.utime = [1060.0]
         queue_ditl.mode = [ACSMode.CHARGING]
         queue_ditl.obsid = [999001]

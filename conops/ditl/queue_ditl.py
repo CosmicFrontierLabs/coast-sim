@@ -899,23 +899,27 @@ class QueueDITL(DITLMixin, DITLStats):
                 )
             return None
         if policy == AttitudeConstraintPolicy.HARD_KEEPOUT:
-            # All hard constraint violations (ST Hard, Radiator Hard, Telescope Hard)
-            # are operational faults dispatched as FaultEvents at runtime, not
-            # post-simulation planning mismatches. This applies to every mode that
-            # uses HARD_KEEPOUT (SLEWING, PASS, CHARGING, SAA, SAFE, IDLE).
+            # In HARD_KEEPOUT modes (SLEWING, PASS, SAA, SAFE, IDLE) the planner
+            # makes no keepout avoidance guarantee — the slew algorithm and tracking
+            # controllers may legitimately transit hard keepout zones. Violations are
+            # operational FaultEvents dispatched by FaultManagement at runtime, not
+            # post-simulation planning mismatches.
             return None
         return None
 
     def validate_attitude_constraints(self) -> list[PlanExecutionMismatch]:
         """Check post-simulation attitude constraint compliance.
 
-        This is a scheduling quality check, separate from plan-execution fidelity.
-        It reports telemetry samples where the commanded attitude violated a soft
-        or full-mission constraint (e.g. Sun, Moon, ST Soft during SCIENCE mode).
+        Reports telemetry samples where the commanded attitude violated a constraint
+        the planner was expected to enforce. The distinction is planner admission
+        guarantee vs FM-monitored runtime condition:
 
-        Hard constraint violations (ST Hard, Radiator Hard, Telescope Hard) are
-        excluded here; they are operational faults handled by FaultManagement at
-        runtime rather than post-simulation scheduling errors.
+        - FULL_MISSION modes (SCIENCE, CHARGING): the planner calls in_constraint()
+          during scheduling, guaranteeing full constraint compliance. Any violation —
+          including hard keepouts — is a scheduling failure and generates a mismatch.
+        - HARD_KEEPOUT modes (SLEWING, PASS, SAA, SAFE, IDLE): the planner makes no
+          keepout avoidance guarantee. Violations are operational FaultEvents handled
+          by FaultManagement at runtime, not post-simulation planning mismatches.
         """
         mismatches: list[PlanExecutionMismatch] = []
         for i in range(len(self.utime)):
