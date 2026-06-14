@@ -686,9 +686,7 @@ class ACS:
         if policy == AttitudeConstraintPolicy.NONE:
             return
 
-        if not self._idle_attitude_violates_policy(
-            self.ra, self.dec, self.roll, utime, policy
-        ):
+        if not self._idle_attitude_unsafe(self.ra, self.dec, self.roll, utime, policy):
             return
 
         safe_attitude = self._find_constraint_safe_idle_attitude(utime, policy)
@@ -741,7 +739,7 @@ class ACS:
                 self.constraint,
             )
             for candidate_roll in self._idle_safe_roll_candidates(optimal_roll):
-                if not self._idle_attitude_violates_policy(
+                if not self._idle_attitude_unsafe(
                     candidate_ra,
                     candidate_dec,
                     candidate_roll,
@@ -756,7 +754,7 @@ class ACS:
             self.config.attitude_constraint_policy_for_mode(ACSMode.IDLE)
         )
 
-    def _idle_attitude_violates_policy(
+    def _idle_attitude_unsafe(
         self,
         ra: float,
         dec: float,
@@ -764,15 +762,24 @@ class ACS:
         utime: float,
         policy: AttitudeConstraintPolicy,
     ) -> bool:
+        """Runtime instrument-safety check for idle holds.
+
+        Distinct from post-simulation planning validation (queue_ditl): this asks
+        "should the ACS repoint to protect hardware?" not "did the planner break a
+        scheduling contract?"
+
+        FULL_MISSION checks every mission constraint (used when science-quality idle
+        holds are required). Any other configured policy uses hard keepouts as the
+        minimum safety floor — the instrument-protection limits that must not be
+        sustained regardless of mission phase. NONE skips all checking.
+        """
         if policy == AttitudeConstraintPolicy.FULL_MISSION:
             return self.constraint.in_constraint(
                 ra, dec, utime, target_roll=roll, acs_mode=ACSMode.IDLE
             )
-        if policy == AttitudeConstraintPolicy.HARD_KEEPOUT:
-            return self._idle_attitude_violates_hard_keepout(ra, dec, roll, utime)
         if policy == AttitudeConstraintPolicy.NONE:
             return False
-        assert_never(policy)
+        return self._idle_attitude_violates_hard_keepout(ra, dec, roll, utime)
 
     def _idle_attitude_violates_hard_keepout(
         self, ra: float, dec: float, roll: float, utime: float
