@@ -596,16 +596,23 @@ Euler angles use the ZYX convention: yaw about Z, then pitch about Y, then roll 
 
 The ACS monitors star tracker constraints at each timestep and records:
 
-* ``star_tracker_hard_violations``: Number of trackers violating their hard constraint (always monitored)
+* ``star_tracker_hard_violations``: Number of trackers inside a HARD_KEEPOUT zone (always monitored)
 * ``star_tracker_soft_violations``: Whether any tracker is in its soft constraint zone
-* ``star_tracker_functional_count``: Number of functional (hard-constraint-clear) trackers
+* ``star_tracker_functional_count``: Number of trackers **not** in a soft constraint zone (``num_trackers - soft_violation_count``)
 
 Hard violations are health-and-safety events and always cause a pointing-invalid result. Soft violations
 only affect pointing validity in modes listed in ``StarTrackerConfiguration.modes_require_lock``.
 
-When star trackers are configured, ``MissionConfig.init_fault_management_defaults()`` automatically adds
-a ``star_tracker_functional_count`` threshold (``direction="below"``, both yellow and red set to
-``num_trackers - 1``) so that any hard violation immediately triggers a RED fault alert.
+Note: ``star_tracker_functional_count`` reflects **soft** violations only — it does not decrease when a
+tracker enters a hard keepout zone. Hard violations are tracked exclusively via
+``star_tracker_hard_violations``.
+
+When star trackers are configured, ``MissionConfig.init_fault_management_defaults()`` automatically adds:
+
+* A ``star_tracker_functional_count`` threshold (``direction="below"``, yellow and red at ``num_trackers - 1``)
+  that fires when any tracker enters a **soft** constraint zone.
+* A ``star_tracker_hard_violations`` threshold (``direction="above"``, yellow and red at ``0.5``,
+  ``triggers_safe_mode=False``) that fires immediately RED when any tracker enters a **hard** keepout zone.
 
 radiators
 ~~~~~~~~~
@@ -1337,9 +1344,14 @@ based on the battery and recorder configuration:
 1. **battery_level**: Yellow at ``1.0 - max_depth_of_discharge``, Red 10% below that
 2. **recorder_fill_fraction**: Uses the recorder's ``yellow_threshold`` and ``red_threshold``
 3. **star_tracker_functional_count**: When star trackers are configured, both yellow and red are set to
-   ``num_trackers - 1`` with ``direction="below"``. This fires the moment any tracker enters a hard
-   constraint zone (``functional_count`` drops from ``num_trackers`` to ``num_trackers - 1``), making
-   any hard violation immediately critical. No threshold is added if no star trackers are configured.
+   ``num_trackers - 1`` with ``direction="below"``. This fires when any tracker enters a **soft**
+   constraint zone (degraded pointing quality). ``star_tracker_functional_count`` is computed as
+   ``num_trackers - soft_violation_count`` and is not affected by hard keepout violations.
+4. **star_tracker_hard_violations**: When star trackers are configured, yellow and red are both set to
+   ``0.5`` with ``direction="above"`` and ``triggers_safe_mode=False``. Any integer violation (≥ 1)
+   immediately fires RED. Hard violations are tracked separately from ``star_tracker_functional_count``
+   and always represent a health-and-safety event (tracker inside a HARD_KEEPOUT zone).
+   No thresholds are added if no star trackers are configured.
 
 You can override these by adding custom thresholds to the ``FaultManagement`` instance before calling
 ``init_fault_management_defaults()`` (defaults are skipped if a threshold for that parameter already exists).

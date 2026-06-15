@@ -131,7 +131,8 @@ Valid threshold names are the predefined ``Housekeeping`` fields. Commonly used 
 * ``panel_illumination``
 * ``recorder_fill_fraction`` / ``recorder_alert``
 * ``sun_angle_deg`` / ``earth_angle_deg`` / ``moon_angle_deg``
-* ``star_tracker_functional_count`` (automatically configured when star trackers are present)
+* ``star_tracker_functional_count`` — trackers not in a soft constraint zone; automatically configured when star trackers are present
+* ``star_tracker_hard_violations`` — trackers inside a HARD_KEEPOUT zone; automatically configured when star trackers are present
 
 During fault checking, the current ACS mode is determined from:
 1. ``housekeeping.acs_mode`` (preferred)
@@ -331,8 +332,9 @@ The fault management system is automatically integrated into the ``QueueDITL`` s
    # Load config with fault_management section
    config = MissionConfig.from_json("config_with_fault_management.json")
 
-   # Initialize defaults (adds battery_level, recorder_fill_fraction, and
-   # star_tracker_functional_count thresholds if not already present)
+   # Initialize defaults (adds battery_level, recorder_fill_fraction,
+   # star_tracker_functional_count, and star_tracker_hard_violations
+   # thresholds if not already present)
    config.init_fault_management_defaults()
 
    # Run simulation
@@ -369,26 +371,28 @@ This allows for:
 
 Set ``time_threshold_seconds`` to ``null`` to create monitoring-only constraints that track violations but never trigger safe mode.
 
-Star Tracker Hard Monitoring
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Star Tracker Monitoring
+^^^^^^^^^^^^^^^^^^^^^^^
 
-Monitor star tracker hard-constraint violations using standard thresholds on
-``star_tracker_hard_violations``.
+The ACS exposes two separate star-tracker telemetry fields:
 
-Recommended configuration:
+* ``star_tracker_functional_count``: ``num_trackers - soft_violation_count``. Decreases when a tracker
+  enters a **soft** constraint zone (degraded pointing quality). Hard violations do **not** affect this count.
+* ``star_tracker_hard_violations``: Count of trackers inside a **HARD_KEEPOUT** zone. Always non-negative;
+  a non-zero value means a tracker is in a health-and-safety exclusion region.
 
-* ``direction="above"``
-* ``yellow=0.5`` and ``red=0.5`` so any non-zero hard violation is RED
-* ``triggers_safe_mode`` controls whether safe mode is requested
-* ``safe_mode_delay_seconds`` sets how long RED must persist before triggering
-
-Example:
+``init_fault_management_defaults()`` adds both thresholds automatically when star trackers are configured.
+To override the hard-violation policy (e.g. to trigger a safehold instead of just alerting), add your
+threshold before calling ``init_fault_management_defaults()`` — the default is skipped when the name
+already exists:
 
 .. code-block:: python
 
      from conops.config.fault_management import FaultManagement
 
      fm = FaultManagement(safe_mode_on_red=True)
+
+     # Override default: trigger safe mode after 30 s of continuous hard violation
      fm.add_threshold(
              "star_tracker_hard_violations",
              yellow=0.5,
@@ -398,7 +402,7 @@ Example:
              safe_mode_delay_seconds=30.0,
      )
 
-JSON configuration:
+JSON configuration equivalent:
 
 .. code-block:: json
 
@@ -417,6 +421,10 @@ JSON configuration:
              ]
          }
      }
+
+The threshold values ``yellow=0.5`` and ``red=0.5`` work because violations is an integer: ``0 < 0.5``
+(nominal) and ``1 >= 0.5`` (RED). Setting yellow and red to the same value means any violation goes
+straight to RED without a separate YELLOW warning.
 
 Example Configuration File
 ---------------------------

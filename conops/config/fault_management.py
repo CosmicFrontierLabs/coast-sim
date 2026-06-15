@@ -79,13 +79,24 @@ ACS Mode Filtering:
 
     Examples:
 
-    # Only check star tracker count during SCIENCE mode (when precision pointing matters)
+    # Only check soft-constraint degradation during SCIENCE mode (precision pointing matters)
+    # star_tracker_functional_count = num_trackers - soft_violation_count (soft only)
     fm.add_threshold(
         "star_tracker_functional_count",
         yellow=2.0,
         red=1.0,
         direction="below",
         acs_modes=[ACSMode.SCIENCE],
+    )
+
+    # Alert on hard keepout violations in all modes (monitor-only, no safehold)
+    # Any non-zero value (first integer >= 0.5) fires RED immediately.
+    fm.add_threshold(
+        "star_tracker_hard_violations",
+        yellow=0.5,
+        red=0.5,
+        direction="above",
+        triggers_safe_mode=False,
     )
 
     # Check thermal limits in all modes except SAFE mode (thermal control always matters)
@@ -245,7 +256,7 @@ class FaultThreshold(ConfigModel):
         ...     direction="below"
         ... )
 
-        >>> # Only check star tracker count during SCIENCE mode
+        >>> # Only check soft-constraint degradation during SCIENCE mode
         >>> star_tracker_threshold = FaultThreshold(
         ...     name="star_tracker_functional_count",
         ...     yellow=2.0,
