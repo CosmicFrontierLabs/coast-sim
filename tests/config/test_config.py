@@ -21,6 +21,7 @@ from conops import (
     SpacecraftBus,
 )
 from conops.config import (
+    AttitudeControlSystem,
     DataGeneration,
     PowerDraw,
     StarTracker,
@@ -71,18 +72,11 @@ class TestConfig:
     def test_attitude_constraint_policy_defaults_by_mode(self) -> None:
         """Test executed attitude validation policy defaults."""
         config = MissionConfig()
-        assert (
-            config.attitude_constraint_policy_for_mode(ACSMode.SCIENCE)
-            == AttitudeConstraintPolicy.FULL_MISSION
-        )
-        assert (
-            config.attitude_constraint_policy_for_mode(ACSMode.PASS)
-            == AttitudeConstraintPolicy.HARD_KEEPOUT
-        )
-        assert (
-            config.attitude_constraint_policy_for_mode(ACSMode.IDLE)
-            == AttitudeConstraintPolicy.HARD_KEEPOUT
-        )
+        for mode in ACSMode:
+            assert (
+                config.attitude_constraint_policy_for_mode(mode)
+                == AttitudeConstraintPolicy.FULL_MISSION
+            )
 
     def test_attitude_constraint_policy_accepts_mode_name_overrides(self) -> None:
         """Test mission config can override one ACS mode by name."""
@@ -102,6 +96,19 @@ class TestConfig:
             config.attitude_constraint_policy_for_mode(ACSMode.SCIENCE)
             == AttitudeConstraintPolicy.FULL_MISSION
         )
+
+    def test_acs_gsp_tracking_phase_step_is_configurable(self) -> None:
+        """Test ground-station roll search granularity is an ACS config setting."""
+        acs = AttitudeControlSystem(gsp_tracking_phase_step_deg=10.0)
+
+        assert acs.gsp_tracking_phase_step_deg == 10.0
+
+    def test_acs_gsp_tracking_phase_step_rejects_invalid_values(self) -> None:
+        """Test ground-station roll search granularity must be positive."""
+        import pytest
+
+        with pytest.raises(ValueError):
+            AttitudeControlSystem(gsp_tracking_phase_step_deg=0.0)
 
     def test_config_default_name(self) -> None:
         """Test that Config uses default name."""

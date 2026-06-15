@@ -217,6 +217,28 @@ class TestScheduleGroundstationPasses:
         assert "Skipped overlapping pass opportunity: Dropped pass" in log_text
         assert "overlaps selected pass Selected pass" in log_text
 
+    def test_schedule_passes_logs_constraint_drops_when_no_pass_survives(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.acs.passrequests.passes = []
+
+        dropped = Mock()
+        dropped.__str__ = Mock(return_value="Constraint dropped pass")
+
+        def populate_drops(year: int, day: int, length: int) -> None:
+            queue_ditl.acs.passrequests.passes = []
+            queue_ditl.acs.passrequests.dropped_constraint_passes = [dropped]
+
+        cast(Mock, queue_ditl.acs.passrequests.get).side_effect = populate_drops
+        queue_ditl._schedule_groundstation_passes()
+
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert (
+            "Skipped constraint-unsafe pass opportunity: Constraint dropped pass"
+            in log_text
+        )
+        assert "No groundstation passes scheduled" in log_text
+
 
 class TestDetermineMode:
     """Test mode determination now handled by ACS.get_mode() - these tests use real ACS instance."""
@@ -1726,6 +1748,45 @@ class TestFetchNewPPT:
         assert queue_ditl.ppt is mock_ppt
         cast(Mock, queue_ditl.acs.enqueue_command).assert_called_once()
 
+    def test_fetch_ppt_rejects_constraint_unsafe_slew_path(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Target slews are rejected when the transient slew attitude is unsafe."""
+        queue_ditl.ephem.step_size = 60
+        queue_ditl.ephem.timestamp = [
+            datetime.fromtimestamp(1000.0 + 60.0 * index, timezone.utc)
+            for index in range(3)
+        ]
+
+        mock_ppt = Mock()
+        mock_ppt.ra = 45.0
+        mock_ppt.dec = 30.0
+        mock_ppt.obsid = 1003
+        mock_ppt.next_vis = Mock(return_value=1000.0)
+        mock_ppt.ss_max = 3600.0
+        mock_ppt.ss_min = 300.0
+        mock_ppt.windows = [[0.0, 1e12]]
+        queue_ditl.queue.targets = [mock_ppt]
+        cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
+        cast(Mock, queue_ditl.acs.passrequests).current_pass = Mock(return_value=None)
+        cast(Mock, queue_ditl.acs.passrequests).next_pass = Mock(return_value=None)
+        queue_ditl.config.spacecraft_bus.attitude_control.slew_time = Mock(
+            return_value=120.0
+        )
+        queue_ditl.constraint.in_constraint = Mock(
+            side_effect=lambda ra, dec, utime, **kwargs: utime == 1060.0
+        )
+        queue_ditl.constraint.in_earth = Mock(
+            side_effect=lambda ra, dec, utime, **kwargs: utime == 1060.0
+        )
+
+        queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
+        assert queue_ditl.ppt is None
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "slew path violates Earth Limb" in log_text
+
 
 class TestRecordSpacecraftState:
     """Test _record_spacecraft_state helper method."""
@@ -2157,7 +2218,7 @@ class TestPlanExecutionValidation:
             40.0, 10.0, 1060.0, target_roll=5.0, acs_mode=ACSMode.CHARGING
         )
 
-    def test_validation_uses_hard_constraints_only_for_pass(
+    def test_validation_fails_for_default_full_constraint_policy_for_pass(
         self, queue_ditl: QueueDITL
     ) -> None:
         entry = PlanEntry(config=queue_ditl.config)
@@ -2188,10 +2249,15 @@ class TestPlanExecutionValidation:
         queue_ditl.dec = [20.0, 21.0]
         queue_ditl.roll = [0.0, 10.0]
         queue_ditl.constraint.in_constraint = Mock(return_value=True)
+        queue_ditl.constraint.in_sun = Mock(return_value=True)
         self._index_telemetry_by_time(queue_ditl)
 
-        assert queue_ditl.validate_plan_matches_execution() == []
-        queue_ditl.constraint.in_constraint.assert_not_called()
+        mismatches = queue_ditl.validate_plan_matches_execution()
+
+        assert any("mode PASS" in str(m) for m in mismatches)
+        assert any("Sun" in str(m) for m in mismatches)
+        assert any("full_mission" in str(m) for m in mismatches)
+        assert queue_ditl.constraint.in_constraint.call_count == 2
 
     def test_validation_uses_configured_full_constraint_policy_for_pass(
         self, queue_ditl: QueueDITL
@@ -2270,6 +2336,9 @@ class TestPlanExecutionValidation:
         queue_ditl.ra = [10.0]
         queue_ditl.dec = [20.0]
         queue_ditl.roll = [15.0]
+        queue_ditl.config.attitude_constraint_policy_for_mode = Mock(
+            return_value=AttitudeConstraintPolicy.HARD_KEEPOUT
+        )
         queue_ditl.constraint.in_star_tracker_hard = Mock(return_value=True)
         self._index_telemetry_by_time(queue_ditl)
 
@@ -2321,7 +2390,7 @@ class TestPlanExecutionValidation:
     @pytest.mark.parametrize(
         "mode", [ACSMode.SLEWING, ACSMode.SAA, ACSMode.SAFE, ACSMode.IDLE]
     )
-    def test_hard_constraint_violation_in_non_activity_modes_is_not_a_validation_mismatch(
+    def test_validation_fails_for_default_full_violation_in_non_activity_modes(
         self, queue_ditl: QueueDITL, mode: ACSMode
     ) -> None:
         # Modes using HARD_KEEPOUT policy never generate validation mismatches;
@@ -2332,12 +2401,41 @@ class TestPlanExecutionValidation:
         queue_ditl.ra = [10.0]
         queue_ditl.dec = [20.0]
         queue_ditl.roll = [30.0]
+        queue_ditl.constraint.in_constraint = Mock(return_value=True)
+        queue_ditl.constraint.in_earth = Mock(return_value=True)
+        self._index_telemetry_by_time(queue_ditl)
+
+        mismatches = queue_ditl.validate_plan_matches_execution()
+
+        assert any(f"mode {mode.name}" in str(m) for m in mismatches)
+        assert any("Earth" in str(m) for m in mismatches)
+        assert any("full_mission" in str(m) for m in mismatches)
+
+    @pytest.mark.parametrize(
+        "mode", [ACSMode.SLEWING, ACSMode.SAA, ACSMode.SAFE, ACSMode.IDLE]
+    )
+    def test_validation_respects_configured_hard_policy_in_non_activity_modes(
+        self, queue_ditl: QueueDITL, mode: ACSMode
+    ) -> None:
+        queue_ditl.utime = [1000.0]
+        queue_ditl.mode = [mode]
+        queue_ditl.obsid = [IDLE_OBSID]
+        queue_ditl.ra = [10.0]
+        queue_ditl.dec = [20.0]
+        queue_ditl.roll = [30.0]
+        queue_ditl.config.attitude_constraint_policy_for_mode = Mock(
+            return_value=AttitudeConstraintPolicy.HARD_KEEPOUT
+        )
+        queue_ditl.constraint.in_constraint = Mock(return_value=True)
         queue_ditl.constraint.in_radiator_hard = Mock(return_value=True)
         self._index_telemetry_by_time(queue_ditl)
 
         mismatches = queue_ditl.validate_plan_matches_execution()
 
-        assert not any("Radiator Hard" in str(m) for m in mismatches)
+        assert any(f"mode {mode.name}" in str(m) for m in mismatches)
+        assert any("Radiator Hard" in str(m) for m in mismatches)
+        assert any("hard_keepout" in str(m) for m in mismatches)
+        queue_ditl.constraint.in_constraint.assert_not_called()
 
     def test_validation_fails_for_idle_full_constraint_violation(
         self, queue_ditl: QueueDITL
@@ -2810,13 +2908,13 @@ class TestCalcMethod:
         mock_charging.copy.return_value.begin = 1543622400
         mock_charging.copy.return_value.end = 1543622400 + 86400
         queue_ditl.emergency_charging.should_initiate_charging = Mock(return_value=True)
-        queue_ditl.emergency_charging.initiate_emergency_charging = Mock(
+        queue_ditl.emergency_charging.create_charging_pointing = Mock(
             return_value=mock_charging
         )
         queue_ditl.acs.enqueue_command = Mock()
         result = queue_ditl.calc()
         assert result is True
-        assert queue_ditl.emergency_charging.initiate_emergency_charging.called
+        assert queue_ditl.emergency_charging.create_charging_pointing.called
 
     def test_calc_handles_emergency_charging_enqueue_command_and_type(
         self, queue_ditl
@@ -2837,7 +2935,7 @@ class TestCalcMethod:
         mock_charging.copy.return_value.begin = 1543622400
         mock_charging.copy.return_value.end = 1543622400 + 86400
         queue_ditl.emergency_charging.should_initiate_charging = Mock(return_value=True)
-        queue_ditl.emergency_charging.initiate_emergency_charging = Mock(
+        queue_ditl.emergency_charging.create_charging_pointing = Mock(
             return_value=mock_charging
         )
         queue_ditl.acs.enqueue_command = Mock()
@@ -2883,15 +2981,10 @@ class TestCalcMethod:
         charging_ppt.obsid = 999001
         charging_ppt.roll = 0.0
 
-        def interrupt_for_charging(utime, ephem, ra, dec, current_ppt):
-            current_ppt.end = utime
-            current_ppt.done = True
-            return charging_ppt
-
         queue_ditl.ppt = science_ppt
         queue_ditl.plan = [plan_entry]
-        queue_ditl.emergency_charging.initiate_emergency_charging = Mock(
-            side_effect=interrupt_for_charging
+        queue_ditl.emergency_charging.create_charging_pointing = Mock(
+            return_value=charging_ppt
         )
 
         queue_ditl._initiate_charging(1250.0, 10.0, 20.0)
@@ -2901,6 +2994,51 @@ class TestCalcMethod:
         assert plan_entry not in queue_ditl.plan
         assert queue_ditl.ppt is charging_ppt
         queue_ditl.acs.enqueue_command.assert_called_once()
+
+    def test_initiate_charging_rejects_constraint_unsafe_slew_path(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Unsafe transient charge slews should not interrupt the science target."""
+        queue_ditl.ephem.step_size = 60
+        queue_ditl.ephem.timestamp = [
+            datetime.fromtimestamp(1000.0 + 60.0 * index, timezone.utc)
+            for index in range(3)
+        ]
+        queue_ditl.config.spacecraft_bus.attitude_control.slew_time = Mock(
+            return_value=120.0
+        )
+
+        science_ppt = Mock()
+        science_ppt.end = 5000.0
+        science_ppt.done = False
+        queue_ditl.ppt = science_ppt
+
+        charging_ppt = Mock()
+        charging_ppt.ra = 100.0
+        charging_ppt.dec = 50.0
+        charging_ppt.roll = 0.0
+        charging_ppt.obsid = 999001
+
+        queue_ditl.emergency_charging.create_charging_pointing = Mock(
+            return_value=charging_ppt
+        )
+        queue_ditl.constraint.in_constraint = Mock(
+            side_effect=lambda ra, dec, utime, **kwargs: utime == 1060.0
+        )
+        queue_ditl.constraint.in_earth = Mock(
+            side_effect=lambda ra, dec, utime, **kwargs: utime == 1060.0
+        )
+
+        queue_ditl._initiate_charging(1000.0, 10.0, 20.0)
+
+        cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
+        assert queue_ditl.charging_ppt is None
+        assert queue_ditl.ppt is science_ppt
+        assert science_ppt.end == 5000.0
+        assert science_ppt.done is False
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "Skipping emergency charge slew" in log_text
+        assert "Earth Limb" in log_text
 
     def test_calc_drops_short_science_entry_when_charging_interrupts(
         self, queue_ditl
@@ -2953,15 +3091,10 @@ class TestCalcMethod:
         charging_entry.roll = 0.0
         charging_entry.copy = Mock(return_value=charging_entry)
 
-        def interrupt_for_charging(utime, ephem, ra, dec, current_ppt):
-            current_ppt.end = utime
-            current_ppt.done = True
-            return charging_entry
-
         queue_ditl.ppt = science_entry
         queue_ditl.emergency_charging.should_initiate_charging = Mock(return_value=True)
-        queue_ditl.emergency_charging.initiate_emergency_charging = Mock(
-            side_effect=interrupt_for_charging
+        queue_ditl.emergency_charging.create_charging_pointing = Mock(
+            return_value=charging_entry
         )
 
         assert queue_ditl.calc() is True
@@ -3881,6 +4014,50 @@ class TestCheckAndManagePasses:
         assert command.slew.endra == pass_obj.gsstartra
         assert command.slew.enddec == pass_obj.gsstartdec
         assert command.slew.obsid == pass_obj.obsid
+
+    def test_check_and_manage_passes_rejects_constraint_unsafe_slew_path(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """GSP slew reservations are rejected when the slew path is unsafe."""
+        utime = 1000.0
+        ra, dec, roll = 10.0, 20.0, 42.0
+        queue_ditl.ephem.step_size = 60
+        queue_ditl.ephem.timestamp = [
+            datetime.fromtimestamp(utime + 60.0 * index, timezone.utc)
+            for index in range(3)
+        ]
+        queue_ditl.config.spacecraft_bus.attitude_control.slew_time = Mock(
+            return_value=120.0
+        )
+
+        pass_obj = Pass(
+            station="GS_TEST",
+            begin=1200.0,
+            length=600.0,
+            gsstartra=100.0,
+            gsstartdec=50.0,
+            gsstartroll=37.0,
+            obsid=4242,
+        )
+
+        queue_ditl.acs.passrequests.current_pass = Mock(return_value=None)
+        queue_ditl.acs.passrequests.next_pass = Mock(return_value=pass_obj)
+        queue_ditl.acs.acsmode = ACSMode.SCIENCE
+        queue_ditl.constraint.in_constraint = Mock(
+            side_effect=lambda ra, dec, utime, **kwargs: utime == 1060.0
+        )
+        queue_ditl.constraint.in_earth = Mock(
+            side_effect=lambda ra, dec, utime, **kwargs: utime == 1060.0
+        )
+
+        with patch.object(Pass, "time_to_slew", return_value=True):
+            assert not queue_ditl._check_and_manage_passes(utime, ra, dec, roll)
+
+        queue_ditl.acs.enqueue_command.assert_not_called()
+        assert len(queue_ditl.plan) == 0
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "Skipping pass slew to GS_TEST" in log_text
+        assert "Earth Limb" in log_text
 
     def test_check_and_manage_passes_exports_gsp_plan_entry_for_pass_slew(
         self, queue_ditl, tmp_path

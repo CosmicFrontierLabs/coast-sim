@@ -11,7 +11,6 @@ from astropy.time import Time  # type: ignore[import-untyped]
 
 from conops import (
     DAY_SECONDS,
-    ACSMode,
     AttitudeConstraintPolicy,
     DumbQueueScheduler,
     QueueDITL,
@@ -85,11 +84,7 @@ def mock_config() -> Mock:
     config.constraint.in_telescope_hard = Mock(return_value=False)
     config.constraint.in_eclipse = Mock(return_value=False)
     config.attitude_constraint_policy_for_mode = Mock(
-        side_effect=lambda mode: (
-            AttitudeConstraintPolicy.FULL_MISSION
-            if ACSMode(int(mode)) in (ACSMode.SCIENCE, ACSMode.CHARGING)
-            else AttitudeConstraintPolicy.HARD_KEEPOUT
-        )
+        return_value=AttitudeConstraintPolicy.FULL_MISSION
     )
     config.constraint.instantaneous_field_of_regard = Mock(return_value=1.234)
 
@@ -120,6 +115,23 @@ def mock_config() -> Mock:
     config.spacecraft_bus.attitude_control.slew_time = Mock(
         return_value=100.0
     )  # Return slew time in seconds
+    config.spacecraft_bus.attitude_control.motion_time = Mock(
+        side_effect=lambda distance: float(
+            config.spacecraft_bus.attitude_control.slew_time(distance)
+        )
+    )
+    config.spacecraft_bus.attitude_control.s_of_t = Mock(
+        side_effect=lambda distance, tau: (
+            0.0
+            if config.spacecraft_bus.attitude_control.motion_time(distance) <= 0
+            else float(distance)
+            * min(
+                1.0,
+                float(tau)
+                / config.spacecraft_bus.attitude_control.motion_time(distance),
+            )
+        )
+    )
 
     # Mock payload
     config.payload = Mock()
@@ -156,6 +168,7 @@ def queue_ditl(mock_config: Mock, mock_ephem: DummyEphemeris) -> QueueDITL:
         mock_pt = Mock()
         mock_pt.passes = []
         mock_pt.dropped_overlapping_passes = []
+        mock_pt.dropped_constraint_passes = []
         mock_pt.get = Mock()
         mock_pt.check_pass_timing = Mock(
             return_value={"start_pass": None, "end_pass": False, "updated_pass": None}
@@ -592,6 +605,7 @@ def queue_ditl_no_queue_log(
         # Mock PassTimes
         mock_pt = Mock()
         mock_pt.passes = []
+        mock_pt.dropped_constraint_passes = []
         mock_pt.get = Mock()
         mock_pt.check_pass_timing = Mock(
             return_value={"start_pass": None, "end_pass": False, "updated_pass": None}
@@ -670,6 +684,7 @@ def queue_ditl_acs_no_ephem(
         # Mock PassTimes
         mock_pt = Mock()
         mock_pt.passes = []
+        mock_pt.dropped_constraint_passes = []
         mock_pt.get = Mock()
         mock_pt.check_pass_timing = Mock(
             return_value={"start_pass": None, "end_pass": False, "updated_pass": None}

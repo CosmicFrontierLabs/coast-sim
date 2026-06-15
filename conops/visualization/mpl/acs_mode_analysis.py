@@ -92,12 +92,8 @@ def plot_acs_mode_distribution(
         startangle=140,
         textprops={"fontsize": label_font_size, "fontfamily": font_family},
     )
-    # matplotlib's pie() historically returned a tuple, but newer versions may
-    # return a PieContainer-like object that does not implement len().
-    if isinstance(pie_res, tuple):
-        autotexts = pie_res[2] if len(pie_res) > 2 else []
-    else:
-        autotexts = getattr(pie_res, "autotexts", [])
+    # Matplotlib returns a tuple in 3.10 and a PieContainer in 3.11+.
+    autotexts = pie_res[2] if isinstance(pie_res, tuple) and len(pie_res) > 2 else []
     ax.set_title(
         "Percentage of Time Spent in Each ACS Mode", fontproperties=title_prop, pad=20
     )

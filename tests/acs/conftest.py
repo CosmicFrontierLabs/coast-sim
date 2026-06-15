@@ -8,7 +8,6 @@ import pytest
 
 from conops import (
     ACS,
-    ACSMode,
     AttitudeConstraintPolicy,
     AttitudeControlSystem,
     Constraint,
@@ -89,11 +88,7 @@ def mock_config(mock_ephem: DummyEphemeris, mock_constraint: Mock) -> Mock:
     config.spacecraft_bus.radiators = Mock()
     config.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
     config.attitude_constraint_policy_for_mode = Mock(
-        side_effect=lambda mode: (
-            AttitudeConstraintPolicy.FULL_MISSION
-            if ACSMode(int(mode)) in (ACSMode.SCIENCE, ACSMode.CHARGING)
-            else AttitudeConstraintPolicy.HARD_KEEPOUT
-        )
+        return_value=AttitudeConstraintPolicy.FULL_MISSION
     )
     return config
 

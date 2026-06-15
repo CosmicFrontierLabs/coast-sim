@@ -72,6 +72,10 @@ def mock_constraint(mock_ephem):
     """Create a mock constraint."""
     constraint = Mock(spec=Constraint)
     constraint.ephem = mock_ephem
+    constraint.in_constraint = Mock(return_value=False)
+    constraint.in_star_tracker_hard = Mock(return_value=False)
+    constraint.in_radiator_hard = Mock(return_value=False)
+    constraint.in_telescope_hard = Mock(return_value=False)
     return constraint
 
 
