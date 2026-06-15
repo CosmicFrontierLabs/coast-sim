@@ -2390,26 +2390,28 @@ class TestPlanExecutionValidation:
     @pytest.mark.parametrize(
         "mode", [ACSMode.SLEWING, ACSMode.SAA, ACSMode.SAFE, ACSMode.IDLE]
     )
-    def test_validation_fails_for_default_full_violation_in_non_activity_modes(
+    def test_hard_constraint_violation_in_non_activity_modes_is_not_a_validation_mismatch(
         self, queue_ditl: QueueDITL, mode: ACSMode
     ) -> None:
-        # Modes using HARD_KEEPOUT policy never generate validation mismatches;
-        # hard constraint violations are runtime FaultEvents.
+        # SLEWING/SAA/SAFE/IDLE use HARD_KEEPOUT policy by default; violations are
+        # runtime FaultEvents, not post-simulation planning mismatches.
         queue_ditl.utime = [1000.0]
         queue_ditl.mode = [mode]
         queue_ditl.obsid = [IDLE_OBSID]
         queue_ditl.ra = [10.0]
         queue_ditl.dec = [20.0]
         queue_ditl.roll = [30.0]
+        queue_ditl.config.attitude_constraint_policy_for_mode = Mock(
+            return_value=AttitudeConstraintPolicy.HARD_KEEPOUT
+        )
         queue_ditl.constraint.in_constraint = Mock(return_value=True)
-        queue_ditl.constraint.in_earth = Mock(return_value=True)
+        queue_ditl.constraint.in_radiator_hard = Mock(return_value=True)
         self._index_telemetry_by_time(queue_ditl)
 
         mismatches = queue_ditl.validate_plan_matches_execution()
 
-        assert any(f"mode {mode.name}" in str(m) for m in mismatches)
-        assert any("Earth" in str(m) for m in mismatches)
-        assert any("full_mission" in str(m) for m in mismatches)
+        assert not mismatches
+        queue_ditl.constraint.in_constraint.assert_not_called()
 
     @pytest.mark.parametrize(
         "mode", [ACSMode.SLEWING, ACSMode.SAA, ACSMode.SAFE, ACSMode.IDLE]
@@ -2432,9 +2434,7 @@ class TestPlanExecutionValidation:
 
         mismatches = queue_ditl.validate_plan_matches_execution()
 
-        assert any(f"mode {mode.name}" in str(m) for m in mismatches)
-        assert any("Radiator Hard" in str(m) for m in mismatches)
-        assert any("hard_keepout" in str(m) for m in mismatches)
+        assert not mismatches
         queue_ditl.constraint.in_constraint.assert_not_called()
 
     def test_validation_fails_for_idle_full_constraint_violation(
