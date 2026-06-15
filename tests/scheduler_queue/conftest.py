@@ -168,6 +168,7 @@ def queue_ditl(mock_config: Mock, mock_ephem: DummyEphemeris) -> QueueDITL:
         mock_pt = Mock()
         mock_pt.passes = []
         mock_pt.dropped_overlapping_passes = []
+        mock_pt.dropped_constraint_passes = []
         mock_pt.get = Mock()
         mock_pt.check_pass_timing = Mock(
             return_value={"start_pass": None, "end_pass": False, "updated_pass": None}
@@ -603,6 +604,7 @@ def queue_ditl_no_queue_log(
         # Mock PassTimes
         mock_pt = Mock()
         mock_pt.passes = []
+        mock_pt.dropped_constraint_passes = []
         mock_pt.get = Mock()
         mock_pt.check_pass_timing = Mock(
             return_value={"start_pass": None, "end_pass": False, "updated_pass": None}
@@ -681,6 +683,7 @@ def queue_ditl_acs_no_ephem(
         # Mock PassTimes
         mock_pt = Mock()
         mock_pt.passes = []
+        mock_pt.dropped_constraint_passes = []
         mock_pt.get = Mock()
         mock_pt.check_pass_timing = Mock(
             return_value={"start_pass": None, "end_pass": False, "updated_pass": None}

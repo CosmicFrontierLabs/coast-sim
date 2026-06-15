@@ -1463,71 +1463,73 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _initiate_charging(self, utime: float, ra: float, dec: float) -> None:
         """Initiate emergency charging by creating charging PPT and sending command to ACS."""
-        interrupted_ppt = self.ppt
-        interrupted_state = (
-            (interrupted_ppt.end, interrupted_ppt.done)
-            if interrupted_ppt is not None
-            else None
+        charging_ppt = self.emergency_charging.create_charging_pointing(
+            utime, self.ephem, ra, dec
         )
-        self.charging_ppt = self.emergency_charging.initiate_emergency_charging(
-            utime, self.ephem, ra, dec, self.ppt
-        )
+        if charging_ppt is None:
+            return
 
-        # If charging PPT created successfully, send command to ACS and replace current PPT
-        if self.charging_ppt is not None:
-            slew = Slew(config=self.config)
-            slew.ephem = self.acs.ephem
-            slew.slewrequest = utime
-            slew.slewstart = utime
-            slew.startra = ra
-            slew.startdec = dec
-            slew.startroll = self.acs.roll
-            slew.endra = self.charging_ppt.ra
-            slew.enddec = self.charging_ppt.dec
-            slew.endroll = self.charging_ppt.roll
-            slew.obstype = ObsType.CHARGE
-            slew.obsid = self.charging_ppt.obsid
-            slew.at = self.charging_ppt
-            slew.calc_slewtime()
-            violation = self._slew_attitude_constraint_violation(slew, ACSMode.SLEWING)
-            if violation is not None:
-                violation_time, constraint_name, policy = violation
-                self.log.log_event(
-                    utime=utime,
-                    event_type="CHARGING",
-                    description=(
-                        f"Skipping emergency charge slew - path violates "
-                        f"{constraint_name} ({policy}) at {unixtime2date(violation_time)}"
-                    ),
-                    obsid=self.charging_ppt.obsid,
-                    acs_mode=self.acs.acsmode,
-                )
-                if interrupted_ppt is not None and interrupted_state is not None:
-                    interrupted_ppt.end, interrupted_ppt.done = interrupted_state
-                self.emergency_charging.current_charging_ppt = None
-                self.charging_ppt = None
-                return
-
-            if interrupted_ppt is not None:
-                if (
-                    len(self.plan) > 0
-                    and self._entry_obstype(self.plan[-1]) == ObsType.AT
-                    and int(self.plan[-1].obsid) == int(interrupted_ppt.obsid)
-                ):
-                    self._close_last_plan_entry(utime)
-                if self._is_short_science_entry(interrupted_ppt):
-                    interrupted_ppt.done = False
-
-            command = ACSCommand(
-                command_type=ACSCommandType.START_BATTERY_CHARGE,
-                execution_time=utime,
-                ra=self.charging_ppt.ra,
-                dec=self.charging_ppt.dec,
-                roll=self.charging_ppt.roll,
-                obsid=self.charging_ppt.obsid,
+        slew = Slew(config=self.config)
+        slew.ephem = self.acs.ephem
+        slew.slewrequest = utime
+        slew.slewstart = utime
+        slew.startra = ra
+        slew.startdec = dec
+        slew.startroll = self.acs.roll
+        slew.endra = charging_ppt.ra
+        slew.enddec = charging_ppt.dec
+        slew.endroll = charging_ppt.roll
+        slew.obstype = ObsType.CHARGE
+        slew.obsid = charging_ppt.obsid
+        slew.at = charging_ppt
+        slew.calc_slewtime()
+        violation = self._slew_attitude_constraint_violation(slew, ACSMode.SLEWING)
+        if violation is not None:
+            violation_time, constraint_name, policy = violation
+            self.log.log_event(
+                utime=utime,
+                event_type="CHARGING",
+                description=(
+                    f"Skipping emergency charge slew - path violates "
+                    f"{constraint_name} ({policy}) at {unixtime2date(violation_time)}"
+                ),
+                obsid=charging_ppt.obsid,
+                acs_mode=self.acs.acsmode,
             )
-            self.acs.enqueue_command(command)
-            self.ppt = self.charging_ppt
+            self.emergency_charging.current_charging_ppt = None
+            return
+
+        interrupted_ppt = self.ppt
+        self.charging_ppt = charging_ppt
+        if interrupted_ppt is not None and not getattr(interrupted_ppt, "done", False):
+            self.log.log_event(
+                utime=utime,
+                event_type="ERROR",
+                description="BATTERY ALERT: Terminating science observation for emergency charging",
+            )
+            interrupted_ppt.end = utime
+            interrupted_ppt.done = True
+
+        if interrupted_ppt is not None:
+            if (
+                len(self.plan) > 0
+                and self._entry_obstype(self.plan[-1]) == ObsType.AT
+                and int(self.plan[-1].obsid) == int(interrupted_ppt.obsid)
+            ):
+                self._close_last_plan_entry(utime)
+            if self._is_short_science_entry(interrupted_ppt):
+                interrupted_ppt.done = False
+
+        command = ACSCommand(
+            command_type=ACSCommandType.START_BATTERY_CHARGE,
+            execution_time=utime,
+            ra=self.charging_ppt.ra,
+            dec=self.charging_ppt.dec,
+            roll=self.charging_ppt.roll,
+            obsid=self.charging_ppt.obsid,
+        )
+        self.acs.enqueue_command(command)
+        self.ppt = self.charging_ppt
 
     def _setup_simulation_timing(self) -> bool:
         """Set up timing aspect of simulation."""
@@ -1586,12 +1588,7 @@ class QueueDITL(DITLMixin, DITLStats):
                     ),
                 )
 
-            constraint_dropped_passes = getattr(
-                self.acs.passrequests, "dropped_constraint_passes", []
-            )
-            if not isinstance(constraint_dropped_passes, list):
-                constraint_dropped_passes = []
-            for dropped in constraint_dropped_passes:
+            for dropped in self.acs.passrequests.dropped_constraint_passes:
                 self.log.log_event(
                     utime=self.ustart,
                     event_type="PASS",

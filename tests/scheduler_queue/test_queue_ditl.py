@@ -2905,13 +2905,13 @@ class TestCalcMethod:
         mock_charging.copy.return_value.begin = 1543622400
         mock_charging.copy.return_value.end = 1543622400 + 86400
         queue_ditl.emergency_charging.should_initiate_charging = Mock(return_value=True)
-        queue_ditl.emergency_charging.initiate_emergency_charging = Mock(
+        queue_ditl.emergency_charging.create_charging_pointing = Mock(
             return_value=mock_charging
         )
         queue_ditl.acs.enqueue_command = Mock()
         result = queue_ditl.calc()
         assert result is True
-        assert queue_ditl.emergency_charging.initiate_emergency_charging.called
+        assert queue_ditl.emergency_charging.create_charging_pointing.called
 
     def test_calc_handles_emergency_charging_enqueue_command_and_type(
         self, queue_ditl
@@ -2932,7 +2932,7 @@ class TestCalcMethod:
         mock_charging.copy.return_value.begin = 1543622400
         mock_charging.copy.return_value.end = 1543622400 + 86400
         queue_ditl.emergency_charging.should_initiate_charging = Mock(return_value=True)
-        queue_ditl.emergency_charging.initiate_emergency_charging = Mock(
+        queue_ditl.emergency_charging.create_charging_pointing = Mock(
             return_value=mock_charging
         )
         queue_ditl.acs.enqueue_command = Mock()
@@ -2978,15 +2978,10 @@ class TestCalcMethod:
         charging_ppt.obsid = 999001
         charging_ppt.roll = 0.0
 
-        def interrupt_for_charging(utime, ephem, ra, dec, current_ppt):
-            current_ppt.end = utime
-            current_ppt.done = True
-            return charging_ppt
-
         queue_ditl.ppt = science_ppt
         queue_ditl.plan = [plan_entry]
-        queue_ditl.emergency_charging.initiate_emergency_charging = Mock(
-            side_effect=interrupt_for_charging
+        queue_ditl.emergency_charging.create_charging_pointing = Mock(
+            return_value=charging_ppt
         )
 
         queue_ditl._initiate_charging(1250.0, 10.0, 20.0)
@@ -3021,13 +3016,8 @@ class TestCalcMethod:
         charging_ppt.roll = 0.0
         charging_ppt.obsid = 999001
 
-        def interrupt_for_charging(utime, ephem, ra, dec, current_ppt):
-            current_ppt.end = utime
-            current_ppt.done = True
-            return charging_ppt
-
-        queue_ditl.emergency_charging.initiate_emergency_charging = Mock(
-            side_effect=interrupt_for_charging
+        queue_ditl.emergency_charging.create_charging_pointing = Mock(
+            return_value=charging_ppt
         )
         queue_ditl.constraint.in_constraint = Mock(
             side_effect=lambda ra, dec, utime, **kwargs: utime == 1060.0
@@ -3098,15 +3088,10 @@ class TestCalcMethod:
         charging_entry.roll = 0.0
         charging_entry.copy = Mock(return_value=charging_entry)
 
-        def interrupt_for_charging(utime, ephem, ra, dec, current_ppt):
-            current_ppt.end = utime
-            current_ppt.done = True
-            return charging_entry
-
         queue_ditl.ppt = science_entry
         queue_ditl.emergency_charging.should_initiate_charging = Mock(return_value=True)
-        queue_ditl.emergency_charging.initiate_emergency_charging = Mock(
-            side_effect=interrupt_for_charging
+        queue_ditl.emergency_charging.create_charging_pointing = Mock(
+            return_value=charging_entry
         )
 
         assert queue_ditl.calc() is True
