@@ -51,6 +51,15 @@ class AttitudeControlSystem(ConfigModel):
             "avoidance during slews, or relaxed Sun angle limits for quick transits)."
         ),
     )
+    gsp_tracking_phase_step_deg: float = Field(
+        default=5.0,
+        gt=0.0,
+        le=180.0,
+        description=(
+            "Ground-station-pass roll phase search increment in degrees. "
+            "Smaller values search more candidate tracking attitudes at higher CPU cost."
+        ),
+    )
 
     def motion_time(self, angle_deg: float) -> float:
         """Time to complete the motion (excluding settle) under bang-bang control."""

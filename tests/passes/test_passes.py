@@ -578,6 +578,15 @@ class TestPassTimes:
 
         assert pt._gsp_antenna_boresight_body() is None
 
+    def test_gsp_tracking_phase_candidates_use_acs_config(
+        self, mock_constraint, mock_config
+    ):
+        """GSP roll phase search granularity comes from ACS configuration."""
+        mock_config.spacecraft_bus.attitude_control.gsp_tracking_phase_step_deg = 90.0
+        pt = PassTimes(config=mock_config)
+
+        assert pt._gsp_tracking_phase_candidates() == [0.0, 90.0, 270.0, 180.0]
+
     def test_get_skips_stations_not_scheduled_for_tracking(
         self, mock_constraint, mock_config
     ):

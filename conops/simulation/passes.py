@@ -29,7 +29,6 @@ from .slew import Slew
 # Legacy ground-pass roll for profiles without explicit roll samples.
 GSP_TRACK_ROLL = 0.0
 LEGACY_GSP_ANTENNA_BODY_VECTOR = (-1.0, 0.0, 0.0)
-GSP_TRACK_PHASE_STEP_DEG = 5.0
 
 
 def pass_slew_trigger_buffer(step_size: float) -> float:
@@ -584,12 +583,15 @@ class PassTimes:
 
     def _gsp_tracking_phase_candidates(self) -> list[float]:
         candidates = [0.0]
-        offset = GSP_TRACK_PHASE_STEP_DEG
+        phase_step_deg = (
+            self.config.spacecraft_bus.attitude_control.gsp_tracking_phase_step_deg
+        )
+        offset = phase_step_deg
         while offset <= 180.0:
             candidates.append(float(offset))
             if offset < 180.0:
                 candidates.append(float(360.0 - offset))
-            offset += GSP_TRACK_PHASE_STEP_DEG
+            offset += phase_step_deg
         return candidates
 
     def _tracking_attitude_profile_for_phase(

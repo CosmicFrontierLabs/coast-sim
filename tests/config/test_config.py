@@ -21,6 +21,7 @@ from conops import (
     SpacecraftBus,
 )
 from conops.config import (
+    AttitudeControlSystem,
     DataGeneration,
     PowerDraw,
     StarTracker,
@@ -95,6 +96,19 @@ class TestConfig:
             config.attitude_constraint_policy_for_mode(ACSMode.SCIENCE)
             == AttitudeConstraintPolicy.FULL_MISSION
         )
+
+    def test_acs_gsp_tracking_phase_step_is_configurable(self) -> None:
+        """Test ground-station roll search granularity is an ACS config setting."""
+        acs = AttitudeControlSystem(gsp_tracking_phase_step_deg=10.0)
+
+        assert acs.gsp_tracking_phase_step_deg == 10.0
+
+    def test_acs_gsp_tracking_phase_step_rejects_invalid_values(self) -> None:
+        """Test ground-station roll search granularity must be positive."""
+        import pytest
+
+        with pytest.raises(ValueError):
+            AttitudeControlSystem(gsp_tracking_phase_step_deg=0.0)
 
     def test_config_default_name(self) -> None:
         """Test that Config uses default name."""
