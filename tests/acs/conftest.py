@@ -60,6 +60,7 @@ def mock_constraint(mock_ephem: DummyEphemeris) -> Mock:
     constraint.in_constraint = Mock(return_value=False)
     constraint.in_star_tracker_hard = Mock(return_value=False)
     constraint.in_radiator_hard = Mock(return_value=False)
+    constraint.telescope_hard_constraint = None
     constraint.in_telescope_hard = Mock(return_value=False)
     constraint.in_eclipse = Mock(return_value=False)
     return constraint

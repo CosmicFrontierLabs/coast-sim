@@ -60,6 +60,7 @@ class ACS:
     star_tracker_functional_count: int
     star_tracker_status: list[bool]
     radiator_hard_violations: int
+    telescope_hard_violations: int
     radiator_sun_exposure: float
     radiator_earth_exposure: float
     radiator_heat_dissipation_w: float
@@ -109,6 +110,7 @@ class ACS:
         self.star_tracker_functional_count = 0
         self.star_tracker_status: list[bool] = []
         self.radiator_hard_violations = 0
+        self.telescope_hard_violations = 0
         self.radiator_sun_exposure = 0.0
         self.radiator_earth_exposure = 0.0
         self.radiator_heat_dissipation_w = 0.0
@@ -963,6 +965,7 @@ class ACS:
         # Check star tracker constraints
         self._check_star_tracker_constraints(utime)
         self._check_radiator_constraints(utime)
+        self._check_telescope_constraints(utime)
 
     def _check_star_tracker_constraints(self, utime: float) -> None:
         """Check and log star tracker constraint violations for current pointing.
@@ -1109,6 +1112,26 @@ class ACS:
                 "RADIATOR_HARD_CONSTRAINT",
                 f"RADIATOR: HARD_CONSTRAINT: RA={current_ra:.3f}° Dec={current_dec:.3f}° "
                 f"roll={current_roll:.3f}° violations={self.radiator_hard_violations}",
+            )
+
+    def _check_telescope_constraints(self, utime: float) -> None:
+        """Check telescope hard constraint for current pointing."""
+        if self.constraint.telescope_hard_constraint is None:
+            self.telescope_hard_violations = 0
+            return
+        self.telescope_hard_violations = (
+            1
+            if self.constraint.in_telescope_hard(
+                self.ra, self.dec, utime, target_roll=self.roll
+            )
+            else 0
+        )
+        if self.telescope_hard_violations > 0:
+            self._log_or_print(
+                utime,
+                "TELESCOPE_HARD_CONSTRAINT",
+                f"TELESCOPE: HARD_CONSTRAINT: RA={self.ra:.3f}° Dec={self.dec:.3f}° "
+                f"roll={self.roll:.3f}°",
             )
 
     def _calculate_pointing(self, utime: float) -> None:

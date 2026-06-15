@@ -292,8 +292,9 @@ def ditl(mock_config_detailed, mock_ephem) -> DITL:
         mock_acs.star_tracker_functional_count = (
             3  # Assume 3 functional star trackers by default
         )
-        # Add radiator attributes for Housekeeping telemetry
+        # Add radiator and telescope attributes for Housekeeping telemetry
         mock_acs.radiator_hard_violations = 0
+        mock_acs.telescope_hard_violations = 0
         mock_acs.radiator_sun_exposure = 0.0
         mock_acs.radiator_earth_exposure = 0.0
         mock_acs.radiator_heat_dissipation_w = 0.0

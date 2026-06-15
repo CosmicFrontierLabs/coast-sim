@@ -94,10 +94,11 @@ Housekeeping Fields
      This value is optional and is ``None`` unless FOR calculation is enabled.
    - ``in_eclipse``: Whether spacecraft is in eclipse
 
-**Star Tracker and Radiator State**
+**Star Tracker, Telescope, and Radiator State**
    - ``star_tracker_hard_violations``: Number of star trackers in hard keep-out zones
    - ``star_tracker_soft_violations``: Whether any star tracker is in a soft-degradation zone
    - ``star_tracker_functional_count``: Number of star trackers currently counted as functional
+   - ``telescope_hard_violations``: 0 or 1 — whether the telescope hard constraint is violated
    - ``radiator_hard_violations``: Number of radiators violating hard keep-out constraints
    - ``radiator_sun_exposure``: Area-weighted Sun exposure for all configured radiators (0-1)
    - ``radiator_earth_exposure``: Area-weighted Earth exposure for all configured radiators (0-1)
@@ -159,9 +160,11 @@ The telemetry container provides convenient access to data fields:
    moon_angles = telemetry.housekeeping.moon_angle_deg
    constraints = telemetry.housekeeping.in_constraint  # list of str|None
 
-   # Star tracker health
+   # Star tracker, telescope, and radiator hard keepout health
    hard_violations = telemetry.housekeeping.star_tracker_hard_violations
    functional_count = telemetry.housekeeping.star_tracker_functional_count
+   telescope_violations = telemetry.housekeeping.telescope_hard_violations
+   radiator_violations = telemetry.housekeeping.radiator_hard_violations
 
    # Access payload data
    data_timestamps = [pd.timestamp for pd in telemetry.data]

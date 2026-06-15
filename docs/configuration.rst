@@ -599,6 +599,7 @@ The ACS monitors star tracker constraints at each timestep and records:
 * ``star_tracker_hard_violations``: Number of trackers inside a HARD_KEEPOUT zone (always monitored)
 * ``star_tracker_soft_violations``: Whether any tracker is in its soft constraint zone
 * ``star_tracker_functional_count``: Number of trackers **not** in a soft constraint zone (``num_trackers - soft_violation_count``)
+* ``telescope_hard_violations``: 0 or 1 — whether the telescope hard constraint is currently violated
 
 Hard violations are health-and-safety events and always cause a pointing-invalid result. Soft violations
 only affect pointing validity in modes listed in ``StarTrackerConfiguration.modes_require_lock``.
@@ -613,6 +614,10 @@ When star trackers are configured, ``MissionConfig.init_fault_management_default
   that fires when any tracker enters a **soft** constraint zone.
 * A ``star_tracker_hard_violations`` threshold (``direction="above"``, yellow and red at ``0.5``,
   ``triggers_safe_mode=False``) that fires immediately RED when any tracker enters a **hard** keepout zone.
+* A ``telescope_hard_violations`` threshold (same parameters) when a telescope hard constraint is configured.
+
+``radiator_hard_violations`` receives the same default FM coverage when radiators are configured — see the
+radiators section below.
 
 radiators
 ~~~~~~~~~
@@ -628,6 +633,10 @@ Radiators in COASTSim have:
 
 Unlike star trackers, radiators do **not** use soft constraints or functional-count
 logic. A radiator always exists physically; geometry changes its net thermal behavior.
+
+The ACS records ``radiator_hard_violations`` (count of radiators inside a hard keepout zone) each
+timestep. ``init_fault_management_defaults()`` automatically adds a monitor-only FM threshold for
+this field when radiators are configured.
 
 **RadiatorConfiguration Attributes:**
 
@@ -1352,6 +1361,12 @@ based on the battery and recorder configuration:
    immediately fires RED. Hard violations are tracked separately from ``star_tracker_functional_count``
    and always represent a health-and-safety event (tracker inside a HARD_KEEPOUT zone).
    No thresholds are added if no star trackers are configured.
+5. **radiator_hard_violations**: When radiators are configured, yellow and red are both set to ``0.5``
+   with ``direction="above"`` and ``triggers_safe_mode=False``. Any radiator entering a hard keepout
+   zone immediately fires RED.
+6. **telescope_hard_violations**: When a telescope hard constraint exists in the payload configuration,
+   yellow and red are both set to ``0.5`` with ``direction="above"`` and ``triggers_safe_mode=False``.
+   The field is 0 or 1 (single constraint); any violation fires RED immediately.
 
 You can override these by adding custom thresholds to the ``FaultManagement`` instance before calling
 ``init_fault_management_defaults()`` (defaults are skipped if a threshold for that parameter already exists).

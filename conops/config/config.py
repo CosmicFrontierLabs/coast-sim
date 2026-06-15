@@ -289,6 +289,43 @@ class MissionConfig(ConfigModel):
             else None
         )
 
+        # Add radiator_hard_violations threshold if not already present.
+        # Same semantics as star_tracker_hard_violations: any non-zero count fires
+        # RED immediately (violations=1 >= 0.5). monitor-only by default.
+        if (
+            not any(
+                t.name == "radiator_hard_violations"
+                for t in self.fault_management.thresholds
+            )
+            and has_radiators
+        ):
+            self.fault_management.add_threshold(
+                name="radiator_hard_violations",
+                yellow=0.5,
+                red=0.5,
+                direction="above",
+                triggers_safe_mode=False,
+            )
+
+        # Add telescope_hard_violations threshold if not already present.
+        # telescope_hard_violations is 0 or 1 (single constraint); any violation
+        # fires RED immediately. monitor-only by default.
+        has_telescope_hard = isinstance(telescope_constraint, ConstraintConfig)
+        if (
+            not any(
+                t.name == "telescope_hard_violations"
+                for t in self.fault_management.thresholds
+            )
+            and has_telescope_hard
+        ):
+            self.fault_management.add_threshold(
+                name="telescope_hard_violations",
+                yellow=0.5,
+                red=0.5,
+                direction="above",
+                triggers_safe_mode=False,
+            )
+
         self.constraint.invalidate_combined_constraint_cache()
         return self
 

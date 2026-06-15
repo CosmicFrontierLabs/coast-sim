@@ -131,6 +131,10 @@ class Housekeeping(BaseModel):
     radiator_hard_violations: int | None = Field(
         default=None, description="Number of radiators violating hard constraints"
     )
+    telescope_hard_violations: int | None = Field(
+        default=None,
+        description="1 if telescope hard constraint is violated, 0 otherwise",
+    )
     radiator_sun_exposure: float | None = Field(
         default=None, description="Area-weighted radiator sun exposure (0-1)"
     )
@@ -373,6 +377,11 @@ class HousekeepingList(list[Housekeeping]):
     def radiator_hard_violations(self) -> list[int | None]:
         """Get radiator hard violation counts from all housekeeping records."""
         return [hk.radiator_hard_violations for hk in self]
+
+    @property
+    def telescope_hard_violations(self) -> list[int | None]:
+        """Get telescope hard violation flags (0/1) from all housekeeping records."""
+        return [hk.telescope_hard_violations for hk in self]
 
     @property
     def radiator_sun_exposure(self) -> list[float | None]:

@@ -1191,6 +1191,7 @@ class QueueDITL(DITLMixin, DITLStats):
             in_constraint=in_constraint_name,
             ppt_unavailable=self._ppt_unavailable,
             radiator_hard_violations=self.acs.radiator_hard_violations,
+            telescope_hard_violations=self.acs.telescope_hard_violations,
             radiator_sun_exposure=self.acs.radiator_sun_exposure,
             radiator_earth_exposure=self.acs.radiator_earth_exposure,
             radiator_heat_dissipation_w=self.acs.radiator_heat_dissipation_w,
