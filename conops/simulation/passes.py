@@ -7,7 +7,7 @@ import rust_ephem
 from pydantic import BaseModel, Field
 
 from ..common import ics_date_conv, unixtime2date
-from ..common.enums import AntennaType, ObsType, SlewAlgorithm
+from ..common.enums import ACSMode, AntennaType, ObsType, SlewAlgorithm
 from ..common.vector import (
     attitude_for_body_vector_tracking,
     body_vector_to_eci,
@@ -17,7 +17,12 @@ from ..common.vector import (
     separation,
     vec2radec,
 )
-from ..config import Constraint, GroundStationRegistry, MissionConfig
+from ..config import (
+    AttitudeConstraintPolicy,
+    Constraint,
+    GroundStationRegistry,
+    MissionConfig,
+)
 from ..config.constants import DTOR
 from .slew import Slew
 
@@ -424,6 +429,7 @@ class PassTimes:
         )
         self.passes = []
         self.dropped_overlapping_passes: list[tuple[Pass, Pass]] = []
+        self.dropped_constraint_passes: list[Pass] = []
         self.length = 1
 
         # Ground stations registry from config
@@ -493,6 +499,44 @@ class PassTimes:
         boresight = antenna.fixed_boresight_body
         return (float(boresight[0]), float(boresight[1]), float(boresight[2]))
 
+    def _pass_attitude_violates_policy(
+        self, ra: float, dec: float, roll: float, utime: float
+    ) -> bool:
+        policy = AttitudeConstraintPolicy(
+            self.config.attitude_constraint_policy_for_mode(ACSMode.PASS)
+        )
+        if policy == AttitudeConstraintPolicy.NONE:
+            return False
+        if policy == AttitudeConstraintPolicy.FULL_MISSION:
+            return bool(
+                self.constraint.in_constraint(
+                    ra, dec, utime, target_roll=roll, acs_mode=ACSMode.PASS
+                )
+            )
+        if policy == AttitudeConstraintPolicy.HARD_KEEPOUT:
+            return bool(
+                self.constraint.in_star_tracker_hard(
+                    ra, dec, utime, target_roll=roll, acs_mode=ACSMode.PASS
+                )
+                or self.constraint.in_radiator_hard(ra, dec, utime, target_roll=roll)
+                or self.constraint.in_telescope_hard(ra, dec, utime, target_roll=roll)
+            )
+        return False
+
+    def _pass_profile_violates_policy(
+        self,
+        utimes: list[float],
+        track_ra: list[float],
+        track_dec: list[float],
+        track_roll: list[float],
+    ) -> bool:
+        return any(
+            self._pass_attitude_violates_policy(ra, dec, roll, utime)
+            for utime, ra, dec, roll in zip(
+                utimes, track_ra, track_dec, track_roll, strict=True
+            )
+        )
+
     def _deconflict_overlapping_passes(self) -> None:
         selected: list[Pass] = []
         self.dropped_overlapping_passes = []
@@ -515,6 +559,7 @@ class PassTimes:
         """Calculate the passes using rust_ephem GroundEphemeris for vectorized operations."""
         ustart = ics_date_conv(f"{year}-{day:03d}-00:00:00")
         assert self.ephem is not None, "Ephemeris is not set"
+        self.dropped_constraint_passes = []
 
         # Use binary search instead of np.where for finding start index
         # Prefer adapter datetimes if available, otherwise use Time.unix
@@ -640,6 +685,9 @@ class PassTimes:
                         track_ra = [attitude[0] for attitude in attitude_profile]
                         track_dec = [attitude[1] for attitude in attitude_profile]
                         track_roll = [attitude[2] for attitude in attitude_profile]
+                        track_utime = timestamp_unix[
+                            startindex + start_idx : startindex + end_idx
+                        ].tolist()
 
                         gspass = Pass(
                             config=self.config,
@@ -657,14 +705,18 @@ class PassTimes:
                         )
 
                         # Record the path during the pass
-                        gspass.utime = timestamp_unix[
-                            startindex + start_idx : startindex + end_idx
-                        ].tolist()
+                        gspass.utime = track_utime
                         gspass.ra = track_ra
                         gspass.dec = track_dec
                         gspass.roll = track_roll
                         gspass.station_ra = target_ra.tolist()
                         gspass.station_dec = target_dec.tolist()
+
+                        if self._pass_profile_violates_policy(
+                            track_utime, track_ra, track_dec, track_roll
+                        ):
+                            self.dropped_constraint_passes.append(gspass)
+                            continue
 
                         self.passes.append(gspass)
 

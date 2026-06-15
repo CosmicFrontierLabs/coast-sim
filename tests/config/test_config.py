@@ -71,18 +71,11 @@ class TestConfig:
     def test_attitude_constraint_policy_defaults_by_mode(self) -> None:
         """Test executed attitude validation policy defaults."""
         config = MissionConfig()
-        assert (
-            config.attitude_constraint_policy_for_mode(ACSMode.SCIENCE)
-            == AttitudeConstraintPolicy.FULL_MISSION
-        )
-        assert (
-            config.attitude_constraint_policy_for_mode(ACSMode.PASS)
-            == AttitudeConstraintPolicy.HARD_KEEPOUT
-        )
-        assert (
-            config.attitude_constraint_policy_for_mode(ACSMode.IDLE)
-            == AttitudeConstraintPolicy.HARD_KEEPOUT
-        )
+        for mode in ACSMode:
+            assert (
+                config.attitude_constraint_policy_for_mode(mode)
+                == AttitudeConstraintPolicy.FULL_MISSION
+            )
 
     def test_attitude_constraint_policy_accepts_mode_name_overrides(self) -> None:
         """Test mission config can override one ACS mode by name."""
