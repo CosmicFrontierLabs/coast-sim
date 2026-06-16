@@ -140,24 +140,7 @@ def roll_over_angle(
     around the circle. This is critical for slew paths that cross near the poles
     where RA can change rapidly.
     """
-    outangles = list()
-    last = -1.0
-    flip = 0.0
-    diff = 0.0
-
-    for i in range(len(angles)):
-        if last != -1:
-            diff = angles[i] + flip - last
-            # Use 180° threshold to always take shortest path around circle
-            if diff > 180:
-                flip -= 360
-            elif diff < -180:
-                flip += 360
-        raf = angles[i] + flip
-        last = raf
-        outangles.append(raf)
-
-    return np.array(outangles)
+    return np.unwrap(np.asarray(angles, dtype=np.float64), period=360.0)
 
 
 def vec2radec(v: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
@@ -480,6 +463,85 @@ def quat_slerp(
     return interp
 
 
+def _batch_quat_slerp(
+    q1: npt.NDArray[np.float64],
+    q2: npt.NDArray[np.float64],
+    steps: int,
+) -> npt.NDArray[np.float64]:
+    """SLERP between q1 and q2 for `steps+1` evenly-spaced t values.
+
+    Returns (steps+1, 4) array of unit quaternions.
+    """
+    q1 = q1 / np.linalg.norm(q1)
+    q2 = q2 / np.linalg.norm(q2)
+    dot = float(np.dot(q1, q2))
+    if dot < 0.0:
+        q2 = -q2
+        dot = -dot
+    dot = min(dot, 1.0)
+
+    ts = np.linspace(0.0, 1.0, steps + 1)  # (N,)
+
+    if dot > 0.9995:
+        # Nearly identical quaternions — linear blend then normalise
+        qs = q1 + ts[:, np.newaxis] * (q2 - q1)  # (N, 4)
+        norms = np.linalg.norm(qs, axis=1, keepdims=True)
+        result: npt.NDArray[np.float64] = qs / norms
+        return result
+
+    theta_0 = np.arccos(dot)
+    sin_theta_0 = np.sin(theta_0)
+    s1 = np.sin((1.0 - ts) * theta_0) / sin_theta_0  # (N,)
+    s2 = np.sin(ts * theta_0) / sin_theta_0  # (N,)
+    slerp: npt.NDArray[np.float64] = s1[:, np.newaxis] * q1 + s2[:, np.newaxis] * q2
+    return slerp
+
+
+def _batch_quat_to_attitudes(
+    qs: npt.NDArray[np.float64],
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Convert (N, 4) quaternions [w, x, y, z] to (RA, Dec, Roll) arrays in degrees."""
+    norms = np.linalg.norm(qs, axis=1, keepdims=True)
+    qs = qs / norms
+    w, x, y, z = qs[:, 0], qs[:, 1], qs[:, 2], qs[:, 3]
+
+    # Row 0 of rotation matrix = boresight direction
+    bx = 1.0 - 2.0 * (y * y + z * z)
+    by = 2.0 * (x * y - z * w)
+    bz = 2.0 * (x * z + y * w)
+    # Row 2 of rotation matrix = body-Z direction
+    r20 = 2.0 * (x * z - y * w)
+    r21 = 2.0 * (y * z + x * w)
+    r22 = 1.0 - 2.0 * (x * x + y * y)
+
+    dec_rad = np.arcsin(np.clip(bz, -1.0, 1.0))
+    ra_rad = np.arctan2(by, bx) % (2.0 * np.pi)
+
+    # Roll: project north pole onto boresight-perpendicular plane
+    b = np.stack([bx, by, bz], axis=1)  # (N, 3)
+    north = np.array([[0.0, 0.0, 1.0]])
+    n_proj = north - bz[:, np.newaxis] * b  # (N, 3)
+    n_norm = np.linalg.norm(n_proj, axis=1)  # (N,)
+
+    # Near-pole fallback: use RA=0 direction when north is aligned with boresight
+    near_pole = n_norm < 1e-10
+    if np.any(near_pole):
+        north2 = np.array([[1.0, 0.0, 0.0]])
+        n_proj2 = north2 - bx[:, np.newaxis] * b
+        n_proj[near_pole] = n_proj2[near_pole]
+        n_norm[near_pole] = np.linalg.norm(n_proj2[near_pole], axis=1)
+
+    n_hat = n_proj / n_norm[:, np.newaxis]  # (N, 3)
+    y_hat = np.cross(n_hat, b)  # (N, 3)
+    body_z = np.stack([r20, r21, r22], axis=1)  # (N, 3)
+
+    dot_z_y = np.einsum("ni,ni->n", body_z, y_hat)
+    dot_z_n = np.einsum("ni,ni->n", body_z, n_hat)
+    roll_rad = np.arctan2(dot_z_y, dot_z_n)
+
+    return np.rad2deg(ra_rad), np.rad2deg(dec_rad), np.rad2deg(roll_rad)
+
+
 def quaternion_slew_path(
     ra1: float,
     dec1: float,
@@ -496,15 +558,9 @@ def quaternion_slew_path(
     """
     q1 = attitude_to_quat(ra1, dec1, roll1)
     q2 = attitude_to_quat(ra2, dec2, roll2)
-    ras, decs, rolls = [], [], []
-    for i in range(steps + 1):
-        t = i / steps
-        q = quat_slerp(q1, q2, t)
-        ra, dec, roll = quat_to_attitude(q)
-        ras.append(ra)
-        decs.append(dec)
-        rolls.append(roll)
-    return ras, decs, rolls
+    qs = _batch_quat_slerp(q1, q2, steps)
+    ras, decs, rolls = _batch_quat_to_attitudes(qs)
+    return list(ras), list(decs), list(rolls)
 
 
 # ---------------------------------------------------------------------------
