@@ -2304,54 +2304,11 @@ class TestPlanExecutionValidation:
             10.0, 20.0, 1000.0, target_roll=15.0, acs_mode=ACSMode.PASS
         )
 
-    def test_st_hard_violation_during_pass_is_not_a_validation_mismatch(
+    def test_hard_keepout_policy_generates_validation_mismatches_for_hard_violations(
         self, queue_ditl: QueueDITL
     ) -> None:
-        # ST Hard violations are runtime fault events, not post-simulation validation
-        # mismatches. HARD_KEEPOUT policy (used during PASS) should not generate a
-        # PlanExecutionMismatch for star-tracker hard constraint violations.
-        entry = PlanEntry(config=queue_ditl.config)
-        entry.obstype = ObsType.GSP
-        entry.obsid = 0xFFFF
-        entry.station = "TRO"
-        entry.begin = 1000.0
-        entry.contact_begin = 1000.0
-        entry.contact_end = 1060.0
-        entry.end = 1060.0
-        queue_ditl.plan.append(entry)
-        queue_ditl.acs.passrequests.passes = [
-            Pass(
-                station="TRO",
-                begin=1000.0,
-                length=60.0,
-                obsid=0xFFFF,
-                utime=[1000.0],
-                ra=[10.0],
-                dec=[20.0],
-            )
-        ]
-        queue_ditl.utime = [1000.0]
-        queue_ditl.mode = [ACSMode.PASS]
-        queue_ditl.obsid = [0xFFFF]
-        queue_ditl.ra = [10.0]
-        queue_ditl.dec = [20.0]
-        queue_ditl.roll = [15.0]
-        queue_ditl.config.attitude_constraint_policy_for_mode = Mock(
-            return_value=AttitudeConstraintPolicy.HARD_KEEPOUT
-        )
-        queue_ditl.constraint.in_star_tracker_hard = Mock(return_value=True)
-        self._index_telemetry_by_time(queue_ditl)
-
-        mismatches = queue_ditl.validate_plan_matches_execution()
-
-        assert not any("ST Hard" in str(m) for m in mismatches)
-
-    def test_hard_keepout_policy_generates_no_validation_mismatches(
-        self, queue_ditl: QueueDITL
-    ) -> None:
-        # In HARD_KEEPOUT modes the planner makes no keepout avoidance guarantee,
-        # so constraint violations are FM runtime events, not planning mismatches.
-        # (Note: in FULL_MISSION modes, hard violations ARE planning mismatches.)
+        # HARD_KEEPOUT policy checks only hard keepout zones; violations ARE planning
+        # mismatches. Full mission constraints are not checked (in_constraint unused).
         queue_ditl.utime = [1060.0]
         queue_ditl.mode = [ACSMode.CHARGING]
         queue_ditl.obsid = [999001]
@@ -2361,14 +2318,15 @@ class TestPlanExecutionValidation:
         queue_ditl.config.attitude_constraint_policy_for_mode = Mock(
             return_value=AttitudeConstraintPolicy.HARD_KEEPOUT
         )
-        queue_ditl.constraint.in_constraint = Mock(return_value=True)
+        queue_ditl.constraint.in_constraint = Mock(return_value=False)
+        queue_ditl.constraint.in_star_tracker_hard = Mock(return_value=False)
         queue_ditl.constraint.in_radiator_hard = Mock(return_value=True)
+        queue_ditl.constraint.in_telescope_hard = Mock(return_value=False)
         self._index_telemetry_by_time(queue_ditl)
 
         mismatches = queue_ditl.validate_plan_matches_execution()
 
-        assert not any("Radiator Hard" in str(m) for m in mismatches)
-        assert not any("hard_keepout" in str(m) for m in mismatches)
+        assert any("Radiator Hard" in str(m) for m in mismatches)
         queue_ditl.constraint.in_constraint.assert_not_called()
 
     def test_validation_fails_for_unknown_attitude_mode(
@@ -2390,11 +2348,11 @@ class TestPlanExecutionValidation:
     @pytest.mark.parametrize(
         "mode", [ACSMode.SLEWING, ACSMode.SAA, ACSMode.SAFE, ACSMode.IDLE]
     )
-    def test_hard_constraint_violation_in_non_activity_modes_is_not_a_validation_mismatch(
+    def test_hard_keepout_policy_flags_hard_violations_as_mismatches(
         self, queue_ditl: QueueDITL, mode: ACSMode
     ) -> None:
-        # SLEWING/SAA/SAFE/IDLE use HARD_KEEPOUT policy by default; violations are
-        # runtime FaultEvents, not post-simulation planning mismatches.
+        # HARD_KEEPOUT policy checks hard keepout zones; violations ARE planning
+        # mismatches. Full mission constraints are not checked (in_constraint unused).
         queue_ditl.utime = [1000.0]
         queue_ditl.mode = [mode]
         queue_ditl.obsid = [IDLE_OBSID]
@@ -2404,37 +2362,15 @@ class TestPlanExecutionValidation:
         queue_ditl.config.attitude_constraint_policy_for_mode = Mock(
             return_value=AttitudeConstraintPolicy.HARD_KEEPOUT
         )
-        queue_ditl.constraint.in_constraint = Mock(return_value=True)
+        queue_ditl.constraint.in_constraint = Mock(return_value=False)
+        queue_ditl.constraint.in_star_tracker_hard = Mock(return_value=False)
         queue_ditl.constraint.in_radiator_hard = Mock(return_value=True)
+        queue_ditl.constraint.in_telescope_hard = Mock(return_value=False)
         self._index_telemetry_by_time(queue_ditl)
 
         mismatches = queue_ditl.validate_plan_matches_execution()
 
-        assert not mismatches
-        queue_ditl.constraint.in_constraint.assert_not_called()
-
-    @pytest.mark.parametrize(
-        "mode", [ACSMode.SLEWING, ACSMode.SAA, ACSMode.SAFE, ACSMode.IDLE]
-    )
-    def test_validation_respects_configured_hard_policy_in_non_activity_modes(
-        self, queue_ditl: QueueDITL, mode: ACSMode
-    ) -> None:
-        queue_ditl.utime = [1000.0]
-        queue_ditl.mode = [mode]
-        queue_ditl.obsid = [IDLE_OBSID]
-        queue_ditl.ra = [10.0]
-        queue_ditl.dec = [20.0]
-        queue_ditl.roll = [30.0]
-        queue_ditl.config.attitude_constraint_policy_for_mode = Mock(
-            return_value=AttitudeConstraintPolicy.HARD_KEEPOUT
-        )
-        queue_ditl.constraint.in_constraint = Mock(return_value=True)
-        queue_ditl.constraint.in_radiator_hard = Mock(return_value=True)
-        self._index_telemetry_by_time(queue_ditl)
-
-        mismatches = queue_ditl.validate_plan_matches_execution()
-
-        assert not mismatches
+        assert any("Radiator Hard" in str(m) for m in mismatches)
         queue_ditl.constraint.in_constraint.assert_not_called()
 
     def test_validation_fails_for_idle_full_constraint_violation(

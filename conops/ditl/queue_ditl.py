@@ -878,6 +878,24 @@ class QueueDITL(DITLMixin, DITLStats):
             for start, end, dropped_obsid in self._dropped_science_windows
         )
 
+    def _hard_attitude_constraint_name(
+        self,
+        ra: float,
+        dec: float,
+        utime: float,
+        roll: float,
+        mode: ACSMode,
+    ) -> str | None:
+        if self.constraint.in_star_tracker_hard(
+            ra, dec, utime, target_roll=roll, acs_mode=mode
+        ):
+            return "ST Hard"
+        if self.constraint.in_radiator_hard(ra, dec, utime, target_roll=roll):
+            return "Radiator Hard"
+        if self.constraint.in_telescope_hard(ra, dec, utime, target_roll=roll):
+            return "Telescope Hard"
+        return None
+
     def _attitude_constraint_name_for_attitude(
         self,
         ra: float,
@@ -900,12 +918,9 @@ class QueueDITL(DITLMixin, DITLStats):
                 )
             return None
         if policy == AttitudeConstraintPolicy.HARD_KEEPOUT:
-            # In HARD_KEEPOUT modes (SLEWING, PASS, SAA, SAFE, IDLE) the planner
-            # makes no keepout avoidance guarantee — the slew algorithm and tracking
-            # controllers may legitimately transit hard keepout zones. Violations are
-            # operational FaultEvents dispatched by FaultManagement at runtime, not
-            # post-simulation planning mismatches.
-            return None
+            name = self._hard_attitude_constraint_name(ra, dec, utime, roll, mode)
+            if name is not None:
+                return name, policy.value
         return None
 
     def _attitude_constraint_name_for_sample(
@@ -924,15 +939,14 @@ class QueueDITL(DITLMixin, DITLStats):
         """Check post-simulation attitude constraint compliance.
 
         Reports telemetry samples where the commanded attitude violated a constraint
-        the planner was expected to enforce. The distinction is planner admission
-        guarantee vs FM-monitored runtime condition:
+        the planner was expected to enforce. The check is gated by each mode's
+        configured AttitudeConstraintPolicy:
 
-        - FULL_MISSION modes (SCIENCE, CHARGING): the planner calls in_constraint()
-          during scheduling, guaranteeing full constraint compliance. Any violation —
-          including hard keepouts — is a scheduling failure and generates a mismatch.
-        - HARD_KEEPOUT modes (SLEWING, PASS, SAA, SAFE, IDLE): the planner makes no
-          keepout avoidance guarantee. Violations are operational FaultEvents handled
-          by FaultManagement at runtime, not post-simulation planning mismatches.
+        - FULL_MISSION: planner guarantees full constraint compliance; any violation
+          (including hard keepouts) is a scheduling failure and generates a mismatch.
+        - HARD_KEEPOUT: planner guarantees only instrument-safety keepouts; only
+          hard keepout violations generate a mismatch.
+        - NONE: no attitude constraint is enforced for this mode.
         """
         mismatches: list[PlanExecutionMismatch] = []
         for i in range(len(self.utime)):
@@ -1063,8 +1077,8 @@ class QueueDITL(DITLMixin, DITLStats):
                 mismatches.extend(
                     self._validate_gsp_entry_execution(entry, tolerance_deg)
                 )
-        mismatches.extend(self._validate_execution_is_planned())
         mismatches.extend(self.validate_attitude_constraints())
+        mismatches.extend(self._validate_execution_is_planned())
         return mismatches
 
     def _assert_plan_matches_execution(self) -> None:
