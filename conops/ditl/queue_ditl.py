@@ -417,6 +417,10 @@ class QueueDITL(DITLMixin, DITLStats):
         spacecraft state transitions (slews, passes, etc.) are managed through
         a command queue, providing explicit, traceable control flow.
         """
+        # Reset per-run state so re-runs on the same instance start clean
+        self._attitude_constraint_violations = []
+        self._active_gsp_end_time = None
+
         # If begin/end datetimes are naive, assume UTC by making them timezone-aware
         if self.begin.tzinfo is None:
             self.begin = self.begin.replace(tzinfo=timezone.utc)
