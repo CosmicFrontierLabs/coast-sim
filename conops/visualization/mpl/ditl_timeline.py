@@ -327,7 +327,7 @@ def plot_ditl_timeline(
     ax.set_xlabel("Hour", fontname=font_family, fontsize=font_size)
 
     # Add legend
-    ax.legend(
+    ax.legend(  # type: ignore[call-overload]
         loc="upper center",
         bbox_to_anchor=(0.5, -0.2),
         ncol=4,

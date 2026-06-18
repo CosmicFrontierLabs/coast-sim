@@ -187,6 +187,8 @@ class QueueDITL(DITLMixin, DITLStats):
         self._gsp_slew_plan_entries: dict[Slew, PlanEntry] = {}
         self._synced_executed_slew_count = 0
         self._dropped_science_windows: list[tuple[float, float, int]] = []
+        self._attitude_constraint_violations: list[tuple[str, str] | None] = []
+        self._active_gsp_end_time: float | None = None
 
     def get_acs_queue_status(self) -> dict[str, Any]:
         """
@@ -415,6 +417,10 @@ class QueueDITL(DITLMixin, DITLStats):
         spacecraft state transitions (slews, passes, etc.) are managed through
         a command queue, providing explicit, traceable control flow.
         """
+        # Reset per-run state so re-runs on the same instance start clean
+        self._attitude_constraint_violations = []
+        self._active_gsp_end_time = None
+
         # If begin/end datetimes are naive, assume UTC by making them timezone-aware
         if self.begin.tzinfo is None:
             self.begin = self.begin.replace(tzinfo=timezone.utc)
@@ -842,12 +848,29 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _validate_execution_is_planned(self) -> list[PlanExecutionMismatch]:
         mismatches: list[PlanExecutionMismatch] = []
+
+        # Build obsid → entries lookups once to avoid O(N×M) linear plan scans.
+        science_by_obsid: dict[int, list[PlanEntry]] = {}
+        gsp_by_obsid: dict[int, list[PlanEntry]] = {}
+        for entry in self.plan:
+            obstype = self._entry_obstype(entry)
+            if obstype in (ObsType.AT, ObsType.TOO):
+                science_by_obsid.setdefault(int(entry.obsid), []).append(entry)
+            elif obstype == ObsType.GSP:
+                gsp_by_obsid.setdefault(int(entry.obsid), []).append(entry)
+
+        dropped_by_obsid: dict[int, list[tuple[float, float]]] = {}
+        for start, end, dropped_obsid in self._dropped_science_windows:
+            dropped_by_obsid.setdefault(dropped_obsid, []).append((start, end))
+
         for i, utime in enumerate(self.utime):
             mode = self._mode_at_index(i)
             if mode == ACSMode.SCIENCE:
                 obsid = int(self.obsid[i])
-                if self._science_entry_covering_sample(utime, obsid) is None:
-                    if self._in_dropped_science_window(utime, obsid):
+                entries = science_by_obsid.get(obsid, [])
+                covered = any(float(e.begin) <= utime < float(e.end) for e in entries)
+                if not covered:
+                    if any(s <= utime < e for s, e in dropped_by_obsid.get(obsid, [])):
                         continue
                     mismatches.append(
                         self._execution_mismatch(
@@ -860,7 +883,8 @@ class QueueDITL(DITLMixin, DITLStats):
                     )
             elif mode == ACSMode.PASS:
                 obsid = int(self.obsid[i])
-                if self._gsp_entry_covering_sample(utime, obsid) is None:
+                entries = gsp_by_obsid.get(obsid, [])
+                if not any(float(e.begin) <= utime <= float(e.end) for e in entries):
                     mismatches.append(
                         self._execution_mismatch(
                             utime,
@@ -937,13 +961,18 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _validate_attitude_constraints(self) -> list[PlanExecutionMismatch]:
         mismatches: list[PlanExecutionMismatch] = []
+        use_cached = len(self._attitude_constraint_violations) == len(self.utime)
         for i in range(len(self.utime)):
             mode = self._mode_at_index(i)
             if mode is None:
                 mismatches.append(self._unknown_mode_mismatch(i))
                 continue
 
-            violation = self._attitude_constraint_name_for_sample(i, mode)
+            violation = (
+                self._attitude_constraint_violations[i]
+                if use_cached
+                else self._attitude_constraint_name_for_sample(i, mode)
+            )
             if violation is None:
                 continue
 
@@ -1146,6 +1175,25 @@ class QueueDITL(DITLMixin, DITLStats):
             else None
         )
 
+        # Pre-compute attitude constraint violation for post-sim validation, reusing
+        # the already-computed violated/in_constraint_name for FULL_MISSION modes so
+        # _validate_attitude_constraints does not need to re-call in_constraint().
+        policy = self.config.attitude_constraint_policy_for_mode(mode)
+        if policy == AttitudeConstraintPolicy.NONE:
+            _constraint_violation: tuple[str, str] | None = None
+        elif policy == AttitudeConstraintPolicy.FULL_MISSION:
+            _constraint_violation = (
+                (in_constraint_name or "Unknown", policy.value) if violated else None
+            )
+        elif policy == AttitudeConstraintPolicy.HARD_KEEPOUT:
+            hard_name = self._hard_attitude_constraint_name(ra, dec, utime, roll, mode)
+            _constraint_violation = (
+                (hard_name, policy.value) if hard_name is not None else None
+            )
+        else:
+            _constraint_violation = None
+        self._attitude_constraint_violations.append(_constraint_violation)
+
         ei = self.ephem.index(dtutcfromtimestamp(utime))
         _sun_bv = scbodyvector(
             np.radians(ra),
@@ -1186,9 +1234,9 @@ class QueueDITL(DITLMixin, DITLStats):
             recorder_volume_gb=self.recorder.current_volume_gb,
             recorder_fill_fraction=self.recorder.get_fill_fraction(),
             recorder_alert=self.recorder.get_alert_level(),
-            sun_angle_deg=self._compute_sun_angle(utime, ra, dec),
-            earth_angle_deg=self._compute_earth_angle(utime, ra, dec),
-            moon_angle_deg=self._compute_moon_angle(utime, ra, dec),
+            sun_angle_deg=self._compute_sun_angle(utime, ra, dec, ephem_index=ei),
+            earth_angle_deg=self._compute_earth_angle(utime, ra, dec, ephem_index=ei),
+            moon_angle_deg=self._compute_moon_angle(utime, ra, dec, ephem_index=ei),
             for_solid_angle_sr=(
                 self.constraint.instantaneous_field_of_regard(utime=utime)
                 if self.calculate_field_of_regard
@@ -1425,8 +1473,9 @@ class QueueDITL(DITLMixin, DITLStats):
         return ra, dec, roll, obsid, self.acs.get_mode(utime)
 
     def _has_due_acs_command(self, utime: float) -> bool:
-        return any(
-            command.execution_time <= utime for command in self.acs.command_queue
+        return (
+            bool(self.acs.command_queue)
+            and self.acs.command_queue[0].execution_time <= utime
         )
 
     def _handle_science_mode(
@@ -1614,9 +1663,8 @@ class QueueDITL(DITLMixin, DITLStats):
         )
 
     def _gsp_activity_in_progress(self, utime: float) -> bool:
-        return any(
-            entry.obstype == ObsType.GSP and entry.begin <= utime < entry.end
-            for entry in self.plan
+        return (
+            self._active_gsp_end_time is not None and utime < self._active_gsp_end_time
         )
 
     def _terminate_active_ppt_for_gsp(self, utime: float) -> None:
@@ -1693,6 +1741,7 @@ class QueueDITL(DITLMixin, DITLStats):
         entry.track_end_roll = gspass.gsendroll
 
         self.plan.append(entry)
+        self._active_gsp_end_time = pass_end
         if slew is not None:
             self._gsp_slew_plan_entries[slew] = entry
         self._planned_gsp_keys.add(key)
@@ -1753,6 +1802,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 acs_mode=self.acs.acsmode,
             )
             self._close_gsp_plan_entry(commanded_pass, utime)
+            self._active_gsp_end_time = None
             command = ACSCommand(
                 command_type=ACSCommandType.END_PASS,
                 execution_time=utime,
@@ -1790,6 +1840,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 acs_mode=self.acs.acsmode,
             )
             self._close_gsp_plan_entry(previous_pass, utime)
+            self._active_gsp_end_time = None
             command = ACSCommand(
                 command_type=ACSCommandType.END_PASS,
                 execution_time=utime,
@@ -2658,13 +2709,19 @@ class QueueDITL(DITLMixin, DITLStats):
         assert isinstance(panel_power, float)
         return panel_illumination, panel_power
 
-    def _compute_sun_angle(self, utime: float, ra: float, dec: float) -> float | None:
+    def _compute_sun_angle(
+        self, utime: float, ra: float, dec: float, ephem_index: int | None = None
+    ) -> float | None:
         """Compute angular distance from pointing to the Sun in degrees."""
         if self.ephem is None:
             return None
 
         try:
-            idx = self.ephem.index(dtutcfromtimestamp(utime))
+            idx = (
+                ephem_index
+                if ephem_index is not None
+                else self.ephem.index(dtutcfromtimestamp(utime))
+            )
             sun_ra = self.ephem.sun_ra_deg[idx]
             sun_dec = self.ephem.sun_dec_deg[idx]
         except Exception:
@@ -2672,13 +2729,19 @@ class QueueDITL(DITLMixin, DITLStats):
 
         return angular_separation(sun_ra, sun_dec, ra, dec)
 
-    def _compute_earth_angle(self, utime: float, ra: float, dec: float) -> float | None:
+    def _compute_earth_angle(
+        self, utime: float, ra: float, dec: float, ephem_index: int | None = None
+    ) -> float | None:
         """Compute angular distance from pointing to the Earth in degrees."""
         if self.ephem is None:
             return None
 
         try:
-            idx = self.ephem.index(dtutcfromtimestamp(utime))
+            idx = (
+                ephem_index
+                if ephem_index is not None
+                else self.ephem.index(dtutcfromtimestamp(utime))
+            )
             earth_ra = self.ephem.earth_ra_deg[idx]
             earth_dec = self.ephem.earth_dec_deg[idx]
         except Exception:
@@ -2686,13 +2749,19 @@ class QueueDITL(DITLMixin, DITLStats):
 
         return angular_separation(earth_ra, earth_dec, ra, dec)
 
-    def _compute_moon_angle(self, utime: float, ra: float, dec: float) -> float | None:
+    def _compute_moon_angle(
+        self, utime: float, ra: float, dec: float, ephem_index: int | None = None
+    ) -> float | None:
         """Compute angular distance from pointing to the Moon in degrees."""
         if self.ephem is None:
             return None
 
         try:
-            idx = self.ephem.index(dtutcfromtimestamp(utime))
+            idx = (
+                ephem_index
+                if ephem_index is not None
+                else self.ephem.index(dtutcfromtimestamp(utime))
+            )
             moon_ra = self.ephem.moon_ra_deg[idx]
             moon_dec = self.ephem.moon_dec_deg[idx]
         except Exception:
