@@ -28,6 +28,8 @@ os.environ.setdefault("MPLCONFIGDIR", str(_MPLCONFIGDIR))
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASELINE = REPO_ROOT / "tests" / "baselines" / "default_plan_output.golden"
+# Only absorb platform-level float roundoff; planner or timing changes should fail.
+DEFAULT_NUMERIC_ABS_TOL = 1e-9
 sys.path.insert(0, str(REPO_ROOT))
 
 from conops import QueueDITL  # noqa: E402
@@ -295,7 +297,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--abs-tol",
         type=float,
-        default=1e-9,
+        default=DEFAULT_NUMERIC_ABS_TOL,
         help="absolute tolerance for numeric comparisons",
     )
     args = parser.parse_args(argv)
