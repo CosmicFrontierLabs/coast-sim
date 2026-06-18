@@ -255,6 +255,20 @@ The project includes a comprehensive test suite:
 pytest tests/
 ```
 
+The test suite includes a COAST-owned default plan output regression check. Run
+it directly when reviewing planner/output changes:
+
+```bash
+python scripts/check_default_plan_output.py
+```
+
+If a planner change intentionally changes the default output, update and review
+the checked-in baseline:
+
+```bash
+python scripts/check_default_plan_output.py --update
+```
+
 Run with coverage:
 
 ```bash
