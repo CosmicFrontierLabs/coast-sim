@@ -113,7 +113,7 @@ class TargetQueue:
 
     def meritsort(self) -> None:
         """Sort target queue by merit based on visibility, type, and trigger recency."""
-
+        utime = self.utime
         for target in self.targets:
             # Initialize merit using any pre-configured merit on the target.
             # Previously this used a `fom` attribute; prefer setting `merit`
@@ -123,8 +123,12 @@ class TargetQueue:
             else:
                 target.merit = target.fom
 
-            # Penalize constrained targets
-            if target.visible(self.utime, self.utime) is False:
+            # Penalize constrained targets — cache result per utime since visibility
+            # windows don't change and the same utime is checked many times per fetch.
+            if getattr(target, "_vis_cache_utime", None) != utime:
+                target._vis_cache_utime = utime  # type: ignore[attr-defined]
+                target._vis_cache_result = target.visible(utime, utime)  # type: ignore[attr-defined]
+            if getattr(target, "_vis_cache_result", None) is False:
                 target.merit = -900
                 continue
 
@@ -135,14 +139,18 @@ class TargetQueue:
 
     def _target_tie_breaker(self, target: Pointing) -> int:
         """Return a deterministic tie-break value for equal-merit targets."""
+        cached: int | None = getattr(target, "_tie_breaker_cache", None)
+        if cached is not None:
+            return cached
         identifier = getattr(target, "obsid", None)
         if identifier is None:
             identifier = getattr(target, "targetid", None)
         if identifier is None:
             identifier = getattr(target, "name", "")
         payload = f"{self.random_seed}:{identifier}".encode()
-        digest = hashlib.blake2b(payload, digest_size=8).digest()
-        return int.from_bytes(digest, "big")
+        value = int.from_bytes(hashlib.blake2b(payload, digest_size=8).digest(), "big")
+        target._tie_breaker_cache = value  # type: ignore[attr-defined]
+        return value
 
     def _candidate_collection_seconds(
         self,
