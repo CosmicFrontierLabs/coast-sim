@@ -418,7 +418,8 @@ class TestACSModeFiltering:
             fm.check(hk, acs=acs_stub)
 
         stats = fm.statistics()["sun_limit"]
-        assert stats["continuous_violation_seconds"] == pytest.approx(180.0)
+        # Entry sample resets to 0; two subsequent samples accumulate 2 * 60 = 120s.
+        assert stats["continuous_violation_seconds"] == pytest.approx(120.0)
 
     def test_continuous_violation_resets_on_recovery(self, acs_stub: Mock) -> None:
         """Test continuous violation time resets when constraint is satisfied."""
@@ -444,7 +445,8 @@ class TestACSModeFiltering:
         fm.check(hk, acs=acs_stub)
 
         stats = fm.statistics()["sun_limit"]
-        assert stats["continuous_violation_seconds"] == pytest.approx(60.0)
+        # Entry sample resets to 0 — delay timer starts counting from the transition.
+        assert stats["continuous_violation_seconds"] == pytest.approx(0.0)
 
         # Cycle 2: Recovered
         hk = Housekeeping(
@@ -625,6 +627,123 @@ class TestSafeModeTriggering:
         )
         assert final_event_count == initial_event_count
 
+    def test_threshold_safe_mode_delay_seconds(self, acs_stub: Mock) -> None:
+        """Test RED thresholds can delay safe mode triggering by continuous duration."""
+        fm = FaultManagement(safe_mode_on_red=True)
+        fm.add_threshold(
+            "power_usage",
+            yellow=50.0,
+            red=60.0,
+            direction="above",
+            safe_mode_delay_seconds=1.0,
+        )
+
+        # First red sample resets continuous_red_seconds to 0 — below delay.
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
+            power_usage=65.0,
+        )
+        fm.check(hk, acs=acs_stub)
+        assert not fm.safe_mode_requested
+
+        # Second consecutive red sample accumulates step_size (1.0) >= delay (1.0).
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1060.0, tz=timezone.utc),
+            power_usage=65.0,
+        )
+        fm.check(hk, acs=acs_stub)
+        assert fm.safe_mode_requested
+
+    def test_threshold_safe_mode_delay_resets_when_red_clears(
+        self, acs_stub: Mock
+    ) -> None:
+        """Test delay requires continuous RED time and resets after non-RED samples."""
+        fm = FaultManagement(safe_mode_on_red=True)
+        fm.add_threshold(
+            "power_usage",
+            yellow=50.0,
+            red=60.0,
+            direction="above",
+            safe_mode_delay_seconds=1.0,
+        )
+
+        # Red for one cycle - not enough to trigger.
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
+            power_usage=65.0,
+        )
+        fm.check(hk, acs=acs_stub)
+        assert not fm.safe_mode_requested
+
+        # Clear RED state (nominal), which should reset continuous RED timer.
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1060.0, tz=timezone.utc),
+            power_usage=40.0,
+        )
+        fm.check(hk, acs=acs_stub)
+        assert not fm.safe_mode_requested
+
+        # First RED cycle after reset: still below delay.
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1120.0, tz=timezone.utc),
+            power_usage=65.0,
+        )
+        fm.check(hk, acs=acs_stub)
+        assert not fm.safe_mode_requested
+
+        # Second consecutive RED cycle after reset reaches delay and triggers.
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1180.0, tz=timezone.utc),
+            power_usage=65.0,
+        )
+        fm.check(hk, acs=acs_stub)
+        assert fm.safe_mode_requested
+
+    def test_threshold_safe_mode_delay_resets_when_yellow_interrupts_red(
+        self, acs_stub: Mock
+    ) -> None:
+        """Test that a YELLOW sample resets the continuous RED timer."""
+        fm = FaultManagement(safe_mode_on_red=True)
+        fm.add_threshold(
+            "power_usage",
+            yellow=50.0,
+            red=60.0,
+            direction="above",
+            safe_mode_delay_seconds=1.0,
+        )
+
+        # First RED cycle - not enough to trigger.
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
+            power_usage=65.0,
+        )
+        fm.check(hk, acs=acs_stub)
+        assert not fm.safe_mode_requested
+
+        # YELLOW interrupts: should reset continuous RED timer.
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1060.0, tz=timezone.utc),
+            power_usage=55.0,
+        )
+        fm.check(hk, acs=acs_stub)
+        assert not fm.safe_mode_requested
+
+        # First RED cycle after YELLOW reset: still below delay.
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1120.0, tz=timezone.utc),
+            power_usage=65.0,
+        )
+        fm.check(hk, acs=acs_stub)
+        assert not fm.safe_mode_requested
+
+        # Second consecutive RED cycle after reset reaches delay and triggers.
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1180.0, tz=timezone.utc),
+            power_usage=65.0,
+        )
+        fm.check(hk, acs=acs_stub)
+        assert fm.safe_mode_requested
+
 
 class TestThresholdTransitionEvents:
     """Test event logging for threshold transitions."""
@@ -693,7 +812,7 @@ class TestConstraintViolationTimeThreshold:
         acs_stub.ephem = ephem
         acs_stub.in_safe_mode = False
 
-        # Cycle 1: 40 seconds violation (below threshold)
+        # Cycle 1: entry resets continuous timer to 0 (below threshold)
         hk = Housekeeping(
             timestamp=datetime.fromtimestamp(1000.0, tz=timezone.utc),
             ra=45.0,
@@ -702,9 +821,18 @@ class TestConstraintViolationTimeThreshold:
         fm.check(hk, acs=acs_stub)
         assert not fm.safe_mode_requested
 
-        # Cycle 2: 80 seconds total violation (exceeds 60.0 threshold)
+        # Cycle 2: 40 seconds elapsed since entry (below 60.0 threshold)
         hk = Housekeeping(
             timestamp=datetime.fromtimestamp(1040.0, tz=timezone.utc),
+            ra=45.0,
+            dec=23.5,
+        )
+        fm.check(hk, acs=acs_stub)
+        assert not fm.safe_mode_requested
+
+        # Cycle 3: 80 seconds elapsed since entry (exceeds 60.0 threshold)
+        hk = Housekeeping(
+            timestamp=datetime.fromtimestamp(1080.0, tz=timezone.utc),
             ra=45.0,
             dec=23.5,
         )

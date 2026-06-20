@@ -60,6 +60,7 @@ class ACS:
     star_tracker_functional_count: int
     star_tracker_status: list[bool]
     radiator_hard_violations: int
+    telescope_hard_violations: int
     radiator_sun_exposure: float
     radiator_earth_exposure: float
     radiator_heat_dissipation_w: float
@@ -109,6 +110,7 @@ class ACS:
         self.star_tracker_functional_count = 0
         self.star_tracker_status: list[bool] = []
         self.radiator_hard_violations = 0
+        self.telescope_hard_violations = 0
         self.radiator_sun_exposure = 0.0
         self.radiator_earth_exposure = 0.0
         self.radiator_heat_dissipation_w = 0.0
@@ -686,9 +688,7 @@ class ACS:
         if policy == AttitudeConstraintPolicy.NONE:
             return
 
-        if not self._idle_attitude_violates_policy(
-            self.ra, self.dec, self.roll, utime, policy
-        ):
+        if not self._idle_attitude_unsafe(self.ra, self.dec, self.roll, utime, policy):
             return
 
         safe_attitude = self._find_constraint_safe_idle_attitude(utime, policy)
@@ -741,7 +741,7 @@ class ACS:
                 self.constraint,
             )
             for candidate_roll in self._idle_safe_roll_candidates(optimal_roll):
-                if not self._idle_attitude_violates_policy(
+                if not self._idle_attitude_unsafe(
                     candidate_ra,
                     candidate_dec,
                     candidate_roll,
@@ -756,7 +756,7 @@ class ACS:
             self.config.attitude_constraint_policy_for_mode(ACSMode.IDLE)
         )
 
-    def _idle_attitude_violates_policy(
+    def _idle_attitude_unsafe(
         self,
         ra: float,
         dec: float,
@@ -764,15 +764,24 @@ class ACS:
         utime: float,
         policy: AttitudeConstraintPolicy,
     ) -> bool:
+        """Runtime instrument-safety check for idle holds.
+
+        Distinct from post-simulation planning validation (queue_ditl): this asks
+        "should the ACS repoint to protect hardware?" not "did the planner break a
+        scheduling contract?"
+
+        FULL_MISSION checks every mission constraint (used when science-quality idle
+        holds are required). Any other configured policy uses hard keepouts as the
+        minimum safety floor — the instrument-protection limits that must not be
+        sustained regardless of mission phase. NONE skips all checking.
+        """
         if policy == AttitudeConstraintPolicy.FULL_MISSION:
             return self.constraint.in_constraint(
                 ra, dec, utime, target_roll=roll, acs_mode=ACSMode.IDLE
             )
-        if policy == AttitudeConstraintPolicy.HARD_KEEPOUT:
-            return self._idle_attitude_violates_hard_keepout(ra, dec, roll, utime)
         if policy == AttitudeConstraintPolicy.NONE:
             return False
-        assert_never(policy)
+        return self._idle_attitude_violates_hard_keepout(ra, dec, roll, utime)
 
     def _idle_attitude_violates_hard_keepout(
         self, ra: float, dec: float, roll: float, utime: float
@@ -956,6 +965,7 @@ class ACS:
         # Check star tracker constraints
         self._check_star_tracker_constraints(utime)
         self._check_radiator_constraints(utime)
+        self._check_telescope_constraints(utime)
 
     def _check_star_tracker_constraints(self, utime: float) -> None:
         """Check and log star tracker constraint violations for current pointing.
@@ -1102,6 +1112,26 @@ class ACS:
                 "RADIATOR_HARD_CONSTRAINT",
                 f"RADIATOR: HARD_CONSTRAINT: RA={current_ra:.3f}° Dec={current_dec:.3f}° "
                 f"roll={current_roll:.3f}° violations={self.radiator_hard_violations}",
+            )
+
+    def _check_telescope_constraints(self, utime: float) -> None:
+        """Check telescope hard constraint for current pointing."""
+        if self.constraint.telescope_hard_constraint is None:
+            self.telescope_hard_violations = 0
+            return
+        self.telescope_hard_violations = (
+            1
+            if self.constraint.in_telescope_hard(
+                self.ra, self.dec, utime, target_roll=self.roll
+            )
+            else 0
+        )
+        if self.telescope_hard_violations > 0:
+            self._log_or_print(
+                utime,
+                "TELESCOPE_HARD_CONSTRAINT",
+                f"TELESCOPE: HARD_CONSTRAINT: RA={self.ra:.3f}° Dec={self.dec:.3f}° "
+                f"roll={self.roll:.3f}°",
             )
 
     def _calculate_pointing(self, utime: float) -> None:

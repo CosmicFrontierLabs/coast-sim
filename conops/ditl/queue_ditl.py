@@ -959,7 +959,19 @@ class QueueDITL(DITLMixin, DITLStats):
             mode,
         )
 
-    def _validate_attitude_constraints(self) -> list[PlanExecutionMismatch]:
+    def validate_attitude_constraints(self) -> list[PlanExecutionMismatch]:
+        """Check post-simulation attitude constraint compliance.
+
+        Reports telemetry samples where the commanded attitude violated a constraint
+        the planner was expected to enforce. The check is gated by each mode's
+        configured AttitudeConstraintPolicy:
+
+        - FULL_MISSION: planner guarantees full constraint compliance; any violation
+          (including hard keepouts) is a scheduling failure and generates a mismatch.
+        - HARD_KEEPOUT: planner guarantees only instrument-safety keepouts; only
+          hard keepout violations generate a mismatch.
+        - NONE: no attitude constraint is enforced for this mode.
+        """
         mismatches: list[PlanExecutionMismatch] = []
         use_cached = len(self._attitude_constraint_violations) == len(self.utime)
         for i in range(len(self.utime)):
@@ -1094,7 +1106,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 mismatches.extend(
                     self._validate_gsp_entry_execution(entry, tolerance_deg)
                 )
-        mismatches.extend(self._validate_attitude_constraints())
+        mismatches.extend(self.validate_attitude_constraints())
         mismatches.extend(self._validate_execution_is_planned())
         return mismatches
 
@@ -1254,6 +1266,7 @@ class QueueDITL(DITLMixin, DITLStats):
             in_constraint=in_constraint_name,
             ppt_unavailable=self._ppt_unavailable,
             radiator_hard_violations=self.acs.radiator_hard_violations,
+            telescope_hard_violations=self.acs.telescope_hard_violations,
             radiator_sun_exposure=self.acs.radiator_sun_exposure,
             radiator_earth_exposure=self.acs.radiator_earth_exposure,
             radiator_heat_dissipation_w=self.acs.radiator_heat_dissipation_w,

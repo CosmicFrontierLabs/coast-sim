@@ -186,27 +186,31 @@ If any sample fails its policy check, a
 message includes the first few violations — mode, obsid, RA/Dec/roll, and the constraint
 name — to aid debugging.
 
-**Hard keep-outs vs. full mission constraints**
+**Planner admission guarantees vs. FM-monitored runtime conditions**
 
-COASTSim's constraint system has two tiers:
+Not every constraint violation is a scheduling failure. The policy per mode encodes
+which violations the planner claims to prevent, and therefore which post-simulation
+telemetry samples should be reported as planning mismatches. Fault Management still
+monitors configured telemetry thresholds at runtime.
 
-* **Full mission constraints** — the complete set of keep-outs the spacecraft must
-  respect during normal science operations: minimum Sun angle, Moon and Earth limb
-  avoidance, solar-panel illumination requirement, and the star-tracker, radiator, and
-  telescope hard constraints listed below.  Violating any of these during science would
-  degrade or invalidate the observation.
+* **Planner admission guarantee** — a constraint the scheduler evaluates via
+  ``in_constraint()`` before accepting an attitude into the plan.  If telemetry shows
+  a violation in one of these modes, the planner broke its contract and the simulation
+  records a :class:`~conops.ditl.queue_ditl.PlanExecutionMismatch`.  This covers the
+  complete mission constraint set: Sun, Moon, Earth limb, solar-panel illumination,
+  star-tracker hard and soft, radiator hard, and telescope hard.
 
-* **Hard keep-outs** — a strict health-and-safety subset that must never be violated
-  regardless of mode: star tracker hard constraint (sensor blinding risk), radiator hard
-  constraint (thermal damage risk), and telescope hard constraint (structural or optical
-  damage risk).  These are always instrument-protection limits, not science-quality
-  limits.
+* **FM-monitored runtime condition** — a violation outside the selected validation
+  policy (for example, a science-quality soft constraint while a mode is configured
+  with ``hard_keepout``). The simulation's Fault Management system dispatches a
+  :class:`~conops.config.fault_management.FaultEvent` in real time when a configured
+  threshold is crossed; the post-simulation validator does not raise a mismatch for
+  violations outside the mode's policy contract.
 
-The ``HARD_KEEPOUT`` policy enforces the second tier only, which is appropriate for
-transient modes (slewing, SAA, safe) where soft science-quality limits legitimately do
-not apply. ``IDLE`` uses this policy by default, and the ACS also uses the configured
-``IDLE`` policy at runtime when deciding whether an idle hold must be moved to a safer
-attitude before telemetry is recorded.
+The default policy is ``full_mission`` for every ACS mode. A mission may explicitly
+configure ``hard_keepout`` for modes where only hardware keepouts are planning
+requirements; hard keepout violations are still validation mismatches in those modes,
+while broader mission constraints are left to runtime telemetry/FM monitoring.
 
 **Policy values** (:class:`~conops.config.AttitudeConstraintPolicy`):
 
@@ -220,9 +224,10 @@ attitude before telemetry is recorded.
      - The complete mission constraint (Sun, Moon, Earth limb, star tracker, radiator,
        telescope) is evaluated.  Any violation is flagged.
    * - ``"hard_keepout"``
-     - Only the three hard keep-outs are checked: star tracker hard constraint,
-       radiator hard constraint, and telescope hard constraint.  Science-quality soft
-       constraints (Sun angle, Moon, Earth limb, etc.) are intentionally ignored.
+     - Only hardware/instrument hard keepouts are validated: star-tracker hard,
+       radiator hard, and telescope hard. Broader mission constraints and
+       science-quality soft constraints are not planning mismatches under this
+       policy, though they may still be monitored by Fault Management thresholds.
    * - ``"none"``
      - No constraint checking is performed for this mode.  Use this when the mode
        genuinely has no pointing restrictions (rare) or when you need to suppress
@@ -244,22 +249,20 @@ attitude before telemetry is recorded.
      - ``full_mission``
      - Emergency charging still obeys the full mission keep-out.
    * - ``SLEWING``
-     - ``hard_keepout``
-     - Slews may briefly sweep through soft-constraint zones by design; hard
-       health-and-safety limits are still enforced.
+     - ``full_mission``
+     - Slews must satisfy the configured mission constraint policy by default.
    * - ``PASS``
-     - ``hard_keepout``
-     - Ground-station tracking may transit soft zones during the arc; hard limits apply.
+     - ``full_mission``
+     - Ground-station tracking must satisfy configured mission constraints by default.
    * - ``SAA``
-     - ``hard_keepout``
-     - SAA transits relax science constraints but not instrument-protection limits.
+     - ``full_mission``
+     - SAA attitude must satisfy configured mission constraints by default.
    * - ``SAFE``
-     - ``hard_keepout``
-     - Safe-mode pointing relaxes science constraints but not instrument-protection limits.
+     - ``full_mission``
+     - Safe-mode attitude must satisfy configured mission constraints by default.
    * - ``IDLE``
-     - ``hard_keepout``
-     - Idle holds may persist, so hard health-and-safety limits are enforced; missions
-       that require science-quality idle holds can override this to ``full_mission``.
+     - ``full_mission``
+     - Idle hold attitude must satisfy configured mission constraints by default.
 
 **Overriding the policy for individual modes:**
 
@@ -585,16 +588,28 @@ Euler angles use the ZYX convention: yaw about Z, then pitch about Y, then roll 
 
 The ACS monitors star tracker constraints at each timestep and records:
 
-* ``star_tracker_hard_violations``: Number of trackers violating their hard constraint (always monitored)
+* ``star_tracker_hard_violations``: Number of trackers inside a HARD_KEEPOUT zone (always monitored)
 * ``star_tracker_soft_violations``: Whether any tracker is in its soft constraint zone
-* ``star_tracker_functional_count``: Number of functional (hard-constraint-clear) trackers
+* ``star_tracker_functional_count``: Number of trackers **not** in a soft constraint zone (``num_trackers - soft_violation_count``)
+* ``telescope_hard_violations``: 0 or 1 — whether the telescope hard constraint is currently violated
 
 Hard violations are health-and-safety events and always cause a pointing-invalid result. Soft violations
 only affect pointing validity in modes listed in ``StarTrackerConfiguration.modes_require_lock``.
 
-When star trackers are configured, ``MissionConfig.init_fault_management_defaults()`` automatically adds
-a ``star_tracker_functional_count`` threshold (``direction="below"``, both yellow and red set to
-``num_trackers - 1``) so that any hard violation immediately triggers a RED fault alert.
+Note: ``star_tracker_functional_count`` reflects **soft** violations only — it does not decrease when a
+tracker enters a hard keepout zone. Hard violations are tracked exclusively via
+``star_tracker_hard_violations``.
+
+When star trackers are configured, ``MissionConfig.init_fault_management_defaults()`` automatically adds:
+
+* A ``star_tracker_functional_count`` threshold (``direction="below"``, yellow and red at ``num_trackers - 1``)
+  that fires when any tracker enters a **soft** constraint zone.
+* A ``star_tracker_hard_violations`` threshold (``direction="above"``, yellow and red at ``0.5``,
+  ``triggers_safe_mode=False``) that fires immediately RED when any tracker enters a **hard** keepout zone.
+* A ``telescope_hard_violations`` threshold (same parameters) when a telescope hard constraint is configured.
+
+``radiator_hard_violations`` receives the same default FM coverage when radiators are configured — see the
+radiators section below.
 
 radiators
 ~~~~~~~~~
@@ -610,6 +625,10 @@ Radiators in COASTSim have:
 
 Unlike star trackers, radiators do **not** use soft constraints or functional-count
 logic. A radiator always exists physically; geometry changes its net thermal behavior.
+
+The ACS records ``radiator_hard_violations`` (count of radiators inside a hard keepout zone) each
+timestep. ``init_fault_management_defaults()`` automatically adds a monitor-only FM threshold for
+this field when radiators are configured.
 
 **RadiatorConfiguration Attributes:**
 
@@ -1326,9 +1345,20 @@ based on the battery and recorder configuration:
 1. **battery_level**: Yellow at ``1.0 - max_depth_of_discharge``, Red 10% below that
 2. **recorder_fill_fraction**: Uses the recorder's ``yellow_threshold`` and ``red_threshold``
 3. **star_tracker_functional_count**: When star trackers are configured, both yellow and red are set to
-   ``num_trackers - 1`` with ``direction="below"``. This fires the moment any tracker enters a hard
-   constraint zone (``functional_count`` drops from ``num_trackers`` to ``num_trackers - 1``), making
-   any hard violation immediately critical. No threshold is added if no star trackers are configured.
+   ``num_trackers - 1`` with ``direction="below"``. This fires when any tracker enters a **soft**
+   constraint zone (degraded pointing quality). ``star_tracker_functional_count`` is computed as
+   ``num_trackers - soft_violation_count`` and is not affected by hard keepout violations.
+4. **star_tracker_hard_violations**: When star trackers are configured, yellow and red are both set to
+   ``0.5`` with ``direction="above"`` and ``triggers_safe_mode=False``. Any integer violation (≥ 1)
+   immediately fires RED. Hard violations are tracked separately from ``star_tracker_functional_count``
+   and always represent a health-and-safety event (tracker inside a HARD_KEEPOUT zone).
+   No thresholds are added if no star trackers are configured.
+5. **radiator_hard_violations**: When radiators are configured, yellow and red are both set to ``0.5``
+   with ``direction="above"`` and ``triggers_safe_mode=False``. Any radiator entering a hard keepout
+   zone immediately fires RED.
+6. **telescope_hard_violations**: When a telescope hard constraint exists in the payload configuration,
+   yellow and red are both set to ``0.5`` with ``direction="above"`` and ``triggers_safe_mode=False``.
+   The field is 0 or 1 (single constraint); any violation fires RED immediately.
 
 You can override these by adding custom thresholds to the ``FaultManagement`` instance before calling
 ``init_fault_management_defaults()`` (defaults are skipped if a threshold for that parameter already exists).

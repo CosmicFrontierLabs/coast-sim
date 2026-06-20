@@ -197,24 +197,44 @@ class MissionConfig(ConfigModel):
         )
         if existing_st_threshold is not None:
             # Config-file-loaded thresholds default triggers_safe_mode=True; force
-            # it False — a tracker hard-constraint violation should alert but not
-            # safehold (the scheduler already avoids the zone; if we slewed into one
-            # it's a scheduling bug, not a spacecraft emergency).
+            # it False — a soft-constraint degradation should alert but not safehold
+            # (reduced pointing quality is operationally significant but not an emergency).
             existing_st_threshold.triggers_safe_mode = False
         elif has_star_trackers and star_trackers is not None:
-            # Any hard constraint violation is RED — star tracker hard constraints
-            # are health-and-safety keep-outs, so any violation is immediately critical.
-            # With direction="below", thresholds fire when value <= threshold, so
-            # num_trackers - 1 fires the moment any tracker enters a hard constraint
-            # (functional_count drops from num_trackers to num_trackers - 1).
+            # Monitors soft-constraint violations (degraded pointing quality).
+            # functional_count = num_trackers - soft_violation_count, so dropping
+            # below num_trackers means at least one tracker is in a soft keepout.
             num_trackers = star_trackers.num_trackers()
-            yellow = num_trackers - 1  # any hard violation → YELLOW and RED
-            red = num_trackers - 1  # any hard violation → RED
+            yellow = num_trackers - 1  # any soft violation → YELLOW and RED
+            red = num_trackers - 1  # any soft violation → RED
             self.fault_management.add_threshold(
                 name="star_tracker_functional_count",
                 yellow=yellow,
                 red=red,
                 direction="below",
+                triggers_safe_mode=False,
+            )
+
+        # Add star_tracker_hard_violations threshold if not already present.
+        # star_tracker_hard_violations counts trackers inside HARD_KEEPOUT zones;
+        # any non-zero value is immediately RED. Hard violations are tracked
+        # separately from functional_count (which only reflects soft violations).
+        # direction="above" fires when value >= threshold, so yellow=red=0.5 fires
+        # on the first integer violation (violations=1 >= 0.5). monitor-only:
+        # the scheduler avoids hard keepouts; a violation is a scheduling bug,
+        # not a spacecraft emergency requiring a safehold.
+        if (
+            not any(
+                t.name == "star_tracker_hard_violations"
+                for t in self.fault_management.thresholds
+            )
+            and has_star_trackers
+        ):
+            self.fault_management.add_threshold(
+                name="star_tracker_hard_violations",
+                yellow=0.5,
+                red=0.5,
+                direction="above",
                 triggers_safe_mode=False,
             )
 
@@ -268,6 +288,43 @@ class MissionConfig(ConfigModel):
             if isinstance(telescope_constraint, ConstraintConfig)
             else None
         )
+
+        # Add radiator_hard_violations threshold if not already present.
+        # Same semantics as star_tracker_hard_violations: any non-zero count fires
+        # RED immediately (violations=1 >= 0.5). monitor-only by default.
+        if (
+            not any(
+                t.name == "radiator_hard_violations"
+                for t in self.fault_management.thresholds
+            )
+            and has_radiators
+        ):
+            self.fault_management.add_threshold(
+                name="radiator_hard_violations",
+                yellow=0.5,
+                red=0.5,
+                direction="above",
+                triggers_safe_mode=False,
+            )
+
+        # Add telescope_hard_violations threshold if not already present.
+        # telescope_hard_violations is 0 or 1 (single constraint); any violation
+        # fires RED immediately. monitor-only by default.
+        has_telescope_hard = isinstance(telescope_constraint, ConstraintConfig)
+        if (
+            not any(
+                t.name == "telescope_hard_violations"
+                for t in self.fault_management.thresholds
+            )
+            and has_telescope_hard
+        ):
+            self.fault_management.add_threshold(
+                name="telescope_hard_violations",
+                yellow=0.5,
+                red=0.5,
+                direction="above",
+                triggers_safe_mode=False,
+            )
 
         self.constraint.invalidate_combined_constraint_cache()
         return self

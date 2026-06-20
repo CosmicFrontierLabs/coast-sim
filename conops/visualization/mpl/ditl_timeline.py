@@ -326,16 +326,15 @@ def plot_ditl_timeline(
     )
     ax.set_xlabel("Hour", fontname=font_family, fontsize=font_size)
 
-    # Add legend
-    ax.legend(  # type: ignore[call-overload]
-        loc="upper center",
-        bbox_to_anchor=(0.5, -0.2),
-        ncol=4,
-        fancybox=True,
-        shadow=False,
-        fontsize=config.legend_font_size if config else font_size,
-        prop={"family": font_family},
-    )
+    # Add legend and configure it via typed Legend methods to avoid
+    # version-specific Axes.legend overload issues in static type checking.
+    legend = ax.legend()
+    legend.set_loc("upper center")
+    legend.set_bbox_to_anchor((0.5, -0.2))
+    legend.set_ncols(4)
+    for text in legend.get_texts():
+        text.set_fontfamily(font_family)
+        text.set_fontsize(config.legend_font_size if config else font_size)
 
     # Save if requested
     if save_path:
