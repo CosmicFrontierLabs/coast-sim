@@ -187,8 +187,9 @@ class EmergencyCharging:
         if current_ppt is not None and not getattr(current_ppt, "done", False):
             self._log_or_print(
                 utime,
-                "ERROR",
-                "BATTERY ALERT: Terminating science observation for emergency charging",
+                "CHARGING",
+                "Battery below recharge threshold; interrupting science observation "
+                "for charging",
             )
             current_ppt.end = utime
             current_ppt.done = True

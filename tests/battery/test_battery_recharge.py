@@ -9,6 +9,7 @@ import pytest
 from conops import (
     ACSMode,
     Battery,
+    DITLLog,
     EmergencyCharging,
     Pointing,
     QueueDITL,
@@ -283,6 +284,38 @@ class TestEmergencyCharging:
             starting_obsid=555000,
         )
         assert ec.current_charging_ppt is None
+
+    def test_recharge_threshold_interrupt_logs_charging_event(
+        self, mock_config, utime
+    ) -> None:
+        log = DITLLog()
+        charging_ppt = Mock(spec=Pointing)
+        current_ppt = Mock(spec=Pointing)
+        current_ppt.done = False
+
+        ec = EmergencyCharging(
+            config=mock_config,
+            starting_obsid=555000,
+            log=log,
+        )
+        ec.create_charging_pointing = Mock(return_value=charging_ppt)
+
+        result = ec.initiate_emergency_charging(
+            utime,
+            ephem=Mock(),
+            lastra=1.0,
+            lastdec=2.0,
+            current_ppt=current_ppt,
+        )
+
+        assert result is charging_ppt
+        assert current_ppt.done is True
+        assert log.events[-1].event_type == "CHARGING"
+        assert (
+            log.events[-1].description
+            == "Battery below recharge threshold; interrupting science observation "
+            "for charging"
+        )
 
     def test_create_charging_pointing_success_returns_pointing(
         self, emergency_charging, mock_ephem, monkeypatch, utime
