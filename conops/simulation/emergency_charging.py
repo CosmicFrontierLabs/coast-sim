@@ -12,10 +12,10 @@ from conops.config.battery import Battery
 from ..common import unixtime2date
 from ..common.enums import ACSMode, ObsType
 from ..common.vector import angular_separation
-from ..config import AttitudeConstraintPolicy, MissionConfig
+from ..config import AttitudeConstraintScope, MissionConfig
 from ..config.constraint import (
-    in_attitude_constraint_policy,
-    in_attitude_constraint_policy_batch,
+    in_attitude_constraint_scopes,
+    in_attitude_constraint_scopes_batch,
 )
 from .roll import optimum_roll
 
@@ -99,17 +99,15 @@ class EmergencyCharging:
         else:
             print(f"{unixtime2date(utime)} {description}")
 
-    def _charging_policy(self) -> AttitudeConstraintPolicy:
-        return AttitudeConstraintPolicy(
-            self.config.attitude_constraint_policy_for_mode(ACSMode.CHARGING)
-        )
+    def _charging_scopes(self) -> list[AttitudeConstraintScope]:
+        return self.config.attitude_constraint_scopes_for_mode(ACSMode.CHARGING)
 
-    def _charging_attitude_violates_policy(
+    def _charging_attitude_violates_scopes(
         self, ra: float, dec: float, utime: float, roll: float | None = None
     ) -> bool:
-        return in_attitude_constraint_policy(
+        return in_attitude_constraint_scopes(
             self.constraint,
-            self._charging_policy(),
+            self._charging_scopes(),
             ra,
             dec,
             utime,
@@ -120,8 +118,8 @@ class EmergencyCharging:
     def _charging_candidate_violations(
         self, ras: list[float], decs: list[float], utime: float
     ) -> np.ndarray:
-        return in_attitude_constraint_policy_batch(
-            self.constraint, self._charging_policy(), ras, decs, utime
+        return in_attitude_constraint_scopes_batch(
+            self.constraint, self._charging_scopes(), ras, decs, utime
         )
 
     def create_charging_pointing(
@@ -273,7 +271,7 @@ class EmergencyCharging:
         optimal_roll = optimum_roll(
             optimal_ra, optimal_dec, utime, ephem, self.solar_panel, self.constraint
         )
-        if not self._charging_attitude_violates_policy(
+        if not self._charging_attitude_violates_scopes(
             optimal_ra, optimal_dec, utime, roll=optimal_roll
         ):
             # Optimal pointing satisfies constraints; now check slew limits
@@ -612,7 +610,7 @@ class EmergencyCharging:
             return "battery_recharged"
 
         # Constraint violation (e.g., occultation)
-        if self._charging_attitude_violates_policy(
+        if self._charging_attitude_violates_scopes(
             self.current_charging_ppt.ra,
             self.current_charging_ppt.dec,
             utime,

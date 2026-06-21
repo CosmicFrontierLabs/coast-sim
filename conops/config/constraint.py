@@ -28,12 +28,14 @@ _TIME_PRECISION = 0  # round to nearest second
 _RA_DEC_ROUNDER = 10**_RA_DEC_PRECISION
 _TIME_ROUNDER = 10**_TIME_PRECISION
 
-_POLICY_SCIENCE_PLUS_SAFETY = "science_plus_safety"
-_POLICY_SCIENCE = "science"
-_POLICY_SAFETY = "safety"
-_POLICY_FULL_MISSION = "full_mission"
-_POLICY_HARD_KEEPOUT = "hard_keepout"
-_POLICY_NONE = "none"
+
+class AttitudeConstraintScope(str, Enum):
+    """Constraint scope applied to executed attitude samples."""
+
+    HARDWARE_SAFETY = "hardware_safety"
+    IMAGING_QUALITY = "imaging_quality"
+    POWER_GENERATION = "power_generation"
+    GROUND_CONTACT = "ground_contact"
 
 
 def _default_sun_constraint() -> ConstraintConfig:
@@ -124,14 +126,14 @@ class Constraint(ConfigModel):
     )
     panel_constraint: ConstraintConfig | None = Field(
         default=None,
-        description="Solar panel constraint configuration",
+        description="Power-generation / solar panel constraint configuration",
     )
     science_constraint: ConstraintConfig | None = Field(
         default=None,
         description=(
-            "Additional science-quality / scheduling constraint. Legacy top-level "
-            "sun, earth, moon, orbit, panel, anti-sun, and star-tracker soft "
-            "constraints are also treated as science constraints."
+            "Additional imaging-quality / science scheduling constraint. Top-level "
+            "sun, earth, moon, orbit, anti-sun, and star-tracker soft constraints "
+            "are also treated as imaging-quality constraints."
         ),
     )
     safety_constraint: ConstraintConfig | None = Field(
@@ -141,6 +143,10 @@ class Constraint(ConfigModel):
             "hard, and telescope hard constraints are also treated as safety "
             "constraints."
         ),
+    )
+    ground_contact_constraint: ConstraintConfig | None = Field(
+        default=None,
+        description="Additional ground-contact attitude constraint",
     )
     star_tracker_hard_constraint: ConstraintConfig | None = Field(
         default=None,
@@ -268,6 +274,10 @@ class Constraint(ConfigModel):
     def invalidate_combined_constraint_cache(self) -> None:
         """Invalidate cached combined constraint after component updates."""
         self.__dict__.pop("constraint", None)
+        self.__dict__.pop("hardware_safety_constraint_config", None)
+        self.__dict__.pop("imaging_quality_constraint_config", None)
+        self.__dict__.pop("power_generation_constraint_config", None)
+        self.__dict__.pop("ground_contact_constraint_config", None)
         self.__dict__.pop("science_constraint_config", None)
         self.__dict__.pop("safety_constraint_config", None)
         self.__dict__.pop("roll_independent_constraint", None)
@@ -290,15 +300,14 @@ class Constraint(ConfigModel):
         return combined
 
     @cached_property
-    def science_constraint_config(self) -> ConstraintConfig | None:
-        """Combined science-quality / scheduling constraints."""
+    def imaging_quality_constraint_config(self) -> ConstraintConfig | None:
+        """Combined imaging-quality / science scheduling constraints."""
         return self._combine_constraints(
             [
                 self.sun_constraint,
                 self.moon_constraint,
                 self.earth_constraint,
                 self.orbit_constraint,
-                self.panel_constraint,
                 self.anti_sun_constraint,
                 self.star_tracker_soft_constraint,
                 self.science_constraint,
@@ -306,7 +315,17 @@ class Constraint(ConfigModel):
         )
 
     @cached_property
-    def safety_constraint_config(self) -> ConstraintConfig | None:
+    def power_generation_constraint_config(self) -> ConstraintConfig | None:
+        """Combined power-generation constraints."""
+        return self._combine_constraints([self.panel_constraint])
+
+    @cached_property
+    def ground_contact_constraint_config(self) -> ConstraintConfig | None:
+        """Combined ground-contact attitude constraints."""
+        return self._combine_constraints([self.ground_contact_constraint])
+
+    @cached_property
+    def hardware_safety_constraint_config(self) -> ConstraintConfig | None:
         """Combined hardware-safety constraints."""
         return self._combine_constraints(
             [
@@ -319,10 +338,30 @@ class Constraint(ConfigModel):
 
     @cached_property
     def constraint(self) -> ConstraintConfig | None:
-        """Combined science-plus-safety constraint preserving legacy behavior."""
+        """Combined configured constraint across all built-in scopes."""
         return self._combine_constraints(
-            [self.science_constraint_config, self.safety_constraint_config]
+            [
+                self.hardware_safety_constraint_config,
+                self.imaging_quality_constraint_config,
+                self.power_generation_constraint_config,
+                self.ground_contact_constraint_config,
+            ]
         )
+
+    @cached_property
+    def science_constraint_config(self) -> ConstraintConfig | None:
+        """Combined constraints used by the historical science helper."""
+        return self._combine_constraints(
+            [
+                self.imaging_quality_constraint_config,
+                self.power_generation_constraint_config,
+            ]
+        )
+
+    @cached_property
+    def safety_constraint_config(self) -> ConstraintConfig | None:
+        """Combined constraints used by the historical safety helper."""
+        return self.hardware_safety_constraint_config
 
     @cached_property
     def roll_independent_constraint(self) -> ConstraintConfig | None:
@@ -394,6 +433,7 @@ class Constraint(ConfigModel):
             self.star_tracker_soft_constraint,
             self.radiator_hard_constraint,
             self.telescope_hard_constraint,
+            self.ground_contact_constraint,
             self.science_constraint,
             self.safety_constraint,
         ):
@@ -511,6 +551,21 @@ class Constraint(ConfigModel):
             target_roll=target_roll,
         )
 
+    def in_ground_contact(
+        self, ra: float, dec: float, time: float, target_roll: float | None = None
+    ) -> bool:
+        if self.ground_contact_constraint is None:
+            return False
+        assert self.ephem is not None, "Ephemeris must be set to use in_ground_contact"
+        return self._cached_check(
+            "ground_contact",
+            ra,
+            dec,
+            time,
+            self.ground_contact_constraint,
+            target_roll=target_roll,
+        )
+
     def in_star_tracker_hard(
         self,
         ra: float,
@@ -605,8 +660,56 @@ class Constraint(ConfigModel):
         target_roll: float | None = None,
         acs_mode: ACSMode | int | None = None,
     ) -> bool:
-        """Check image-quality / scheduling constraints only."""
-        return in_science_attitude_constraint(
+        """Check imaging-quality and power-generation constraints."""
+        return in_attitude_constraint_scopes(
+            self,
+            [
+                AttitudeConstraintScope.IMAGING_QUALITY,
+                AttitudeConstraintScope.POWER_GENERATION,
+            ],
+            ra,
+            dec,
+            utime,
+            target_roll=target_roll,
+            acs_mode=acs_mode,
+        )
+
+    def in_imaging_quality_constraint(
+        self,
+        ra: float,
+        dec: float,
+        utime: float,
+        target_roll: float | None = None,
+        acs_mode: ACSMode | int | None = None,
+    ) -> bool:
+        """Check imaging-quality / science scheduling constraints."""
+        return in_imaging_quality_attitude_constraint(
+            self, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
+        )
+
+    def in_power_generation_constraint(
+        self,
+        ra: float,
+        dec: float,
+        utime: float,
+        target_roll: float | None = None,
+        acs_mode: ACSMode | int | None = None,
+    ) -> bool:
+        """Check power-generation attitude constraints."""
+        return in_power_generation_attitude_constraint(
+            self, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
+        )
+
+    def in_ground_contact_constraint(
+        self,
+        ra: float,
+        dec: float,
+        utime: float,
+        target_roll: float | None = None,
+        acs_mode: ACSMode | int | None = None,
+    ) -> bool:
+        """Check ground-contact attitude constraints."""
+        return in_ground_contact_attitude_constraint(
             self, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
         )
 
@@ -619,11 +722,11 @@ class Constraint(ConfigModel):
         acs_mode: ACSMode | int | None = None,
     ) -> bool:
         """Check hardware-safety constraints only."""
-        return in_safety_attitude_constraint(
+        return in_hardware_safety_attitude_constraint(
             self, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
         )
 
-    def in_science_plus_safety_constraint(
+    def in_all_attitude_constraint_scopes(
         self,
         ra: float,
         dec: float,
@@ -631,8 +734,8 @@ class Constraint(ConfigModel):
         target_roll: float | None = None,
         acs_mode: ACSMode | int | None = None,
     ) -> bool:
-        """Check both scheduling and hardware-safety constraints."""
-        return in_science_plus_safety_attitude_constraint(
+        """Check all built-in attitude constraint scopes."""
+        return in_all_attitude_constraint_scopes(
             self, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
         )
 
@@ -644,8 +747,8 @@ class Constraint(ConfigModel):
         target_roll: float | None = None,
         acs_mode: ACSMode | int | None = None,
     ) -> bool:
-        """For a given time is a RA/Dec in any science or safety constraint?"""
-        return self.in_science_plus_safety_constraint(
+        """For a given time is a RA/Dec in any built-in attitude constraint?"""
+        return self.in_all_attitude_constraint_scopes(
             ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
         )
 
@@ -675,7 +778,7 @@ class Constraint(ConfigModel):
             self, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
         )
 
-    def science_plus_safety_constraint_name(
+    def all_attitude_constraint_name(
         self,
         ra: float,
         dec: float,
@@ -683,8 +786,8 @@ class Constraint(ConfigModel):
         target_roll: float | None = None,
         acs_mode: ACSMode | int | None = None,
     ) -> str | None:
-        """Return the first violated science or safety constraint name."""
-        return science_plus_safety_attitude_constraint_name(
+        """Return the first violated constraint name across all built-in scopes."""
+        return all_attitude_constraint_name(
             self, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
         )
 
@@ -762,7 +865,7 @@ class Constraint(ConfigModel):
         utime: float,
         target_rolls: list[float] | None = None,
     ) -> np.ndarray:
-        """Check science/scheduling constraints for multiple pointings."""
+        """Check imaging-quality and power-generation constraints."""
         return self._in_constraint_batch_for_components(
             ras,
             decs,
@@ -770,13 +873,69 @@ class Constraint(ConfigModel):
             [
                 self.sun_constraint,
                 self.earth_constraint,
+                self.moon_constraint,
+                self.anti_sun_constraint,
+                self.orbit_constraint,
+                self.star_tracker_soft_constraint,
+                self.science_constraint,
                 self.panel_constraint,
+            ],
+            target_rolls=target_rolls,
+        )
+
+    def in_imaging_quality_constraint_batch(
+        self,
+        ras: list[float],
+        decs: list[float],
+        utime: float,
+        target_rolls: list[float] | None = None,
+    ) -> np.ndarray:
+        """Check imaging-quality constraints for multiple pointings."""
+        return self._in_constraint_batch_for_components(
+            ras,
+            decs,
+            utime,
+            [
+                self.sun_constraint,
+                self.earth_constraint,
                 self.moon_constraint,
                 self.anti_sun_constraint,
                 self.orbit_constraint,
                 self.star_tracker_soft_constraint,
                 self.science_constraint,
             ],
+            target_rolls=target_rolls,
+        )
+
+    def in_power_generation_constraint_batch(
+        self,
+        ras: list[float],
+        decs: list[float],
+        utime: float,
+        target_rolls: list[float] | None = None,
+    ) -> np.ndarray:
+        """Check power-generation constraints for multiple pointings."""
+        return self._in_constraint_batch_for_components(
+            ras,
+            decs,
+            utime,
+            [self.panel_constraint],
+            target_rolls=target_rolls,
+        )
+
+    def in_ground_contact_constraint_batch(
+        self,
+        ras: list[float],
+        decs: list[float],
+        utime: float,
+        target_rolls: list[float] | None = None,
+    ) -> np.ndarray:
+        """Check ground-contact constraints for multiple pointings."""
+        return self._in_constraint_batch_for_components(
+            ras,
+            decs,
+            utime,
+            [self.ground_contact_constraint],
             target_rolls=target_rolls,
         )
 
@@ -801,6 +960,18 @@ class Constraint(ConfigModel):
             target_rolls=target_rolls,
         )
 
+    def in_hardware_safety_constraint_batch(
+        self,
+        ras: list[float],
+        decs: list[float],
+        utime: float,
+        target_rolls: list[float] | None = None,
+    ) -> np.ndarray:
+        """Check hardware-safety constraints for multiple pointings."""
+        return self.in_safety_constraint_batch(
+            ras, decs, utime, target_rolls=target_rolls
+        )
+
     def in_constraint_batch(
         self,
         ras: list[float],
@@ -808,7 +979,7 @@ class Constraint(ConfigModel):
         utime: float,
         target_rolls: list[float] | None = None,
     ) -> np.ndarray:
-        """Check science-plus-safety constraints for multiple pointings.
+        """Check all built-in attitude constraint scopes.
 
         Uses batch evaluation via rust_ephem's in_constraint_batch() API,
         which is much faster than repeated scalar calls for many candidates.
@@ -835,11 +1006,26 @@ class Constraint(ConfigModel):
         )
 
 
-def _attitude_policy_value(policy: str | Enum) -> str:
-    if isinstance(policy, Enum):
-        value = policy.value
+def _attitude_scope_value(scope: str | Enum) -> str:
+    if isinstance(scope, Enum):
+        value = scope.value
         return value if isinstance(value, str) else str(value)
-    return policy
+    return scope
+
+
+def _attitude_scope_values(scopes: list[str | Enum]) -> list[str]:
+    values: list[str] = []
+    for scope in scopes:
+        value = _attitude_scope_value(scope)
+        if value not in values:
+            values.append(value)
+    return values
+
+
+def attitude_constraint_scope_label(scopes: list[str | Enum]) -> str:
+    """Return a stable label for a mode's configured constraint scopes."""
+    values = _attitude_scope_values(scopes)
+    return "+".join(values) if values else "none"
 
 
 def _has_real_constraint_method(constraint: Constraint, method_name: str) -> bool:
@@ -847,7 +1033,7 @@ def _has_real_constraint_method(constraint: Constraint, method_name: str) -> boo
     return hasattr(type(constraint), method_name)
 
 
-def in_science_attitude_constraint(
+def in_imaging_quality_attitude_constraint(
     constraint: Constraint,
     ra: float,
     dec: float,
@@ -855,12 +1041,10 @@ def in_science_attitude_constraint(
     target_roll: float | None = None,
     acs_mode: ACSMode | int | None = None,
 ) -> bool:
-    """Return True if an attitude violates science/scheduling constraints."""
+    """Return True if an attitude violates imaging-quality constraints."""
     if constraint.in_sun(ra, dec, utime, target_roll=target_roll):
         return True
     if constraint.in_earth(ra, dec, utime, target_roll=target_roll):
-        return True
-    if constraint.in_panel(ra, dec, utime, target_roll=target_roll):
         return True
     if constraint.in_moon(ra, dec, utime, target_roll=target_roll):
         return True
@@ -879,7 +1063,31 @@ def in_science_attitude_constraint(
     return False
 
 
-def in_safety_attitude_constraint(
+def in_power_generation_attitude_constraint(
+    constraint: Constraint,
+    ra: float,
+    dec: float,
+    utime: float,
+    target_roll: float | None = None,
+    acs_mode: ACSMode | int | None = None,
+) -> bool:
+    """Return True if an attitude violates power-generation constraints."""
+    return constraint.in_panel(ra, dec, utime, target_roll=target_roll)
+
+
+def in_ground_contact_attitude_constraint(
+    constraint: Constraint,
+    ra: float,
+    dec: float,
+    utime: float,
+    target_roll: float | None = None,
+    acs_mode: ACSMode | int | None = None,
+) -> bool:
+    """Return True if an attitude violates ground-contact constraints."""
+    return constraint.in_ground_contact(ra, dec, utime, target_roll=target_roll)
+
+
+def in_hardware_safety_attitude_constraint(
     constraint: Constraint,
     ra: float,
     dec: float,
@@ -902,7 +1110,61 @@ def in_safety_attitude_constraint(
     return False
 
 
-def in_science_plus_safety_attitude_constraint(
+def in_attitude_constraint_scope(
+    constraint: Constraint,
+    scope: str | Enum,
+    ra: float,
+    dec: float,
+    utime: float,
+    target_roll: float | None = None,
+    acs_mode: ACSMode | int | None = None,
+) -> bool:
+    """Return True if an attitude violates one configured scope."""
+    scope_value = _attitude_scope_value(scope)
+    if scope_value == AttitudeConstraintScope.HARDWARE_SAFETY.value:
+        return in_hardware_safety_attitude_constraint(
+            constraint, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
+        )
+    if scope_value == AttitudeConstraintScope.IMAGING_QUALITY.value:
+        return in_imaging_quality_attitude_constraint(
+            constraint, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
+        )
+    if scope_value == AttitudeConstraintScope.POWER_GENERATION.value:
+        return in_power_generation_attitude_constraint(
+            constraint, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
+        )
+    if scope_value == AttitudeConstraintScope.GROUND_CONTACT.value:
+        return in_ground_contact_attitude_constraint(
+            constraint, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
+        )
+    raise ValueError(f"Unknown attitude constraint scope: {scope_value!r}")
+
+
+def in_attitude_constraint_scopes(
+    constraint: Constraint,
+    scopes: list[str | Enum],
+    ra: float,
+    dec: float,
+    utime: float,
+    target_roll: float | None = None,
+    acs_mode: ACSMode | int | None = None,
+) -> bool:
+    """Return True if an attitude violates any configured scope."""
+    return any(
+        in_attitude_constraint_scope(
+            constraint,
+            scope,
+            ra,
+            dec,
+            utime,
+            target_roll=target_roll,
+            acs_mode=acs_mode,
+        )
+        for scope in scopes
+    )
+
+
+def in_science_attitude_constraint(
     constraint: Constraint,
     ra: float,
     dec: float,
@@ -910,47 +1172,61 @@ def in_science_plus_safety_attitude_constraint(
     target_roll: float | None = None,
     acs_mode: ACSMode | int | None = None,
 ) -> bool:
-    """Return True if either science or safety constraints are violated."""
-    return in_science_attitude_constraint(
-        constraint, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
-    ) or in_safety_attitude_constraint(
+    """Return True if an attitude violates science helper constraints."""
+    return in_attitude_constraint_scopes(
+        constraint,
+        [
+            AttitudeConstraintScope.IMAGING_QUALITY,
+            AttitudeConstraintScope.POWER_GENERATION,
+        ],
+        ra,
+        dec,
+        utime,
+        target_roll=target_roll,
+        acs_mode=acs_mode,
+    )
+
+
+def in_safety_attitude_constraint(
+    constraint: Constraint,
+    ra: float,
+    dec: float,
+    utime: float,
+    target_roll: float | None = None,
+    acs_mode: ACSMode | int | None = None,
+) -> bool:
+    """Return True if an attitude violates hardware-safety constraints."""
+    return in_hardware_safety_attitude_constraint(
         constraint, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
     )
 
 
-def in_attitude_constraint_policy(
+def in_all_attitude_constraint_scopes(
     constraint: Constraint,
-    policy: str | Enum,
     ra: float,
     dec: float,
     utime: float,
     target_roll: float | None = None,
     acs_mode: ACSMode | int | None = None,
 ) -> bool:
-    """Return True if an attitude violates the configured policy scope."""
-    policy_value = _attitude_policy_value(policy)
-    if policy_value == _POLICY_NONE:
-        return False
-    if policy_value == _POLICY_FULL_MISSION:
-        return constraint.in_constraint(
-            ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
-        )
-    if policy_value == _POLICY_SCIENCE_PLUS_SAFETY:
-        return in_science_plus_safety_attitude_constraint(
-            constraint, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
-        )
-    if policy_value == _POLICY_SCIENCE:
-        return in_science_attitude_constraint(
-            constraint, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
-        )
-    if policy_value in {_POLICY_HARD_KEEPOUT, _POLICY_SAFETY}:
-        return in_safety_attitude_constraint(
-            constraint, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
-        )
-    raise ValueError(f"Unknown attitude constraint policy: {policy_value!r}")
+    """Return True if any built-in attitude scope is violated."""
+    return in_attitude_constraint_scopes(
+        constraint,
+        [
+            AttitudeConstraintScope.HARDWARE_SAFETY,
+            AttitudeConstraintScope.IMAGING_QUALITY,
+            AttitudeConstraintScope.POWER_GENERATION,
+            AttitudeConstraintScope.GROUND_CONTACT,
+        ],
+        ra,
+        dec,
+        utime,
+        target_roll=target_roll,
+        acs_mode=acs_mode,
+    )
 
 
-def science_attitude_constraint_name(
+def imaging_quality_attitude_constraint_name(
     constraint: Constraint,
     ra: float,
     dec: float,
@@ -958,13 +1234,11 @@ def science_attitude_constraint_name(
     target_roll: float | None = None,
     acs_mode: ACSMode | int | None = None,
 ) -> str | None:
-    """Return the first violated science/scheduling constraint name."""
+    """Return the first violated imaging-quality constraint name."""
     if constraint.in_sun(ra, dec, utime, target_roll=target_roll):
         return "Sun"
     if constraint.in_earth(ra, dec, utime, target_roll=target_roll):
         return "Earth Limb"
-    if constraint.in_panel(ra, dec, utime, target_roll=target_roll):
-        return "Panel"
     if constraint.in_moon(ra, dec, utime, target_roll=target_roll):
         return "Moon"
     if constraint.in_anti_sun(ra, dec, utime, target_roll=target_roll):
@@ -981,7 +1255,35 @@ def science_attitude_constraint_name(
     return None
 
 
-def safety_attitude_constraint_name(
+def power_generation_attitude_constraint_name(
+    constraint: Constraint,
+    ra: float,
+    dec: float,
+    utime: float,
+    target_roll: float | None = None,
+    acs_mode: ACSMode | int | None = None,
+) -> str | None:
+    """Return the first violated power-generation constraint name."""
+    if constraint.in_panel(ra, dec, utime, target_roll=target_roll):
+        return "Panel"
+    return None
+
+
+def ground_contact_attitude_constraint_name(
+    constraint: Constraint,
+    ra: float,
+    dec: float,
+    utime: float,
+    target_roll: float | None = None,
+    acs_mode: ACSMode | int | None = None,
+) -> str | None:
+    """Return the first violated ground-contact constraint name."""
+    if constraint.in_ground_contact(ra, dec, utime, target_roll=target_roll):
+        return "Ground Contact"
+    return None
+
+
+def hardware_safety_attitude_constraint_name(
     constraint: Constraint,
     ra: float,
     dec: float,
@@ -1004,7 +1306,62 @@ def safety_attitude_constraint_name(
     return None
 
 
-def science_plus_safety_attitude_constraint_name(
+def attitude_constraint_name_for_scope(
+    constraint: Constraint,
+    scope: str | Enum,
+    ra: float,
+    dec: float,
+    utime: float,
+    target_roll: float | None = None,
+    acs_mode: ACSMode | int | None = None,
+) -> str | None:
+    """Return the violated constraint name for one configured scope."""
+    scope_value = _attitude_scope_value(scope)
+    if scope_value == AttitudeConstraintScope.HARDWARE_SAFETY.value:
+        return hardware_safety_attitude_constraint_name(
+            constraint, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
+        )
+    if scope_value == AttitudeConstraintScope.IMAGING_QUALITY.value:
+        return imaging_quality_attitude_constraint_name(
+            constraint, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
+        )
+    if scope_value == AttitudeConstraintScope.POWER_GENERATION.value:
+        return power_generation_attitude_constraint_name(
+            constraint, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
+        )
+    if scope_value == AttitudeConstraintScope.GROUND_CONTACT.value:
+        return ground_contact_attitude_constraint_name(
+            constraint, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
+        )
+    raise ValueError(f"Unknown attitude constraint scope: {scope_value!r}")
+
+
+def attitude_constraint_name_for_scopes(
+    constraint: Constraint,
+    scopes: list[str | Enum],
+    ra: float,
+    dec: float,
+    utime: float,
+    target_roll: float | None = None,
+    acs_mode: ACSMode | int | None = None,
+) -> str | None:
+    """Return the first violated constraint name for configured scopes."""
+    for scope in _attitude_scope_values(scopes):
+        name = attitude_constraint_name_for_scope(
+            constraint,
+            scope,
+            ra,
+            dec,
+            utime,
+            target_roll=target_roll,
+            acs_mode=acs_mode,
+        )
+        if name is not None:
+            return name
+    return None
+
+
+def science_attitude_constraint_name(
     constraint: Constraint,
     ra: float,
     dec: float,
@@ -1012,87 +1369,95 @@ def science_plus_safety_attitude_constraint_name(
     target_roll: float | None = None,
     acs_mode: ACSMode | int | None = None,
 ) -> str | None:
-    """Return the first violated science or safety constraint name."""
-    return science_attitude_constraint_name(
-        constraint, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
-    ) or safety_attitude_constraint_name(
+    """Return the first violated science helper constraint name."""
+    return attitude_constraint_name_for_scopes(
+        constraint,
+        [
+            AttitudeConstraintScope.IMAGING_QUALITY,
+            AttitudeConstraintScope.POWER_GENERATION,
+        ],
+        ra,
+        dec,
+        utime,
+        target_roll=target_roll,
+        acs_mode=acs_mode,
+    )
+
+
+def safety_attitude_constraint_name(
+    constraint: Constraint,
+    ra: float,
+    dec: float,
+    utime: float,
+    target_roll: float | None = None,
+    acs_mode: ACSMode | int | None = None,
+) -> str | None:
+    """Return the first violated hardware-safety constraint name."""
+    return hardware_safety_attitude_constraint_name(
         constraint, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
     )
 
 
-def attitude_constraint_name_for_policy(
+def all_attitude_constraint_name(
     constraint: Constraint,
-    policy: str | Enum,
     ra: float,
     dec: float,
     utime: float,
     target_roll: float | None = None,
     acs_mode: ACSMode | int | None = None,
 ) -> str | None:
-    """Return the violated constraint name for the configured policy scope."""
-    policy_value = _attitude_policy_value(policy)
-    if policy_value == _POLICY_NONE:
-        return None
-    if policy_value == _POLICY_FULL_MISSION:
-        if not constraint.in_constraint(
-            ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
-        ):
-            return None
-        return (
-            science_plus_safety_attitude_constraint_name(
-                constraint,
-                ra,
-                dec,
-                utime,
-                target_roll=target_roll,
-                acs_mode=acs_mode,
-            )
-            or "Unknown"
-        )
-    if policy_value == _POLICY_SCIENCE_PLUS_SAFETY:
-        return science_plus_safety_attitude_constraint_name(
-            constraint, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
-        )
-    if policy_value == _POLICY_SCIENCE:
-        return science_attitude_constraint_name(
-            constraint, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
-        )
-    if policy_value in {_POLICY_HARD_KEEPOUT, _POLICY_SAFETY}:
-        return safety_attitude_constraint_name(
-            constraint, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
-        )
-    raise ValueError(f"Unknown attitude constraint policy: {policy_value!r}")
+    """Return the first violated constraint name across all built-in scopes."""
+    return attitude_constraint_name_for_scopes(
+        constraint,
+        [
+            AttitudeConstraintScope.HARDWARE_SAFETY,
+            AttitudeConstraintScope.IMAGING_QUALITY,
+            AttitudeConstraintScope.POWER_GENERATION,
+            AttitudeConstraintScope.GROUND_CONTACT,
+        ],
+        ra,
+        dec,
+        utime,
+        target_roll=target_roll,
+        acs_mode=acs_mode,
+    )
 
 
-def in_attitude_constraint_policy_batch(
+def in_attitude_constraint_scopes_batch(
     constraint: Constraint,
-    policy: str | Enum,
+    scopes: list[str | Enum],
     ras: list[float],
     decs: list[float],
     utime: float,
     target_rolls: list[float] | None = None,
 ) -> np.ndarray:
-    """Check multiple pointings against the configured policy scope."""
-    policy_value = _attitude_policy_value(policy)
-    if policy_value == _POLICY_NONE:
-        return np.zeros(len(ras), dtype=bool)
-    if policy_value in {_POLICY_FULL_MISSION, _POLICY_SCIENCE_PLUS_SAFETY}:
-        if target_rolls is None:
-            return constraint.in_constraint_batch(ras, decs, utime)
-        return constraint.in_constraint_batch(ras, decs, utime, target_rolls)
-    if policy_value == _POLICY_SCIENCE:
-        if target_rolls is None:
-            return constraint.in_science_constraint_batch(ras, decs, utime)
-        return constraint.in_science_constraint_batch(ras, decs, utime, target_rolls)
-    if policy_value in {_POLICY_HARD_KEEPOUT, _POLICY_SAFETY}:
-        if target_rolls is None:
-            return constraint.in_safety_constraint_batch(ras, decs, utime)
-        return constraint.in_safety_constraint_batch(ras, decs, utime, target_rolls)
-    raise ValueError(f"Unknown attitude constraint policy: {policy_value!r}")
+    """Check multiple pointings against configured scopes."""
+    violations = np.zeros(len(ras), dtype=bool)
+    for scope in _attitude_scope_values(scopes):
+        if scope == AttitudeConstraintScope.HARDWARE_SAFETY.value:
+            scoped = constraint.in_hardware_safety_constraint_batch(
+                ras, decs, utime, target_rolls=target_rolls
+            )
+        elif scope == AttitudeConstraintScope.IMAGING_QUALITY.value:
+            scoped = constraint.in_imaging_quality_constraint_batch(
+                ras, decs, utime, target_rolls=target_rolls
+            )
+        elif scope == AttitudeConstraintScope.POWER_GENERATION.value:
+            scoped = constraint.in_power_generation_constraint_batch(
+                ras, decs, utime, target_rolls=target_rolls
+            )
+        elif scope == AttitudeConstraintScope.GROUND_CONTACT.value:
+            scoped = constraint.in_ground_contact_constraint_batch(
+                ras, decs, utime, target_rolls=target_rolls
+            )
+        else:
+            raise ValueError(f"Unknown attitude constraint scope: {scope!r}")
+        violations = violations | scoped
+    return violations
 
 
 class DefaultConstraint(Constraint):
-    """Default mission constraint set preserving legacy COAST-Sim behavior."""
+    """Default mission imaging and power-generation constraint set."""
 
     sun_constraint: ConstraintConfig | None = Field(
         default_factory=_default_sun_constraint,

@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pytest
 
-from conops import ACS, ACSMode, AttitudeConstraintPolicy
+from conops import ACS, ACSMode, AttitudeConstraintScope
 from conops.config.solar_panel import SolarPanel, SolarPanelSet
 
 
@@ -72,8 +72,8 @@ def mock_config_roll(mock_ephem_roll, mock_constraint_roll):
     config.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
     config.spacecraft_bus.radiators = Mock()
     config.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
-    config.attitude_constraint_policy_for_mode = Mock(
-        return_value=AttitudeConstraintPolicy.HARD_KEEPOUT
+    config.attitude_constraint_scopes_for_mode = Mock(
+        return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
     )
     return config
 
@@ -166,8 +166,8 @@ class TestACSRollCalculation:
         config1.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
         config1.spacecraft_bus.radiators = Mock()
         config1.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
-        config1.attitude_constraint_policy_for_mode = Mock(
-            return_value=AttitudeConstraintPolicy.HARD_KEEPOUT
+        config1.attitude_constraint_scopes_for_mode = Mock(
+            return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
         )
 
         with patch("conops.simulation.passes.PassTimes"):
@@ -203,8 +203,8 @@ class TestACSRollCalculation:
         config2.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
         config2.spacecraft_bus.radiators = Mock()
         config2.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
-        config2.attitude_constraint_policy_for_mode = Mock(
-            return_value=AttitudeConstraintPolicy.HARD_KEEPOUT
+        config2.attitude_constraint_scopes_for_mode = Mock(
+            return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
         )
 
         with patch("conops.simulation.passes.PassTimes"):
@@ -365,8 +365,8 @@ class TestACSRollEdgeCases:
         config.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
         config.spacecraft_bus.radiators = Mock()
         config.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
-        config.attitude_constraint_policy_for_mode = Mock(
-            return_value=AttitudeConstraintPolicy.HARD_KEEPOUT
+        config.attitude_constraint_scopes_for_mode = Mock(
+            return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
         )
 
         with patch("conops.simulation.passes.PassTimes"):

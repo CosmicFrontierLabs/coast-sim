@@ -10,7 +10,7 @@ import yaml
 
 from conops import (
     ACSMode,
-    AttitudeConstraintPolicy,
+    AttitudeConstraintScope,
     Battery,
     Constraint,
     FaultManagement,
@@ -69,69 +69,81 @@ class TestConfig:
             == minimal_config["ground_stations"]
         )
 
-    def test_attitude_constraint_policy_defaults_by_mode(self) -> None:
-        """Test executed attitude validation policy defaults."""
+    def test_attitude_constraint_scopes_defaults_by_mode(self) -> None:
+        """Test executed attitude validation scope defaults."""
         config = MissionConfig()
-        for mode in ACSMode:
-            assert (
-                config.attitude_constraint_policy_for_mode(mode)
-                == AttitudeConstraintPolicy.FULL_MISSION
-            )
 
-    def test_attitude_constraint_policy_accepts_mode_name_overrides(self) -> None:
+        assert config.attitude_constraint_scopes_for_mode(ACSMode.SCIENCE) == [
+            AttitudeConstraintScope.HARDWARE_SAFETY,
+            AttitudeConstraintScope.IMAGING_QUALITY,
+            AttitudeConstraintScope.POWER_GENERATION,
+        ]
+        assert config.attitude_constraint_scopes_for_mode(ACSMode.CHARGING) == [
+            AttitudeConstraintScope.HARDWARE_SAFETY,
+            AttitudeConstraintScope.POWER_GENERATION,
+        ]
+        assert config.attitude_constraint_scopes_for_mode(ACSMode.PASS) == [
+            AttitudeConstraintScope.HARDWARE_SAFETY,
+            AttitudeConstraintScope.POWER_GENERATION,
+            AttitudeConstraintScope.GROUND_CONTACT,
+        ]
+        assert config.attitude_constraint_scopes_for_mode(ACSMode.SLEWING) == [
+            AttitudeConstraintScope.HARDWARE_SAFETY
+        ]
+        assert config.attitude_constraint_scopes_for_mode(ACSMode.SAA) == [
+            AttitudeConstraintScope.HARDWARE_SAFETY
+        ]
+        assert config.attitude_constraint_scopes_for_mode(ACSMode.SAFE) == [
+            AttitudeConstraintScope.HARDWARE_SAFETY,
+            AttitudeConstraintScope.POWER_GENERATION,
+        ]
+        assert config.attitude_constraint_scopes_for_mode(ACSMode.IDLE) == [
+            AttitudeConstraintScope.HARDWARE_SAFETY
+        ]
+
+    def test_attitude_constraint_scopes_accepts_mode_name_overrides(self) -> None:
         """Test mission config can override one ACS mode by name."""
         config = MissionConfig(
-            attitude_constraint_policy={"PASS": "full_mission", "CHARGING": "none"}
-        )
-
-        assert (
-            config.attitude_constraint_policy_for_mode(ACSMode.PASS)
-            == AttitudeConstraintPolicy.FULL_MISSION
-        )
-        assert (
-            config.attitude_constraint_policy_for_mode(ACSMode.CHARGING)
-            == AttitudeConstraintPolicy.NONE
-        )
-        assert (
-            config.attitude_constraint_policy_for_mode(ACSMode.SCIENCE)
-            == AttitudeConstraintPolicy.FULL_MISSION
-        )
-
-    def test_attitude_constraint_policy_accepts_scoped_overrides(self) -> None:
-        """Test mission config accepts science/safety scoped policies."""
-        config = MissionConfig(
-            attitude_constraint_policy={
-                "SCIENCE": "science_plus_safety",
-                "CHARGING": "safety",
-                "PASS": "science",
+            attitude_constraint_scopes={
+                "PASS": ["hardware_safety", "ground_contact"],
+                "CHARGING": [],
             }
         )
 
-        assert (
-            config.attitude_constraint_policy_for_mode(ACSMode.SCIENCE)
-            == AttitudeConstraintPolicy.SCIENCE_PLUS_SAFETY
-        )
-        assert (
-            config.attitude_constraint_policy_for_mode(ACSMode.CHARGING)
-            == AttitudeConstraintPolicy.SAFETY
-        )
-        assert (
-            config.attitude_constraint_policy_for_mode(ACSMode.PASS)
-            == AttitudeConstraintPolicy.SCIENCE
+        assert config.attitude_constraint_scopes_for_mode(ACSMode.PASS) == [
+            AttitudeConstraintScope.HARDWARE_SAFETY,
+            AttitudeConstraintScope.GROUND_CONTACT,
+        ]
+        assert config.attitude_constraint_scopes_for_mode(ACSMode.CHARGING) == []
+        assert config.attitude_constraint_scopes_for_mode(ACSMode.SCIENCE) == [
+            AttitudeConstraintScope.HARDWARE_SAFETY,
+            AttitudeConstraintScope.IMAGING_QUALITY,
+            AttitudeConstraintScope.POWER_GENERATION,
+        ]
+
+    def test_attitude_constraint_scopes_accepts_enum_overrides(self) -> None:
+        """Test mission config accepts enum scope overrides."""
+        config = MissionConfig(
+            attitude_constraint_scopes={
+                "SCIENCE": [
+                    AttitudeConstraintScope.HARDWARE_SAFETY,
+                    AttitudeConstraintScope.IMAGING_QUALITY,
+                ],
+                "CHARGING": [AttitudeConstraintScope.POWER_GENERATION],
+                "PASS": [AttitudeConstraintScope.GROUND_CONTACT],
+            }
         )
 
-    def test_attitude_constraint_policy_scope_flags(self) -> None:
-        """Test policy scope helpers document compatibility alias behavior."""
-        assert AttitudeConstraintPolicy.SCIENCE_PLUS_SAFETY.enforces_science
-        assert AttitudeConstraintPolicy.SCIENCE_PLUS_SAFETY.enforces_safety
-        assert AttitudeConstraintPolicy.FULL_MISSION.enforces_science
-        assert AttitudeConstraintPolicy.FULL_MISSION.enforces_safety
-        assert AttitudeConstraintPolicy.SCIENCE.enforces_science
-        assert not AttitudeConstraintPolicy.SCIENCE.enforces_safety
-        assert not AttitudeConstraintPolicy.SAFETY.enforces_science
-        assert AttitudeConstraintPolicy.SAFETY.enforces_safety
-        assert not AttitudeConstraintPolicy.NONE.enforces_science
-        assert not AttitudeConstraintPolicy.NONE.enforces_safety
+        assert config.attitude_constraint_scopes_for_mode(ACSMode.SCIENCE) == [
+            AttitudeConstraintScope.HARDWARE_SAFETY,
+            AttitudeConstraintScope.IMAGING_QUALITY,
+        ]
+        assert config.attitude_constraint_scopes_for_mode(ACSMode.CHARGING) == [
+            AttitudeConstraintScope.POWER_GENERATION
+        ]
+        assert config.attitude_constraint_scopes_for_mode(ACSMode.PASS) == [
+            AttitudeConstraintScope.GROUND_CONTACT
+        ]
 
     def test_acs_gsp_tracking_phase_step_is_configurable(self) -> None:
         """Test ground-station roll search granularity is an ACS config setting."""

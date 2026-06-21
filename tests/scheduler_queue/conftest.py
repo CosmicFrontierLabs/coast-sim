@@ -11,8 +11,8 @@ from astropy.time import Time  # type: ignore[import-untyped]
 
 from conops import (
     DAY_SECONDS,
-    AttitudeConstraintPolicy,
     DumbQueueScheduler,
+    MissionConfig,
     QueueDITL,
 )
 from conops.targets.plan import Plan
@@ -82,9 +82,11 @@ def mock_config() -> Mock:
     config.constraint.in_star_tracker_soft = Mock(return_value=False)
     config.constraint.in_radiator_hard = Mock(return_value=False)
     config.constraint.in_telescope_hard = Mock(return_value=False)
+    config.constraint.in_ground_contact = Mock(return_value=False)
     config.constraint.in_eclipse = Mock(return_value=False)
-    config.attitude_constraint_policy_for_mode = Mock(
-        return_value=AttitudeConstraintPolicy.FULL_MISSION
+    default_scope_config = MissionConfig()
+    config.attitude_constraint_scopes_for_mode = Mock(
+        side_effect=default_scope_config.attitude_constraint_scopes_for_mode
     )
     config.constraint.instantaneous_field_of_regard = Mock(return_value=1.234)
 

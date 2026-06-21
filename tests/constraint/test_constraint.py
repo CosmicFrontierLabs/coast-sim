@@ -5,10 +5,10 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from conops import AttitudeConstraintPolicy, Constraint, DefaultConstraint
+from conops import AttitudeConstraintScope, Constraint, DefaultConstraint
 from conops.config.constraint import (
-    attitude_constraint_name_for_policy,
-    in_attitude_constraint_policy,
+    attitude_constraint_name_for_scopes,
+    in_attitude_constraint_scopes,
 )
 
 
@@ -57,8 +57,8 @@ class TestConstraintInit:
         """Test bare Constraint defaults to no star-tracker soft constraint."""
         assert Constraint().star_tracker_soft_constraint is None
 
-    def test_default_constraint_has_legacy_constraints(self) -> None:
-        """Test DefaultConstraint preserves legacy non-None defaults."""
+    def test_default_constraint_has_standard_constraints(self) -> None:
+        """Test DefaultConstraint provides the standard default components."""
         default_constraint = DefaultConstraint()
         assert default_constraint.sun_constraint is not None
         assert default_constraint.anti_sun_constraint is not None
@@ -265,15 +265,15 @@ class TestInOccultMethod:
 
 
 class TestConstraintScopes:
-    """Test science/scheduling and safety constraint scopes."""
+    """Test imaging-quality, power-generation, and safety constraint scopes."""
 
     @patch("conops.Constraint.in_earth")
-    def test_legacy_earth_constraint_is_science_not_safety(self, mock_earth) -> None:
-        """Top-level Earth constraints remain image-quality constraints."""
+    def test_earth_constraint_is_imaging_quality_not_safety(self, mock_earth) -> None:
+        """Top-level Earth constraints are imaging-quality constraints."""
         constraint = Constraint()
         mock_earth.return_value = True
 
-        assert constraint.in_science_constraint(45.0, 30.0, 1700000000.0)
+        assert constraint.in_imaging_quality_constraint(45.0, 30.0, 1700000000.0)
         assert not constraint.in_safety_constraint(45.0, 30.0, 1700000000.0)
 
     @patch("conops.Constraint.in_telescope_hard")
@@ -285,53 +285,53 @@ class TestConstraintScopes:
         mock_telescope_hard.return_value = True
 
         assert constraint.in_safety_constraint(45.0, 30.0, 1700000000.0)
-        assert not constraint.in_science_constraint(45.0, 30.0, 1700000000.0)
+        assert not constraint.in_imaging_quality_constraint(45.0, 30.0, 1700000000.0)
 
     @patch("conops.Constraint.in_radiator_hard")
     @patch("conops.Constraint.in_earth")
-    def test_science_plus_safety_constraint_accepts_either_scope(
+    def test_all_scope_constraint_accepts_either_scope(
         self, mock_earth, mock_radiator_hard
     ) -> None:
-        """Combined policy remains true for either scoped violation."""
+        """All-scope helper remains true for either scoped violation."""
         constraint = Constraint()
         mock_earth.return_value = False
         mock_radiator_hard.return_value = True
 
-        assert constraint.in_science_plus_safety_constraint(45.0, 30.0, 1700000000.0)
+        assert constraint.in_constraint(45.0, 30.0, 1700000000.0)
 
     @patch("conops.Constraint.in_earth")
-    def test_policy_helper_routes_to_configured_scope(self, mock_earth) -> None:
-        """Central policy helper applies science and safety scopes consistently."""
+    def test_scope_helper_routes_to_configured_scopes(self, mock_earth) -> None:
+        """Central scope helper applies configured scopes consistently."""
         constraint = Constraint()
         mock_earth.return_value = True
 
-        assert in_attitude_constraint_policy(
+        assert in_attitude_constraint_scopes(
             constraint,
-            AttitudeConstraintPolicy.SCIENCE,
+            [AttitudeConstraintScope.IMAGING_QUALITY],
             45.0,
             30.0,
             1700000000.0,
         )
-        assert not in_attitude_constraint_policy(
+        assert not in_attitude_constraint_scopes(
             constraint,
-            AttitudeConstraintPolicy.SAFETY,
+            [AttitudeConstraintScope.HARDWARE_SAFETY],
             45.0,
             30.0,
             1700000000.0,
         )
 
     @patch("conops.Constraint.in_radiator_hard")
-    def test_policy_name_helper_routes_to_configured_scope(
+    def test_scope_name_helper_routes_to_configured_scope(
         self, mock_radiator_hard
     ) -> None:
-        """Central policy name helper reports the active scoped constraint."""
+        """Central scope name helper reports the active scoped constraint."""
         constraint = Constraint()
         mock_radiator_hard.return_value = True
 
         assert (
-            attitude_constraint_name_for_policy(
+            attitude_constraint_name_for_scopes(
                 constraint,
-                AttitudeConstraintPolicy.SAFETY,
+                [AttitudeConstraintScope.HARDWARE_SAFETY],
                 45.0,
                 30.0,
                 1700000000.0,
@@ -339,9 +339,9 @@ class TestConstraintScopes:
             == "Radiator Hard"
         )
         assert (
-            attitude_constraint_name_for_policy(
+            attitude_constraint_name_for_scopes(
                 constraint,
-                AttitudeConstraintPolicy.SCIENCE,
+                [AttitudeConstraintScope.IMAGING_QUALITY],
                 45.0,
                 30.0,
                 1700000000.0,

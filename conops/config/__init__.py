@@ -5,9 +5,9 @@ from .communications import (
     BandCapability,
     CommunicationsSystem,
 )
-from .config import AttitudeConstraintPolicy, MissionConfig
+from .config import MissionConfig
 from .constants import DAY_SECONDS, DTOR
-from .constraint import Constraint, DefaultConstraint
+from .constraint import AttitudeConstraintScope, Constraint, DefaultConstraint
 from .data_generator import DataGeneration
 from .fault_management import (
     FaultConstraint,
@@ -44,7 +44,7 @@ from .visualization import VisualizationConfig
 __all__ = [
     "AntennaPointing",
     "AttitudeControlSystem",
-    "AttitudeConstraintPolicy",
+    "AttitudeConstraintScope",
     "BandCapability",
     "Battery",
     "CommunicationsSystem",

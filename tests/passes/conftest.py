@@ -73,9 +73,17 @@ def mock_constraint(mock_ephem):
     constraint = Mock(spec=Constraint)
     constraint.ephem = mock_ephem
     constraint.in_constraint = Mock(return_value=False)
+    constraint.in_sun = Mock(return_value=False)
+    constraint.in_earth = Mock(return_value=False)
+    constraint.in_panel = Mock(return_value=False)
+    constraint.in_moon = Mock(return_value=False)
+    constraint.in_anti_sun = Mock(return_value=False)
+    constraint.in_orbit = Mock(return_value=False)
     constraint.in_star_tracker_hard = Mock(return_value=False)
+    constraint.in_star_tracker_soft = Mock(return_value=False)
     constraint.in_radiator_hard = Mock(return_value=False)
     constraint.in_telescope_hard = Mock(return_value=False)
+    constraint.in_ground_contact = Mock(return_value=False)
     return constraint
 
 

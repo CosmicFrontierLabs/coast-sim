@@ -11,8 +11,11 @@ from ..common import (
     unixtime2yearday,
 )
 from ..common.vector import angular_separation
-from ..config import AttitudeConstraintPolicy, FaultEvent, MissionConfig
-from ..config.constraint import in_attitude_constraint_policy
+from ..config import AttitudeConstraintScope, FaultEvent, MissionConfig
+from ..config.constraint import (
+    attitude_constraint_scope_label,
+    in_attitude_constraint_scopes,
+)
 from ..simulation.passes import PassTimes
 from ..simulation.roll import optimum_roll
 from .acs_command import ACSCommand
@@ -583,7 +586,7 @@ class ACS:
 
         # Idle is an executed attitude, not a constraint-free gap. If a completed
         # observation is being held after science ends, move the hold to an
-        # attitude that satisfies the configured IDLE policy before recording.
+        # attitude that satisfies the configured IDLE scopes before recording.
         self._enforce_idle_constraint_safe_attitude(utime)
 
         # Check current constraints (must run after roll is updated)
@@ -679,24 +682,25 @@ class ACS:
         )
 
     def _enforce_idle_constraint_safe_attitude(self, utime: float) -> None:
-        """Replace unsafe idle holds with an attitude that satisfies IDLE policy."""
+        """Replace unsafe idle holds with an attitude that satisfies IDLE scopes."""
         if self.acsmode != ACSMode.IDLE:
             return
         if self.current_pass is not None or self.in_safe_mode:
             return
 
-        policy = self._idle_attitude_policy()
-        if policy == AttitudeConstraintPolicy.NONE:
+        scopes = self._idle_attitude_scopes()
+        if not scopes:
             return
 
-        if not self._idle_attitude_unsafe(self.ra, self.dec, self.roll, utime, policy):
+        if not self._idle_attitude_unsafe(self.ra, self.dec, self.roll, utime, scopes):
             return
 
-        safe_attitude = self._find_constraint_safe_idle_attitude(utime, policy)
+        safe_attitude = self._find_constraint_safe_idle_attitude(utime, scopes)
         if safe_attitude is None:
+            scope_label = attitude_constraint_scope_label(scopes)
             cause = (
                 "No constraint-safe IDLE attitude found "
-                f"(RA={self.ra:.2f} Dec={self.dec:.2f} policy={policy.value}); "
+                f"(RA={self.ra:.2f} Dec={self.dec:.2f} scopes={scope_label}); "
                 "requesting safe mode"
             )
             self._log_or_print(utime, "ERROR", f"{unixtime2date(utime)}: {cause}")
@@ -711,7 +715,7 @@ class ACS:
                         metadata={
                             "ra": self.ra,
                             "dec": self.dec,
-                            "policy": policy.value,
+                            "scopes": scope_label,
                         },
                     )
                 )
@@ -728,9 +732,9 @@ class ACS:
         )
 
     def _find_constraint_safe_idle_attitude(
-        self, utime: float, policy: AttitudeConstraintPolicy
+        self, utime: float, scopes: list[AttitudeConstraintScope]
     ) -> tuple[float, float, float] | None:
-        """Find a deterministic nearby attitude that satisfies IDLE policy."""
+        """Find a deterministic nearby attitude that satisfies IDLE scopes."""
         candidates = self._idle_safe_attitude_candidates(utime)
         for candidate_ra, candidate_dec in candidates:
             optimal_roll = optimum_roll(
@@ -747,15 +751,13 @@ class ACS:
                     candidate_dec,
                     candidate_roll,
                     utime,
-                    policy,
+                    scopes,
                 ):
                     return candidate_ra, candidate_dec, candidate_roll
         return None
 
-    def _idle_attitude_policy(self) -> AttitudeConstraintPolicy:
-        return AttitudeConstraintPolicy(
-            self.config.attitude_constraint_policy_for_mode(ACSMode.IDLE)
-        )
+    def _idle_attitude_scopes(self) -> list[AttitudeConstraintScope]:
+        return self.config.attitude_constraint_scopes_for_mode(ACSMode.IDLE)
 
     def _idle_attitude_unsafe(
         self,
@@ -763,7 +765,7 @@ class ACS:
         dec: float,
         roll: float,
         utime: float,
-        policy: AttitudeConstraintPolicy,
+        scopes: list[AttitudeConstraintScope],
     ) -> bool:
         """Runtime instrument-safety check for idle holds.
 
@@ -771,15 +773,12 @@ class ACS:
         "should the ACS repoint to protect hardware?" not "did the planner break a
         scheduling contract?"
 
-        FULL_MISSION preserves the legacy combined constraint check.
-        SCIENCE_PLUS_SAFETY checks both scoped constraint groups. SCIENCE checks
-        only image-quality constraints. SAFETY and HARD_KEEPOUT check only the
-        hardware-protection limits that must not be sustained regardless of
-        mission phase. NONE skips all checking.
+        The configured IDLE scopes describe the attitude constraints that must
+        not be sustained while idle. An empty list skips this check.
         """
-        return in_attitude_constraint_policy(
+        return in_attitude_constraint_scopes(
             self.constraint,
-            policy,
+            scopes,
             ra,
             dec,
             utime,

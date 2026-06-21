@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from enum import Enum
 from typing import Any
 
 import yaml
@@ -10,7 +9,7 @@ from rust_ephem.constraints import ConstraintConfig
 from ..common.enums import ACSMode
 from ._base import ConfigModel
 from .battery import Battery
-from .constraint import Constraint, DefaultConstraint
+from .constraint import AttitudeConstraintScope, Constraint, DefaultConstraint
 from .fault_management import FaultManagement
 from .groundstation import GroundStationRegistry
 from .instrument import Payload
@@ -22,45 +21,29 @@ from .targets import TargetConfig
 from .visualization import VisualizationConfig
 
 
-class AttitudeConstraintPolicy(str, Enum):
-    """Constraint validation policy applied to executed attitude samples."""
-
-    SCIENCE_PLUS_SAFETY = "science_plus_safety"
-    SCIENCE = "science"
-    SAFETY = "safety"
-    FULL_MISSION = "full_mission"
-    HARD_KEEPOUT = "hard_keepout"
-    NONE = "none"
-
-    @property
-    def enforces_science(self) -> bool:
-        """True when image-quality / scheduling constraints must be satisfied."""
-        return self in {
-            AttitudeConstraintPolicy.SCIENCE_PLUS_SAFETY,
-            AttitudeConstraintPolicy.SCIENCE,
-            AttitudeConstraintPolicy.FULL_MISSION,
-        }
-
-    @property
-    def enforces_safety(self) -> bool:
-        """True when hardware-safety constraints must be satisfied."""
-        return self in {
-            AttitudeConstraintPolicy.SCIENCE_PLUS_SAFETY,
-            AttitudeConstraintPolicy.SAFETY,
-            AttitudeConstraintPolicy.FULL_MISSION,
-            AttitudeConstraintPolicy.HARD_KEEPOUT,
-        }
-
-
-def _default_attitude_constraint_policy() -> dict[str, AttitudeConstraintPolicy]:
+def _default_attitude_constraint_scopes() -> dict[str, list[AttitudeConstraintScope]]:
     return {
-        ACSMode.SCIENCE.name: AttitudeConstraintPolicy.FULL_MISSION,
-        ACSMode.CHARGING.name: AttitudeConstraintPolicy.FULL_MISSION,
-        ACSMode.SLEWING.name: AttitudeConstraintPolicy.FULL_MISSION,
-        ACSMode.PASS.name: AttitudeConstraintPolicy.FULL_MISSION,
-        ACSMode.SAA.name: AttitudeConstraintPolicy.FULL_MISSION,
-        ACSMode.SAFE.name: AttitudeConstraintPolicy.FULL_MISSION,
-        ACSMode.IDLE.name: AttitudeConstraintPolicy.FULL_MISSION,
+        ACSMode.SCIENCE.name: [
+            AttitudeConstraintScope.HARDWARE_SAFETY,
+            AttitudeConstraintScope.IMAGING_QUALITY,
+            AttitudeConstraintScope.POWER_GENERATION,
+        ],
+        ACSMode.CHARGING.name: [
+            AttitudeConstraintScope.HARDWARE_SAFETY,
+            AttitudeConstraintScope.POWER_GENERATION,
+        ],
+        ACSMode.SLEWING.name: [AttitudeConstraintScope.HARDWARE_SAFETY],
+        ACSMode.PASS.name: [
+            AttitudeConstraintScope.HARDWARE_SAFETY,
+            AttitudeConstraintScope.POWER_GENERATION,
+            AttitudeConstraintScope.GROUND_CONTACT,
+        ],
+        ACSMode.SAA.name: [AttitudeConstraintScope.HARDWARE_SAFETY],
+        ACSMode.SAFE.name: [
+            AttitudeConstraintScope.HARDWARE_SAFETY,
+            AttitudeConstraintScope.POWER_GENERATION,
+        ],
+        ACSMode.IDLE.name: [AttitudeConstraintScope.HARDWARE_SAFETY],
     }
 
 
@@ -75,15 +58,24 @@ def _mode_name(mode: ACSMode | int | str) -> str:
     return ACSMode(int(raw)).name
 
 
-def _normalize_attitude_constraint_policy(
-    value: dict[ACSMode | int | str, AttitudeConstraintPolicy | str] | None,
-) -> dict[str, AttitudeConstraintPolicy]:
-    policies = _default_attitude_constraint_policy()
+def _normalize_attitude_constraint_scopes(
+    value: dict[
+        ACSMode | int | str,
+        list[AttitudeConstraintScope | str] | tuple[AttitudeConstraintScope | str, ...],
+    ]
+    | None,
+) -> dict[str, list[AttitudeConstraintScope]]:
+    scopes = _default_attitude_constraint_scopes()
     if value is None:
-        return policies
-    for mode, policy in value.items():
-        policies[_mode_name(mode)] = AttitudeConstraintPolicy(policy)
-    return policies
+        return scopes
+    for mode, configured_scopes in value.items():
+        normalized: list[AttitudeConstraintScope] = []
+        for scope in configured_scopes:
+            enum_scope = AttitudeConstraintScope(scope)
+            if enum_scope not in normalized:
+                normalized.append(enum_scope)
+        scopes[_mode_name(mode)] = normalized
+    return scopes
 
 
 class MissionConfig(ConfigModel):
@@ -96,14 +88,13 @@ class MissionConfig(ConfigModel):
         default=None,
         description="Optional seed for stochastic planning decisions.",
     )
-    attitude_constraint_policy: dict[str, AttitudeConstraintPolicy] = Field(
-        default_factory=_default_attitude_constraint_policy,
+    attitude_constraint_scopes: dict[str, list[AttitudeConstraintScope]] = Field(
+        default_factory=_default_attitude_constraint_scopes,
         description=(
-            "Constraint validation policy by ACS mode for executed attitude samples. "
-            "Values are 'science_plus_safety', 'science', 'safety', or 'none'. "
-            "'full_mission' and 'hard_keepout' are accepted as compatibility "
-            "aliases for science_plus_safety and safety behavior. Omitted modes use "
-            "the default policy."
+            "Constraint validation scopes by ACS mode for executed attitude samples. "
+            "Values are lists containing 'hardware_safety', 'imaging_quality', "
+            "'power_generation', and/or 'ground_contact'. Omitted modes use "
+            "the default scopes."
         ),
     )
     spacecraft_bus: SpacecraftBus = Field(
@@ -152,20 +143,23 @@ class MissionConfig(ConfigModel):
         description="Target Configuration. Defines observational targets and scheduling parameters",
     )
 
-    @field_validator("attitude_constraint_policy", mode="before")
+    @field_validator("attitude_constraint_scopes", mode="before")
     @classmethod
-    def _validate_attitude_constraint_policy(
+    def _validate_attitude_constraint_scopes(
         cls,
-        value: dict[ACSMode | int | str, AttitudeConstraintPolicy | str] | None,
-    ) -> dict[str, AttitudeConstraintPolicy]:
-        return _normalize_attitude_constraint_policy(value)
+        value: dict[
+            ACSMode | int | str,
+            list[AttitudeConstraintScope | str]
+            | tuple[AttitudeConstraintScope | str, ...],
+        ]
+        | None,
+    ) -> dict[str, list[AttitudeConstraintScope]]:
+        return _normalize_attitude_constraint_scopes(value)
 
-    def attitude_constraint_policy_for_mode(
+    def attitude_constraint_scopes_for_mode(
         self, mode: ACSMode | int
-    ) -> AttitudeConstraintPolicy:
-        return self.attitude_constraint_policy.get(
-            _mode_name(mode), AttitudeConstraintPolicy.NONE
-        )
+    ) -> list[AttitudeConstraintScope]:
+        return self.attitude_constraint_scopes.get(_mode_name(mode), [])
 
     @model_validator(mode="after")
     def init_fault_management_defaults(self) -> MissionConfig:

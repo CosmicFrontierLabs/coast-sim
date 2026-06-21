@@ -155,7 +155,7 @@ Example:
 
    config = MissionConfig(name="Reproducible Run", random_seed=42)
 
-attitude_constraint_policy
+attitude_constraint_scopes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Controls which constraints are checked against the executed attitude timeline during
@@ -163,7 +163,7 @@ post-run plan validation.
 
 .. code-block:: python
 
-   attitude_constraint_policy: dict[str, AttitudeConstraintPolicy] = <mode-specific defaults>
+   attitude_constraint_scopes: dict[str, list[AttitudeConstraintScope]] = <mode-specific defaults>
 
 **Background**
 
@@ -176,10 +176,10 @@ Not all modes are held to the same standard.  During ``SCIENCE`` mode a pointing
 violation is unambiguously a simulation bug.  During ``SLEWING`` the spacecraft is
 actively rotating between targets and may briefly sweep through a soft-constraint zone
 by design — flagging that as an error would produce false positives.  The
-``attitude_constraint_policy`` map lets you express, per ACS mode, exactly how strict
-you want that check to be.
+``attitude_constraint_scopes`` map lets you express, per ACS mode, which categories
+of attitude constraints the planner is expected to enforce.
 
-If any sample fails its policy check, a
+If any sample fails its configured scope check, a
 :class:`~conops.ditl.queue_ditl.PlanExecutionMismatch` is recorded and
 :meth:`~conops.ditl.queue_ditl.QueueDITL.run` raises
 :exc:`~conops.ditl.queue_ditl.PlanExecutionMismatchError` before returning.  The error
@@ -188,7 +188,7 @@ name — to aid debugging.
 
 **Planner admission guarantees vs. FM-monitored runtime conditions**
 
-Not every constraint violation is a scheduling failure. The policy per mode encodes
+Not every constraint violation is a scheduling failure. The scopes per mode encode
 which violations the planner claims to prevent, and therefore which post-simulation
 telemetry samples should be reported as planning mismatches. Fault Management still
 monitors configured telemetry thresholds at runtime.
@@ -197,22 +197,16 @@ monitors configured telemetry thresholds at runtime.
   ``in_constraint()`` before accepting an attitude into the plan.  If telemetry shows
   a violation in one of these modes, the planner broke its contract and the simulation
   records a :class:`~conops.ditl.queue_ditl.PlanExecutionMismatch`.  This covers the
-  complete mission constraint set: Sun, Moon, Earth limb, solar-panel illumination,
-  star-tracker hard and soft, radiator hard, and telescope hard.
+  configured scopes for that mode.
 
 * **FM-monitored runtime condition** — a violation outside the selected validation
-  policy (for example, a science-quality soft constraint while a mode is configured
-  with ``hard_keepout``). The simulation's Fault Management system dispatches a
+  scopes (for example, an imaging-quality constraint while a mode is configured only
+  with ``hardware_safety``). The simulation's Fault Management system dispatches a
   :class:`~conops.config.fault_management.FaultEvent` in real time when a configured
   threshold is crossed; the post-simulation validator does not raise a mismatch for
-  violations outside the mode's policy contract.
+  violations outside the mode's scoped contract.
 
-The default policy is ``full_mission`` for every ACS mode. A mission may explicitly
-configure ``hard_keepout`` for modes where only hardware keepouts are planning
-requirements; hard keepout violations are still validation mismatches in those modes,
-while broader mission constraints are left to runtime telemetry/FM monitoring.
-
-**Policy values** (:class:`~conops.config.AttitudeConstraintPolicy`):
+**Scope values** (:class:`~conops.config.AttitudeConstraintScope`):
 
 .. list-table::
    :header-rows: 1
@@ -220,51 +214,53 @@ while broader mission constraints are left to runtime telemetry/FM monitoring.
 
    * - Value
      - Behaviour
-   * - ``"full_mission"``
-     - The complete mission constraint (Sun, Moon, Earth limb, star tracker, radiator,
-       telescope) is evaluated.  Any violation is flagged.
-   * - ``"hard_keepout"``
-     - Only hardware/instrument hard keepouts are validated: star-tracker hard,
-       radiator hard, and telescope hard. Broader mission constraints and
-       science-quality soft constraints are not planning mismatches under this
-       policy, though they may still be monitored by Fault Management thresholds.
-   * - ``"none"``
-     - No constraint checking is performed for this mode.  Use this when the mode
-       genuinely has no pointing restrictions (rare) or when you need to suppress
-       false positives during development.
+   * - ``"hardware_safety"``
+     - Hardware/instrument hard keepouts: explicit safety constraints,
+       star-tracker hard, radiator hard, and telescope hard.
+   * - ``"imaging_quality"``
+     - Science/image-quality constraints: Sun, Moon, Earth limb, orbit,
+       anti-Sun, star-tracker soft, and explicit science constraints.
+   * - ``"power_generation"``
+     - Solar-panel / power-positive attitude constraints.
+   * - ``"ground_contact"``
+     - Ground-contact attitude constraints, when configured.
 
-**Default policy per ACS mode:**
+An empty list disables post-run attitude constraint validation for that ACS mode.
+
+**Default scopes per ACS mode:**
 
 .. list-table::
    :header-rows: 1
-   :widths: 20 30 50
+   :widths: 20 45 35
 
    * - ACS Mode
-     - Default Policy
+     - Default Scopes
      - Rationale
    * - ``SCIENCE``
-     - ``full_mission``
-     - Science observations must satisfy all pointing constraints.
+     - ``hardware_safety``, ``imaging_quality``, ``power_generation``
+     - Science observations must be safe, image-valid, and power-valid.
    * - ``CHARGING``
-     - ``full_mission``
-     - Emergency charging still obeys the full mission keep-out.
+     - ``hardware_safety``, ``power_generation``
+     - Emergency charging must be safe and power-positive, but does not inherit
+       imaging-quality keepouts.
    * - ``SLEWING``
-     - ``full_mission``
-     - Slews must satisfy the configured mission constraint policy by default.
+     - ``hardware_safety``
+     - Slews must avoid hard hardware keepouts.
    * - ``PASS``
-     - ``full_mission``
-     - Ground-station tracking must satisfy configured mission constraints by default.
+     - ``hardware_safety``, ``power_generation``, ``ground_contact``
+     - Ground-station tracking must be safe, power-valid, and satisfy contact-specific
+       pointing constraints.
    * - ``SAA``
-     - ``full_mission``
-     - SAA attitude must satisfy configured mission constraints by default.
+     - ``hardware_safety``
+     - SAA attitude must avoid hard hardware keepouts.
    * - ``SAFE``
-     - ``full_mission``
-     - Safe-mode attitude must satisfy configured mission constraints by default.
+     - ``hardware_safety``, ``power_generation``
+     - Safe-mode attitude must be hardware-safe and power-valid.
    * - ``IDLE``
-     - ``full_mission``
-     - Idle hold attitude must satisfy configured mission constraints by default.
+     - ``hardware_safety``
+     - Idle hold attitude must avoid hard hardware keepouts.
 
-**Overriding the policy for individual modes:**
+**Overriding scopes for individual modes:**
 
 Pass a partial dict — only the modes you specify are overridden; all others keep their
 defaults.  Keys can be :class:`~conops.common.ACSMode` enum members, their integer
@@ -272,29 +268,37 @@ values, or their string names.
 
 .. code-block:: python
 
-   from conops.config import MissionConfig, AttitudeConstraintPolicy
+   from conops.config import AttitudeConstraintScope, MissionConfig
    from conops.common import ACSMode
 
    config = MissionConfig(
-       attitude_constraint_policy={
-           # Relax SLEWING to no check when using a separate, less restrictive
-           # slew constraint already enforced by the ACS slew algorithm.
-           ACSMode.SLEWING: AttitudeConstraintPolicy.NONE,
-           # Promote SAFE mode to full validation for a strict mission context.
-           "SAFE": AttitudeConstraintPolicy.FULL_MISSION,
+       attitude_constraint_scopes={
+           # Disable post-run attitude validation for SLEWING if a separate
+           # slew constraint is already enforced by the ACS slew algorithm.
+           ACSMode.SLEWING: [],
+           # Add imaging-quality validation to PASS for a strict mission context.
+           "PASS": [
+               AttitudeConstraintScope.HARDWARE_SAFETY,
+               AttitudeConstraintScope.IMAGING_QUALITY,
+               AttitudeConstraintScope.POWER_GENERATION,
+               AttitudeConstraintScope.GROUND_CONTACT,
+           ],
        }
    )
 
 **YAML configuration:**
 
-When loading a config from YAML, use the mode name string as the key and the policy
-string as the value.  Omitted modes retain their defaults.
+When loading a config from YAML, use the mode name string as the key and a list of
+scope strings as the value.  Omitted modes retain their defaults.
 
 .. code-block:: yaml
 
-   attitude_constraint_policy:
-     SLEWING: none
-     SAFE: full_mission
+   attitude_constraint_scopes:
+     SLEWING: []
+     PASS:
+       - hardware_safety
+       - power_generation
+       - ground_contact
 
 spacecraft_bus
 ~~~~~~~~~~~~~~
@@ -1419,7 +1423,7 @@ API Reference
 For detailed API documentation, see:
 
 * :class:`~conops.config.MissionConfig`
-* :class:`~conops.config.AttitudeConstraintPolicy`
+* :class:`~conops.config.AttitudeConstraintScope`
 * :class:`~conops.config.SpacecraftBus`
 * :class:`~conops.config.SolarPanelSet`
 * :class:`~conops.config.SolarPanel`

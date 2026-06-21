@@ -20,7 +20,7 @@ from conops.common import (
 from conops.common.enums import ACSMode, AntennaType, ObsType, SlewAlgorithm
 from conops.config import (
     AntennaPointing,
-    AttitudeConstraintPolicy,
+    AttitudeConstraintScope,
     AttitudeControlSystem,
     BandCapability,
     CommunicationsSystem,
@@ -616,40 +616,44 @@ class TestPassTimes:
         gs_ephem.assert_not_called()
         assert pt.passes == []
 
-    def test_pass_profile_uses_full_mission_policy(self, mock_constraint, mock_config):
-        """PASS profiles should be filtered by the configured full mission policy."""
+    def test_pass_profile_uses_configured_scopes(self, mock_constraint, mock_config):
+        """PASS profiles should be filtered by configured attitude scopes."""
+        mock_config.attitude_constraint_scopes[ACSMode.PASS.name] = [
+            AttitudeConstraintScope.HARDWARE_SAFETY,
+            AttitudeConstraintScope.IMAGING_QUALITY,
+        ]
         pt = PassTimes(config=mock_config)
-        mock_constraint.in_constraint = Mock(return_value=True)
+        mock_constraint.in_earth = Mock(return_value=True)
 
-        assert pt._pass_profile_violates_policy([1000.0], [10.0], [20.0], [30.0])
-        mock_constraint.in_constraint.assert_called_once_with(
-            10.0, 20.0, 1000.0, target_roll=30.0, acs_mode=ACSMode.PASS
+        assert pt._pass_profile_violates_scopes([1000.0], [10.0], [20.0], [30.0])
+        mock_constraint.in_earth.assert_called_once_with(
+            10.0, 20.0, 1000.0, target_roll=30.0
         )
 
-    def test_pass_profile_respects_hard_keepout_override(
+    def test_pass_profile_respects_hardware_safety_scope(
         self, mock_constraint, mock_config
     ):
-        """PASS profiles still honor explicit hard-keepout policy overrides."""
-        mock_config.attitude_constraint_policy = {
-            ACSMode.PASS.name: AttitudeConstraintPolicy.HARD_KEEPOUT
-        }
+        """PASS profiles still honor explicit hardware-safety scope overrides."""
+        mock_config.attitude_constraint_scopes[ACSMode.PASS.name] = [
+            AttitudeConstraintScope.HARDWARE_SAFETY
+        ]
         pt = PassTimes(config=mock_config)
         mock_constraint.in_constraint = Mock(return_value=True)
         mock_constraint.in_star_tracker_hard = Mock(return_value=True)
 
-        assert pt._pass_profile_violates_policy([1000.0], [10.0], [20.0], [30.0])
+        assert pt._pass_profile_violates_scopes([1000.0], [10.0], [20.0], [30.0])
         mock_constraint.in_constraint.assert_not_called()
         mock_constraint.in_star_tracker_hard.assert_called_once_with(
             10.0, 20.0, 1000.0, target_roll=30.0, acs_mode=ACSMode.PASS
         )
 
-    def test_pass_profile_safety_policy_ignores_science_constraint(
+    def test_pass_profile_hardware_safety_scope_ignores_imaging_constraint(
         self, mock_constraint, mock_config
     ):
-        """PASS safety policy ignores image-quality constraints like Earth limb."""
-        mock_config.attitude_constraint_policy = {
-            ACSMode.PASS.name: AttitudeConstraintPolicy.SAFETY
-        }
+        """PASS hardware-safety scope ignores image-quality constraints like Earth."""
+        mock_config.attitude_constraint_scopes[ACSMode.PASS.name] = [
+            AttitudeConstraintScope.HARDWARE_SAFETY
+        ]
         pt = PassTimes(config=mock_config)
         mock_constraint.in_constraint = Mock(return_value=True)
         mock_constraint.in_earth = Mock(return_value=True)
@@ -657,7 +661,7 @@ class TestPassTimes:
         mock_constraint.in_radiator_hard = Mock(return_value=False)
         mock_constraint.in_telescope_hard = Mock(return_value=False)
 
-        assert not pt._pass_profile_violates_policy([1000.0], [10.0], [20.0], [30.0])
+        assert not pt._pass_profile_violates_scopes([1000.0], [10.0], [20.0], [30.0])
         mock_constraint.in_constraint.assert_not_called()
         mock_constraint.in_earth.assert_not_called()
         mock_constraint.in_star_tracker_hard.assert_called_once_with(
@@ -694,8 +698,11 @@ class TestPassTimes:
         self, mock_constraint, mock_config
     ):
         """Unsafe default GSP phase should be replaced by a safe tracking phase."""
+        mock_config.attitude_constraint_scopes[ACSMode.PASS.name] = [
+            AttitudeConstraintScope.GROUND_CONTACT
+        ]
         pt = PassTimes(config=mock_config)
-        mock_constraint.in_constraint = Mock(
+        mock_constraint.in_ground_contact = Mock(
             side_effect=lambda ra, dec, utime, **kwargs: dec > -1.0
         )
 
@@ -719,6 +726,9 @@ class TestPassTimes:
             slew_acceleration=5.0,
             settle_time=0.0,
         )
+        mock_config.attitude_constraint_scopes[ACSMode.PASS.name] = [
+            AttitudeConstraintScope.GROUND_CONTACT
+        ]
         pt = PassTimes(config=mock_config)
         pt._gsp_tracking_phase_candidates = Mock(return_value=[0.0, 90.0])
         pt._tracking_attitude_profile_for_phase = Mock(
@@ -726,7 +736,7 @@ class TestPassTimes:
                 (phase_deg, 0.0, phase_deg) for _target in targets
             ]
         )
-        mock_constraint.in_constraint = Mock(
+        mock_constraint.in_ground_contact = Mock(
             side_effect=lambda ra, dec, utime, **kwargs: (
                 not (
                     (utime == 1000.0 and kwargs["target_roll"] == 0.0)
@@ -755,6 +765,9 @@ class TestPassTimes:
             slew_acceleration=0.1,
             settle_time=0.0,
         )
+        mock_config.attitude_constraint_scopes[ACSMode.PASS.name] = [
+            AttitudeConstraintScope.GROUND_CONTACT
+        ]
         pt = PassTimes(config=mock_config)
         pt._gsp_tracking_phase_candidates = Mock(return_value=[0.0, 180.0])
         pt._tracking_attitude_profile_for_phase = Mock(
@@ -762,7 +775,7 @@ class TestPassTimes:
                 (phase_deg, 0.0, phase_deg) for _target in targets
             ]
         )
-        mock_constraint.in_constraint = Mock(
+        mock_constraint.in_ground_contact = Mock(
             side_effect=lambda ra, dec, utime, **kwargs: (
                 not (
                     (utime == 1000.0 and kwargs["target_roll"] == 0.0)

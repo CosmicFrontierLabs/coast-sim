@@ -18,13 +18,12 @@ from ..common.vector import (
     vec2radec,
 )
 from ..config import (
-    AttitudeConstraintPolicy,
     Constraint,
     GroundStationRegistry,
     MissionConfig,
 )
 from ..config.constants import DTOR
-from ..config.constraint import in_attitude_constraint_policy
+from ..config.constraint import in_attitude_constraint_scopes
 from .slew import Slew
 
 # Legacy ground-pass roll for profiles without explicit roll samples.
@@ -544,16 +543,13 @@ class PassTimes:
         boresight = antenna.fixed_boresight_body
         return (float(boresight[0]), float(boresight[1]), float(boresight[2]))
 
-    def _pass_attitude_violates_policy(
+    def _pass_attitude_violates_scopes(
         self, ra: float, dec: float, roll: float, utime: float
     ) -> bool:
-        policy = AttitudeConstraintPolicy(
-            self.config.attitude_constraint_policy_for_mode(ACSMode.PASS)
-        )
         return bool(
-            in_attitude_constraint_policy(
+            in_attitude_constraint_scopes(
                 self.constraint,
-                policy,
+                self.config.attitude_constraint_scopes_for_mode(ACSMode.PASS),
                 ra,
                 dec,
                 utime,
@@ -562,7 +558,7 @@ class PassTimes:
             )
         )
 
-    def _pass_profile_violates_policy(
+    def _pass_profile_violates_scopes(
         self,
         utimes: list[float],
         track_ra: list[float],
@@ -570,7 +566,7 @@ class PassTimes:
         track_roll: list[float],
     ) -> bool:
         return any(
-            self._pass_attitude_violates_policy(ra, dec, roll, utime)
+            self._pass_attitude_violates_scopes(ra, dec, roll, utime)
             for utime, ra, dec, roll in zip(
                 utimes, track_ra, track_dec, track_roll, strict=True
             )
@@ -628,7 +624,7 @@ class PassTimes:
             track_ra = [attitude[0] for attitude in attitude_profile]
             track_dec = [attitude[1] for attitude in attitude_profile]
             track_roll = [attitude[2] for attitude in attitude_profile]
-            if not self._pass_profile_violates_policy(
+            if not self._pass_profile_violates_scopes(
                 track_utime, track_ra, track_dec, track_roll
             ):
                 return attitude_profile, True
@@ -653,7 +649,7 @@ class PassTimes:
                 if attitude_profile is None:
                     continue
                 attitude = attitude_profile[0]
-                if not self._pass_attitude_violates_policy(*attitude, utime):
+                if not self._pass_attitude_violates_scopes(*attitude, utime):
                     sample_attitudes[phase_deg] = attitude
             if not sample_attitudes:
                 return None

@@ -19,7 +19,7 @@ from .common import (
 from .config import (
     DAY_SECONDS,
     DTOR,
-    AttitudeConstraintPolicy,
+    AttitudeConstraintScope,
     AttitudeControlSystem,
     Battery,
     Constraint,
@@ -94,7 +94,7 @@ __all__ = [
     "AttitudeSampleSchema",
     "AttitudeTimeseriesSchema",
     "AttitudeControlSystem",
-    "AttitudeConstraintPolicy",
+    "AttitudeConstraintScope",
     "Battery",
     "ChargeState",
     "MissionConfig",
