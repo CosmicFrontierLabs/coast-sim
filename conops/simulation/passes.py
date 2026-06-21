@@ -24,6 +24,7 @@ from ..config import (
     MissionConfig,
 )
 from ..config.constants import DTOR
+from ..config.constraint import in_attitude_constraint_policy
 from .slew import Slew
 
 # Legacy ground-pass roll for profiles without explicit roll samples.
@@ -549,23 +550,17 @@ class PassTimes:
         policy = AttitudeConstraintPolicy(
             self.config.attitude_constraint_policy_for_mode(ACSMode.PASS)
         )
-        if policy == AttitudeConstraintPolicy.NONE:
-            return False
-        if policy == AttitudeConstraintPolicy.FULL_MISSION:
-            return bool(
-                self.constraint.in_constraint(
-                    ra, dec, utime, target_roll=roll, acs_mode=ACSMode.PASS
-                )
+        return bool(
+            in_attitude_constraint_policy(
+                self.constraint,
+                policy,
+                ra,
+                dec,
+                utime,
+                target_roll=roll,
+                acs_mode=ACSMode.PASS,
             )
-        if policy == AttitudeConstraintPolicy.HARD_KEEPOUT:
-            return bool(
-                self.constraint.in_star_tracker_hard(
-                    ra, dec, utime, target_roll=roll, acs_mode=ACSMode.PASS
-                )
-                or self.constraint.in_radiator_hard(ra, dec, utime, target_roll=roll)
-                or self.constraint.in_telescope_hard(ra, dec, utime, target_roll=roll)
-            )
-        return False
+        )
 
     def _pass_profile_violates_policy(
         self,

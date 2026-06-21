@@ -12,6 +12,7 @@ from ..common import (
 )
 from ..common.vector import angular_separation
 from ..config import AttitudeConstraintPolicy, FaultEvent, MissionConfig
+from ..config.constraint import in_attitude_constraint_policy
 from ..simulation.passes import PassTimes
 from ..simulation.roll import optimum_roll
 from .acs_command import ACSCommand
@@ -770,31 +771,21 @@ class ACS:
         "should the ACS repoint to protect hardware?" not "did the planner break a
         scheduling contract?"
 
-        FULL_MISSION checks every mission constraint (used when science-quality idle
-        holds are required). Any other configured policy uses hard keepouts as the
-        minimum safety floor — the instrument-protection limits that must not be
-        sustained regardless of mission phase. NONE skips all checking.
+        FULL_MISSION preserves the legacy combined constraint check.
+        SCIENCE_PLUS_SAFETY checks both scoped constraint groups. SCIENCE checks
+        only image-quality constraints. SAFETY and HARD_KEEPOUT check only the
+        hardware-protection limits that must not be sustained regardless of
+        mission phase. NONE skips all checking.
         """
-        if policy == AttitudeConstraintPolicy.FULL_MISSION:
-            return self.constraint.in_constraint(
-                ra, dec, utime, target_roll=roll, acs_mode=ACSMode.IDLE
-            )
-        if policy == AttitudeConstraintPolicy.NONE:
-            return False
-        return self._idle_attitude_violates_hard_keepout(ra, dec, roll, utime)
-
-    def _idle_attitude_violates_hard_keepout(
-        self, ra: float, dec: float, roll: float, utime: float
-    ) -> bool:
-        if self.constraint.in_star_tracker_hard(
-            ra, dec, utime, target_roll=roll, acs_mode=ACSMode.IDLE
-        ):
-            return True
-        if self.constraint.in_radiator_hard(ra, dec, utime, target_roll=roll):
-            return True
-        if self.constraint.in_telescope_hard(ra, dec, utime, target_roll=roll):
-            return True
-        return False
+        return in_attitude_constraint_policy(
+            self.constraint,
+            policy,
+            ra,
+            dec,
+            utime,
+            target_roll=roll,
+            acs_mode=ACSMode.IDLE,
+        )
 
     @staticmethod
     def _idle_safe_roll_candidates(optimal_roll: float) -> list[float]:

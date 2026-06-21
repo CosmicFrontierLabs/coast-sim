@@ -643,6 +643,27 @@ class TestPassTimes:
             10.0, 20.0, 1000.0, target_roll=30.0, acs_mode=ACSMode.PASS
         )
 
+    def test_pass_profile_safety_policy_ignores_science_constraint(
+        self, mock_constraint, mock_config
+    ):
+        """PASS safety policy ignores image-quality constraints like Earth limb."""
+        mock_config.attitude_constraint_policy = {
+            ACSMode.PASS.name: AttitudeConstraintPolicy.SAFETY
+        }
+        pt = PassTimes(config=mock_config)
+        mock_constraint.in_constraint = Mock(return_value=True)
+        mock_constraint.in_earth = Mock(return_value=True)
+        mock_constraint.in_star_tracker_hard = Mock(return_value=False)
+        mock_constraint.in_radiator_hard = Mock(return_value=False)
+        mock_constraint.in_telescope_hard = Mock(return_value=False)
+
+        assert not pt._pass_profile_violates_policy([1000.0], [10.0], [20.0], [30.0])
+        mock_constraint.in_constraint.assert_not_called()
+        mock_constraint.in_earth.assert_not_called()
+        mock_constraint.in_star_tracker_hard.assert_called_once_with(
+            10.0, 20.0, 1000.0, target_roll=30.0, acs_mode=ACSMode.PASS
+        )
+
     def test_tracking_phase_profile_preserves_antenna_pointing(
         self, mock_constraint, mock_config
     ):

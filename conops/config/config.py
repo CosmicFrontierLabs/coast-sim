@@ -25,9 +25,31 @@ from .visualization import VisualizationConfig
 class AttitudeConstraintPolicy(str, Enum):
     """Constraint validation policy applied to executed attitude samples."""
 
+    SCIENCE_PLUS_SAFETY = "science_plus_safety"
+    SCIENCE = "science"
+    SAFETY = "safety"
     FULL_MISSION = "full_mission"
     HARD_KEEPOUT = "hard_keepout"
     NONE = "none"
+
+    @property
+    def enforces_science(self) -> bool:
+        """True when image-quality / scheduling constraints must be satisfied."""
+        return self in {
+            AttitudeConstraintPolicy.SCIENCE_PLUS_SAFETY,
+            AttitudeConstraintPolicy.SCIENCE,
+            AttitudeConstraintPolicy.FULL_MISSION,
+        }
+
+    @property
+    def enforces_safety(self) -> bool:
+        """True when hardware-safety constraints must be satisfied."""
+        return self in {
+            AttitudeConstraintPolicy.SCIENCE_PLUS_SAFETY,
+            AttitudeConstraintPolicy.SAFETY,
+            AttitudeConstraintPolicy.FULL_MISSION,
+            AttitudeConstraintPolicy.HARD_KEEPOUT,
+        }
 
 
 def _default_attitude_constraint_policy() -> dict[str, AttitudeConstraintPolicy]:
@@ -78,8 +100,10 @@ class MissionConfig(ConfigModel):
         default_factory=_default_attitude_constraint_policy,
         description=(
             "Constraint validation policy by ACS mode for executed attitude samples. "
-            "Values are 'full_mission', 'hard_keepout', or 'none'. Omitted modes "
-            "use the default policy."
+            "Values are 'science_plus_safety', 'science', 'safety', or 'none'. "
+            "'full_mission' and 'hard_keepout' are accepted as compatibility "
+            "aliases for science_plus_safety and safety behavior. Omitted modes use "
+            "the default policy."
         ),
     )
     spacecraft_bus: SpacecraftBus = Field(

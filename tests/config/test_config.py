@@ -97,6 +97,42 @@ class TestConfig:
             == AttitudeConstraintPolicy.FULL_MISSION
         )
 
+    def test_attitude_constraint_policy_accepts_scoped_overrides(self) -> None:
+        """Test mission config accepts science/safety scoped policies."""
+        config = MissionConfig(
+            attitude_constraint_policy={
+                "SCIENCE": "science_plus_safety",
+                "CHARGING": "safety",
+                "PASS": "science",
+            }
+        )
+
+        assert (
+            config.attitude_constraint_policy_for_mode(ACSMode.SCIENCE)
+            == AttitudeConstraintPolicy.SCIENCE_PLUS_SAFETY
+        )
+        assert (
+            config.attitude_constraint_policy_for_mode(ACSMode.CHARGING)
+            == AttitudeConstraintPolicy.SAFETY
+        )
+        assert (
+            config.attitude_constraint_policy_for_mode(ACSMode.PASS)
+            == AttitudeConstraintPolicy.SCIENCE
+        )
+
+    def test_attitude_constraint_policy_scope_flags(self) -> None:
+        """Test policy scope helpers document compatibility alias behavior."""
+        assert AttitudeConstraintPolicy.SCIENCE_PLUS_SAFETY.enforces_science
+        assert AttitudeConstraintPolicy.SCIENCE_PLUS_SAFETY.enforces_safety
+        assert AttitudeConstraintPolicy.FULL_MISSION.enforces_science
+        assert AttitudeConstraintPolicy.FULL_MISSION.enforces_safety
+        assert AttitudeConstraintPolicy.SCIENCE.enforces_science
+        assert not AttitudeConstraintPolicy.SCIENCE.enforces_safety
+        assert not AttitudeConstraintPolicy.SAFETY.enforces_science
+        assert AttitudeConstraintPolicy.SAFETY.enforces_safety
+        assert not AttitudeConstraintPolicy.NONE.enforces_science
+        assert not AttitudeConstraintPolicy.NONE.enforces_safety
+
     def test_acs_gsp_tracking_phase_step_is_configurable(self) -> None:
         """Test ground-station roll search granularity is an ACS config setting."""
         acs = AttitudeControlSystem(gsp_tracking_phase_step_deg=10.0)

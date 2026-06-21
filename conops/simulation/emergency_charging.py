@@ -12,7 +12,11 @@ from conops.config.battery import Battery
 from ..common import unixtime2date
 from ..common.enums import ACSMode, ObsType
 from ..common.vector import angular_separation
-from ..config import MissionConfig
+from ..config import AttitudeConstraintPolicy, MissionConfig
+from ..config.constraint import (
+    in_attitude_constraint_policy,
+    in_attitude_constraint_policy_batch,
+)
 from .roll import optimum_roll
 
 if TYPE_CHECKING:
@@ -94,6 +98,31 @@ class EmergencyCharging:
             )
         else:
             print(f"{unixtime2date(utime)} {description}")
+
+    def _charging_policy(self) -> AttitudeConstraintPolicy:
+        return AttitudeConstraintPolicy(
+            self.config.attitude_constraint_policy_for_mode(ACSMode.CHARGING)
+        )
+
+    def _charging_attitude_violates_policy(
+        self, ra: float, dec: float, utime: float, roll: float | None = None
+    ) -> bool:
+        return in_attitude_constraint_policy(
+            self.constraint,
+            self._charging_policy(),
+            ra,
+            dec,
+            utime,
+            target_roll=roll,
+            acs_mode=ACSMode.CHARGING,
+        )
+
+    def _charging_candidate_violations(
+        self, ras: list[float], decs: list[float], utime: float
+    ) -> np.ndarray:
+        return in_attitude_constraint_policy_batch(
+            self.constraint, self._charging_policy(), ras, decs, utime
+        )
 
     def create_charging_pointing(
         self,
@@ -244,8 +273,8 @@ class EmergencyCharging:
         optimal_roll = optimum_roll(
             optimal_ra, optimal_dec, utime, ephem, self.solar_panel, self.constraint
         )
-        if not self.constraint.in_constraint(
-            optimal_ra, optimal_dec, utime, target_roll=optimal_roll
+        if not self._charging_attitude_violates_policy(
+            optimal_ra, optimal_dec, utime, roll=optimal_roll
         ):
             # Optimal pointing satisfies constraints; now check slew limits
             if self.max_slew_deg is not None:
@@ -319,7 +348,7 @@ class EmergencyCharging:
         # Batch-check all constraints at once
         candidate_ras = [ra for ra, dec in candidates]
         candidate_decs = [dec for ra, dec in candidates]
-        violations = self.constraint.in_constraint_batch(
+        violations = self._charging_candidate_violations(
             candidate_ras, candidate_decs, utime
         )
 
@@ -460,7 +489,7 @@ class EmergencyCharging:
         # Batch-check all constraints at once
         candidate_ras = [ra for ra, dec in candidates]
         candidate_decs = [dec for ra, dec in candidates]
-        violations = self.constraint.in_constraint_batch(
+        violations = self._charging_candidate_violations(
             candidate_ras, candidate_decs, utime
         )
 
@@ -583,12 +612,11 @@ class EmergencyCharging:
             return "battery_recharged"
 
         # Constraint violation (e.g., occultation)
-        if self.constraint.in_constraint(
+        if self._charging_attitude_violates_policy(
             self.current_charging_ppt.ra,
             self.current_charging_ppt.dec,
             utime,
-            target_roll=self.current_charging_ppt.roll,
-            acs_mode=ACSMode.CHARGING,
+            roll=self.current_charging_ppt.roll,
         ):
             return "constraint"
 

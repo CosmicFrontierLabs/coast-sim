@@ -18,7 +18,11 @@ from ..common import (
 )
 from ..common.enums import ACSCommandType
 from ..common.vector import attitude_to_quat, quaternion_attitude_distance
-from ..config import DAY_SECONDS, AttitudeConstraintPolicy, MissionConfig
+from ..config import DAY_SECONDS, MissionConfig
+from ..config.constraint import (
+    attitude_constraint_name_for_policy,
+    science_plus_safety_attitude_constraint_name,
+)
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
 from ..simulation.passes import Pass, pass_slew_trigger_buffer
@@ -902,24 +906,6 @@ class QueueDITL(DITLMixin, DITLStats):
             for start, end, dropped_obsid in self._dropped_science_windows
         )
 
-    def _hard_attitude_constraint_name(
-        self,
-        ra: float,
-        dec: float,
-        utime: float,
-        roll: float,
-        mode: ACSMode,
-    ) -> str | None:
-        if self.constraint.in_star_tracker_hard(
-            ra, dec, utime, target_roll=roll, acs_mode=mode
-        ):
-            return "ST Hard"
-        if self.constraint.in_radiator_hard(ra, dec, utime, target_roll=roll):
-            return "Radiator Hard"
-        if self.constraint.in_telescope_hard(ra, dec, utime, target_roll=roll):
-            return "Telescope Hard"
-        return None
-
     def _attitude_constraint_name_for_attitude(
         self,
         ra: float,
@@ -930,21 +916,17 @@ class QueueDITL(DITLMixin, DITLStats):
     ) -> tuple[str, str] | None:
         """Return the violated constraint name and policy for one attitude."""
         policy = self.config.attitude_constraint_policy_for_mode(mode)
-        if policy == AttitudeConstraintPolicy.NONE:
-            return None
-        if policy == AttitudeConstraintPolicy.FULL_MISSION:
-            if self.constraint.in_constraint(
-                ra, dec, utime, target_roll=roll, acs_mode=mode
-            ):
-                return (
-                    self._get_constraint_name(ra, dec, utime, roll=roll, mode=mode),
-                    policy.value,
-                )
-            return None
-        if policy == AttitudeConstraintPolicy.HARD_KEEPOUT:
-            name = self._hard_attitude_constraint_name(ra, dec, utime, roll, mode)
-            if name is not None:
-                return name, policy.value
+        name = attitude_constraint_name_for_policy(
+            self.constraint,
+            policy,
+            ra,
+            dec,
+            utime,
+            target_roll=roll,
+            acs_mode=mode,
+        )
+        if name is not None:
+            return name, policy.value
         return None
 
     def _attitude_constraint_name_for_sample(
@@ -966,10 +948,12 @@ class QueueDITL(DITLMixin, DITLStats):
         the planner was expected to enforce. The check is gated by each mode's
         configured AttitudeConstraintPolicy:
 
-        - FULL_MISSION: planner guarantees full constraint compliance; any violation
-          (including hard keepouts) is a scheduling failure and generates a mismatch.
-        - HARD_KEEPOUT: planner guarantees only instrument-safety keepouts; only
-          hard keepout violations generate a mismatch.
+        - FULL_MISSION / SCIENCE_PLUS_SAFETY: planner guarantees full constraint
+          compliance; any violation (including safety keepouts) is a scheduling
+          failure and generates a mismatch.
+        - SCIENCE: planner guarantees image-quality / scheduling constraints only.
+        - HARD_KEEPOUT / SAFETY: planner guarantees only instrument-safety
+          keepouts; only safety violations generate a mismatch.
         - NONE: no attitude constraint is enforced for this mode.
         """
         mismatches: list[PlanExecutionMismatch] = []
@@ -1187,23 +1171,23 @@ class QueueDITL(DITLMixin, DITLStats):
             else None
         )
 
-        # Pre-compute attitude constraint violation for post-sim validation, reusing
-        # the already-computed violated/in_constraint_name for FULL_MISSION modes so
-        # _validate_attitude_constraints does not need to re-call in_constraint().
+        # Pre-compute policy-scoped attitude constraint violations for
+        # post-simulation validation.
         policy = self.config.attitude_constraint_policy_for_mode(mode)
-        if policy == AttitudeConstraintPolicy.NONE:
-            _constraint_violation: tuple[str, str] | None = None
-        elif policy == AttitudeConstraintPolicy.FULL_MISSION:
-            _constraint_violation = (
-                (in_constraint_name or "Unknown", policy.value) if violated else None
-            )
-        elif policy == AttitudeConstraintPolicy.HARD_KEEPOUT:
-            hard_name = self._hard_attitude_constraint_name(ra, dec, utime, roll, mode)
-            _constraint_violation = (
-                (hard_name, policy.value) if hard_name is not None else None
-            )
-        else:
-            _constraint_violation = None
+        policy_constraint_name = attitude_constraint_name_for_policy(
+            self.constraint,
+            policy,
+            ra,
+            dec,
+            utime,
+            target_roll=roll,
+            acs_mode=mode,
+        )
+        _constraint_violation = (
+            (policy_constraint_name, policy.value)
+            if policy_constraint_name is not None
+            else None
+        )
         self._attitude_constraint_violations.append(_constraint_violation)
 
         ei = self.ephem.index(dtutcfromtimestamp(utime))
@@ -1964,24 +1948,20 @@ class QueueDITL(DITLMixin, DITLStats):
         # Handle charging PPT constraint checks (regardless of mode)
         if self.ppt == self.charging_ppt:
             # Check constraints for charging PPT even if mode hasn't transitioned yet
-            if self.constraint.in_constraint(
+            violation = self._attitude_constraint_name_for_attitude(
                 self.ppt.ra,
                 self.ppt.dec,
+                self.acs.roll,
                 utime,
-                target_roll=self.acs.roll,
-                acs_mode=ACSMode.CHARGING,
-            ):
-                constraint_name = self._get_constraint_name(
-                    self.ppt.ra,
-                    self.ppt.dec,
-                    utime,
-                    roll=self.acs.roll,
-                    mode=ACSMode.CHARGING,
-                )
+                ACSMode.CHARGING,
+            )
+            if violation is not None:
+                constraint_name, policy = violation
+                constraint_text = f"{constraint_name} ({policy})"
                 self.log.log_event(
                     utime=utime,
                     event_type="CHARGING",
-                    description=f"Charging PPT {constraint_name} constrained, terminating",
+                    description=f"Charging PPT {constraint_text} constrained, terminating",
                     obsid=self.ppt.obsid,
                     acs_mode=self.acs.acsmode,
                 )
@@ -2084,31 +2064,17 @@ class QueueDITL(DITLMixin, DITLStats):
         constraints are simultaneously active the reported name is consistent
         with the one that actually triggered termination.
         """
-        if self.constraint.in_sun(ra, dec, utime, target_roll=roll):
-            return "Sun"
-        elif self.constraint.in_earth(ra, dec, utime, target_roll=roll):
-            return "Earth Limb"
-        elif self.constraint.in_panel(ra, dec, utime, target_roll=roll):
-            return "Panel"
-        elif self.constraint.in_moon(ra, dec, utime, target_roll=roll):
-            return "Moon"
-        elif self.constraint.in_anti_sun(ra, dec, utime, target_roll=roll):
-            return "Anti-Sun"
-        elif self.constraint.in_orbit(ra, dec, utime, target_roll=roll):
-            return "Orbit"
-        elif self.constraint.in_star_tracker_hard(
-            ra, dec, utime, target_roll=roll, acs_mode=mode
-        ):
-            return "ST Hard"
-        elif self.constraint.in_star_tracker_soft(
-            ra, dec, utime, target_roll=roll, acs_mode=mode
-        ):
-            return "ST Soft"
-        elif self.constraint.in_radiator_hard(ra, dec, utime, target_roll=roll):
-            return "Radiator Hard"
-        elif self.constraint.in_telescope_hard(ra, dec, utime, target_roll=roll):
-            return "Telescope Hard"
-        return "Unknown"
+        return (
+            science_plus_safety_attitude_constraint_name(
+                self.constraint,
+                ra,
+                dec,
+                utime,
+                target_roll=roll,
+                acs_mode=mode,
+            )
+            or "Unknown"
+        )
 
     def _simulation_end_deadline(self) -> float:
         """Return the Unix timestamp for the end of the simulation."""

@@ -2329,6 +2329,52 @@ class TestPlanExecutionValidation:
         assert any("Radiator Hard" in str(m) for m in mismatches)
         queue_ditl.constraint.in_constraint.assert_not_called()
 
+    def test_safety_policy_ignores_science_constraint_violations(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.utime = [1000.0]
+        queue_ditl.mode = [ACSMode.IDLE]
+        queue_ditl.obsid = [IDLE_OBSID]
+        queue_ditl.ra = [10.0]
+        queue_ditl.dec = [20.0]
+        queue_ditl.roll = [30.0]
+        queue_ditl.config.attitude_constraint_policy_for_mode = Mock(
+            return_value=AttitudeConstraintPolicy.SAFETY
+        )
+        queue_ditl.constraint.in_constraint = Mock(return_value=True)
+        queue_ditl.constraint.in_earth = Mock(return_value=True)
+        queue_ditl.constraint.in_star_tracker_hard = Mock(return_value=False)
+        queue_ditl.constraint.in_radiator_hard = Mock(return_value=False)
+        queue_ditl.constraint.in_telescope_hard = Mock(return_value=False)
+        self._index_telemetry_by_time(queue_ditl)
+
+        mismatches = queue_ditl.validate_attitude_constraints()
+
+        assert mismatches == []
+        queue_ditl.constraint.in_constraint.assert_not_called()
+
+    def test_science_plus_safety_policy_flags_science_constraint_violations(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.utime = [1000.0]
+        queue_ditl.mode = [ACSMode.IDLE]
+        queue_ditl.obsid = [IDLE_OBSID]
+        queue_ditl.ra = [10.0]
+        queue_ditl.dec = [20.0]
+        queue_ditl.roll = [30.0]
+        queue_ditl.config.attitude_constraint_policy_for_mode = Mock(
+            return_value=AttitudeConstraintPolicy.SCIENCE_PLUS_SAFETY
+        )
+        queue_ditl.constraint.in_constraint = Mock(return_value=False)
+        queue_ditl.constraint.in_earth = Mock(return_value=True)
+        self._index_telemetry_by_time(queue_ditl)
+
+        mismatches = queue_ditl.validate_attitude_constraints()
+
+        assert any("Earth Limb" in str(m) for m in mismatches)
+        assert any("science_plus_safety" in str(m) for m in mismatches)
+        queue_ditl.constraint.in_constraint.assert_not_called()
+
     def test_validation_fails_for_unknown_attitude_mode(
         self, queue_ditl: QueueDITL
     ) -> None:
@@ -5480,7 +5526,6 @@ class TestQueueDITLCoverage:
             patch("conops.Queue") as mock_queue_class,
             patch("conops.PassTimes") as mock_passtimes,
             patch("conops.ACS") as mock_acs_class,
-            patch.object(QueueDITL, "_get_constraint_name") as mock_get_constraint,
             patch.object(QueueDITL, "_terminate_emergency_charging") as mock_terminate,
         ):
             # Mock PassTimes
@@ -5524,7 +5569,6 @@ class TestQueueDITLCoverage:
 
             # Mock constraint
             mock_config.constraint.in_constraint = Mock(return_value=True)
-            mock_get_constraint.return_value = "SAA"
 
             ditl = QueueDITL(config=mock_config, ephem=mock_ephem, queue=mock_queue)
             ditl.acs = mock_acs
@@ -5543,9 +5587,6 @@ class TestQueueDITLCoverage:
             # Verify constraint check and termination
             mock_config.constraint.in_constraint.assert_called_once_with(
                 10.0, 20.0, 1000.0, target_roll=mock_acs.roll, acs_mode=ACSMode.CHARGING
-            )
-            mock_get_constraint.assert_called_once_with(
-                10.0, 20.0, 1000.0, roll=mock_acs.roll, mode=ACSMode.CHARGING
             )
             mock_terminate.assert_called_once_with("constraint", 1000.0)
 
