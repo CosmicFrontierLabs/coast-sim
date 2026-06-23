@@ -5474,6 +5474,45 @@ class TestQueueDITLCoverage:
     #     # NOTE: This test was removed due to patching issues with relative imports
     #     # The pass slewing logic is tested indirectly through integration tests
 
+    def test_recharge_threshold_interruption_logs_charging_event(
+        self, queue_ditl
+    ) -> None:
+        charging_ppt = Mock()
+        charging_ppt.ra = 45.0
+        charging_ppt.dec = 23.5
+        charging_ppt.roll = 90.0
+        charging_ppt.obsid = 999000
+
+        interrupted_ppt = Mock()
+        interrupted_ppt.done = False
+        interrupted_ppt.obsid = 12345
+        queue_ditl.ppt = interrupted_ppt
+        queue_ditl.emergency_charging.create_charging_pointing = Mock(
+            return_value=charging_ppt
+        )
+
+        with (
+            patch("conops.ditl.queue_ditl.Slew") as mock_slew_class,
+            patch.object(
+                queue_ditl, "_slew_attitude_constraint_violation", return_value=None
+            ),
+        ):
+            mock_slew_class.return_value.calc_slewtime = Mock()
+
+            queue_ditl.acs.acsmode = ACSMode.SCIENCE
+            queue_ditl._initiate_charging(1000.0, 10.0, 20.0)
+
+        event = queue_ditl.log.events[-1]
+        assert event.event_type == "CHARGING"
+        assert (
+            event.description
+            == "Battery below recharge threshold; interrupting science observation "
+            "for charging"
+        )
+        assert event.obsid == interrupted_ppt.obsid
+        assert event.acs_mode == ACSMode.SCIENCE
+        assert not any(event.event_type == "ERROR" for event in queue_ditl.log.events)
+
     def test_charging_ppt_constraint_check(self, mock_config, mock_ephem) -> None:
         """Test charging PPT constraint checking (lines 717-727)."""
         with (

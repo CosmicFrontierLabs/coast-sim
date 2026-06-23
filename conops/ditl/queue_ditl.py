@@ -1566,8 +1566,13 @@ class QueueDITL(DITLMixin, DITLStats):
         if interrupted_ppt is not None and not getattr(interrupted_ppt, "done", False):
             self.log.log_event(
                 utime=utime,
-                event_type="ERROR",
-                description="BATTERY ALERT: Terminating science observation for emergency charging",
+                event_type="CHARGING",
+                description=(
+                    "Battery below recharge threshold; interrupting science observation "
+                    "for charging"
+                ),
+                obsid=getattr(interrupted_ppt, "obsid", None),
+                acs_mode=self.acs.acsmode,
             )
             interrupted_ppt.end = utime
             interrupted_ppt.done = True
