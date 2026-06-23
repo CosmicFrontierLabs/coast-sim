@@ -292,6 +292,7 @@ class TestEmergencyCharging:
         charging_ppt = Mock(spec=Pointing)
         current_ppt = Mock(spec=Pointing)
         current_ppt.done = False
+        current_ppt.obsid = 12345
 
         ec = EmergencyCharging(
             config=mock_config,
@@ -316,6 +317,7 @@ class TestEmergencyCharging:
             == "Battery below recharge threshold; interrupting science observation "
             "for charging"
         )
+        assert log.events[-1].obsid == current_ppt.obsid
 
     def test_create_charging_pointing_success_returns_pointing(
         self, emergency_charging, mock_ephem, monkeypatch, utime

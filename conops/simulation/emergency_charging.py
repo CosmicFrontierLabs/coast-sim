@@ -86,14 +86,26 @@ class EmergencyCharging:
         self._charging_suppressed_due_to_eclipse = False
         self.log = log
 
-    def _log_or_print(self, utime: float, event_type: str, description: str) -> None:
+    def _log_or_print(
+        self,
+        utime: float,
+        event_type: str,
+        description: str,
+        obsid: int | None = None,
+        acs_mode: ACSMode | None = None,
+    ) -> None:
         """Log event to DITLLog if available, otherwise print."""
         if self.log is not None:
             self.log.log_event(
-                utime=utime, event_type=event_type, description=description
+                utime=utime,
+                event_type=event_type,
+                description=description,
+                obsid=obsid,
+                acs_mode=acs_mode,
             )
         else:
-            print(f"{unixtime2date(utime)} {description}")
+            suffix = f", obsid={obsid}" if obsid is not None else ""
+            print(f"{unixtime2date(utime)} {description}{suffix}")
 
     def create_charging_pointing(
         self,
@@ -190,6 +202,7 @@ class EmergencyCharging:
                 "CHARGING",
                 "Battery below recharge threshold; interrupting science observation "
                 "for charging",
+                obsid=getattr(current_ppt, "obsid", None),
             )
             current_ppt.end = utime
             current_ppt.done = True
