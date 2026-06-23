@@ -146,7 +146,12 @@ class Constraint(ConfigModel):
     )
     ground_contact_constraint: ConstraintConfig | None = Field(
         default=None,
-        description="Additional ground-contact attitude constraint",
+        description=(
+            "Keepout constraint applied during ground-contact (PASS) attitudes. "
+            "Violated (returns True) when the pointing direction would interfere "
+            "with ground-station contact, e.g. an Earth-limb or antenna-exclusion "
+            "zone. Included in the 'ground_contact' scope."
+        ),
     )
     star_tracker_hard_constraint: ConstraintConfig | None = Field(
         default=None,
@@ -391,7 +396,11 @@ class Constraint(ConfigModel):
         ]
         components.extend(
             constraint
-            for constraint in (self.science_constraint, self.safety_constraint)
+            for constraint in (
+                self.science_constraint,
+                self.safety_constraint,
+                self.ground_contact_constraint,
+            )
             if constraint is not None
             and not self._boresight_offset_constraints(constraint)
         )
@@ -1504,6 +1513,8 @@ class DefaultConstraint(Constraint):
         if self.in_explicit_science(ra=ra, dec=dec, time=time, target_roll=target_roll):
             count += 2
         if self.in_explicit_safety(ra=ra, dec=dec, time=time, target_roll=target_roll):
+            count += 2
+        if self.in_ground_contact(ra=ra, dec=dec, time=time, target_roll=target_roll):
             count += 2
         if self.in_star_tracker_hard(
             ra=ra, dec=dec, time=time, target_roll=target_roll, acs_mode=acs_mode

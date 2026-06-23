@@ -350,6 +350,19 @@ class TestConstraintScopes:
         )
 
 
+class TestRollIndependentConstraint:
+    """Test roll-independent constraint aggregation."""
+
+    def test_includes_ground_contact_constraint(self) -> None:
+        """Roll-independent ground-contact constraints are included."""
+        import rust_ephem
+
+        ground_contact = rust_ephem.SunConstraint(min_angle=45.0)
+        constraint = Constraint(ground_contact_constraint=ground_contact)
+
+        assert constraint.roll_independent_constraint is ground_contact
+
+
 class TestInOccultCountMethod:
     """Test in_constraint_count method logic."""
 
@@ -386,6 +399,34 @@ class TestInOccultCountMethod:
         mock_antisun.return_value = False
         mock_earth.return_value = False
         mock_panel.return_value = False
+
+        count = constraint.in_constraint_count(45.0, 30.0, 1700000000.0, 21)
+
+        assert count == 2
+
+    @patch("conops.Constraint.in_ground_contact")
+    @patch("conops.Constraint.in_panel")
+    @patch("conops.Constraint.in_earth")
+    @patch("conops.Constraint.in_anti_sun")
+    @patch("conops.Constraint.in_moon")
+    @patch("conops.Constraint.in_sun")
+    def test_in_constraint_count_ground_contact_only(
+        self,
+        mock_sun,
+        mock_moon,
+        mock_antisun,
+        mock_earth,
+        mock_panel,
+        mock_ground_contact,
+        constraint,
+    ) -> None:
+        """Test in_constraint_count includes ground-contact violations."""
+        mock_sun.return_value = False
+        mock_moon.return_value = False
+        mock_antisun.return_value = False
+        mock_earth.return_value = False
+        mock_panel.return_value = False
+        mock_ground_contact.return_value = True
 
         count = constraint.in_constraint_count(45.0, 30.0, 1700000000.0, 21)
 
