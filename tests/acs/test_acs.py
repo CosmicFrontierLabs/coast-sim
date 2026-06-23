@@ -5,7 +5,7 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from conops import ACS, ACSCommandType, ACSMode, AttitudeConstraintPolicy
+from conops import ACS, ACSCommandType, ACSMode, AttitudeConstraintScope
 from conops.common.enums import ObsType
 from conops.simulation.acs import IDLE_OBSID
 from conops.simulation.slew import Slew
@@ -183,12 +183,12 @@ class TestACSStateManagement:
         science_slew.endroll = 30.0
         acs.last_slew = science_slew
         acs.science_observation_active = False
-        acs.config.attitude_constraint_policy_for_mode = Mock(
-            return_value=AttitudeConstraintPolicy.FULL_MISSION
+        acs.config.attitude_constraint_scopes_for_mode = Mock(
+            return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
         )
 
         monkeypatch.setattr("conops.simulation.acs.optimum_roll", lambda *args: 5.0)
-        acs.constraint.in_constraint = Mock(side_effect=[True, False])
+        acs.constraint.in_star_tracker_hard = Mock(side_effect=[True, False])
 
         ra, dec, roll, obsid = acs.pointing(1000.0)
 
@@ -200,7 +200,7 @@ class TestACSStateManagement:
     def test_pointing_replaces_hard_constrained_idle_hold(
         self, acs, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """IDLE enforcement should use the configured hard-keepout policy."""
+        """IDLE enforcement should use configured hardware-safety scopes."""
         science_slew = Slew(config=acs.config)
         science_slew.obstype = ObsType.PPT
         science_slew.obsid = 42
@@ -214,8 +214,8 @@ class TestACSStateManagement:
         science_slew.endroll = 30.0
         acs.last_slew = science_slew
         acs.science_observation_active = False
-        acs.config.attitude_constraint_policy_for_mode = Mock(
-            return_value=AttitudeConstraintPolicy.HARD_KEEPOUT
+        acs.config.attitude_constraint_scopes_for_mode = Mock(
+            return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
         )
 
         monkeypatch.setattr("conops.simulation.acs.optimum_roll", lambda *args: 5.0)
@@ -231,12 +231,12 @@ class TestACSStateManagement:
         self, acs, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """IDLE enforcement should safe-mode instead of crashing on no safe hold."""
-        acs.config.attitude_constraint_policy_for_mode = Mock(
-            return_value=AttitudeConstraintPolicy.FULL_MISSION
+        acs.config.attitude_constraint_scopes_for_mode = Mock(
+            return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
         )
         acs.config.fault_management.events = []
         monkeypatch.setattr("conops.simulation.acs.optimum_roll", lambda *args: 5.0)
-        acs.constraint.in_constraint = Mock(return_value=True)
+        acs.constraint.in_star_tracker_hard = Mock(return_value=True)
 
         ra, dec, roll, obsid = acs.pointing(1000.0)
 

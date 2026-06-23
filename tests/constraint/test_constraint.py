@@ -5,7 +5,11 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from conops import Constraint, DefaultConstraint
+from conops import AttitudeConstraintScope, Constraint, DefaultConstraint
+from conops.config.constraint import (
+    attitude_constraint_name_for_scopes,
+    in_attitude_constraint_scopes,
+)
 
 
 class TestConstraintInit:
@@ -53,8 +57,8 @@ class TestConstraintInit:
         """Test bare Constraint defaults to no star-tracker soft constraint."""
         assert Constraint().star_tracker_soft_constraint is None
 
-    def test_default_constraint_has_legacy_constraints(self) -> None:
-        """Test DefaultConstraint preserves legacy non-None defaults."""
+    def test_default_constraint_has_standard_constraints(self) -> None:
+        """Test DefaultConstraint provides the standard default components."""
         default_constraint = DefaultConstraint()
         assert default_constraint.sun_constraint is not None
         assert default_constraint.anti_sun_constraint is not None
@@ -260,6 +264,105 @@ class TestInOccultMethod:
         assert result is True
 
 
+class TestConstraintScopes:
+    """Test imaging-quality, power-generation, and safety constraint scopes."""
+
+    @patch("conops.Constraint.in_earth")
+    def test_earth_constraint_is_imaging_quality_not_safety(self, mock_earth) -> None:
+        """Top-level Earth constraints are imaging-quality constraints."""
+        constraint = Constraint()
+        mock_earth.return_value = True
+
+        assert constraint.in_imaging_quality_constraint(45.0, 30.0, 1700000000.0)
+        assert not constraint.in_safety_constraint(45.0, 30.0, 1700000000.0)
+
+    @patch("conops.Constraint.in_telescope_hard")
+    def test_telescope_hard_constraint_is_safety_not_science(
+        self, mock_telescope_hard
+    ) -> None:
+        """Telescope hard constraints are hardware-safety constraints."""
+        constraint = Constraint()
+        mock_telescope_hard.return_value = True
+
+        assert constraint.in_safety_constraint(45.0, 30.0, 1700000000.0)
+        assert not constraint.in_imaging_quality_constraint(45.0, 30.0, 1700000000.0)
+
+    @patch("conops.Constraint.in_radiator_hard")
+    @patch("conops.Constraint.in_earth")
+    def test_all_scope_constraint_accepts_either_scope(
+        self, mock_earth, mock_radiator_hard
+    ) -> None:
+        """All-scope helper remains true for either scoped violation."""
+        constraint = Constraint()
+        mock_earth.return_value = False
+        mock_radiator_hard.return_value = True
+
+        assert constraint.in_constraint(45.0, 30.0, 1700000000.0)
+
+    @patch("conops.Constraint.in_earth")
+    def test_scope_helper_routes_to_configured_scopes(self, mock_earth) -> None:
+        """Central scope helper applies configured scopes consistently."""
+        constraint = Constraint()
+        mock_earth.return_value = True
+
+        assert in_attitude_constraint_scopes(
+            constraint,
+            [AttitudeConstraintScope.IMAGING_QUALITY],
+            45.0,
+            30.0,
+            1700000000.0,
+        )
+        assert not in_attitude_constraint_scopes(
+            constraint,
+            [AttitudeConstraintScope.HARDWARE_SAFETY],
+            45.0,
+            30.0,
+            1700000000.0,
+        )
+
+    @patch("conops.Constraint.in_radiator_hard")
+    def test_scope_name_helper_routes_to_configured_scope(
+        self, mock_radiator_hard
+    ) -> None:
+        """Central scope name helper reports the active scoped constraint."""
+        constraint = Constraint()
+        mock_radiator_hard.return_value = True
+
+        assert (
+            attitude_constraint_name_for_scopes(
+                constraint,
+                [AttitudeConstraintScope.HARDWARE_SAFETY],
+                45.0,
+                30.0,
+                1700000000.0,
+            )
+            == "Radiator Hard"
+        )
+        assert (
+            attitude_constraint_name_for_scopes(
+                constraint,
+                [AttitudeConstraintScope.IMAGING_QUALITY],
+                45.0,
+                30.0,
+                1700000000.0,
+            )
+            is None
+        )
+
+
+class TestRollIndependentConstraint:
+    """Test roll-independent constraint aggregation."""
+
+    def test_includes_ground_contact_constraint(self) -> None:
+        """Roll-independent ground-contact constraints are included."""
+        import rust_ephem
+
+        ground_contact = rust_ephem.SunConstraint(min_angle=45.0)
+        constraint = Constraint(ground_contact_constraint=ground_contact)
+
+        assert constraint.roll_independent_constraint is ground_contact
+
+
 class TestInOccultCountMethod:
     """Test in_constraint_count method logic."""
 
@@ -296,6 +399,34 @@ class TestInOccultCountMethod:
         mock_antisun.return_value = False
         mock_earth.return_value = False
         mock_panel.return_value = False
+
+        count = constraint.in_constraint_count(45.0, 30.0, 1700000000.0, 21)
+
+        assert count == 2
+
+    @patch("conops.Constraint.in_ground_contact")
+    @patch("conops.Constraint.in_panel")
+    @patch("conops.Constraint.in_earth")
+    @patch("conops.Constraint.in_anti_sun")
+    @patch("conops.Constraint.in_moon")
+    @patch("conops.Constraint.in_sun")
+    def test_in_constraint_count_ground_contact_only(
+        self,
+        mock_sun,
+        mock_moon,
+        mock_antisun,
+        mock_earth,
+        mock_panel,
+        mock_ground_contact,
+        constraint,
+    ) -> None:
+        """Test in_constraint_count includes ground-contact violations."""
+        mock_sun.return_value = False
+        mock_moon.return_value = False
+        mock_antisun.return_value = False
+        mock_earth.return_value = False
+        mock_panel.return_value = False
+        mock_ground_contact.return_value = True
 
         count = constraint.in_constraint_count(45.0, 30.0, 1700000000.0, 21)
 

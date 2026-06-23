@@ -18,7 +18,12 @@ from ..common import (
 )
 from ..common.enums import ACSCommandType
 from ..common.vector import attitude_to_quat, quaternion_attitude_distance
-from ..config import DAY_SECONDS, AttitudeConstraintPolicy, MissionConfig
+from ..config import DAY_SECONDS, MissionConfig
+from ..config.constraint import (
+    all_attitude_constraint_name,
+    attitude_constraint_name_for_scopes,
+    attitude_constraint_scope_label,
+)
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
 from ..simulation.passes import Pass, pass_slew_trigger_buffer
@@ -708,7 +713,7 @@ class QueueDITL(DITLMixin, DITLStats):
         )
 
     def _attitude_constraint_mismatch(
-        self, index: int, constraint_name: str, policy: str
+        self, index: int, constraint_name: str, scope_label: str
     ) -> PlanExecutionMismatch:
         mode = self._mode_at_index(index)
         obsid = int(self.obsid[index])
@@ -718,7 +723,7 @@ class QueueDITL(DITLMixin, DITLStats):
             "constraint_violation",
             (
                 f"mode {mode.name if mode is not None else self.mode[index]} "
-                f"obsid {obsid} violates {constraint_name} ({policy}); "
+                f"obsid {obsid} violates {constraint_name} ({scope_label}); "
                 f"ra={float(self.ra[index]):.3f} "
                 f"dec={float(self.dec[index]):.3f} "
                 f"roll={float(self.roll[index]):.3f}"
@@ -731,7 +736,7 @@ class QueueDITL(DITLMixin, DITLStats):
             self.utime[index],
             "attitude",
             "unknown_mode",
-            f"cannot apply constraint policy for mode {self.mode[index]}",
+            f"cannot apply constraint scopes for mode {self.mode[index]}",
             obsid=int(self.obsid[index]),
         )
 
@@ -902,24 +907,6 @@ class QueueDITL(DITLMixin, DITLStats):
             for start, end, dropped_obsid in self._dropped_science_windows
         )
 
-    def _hard_attitude_constraint_name(
-        self,
-        ra: float,
-        dec: float,
-        utime: float,
-        roll: float,
-        mode: ACSMode,
-    ) -> str | None:
-        if self.constraint.in_star_tracker_hard(
-            ra, dec, utime, target_roll=roll, acs_mode=mode
-        ):
-            return "ST Hard"
-        if self.constraint.in_radiator_hard(ra, dec, utime, target_roll=roll):
-            return "Radiator Hard"
-        if self.constraint.in_telescope_hard(ra, dec, utime, target_roll=roll):
-            return "Telescope Hard"
-        return None
-
     def _attitude_constraint_name_for_attitude(
         self,
         ra: float,
@@ -928,29 +915,25 @@ class QueueDITL(DITLMixin, DITLStats):
         utime: float,
         mode: ACSMode,
     ) -> tuple[str, str] | None:
-        """Return the violated constraint name and policy for one attitude."""
-        policy = self.config.attitude_constraint_policy_for_mode(mode)
-        if policy == AttitudeConstraintPolicy.NONE:
-            return None
-        if policy == AttitudeConstraintPolicy.FULL_MISSION:
-            if self.constraint.in_constraint(
-                ra, dec, utime, target_roll=roll, acs_mode=mode
-            ):
-                return (
-                    self._get_constraint_name(ra, dec, utime, roll=roll, mode=mode),
-                    policy.value,
-                )
-            return None
-        if policy == AttitudeConstraintPolicy.HARD_KEEPOUT:
-            name = self._hard_attitude_constraint_name(ra, dec, utime, roll, mode)
-            if name is not None:
-                return name, policy.value
+        """Return the violated constraint name and scope label for one attitude."""
+        scopes = self.config.attitude_constraint_scopes_for_mode(mode)
+        name = attitude_constraint_name_for_scopes(
+            self.constraint,
+            scopes,
+            ra,
+            dec,
+            utime,
+            target_roll=roll,
+            acs_mode=mode,
+        )
+        if name is not None:
+            return name, attitude_constraint_scope_label(scopes)
         return None
 
     def _attitude_constraint_name_for_sample(
         self, index: int, mode: ACSMode
     ) -> tuple[str, str] | None:
-        """Return the violated constraint name and policy for one recorded sample."""
+        """Return the violated constraint name and scope label for one sample."""
         return self._attitude_constraint_name_for_attitude(
             float(self.ra[index]),
             float(self.dec[index]),
@@ -964,13 +947,8 @@ class QueueDITL(DITLMixin, DITLStats):
 
         Reports telemetry samples where the commanded attitude violated a constraint
         the planner was expected to enforce. The check is gated by each mode's
-        configured AttitudeConstraintPolicy:
-
-        - FULL_MISSION: planner guarantees full constraint compliance; any violation
-          (including hard keepouts) is a scheduling failure and generates a mismatch.
-        - HARD_KEEPOUT: planner guarantees only instrument-safety keepouts; only
-          hard keepout violations generate a mismatch.
-        - NONE: no attitude constraint is enforced for this mode.
+        configured attitude constraint scopes. An empty scope list disables
+        validation for that mode.
         """
         mismatches: list[PlanExecutionMismatch] = []
         use_cached = len(self._attitude_constraint_violations) == len(self.utime)
@@ -988,9 +966,9 @@ class QueueDITL(DITLMixin, DITLStats):
             if violation is None:
                 continue
 
-            constraint_name, policy = violation
+            constraint_name, scope_label = violation
             mismatches.append(
-                self._attitude_constraint_mismatch(i, constraint_name, policy)
+                self._attitude_constraint_mismatch(i, constraint_name, scope_label)
             )
         return mismatches
 
@@ -1187,23 +1165,23 @@ class QueueDITL(DITLMixin, DITLStats):
             else None
         )
 
-        # Pre-compute attitude constraint violation for post-sim validation, reusing
-        # the already-computed violated/in_constraint_name for FULL_MISSION modes so
-        # _validate_attitude_constraints does not need to re-call in_constraint().
-        policy = self.config.attitude_constraint_policy_for_mode(mode)
-        if policy == AttitudeConstraintPolicy.NONE:
-            _constraint_violation: tuple[str, str] | None = None
-        elif policy == AttitudeConstraintPolicy.FULL_MISSION:
-            _constraint_violation = (
-                (in_constraint_name or "Unknown", policy.value) if violated else None
-            )
-        elif policy == AttitudeConstraintPolicy.HARD_KEEPOUT:
-            hard_name = self._hard_attitude_constraint_name(ra, dec, utime, roll, mode)
-            _constraint_violation = (
-                (hard_name, policy.value) if hard_name is not None else None
-            )
-        else:
-            _constraint_violation = None
+        # Pre-compute scope-scoped attitude constraint violations for
+        # post-simulation validation.
+        scopes = self.config.attitude_constraint_scopes_for_mode(mode)
+        scope_constraint_name = attitude_constraint_name_for_scopes(
+            self.constraint,
+            scopes,
+            ra,
+            dec,
+            utime,
+            target_roll=roll,
+            acs_mode=mode,
+        )
+        _constraint_violation = (
+            (scope_constraint_name, attitude_constraint_scope_label(scopes))
+            if scope_constraint_name is not None
+            else None
+        )
         self._attitude_constraint_violations.append(_constraint_violation)
 
         ei = self.ephem.index(dtutcfromtimestamp(utime))
@@ -1547,13 +1525,14 @@ class QueueDITL(DITLMixin, DITLStats):
         slew.calc_slewtime()
         violation = self._slew_attitude_constraint_violation(slew, ACSMode.SLEWING)
         if violation is not None:
-            violation_time, constraint_name, policy = violation
+            violation_time, constraint_name, scope_label = violation
             self.log.log_event(
                 utime=utime,
                 event_type="CHARGING",
                 description=(
                     f"Skipping emergency charge slew - path violates "
-                    f"{constraint_name} ({policy}) at {unixtime2date(violation_time)}"
+                    f"{constraint_name} ({scope_label}) at "
+                    f"{unixtime2date(violation_time)}"
                 ),
                 obsid=charging_ppt.obsid,
                 acs_mode=self.acs.acsmode,
@@ -1907,13 +1886,14 @@ class QueueDITL(DITLMixin, DITLStats):
             slew.calc_slewtime()
             violation = self._slew_attitude_constraint_violation(slew, ACSMode.PASS)
             if violation is not None:
-                violation_time, constraint_name, policy = violation
+                violation_time, constraint_name, scope_label = violation
                 self.log.log_event(
                     utime=utime,
                     event_type="PASS",
                     description=(
                         f"Skipping pass slew to {next_pass.station} - path violates "
-                        f"{constraint_name} ({policy}) at {unixtime2date(violation_time)}"
+                        f"{constraint_name} ({scope_label}) at "
+                        f"{unixtime2date(violation_time)}"
                     ),
                     obsid=next_pass.obsid,
                     acs_mode=self.acs.acsmode,
@@ -1969,24 +1949,20 @@ class QueueDITL(DITLMixin, DITLStats):
         # Handle charging PPT constraint checks (regardless of mode)
         if self.ppt == self.charging_ppt:
             # Check constraints for charging PPT even if mode hasn't transitioned yet
-            if self.constraint.in_constraint(
+            violation = self._attitude_constraint_name_for_attitude(
                 self.ppt.ra,
                 self.ppt.dec,
+                self.acs.roll,
                 utime,
-                target_roll=self.acs.roll,
-                acs_mode=ACSMode.CHARGING,
-            ):
-                constraint_name = self._get_constraint_name(
-                    self.ppt.ra,
-                    self.ppt.dec,
-                    utime,
-                    roll=self.acs.roll,
-                    mode=ACSMode.CHARGING,
-                )
+                ACSMode.CHARGING,
+            )
+            if violation is not None:
+                constraint_name, scope_label = violation
+                constraint_text = f"{constraint_name} ({scope_label})"
                 self.log.log_event(
                     utime=utime,
                     event_type="CHARGING",
-                    description=f"Charging PPT {constraint_name} constrained, terminating",
+                    description=f"Charging PPT {constraint_text} constrained, terminating",
                     obsid=self.ppt.obsid,
                     acs_mode=self.acs.acsmode,
                 )
@@ -2013,23 +1989,19 @@ class QueueDITL(DITLMixin, DITLStats):
         """Check if PPT should terminate due to constraints, completion, or timeout."""
         assert self.ppt is not None
 
-        if self.constraint.in_constraint(
+        violation = self._attitude_constraint_name_for_attitude(
             self.ppt.ra,
             self.ppt.dec,
+            self.acs.roll,
             utime,
-            target_roll=self.acs.roll,
-            acs_mode=ACSMode.SCIENCE,
-        ):
-            constraint_name = self._get_constraint_name(
-                self.ppt.ra,
-                self.ppt.dec,
-                utime,
-                roll=self.acs.roll,
-                mode=ACSMode.SCIENCE,
-            )
+            ACSMode.SCIENCE,
+        )
+        if violation is not None:
+            constraint_name, scope_label = violation
+            constraint_text = f"{constraint_name} ({scope_label})"
             self._terminate_ppt(
                 utime,
-                reason=f"Target {constraint_name} constrained, ending observation",
+                reason=f"Target {constraint_text} constrained, ending observation",
             )
         elif self.ppt.exptime is None or self.ppt.exptime <= 0:
             self._terminate_ppt(
@@ -2037,6 +2009,42 @@ class QueueDITL(DITLMixin, DITLStats):
             )
         elif utime >= self.ppt.end:
             self._terminate_ppt(utime, reason="Time window elapsed, ending observation")
+
+    def _constraint_name_for_science_attitude(
+        self,
+        ra: float,
+        dec: float,
+        roll: float,
+        utime: float,
+    ) -> tuple[str, str] | None:
+        return self._attitude_constraint_name_for_attitude(
+            ra, dec, roll, utime, ACSMode.SCIENCE
+        )
+
+    def _check_locked_roll_window(
+        self,
+        obs_start_time: float,
+        obs_val_end: float,
+        target_roll: float,
+    ) -> tuple[float, str, str] | None:
+        assert self.ppt is not None
+        ephem = self.acs.ephem
+        begin_idx = max(0, ephem.index(dtutcfromtimestamp(obs_start_time)))
+        end_idx = min(
+            len(ephem.timestamp), ephem.index(dtutcfromtimestamp(obs_val_end)) + 1
+        )
+        for t in ephem.timestamp[begin_idx:end_idx]:
+            t_unix = t.timestamp() if hasattr(t, "timestamp") else float(t)
+            violation = self._constraint_name_for_science_attitude(
+                self.ppt.ra,
+                self.ppt.dec,
+                target_roll,
+                t_unix,
+            )
+            if violation is not None:
+                constraint_name, scope_label = violation
+                return t_unix, constraint_name, scope_label
+        return None
 
     def _terminate_ppt(
         self, utime: float, reason: str, mark_done: bool = False
@@ -2089,31 +2097,17 @@ class QueueDITL(DITLMixin, DITLStats):
         constraints are simultaneously active the reported name is consistent
         with the one that actually triggered termination.
         """
-        if self.constraint.in_sun(ra, dec, utime, target_roll=roll):
-            return "Sun"
-        elif self.constraint.in_earth(ra, dec, utime, target_roll=roll):
-            return "Earth Limb"
-        elif self.constraint.in_panel(ra, dec, utime, target_roll=roll):
-            return "Panel"
-        elif self.constraint.in_moon(ra, dec, utime, target_roll=roll):
-            return "Moon"
-        elif self.constraint.in_anti_sun(ra, dec, utime, target_roll=roll):
-            return "Anti-Sun"
-        elif self.constraint.in_orbit(ra, dec, utime, target_roll=roll):
-            return "Orbit"
-        elif self.constraint.in_star_tracker_hard(
-            ra, dec, utime, target_roll=roll, acs_mode=mode
-        ):
-            return "ST Hard"
-        elif self.constraint.in_star_tracker_soft(
-            ra, dec, utime, target_roll=roll, acs_mode=mode
-        ):
-            return "ST Soft"
-        elif self.constraint.in_radiator_hard(ra, dec, utime, target_roll=roll):
-            return "Radiator Hard"
-        elif self.constraint.in_telescope_hard(ra, dec, utime, target_roll=roll):
-            return "Telescope Hard"
-        return "Unknown"
+        return (
+            all_attitude_constraint_name(
+                self.constraint,
+                ra,
+                dec,
+                utime,
+                target_roll=roll,
+                acs_mode=mode,
+            )
+            or "Unknown"
+        )
 
     def _simulation_end_deadline(self) -> float:
         """Return the Unix timestamp for the end of the simulation."""
@@ -2135,7 +2129,7 @@ class QueueDITL(DITLMixin, DITLStats):
     def _slew_attitude_constraint_violation(
         self, slew: Slew, mode: ACSMode
     ) -> tuple[float, str, str] | None:
-        """Return first policy violation along a planned slew path, if any."""
+        """Return first scoped violation along a planned slew path, if any."""
         if slew.slewtime <= 0:
             return None
 
@@ -2155,8 +2149,8 @@ class QueueDITL(DITLMixin, DITLStats):
                 mode,
             )
             if violation is not None:
-                constraint_name, policy = violation
-                return sample_utime, constraint_name, policy
+                constraint_name, scope_label = violation
+                return sample_utime, constraint_name, scope_label
 
         return None
 
@@ -2558,13 +2552,14 @@ class QueueDITL(DITLMixin, DITLStats):
             self._complete_ppt_slew(slew, self.ppt, utime, execution_time)
             violation = self._slew_attitude_constraint_violation(slew, ACSMode.SLEWING)
             if violation is not None:
-                violation_time, constraint_name, policy = violation
+                violation_time, constraint_name, scope_label = violation
                 self.log.log_event(
                     utime=utime,
                     event_type="QUEUE",
                     description=(
                         f"Target {self.ppt.obsid} skipped - slew path violates "
-                        f"{constraint_name} ({policy}) at {unixtime2date(violation_time)}"
+                        f"{constraint_name} ({scope_label}) at "
+                        f"{unixtime2date(violation_time)}"
                     ),
                     obsid=self.ppt.obsid,
                     acs_mode=self.acs.acsmode,
@@ -2585,32 +2580,27 @@ class QueueDITL(DITLMixin, DITLStats):
                 else float(ephem.timestamp[-1])
             )
             obs_val_end = min(obs_start_time + self.ppt.ss_min, ephem_end)
-            begin_idx = max(0, ephem.index(dtutcfromtimestamp(obs_start_time)))
-            end_idx = min(
-                len(ephem.timestamp), ephem.index(dtutcfromtimestamp(obs_val_end)) + 1
+            violation = self._check_locked_roll_window(
+                obs_start_time,
+                obs_val_end,
+                slew.endroll,
             )
-            for t in ephem.timestamp[begin_idx:end_idx]:
-                t_unix = t.timestamp() if hasattr(t, "timestamp") else float(t)
-                if self.constraint.in_constraint(
-                    self.ppt.ra,
-                    self.ppt.dec,
-                    t_unix,
-                    target_roll=slew.endroll,
-                    acs_mode=ACSMode.SCIENCE,
-                ):
-                    self.log.log_event(
-                        utime=utime,
-                        event_type="QUEUE",
-                        description=(
-                            f"Target {self.ppt.obsid} skipped — locked roll "
-                            f"{slew.endroll:.1f}° violates constraint "
-                            f"within minimum observation window (at t+{t_unix - obs_start_time:.0f}s)"
-                        ),
-                        obsid=self.ppt.obsid,
-                        acs_mode=self.acs.acsmode,
-                    )
-                    self._retry_fetch_without_current_ppt(utime, ra, dec)
-                    return
+            if violation is not None:
+                t_unix, constraint_name, scope_label = violation
+                self.log.log_event(
+                    utime=utime,
+                    event_type="QUEUE",
+                    description=(
+                        f"Target {self.ppt.obsid} skipped — locked roll "
+                        f"{slew.endroll:.1f}° violates {constraint_name} "
+                        f"({scope_label}) within minimum observation window "
+                        f"(at t+{t_unix - obs_start_time:.0f}s)"
+                    ),
+                    obsid=self.ppt.obsid,
+                    acs_mode=self.acs.acsmode,
+                )
+                self._retry_fetch_without_current_ppt(utime, ra, dec)
+                return
 
             # Verify slew won't overlap with a pass - check both start and end
             slew_end = execution_time + slew.slewtime

@@ -12,7 +12,7 @@ from conops import (
     ACSCommand,
     ACSCommandType,
     ACSMode,
-    AttitudeConstraintPolicy,
+    AttitudeConstraintScope,
     Pass,
     PlanExecutionMismatchError,
     QueueDITL,
@@ -476,7 +476,7 @@ class TestHandleChargingMode:
         mock_charging.done = False
         mock_charging.obsid = 999001  # Add obsid attribute
         queue_ditl.charging_ppt = mock_charging
-        cast(Mock, queue_ditl.constraint).in_constraint = Mock(return_value=True)
+        cast(Mock, queue_ditl.constraint).in_panel = Mock(return_value=True)
         queue_ditl._handle_charging_mode(1000.0)
         assert mock_charging.end == 1000.0
         assert mock_charging.done is True
@@ -562,7 +562,7 @@ class TestManagePPTLifecycle:
         mock_ppt.obsid = 1001  # Add obsid attribute
         queue_ditl.ppt = mock_ppt
         queue_ditl.charging_ppt = None
-        cast(Mock, queue_ditl.constraint).in_constraint = Mock(return_value=True)
+        cast(Mock, queue_ditl.constraint).in_earth = Mock(return_value=True)
         queue_ditl._manage_ppt_lifecycle(1000.0, ACSMode.SCIENCE)
         assert queue_ditl.ppt is None
 
@@ -1040,7 +1040,7 @@ class TestFetchNewPPT:
         queue_ditl.queue.targets = [mock_ppt]
         cast(Mock, queue_ditl.acs.passrequests).current_pass = Mock(return_value=None)
         cast(Mock, queue_ditl.acs.passrequests).next_pass = Mock(return_value=None)
-        queue_ditl.constraint.in_constraint = Mock(return_value=True)
+        queue_ditl.constraint.in_earth = Mock(return_value=True)
 
         queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
 
@@ -1655,8 +1655,9 @@ class TestFetchNewPPT:
         cast(Mock, queue_ditl.acs.passrequests).current_pass = Mock(return_value=None)
         cast(Mock, queue_ditl.acs.passrequests).next_pass = Mock(return_value=None)
 
-        # Constraint reports a violation for every timestamp in the window
-        queue_ditl.constraint.in_constraint = Mock(return_value=True)
+        # Science-scope constraint reports a violation for every timestamp
+        # in the locked-roll window.
+        queue_ditl.constraint.in_earth = Mock(return_value=True)
 
         queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
 
@@ -1706,7 +1707,7 @@ class TestFetchNewPPT:
         cast(Mock, queue_ditl.queue).get = Mock(side_effect=get_next_not_done)
         cast(Mock, queue_ditl.acs.passrequests).current_pass = Mock(return_value=None)
         cast(Mock, queue_ditl.acs.passrequests).next_pass = Mock(return_value=None)
-        queue_ditl.constraint.in_constraint = Mock(
+        queue_ditl.constraint.in_earth = Mock(
             side_effect=lambda ra, *args, **kwargs: ra == bad_ppt.ra
         )
 
@@ -1740,8 +1741,9 @@ class TestFetchNewPPT:
         cast(Mock, queue_ditl.acs.passrequests).current_pass = Mock(return_value=None)
         cast(Mock, queue_ditl.acs.passrequests).next_pass = Mock(return_value=None)
 
-        # Constraint reports no violation (default for the fixture, but explicit here)
-        queue_ditl.constraint.in_constraint = Mock(return_value=False)
+        # Science-scope constraints report no violation (default for the fixture,
+        # but explicit here).
+        queue_ditl.constraint.in_earth = Mock(return_value=False)
 
         queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
 
@@ -1773,10 +1775,7 @@ class TestFetchNewPPT:
         queue_ditl.config.spacecraft_bus.attitude_control.slew_time = Mock(
             return_value=120.0
         )
-        queue_ditl.constraint.in_constraint = Mock(
-            side_effect=lambda ra, dec, utime, **kwargs: utime == 1060.0
-        )
-        queue_ditl.constraint.in_earth = Mock(
+        queue_ditl.constraint.in_star_tracker_hard = Mock(
             side_effect=lambda ra, dec, utime, **kwargs: utime == 1060.0
         )
 
@@ -1785,7 +1784,7 @@ class TestFetchNewPPT:
         cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
         assert queue_ditl.ppt is None
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
-        assert "slew path violates Earth Limb" in log_text
+        assert "slew path violates ST Hard" in log_text
 
 
 class TestRecordSpacecraftState:
@@ -2189,8 +2188,7 @@ class TestPlanExecutionValidation:
         queue_ditl.obsid = [42, 42]
         queue_ditl.ra = [10.0, 10.0]
         queue_ditl.dec = [20.0, 20.0]
-        queue_ditl.constraint.in_constraint = Mock(side_effect=[False, True])
-        queue_ditl._get_constraint_name = Mock(return_value="Earth Limb")  # type: ignore[method-assign]
+        queue_ditl.constraint.in_earth = Mock(side_effect=[False, True])
         self._index_telemetry_by_time(queue_ditl)
 
         mismatches = queue_ditl.validate_attitude_constraints()
@@ -2207,18 +2205,20 @@ class TestPlanExecutionValidation:
         queue_ditl.dec = [10.0]
         queue_ditl.roll = [5.0]
         queue_ditl.constraint.in_constraint = Mock(return_value=True)
-        queue_ditl.constraint.in_sun = Mock(return_value=True)
+        queue_ditl.constraint.in_panel = Mock(return_value=True)
         self._index_telemetry_by_time(queue_ditl)
 
         mismatches = queue_ditl.validate_attitude_constraints()
 
         assert any("mode CHARGING" in str(m) for m in mismatches)
-        assert any("Sun" in str(m) for m in mismatches)
-        queue_ditl.constraint.in_constraint.assert_called_once_with(
-            40.0, 10.0, 1060.0, target_roll=5.0, acs_mode=ACSMode.CHARGING
+        assert any("Panel" in str(m) for m in mismatches)
+        assert any("power_generation" in str(m) for m in mismatches)
+        queue_ditl.constraint.in_constraint.assert_not_called()
+        queue_ditl.constraint.in_panel.assert_called_once_with(
+            40.0, 10.0, 1060.0, target_roll=5.0
         )
 
-    def test_validation_fails_for_default_full_constraint_policy_for_pass(
+    def test_validation_fails_for_default_pass_constraint_scopes(
         self, queue_ditl: QueueDITL
     ) -> None:
         entry = PlanEntry(config=queue_ditl.config)
@@ -2249,17 +2249,17 @@ class TestPlanExecutionValidation:
         queue_ditl.dec = [20.0, 21.0]
         queue_ditl.roll = [0.0, 10.0]
         queue_ditl.constraint.in_constraint = Mock(return_value=True)
-        queue_ditl.constraint.in_sun = Mock(return_value=True)
+        queue_ditl.constraint.in_ground_contact = Mock(return_value=True)
         self._index_telemetry_by_time(queue_ditl)
 
         mismatches = queue_ditl.validate_plan_matches_execution()
 
         assert any("mode PASS" in str(m) for m in mismatches)
-        assert any("Sun" in str(m) for m in mismatches)
-        assert any("full_mission" in str(m) for m in mismatches)
-        assert queue_ditl.constraint.in_constraint.call_count == 2
+        assert any("Ground Contact" in str(m) for m in mismatches)
+        assert any("ground_contact" in str(m) for m in mismatches)
+        queue_ditl.constraint.in_constraint.assert_not_called()
 
-    def test_validation_uses_configured_full_constraint_policy_for_pass(
+    def test_validation_uses_configured_constraint_scopes_for_pass(
         self, queue_ditl: QueueDITL
     ) -> None:
         entry = PlanEntry(config=queue_ditl.config)
@@ -2288,8 +2288,11 @@ class TestPlanExecutionValidation:
         queue_ditl.ra = [10.0]
         queue_ditl.dec = [20.0]
         queue_ditl.roll = [15.0]
-        queue_ditl.config.attitude_constraint_policy_for_mode = Mock(
-            return_value=AttitudeConstraintPolicy.FULL_MISSION
+        queue_ditl.config.attitude_constraint_scopes_for_mode = Mock(
+            return_value=[
+                AttitudeConstraintScope.HARDWARE_SAFETY,
+                AttitudeConstraintScope.IMAGING_QUALITY,
+            ]
         )
         queue_ditl.constraint.in_constraint = Mock(return_value=True)
         queue_ditl.constraint.in_sun = Mock(return_value=True)
@@ -2299,24 +2302,22 @@ class TestPlanExecutionValidation:
 
         assert any("mode PASS" in str(m) for m in mismatches)
         assert any("Sun" in str(m) for m in mismatches)
-        assert any("full_mission" in str(m) for m in mismatches)
-        queue_ditl.constraint.in_constraint.assert_called_once_with(
-            10.0, 20.0, 1000.0, target_roll=15.0, acs_mode=ACSMode.PASS
-        )
+        assert any("imaging_quality" in str(m) for m in mismatches)
+        queue_ditl.constraint.in_constraint.assert_not_called()
 
-    def test_hard_keepout_policy_generates_validation_mismatches_for_hard_violations(
+    def test_hardware_safety_scope_generates_mismatches_for_hard_violations(
         self, queue_ditl: QueueDITL
     ) -> None:
-        # HARD_KEEPOUT policy checks only hard keepout zones; violations ARE planning
-        # mismatches. Full mission constraints are not checked (in_constraint unused).
+        # Hardware-safety scope checks only hard keepout zones; violations ARE
+        # planning mismatches. Combined constraints are not checked.
         queue_ditl.utime = [1060.0]
         queue_ditl.mode = [ACSMode.CHARGING]
         queue_ditl.obsid = [999001]
         queue_ditl.ra = [40.0]
         queue_ditl.dec = [10.0]
         queue_ditl.roll = [5.0]
-        queue_ditl.config.attitude_constraint_policy_for_mode = Mock(
-            return_value=AttitudeConstraintPolicy.HARD_KEEPOUT
+        queue_ditl.config.attitude_constraint_scopes_for_mode = Mock(
+            return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
         )
         queue_ditl.constraint.in_constraint = Mock(return_value=False)
         queue_ditl.constraint.in_star_tracker_hard = Mock(return_value=False)
@@ -2327,6 +2328,55 @@ class TestPlanExecutionValidation:
         mismatches = queue_ditl.validate_plan_matches_execution()
 
         assert any("Radiator Hard" in str(m) for m in mismatches)
+        queue_ditl.constraint.in_constraint.assert_not_called()
+
+    def test_hardware_safety_scope_ignores_imaging_constraint_violations(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.utime = [1000.0]
+        queue_ditl.mode = [ACSMode.IDLE]
+        queue_ditl.obsid = [IDLE_OBSID]
+        queue_ditl.ra = [10.0]
+        queue_ditl.dec = [20.0]
+        queue_ditl.roll = [30.0]
+        queue_ditl.config.attitude_constraint_scopes_for_mode = Mock(
+            return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
+        )
+        queue_ditl.constraint.in_constraint = Mock(return_value=True)
+        queue_ditl.constraint.in_earth = Mock(return_value=True)
+        queue_ditl.constraint.in_star_tracker_hard = Mock(return_value=False)
+        queue_ditl.constraint.in_radiator_hard = Mock(return_value=False)
+        queue_ditl.constraint.in_telescope_hard = Mock(return_value=False)
+        self._index_telemetry_by_time(queue_ditl)
+
+        mismatches = queue_ditl.validate_attitude_constraints()
+
+        assert mismatches == []
+        queue_ditl.constraint.in_constraint.assert_not_called()
+
+    def test_imaging_quality_scope_flags_imaging_constraint_violations(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.utime = [1000.0]
+        queue_ditl.mode = [ACSMode.IDLE]
+        queue_ditl.obsid = [IDLE_OBSID]
+        queue_ditl.ra = [10.0]
+        queue_ditl.dec = [20.0]
+        queue_ditl.roll = [30.0]
+        queue_ditl.config.attitude_constraint_scopes_for_mode = Mock(
+            return_value=[
+                AttitudeConstraintScope.HARDWARE_SAFETY,
+                AttitudeConstraintScope.IMAGING_QUALITY,
+            ]
+        )
+        queue_ditl.constraint.in_constraint = Mock(return_value=False)
+        queue_ditl.constraint.in_earth = Mock(return_value=True)
+        self._index_telemetry_by_time(queue_ditl)
+
+        mismatches = queue_ditl.validate_attitude_constraints()
+
+        assert any("Earth Limb" in str(m) for m in mismatches)
+        assert any("imaging_quality" in str(m) for m in mismatches)
         queue_ditl.constraint.in_constraint.assert_not_called()
 
     def test_validation_fails_for_unknown_attitude_mode(
@@ -2348,19 +2398,19 @@ class TestPlanExecutionValidation:
     @pytest.mark.parametrize(
         "mode", [ACSMode.SLEWING, ACSMode.SAA, ACSMode.SAFE, ACSMode.IDLE]
     )
-    def test_hard_keepout_policy_flags_hard_violations_as_mismatches(
+    def test_hardware_safety_scope_flags_hard_violations_as_mismatches(
         self, queue_ditl: QueueDITL, mode: ACSMode
     ) -> None:
-        # HARD_KEEPOUT policy checks hard keepout zones; violations ARE planning
-        # mismatches. Full mission constraints are not checked (in_constraint unused).
+        # Hardware-safety scope checks hard keepout zones; violations ARE planning
+        # mismatches. Combined constraints are not checked.
         queue_ditl.utime = [1000.0]
         queue_ditl.mode = [mode]
         queue_ditl.obsid = [IDLE_OBSID]
         queue_ditl.ra = [10.0]
         queue_ditl.dec = [20.0]
         queue_ditl.roll = [30.0]
-        queue_ditl.config.attitude_constraint_policy_for_mode = Mock(
-            return_value=AttitudeConstraintPolicy.HARD_KEEPOUT
+        queue_ditl.config.attitude_constraint_scopes_for_mode = Mock(
+            return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
         )
         queue_ditl.constraint.in_constraint = Mock(return_value=False)
         queue_ditl.constraint.in_star_tracker_hard = Mock(return_value=False)
@@ -2373,7 +2423,7 @@ class TestPlanExecutionValidation:
         assert any("Radiator Hard" in str(m) for m in mismatches)
         queue_ditl.constraint.in_constraint.assert_not_called()
 
-    def test_validation_fails_for_idle_full_constraint_violation(
+    def test_validation_fails_for_idle_imaging_constraint_violation(
         self, queue_ditl: QueueDITL
     ) -> None:
         queue_ditl.utime = [1000.0]
@@ -2382,8 +2432,11 @@ class TestPlanExecutionValidation:
         queue_ditl.ra = [10.0]
         queue_ditl.dec = [20.0]
         queue_ditl.roll = [30.0]
-        queue_ditl.config.attitude_constraint_policy_for_mode = Mock(
-            return_value=AttitudeConstraintPolicy.FULL_MISSION
+        queue_ditl.config.attitude_constraint_scopes_for_mode = Mock(
+            return_value=[
+                AttitudeConstraintScope.HARDWARE_SAFETY,
+                AttitudeConstraintScope.IMAGING_QUALITY,
+            ]
         )
         queue_ditl.constraint.in_constraint = Mock(return_value=True)
         queue_ditl.constraint.in_earth = Mock(return_value=True)
@@ -2393,10 +2446,8 @@ class TestPlanExecutionValidation:
 
         assert any("mode IDLE" in str(m) for m in mismatches)
         assert any("Earth" in str(m) for m in mismatches)
-        assert any("full_mission" in str(m) for m in mismatches)
-        queue_ditl.constraint.in_constraint.assert_called_once_with(
-            10.0, 20.0, 1000.0, target_roll=30.0, acs_mode=ACSMode.IDLE
-        )
+        assert any("imaging_quality" in str(m) for m in mismatches)
+        queue_ditl.constraint.in_constraint.assert_not_called()
 
     def test_execution_coverage_uses_full_gsp_entry_window(
         self, queue_ditl: QueueDITL
@@ -2958,10 +3009,7 @@ class TestCalcMethod:
         queue_ditl.emergency_charging.create_charging_pointing = Mock(
             return_value=charging_ppt
         )
-        queue_ditl.constraint.in_constraint = Mock(
-            side_effect=lambda ra, dec, utime, **kwargs: utime == 1060.0
-        )
-        queue_ditl.constraint.in_earth = Mock(
+        queue_ditl.constraint.in_star_tracker_hard = Mock(
             side_effect=lambda ra, dec, utime, **kwargs: utime == 1060.0
         )
 
@@ -2974,7 +3022,7 @@ class TestCalcMethod:
         assert science_ppt.done is False
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "Skipping emergency charge slew" in log_text
-        assert "Earth Limb" in log_text
+        assert "ST Hard" in log_text
 
     def test_calc_drops_short_science_entry_when_charging_interrupts(
         self, queue_ditl
@@ -3620,17 +3668,20 @@ class TestGetConstraintName:
         queue_ditl.constraint.in_star_tracker_hard = Mock(return_value=False)
         queue_ditl.constraint.in_star_tracker_soft = Mock(return_value=False)
         _ = queue_ditl._get_constraint_name(ra, dec, utime)
-        # Order: Sun, Earth, Panel — Moon is never reached
+        # Order checks hardware safety first, then imaging-quality, then
+        # power-generation, so Moon is checked before Panel.
         queue_ditl.constraint.in_sun.assert_called_once_with(
             ra, dec, utime, target_roll=None
         )
         queue_ditl.constraint.in_earth.assert_called_once_with(
             ra, dec, utime, target_roll=None
         )
+        queue_ditl.constraint.in_moon.assert_called_once_with(
+            ra, dec, utime, target_roll=None
+        )
         queue_ditl.constraint.in_panel.assert_called_once_with(
             ra, dec, utime, target_roll=None
         )
-        queue_ditl.constraint.in_moon.assert_not_called()
 
     def test_get_constraint_name_unknown_name(self, queue_ditl) -> None:
         ra, dec, utime = 14.0, 24.0, 5000.0
@@ -3979,10 +4030,7 @@ class TestCheckAndManagePasses:
         queue_ditl.acs.passrequests.current_pass = Mock(return_value=None)
         queue_ditl.acs.passrequests.next_pass = Mock(return_value=pass_obj)
         queue_ditl.acs.acsmode = ACSMode.SCIENCE
-        queue_ditl.constraint.in_constraint = Mock(
-            side_effect=lambda ra, dec, utime, **kwargs: utime == 1060.0
-        )
-        queue_ditl.constraint.in_earth = Mock(
+        queue_ditl.constraint.in_ground_contact = Mock(
             side_effect=lambda ra, dec, utime, **kwargs: utime == 1060.0
         )
 
@@ -3993,7 +4041,7 @@ class TestCheckAndManagePasses:
         assert len(queue_ditl.plan) == 0
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "Skipping pass slew to GS_TEST" in log_text
-        assert "Earth Limb" in log_text
+        assert "Ground Contact" in log_text
 
     def test_check_and_manage_passes_exports_gsp_plan_entry_for_pass_slew(
         self, queue_ditl, tmp_path
@@ -5519,7 +5567,6 @@ class TestQueueDITLCoverage:
             patch("conops.Queue") as mock_queue_class,
             patch("conops.PassTimes") as mock_passtimes,
             patch("conops.ACS") as mock_acs_class,
-            patch.object(QueueDITL, "_get_constraint_name") as mock_get_constraint,
             patch.object(QueueDITL, "_terminate_emergency_charging") as mock_terminate,
         ):
             # Mock PassTimes
@@ -5561,9 +5608,9 @@ class TestQueueDITLCoverage:
             mock_queue.get = Mock(return_value=None)
             mock_queue_class.return_value = mock_queue
 
-            # Mock constraint
+            # Mock a charging-scope power-generation violation.
             mock_config.constraint.in_constraint = Mock(return_value=True)
-            mock_get_constraint.return_value = "SAA"
+            mock_config.constraint.in_panel = Mock(return_value=True)
 
             ditl = QueueDITL(config=mock_config, ephem=mock_ephem, queue=mock_queue)
             ditl.acs = mock_acs
@@ -5579,12 +5626,10 @@ class TestQueueDITLCoverage:
             # Call _manage_ppt_lifecycle
             ditl._manage_ppt_lifecycle(1000.0, ACSMode.SCIENCE)
 
-            # Verify constraint check and termination
-            mock_config.constraint.in_constraint.assert_called_once_with(
-                10.0, 20.0, 1000.0, target_roll=mock_acs.roll, acs_mode=ACSMode.CHARGING
-            )
-            mock_get_constraint.assert_called_once_with(
-                10.0, 20.0, 1000.0, roll=mock_acs.roll, mode=ACSMode.CHARGING
+            # Verify scoped constraint check and termination.
+            mock_config.constraint.in_constraint.assert_not_called()
+            mock_config.constraint.in_panel.assert_called_once_with(
+                10.0, 20.0, 1000.0, target_roll=mock_acs.roll
             )
             mock_terminate.assert_called_once_with("constraint", 1000.0)
 

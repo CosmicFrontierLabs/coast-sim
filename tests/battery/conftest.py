@@ -110,6 +110,55 @@ def mock_config(mock_ephem):
     )
     constraint.in_eclipse = Mock(return_value=False)
 
+    def scoped_scalar(ra, dec, utime, target_roll=None, acs_mode=None):
+        return bool(
+            constraint.in_constraint(
+                ra,
+                dec,
+                utime,
+                target_roll=target_roll,
+                acs_mode=acs_mode,
+            )
+        )
+
+    def scoped_batch(ras, decs, utime, target_rolls=None):
+        if target_rolls is None:
+            violations = constraint.in_constraint_batch(ras, decs, utime)
+        else:
+            violations = constraint.in_constraint_batch(
+                ras,
+                decs,
+                utime,
+                target_rolls=target_rolls,
+            )
+        return np.asarray(violations, dtype=bool)
+
+    constraint.in_explicit_safety = Mock(return_value=False)
+    constraint.in_star_tracker_hard = Mock(side_effect=scoped_scalar)
+    constraint.in_radiator_hard = Mock(return_value=False)
+    constraint.in_telescope_hard = Mock(return_value=False)
+    constraint.in_panel = Mock(side_effect=scoped_scalar)
+    constraint.in_sun = Mock(return_value=False)
+    constraint.in_earth = Mock(return_value=False)
+    constraint.in_moon = Mock(return_value=False)
+    constraint.in_anti_sun = Mock(return_value=False)
+    constraint.in_orbit = Mock(return_value=False)
+    constraint.in_star_tracker_soft = Mock(return_value=False)
+    constraint.in_explicit_science = Mock(return_value=False)
+    constraint.in_ground_contact = Mock(return_value=False)
+    constraint.in_hardware_safety_constraint_batch = Mock(side_effect=scoped_batch)
+    constraint.in_power_generation_constraint_batch = Mock(side_effect=scoped_batch)
+    constraint.in_imaging_quality_constraint_batch = Mock(
+        side_effect=lambda ras, decs, utime, target_rolls=None: np.zeros(
+            len(ras), dtype=bool
+        )
+    )
+    constraint.in_ground_contact_constraint_batch = Mock(
+        side_effect=lambda ras, decs, utime, target_rolls=None: np.zeros(
+            len(ras), dtype=bool
+        )
+    )
+
     config = MissionConfig(
         spacecraft_bus=spacecraft_bus,
         solar_panel=solar_panel,
