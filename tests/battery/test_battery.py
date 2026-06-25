@@ -135,6 +135,17 @@ class TestBatteryAlerts:
         b.charge_level = b.watthour * 0.96
         assert b.battery_alert is False
 
+    def test_battery_alert_stays_latched_until_clear_threshold(self, default_battery):
+        b = default_battery
+        b.charge_level = b.watthour * 0.60
+        assert b.battery_alert is True
+
+        b.charge_level = b.watthour * 0.952
+        assert b.battery_alert is True
+
+        b.charge_level = b.watthour * b.recharge_clear_threshold
+        assert b.battery_alert is False
+
     def test_emergency_recharge_cleared_above_recharge_threshold(self, default_battery):
         b = default_battery
         b.charge_level = b.watthour * 0.96

@@ -13,6 +13,7 @@ from conops import (
     ACSCommandType,
     ACSMode,
     AttitudeConstraintScope,
+    Battery,
     Pass,
     PlanExecutionMismatchError,
     QueueDITL,
@@ -464,6 +465,31 @@ class TestHandleChargingMode:
         # Check the log instead of print output
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "Battery recharged" in log_text
+
+    def test_charging_stays_active_until_recharge_clear_threshold(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        battery = Battery(recharge_threshold=0.95, watthour=560.0)
+        battery.charge_level = battery.watthour * 0.60
+        assert battery.battery_alert is True
+        battery.charge_level = battery.watthour * 0.952
+        queue_ditl.battery = battery
+
+        mock_charging = Mock()
+        mock_charging.ra = 10.0
+        mock_charging.dec = 20.0
+        mock_charging.roll = 30.0
+        mock_charging.end = 0
+        mock_charging.done = False
+        mock_charging.obsid = 999001
+        queue_ditl.charging_ppt = mock_charging
+
+        queue_ditl._handle_charging_mode(1000.0)
+
+        assert queue_ditl.charging_ppt is mock_charging
+        assert mock_charging.done is False
+        cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
+        cast(Mock, queue_ditl.queue.get).assert_not_called()
 
     def test_charging_ends_when_constrained_end_and_done_set(
         self, queue_ditl: QueueDITL, capsys: pytest.CaptureFixture[str]
