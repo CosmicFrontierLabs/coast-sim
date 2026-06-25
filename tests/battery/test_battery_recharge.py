@@ -46,9 +46,14 @@ class TestBattery:
         """Test that recharge_threshold defaults to 0.95 (95%)."""
         assert default_battery.recharge_threshold == 0.95
 
+    def test_default_recharge_clear_threshold(self, default_battery) -> None:
+        """Default recharge clear threshold adds hysteresis above the start threshold."""
+        assert default_battery.recharge_clear_threshold == 0.955
+
     def test_custom_recharge_threshold(self, battery_with_custom_threshold) -> None:
         """Test that custom recharge_threshold can be set."""
         assert battery_with_custom_threshold.recharge_threshold == 0.90
+        assert battery_with_custom_threshold.recharge_clear_threshold == 0.905
 
     def test_battery_alert_true_when_below_max_depth_of_discharge(
         self, battery_with_dod
@@ -105,23 +110,46 @@ class TestBattery:
         )
         assert battery_with_dod_and_threshold.emergency_recharge is True
 
-    def test_battery_alert_clears_at_ninetyfive_percent(
+    def test_battery_alert_persists_at_ninetyfive_percent(
         self, battery_with_dod_and_threshold
     ):
-        """Battery alert should clear at recharge threshold (95%)."""
+        """Battery alert should not clear until the clear threshold is reached."""
+        battery_with_dod_and_threshold.charge_level = (
+            battery_with_dod_and_threshold.watthour * 0.60
+        )
+        _ = battery_with_dod_and_threshold.battery_alert
         battery_with_dod_and_threshold.charge_level = (
             battery_with_dod_and_threshold.watthour * 0.95
+        )
+        assert battery_with_dod_and_threshold.battery_alert is True
+
+    def test_emergency_recharge_persists_at_ninetyfive_percent(
+        self, battery_with_dod_and_threshold
+    ):
+        """Emergency recharge should remain latched at the start threshold."""
+        battery_with_dod_and_threshold.charge_level = (
+            battery_with_dod_and_threshold.watthour * 0.60
+        )
+        _ = battery_with_dod_and_threshold.battery_alert
+        battery_with_dod_and_threshold.charge_level = (
+            battery_with_dod_and_threshold.watthour * 0.95
+        )
+        _ = battery_with_dod_and_threshold.battery_alert
+        assert battery_with_dod_and_threshold.emergency_recharge is True
+
+    def test_battery_alert_clears_at_recharge_clear_threshold(
+        self, battery_with_dod_and_threshold
+    ):
+        """Battery alert should clear at the recharge clear threshold."""
+        battery_with_dod_and_threshold.charge_level = (
+            battery_with_dod_and_threshold.watthour * 0.60
+        )
+        _ = battery_with_dod_and_threshold.battery_alert
+        battery_with_dod_and_threshold.charge_level = (
+            battery_with_dod_and_threshold.watthour
+            * battery_with_dod_and_threshold.recharge_clear_threshold
         )
         assert battery_with_dod_and_threshold.battery_alert is False
-
-    def test_emergency_recharge_clears_at_ninetyfive_percent(
-        self, battery_with_dod_and_threshold
-    ):
-        """Emergency recharge should clear at recharge threshold (95%)."""
-        battery_with_dod_and_threshold.charge_level = (
-            battery_with_dod_and_threshold.watthour * 0.95
-        )
-        assert battery_with_dod_and_threshold.emergency_recharge is False
 
     def test_battery_alert_false_when_above_threshold(self, battery_with_dod) -> None:
         """Test battery_alert False when battery level is sufficient."""
@@ -1298,21 +1326,37 @@ class TestBatteryRechargeScenarios:
         battery.charge_level = battery.watthour * 0.94
         assert battery.battery_alert is True
 
-    def test_full_discharge_recharge_cycle_alert_clears_at_95percent(self) -> None:
+    def test_full_discharge_recharge_cycle_alert_persists_at_95percent(self) -> None:
         battery = Battery(
             max_depth_of_discharge=0.35, recharge_threshold=0.95, watthour=560.0
         )
+        battery.charge_level = battery.watthour * 0.60
+        _ = battery.battery_alert
         battery.charge_level = battery.watthour * 0.95
-        assert battery.battery_alert is False
+        assert battery.battery_alert is True
 
-    def test_full_discharge_recharge_cycle_emergency_recharge_clears_at_95percent(
+    def test_full_discharge_recharge_cycle_emergency_recharge_persists_at_95percent(
         self,
     ) -> None:
         battery = Battery(
             max_depth_of_discharge=0.35, recharge_threshold=0.95, watthour=560.0
         )
+        battery.charge_level = battery.watthour * 0.60
+        _ = battery.battery_alert
         battery.charge_level = battery.watthour * 0.95
-        assert battery.emergency_recharge is False
+        _ = battery.battery_alert
+        assert battery.emergency_recharge is True
+
+    def test_full_discharge_recharge_cycle_alert_clears_at_clear_threshold(
+        self,
+    ) -> None:
+        battery = Battery(
+            max_depth_of_discharge=0.35, recharge_threshold=0.95, watthour=560.0
+        )
+        battery.charge_level = battery.watthour * 0.60
+        _ = battery.battery_alert
+        battery.charge_level = battery.watthour * battery.recharge_clear_threshold
+        assert battery.battery_alert is False
 
     def test_full_discharge_recharge_cycle_alert_remains_cleared_at_100percent(
         self,
@@ -1330,8 +1374,19 @@ class TestBatteryRechargeScenarios:
 
     def test_multiple_charge_discharge_cycles_first_cycle_clear(self) -> None:
         battery = Battery(max_depth_of_discharge=0.35, recharge_threshold=0.95)
-        battery.charge_level = battery.watthour * 0.95
+        battery.charge_level = battery.watthour * 0.60
+        _ = battery.battery_alert
+        battery.charge_level = battery.watthour * battery.recharge_clear_threshold
         assert battery.battery_alert is False
+
+    def test_multiple_charge_discharge_cycles_first_cycle_persists_at_start_threshold(
+        self,
+    ) -> None:
+        battery = Battery(max_depth_of_discharge=0.35, recharge_threshold=0.95)
+        battery.charge_level = battery.watthour * 0.60
+        _ = battery.battery_alert
+        battery.charge_level = battery.watthour * 0.95
+        assert battery.battery_alert is True
 
     def test_multiple_charge_discharge_cycles_second_cycle_alert(self) -> None:
         battery = Battery(max_depth_of_discharge=0.35, recharge_threshold=0.95)
@@ -1340,8 +1395,19 @@ class TestBatteryRechargeScenarios:
 
     def test_multiple_charge_discharge_cycles_second_cycle_clear(self) -> None:
         battery = Battery(max_depth_of_discharge=0.35, recharge_threshold=0.95)
-        battery.charge_level = battery.watthour * 0.95
+        battery.charge_level = battery.watthour * 0.55
+        _ = battery.battery_alert
+        battery.charge_level = battery.watthour * battery.recharge_clear_threshold
         assert battery.battery_alert is False
+
+    def test_multiple_charge_discharge_cycles_second_cycle_persists_at_start_threshold(
+        self,
+    ) -> None:
+        battery = Battery(max_depth_of_discharge=0.35, recharge_threshold=0.95)
+        battery.charge_level = battery.watthour * 0.55
+        _ = battery.battery_alert
+        battery.charge_level = battery.watthour * 0.95
+        assert battery.battery_alert is True
 
 
 if __name__ == "__main__":
