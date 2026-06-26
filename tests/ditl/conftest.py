@@ -214,6 +214,7 @@ def mock_config_detailed():
     config.constraint.panel_constraint.solar_panel = Mock()
     config.constraint.in_constraint = Mock(return_value=False)
     config.constraint.instantaneous_field_of_regard = Mock(return_value=1.234)
+    config.attitude_constraint_scopes_for_mode = Mock(return_value=[])
 
     # Mock battery
     config.battery = Mock()

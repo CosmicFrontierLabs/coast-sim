@@ -8,6 +8,11 @@ from conops.targets.plan import Plan
 from ..common import angular_separation, dtutcfromtimestamp, radec2vec, scbodyvector
 from ..common.vector import attitude_to_quat
 from ..config import MissionConfig
+from ..config.constraint import (
+    all_attitude_constraint_name,
+    attitude_constraint_name_for_scopes,
+    attitude_constraint_scope_label,
+)
 from ..simulation.roll import optimum_roll
 from .ditl_log import DITLLog
 from .ditl_mixin import DITLMixin
@@ -259,6 +264,33 @@ class DITL(DITLMixin, DITLStats):
                 if self.calculate_field_of_regard
                 else None
             )
+            violated = self.constraint.in_constraint(
+                ra, dec, self.utime[i], target_roll=roll, acs_mode=mode
+            )
+            in_constraint_name = None
+            if violated:
+                in_constraint_name = (
+                    all_attitude_constraint_name(
+                        self.constraint,
+                        ra,
+                        dec,
+                        self.utime[i],
+                        target_roll=roll,
+                        acs_mode=mode,
+                    )
+                    or "Unknown"
+                )
+            scopes = self.config.attitude_constraint_scopes_for_mode(mode)
+            scope_constraint_name = attitude_constraint_name_for_scopes(
+                self.constraint,
+                scopes,
+                ra,
+                dec,
+                self.utime[i],
+                target_roll=roll,
+                acs_mode=mode,
+            )
+            scope_label = attitude_constraint_scope_label(scopes)
             _q = attitude_to_quat(ra, dec, roll)
             hk = Housekeeping(
                 timestamp=datetime.fromtimestamp(self.utime[i], tz=timezone.utc),
@@ -291,6 +323,11 @@ class DITL(DITLMixin, DITLStats):
                 ),
                 radiator_hard_violations=self.acs.radiator_hard_violations,
                 telescope_hard_violations=self.acs.telescope_hard_violations,
+                in_constraint=in_constraint_name,
+                attitude_constraint=scope_constraint_name,
+                attitude_constraint_scope=scope_label
+                if scope_constraint_name is not None
+                else None,
                 radiator_sun_exposure=self.acs.radiator_sun_exposure,
                 radiator_earth_exposure=self.acs.radiator_earth_exposure,
                 radiator_heat_dissipation_w=self.acs.radiator_heat_dissipation_w,
