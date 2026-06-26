@@ -975,7 +975,9 @@ The :class:`~conops.config.Battery` models the spacecraft battery system.
 * ``voltage`` (float): Battery voltage (Volts)
 * ``watthour`` (float): Total energy capacity (Watt-hours, auto-calculated)
 * ``max_depth_of_discharge`` (float): Maximum allowed DoD (0-1)
-* ``recharge_threshold`` (float): SOC level to end emergency recharge (0-1)
+* ``recharge_threshold`` (float): SOC level that starts emergency recharge (0-1)
+* ``recharge_clear_threshold`` (float): SOC level that clears emergency recharge
+  (0-1, defaults to ``recharge_threshold + 0.005`` capped at 1.0)
 * ``charge_level`` (float): Current charge in Watt-hours
 
 .. code-block:: python
@@ -988,7 +990,8 @@ The :class:`~conops.config.Battery` models the spacecraft battery system.
        voltage=28.0,
        watthour=560.0,  # Optional, calculated from amphour * voltage
        max_depth_of_discharge=0.4,  # Allow 40% discharge
-       recharge_threshold=0.95,     # Recharge until 95% SOC
+       recharge_threshold=0.95,     # Start emergency recharge below 95% SOC
+       recharge_clear_threshold=0.955,  # Continue charging until 95.5% SOC
    )
 
 constraint
@@ -1313,7 +1316,8 @@ Here is a complete example of creating a ``MissionConfig`` programmatically:
            amphour=20.0,
            voltage=28.0,
            max_depth_of_discharge=0.4,
-           recharge_threshold=0.95
+           recharge_threshold=0.95,
+           recharge_clear_threshold=0.955,
        ),
        constraint=Constraint(
            sun_constraint=rust_ephem.SunConstraint(min_angle=45.0),

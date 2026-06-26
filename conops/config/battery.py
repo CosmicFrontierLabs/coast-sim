@@ -6,6 +6,11 @@ from ..common import ChargeState
 from ._base import ConfigModel
 
 
+DEFAULT_RECHARGE_THRESHOLD = 0.95
+DEFAULT_RECHARGE_CLEAR_HYSTERESIS = 0.005
+BATTERY_ALERT_THRESHOLD_TOLERANCE = 1e-12
+
+
 class Battery(ConfigModel):
     """It's a fake battery"""
 
@@ -28,7 +33,16 @@ class Battery(ConfigModel):
         default=0.3, description="Maximum allowed depth of discharge (0.0-1.0)"
     )
     recharge_threshold: float = Field(
-        default=0.95, description="Battery level fraction to stop charging (0.0-1.0)"
+        default=DEFAULT_RECHARGE_THRESHOLD,
+        description="Battery level fraction that starts emergency recharge (0.0-1.0)",
+    )
+    recharge_clear_threshold: float | None = Field(
+        default=None,
+        description=(
+            "Battery level fraction that clears emergency recharge. Defaults to "
+            "recharge_threshold + "
+            f"{DEFAULT_RECHARGE_CLEAR_HYSTERESIS:g}, capped at 1.0."
+        ),
     )
     charge_level: float = Field(
         default=0, description="Current battery charge level (Wh)"
@@ -45,7 +59,27 @@ class Battery(ConfigModel):
         if "watthour" not in values:
             values["watthour"] = values.get("amphour", 20) * values.get("voltage", 28)
 
+        if values.get("recharge_clear_threshold") is None:
+            recharge_threshold = float(
+                values.get("recharge_threshold", DEFAULT_RECHARGE_THRESHOLD)
+            )
+            values["recharge_clear_threshold"] = min(
+                1.0, recharge_threshold + DEFAULT_RECHARGE_CLEAR_HYSTERESIS
+            )
+
         return values
+
+    @model_validator(mode="after")
+    def validate_recharge_thresholds(self) -> "Battery":
+        """Validate recharge hysteresis thresholds."""
+        if self.recharge_clear_threshold is None:
+            raise ValueError("recharge_clear_threshold must be set")
+        if self.recharge_clear_threshold < self.recharge_threshold:
+            raise ValueError(
+                "recharge_clear_threshold must be greater than or equal to "
+                "recharge_threshold"
+            )
+        return self
 
     def __init__(self, **data: dict[str, Any]) -> None:
         super().__init__(**data)
@@ -72,18 +106,27 @@ class Battery(ConfigModel):
     @property
     def battery_alert(self) -> bool:
         """Is the battery in an alert status caused by discharge"""
+        threshold_tolerance = BATTERY_ALERT_THRESHOLD_TOLERANCE
+        battery_level = self.battery_level
+
         # Depth of discharge > max_depth_of_discharge, start an emergency recharge state
         if self.below_minimum_charge_level:
             self.emergency_recharge = True
             return True
 
-        # Alert is True when battery level is below recharge threshold
-        if self.battery_level < self.recharge_threshold:
+        # Start recharge at the lower threshold, then keep it latched until the
+        # higher clear threshold is reached. This avoids charge/resume chatter.
+        if battery_level < self.recharge_threshold - threshold_tolerance:
             self.emergency_recharge = True
             return True
-        else:
-            self.emergency_recharge = False
-            return False
+        if (
+            self.emergency_recharge
+            and battery_level < self.recharge_clear_threshold - threshold_tolerance
+        ):
+            return True
+
+        self.emergency_recharge = False
+        return False
 
     @property
     def minimum_charge_level(self) -> float:
