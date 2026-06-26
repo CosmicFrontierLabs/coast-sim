@@ -1733,6 +1733,11 @@ class QueueDITL(DITLMixin, DITLStats):
         entry.ss_max = contact_duration
         entry.exptime = contact_duration
         entry.station = station
+        station_location = self._gsp_station_location(station)
+        if station_location is not None:
+            entry.station_lat_deg, entry.station_lon_deg, entry.station_alt_m = (
+                station_location
+            )
         entry.contact_begin = pass_begin
         entry.contact_end = pass_end
         entry.track_start_ra = gspass.gsstartra
@@ -1758,6 +1763,21 @@ class QueueDITL(DITLMixin, DITLStats):
             acs_mode=self.acs.acsmode,
         )
         return True
+
+    def _gsp_station_location(self, station: str) -> tuple[float, float, float] | None:
+        try:
+            ground_station = self.config.ground_stations.get(station)
+        except (AttributeError, KeyError):
+            return None
+
+        try:
+            return (
+                float(ground_station.latitude_deg),
+                float(ground_station.longitude_deg),
+                float(getattr(ground_station, "elevation_m", 0.0)),
+            )
+        except (AttributeError, TypeError, ValueError):
+            return None
 
     def _planned_gsp_entry(self, gspass: Pass) -> PlanEntry | None:
         station, pass_begin, pass_end = self._ground_pass_key(gspass)
