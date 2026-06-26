@@ -246,6 +246,112 @@ class TestACSStateManagement:
         assert acs.config.fault_management.events[-1].event_type == "safe_mode_trigger"
         assert acs.config.fault_management.events[-1].name == "idle_attitude_constraint"
 
+    def test_constraint_logging_uses_idle_scopes(self, acs) -> None:
+        """Legacy CONSTRAINT telemetry should respect the current ACS mode scopes."""
+        science_slew = Slew(config=acs.config)
+        science_slew.obstype = ObsType.PPT
+        science_slew.obsid = 42
+        science_slew.at = Mock(ra=10.0, dec=20.0, roll=0.0)
+        acs.last_slew = science_slew
+        acs.acsmode = ACSMode.IDLE
+        acs.roll = 30.0
+        acs.config.attitude_constraint_scopes_for_mode = Mock(
+            return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
+        )
+        acs.config.spacecraft_bus.star_trackers = Mock()
+        acs.config.spacecraft_bus.star_trackers.num_trackers = Mock(return_value=0)
+        acs.constraint.in_constraint = Mock(return_value=True)
+        acs.constraint.in_panel = Mock(return_value=True)
+        acs.constraint.in_star_tracker_hard = Mock(return_value=False)
+        acs.constraint.in_radiator_hard = Mock(return_value=False)
+        acs.constraint.in_telescope_hard = Mock(return_value=False)
+        acs._log_or_print = Mock()
+
+        acs._check_constraints(1000.0)
+
+        acs.constraint.in_constraint.assert_not_called()
+        assert science_slew.at.roll == 0.0
+        assert not any(
+            call.args[1] == "CONSTRAINT" for call in acs._log_or_print.call_args_list
+        )
+
+    def test_constraint_logging_reports_power_generation_scope(self, acs) -> None:
+        """Telemetry should still report power-generation scoped violations."""
+        science_slew = Slew(config=acs.config)
+        science_slew.obstype = ObsType.PPT
+        science_slew.obsid = 42
+        science_slew.at = Mock(ra=10.0, dec=20.0, roll=0.0)
+        acs.last_slew = science_slew
+        acs.acsmode = ACSMode.SCIENCE
+        acs.roll = 30.0
+        acs.config.attitude_constraint_scopes_for_mode = Mock(
+            return_value=[AttitudeConstraintScope.POWER_GENERATION]
+        )
+        acs.config.spacecraft_bus.star_trackers = Mock()
+        acs.config.spacecraft_bus.star_trackers.num_trackers = Mock(return_value=0)
+        acs.constraint.in_constraint = Mock(return_value=False)
+        acs.constraint.in_panel = Mock(return_value=True)
+        acs.constraint.in_star_tracker_hard = Mock(return_value=False)
+        acs.constraint.in_radiator_hard = Mock(return_value=False)
+        acs.constraint.in_telescope_hard = Mock(return_value=False)
+        acs._log_or_print = Mock()
+
+        acs._check_constraints(1000.0)
+
+        acs.constraint.in_constraint.assert_not_called()
+        assert science_slew.at.roll == 0.0
+        constraint_calls = [
+            call
+            for call in acs._log_or_print.call_args_list
+            if call.args[1] == "CONSTRAINT"
+        ]
+        assert len(constraint_calls) == 1
+        assert "Panel" in constraint_calls[0].args[2]
+        assert "power_generation" in constraint_calls[0].args[2]
+
+    def test_constraint_logging_reports_all_scoped_violations(self, acs) -> None:
+        """Telemetry should report every violation within the active scopes."""
+        science_slew = Slew(config=acs.config)
+        science_slew.obstype = ObsType.PPT
+        science_slew.obsid = 42
+        science_slew.at = Mock(ra=10.0, dec=20.0, roll=0.0)
+        acs.last_slew = science_slew
+        acs.acsmode = ACSMode.SCIENCE
+        acs.roll = 30.0
+        acs.config.attitude_constraint_scopes_for_mode = Mock(
+            return_value=[
+                AttitudeConstraintScope.IMAGING_QUALITY,
+                AttitudeConstraintScope.POWER_GENERATION,
+            ]
+        )
+        acs.config.spacecraft_bus.star_trackers = Mock()
+        acs.config.spacecraft_bus.star_trackers.num_trackers = Mock(return_value=0)
+        acs.constraint.in_constraint = Mock(return_value=False)
+        acs.constraint.in_sun = Mock(return_value=True)
+        acs.constraint.in_earth = Mock(return_value=True)
+        acs.constraint.in_moon = Mock(return_value=False)
+        acs.constraint.in_anti_sun = Mock(return_value=False)
+        acs.constraint.in_orbit = Mock(return_value=False)
+        acs.constraint.in_star_tracker_soft = Mock(return_value=False)
+        acs.constraint.in_panel = Mock(return_value=True)
+        acs.constraint.in_star_tracker_hard = Mock(return_value=False)
+        acs.constraint.in_radiator_hard = Mock(return_value=False)
+        acs.constraint.in_telescope_hard = Mock(return_value=False)
+        acs._log_or_print = Mock()
+
+        acs._check_constraints(1000.0)
+
+        acs.constraint.in_constraint.assert_not_called()
+        constraint_calls = [
+            call
+            for call in acs._log_or_print.call_args_list
+            if call.args[1] == "CONSTRAINT"
+        ]
+        assert len(constraint_calls) == 1
+        description = constraint_calls[0].args[2]
+        assert "Sun Earth Limb Panel" in description
+        assert "imaging_quality+power_generation" in description
+
 
 class TestACSPassRequestManagement:
     """Test pass request management."""
