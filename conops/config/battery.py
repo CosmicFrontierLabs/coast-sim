@@ -6,6 +6,11 @@ from ..common import ChargeState
 from ._base import ConfigModel
 
 
+DEFAULT_RECHARGE_THRESHOLD = 0.95
+DEFAULT_RECHARGE_CLEAR_HYSTERESIS = 0.005
+BATTERY_ALERT_THRESHOLD_TOLERANCE = 1e-12
+
+
 class Battery(ConfigModel):
     """It's a fake battery"""
 
@@ -28,14 +33,15 @@ class Battery(ConfigModel):
         default=0.3, description="Maximum allowed depth of discharge (0.0-1.0)"
     )
     recharge_threshold: float = Field(
-        default=0.95,
+        default=DEFAULT_RECHARGE_THRESHOLD,
         description="Battery level fraction that starts emergency recharge (0.0-1.0)",
     )
     recharge_clear_threshold: float | None = Field(
         default=None,
         description=(
             "Battery level fraction that clears emergency recharge. Defaults to "
-            "recharge_threshold + 0.005, capped at 1.0."
+            "recharge_threshold + "
+            f"{DEFAULT_RECHARGE_CLEAR_HYSTERESIS:g}, capped at 1.0."
         ),
     )
     charge_level: float = Field(
@@ -54,8 +60,12 @@ class Battery(ConfigModel):
             values["watthour"] = values.get("amphour", 20) * values.get("voltage", 28)
 
         if values.get("recharge_clear_threshold") is None:
-            recharge_threshold = float(values.get("recharge_threshold", 0.95))
-            values["recharge_clear_threshold"] = min(1.0, recharge_threshold + 0.005)
+            recharge_threshold = float(
+                values.get("recharge_threshold", DEFAULT_RECHARGE_THRESHOLD)
+            )
+            values["recharge_clear_threshold"] = min(
+                1.0, recharge_threshold + DEFAULT_RECHARGE_CLEAR_HYSTERESIS
+            )
 
         return values
 
@@ -96,7 +106,7 @@ class Battery(ConfigModel):
     @property
     def battery_alert(self) -> bool:
         """Is the battery in an alert status caused by discharge"""
-        threshold_tolerance = 1e-12
+        threshold_tolerance = BATTERY_ALERT_THRESHOLD_TOLERANCE
         battery_level = self.battery_level
 
         # Depth of discharge > max_depth_of_discharge, start an emergency recharge state
