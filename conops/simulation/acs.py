@@ -13,7 +13,7 @@ from ..common import (
 from ..common.vector import angular_separation
 from ..config import AttitudeConstraintScope, FaultEvent, MissionConfig
 from ..config.constraint import (
-    attitude_constraint_name_for_scopes,
+    attitude_constraint_names_for_scopes,
     attitude_constraint_scope_label,
     in_attitude_constraint_scopes,
 )
@@ -916,7 +916,7 @@ class ACS:
             assert self.last_slew.at is not None
 
             scopes = self.config.attitude_constraint_scopes_for_mode(self.acsmode)
-            constraint_name = attitude_constraint_name_for_scopes(
+            constraint_names = attitude_constraint_names_for_scopes(
                 self.constraint,
                 scopes,
                 self.last_slew.at.ra,
@@ -926,7 +926,7 @@ class ACS:
                 acs_mode=self.acsmode,
             )
 
-            if constraint_name is not None:
+            if constraint_names:
                 self._log_or_print(
                     utime,
                     "CONSTRAINT",
@@ -936,7 +936,7 @@ class ACS:
                         self.last_slew.at.ra,
                         self.last_slew.at.dec,
                         self.last_slew.obsid,
-                        constraint_name,
+                        " ".join(constraint_names),
                         attitude_constraint_scope_label(scopes),
                     ),
                 )
