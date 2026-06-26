@@ -2354,6 +2354,47 @@ class TestPlanExecutionValidation:
         assert mismatches == []
         queue_ditl.constraint.in_constraint.assert_not_called()
 
+    def test_housekeeping_separates_global_from_scoped_constraint_violations(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.config.attitude_constraint_scopes_for_mode = Mock(
+            return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
+        )
+        queue_ditl.constraint.in_constraint = Mock(return_value=True)
+        queue_ditl.constraint.in_earth = Mock(return_value=True)
+        queue_ditl.constraint.in_star_tracker_hard = Mock(return_value=False)
+        queue_ditl.constraint.in_radiator_hard = Mock(return_value=False)
+        queue_ditl.constraint.in_telescope_hard = Mock(return_value=False)
+
+        hk = queue_ditl._create_housekeeping_record(
+            1000.0, 10.0, 20.0, 30.0, ACSMode.IDLE
+        )
+
+        assert hk.in_constraint == "Earth Limb"
+        assert hk.attitude_constraint is None
+        assert hk.attitude_constraint_scope is None
+        assert queue_ditl._attitude_constraint_violations == [None]
+
+    def test_housekeeping_exports_scoped_constraint_violation(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.config.attitude_constraint_scopes_for_mode = Mock(
+            return_value=[AttitudeConstraintScope.POWER_GENERATION]
+        )
+        queue_ditl.constraint.in_constraint = Mock(return_value=False)
+        queue_ditl.constraint.in_panel = Mock(return_value=True)
+
+        hk = queue_ditl._create_housekeeping_record(
+            1000.0, 10.0, 20.0, 30.0, ACSMode.CHARGING
+        )
+
+        assert hk.in_constraint is None
+        assert hk.attitude_constraint == "Panel"
+        assert hk.attitude_constraint_scope == "power_generation"
+        assert queue_ditl._attitude_constraint_violations == [
+            ("Panel", "power_generation")
+        ]
+
     def test_imaging_quality_scope_flags_imaging_constraint_violations(
         self, queue_ditl: QueueDITL
     ) -> None:

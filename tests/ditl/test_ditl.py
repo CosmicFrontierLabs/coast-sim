@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pytest
 
-from conops import DITL, ACSMode, DITLs
+from conops import DITL, ACSMode, AttitudeConstraintScope, DITLs
 
 
 class TestDITLInit:
@@ -90,6 +90,50 @@ class TestDITLCalc:
         assert len(ditl.batterylevel) == simlen
         assert len(ditl.batteryalert) == simlen
         assert len(ditl.power) == simlen
+
+    def test_calc_housekeeping_separates_global_from_scoped_constraints(
+        self, ditl: DITL
+    ) -> None:
+        """DITL housekeeping should keep legacy and scoped violations distinct."""
+        ditl.config.attitude_constraint_scopes_for_mode = Mock(
+            return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
+        )
+        ditl.constraint.in_constraint = Mock(return_value=True)
+        ditl.constraint.in_star_tracker_hard = Mock(return_value=False)
+        ditl.constraint.in_radiator_hard = Mock(return_value=False)
+        ditl.constraint.in_telescope_hard = Mock(return_value=False)
+        ditl.constraint.in_sun = Mock(return_value=False)
+        ditl.constraint.in_earth = Mock(return_value=True)
+        ditl.constraint.in_moon = Mock(return_value=False)
+        ditl.constraint.in_anti_sun = Mock(return_value=False)
+        ditl.constraint.in_orbit = Mock(return_value=False)
+        ditl.constraint.in_star_tracker_soft = Mock(return_value=False)
+        ditl.constraint.in_panel = Mock(return_value=False)
+        ditl.constraint.in_ground_contact = Mock(return_value=False)
+
+        ditl.calc()
+
+        hk = ditl.telemetry.housekeeping[0]
+        assert hk.in_constraint == "Earth Limb"
+        assert hk.attitude_constraint is None
+        assert hk.attitude_constraint_scope is None
+
+    def test_calc_housekeeping_exports_scoped_constraint_violation(
+        self, ditl: DITL
+    ) -> None:
+        """DITL housekeeping should export active scoped attitude violations."""
+        ditl.config.attitude_constraint_scopes_for_mode = Mock(
+            return_value=[AttitudeConstraintScope.POWER_GENERATION]
+        )
+        ditl.constraint.in_constraint = Mock(return_value=False)
+        ditl.constraint.in_panel = Mock(return_value=True)
+
+        ditl.calc()
+
+        hk = ditl.telemetry.housekeeping[0]
+        assert hk.in_constraint is None
+        assert hk.attitude_constraint == "Panel"
+        assert hk.attitude_constraint_scope == "power_generation"
 
 
 class TestDITLSimulationLoop:
