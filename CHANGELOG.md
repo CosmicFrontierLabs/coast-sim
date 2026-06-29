@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.7.0](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.6.0...v0.7.0) (2026-06-29)
+
+
+### Features
+
+* Add default plan output regression check ([#212](https://github.com/CosmicFrontierLabs/coast-sim/issues/212)) ([9eb749d](https://github.com/CosmicFrontierLabs/coast-sim/commit/9eb749d4d5377fc0342083fec4377ef6d96f2461))
+* Plan constraint-safe ground station roll phases ([#210](https://github.com/CosmicFrontierLabs/coast-sim/issues/210)) ([9f22995](https://github.com/CosmicFrontierLabs/coast-sim/commit/9f22995b4f9f6648dda9abde24ef051840177a06))
+* reward collection time during target selection ([#190](https://github.com/CosmicFrontierLabs/coast-sim/issues/190)) ([24e13ec](https://github.com/CosmicFrontierLabs/coast-sim/commit/24e13ecb12464ca0459383410b44e55032563acd))
+* **visualization:** Add Spacecraft 3d model based on configuration parameters ([#122](https://github.com/CosmicFrontierLabs/coast-sim/issues/122)) ([a90d067](https://github.com/CosmicFrontierLabs/coast-sim/commit/a90d067ee01a535d1c3d49f297a69efe724af97f))
+
+
+### Bug Fixes
+
+* `PlanExecutionMismatchError` from plan/execution bookkeeping drift ([#192](https://github.com/CosmicFrontierLabs/coast-sim/issues/192)) ([ba281e4](https://github.com/CosmicFrontierLabs/coast-sim/commit/ba281e4b4e00e18ca541564d75af18f8fdea2169))
+* cancel superseded ACS slew commands ([#144](https://github.com/CosmicFrontierLabs/coast-sim/issues/144)) ([ae57f2c](https://github.com/CosmicFrontierLabs/coast-sim/commit/ae57f2cc1d2fbcf46a231261b70087e6ccbaa395))
+* clear self.ppt when terminating an immediately-constrained charging PPT ([#182](https://github.com/CosmicFrontierLabs/coast-sim/issues/182)) ([70715d2](https://github.com/CosmicFrontierLabs/coast-sim/commit/70715d2c6f64ec42acc00dc97bd33d2733efe134))
+* **documentation:** catch up on updates to documentation ([#176](https://github.com/CosmicFrontierLabs/coast-sim/issues/176)) ([cb76c8b](https://github.com/CosmicFrontierLabs/coast-sim/commit/cb76c8bedcd35d35300fd78d6d730b325fb0e302))
+* enforce constraint-safe idle holds ([#191](https://github.com/CosmicFrontierLabs/coast-sim/issues/191)) ([dc3987d](https://github.com/CosmicFrontierLabs/coast-sim/commit/dc3987d0617fd48c331eaef9aae467a507653440))
+* Enforce full-mission attitude constraints ([#209](https://github.com/CosmicFrontierLabs/coast-sim/issues/209)) ([d008968](https://github.com/CosmicFrontierLabs/coast-sim/commit/d0089689956048719117b12b3dd4637d53f3a5f5))
+* export GSP tracking attitude metadata ([#146](https://github.com/CosmicFrontierLabs/coast-sim/issues/146)) ([9315949](https://github.com/CosmicFrontierLabs/coast-sim/commit/9315949f7a4f23f280cf7c43868abeec09e56680))
+* export scoped attitude constraint telemetry ([#216](https://github.com/CosmicFrontierLabs/coast-sim/issues/216)) ([20eb451](https://github.com/CosmicFrontierLabs/coast-sim/commit/20eb45124a40477b282c4b8db17a6956e65a2f47))
+* keep QueueDITL target state aligned after command churn ([#184](https://github.com/CosmicFrontierLabs/coast-sim/issues/184)) ([fa875db](https://github.com/CosmicFrontierLabs/coast-sim/commit/fa875db2d2a796b556e3b0aef3005aa4b04f31d5))
+* log recharge-threshold interruptions as charging ([#213](https://github.com/CosmicFrontierLabs/coast-sim/issues/213)) ([a098b0c](https://github.com/CosmicFrontierLabs/coast-sim/commit/a098b0ca1309b54ae160b2670b81c8004292c50c))
+* only guard science dispatch below battery floor ([#188](https://github.com/CosmicFrontierLabs/coast-sim/issues/188)) ([a2bc559](https://github.com/CosmicFrontierLabs/coast-sim/commit/a2bc5597939d1c22aa5a021bc9d830d1a7c41143))
+* prevent stale plan entry slew sync ([#166](https://github.com/CosmicFrontierLabs/coast-sim/issues/166)) ([34d42be](https://github.com/CosmicFrontierLabs/coast-sim/commit/34d42be3c801b2825fad00cd5b1375c9d82d40e1))
+* refine hard-keepout validation and fault management ([#194](https://github.com/CosmicFrontierLabs/coast-sim/issues/194)) ([a41b914](https://github.com/CosmicFrontierLabs/coast-sim/commit/a41b914e364084b2e79437f3cd1e14a063c3f2bd))
+* retry equal-merit target selection ([#175](https://github.com/CosmicFrontierLabs/coast-sim/issues/175)) ([3d3130c](https://github.com/CosmicFrontierLabs/coast-sim/commit/3d3130ce0da9a06054cb31a9671a1c1403a771a7))
+* scope ACS constraint logging ([#215](https://github.com/CosmicFrontierLabs/coast-sim/issues/215)) ([d4b571b](https://github.com/CosmicFrontierLabs/coast-sim/commit/d4b571bbbb196754d9e4976238f483894792089e))
+* sync plan slew metadata with ACS execution ([#145](https://github.com/CosmicFrontierLabs/coast-sim/issues/145)) ([47d88b3](https://github.com/CosmicFrontierLabs/coast-sim/commit/47d88b35f607d06b2f4d0153437f4a35793c27b6))
+* track GSP contacts with configured antenna vector ([#177](https://github.com/CosmicFrontierLabs/coast-sim/issues/177)) ([9e7be74](https://github.com/CosmicFrontierLabs/coast-sim/commit/9e7be74bcb239baf0c0d93e610b2691cc660c57f))
+* use cheap pass slew trigger estimates ([#198](https://github.com/CosmicFrontierLabs/coast-sim/issues/198)) ([c8c86fc](https://github.com/CosmicFrontierLabs/coast-sim/commit/c8c86fc954079c2e2960f3b13fcea4838730e739))
+* validate executed science/contact activity before export ([#169](https://github.com/CosmicFrontierLabs/coast-sim/issues/169)) ([5a85efe](https://github.com/CosmicFrontierLabs/coast-sim/commit/5a85efe0ebaf84b309dc9eda055ab47afad6cdb3))
+* validate exported plan entries against ACS execution ([#147](https://github.com/CosmicFrontierLabs/coast-sim/issues/147)) ([daf50ae](https://github.com/CosmicFrontierLabs/coast-sim/commit/daf50ae2f093a600e940559fbfecfd939d7094ef))
+
+
+### Performance Improvements
+
+* various queue ditl optimizations ([#211](https://github.com/CosmicFrontierLabs/coast-sim/issues/211)) ([ec89809](https://github.com/CosmicFrontierLabs/coast-sim/commit/ec89809c3c1f5d40522570cf67a3da0627678ba7))
+
+
+### Documentation
+
+* seed quick DITL example targets ([#185](https://github.com/CosmicFrontierLabs/coast-sim/issues/185)) ([e723806](https://github.com/CosmicFrontierLabs/coast-sim/commit/e7238061e214aa0ca5594b350d830e44f5446eef))
+
 ## [0.6.0](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.5.0...v0.6.0) (2026-05-17)
 
 
