@@ -8,6 +8,7 @@ import pytest
 from conops import AttitudeConstraintScope, Constraint, DefaultConstraint
 from conops.config.constraint import (
     attitude_constraint_name_for_scopes,
+    attitude_constraint_names_for_scopes,
     in_attitude_constraint_scopes,
 )
 
@@ -348,6 +349,29 @@ class TestConstraintScopes:
             )
             is None
         )
+
+    @patch("conops.Constraint.in_panel")
+    @patch("conops.Constraint.in_earth")
+    @patch("conops.Constraint.in_sun")
+    def test_scope_names_helper_reports_all_configured_violations(
+        self, mock_sun, mock_earth, mock_panel
+    ) -> None:
+        """Central scope names helper reports every active scoped constraint."""
+        constraint = Constraint()
+        mock_sun.return_value = True
+        mock_earth.return_value = True
+        mock_panel.return_value = True
+
+        assert attitude_constraint_names_for_scopes(
+            constraint,
+            [
+                AttitudeConstraintScope.IMAGING_QUALITY,
+                AttitudeConstraintScope.POWER_GENERATION,
+            ],
+            45.0,
+            30.0,
+            1700000000.0,
+        ) == ["Sun", "Earth Limb", "Panel"]
 
 
 class TestRollIndependentConstraint:

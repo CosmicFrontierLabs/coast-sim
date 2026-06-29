@@ -1264,6 +1264,36 @@ def imaging_quality_attitude_constraint_name(
     return None
 
 
+def imaging_quality_attitude_constraint_names(
+    constraint: Constraint,
+    ra: float,
+    dec: float,
+    utime: float,
+    target_roll: float | None = None,
+    acs_mode: ACSMode | int | None = None,
+) -> list[str]:
+    """Return all violated imaging-quality constraint names."""
+    names = []
+    if constraint.in_sun(ra, dec, utime, target_roll=target_roll):
+        names.append("Sun")
+    if constraint.in_earth(ra, dec, utime, target_roll=target_roll):
+        names.append("Earth Limb")
+    if constraint.in_moon(ra, dec, utime, target_roll=target_roll):
+        names.append("Moon")
+    if constraint.in_anti_sun(ra, dec, utime, target_roll=target_roll):
+        names.append("Anti-Sun")
+    if constraint.in_orbit(ra, dec, utime, target_roll=target_roll):
+        names.append("Orbit")
+    if constraint.in_star_tracker_soft(
+        ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
+    ):
+        names.append("ST Soft")
+    if _has_real_constraint_method(constraint, "in_explicit_science"):
+        if constraint.in_explicit_science(ra, dec, utime, target_roll=target_roll):
+            names.append("Science")
+    return names
+
+
 def power_generation_attitude_constraint_name(
     constraint: Constraint,
     ra: float,
@@ -1278,6 +1308,20 @@ def power_generation_attitude_constraint_name(
     return None
 
 
+def power_generation_attitude_constraint_names(
+    constraint: Constraint,
+    ra: float,
+    dec: float,
+    utime: float,
+    target_roll: float | None = None,
+    acs_mode: ACSMode | int | None = None,
+) -> list[str]:
+    """Return all violated power-generation constraint names."""
+    if constraint.in_panel(ra, dec, utime, target_roll=target_roll):
+        return ["Panel"]
+    return []
+
+
 def ground_contact_attitude_constraint_name(
     constraint: Constraint,
     ra: float,
@@ -1290,6 +1334,20 @@ def ground_contact_attitude_constraint_name(
     if constraint.in_ground_contact(ra, dec, utime, target_roll=target_roll):
         return "Ground Contact"
     return None
+
+
+def ground_contact_attitude_constraint_names(
+    constraint: Constraint,
+    ra: float,
+    dec: float,
+    utime: float,
+    target_roll: float | None = None,
+    acs_mode: ACSMode | int | None = None,
+) -> list[str]:
+    """Return all violated ground-contact constraint names."""
+    if constraint.in_ground_contact(ra, dec, utime, target_roll=target_roll):
+        return ["Ground Contact"]
+    return []
 
 
 def hardware_safety_attitude_constraint_name(
@@ -1313,6 +1371,30 @@ def hardware_safety_attitude_constraint_name(
     if constraint.in_telescope_hard(ra, dec, utime, target_roll=target_roll):
         return "Telescope Hard"
     return None
+
+
+def hardware_safety_attitude_constraint_names(
+    constraint: Constraint,
+    ra: float,
+    dec: float,
+    utime: float,
+    target_roll: float | None = None,
+    acs_mode: ACSMode | int | None = None,
+) -> list[str]:
+    """Return all violated hardware-safety constraint names."""
+    names = []
+    if _has_real_constraint_method(constraint, "in_explicit_safety"):
+        if constraint.in_explicit_safety(ra, dec, utime, target_roll=target_roll):
+            names.append("Safety")
+    if constraint.in_star_tracker_hard(
+        ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
+    ):
+        names.append("ST Hard")
+    if constraint.in_radiator_hard(ra, dec, utime, target_roll=target_roll):
+        names.append("Radiator Hard")
+    if constraint.in_telescope_hard(ra, dec, utime, target_roll=target_roll):
+        names.append("Telescope Hard")
+    return names
 
 
 def attitude_constraint_name_for_scope(
@@ -1345,6 +1427,36 @@ def attitude_constraint_name_for_scope(
     raise ValueError(f"Unknown attitude constraint scope: {scope_value!r}")
 
 
+def attitude_constraint_names_for_scope(
+    constraint: Constraint,
+    scope: str | Enum,
+    ra: float,
+    dec: float,
+    utime: float,
+    target_roll: float | None = None,
+    acs_mode: ACSMode | int | None = None,
+) -> list[str]:
+    """Return all violated constraint names for one configured scope."""
+    scope_value = _attitude_scope_value(scope)
+    if scope_value == AttitudeConstraintScope.HARDWARE_SAFETY.value:
+        return hardware_safety_attitude_constraint_names(
+            constraint, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
+        )
+    if scope_value == AttitudeConstraintScope.IMAGING_QUALITY.value:
+        return imaging_quality_attitude_constraint_names(
+            constraint, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
+        )
+    if scope_value == AttitudeConstraintScope.POWER_GENERATION.value:
+        return power_generation_attitude_constraint_names(
+            constraint, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
+        )
+    if scope_value == AttitudeConstraintScope.GROUND_CONTACT.value:
+        return ground_contact_attitude_constraint_names(
+            constraint, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
+        )
+    raise ValueError(f"Unknown attitude constraint scope: {scope_value!r}")
+
+
 def attitude_constraint_name_for_scopes(
     constraint: Constraint,
     scopes: list[str | Enum],
@@ -1368,6 +1480,32 @@ def attitude_constraint_name_for_scopes(
         if name is not None:
             return name
     return None
+
+
+def attitude_constraint_names_for_scopes(
+    constraint: Constraint,
+    scopes: list[str | Enum],
+    ra: float,
+    dec: float,
+    utime: float,
+    target_roll: float | None = None,
+    acs_mode: ACSMode | int | None = None,
+) -> list[str]:
+    """Return all violated constraint names for configured scopes."""
+    names = []
+    for scope in _attitude_scope_values(scopes):
+        names.extend(
+            attitude_constraint_names_for_scope(
+                constraint,
+                scope,
+                ra,
+                dec,
+                utime,
+                target_roll=target_roll,
+                acs_mode=acs_mode,
+            )
+        )
+    return names
 
 
 def science_attitude_constraint_name(

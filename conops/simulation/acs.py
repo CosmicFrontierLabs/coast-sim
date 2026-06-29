@@ -13,6 +13,7 @@ from ..common import (
 from ..common.vector import angular_separation
 from ..config import AttitudeConstraintScope, FaultEvent, MissionConfig
 from ..config.constraint import (
+    attitude_constraint_names_for_scopes,
     attitude_constraint_scope_label,
     in_attitude_constraint_scopes,
 )
@@ -911,45 +912,32 @@ class ACS:
             and self.last_slew.at is not None
             and not isinstance(self.last_slew.at, bool)
             and self.last_slew.obstype == ObsType.PPT
-            and self.constraint.in_constraint(
+        ):
+            assert self.last_slew.at is not None
+
+            scopes = self.config.attitude_constraint_scopes_for_mode(self.acsmode)
+            constraint_names = attitude_constraint_names_for_scopes(
+                self.constraint,
+                scopes,
                 self.last_slew.at.ra,
                 self.last_slew.at.dec,
                 utime,
                 target_roll=self.roll,
+                acs_mode=self.acsmode,
             )
-        ):
-            assert self.last_slew.at is not None
 
-            # Keep the target's stored roll in sync with the ACS locked roll.
-            self.last_slew.at.roll = self.roll
-
-            # Collect only the true constraints
-            true_constraints = []
-            if self.last_slew.at.in_moon(utime):
-                true_constraints.append("Moon")
-            if self.last_slew.at.in_sun(utime):
-                true_constraints.append("Sun")
-            if self.last_slew.at.in_earth(utime):
-                true_constraints.append("Earth")
-            if self.last_slew.at.in_panel(utime):
-                true_constraints.append("Panel")
-            if self.last_slew.at.in_star_tracker_hard(utime, acs_mode=self.acsmode):
-                true_constraints.append("ST Hard")
-            if self.last_slew.at.in_star_tracker_soft(utime, acs_mode=self.acsmode):
-                true_constraints.append("ST Soft")
-
-            # Print only if there are true constraints
-            if true_constraints:
+            if constraint_names:
                 self._log_or_print(
                     utime,
                     "CONSTRAINT",
-                    "%s: CONSTRAINT: RA=%s Dec=%s obsid=%s %s"
+                    "%s: CONSTRAINT: RA=%s Dec=%s obsid=%s %s (%s)"
                     % (
                         unixtime2date(utime),
                         self.last_slew.at.ra,
                         self.last_slew.at.dec,
                         self.last_slew.obsid,
-                        " ".join(true_constraints),
+                        " ".join(constraint_names),
+                        attitude_constraint_scope_label(scopes),
                     ),
                 )
         # Check star tracker constraints
