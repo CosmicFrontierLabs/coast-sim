@@ -33,6 +33,22 @@ from conops.config import (
 )
 
 
+def _mock_battery(
+    *,
+    max_depth_of_discharge: float = 0.3,
+    recharge_threshold: float = 0.95,
+    recharge_clear_threshold: float = 0.955,
+    capacity: float | None = None,
+) -> Mock:
+    battery = Mock(spec=Battery)
+    battery.max_depth_of_discharge = max_depth_of_discharge
+    battery.recharge_threshold = recharge_threshold
+    battery.recharge_clear_threshold = recharge_clear_threshold
+    if capacity is not None:
+        battery.capacity = capacity
+    return battery
+
+
 class TestConfig:
     """Test Config class initialization."""
 
@@ -163,8 +179,7 @@ class TestConfig:
         spacecraft_bus = Mock(spec=SpacecraftBus)
         solar_panel = Mock(spec=SolarPanelSet)
         payload = Mock(spec=Payload)
-        battery = Mock(spec=Battery)
-        battery.max_depth_of_discharge = 0.3  # Configure mock battery
+        battery = _mock_battery()
         constraint = Mock(spec=Constraint)
         panel_constraint_mock = Mock()
         panel_constraint_mock.solar_panel = None
@@ -192,8 +207,7 @@ class TestConfig:
         import pytest
         from pydantic import ValidationError
 
-        battery = Mock(spec=Battery)
-        battery.max_depth_of_discharge = 0.3  # Configure mock battery
+        battery = _mock_battery()
         config = MissionConfig(
             spacecraft_bus=Mock(spec=SpacecraftBus),
             solar_panel=Mock(spec=SolarPanelSet),
@@ -209,8 +223,7 @@ class TestConfig:
     def test_init_fault_management_defaults_adds_threshold(self) -> None:
         """Test init_fault_management_defaults adds battery_level threshold if not present."""
         fault_management = FaultManagement()
-        battery = Mock(spec=Battery)
-        battery.max_depth_of_discharge = 0.2
+        battery = _mock_battery(max_depth_of_discharge=0.2)
         config = MissionConfig(
             spacecraft_bus=Mock(spec=SpacecraftBus),
             solar_panel=Mock(spec=SolarPanelSet),
@@ -236,8 +249,7 @@ class TestConfig:
         fault_management.add_threshold(
             "battery_level", yellow=0.5, red=0.4, direction="below"
         )
-        battery = Mock(spec=Battery)
-        battery.max_depth_of_discharge = 0.2
+        battery = _mock_battery(max_depth_of_discharge=0.2)
         config = MissionConfig(
             spacecraft_bus=Mock(spec=SpacecraftBus),
             solar_panel=Mock(spec=SolarPanelSet),
@@ -314,7 +326,7 @@ class TestConfig:
             spacecraft_bus=Mock(spec=SpacecraftBus, mass=100.0),
             solar_panel=Mock(spec=SolarPanelSet, area=10.0),
             payload=Mock(spec=Payload, mass=50.0),
-            battery=Mock(spec=Battery, capacity=200.0, max_depth_of_discharge=0.8),
+            battery=_mock_battery(max_depth_of_discharge=0.8, capacity=200.0),
             constraint=Mock(spec=Constraint),
             ground_stations=Mock(spec=GroundStationRegistry),
         )
