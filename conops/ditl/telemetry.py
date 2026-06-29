@@ -118,7 +118,19 @@ class Housekeeping(BaseModel):
         ),
     )
     in_constraint: str | None = Field(
-        default=None, description="Name of currently violated constraint (if any)"
+        default=None,
+        description=(
+            "Name of any globally configured constraint violated by the attitude "
+            "(legacy diagnostic; not scoped by ACS mode)"
+        ),
+    )
+    attitude_constraint: str | None = Field(
+        default=None,
+        description="Name of active scoped attitude constraint violation (if any)",
+    )
+    attitude_constraint_scope: str | None = Field(
+        default=None,
+        description="Configured attitude constraint scope label for active violation",
     )
     ppt_unavailable: bool | None = Field(
         default=None,
@@ -372,6 +384,16 @@ class HousekeepingList(list[Housekeeping]):
     def in_constraint(self) -> list[str | None]:
         """Get violated constraint names from all housekeeping records."""
         return [hk.in_constraint for hk in self]
+
+    @property
+    def attitude_constraint(self) -> list[str | None]:
+        """Get active scoped attitude constraint violations from all records."""
+        return [hk.attitude_constraint for hk in self]
+
+    @property
+    def attitude_constraint_scope(self) -> list[str | None]:
+        """Get active scoped attitude constraint labels from all records."""
+        return [hk.attitude_constraint_scope for hk in self]
 
     @property
     def radiator_hard_violations(self) -> list[int | None]:

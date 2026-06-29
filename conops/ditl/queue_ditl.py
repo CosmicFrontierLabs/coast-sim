@@ -1177,8 +1177,9 @@ class QueueDITL(DITLMixin, DITLStats):
             target_roll=roll,
             acs_mode=mode,
         )
+        scope_label = attitude_constraint_scope_label(scopes)
         _constraint_violation = (
-            (scope_constraint_name, attitude_constraint_scope_label(scopes))
+            (scope_constraint_name, scope_label)
             if scope_constraint_name is not None
             else None
         )
@@ -1242,6 +1243,10 @@ class QueueDITL(DITLMixin, DITLStats):
                 else None
             ),
             in_constraint=in_constraint_name,
+            attitude_constraint=scope_constraint_name,
+            attitude_constraint_scope=scope_label
+            if scope_constraint_name is not None
+            else None,
             ppt_unavailable=self._ppt_unavailable,
             radiator_hard_violations=self.acs.radiator_hard_violations,
             telescope_hard_violations=self.acs.telescope_hard_violations,
