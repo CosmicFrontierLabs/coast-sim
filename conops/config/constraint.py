@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from enum import Enum
 from functools import cached_property, lru_cache
 from typing import cast
@@ -1022,7 +1023,7 @@ def _attitude_scope_value(scope: str | Enum) -> str:
     return scope
 
 
-def _attitude_scope_values(scopes: list[str | Enum]) -> list[str]:
+def _attitude_scope_values(scopes: Sequence[str | Enum]) -> list[str]:
     values: list[str] = []
     for scope in scopes:
         value = _attitude_scope_value(scope)
@@ -1031,7 +1032,7 @@ def _attitude_scope_values(scopes: list[str | Enum]) -> list[str]:
     return values
 
 
-def attitude_constraint_scope_label(scopes: list[str | Enum]) -> str:
+def attitude_constraint_scope_label(scopes: Sequence[str | Enum]) -> str:
     """Return a stable label for a mode's configured constraint scopes."""
     values = _attitude_scope_values(scopes)
     return "+".join(values) if values else "none"
@@ -1151,7 +1152,7 @@ def in_attitude_constraint_scope(
 
 def in_attitude_constraint_scopes(
     constraint: Constraint,
-    scopes: list[str | Enum],
+    scopes: Sequence[str | Enum],
     ra: float,
     dec: float,
     utime: float,
@@ -1459,7 +1460,7 @@ def attitude_constraint_names_for_scope(
 
 def attitude_constraint_name_for_scopes(
     constraint: Constraint,
-    scopes: list[str | Enum],
+    scopes: Sequence[str | Enum],
     ra: float,
     dec: float,
     utime: float,
@@ -1484,7 +1485,7 @@ def attitude_constraint_name_for_scopes(
 
 def attitude_constraint_names_for_scopes(
     constraint: Constraint,
-    scopes: list[str | Enum],
+    scopes: Sequence[str | Enum],
     ra: float,
     dec: float,
     utime: float,
@@ -1572,7 +1573,7 @@ def all_attitude_constraint_name(
 
 def in_attitude_constraint_scopes_batch(
     constraint: Constraint,
-    scopes: list[str | Enum],
+    scopes: Sequence[str | Enum],
     ras: list[float],
     decs: list[float],
     utime: float,

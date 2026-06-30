@@ -1,6 +1,6 @@
 from typing import Any
 
-from pydantic import Field, model_validator
+from pydantic import Field, PrivateAttr, model_validator
 
 from ..common import ChargeState
 from ._base import ConfigModel
@@ -38,6 +38,8 @@ class Battery(ConfigModel):
         description="Illumination threshold for emergency charging (0.0-1.0)",
     )
 
+    _last_charge_power: float = PrivateAttr(default=0.0)
+
     @model_validator(mode="before")
     @classmethod
     def set_defaults(cls, values: dict[str, Any]) -> dict[str, Any]:
@@ -47,11 +49,8 @@ class Battery(ConfigModel):
 
         return values
 
-    def __init__(self, **data: dict[str, Any]) -> None:
-        super().__init__(**data)
-
-        self.charge_level = self.watthour  # Start fully charged
-        self._last_charge_power = 0.0  # Track last charge power for state determination
+    def model_post_init(self, __context: object) -> None:
+        self.charge_level = self.watthour
 
     @property
     def charge_state(self) -> ChargeState:
