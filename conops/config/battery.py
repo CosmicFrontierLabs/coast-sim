@@ -5,7 +5,6 @@ from pydantic import Field, PrivateAttr, model_validator
 from ..common import ChargeState
 from ._base import ConfigModel
 
-
 DEFAULT_RECHARGE_THRESHOLD = 0.95
 DEFAULT_RECHARGE_CLEAR_HYSTERESIS = 0.005
 BATTERY_ALERT_THRESHOLD_TOLERANCE = 1e-12
@@ -118,9 +117,11 @@ class Battery(ConfigModel):
         if battery_level < self.recharge_threshold - threshold_tolerance:
             self.emergency_recharge = True
             return True
+        recharge_clear_threshold = self.recharge_clear_threshold
+        assert recharge_clear_threshold is not None
         if (
             self.emergency_recharge
-            and battery_level < self.recharge_clear_threshold - threshold_tolerance
+            and battery_level < recharge_clear_threshold - threshold_tolerance
         ):
             return True
 
