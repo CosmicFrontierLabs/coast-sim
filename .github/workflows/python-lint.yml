@@ -30,3 +30,21 @@ jobs:
         uses: astral-sh/ruff-action@v3
         with:
           args: format --check
+
+  mypy:
+    name: Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          activate-environment: true
+          python-version: "3.12"
+
+      - name: Install package with dev dependencies
+        run: uv pip install .[dev]
+
+      - name: Run mypy
+        run: mypy conops/
