@@ -51,6 +51,7 @@ def mock_config():
 
     cfg.constraint = Mock()
     cfg.constraint.ephem = ephem
+    cfg.random_seed = None
     # subsystems
     cfg.battery = Mock()
     cfg.spacecraft_bus = Mock()

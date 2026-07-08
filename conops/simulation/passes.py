@@ -36,7 +36,7 @@ def pass_slew_trigger_buffer(step_size: float) -> float:
 
 
 def _config_random_seed(config: MissionConfig) -> int | None:
-    seed = getattr(config, "random_seed", None)
+    seed = config.random_seed
     if seed is None or isinstance(seed, bool) or not isinstance(seed, Integral):
         return None
     return int(seed)
@@ -420,7 +420,6 @@ class PassTimes:
         rng: RandomSource | None = None,
     ):
         self.constraint = config.constraint
-        assert self.constraint is not None, "Constraint must be set for PassTimes class"
         assert self.constraint.ephem is not None, (
             "Ephemeris must be set for PassTimes class"
         )
@@ -444,7 +443,6 @@ class PassTimes:
             self.ground_stations = config.ground_stations
 
         # What makes a good pass
-        self.minelev = 10.0
         self.minlen = 8 * 60  # 10 mins
         self.schedule_chance = 1.0  # base chance of getting a pass
 
@@ -495,7 +493,7 @@ class PassTimes:
         return (rate * gspass.length, gspass.length, -gspass.begin)
 
     def _gsp_antenna_boresight_body(self) -> tuple[float, float, float] | None:
-        communications = getattr(self.config.spacecraft_bus, "communications", None)
+        communications = self.config.spacecraft_bus.communications
         if communications is None:
             return LEGACY_GSP_ANTENNA_BODY_VECTOR
         antenna = communications.antenna_pointing
@@ -741,7 +739,6 @@ class PassTimes:
     def get(self, year: int, day: int, length: int = 1) -> None:
         """Calculate the passes using rust_ephem GroundEphemeris for vectorized operations."""
         ustart = ics_date_conv(f"{year}-{day:03d}-00:00:00")
-        assert self.ephem is not None, "Ephemeris is not set"
         self.dropped_constraint_passes = []
 
         # Use binary search instead of np.where for finding start index
@@ -761,7 +758,7 @@ class PassTimes:
         # Process stations that are allowed to drive spacecraft GSP tracking. RF
         # uplink/downlink capability is modeled separately on each station.
         for station in self.ground_stations.stations:
-            if not getattr(station, "schedule_for_tracking", True):
+            if not station.schedule_for_tracking:
                 continue
 
             # Create GroundEphemeris for this station (vectorized ground station ephemeris)
@@ -804,11 +801,7 @@ class PassTimes:
             elevation_angle = np.degrees(np.arcsin(cos_angle))
 
             # Find passes using elevation threshold
-            min_elev = (
-                station.min_elevation_deg
-                if hasattr(station, "min_elevation_deg")
-                else self.minelev
-            )
+            min_elev = station.min_elevation_deg
 
             # Target is visible if elevation > min_elev
             is_visible = elevation_angle > min_elev
@@ -840,9 +833,7 @@ class PassTimes:
                 # Only consider passes that meet minimum length
                 if passlen >= self.minlen:
                     # Combine global and station-specific schedule probabilities
-                    combined_prob = self.schedule_chance * getattr(
-                        station, "schedule_probability", 1.0
-                    )
+                    combined_prob = self.schedule_chance * station.schedule_probability
                     should_schedule = combined_prob >= 1.0 or (
                         combined_prob > 0.0 and self._random() <= combined_prob
                     )
