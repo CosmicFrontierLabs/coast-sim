@@ -4172,6 +4172,9 @@ class TestCheckAndManagePasses:
         assert entry.exposure == 600
         assert entry.exptime == 600
         assert entry.station == "GS_TEST"
+        assert entry.station_lat_deg == pytest.approx(12.34)
+        assert entry.station_lon_deg == pytest.approx(-56.78)
+        assert entry.station_alt_m == pytest.approx(910.0)
         assert entry.contact_begin == pass_obj.begin
         assert entry.contact_end == pass_obj.end
         assert entry.ra == pytest.approx(pass_obj.gsstartra)
@@ -4191,6 +4194,9 @@ class TestCheckAndManagePasses:
         assert schema.entries[0].slewdist == pytest.approx(entry.slewdist)
         assert schema.entries[0].exposure == 600
         assert schema.entries[0].station == "GS_TEST"
+        assert schema.entries[0].station_lat_deg == pytest.approx(12.34)
+        assert schema.entries[0].station_lon_deg == pytest.approx(-56.78)
+        assert schema.entries[0].station_alt_m == pytest.approx(910.0)
         assert schema.entries[0].contact_begin == pass_obj.begin
         assert schema.entries[0].track_start_ra == pytest.approx(pass_obj.gsstartra)
         assert schema.entries[0].track_start_dec == pytest.approx(pass_obj.gsstartdec)
@@ -4202,6 +4208,9 @@ class TestCheckAndManagePasses:
         saved_json = saved_path.read_text()
         assert '"obstype": "GSP"' in saved_json
         assert '"station": "GS_TEST"' in saved_json
+        assert '"station_lat_deg": 12.34' in saved_json
+        assert '"station_lon_deg": -56.78' in saved_json
+        assert '"station_alt_m": 910.0' in saved_json
         assert '"track_start_ra": 100.0' in saved_json
         assert '"track_start_roll": 37.0' in saved_json
         assert '"track_end_ra": 115.0' in saved_json

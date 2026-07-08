@@ -26,6 +26,9 @@ class PlanEntry:
     saa: SAA | None
     slewpath: tuple[list[float], list[float]]
     station: str | None
+    station_lat_deg: float | None
+    station_lon_deg: float | None
+    station_alt_m: float | None
     contact_begin: float | None
     contact_end: float | None
     track_start_ra: float | None
@@ -61,6 +64,9 @@ class PlanEntry:
         self.end = 0
         self.obsid = 0
         self.station = None
+        self.station_lat_deg = None
+        self.station_lon_deg = None
+        self.station_alt_m = None
         self.contact_begin = None
         self.contact_end = None
         self.track_start_ra = None

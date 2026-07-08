@@ -484,38 +484,39 @@ class EmergencyCharging:
         # position or no slew limit, the first valid candidate is used
         # immediately; otherwise the closest one within the slew limit wins.
         best_candidate = None
-        best_slew = float("inf")
+        best_slew: float | None = None
 
         for i, (candidate_ra, candidate_dec) in enumerate(candidates):
             if violations[i]:
                 continue  # Skip constrained pointings
 
-            if current_ra is None or current_dec is None or self.max_slew_deg is None:
+            if current_ra is None or current_dec is None:
+                # No current position to measure a slew from.
                 best_candidate = (candidate_ra, candidate_dec)
-                best_slew = (
-                    0.0
-                    if current_ra is None or current_dec is None
-                    else angular_separation(
-                        current_ra, current_dec, candidate_ra, candidate_dec
-                    )
-                )
+                best_slew = None
                 break
 
-            # Calculate slew distance
             slew = angular_separation(
                 current_ra, current_dec, candidate_ra, candidate_dec
             )
-            if slew <= self.max_slew_deg and slew < best_slew:
+
+            if self.max_slew_deg is None:
+                best_candidate = (candidate_ra, candidate_dec)
+                best_slew = slew
+                break
+
+            if slew <= self.max_slew_deg and (best_slew is None or slew < best_slew):
                 best_candidate = (candidate_ra, candidate_dec)
                 best_slew = slew
 
         if best_candidate is not None:
             candidate_ra, candidate_dec = best_candidate
+            slew_clause = f", {best_slew:.1f}° slew" if best_slew is not None else ""
             self._log_or_print(
                 utime,
                 "CHARGING",
                 f"Found side-mount charging pointing at RA={candidate_ra:.2f}, Dec={candidate_dec:.2f} "
-                f"(90° from Sun at RA={sun_ra:.2f}, Dec={sun_dec:.2f}, {best_slew:.1f}° slew)",
+                f"(90° from Sun at RA={sun_ra:.2f}, Dec={sun_dec:.2f}{slew_clause})",
             )
             return best_candidate
 

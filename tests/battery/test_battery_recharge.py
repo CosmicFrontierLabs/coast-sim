@@ -826,6 +826,55 @@ class TestEmergencyCharging:
         assert ra is not None
         assert dec is not None
 
+    def test_sidemount_log_omits_slew_when_no_current_position(
+        self, mock_config
+    ) -> None:
+        """No current position means no slew distance was computed -- the log
+        must not report a fabricated slew distance."""
+        ec = EmergencyCharging(config=mock_config, starting_obsid=999000)
+        ec._log_or_print = Mock()
+        sun_ra = 90.0
+        sun_dec = 0.0
+        utime = 1700000000.0
+
+        ra, dec = ec._find_valid_pointing_sidemount(sun_ra, sun_dec, utime)
+
+        assert ra is not None
+        assert dec is not None
+        charging_calls = [
+            call
+            for call in ec._log_or_print.call_args_list
+            if call.args[1] == "CHARGING"
+        ]
+        assert len(charging_calls) == 1
+        assert "slew" not in charging_calls[0].args[2]
+
+    def test_sidemount_log_reports_slew_when_current_position_given(
+        self, mock_config
+    ) -> None:
+        """With a current position, the log reports the real slew distance
+        rather than omitting or fabricating it."""
+        ec = EmergencyCharging(config=mock_config, starting_obsid=999000)
+        ec._log_or_print = Mock()
+        sun_ra = 90.0
+        sun_dec = 0.0
+        utime = 1700000000.0
+        current_ra = 0.0
+        current_dec = 0.0
+
+        ra, dec = ec._find_valid_pointing_sidemount(
+            sun_ra, sun_dec, utime, current_ra, current_dec
+        )
+
+        expected_slew = angular_separation(current_ra, current_dec, ra, dec)
+        charging_calls = [
+            call
+            for call in ec._log_or_print.call_args_list
+            if call.args[1] == "CHARGING"
+        ]
+        assert len(charging_calls) == 1
+        assert f"{expected_slew:.1f}° slew" in charging_calls[0].args[2]
+
     def test_slew_limit_sidemount_within_45deg_and_90deg_sep(self, mock_config) -> None:
         ec = EmergencyCharging(
             config=mock_config,
