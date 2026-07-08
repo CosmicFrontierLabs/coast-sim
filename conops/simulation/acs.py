@@ -247,26 +247,20 @@ class ACS:
             )
 
             # Dispatch to appropriate handler based on command type
-            handlers: dict[ACSCommandType, Any] = {
-                ACSCommandType.SLEW_TO_TARGET: lambda: self._handle_slew_command(
-                    command, utime
-                ),
-                ACSCommandType.START_PASS: lambda: self._start_pass(command, utime),
-                ACSCommandType.END_PASS: lambda: self._end_pass(utime),
-                ACSCommandType.START_BATTERY_CHARGE: lambda: self._start_battery_charge(
-                    command, utime
-                ),
-                ACSCommandType.END_BATTERY_CHARGE: lambda: self._end_battery_charge(
-                    utime
-                ),
-                ACSCommandType.ENTER_SAFE_MODE: lambda: self._handle_safe_mode_command(
-                    command, utime
-                ),
-            }
+            match command.command_type:
+                case ACSCommandType.SLEW_TO_TARGET:
+                    self._handle_slew_command(command, utime)
+                case ACSCommandType.START_PASS:
+                    self._start_pass(command, utime)
+                case ACSCommandType.END_PASS:
+                    self._end_pass(utime)
+                case ACSCommandType.START_BATTERY_CHARGE:
+                    self._start_battery_charge(command, utime)
+                case ACSCommandType.END_BATTERY_CHARGE:
+                    self._end_battery_charge(utime)
+                case ACSCommandType.ENTER_SAFE_MODE:
+                    self._handle_safe_mode_command(command, utime)
 
-            handler = handlers.get(command.command_type)
-            if handler:
-                handler()
             self.executed_commands.append(command)
 
     def _handle_slew_command(self, command: ACSCommand, utime: float) -> None:
