@@ -274,10 +274,6 @@ class EmergencyCharging:
         Returns:
             Tuple of (ra, dec) if valid pointing found, or (None, None) if not
         """
-        # Short-circuit: if in eclipse, no pointing will provide power
-        if self.constraint.in_eclipse(ra=0, dec=0, time=utime):
-            return None, None
-
         # Validate optimal pointing
         optimal_roll = optimum_roll(
             optimal_ra, optimal_dec, utime, ephem, self.solar_panel, self.constraint
@@ -490,10 +486,10 @@ class EmergencyCharging:
             candidate_ra = np.degrees(ra_rad) % 360.0
             candidate_dec = np.degrees(dec_rad)
 
-            # Verify this is actually 90° from Sun (within numerical precision)
-            sep = np.degrees(np.arccos(np.clip(np.dot(pointing_vec, sun_vec), -1, 1)))
-            if abs(sep - 90.0) < 1.0:  # Within 1 degree of 90°
-                candidates.append((candidate_ra, candidate_dec))
+            # pointing_vec is a unit-norm combination of perp1/perp2, both of which
+            # are constructed orthogonal to sun_vec, so it is exactly 90° from the
+            # Sun by construction (up to floating-point error) — no need to verify.
+            candidates.append((candidate_ra, candidate_dec))
 
         # Batch-check all constraints at once
         candidate_ras = [ra for ra, dec in candidates]
@@ -502,7 +498,9 @@ class EmergencyCharging:
             candidate_ras, candidate_decs, utime
         )
 
-        # Find best valid pointing (skip constrained ones)
+        # Find best valid pointing (skip constrained ones). With no current
+        # position or no slew limit, the first valid candidate is used
+        # immediately; otherwise the closest one within the slew limit wins.
         best_candidate = None
         best_slew = float("inf")
 
@@ -510,41 +508,32 @@ class EmergencyCharging:
             if violations[i]:
                 continue  # Skip constrained pointings
 
-            # If no current position provided, return first valid pointing
-            if current_ra is None or current_dec is None:
-                self._log_or_print(
-                    utime,
-                    "CHARGING",
-                    f"Found side-mount charging pointing at RA={candidate_ra:.2f}, Dec={candidate_dec:.2f} (90° from Sun at RA={sun_ra:.2f}, Dec={sun_dec:.2f})",
+            if current_ra is None or current_dec is None or self.max_slew_deg is None:
+                best_candidate = (candidate_ra, candidate_dec)
+                best_slew = (
+                    0.0
+                    if current_ra is None or current_dec is None
+                    else angular_separation(
+                        current_ra, current_dec, candidate_ra, candidate_dec
+                    )
                 )
-                return candidate_ra, candidate_dec
+                break
 
             # Calculate slew distance
             slew = angular_separation(
                 current_ra, current_dec, candidate_ra, candidate_dec
             )
-
-            # If no slew limit, return first valid pointing
-            if self.max_slew_deg is None:
-                self._log_or_print(
-                    utime,
-                    "CHARGING",
-                    f"Found side-mount charging pointing at RA={candidate_ra:.2f}, Dec={candidate_dec:.2f} (90° from Sun at RA={sun_ra:.2f}, Dec={sun_dec:.2f})",
-                )
-                return candidate_ra, candidate_dec
-
-            # If within slew limit, track the closest one
             if slew <= self.max_slew_deg and slew < best_slew:
                 best_candidate = (candidate_ra, candidate_dec)
                 best_slew = slew
 
-        # Return the closest valid pointing within slew limit
         if best_candidate is not None:
             candidate_ra, candidate_dec = best_candidate
             self._log_or_print(
                 utime,
                 "CHARGING",
-                f"Found side-mount charging pointing at RA={candidate_ra:.2f}, Dec={candidate_dec:.2f} (90° from Sun, {best_slew:.1f}° slew)",
+                f"Found side-mount charging pointing at RA={candidate_ra:.2f}, Dec={candidate_dec:.2f} "
+                f"(90° from Sun at RA={sun_ra:.2f}, Dec={sun_dec:.2f}, {best_slew:.1f}° slew)",
             )
             return best_candidate
 
