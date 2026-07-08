@@ -144,10 +144,7 @@ class Pass(BaseModel):
         return f"{unixtime2date(self.begin):18s}  {self.station:3s}  {self.length / 60.0:4.1f} mins"
 
     def in_pass(self, utime: float) -> bool:
-        if utime >= self.begin and utime <= self.end:
-            return True
-        else:
-            return False
+        return self.begin <= utime <= self.end
 
     def time_to_pass(self) -> str:
         """Return a string for how long it is until the next pass"""

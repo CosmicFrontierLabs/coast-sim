@@ -110,10 +110,7 @@ class Slew:
 
     def is_slewing(self, utime: float) -> bool:
         """For a given utime, are we slewing?"""
-        if utime >= self.slewend or utime < self.slewstart:
-            return False
-        else:
-            return True
+        return self.slewstart <= utime < self.slewend
 
     def ra_dec(self, utime: float) -> tuple[float, float]:
         return self.slew_ra_dec(utime)
