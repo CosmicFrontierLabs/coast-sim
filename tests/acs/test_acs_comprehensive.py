@@ -164,7 +164,7 @@ class TestAddSlewClass:
         mock_at.next_vis = Mock(return_value=1514765000.0)  # 200s later
         mock_too.return_value = mock_at
 
-        acs.last_slew = False
+        acs.last_slew = None
         result = acs._enqueue_slew(
             slew.endra, slew.enddec, slew.obsid, 1514764800.0, slew.obstype
         )
@@ -268,7 +268,7 @@ class TestAddSlewClass:
         mock_at.windows = []
         mock_too.return_value = mock_at
 
-        acs.last_slew = False
+        acs.last_slew = None
         result = acs._enqueue_slew(
             slew.endra, slew.enddec, slew.obsid, 1514764800.0, slew.obstype
         )
@@ -311,6 +311,7 @@ class TestPointing:
         mock_slew.is_slewing = Mock(return_value=False)
         mock_slew.ra_dec = Mock(return_value=(45.0, 30.0))
         mock_slew.at = None
+        mock_slew.endroll = 0.0
 
         acs.current_slew = mock_slew
         acs.last_slew = mock_slew
@@ -347,15 +348,18 @@ class TestPointing:
         """Test pointing during pass slew."""
         mock_roll.return_value = 45.0
 
-        mock_pass = Mock(spec=Pass)
-        mock_pass.is_slewing = Mock(return_value=True)
-        mock_pass.obstype = "GSP"
-        mock_pass.obsid = 200
-        mock_pass.ra_dec = Mock(return_value=(45.0, 30.0))
-        mock_pass.slew_roll = Mock(return_value=45.0)
+        # A GSP pass slew is represented as a Slew with obstype=GSP (the Pass
+        # object itself only tracks the dwell, not the approach slew).
+        mock_gsp_slew = Mock(spec=Slew)
+        mock_gsp_slew.is_slewing = Mock(return_value=True)
+        mock_gsp_slew.obstype = "GSP"
+        mock_gsp_slew.obsid = 200
+        mock_gsp_slew.ra_dec = Mock(return_value=(45.0, 30.0))
+        mock_gsp_slew.slew_roll = Mock(return_value=45.0)
+        mock_gsp_slew.at = None
 
-        acs.last_slew = mock_pass
-        acs.current_slew = mock_pass
+        acs.last_slew = mock_gsp_slew
+        acs.current_slew = mock_gsp_slew
 
         ra, dec, roll, obsid = acs.pointing(1514764800.0)
 
@@ -367,17 +371,21 @@ class TestPointing:
         """Test pointing during pass dwell phase."""
         mock_roll.return_value = 0.0
 
-        mock_pass = Mock(spec=Pass)
-        mock_pass.is_slewing = Mock(return_value=False)
-        mock_pass.obstype = "GSP"
-        mock_pass.obsid = 200
-        mock_pass.slewend = 1514764800.0
-        mock_pass.begin = 1514764800.0
-        mock_pass.length = 600.0
-        mock_pass.ra_dec = Mock(return_value=(45.0, 30.0))
+        # A GSP pass dwell is represented as a Slew with obstype=GSP.
+        mock_gsp_slew = Mock(spec=Slew)
+        mock_gsp_slew.is_slewing = Mock(return_value=False)
+        mock_gsp_slew.obstype = "GSP"
+        mock_gsp_slew.obsid = 200
+        mock_gsp_slew.slewend = 1514764800.0
+        mock_gsp_slew.slewstart = 1514764800.0
+        mock_gsp_slew.endroll = 0.0
+        mock_gsp_slew.begin = 1514764800.0
+        mock_gsp_slew.length = 600.0
+        mock_gsp_slew.ra_dec = Mock(return_value=(45.0, 30.0))
+        mock_gsp_slew.at = None
 
-        acs.last_slew = mock_pass
-        acs.current_slew = mock_pass
+        acs.last_slew = mock_gsp_slew
+        acs.current_slew = mock_gsp_slew
 
         ra, dec, roll, obsid = acs.pointing(1514765000.0)  # Within pass
 
@@ -423,6 +431,7 @@ class TestPointing:
         mock_slew.is_slewing = Mock(return_value=False)
         mock_slew.obstype = "PPT"
         mock_slew.obsid = 100
+        mock_slew.slewstart = 0.0
         mock_slew.ra_dec = Mock(return_value=(45.0, 30.0))
         mock_slew.at = Mock(spec=Pointing)
         mock_slew.at.ra = 45.0
@@ -455,6 +464,7 @@ class TestPointing:
         mock_slew.is_slewing = Mock(return_value=False)
         mock_slew.obstype = "PPT"
         mock_slew.obsid = 100
+        mock_slew.slewstart = 0.0
         mock_slew.ra_dec = Mock(return_value=(45.0, 30.0))
         mock_slew.at = None  # No at attribute
 
@@ -472,17 +482,19 @@ class TestPointing:
         """Test pointing after pass dwell phase."""
         mock_roll.return_value = 0.0
 
-        mock_pass = Mock(spec=Pass)
-        mock_pass.is_slewing = Mock(return_value=False)
-        mock_pass.obstype = "GSP"
-        mock_pass.obsid = 200
-        mock_pass.slewend = 1514764800.0
-        mock_pass.begin = 1514764800.0
-        mock_pass.length = 600.0
-        mock_pass.ra_dec = Mock(return_value=(45.0, 30.0))
-        mock_pass.at = None
+        # A GSP pass dwell is represented as a Slew with obstype=GSP.
+        mock_gsp_slew = Mock(spec=Slew)
+        mock_gsp_slew.is_slewing = Mock(return_value=False)
+        mock_gsp_slew.obstype = "GSP"
+        mock_gsp_slew.obsid = 200
+        mock_gsp_slew.slewend = 1514764800.0
+        mock_gsp_slew.slewstart = 0.0
+        mock_gsp_slew.begin = 1514764800.0
+        mock_gsp_slew.length = 600.0
+        mock_gsp_slew.ra_dec = Mock(return_value=(45.0, 30.0))
+        mock_gsp_slew.at = None
 
-        acs.last_slew = mock_pass
+        acs.last_slew = mock_gsp_slew
 
         # After pass ends
         ra, dec, roll, obsid = acs.pointing(1514765500.0)
@@ -599,7 +611,7 @@ class TestAddSlewClassEdgeCases:
         mock_at.windows = []
         mock_too.return_value = mock_at
 
-        acs.last_slew = False
+        acs.last_slew = None
         acs.last_ppt = False
         result = acs._enqueue_slew(
             pass_obj.endra,
@@ -637,7 +649,7 @@ class TestAddSlewClassEdgeCases:
         mock_at.windows = []
         mock_too.return_value = mock_at
 
-        acs.last_slew = False
+        acs.last_slew = None
         acs.last_ppt = False
         result = acs._enqueue_slew(
             slew.endra, slew.enddec, slew.obsid, 1514764800.0, slew.obstype
@@ -670,7 +682,7 @@ class TestAddSlewClassEdgeCases:
         mock_at.windows = [[1514764800.0, 1514765000.0]]
         mock_too.return_value = mock_at
 
-        acs.last_slew = False
+        acs.last_slew = None
         result = acs._enqueue_slew(
             slew.endra, slew.enddec, slew.obsid, 1514764800.0, slew.obstype
         )
@@ -701,7 +713,7 @@ class TestAddSlewClassEdgeCases:
         mock_at.windows = []
         mock_too.return_value = mock_at
 
-        acs.last_slew = False
+        acs.last_slew = None
         result = acs._enqueue_slew(
             slew.endra, slew.enddec, slew.obsid, 1514764800.0, slew.obstype
         )

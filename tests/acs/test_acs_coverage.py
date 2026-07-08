@@ -248,6 +248,7 @@ class TestStartSlewCoverage:
         mock_slew.obstype = "PPT"
         mock_slew.slewstart = 1514764800.0
         mock_slew.slewtime = 60.0
+        mock_slew.slewdist = 45.0
         mock_slew.calc_slewtime = Mock()
 
         acs._start_slew(mock_slew, 1514764800.0)
@@ -266,6 +267,7 @@ class TestStartSlewCoverage:
         mock_slew.obstype = "PPT"
         mock_slew.slewstart = 1514764800.0
         mock_slew.slewtime = 60.0
+        mock_slew.slewdist = 45.0
         mock_slew.calc_slewtime = Mock()
 
         acs._start_slew(mock_slew, 1514764800.0)
@@ -284,6 +286,7 @@ class TestStartSlewCoverage:
         mock_slew.obstype = "PPT"
         mock_slew.slewstart = 1514764800.0
         mock_slew.slewtime = 60.0
+        mock_slew.slewdist = 45.0
         mock_slew.calc_slewtime = Mock()
 
         acs._start_slew(mock_slew, 1514764800.0)
@@ -302,6 +305,7 @@ class TestStartSlewCoverage:
         mock_pass.obstype = "GSP"
         mock_pass.slewstart = 1514764800.0
         mock_pass.slewtime = 60.0
+        mock_pass.slewdist = 45.0
         mock_pass.calc_slewtime = Mock()
 
         acs._start_slew(mock_pass, 1514764800.0)
@@ -320,6 +324,7 @@ class TestStartSlewCoverage:
         mock_pass.obstype = "GSP"
         mock_pass.slewstart = 1514764800.0
         mock_pass.slewtime = 60.0
+        mock_pass.slewdist = 45.0
         mock_pass.calc_slewtime = Mock()
 
         acs._start_slew(mock_pass, 1514764800.0)
@@ -338,6 +343,7 @@ class TestStartSlewCoverage:
         mock_pass.obstype = "GSP"
         mock_pass.slewstart = 1514764800.0
         mock_pass.slewtime = 60.0
+        mock_pass.slewdist = 45.0
         mock_pass.calc_slewtime = Mock()
 
         acs._start_slew(mock_pass, 1514764800.0)
@@ -356,6 +362,7 @@ class TestStartSlewCoverage:
         mock_slew.obstype = "PPT"
         mock_slew.slewstart = 1514764800.0
         mock_slew.slewtime = 60.0
+        mock_slew.slewdist = 45.0
         mock_slew.calc_slewtime = Mock()
 
         acs._start_slew(mock_slew, 1514764800.0)
@@ -375,6 +382,7 @@ class TestStartSlewCoverage:
         mock_slew.obstype = "PPT"
         mock_slew.slewstart = 9999999.0  # Different from execution time
         mock_slew.slewtime = 60.0
+        mock_slew.slewdist = 45.0
         mock_slew.calc_slewtime = Mock()
 
         acs._start_slew(mock_slew, 1514764800.0)
@@ -393,6 +401,7 @@ class TestStartSlewCoverage:
         mock_slew.obstype = "PPT"
         mock_slew.slewstart = 1514764800.0
         mock_slew.slewtime = 60.0
+        mock_slew.slewdist = 45.0
         mock_slew.calc_slewtime = Mock()
 
         acs._start_slew(mock_slew, 1514764800.0)
@@ -413,6 +422,7 @@ class TestStartSlewCoverage:
         mock_slew.obstype = "PPT"
         mock_slew.slewstart = 1514764800.0
         mock_slew.slewtime = 60.0
+        mock_slew.slewdist = 45.0
         mock_slew.calc_slewtime = Mock()
 
         acs._start_slew(mock_slew, 1514764800.0)
@@ -430,6 +440,7 @@ class TestStartSlewCoverage:
         mock_slew.obstype = "GSP"
         mock_slew.slewstart = 1514764800.0
         mock_slew.slewtime = 60.0
+        mock_slew.slewdist = 45.0
         mock_slew.calc_slewtime = Mock()
 
         acs.last_ppt = None
@@ -616,6 +627,7 @@ class TestProcessCommandsCoverage:
         mock_slew.obstype = obstype
         mock_slew.slewstart = 1514764800.0
         mock_slew.slewtime = 60.0
+        mock_slew.slewdist = 45.0
         mock_slew.calc_slewtime = Mock()
         return mock_slew
 
@@ -779,6 +791,7 @@ class TestExecuteCommandLogging:
         mock_slew.obstype = "PPT"
         mock_slew.slewstart = 1514764800.0
         mock_slew.slewtime = 60.0
+        mock_slew.slewdist = 45.0
         mock_slew.calc_slewtime = Mock()
         command1 = ACSCommand(
             command_type=ACSCommandType.SLEW_TO_TARGET,
@@ -799,6 +812,7 @@ class TestExecuteCommandLogging:
         mock_slew.obstype = "GSP"
         mock_slew.slewstart = 1514764800.0
         mock_slew.slewtime = 60.0
+        mock_slew.slewdist = 45.0
         mock_slew.calc_slewtime = Mock()
         command2 = ACSCommand(
             command_type=ACSCommandType.START_PASS,

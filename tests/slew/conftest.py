@@ -67,7 +67,6 @@ def slew_ra_dec(slew):
     slew.slewstart = 1700000000.0
     slew.slewend = 1700000100.0
     slew.slewpath = (np.array([45.0, 90.0]), np.array([30.0, 60.0]))
-    slew.slewsecs = np.array([0.0, 100.0])
     return slew
 
 
@@ -137,7 +136,6 @@ def slew_interp_start(slew):
     slew.startdec = 0.0
     slew.slewstart = 1700000000.0
     slew.slewpath = (np.array([0.0, 10.0]), np.array([0.0, 10.0]))
-    slew.slewsecs = np.array([0.0, 100.0])
     slew.slewdist = 0
     return slew
 

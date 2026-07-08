@@ -66,7 +66,9 @@ def mock_constraint(mock_ephem: DummyEphemeris) -> Mock:
 
 
 @pytest.fixture
-def mock_config(mock_ephem: DummyEphemeris, mock_constraint: Mock) -> Mock:
+def mock_config(
+    mock_ephem: DummyEphemeris, mock_constraint: Mock, mock_spacecraft_bus: Mock
+) -> Mock:
     """Create a mock config."""
     config = Mock()
     config.constraint = mock_constraint
@@ -79,14 +81,7 @@ def mock_config(mock_ephem: DummyEphemeris, mock_constraint: Mock) -> Mock:
     )
     config.solar_panel = SolarPanelSet(panels=[panel])
 
-    config.spacecraft_bus = Mock()
-    config.spacecraft_bus.attitude_control = Mock()
-    # Mock predict_slew to return distance and path
-    config.spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))
-    # Mock slew_time to return a reasonable slew duration
-    config.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
-    config.spacecraft_bus.radiators = Mock()
-    config.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
+    config.spacecraft_bus = mock_spacecraft_bus
     config.attitude_constraint_scopes_for_mode = Mock(
         return_value=[
             AttitudeConstraintScope.HARDWARE_SAFETY,

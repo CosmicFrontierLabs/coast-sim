@@ -6,19 +6,19 @@ import numpy as np
 import rust_ephem
 from pydantic import BaseModel, Field
 
-from ..common import ics_date_conv, unixtime2date
+from ..common import find_boundaries, ics_date_conv, unixtime2date
 from ..common.enums import ACSMode, AntennaType, ObsType, SlewAlgorithm
 from ..common.vector import (
     attitude_for_body_vector_tracking,
     body_vector_to_eci,
     quaternion_attitude_distance,
     radec2vec,
-    rotvec,
     separation,
     vec2radec,
 )
 from ..config import (
     Constraint,
+    GroundStation,
     GroundStationRegistry,
     MissionConfig,
 )
@@ -37,7 +37,7 @@ def pass_slew_trigger_buffer(step_size: float) -> float:
 
 
 def _config_random_seed(config: MissionConfig) -> int | None:
-    seed = getattr(config, "random_seed", None)
+    seed = config.random_seed
     if seed is None or isinstance(seed, bool) or not isinstance(seed, Integral):
         return None
     return int(seed)
@@ -140,13 +140,10 @@ class Pass(BaseModel):
 
     def __str__(self) -> str:
         """Return string of details on the pass"""
-        return f"{unixtime2date(self.begin):18s}  {self.station:3s}  {self.length / 60.0:4.1f} mins"  #  {self.time_to_pass():12s}"
+        return f"{unixtime2date(self.begin):18s}  {self.station:3s}  {self.length / 60.0:4.1f} mins"
 
     def in_pass(self, utime: float) -> bool:
-        if utime >= self.begin and utime <= self.end:
-            return True
-        else:
-            return False
+        return self.begin <= utime <= self.end
 
     def time_to_pass(self) -> str:
         """Return a string for how long it is until the next pass"""
@@ -200,44 +197,6 @@ class Pass(BaseModel):
         if idx is None or not self.station_ra or not self.station_dec:
             return None, None
         return self.station_ra[idx], self.station_dec[idx]
-
-    @staticmethod
-    def apply_antenna_offset(
-        ra: float, dec: float, azimuth_deg: float, elevation_deg: float
-    ) -> tuple[float, float]:
-        """Apply a legacy antenna pointing offset to RA/Dec.
-
-        This helper is retained for compatibility with older tests and callers.
-        Ground-station-pass attitude generation uses fixed body-frame antenna
-        boresight vectors instead.
-
-        Args:
-            ra: Original right ascension (degrees)
-            dec: Original declination (degrees)
-            azimuth_deg: Antenna azimuth offset (degrees, 0=forward, 90=right)
-            elevation_deg: Antenna elevation offset (degrees, 0=horizon, 90=zenith, -90=nadir)
-
-        Returns:
-            Tuple of (adjusted_ra, adjusted_dec) in degrees
-        """
-
-        # Convert RA/Dec to unit vector
-        sat_vec = radec2vec(ra * DTOR, dec * DTOR)
-
-        # Apply rotation for azimuth (rotation around Z-axis/north pole)
-        # Positive azimuth rotates right (east)
-        # rotvec parameters: (axis_number, angle, vector) where axis: 1=x, 2=y, 3=z
-        rotated = rotvec(3, azimuth_deg * DTOR, sat_vec)
-
-        # Apply rotation for elevation (rotation around east-west axis = Y)
-        # Positive elevation points up from horizon toward zenith
-        # Negative elevation points down toward nadir
-        rotated = rotvec(2, -elevation_deg * DTOR, rotated)
-
-        # Convert back to RA/Dec
-        adjusted_ra, adjusted_dec = np.degrees(vec2radec(rotated))
-
-        return adjusted_ra, adjusted_dec
 
     def pointing_error(
         self,
@@ -459,7 +418,6 @@ class PassTimes:
         rng: RandomSource | None = None,
     ):
         self.constraint = config.constraint
-        assert self.constraint is not None, "Constraint must be set for PassTimes class"
         assert self.constraint.ephem is not None, (
             "Ephemeris must be set for PassTimes class"
         )
@@ -483,7 +441,6 @@ class PassTimes:
             self.ground_stations = config.ground_stations
 
         # What makes a good pass
-        self.minelev = 10.0
         self.minlen = 8 * 60  # 10 mins
         self.schedule_chance = 1.0  # base chance of getting a pass
 
@@ -534,7 +491,7 @@ class PassTimes:
         return (rate * gspass.length, gspass.length, -gspass.begin)
 
     def _gsp_antenna_boresight_body(self) -> tuple[float, float, float] | None:
-        communications = getattr(self.config.spacecraft_bus, "communications", None)
+        communications = self.config.spacecraft_bus.communications
         if communications is None:
             return LEGACY_GSP_ANTENNA_BODY_VECTOR
         antenna = communications.antenna_pointing
@@ -777,10 +734,139 @@ class PassTimes:
 
         self.passes = selected
 
+    def _station_visibility(
+        self,
+        station: GroundStation,
+        startindex: int,
+        endindex: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Compute elevation angle and target-direction unit vectors for a station.
+
+        Uses a fast vectorized Earth-limb approach: the angle from the ground
+        station's local "up" direction to the satellite direction is compared
+        against the station's minimum elevation.
+
+        Returns (elevation_angle, gs_to_sat_unit) arrays over [startindex, endindex).
+        """
+        gs_ephem = rust_ephem.GroundEphemeris(
+            latitude=station.latitude_deg,
+            longitude=station.longitude_deg,
+            height=station.elevation_m,
+            begin=self.ephem.timestamp[startindex],
+            end=self.ephem.timestamp[endindex - 1],
+            step_size=self.ephem.step_size,
+        )
+
+        # Get ground station position in GCRS
+        gs_pos = gs_ephem.gcrs_pv.position  # Shape: (N, 3)
+
+        # Vector from ground station to satellite (target direction)
+        gs_to_sat = (
+            self.ephem.gcrs_pv.position[startindex:endindex] - gs_pos
+        )  # Shape: (N, 3)
+
+        # Normalize to get unit vector toward satellite
+        gs_to_sat_dist = np.linalg.norm(gs_to_sat, axis=1, keepdims=True)
+        gs_to_sat_unit = gs_to_sat / gs_to_sat_dist
+
+        # Vector from Earth center to ground station
+        earth_to_gs = gs_pos  # GCRS origin is Earth center
+        earth_to_gs_dist = np.linalg.norm(earth_to_gs, axis=1, keepdims=True)
+        earth_to_gs_unit = earth_to_gs / earth_to_gs_dist
+
+        # Angle between "up" (away from Earth center) and target direction
+        # cos(angle) = dot(earth_to_gs_unit, gs_to_sat_unit)
+        cos_angle = np.sum(earth_to_gs_unit * gs_to_sat_unit, axis=1)
+
+        # Calculate elevation above local horizon
+        elevation_angle = np.degrees(np.arcsin(cos_angle))
+
+        return elevation_angle, gs_to_sat_unit
+
+    def _build_pass(
+        self,
+        station: GroundStation,
+        startindex: int,
+        start_idx: int,
+        end_idx: int,
+        timestamp_unix: np.ndarray,
+        gs_to_sat_unit: np.ndarray,
+    ) -> tuple[Pass, bool] | None:
+        """Build a Pass for one visibility window.
+
+        Returns None if the window is too short, loses the scheduling-probability
+        dice roll, or no constraint-safe tracking attitude profile can be built.
+        Otherwise returns (gspass, profile_safe).
+        """
+        global_start_idx = startindex + start_idx
+        global_end_idx = (
+            startindex + end_idx
+        )  # end_idx is already the first point below threshold
+        # Clamp to last valid index to avoid overflow on short ephemeris windows
+        global_end_idx = min(global_end_idx, len(timestamp_unix) - 1)
+
+        passstart = timestamp_unix[global_start_idx]
+        passend = timestamp_unix[global_end_idx]
+        passlen = passend - passstart
+
+        # Only consider passes that meet minimum length
+        if passlen < self.minlen:
+            return None
+
+        # Combine global and station-specific schedule probabilities
+        combined_prob = self.schedule_chance * station.schedule_probability
+        should_schedule = combined_prob >= 1.0 or (
+            combined_prob > 0.0 and self._random() <= combined_prob
+        )
+        if not should_schedule:
+            return None
+
+        target_vectors = -gs_to_sat_unit[start_idx:end_idx]
+        target_ra, target_dec = np.degrees(vec2radec(target_vectors.T))
+        track_utime = timestamp_unix[
+            startindex + start_idx : startindex + end_idx
+        ].tolist()
+        antenna_boresight = self._gsp_antenna_boresight_body()
+        if antenna_boresight is None:
+            return None
+        profile_result = self._constraint_safe_tracking_attitude_profile(
+            antenna_boresight, target_vectors, track_utime
+        )
+        if profile_result is None:
+            return None
+        attitude_profile, profile_safe = profile_result
+        track_ra = [attitude[0] for attitude in attitude_profile]
+        track_dec = [attitude[1] for attitude in attitude_profile]
+        track_roll = [attitude[2] for attitude in attitude_profile]
+
+        gspass = Pass(
+            config=self.config,
+            ephem=self.ephem,
+            station=station.code,
+            begin=passstart,
+            antenna_boresight_body=antenna_boresight,
+            gsstartra=track_ra[0],
+            gsstartdec=track_dec[0],
+            gsstartroll=track_roll[0],
+            gsendra=track_ra[-1],
+            gsenddec=track_dec[-1],
+            gsendroll=track_roll[-1],
+            length=passlen,
+        )
+
+        # Record the path during the pass
+        gspass.utime = track_utime
+        gspass.ra = track_ra
+        gspass.dec = track_dec
+        gspass.roll = track_roll
+        gspass.station_ra = target_ra.tolist()
+        gspass.station_dec = target_dec.tolist()
+
+        return gspass, profile_safe
+
     def get(self, year: int, day: int, length: int = 1) -> None:
         """Calculate the passes using rust_ephem GroundEphemeris for vectorized operations."""
         ustart = ics_date_conv(f"{year}-{day:03d}-00:00:00")
-        assert self.ephem is not None, "Ephemeris is not set"
         self.dropped_constraint_passes = []
 
         # Use binary search instead of np.where for finding start index
@@ -792,149 +878,34 @@ class PassTimes:
         num_steps = int(86400 * length / self.ephem.step_size)
         endindex = min(startindex + num_steps, len(timestamp_unix))
 
-        # Get timestamps as datetime objects for GroundEphemeris
-        timestamps = self.ephem.timestamp[startindex:endindex]
-        begin_time = timestamps[0]
-        end_time = timestamps[-1]
-
         # Process stations that are allowed to drive spacecraft GSP tracking. RF
         # uplink/downlink capability is modeled separately on each station.
         for station in self.ground_stations.stations:
-            if not getattr(station, "schedule_for_tracking", True):
+            if not station.schedule_for_tracking:
                 continue
 
-            # Create GroundEphemeris for this station (vectorized ground station ephemeris)
-
-            gs_ephem = rust_ephem.GroundEphemeris(
-                latitude=station.latitude_deg,
-                longitude=station.longitude_deg,
-                height=station.elevation_m,
-                begin=begin_time,
-                end=end_time,
-                step_size=self.ephem.step_size,
+            elevation_angle, gs_to_sat_unit = self._station_visibility(
+                station, startindex, endindex
             )
+            is_visible = elevation_angle > station.min_elevation_deg
+            pass_starts, pass_ends = find_boundaries(is_visible)
 
-            # Fast vectorized approach: compute Earth limb constraint directly
-            # The Earth limb constraint checks if the angle from the observer to the target
-            # passes through Earth (i.e., target is below the horizon + min_angle)
-
-            # Get ground station position in GCRS
-            gs_pos = gs_ephem.gcrs_pv.position  # Shape: (N, 3)
-
-            # Vector from ground station to satellite (target direction)
-            gs_to_sat = (
-                self.ephem.gcrs_pv.position[startindex:endindex] - gs_pos
-            )  # Shape: (N, 3)
-
-            # Normalize to get unit vector toward satellite
-            gs_to_sat_dist = np.linalg.norm(gs_to_sat, axis=1, keepdims=True)
-            gs_to_sat_unit = gs_to_sat / gs_to_sat_dist
-
-            # Vector from Earth center to ground station
-            earth_to_gs = gs_pos  # GCRS origin is Earth center
-            earth_to_gs_dist = np.linalg.norm(earth_to_gs, axis=1, keepdims=True)
-            earth_to_gs_unit = earth_to_gs / earth_to_gs_dist
-
-            # Angle between "up" (away from Earth center) and target direction
-            # cos(angle) = dot(earth_to_gs_unit, gs_to_sat_unit)
-            cos_angle = np.sum(earth_to_gs_unit * gs_to_sat_unit, axis=1)
-
-            # Calculate elevation above local horizon
-            elevation_angle = np.degrees(np.arcsin(cos_angle))
-
-            # Find passes using elevation threshold
-            min_elev = (
-                station.min_elevation_deg
-                if hasattr(station, "min_elevation_deg")
-                else self.minelev
-            )
-
-            # Target is visible if elevation > min_elev
-            is_visible = elevation_angle > min_elev
-
-            # Find pass boundaries by detecting transitions
-            transitions = np.diff(is_visible.astype(int))
-            pass_starts = np.where(transitions == 1)[0] + 1
-            pass_ends = np.where(transitions == -1)[0] + 1
-
-            # Handle edge cases
-            if is_visible[0]:
-                pass_starts = np.concatenate([[0], pass_starts])
-            if is_visible[-1]:
-                pass_ends = np.concatenate([pass_ends, [len(is_visible)]])
-
-            # Create Pass objects
             for start_idx, end_idx in zip(pass_starts, pass_ends):
-                global_start_idx = startindex + start_idx
-                global_end_idx = (
-                    startindex + end_idx
-                )  # end_idx is already the first point below threshold
-                # Clamp to last valid index to avoid overflow on short ephemeris windows
-                global_end_idx = min(global_end_idx, len(timestamp_unix) - 1)
-
-                passstart = timestamp_unix[global_start_idx]
-                passend = timestamp_unix[global_end_idx]
-                passlen = passend - passstart
-
-                # Only consider passes that meet minimum length
-                if passlen >= self.minlen:
-                    # Combine global and station-specific schedule probabilities
-                    combined_prob = self.schedule_chance * getattr(
-                        station, "schedule_probability", 1.0
-                    )
-                    should_schedule = combined_prob >= 1.0 or (
-                        combined_prob > 0.0 and self._random() <= combined_prob
-                    )
-                    if should_schedule:
-                        # Schedule this pass if the dice roll allows it
-                        target_vectors = -gs_to_sat_unit[start_idx:end_idx]
-                        target_ra, target_dec = np.degrees(vec2radec(target_vectors.T))
-                        track_utime = timestamp_unix[
-                            startindex + start_idx : startindex + end_idx
-                        ].tolist()
-                        antenna_boresight = self._gsp_antenna_boresight_body()
-                        if antenna_boresight is None:
-                            continue
-                        profile_result = (
-                            self._constraint_safe_tracking_attitude_profile(
-                                antenna_boresight, target_vectors, track_utime
-                            )
-                        )
-                        if profile_result is None:
-                            continue
-                        attitude_profile, profile_safe = profile_result
-                        track_ra = [attitude[0] for attitude in attitude_profile]
-                        track_dec = [attitude[1] for attitude in attitude_profile]
-                        track_roll = [attitude[2] for attitude in attitude_profile]
-
-                        gspass = Pass(
-                            config=self.config,
-                            ephem=self.ephem,
-                            station=station.code,
-                            begin=passstart,
-                            antenna_boresight_body=antenna_boresight,
-                            gsstartra=track_ra[0],
-                            gsstartdec=track_dec[0],
-                            gsstartroll=track_roll[0],
-                            gsendra=track_ra[-1],
-                            gsenddec=track_dec[-1],
-                            gsendroll=track_roll[-1],
-                            length=passlen,
-                        )
-
-                        # Record the path during the pass
-                        gspass.utime = track_utime
-                        gspass.ra = track_ra
-                        gspass.dec = track_dec
-                        gspass.roll = track_roll
-                        gspass.station_ra = target_ra.tolist()
-                        gspass.station_dec = target_dec.tolist()
-
-                        if not profile_safe:
-                            self.dropped_constraint_passes.append(gspass)
-                            continue
-
-                        self.passes.append(gspass)
+                result = self._build_pass(
+                    station,
+                    startindex,
+                    start_idx,
+                    end_idx,
+                    timestamp_unix,
+                    gs_to_sat_unit,
+                )
+                if result is None:
+                    continue
+                gspass, profile_safe = result
+                if not profile_safe:
+                    self.dropped_constraint_passes.append(gspass)
+                    continue
+                self.passes.append(gspass)
 
         # Order the passes by time
         self.passes.sort(key=lambda x: x.begin, reverse=False)

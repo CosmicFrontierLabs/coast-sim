@@ -56,6 +56,29 @@ def dtutcfromtimestamp(timestamp: float) -> datetime:
     return datetime.fromtimestamp(timestamp, tz=timezone.utc)
 
 
+def find_boundaries(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Find contiguous True runs in a boolean mask.
+
+    Returns (starts, ends) index arrays such that mask[starts[i]:ends[i]] is
+    all True for each run i (half-open, so ends[i] is one past the last True
+    index). Runs already True at index 0, or still True at the last index,
+    are included rather than silently dropped.
+    """
+    if mask.size == 0:
+        return np.array([], dtype=int), np.array([], dtype=int)
+
+    transitions = np.diff(mask.astype(int))
+    starts = np.where(transitions == 1)[0] + 1
+    ends = np.where(transitions == -1)[0] + 1
+
+    if mask[0]:
+        starts = np.concatenate([[0], starts])
+    if mask[-1]:
+        ends = np.concatenate([ends, [len(mask)]])
+
+    return starts, ends
+
+
 def normalize_acs_mode(mode: "ACSMode | int | None") -> "ACSMode | None":
     """Normalize ACS mode to ACSMode enum, handling int conversion gracefully.
 

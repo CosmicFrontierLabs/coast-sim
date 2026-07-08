@@ -11,7 +11,7 @@ from conops.ditl.ditl_mixin import DITLMixin
 
 
 @pytest.fixture
-def mock_config():
+def mock_config(mock_spacecraft_bus):
     cfg = Mock(spec=MissionConfig)
     # constraint with ephem required for ACS init
     # Build a minimal ephem with earth[0].ra.deg and dec.deg (legacy SkyCoord style)
@@ -51,10 +51,10 @@ def mock_config():
 
     cfg.constraint = Mock()
     cfg.constraint.ephem = ephem
+    cfg.random_seed = None
     # subsystems
     cfg.battery = Mock()
-    cfg.spacecraft_bus = Mock()
-    cfg.spacecraft_bus.attitude_control = Mock()
+    cfg.spacecraft_bus = mock_spacecraft_bus
     cfg.payload = Mock()
     cfg.recorder = Mock()
     # ground stations

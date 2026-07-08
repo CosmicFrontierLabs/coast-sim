@@ -53,7 +53,7 @@ def mock_constraint_roll(mock_ephem_roll):
 
 
 @pytest.fixture
-def mock_config_roll(mock_ephem_roll, mock_constraint_roll):
+def mock_config_roll(mock_ephem_roll, mock_constraint_roll, mock_spacecraft_bus):
     """Create a mock config for roll testing."""
     config = Mock()
     config.constraint = mock_constraint_roll
@@ -66,12 +66,7 @@ def mock_config_roll(mock_ephem_roll, mock_constraint_roll):
     )
     config.solar_panel = SolarPanelSet(panels=[panel])
 
-    config.spacecraft_bus = Mock()
-    config.spacecraft_bus.attitude_control = Mock()
-    config.spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))
-    config.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
-    config.spacecraft_bus.radiators = Mock()
-    config.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
+    config.spacecraft_bus = mock_spacecraft_bus
     config.attitude_constraint_scopes_for_mode = Mock(
         return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
     )
@@ -133,7 +128,7 @@ class TestACSRollCalculation:
         # Roll should be a valid angle
         assert 0.0 <= acs_roll.roll < 360.0
 
-    def test_roll_varies_with_sun_position(self) -> None:
+    def test_roll_varies_with_sun_position(self, mock_spacecraft_bus) -> None:
         """Test that roll varies with sun position."""
         # Create two ACS instances with different sun positions
         ephem1 = DummyEphemeris(sun_ra=0.0, sun_dec=0.0)
@@ -158,14 +153,7 @@ class TestACSRollCalculation:
             max_power=250.0,
         )
         config1.solar_panel = SolarPanelSet(panels=[panel1])
-        config1.spacecraft_bus = Mock()
-        config1.spacecraft_bus.attitude_control = Mock()
-        config1.spacecraft_bus.attitude_control.predict_slew = Mock(
-            return_value=(45.0, [])
-        )
-        config1.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
-        config1.spacecraft_bus.radiators = Mock()
-        config1.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
+        config1.spacecraft_bus = mock_spacecraft_bus
         config1.attitude_constraint_scopes_for_mode = Mock(
             return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
         )
@@ -195,14 +183,7 @@ class TestACSRollCalculation:
             max_power=250.0,
         )
         config2.solar_panel = SolarPanelSet(panels=[panel2])
-        config2.spacecraft_bus = Mock()
-        config2.spacecraft_bus.attitude_control = Mock()
-        config2.spacecraft_bus.attitude_control.predict_slew = Mock(
-            return_value=(45.0, [])
-        )
-        config2.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
-        config2.spacecraft_bus.radiators = Mock()
-        config2.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
+        config2.spacecraft_bus = mock_spacecraft_bus
         config2.attitude_constraint_scopes_for_mode = Mock(
             return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
         )
@@ -333,7 +314,7 @@ class TestACSRollEdgeCases:
         # Should still return valid roll
         assert 0.0 <= roll < 360.0
 
-    def test_roll_near_poles(self) -> None:
+    def test_roll_near_poles(self, mock_spacecraft_bus) -> None:
         """Test roll calculation with spacecraft near poles."""
         ephem = DummyEphemeris(sun_ra=0.0, sun_dec=89.0)
         constraint = Mock()
@@ -357,14 +338,7 @@ class TestACSRollEdgeCases:
             max_power=250.0,
         )
         config.solar_panel = SolarPanelSet(panels=[panel])
-        config.spacecraft_bus = Mock()
-        config.spacecraft_bus.attitude_control = Mock()
-        config.spacecraft_bus.attitude_control.predict_slew = Mock(
-            return_value=(45.0, [])
-        )
-        config.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
-        config.spacecraft_bus.radiators = Mock()
-        config.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
+        config.spacecraft_bus = mock_spacecraft_bus
         config.attitude_constraint_scopes_for_mode = Mock(
             return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
         )

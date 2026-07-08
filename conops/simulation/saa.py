@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+from importlib import resources
+
 import numpy as np
 import rust_ephem
 from shapely import Point, Polygon
 
-from ..common import dtutcfromtimestamp
+from ..common import dtutcfromtimestamp, find_boundaries
+
+
+def _load_saa_polygon() -> Polygon:
+    """Load the SAA boundary polygon (longitude, latitude pairs in degrees)."""
+    data_file = resources.files("conops") / "data" / "saa_polygon.csv"
+    with resources.as_file(data_file) as path:
+        points = np.loadtxt(path, delimiter=",", skiprows=1)
+    return Polygon(points)
 
 
 class SAA:
@@ -13,8 +23,6 @@ class SAA:
     ephem: rust_ephem.Ephemeris | None
     year: int | None
     day: int | None
-    lat: float | bool  # bool initially, becomes float after calculation
-    long: float | bool  # bool initially, becomes float after calculation
     saatimes: np.ndarray
     calculated: bool
     saapoly: Polygon
@@ -22,240 +30,13 @@ class SAA:
     def __init__(self, year: int | None = None, day: int | None = None) -> None:
         self.year = year
         self.day = day
-        self.lat = False
-        self.long = False
-        self.ephem: rust_ephem.Ephemeris | None = None
+        self.ephem = None
         self.saatimes = np.array([]).reshape(
             0, 2
         )  # Empty 2D array for [start, end] pairs
         self.calculated = False
 
-        # SAA polygon boundary points (longitude, latitude pairs)
-        points = np.array(
-            [
-                [-8.50000000e01, -1.99999935e01],
-                [-8.49999999e01, -21.5],
-                [-8.40000000e01, -21.5],
-                [-8.30000000e01, -21.5],
-                [-8.20000000e01, -21.5],
-                [-8.10000000e01, -21.5],
-                [-8.00000000e01, -21.5],
-                [-7.90000000e01, -21.5],
-                [-7.80000000e01, -21.5],
-                [-7.70000000e01, -21.5],
-                [-7.60000000e01, -21.5],
-                [-7.50000000e01, -21.5],
-                [-7.40000000e01, -21.5],
-                [-7.30000000e01, -21.5],
-                [-7.20000000e01, -21.5],
-                [-7.10000000e01, -21.5],
-                [-7.00000000e01, -21.5],
-                [-6.90000000e01, -21.5],
-                [-6.80000000e01, -21.5],
-                [-6.70000000e01, -21.5],
-                [-6.60000000e01, -21.5],
-                [-6.50000000e01, -21.5],
-                [-6.40000000e01, -21.5],
-                [-6.30000000e01, -21.5],
-                [-6.20000000e01, -21.5],
-                [-6.10000000e01, -21.5],
-                [-6.00000000e01, -21.5],
-                [-5.90000000e01, -21.5],
-                [-5.80000000e01, -21.5],
-                [-5.70000000e01, -21.5],
-                [-5.60000000e01, -21.5],
-                [-5.50000000e01, -21.5],
-                [-5.40000000e01, -21.5],
-                [-5.30000000e01, -21.5],
-                [-5.20000000e01, -21.5],
-                [-5.10000000e01, -21.5],
-                [-5.00000000e01, -21.5],
-                [-4.90000000e01, -21.5],
-                [-4.80000000e01, -21.5],
-                [-4.70000000e01, -21.5],
-                [-4.60000000e01, -21.5],
-                [-4.50000000e01, -21.5],
-                [-4.40000000e01, -21.5],
-                [-4.30000000e01, -21.5],
-                [-4.20000000e01, -21.5],
-                [-4.10000000e01, -21.5],
-                [-4.00000000e01, -21.5],
-                [-3.90000000e01, -21.5],
-                [-3.80000000e01, -21.5],
-                [-3.70000000e01, -21.5],
-                [-3.60000000e01, -21.5],
-                [-3.50000000e01, -21.5],
-                [-3.40000000e01, -21.5],
-                [-3.30000000e01, -21.5],
-                [-3.20000000e01, -21.5],
-                [-3.10000000e01, -21.5],
-                [-3.00000000e01, -21.5],
-                [-2.90000000e01, -21.5],
-                [-2.80000000e01, -21.5],
-                [-2.70000000e01, -21.5],
-                [-2.60000000e01, -21.5],
-                [-2.50000000e01, -21.5],
-                [-2.40000000e01, -21.5],
-                [-2.30000000e01, -21.5],
-                [-2.20000000e01, -21.5],
-                [-2.10000000e01, -21.5],
-                [-21.5, -21.5],
-                [-1.90000000e01, -21.5],
-                [-1.80000000e01, -21.5],
-                [-1.70000000e01, -21.5],
-                [-1.60000000e01, -21.5],
-                [-1.50000000e01, -21.5],
-                [-1.40000000e01, -21.5],
-                [-1.30000000e01, -21.5],
-                [-1.20000000e01, -21.5],
-                [-1.10000000e01, -21.5],
-                [-1.00000000e01, -21.5],
-                [-9.00000000e00, -21.5],
-                [-8.00000000e00, -21.5],
-                [-7.00000000e00, -21.5],
-                [-6.00000000e00, -21.5],
-                [-5.00000000e00, -21.5],
-                [-4.00000000e00, -21.5],
-                [-3.00000000e00, -21.5],
-                [-2.00000000e00, -21.5],
-                [-1.00000000e00, -21.5],
-                [-4.15588488e-08, -1.90000000e01],
-                [-3.35000038e-07, -1.90000000e01],
-                [-1.00000000e00, -1.80000003e01],
-                [-2.00000000e00, -1.80000001e01],
-                [-3.00000000e00, -1.80000000e01],
-                [-4.00000000e00, -1.80000000e01],
-                [-5.00000000e00, -1.80000000e01],
-                [-5.00000058e00, -1.80000000e01],
-                [-6.00000000e00, -1.70000006e01],
-                [-7.00000000e00, -1.70000001e01],
-                [-7.00000030e00, -1.70000000e01],
-                [-8.00000000e00, -1.60000003e01],
-                [-9.00000000e00, -1.60000001e01],
-                [-1.00000000e01, -1.60000000e01],
-                [-1.00000005e01, -1.60000000e01],
-                [-1.10000000e01, -1.50000005e01],
-                [-1.20000000e01, -1.50000000e01],
-                [-1.30000000e01, -1.50000000e01],
-                [-1.30000000e01, -1.50000000e01],
-                [-1.40000000e01, -1.40000000e01],
-                [-1.40000001e01, -1.40000000e01],
-                [-1.50000000e01, -1.30000001e01],
-                [-1.60000000e01, -1.30000000e01],
-                [-1.70000000e01, -1.30000000e01],
-                [-1.70000000e01, -1.30000000e01],
-                [-1.80000000e01, -1.20000000e01],
-                [-1.90000000e01, -1.20000000e01],
-                [-1.90000000e01, -1.20000000e01],
-                [-1.90000000e01, -1.19999999e01],
-                [-1.80000001e01, -1.10000000e01],
-                [-1.80000000e01, -1.10000000e01],
-                [-1.70000000e01, -1.00000000e01],
-                [-1.70000001e01, -9.00000000e00],
-                [-1.80000000e01, -8.00000013e00],
-                [-1.90000000e01, -8.00000002e00],
-                [-1.90000001e01, -8.00000000e00],
-                [-21.5, -7.00000014e00],
-                [-2.10000000e01, -7.00000003e00],
-                [-2.20000000e01, -7.00000001e00],
-                [-2.20000000e01, -7.00000000e00],
-                [-2.30000000e01, -6.00000003e00],
-                [-2.40000000e01, -6.00000001e00],
-                [-2.50000000e01, -6.00000000e00],
-                [-2.50000000e01, -6.00000000e00],
-                [-2.60000000e01, -5.00000002e00],
-                [-2.70000000e01, -5.00000001e00],
-                [-2.70000000e01, -5.00000000e00],
-                [-2.80000000e01, -4.00000004e00],
-                [-2.80000000e01, -4.00000000e00],
-                [-2.90000000e01, -3.00000003e00],
-                [-3.00000000e01, -3.00000002e00],
-                [-3.00000000e01, -3.00000000e00],
-                [-3.00000003e01, -2.00000000e00],
-                [-3.10000000e01, -1.00000032e00],
-                [-3.10000003e01, -1.00000000e00],
-                [-3.20000000e01, -2.79999995e-07],
-                [-3.30000000e01, -4.84444485e-08],
-                [-3.40000000e01, -1.17647119e-08],
-                [-3.50000000e01, -1.62000049e-08],
-                [-3.50000001e01, 0.00000000e00],
-                [-3.60000000e01, 9.99999907e-01],
-                [-3.70000000e01, 9.99999984e-01],
-                [-3.80000000e01, 9.99999988e-01],
-                [-3.90000000e01, 9.99999888e-01],
-                [-4.00000000e01, 9.99999982e-01],
-                [-4.10000000e01, 9.99999993e-01],
-                [-4.20000000e01, 9.99999995e-01],
-                [-4.30000000e01, 9.99999995e-01],
-                [-4.40000000e01, 9.99999993e-01],
-                [-4.50000000e01, 9.99999987e-01],
-                [-4.60000000e01, 9.99999990e-01],
-                [-4.70000000e01, 9.99999993e-01],
-                [-4.80000000e01, 9.99999995e-01],
-                [-4.90000000e01, 9.99999994e-01],
-                [-5.00000000e01, 9.99999994e-01],
-                [-5.10000000e01, 9.99999977e-01],
-                [-5.20000000e01, 9.99999900e-01],
-                [-5.30000000e01, 9.99999943e-01],
-                [-5.40000000e01, 9.99999969e-01],
-                [-5.50000000e01, 9.99999854e-01],
-                [-5.60000000e01, 9.99999867e-01],
-                [-5.69999999e01, 0.00000000e00],
-                [-5.70000000e01, -7.33845695e-09],
-                [-5.80000000e01, -1.05333271e-08],
-                [-5.90000000e01, -1.47777826e-08],
-                [-5.90000007e01, 0.00000000e00],
-                [-6.00000000e01, 9.99999315e-01],
-                [-6.10000000e01, 9.99999901e-01],
-                [-6.19999999e01, 0.00000000e00],
-                [-6.20000000e01, -2.48888909e-08],
-                [-6.30000000e01, -4.80000040e-08],
-                [-6.40000000e01, -1.93000005e-07],
-                [-6.49999998e01, -1.00000000e00],
-                [-6.50000000e01, -1.00000002e00],
-                [-6.60000000e01, -1.00000004e01],
-                [-6.70000000e01, -2.00000000e00],
-                [-6.70000000e01, -2.00000001e00],
-                [-6.80000000e01, -2.00000002e00],
-                [-6.90000000e01, -2.00000011e00],
-                [-6.99999999e01, -3.00000000e00],
-                [-7.00000000e01, -3.00000002e00],
-                [-7.10000000e01, -3.00000007e00],
-                [-7.19999999e01, -4.00000000e00],
-                [-7.20000000e01, -4.00000001e00],
-                [-7.30000000e01, -4.00000003e00],
-                [-7.40000000e01, -4.00000021e00],
-                [-7.49999998e01, -5.00000000e00],
-                [-7.50000000e01, -5.00000002e00],
-                [-7.60000000e01, -6.00000000e00],
-                [-7.60000000e01, -6.00000002e00],
-                [-7.70000000e01, -6.00000025e00],
-                [-7.79999998e01, -7.00000000e00],
-                [-7.80000000e01, -7.00000012e00],
-                [-7.89999999e01, -8.00000000e00],
-                [-7.90000000e01, -8.00000001e00],
-                [-8.00000000e01, -8.00000005e00],
-                [-8.10000000e01, -9.00000000e00],
-                [-8.10000000e01, -9.00000002e00],
-                [-8.20000000e01, -1.00000000e01],
-                [-8.20000000e01, -1.10000000e01],
-                [-8.20000000e01, -1.10000000e01],
-                [-8.30000000e01, -1.10000002e01],
-                [-8.39999998e01, -1.20000000e01],
-                [-8.40000000e01, -1.30000000e01],
-                [-8.40000000e01, -1.30000001e01],
-                [-8.49999999e01, -1.40000000e01],
-                [-8.50000000e01, -1.50000000e01],
-                [-8.50000000e01, -1.50000004e01],
-                [-8.59999996e01, -1.60000000e01],
-                [-8.59999993e01, -1.70000000e01],
-                [-8.59999999e01, -1.80000000e01],
-                [-8.59999935e01, -1.90000000e01],
-                [-8.50000000e01, -20],
-                [-8.50000000e01, -21.5],
-            ]
-        )
-        self.saapoly = Polygon(points)
+        self.saapoly = _load_saa_polygon()
 
     def insaa_calc(self, utime: float) -> bool:
         """For a given time, are we inside the BAT SAA polygon"""
@@ -263,10 +44,10 @@ class SAA:
             raise ValueError("Ephemeris must be set before checking SAA status")
 
         i = self.ephem.index(dtutcfromtimestamp(utime))
-        self.long = self.ephem.longitude_deg[i]
-        self.lat = self.ephem.latitude_deg[i]
+        long = self.ephem.longitude_deg[i]
+        lat = self.ephem.latitude_deg[i]
 
-        return bool(self.saapoly.contains(Point(self.long, self.lat)))
+        return bool(self.saapoly.contains(Point(long, lat)))
 
     def calc(self) -> None:
         """
@@ -278,33 +59,33 @@ class SAA:
         if self.ephem is None:
             raise ValueError("Ephemeris must be set before calculating SAA times")
 
-        # First, calculate using the original method
         ephem_utime = [dt.timestamp() for dt in self.ephem.timestamp]
         inside = np.array([self.insaa_calc(t) for t in ephem_utime])
 
-        diff = np.diff(inside.astype(int))
-        # Starts are where diff goes from 0 to 1 (so diff is 1)
-        start_indices = np.where(diff == 1)[0]
-        # Exits are where diff goes from 1 to 0 (so diff is -1)
-        end_indices = np.where(diff == -1)[0]
-
-        saatimes_list = []
-
-        for start, end in zip(start_indices, end_indices):
-            # The start index from np.diff is the point *before* the transition.
-            # So we need to add 1 to get the first point inside the SAA.
-            # The end index is also the point *before* the transition, so we take
-            # that time as the last point inside the SAA.
-            saatimes_list.append([ephem_utime[start + 1], ephem_utime[end]])
-        self.saatimes = np.array(saatimes_list)
+        # starts/ends are half-open [start, end) index pairs; find_boundaries
+        # also captures SAA intervals already active at the start of the
+        # ephemeris window, or still active at its end, rather than dropping them.
+        starts, ends = find_boundaries(inside)
+        if len(starts) == 0:
+            self.saatimes = np.array([]).reshape(0, 2)
+        else:
+            self.saatimes = np.array(
+                [
+                    [ephem_utime[start], ephem_utime[end - 1]]
+                    for start, end in zip(starts, ends)
+                ]
+            )
         self.calculated = True
 
-    def get_saa_times(self) -> np.ndarray:
+    def _ensure_calculated(self) -> None:
         if not self.calculated:
             self.calc()
+
+    def get_saa_times(self) -> np.ndarray:
+        self._ensure_calculated()
         return self.saatimes
 
-    def insaa(self, utime: float) -> int:
+    def insaa(self, utime: float) -> bool:
         """
         Check if the given UTC time is within an SAA interval.
 
@@ -312,15 +93,14 @@ class SAA:
             utime (float): The UTC time to check.
 
         Returns:
-            int: 1 if the time is within an SAA interval, 0 otherwise.
+            True if the time is within an SAA interval, False otherwise.
         """
-        if not self.calculated:
-            self.calc()
+        self._ensure_calculated()
 
         for start, end in self.saatimes:
             if start <= utime <= end:
-                return 1
-        return 0
+                return True
+        return False
 
     def get_next_saa_time(self, utime: float) -> tuple[float, float] | None:
         """
@@ -329,8 +109,7 @@ class SAA:
             tuple: (start, end) of the next SAA interval, or None if there is no
             upcoming SAA interval.
         """
-        if not self.calculated:
-            self.calc()
+        self._ensure_calculated()
 
         for start, end in self.saatimes:
             if start > utime:

@@ -405,3 +405,68 @@ class TestACSStateTransitions:
         for mode in [0, 1, 2, 3, 4]:
             acs.acsmode = mode
             assert acs.acsmode == mode
+
+
+class TestStarTrackerTelemetryModeGating:
+    """star_tracker_status and star_tracker_functional_count answer different
+    questions and are intentionally gated differently.
+
+    star_tracker_status is a real-time diagnostic of actual hardware geometry
+    (useful to see e.g. a tracker staring at the Sun during a slew, even if
+    that doesn't matter for the current mode). star_tracker_functional_count
+    is gated by requires_lock_in_mode() because it answers "how many trackers
+    are usable for this mode's own purposes" -- these are allowed to disagree.
+    """
+
+    def _make_star_trackers(
+        self, tracker_in_soft_constraint: bool, lock_required: bool
+    ):
+        tracker = Mock()
+        tracker.in_soft_constraint = Mock(return_value=tracker_in_soft_constraint)
+
+        star_trackers = Mock()
+        star_trackers.num_trackers = Mock(return_value=1)
+        star_trackers.star_trackers = [tracker]
+        star_trackers.trackers_violating_hard_constraints = Mock(return_value=0)
+        star_trackers.min_functional_trackers = 1
+        star_trackers.requires_lock_in_mode = Mock(return_value=lock_required)
+        soft_violated = lock_required and tracker_in_soft_constraint
+        star_trackers.any_tracker_violating_soft_constraints = Mock(
+            return_value=soft_violated
+        )
+        star_trackers.trackers_violating_soft_constraints = Mock(
+            return_value=1 if soft_violated else 0
+        )
+        return star_trackers, tracker
+
+    def test_status_reflects_real_geometry_even_when_lock_not_required(
+        self, acs
+    ) -> None:
+        """Outside modes_require_lock, star_tracker_functional_count treats the
+        tracker as usable, but star_tracker_status still reports its actual
+        constrained geometry -- it's a diagnostic, not gated by mode."""
+        star_trackers, tracker = self._make_star_trackers(
+            tracker_in_soft_constraint=True, lock_required=False
+        )
+        acs.config.spacecraft_bus.star_trackers = star_trackers
+        acs.acsmode = ACSMode.CHARGING
+
+        acs._check_star_tracker_constraints(1514764800.0)
+
+        assert acs.star_tracker_functional_count == 1
+        assert acs.star_tracker_status == [False]
+        tracker.in_soft_constraint.assert_called_once()
+
+    def test_status_reflects_geometry_when_lock_required(self, acs) -> None:
+        """Inside modes_require_lock, a geometrically-degraded tracker is
+        reported as not functional in both the count and the per-tracker status."""
+        star_trackers, tracker = self._make_star_trackers(
+            tracker_in_soft_constraint=True, lock_required=True
+        )
+        acs.config.spacecraft_bus.star_trackers = star_trackers
+        acs.acsmode = ACSMode.SCIENCE
+
+        acs._check_star_tracker_constraints(1514764800.0)
+
+        assert acs.star_tracker_functional_count == 0
+        assert acs.star_tracker_status == [False]

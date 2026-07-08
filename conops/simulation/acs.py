@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any, NoReturn, cast
+from typing import TYPE_CHECKING, cast
 
 import rust_ephem
 
@@ -8,9 +8,8 @@ from ..common import (
     ObsType,
     dtutcfromtimestamp,
     unixtime2date,
-    unixtime2yearday,
 )
-from ..common.vector import angular_separation
+from ..common.vector import sort_by_angular_separation
 from ..config import AttitudeConstraintScope, FaultEvent, MissionConfig
 from ..config.constraint import (
     attitude_constraint_names_for_scopes,
@@ -27,10 +26,6 @@ from .slew import Slew
 if TYPE_CHECKING:
     from ..ditl.ditl_log import DITLLog
     from ..targets import Pointing
-
-
-def assert_never(value: NoReturn) -> NoReturn:
-    raise AssertionError(f"Expected code to be unreachable, but got: {value!r}")
 
 
 IDLE_OBSID = 0
@@ -147,10 +142,8 @@ class ACS:
                 utime=utime,
                 event_type=event_type,
                 description=description,
-                obsid=getattr(self.last_slew, "obsid", None)
-                if self.last_slew
-                else None,
-                acs_mode=self.acsmode if hasattr(self, "acsmode") else None,
+                obsid=self.last_slew.obsid if self.last_slew is not None else None,
+                acs_mode=self.acsmode,
             )
         else:
             # Fallback to print if no log available
@@ -165,7 +158,6 @@ class ACS:
         # Allow SAFE slews to be enqueued even in safe mode (part of safe mode entry)
         is_safe_slew = (
             command.command_type == ACSCommandType.SLEW_TO_TARGET
-            and hasattr(command, "slew")
             and command.slew is not None
             and command.slew.obstype == ObsType.SAFE
         )
@@ -233,7 +225,7 @@ class ACS:
     @staticmethod
     def _command_obsid(command: ACSCommand) -> int | None:
         if command.slew is not None:
-            return getattr(command.slew, "obsid", command.obsid)
+            return command.slew.obsid
         return command.obsid
 
     def _process_commands(self, utime: float) -> None:
@@ -247,26 +239,20 @@ class ACS:
             )
 
             # Dispatch to appropriate handler based on command type
-            handlers: dict[ACSCommandType, Any] = {
-                ACSCommandType.SLEW_TO_TARGET: lambda: self._handle_slew_command(
-                    command, utime
-                ),
-                ACSCommandType.START_PASS: lambda: self._start_pass(command, utime),
-                ACSCommandType.END_PASS: lambda: self._end_pass(utime),
-                ACSCommandType.START_BATTERY_CHARGE: lambda: self._start_battery_charge(
-                    command, utime
-                ),
-                ACSCommandType.END_BATTERY_CHARGE: lambda: self._end_battery_charge(
-                    utime
-                ),
-                ACSCommandType.ENTER_SAFE_MODE: lambda: self._handle_safe_mode_command(
-                    command, utime
-                ),
-            }
+            match command.command_type:
+                case ACSCommandType.SLEW_TO_TARGET:
+                    self._handle_slew_command(command, utime)
+                case ACSCommandType.START_PASS:
+                    self._start_pass(command, utime)
+                case ACSCommandType.END_PASS:
+                    self._end_pass(utime)
+                case ACSCommandType.START_BATTERY_CHARGE:
+                    self._start_battery_charge(command, utime)
+                case ACSCommandType.END_BATTERY_CHARGE:
+                    self._end_battery_charge(utime)
+                case ACSCommandType.ENTER_SAFE_MODE:
+                    self._handle_safe_mode_command(command, utime)
 
-            handler = handlers.get(command.command_type)
-            if handler:
-                handler()
             self.executed_commands.append(command)
 
     def _handle_slew_command(self, command: ACSCommand, utime: float) -> None:
@@ -307,10 +293,11 @@ class ACS:
             )
             self.last_slew = None
 
+        last_ppt_obsid = self.last_ppt.obsid if self.last_ppt is not None else "unknown"
         self._log_or_print(
             utime,
             "PASS",
-            f"{unixtime2date(utime)}: Pass over - returning to last PPT {getattr(self.last_ppt, 'obsid', 'unknown')}",
+            f"{unixtime2date(utime)}: Pass over - returning to last PPT {last_ppt_obsid}",
         )
 
     # Handle Safe Mode Command
@@ -372,7 +359,7 @@ class ACS:
         slew.slewstart = utime
         slew.calc_slewtime()
 
-        slewdist = float(getattr(slew, "slewdist", 0.0))
+        slewdist = slew.slewdist
         self._log_or_print(
             utime,
             "SLEW",
@@ -434,16 +421,16 @@ class ACS:
         # For SAFE mode, skip visibility checking (emergency situation)
         if obstype == ObsType.SAFE:
             # Initialize slew positions without target
-            is_first_slew = self._initialize_slew_positions(slew, utime)
+            is_first_slew = self._initialize_slew_positions(slew)
             slew.at = None  # No visibility constraint in safe mode
             execution_time = utime  # Execute immediately
         else:
             # Set up target observation request and check visibility
-            target_request = self._create_target_request(slew, utime, roll)
+            target_request = self._create_target_request(slew, roll)
             slew.at = target_request
 
             visstart = target_request.next_vis(utime)
-            is_first_slew = self._initialize_slew_positions(slew, utime)
+            is_first_slew = self._initialize_slew_positions(slew)
 
             # Validate slew is possible
             if not self._is_slew_valid(visstart, slew.obstype, utime):
@@ -472,7 +459,7 @@ class ACS:
         return True
 
     def _create_target_request(
-        self, slew: Slew, utime: float, roll: float | None = None
+        self, slew: Slew, roll: float | None = None
     ) -> "Pointing":
         """Create and configure a target observation request for visibility checking."""
         from ..targets import Pointing
@@ -486,28 +473,20 @@ class ACS:
         )
         target.isat = slew.obstype != ObsType.PPT
 
-        year, day = unixtime2yearday(utime)
         target.visibility()
         return target
 
-    def _initialize_slew_positions(self, slew: Slew, utime: float) -> bool:
-        """Initialize slew start positions.
+    def _initialize_slew_positions(self, slew: Slew) -> bool:
+        """Initialize slew start positions from current ACS pointing.
 
-        If a previous slew exists, start from current pointing (self.ra/dec).
-        If this is the first slew, derive current pointing from ephemeris if
-        ra/dec have not yet been initialized (both zero) and use that as start.
+        The ACS always drives the spacecraft from its current position
+        (self.ra/dec/roll), regardless of whether a previous slew exists.
         Returns True if this is the first slew (used for accounting/logging).
         """
-        if self.last_slew:
-            slew.startra = self.ra
-            slew.startdec = self.dec
-            slew.startroll = self.roll
-            return False
-
         slew.startra = self.ra
         slew.startdec = self.dec
         slew.startroll = self.roll
-        return True
+        return self.last_slew is None
 
     def _is_slew_valid(self, visstart: float, obstype: ObsType, utime: float) -> bool:
         """Check if the requested slew is valid (target is visible)."""
@@ -529,7 +508,7 @@ class ACS:
         # Wait for current slew to finish if in progress
         if (
             not is_first_slew
-            and isinstance(self.last_slew, Slew)
+            and self.last_slew is not None
             and self.last_slew.is_slewing(utime)
         ):
             execution_time = self.last_slew.slewstart + self.last_slew.slewtime
@@ -671,12 +650,7 @@ class ACS:
             )
         if self.current_pass is not None and self.current_pass.in_pass(utime):
             return self.current_pass.roll_at(utime)
-        if (
-            self.last_slew is not None
-            and isinstance(self.last_slew, Slew)
-            and getattr(self.last_slew, "slewstart", 0) > 0
-            and hasattr(self.last_slew, "endroll")
-        ):
+        if self.last_slew is not None and self.last_slew.slewstart > 0:
             return self.last_slew.endroll
         return optimum_roll(
             self.ra, self.dec, utime, self.ephem, self.solar_panel, self.constraint
@@ -705,21 +679,19 @@ class ACS:
                 "requesting safe mode"
             )
             self._log_or_print(utime, "ERROR", f"{unixtime2date(utime)}: {cause}")
-            fm = getattr(self.config, "fault_management", None)
-            if fm is not None:
-                fm.events.append(
-                    FaultEvent(
-                        utime=utime,
-                        event_type="safe_mode_trigger",
-                        name="idle_attitude_constraint",
-                        cause=cause,
-                        metadata={
-                            "ra": self.ra,
-                            "dec": self.dec,
-                            "scopes": scope_label,
-                        },
-                    )
+            self.config.fault_management.events.append(
+                FaultEvent(
+                    utime=utime,
+                    event_type="safe_mode_trigger",
+                    name="idle_attitude_constraint",
+                    cause=cause,
+                    metadata={
+                        "ra": self.ra,
+                        "dec": self.dec,
+                        "scopes": scope_label,
+                    },
                 )
+            )
             self.request_safe_mode(utime)
             return
 
@@ -841,12 +813,7 @@ class ACS:
                 continue
             for grid_ra in range(0, 360, IDLE_SAFE_ATTITUDE_GRID_STEP_DEG):
                 grid.append((float(grid_ra), float(dec)))
-        grid.sort(
-            key=lambda candidate: angular_separation(
-                self.ra, self.dec, candidate[0], candidate[1]
-            )
-        )
-        raw_candidates.extend(grid)
+        raw_candidates.extend(sort_by_angular_separation(grid, self.ra, self.dec))
 
         candidates: list[tuple[float, float]] = []
         seen: set[tuple[float, float]] = set()
@@ -908,13 +875,10 @@ class ACS:
     def _check_constraints(self, utime: float) -> None:
         """Check and log constraint violations for current pointing."""
         if (
-            isinstance(self.last_slew, Slew)
+            self.last_slew is not None
             and self.last_slew.at is not None
-            and not isinstance(self.last_slew.at, bool)
             and self.last_slew.obstype == ObsType.PPT
         ):
-            assert self.last_slew.at is not None
-
             scopes = self.config.attitude_constraint_scopes_for_mode(self.acsmode)
             constraint_names = attitude_constraint_names_for_scopes(
                 self.constraint,
@@ -954,7 +918,7 @@ class ACS:
 
         star_trackers = self.config.spacecraft_bus.star_trackers
 
-        # Skip if no star trackers configured or if star_trackers is mocked (for tests)
+        # Skip if no star trackers configured
         if star_trackers.num_trackers() == 0:
             return
 
@@ -962,10 +926,6 @@ class ACS:
         current_ra = self.ra
         current_dec = self.dec
         current_roll = self.roll
-
-        # Check if this is a real star tracker configuration (not mocked)
-        if not hasattr(star_trackers, "trackers_violating_hard_constraints"):
-            return
 
         # Check hard constraints
         hard_violations = star_trackers.trackers_violating_hard_constraints(
@@ -993,36 +953,22 @@ class ACS:
         )
 
         # Update ACS state for Housekeeping telemetry
-        self.star_tracker_hard_violations = (
-            hard_violations if isinstance(hard_violations, int) else 0
-        )
+        self.star_tracker_hard_violations = hard_violations
         self.star_tracker_soft_violations = soft_violations
-        num_trackers = (
-            star_trackers.num_trackers()
-            if isinstance(star_trackers.num_trackers(), int)
-            else 0
-        )
+        num_trackers = star_trackers.num_trackers()
         # Functional = not in soft constraint (i.e. tracking at full science quality).
         # Hard-constraint violations are always faulted separately; a tracker
         # being burned by the Sun is still "not soft-constrained" but the hard
         # constraint system handles that separately.
-        self.star_tracker_functional_count = (
-            num_trackers - soft_violation_count
-            if isinstance(num_trackers, int) and isinstance(soft_violation_count, int)
-            else 0
-        )
+        self.star_tracker_functional_count = num_trackers - soft_violation_count
         # Per-tracker status: True = functional (not in soft constraint)
-        raw_st_list = getattr(star_trackers, "star_trackers", None)
-        if isinstance(raw_st_list, list):
-            self.star_tracker_status = [
-                not st.in_soft_constraint(current_ra, current_dec, utime, current_roll)
-                for st in raw_st_list
-            ]
-        else:
-            self.star_tracker_status = []
+        self.star_tracker_status = [
+            not st.in_soft_constraint(current_ra, current_dec, utime, current_roll)
+            for st in star_trackers.star_trackers
+        ]
 
         # Log hard constraint violations
-        if isinstance(hard_violations, int) and hard_violations > 0:
+        if hard_violations > 0:
             functional_trackers = star_trackers.num_trackers() - hard_violations
             min_required = star_trackers.min_functional_trackers
 
@@ -1242,7 +1188,7 @@ class ACS:
         lastra: float,
         lastdec: float,
         current_ppt: "Pointing | None",
-    ) -> tuple[float, float, Any]:
+    ) -> "tuple[float, float, Pointing | None]":
         """Initiate emergency charging by creating charging PPT and enqueuing charge command.
 
         Delegates to EmergencyCharging module to create the optimal charging pointing,

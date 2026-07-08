@@ -533,7 +533,6 @@ class TestPassTimes:
         assert pt.passes == []
         assert pt.length == 1
         assert pt.dropped_constraint_passes == []
-        assert pt.minelev == 10.0
         assert pt.minlen == 480
         assert pt.schedule_chance == 1.0
 
@@ -1095,7 +1094,6 @@ class TestPassTimesGetIntegration:
 
         # Set reasonable parameters
         passtimes.minlen = 60.0  # 1 minute minimum
-        passtimes.minelev = 5.0  # 5 degrees minimum elevation
         passtimes.schedule_chance = 1.0  # Always schedule
 
         # Run get method

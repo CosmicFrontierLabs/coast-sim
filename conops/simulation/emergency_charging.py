@@ -11,7 +11,7 @@ from conops.config.battery import Battery
 
 from ..common import unixtime2date
 from ..common.enums import ACSMode, ObsType
-from ..common.vector import angular_separation
+from ..common.vector import angular_separation, sort_by_angular_separation
 from ..config import AttitudeConstraintScope, MissionConfig
 from ..config.constraint import (
     in_attitude_constraint_scopes,
@@ -46,7 +46,7 @@ class EmergencyCharging:
         This minimizes slew time and energy expenditure during emergency charging.
 
     Example:
-        # Without slew limit (new API — pass the full Config object)
+        # Without slew limit
         ec = EmergencyCharging(config=config, starting_obsid=999000)
 
         # With 45° slew limit
@@ -59,7 +59,7 @@ class EmergencyCharging:
 
     def __init__(
         self,
-        config: MissionConfig | None = None,
+        config: MissionConfig,
         starting_obsid: int = 999000,
         max_slew_deg: float | None = None,
         sidemount: bool = False,
@@ -74,9 +74,6 @@ class EmergencyCharging:
             starting_obsid: Starting obsid for charging observations (default: 999000)
             max_slew_deg: Maximum slew distance in degrees from current pointing (default: None = no limit)
         """
-        # Handle both old and new parameter styles for backward compatibility
-
-        assert config is not None, "Config must be set for EmergencyCharging"
         self.config = config
         self.constraint = config.constraint
         self.solar_panel = config.solar_panel
@@ -223,13 +220,13 @@ class EmergencyCharging:
         if charging_ppt is None:
             return None
 
-        if current_ppt is not None and not getattr(current_ppt, "done", False):
+        if current_ppt is not None and not current_ppt.done:
             self._log_or_print(
                 utime,
                 "CHARGING",
                 "Battery below recharge threshold; interrupting science observation "
                 "for charging",
-                obsid=getattr(current_ppt, "obsid", None),
+                obsid=current_ppt.obsid,
             )
             current_ppt.end = utime
             current_ppt.done = True
@@ -277,10 +274,6 @@ class EmergencyCharging:
         Returns:
             Tuple of (ra, dec) if valid pointing found, or (None, None) if not
         """
-        # Short-circuit: if in eclipse, no pointing will provide power
-        if self.constraint.in_eclipse(ra=0, dec=0, time=utime):
-            return None, None
-
         # Validate optimal pointing
         optimal_roll = optimum_roll(
             optimal_ra, optimal_dec, utime, ephem, self.solar_panel, self.constraint
@@ -319,43 +312,25 @@ class EmergencyCharging:
         # For side-mounted panels, explore RA offsets while keeping Dec similar
         # For body-mounted panels, we need to maintain pointing near the Sun
 
-        # Generate candidate pointings ordered by angular distance from optimal
-        # Smaller offsets first - more likely to satisfy similar constraints
-        candidates: list[tuple[float, float]] = []
+        # Build candidate pointings: RA offsets only, Dec offsets only, and
+        # combined RA+Dec offsets.
+        raw_candidates: list[tuple[float, float]] = []
 
-        # Build candidates with approximate angular distance for sorting
-        candidate_list: list[tuple[float, float, float]] = []  # (ra, dec, approx_dist)
+        for ra_offset in (30, -30, 60, -60, 90, -90, 120, -120, 150, -150, 180):
+            raw_candidates.append(((optimal_ra + ra_offset) % 360.0, optimal_dec))
 
-        # RA offsets only (Dec unchanged)
-        for ra_offset in [30, -30, 60, -60, 90, -90, 120, -120, 150, -150, 180]:
-            alt_ra = (optimal_ra + ra_offset) % 360.0
-            # Approximate angular distance (RA offset scaled by cos(dec))
-            approx_dist = abs(ra_offset) * max(
-                0.1, abs(np.cos(np.radians(optimal_dec)))
-            )
-            candidate_list.append((alt_ra, optimal_dec, approx_dist))
-
-        # Dec offsets only (RA unchanged)
-        for dec_offset in [10, -10, 20, -20, 30, -30]:
-            alt_dec = np.clip(optimal_dec + dec_offset, -90.0, 90.0)
+        for dec_offset in (10, -10, 20, -20, 30, -30):
+            alt_dec = max(-90.0, min(90.0, optimal_dec + dec_offset))
             if abs(alt_dec - optimal_dec) > 0.1:  # Only if actually different
-                candidate_list.append((optimal_ra, alt_dec, abs(dec_offset)))
+                raw_candidates.append((optimal_ra, alt_dec))
 
-        # Combined offsets
-        for ra_offset in [45, -45, 90, -90, 135, -135]:
-            for dec_offset in [15, -15, 30, -30]:
-                alt_ra = (optimal_ra + ra_offset) % 360.0
-                alt_dec = np.clip(optimal_dec + dec_offset, -90.0, 90.0)
-                # Approximate angular distance
-                ra_contrib = abs(ra_offset) * max(
-                    0.1, abs(np.cos(np.radians(optimal_dec)))
-                )
-                approx_dist = (ra_contrib**2 + dec_offset**2) ** 0.5
-                candidate_list.append((alt_ra, alt_dec, approx_dist))
+        for ra_offset in (45, -45, 90, -90, 135, -135):
+            for dec_offset in (15, -15, 30, -30):
+                alt_dec = max(-90.0, min(90.0, optimal_dec + dec_offset))
+                raw_candidates.append(((optimal_ra + ra_offset) % 360.0, alt_dec))
 
-        # Sort by angular distance and extract (ra, dec) pairs
-        candidate_list.sort(key=lambda x: x[2])
-        candidates = [(ra, dec) for ra, dec, _ in candidate_list]
+        # Order candidates by true angular distance from optimal (smaller offsets first)
+        candidates = sort_by_angular_separation(raw_candidates, optimal_ra, optimal_dec)
 
         # Batch-check all constraints at once
         candidate_ras = [ra for ra, dec in candidates]
@@ -370,7 +345,7 @@ class EmergencyCharging:
 
         for i, (alt_ra, alt_dec) in enumerate(candidates):
             # Skip constrained pointings (already batch-computed)
-            if violations is not None and violations[i]:
+            if violations[i]:
                 continue
 
             # Check slew distance if limit is set
@@ -493,10 +468,10 @@ class EmergencyCharging:
             candidate_ra = np.degrees(ra_rad) % 360.0
             candidate_dec = np.degrees(dec_rad)
 
-            # Verify this is actually 90° from Sun (within numerical precision)
-            sep = np.degrees(np.arccos(np.clip(np.dot(pointing_vec, sun_vec), -1, 1)))
-            if abs(sep - 90.0) < 1.0:  # Within 1 degree of 90°
-                candidates.append((candidate_ra, candidate_dec))
+            # pointing_vec is a unit-norm combination of perp1/perp2, both of which
+            # are constructed orthogonal to sun_vec, so it is exactly 90° from the
+            # Sun by construction (up to floating-point error) — no need to verify.
+            candidates.append((candidate_ra, candidate_dec))
 
         # Batch-check all constraints at once
         candidate_ras = [ra for ra, dec in candidates]
@@ -505,49 +480,43 @@ class EmergencyCharging:
             candidate_ras, candidate_decs, utime
         )
 
-        # Find best valid pointing (skip constrained ones)
+        # Find best valid pointing (skip constrained ones). With no current
+        # position or no slew limit, the first valid candidate is used
+        # immediately; otherwise the closest one within the slew limit wins.
         best_candidate = None
-        best_slew = float("inf")
+        best_slew: float | None = None
 
         for i, (candidate_ra, candidate_dec) in enumerate(candidates):
-            if violations is not None and violations[i]:
+            if violations[i]:
                 continue  # Skip constrained pointings
 
-            # If no current position provided, return first valid pointing
             if current_ra is None or current_dec is None:
-                self._log_or_print(
-                    utime,
-                    "CHARGING",
-                    f"Found side-mount charging pointing at RA={candidate_ra:.2f}, Dec={candidate_dec:.2f} (90° from Sun at RA={sun_ra:.2f}, Dec={sun_dec:.2f})",
-                )
-                return candidate_ra, candidate_dec
+                # No current position to measure a slew from.
+                best_candidate = (candidate_ra, candidate_dec)
+                best_slew = None
+                break
 
-            # Calculate slew distance
             slew = angular_separation(
                 current_ra, current_dec, candidate_ra, candidate_dec
             )
 
-            # If no slew limit, return first valid pointing
             if self.max_slew_deg is None:
-                self._log_or_print(
-                    utime,
-                    "CHARGING",
-                    f"Found side-mount charging pointing at RA={candidate_ra:.2f}, Dec={candidate_dec:.2f} (90° from Sun at RA={sun_ra:.2f}, Dec={sun_dec:.2f})",
-                )
-                return candidate_ra, candidate_dec
+                best_candidate = (candidate_ra, candidate_dec)
+                best_slew = slew
+                break
 
-            # If within slew limit, track the closest one
-            if slew <= self.max_slew_deg and slew < best_slew:
+            if slew <= self.max_slew_deg and (best_slew is None or slew < best_slew):
                 best_candidate = (candidate_ra, candidate_dec)
                 best_slew = slew
 
-        # Return the closest valid pointing within slew limit
         if best_candidate is not None:
             candidate_ra, candidate_dec = best_candidate
+            slew_clause = f", {best_slew:.1f}° slew" if best_slew is not None else ""
             self._log_or_print(
                 utime,
                 "CHARGING",
-                f"Found side-mount charging pointing at RA={candidate_ra:.2f}, Dec={candidate_dec:.2f} (90° from Sun, {best_slew:.1f}° slew)",
+                f"Found side-mount charging pointing at RA={candidate_ra:.2f}, Dec={candidate_dec:.2f} "
+                f"(90° from Sun at RA={sun_ra:.2f}, Dec={sun_dec:.2f}{slew_clause})",
             )
             return best_candidate
 

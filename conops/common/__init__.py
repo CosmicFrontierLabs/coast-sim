@@ -1,5 +1,6 @@
 from .common import (
     dtutcfromtimestamp,
+    find_boundaries,
     givename,
     ics_date_conv,
     normalize_acs_mode,
@@ -49,6 +50,7 @@ __all__ = [
     "body_vector_to_eci",
     "constraint_avoiding_waypoint",
     "dtutcfromtimestamp",
+    "find_boundaries",
     "givename",
     "great_circle",
     "ics_date_conv",
