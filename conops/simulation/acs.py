@@ -421,7 +421,7 @@ class ACS:
         # For SAFE mode, skip visibility checking (emergency situation)
         if obstype == ObsType.SAFE:
             # Initialize slew positions without target
-            is_first_slew = self._initialize_slew_positions(slew, utime)
+            is_first_slew = self._initialize_slew_positions(slew)
             slew.at = None  # No visibility constraint in safe mode
             execution_time = utime  # Execute immediately
         else:
@@ -430,7 +430,7 @@ class ACS:
             slew.at = target_request
 
             visstart = target_request.next_vis(utime)
-            is_first_slew = self._initialize_slew_positions(slew, utime)
+            is_first_slew = self._initialize_slew_positions(slew)
 
             # Validate slew is possible
             if not self._is_slew_valid(visstart, slew.obstype, utime):
@@ -476,24 +476,17 @@ class ACS:
         target.visibility()
         return target
 
-    def _initialize_slew_positions(self, slew: Slew, utime: float) -> bool:
-        """Initialize slew start positions.
+    def _initialize_slew_positions(self, slew: Slew) -> bool:
+        """Initialize slew start positions from current ACS pointing.
 
-        If a previous slew exists, start from current pointing (self.ra/dec).
-        If this is the first slew, derive current pointing from ephemeris if
-        ra/dec have not yet been initialized (both zero) and use that as start.
+        The ACS always drives the spacecraft from its current position
+        (self.ra/dec/roll), regardless of whether a previous slew exists.
         Returns True if this is the first slew (used for accounting/logging).
         """
-        if self.last_slew:
-            slew.startra = self.ra
-            slew.startdec = self.dec
-            slew.startroll = self.roll
-            return False
-
         slew.startra = self.ra
         slew.startdec = self.dec
         slew.startroll = self.roll
-        return True
+        return self.last_slew is None
 
     def _is_slew_valid(self, visstart: float, obstype: ObsType, utime: float) -> bool:
         """Check if the requested slew is valid (target is visible)."""

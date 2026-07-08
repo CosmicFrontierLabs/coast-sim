@@ -164,7 +164,7 @@ class TestAddSlewClass:
         mock_at.next_vis = Mock(return_value=1514765000.0)  # 200s later
         mock_too.return_value = mock_at
 
-        acs.last_slew = False
+        acs.last_slew = None
         result = acs._enqueue_slew(
             slew.endra, slew.enddec, slew.obsid, 1514764800.0, slew.obstype
         )
@@ -268,7 +268,7 @@ class TestAddSlewClass:
         mock_at.windows = []
         mock_too.return_value = mock_at
 
-        acs.last_slew = False
+        acs.last_slew = None
         result = acs._enqueue_slew(
             slew.endra, slew.enddec, slew.obsid, 1514764800.0, slew.obstype
         )
@@ -611,7 +611,7 @@ class TestAddSlewClassEdgeCases:
         mock_at.windows = []
         mock_too.return_value = mock_at
 
-        acs.last_slew = False
+        acs.last_slew = None
         acs.last_ppt = False
         result = acs._enqueue_slew(
             pass_obj.endra,
@@ -649,7 +649,7 @@ class TestAddSlewClassEdgeCases:
         mock_at.windows = []
         mock_too.return_value = mock_at
 
-        acs.last_slew = False
+        acs.last_slew = None
         acs.last_ppt = False
         result = acs._enqueue_slew(
             slew.endra, slew.enddec, slew.obsid, 1514764800.0, slew.obstype
@@ -682,7 +682,7 @@ class TestAddSlewClassEdgeCases:
         mock_at.windows = [[1514764800.0, 1514765000.0]]
         mock_too.return_value = mock_at
 
-        acs.last_slew = False
+        acs.last_slew = None
         result = acs._enqueue_slew(
             slew.endra, slew.enddec, slew.obsid, 1514764800.0, slew.obstype
         )
@@ -713,7 +713,7 @@ class TestAddSlewClassEdgeCases:
         mock_at.windows = []
         mock_too.return_value = mock_at
 
-        acs.last_slew = False
+        acs.last_slew = None
         result = acs._enqueue_slew(
             slew.endra, slew.enddec, slew.obsid, 1514764800.0, slew.obstype
         )
