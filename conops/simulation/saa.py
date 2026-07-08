@@ -6,7 +6,7 @@ import numpy as np
 import rust_ephem
 from shapely import Point, Polygon
 
-from ..common import dtutcfromtimestamp
+from ..common import dtutcfromtimestamp, find_boundaries
 
 
 def _load_saa_polygon() -> Polygon:
@@ -62,21 +62,19 @@ class SAA:
         ephem_utime = [dt.timestamp() for dt in self.ephem.timestamp]
         inside = np.array([self.insaa_calc(t) for t in ephem_utime])
 
-        diff = np.diff(inside.astype(int))
-        # Starts are where diff goes from 0 to 1 (so diff is 1)
-        start_indices = np.where(diff == 1)[0]
-        # Exits are where diff goes from 1 to 0 (so diff is -1)
-        end_indices = np.where(diff == -1)[0]
-
-        saatimes_list = []
-
-        for start, end in zip(start_indices, end_indices):
-            # The start index from np.diff is the point *before* the transition.
-            # So we need to add 1 to get the first point inside the SAA.
-            # The end index is also the point *before* the transition, so we take
-            # that time as the last point inside the SAA.
-            saatimes_list.append([ephem_utime[start + 1], ephem_utime[end]])
-        self.saatimes = np.array(saatimes_list)
+        # starts/ends are half-open [start, end) index pairs; find_boundaries
+        # also captures SAA intervals already active at the start of the
+        # ephemeris window, or still active at its end, rather than dropping them.
+        starts, ends = find_boundaries(inside)
+        if len(starts) == 0:
+            self.saatimes = np.array([]).reshape(0, 2)
+        else:
+            self.saatimes = np.array(
+                [
+                    [ephem_utime[start], ephem_utime[end - 1]]
+                    for start, end in zip(starts, ends)
+                ]
+            )
         self.calculated = True
 
     def _ensure_calculated(self) -> None:

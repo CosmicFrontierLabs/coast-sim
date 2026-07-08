@@ -6,7 +6,7 @@ import numpy as np
 import rust_ephem
 from pydantic import BaseModel, Field
 
-from ..common import ics_date_conv, unixtime2date
+from ..common import find_boundaries, ics_date_conv, unixtime2date
 from ..common.enums import ACSMode, AntennaType, ObsType, SlewAlgorithm
 from ..common.vector import (
     attitude_for_body_vector_tracking,
@@ -783,21 +783,6 @@ class PassTimes:
 
         return elevation_angle, gs_to_sat_unit
 
-    @staticmethod
-    def _find_pass_boundaries(is_visible: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Return (pass_starts, pass_ends) index arrays from a visibility mask."""
-        transitions = np.diff(is_visible.astype(int))
-        pass_starts = np.where(transitions == 1)[0] + 1
-        pass_ends = np.where(transitions == -1)[0] + 1
-
-        # Handle edge cases
-        if is_visible[0]:
-            pass_starts = np.concatenate([[0], pass_starts])
-        if is_visible[-1]:
-            pass_ends = np.concatenate([pass_ends, [len(is_visible)]])
-
-        return pass_starts, pass_ends
-
     def _build_pass(
         self,
         station: GroundStation,
@@ -903,7 +888,7 @@ class PassTimes:
                 station, startindex, endindex
             )
             is_visible = elevation_angle > station.min_elevation_deg
-            pass_starts, pass_ends = self._find_pass_boundaries(is_visible)
+            pass_starts, pass_ends = find_boundaries(is_visible)
 
             for start_idx, end_idx in zip(pass_starts, pass_ends):
                 result = self._build_pass(
