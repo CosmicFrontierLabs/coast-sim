@@ -206,9 +206,6 @@ class TestPlanEntrySchema:
                 _ENTRY_DICT,
                 obstype="GSP",
                 station="TRO",
-                station_lat_deg=12.34,
-                station_lon_deg=-56.78,
-                station_alt_m=910.0,
                 contact_begin=1_000_120.0,
                 contact_end=1_000_720.0,
                 track_start_ra=12.5,
@@ -222,9 +219,6 @@ class TestPlanEntrySchema:
 
         dumped = entry.model_dump(mode="json")
         assert dumped["station"] == "TRO"
-        assert dumped["station_lat_deg"] == pytest.approx(12.34)
-        assert dumped["station_lon_deg"] == pytest.approx(-56.78)
-        assert dumped["station_alt_m"] == pytest.approx(910.0)
         assert dumped["contact_begin"] == "1970-01-12T13:48:40+00:00"
         assert dumped["contact_end"] == "1970-01-12T13:58:40+00:00"
         assert dumped["track_start_ra"] == pytest.approx(12.5)
@@ -236,9 +230,6 @@ class TestPlanEntrySchema:
 
         reloaded = PlanEntrySchema(**dumped)
         assert reloaded.station == "TRO"
-        assert reloaded.station_lat_deg == pytest.approx(12.34)
-        assert reloaded.station_lon_deg == pytest.approx(-56.78)
-        assert reloaded.station_alt_m == pytest.approx(910.0)
         assert reloaded.contact_begin == pytest.approx(1_000_120.0)
         assert reloaded.contact_end == pytest.approx(1_000_720.0)
         assert reloaded.track_start_ra == pytest.approx(12.5)
@@ -442,9 +433,6 @@ class TestPlanSchema:
         assert isinstance(entry["end"], str), "end should be an ISO-8601 string"
         assert "T" in entry["begin"]
         assert "station" not in entry
-        assert "station_lat_deg" not in entry
-        assert "station_lon_deg" not in entry
-        assert "station_alt_m" not in entry
         assert "contact_begin" not in entry
         assert "contact_end" not in entry
         assert "track_start_ra" not in entry

@@ -109,9 +109,6 @@ class PlanEntrySchema(BaseModel):
     done: bool = False
     exposure: int = 0
     station: str | None = None
-    station_lat_deg: float | None = None
-    station_lon_deg: float | None = None
-    station_alt_m: float | None = None
     contact_begin: float | None = None
     contact_end: float | None = None
     track_start_ra: float | None = None
@@ -206,9 +203,6 @@ class PlanEntrySchema(BaseModel):
                 "done": getattr(data, "done", False),
                 "exposure": cls._computed_exposure(data),
                 "station": getattr(data, "station", None),
-                "station_lat_deg": getattr(data, "station_lat_deg", None),
-                "station_lon_deg": getattr(data, "station_lon_deg", None),
-                "station_alt_m": getattr(data, "station_alt_m", None),
                 "contact_begin": getattr(data, "contact_begin", None),
                 "contact_end": getattr(data, "contact_end", None),
                 "track_start_ra": getattr(data, "track_start_ra", None),
