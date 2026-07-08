@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any, NoReturn, cast
+from typing import TYPE_CHECKING, NoReturn, cast
 
 import rust_ephem
 
@@ -1236,7 +1236,7 @@ class ACS:
         lastra: float,
         lastdec: float,
         current_ppt: "Pointing | None",
-    ) -> tuple[float, float, Any]:
+    ) -> "tuple[float, float, Pointing | None]":
         """Initiate emergency charging by creating charging PPT and enqueuing charge command.
 
         Delegates to EmergencyCharging module to create the optimal charging pointing,
