@@ -82,6 +82,9 @@ build-backend = "setuptools.build_meta"
 # orbit_visualizer lives in its own repo (orbit-visualizer) — exclude it here
 exclude = ["orbit_visualizer*"]
 
+[tool.setuptools.package-data]
+"conops" = ["data/*.csv"]
+
 [tool.setuptools_scm]
 # Use Git tags to determine the version
 version_scheme = "guess-next-dev"
