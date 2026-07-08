@@ -65,7 +65,9 @@ def mock_ephem_with_pv(sun_ra: float = 90.0, sun_dec: float = 0.0) -> Mock:
 
 
 @pytest.fixture
-def test_config_with_panels(mock_ephem_with_pv: Mock) -> tuple[Mock, SolarPanelSet]:
+def test_config_with_panels(
+    mock_ephem_with_pv: Mock, mock_spacecraft_bus: Mock
+) -> tuple[Mock, SolarPanelSet]:
     """Create a test configuration with solar panels and mock ephemeris.
 
     Args:
@@ -101,14 +103,7 @@ def test_config_with_panels(mock_ephem_with_pv: Mock) -> tuple[Mock, SolarPanelS
     config.constraint = constraint
     config.ground_stations = Mock()
     config.solar_panel = panel_set
-    config.spacecraft_bus = Mock()
-    config.spacecraft_bus.attitude_control = Mock()
-    config.spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))
-    config.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
-    config.spacecraft_bus.radiators = Mock()
-    config.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
-    config.spacecraft_bus.star_trackers = Mock()
-    config.spacecraft_bus.star_trackers.num_trackers = Mock(return_value=0)
+    config.spacecraft_bus = mock_spacecraft_bus
     config.attitude_constraint_scopes_for_mode = Mock(
         return_value=[
             AttitudeConstraintScope.HARDWARE_SAFETY,

@@ -41,6 +41,26 @@ def mock_ephem():
 
 
 @pytest.fixture
+def mock_spacecraft_bus() -> Mock:
+    """Create a mock SpacecraftBus with the subsystem stubs ACS/passes production
+    code reads directly (attitude_control, radiators, star_trackers).
+
+    Centralizes a block that used to be copy-pasted across multiple test files'
+    mock_config fixtures; add new subsystem stubs here as production code grows
+    to depend on them, rather than patching each fixture individually.
+    """
+    spacecraft_bus = Mock()
+    spacecraft_bus.attitude_control = Mock()
+    spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))
+    spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
+    spacecraft_bus.radiators = Mock()
+    spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
+    spacecraft_bus.star_trackers = Mock()
+    spacecraft_bus.star_trackers.num_trackers = Mock(return_value=0)
+    return spacecraft_bus
+
+
+@pytest.fixture
 def base_constraint():
     """Create a basic constraint fixture."""
     from conops import Constraint

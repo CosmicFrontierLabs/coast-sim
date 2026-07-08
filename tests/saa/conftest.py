@@ -42,8 +42,10 @@ class FakePoly:
 
 
 @pytest.fixture
-def build_saa_with_ephem_fixture():
+def build_saa_with_ephem_fixture(monkeypatch):
     def _build(utime, longs, lats, inside_coords):
+        # Skip the real polygon CSV load — saapoly is replaced with FakePoly below.
+        monkeypatch.setattr("conops.simulation.saa._load_saa_polygon", lambda: None)
         s = SAA(year=2020, day=1)
         s.ephem = DummyEphem(utime, longs, lats)
         s.saapoly = FakePoly(inside_coords)
