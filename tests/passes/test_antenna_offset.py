@@ -16,56 +16,6 @@ from conops.config import (
 from conops.simulation import Pass
 
 
-class TestAntennaPointingOffset:
-    """Test legacy antenna pointing offset calculations."""
-
-    def test_apply_antenna_offset_zero(self):
-        """Test that zero offset returns original pointing."""
-        ra, dec = 45.0, 30.0
-        adjusted_ra, adjusted_dec = Pass.apply_antenna_offset(ra, dec, 0.0, 0.0)
-
-        assert np.isclose(adjusted_ra, ra, atol=1e-6)
-        assert np.isclose(adjusted_dec, dec, atol=1e-6)
-
-    def test_apply_antenna_offset_azimuth_90(self):
-        """Test 90-degree azimuth offset (pointing right)."""
-        ra, dec = 0.0, 0.0
-        adjusted_ra, adjusted_dec = Pass.apply_antenna_offset(ra, dec, 90.0, 0.0)
-
-        # Azimuth offset should rotate RA
-        # The actual value depends on the rotation convention
-        assert adjusted_ra != ra  # RA should change
-        assert np.isclose(
-            adjusted_dec, dec, atol=1.0
-        )  # Dec should stay near 0    def test_apply_antenna_offset_elevation_90_nadir(self):
-        """Test -90-degree elevation offset (nadir pointing)."""
-        ra, dec = 45.0, 45.0
-        adjusted_ra, adjusted_dec = Pass.apply_antenna_offset(ra, dec, 0.0, -90.0)
-
-        # Nadir pointing should point toward declination -90 (south pole)
-        assert adjusted_dec < dec  # Should point more toward south
-
-    def test_apply_antenna_offset_elevation_90_zenith(self):
-        """Test 90-degree elevation offset (zenith pointing)."""
-        ra, dec = 45.0, -45.0
-        adjusted_ra, adjusted_dec = Pass.apply_antenna_offset(ra, dec, 0.0, 90.0)
-
-        # Zenith pointing should point toward declination 90 (north pole)
-        assert adjusted_dec > dec  # Should point more toward north
-
-    def test_apply_antenna_offset_combined(self):
-        """Test combined azimuth and elevation offset."""
-        ra, dec = 0.0, 0.0
-        adjusted_ra, adjusted_dec = Pass.apply_antenna_offset(ra, dec, 45.0, 45.0)
-
-        # Should be offset in both directions
-        assert adjusted_ra != ra
-        assert adjusted_dec != dec
-        # Verify offset is applied (values changed)
-        assert abs(adjusted_ra - ra) > 1.0
-        assert abs(adjusted_dec - dec) > 1.0
-
-
 class TestPassWithAntennaOffset:
     """Test Pass objects with antenna pointing offsets."""
 
@@ -152,15 +102,6 @@ class TestPassWithAntennaOffset:
             gsenddec=30.0,
         )
 
-        # Pointing should be different from original due to antenna offset
-        # The legacy offset helper is not applied in Pass.__init__.
-        adjusted_ra, adjusted_dec = Pass.apply_antenna_offset(
-            original_ra, original_dec, 45.0, 30.0
-        )
-
-        # Verify the offset function produces different values
-        assert adjusted_ra != original_ra
-        assert adjusted_dec != original_dec
         # Pass object stores original values (offset not yet applied in init)
         assert np.isclose(gs_pass.gsstartra, original_ra, atol=1e-6)
         assert np.isclose(gs_pass.gsstartdec, original_dec, atol=1e-6)

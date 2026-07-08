@@ -13,7 +13,6 @@ from ..common.vector import (
     body_vector_to_eci,
     quaternion_attitude_distance,
     radec2vec,
-    rotvec,
     separation,
     vec2radec,
 )
@@ -200,44 +199,6 @@ class Pass(BaseModel):
         if idx is None or not self.station_ra or not self.station_dec:
             return None, None
         return self.station_ra[idx], self.station_dec[idx]
-
-    @staticmethod
-    def apply_antenna_offset(
-        ra: float, dec: float, azimuth_deg: float, elevation_deg: float
-    ) -> tuple[float, float]:
-        """Apply a legacy antenna pointing offset to RA/Dec.
-
-        This helper is retained for compatibility with older tests and callers.
-        Ground-station-pass attitude generation uses fixed body-frame antenna
-        boresight vectors instead.
-
-        Args:
-            ra: Original right ascension (degrees)
-            dec: Original declination (degrees)
-            azimuth_deg: Antenna azimuth offset (degrees, 0=forward, 90=right)
-            elevation_deg: Antenna elevation offset (degrees, 0=horizon, 90=zenith, -90=nadir)
-
-        Returns:
-            Tuple of (adjusted_ra, adjusted_dec) in degrees
-        """
-
-        # Convert RA/Dec to unit vector
-        sat_vec = radec2vec(ra * DTOR, dec * DTOR)
-
-        # Apply rotation for azimuth (rotation around Z-axis/north pole)
-        # Positive azimuth rotates right (east)
-        # rotvec parameters: (axis_number, angle, vector) where axis: 1=x, 2=y, 3=z
-        rotated = rotvec(3, azimuth_deg * DTOR, sat_vec)
-
-        # Apply rotation for elevation (rotation around east-west axis = Y)
-        # Positive elevation points up from horizon toward zenith
-        # Negative elevation points down toward nadir
-        rotated = rotvec(2, -elevation_deg * DTOR, rotated)
-
-        # Convert back to RA/Dec
-        adjusted_ra, adjusted_dec = np.degrees(vec2radec(rotated))
-
-        return adjusted_ra, adjusted_dec
 
     def pointing_error(
         self,

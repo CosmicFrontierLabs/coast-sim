@@ -1,3 +1,5 @@
+"""Roll computation helpers."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -5,8 +7,6 @@ import rust_ephem
 
 from ..common import dtutcfromtimestamp, scbodyvector
 from ..config import DTOR, Constraint, SolarPanelSet
-
-"""Roll computation helpers."""
 
 
 def _roll_valid_mask(
@@ -183,25 +183,4 @@ def optimum_roll_sidemount(
 ) -> float:
     """Calculate the optimum Roll angle (in degrees) for a given Ra, Dec
     and Unix Time"""
-    # Analytic optimum: choose roll that minimizes the Z-component of the
-    # Sun vector in the spacecraft body frame (roll=free about X).
-    # This maximizes illumination for side-mounted panels (and general canted
-    # panels derived from -Z toward +X), independent of panel cant magnitude.
-
-    # Fetch ephemeris index and Sun vector from pre-computed arrays
-    index = ephem.index(dtutcfromtimestamp(utime))
-    sunvec = ephem.sun_pv.position[index] - ephem.gcrs_pv.position[index]  # km
-
-    # Sun vector in body coordinates for roll=0
-    s_body_0 = scbodyvector(ra * DTOR, dec * DTOR, 0.0, sunvec)
-    y0 = s_body_0[1]
-    z0 = s_body_0[2]
-
-    # Maximize y_body = cos(roll)*y0 - sin(roll)*z0
-    # d/d(roll) = 0 -> -sin(roll)*y0 - cos(roll)*z0 = 0
-    # => tan(roll) = -z0 / y0 -> roll = atan2(-z0, y0)
-    roll_rad = np.arctan2(-z0, y0)
-
-    # Return degrees in [0, 360)
-    roll_deg = (roll_rad / DTOR) % 360.0
-    return float(roll_deg)
+    return optimum_roll(ra, dec, utime, ephem)
