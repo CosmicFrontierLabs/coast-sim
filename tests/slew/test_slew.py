@@ -41,14 +41,6 @@ class TestSlewInit:
             expected = value
         assert getattr(slew, attr) == expected
 
-    def test_slew_init_missing_constraint(self, acs_config):
-        mock_config = Mock()
-        mock_config.constraint = None
-        mock_config.spacecraft_bus = Mock()
-        mock_config.spacecraft_bus.attitude_control = acs_config
-        with pytest.raises(AssertionError, match="Constraint must be set"):
-            Slew(config=mock_config)
-
     def test_slew_init_missing_ephemeris(self, constraint, acs_config):
         constraint.ephem = None
         mock_config = Mock()
@@ -56,14 +48,6 @@ class TestSlewInit:
         mock_config.spacecraft_bus = Mock()
         mock_config.spacecraft_bus.attitude_control = acs_config
         with pytest.raises(AssertionError, match="Ephemeris must be set"):
-            Slew(config=mock_config)
-
-    def test_slew_init_missing_acs_config(self, constraint):
-        mock_config = Mock()
-        mock_config.constraint = constraint
-        mock_config.spacecraft_bus = Mock()
-        mock_config.spacecraft_bus.attitude_control = None
-        with pytest.raises(AssertionError, match="ACS config must be set"):
             Slew(config=mock_config)
 
     def test_idle_hold_builds_zero_duration_idle_slew(self, mock_config):

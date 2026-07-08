@@ -46,7 +46,7 @@ class EmergencyCharging:
         This minimizes slew time and energy expenditure during emergency charging.
 
     Example:
-        # Without slew limit (new API — pass the full Config object)
+        # Without slew limit
         ec = EmergencyCharging(config=config, starting_obsid=999000)
 
         # With 45° slew limit
@@ -59,7 +59,7 @@ class EmergencyCharging:
 
     def __init__(
         self,
-        config: MissionConfig | None = None,
+        config: MissionConfig,
         starting_obsid: int = 999000,
         max_slew_deg: float | None = None,
         sidemount: bool = False,
@@ -74,9 +74,6 @@ class EmergencyCharging:
             starting_obsid: Starting obsid for charging observations (default: 999000)
             max_slew_deg: Maximum slew distance in degrees from current pointing (default: None = no limit)
         """
-        # Handle both old and new parameter styles for backward compatibility
-
-        assert config is not None, "Config must be set for EmergencyCharging"
         self.config = config
         self.constraint = config.constraint
         self.solar_panel = config.solar_panel

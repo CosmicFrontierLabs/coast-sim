@@ -51,20 +51,14 @@ class Slew:
 
     def __init__(
         self,
-        config: MissionConfig | None = None,
+        config: MissionConfig,
     ):
-        # Handle both old and new parameter styles for backward compatibility
-        assert config is not None, "MissionConfig must be passed for Slew"
         self.constraint = config.constraint
         self.acs_config = config.spacecraft_bus.attitude_control
 
-        assert self.constraint is not None, "Constraint must be set for Slew class"
         assert self.constraint.ephem is not None, "Ephemeris must be set for Slew class"
 
         self.ephem = self.constraint.ephem
-
-        # Store ACS configuration if provided
-        assert self.acs_config is not None, "ACS config must be set for Slew class"
 
         self.slewrequest = 0  # When was the slew requested
         self.slewstart = 0
