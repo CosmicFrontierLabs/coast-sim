@@ -11,7 +11,7 @@ from conops.config.battery import Battery
 
 from ..common import unixtime2date
 from ..common.enums import ACSMode, ObsType
-from ..common.vector import angular_separation
+from ..common.vector import angular_separation, sort_by_angular_separation
 from ..config import AttitudeConstraintScope, MissionConfig
 from ..config.constraint import (
     in_attitude_constraint_scopes,
@@ -312,43 +312,25 @@ class EmergencyCharging:
         # For side-mounted panels, explore RA offsets while keeping Dec similar
         # For body-mounted panels, we need to maintain pointing near the Sun
 
-        # Build candidate RA/Dec offsets: RA-only, Dec-only, and combined grids.
-        ra_offsets = np.array([30, -30, 60, -60, 90, -90, 120, -120, 150, -150, 180])
-        dec_offsets = np.array([10, -10, 20, -20, 30, -30])
-        combo_ra_grid, combo_dec_grid = np.meshgrid(
-            [45, -45, 90, -90, 135, -135], [15, -15, 30, -30], indexing="ij"
-        )
+        # Build candidate pointings: RA offsets only, Dec offsets only, and
+        # combined RA+Dec offsets.
+        raw_candidates: list[tuple[float, float]] = []
 
-        cand_ra = np.concatenate(
-            [
-                (optimal_ra + ra_offsets) % 360.0,
-                np.full(dec_offsets.shape, optimal_ra),
-                (optimal_ra + combo_ra_grid.ravel()) % 360.0,
-            ]
-        )
-        cand_dec = np.concatenate(
-            [
-                np.full(ra_offsets.shape, optimal_dec),
-                np.clip(optimal_dec + dec_offsets, -90.0, 90.0),
-                np.clip(optimal_dec + combo_dec_grid.ravel(), -90.0, 90.0),
-            ]
-        )
+        for ra_offset in (30, -30, 60, -60, 90, -90, 120, -120, 150, -150, 180):
+            raw_candidates.append(((optimal_ra + ra_offset) % 360.0, optimal_dec))
 
-        # Drop Dec-only candidates that clipped back to the original Dec (near the poles)
-        keep = np.ones(cand_ra.shape, dtype=bool)
-        dec_only = slice(len(ra_offsets), len(ra_offsets) + len(dec_offsets))
-        keep[dec_only] = np.abs(cand_dec[dec_only] - optimal_dec) > 0.1
-        cand_ra, cand_dec = cand_ra[keep], cand_dec[keep]
+        for dec_offset in (10, -10, 20, -20, 30, -30):
+            alt_dec = max(-90.0, min(90.0, optimal_dec + dec_offset))
+            if abs(alt_dec - optimal_dec) > 0.1:  # Only if actually different
+                raw_candidates.append((optimal_ra, alt_dec))
+
+        for ra_offset in (45, -45, 90, -90, 135, -135):
+            for dec_offset in (15, -15, 30, -30):
+                alt_dec = max(-90.0, min(90.0, optimal_dec + dec_offset))
+                raw_candidates.append(((optimal_ra + ra_offset) % 360.0, alt_dec))
 
         # Order candidates by true angular distance from optimal (smaller offsets first)
-        dist = np.array(
-            [
-                angular_separation(optimal_ra, optimal_dec, ra, dec)
-                for ra, dec in zip(cand_ra, cand_dec)
-            ]
-        )
-        order = np.argsort(dist)
-        candidates = list(zip(cand_ra[order].tolist(), cand_dec[order].tolist()))
+        candidates = sort_by_angular_separation(raw_candidates, optimal_ra, optimal_dec)
 
         # Batch-check all constraints at once
         candidate_ras = [ra for ra, dec in candidates]

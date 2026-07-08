@@ -9,7 +9,7 @@ from ..common import (
     dtutcfromtimestamp,
     unixtime2date,
 )
-from ..common.vector import angular_separation
+from ..common.vector import sort_by_angular_separation
 from ..config import AttitudeConstraintScope, FaultEvent, MissionConfig
 from ..config.constraint import (
     attitude_constraint_names_for_scopes,
@@ -813,12 +813,7 @@ class ACS:
                 continue
             for grid_ra in range(0, 360, IDLE_SAFE_ATTITUDE_GRID_STEP_DEG):
                 grid.append((float(grid_ra), float(dec)))
-        grid.sort(
-            key=lambda candidate: angular_separation(
-                self.ra, self.dec, candidate[0], candidate[1]
-            )
-        )
-        raw_candidates.extend(grid)
+        raw_candidates.extend(sort_by_angular_separation(grid, self.ra, self.dec))
 
         candidates: list[tuple[float, float]] = []
         seen: set[tuple[float, float]] = set()

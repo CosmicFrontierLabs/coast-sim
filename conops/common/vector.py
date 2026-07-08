@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import numpy as np
 import numpy.typing as npt
@@ -111,6 +111,18 @@ def angular_separation(ra1: float, dec1: float, ra2: float, dec2: float) -> floa
 
     sep_rad = separation([ra1_rad, dec1_rad], [ra2_rad, dec2_rad])
     return float(np.rad2deg(sep_rad))
+
+
+def sort_by_angular_separation(
+    candidates: Sequence[tuple[float, float]], ref_ra: float, ref_dec: float
+) -> list[tuple[float, float]]:
+    """Return (ra, dec) candidates ordered by ascending angular distance from a reference point."""
+    return sorted(
+        candidates,
+        key=lambda candidate: angular_separation(
+            ref_ra, ref_dec, candidate[0], candidate[1]
+        ),
+    )
 
 
 def great_circle(

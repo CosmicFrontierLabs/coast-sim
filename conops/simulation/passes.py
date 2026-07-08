@@ -1,5 +1,4 @@
 import time
-from datetime import datetime
 from numbers import Integral
 from typing import Protocol
 
@@ -740,8 +739,6 @@ class PassTimes:
         station: GroundStation,
         startindex: int,
         endindex: int,
-        begin_time: datetime,
-        end_time: datetime,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Compute elevation angle and target-direction unit vectors for a station.
 
@@ -755,8 +752,8 @@ class PassTimes:
             latitude=station.latitude_deg,
             longitude=station.longitude_deg,
             height=station.elevation_m,
-            begin=begin_time,
-            end=end_time,
+            begin=self.ephem.timestamp[startindex],
+            end=self.ephem.timestamp[endindex - 1],
             step_size=self.ephem.step_size,
         )
 
@@ -896,11 +893,6 @@ class PassTimes:
         num_steps = int(86400 * length / self.ephem.step_size)
         endindex = min(startindex + num_steps, len(timestamp_unix))
 
-        # Get timestamps as datetime objects for GroundEphemeris
-        timestamps = self.ephem.timestamp[startindex:endindex]
-        begin_time = timestamps[0]
-        end_time = timestamps[-1]
-
         # Process stations that are allowed to drive spacecraft GSP tracking. RF
         # uplink/downlink capability is modeled separately on each station.
         for station in self.ground_stations.stations:
@@ -908,7 +900,7 @@ class PassTimes:
                 continue
 
             elevation_angle, gs_to_sat_unit = self._station_visibility(
-                station, startindex, endindex, begin_time, end_time
+                station, startindex, endindex
             )
             is_visible = elevation_angle > station.min_elevation_deg
             pass_starts, pass_ends = self._find_pass_boundaries(is_visible)

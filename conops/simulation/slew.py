@@ -122,9 +122,7 @@ class Slew:
     def _slew_fraction(self, t: float) -> float:
         """Return progress fraction [0,1] along the bang-bang profile at elapsed time t."""
         total_dist = float(self.slewdist)
-        motion_time = self.acs_config.motion_time(total_dist)
-        tau = max(0.0, min(float(t), motion_time))
-        s = self.acs_config.s_of_t(total_dist, tau)
+        s = self.acs_config.s_of_t(total_dist, t)
         return 0.0 if total_dist == 0 else max(0.0, min(1.0, s / total_dist))
 
     @staticmethod
