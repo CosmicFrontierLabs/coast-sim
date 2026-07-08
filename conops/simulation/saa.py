@@ -30,7 +30,7 @@ class SAA:
     def __init__(self, year: int | None = None, day: int | None = None) -> None:
         self.year = year
         self.day = day
-        self.ephem: rust_ephem.Ephemeris | None = None
+        self.ephem = None
         self.saatimes = np.array([]).reshape(
             0, 2
         )  # Empty 2D array for [start, end] pairs
@@ -79,12 +79,15 @@ class SAA:
         self.saatimes = np.array(saatimes_list)
         self.calculated = True
 
-    def get_saa_times(self) -> np.ndarray:
+    def _ensure_calculated(self) -> None:
         if not self.calculated:
             self.calc()
+
+    def get_saa_times(self) -> np.ndarray:
+        self._ensure_calculated()
         return self.saatimes
 
-    def insaa(self, utime: float) -> int:
+    def insaa(self, utime: float) -> bool:
         """
         Check if the given UTC time is within an SAA interval.
 
@@ -92,15 +95,14 @@ class SAA:
             utime (float): The UTC time to check.
 
         Returns:
-            int: 1 if the time is within an SAA interval, 0 otherwise.
+            True if the time is within an SAA interval, False otherwise.
         """
-        if not self.calculated:
-            self.calc()
+        self._ensure_calculated()
 
         for start, end in self.saatimes:
             if start <= utime <= end:
-                return 1
-        return 0
+                return True
+        return False
 
     def get_next_saa_time(self, utime: float) -> tuple[float, float] | None:
         """
@@ -109,8 +111,7 @@ class SAA:
             tuple: (start, end) of the next SAA interval, or None if there is no
             upcoming SAA interval.
         """
-        if not self.calculated:
-            self.calc()
+        self._ensure_calculated()
 
         for start, end in self.saatimes:
             if start > utime:
