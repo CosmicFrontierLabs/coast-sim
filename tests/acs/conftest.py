@@ -87,6 +87,8 @@ def mock_config(mock_ephem: DummyEphemeris, mock_constraint: Mock) -> Mock:
     config.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
     config.spacecraft_bus.radiators = Mock()
     config.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
+    config.spacecraft_bus.star_trackers = Mock()
+    config.spacecraft_bus.star_trackers.num_trackers = Mock(return_value=0)
     config.attitude_constraint_scopes_for_mode = Mock(
         return_value=[
             AttitudeConstraintScope.HARDWARE_SAFETY,

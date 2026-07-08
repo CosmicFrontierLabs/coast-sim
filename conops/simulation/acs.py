@@ -936,7 +936,7 @@ class ACS:
 
         star_trackers = self.config.spacecraft_bus.star_trackers
 
-        # Skip if no star trackers configured or if star_trackers is mocked (for tests)
+        # Skip if no star trackers configured
         if star_trackers.num_trackers() == 0:
             return
 
@@ -944,10 +944,6 @@ class ACS:
         current_ra = self.ra
         current_dec = self.dec
         current_roll = self.roll
-
-        # Check if this is a real star tracker configuration (not mocked)
-        if not hasattr(star_trackers, "trackers_violating_hard_constraints"):
-            return
 
         # Check hard constraints
         hard_violations = star_trackers.trackers_violating_hard_constraints(
@@ -975,36 +971,22 @@ class ACS:
         )
 
         # Update ACS state for Housekeeping telemetry
-        self.star_tracker_hard_violations = (
-            hard_violations if isinstance(hard_violations, int) else 0
-        )
+        self.star_tracker_hard_violations = hard_violations
         self.star_tracker_soft_violations = soft_violations
-        num_trackers = (
-            star_trackers.num_trackers()
-            if isinstance(star_trackers.num_trackers(), int)
-            else 0
-        )
+        num_trackers = star_trackers.num_trackers()
         # Functional = not in soft constraint (i.e. tracking at full science quality).
         # Hard-constraint violations are always faulted separately; a tracker
         # being burned by the Sun is still "not soft-constrained" but the hard
         # constraint system handles that separately.
-        self.star_tracker_functional_count = (
-            num_trackers - soft_violation_count
-            if isinstance(num_trackers, int) and isinstance(soft_violation_count, int)
-            else 0
-        )
+        self.star_tracker_functional_count = num_trackers - soft_violation_count
         # Per-tracker status: True = functional (not in soft constraint)
-        raw_st_list = getattr(star_trackers, "star_trackers", None)
-        if isinstance(raw_st_list, list):
-            self.star_tracker_status = [
-                not st.in_soft_constraint(current_ra, current_dec, utime, current_roll)
-                for st in raw_st_list
-            ]
-        else:
-            self.star_tracker_status = []
+        self.star_tracker_status = [
+            not st.in_soft_constraint(current_ra, current_dec, utime, current_roll)
+            for st in star_trackers.star_trackers
+        ]
 
         # Log hard constraint violations
-        if isinstance(hard_violations, int) and hard_violations > 0:
+        if hard_violations > 0:
             functional_trackers = star_trackers.num_trackers() - hard_violations
             min_required = star_trackers.min_functional_trackers
 

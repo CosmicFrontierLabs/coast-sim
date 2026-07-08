@@ -72,6 +72,8 @@ def mock_config_roll(mock_ephem_roll, mock_constraint_roll):
     config.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
     config.spacecraft_bus.radiators = Mock()
     config.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
+    config.spacecraft_bus.star_trackers = Mock()
+    config.spacecraft_bus.star_trackers.num_trackers = Mock(return_value=0)
     config.attitude_constraint_scopes_for_mode = Mock(
         return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
     )
@@ -166,6 +168,8 @@ class TestACSRollCalculation:
         config1.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
         config1.spacecraft_bus.radiators = Mock()
         config1.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
+        config1.spacecraft_bus.star_trackers = Mock()
+        config1.spacecraft_bus.star_trackers.num_trackers = Mock(return_value=0)
         config1.attitude_constraint_scopes_for_mode = Mock(
             return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
         )
@@ -203,6 +207,8 @@ class TestACSRollCalculation:
         config2.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
         config2.spacecraft_bus.radiators = Mock()
         config2.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
+        config2.spacecraft_bus.star_trackers = Mock()
+        config2.spacecraft_bus.star_trackers.num_trackers = Mock(return_value=0)
         config2.attitude_constraint_scopes_for_mode = Mock(
             return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
         )
@@ -365,6 +371,8 @@ class TestACSRollEdgeCases:
         config.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
         config.spacecraft_bus.radiators = Mock()
         config.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
+        config.spacecraft_bus.star_trackers = Mock()
+        config.spacecraft_bus.star_trackers.num_trackers = Mock(return_value=0)
         config.attitude_constraint_scopes_for_mode = Mock(
             return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
         )
