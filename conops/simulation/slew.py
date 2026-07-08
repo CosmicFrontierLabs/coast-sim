@@ -38,7 +38,6 @@ class Slew:
     endroll: float
     slewtime: float
     slewpath: tuple[list[float], list[float]]
-    slewsecs: list[float]
     slewdist: float
     obstype: ObsType
     obsid: int
@@ -71,6 +70,7 @@ class Slew:
         self.endroll = 0
         self.slewtime = 0
         self.slewdist = 0
+        self.slewpath = ([], [])
 
         self.obstype = ObsType.PPT
         self.obsid = 0
@@ -134,14 +134,7 @@ class Slew:
         if t <= 0:
             return self.startra, self.startdec
 
-        has_path = (
-            hasattr(self, "slewpath")
-            and isinstance(self.slewpath, (tuple, list))
-            and len(self.slewpath) == 2
-            and len(self.slewpath[0]) > 0
-        )
-
-        if not self.acs_config or not has_path or self.slewdist <= 0:
+        if len(self.slewpath[0]) == 0 or self.slewdist <= 0:
             return self.startra, self.startdec
 
         total_dist = float(self.slewdist)
