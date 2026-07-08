@@ -147,10 +147,8 @@ class ACS:
                 utime=utime,
                 event_type=event_type,
                 description=description,
-                obsid=getattr(self.last_slew, "obsid", None)
-                if self.last_slew
-                else None,
-                acs_mode=self.acsmode if hasattr(self, "acsmode") else None,
+                obsid=self.last_slew.obsid if self.last_slew is not None else None,
+                acs_mode=self.acsmode,
             )
         else:
             # Fallback to print if no log available
@@ -165,7 +163,6 @@ class ACS:
         # Allow SAFE slews to be enqueued even in safe mode (part of safe mode entry)
         is_safe_slew = (
             command.command_type == ACSCommandType.SLEW_TO_TARGET
-            and hasattr(command, "slew")
             and command.slew is not None
             and command.slew.obstype == ObsType.SAFE
         )
@@ -233,7 +230,7 @@ class ACS:
     @staticmethod
     def _command_obsid(command: ACSCommand) -> int | None:
         if command.slew is not None:
-            return getattr(command.slew, "obsid", command.obsid)
+            return command.slew.obsid
         return command.obsid
 
     def _process_commands(self, utime: float) -> None:
@@ -301,10 +298,11 @@ class ACS:
             )
             self.last_slew = None
 
+        last_ppt_obsid = self.last_ppt.obsid if self.last_ppt is not None else "unknown"
         self._log_or_print(
             utime,
             "PASS",
-            f"{unixtime2date(utime)}: Pass over - returning to last PPT {getattr(self.last_ppt, 'obsid', 'unknown')}",
+            f"{unixtime2date(utime)}: Pass over - returning to last PPT {last_ppt_obsid}",
         )
 
     # Handle Safe Mode Command
@@ -366,7 +364,7 @@ class ACS:
         slew.slewstart = utime
         slew.calc_slewtime()
 
-        slewdist = float(getattr(slew, "slewdist", 0.0))
+        slewdist = slew.slewdist
         self._log_or_print(
             utime,
             "SLEW",
@@ -523,7 +521,7 @@ class ACS:
         # Wait for current slew to finish if in progress
         if (
             not is_first_slew
-            and isinstance(self.last_slew, Slew)
+            and self.last_slew is not None
             and self.last_slew.is_slewing(utime)
         ):
             execution_time = self.last_slew.slewstart + self.last_slew.slewtime
@@ -665,12 +663,7 @@ class ACS:
             )
         if self.current_pass is not None and self.current_pass.in_pass(utime):
             return self.current_pass.roll_at(utime)
-        if (
-            self.last_slew is not None
-            and isinstance(self.last_slew, Slew)
-            and getattr(self.last_slew, "slewstart", 0) > 0
-            and hasattr(self.last_slew, "endroll")
-        ):
+        if self.last_slew is not None and self.last_slew.slewstart > 0:
             return self.last_slew.endroll
         return optimum_roll(
             self.ra, self.dec, utime, self.ephem, self.solar_panel, self.constraint
@@ -699,21 +692,19 @@ class ACS:
                 "requesting safe mode"
             )
             self._log_or_print(utime, "ERROR", f"{unixtime2date(utime)}: {cause}")
-            fm = getattr(self.config, "fault_management", None)
-            if fm is not None:
-                fm.events.append(
-                    FaultEvent(
-                        utime=utime,
-                        event_type="safe_mode_trigger",
-                        name="idle_attitude_constraint",
-                        cause=cause,
-                        metadata={
-                            "ra": self.ra,
-                            "dec": self.dec,
-                            "scopes": scope_label,
-                        },
-                    )
+            self.config.fault_management.events.append(
+                FaultEvent(
+                    utime=utime,
+                    event_type="safe_mode_trigger",
+                    name="idle_attitude_constraint",
+                    cause=cause,
+                    metadata={
+                        "ra": self.ra,
+                        "dec": self.dec,
+                        "scopes": scope_label,
+                    },
                 )
+            )
             self.request_safe_mode(utime)
             return
 
@@ -902,13 +893,10 @@ class ACS:
     def _check_constraints(self, utime: float) -> None:
         """Check and log constraint violations for current pointing."""
         if (
-            isinstance(self.last_slew, Slew)
+            self.last_slew is not None
             and self.last_slew.at is not None
-            and not isinstance(self.last_slew.at, bool)
             and self.last_slew.obstype == ObsType.PPT
         ):
-            assert self.last_slew.at is not None
-
             scopes = self.config.attitude_constraint_scopes_for_mode(self.acsmode)
             constraint_names = attitude_constraint_names_for_scopes(
                 self.constraint,
