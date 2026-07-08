@@ -13,8 +13,6 @@ class SAA:
     ephem: rust_ephem.Ephemeris | None
     year: int | None
     day: int | None
-    lat: float | bool  # bool initially, becomes float after calculation
-    long: float | bool  # bool initially, becomes float after calculation
     saatimes: np.ndarray
     calculated: bool
     saapoly: Polygon
@@ -22,8 +20,6 @@ class SAA:
     def __init__(self, year: int | None = None, day: int | None = None) -> None:
         self.year = year
         self.day = day
-        self.lat = False
-        self.long = False
         self.ephem: rust_ephem.Ephemeris | None = None
         self.saatimes = np.array([]).reshape(
             0, 2
@@ -263,10 +259,10 @@ class SAA:
             raise ValueError("Ephemeris must be set before checking SAA status")
 
         i = self.ephem.index(dtutcfromtimestamp(utime))
-        self.long = self.ephem.longitude_deg[i]
-        self.lat = self.ephem.latitude_deg[i]
+        long = self.ephem.longitude_deg[i]
+        lat = self.ephem.latitude_deg[i]
 
-        return bool(self.saapoly.contains(Point(self.long, self.lat)))
+        return bool(self.saapoly.contains(Point(long, lat)))
 
     def calc(self) -> None:
         """
@@ -278,7 +274,6 @@ class SAA:
         if self.ephem is None:
             raise ValueError("Ephemeris must be set before calculating SAA times")
 
-        # First, calculate using the original method
         ephem_utime = [dt.timestamp() for dt in self.ephem.timestamp]
         inside = np.array([self.insaa_calc(t) for t in ephem_utime])
 

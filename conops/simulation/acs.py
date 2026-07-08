@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, NoReturn, cast
+from typing import TYPE_CHECKING, cast
 
 import rust_ephem
 
@@ -8,7 +8,6 @@ from ..common import (
     ObsType,
     dtutcfromtimestamp,
     unixtime2date,
-    unixtime2yearday,
 )
 from ..common.vector import angular_separation
 from ..config import AttitudeConstraintScope, FaultEvent, MissionConfig
@@ -27,10 +26,6 @@ from .slew import Slew
 if TYPE_CHECKING:
     from ..ditl.ditl_log import DITLLog
     from ..targets import Pointing
-
-
-def assert_never(value: NoReturn) -> NoReturn:
-    raise AssertionError(f"Expected code to be unreachable, but got: {value!r}")
 
 
 IDLE_OBSID = 0
@@ -431,7 +426,7 @@ class ACS:
             execution_time = utime  # Execute immediately
         else:
             # Set up target observation request and check visibility
-            target_request = self._create_target_request(slew, utime, roll)
+            target_request = self._create_target_request(slew, roll)
             slew.at = target_request
 
             visstart = target_request.next_vis(utime)
@@ -464,7 +459,7 @@ class ACS:
         return True
 
     def _create_target_request(
-        self, slew: Slew, utime: float, roll: float | None = None
+        self, slew: Slew, roll: float | None = None
     ) -> "Pointing":
         """Create and configure a target observation request for visibility checking."""
         from ..targets import Pointing
@@ -478,7 +473,6 @@ class ACS:
         )
         target.isat = slew.obstype != ObsType.PPT
 
-        year, day = unixtime2yearday(utime)
         target.visibility()
         return target
 

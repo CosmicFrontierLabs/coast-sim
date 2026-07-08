@@ -220,13 +220,13 @@ class EmergencyCharging:
         if charging_ppt is None:
             return None
 
-        if current_ppt is not None and not getattr(current_ppt, "done", False):
+        if current_ppt is not None and not current_ppt.done:
             self._log_or_print(
                 utime,
                 "CHARGING",
                 "Battery below recharge threshold; interrupting science observation "
                 "for charging",
-                obsid=getattr(current_ppt, "obsid", None),
+                obsid=current_ppt.obsid,
             )
             current_ppt.end = utime
             current_ppt.done = True
@@ -367,7 +367,7 @@ class EmergencyCharging:
 
         for i, (alt_ra, alt_dec) in enumerate(candidates):
             # Skip constrained pointings (already batch-computed)
-            if violations is not None and violations[i]:
+            if violations[i]:
                 continue
 
             # Check slew distance if limit is set
@@ -507,7 +507,7 @@ class EmergencyCharging:
         best_slew = float("inf")
 
         for i, (candidate_ra, candidate_dec) in enumerate(candidates):
-            if violations is not None and violations[i]:
+            if violations[i]:
                 continue  # Skip constrained pointings
 
             # If no current position provided, return first valid pointing

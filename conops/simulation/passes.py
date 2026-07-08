@@ -139,7 +139,7 @@ class Pass(BaseModel):
 
     def __str__(self) -> str:
         """Return string of details on the pass"""
-        return f"{unixtime2date(self.begin):18s}  {self.station:3s}  {self.length / 60.0:4.1f} mins"  #  {self.time_to_pass():12s}"
+        return f"{unixtime2date(self.begin):18s}  {self.station:3s}  {self.length / 60.0:4.1f} mins"
 
     def in_pass(self, utime: float) -> bool:
         if utime >= self.begin and utime <= self.end:

@@ -122,6 +122,19 @@ class Slew:
         """Return roll angle at the given time during the slew."""
         return self.slew_roll(utime)
 
+    def _slew_fraction(self, t: float) -> float:
+        """Return progress fraction [0,1] along the bang-bang profile at elapsed time t."""
+        total_dist = float(self.slewdist)
+        motion_time = self.acs_config.motion_time(total_dist)
+        tau = max(0.0, min(float(t), motion_time))
+        s = self.acs_config.s_of_t(total_dist, tau)
+        return 0.0 if total_dist == 0 else max(0.0, min(1.0, s / total_dist))
+
+    @staticmethod
+    def _shortest_roll_diff(start: float, end: float) -> float:
+        """Return end - start adjusted to take the shortest path around the circle."""
+        return float(roll_over_angle([start, end])[1] - start)
+
     def slew_ra_dec(self, utime: float) -> tuple[float, float]:
         """Return RA/Dec at time using bang-bang slew profile when configured.
 
@@ -137,11 +150,7 @@ class Slew:
         if len(self.slewpath[0]) == 0 or self.slewdist <= 0:
             return self.startra, self.startdec
 
-        total_dist = float(self.slewdist)
-        motion_time = self.acs_config.motion_time(total_dist)
-        tau = max(0.0, min(float(t), motion_time))
-        s = self.acs_config.s_of_t(total_dist, tau)
-        f = 0.0 if total_dist == 0 else max(0.0, min(1.0, s / total_dist))
+        f = self._slew_fraction(t)
 
         ra_path, dec_path = self.slewpath
         n = len(ra_path)
@@ -164,11 +173,7 @@ class Slew:
             return self.startroll
 
         if self._quat_roll_path:
-            total_dist = float(self.slewdist)
-            motion_time = self.acs_config.motion_time(total_dist)
-            tau = max(0.0, min(float(t), motion_time))
-            s = self.acs_config.s_of_t(total_dist, tau)
-            f = 0.0 if total_dist == 0 else max(0.0, min(1.0, s / total_dist))
+            f = self._slew_fraction(t)
             n = len(self._quat_roll_path)
             idx = f * (n - 1)
             rolls = roll_over_angle(self._quat_roll_path)
@@ -176,11 +181,7 @@ class Slew:
 
         # Fallback: shortest-path linear interpolation
         f = max(0.0, min(1.0, t / self.slewtime))
-        roll_diff = self.endroll - self.startroll
-        if roll_diff > 180:
-            roll_diff -= 360
-        elif roll_diff < -180:
-            roll_diff += 360
+        roll_diff = self._shortest_roll_diff(self.startroll, self.endroll)
         return (self.startroll + f * roll_diff) % 360
 
     def calc_slewtime(self) -> float:
@@ -323,11 +324,7 @@ class Slew:
         )
         total = dist1 + dist2
         frac = dist1 / total if total > 0 else 0.5
-        roll_diff = self.endroll - self.startroll
-        if roll_diff > 180:
-            roll_diff -= 360
-        elif roll_diff < -180:
-            roll_diff += 360
+        roll_diff = self._shortest_roll_diff(self.startroll, self.endroll)
         w_roll = (self.startroll + frac * roll_diff) % 360
 
         # Build two SLERP segments; split steps proportionally
