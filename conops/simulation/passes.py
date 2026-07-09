@@ -353,7 +353,7 @@ class Pass(BaseModel):
             )
             return round(acs_config.slew_time(slewdist))
 
-        slew = Slew(config=self.config)
+        slew = Slew.from_config(self.config)
         slew.startra = ra
         slew.startdec = dec
         slew.startroll = roll

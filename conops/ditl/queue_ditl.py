@@ -1497,7 +1497,7 @@ class QueueDITL(DITLMixin, DITLStats):
         if charging_ppt is None:
             return
 
-        slew = Slew(config=self.config)
+        slew = Slew.from_config(self.config)
         slew.ephem = self.acs.ephem
         slew.slewrequest = utime
         slew.slewstart = utime
@@ -1879,9 +1879,7 @@ class QueueDITL(DITLMixin, DITLStats):
             )
 
             # Create slew object for the pass
-            slew = Slew(
-                config=self.config,
-            )
+            slew = Slew.from_config(self.config)
 
             slew.startra = ra
             slew.startdec = dec
@@ -2274,7 +2272,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _new_ppt_slew(self, target: Pointing, utime: float) -> Slew:
         """Build a new, not-yet-timed Slew object targeting a Pointing."""
-        slew = Slew(config=self.config)
+        slew = Slew.from_config(self.config)
         slew.ephem = self.acs.ephem
         slew.slewrequest = utime
         slew.endra = target.ra

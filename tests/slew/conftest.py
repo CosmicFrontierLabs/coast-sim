@@ -45,7 +45,7 @@ def mock_config(constraint, acs_config):
 
 @pytest.fixture
 def slew(mock_config):
-    return Slew(config=mock_config)
+    return Slew.from_config(mock_config)
 
 
 @pytest.fixture

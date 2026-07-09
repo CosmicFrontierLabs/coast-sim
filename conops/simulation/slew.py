@@ -50,10 +50,12 @@ class Slew(BaseModel):
     # Quaternion SLERP: intermediate roll values along the path
     _quat_roll_path: list[float] = PrivateAttr(default_factory=list)
 
-    def __init__(self, config: MissionConfig) -> None:
+    @classmethod
+    def from_config(cls, config: MissionConfig) -> "Slew":
+        """Build a Slew from a mission config, deriving ephem/constraint/acs_config."""
         constraint = config.constraint
         assert constraint.ephem is not None, "Ephemeris must be set for Slew class"
-        super().__init__(
+        return cls(
             ephem=constraint.ephem,
             constraint=constraint,
             acs_config=config.spacecraft_bus.attitude_control,
@@ -77,7 +79,7 @@ class Slew(BaseModel):
         utime: float,
     ) -> "Slew":
         """Create a zero-duration IDLE hold at the given attitude."""
-        hold = cls(config=config)
+        hold = cls.from_config(config)
         hold.slewrequest = utime
         hold.slewstart = utime
         hold.slewend = utime

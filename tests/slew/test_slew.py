@@ -48,7 +48,7 @@ class TestSlewInit:
         mock_config.spacecraft_bus = Mock()
         mock_config.spacecraft_bus.attitude_control = acs_config
         with pytest.raises(AssertionError, match="Ephemeris must be set"):
-            Slew(config=mock_config)
+            Slew.from_config(mock_config)
 
     def test_idle_hold_builds_zero_duration_idle_slew(self, mock_config):
         hold = Slew.idle_hold(
