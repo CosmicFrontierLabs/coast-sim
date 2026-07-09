@@ -836,31 +836,6 @@ class QueueDITL(DITLMixin, DITLStats):
             )
         return mismatches
 
-    def _science_entry_covering_sample(
-        self, utime: float, obsid: int
-    ) -> PlanEntry | None:
-        """Find the science plan entry that covers this timestamp and obsid, if any."""
-        for entry in self.plan:
-            obstype = self._entry_obstype(entry)
-            if obstype not in (ObsType.AT, ObsType.TOO):
-                continue
-            if int(entry.obsid) != int(obsid):
-                continue
-            if float(entry.begin) <= utime < float(entry.end):
-                return entry
-        return None
-
-    def _gsp_entry_covering_sample(self, utime: float, obsid: int) -> PlanEntry | None:
-        """Find the GSP plan entry that covers this timestamp and obsid, if any."""
-        for entry in self.plan:
-            if self._entry_obstype(entry) != ObsType.GSP:
-                continue
-            if int(entry.obsid) != int(obsid):
-                continue
-            if float(entry.begin) <= utime <= float(entry.end):
-                return entry
-        return None
-
     def _validate_execution_is_planned(self) -> list[PlanExecutionMismatch]:
         """Check that every executed science/pass telemetry sample is covered by an exported plan entry."""
         mismatches: list[PlanExecutionMismatch] = []
@@ -911,13 +886,6 @@ class QueueDITL(DITLMixin, DITLStats):
                         )
                     )
         return mismatches
-
-    def _in_dropped_science_window(self, utime: float, obsid: int) -> bool:
-        """Return whether utime/obsid falls in a window dropped for under-collection."""
-        return any(
-            dropped_obsid == obsid and start <= utime < end
-            for start, end, dropped_obsid in self._dropped_science_windows
-        )
 
     def _attitude_constraint_name_for_attitude(
         self,
@@ -2240,14 +2208,6 @@ class QueueDITL(DITLMixin, DITLStats):
             ]
             self._ephem_utime_cache_source = timestamps
         return self._ephem_utime_cache
-
-    def _ephem_utime_at_or_after(self, utime: float) -> float:
-        """Return the nearest ephemeris timestamp at or after the given time."""
-        timestamps = self._ephem_utimes()
-        index = bisect_left(timestamps, utime)
-        if index >= len(timestamps):
-            return timestamps[-1]
-        return timestamps[index]
 
     def _next_charge_science_deadline(self, current_time: float) -> float | None:
         """Return when pending battery recharge can next preempt science."""
