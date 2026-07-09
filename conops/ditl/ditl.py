@@ -67,7 +67,7 @@ class DITL(DITLMixin, DITLStats):
         self,
         config: MissionConfig,
         ephem: rust_ephem.Ephemeris | None = None,
-        plan: Plan = Plan(),
+        plan: Plan | None = None,
         begin: datetime | None = None,
         end: datetime | None = None,
         calculate_field_of_regard: bool = False,
@@ -108,9 +108,8 @@ class DITL(DITLMixin, DITLStats):
 
         # Event log
         self.log = DITLLog()
-        # Wire log into ACS so it can log events (if ACS exists)
-        if hasattr(self, "acs"):
-            self.acs.log = self.log
+        # Wire log into ACS so it can log events
+        self.acs.log = self.log
 
     def calc(self) -> bool:
         """Execute Day In The Life simulation.
@@ -316,11 +315,7 @@ class DITL(DITLMixin, DITLStats):
                 star_tracker_hard_violations=self.acs.star_tracker_hard_violations,
                 star_tracker_soft_violations=self.acs.star_tracker_soft_violations,
                 star_tracker_functional_count=self.acs.star_tracker_functional_count,
-                star_tracker_status=(
-                    self.acs.star_tracker_status
-                    if isinstance(self.acs.star_tracker_status, list)
-                    else None
-                ),
+                star_tracker_status=self.acs.star_tracker_status,
                 radiator_hard_violations=self.acs.radiator_hard_violations,
                 telescope_hard_violations=self.acs.telescope_hard_violations,
                 in_constraint=in_constraint_name,
