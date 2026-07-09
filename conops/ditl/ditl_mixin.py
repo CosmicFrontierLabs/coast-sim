@@ -14,6 +14,8 @@ from .telemetry import Telemetry
 
 
 class DITLMixin:
+    """Shared initialization, plotting, and data-management logic for DITL simulations."""
+
     ppt: PlanEntry | None
     ra: list[float]
     dec: list[float]
@@ -54,6 +56,7 @@ class DITLMixin:
         plan: Plan | None = None,
         calculate_field_of_regard: bool = False,
     ) -> None:
+        """Initialize shared DITL state, ephemeris, and subsystems from config."""
         # Initialize mixin
         self.config = config
         self.calculate_field_of_regard = calculate_field_of_regard
@@ -139,6 +142,7 @@ class DITLMixin:
 
     @staticmethod
     def _attitude_mode_name(mode: ACSMode | int | None) -> str | None:
+        """Return the mode's name, coercing an int/None to a name or None."""
         if mode is None:
             return None
         if isinstance(mode, ACSMode):

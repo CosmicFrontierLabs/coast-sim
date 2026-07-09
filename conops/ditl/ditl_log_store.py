@@ -25,6 +25,7 @@ class DITLLogStore(BaseModel):
     _conn: sqlite3.Connection = PrivateAttr()
 
     def __init__(self, db_path: str | Path = "ditl_logs.sqlite") -> None:
+        """Open (creating if needed) the SQLite database at db_path and set up its schema."""
         # Allow convenient construction with str | Path while remaining a Pydantic model
         super().__init__(db_path=Path(db_path))
         self._conn = sqlite3.connect(self.db_path)
@@ -34,6 +35,7 @@ class DITLLogStore(BaseModel):
         self._create_schema()
 
     def __enter__(self) -> DITLLogStore:
+        """Return self for use as a context manager."""
         return self
 
     def __exit__(
@@ -42,9 +44,11 @@ class DITLLogStore(BaseModel):
         exc_val: BaseException | None,
         exc_tb: object | None,
     ) -> None:
+        """Close the underlying database connection on context exit."""
         self.close()
 
     def _create_schema(self) -> None:
+        """Create the events table and its indexes if they don't already exist."""
         cur = self._conn.cursor()
         cur.execute(
             """
@@ -160,6 +164,7 @@ class DITLLogStore(BaseModel):
         return [row[0] for row in cur.fetchall()]
 
     def close(self) -> None:
+        """Close the underlying database connection, ignoring errors."""
         try:
             self._conn.close()
         except Exception:
