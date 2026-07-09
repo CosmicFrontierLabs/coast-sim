@@ -117,6 +117,7 @@ def mock_config() -> Mock:
     config.spacecraft_bus.attitude_control.slew_time = Mock(
         return_value=100.0
     )  # Return slew time in seconds
+    config.spacecraft_bus.attitude_control.slew_accuracy = 0.01
     config.spacecraft_bus.attitude_control.motion_time = Mock(
         side_effect=lambda distance: float(
             config.spacecraft_bus.attitude_control.slew_time(distance)
@@ -134,6 +135,12 @@ def mock_config() -> Mock:
             )
         )
     )
+
+    # Mock fault management
+    config.fault_management = Mock()
+    config.fault_management.check = Mock()
+    config.fault_management.safe_mode_requested = False
+    config.fault_management.events = []
 
     # Mock payload
     config.payload = Mock()
@@ -205,6 +212,7 @@ def queue_ditl(mock_config: Mock, mock_ephem: DummyEphemeris) -> QueueDITL:
         mock_acs.in_eclipse = False
         # Add star tracker attributes for Housekeeping telemetry
         mock_acs.configure_mock(
+            star_tracker_status=[True, True, True],
             star_tracker_hard_violations=0,
             star_tracker_soft_violations=False,
             star_tracker_functional_count=3,  # Assume 3 functional star trackers by default
