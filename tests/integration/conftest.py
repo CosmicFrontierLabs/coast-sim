@@ -5,9 +5,10 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
+import rust_ephem
 from astropy.time import Time  # type: ignore[import-untyped]
 
-from conops import AttitudeConstraintScope, SolarPanel, SolarPanelSet
+from conops import AttitudeConstraintScope, Constraint, SolarPanel, SolarPanelSet
 
 
 @pytest.fixture(autouse=True)
@@ -31,6 +32,7 @@ def mock_ephem_with_pv(sun_ra: float = 90.0, sun_dec: float = 0.0) -> Mock:
         sun_dec: Sun Dec in degrees (default 0°)
     """
     ephem = Mock()
+    ephem.__class__ = rust_ephem.Ephemeris
 
     # Time data - required by eclipse constraint
     start_time = 1514764800.0
@@ -78,6 +80,7 @@ def test_config_with_panels(
     """
     # Create constraint
     constraint = Mock()
+    constraint.__class__ = Constraint
     constraint.ephem = mock_ephem_with_pv
     constraint.constraint = None  # no combined rust-ephem constraint in tests
     constraint.roll_dependent_constraint = None

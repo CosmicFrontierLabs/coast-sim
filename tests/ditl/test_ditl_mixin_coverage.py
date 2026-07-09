@@ -4,7 +4,9 @@ from unittest.mock import Mock, patch
 
 import matplotlib.pyplot as plt
 import pytest
+import rust_ephem
 
+from conops import Constraint
 from conops.common.enums import ACSMode
 from conops.config import MissionConfig
 from conops.ditl.ditl_mixin import DITLMixin
@@ -23,6 +25,7 @@ def mock_config(mock_spacecraft_bus):
     earth_entry.ra = ra
     earth_entry.dec = dec
     ephem = Mock()
+    ephem.__class__ = rust_ephem.Ephemeris
     ephem.earth = [earth_entry]
     # Also provide sun and index for safe mode fallbacks (unused here but safe)
     sun_ra = Mock()
@@ -50,6 +53,7 @@ def mock_config(mock_spacecraft_bus):
     ]
 
     cfg.constraint = Mock()
+    cfg.constraint.__class__ = Constraint
     cfg.constraint.ephem = ephem
     cfg.random_seed = None
     # subsystems

@@ -2,6 +2,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import rust_ephem
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from ..common import dtutcfromtimestamp, roll_over_angle, separation, unixtime2date
 from ..common.enums import ObsType, SlewAlgorithm
@@ -17,7 +18,7 @@ if TYPE_CHECKING:
     from ..targets.pointing import Pointing
 
 
-class Slew:
+class Slew(BaseModel):
     """Class defines a Spacecraft Slew. Calculates slew time and slew path.
 
     Supports two path algorithms selected via the ACS configuration:
@@ -25,58 +26,46 @@ class Slew:
     - CONSTRAINT_AVOIDING: generalized constraint-avoiding SLERP.
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     ephem: rust_ephem.Ephemeris
     constraint: Constraint
-    config: MissionConfig
-    slewstart: float
-    slewend: float
-    startra: float
-    startdec: float
-    startroll: float
-    endra: float
-    enddec: float
-    endroll: float
-    slewtime: float
-    slewpath: tuple[list[float], list[float]]
-    slewdist: float
-    obstype: ObsType
-    obsid: int
-    mode: int
-    slewrequest: float
-    at: "Pointing | None"  # In quotes to avoid circular import
     acs_config: AttitudeControlSystem
+    slewrequest: float = 0.0  # When was the slew requested
+    slewstart: float = 0.0
+    slewend: float = 0.0
+    startra: float = 0.0
+    startdec: float = 0.0
+    startroll: float = 0.0
+    endra: float = 0.0
+    enddec: float = 0.0
+    endroll: float = 0.0
+    slewtime: float = 0.0
+    slewdist: float = 0.0
+    slewpath: tuple[list[float], list[float]] = Field(default_factory=lambda: ([], []))
+    obstype: ObsType = ObsType.PPT
+    obsid: int = 0
+    mode: int = 0
+    at: "Pointing | None" = None  # In quotes to avoid circular import
     # Quaternion SLERP: intermediate roll values along the path
-    _quat_roll_path: list[float]
+    _quat_roll_path: list[float] = PrivateAttr(default_factory=list)
 
-    def __init__(
-        self,
-        config: MissionConfig,
-    ):
-        self.constraint = config.constraint
-        self.acs_config = config.spacecraft_bus.attitude_control
+    def __init__(self, config: MissionConfig) -> None:
+        constraint = config.constraint
+        assert constraint.ephem is not None, "Ephemeris must be set for Slew class"
+        super().__init__(
+            ephem=constraint.ephem,
+            constraint=constraint,
+            acs_config=config.spacecraft_bus.attitude_control,
+        )
 
-        assert self.constraint.ephem is not None, "Ephemeris must be set for Slew class"
+    def __eq__(self, other: object) -> bool:
+        """Compare by identity, matching plain-object semantics (Slew instances are used as dict keys)."""
+        return self is other
 
-        self.ephem = self.constraint.ephem
-
-        self.slewrequest = 0  # When was the slew requested
-        self.slewstart = 0
-        self.slewend = 0
-        self.startra = 0
-        self.startdec = 0
-        self.startroll = 0
-        self.endra = 0
-        self.enddec = 0
-        self.endroll = 0
-        self.slewtime = 0
-        self.slewdist = 0
-        self.slewpath = ([], [])
-
-        self.obstype = ObsType.PPT
-        self.obsid = 0
-        self.mode = 0
-        self.at = None  # What's the target associated with this slew?
-        self._quat_roll_path: list[float] = []  # roll path for QUATERNION algorithm
+    def __hash__(self) -> int:
+        """Hash by identity, matching plain-object semantics (Slew instances are used as dict keys)."""
+        return id(self)
 
     @classmethod
     def idle_hold(

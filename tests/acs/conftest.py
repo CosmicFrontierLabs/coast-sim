@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
+import rust_ephem
 
 from conops import (
     ACS,
@@ -39,6 +40,11 @@ class DummyEphemeris:
 
     def index(self, time: object) -> int:
         return 0
+
+
+# Register as a virtual subclass so isinstance checks (e.g. Slew's pydantic
+# field) pass without implementing every abstract Ephemeris member.
+rust_ephem.Ephemeris.register(DummyEphemeris)
 
 
 @pytest.fixture

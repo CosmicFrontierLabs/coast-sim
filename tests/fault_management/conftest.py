@@ -9,6 +9,7 @@ import rust_ephem
 
 from conops import (
     ACS,
+    AttitudeControlSystem,
     Battery,
     Constraint,
     FaultManagement,
@@ -181,11 +182,17 @@ class DummyEphemeris:
         return 0
 
 
+# Register as a virtual subclass so isinstance checks (e.g. Slew's pydantic
+# field) pass without implementing every abstract Ephemeris member.
+rust_ephem.Ephemeris.register(DummyEphemeris)
+
+
 @pytest.fixture
 def base_config() -> MissionConfig:
     # Minimal mocks for required subsystems
     spacecraft_bus = Mock(spec=SpacecraftBus)
     spacecraft_bus.attitude_control = Mock()
+    spacecraft_bus.attitude_control.__class__ = AttitudeControlSystem
     spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))
     spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
 

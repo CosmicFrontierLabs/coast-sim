@@ -7,10 +7,13 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
+import rust_ephem
 from astropy.time import Time  # type: ignore[import-untyped]
 
 from conops import (
     DAY_SECONDS,
+    AttitudeControlSystem,
+    Constraint,
     DumbQueueScheduler,
     MissionConfig,
     QueueDITL,
@@ -52,6 +55,11 @@ class DummyEphemeris:
         return False
 
 
+# Register as a virtual subclass so isinstance checks (e.g. Slew's pydantic
+# field) pass without implementing every abstract Ephemeris member.
+rust_ephem.Ephemeris.register(DummyEphemeris)
+
+
 @pytest.fixture
 def mock_ephem() -> DummyEphemeris:
     """Create a mock ephemeris object."""
@@ -65,6 +73,7 @@ def mock_config() -> Mock:
 
     # Mock constraint
     config.constraint = Mock()
+    config.constraint.__class__ = Constraint
     config.constraint.ephem = DummyEphemeris()
     config.constraint.constraint = None  # no combined rust-ephem constraint in tests
     config.constraint.roll_dependent_constraint = None
@@ -111,6 +120,7 @@ def mock_config() -> Mock:
     config.spacecraft_bus = Mock()
     config.spacecraft_bus.power = Mock(return_value=50.0)
     config.spacecraft_bus.attitude_control = Mock()
+    config.spacecraft_bus.attitude_control.__class__ = AttitudeControlSystem
     config.spacecraft_bus.attitude_control.predict_slew = Mock(
         return_value=(10.0, [])
     )  # Return (distance, path)

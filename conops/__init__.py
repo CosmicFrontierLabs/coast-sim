@@ -160,3 +160,4 @@ __all__ = [
 
 # Resolve forward references in Pydantic models
 ACSCommand.model_rebuild()
+Slew.model_rebuild()

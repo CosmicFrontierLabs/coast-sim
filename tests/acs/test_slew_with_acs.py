@@ -1,4 +1,7 @@
 from typing import Any
+from unittest.mock import Mock
+
+import rust_ephem
 
 from conops import AttitudeControlSystem, Constraint, MissionConfig, Slew, SpacecraftBus
 
@@ -7,8 +10,11 @@ class DummyConstraint(Constraint):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         # Bypass validate_assignment: Slew asserts constraint.ephem is not None,
-        # but does not use it during calc.
-        object.__setattr__(self, "ephem", object())
+        # but does not use it during calc. The dummy still needs to satisfy
+        # Slew's isinstance-validated `ephem` field.
+        dummy_ephem = Mock()
+        dummy_ephem.__class__ = rust_ephem.Ephemeris
+        object.__setattr__(self, "ephem", dummy_ephem)
 
 
 def test_slew_uses_acs_config() -> None:

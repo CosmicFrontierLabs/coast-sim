@@ -4,13 +4,17 @@ from unittest.mock import Mock
 
 import numpy as np
 import pytest
+import rust_ephem
 
-from conops import Slew
+from conops import AttitudeControlSystem, Constraint, Slew
 
 
 @pytest.fixture
 def ephem():
     mock = Mock()
+    # Satisfies isinstance checks (e.g. Slew's pydantic field) without the
+    # attribute-restriction that Mock(spec=...) would impose.
+    mock.__class__ = rust_ephem.Ephemeris
     mock.step_size = 60
     return mock
 
@@ -18,13 +22,16 @@ def ephem():
 @pytest.fixture
 def constraint(ephem):
     constraint = Mock()
+    constraint.__class__ = Constraint
     constraint.ephem = ephem
     return constraint
 
 
 @pytest.fixture
 def acs_config():
-    return Mock()
+    mock = Mock()
+    mock.__class__ = AttitudeControlSystem
+    return mock
 
 
 @pytest.fixture

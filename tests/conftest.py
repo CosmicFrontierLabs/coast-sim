@@ -3,6 +3,9 @@
 from unittest.mock import Mock
 
 import pytest
+import rust_ephem
+
+import conops
 
 
 @pytest.fixture
@@ -12,6 +15,9 @@ def mock_ephem():
     import numpy as np
 
     ephem = Mock()
+    # Satisfies isinstance checks (e.g. Slew's pydantic field) without the
+    # attribute-restriction that Mock(spec=...) would impose.
+    ephem.__class__ = rust_ephem.Ephemeris
     ephem.index = Mock(return_value=0)
 
     # Legacy SkyCoord-style access
@@ -51,6 +57,7 @@ def mock_spacecraft_bus() -> Mock:
     """
     spacecraft_bus = Mock()
     spacecraft_bus.attitude_control = Mock()
+    spacecraft_bus.attitude_control.__class__ = conops.AttitudeControlSystem
     spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))
     spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
     spacecraft_bus.radiators = Mock()

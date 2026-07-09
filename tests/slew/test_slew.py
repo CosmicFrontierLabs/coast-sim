@@ -225,7 +225,7 @@ class TestCalcSlewtime:
             slew.slewpath = ([0.0], [0.0])
             slew._quat_roll_path = []
 
-        slew.predict_slew = inject_bad_distance
+        object.__setattr__(slew, "predict_slew", inject_bad_distance)
         with pytest.raises(ValueError, match="Invalid slew distance"):
             slew.calc_slewtime()
 

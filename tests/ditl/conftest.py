@@ -5,10 +5,12 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
+import rust_ephem
 from matplotlib import pyplot as plt
 
 from conops import DITL, ACSMode, Queue
 from conops.config import (
+    AttitudeControlSystem,
     BandCapability,
     Battery,
     Constraint,
@@ -62,6 +64,11 @@ class DummyEphemeris:
         return 0
 
 
+# Register as a virtual subclass so isinstance checks (e.g. Slew's pydantic
+# field) pass without implementing every abstract Ephemeris member.
+rust_ephem.Ephemeris.register(DummyEphemeris)
+
+
 class MockDITL(DITLMixin, DITLStats):
     """Mock DITL class for statistics testing."""
 
@@ -86,6 +93,7 @@ def create_statistics_test_config(ephem: DummyEphemeris | None = None) -> Missio
 
     spacecraft_bus = Mock(spec=SpacecraftBus)
     spacecraft_bus.attitude_control = Mock()
+    spacecraft_bus.attitude_control.__class__ = AttitudeControlSystem
     spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))
     spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
     spacecraft_bus.star_trackers = Mock()
@@ -182,7 +190,9 @@ def mock_config():
     cfg = Mock()
     cfg.name = "test"
     cfg.constraint = Mock()
+    cfg.constraint.__class__ = Constraint
     cfg.constraint.ephem = Mock()  # DITLMixin asserts this is not None
+    cfg.constraint.ephem.__class__ = rust_ephem.Ephemeris
     cfg.constraint.ephem.earth = [Mock(ra=Mock(deg=0.0), dec=Mock(deg=0.0))]
     cfg.constraint.ephem.earth_ra_deg = [0.0]
     cfg.constraint.ephem.earth_dec_deg = [0.0]
@@ -195,6 +205,7 @@ def mock_config():
     ]
     cfg.battery = Mock()
     cfg.battery.max_depth_of_discharge = 0.5
+    cfg.spacecraft_bus.attitude_control.__class__ = AttitudeControlSystem
     return cfg
 
 
@@ -211,6 +222,7 @@ def mock_config_detailed():
 
     # Mock constraint
     config.constraint = Mock()
+    config.constraint.__class__ = Constraint
     config.constraint.ephem = DummyEphemeris()
     config.constraint.panel_constraint = Mock()
     config.constraint.panel_constraint.solar_panel = Mock()
@@ -231,6 +243,7 @@ def mock_config_detailed():
     config.spacecraft_bus = Mock()
     config.spacecraft_bus.power = Mock(return_value=50.0)
     config.spacecraft_bus.attitude_control = Mock()
+    config.spacecraft_bus.attitude_control.__class__ = AttitudeControlSystem
     config.spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))
     config.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
     config.spacecraft_bus.radiators = Mock()
