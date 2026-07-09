@@ -467,7 +467,7 @@ def comprehensive_ditl(ditl_instance, mock_config):
     mock_cmd2 = Mock()
     mock_cmd2.command_type = Mock()
     mock_cmd2.command_type.name = "OBSERVE"
-    ditl.acs.commands = [mock_cmd1, mock_cmd2, mock_cmd1]
+    ditl.acs.executed_commands = [mock_cmd1, mock_cmd2, mock_cmd1]
 
     # Mock executed passes
     mock_pass = Mock()

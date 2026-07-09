@@ -5,6 +5,7 @@ import numpy as np
 
 from ..common import ChargeState, normalize_acs_mode
 from ..config.config import MissionConfig
+from ..simulation.acs import ACS
 from ..simulation.passes import PassTimes
 
 
@@ -28,6 +29,7 @@ class DITLStats:
     data_generated_gb: list[float]
     data_downlinked_gb: list[float]
     executed_passes: PassTimes
+    acs: ACS
 
     def print_statistics(self) -> None:
         """Print comprehensive statistics about the DITL simulation.
@@ -284,12 +286,14 @@ class DITLStats:
             print(f"Remaining Targets: {len(self.queue.targets) - completed}")
 
         # ACS Command statistics (if available)
-        if hasattr(self, "acs") and hasattr(self.acs, "commands"):
+        if self.acs.executed_commands:
             print("\n" + "-" * 70)
             print("ACS COMMAND STATISTICS")
             print("-" * 70)
-            cmd_counts = Counter([cmd.command_type for cmd in self.acs.commands])
-            print(f"Total ACS Commands: {len(self.acs.commands)}")
+            cmd_counts = Counter(
+                [cmd.command_type for cmd in self.acs.executed_commands]
+            )
+            print(f"Total ACS Commands: {len(self.acs.executed_commands)}")
             print(f"\n{'Command Type':<25} {'Count':<10}")
             print("-" * 35)
             for cmd_type, count in sorted(
