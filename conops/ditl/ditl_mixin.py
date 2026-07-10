@@ -204,12 +204,20 @@ class DITLMixin:
             return
 
         try:
-            sample_count = min(len(timestamps), len(positions), len(velocities))
+            timestamp_count = len(timestamps)
+            position_count = len(positions)
+            velocity_count = len(velocities)
         except TypeError:
             return
+        if not timestamp_count == position_count == velocity_count:
+            raise ValueError(
+                "Orbit state timeseries inputs must have matching lengths "
+                f"(timestamps={timestamp_count}, positions={position_count}, "
+                f"velocities={velocity_count})"
+            )
 
         samples = []
-        for i in range(sample_count):
+        for i in range(timestamp_count):
             timestamp = self._timestamp_to_utc(timestamps[i])
             position = positions[i]
             velocity = velocities[i]

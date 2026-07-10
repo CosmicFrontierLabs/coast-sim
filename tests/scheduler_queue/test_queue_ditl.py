@@ -109,6 +109,29 @@ class TestQueueDITLInitialization:
         )
         assert (tmp_path / "plan_orbit_state_timeseries.json").exists()
 
+    def test_attach_orbit_state_timeseries_rejects_mismatched_lengths(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.ephem.timestamp = [
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
+            datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc),
+        ]
+        queue_ditl.ephem.gcrs_pv = Mock(
+            position=[
+                [7000.0, 0.0, 0.0],
+                [6999.0, 10.0, 0.0],
+            ],
+            velocity=[
+                [0.0, 7.5, 0.0],
+            ],
+        )
+
+        with pytest.raises(
+            ValueError,
+            match=r"matching lengths \(timestamps=2, positions=2, velocities=1\)",
+        ):
+            queue_ditl._attach_orbit_state_timeseries_to_plan()
+
     def test_initialization_pointing_lists_empty(
         self, mock_config: MissionConfig
     ) -> None:
