@@ -8,7 +8,12 @@ import pytest
 
 from conops import Plan, PlanEntry
 from conops.common.enums import ObsType
-from conops.targets import AttitudeSampleSchema, AttitudeTimeseriesSchema
+from conops.targets import (
+    AttitudeSampleSchema,
+    AttitudeTimeseriesSchema,
+    OrbitStateSampleSchema,
+    OrbitStateTimeseriesSchema,
+)
 from conops.targets.plan_metadata import PlanMetadata
 
 
@@ -272,6 +277,30 @@ class TestPlanSaveLoad:
         attitude_raw = json.loads(attitude_path.read_text())
         assert attitude_raw["plan_file"] == "plan.json"
         assert attitude_raw["samples"][0]["obsid"] == 0
+
+    def test_save_writes_orbit_state_timeseries_companion(self, tmp_path):
+        """Plan.save() writes the attached orbit-state companion file."""
+        plan = _make_plan(1)
+        plan.orbit_state_timeseries = OrbitStateTimeseriesSchema(
+            samples=[
+                OrbitStateSampleSchema(
+                    utime=1_000_000.0,
+                    timestamp="1970-01-12T13:46:40+00:00",
+                    position_km=(7000.0, 0.0, 0.0),
+                    velocity_km_s=(0.0, 7.5, 0.0),
+                )
+            ]
+        )
+        dest = tmp_path / "plan.json"
+
+        plan.save(dest)
+
+        raw = json.loads(dest.read_text())
+        orbit_path = tmp_path / raw["orbit_state_timeseries_file"]
+        assert orbit_path.exists()
+        orbit_raw = json.loads(orbit_path.read_text())
+        assert orbit_raw["plan_file"] == "plan.json"
+        assert orbit_raw["samples"][0]["velocity_km_s"] == [0.0, 7.5, 0.0]
 
     def test_save_times_are_iso_strings(self, tmp_path):
         """start, end, and entry begin/end are serialised as ISO-8601 strings."""

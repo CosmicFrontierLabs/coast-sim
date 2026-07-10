@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Any
 
 import matplotlib.pyplot as plt
 import rust_ephem
@@ -148,6 +149,21 @@ class DITLMixin:
         except (TypeError, ValueError):
             return str(mode)
 
+    @staticmethod
+    def _timestamp_to_utc(timestamp: Any) -> datetime:
+        if isinstance(timestamp, datetime):
+            dt = timestamp
+        else:
+            dt = datetime.fromtimestamp(float(timestamp), tz=timezone.utc)
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
+    def _attach_execution_timeseries_to_plan(self) -> None:
+        """Attach executed attitude and orbit-state timelines to the current plan."""
+        self._attach_attitude_timeseries_to_plan()
+        self._attach_orbit_state_timeseries_to_plan()
+
     def _attach_attitude_timeseries_to_plan(self) -> None:
         """Attach the executed attitude timeline to the current plan for export."""
         from ..targets import AttitudeSampleSchema, AttitudeTimeseriesSchema
@@ -175,6 +191,46 @@ class DITLMixin:
             )
 
         self.plan.attitude_timeseries = AttitudeTimeseriesSchema(samples=samples)
+
+    def _attach_orbit_state_timeseries_to_plan(self) -> None:
+        """Attach GCRS spacecraft position/velocity samples to the current plan."""
+        from ..targets import OrbitStateSampleSchema, OrbitStateTimeseriesSchema
+
+        pv = getattr(self.ephem, "gcrs_pv", None)
+        positions = getattr(pv, "position", None)
+        velocities = getattr(pv, "velocity", None)
+        timestamps = getattr(self.ephem, "timestamp", None)
+        if positions is None or velocities is None or timestamps is None:
+            return
+
+        try:
+            sample_count = min(len(timestamps), len(positions), len(velocities))
+        except TypeError:
+            return
+
+        samples = []
+        for i in range(sample_count):
+            timestamp = self._timestamp_to_utc(timestamps[i])
+            position = positions[i]
+            velocity = velocities[i]
+            samples.append(
+                OrbitStateSampleSchema(
+                    utime=timestamp.timestamp(),
+                    timestamp=timestamp.isoformat(),
+                    position_km=(
+                        float(position[0]),
+                        float(position[1]),
+                        float(position[2]),
+                    ),
+                    velocity_km_s=(
+                        float(velocity[0]),
+                        float(velocity[1]),
+                        float(velocity[2]),
+                    ),
+                )
+            )
+
+        self.plan.orbit_state_timeseries = OrbitStateTimeseriesSchema(samples=samples)
 
     def plot(self) -> None:
         """Plot DITL timeline.

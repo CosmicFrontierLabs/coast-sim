@@ -85,6 +85,8 @@ class DeterministicEphemeris:
         self.moon_dec_deg = np.full(sample_count, -5.0)
 
         orbit_radius_km = 7000.0
+        orbit_period_seconds = max(1.0, (sample_count - 1) * step_size_seconds)
+        angular_rate_rad_s = 2.0 * np.pi / orbit_period_seconds
         self.gcrs_pv = SimpleNamespace(
             position=np.column_stack(
                 (
@@ -92,7 +94,14 @@ class DeterministicEphemeris:
                     orbit_radius_km * np.sin(theta),
                     500.0 * np.sin(2.0 * theta),
                 )
-            )
+            ),
+            velocity=np.column_stack(
+                (
+                    -orbit_radius_km * angular_rate_rad_s * np.sin(theta),
+                    orbit_radius_km * angular_rate_rad_s * np.cos(theta),
+                    1000.0 * angular_rate_rad_s * np.cos(2.0 * theta),
+                )
+            ),
         )
         self.sun_pv = SimpleNamespace(
             position=np.tile(np.array([1.5e8, 1.0e7, 2.0e7]), (sample_count, 1))
@@ -130,6 +139,28 @@ SCENARIO_TARGETS = (
     ScenarioTarget(10003, "coast-default-3", 215.0, -25.0, 95.0, 600),
     ScenarioTarget(10004, "coast-default-4", 300.0, 35.0, 85.0, 900),
 )
+
+
+def _summarize_orbit_state_payload(
+    orbit_state_payload: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Return a compact regression check for the full orbit-state sidecar."""
+    if orbit_state_payload is None:
+        return None
+
+    samples = orbit_state_payload.get("samples", [])
+    sample_indices = sorted({0, len(samples) // 2, len(samples) - 1}) if samples else []
+    return {
+        "version": orbit_state_payload.get("version"),
+        "frame": orbit_state_payload.get("frame"),
+        "origin": orbit_state_payload.get("origin"),
+        "position_unit": orbit_state_payload.get("position_unit"),
+        "velocity_unit": orbit_state_payload.get("velocity_unit"),
+        "component_order": orbit_state_payload.get("component_order"),
+        "num_samples": orbit_state_payload.get("num_samples", len(samples)),
+        "sample_indices": sample_indices,
+        "samples": [samples[index] for index in sample_indices],
+    }
 
 
 def build_default_plan_payload() -> dict[str, Any]:
@@ -189,6 +220,14 @@ def build_default_plan_payload() -> dict[str, Any]:
         attitude_payload.pop("created_at", None)
         attitude_payload.pop("coast_sim_version", None)
 
+    orbit_state_payload = None
+    if schema.orbit_state_timeseries is not None:
+        orbit_state_payload = schema.orbit_state_timeseries.model_dump(
+            mode="json", exclude_none=True
+        )
+        orbit_state_payload.pop("created_at", None)
+        orbit_state_payload.pop("coast_sim_version", None)
+
     return {
         "scenario": {
             "name": config.name,
@@ -202,11 +241,17 @@ def build_default_plan_payload() -> dict[str, Any]:
             "attitude_samples": len(
                 (attitude_payload or {"samples": []}).get("samples", [])
             ),
+            "orbit_state_samples": len(
+                (orbit_state_payload or {"samples": []}).get("samples", [])
+            ),
             "obsids": [entry["obsid"] for entry in plan_payload["entries"]],
             "obstypes": [entry["obstype"] for entry in plan_payload["entries"]],
         },
         "plan": plan_payload,
         "attitude_timeseries": attitude_payload,
+        "orbit_state_timeseries_summary": _summarize_orbit_state_payload(
+            orbit_state_payload
+        ),
     }
 
 

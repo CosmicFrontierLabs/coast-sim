@@ -74,6 +74,41 @@ class TestQueueDITLInitialization:
         assert raw["attitude_timeseries_file"] == "plan_attitude_timeseries.json"
         assert (tmp_path / "plan_attitude_timeseries.json").exists()
 
+    def test_attach_orbit_state_timeseries_to_plan(
+        self, queue_ditl: QueueDITL, tmp_path
+    ) -> None:
+        queue_ditl.ephem.timestamp = [
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
+            datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc),
+        ]
+        queue_ditl.ephem.gcrs_pv = Mock(
+            position=[
+                [7000.0, 0.0, 0.0],
+                [6999.0, 10.0, 0.0],
+            ],
+            velocity=[
+                [0.0, 7.5, 0.0],
+                [-0.01, 7.49, 0.0],
+            ],
+        )
+
+        queue_ditl._attach_orbit_state_timeseries_to_plan()
+
+        orbit_state = queue_ditl.plan.orbit_state_timeseries
+        assert orbit_state is not None
+        assert orbit_state.num_samples == 2
+        sample = orbit_state.samples[0]
+        assert sample.timestamp == "2026-01-01T00:00:00+00:00"
+        assert sample.position_km == pytest.approx((7000.0, 0.0, 0.0))
+        assert sample.velocity_km_s == pytest.approx((0.0, 7.5, 0.0))
+
+        plan_path = queue_ditl.plan.save(tmp_path / "plan.json")
+        raw = json.loads(plan_path.read_text())
+        assert raw["orbit_state_timeseries_file"] == (
+            "plan_orbit_state_timeseries.json"
+        )
+        assert (tmp_path / "plan_orbit_state_timeseries.json").exists()
+
     def test_initialization_pointing_lists_empty(
         self, mock_config: MissionConfig
     ) -> None:

@@ -272,6 +272,55 @@ class AttitudeTimeseriesSchema(BaseModel):
         return datetime.fromtimestamp(v, tz=timezone.utc).isoformat()
 
 
+class OrbitStateSampleSchema(BaseModel):
+    """A single spacecraft orbit-state sample for plan inspection."""
+
+    utime: float
+    timestamp: str
+    position_km: tuple[float, float, float]
+    velocity_km_s: tuple[float, float, float]
+
+
+class OrbitStateTimeseriesSchema(BaseModel):
+    """Continuous spacecraft orbit-state timeline tied to a plan file."""
+
+    version: int = 0
+    coast_sim_version: str = Field(default_factory=lambda: __version__)
+    created_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+    frame: Literal["GCRS"] = "GCRS"
+    origin: Literal["Earth center"] = "Earth center"
+    position_unit: Literal["km"] = "km"
+    velocity_unit: Literal["km/s"] = "km/s"
+    component_order: Literal["x_y_z"] = "x_y_z"
+    plan_file: str | None = None
+    plan_version: int | None = None
+    plan_start: float | None = None
+    plan_end: float | None = None
+    samples: list[OrbitStateSampleSchema] = Field(default_factory=list)
+
+    @computed_field  # type:ignore[prop-decorator]
+    @property
+    def num_samples(self) -> int:
+        return len(self.samples)
+
+    @field_validator("plan_start", "plan_end", mode="before")
+    @classmethod
+    def _coerce_optional_time(cls, v: Any) -> float | None:
+        if v is None:
+            return None
+        if isinstance(v, str):
+            return datetime.fromisoformat(v).timestamp()
+        return float(v)
+
+    @field_serializer("plan_start", "plan_end")
+    def _serialize_optional_time(self, v: float | None) -> str | None:
+        if v is None:
+            return None
+        return datetime.fromtimestamp(v, tz=timezone.utc).isoformat()
+
+
 class PlanSchema(BaseModel):
     """Top-level schema for a serialised :class:`~conops.targets.Plan`.
 
@@ -300,6 +349,9 @@ class PlanSchema(BaseModel):
     attitude_timeseries_file:
         Optional sibling JSON file containing the executed attitude samples
         associated with this exact plan export.
+    orbit_state_timeseries_file:
+        Optional sibling JSON file containing the GCRS spacecraft position and
+        velocity samples associated with this exact plan export.
     metadata:
         Optional producer-specific plan provenance and validation metadata.
     """
@@ -314,9 +366,13 @@ class PlanSchema(BaseModel):
     start: float = 0.0
     end: float = 0.0
     attitude_timeseries_file: str | None = None
+    orbit_state_timeseries_file: str | None = None
     metadata: PlanMetadata | None = None
     entries: list[PlanEntrySchema] = Field(default_factory=list)
     attitude_timeseries: AttitudeTimeseriesSchema | None = Field(
+        default=None, exclude=True
+    )
+    orbit_state_timeseries: OrbitStateTimeseriesSchema | None = Field(
         default=None, exclude=True
     )
 
@@ -366,6 +422,7 @@ class PlanSchema(BaseModel):
                 "metadata": getattr(data, "metadata", None) or None,
                 "entries": entries,
                 "attitude_timeseries": getattr(data, "attitude_timeseries", None),
+                "orbit_state_timeseries": getattr(data, "orbit_state_timeseries", None),
             }
         return data
 
@@ -433,6 +490,35 @@ class PlanSchema(BaseModel):
     def _attitude_timeseries_path(plan_path: Path) -> Path:
         return plan_path.with_name(f"{plan_path.stem}_attitude_timeseries.json")
 
+    @staticmethod
+    def _orbit_state_timeseries_path(plan_path: Path) -> Path:
+        return plan_path.with_name(f"{plan_path.stem}_orbit_state_timeseries.json")
+
+    @staticmethod
+    def _write_timeseries_sidecar(
+        schema: PlanSchema,
+        dest: Path,
+        *,
+        sidecar_path: Path,
+        link_field: str,
+        timeseries: BaseModel,
+        indent: int,
+    ) -> PlanSchema:
+        schema = schema.model_copy(update={link_field: sidecar_path.name})
+        timeseries = timeseries.model_copy(
+            update={
+                "plan_file": dest.name,
+                "plan_version": schema.version,
+                "plan_start": schema.start,
+                "plan_end": schema.end,
+            }
+        )
+        sidecar_payload = timeseries.model_dump(mode="json", exclude_none=True)
+        sidecar_path.write_text(
+            json.dumps(sidecar_payload, indent=indent), encoding="utf-8"
+        )
+        return schema
+
     def save(self, path: str | Path, *, indent: int = 2) -> Path:
         """Serialise the plan to a JSON file.
 
@@ -465,23 +551,24 @@ class PlanSchema(BaseModel):
 
         attitude_timeseries = schema.attitude_timeseries
         if attitude_timeseries is not None:
-            attitude_path = self._attitude_timeseries_path(dest)
-            schema = schema.model_copy(
-                update={"attitude_timeseries_file": attitude_path.name}
+            schema = self._write_timeseries_sidecar(
+                schema,
+                dest,
+                sidecar_path=self._attitude_timeseries_path(dest),
+                link_field="attitude_timeseries_file",
+                timeseries=attitude_timeseries,
+                indent=indent,
             )
-            attitude_timeseries = attitude_timeseries.model_copy(
-                update={
-                    "plan_file": dest.name,
-                    "plan_version": schema.version,
-                    "plan_start": schema.start,
-                    "plan_end": schema.end,
-                }
-            )
-            attitude_payload = attitude_timeseries.model_dump(
-                mode="json", exclude_none=True
-            )
-            attitude_path.write_text(
-                json.dumps(attitude_payload, indent=indent), encoding="utf-8"
+
+        orbit_state_timeseries = schema.orbit_state_timeseries
+        if orbit_state_timeseries is not None:
+            schema = self._write_timeseries_sidecar(
+                schema,
+                dest,
+                sidecar_path=self._orbit_state_timeseries_path(dest),
+                link_field="orbit_state_timeseries_file",
+                timeseries=orbit_state_timeseries,
+                indent=indent,
             )
 
         payload = schema.model_dump(mode="json", exclude_none=True)
