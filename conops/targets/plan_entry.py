@@ -1,14 +1,56 @@
 from __future__ import annotations
 
-from typing import Literal
+from datetime import datetime, timezone
+from typing import ClassVar, Literal
 
 import rust_ephem
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    computed_field,
+    field_serializer,
+    field_validator,
+)
 
 from ..common import givename, unixtime2date
 from ..common.enums import ObsType
+from ..common.vector import attitude_to_quat
 from ..config import AttitudeControlSystem, Constraint, MissionConfig
 from ..simulation.saa import SAA
+
+BodyAxis = Literal["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
+RollSource = Literal["planned", "defaulted_from_unconstrained_sentinel"]
+
+
+class AttitudeRotationSchema(BaseModel):
+    """Generic attitude rotation representation."""
+
+    representation: Literal["quaternion"] = "quaternion"
+    direction: Literal["inertial_to_body"] = "inertial_to_body"
+    order: Literal["wxyz"] = "wxyz"
+    values: tuple[float, float, float, float]
+
+
+class AttitudePointingSchema(BaseModel):
+    """Pointing parameters used to generate a target attitude."""
+
+    ra_deg: float
+    dec_deg: float
+    roll_deg: float
+    boresight_axis: BodyAxis = "+X"
+    roll_axis: BodyAxis = "+X"
+    roll_source: RollSource = "planned"
+
+
+class TargetAttitudeSchema(BaseModel):
+    """Commanded target attitude for a fixed-attitude plan entry."""
+
+    frame: Literal["GCRS"] = "GCRS"
+    body_frame: Literal["COAST_BODY"] = "COAST_BODY"
+    rotation: AttitudeRotationSchema
+    pointing: AttitudePointingSchema
 
 
 class PlanEntry(BaseModel):
@@ -16,10 +58,14 @@ class PlanEntry(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    config: MissionConfig
-    constraint: Constraint
-    acs_config: AttitudeControlSystem
-    ephem: rust_ephem.Ephemeris | None
+    _STATIC_TARGET_OBSTYPES: ClassVar[frozenset[ObsType]] = frozenset(
+        {ObsType.PPT, ObsType.AT, ObsType.TOO}
+    )
+
+    config: MissionConfig | None = Field(default=None, exclude=True)
+    constraint: Constraint | None = Field(default=None, exclude=True)
+    acs_config: AttitudeControlSystem | None = Field(default=None, exclude=True)
+    ephem: rust_ephem.Ephemeris | None = Field(default=None, exclude=True)
     name: str = ""
     ra: float = 0.0
     dec: float = 0.0
@@ -41,11 +87,13 @@ class PlanEntry(BaseModel):
     track_end_ra: float | None = None
     track_end_dec: float | None = None
     track_end_roll: float | None = None
-    saa: SAA | None = None
+    saa: SAA | None = Field(default=None, exclude=True)
     merit: float = 101
-    windows: list[list[float]] = Field(default_factory=list)
+    windows: list[list[float]] = Field(default_factory=list, exclude=True)
     obstype: ObsType = ObsType.PPT
-    slewpath: tuple[list[float], list[float]] = Field(default_factory=lambda: ([], []))
+    slewpath: tuple[list[float], list[float]] = Field(
+        default_factory=lambda: ([], []), exclude=True
+    )
     slewdist: float = 0.0
     ss_min: float = 1000
     ss_max: float = 1e6
@@ -75,6 +123,23 @@ class PlanEntry(BaseModel):
         entry._exporig = exptime
         return entry
 
+    @field_validator("begin", "end", "contact_begin", "contact_end", mode="before")
+    @classmethod
+    def _coerce_time(cls, v: float | int | str | None) -> float | None:
+        """Accept Unix timestamps (float/int) or ISO-8601 strings."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            return datetime.fromisoformat(v).timestamp()
+        return float(v)
+
+    @field_serializer("begin", "end", "contact_begin", "contact_end")
+    def _serialize_time(self, v: float | None) -> str | None:
+        if v is None:
+            return None
+        return datetime.fromtimestamp(v, tz=timezone.utc).isoformat()
+
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def exptime(self) -> int:
         return self._exptime
@@ -85,11 +150,17 @@ class PlanEntry(BaseModel):
             self._exporig = t
         self._exptime = t
 
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def exporig(self) -> int:
+        return self._exporig
+
     def __str__(self) -> str:
         return f"{unixtime2date(self.begin)} Target: {self.name} ({self.obsid}) Exp: {self.exposure}s "
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
-    def exposure(self) -> int:  # (),excludesaa=False):
+    def exposure(self) -> int:
         if (
             self.obstype == ObsType.GSP
             and self.contact_begin is not None
@@ -97,7 +168,6 @@ class PlanEntry(BaseModel):
         ):
             contact_start = max(float(self.contact_begin), float(self.begin))
             return max(0, int(self.contact_end - contact_start))
-        self.insaa = 0
         exposure = self.end - self.begin - self.slewtime - self.insaa
         return max(0, int(exposure))  # always an integer number of seconds
 
@@ -105,6 +175,37 @@ class PlanEntry(BaseModel):
     def exposure(self, value: int) -> None:
         """Setter for exposure - accepts but ignores the value since exposure is computed."""
         pass
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def target_attitude(self) -> TargetAttitudeSchema | None:
+        """Fixed target attitude generated from COAST's RA/Dec/Roll convention."""
+        if self.obstype not in self._STATIC_TARGET_OBSTYPES:
+            return None
+
+        roll_deg = float(self.roll)
+        roll_source: RollSource = "planned"
+        if roll_deg == -1.0:
+            roll_deg = 0.0
+            roll_source = "defaulted_from_unconstrained_sentinel"
+
+        quat = attitude_to_quat(self.ra, self.dec, roll_deg)
+        return TargetAttitudeSchema(
+            rotation=AttitudeRotationSchema(
+                values=(
+                    float(quat[0]),
+                    float(quat[1]),
+                    float(quat[2]),
+                    float(quat[3]),
+                )
+            ),
+            pointing=AttitudePointingSchema(
+                ra_deg=float(self.ra),
+                dec_deg=float(self.dec),
+                roll_deg=roll_deg,
+                roll_source=roll_source,
+            ),
+        )
 
     def givename(self, stem: str = "") -> None:
         self.name = givename(self.ra, self.dec, stem=stem)
@@ -119,12 +220,16 @@ class PlanEntry(BaseModel):
         the entire ephemeris time range.
         """
 
+        assert self.config is not None, "Config must be set to calculate visibility"
         assert self.config.constraint is not None, (
             "Constraint must be set to calculate visibility"
         )
         assert self.ephem is not None, "Ephemeris must be set to calculate visibility"
 
         # Calculate the visibility of this target
+        assert self.constraint is not None, (
+            "Constraint must be set to calculate visibility"
+        )
         if self.constraint.ignore_roll:
             # ignore_roll=True → field-of-regard scheduling.
             #
@@ -199,6 +304,9 @@ class PlanEntry(BaseModel):
         # Use the more accurate slew distance instead of angular distance
         self.predict_slew(lastra, lastdec)
 
+        assert self.acs_config is not None, (
+            "ACS config must be set to calculate slew time"
+        )
         # Calculate slew time using AttitudeControlSystem
         slewtime = round(self.acs_config.slew_time(self.slewdist))
 
@@ -206,6 +314,7 @@ class PlanEntry(BaseModel):
 
     def predict_slew(self, lastra: float, lastdec: float) -> None:
         """Calculate great circle slew distance and path using ACS configuration."""
+        assert self.acs_config is not None, "ACS config must be set to predict slew"
         self.slewdist, self.slewpath = self.acs_config.predict_slew(
             lastra, lastdec, self.ra, self.dec
         )

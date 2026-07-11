@@ -1,7 +1,7 @@
 from typing import Literal
 
 import numpy as np
-from pydantic import PrivateAttr
+from pydantic import Field, PrivateAttr, computed_field
 
 from ..common import unixtime2date
 from ..common.enums import ObsType
@@ -20,7 +20,7 @@ class Pointing(PlanEntry):
     # backwards compatibility (e.g. tests and older code). The
     # canonical field we use internally is ``merit`` which can be
     # recomputed each scheduling iteration by ``Queue.meritsort``.
-    fom: float = 100.0
+    fom: float = Field(default=100.0, exclude=True)
     obstype: ObsType = ObsType.AT
     roll: float = 0.0
     _done: bool = PrivateAttr(default=False)
@@ -67,42 +67,49 @@ class Pointing(PlanEntry):
 
     def in_sun(self, utime: float) -> bool:
         """Is this target in Sun constraint?"""
+        assert self.config is not None, "Config must be set to evaluate constraints"
         return self.config.constraint.in_sun(
             self.ra, self.dec, utime, target_roll=self.roll
         )
 
     def in_earth(self, utime: float) -> bool:
         """Is this target in Earth constraint?"""
+        assert self.config is not None, "Config must be set to evaluate constraints"
         return self.config.constraint.in_earth(
             self.ra, self.dec, utime, target_roll=self.roll
         )
 
     def in_moon(self, utime: float) -> bool:
         """Is this target in Moon constraint?"""
+        assert self.config is not None, "Config must be set to evaluate constraints"
         return self.config.constraint.in_moon(
             self.ra, self.dec, utime, target_roll=self.roll
         )
 
     def in_panel(self, utime: float) -> bool:
         """Is this target in Panel constraint?"""
+        assert self.config is not None, "Config must be set to evaluate constraints"
         return self.config.constraint.in_panel(
             self.ra, self.dec, utime, target_roll=self.roll
         )
 
     def in_orbit(self, utime: float) -> bool:
         """Is this target in Orbit constraint?"""
+        assert self.config is not None, "Config must be set to evaluate constraints"
         return self.config.constraint.in_orbit(
             self.ra, self.dec, utime, target_roll=self.roll
         )
 
     def in_star_tracker_hard(self, utime: float, acs_mode: int | None = None) -> bool:
         """Is this target in star tracker hard constraint?"""
+        assert self.config is not None, "Config must be set to evaluate constraints"
         return self.config.constraint.in_star_tracker_hard(
             self.ra, self.dec, utime, target_roll=self.roll, acs_mode=acs_mode
         )
 
     def in_star_tracker_soft(self, utime: float, acs_mode: int | None = None) -> bool:
         """Is this target in star tracker soft constraint?"""
+        assert self.config is not None, "Config must be set to evaluate constraints"
         return self.config.constraint.in_star_tracker_soft(
             self.ra, self.dec, utime, target_roll=self.roll, acs_mode=acs_mode
         )
@@ -126,6 +133,7 @@ class Pointing(PlanEntry):
     def __str__(self) -> str:
         return f"{unixtime2date(self.begin)} {self.name} ({self.obsid}) RA={self.ra:.4f}, Dec={self.dec:4f}, Roll={self.roll:.1f}, Merit={self.merit}"
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def done(self) -> bool:
         if self.exptime is not None and self.exptime <= 0:

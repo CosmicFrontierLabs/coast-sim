@@ -45,7 +45,6 @@ from conops.config import (  # noqa: E402
     SpacecraftBus,
     StarTrackerConfiguration,
 )
-from conops.targets import PlanSchema  # noqa: E402
 
 
 class DeterministicConstraint(Constraint):
@@ -213,7 +212,7 @@ def build_default_plan_payload() -> dict[str, Any]:
     if not ditl.calc():
         raise RuntimeError("Default plan scenario failed to calculate")
 
-    schema = PlanSchema.from_plan(ditl.plan)
+    schema = ditl.plan
     plan_payload = schema.model_dump(mode="json", exclude_none=True)
     plan_payload.pop("created_at", None)
     plan_payload.pop("coast_sim_version", None)

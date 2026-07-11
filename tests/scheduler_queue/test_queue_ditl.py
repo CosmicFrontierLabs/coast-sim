@@ -25,7 +25,7 @@ from conops.common.enums import ObsType
 from conops.config.config import MissionConfig
 from conops.ditl.telemetry import Housekeeping
 from conops.simulation.acs import IDLE_OBSID
-from conops.targets import Plan, PlanEntry, PlanSchema, Pointing
+from conops.targets import Plan, PlanEntry, Pointing
 
 
 class TestQueueDITLInitialization:
@@ -4245,24 +4245,7 @@ class TestCheckAndManagePasses:
         assert entry.track_end_ra == pytest.approx(pass_end_ra)
         assert entry.track_end_dec == pytest.approx(pass_end_dec)
         assert entry.track_end_roll == pytest.approx(pass_end_roll)
-
-        schema = PlanSchema.from_plan(queue_ditl.plan)
-        assert schema.entries[0].obstype == ObsType.GSP
-        assert schema.entries[0].slewtime == entry.slewtime
-        assert schema.entries[0].slewdist == pytest.approx(entry.slewdist)
-        assert schema.entries[0].exposure == 600
-        assert schema.entries[0].station == "GS_TEST"
-        assert schema.entries[0].station_lat_deg == pytest.approx(12.34)
-        assert schema.entries[0].station_lon_deg == pytest.approx(-56.78)
-        assert schema.entries[0].station_alt_m == pytest.approx(910.0)
-        assert schema.entries[0].contact_begin == pass_obj.begin
-        assert schema.entries[0].track_start_ra == pytest.approx(pass_obj.gsstartra)
-        assert schema.entries[0].track_start_dec == pytest.approx(pass_obj.gsstartdec)
-        assert schema.entries[0].track_start_roll == pytest.approx(pass_obj.gsstartroll)
-        assert schema.entries[0].track_end_ra == pytest.approx(pass_end_ra)
-        assert schema.entries[0].track_end_dec == pytest.approx(pass_end_dec)
-        assert schema.entries[0].track_end_roll == pytest.approx(pass_end_roll)
-        saved_path = schema.save(tmp_path / "plan.json")
+        saved_path = queue_ditl.plan.save(tmp_path / "plan.json")
         saved_json = saved_path.read_text()
         assert '"obstype": "GSP"' in saved_json
         assert '"station": "GS_TEST"' in saved_json

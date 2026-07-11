@@ -1,28 +1,27 @@
-from .plan import Plan, TargetList
-from .plan_entry import PlanEntry
-from .plan_metadata import (
-    EphemerisMetadata,
-    PlanMetadata,
-    attach_tle_plan_metadata,
-)
-from .plan_schema import (
-    AttitudePointingSchema,
-    AttitudeRotationSchema,
+from .plan import (
     AttitudeSampleSchema,
     AttitudeTimeseriesSchema,
     OrbitStateSampleSchema,
     OrbitStateTimeseriesSchema,
-    PlanEntrySchema,
-    PlanSchema,
+    Plan,
+    TargetList,
+)
+from .plan_entry import (
+    AttitudePointingSchema,
+    AttitudeRotationSchema,
+    PlanEntry,
     TargetAttitudeSchema,
+)
+from .plan_metadata import (
+    EphemerisMetadata,
+    PlanMetadata,
+    attach_tle_plan_metadata,
 )
 from .pointing import Pointing
 from .target_queue import Queue, TargetQueue, TargetSlewEstimate
 
 __all__ = [
     "PlanEntry",
-    "PlanEntrySchema",
-    "PlanSchema",
     "TargetAttitudeSchema",
     "AttitudeRotationSchema",
     "AttitudePointingSchema",

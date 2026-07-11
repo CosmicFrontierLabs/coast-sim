@@ -37,7 +37,7 @@ TLE_CLASSICAL_ELEMENTS_NOTE = (
 
 
 class PlanMetadata(BaseModel):
-    """Top-level metadata envelope persisted under ``PlanSchema.metadata``.
+    """Top-level metadata envelope persisted under ``Plan.metadata``.
 
     ``ephemeris`` is typed when present, while producer-specific fields remain
     supported via ``extra=allow``.

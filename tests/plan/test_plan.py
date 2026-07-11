@@ -19,8 +19,8 @@ from conops.targets.plan_metadata import PlanMetadata
 
 def _make_plan_entry(obsid: int, begin: float, end: float) -> PlanEntry:
     """Return a bare PlanEntry instance (bypasses validation, via
-    model_construct) with the minimal attributes that
-    PlanEntrySchema._coerce_from_plan_entry reads."""
+    model_construct) with the minimal attributes needed for Plan save/load
+    tests."""
     entry = PlanEntry.model_construct(
         name=f"TARGET_{obsid}",
         ra=10.0 + obsid,
@@ -36,7 +36,6 @@ def _make_plan_entry(obsid: int, begin: float, end: float) -> PlanEntry:
         slewdist=5.0,
         ss_min=300.0,
         ss_max=1_000_000.0,
-        isat=False,
     )
     entry._exptime = 1000
     entry._exporig = 1000
@@ -332,18 +331,16 @@ class TestPlanSaveLoad:
         assert "_v0." in first.name
         assert "_v1." in second.name
 
-    def test_load_returns_plan_schema(self, tmp_path):
-        """Plan.load() returns a PlanSchema, not a plain Plan."""
-        from conops.targets.plan_schema import PlanSchema
-
+    def test_load_returns_plan(self, tmp_path):
+        """Plan.load() returns a Plan."""
         plan = _make_plan(2)
         dest = tmp_path / "plan.json"
         plan.save(dest)
         loaded = Plan.load(dest)
-        assert isinstance(loaded, PlanSchema)
+        assert isinstance(loaded, Plan)
 
     def test_load_entry_count_matches(self, tmp_path):
-        """Loaded PlanSchema has the same number of entries as saved."""
+        """Loaded Plan has the same number of entries as saved."""
         plan = _make_plan(3)
         dest = tmp_path / "plan.json"
         plan.save(dest)
@@ -375,10 +372,7 @@ class TestPlanSaveLoad:
         dest = tmp_path / "plan.json"
         plan.save(dest)
         loaded = Plan.load(dest)
-        assert loaded.start == pytest.approx(plan.entries[0].begin)
-        assert loaded.end == pytest.approx(plan.entries[-1].end)
+        assert loaded._start_ts == pytest.approx(plan.entries[0].begin)
+        assert loaded._end_ts == pytest.approx(plan.entries[-1].end)
         assert isinstance(loaded.version, int)
-        assert loaded.metadata is not None
-        assert (
-            loaded.metadata.model_dump(mode="json", exclude_none=True) == plan.metadata
-        )
+        assert loaded.metadata == plan.metadata
