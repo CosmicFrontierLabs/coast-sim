@@ -43,13 +43,8 @@ class Pointing(PlanEntry):
         if config is None:
             raise ValueError("Config must be provided to Pointing")
 
-        base = PlanEntry.from_config(config, exptime=exptime)
-        assert config.constraint is not None, "Constraint not properly set in Pointing"
         entry = cls(
-            config=base.config,
-            constraint=base.constraint,
-            acs_config=base.acs_config,
-            ephem=base.ephem,
+            config=config,
             ra=ra,
             dec=dec,
             roll=roll,

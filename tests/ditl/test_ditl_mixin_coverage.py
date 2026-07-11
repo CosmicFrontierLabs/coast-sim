@@ -15,6 +15,11 @@ from conops.ditl.ditl_mixin import DITLMixin
 @pytest.fixture
 def mock_config(mock_spacecraft_bus):
     cfg = Mock(spec=MissionConfig)
+    # MissionConfig's init_fault_management_defaults model_validator re-runs
+    # whenever this config is embedded as a nested pydantic field elsewhere
+    # (e.g. on Slew.config); None short-circuits it via the validator's own
+    # early-return guard.
+    cfg.fault_management = None
     # constraint with ephem required for ACS init
     # Build a minimal ephem with earth[0].ra.deg and dec.deg (legacy SkyCoord style)
     ra = Mock()

@@ -12,6 +12,7 @@ from pydantic import (
     computed_field,
     field_serializer,
     field_validator,
+    model_validator,
 )
 
 from ..common import givename, unixtime2date
@@ -100,6 +101,22 @@ class PlanEntry(BaseModel):
     _exptime: int = PrivateAttr()
     _exporig: int = PrivateAttr()
 
+    @model_validator(mode="after")
+    def _derive_from_config(self) -> PlanEntry:
+        """Populate constraint/ephem/acs_config from config, when not already set."""
+        if self.config is None:
+            return self
+        if self.constraint is None:
+            self.constraint = self.config.constraint
+        assert self.constraint is not None, "Constraint must be set for PlanEntry class"
+        if self.ephem is None:
+            self.ephem = self.constraint.ephem
+        assert self.ephem is not None, "Ephemeris must be set for PlanEntry class"
+        if self.acs_config is None:
+            self.acs_config = self.config.spacecraft_bus.attitude_control
+        assert self.acs_config is not None, "ACS config must be set for PlanEntry class"
+        return self
+
     @classmethod
     def from_config(
         cls, config: MissionConfig | None = None, exptime: int = 1000
@@ -107,18 +124,7 @@ class PlanEntry(BaseModel):
         """Build a PlanEntry from a mission config, deriving constraint/acs_config/ephem."""
         if config is None:
             raise ValueError("Config must be provided to PlanEntry")
-        constraint = config.constraint
-        assert constraint is not None, "Constraint must be set for PlanEntry class"
-        ephem = constraint.ephem
-        assert ephem is not None, "Ephemeris must be set for PlanEntry class"
-        acs_config = config.spacecraft_bus.attitude_control
-        assert acs_config is not None, "ACS config must be set for PlanEntry class"
-        entry = cls(
-            config=config,
-            constraint=constraint,
-            acs_config=acs_config,
-            ephem=ephem,
-        )
+        entry = cls(config=config)
         entry._exptime = exptime
         entry._exporig = exptime
         return entry

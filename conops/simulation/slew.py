@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import rust_ephem
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from ..common import dtutcfromtimestamp, roll_over_angle, separation, unixtime2date
 from ..common.enums import ObsType, SlewAlgorithm
@@ -28,9 +28,10 @@ class Slew(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    ephem: rust_ephem.Ephemeris
-    constraint: Constraint
-    acs_config: AttitudeControlSystem
+    config: MissionConfig | None = Field(default=None, exclude=True)
+    ephem: rust_ephem.Ephemeris | None = Field(default=None, exclude=True)
+    constraint: Constraint | None = Field(default=None, exclude=True)
+    acs_config: AttitudeControlSystem | None = Field(default=None, exclude=True)
     slewrequest: float = 0.0  # When was the slew requested
     slewstart: float = 0.0
     slewend: float = 0.0
@@ -50,16 +51,34 @@ class Slew(BaseModel):
     # Quaternion SLERP: intermediate roll values along the path
     _quat_roll_path: list[float] = PrivateAttr(default_factory=list)
 
+    @model_validator(mode="after")
+    def _derive_from_config(self) -> "Slew":
+        """Populate ephem/constraint/acs_config from config, when not already set.
+
+        Uses ``getattr`` (not ``self.config``) because pydantic re-runs this
+        "after" validator on any object that merely satisfies ``isinstance``
+        against ``Slew`` — e.g. a test double such as ``Mock(spec=Slew)``
+        embedded in another model's ``Slew``-typed field — without going
+        through real field population first, so ``config`` may not exist.
+        """
+        config = getattr(self, "config", None)
+        if config is None:
+            return self
+        if self.constraint is None:
+            self.constraint = config.constraint
+        assert self.constraint is not None, "Constraint must be set for Slew class"
+        if self.ephem is None:
+            self.ephem = self.constraint.ephem
+        assert self.ephem is not None, "Ephemeris must be set for Slew class"
+        if self.acs_config is None:
+            self.acs_config = config.spacecraft_bus.attitude_control
+        assert self.acs_config is not None, "ACS config must be set for Slew class"
+        return self
+
     @classmethod
     def from_config(cls, config: MissionConfig) -> "Slew":
         """Build a Slew from a mission config, deriving ephem/constraint/acs_config."""
-        constraint = config.constraint
-        assert constraint.ephem is not None, "Ephemeris must be set for Slew class"
-        return cls(
-            ephem=constraint.ephem,
-            constraint=constraint,
-            acs_config=config.spacecraft_bus.attitude_control,
-        )
+        return cls(config=config)
 
     def __eq__(self, other: object) -> bool:
         """Compare by identity, matching plain-object semantics (Slew instances are used as dict keys)."""
@@ -112,6 +131,9 @@ class Slew(BaseModel):
 
     def _slew_fraction(self, t: float) -> float:
         """Return progress fraction [0,1] along the bang-bang profile at elapsed time t."""
+        assert self.acs_config is not None, (
+            "ACS config must be set to calculate slew fraction"
+        )
         total_dist = float(self.slewdist)
         s = self.acs_config.s_of_t(total_dist, t)
         return 0.0 if total_dist == 0 else max(0.0, min(1.0, s / total_dist))
@@ -187,6 +209,9 @@ class Slew(BaseModel):
             )
 
         # Calculate slew time using AttitudeControlSystem
+        assert self.acs_config is not None, (
+            "ACS config must be set to calculate slew time"
+        )
         self.slewtime = round(self.acs_config.slew_time(distance))
 
         self.slewend = self.slewstart + self.slewtime
@@ -209,6 +234,7 @@ class Slew(BaseModel):
         In all cases self.slewdist is the total angular distance (degrees) and
         self.slewpath is the (ra_list, dec_list) path used for interpolation.
         """
+        assert self.acs_config is not None, "ACS config must be set to predict slew"
         steps = 100
         if self.acs_config.slew_algorithm == SlewAlgorithm.CONSTRAINT_AVOIDING:
             self._predict_slew_constraint_avoiding(steps)
@@ -248,6 +274,11 @@ class Slew(BaseModel):
         from two consecutive SLERP segments.  Falls back to plain quaternion SLERP
         when no violation is detected.
         """
+        assert self.acs_config is not None, "ACS config must be set to predict slew"
+        assert self.constraint is not None, "Constraint must be set to predict slew"
+        ephem = self.ephem
+        assert ephem is not None, "Ephemeris must be set to predict slew"
+
         # Determine which constraint to use: ACS slew_constraint or spacecraft constraint
         slew_constraint = (
             self.acs_config.slew_constraint
@@ -262,12 +293,12 @@ class Slew(BaseModel):
                 return False
             # Round time to nearest ephemeris step to ensure it exists in ephemeris
             # rust-ephem's in_constraint requires exact timestamp matches
-            step_size: float = getattr(self.ephem, "step_size", 60)
+            step_size: float = getattr(ephem, "step_size", 60)
             rounded_time = round(time / step_size) * step_size
             dt = dtutcfromtimestamp(rounded_time)
             return bool(
                 slew_constraint.in_constraint(
-                    ephemeris=self.ephem,
+                    ephemeris=ephem,
                     target_ra=ra,
                     target_dec=dec,
                     time=dt,

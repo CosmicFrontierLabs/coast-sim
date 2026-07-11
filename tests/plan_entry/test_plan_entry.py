@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
 from conops import PlanEntry
 from conops.common.enums import ObsType
@@ -67,9 +68,13 @@ class TestPlanEntryInit:
             PlanEntry.from_config(config=None)
 
     def test_init_with_constraint_missing_ephem(self, mock_config):
-        """Test that initialization with constraint missing ephem raises AssertionError."""
+        """Test that initialization with constraint missing ephem raises ValidationError.
+
+        The ephem assertion now runs inside a model_validator, so pydantic wraps
+        the AssertionError as a ValidationError rather than letting it propagate.
+        """
         mock_config.constraint.ephem = None
-        with pytest.raises(AssertionError, match="Ephemeris must be set"):
+        with pytest.raises(ValidationError, match="Ephemeris must be set"):
             PlanEntry.from_config(config=mock_config)
 
 

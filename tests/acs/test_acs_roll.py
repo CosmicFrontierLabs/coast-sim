@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import rust_ephem
 
-from conops import ACS, ACSMode, AttitudeConstraintScope, Constraint
+from conops import ACS, ACSMode, AttitudeConstraintScope, Constraint, MissionConfig
 from conops.config.solar_panel import SolarPanel, SolarPanelSet
 
 
@@ -63,6 +63,14 @@ def mock_constraint_roll(mock_ephem_roll):
 def mock_config_roll(mock_ephem_roll, mock_constraint_roll, mock_spacecraft_bus):
     """Create a mock config for roll testing."""
     config = Mock()
+    # Satisfies isinstance checks (e.g. Slew's pydantic "config" field) without
+    # the attribute-restriction that Mock(spec=...) would impose.
+    config.__class__ = MissionConfig
+    # MissionConfig's init_fault_management_defaults model_validator re-runs
+    # whenever this config is embedded as a nested pydantic field elsewhere
+    # (e.g. on Slew.config); None short-circuits it via the validator's own
+    # early-return guard.
+    config.fault_management = None
     config.constraint = mock_constraint_roll
     config.ground_stations = Mock()
 
@@ -153,6 +161,8 @@ class TestACSRollCalculation:
         constraint1.in_eclipse = Mock(return_value=False)
 
         config1 = Mock()
+        config1.__class__ = MissionConfig
+        config1.fault_management = None
         config1.constraint = constraint1
         config1.ground_stations = Mock()
         panel1 = SolarPanel(
@@ -184,6 +194,8 @@ class TestACSRollCalculation:
         constraint2.in_eclipse = Mock(return_value=False)
 
         config2 = Mock()
+        config2.__class__ = MissionConfig
+        config2.fault_management = None
         config2.constraint = constraint2
         config2.ground_stations = Mock()
         panel2 = SolarPanel(
@@ -340,6 +352,8 @@ class TestACSRollEdgeCases:
         constraint.in_eclipse = Mock(return_value=False)
 
         config = Mock()
+        config.__class__ = MissionConfig
+        config.fault_management = None
         config.constraint = constraint
         config.ground_stations = Mock()
         panel = SolarPanel(

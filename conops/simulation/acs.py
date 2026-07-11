@@ -90,7 +90,7 @@ class ACS:
         # last slew to execute before the current DITL), so didn't
         # happen in our simulation, but defines a realistic boundary
         # condition for our simulation.
-        self.last_slew = Slew.from_config(config)
+        self.last_slew = Slew(config=self.config)
         self.last_slew.endra = self.ra
         self.last_slew.enddec = self.dec
 
@@ -399,7 +399,7 @@ class ACS:
         commands during battery charging operations.
         """
         # Create slew object
-        slew = Slew.from_config(self.config)
+        slew = Slew(config=self.config)
         slew.ephem = self.ephem
         slew.slewrequest = utime
         slew.endra = ra

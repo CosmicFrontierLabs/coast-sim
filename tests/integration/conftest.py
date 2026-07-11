@@ -8,7 +8,13 @@ import pytest
 import rust_ephem
 from astropy.time import Time  # type: ignore[import-untyped]
 
-from conops import AttitudeConstraintScope, Constraint, SolarPanel, SolarPanelSet
+from conops import (
+    AttitudeConstraintScope,
+    Constraint,
+    MissionConfig,
+    SolarPanel,
+    SolarPanelSet,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -103,10 +109,28 @@ def test_config_with_panels(
 
     # Create config
     config = Mock()
+    # Satisfies isinstance checks (e.g. Slew's pydantic "config" field) without
+    # the attribute-restriction that Mock(spec=...) would impose.
+    config.__class__ = MissionConfig
+    # MissionConfig's init_fault_management_defaults model_validator re-runs
+    # whenever this config is embedded as a nested pydantic field elsewhere
+    # (e.g. on Slew.config) and iterates fault_management.thresholds, while
+    # ACS calls fault_management.events.append(...) directly — so
+    # fault_management must be a populated mock, not None.
+    config.fault_management = Mock()
+    config.fault_management.check = Mock()
+    config.fault_management.safe_mode_requested = False
+    config.fault_management.events = []
+    config.fault_management.thresholds = []
     config.constraint = constraint
     config.ground_stations = Mock()
     config.solar_panel = panel_set
     config.spacecraft_bus = mock_spacecraft_bus
+    config.battery = Mock()
+    config.battery.max_depth_of_discharge = 0.3
+    config.recorder = Mock()
+    config.recorder.yellow_threshold = 0.7
+    config.recorder.red_threshold = 0.9
     config.attitude_constraint_scopes_for_mode = Mock(
         return_value=[
             AttitudeConstraintScope.HARDWARE_SAFETY,

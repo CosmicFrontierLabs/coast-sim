@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import rust_ephem
 
-from conops import AttitudeControlSystem, Constraint, Slew
+from conops import AttitudeControlSystem, Constraint, MissionConfig, Slew
 
 
 @pytest.fixture
@@ -37,6 +37,14 @@ def acs_config():
 @pytest.fixture
 def mock_config(constraint, acs_config):
     config = Mock()
+    # Satisfies isinstance checks (e.g. Slew's pydantic "config" field) without
+    # the attribute-restriction that Mock(spec=...) would impose.
+    config.__class__ = MissionConfig
+    # MissionConfig's init_fault_management_defaults model_validator re-runs
+    # whenever this config is embedded as a nested pydantic field elsewhere
+    # (e.g. on Slew.config) and iterates fault_management.thresholds; None
+    # short-circuits it via the validator's own early-return guard.
+    config.fault_management = None
     config.constraint = constraint
     config.spacecraft_bus = Mock()
     config.spacecraft_bus.attitude_control = acs_config
