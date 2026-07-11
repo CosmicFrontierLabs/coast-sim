@@ -1694,7 +1694,7 @@ class QueueDITL(DITLMixin, DITLStats):
             if last_entry.obstype != ObsType.GSP and last_entry.end > reserved_begin:
                 self._close_last_plan_entry(reserved_begin)
 
-        entry = PlanEntry.from_config(config=self.config)
+        entry = PlanEntry(config=self.config)
         entry.name = f"{station}_PASS"
         entry.ra = gspass.gsstartra
         entry.dec = gspass.gsstartdec

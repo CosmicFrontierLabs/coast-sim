@@ -98,21 +98,23 @@ class Slew(BaseModel):
         utime: float,
     ) -> "Slew":
         """Create a zero-duration IDLE hold at the given attitude."""
-        hold = cls.from_config(config)
-        hold.slewrequest = utime
-        hold.slewstart = utime
-        hold.slewend = utime
-        hold.slewtime = 0.0
-        hold.slewdist = 0.0
-        hold.startra = ra
-        hold.startdec = dec
-        hold.startroll = roll
-        hold.endra = ra
-        hold.enddec = dec
-        hold.endroll = roll
-        hold.obstype = ObsType.IDLE
-        hold.obsid = 0
-        hold.at = None
+        hold = cls(
+            config=config,
+            slewrequest=utime,
+            slewstart=utime,
+            slewend=utime,
+            slewtime=0.0,
+            slewdist=0.0,
+            startra=ra,
+            startdec=dec,
+            startroll=roll,
+            endra=ra,
+            enddec=dec,
+            endroll=roll,
+            obstype=ObsType.IDLE,
+            obsid=0,
+            at=None,
+        )
         return hold
 
     def __str__(self) -> str:

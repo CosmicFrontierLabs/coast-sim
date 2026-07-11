@@ -171,7 +171,7 @@ class DumbScheduler:
             # Create and populate the plan entry
             assert selected_target is not None
             assert selected_target.exptime is not None
-            ppt = PlanEntry.from_config(config=self.config)
+            ppt = PlanEntry(config=self.config)
 
             ppt.ephem = self.ephem
             # keep entry angles in units that other code expects (note: original used target.ra)
