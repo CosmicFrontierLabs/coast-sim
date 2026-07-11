@@ -118,4 +118,4 @@ def mock_config(mock_constraint, mock_acs):
 @pytest.fixture
 def plan_entry(mock_config):
     """Fixture for PlanEntry with mocks."""
-    return PlanEntry.from_config(config=mock_config)
+    return PlanEntry(config=mock_config)

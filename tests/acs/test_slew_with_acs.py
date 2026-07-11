@@ -26,7 +26,7 @@ def test_slew_uses_acs_config() -> None:
     config = MissionConfig(
         name="Test", constraint=constraint, spacecraft_bus=spacecraft_bus
     )
-    s = Slew.from_config(config)
+    s = Slew(config=config)
     s.startra = 0
     s.startdec = 0
     s.endra = 90
@@ -43,7 +43,7 @@ def test_slew_path_and_secs_lengths() -> None:
     config = MissionConfig(
         name="Test", constraint=constraint, spacecraft_bus=spacecraft_bus
     )
-    s = Slew.from_config(config)
+    s = Slew(config=config)
     s.startra = 10
     s.startdec = 5
     s.endra = 20

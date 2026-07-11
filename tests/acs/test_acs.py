@@ -176,7 +176,7 @@ class TestACSStateManagement:
         self, acs, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """IDLE telemetry should not keep holding a constrained science attitude."""
-        science_slew = Slew.from_config(acs.config)
+        science_slew = Slew(config=acs.config)
         science_slew.obstype = ObsType.PPT
         science_slew.obsid = 42
         science_slew.slewstart = 1.0
@@ -207,7 +207,7 @@ class TestACSStateManagement:
         self, acs, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """IDLE enforcement should use configured hardware-safety scopes."""
-        science_slew = Slew.from_config(acs.config)
+        science_slew = Slew(config=acs.config)
         science_slew.obstype = ObsType.PPT
         science_slew.obsid = 42
         science_slew.slewstart = 1.0
@@ -254,7 +254,7 @@ class TestACSStateManagement:
 
     def test_constraint_logging_uses_idle_scopes(self, acs) -> None:
         """Legacy CONSTRAINT telemetry should respect the current ACS mode scopes."""
-        science_slew = Slew.from_config(acs.config)
+        science_slew = Slew(config=acs.config)
         science_slew.obstype = ObsType.PPT
         science_slew.obsid = 42
         science_slew.at = Mock(ra=10.0, dec=20.0, roll=0.0)
@@ -283,7 +283,7 @@ class TestACSStateManagement:
 
     def test_constraint_logging_reports_power_generation_scope(self, acs) -> None:
         """Telemetry should still report power-generation scoped violations."""
-        science_slew = Slew.from_config(acs.config)
+        science_slew = Slew(config=acs.config)
         science_slew.obstype = ObsType.PPT
         science_slew.obsid = 42
         science_slew.at = Mock(ra=10.0, dec=20.0, roll=0.0)
@@ -317,7 +317,7 @@ class TestACSStateManagement:
 
     def test_constraint_logging_reports_all_scoped_violations(self, acs) -> None:
         """Telemetry should report every violation within the active scopes."""
-        science_slew = Slew.from_config(acs.config)
+        science_slew = Slew(config=acs.config)
         science_slew.obstype = ObsType.PPT
         science_slew.obsid = 42
         science_slew.at = Mock(ra=10.0, dec=20.0, roll=0.0)

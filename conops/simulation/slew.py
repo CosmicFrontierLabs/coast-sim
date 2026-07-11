@@ -75,11 +75,6 @@ class Slew(BaseModel):
         assert self.acs_config is not None, "ACS config must be set for Slew class"
         return self
 
-    @classmethod
-    def from_config(cls, config: MissionConfig) -> "Slew":
-        """Build a Slew from a mission config, deriving ephem/constraint/acs_config."""
-        return cls(config=config)
-
     def __eq__(self, other: object) -> bool:
         """Compare by identity, matching plain-object semantics (Slew instances are used as dict keys)."""
         return self is other

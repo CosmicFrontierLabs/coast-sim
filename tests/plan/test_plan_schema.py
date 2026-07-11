@@ -477,7 +477,7 @@ def _make_from_config_entry() -> PlanEntry:
     config.spacecraft_bus.attitude_control = Mock()
     config.spacecraft_bus.attitude_control.__class__ = AttitudeControlSystem
 
-    return PlanEntry.from_config(config=config)
+    return PlanEntry(config=config)
 
 
 class TestExposureViaPlan:

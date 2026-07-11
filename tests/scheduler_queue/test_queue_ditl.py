@@ -399,7 +399,7 @@ class TestDetermineMode:
         mode = acs.get_mode(1000.0)
         assert mode == ACSMode.IDLE
 
-        science_slew = Slew.from_config(mock_config)
+        science_slew = Slew(config=mock_config)
         science_slew.obstype = ObsType.PPT
         science_slew.obsid = 42
         science_slew.slewstart = 0.0
@@ -887,7 +887,7 @@ class TestFetchNewPPT:
         queue_ditl.plan.append(entry)
         queue_ditl.ppt = target
 
-        slew = Slew.from_config(queue_ditl.config)
+        slew = Slew(config=queue_ditl.config)
         slew.obstype = ObsType.PPT
         slew.obsid = target.obsid
         slew.at = target
@@ -930,7 +930,7 @@ class TestFetchNewPPT:
         queue_ditl.plan.append(target.model_copy())
         queue_ditl.ppt = target
 
-        slew = Slew.from_config(queue_ditl.config)
+        slew = Slew(config=queue_ditl.config)
         slew.obstype = ObsType.PPT
         slew.obsid = target.obsid
         slew.at = target
@@ -969,7 +969,7 @@ class TestFetchNewPPT:
             queue_ditl.plan.append(entry)
             entries.append(entry)
 
-            slew = Slew.from_config(queue_ditl.config)
+            slew = Slew(config=queue_ditl.config)
             slew.obstype = ObsType.PPT
             slew.obsid = obsid
             slew.slewstart = 1000.0
@@ -1012,7 +1012,7 @@ class TestFetchNewPPT:
         entry.slewdist = 10.0
         queue_ditl.plan.append(entry)
 
-        slew = Slew.from_config(queue_ditl.config)
+        slew = Slew(config=queue_ditl.config)
         slew.obstype = ObsType.PPT
         slew.obsid = entry.obsid
         slew.slewstart = 5000.0
@@ -1052,7 +1052,7 @@ class TestFetchNewPPT:
         queue_ditl.plan.append(entry)
 
         # Actual executed slew: started one step later and recomputed.
-        slew = Slew.from_config(queue_ditl.config)
+        slew = Slew(config=queue_ditl.config)
         slew.obstype = ObsType.PPT
         slew.obsid = entry.obsid
         slew.slewstart = 1060.0
@@ -1090,7 +1090,7 @@ class TestFetchNewPPT:
 
         # Retry slew for the same obsid, scheduled at utime == entry.end
         # (the tightest reuse that the invariant forbids landing inside the window).
-        slew = Slew.from_config(queue_ditl.config)
+        slew = Slew(config=queue_ditl.config)
         slew.obstype = ObsType.PPT
         slew.obsid = entry.obsid
         slew.slewstart = 1300.0  # exactly at entry_end — not inside [begin, end)
@@ -2155,7 +2155,7 @@ class TestPlanExecutionValidation:
 
         real_acs = ACS(config=queue_ditl.config)
         queue_ditl.acs = real_acs
-        science_slew = Slew.from_config(queue_ditl.config)
+        science_slew = Slew(config=queue_ditl.config)
         science_slew.obstype = ObsType.PPT
         science_slew.obsid = entry.obsid
         science_slew.slewstart = 1000.0
@@ -4730,7 +4730,7 @@ class TestSameTickACSCommands:
             command_type=ACSCommandType.SLEW_TO_TARGET,
             execution_time=utime,
         )
-        active_slew = Slew.from_config(queue_ditl.config)
+        active_slew = Slew(config=queue_ditl.config)
         active_slew.obstype = ObsType.PPT
         active_slew.obsid = 1002
 
@@ -4793,7 +4793,7 @@ class TestSameTickACSCommands:
         science.roll = 24.0
         science.begin = utime
         science.end = utime + 600.0
-        science_slew = Slew.from_config(queue_ditl.config)
+        science_slew = Slew(config=queue_ditl.config)
         science_slew.obstype = ObsType.PPT
         science_slew.obsid = science.obsid
 
@@ -4874,7 +4874,7 @@ class TestSameTickACSCommands:
             execution_time=utime,
         )
         queue_ditl.acs.command_queue = [due_command]
-        charge_slew = Slew.from_config(queue_ditl.config)
+        charge_slew = Slew(config=queue_ditl.config)
         charge_slew.obstype = ObsType.CHARGE
         charge_slew.obsid = 999000
 

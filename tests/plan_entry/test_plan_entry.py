@@ -43,7 +43,7 @@ class MockTarget:
 class TestPlanEntryInit:
     def test_init_with_constraint_and_acs(self, mock_config):
         """Test PlanEntry initialization with valid constraint and ACS."""
-        pe = PlanEntry.from_config(config=mock_config)
+        pe = PlanEntry(config=mock_config)
         assert pe.constraint is mock_config.constraint
         assert pe.acs_config is mock_config.spacecraft_bus.attitude_control
         assert pe.ephem is mock_config.constraint.ephem
@@ -62,10 +62,13 @@ class TestPlanEntryInit:
         assert pe.slewpath == ([], [])
         assert pe.slewdist == 0.0
 
-    def test_init_without_config_raises_assertion(self):
-        """Test that initialization without constraint raises AssertionError."""
-        with pytest.raises(ValueError, match="Config must be provided to PlanEntry"):
-            PlanEntry.from_config(config=None)
+    def test_init_without_config_leaves_derived_fields_unset(self):
+        """A bare PlanEntry (no config) is valid, used for deserialized/schema-only entries."""
+        pe = PlanEntry(config=None)
+        assert pe.config is None
+        assert pe.constraint is None
+        assert pe.ephem is None
+        assert pe.acs_config is None
 
     def test_init_with_constraint_missing_ephem(self, mock_config):
         """Test that initialization with constraint missing ephem raises ValidationError.
@@ -75,7 +78,7 @@ class TestPlanEntryInit:
         """
         mock_config.constraint.ephem = None
         with pytest.raises(ValidationError, match="Ephemeris must be set"):
-            PlanEntry.from_config(config=mock_config)
+            PlanEntry(config=mock_config)
 
 
 class TestPlanEntryCopy:
