@@ -211,10 +211,11 @@ class DITLStats:
                 print(f"  Peak: {max(self.recorder_fill_fraction) * 100:.1f}%")
                 print(f"  Average: {np.mean(self.recorder_fill_fraction) * 100:.1f}%")
 
+            total_generated = (
+                self.data_generated_gb[-1] if self.data_generated_gb else 0.0
+            )
+
             if self.data_generated_gb:
-                total_generated = (
-                    self.data_generated_gb[-1] if self.data_generated_gb else 0
-                )
                 print(f"\nData Generated: {total_generated:.2f} Gb")
 
                 # Calculate generation rate
