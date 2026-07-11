@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import datetime
-from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 import plotly.graph_objects as go
 import rust_ephem
+from pydantic import BaseModel, ConfigDict
 
 from ...config.constants import EARTH_OCCULT, MOON_OCCULT, PANEL_CONSTRAINT, SUN_OCCULT
 from ._helpers import (
@@ -24,9 +24,10 @@ from ._helpers import (
 ConstraintSpec = tuple[int, str, str, str, float]
 
 
-@dataclass
-class ConstraintPlotConfig:
+class ConstraintPlotConfig(BaseModel):
     """All constraint-plotting configuration resolved from a DITL object."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
     body_angle_cfg: dict[str, tuple[float, float | None]]
     st_boresight_offsets: list[float]
