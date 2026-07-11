@@ -119,10 +119,9 @@ ACS Mode Filtering:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 from rust_ephem.constraints import ConstraintConfig
 
 from ..common import ACSMode, normalize_acs_mode
@@ -134,8 +133,7 @@ if TYPE_CHECKING:
     from ..simulation import ACS
 
 
-@dataclass
-class FaultEvent:
+class FaultEvent(BaseModel):
     """Records a single fault management event.
 
     Attributes:
@@ -179,8 +177,7 @@ class FaultEvent:
         return f"{base} | " + ", ".join(parts)
 
 
-@dataclass
-class FaultState:
+class FaultState(BaseModel):
     """Tracks constraint violations and threshold state durations.
 
     Attributes:

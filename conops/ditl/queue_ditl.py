@@ -1,11 +1,10 @@
 from bisect import bisect_left
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
 import rust_ephem
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from ..common import (
     ACSMode,
@@ -65,9 +64,10 @@ class PlanExecutionMismatchError(RuntimeError):
     """Raised when an exported plan entry does not match executed ACS telemetry."""
 
 
-@dataclass(frozen=True)
-class PlanExecutionMismatch:
+class PlanExecutionMismatch(BaseModel):
     """A single mismatch between an exported plan entry and ACS telemetry."""
+
+    model_config = ConfigDict(frozen=True)
 
     utime: float
     message: str
@@ -78,9 +78,10 @@ class PlanExecutionMismatch:
         return self.message
 
 
-@dataclass(frozen=True)
-class _ScienceDeadlineInputs:
+class _ScienceDeadlineInputs(BaseModel):
     """Target-independent deadline components for one scheduler fetch."""
+
+    model_config = ConfigDict(frozen=True)
 
     simulation_end: float
     charge_deadline: float | None

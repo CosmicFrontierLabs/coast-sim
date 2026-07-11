@@ -1,10 +1,10 @@
 import hashlib
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import Any, cast
 
 import numpy as np
 import rust_ephem
+from pydantic import BaseModel, ConfigDict
 
 from ..common import unixtime2date
 from ..config import AttitudeControlSystem, Constraint, MissionConfig
@@ -12,9 +12,10 @@ from ..ditl.ditl_log import DITLLog
 from . import Pointing
 
 
-@dataclass(frozen=True)
-class TargetSlewEstimate:
+class TargetSlewEstimate(BaseModel):
     """Estimated slew cost used for target selection."""
+
+    model_config = ConfigDict(frozen=True)
 
     slewtime: float
     slewdist: float
