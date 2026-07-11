@@ -1226,7 +1226,8 @@ class TestFetchNewPPT:
     ) -> None:
         """Recharge-alert state alone does not block the next target."""
         utime = 1000.0
-        science = Pointing.from_config(config=queue_ditl.config)
+        science = Pointing(config=queue_ditl.config)
+        science.exptime = 1000
         science.obstype = ObsType.AT
         science.obsid = 1001
         science.ra = 10.0
@@ -1272,7 +1273,8 @@ class TestFetchNewPPT:
     ) -> None:
         """Do not start another target below the battery operating floor."""
         utime = 1000.0
-        science = Pointing.from_config(config=queue_ditl.config)
+        science = Pointing(config=queue_ditl.config)
+        science.exptime = 1000
         science.obstype = ObsType.AT
         science.obsid = 1001
         science.ra = 10.0
@@ -3638,7 +3640,9 @@ class TestCalcMethod:
         science_entry.end = 1480.0  # already closed at its real end
         queue_ditl.plan = [science_entry]
 
-        charging_ppt = Pointing.from_config(config=queue_ditl.config)
+        charging_ppt = Pointing(config=queue_ditl.config)
+
+        charging_ppt.exptime = 1000
         charging_ppt.obsid = 999000
         charging_ppt.begin = 1480.0
         charging_ppt.end = 1480.0 + 86400.0
@@ -4422,7 +4426,8 @@ class TestCheckAndManagePasses:
         """Reserving a pass should end active science and not re-add it later."""
         utime = 1000.0
         ra, dec = 10.0, 20.0
-        ppt = Pointing.from_config(config=queue_ditl.config)
+        ppt = Pointing(config=queue_ditl.config)
+        ppt.exptime = 1000
         ppt.name = "SCIENCE"
         ppt.obstype = ObsType.AT
         ppt.begin = 900.0
@@ -4768,7 +4773,8 @@ class TestSameTickACSCommands:
     def test_charge_handoff_has_no_plan_gap(self, queue_ditl: QueueDITL) -> None:
         """Charge termination and the next science slew share the same plan boundary."""
         utime = queue_ditl.ephem.timestamp[0].timestamp()
-        charge = Pointing.from_config(config=queue_ditl.config)
+        charge = Pointing(config=queue_ditl.config)
+        charge.exptime = 1000
         charge.obstype = ObsType.CHARGE
         charge.name = "EMERGENCY_CHARGE_999001"
         charge.obsid = 999001
@@ -5167,15 +5173,16 @@ class TestTOOFunctionality:
         # Set current PPT with higher merit
         from conops import Pointing
 
-        queue_ditl.ppt = Pointing.from_config(
+        queue_ditl.ppt = Pointing(
             config=queue_ditl.config,
             ra=0.0,
             dec=0.0,
             obsid=1,
             name="Current obs",
+            fom=1000.0,  # Higher merit
             merit=1000.0,  # Higher merit
-            exptime=1800,
         )
+        queue_ditl.ppt.exptime = 1800
 
         result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
         assert result is False

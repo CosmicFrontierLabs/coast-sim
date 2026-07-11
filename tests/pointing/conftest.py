@@ -87,7 +87,7 @@ def mock_config(constraint):
 
 @pytest.fixture
 def pointing(mock_config):
-    return Pointing.from_config(config=mock_config, exptime=None)
+    return Pointing(config=mock_config)
 
 
 @pytest.fixture

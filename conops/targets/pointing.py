@@ -5,7 +5,6 @@ from pydantic import Field, PrivateAttr, computed_field
 
 from ..common import unixtime2date
 from ..common.enums import ObsType
-from ..config import MissionConfig
 from .plan_entry import PlanEntry
 
 
@@ -24,41 +23,6 @@ class Pointing(PlanEntry):
     obstype: ObsType = ObsType.AT
     roll: float = 0.0
     _done: bool = PrivateAttr(default=False)
-
-    @classmethod
-    def from_config(  # type: ignore[override]
-        cls,
-        config: MissionConfig | None = None,
-        ra: float = 0.0,
-        dec: float = 0.0,
-        roll: float = 0.0,
-        obsid: int = 0,
-        name: str = "FakeTarget",
-        merit: float = 100.0,
-        exptime: int = 1000,
-        ss_min: int = 300,
-        ss_max: int = 86400,
-    ) -> "Pointing":
-        """Build a Pointing from a mission config, deriving constraint/acs_config/ephem."""
-        if config is None:
-            raise ValueError("Config must be provided to Pointing")
-
-        entry = cls(
-            config=config,
-            ra=ra,
-            dec=dec,
-            roll=roll,
-            obsid=obsid,
-            name=name,
-            fom=merit,
-            merit=merit,
-            ss_min=ss_min,
-            ss_max=ss_max,
-        )
-        entry._exptime = exptime
-        entry._exporig = exptime
-        entry._done = False
-        return entry
 
     def in_sun(self, utime: float) -> bool:
         """Is this target in Sun constraint?"""

@@ -544,15 +544,15 @@ class EmergencyCharging:
         """
         from ..targets import Pointing
 
-        charging_ppt = Pointing.from_config(
+        charging_ppt = Pointing(
             config=self.config,
             ra=ra,
             dec=dec,
             roll=roll,
             name=f"EMERGENCY_CHARGE_{self.next_charging_obsid}",
             obsid=self.next_charging_obsid,
-            exptime=86400,
         )
+        charging_ppt.exptime = 86400
         charging_ppt.obstype = ObsType.CHARGE
         self.next_charging_obsid += 1
         charging_ppt.begin = int(utime)

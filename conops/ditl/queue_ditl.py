@@ -352,15 +352,16 @@ class QueueDITL(DITLMixin, DITLStats):
                 continue
 
             # Create a temporary Pointing to check visibility
-            too_pointing = Pointing.from_config(
+            too_pointing = Pointing(
                 config=self.config,
                 ra=too.ra,
                 dec=too.dec,
                 obsid=too.obsid,
                 name=too.name,
+                fom=too.merit,
                 merit=too.merit,
-                exptime=too.exptime,
             )
+            too_pointing.exptime = too.exptime
             too_pointing.visibility()
 
             # Check if TOO is currently visible

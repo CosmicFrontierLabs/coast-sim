@@ -460,13 +460,14 @@ class ACS:
         """Create and configure a target observation request for visibility checking."""
         from ..targets import Pointing
 
-        target = Pointing.from_config(
+        target = Pointing(
             config=self.config,
             ra=slew.endra,
             dec=slew.enddec,
             roll=roll if roll is not None else slew.endroll,
             obsid=slew.obsid,
         )
+        target.exptime = 1000
         target.isat = slew.obstype != ObsType.PPT
 
         target.visibility()

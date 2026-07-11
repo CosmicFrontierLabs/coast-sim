@@ -98,8 +98,8 @@ class PlanEntry(BaseModel):
     slewdist: float = 0.0
     ss_min: float = 1000
     ss_max: float = 1e6
-    _exptime: int = PrivateAttr()
-    _exporig: int = PrivateAttr()
+    _exptime: int | None = PrivateAttr(default=None)
+    _exporig: int | None = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def _derive_from_config(self) -> PlanEntry:
@@ -125,8 +125,7 @@ class PlanEntry(BaseModel):
         if config is None:
             raise ValueError("Config must be provided to PlanEntry")
         entry = cls(config=config)
-        entry._exptime = exptime
-        entry._exporig = exptime
+        entry.exptime = exptime
         return entry
 
     @field_validator("begin", "end", "contact_begin", "contact_end", mode="before")
@@ -147,7 +146,7 @@ class PlanEntry(BaseModel):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
-    def exptime(self) -> int:
+    def exptime(self) -> int | None:
         return self._exptime
 
     @exptime.setter
@@ -158,7 +157,7 @@ class PlanEntry(BaseModel):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
-    def exporig(self) -> int:
+    def exporig(self) -> int | None:
         return self._exporig
 
     def __str__(self) -> str:

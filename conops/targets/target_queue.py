@@ -97,17 +97,18 @@ class TargetQueue:
             ss_max: Maximum snapshot size in seconds
         """
 
-        pointing = Pointing.from_config(
+        pointing = Pointing(
             config=self.config,
             ra=ra,
             dec=dec,
             obsid=obsid,
             name=name,
+            fom=merit,
             merit=merit,
-            exptime=exptime,
             ss_min=ss_min,
             ss_max=ss_max,
         )
+        pointing.exptime = exptime
         pointing.visibility()
         self.targets.append(pointing)
 

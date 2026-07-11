@@ -499,15 +499,16 @@ def low_merit_current_ppt(queue_ditl: QueueDITL) -> Any:
     """Create a current pointing object with low merit for TOO interrupt tests."""
     from conops import Pointing
 
-    ppt = Pointing.from_config(
+    ppt = Pointing(
         config=queue_ditl.config,
         ra=0.0,
         dec=0.0,
         obsid=1,
         name="Current obs",
+        fom=100.0,  # Lower merit than typical TOO
         merit=100.0,  # Lower merit than typical TOO
-        exptime=1800,
     )
+    ppt.exptime = 1800
     queue_ditl.ppt = ppt
     return ppt
 
