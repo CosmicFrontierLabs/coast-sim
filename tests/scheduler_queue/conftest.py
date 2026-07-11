@@ -71,12 +71,6 @@ def mock_config() -> Mock:
     """Create a mock config with all required subsystems."""
     config = Mock()
     config.__class__ = MissionConfig
-    # MissionConfig's init_fault_management_defaults model_validator re-runs
-    # whenever this config is embedded as a nested field elsewhere (e.g. on
-    # PlanEntry.config) and needs battery/recorder threshold fields this
-    # fixture doesn't populate; None short-circuits it via the validator's
-    # own early-return guard.
-    config.fault_management = None
 
     # Mock constraint
     config.constraint = Mock()
@@ -112,12 +106,15 @@ def mock_config() -> Mock:
     config.battery.battery_alert = False
     config.battery.below_minimum_charge_level = False
     config.battery.charge_state = 0  # NOT_CHARGING
+    config.battery.max_depth_of_discharge = 0.3
     config.battery.drain = Mock()
     config.battery.charge = Mock()
 
     # Mock recorder
     config.recorder = Mock()
     config.recorder.current_volume_gb = 10.0
+    config.recorder.yellow_threshold = 0.7
+    config.recorder.red_threshold = 0.9
     config.recorder.get_fill_fraction = Mock(return_value=0.3)
     config.recorder.get_alert_level = Mock(return_value=0)
     config.recorder.add_data = Mock()
@@ -126,6 +123,10 @@ def mock_config() -> Mock:
     # Mock spacecraft bus
     config.spacecraft_bus = Mock()
     config.spacecraft_bus.power = Mock(return_value=50.0)
+    config.spacecraft_bus.star_trackers = Mock()
+    config.spacecraft_bus.star_trackers.num_trackers = Mock(return_value=0)
+    config.spacecraft_bus.radiators = Mock()
+    config.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
     config.spacecraft_bus.attitude_control = Mock()
     config.spacecraft_bus.attitude_control.__class__ = AttitudeControlSystem
     config.spacecraft_bus.attitude_control.predict_slew = Mock(
@@ -158,6 +159,10 @@ def mock_config() -> Mock:
     config.fault_management.check = Mock()
     config.fault_management.safe_mode_requested = False
     config.fault_management.events = []
+    # MissionConfig's init_fault_management_defaults model_validator re-runs
+    # whenever this config is embedded as a nested pydantic field elsewhere
+    # (e.g. on PlanEntry.config) and iterates fault_management.thresholds.
+    config.fault_management.thresholds = []
 
     # Mock payload
     config.payload = Mock()
