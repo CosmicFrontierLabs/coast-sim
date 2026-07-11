@@ -16,6 +16,8 @@ from conops.targets import (
     AttitudeRotationSchema,
     AttitudeSampleSchema,
     AttitudeTimeseriesSchema,
+    OrbitStateSampleSchema,
+    OrbitStateTimeseriesSchema,
     PlanEntrySchema,
     PlanSchema,
     TargetAttitudeSchema,
@@ -409,6 +411,40 @@ class TestPlanSchema:
         assert attitude_raw["plan_end"] == raw["end"]
         assert attitude_raw["num_samples"] == 1
         assert attitude_raw["samples"][0]["mode"] == "SCIENCE"
+
+    def test_save_writes_linked_orbit_state_timeseries(self, tmp_path):
+        schema = _make_schema(1)
+        schema.orbit_state_timeseries = OrbitStateTimeseriesSchema(
+            samples=[
+                OrbitStateSampleSchema(
+                    utime=1_000_000.0,
+                    timestamp="1970-01-12T13:46:40+00:00",
+                    position_km=(7000.0, 0.0, 0.0),
+                    velocity_km_s=(0.0, 7.5, 0.0),
+                )
+            ]
+        )
+        dest = tmp_path / "plan.json"
+
+        schema.save(dest)
+
+        raw = json.loads(dest.read_text())
+        assert raw["orbit_state_timeseries_file"] == (
+            "plan_orbit_state_timeseries.json"
+        )
+        assert "orbit_state_timeseries" not in raw
+
+        orbit_path = tmp_path / raw["orbit_state_timeseries_file"]
+        orbit_raw = json.loads(orbit_path.read_text())
+        assert orbit_raw["plan_file"] == "plan.json"
+        assert orbit_raw["plan_version"] == raw["version"]
+        assert orbit_raw["plan_start"] == raw["start"]
+        assert orbit_raw["plan_end"] == raw["end"]
+        assert orbit_raw["frame"] == "GCRS"
+        assert orbit_raw["position_unit"] == "km"
+        assert orbit_raw["velocity_unit"] == "km/s"
+        assert orbit_raw["num_samples"] == 1
+        assert orbit_raw["samples"][0]["position_km"] == [7000.0, 0.0, 0.0]
 
     def test_entry_fields_in_json(self, tmp_path):
         schema = _make_schema(1)

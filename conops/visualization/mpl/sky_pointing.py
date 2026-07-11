@@ -1342,7 +1342,8 @@ class SkyPointingController:
                 return None
             stacked = cast(npt.NDArray[np.bool_], np.vstack(masks))
             if kind == "hard":
-                return np.any(stacked, axis=0)
+                hard_mask: npt.NDArray[np.bool_] = np.any(stacked, axis=0)
+                return hard_mask
             # Soft: AtLeast violation semantics
             min_func = int(getattr(star_trackers, "min_functional_trackers", 1))
             required = max(0, len(trackers) - min_func + 1)

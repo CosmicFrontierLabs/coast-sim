@@ -7,7 +7,11 @@ from typing import TYPE_CHECKING, Any
 from .plan_entry import PlanEntry
 
 if TYPE_CHECKING:
-    from .plan_schema import AttitudeTimeseriesSchema, PlanSchema
+    from .plan_schema import (
+        AttitudeTimeseriesSchema,
+        OrbitStateTimeseriesSchema,
+        PlanSchema,
+    )
 
 
 class TargetList:
@@ -39,6 +43,7 @@ class Plan:
     def __init__(self) -> None:
         self.entries = list()
         self.attitude_timeseries: AttitudeTimeseriesSchema | None = None
+        self.orbit_state_timeseries: OrbitStateTimeseriesSchema | None = None
         self.metadata: dict[str, Any] = {}
 
     def __getitem__(self, number: int) -> PlanEntry:
