@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
+
+from pydantic import BaseModel, Field
 
 from .plan_entry import PlanEntry
 
@@ -14,18 +16,15 @@ if TYPE_CHECKING:
     )
 
 
-class TargetList:
+class TargetList(BaseModel):
     """List of potential targets for Spacecraft to observe"""
 
-    targets: list[PlanEntry]
-
-    def __init__(self) -> None:
-        self.targets = list()
+    targets: list[PlanEntry] = Field(default_factory=list)
 
     def __getitem__(self, number: int) -> PlanEntry:
         return self.targets[number]
 
-    def __iter__(self) -> Iterator[PlanEntry]:
+    def __iter__(self) -> Iterator[PlanEntry]:  # type: ignore[override]
         return iter(self.targets)
 
     def add_target(self, plan_entry: PlanEntry) -> None:
@@ -35,16 +34,13 @@ class TargetList:
         return len(self.targets)
 
 
-class Plan:
+class Plan(BaseModel):
     """Simple Plan class"""
 
-    entries: list[PlanEntry]
-
-    def __init__(self) -> None:
-        self.entries = list()
-        self.attitude_timeseries: AttitudeTimeseriesSchema | None = None
-        self.orbit_state_timeseries: OrbitStateTimeseriesSchema | None = None
-        self.metadata: dict[str, Any] = {}
+    entries: list[PlanEntry] = Field(default_factory=list)
+    attitude_timeseries: AttitudeTimeseriesSchema | None = None
+    orbit_state_timeseries: OrbitStateTimeseriesSchema | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
 
     def __getitem__(self, number: int) -> PlanEntry:
         return self.entries[number]
@@ -52,7 +48,7 @@ class Plan:
     def __len__(self) -> int:
         return len(self.entries)
 
-    def __iter__(self) -> Iterator[PlanEntry]:
+    def __iter__(self) -> Iterator[PlanEntry]:  # type: ignore[override]
         return iter(self.entries)
 
     def which_ppt(self, utime: float) -> PlanEntry | None:
