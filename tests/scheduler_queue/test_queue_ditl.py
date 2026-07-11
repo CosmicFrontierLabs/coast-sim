@@ -872,7 +872,7 @@ class TestFetchNewPPT:
     def test_sync_acs_slew_metadata_updates_exported_plan_entry(
         self, queue_ditl: QueueDITL
     ) -> None:
-        target = PlanEntry.from_config(config=queue_ditl.config)
+        target = PlanEntry(config=queue_ditl.config)
         target.obstype = ObsType.AT
         target.obsid = 1001
         target.ss_max = 3600.0
@@ -919,7 +919,7 @@ class TestFetchNewPPT:
         acs.roll = 25.0
         queue_ditl.acs = acs
 
-        target = PlanEntry.from_config(config=queue_ditl.config)
+        target = PlanEntry(config=queue_ditl.config)
         target.obstype = ObsType.AT
         target.obsid = 1001
         target.ss_max = 3600.0
@@ -958,7 +958,7 @@ class TestFetchNewPPT:
         entries = []
         slews = []
         for index, obsid in enumerate((1001, 1002)):
-            entry = PlanEntry.from_config(config=queue_ditl.config)
+            entry = PlanEntry(config=queue_ditl.config)
             entry.obstype = ObsType.AT
             entry.obsid = obsid
             entry.ss_max = 3600.0
@@ -1003,7 +1003,7 @@ class TestFetchNewPPT:
     def test_sync_slew_metadata_does_not_rewrite_closed_duplicate_obsid(
         self, queue_ditl: QueueDITL
     ) -> None:
-        entry = PlanEntry.from_config(config=queue_ditl.config)
+        entry = PlanEntry(config=queue_ditl.config)
         entry.obstype = ObsType.AT
         entry.obsid = 1001
         entry.begin = 1000.0
@@ -1040,7 +1040,7 @@ class TestFetchNewPPT:
         The entry must still be updated to the actual executed timing so the
         exported plan matches execution.
         """
-        entry = PlanEntry.from_config(config=queue_ditl.config)
+        entry = PlanEntry(config=queue_ditl.config)
         entry.obstype = ObsType.AT
         entry.obsid = 1001
         entry.ss_max = 3600.0
@@ -1079,7 +1079,7 @@ class TestFetchNewPPT:
         earliest a retry can start is slew_start == entry.end, which is excluded
         by the strict `< entry_end` bound in _entry_matches_science_slew.
         """
-        entry = PlanEntry.from_config(config=queue_ditl.config)
+        entry = PlanEntry(config=queue_ditl.config)
         entry.obstype = ObsType.AT
         entry.obsid = 1001
         entry.begin = 1000.0
@@ -2098,7 +2098,7 @@ class TestPlanExecutionValidation:
         queue_ditl.ephem.index = index
 
     def _science_entry(self, queue_ditl: QueueDITL) -> PlanEntry:
-        entry = PlanEntry.from_config(config=queue_ditl.config)
+        entry = PlanEntry(config=queue_ditl.config)
         entry.obstype = ObsType.AT
         entry.obsid = 42
         entry.ra = 10.0
@@ -2250,7 +2250,7 @@ class TestPlanExecutionValidation:
     def test_close_last_plan_entry_records_dropped_science_window(
         self, queue_ditl: QueueDITL
     ) -> None:
-        entry = PlanEntry.from_config(config=queue_ditl.config)
+        entry = PlanEntry(config=queue_ditl.config)
         entry.obstype = ObsType.AT
         entry.obsid = 42
         entry.begin = 1000.0
@@ -2309,7 +2309,7 @@ class TestPlanExecutionValidation:
     def test_validation_fails_for_default_pass_constraint_scopes(
         self, queue_ditl: QueueDITL
     ) -> None:
-        entry = PlanEntry.from_config(config=queue_ditl.config)
+        entry = PlanEntry(config=queue_ditl.config)
         entry.obstype = ObsType.GSP
         entry.obsid = 0xFFFF
         entry.station = "TRO"
@@ -2350,7 +2350,7 @@ class TestPlanExecutionValidation:
     def test_validation_uses_configured_constraint_scopes_for_pass(
         self, queue_ditl: QueueDITL
     ) -> None:
-        entry = PlanEntry.from_config(config=queue_ditl.config)
+        entry = PlanEntry(config=queue_ditl.config)
         entry.obstype = ObsType.GSP
         entry.obsid = 0xFFFF
         entry.station = "TRO"
@@ -2581,7 +2581,7 @@ class TestPlanExecutionValidation:
     def test_execution_coverage_uses_full_gsp_entry_window(
         self, queue_ditl: QueueDITL
     ) -> None:
-        entry = PlanEntry.from_config(config=queue_ditl.config)
+        entry = PlanEntry(config=queue_ditl.config)
         entry.obstype = ObsType.GSP
         entry.obsid = 0xFFFF
         entry.station = "TRO"
@@ -2678,7 +2678,7 @@ class TestPlanExecutionValidation:
     def test_validation_fails_for_contact_mode_mismatch(
         self, queue_ditl: QueueDITL
     ) -> None:
-        entry = PlanEntry.from_config(config=queue_ditl.config)
+        entry = PlanEntry(config=queue_ditl.config)
         entry.obstype = ObsType.GSP
         entry.obsid = 0xFFFF
         entry.station = "TRO"
@@ -2707,7 +2707,7 @@ class TestPlanExecutionValidation:
     def test_validation_fails_when_contact_profile_missing(
         self, queue_ditl: QueueDITL
     ) -> None:
-        entry = PlanEntry.from_config(config=queue_ditl.config)
+        entry = PlanEntry(config=queue_ditl.config)
         entry.obstype = ObsType.GSP
         entry.obsid = 0xFFFF
         entry.station = "TRO"
@@ -2730,7 +2730,7 @@ class TestPlanExecutionValidation:
     def test_validation_fails_for_contact_pointing_mismatch(
         self, queue_ditl: QueueDITL
     ) -> None:
-        entry = PlanEntry.from_config(config=queue_ditl.config)
+        entry = PlanEntry(config=queue_ditl.config)
         entry.obstype = ObsType.GSP
         entry.obsid = 0xFFFF
         entry.station = "TRO"
@@ -2795,7 +2795,7 @@ class TestCalcMethod:
         """
         from conops.targets import PlanEntry
 
-        entry = PlanEntry.from_config(config=queue_ditl.config)
+        entry = PlanEntry(config=queue_ditl.config)
         entry.obstype = ObsType.AT
         entry.obsid = 10214
         entry.begin = 1000.0
@@ -2815,7 +2815,7 @@ class TestCalcMethod:
         """A finalized entry may still be trimmed earlier (e.g. for a GS pass)."""
         from conops.targets import PlanEntry
 
-        entry = PlanEntry.from_config(config=queue_ditl.config)
+        entry = PlanEntry(config=queue_ditl.config)
         entry.obstype = ObsType.AT
         entry.obsid = 10214
         entry.begin = 1000.0
@@ -2832,7 +2832,7 @@ class TestCalcMethod:
         """An open (placeholder-end) entry is closed at the requested time."""
         from conops.targets import PlanEntry
 
-        entry = PlanEntry.from_config(config=queue_ditl.config)
+        entry = PlanEntry(config=queue_ditl.config)
         entry.obstype = ObsType.AT
         entry.obsid = 10214
         entry.begin = 1000.0
@@ -2878,7 +2878,7 @@ class TestCalcMethod:
         queue_ditl.acs.pointing = Mock(return_value=(10.0, 20.0, 0.0, 1001))
         queue_ditl._assert_plan_matches_execution = Mock()
 
-        ppt = PlanEntry.from_config(config=queue_ditl.config)
+        ppt = PlanEntry(config=queue_ditl.config)
         ppt.obstype = ObsType.AT
         ppt.begin = begin.timestamp()
         ppt.end = begin.timestamp() + 86400.0
@@ -3633,7 +3633,7 @@ class TestCalcMethod:
         """
         from conops.targets import PlanEntry, Pointing
 
-        science_entry = PlanEntry.from_config(config=queue_ditl.config)
+        science_entry = PlanEntry(config=queue_ditl.config)
         science_entry.obstype = ObsType.AT
         science_entry.obsid = 10668
         science_entry.begin = 1000.0
@@ -4719,7 +4719,7 @@ class TestSameTickACSCommands:
         queue_ditl.acs.command_queue = []
         queue_ditl.acs.get_mode = Mock(return_value=ACSMode.SLEWING)
 
-        next_ppt = PlanEntry.from_config(config=queue_ditl.config)
+        next_ppt = PlanEntry(config=queue_ditl.config)
         next_ppt.begin = utime
         next_ppt.end = utime + 600.0
         next_ppt.obsid = 1002
@@ -4784,7 +4784,7 @@ class TestSameTickACSCommands:
         charge.begin = utime - 300.0
         charge.end = utime + 86400.0
 
-        science = PlanEntry.from_config(config=queue_ditl.config)
+        science = PlanEntry(config=queue_ditl.config)
         science.obstype = ObsType.AT
         science.name = "pointing_10001"
         science.obsid = 10001
@@ -4855,14 +4855,14 @@ class TestSameTickACSCommands:
         self, queue_ditl: QueueDITL
     ) -> None:
         utime = 1000.0
-        previous_entry = PlanEntry.from_config(config=queue_ditl.config)
+        previous_entry = PlanEntry(config=queue_ditl.config)
         previous_entry.obstype = ObsType.AT
         previous_entry.obsid = 1001
         previous_entry.begin = 0.0
         previous_entry.end = 900.0
         queue_ditl.plan.append(previous_entry)
 
-        canceled_ppt = PlanEntry.from_config(config=queue_ditl.config)
+        canceled_ppt = PlanEntry(config=queue_ditl.config)
         canceled_ppt.obstype = ObsType.AT
         canceled_ppt.obsid = 10545
         canceled_ppt.begin = utime

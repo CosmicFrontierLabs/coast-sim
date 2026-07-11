@@ -117,17 +117,6 @@ class PlanEntry(BaseModel):
         assert self.acs_config is not None, "ACS config must be set for PlanEntry class"
         return self
 
-    @classmethod
-    def from_config(
-        cls, config: MissionConfig | None = None, exptime: int = 1000
-    ) -> PlanEntry:
-        """Build a PlanEntry from a mission config, deriving constraint/acs_config/ephem."""
-        if config is None:
-            raise ValueError("Config must be provided to PlanEntry")
-        entry = cls(config=config)
-        entry.exptime = exptime
-        return entry
-
     @field_validator("begin", "end", "contact_begin", "contact_end", mode="before")
     @classmethod
     def _coerce_time(cls, v: float | int | str | None) -> float | None:
