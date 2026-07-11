@@ -15,6 +15,8 @@ from .telemetry import Telemetry
 
 
 class DITLMixin:
+    """Shared initialization, plotting, and data-management logic for DITL simulations."""
+
     ppt: PlanEntry | None
     ra: list[float]
     dec: list[float]
@@ -52,9 +54,10 @@ class DITLMixin:
         ephem: rust_ephem.Ephemeris | None = None,
         begin: datetime | None = None,
         end: datetime | None = None,
-        plan: Plan = Plan(),
+        plan: Plan | None = None,
         calculate_field_of_regard: bool = False,
     ) -> None:
+        """Initialize shared DITL state, ephemeris, and subsystems from config."""
         # Initialize mixin
         self.config = config
         self.calculate_field_of_regard = calculate_field_of_regard
@@ -111,7 +114,7 @@ class DITLMixin:
         self.step_size = 60  # seconds
         self.ustart = 0.0  # Calculate these
         self.uend = 0.0  # later
-        self.plan = plan
+        self.plan = plan if plan is not None else Plan()
         self.saa = None
         self.passes = PassTimes(config=config)
         self.executed_passes = PassTimes(config=config)
@@ -140,6 +143,7 @@ class DITLMixin:
 
     @staticmethod
     def _attitude_mode_name(mode: ACSMode | int | None) -> str | None:
+        """Return the mode's name, coercing an int/None to a name or None."""
         if mode is None:
             return None
         if isinstance(mode, ACSMode):
@@ -249,7 +253,7 @@ class DITLMixin:
         """
         from ..visualization import plot_ditl_telemetry
 
-        plot_ditl_telemetry(self, config=getattr(self.config, "visualization", None))
+        plot_ditl_telemetry(self, config=self.config.visualization)
         plt.show()
 
     def _find_current_pass(self, utime: float) -> Pass | None:
@@ -262,18 +266,16 @@ class DITLMixin:
             Pass object if currently in a pass, None otherwise.
         """
         # Check in ACS passrequests (scheduled passes)
-        if hasattr(self, "acs") and hasattr(self.acs, "passrequests"):
-            if self.acs.passrequests.passes:
-                for pass_obj in self.acs.passrequests.passes:
-                    if pass_obj.in_pass(utime):
-                        return pass_obj
+        if self.acs.passrequests.passes:
+            for pass_obj in self.acs.passrequests.passes:
+                if pass_obj.in_pass(utime):
+                    return pass_obj
 
         # Fallback to executed_passes for backwards compatibility
-        if hasattr(self, "executed_passes") and self.executed_passes is not None:
-            if self.executed_passes.passes:
-                for pass_obj in self.executed_passes.passes:
-                    if pass_obj.in_pass(utime):
-                        return pass_obj
+        if self.executed_passes.passes:
+            for pass_obj in self.executed_passes.passes:
+                if pass_obj.in_pass(utime):
+                    return pass_obj
 
         return None
 
@@ -290,8 +292,6 @@ class DITLMixin:
         Returns:
             Tuple of (data_generated, data_downlinked) in Gb for this timestep.
         """
-        from ..common.enums import ACSMode
-
         data_generated = 0.0
         data_downlinked = 0.0
 
@@ -325,7 +325,6 @@ class DITLMixin:
 
         Args:
             station: GroundStation object with antenna capabilities
-            current_pass: Pass object with communications configuration
 
         Returns:
             Effective data rate in Mbps, or None if no compatible bands/rates

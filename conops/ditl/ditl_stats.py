@@ -3,8 +3,10 @@ from datetime import datetime
 
 import numpy as np
 
-from ..common import normalize_acs_mode
+from ..common import ChargeState, normalize_acs_mode
 from ..config.config import MissionConfig
+from ..simulation.acs import ACS
+from ..simulation.passes import PassTimes
 
 
 class DITLStats:
@@ -26,6 +28,8 @@ class DITLStats:
     recorder_fill_fraction: list[float]
     data_generated_gb: list[float]
     data_downlinked_gb: list[float]
+    executed_passes: PassTimes
+    acs: ACS
 
     def print_statistics(self) -> None:
         """Print comprehensive statistics about the DITL simulation.
@@ -104,7 +108,7 @@ class DITLStats:
             print(f"Total Pointing Updates: {len(self.ra)}")
             print(f"RA Range: {min(self.ra):.2f}° to {max(self.ra):.2f}°")
             print(f"Dec Range: {min(self.dec):.2f}° to {max(self.dec):.2f}°")
-            if hasattr(self, "roll") and self.roll:
+            if self.roll:
                 print(f"Roll Range: {min(self.roll):.2f}° to {max(self.roll):.2f}°")
 
         # Battery statistics
@@ -112,13 +116,7 @@ class DITLStats:
         print("POWER AND BATTERY STATISTICS")
         print("-" * 70)
         if self.batterylevel:
-            battery_capacity = getattr(
-                self.config.battery,
-                "watthour",
-                getattr(self.config.battery, "capacity", None),
-            )
-            if battery_capacity is not None:
-                print(f"Battery Capacity: {battery_capacity:.2f} Wh")
+            print(f"Battery Capacity: {self.config.battery.watthour:.2f} Wh")
             print(f"Initial Charge: {self.batterylevel[0] * 100:.1f}%")
             print(f"Final Charge: {self.batterylevel[-1] * 100:.1f}%")
             print(f"Min Charge: {min(self.batterylevel) * 100:.1f}%")
@@ -134,8 +132,6 @@ class DITLStats:
 
         # Charge state statistics
         if hasattr(self, "charge_state") and self.charge_state:
-            from ..common import ChargeState
-
             print("\nBattery Charging State Distribution:")
             charge_state_counts = Counter(self.charge_state)
             total_steps = len(self.charge_state)
@@ -144,11 +140,10 @@ class DITLStats:
             )
             print("-" * 70)
             for state_val, count in sorted(charge_state_counts.items()):
-                state_name = (
-                    ChargeState(state_val).name
-                    if state_val in [s.value for s in ChargeState]
-                    else f"UNKNOWN({state_val})"
-                )
+                try:
+                    state_name = ChargeState(state_val).name
+                except ValueError:
+                    state_name = f"UNKNOWN({state_val})"
                 percentage = (count / total_steps) * 100
                 time_hours = (count * self.step_size) / 3600
                 print(
@@ -200,11 +195,7 @@ class DITLStats:
             )
 
         # Data Management statistics
-        if (
-            hasattr(self, "recorder_volume_gb")
-            and self.recorder_volume_gb
-            and self.config.recorder is not None
-        ):
+        if hasattr(self, "recorder_volume_gb") and self.recorder_volume_gb:
             print("\n" + "-" * 70)
             print("DATA MANAGEMENT STATISTICS")
             print("-" * 70)
@@ -220,10 +211,11 @@ class DITLStats:
                 print(f"  Peak: {max(self.recorder_fill_fraction) * 100:.1f}%")
                 print(f"  Average: {np.mean(self.recorder_fill_fraction) * 100:.1f}%")
 
+            total_generated = (
+                self.data_generated_gb[-1] if self.data_generated_gb else 0.0
+            )
+
             if self.data_generated_gb:
-                total_generated = (
-                    self.data_generated_gb[-1] if self.data_generated_gb else 0
-                )
                 print(f"\nData Generated: {total_generated:.2f} Gb")
 
                 # Calculate generation rate
@@ -241,11 +233,9 @@ class DITLStats:
                 print(f"\nData Downlinked: {total_downlinked:.2f} Gb")
 
                 # Calculate downlink efficiency
-                if hasattr(self, "data_generated_gb") and self.data_generated_gb:
-                    total_generated = self.data_generated_gb[-1]
-                    if total_generated > 0:
-                        efficiency = (total_downlinked / total_generated) * 100
-                        print(f"  Downlink Efficiency: {efficiency:.1f}%")
+                if total_generated > 0:
+                    efficiency = (total_downlinked / total_generated) * 100
+                    print(f"  Downlink Efficiency: {efficiency:.1f}%")
 
                 # Calculate downlink rate
                 duration_hours = (self.end - self.begin).total_seconds() / 3600
@@ -297,12 +287,14 @@ class DITLStats:
             print(f"Remaining Targets: {len(self.queue.targets) - completed}")
 
         # ACS Command statistics (if available)
-        if hasattr(self, "acs") and hasattr(self.acs, "commands"):
+        if self.acs.executed_commands:
             print("\n" + "-" * 70)
             print("ACS COMMAND STATISTICS")
             print("-" * 70)
-            cmd_counts = Counter([cmd.command_type for cmd in self.acs.commands])
-            print(f"Total ACS Commands: {len(self.acs.commands)}")
+            cmd_counts = Counter(
+                [cmd.command_type for cmd in self.acs.executed_commands]
+            )
+            print(f"Total ACS Commands: {len(self.acs.executed_commands)}")
             print(f"\n{'Command Type':<25} {'Count':<10}")
             print("-" * 35)
             for cmd_type, count in sorted(
@@ -311,7 +303,7 @@ class DITLStats:
                 print(f"{cmd_type.name:<25} {count:<10}")
 
         # Ground station pass statistics (if available)
-        if hasattr(self, "executed_passes") and len(self.executed_passes.passes) > 0:
+        if len(self.executed_passes.passes) > 0:
             print("\n" + "-" * 70)
             print("GROUND STATION PASS STATISTICS")
             print("-" * 70)

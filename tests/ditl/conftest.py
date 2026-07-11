@@ -100,7 +100,7 @@ def create_statistics_test_config(ephem: DummyEphemeris | None = None) -> Missio
 
     payload = Mock(spec=Payload)
     battery = Mock(spec=Battery)
-    battery.capacity = 100.0
+    battery.watthour = 100.0
     battery.max_depth_of_discharge = 0.3
     battery.recharge_threshold = 0.95
     battery.recharge_clear_threshold = 0.955
@@ -295,6 +295,7 @@ def ditl(mock_config_detailed, mock_ephem) -> DITL:
         mock_acs.star_tracker_functional_count = (
             3  # Assume 3 functional star trackers by default
         )
+        mock_acs.star_tracker_status = [True, True, True]
         # Add radiator and telescope attributes for Housekeeping telemetry
         mock_acs.radiator_hard_violations = 0
         mock_acs.telescope_hard_violations = 0
@@ -466,7 +467,7 @@ def comprehensive_ditl(ditl_instance, mock_config):
     mock_cmd2 = Mock()
     mock_cmd2.command_type = Mock()
     mock_cmd2.command_type.name = "OBSERVE"
-    ditl.acs.commands = [mock_cmd1, mock_cmd2, mock_cmd1]
+    ditl.acs.executed_commands = [mock_cmd1, mock_cmd2, mock_cmd1]
 
     # Mock executed passes
     mock_pass = Mock()

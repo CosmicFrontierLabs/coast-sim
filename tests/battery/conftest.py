@@ -187,6 +187,7 @@ def queue_ditl(mock_config):
         self.config = config
         self.ephem = ephem or Mock()  # Mock ephem
         self.calculate_field_of_regard = calculate_field_of_regard
+        self.acs = Mock()
         self._init_subsystems()
 
     with patch(

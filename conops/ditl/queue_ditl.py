@@ -1,7 +1,7 @@
 from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 import rust_ephem
@@ -74,6 +74,7 @@ class PlanExecutionMismatch:
     obsid: int | None = None
 
     def __str__(self) -> str:
+        """Return the mismatch message as the string representation."""
         return self.message
 
 
@@ -113,6 +114,7 @@ class QueueDITL(DITLMixin, DITLStats):
         queue: Queue | None = None,
         calculate_field_of_regard: bool = False,
     ) -> None:
+        """Initialize a queue-driven DITL simulation."""
         # Initialize mixin
         DITLMixin.__init__(
             self,
@@ -170,9 +172,8 @@ class QueueDITL(DITLMixin, DITLStats):
                 ephem=self.ephem,
             )
 
-        # Wire log into ACS so it can log events (if ACS exists)
-        if hasattr(self, "acs"):
-            self.acs.log = self.log
+        # Wire log into ACS so it can log events
+        self.acs.log = self.log
 
         # Initialize emergency charging manager (will be fully set up after ACS is available)
         self.charging_ppt = None
@@ -547,41 +548,38 @@ class QueueDITL(DITLMixin, DITLStats):
         self, utime: float, hk: Housekeeping | None = None
     ) -> None:
         """Handle fault management checks and safe mode requests."""
-        if self.config.fault_management is not None:
-            # Get the most recent housekeeping record
-            if hk is None:
-                if not self.telemetry.housekeeping:
-                    return
-                hk = self.telemetry.housekeeping[-1]
+        # Get the most recent housekeeping record
+        if hk is None:
+            if not self.telemetry.housekeeping:
+                return
+            hk = self.telemetry.housekeeping[-1]
 
-            self.config.fault_management.check(
-                housekeeping=hk,
-                acs=self.acs,
+        self.config.fault_management.check(
+            housekeeping=hk,
+            acs=self.acs,
+        )
+        # Check if safe mode has been requested by fault management
+        if (
+            self.config.fault_management.safe_mode_requested
+            and not self.acs.in_safe_mode
+        ):
+            reason = None
+            trigger_event = next(
+                (
+                    e
+                    for e in reversed(self.config.fault_management.events)
+                    if e.event_type == "safe_mode_trigger"
+                ),
+                None,
             )
-            # Check if safe mode has been requested by fault management
-            if (
-                self.config.fault_management.safe_mode_requested
-                and not self.acs.in_safe_mode
-            ):
-                reason = None
-                events = getattr(self.config.fault_management, "events", [])
-                if isinstance(events, list):
-                    trigger_event = next(
-                        (
-                            e
-                            for e in reversed(events)
-                            if e.event_type == "safe_mode_trigger"
-                        ),
-                        None,
-                    )
-                    if trigger_event is not None:
-                        reason = trigger_event.cause
-                command = ACSCommand(
-                    command_type=ACSCommandType.ENTER_SAFE_MODE,
-                    execution_time=utime,
-                    reason=reason,
-                )
-                self.acs.enqueue_command(command)
+            if trigger_event is not None:
+                reason = trigger_event.cause
+            command = ACSCommand(
+                command_type=ACSCommandType.ENTER_SAFE_MODE,
+                execution_time=utime,
+                reason=reason,
+            )
+            self.acs.enqueue_command(command)
 
     def _science_collection_time(
         self, entry: PlanEntry, end_time: float | None = None
@@ -607,6 +605,7 @@ class QueueDITL(DITLMixin, DITLStats):
         return collection_time < max(0.0, float(entry.ss_min))
 
     def _entry_obstype(self, entry: PlanEntry) -> ObsType | None:
+        """Return the entry's obstype as an ObsType, or None if it cannot be coerced."""
         obstype = getattr(entry, "obstype", None)
         if isinstance(obstype, ObsType):
             return obstype
@@ -616,6 +615,7 @@ class QueueDITL(DITLMixin, DITLStats):
             return None
 
     def _mode_at_index(self, index: int) -> ACSMode | None:
+        """Return the telemetry mode at index as an ACSMode, or None if it cannot be coerced."""
         mode = self.mode[index]
         if isinstance(mode, ACSMode):
             return mode
@@ -625,14 +625,12 @@ class QueueDITL(DITLMixin, DITLStats):
             return None
 
     def _plan_execution_tolerance_deg(self) -> float:
-        acs_config = self.config.spacecraft_bus.attitude_control
-        try:
-            tolerance = float(acs_config.slew_accuracy)
-        except (TypeError, ValueError):
-            tolerance = 0.01
+        """Return the pointing error tolerance, in degrees, used for plan/execution checks."""
+        tolerance = float(self.config.spacecraft_bus.attitude_control.slew_accuracy)
         return tolerance if tolerance > 0 else 0.01
 
     def _telemetry_length_mismatch(self) -> PlanExecutionMismatch | None:
+        """Return a mismatch if the per-step telemetry lists are not all the same length."""
         lengths = {
             "utime": len(self.utime),
             "ra": len(self.ra),
@@ -649,9 +647,11 @@ class QueueDITL(DITLMixin, DITLStats):
         )
 
     def _science_start_time(self, entry: PlanEntry) -> float:
-        return float(entry.begin) + max(0.0, float(getattr(entry, "slewtime", 0.0)))
+        """Return the time science collection begins for an entry, after its slew."""
+        return float(entry.begin) + max(0.0, float(entry.slewtime))
 
     def _window_indices(self, start: float, end: float) -> range:
+        """Return the range of telemetry indices whose utime falls within [start, end)."""
         lo = max(0, bisect_left(self.utime, start))
         hi = min(len(self.utime), bisect_left(self.utime, end))
         return range(lo, hi)
@@ -664,6 +664,7 @@ class QueueDITL(DITLMixin, DITLStats):
         detail: str,
         obsid: int | None = None,
     ) -> PlanExecutionMismatch:
+        """Build a PlanExecutionMismatch with a formatted, timestamped message."""
         return PlanExecutionMismatch(
             utime=utime,
             message=f"{unixtime2date(utime)} {interval} {mismatch_type}: {detail}",
@@ -678,6 +679,7 @@ class QueueDITL(DITLMixin, DITLStats):
         expected_mode: ACSMode,
         interval: str,
     ) -> PlanExecutionMismatch:
+        """Build a mismatch for telemetry executing in an unexpected ACS mode."""
         return self._execution_mismatch(
             utime,
             interval,
@@ -689,6 +691,7 @@ class QueueDITL(DITLMixin, DITLStats):
     def _obsid_mismatch(
         self, entry: PlanEntry, utime: float, actual_obsid: int, interval: str
     ) -> PlanExecutionMismatch:
+        """Build a mismatch for telemetry reporting an unexpected obsid."""
         return self._execution_mismatch(
             utime,
             interval,
@@ -704,6 +707,7 @@ class QueueDITL(DITLMixin, DITLStats):
         error_deg: float,
         interval: str,
     ) -> PlanExecutionMismatch:
+        """Build a mismatch for pointing error exceeding tolerance."""
         return self._execution_mismatch(
             utime,
             interval,
@@ -715,6 +719,7 @@ class QueueDITL(DITLMixin, DITLStats):
     def _attitude_constraint_mismatch(
         self, index: int, constraint_name: str, scope_label: str
     ) -> PlanExecutionMismatch:
+        """Build a mismatch for an attitude constraint violation at a telemetry sample."""
         mode = self._mode_at_index(index)
         obsid = int(self.obsid[index])
         return self._execution_mismatch(
@@ -732,6 +737,7 @@ class QueueDITL(DITLMixin, DITLStats):
         )
 
     def _unknown_mode_mismatch(self, index: int) -> PlanExecutionMismatch:
+        """Build a mismatch for a telemetry sample whose mode could not be resolved."""
         return self._execution_mismatch(
             self.utime[index],
             "attitude",
@@ -741,6 +747,7 @@ class QueueDITL(DITLMixin, DITLStats):
         )
 
     def _validate_plan_entry_structure(self) -> list[PlanExecutionMismatch]:
+        """Check exported plan entries for invalid intervals and non-monotonic ordering."""
         mismatches: list[PlanExecutionMismatch] = []
         previous_begin: float | None = None
         for index, entry in enumerate(self.plan):
@@ -782,6 +789,7 @@ class QueueDITL(DITLMixin, DITLStats):
     def _validate_science_entry_execution(
         self, entry: PlanEntry, tolerance_deg: float
     ) -> list[PlanExecutionMismatch]:
+        """Check telemetry over a science entry's window against expected mode, obsid, and pointing."""
         start = self._science_start_time(entry)
         end = float(entry.end)
         mismatches: list[PlanExecutionMismatch] = []
@@ -828,30 +836,8 @@ class QueueDITL(DITLMixin, DITLStats):
             )
         return mismatches
 
-    def _science_entry_covering_sample(
-        self, utime: float, obsid: int
-    ) -> PlanEntry | None:
-        for entry in self.plan:
-            obstype = self._entry_obstype(entry)
-            if obstype not in (ObsType.AT, ObsType.TOO):
-                continue
-            if int(entry.obsid) != int(obsid):
-                continue
-            if float(entry.begin) <= utime < float(entry.end):
-                return entry
-        return None
-
-    def _gsp_entry_covering_sample(self, utime: float, obsid: int) -> PlanEntry | None:
-        for entry in self.plan:
-            if self._entry_obstype(entry) != ObsType.GSP:
-                continue
-            if int(entry.obsid) != int(obsid):
-                continue
-            if float(entry.begin) <= utime <= float(entry.end):
-                return entry
-        return None
-
     def _validate_execution_is_planned(self) -> list[PlanExecutionMismatch]:
+        """Check that every executed science/pass telemetry sample is covered by an exported plan entry."""
         mismatches: list[PlanExecutionMismatch] = []
 
         # Build obsid → entries lookups once to avoid O(N×M) linear plan scans.
@@ -900,12 +886,6 @@ class QueueDITL(DITLMixin, DITLStats):
                         )
                     )
         return mismatches
-
-    def _in_dropped_science_window(self, utime: float, obsid: int) -> bool:
-        return any(
-            dropped_obsid == obsid and start <= utime < end
-            for start, end, dropped_obsid in self._dropped_science_windows
-        )
 
     def _attitude_constraint_name_for_attitude(
         self,
@@ -973,15 +953,11 @@ class QueueDITL(DITLMixin, DITLStats):
         return mismatches
 
     def _matching_pass_for_entry(self, entry: PlanEntry) -> Pass | None:
-        passrequests = getattr(self.acs, "passrequests", None)
-        passes = getattr(passrequests, "passes", None)
-        if not isinstance(passes, list):
-            return None
-
-        station = getattr(entry, "station", None)
-        contact_begin = getattr(entry, "contact_begin", None)
-        contact_end = getattr(entry, "contact_end", None)
-        for gspass in passes:
+        """Find the ACS-scheduled pass matching a GSP plan entry's station and contact window."""
+        station = entry.station
+        contact_begin = entry.contact_begin
+        contact_end = entry.contact_end
+        for gspass in self.acs.passrequests.passes:
             if station is not None and gspass.station != station:
                 continue
             begin_matches = (
@@ -993,14 +969,15 @@ class QueueDITL(DITLMixin, DITLStats):
                 or abs(float(gspass.end) - float(contact_end)) <= 1e-6
             )
             if begin_matches and end_matches:
-                return cast(Pass, gspass)
+                return gspass
         return None
 
     def _validate_gsp_entry_execution(
         self, entry: PlanEntry, tolerance_deg: float
     ) -> list[PlanExecutionMismatch]:
-        contact_begin = getattr(entry, "contact_begin", None)
-        contact_end = getattr(entry, "contact_end", None)
+        """Check telemetry over a GSP entry's contact window against expected mode, obsid, and antenna pointing."""
+        contact_begin = entry.contact_begin
+        contact_end = entry.contact_end
         start = (
             float(contact_begin)
             if contact_begin is not None
@@ -1019,7 +996,7 @@ class QueueDITL(DITLMixin, DITLStats):
                     start,
                     "contact",
                     "pass_profile_missing",
-                    f"obsid {int(entry.obsid)} station {getattr(entry, 'station', None)}",
+                    f"obsid {int(entry.obsid)} station {entry.station}",
                     obsid=int(entry.obsid),
                 )
             )
@@ -1089,6 +1066,7 @@ class QueueDITL(DITLMixin, DITLStats):
         return mismatches
 
     def _assert_plan_matches_execution(self) -> None:
+        """Raise if the exported plan doesn't match executed telemetry, logging the first mismatch."""
         mismatches = self.validate_plan_matches_execution()
         if not mismatches:
             return
@@ -1237,11 +1215,7 @@ class QueueDITL(DITLMixin, DITLStats):
             star_tracker_hard_violations=self.acs.star_tracker_hard_violations,
             star_tracker_soft_violations=self.acs.star_tracker_soft_violations,
             star_tracker_functional_count=self.acs.star_tracker_functional_count,
-            star_tracker_status=(
-                self.acs.star_tracker_status
-                if isinstance(self.acs.star_tracker_status, list)
-                else None
-            ),
+            star_tracker_status=self.acs.star_tracker_status,
             in_constraint=in_constraint_name,
             attitude_constraint=scope_constraint_name,
             attitude_constraint_scope=scope_label
@@ -1300,9 +1274,11 @@ class QueueDITL(DITLMixin, DITLStats):
 
     @staticmethod
     def _slew_matches_obsid(slew: Slew | None, obsid: int) -> bool:
-        return isinstance(slew, Slew) and int(slew.obsid) == obsid
+        """Return whether a slew exists and targets the given obsid."""
+        return slew is not None and int(slew.obsid) == obsid
 
     def _ppt_has_pending_or_active_slew(self, obsid: int) -> bool:
+        """Return whether a slew for this obsid is active, just completed, or still queued."""
         if self._slew_matches_obsid(self.acs.current_slew, obsid):
             return True
         if self._slew_matches_obsid(self.acs.last_slew, obsid):
@@ -1351,6 +1327,7 @@ class QueueDITL(DITLMixin, DITLStats):
     def _apply_slew_metadata(
         entry: PlanEntry, slew: Slew, *, update_end: bool = False
     ) -> None:
+        """Copy executed slew timing, distance, and roll onto a plan entry."""
         entry.begin = int(slew.slewstart)
         entry.slewtime = int(round(slew.slewtime))
         entry.slewdist = float(slew.slewdist)
@@ -1361,6 +1338,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
     @staticmethod
     def _entry_matches_science_slew(entry: PlanEntry, slew: Slew) -> bool:
+        """Return whether a plan entry corresponds to the given executed science slew."""
         if entry.obstype != ObsType.AT or entry.obsid != slew.obsid:
             return False
 
@@ -1392,6 +1370,7 @@ class QueueDITL(DITLMixin, DITLStats):
         return abs(entry_begin - slew_start) <= 1e-6
 
     def _sync_gsp_slew_metadata(self, slew: Slew) -> None:
+        """Update the GSP plan entry's timing/roll from its associated executed slew."""
         entry = self._gsp_slew_plan_entries.get(slew)
         if entry is not None:
             entry.begin = int(slew.slewstart)
@@ -1400,6 +1379,7 @@ class QueueDITL(DITLMixin, DITLStats):
             entry.roll = float(slew.endroll)
 
     def _sync_slew_metadata(self, slew: Slew) -> None:
+        """Sync slew metadata onto the GSP or PPT plan entry the slew belongs to."""
         if slew.obstype == ObsType.GSP:
             self._sync_gsp_slew_metadata(slew)
             return
@@ -1422,18 +1402,19 @@ class QueueDITL(DITLMixin, DITLStats):
         for command in new_commands:
             if command.command_type == ACSCommandType.SLEW_TO_TARGET:
                 slew = command.slew
-                if isinstance(slew, Slew):
+                if slew is not None:
                     self._sync_slew_metadata(slew)
         self._synced_executed_slew_count = len(self.acs.executed_commands)
 
-        if isinstance(self.acs.current_slew, Slew):
+        if self.acs.current_slew is not None:
             self._sync_slew_metadata(self.acs.current_slew)
 
     def _expected_slew_start_attitude(
         self, utime: float, execution_time: float
     ) -> tuple[float, float, float]:
+        """Return the attitude a new slew should start from, accounting for an in-progress slew."""
         active_slew = self.acs.last_slew
-        if isinstance(active_slew, Slew) and active_slew.is_slewing(utime):
+        if active_slew is not None and active_slew.is_slewing(utime):
             slewend = active_slew.slewstart + active_slew.slewtime
             if execution_time >= slewend:
                 return active_slew.endra, active_slew.enddec, active_slew.endroll
@@ -1460,6 +1441,7 @@ class QueueDITL(DITLMixin, DITLStats):
         roll: float,
         obsid: int,
     ) -> tuple[float, float, float, int, ACSMode]:
+        """Re-query ACS pointing and mode if the mode changed or a command is now due."""
         mode = self.acs.get_mode(utime)
         if mode == previous_mode and not self._has_due_acs_command(utime):
             return ra, dec, roll, obsid, mode
@@ -1469,6 +1451,7 @@ class QueueDITL(DITLMixin, DITLStats):
         return ra, dec, roll, obsid, self.acs.get_mode(utime)
 
     def _has_due_acs_command(self, utime: float) -> bool:
+        """Return whether the ACS command queue has a command due at or before utime."""
         return (
             bool(self.acs.command_queue)
             and self.acs.command_queue[0].execution_time <= utime
@@ -1547,7 +1530,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
         interrupted_ppt = self.ppt
         self.charging_ppt = charging_ppt
-        if interrupted_ppt is not None and not getattr(interrupted_ppt, "done", False):
+        if interrupted_ppt is not None and not interrupted_ppt.done:
             self.log.log_event(
                 utime=utime,
                 event_type="CHARGING",
@@ -1555,7 +1538,7 @@ class QueueDITL(DITLMixin, DITLStats):
                     "Battery below recharge threshold; interrupting science observation "
                     "for charging"
                 ),
-                obsid=getattr(interrupted_ppt, "obsid", None),
+                obsid=interrupted_ppt.obsid,
                 acs_mode=self.acs.acsmode,
             )
             interrupted_ppt.end = utime
@@ -1616,20 +1599,14 @@ class QueueDITL(DITLMixin, DITLStats):
             # Calculate length in days from begin/end
             length = int((self.end - self.begin).total_seconds() / 86400)
             self.acs.passrequests.get(year, day, length)
-            scheduled_passes = self.acs.passrequests.passes or []
-            for p in scheduled_passes:
+            for p in self.acs.passrequests.passes:
                 self.log.log_event(
                     utime=self.ustart,
                     event_type="PASS",
                     description=f"Scheduled pass: {p}",
                 )
 
-            dropped_passes = getattr(
-                self.acs.passrequests, "dropped_overlapping_passes", []
-            )
-            if not isinstance(dropped_passes, list):
-                dropped_passes = []
-            for dropped, selected in dropped_passes:
+            for dropped, selected in self.acs.passrequests.dropped_overlapping_passes:
                 self.log.log_event(
                     utime=self.ustart,
                     event_type="PASS",
@@ -1646,7 +1623,7 @@ class QueueDITL(DITLMixin, DITLStats):
                     description=f"Skipped constraint-unsafe pass opportunity: {dropped}",
                 )
 
-            if not scheduled_passes:
+            if not self.acs.passrequests.passes:
                 self.log.log_event(
                     utime=self.ustart,
                     event_type="INFO",
@@ -1654,9 +1631,11 @@ class QueueDITL(DITLMixin, DITLStats):
                 )
 
     def _ground_pass_key(self, gspass: Pass) -> tuple[str, float, float]:
+        """Return the (station, begin, end) identity key for a pass."""
         return gspass.station, gspass.begin, gspass.end
 
     def _overlaps_planned_gsp(self, gspass: Pass) -> bool:
+        """Return whether a pass overlaps an already-planned GSP entry."""
         return any(
             entry.obstype == ObsType.GSP
             and gspass.begin < entry.end
@@ -1665,11 +1644,13 @@ class QueueDITL(DITLMixin, DITLStats):
         )
 
     def _gsp_activity_in_progress(self, utime: float) -> bool:
+        """Return whether a ground station contact is still active at utime."""
         return (
             self._active_gsp_end_time is not None and utime < self._active_gsp_end_time
         )
 
     def _terminate_active_ppt_for_gsp(self, utime: float) -> None:
+        """Terminate whichever PPT (charging or science) is active ahead of a ground station pass."""
         if self.ppt is None:
             return
         if self.ppt == self.charging_ppt:
@@ -1765,6 +1746,7 @@ class QueueDITL(DITLMixin, DITLStats):
         return True
 
     def _gsp_station_location(self, station: str) -> tuple[float, float, float] | None:
+        """Look up a ground station's lat/lon/elevation for plan export, if available."""
         try:
             ground_station = self.config.ground_stations.get(station)
         except (AttributeError, KeyError):
@@ -1774,20 +1756,21 @@ class QueueDITL(DITLMixin, DITLStats):
             return (
                 float(ground_station.latitude_deg),
                 float(ground_station.longitude_deg),
-                float(getattr(ground_station, "elevation_m", 0.0)),
+                float(ground_station.elevation_m),
             )
         except (AttributeError, TypeError, ValueError):
             return None
 
     def _planned_gsp_entry(self, gspass: Pass) -> PlanEntry | None:
+        """Find the exported plan entry matching a scheduled pass."""
         station, pass_begin, pass_end = self._ground_pass_key(gspass)
         for entry in reversed(self.plan):
             if self._entry_obstype(entry) != ObsType.GSP:
                 continue
-            contact_begin = getattr(entry, "contact_begin", None)
-            contact_end = getattr(entry, "contact_end", None)
+            contact_begin = entry.contact_begin
+            contact_end = entry.contact_end
             if (
-                getattr(entry, "station", None) == station
+                entry.station == station
                 and contact_begin is not None
                 and contact_end is not None
                 and abs(float(contact_begin) - pass_begin) <= 1e-6
@@ -1797,6 +1780,7 @@ class QueueDITL(DITLMixin, DITLStats):
         return None
 
     def _close_gsp_plan_entry(self, gspass: Pass, executed_end: float) -> None:
+        """Extend a GSP plan entry's end time to match when the pass actually ended."""
         entry = self._planned_gsp_entry(gspass)
         if entry is None:
             return
@@ -2042,6 +2026,7 @@ class QueueDITL(DITLMixin, DITLStats):
         roll: float,
         utime: float,
     ) -> tuple[str, str] | None:
+        """Return the violated constraint name/scope for an attitude in SCIENCE mode."""
         return self._attitude_constraint_name_for_attitude(
             ra, dec, roll, utime, ACSMode.SCIENCE
         )
@@ -2052,6 +2037,7 @@ class QueueDITL(DITLMixin, DITLStats):
         obs_val_end: float,
         target_roll: float,
     ) -> tuple[float, str, str] | None:
+        """Check whether a locked roll stays constraint-free for the minimum observation window."""
         assert self.ppt is not None
         ephem = self.acs.ephem
         begin_idx = max(0, ephem.index(dtutcfromtimestamp(obs_start_time)))
@@ -2059,7 +2045,7 @@ class QueueDITL(DITLMixin, DITLStats):
             len(ephem.timestamp), ephem.index(dtutcfromtimestamp(obs_val_end)) + 1
         )
         for t in ephem.timestamp[begin_idx:end_idx]:
-            t_unix = t.timestamp() if hasattr(t, "timestamp") else float(t)
+            t_unix = self._ephem_timestamp_to_utime(t)
             violation = self._constraint_name_for_science_attitude(
                 self.ppt.ra,
                 self.ppt.dec,
@@ -2199,15 +2185,18 @@ class QueueDITL(DITLMixin, DITLStats):
         return next_pass.begin - pass_slew_time - self._pass_slew_trigger_buffer()
 
     def _pass_slew_trigger_buffer(self) -> float:
+        """Return the lead time to trigger a pass slew, based on the ephemeris step size."""
         return pass_slew_trigger_buffer(self.ephem.step_size)
 
     @staticmethod
     def _ephem_timestamp_to_utime(timestamp: Any) -> float:
+        """Convert an ephemeris timestamp entry to a Unix timestamp."""
         if hasattr(timestamp, "timestamp"):
             return float(timestamp.timestamp())
         return float(timestamp)
 
     def _ephem_utimes(self) -> list[float]:
+        """Return the ephemeris timestamps converted to Unix time, caching the result."""
         timestamps = self.ephem.timestamp
         if (
             self._ephem_utime_cache is None
@@ -2219,13 +2208,6 @@ class QueueDITL(DITLMixin, DITLStats):
             ]
             self._ephem_utime_cache_source = timestamps
         return self._ephem_utime_cache
-
-    def _ephem_utime_at_or_after(self, utime: float) -> float:
-        timestamps = self._ephem_utimes()
-        index = bisect_left(timestamps, utime)
-        if index >= len(timestamps):
-            return timestamps[-1]
-        return timestamps[index]
 
     def _next_charge_science_deadline(self, current_time: float) -> float | None:
         """Return when pending battery recharge can next preempt science."""
@@ -2285,15 +2267,13 @@ class QueueDITL(DITLMixin, DITLStats):
         return min(deadlines, key=lambda item: item[0])
 
     def _ppt_slew_execution_time(self, utime: float) -> float:
-        if (
-            self.acs.last_slew is not None
-            and isinstance(self.acs.last_slew, Slew)
-            and self.acs.last_slew.is_slewing(utime)
-        ):
+        """Return when a new slew can execute, waiting for an in-progress slew to finish."""
+        if self.acs.last_slew is not None and self.acs.last_slew.is_slewing(utime):
             return self.acs.last_slew.slewstart + self.acs.last_slew.slewtime
         return utime
 
     def _new_ppt_slew(self, target: Pointing, utime: float) -> Slew:
+        """Build a new, not-yet-timed Slew object targeting a Pointing."""
         slew = Slew(config=self.config)
         slew.ephem = self.acs.ephem
         slew.slewrequest = utime
@@ -2311,6 +2291,7 @@ class QueueDITL(DITLMixin, DITLStats):
         utime: float,
         execution_time: float,
     ) -> None:
+        """Fill in a PPT slew's start attitude, end roll, and computed slew time."""
         slew.slewstart = execution_time
         slew.startra, slew.startdec, slew.startroll = (
             self._expected_slew_start_attitude(utime, execution_time)
@@ -2319,6 +2300,7 @@ class QueueDITL(DITLMixin, DITLStats):
         slew.calc_slewtime()
 
     def _ppt_optimum_roll(self, target: Pointing, execution_time: float) -> float:
+        """Return the optimum roll for a target at the given time, caching the result."""
         key = (
             float(target.ra),
             float(target.dec),
@@ -2343,6 +2325,7 @@ class QueueDITL(DITLMixin, DITLStats):
         return roll
 
     def _estimate_ppt_slew(self, target: Pointing, utime: float) -> TargetSlewEstimate:
+        """Estimate slew distance and time to a candidate target, for queue scoring."""
         execution_time = self._ppt_slew_execution_time(utime)
         startra, startdec, startroll = self._expected_slew_start_attitude(
             utime, execution_time
@@ -2446,6 +2429,12 @@ class QueueDITL(DITLMixin, DITLStats):
             self._retry_ppt_fetch_requested = False
 
     def _fetch_new_ppt_inner(self, utime: float, ra: float, dec: float) -> None:
+        """Fetch one candidate PPT from the queue, validate it, and enqueue its slew.
+
+        May request a retry (via `_retry_fetch_without_current_ppt`) if the
+        candidate is rejected; `_fetch_new_ppt` loops this until a target is
+        accepted or none remain.
+        """
         if self.battery.below_minimum_charge_level:
             self.log.log_event(
                 utime=utime,
@@ -2484,6 +2473,7 @@ class QueueDITL(DITLMixin, DITLStats):
         deadline_inputs: _ScienceDeadlineInputs | None = None
 
         def collection_deadline(target: Pointing, slew_end: float) -> float:
+            """Return the next science deadline for a candidate target, for queue scoring."""
             nonlocal deadline_inputs
             if deadline_inputs is None:
                 deadline_inputs = self._science_deadline_inputs(utime)
@@ -2599,11 +2589,7 @@ class QueueDITL(DITLMixin, DITLStats):
             # is collected.  Skip the target now rather than wasting a slew.
             obs_start_time = execution_time + slew.slewtime
             ephem = self.acs.ephem
-            ephem_end = (
-                ephem.timestamp[-1].timestamp()
-                if hasattr(ephem.timestamp[-1], "timestamp")
-                else float(ephem.timestamp[-1])
-            )
+            ephem_end = self._ephem_timestamp_to_utime(ephem.timestamp[-1])
             obs_val_end = min(obs_start_time + self.ppt.ss_min, ephem_end)
             violation = self._check_locked_roll_window(
                 obs_start_time,
