@@ -17,7 +17,7 @@ class TestAddSlew:
         mock_at.next_vis = Mock(return_value=1514764800.0)  # Visibility available now
         mock_at.windows = []
         mock_at.visibility = Mock()
-        mock_too.return_value = mock_at
+        mock_too.from_config.return_value = mock_at
 
         result = acs._enqueue_slew(45.0, 30.0, 100, 1514764800.0, "PPT")
         assert result is True
@@ -30,7 +30,7 @@ class TestAddSlew:
         mock_at.next_vis = Mock(return_value=1514764800.0)
         mock_at.windows = []
         mock_at.visibility = Mock()
-        mock_too.return_value = mock_at
+        mock_too.from_config.return_value = mock_at
 
         result = acs._enqueue_slew(45.0, 30.0, 100, 1514764800.0, "GSP")
         assert result is True
@@ -62,7 +62,7 @@ class TestAddSlewClass:
         mock_at.visibility = Mock()
         mock_at.next_vis = Mock(return_value=1514764800.0)  # Visibility available now
         mock_at.windows = []
-        mock_too.return_value = mock_at
+        mock_too.from_config.return_value = mock_at
 
         acs.last_slew = None
         result = acs._enqueue_slew(
@@ -100,7 +100,7 @@ class TestAddSlewClass:
         mock_at.visibility = Mock()
         mock_at.next_vis = Mock(return_value=1514764800.0)
         mock_at.windows = []
-        mock_too.return_value = mock_at
+        mock_too.from_config.return_value = mock_at
 
         result = acs._enqueue_slew(
             slew.endra, slew.enddec, slew.obsid, 1514764800.0, slew.obstype
@@ -131,7 +131,7 @@ class TestAddSlewClass:
         mock_at.visibility = Mock()
         mock_at.next_vis = Mock(return_value=False)  # No visibility
         mock_at.windows = [[1514764800.0, 1514765000.0]]
-        mock_too.return_value = mock_at
+        mock_too.from_config.return_value = mock_at
 
         acs.last_slew = None
         slew.at = mock_at
@@ -162,7 +162,7 @@ class TestAddSlewClass:
         mock_at = Mock(spec=Pointing)
         mock_at.visibility = Mock()
         mock_at.next_vis = Mock(return_value=1514765000.0)  # 200s later
-        mock_too.return_value = mock_at
+        mock_too.from_config.return_value = mock_at
 
         acs.last_slew = None
         result = acs._enqueue_slew(
@@ -205,7 +205,7 @@ class TestAddSlewClass:
         mock_at.visibility = Mock()
         mock_at.next_vis = Mock(return_value=1514764920.0)  # After existing slew
         mock_at.windows = []
-        mock_too.return_value = mock_at
+        mock_too.from_config.return_value = mock_at
 
         result = acs._enqueue_slew(
             slew.endra, slew.enddec, slew.obsid, 1514764800.0, slew.obstype
@@ -236,7 +236,7 @@ class TestAddSlewClass:
         mock_at.visibility = Mock()
         mock_at.next_vis = Mock(return_value=1514764800.0)
         mock_at.windows = []
-        mock_too.return_value = mock_at
+        mock_too.from_config.return_value = mock_at
 
         acs.last_slew = None
         result = acs._enqueue_slew(
@@ -266,7 +266,7 @@ class TestAddSlewClass:
         mock_at.visibility = Mock()
         mock_at.next_vis = Mock(return_value=False)
         mock_at.windows = []
-        mock_too.return_value = mock_at
+        mock_too.from_config.return_value = mock_at
 
         acs.last_slew = None
         result = acs._enqueue_slew(
@@ -285,6 +285,7 @@ class TestPointing:
         """Test pointing with no slew."""
         mock_roll.return_value = 0.0
         acs.ephem = mock_ephem
+        acs.config.fault_management = Mock(events=[])
 
         ra, dec, roll, obsid = acs.pointing(1514764800.0)
 
@@ -297,6 +298,7 @@ class TestPointing:
     def test_pointing_slew_start_adjustment(self, mock_roll, acs) -> None:
         """Test pointing adjusts slew start when within step_size."""
         mock_roll.return_value = 0.0
+        acs.config.fault_management = Mock(events=[])
 
         # Setup slew request that should start now
         mock_slew = Mock(spec=Slew)
@@ -370,6 +372,7 @@ class TestPointing:
     def test_pointing_during_pass_dwell(self, mock_roll, acs) -> None:
         """Test pointing during pass dwell phase."""
         mock_roll.return_value = 0.0
+        acs.config.fault_management = Mock(events=[])
 
         # A GSP pass dwell is represented as a Slew with obstype=GSP.
         mock_gsp_slew = Mock(spec=Slew)
@@ -459,6 +462,7 @@ class TestPointing:
     ):
         """Test pointing constraint checks when slew has no at attribute."""
         mock_roll.return_value = 0.0
+        acs.config.fault_management = Mock(events=[])
 
         mock_slew = Mock(spec=Slew)
         mock_slew.is_slewing = Mock(return_value=False)
@@ -481,6 +485,7 @@ class TestPointing:
     def test_pointing_pass_after_dwell(self, mock_roll, acs) -> None:
         """Test pointing after pass dwell phase."""
         mock_roll.return_value = 0.0
+        acs.config.fault_management = Mock(events=[])
 
         # A GSP pass dwell is represented as a Slew with obstype=GSP.
         mock_gsp_slew = Mock(spec=Slew)
@@ -609,7 +614,7 @@ class TestAddSlewClassEdgeCases:
         mock_at.visibility = Mock()
         mock_at.next_vis = Mock(return_value=1514764800.0)
         mock_at.windows = []
-        mock_too.return_value = mock_at
+        mock_too.from_config.return_value = mock_at
 
         acs.last_slew = None
         acs.last_ppt = False
@@ -647,7 +652,7 @@ class TestAddSlewClassEdgeCases:
         mock_at.visibility = Mock()
         mock_at.next_vis = Mock(return_value=1514764800.0)
         mock_at.windows = []
-        mock_too.return_value = mock_at
+        mock_too.from_config.return_value = mock_at
 
         acs.last_slew = None
         acs.last_ppt = False
@@ -680,7 +685,7 @@ class TestAddSlewClassEdgeCases:
         mock_at.visibility = Mock()
         mock_at.next_vis = Mock(return_value=False)  # No visibility
         mock_at.windows = [[1514764800.0, 1514765000.0]]
-        mock_too.return_value = mock_at
+        mock_too.from_config.return_value = mock_at
 
         acs.last_slew = None
         result = acs._enqueue_slew(
@@ -711,7 +716,7 @@ class TestAddSlewClassEdgeCases:
         mock_at.visibility = Mock()
         mock_at.next_vis = Mock(return_value=1514765000.0)  # 200s later
         mock_at.windows = []
-        mock_too.return_value = mock_at
+        mock_too.from_config.return_value = mock_at
 
         acs.last_slew = None
         result = acs._enqueue_slew(

@@ -18,28 +18,28 @@ from conops.targets.plan_metadata import PlanMetadata
 
 
 def _make_plan_entry(obsid: int, begin: float, end: float) -> PlanEntry:
-    """Return a bare PlanEntry instance (bypasses __init__) with the minimal
-    attributes that PlanEntrySchema._coerce_from_plan_entry reads."""
-    entry = object.__new__(PlanEntry)
-    entry.name = f"TARGET_{obsid}"
-    entry.ra = 10.0 + obsid
-    entry.dec = -20.0 + obsid
-    entry.roll = -1.0
-    entry.begin = begin
-    entry.end = end
-    entry.merit = 100.0
-    entry.slewtime = 60
-    entry.insaa = 0
-    entry.obsid = obsid
-    entry.obstype = ObsType.AT
-    entry.slewdist = 5.0
-    entry.ss_min = 300.0
-    entry.ss_max = 1_000_000.0
+    """Return a bare PlanEntry instance (bypasses validation, via
+    model_construct) with the minimal attributes that
+    PlanEntrySchema._coerce_from_plan_entry reads."""
+    entry = PlanEntry.model_construct(
+        name=f"TARGET_{obsid}",
+        ra=10.0 + obsid,
+        dec=-20.0 + obsid,
+        roll=-1.0,
+        begin=begin,
+        end=end,
+        merit=100.0,
+        slewtime=60,
+        insaa=0,
+        obsid=obsid,
+        obstype=ObsType.AT,
+        slewdist=5.0,
+        ss_min=300.0,
+        ss_max=1_000_000.0,
+        isat=False,
+    )
     entry._exptime = 1000
     entry._exporig = 1000
-    entry.isat = False
-    entry.done = False
-    entry.exposure = 1000
     return entry
 
 

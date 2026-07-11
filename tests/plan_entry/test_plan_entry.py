@@ -42,7 +42,7 @@ class MockTarget:
 class TestPlanEntryInit:
     def test_init_with_constraint_and_acs(self, mock_config):
         """Test PlanEntry initialization with valid constraint and ACS."""
-        pe = PlanEntry(config=mock_config)
+        pe = PlanEntry.from_config(config=mock_config)
         assert pe.constraint is mock_config.constraint
         assert pe.acs_config is mock_config.spacecraft_bus.attitude_control
         assert pe.ephem is mock_config.constraint.ephem
@@ -64,13 +64,13 @@ class TestPlanEntryInit:
     def test_init_without_config_raises_assertion(self):
         """Test that initialization without constraint raises AssertionError."""
         with pytest.raises(ValueError, match="Config must be provided to PlanEntry"):
-            PlanEntry(config=None)
+            PlanEntry.from_config(config=None)
 
     def test_init_with_constraint_missing_ephem(self, mock_config):
         """Test that initialization with constraint missing ephem raises AssertionError."""
         mock_config.constraint.ephem = None
         with pytest.raises(AssertionError, match="Ephemeris must be set"):
-            PlanEntry(config=mock_config)
+            PlanEntry.from_config(config=mock_config)
 
 
 class TestPlanEntryCopy:
@@ -81,7 +81,7 @@ class TestPlanEntryCopy:
         plan_entry.dec = 67.89
         plan_entry.merit = 50
 
-        copied = plan_entry.copy()
+        copied = plan_entry.model_copy()
 
         assert copied is not plan_entry
         assert copied.name == plan_entry.name

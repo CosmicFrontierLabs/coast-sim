@@ -352,7 +352,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 continue
 
             # Create a temporary Pointing to check visibility
-            too_pointing = Pointing(
+            too_pointing = Pointing.from_config(
                 config=self.config,
                 ra=too.ra,
                 dec=too.dec,
@@ -1249,7 +1249,7 @@ class QueueDITL(DITLMixin, DITLStats):
                     # Set end to the begin time of new PPT (no gap between entries)
                     self._close_last_plan_entry(self.ppt.begin)
 
-            self.plan.append(self.ppt.copy())
+            self.plan.append(self.ppt.model_copy())
 
     def _process_due_acs_commands(
         self, utime: float
@@ -1693,7 +1693,7 @@ class QueueDITL(DITLMixin, DITLStats):
             if last_entry.obstype != ObsType.GSP and last_entry.end > reserved_begin:
                 self._close_last_plan_entry(reserved_begin)
 
-        entry = PlanEntry(config=self.config)
+        entry = PlanEntry.from_config(config=self.config)
         entry.name = f"{station}_PASS"
         entry.ra = gspass.gsstartra
         entry.dec = gspass.gsstartdec

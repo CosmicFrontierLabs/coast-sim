@@ -70,6 +70,13 @@ def mock_ephem() -> DummyEphemeris:
 def mock_config() -> Mock:
     """Create a mock config with all required subsystems."""
     config = Mock()
+    config.__class__ = MissionConfig
+    # MissionConfig's init_fault_management_defaults model_validator re-runs
+    # whenever this config is embedded as a nested field elsewhere (e.g. on
+    # PlanEntry.config) and needs battery/recorder threshold fields this
+    # fixture doesn't populate; None short-circuits it via the validator's
+    # own early-return guard.
+    config.fault_management = None
 
     # Mock constraint
     config.constraint = Mock()
@@ -487,7 +494,7 @@ def low_merit_current_ppt(queue_ditl: QueueDITL) -> Any:
     """Create a current pointing object with low merit for TOO interrupt tests."""
     from conops import Pointing
 
-    ppt = Pointing(
+    ppt = Pointing.from_config(
         config=queue_ditl.config,
         ra=0.0,
         dec=0.0,

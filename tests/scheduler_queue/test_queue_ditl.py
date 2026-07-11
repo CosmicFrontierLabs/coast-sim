@@ -25,7 +25,7 @@ from conops.common.enums import ObsType
 from conops.config.config import MissionConfig
 from conops.ditl.telemetry import Housekeeping
 from conops.simulation.acs import IDLE_OBSID
-from conops.targets import Plan, PlanEntry, PlanSchema
+from conops.targets import Plan, PlanEntry, PlanSchema, Pointing
 
 
 class TestQueueDITLInitialization:
@@ -872,7 +872,7 @@ class TestFetchNewPPT:
     def test_sync_acs_slew_metadata_updates_exported_plan_entry(
         self, queue_ditl: QueueDITL
     ) -> None:
-        target = PlanEntry(config=queue_ditl.config)
+        target = PlanEntry.from_config(config=queue_ditl.config)
         target.obstype = ObsType.AT
         target.obsid = 1001
         target.ss_max = 3600.0
@@ -881,7 +881,7 @@ class TestFetchNewPPT:
         target.slewtime = 5
         target.slewdist = 2.0
 
-        entry = target.copy()
+        entry = target.model_copy()
         entry.slewtime = 1
         entry.slewdist = 1.0
         queue_ditl.plan.append(entry)
@@ -919,7 +919,7 @@ class TestFetchNewPPT:
         acs.roll = 25.0
         queue_ditl.acs = acs
 
-        target = PlanEntry(config=queue_ditl.config)
+        target = PlanEntry.from_config(config=queue_ditl.config)
         target.obstype = ObsType.AT
         target.obsid = 1001
         target.ss_max = 3600.0
@@ -927,7 +927,7 @@ class TestFetchNewPPT:
         target.end = 1000.0 + 86400.0
         target.slewtime = 5
         target.slewdist = 2.0
-        queue_ditl.plan.append(target.copy())
+        queue_ditl.plan.append(target.model_copy())
         queue_ditl.ppt = target
 
         slew = Slew.from_config(queue_ditl.config)
@@ -958,7 +958,7 @@ class TestFetchNewPPT:
         entries = []
         slews = []
         for index, obsid in enumerate((1001, 1002)):
-            entry = PlanEntry(config=queue_ditl.config)
+            entry = PlanEntry.from_config(config=queue_ditl.config)
             entry.obstype = ObsType.AT
             entry.obsid = obsid
             entry.ss_max = 3600.0
@@ -1003,7 +1003,7 @@ class TestFetchNewPPT:
     def test_sync_slew_metadata_does_not_rewrite_closed_duplicate_obsid(
         self, queue_ditl: QueueDITL
     ) -> None:
-        entry = PlanEntry(config=queue_ditl.config)
+        entry = PlanEntry.from_config(config=queue_ditl.config)
         entry.obstype = ObsType.AT
         entry.obsid = 1001
         entry.begin = 1000.0
@@ -1040,7 +1040,7 @@ class TestFetchNewPPT:
         The entry must still be updated to the actual executed timing so the
         exported plan matches execution.
         """
-        entry = PlanEntry(config=queue_ditl.config)
+        entry = PlanEntry.from_config(config=queue_ditl.config)
         entry.obstype = ObsType.AT
         entry.obsid = 1001
         entry.ss_max = 3600.0
@@ -1079,7 +1079,7 @@ class TestFetchNewPPT:
         earliest a retry can start is slew_start == entry.end, which is excluded
         by the strict `< entry_end` bound in _entry_matches_science_slew.
         """
-        entry = PlanEntry(config=queue_ditl.config)
+        entry = PlanEntry.from_config(config=queue_ditl.config)
         entry.obstype = ObsType.AT
         entry.obsid = 1001
         entry.begin = 1000.0
@@ -1226,7 +1226,7 @@ class TestFetchNewPPT:
     ) -> None:
         """Recharge-alert state alone does not block the next target."""
         utime = 1000.0
-        science = PlanEntry(config=queue_ditl.config)
+        science = Pointing.from_config(config=queue_ditl.config)
         science.obstype = ObsType.AT
         science.obsid = 1001
         science.ra = 10.0
@@ -1272,7 +1272,7 @@ class TestFetchNewPPT:
     ) -> None:
         """Do not start another target below the battery operating floor."""
         utime = 1000.0
-        science = PlanEntry(config=queue_ditl.config)
+        science = Pointing.from_config(config=queue_ditl.config)
         science.obstype = ObsType.AT
         science.obsid = 1001
         science.ra = 10.0
@@ -2096,7 +2096,7 @@ class TestPlanExecutionValidation:
         queue_ditl.ephem.index = index
 
     def _science_entry(self, queue_ditl: QueueDITL) -> PlanEntry:
-        entry = PlanEntry(config=queue_ditl.config)
+        entry = PlanEntry.from_config(config=queue_ditl.config)
         entry.obstype = ObsType.AT
         entry.obsid = 42
         entry.ra = 10.0
@@ -2248,7 +2248,7 @@ class TestPlanExecutionValidation:
     def test_close_last_plan_entry_records_dropped_science_window(
         self, queue_ditl: QueueDITL
     ) -> None:
-        entry = PlanEntry(config=queue_ditl.config)
+        entry = PlanEntry.from_config(config=queue_ditl.config)
         entry.obstype = ObsType.AT
         entry.obsid = 42
         entry.begin = 1000.0
@@ -2307,7 +2307,7 @@ class TestPlanExecutionValidation:
     def test_validation_fails_for_default_pass_constraint_scopes(
         self, queue_ditl: QueueDITL
     ) -> None:
-        entry = PlanEntry(config=queue_ditl.config)
+        entry = PlanEntry.from_config(config=queue_ditl.config)
         entry.obstype = ObsType.GSP
         entry.obsid = 0xFFFF
         entry.station = "TRO"
@@ -2348,7 +2348,7 @@ class TestPlanExecutionValidation:
     def test_validation_uses_configured_constraint_scopes_for_pass(
         self, queue_ditl: QueueDITL
     ) -> None:
-        entry = PlanEntry(config=queue_ditl.config)
+        entry = PlanEntry.from_config(config=queue_ditl.config)
         entry.obstype = ObsType.GSP
         entry.obsid = 0xFFFF
         entry.station = "TRO"
@@ -2579,7 +2579,7 @@ class TestPlanExecutionValidation:
     def test_execution_coverage_uses_full_gsp_entry_window(
         self, queue_ditl: QueueDITL
     ) -> None:
-        entry = PlanEntry(config=queue_ditl.config)
+        entry = PlanEntry.from_config(config=queue_ditl.config)
         entry.obstype = ObsType.GSP
         entry.obsid = 0xFFFF
         entry.station = "TRO"
@@ -2676,7 +2676,7 @@ class TestPlanExecutionValidation:
     def test_validation_fails_for_contact_mode_mismatch(
         self, queue_ditl: QueueDITL
     ) -> None:
-        entry = PlanEntry(config=queue_ditl.config)
+        entry = PlanEntry.from_config(config=queue_ditl.config)
         entry.obstype = ObsType.GSP
         entry.obsid = 0xFFFF
         entry.station = "TRO"
@@ -2705,7 +2705,7 @@ class TestPlanExecutionValidation:
     def test_validation_fails_when_contact_profile_missing(
         self, queue_ditl: QueueDITL
     ) -> None:
-        entry = PlanEntry(config=queue_ditl.config)
+        entry = PlanEntry.from_config(config=queue_ditl.config)
         entry.obstype = ObsType.GSP
         entry.obsid = 0xFFFF
         entry.station = "TRO"
@@ -2728,7 +2728,7 @@ class TestPlanExecutionValidation:
     def test_validation_fails_for_contact_pointing_mismatch(
         self, queue_ditl: QueueDITL
     ) -> None:
-        entry = PlanEntry(config=queue_ditl.config)
+        entry = PlanEntry.from_config(config=queue_ditl.config)
         entry.obstype = ObsType.GSP
         entry.obsid = 0xFFFF
         entry.station = "TRO"
@@ -2793,7 +2793,7 @@ class TestCalcMethod:
         """
         from conops.targets import PlanEntry
 
-        entry = PlanEntry(config=queue_ditl.config)
+        entry = PlanEntry.from_config(config=queue_ditl.config)
         entry.obstype = ObsType.AT
         entry.obsid = 10214
         entry.begin = 1000.0
@@ -2813,7 +2813,7 @@ class TestCalcMethod:
         """A finalized entry may still be trimmed earlier (e.g. for a GS pass)."""
         from conops.targets import PlanEntry
 
-        entry = PlanEntry(config=queue_ditl.config)
+        entry = PlanEntry.from_config(config=queue_ditl.config)
         entry.obstype = ObsType.AT
         entry.obsid = 10214
         entry.begin = 1000.0
@@ -2830,7 +2830,7 @@ class TestCalcMethod:
         """An open (placeholder-end) entry is closed at the requested time."""
         from conops.targets import PlanEntry
 
-        entry = PlanEntry(config=queue_ditl.config)
+        entry = PlanEntry.from_config(config=queue_ditl.config)
         entry.obstype = ObsType.AT
         entry.obsid = 10214
         entry.begin = 1000.0
@@ -2876,7 +2876,7 @@ class TestCalcMethod:
         queue_ditl.acs.pointing = Mock(return_value=(10.0, 20.0, 0.0, 1001))
         queue_ditl._assert_plan_matches_execution = Mock()
 
-        ppt = PlanEntry(config=queue_ditl.config)
+        ppt = PlanEntry.from_config(config=queue_ditl.config)
         ppt.obstype = ObsType.AT
         ppt.begin = begin.timestamp()
         ppt.end = begin.timestamp() + 86400.0
@@ -2920,10 +2920,10 @@ class TestCalcMethod:
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 300.0
         mock_ppt.windows = [[0.0, 1e12]]
-        mock_ppt.copy = Mock(return_value=Mock())
-        mock_ppt.copy.return_value.begin = 1543622400
-        mock_ppt.copy.return_value.end = 1543629600
-        mock_ppt.copy.return_value.obstype = "PPT"
+        mock_ppt.model_copy = Mock(return_value=Mock())
+        mock_ppt.model_copy.return_value.begin = 1543622400
+        mock_ppt.model_copy.return_value.end = 1543629600
+        mock_ppt.model_copy.return_value.obstype = "PPT"
 
         queue_ditl.queue.get = Mock(side_effect=[mock_ppt] + [None] * 1500)
         queue_ditl.calc()
@@ -3018,9 +3018,9 @@ class TestCalcMethod:
         mock_charging.roll = 0.0
         mock_charging.begin = 1543622400
         mock_charging.end = 1543622400 + 86400
-        mock_charging.copy = Mock(return_value=Mock())
-        mock_charging.copy.return_value.begin = 1543622400
-        mock_charging.copy.return_value.end = 1543622400 + 86400
+        mock_charging.model_copy = Mock(return_value=Mock())
+        mock_charging.model_copy.return_value.begin = 1543622400
+        mock_charging.model_copy.return_value.end = 1543622400 + 86400
         queue_ditl.emergency_charging.should_initiate_charging = Mock(return_value=True)
         queue_ditl.emergency_charging.create_charging_pointing = Mock(
             return_value=mock_charging
@@ -3045,9 +3045,9 @@ class TestCalcMethod:
         mock_charging.roll = 0.0
         mock_charging.begin = 1543622400
         mock_charging.end = 1543622400 + 86400
-        mock_charging.copy = Mock(return_value=Mock())
-        mock_charging.copy.return_value.begin = 1543622400
-        mock_charging.copy.return_value.end = 1543622400 + 86400
+        mock_charging.model_copy = Mock(return_value=Mock())
+        mock_charging.model_copy.return_value.begin = 1543622400
+        mock_charging.model_copy.return_value.end = 1543622400 + 86400
         queue_ditl.emergency_charging.should_initiate_charging = Mock(return_value=True)
         queue_ditl.emergency_charging.create_charging_pointing = Mock(
             return_value=mock_charging
@@ -3077,7 +3077,7 @@ class TestCalcMethod:
         science_ppt.obsid = 1001
 
         # The plan entry is a separate, still-open copy of the active PPT (real
-        # code appends self.ppt.copy() in _track_ppt_in_timeline).  Its end is a
+        # code appends self.ppt.model_copy() in _track_ppt_in_timeline).  Its end is a
         # placeholder until the interrupt closes it, so closing at the interrupt
         # time is a first close, not a forbidden re-extension.
         plan_entry = Mock()
@@ -3189,7 +3189,7 @@ class TestCalcMethod:
         science_copy.insaa = science_entry.insaa
         science_copy.ss_min = science_entry.ss_min
         science_copy.obsid = science_entry.obsid
-        science_entry.copy = Mock(return_value=science_copy)
+        science_entry.model_copy = Mock(return_value=science_copy)
 
         charging_entry = Mock()
         charging_entry.obstype = "CHARGE"
@@ -3200,7 +3200,7 @@ class TestCalcMethod:
         charging_entry.dec = 50.0
         charging_entry.obsid = 999001
         charging_entry.roll = 0.0
-        charging_entry.copy = Mock(return_value=charging_entry)
+        charging_entry.model_copy = Mock(return_value=charging_entry)
 
         queue_ditl.ppt = science_entry
         queue_ditl.emergency_charging.should_initiate_charging = Mock(return_value=True)
@@ -3235,10 +3235,10 @@ class TestCalcMethod:
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 300.0
         mock_ppt.windows = [[0.0, 1e12]]
-        mock_ppt.copy = Mock(return_value=Mock())
-        mock_ppt.copy.return_value.begin = 1543622400
-        mock_ppt.copy.return_value.end = 1543708800
-        mock_ppt.copy.return_value.obstype = "PPT"
+        mock_ppt.model_copy = Mock(return_value=Mock())
+        mock_ppt.model_copy.return_value.begin = 1543622400
+        mock_ppt.model_copy.return_value.end = 1543708800
+        mock_ppt.model_copy.return_value.obstype = "PPT"
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
         queue_ditl.calc()
         if queue_ditl.plan:
@@ -3266,7 +3266,7 @@ class TestCalcMethod:
     def test_calc_handles_safe_mode_request(self, queue_ditl) -> None:
         """Test calc method handles safe mode requests."""
         # Set up safe mode request
-        queue_ditl.config.fault_management.safe_mode_requested = True
+        queue_ditl.config.fault_management = Mock(safe_mode_requested=True)
         queue_ditl.acs.in_safe_mode = False
 
         queue_ditl.year = 2018
@@ -3385,13 +3385,13 @@ class TestCalcMethod:
         mock_previous_ppt.begin = 1000.0
         mock_previous_ppt.end = 1000.0 + 86400 + 100  # Placeholder end time
         mock_previous_ppt.obstype = "PPT"
-        mock_previous_ppt.copy = Mock(return_value=mock_previous_ppt)
+        mock_previous_ppt.model_copy = Mock(return_value=mock_previous_ppt)
 
         # Create current PPT
         mock_current_ppt = Mock(spec=PlanEntry)
         mock_current_ppt.begin = 2000.0
         mock_current_ppt.end = 3000.0
-        mock_current_ppt.copy = Mock(return_value=mock_current_ppt)
+        mock_current_ppt.model_copy = Mock(return_value=mock_current_ppt)
 
         # Set up plan with previous PPT
         queue_ditl.plan = [mock_previous_ppt]
@@ -3422,7 +3422,7 @@ class TestCalcMethod:
         current_ppt = Mock()
         current_ppt.begin = 1060.0
         current_ppt.end = 3000.0
-        current_ppt.copy = Mock(return_value=current_ppt)
+        current_ppt.model_copy = Mock(return_value=current_ppt)
 
         queue_ditl.plan = [previous_ppt]
         queue_ditl.ppt = current_ppt
@@ -3449,7 +3449,7 @@ class TestCalcMethod:
         current_ppt = Mock()
         current_ppt.begin = 1350.0
         current_ppt.end = 3000.0
-        current_ppt.copy = Mock(return_value=current_ppt)
+        current_ppt.model_copy = Mock(return_value=current_ppt)
 
         queue_ditl.plan = [previous_ppt]
         queue_ditl.ppt = current_ppt
@@ -3629,16 +3629,16 @@ class TestCalcMethod:
         than extending it to the charging-termination time (which would overlap the
         IDLE/SLEW that followed and trip plan/execution validation).
         """
-        from conops.targets import PlanEntry
+        from conops.targets import PlanEntry, Pointing
 
-        science_entry = PlanEntry(config=queue_ditl.config)
+        science_entry = PlanEntry.from_config(config=queue_ditl.config)
         science_entry.obstype = ObsType.AT
         science_entry.obsid = 10668
         science_entry.begin = 1000.0
         science_entry.end = 1480.0  # already closed at its real end
         queue_ditl.plan = [science_entry]
 
-        charging_ppt = PlanEntry(config=queue_ditl.config)
+        charging_ppt = Pointing.from_config(config=queue_ditl.config)
         charging_ppt.obsid = 999000
         charging_ppt.begin = 1480.0
         charging_ppt.end = 1480.0 + 86400.0
@@ -4439,7 +4439,7 @@ class TestCheckAndManagePasses:
         """Reserving a pass should end active science and not re-add it later."""
         utime = 1000.0
         ra, dec = 10.0, 20.0
-        ppt = PlanEntry(config=queue_ditl.config)
+        ppt = Pointing.from_config(config=queue_ditl.config)
         ppt.name = "SCIENCE"
         ppt.obstype = ObsType.AT
         ppt.begin = 900.0
@@ -4731,7 +4731,7 @@ class TestSameTickACSCommands:
         queue_ditl.acs.command_queue = []
         queue_ditl.acs.get_mode = Mock(return_value=ACSMode.SLEWING)
 
-        next_ppt = PlanEntry(config=queue_ditl.config)
+        next_ppt = PlanEntry.from_config(config=queue_ditl.config)
         next_ppt.begin = utime
         next_ppt.end = utime + 600.0
         next_ppt.obsid = 1002
@@ -4785,7 +4785,7 @@ class TestSameTickACSCommands:
     def test_charge_handoff_has_no_plan_gap(self, queue_ditl: QueueDITL) -> None:
         """Charge termination and the next science slew share the same plan boundary."""
         utime = queue_ditl.ephem.timestamp[0].timestamp()
-        charge = PlanEntry(config=queue_ditl.config)
+        charge = Pointing.from_config(config=queue_ditl.config)
         charge.obstype = ObsType.CHARGE
         charge.name = "EMERGENCY_CHARGE_999001"
         charge.obsid = 999001
@@ -4795,7 +4795,7 @@ class TestSameTickACSCommands:
         charge.begin = utime - 300.0
         charge.end = utime + 86400.0
 
-        science = PlanEntry(config=queue_ditl.config)
+        science = PlanEntry.from_config(config=queue_ditl.config)
         science.obstype = ObsType.AT
         science.name = "pointing_10001"
         science.obsid = 10001
@@ -4866,14 +4866,14 @@ class TestSameTickACSCommands:
         self, queue_ditl: QueueDITL
     ) -> None:
         utime = 1000.0
-        previous_entry = PlanEntry(config=queue_ditl.config)
+        previous_entry = PlanEntry.from_config(config=queue_ditl.config)
         previous_entry.obstype = ObsType.AT
         previous_entry.obsid = 1001
         previous_entry.begin = 0.0
         previous_entry.end = 900.0
         queue_ditl.plan.append(previous_entry)
 
-        canceled_ppt = PlanEntry(config=queue_ditl.config)
+        canceled_ppt = PlanEntry.from_config(config=queue_ditl.config)
         canceled_ppt.obstype = ObsType.AT
         canceled_ppt.obsid = 10545
         canceled_ppt.begin = utime
@@ -5184,7 +5184,7 @@ class TestTOOFunctionality:
         # Set current PPT with higher merit
         from conops import Pointing
 
-        queue_ditl.ppt = Pointing(
+        queue_ditl.ppt = Pointing.from_config(
             config=queue_ditl.config,
             ra=0.0,
             dec=0.0,

@@ -544,7 +544,7 @@ class EmergencyCharging:
         """
         from ..targets import Pointing
 
-        charging_ppt = Pointing(
+        charging_ppt = Pointing.from_config(
             config=self.config,
             ra=ra,
             dec=dec,

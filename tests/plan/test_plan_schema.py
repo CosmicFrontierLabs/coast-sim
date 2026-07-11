@@ -6,9 +6,11 @@ from datetime import datetime, timezone
 from unittest.mock import Mock
 
 import pytest
+import rust_ephem
 from pydantic import ValidationError
 from rust_ephem.tle import TLERecord
 
+from conops import AttitudeControlSystem, Constraint, MissionConfig
 from conops.common.enums import ObsType
 from conops.common.vector import attitude_to_quat
 from conops.targets import (
@@ -630,12 +632,17 @@ class TestPlanSchema:
         from conops.targets.plan_entry import PlanEntry
 
         config = Mock()
+        config.__class__ = MissionConfig
+        config.fault_management = None
         config.constraint = Mock()
+        config.constraint.__class__ = Constraint
         config.constraint.ephem = Mock()
+        config.constraint.ephem.__class__ = rust_ephem.Ephemeris
         config.spacecraft_bus = Mock()
         config.spacecraft_bus.attitude_control = Mock()
+        config.spacecraft_bus.attitude_control.__class__ = AttitudeControlSystem
 
-        entry = PlanEntry(config=config)
+        entry = PlanEntry.from_config(config=config)
         entry.obstype = "AT"
         entry.begin = 1000.0
         entry.end = 1060.0
@@ -659,12 +666,17 @@ class TestPlanSchema:
         from conops.targets.plan_entry import PlanEntry
 
         config = Mock()
+        config.__class__ = MissionConfig
+        config.fault_management = None
         config.constraint = Mock()
+        config.constraint.__class__ = Constraint
         config.constraint.ephem = Mock()
+        config.constraint.ephem.__class__ = rust_ephem.Ephemeris
         config.spacecraft_bus = Mock()
         config.spacecraft_bus.attitude_control = Mock()
+        config.spacecraft_bus.attitude_control.__class__ = AttitudeControlSystem
 
-        entry = PlanEntry(config=config)
+        entry = PlanEntry.from_config(config=config)
         entry.obstype = ObsType.AT
         entry.begin = 1000.0
         entry.end = 1200.0

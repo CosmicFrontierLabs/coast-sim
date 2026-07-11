@@ -1,6 +1,7 @@
 from typing import Literal
 
 import numpy as np
+from pydantic import PrivateAttr
 
 from ..common import unixtime2date
 from ..common.enums import ObsType
@@ -11,16 +12,22 @@ from .plan_entry import PlanEntry
 class Pointing(PlanEntry):
     """Define the basic parameters of an observing target with visibility checking."""
 
-    ra: float
-    dec: float
-    roll: float
-    obsid: int
-    name: str
-    merit: float
-    isat: bool
+    obsid: int = 0
+    name: str = "FakeTarget"
+    merit: float = 100.0
+    isat: bool = False
+    # ``fom`` is maintained as a legacy alias for ``merit`` for
+    # backwards compatibility (e.g. tests and older code). The
+    # canonical field we use internally is ``merit`` which can be
+    # recomputed each scheduling iteration by ``Queue.meritsort``.
+    fom: float = 100.0
+    obstype: ObsType = ObsType.AT
+    roll: float = 0.0
+    _done: bool = PrivateAttr(default=False)
 
-    def __init__(
-        self,
+    @classmethod
+    def from_config(  # type: ignore[override]
+        cls,
         config: MissionConfig | None = None,
         ra: float = 0.0,
         dec: float = 0.0,
@@ -31,31 +38,32 @@ class Pointing(PlanEntry):
         exptime: int = 1000,
         ss_min: int = 300,
         ss_max: int = 86400,
-    ) -> None:
-        # Handle both old and new parameter styles for backward compatibility
+    ) -> "Pointing":
+        """Build a Pointing from a mission config, deriving constraint/acs_config/ephem."""
         if config is None:
             raise ValueError("Config must be provided to Pointing")
 
-        PlanEntry.__init__(self, config=config, exptime=exptime)
+        base = PlanEntry.from_config(config, exptime=exptime)
         assert config.constraint is not None, "Constraint not properly set in Pointing"
-        self.done = False
-        self.obstype = ObsType.AT
-        self.isat = False
-        self.ra = ra
-        self.dec = dec
-        self.roll = roll
-        self.obsid = obsid
-        self.name = name
-        # ``fom`` is maintained as a legacy alias for ``merit`` for
-        # backwards compatibility (e.g. tests and older code). The
-        # canonical field we use internally is ``merit`` which can be
-        # recomputed each scheduling iteration by ``Queue.meritsort``.
-        self.fom = merit
-        self.merit = merit
-        self._done = False
-        # Snapshot min/max size
-        self.ss_min = ss_min  # seconds
-        self.ss_max = ss_max  # seconds
+        entry = cls(
+            config=base.config,
+            constraint=base.constraint,
+            acs_config=base.acs_config,
+            ephem=base.ephem,
+            ra=ra,
+            dec=dec,
+            roll=roll,
+            obsid=obsid,
+            name=name,
+            fom=merit,
+            merit=merit,
+            ss_min=ss_min,
+            ss_max=ss_max,
+        )
+        entry._exptime = exptime
+        entry._exporig = exptime
+        entry._done = False
+        return entry
 
     def in_sun(self, utime: float) -> bool:
         """Is this target in Sun constraint?"""

@@ -460,7 +460,7 @@ class ACS:
         """Create and configure a target observation request for visibility checking."""
         from ..targets import Pointing
 
-        target = Pointing(
+        target = Pointing.from_config(
             config=self.config,
             ra=slew.endra,
             dec=slew.enddec,

@@ -240,7 +240,7 @@ class TestACSStateManagement:
         acs.config.attitude_constraint_scopes_for_mode = Mock(
             return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
         )
-        acs.config.fault_management.events = []
+        acs.config.fault_management = Mock(events=[])
         monkeypatch.setattr("conops.simulation.acs.optimum_roll", lambda *args: 5.0)
         acs.constraint.in_star_tracker_hard = Mock(return_value=True)
 

@@ -97,7 +97,7 @@ class TargetQueue:
             ss_max: Maximum snapshot size in seconds
         """
 
-        pointing = Pointing(
+        pointing = Pointing.from_config(
             config=self.config,
             ra=ra,
             dec=dec,

@@ -3,89 +3,77 @@ from __future__ import annotations
 from typing import Literal
 
 import rust_ephem
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from ..common import givename, unixtime2date
 from ..common.enums import ObsType
-from ..config import Constraint, MissionConfig
+from ..config import AttitudeControlSystem, Constraint, MissionConfig
 from ..simulation.saa import SAA
 
 
-class PlanEntry:
+class PlanEntry(BaseModel):
     """Class to define a entry in the Plan"""
 
-    ra: float
-    dec: float
-    roll: float
-    begin: float
-    end: float
-    windows: list[list[float]]
-    ephem: rust_ephem.Ephemeris | None
-    constraint: Constraint
-    config: MissionConfig
-    merit: float
-    saa: SAA | None
-    slewpath: tuple[list[float], list[float]]
-    station: str | None
-    station_lat_deg: float | None
-    station_lon_deg: float | None
-    station_alt_m: float | None
-    contact_begin: float | None
-    contact_end: float | None
-    track_start_ra: float | None
-    track_start_dec: float | None
-    track_start_roll: float | None
-    track_end_ra: float | None
-    track_end_dec: float | None
-    track_end_roll: float | None
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    def __init__(
-        self,
-        config: MissionConfig | None = None,
-        exptime: int = 1000,
-    ) -> None:
-        # Extract config parameters from Config object
+    config: MissionConfig
+    constraint: Constraint
+    acs_config: AttitudeControlSystem
+    ephem: rust_ephem.Ephemeris | None
+    name: str = ""
+    ra: float = 0.0
+    dec: float = 0.0
+    roll: float = -1.0
+    begin: float = 0  # start of window, not observation
+    slewtime: int = 0
+    insaa: int = 0
+    end: float = 0
+    obsid: int = 0
+    station: str | None = None
+    station_lat_deg: float | None = None
+    station_lon_deg: float | None = None
+    station_alt_m: float | None = None
+    contact_begin: float | None = None
+    contact_end: float | None = None
+    track_start_ra: float | None = None
+    track_start_dec: float | None = None
+    track_start_roll: float | None = None
+    track_end_ra: float | None = None
+    track_end_dec: float | None = None
+    track_end_roll: float | None = None
+    saa: SAA | None = None
+    merit: float = 101
+    windows: list[list[float]] = Field(default_factory=list)
+    obstype: ObsType = ObsType.PPT
+    slewpath: tuple[list[float], list[float]] = Field(default_factory=lambda: ([], []))
+    slewdist: float = 0.0
+    ss_min: float = 1000
+    ss_max: float = 1e6
+    _exptime: int = PrivateAttr()
+    _exporig: int = PrivateAttr()
+
+    @classmethod
+    def from_config(
+        cls, config: MissionConfig | None = None, exptime: int = 1000
+    ) -> PlanEntry:
+        """Build a PlanEntry from a mission config, deriving constraint/acs_config/ephem."""
         if config is None:
             raise ValueError("Config must be provided to PlanEntry")
-        self.config = config
-        self.constraint = config.constraint
-        self.acs_config = config.spacecraft_bus.attitude_control
-
-        assert self.constraint is not None, "Constraint must be set for PlanEntry class"
-        self.ephem = self.constraint.ephem
-        assert self.ephem is not None, "Ephemeris must be set for PlanEntry class"
-        assert self.acs_config is not None, "ACS config must be set for PlanEntry class"
-        self.name = ""
-        self.ra = 0.0
-        self.dec = 0.0
-        self.roll = -1.0
-        self.begin = 0  # start of window, not observation
-        self.slewtime = 0
-        self.insaa = 0
-        self.end = 0
-        self.obsid = 0
-        self.station = None
-        self.station_lat_deg = None
-        self.station_lon_deg = None
-        self.station_alt_m = None
-        self.contact_begin = None
-        self.contact_end = None
-        self.track_start_ra = None
-        self.track_start_dec = None
-        self.track_start_roll = None
-        self.track_end_ra = None
-        self.track_end_dec = None
-        self.track_end_roll = None
-
-        self.saa = None
-        self.merit = 101
-        self.windows = list()
-        self.obstype: ObsType = ObsType.PPT
-        self.slewpath = ([], [])
-        self.slewdist = 0.0
-        self.ss_min = 1000
-        self.ss_max = 1e6
-        self._exptime = exptime
-        self._exporig = exptime
+        constraint = config.constraint
+        assert constraint is not None, "Constraint must be set for PlanEntry class"
+        ephem = constraint.ephem
+        assert ephem is not None, "Ephemeris must be set for PlanEntry class"
+        acs_config = config.spacecraft_bus.attitude_control
+        assert acs_config is not None, "ACS config must be set for PlanEntry class"
+        entry = cls(
+            config=config,
+            constraint=constraint,
+            acs_config=acs_config,
+            ephem=ephem,
+        )
+        entry._exptime = exptime
+        entry._exporig = exptime
+        return entry
 
     @property
     def exptime(self) -> int:
@@ -96,12 +84,6 @@ class PlanEntry:
         if self._exptime is None:
             self._exporig = t
         self._exptime = t
-
-    def copy(self) -> PlanEntry:
-        """Create a copy of this class"""
-        obj = type(self).__new__(self.__class__)
-        obj.__dict__.update(self.__dict__)
-        return obj
 
     def __str__(self) -> str:
         return f"{unixtime2date(self.begin)} Target: {self.name} ({self.obsid}) Exp: {self.exposure}s "

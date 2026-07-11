@@ -12,6 +12,7 @@ from conops import (
     AttitudeConstraintScope,
     AttitudeControlSystem,
     Constraint,
+    MissionConfig,
     SpacecraftBus,
 )
 from conops.config.solar_panel import SolarPanel, SolarPanelSet
@@ -77,6 +78,13 @@ def mock_config(
 ) -> Mock:
     """Create a mock config."""
     config = Mock()
+    config.__class__ = MissionConfig
+    # MissionConfig's init_fault_management_defaults model_validator re-runs
+    # whenever this config is embedded as a nested field elsewhere (e.g. on
+    # PlanEntry.config) and needs battery/recorder threshold fields this
+    # fixture doesn't populate; None short-circuits it via the validator's
+    # own early-return guard.
+    config.fault_management = None
     config.constraint = mock_constraint
     config.ground_stations = Mock()
 

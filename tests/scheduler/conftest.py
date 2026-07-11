@@ -5,6 +5,7 @@ from unittest.mock import Mock
 
 import numpy as np
 import pytest
+import rust_ephem
 from astropy.time import Time  # type: ignore[import-untyped]
 from pydantic import ConfigDict
 
@@ -54,6 +55,7 @@ def simple_target_factory():
 def mock_ephemeris():
     """Create a mock ephemeris object."""
     ephem = Mock()
+    ephem.__class__ = rust_ephem.Ephemeris
     # 24 hours of data with 60-second steps
     start_time = 1543276800  # 2018-11-27 00:00:00 UTC
     ephem.utime = np.arange(start_time, start_time + 86400, 60)
