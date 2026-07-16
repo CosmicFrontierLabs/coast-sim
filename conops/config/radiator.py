@@ -137,6 +137,14 @@ class Radiator(ConfigModel):
             yaw_deg=yaw_deg,
         )
 
+    def invalidate_hard_constraint_cache(self) -> None:
+        """Invalidate cached _hard_constraint_with_offset after updates.
+
+        Call this whenever ``orientation`` or ``hard_constraint`` is
+        reassigned after construction so the offset constraint is recomputed.
+        """
+        self.__dict__.pop("_hard_constraint_with_offset", None)
+
     def in_hard_constraint(
         self, ra_deg: float, dec_deg: float, utime: float, roll_deg: float = 0.0
     ) -> bool:
@@ -302,6 +310,17 @@ class RadiatorConfiguration(ConfigModel):
                 combined = combined | offset_constraint
 
         return combined
+
+    def invalidate_hard_constraint_cache(self) -> None:
+        """Invalidate cached radiator_hard_constraint and each radiator's own cache.
+
+        Call this whenever any radiator's ``orientation`` or
+        ``hard_constraint`` is reassigned after construction so the combined
+        constraint is recomputed.
+        """
+        for rad in self.radiators:
+            rad.invalidate_hard_constraint_cache()
+        self.__dict__.pop("radiator_hard_constraint", None)
 
     def set_ephem(self, ephem: rust_ephem.Ephemeris) -> None:
         for rad in self.radiators:
