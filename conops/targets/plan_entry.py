@@ -8,6 +8,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    ModelWrapValidatorHandler,
     PrivateAttr,
     computed_field,
     field_serializer,
@@ -100,6 +101,29 @@ class PlanEntry(BaseModel):
     ss_max: float = 1e6
     _exptime: int | None = PrivateAttr(default=None)
     _exporig: int | None = PrivateAttr(default=None)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _set_exptime_exporig_from_input(
+        cls, data: object, handler: ModelWrapValidatorHandler[PlanEntry]
+    ) -> PlanEntry:
+        """Set _exptime/_exporig private attrs from raw input dict keys.
+
+        exptime/exporig are @computed_field properties backed by private
+        attrs, not real pydantic fields, so they serialize out via
+        model_dump() but are otherwise silently dropped as unrecognized
+        input during model_validate()/JSON load. This reads them from the
+        raw input before that happens and assigns them directly to the
+        private attrs on the constructed instance.
+        """
+        exptime = data.get("exptime") if isinstance(data, dict) else None
+        exporig = data.get("exporig") if isinstance(data, dict) else None
+        instance = handler(data)
+        if exptime is not None:
+            instance._exptime = exptime
+        if exporig is not None:
+            instance._exporig = exporig
+        return instance
 
     @model_validator(mode="after")
     def _derive_from_config(self) -> PlanEntry:

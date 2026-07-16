@@ -17,6 +17,7 @@ from .plan_metadata import (
     PlanMetadata,
     attach_tle_plan_metadata,
 )
+from .plan_schema import PlanSchema
 from .pointing import Pointing
 from .target_queue import Queue, TargetQueue, TargetSlewEstimate
 
@@ -31,6 +32,7 @@ __all__ = [
     "OrbitStateTimeseriesSchema",
     "Pointing",
     "Plan",
+    "PlanSchema",
     "TargetList",
     "Queue",
     "TargetQueue",
