@@ -11,8 +11,10 @@ class GroundStation(ConfigModel):
 
     code: str = Field(description="Short code identifier (e.g., GHA, RWA)")
     name: str = Field(description="Human readable name")
-    latitude_deg: float = Field(description="Latitude in degrees")
-    longitude_deg: float = Field(description="Longitude in degrees")
+    latitude_deg: float = Field(ge=-90.0, le=90.0, description="Latitude in degrees")
+    longitude_deg: float = Field(
+        ge=-180.0, le=180.0, description="Longitude in degrees"
+    )
     elevation_m: float = Field(
         default=0.0, description="Elevation above sea level in meters"
     )
