@@ -5,6 +5,7 @@ import rust_ephem
 from ..common import (
     ACSCommandType,
     ACSMode,
+    DITLEventType,
     ObsType,
     dtutcfromtimestamp,
     unixtime2date,
@@ -127,7 +128,9 @@ class ACS:
         self.slew_dists: list[float] = []
         self.saa = None
 
-    def _log_or_print(self, utime: float, event_type: str, description: str) -> None:
+    def _log_or_print(
+        self, utime: float, event_type: DITLEventType, description: str
+    ) -> None:
         """Log an event to DITLLog if available, otherwise print to stdout.
 
         Args:

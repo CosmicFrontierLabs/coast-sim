@@ -46,7 +46,6 @@ class Slew(BaseModel):
     slewpath: tuple[list[float], list[float]] = Field(default_factory=lambda: ([], []))
     obstype: ObsType = ObsType.PPT
     obsid: int = 0
-    mode: int = 0
     at: "Pointing | None" = None  # In quotes to avoid circular import
     # Quaternion SLERP: intermediate roll values along the path
     _quat_roll_path: list[float] = PrivateAttr(default_factory=list)

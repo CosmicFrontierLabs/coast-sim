@@ -29,7 +29,6 @@ class TestSlewInit:
             ("endra", 0),
             ("enddec", 0),
             ("obsid", 0),
-            ("mode", 0),
             ("at", None),
             ("obstype", "PPT"),
         ],

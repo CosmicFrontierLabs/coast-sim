@@ -9,9 +9,11 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterable
 from pathlib import Path
+from typing import cast
 
 from pydantic import BaseModel, Field, PrivateAttr
 
+from ..common import DITLEventType
 from .ditl_event import DITLEvent
 
 
@@ -119,7 +121,7 @@ class DITLLogStore(BaseModel):
         run_id: str,
         start_time: float | None = None,
         end_time: float | None = None,
-        event_type: str | None = None,
+        event_type: DITLEventType | None = None,
     ) -> list[DITLEvent]:
         """Fetch events for a run, optionally filtered by time range and type."""
         clauses: list[str] = ["run_id = ?"]
@@ -149,7 +151,7 @@ class DITLLogStore(BaseModel):
                 DITLEvent(
                     time=float(time_val),
                     timestamp=str(timestamp),
-                    event_type=str(etype),
+                    event_type=cast(DITLEventType, str(etype)),
                     description=str(desc),
                     obsid=int(obsid) if obsid is not None else None,
                     acs_mode=acs_mode if acs_mode is not None else None,

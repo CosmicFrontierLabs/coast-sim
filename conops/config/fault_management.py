@@ -119,7 +119,7 @@ ACS Mode Filtering:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic import BaseModel, Field
 from rust_ephem.constraints import ConstraintConfig
@@ -279,7 +279,7 @@ class FaultThreshold(ConfigModel):
     name: str = Field(description="Parameter name to monitor")
     yellow: float = Field(description="Yellow threshold value")
     red: float = Field(description="Red threshold value")
-    direction: str = Field(
+    direction: Literal["below", "above"] = Field(
         default="below", description="Fault direction: 'below' or 'above'"
     )
     acs_modes: list[ACSMode] | None = Field(
@@ -614,7 +614,7 @@ class FaultManagement(ConfigModel):
         name: str,
         yellow: float,
         red: float,
-        direction: str = "below",
+        direction: Literal["below", "above"] = "below",
         acs_modes: list[ACSMode] | None = None,
         triggers_safe_mode: bool = True,
         safe_mode_delay_seconds: float = 0.0,

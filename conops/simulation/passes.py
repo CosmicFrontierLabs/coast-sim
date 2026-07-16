@@ -1,6 +1,6 @@
 import time
 from numbers import Integral
-from typing import Protocol
+from typing import Literal, Protocol
 
 import numpy as np
 import rust_ephem
@@ -286,7 +286,9 @@ class Pass(BaseModel):
         dot = float(np.clip(dot, -1.0, 1.0))
         return float(np.rad2deg(np.arccos(dot)))
 
-    def get_data_rate(self, band: str, direction: str = "downlink") -> float:
+    def get_data_rate(
+        self, band: str, direction: Literal["downlink", "uplink"] = "downlink"
+    ) -> float:
         """Get data rate for this pass in the specified band.
 
         Args:
@@ -307,7 +309,9 @@ class Pass(BaseModel):
         else:
             return 0.0
 
-    def calculate_data_volume(self, band: str, direction: str = "downlink") -> float:
+    def calculate_data_volume(
+        self, band: str, direction: Literal["downlink", "uplink"] = "downlink"
+    ) -> float:
         """Calculate total data volume for this pass.
 
         Args:

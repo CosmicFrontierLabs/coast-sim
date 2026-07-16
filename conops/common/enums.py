@@ -1,4 +1,25 @@
 from enum import Enum, auto
+from typing import Literal
+
+DITLEventType = Literal[
+    "ACS",
+    "CHARGING",
+    "CONSTRAINT",
+    "ERROR",
+    "INFO",
+    "OBSERVATION",
+    "PASS",
+    "QUEUE",
+    "RADIATOR_HARD_CONSTRAINT",
+    "SAFE",
+    "SCHEDULER",
+    "SLEW",
+    "STAR_TRACKER_HARD_CONSTRAINT",
+    "STAR_TRACKER_SOFT_CONSTRAINT",
+    "TELESCOPE_HARD_CONSTRAINT",
+    "TOO",
+]
+"""Closed set of DITLEvent.event_type category strings used across the simulator."""
 
 
 class ACSMode(int, Enum):
