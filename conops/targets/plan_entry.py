@@ -117,6 +117,28 @@ class PlanEntry(BaseModel):
         assert self.acs_config is not None, "ACS config must be set for PlanEntry class"
         return self
 
+    @model_validator(mode="after")
+    def _validate_time_ordering(self) -> PlanEntry:
+        """Check begin/end and contact_begin/contact_end ordering.
+
+        Only runs at construction: validate_assignment is disabled on this
+        model (see model_config above), so begin/end set individually via
+        post-construction attribute assignment - the common pattern used
+        throughout the scheduler/DITL code - are not re-checked here.
+        """
+        if self.begin > self.end:
+            raise ValueError(f"begin ({self.begin}) must be <= end ({self.end})")
+        if (
+            self.contact_begin is not None
+            and self.contact_end is not None
+            and self.contact_begin > self.contact_end
+        ):
+            raise ValueError(
+                f"contact_begin ({self.contact_begin}) must be <= "
+                f"contact_end ({self.contact_end})"
+            )
+        return self
+
     @field_validator("begin", "end", "contact_begin", "contact_end", mode="before")
     @classmethod
     def _coerce_time(cls, v: float | int | str | None) -> float | None:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from ._base import ConfigModel
 
@@ -28,6 +28,15 @@ class ObservationCategory(ConfigModel):
     color: str = Field(
         default="tab:blue", description="Matplotlib color for visualization"
     )
+
+    @model_validator(mode="after")
+    def _validate_obsid_range(self) -> ObservationCategory:
+        if self.obsid_min >= self.obsid_max:
+            raise ValueError(
+                f"obsid_min ({self.obsid_min}) must be less than "
+                f"obsid_max ({self.obsid_max})"
+            )
+        return self
 
 
 class ObservationCategories(ConfigModel):

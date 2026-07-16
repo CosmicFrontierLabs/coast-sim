@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ..common import ACSMode, DITLEventType
 
@@ -28,6 +28,18 @@ class DITLEvent(BaseModel):
     acs_mode: ACSMode | None = Field(
         None, description="Current ACS mode (if applicable)"
     )
+
+    @model_validator(mode="after")
+    def _validate_timestamp_matches_time(self) -> "DITLEvent":
+        expected = datetime.fromtimestamp(self.time, tz=timezone.utc).isoformat(
+            timespec="seconds"
+        )
+        if self.timestamp != expected:
+            raise ValueError(
+                f"timestamp {self.timestamp!r} does not match time {self.time} "
+                f"(expected {expected!r})"
+            )
+        return self
 
     @classmethod
     def from_utime(
