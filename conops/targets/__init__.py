@@ -17,7 +17,7 @@ from .plan_metadata import (
     PlanMetadata,
     attach_tle_plan_metadata,
 )
-from .plan_schema import PlanSchema
+from .plan_schema import PlanEntrySchema, PlanSchema
 from .pointing import Pointing
 from .target_queue import Queue, TargetQueue, TargetSlewEstimate
 
@@ -33,6 +33,7 @@ __all__ = [
     "Pointing",
     "Plan",
     "PlanSchema",
+    "PlanEntrySchema",
     "TargetList",
     "Queue",
     "TargetQueue",
