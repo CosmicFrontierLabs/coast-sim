@@ -164,8 +164,8 @@ def mock_config(mock_ephemeris, mock_constraint):
 
     # Create minimal payload, battery, solar_panel
     payload = Payload(instruments=[])
-    battery = Battery(capacity_wh=1000, max_depth_of_discharge=0.8)
-    solar_panel = SolarPanelSet(panels=[SolarPanel(sidemount=False)])
+    battery = Battery(watthour=1000, max_depth_of_discharge=0.8)
+    solar_panel = SolarPanelSet(panels=[SolarPanel()])
 
     # Use the mock_constraint fixture so in_constraint returns arrays when
     # utime is an iterable. Assign the ephemeris that was created for

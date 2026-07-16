@@ -98,7 +98,7 @@ def mock_config(mock_ephem):
 
     # Create minimal payload, battery, solar_panel
     payload = Payload(instruments=[])
-    battery = Battery(capacity_wh=1000, max_depth_of_discharge=0.8)
+    battery = Battery(watthour=1000, max_depth_of_discharge=0.8)
     # Body-mounted panel: points at sun (Z-dominant normal)
     solar_panel = SolarPanelSet(panels=[SolarPanel(normal=(0.0, 0.0, -1.0))])
 

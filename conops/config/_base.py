@@ -6,6 +6,8 @@ class ConfigModel(BaseModel):
 
     Enables ``validate_assignment`` so that field-level validators run on
     post-construction attribute assignment as well as at construction time.
+    Forbids unrecognized fields so typo'd keys in mission YAML/JSON raise
+    instead of being silently dropped.
     """
 
-    model_config = ConfigDict(validate_assignment=True)
+    model_config = ConfigDict(validate_assignment=True, extra="forbid")
