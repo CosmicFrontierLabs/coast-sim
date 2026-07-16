@@ -1,5 +1,35 @@
 {
     "name": "Example Spacecraft Configuration",
+    "random_seed": null,
+    "attitude_constraint_scopes": {
+        "SCIENCE": [
+            "hardware_safety",
+            "imaging_quality",
+            "power_generation"
+        ],
+        "CHARGING": [
+            "hardware_safety",
+            "power_generation"
+        ],
+        "SLEWING": [
+            "hardware_safety"
+        ],
+        "PASS": [
+            "hardware_safety",
+            "power_generation",
+            "ground_contact"
+        ],
+        "SAA": [
+            "hardware_safety"
+        ],
+        "SAFE": [
+            "hardware_safety",
+            "power_generation"
+        ],
+        "IDLE": [
+            "hardware_safety"
+        ]
+    },
     "spacecraft_bus": {
         "name": "Example Spacecraft Bus",
         "power_draw": {
@@ -16,7 +46,10 @@
             "slew_acceleration": 0.01,
             "max_slew_rate": 0.3,
             "slew_accuracy": 0.01,
-            "settle_time": 10.0
+            "settle_time": 10.0,
+            "slew_algorithm": "quaternion",
+            "slew_constraint": null,
+            "gsp_tracking_phase_step_deg": 5.0
         },
         "communications": null,
         "heater": {
@@ -50,16 +83,8 @@
                             "min_angle": 25.0,
                             "max_angle": null
                         },
-                        "anti_sun_constraint": {
-                            "type": "sun",
-                            "min_angle": 0.0,
-                            "max_angle": 180.0
-                        },
-                        "moon_constraint": {
-                            "type": "moon",
-                            "min_angle": 20.0,
-                            "max_angle": null
-                        },
+                        "anti_sun_constraint": null,
+                        "moon_constraint": null,
                         "earth_constraint": {
                             "type": "earth_limb",
                             "min_angle": 12.0,
@@ -67,26 +92,19 @@
                             "include_refraction": false,
                             "horizon_dip": false
                         },
-                        "panel_constraint": {
-                            "type": "and",
-                            "constraints": [
-                                {
-                                    "type": "sun",
-                                    "min_angle": 45.0,
-                                    "max_angle": 135.0
-                                },
-                                {
-                                    "type": "not",
-                                    "constraint": {
-                                        "type": "eclipse",
-                                        "umbra_only": true
-                                    }
-                                }
-                            ]
-                        }
+                        "orbit_constraint": null,
+                        "panel_constraint": null,
+                        "science_constraint": null,
+                        "safety_constraint": null,
+                        "ground_contact_constraint": null,
+                        "star_tracker_hard_constraint": null,
+                        "star_tracker_soft_constraint": null,
+                        "star_tracker_enforce_modes": null,
+                        "ignore_roll": false,
+                        "radiator_hard_constraint": null,
+                        "telescope_hard_constraint": null
                     },
-                    "soft_constraint": null,
-                    "modes_require_lock": null
+                    "soft_constraint": null
                 },
                 {
                     "name": "ST-ZenithSide",
@@ -103,16 +121,8 @@
                             "min_angle": 20.0,
                             "max_angle": null
                         },
-                        "anti_sun_constraint": {
-                            "type": "sun",
-                            "min_angle": 0.0,
-                            "max_angle": 180.0
-                        },
-                        "moon_constraint": {
-                            "type": "moon",
-                            "min_angle": 20.0,
-                            "max_angle": null
-                        },
+                        "anti_sun_constraint": null,
+                        "moon_constraint": null,
                         "earth_constraint": {
                             "type": "earth_limb",
                             "min_angle": 12.0,
@@ -120,29 +130,53 @@
                             "include_refraction": false,
                             "horizon_dip": false
                         },
-                        "panel_constraint": {
-                            "type": "and",
-                            "constraints": [
-                                {
-                                    "type": "sun",
-                                    "min_angle": 45.0,
-                                    "max_angle": 135.0
-                                },
-                                {
-                                    "type": "not",
-                                    "constraint": {
-                                        "type": "eclipse",
-                                        "umbra_only": true
-                                    }
-                                }
-                            ]
-                        }
+                        "orbit_constraint": null,
+                        "panel_constraint": null,
+                        "science_constraint": null,
+                        "safety_constraint": null,
+                        "ground_contact_constraint": null,
+                        "star_tracker_hard_constraint": null,
+                        "star_tracker_soft_constraint": null,
+                        "star_tracker_enforce_modes": null,
+                        "ignore_roll": false,
+                        "radiator_hard_constraint": null,
+                        "telescope_hard_constraint": null
                     },
-                    "soft_constraint": null,
-                    "modes_require_lock": null
+                    "soft_constraint": null
                 }
             ],
-            "min_functional_trackers": 1
+            "min_functional_trackers": 1,
+            "modes_require_lock": null
+        },
+        "radiators": {
+            "radiators": [
+                {
+                    "name": "Default Radiator",
+                    "width_m": 1.0,
+                    "height_m": 1.0,
+                    "orientation": {
+                        "normal": [
+                            0.0,
+                            -1.0,
+                            0.0
+                        ]
+                    },
+                    "subsystem": "spacecraft_bus",
+                    "efficiency": 0.9,
+                    "emissivity": 0.85,
+                    "dissipation_coefficient_w_per_m2": 220.0,
+                    "absorptivity": 0.2,
+                    "radiator_temperature_k": 300.0,
+                    "sink_temperature_k": 3.0,
+                    "solar_constant_w_per_m2": 1361.0,
+                    "earth_ir_flux_w_per_m2": 237.0,
+                    "sun_loading_factor": 0.7,
+                    "earth_loading_factor": 0.3,
+                    "hard_constraint": null,
+                    "geometry": null,
+                    "shadowed_by": []
+                }
+            ]
         }
     },
     "solar_panel": {
@@ -157,7 +191,8 @@
                     0.0
                 ],
                 "max_power": 474.21,
-                "conversion_efficiency": 0.94
+                "conversion_efficiency": 0.94,
+                "geometry": null
             }
         ],
         "conversion_efficiency": 0.95
@@ -165,17 +200,22 @@
     "payload": {
         "instruments": [
             {
-                "name": "Default Instrument",
+                "instrument_type": "Instrument",
+                "name": "Optical Imager",
                 "power_draw": {
                     "nominal_power": 50.0,
-                    "peak_power": 100.0,
-                    "power_mode": {},
+                    "peak_power": 300.0,
+                    "power_mode": {
+                        "0": 200.0,
+                        "1": 50.0,
+                        "2": 50.0
+                    },
                     "eclipse_power": null,
                     "eclipse_power_mode": {}
                 },
                 "heater": null,
                 "data_generation": {
-                    "rate_gbps": 0.0,
+                    "rate_gbps": 0.0001953125,
                     "per_observation_gb": 0.0
                 }
             }
@@ -189,6 +229,7 @@
         "emergency_recharge": false,
         "max_depth_of_discharge": 0.4,
         "recharge_threshold": 0.95,
+        "recharge_clear_threshold": 0.955,
         "charge_level": 1000.0,
         "emergency_charging_min_illumination": 1.0
     },
@@ -210,11 +251,7 @@
                 }
             ]
         },
-        "anti_sun_constraint": {
-            "type": "sun",
-            "min_angle": 0.0,
-            "max_angle": 180.0
-        },
+        "anti_sun_constraint": null,
         "moon_constraint": {
             "type": "moon",
             "min_angle": 20.0,
@@ -227,6 +264,7 @@
             "include_refraction": false,
             "horizon_dip": false
         },
+        "orbit_constraint": null,
         "panel_constraint": {
             "type": "and",
             "constraints": [
@@ -243,7 +281,46 @@
                     }
                 }
             ]
-        }
+        },
+        "science_constraint": null,
+        "safety_constraint": null,
+        "ground_contact_constraint": null,
+        "star_tracker_hard_constraint": null,
+        "star_tracker_soft_constraint": {
+            "type": "at_least",
+            "min_violated": 1,
+            "constraints": [
+                {
+                    "type": "boresight_offset",
+                    "constraint": {
+                        "type": "or",
+                        "constraints": [
+                            {
+                                "type": "sun",
+                                "min_angle": 20.0,
+                                "max_angle": null
+                            },
+                            {
+                                "type": "earth_limb",
+                                "min_angle": 0.0,
+                                "max_angle": null,
+                                "include_refraction": false,
+                                "horizon_dip": false
+                            }
+                        ]
+                    },
+                    "roll_deg": 0.0,
+                    "roll_clockwise": true,
+                    "roll_reference": "north",
+                    "pitch_deg": 0.0,
+                    "yaw_deg": 0.0
+                }
+            ]
+        },
+        "star_tracker_enforce_modes": null,
+        "ignore_roll": false,
+        "radiator_hard_constraint": null,
+        "telescope_hard_constraint": null
     },
     "ground_stations": {
         "stations": [
@@ -255,6 +332,7 @@
                 "elevation_m": 0.0,
                 "min_elevation_deg": 10.0,
                 "schedule_probability": 0.7,
+                "schedule_for_tracking": true,
                 "bands": [
                     {
                         "band": "S",
@@ -272,6 +350,7 @@
                 "elevation_m": 2835.0,
                 "min_elevation_deg": 10.0,
                 "schedule_probability": 0.2,
+                "schedule_for_tracking": true,
                 "bands": [
                     {
                         "band": "S",
@@ -289,6 +368,7 @@
                 "elevation_m": 0.0,
                 "min_elevation_deg": 10.0,
                 "schedule_probability": 0.2,
+                "schedule_for_tracking": true,
                 "bands": [
                     {
                         "band": "S",
@@ -306,6 +386,7 @@
                 "elevation_m": 0.0,
                 "min_elevation_deg": 10.0,
                 "schedule_probability": 0.5,
+                "schedule_for_tracking": true,
                 "bands": [
                     {
                         "band": "S",
@@ -331,21 +412,54 @@
                 "yellow": 0.6,
                 "red": 0.5,
                 "direction": "below",
-                "acs_modes": null
+                "acs_modes": null,
+                "triggers_safe_mode": true,
+                "safe_mode_delay_seconds": 0.0
             },
             {
                 "name": "recorder_fill_fraction",
                 "yellow": 0.7,
                 "red": 0.9,
                 "direction": "above",
-                "acs_modes": null
+                "acs_modes": null,
+                "triggers_safe_mode": true,
+                "safe_mode_delay_seconds": 0.0
             },
             {
                 "name": "star_tracker_functional_count",
-                "yellow": 1.0,
+                "yellow": 0.0,
                 "red": 0.0,
                 "direction": "below",
-                "acs_modes": null
+                "acs_modes": null,
+                "triggers_safe_mode": false,
+                "safe_mode_delay_seconds": 0.0
+            },
+            {
+                "name": "star_tracker_hard_violations",
+                "yellow": 0.5,
+                "red": 0.5,
+                "direction": "above",
+                "acs_modes": null,
+                "triggers_safe_mode": false,
+                "safe_mode_delay_seconds": 0.0
+            },
+            {
+                "name": "ppt_unavailable",
+                "yellow": 0.5,
+                "red": 1.5,
+                "direction": "above",
+                "acs_modes": null,
+                "triggers_safe_mode": true,
+                "safe_mode_delay_seconds": 0.0
+            },
+            {
+                "name": "radiator_hard_violations",
+                "yellow": 0.5,
+                "red": 0.5,
+                "direction": "above",
+                "acs_modes": null,
+                "triggers_safe_mode": false,
+                "safe_mode_delay_seconds": 0.0
             }
         ],
         "red_limit_constraints": [
