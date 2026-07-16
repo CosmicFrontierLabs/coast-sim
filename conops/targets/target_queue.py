@@ -1,6 +1,6 @@
 import hashlib
 from collections.abc import Callable
-from typing import Any, cast
+from typing import cast
 
 import numpy as np
 import rust_ephem
@@ -28,7 +28,6 @@ class TargetQueue:
     targets: list[Pointing]
     ephem: rust_ephem.Ephemeris | None
     utime: float
-    gs: Any
     log: DITLLog | None
     constraint: Constraint | None
     acs_config: AttitudeControlSystem | None
@@ -51,7 +50,6 @@ class TargetQueue:
         self.targets = []
         self.ephem = ephem
         self.utime = 0.0
-        self.gs = None
         self.log = log
         # Optional weight to penalize long slews when selecting next target
         self.slew_distance_weight = config.targets.slew_distance_weight

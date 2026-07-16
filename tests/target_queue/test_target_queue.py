@@ -16,10 +16,6 @@ class TestQueueInitAndAppend:
         queue = Queue(config=mock_config)
         assert queue.utime == 0.0
 
-    def test_queue_init_gs_none(self, mock_config) -> None:
-        queue = Queue(config=mock_config)
-        assert queue.gs is None
-
     def test_queue_append_len(self, mock_target, mock_config) -> None:
         queue = Queue(config=mock_config)
         queue.append(mock_target)
