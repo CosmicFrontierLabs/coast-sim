@@ -1,6 +1,6 @@
 """DITL event logging system."""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..common import ACSMode, DITLEventType
 from .ditl_event import DITLEvent
@@ -16,6 +16,8 @@ class DITLLog(BaseModel):
         run_id: Optional identifier for this DITL run; used by stores
         store: Optional persistent store to which events are appended
     """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     events: list[DITLEvent] = Field(
         default_factory=list, description="List of logged events"

@@ -11,26 +11,20 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import cast
 
-from pydantic import BaseModel, Field, PrivateAttr
-
 from ..common import DITLEventType
 from .ditl_event import DITLEvent
 
 
-class DITLLogStore(BaseModel):
+class DITLLogStore:
     """SQLite-backed store for DITL logs.
 
     The store schema is simple and optimized for querying by run and time.
     """
 
-    db_path: Path = Field(default_factory=lambda: Path("ditl_logs.sqlite"))
-    _conn: sqlite3.Connection = PrivateAttr()
-
     def __init__(self, db_path: str | Path = "ditl_logs.sqlite") -> None:
         """Open (creating if needed) the SQLite database at db_path and set up its schema."""
-        # Allow convenient construction with str | Path while remaining a Pydantic model
-        super().__init__(db_path=Path(db_path))
-        self._conn = sqlite3.connect(self.db_path)
+        self.db_path: Path = Path(db_path)
+        self._conn: sqlite3.Connection = sqlite3.connect(self.db_path)
         # Improve concurrent read/write characteristics
         self._conn.execute("PRAGMA journal_mode=WAL;")
         self._conn.execute("PRAGMA synchronous=NORMAL;")
