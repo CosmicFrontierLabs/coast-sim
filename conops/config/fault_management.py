@@ -121,7 +121,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal, cast
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from rust_ephem.constraints import ConstraintConfig
 
 from ..common import ACSMode, normalize_acs_mode
@@ -235,7 +235,7 @@ class FaultConstraint(ConfigModel):
         default="", description="Human-readable description of constraint purpose"
     )
 
-    model_config = {"arbitrary_types_allowed": True}
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class FaultThreshold(ConfigModel):

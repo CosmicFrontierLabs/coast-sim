@@ -211,6 +211,9 @@ class Constraint(ConfigModel):
     )
     _cache_hits: int = PrivateAttr(default=0)
     _cache_misses: int = PrivateAttr(default=0)
+    _eclipse_constraint: rust_ephem.EclipseConstraint = PrivateAttr(
+        default_factory=rust_ephem.EclipseConstraint
+    )
 
     # validate_assignment=False: this class holds external rust_ephem types
     # (Ephemeris, ConstraintConfig) that tests legitimately mock via assignment.
@@ -504,9 +507,6 @@ class Constraint(ConfigModel):
 
     def in_eclipse(self, ra: float, dec: float, time: float) -> bool:
         assert self.ephem is not None, "Ephemeris must be set to use in_eclipse method"
-        # Eclipse constraint is special - create once and cache
-        if not hasattr(self, "_eclipse_constraint"):
-            self._eclipse_constraint = rust_ephem.EclipseConstraint()
         return self._cached_check("eclipse", ra, dec, time, self._eclipse_constraint)
 
     def in_moon(

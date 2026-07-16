@@ -4,7 +4,7 @@ from typing import Literal, Protocol
 
 import numpy as np
 import rust_ephem
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..common import find_boundaries, ics_date_conv, unixtime2date
 from ..common.enums import ACSMode, AntennaType, ObsType, SlewAlgorithm
@@ -97,7 +97,7 @@ class Pass(BaseModel):
     The pass contains pointing profile information for ground station contacts.
     """
 
-    model_config = {"arbitrary_types_allowed": True}
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     # Core dependencies
     ephem: rust_ephem.Ephemeris | None = None
