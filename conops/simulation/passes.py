@@ -318,7 +318,7 @@ class Pass(BaseModel):
             Data volume in Megabits
         """
         assert self.config is not None, "Config must be set for Pass class"
-        if self.length is None or self.config.spacecraft_bus.communications is None:
+        if self.config.spacecraft_bus.communications is None:
             return 0.0
 
         rate_mbps = self.get_data_rate(band, direction)
