@@ -119,7 +119,7 @@ ACS Mode Filtering:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 from pydantic import BaseModel, Field
 from rust_ephem.constraints import ConstraintConfig
@@ -131,6 +131,10 @@ from ._base import ConfigModel
 if TYPE_CHECKING:
     from ..ditl.telemetry import Housekeeping
     from ..simulation import ACS
+
+# Event metadata is a free-form bag of diagnostic context (previous/new state
+# labels, measured values, thresholds, durations, constraint type names, etc.)
+FaultEventMetadataValue = str | float | int | None
 
 
 class FaultEvent(BaseModel):
@@ -148,7 +152,7 @@ class FaultEvent(BaseModel):
     event_type: str
     name: str
     cause: str
-    metadata: dict[str, Any] | None = None
+    metadata: dict[str, FaultEventMetadataValue] | None = None
 
     def __str__(self) -> str:
         """Concise human-readable summary for printing a list of events."""
@@ -353,7 +357,7 @@ class FaultManagement(ConfigModel):
         utime: float,
         name: str,
         cause: str,
-        metadata: dict[str, Any],
+        metadata: dict[str, FaultEventMetadataValue],
         acs: ACS,
     ) -> None:
         if not self.safe_mode_on_red:

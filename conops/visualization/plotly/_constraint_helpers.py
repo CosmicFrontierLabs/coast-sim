@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime
-from typing import Any
 
 import numpy as np
 import plotly.graph_objects as go
@@ -11,7 +10,9 @@ import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
 from ...config.constants import EARTH_OCCULT, MOON_OCCULT, PANEL_CONSTRAINT, SUN_OCCULT
+from ...config.star_tracker import StarTracker
 from ._helpers import (
+    TraceDict,
     _marker_trace,
     _poly_trace,
     _ra_to_lon,
@@ -33,22 +34,24 @@ class ConstraintPlotConfig(BaseModel):
     st_boresight_offsets: list[float]
     st_constraint_specs: list[ConstraintSpec]
     ignore_roll: bool
-    orbit_constraint: Any | None
+    # Only ever checked for `is not None`: min/max angles are pre-extracted
+    # into the float fields below, so the sentinel's real type doesn't matter.
+    orbit_constraint: object | None
     orbit_min_angle: float
     orbit_max_angle: float | None
     gcrs_vel: np.ndarray | None
-    anti_sun_constraint_cfg: Any | None
+    anti_sun_constraint_cfg: object | None
     anti_sun_min_angle: float
     anti_sun_max_angle: float | None
-    panel_constraint_cfg: Any | None
+    panel_constraint_cfg: object | None
     panel_min_angle: float
     panel_max_angle: float
 
 
 def resolve_constraint_plot_config(
-    ditl: Any,
-    raw_trackers: list[Any],
-    ephem: Any,
+    ditl: object,
+    raw_trackers: list[StarTracker],
+    ephem: rust_ephem.Ephemeris,
 ) -> ConstraintPlotConfig:
     """Resolve all constraint-plotting configuration from a DITL object."""
     constraint_cfg = None
@@ -223,7 +226,7 @@ def build_body_polygon_traces(
     earth_dec: float,
     earth_disk_r: float,
     body_angle_cfg: dict[str, tuple[float, float | None]],
-) -> list[dict[str, Any]]:
+) -> list[TraceDict]:
     """Build the 9 per-frame body-constraint trace dicts (indices 0–8).
 
     Trace ordering:
@@ -289,14 +292,14 @@ def build_tail_constraint_traces(
     ei: int,
     dt: datetime.datetime,
     eclipse_con: rust_ephem.EclipseConstraint,
-    ephem: Any,
-) -> list[dict[str, Any]]:
+    ephem: rust_ephem.Ephemeris,
+) -> list[TraceDict]:
     """Build per-frame trace dicts for ST constraints, orbit, anti-sun, and panel.
 
     These are appended after the pointing marker and ST boresight markers
     (indices 10+n_trackers onward in the full trace list).
     """
-    traces: list[dict[str, Any]] = []
+    traces: list[TraceDict] = []
 
     # ST constraint exclusion-zone circles
     for tr_idx, tier, body, bound_kind, angle in cc.st_constraint_specs:
@@ -403,7 +406,7 @@ def build_tail_constraint_traces(
 
 def build_optional_figure_traces(
     cc: ConstraintPlotConfig,
-    init_data: list[dict[str, Any]],
+    init_data: list[TraceDict],
     n_trackers: int,
     constraint_alpha: float,
 ) -> list[go.Scattergeo]:

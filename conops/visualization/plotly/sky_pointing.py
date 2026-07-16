@@ -6,7 +6,7 @@ of the sky with scheduled observations and constraint regions.
 
 # pyright: reportMissingTypeStubs=false
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import matplotlib.colors as mcolors
 import numpy as np
@@ -16,6 +16,7 @@ import rust_ephem
 
 from ...common import dtutcfromtimestamp
 from ...config.observation_categories import ObservationCategories
+from ...config.star_tracker import StarTracker
 from ...config.visualization import VisualizationConfig
 from ._constraint_helpers import (
     ConstraintPlotConfig,
@@ -25,6 +26,7 @@ from ._constraint_helpers import (
     resolve_constraint_plot_config,
 )
 from ._helpers import (
+    TraceDict,
     _marker_trace,
     _poly_trace,
     _ra_to_lon,
@@ -203,7 +205,7 @@ def plot_sky_pointing_plotly(
         }
     )
 
-    raw_trackers: list[Any] = []
+    raw_trackers: list[StarTracker] = []
     if hasattr(ditl, "config") and hasattr(ditl.config, "spacecraft_bus"):
         _st = getattr(ditl.config.spacecraft_bus, "star_trackers", None)
         if _st is not None and hasattr(_st, "star_trackers"):
@@ -264,7 +266,7 @@ def plot_sky_pointing_plotly(
     #   _A+1: Panel max excl polygon      [if panel configured]
     #   _A+2 … : Radiator hard exclusion-zone circles
     # ------------------------------------------------------------------
-    def _frame_traces(idx: int) -> list[dict[str, Any]]:
+    def _frame_traces(idx: int) -> list[TraceDict]:
         dt = dtutcfromtimestamp(utimes[idx])
         ei = ephem.index(dt)
 
@@ -393,7 +395,7 @@ def plot_sky_pointing_plotly(
     init_data = _frame_traces(init_idx)
     mc0 = _mode_color(init_idx)
 
-    traces_fig: list[Any] = [
+    traces_fig: list[go.Scattergeo] = [
         # Trace 0: static observations
         go.Scattergeo(
             lon=obs_lons,
@@ -537,7 +539,7 @@ def plot_sky_pointing_plotly(
     # Build animation frames and slider steps
     # ------------------------------------------------------------------
     frames: list[go.Frame] = []
-    slider_steps: list[dict[str, Any]] = []
+    slider_steps: list[dict[str, object]] = []
 
     for fi, idx in enumerate(frame_indices):
         dt = dtutcfromtimestamp(utimes[idx])

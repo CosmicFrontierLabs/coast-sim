@@ -1,8 +1,9 @@
 from bisect import bisect_left
 from datetime import datetime, timezone
-from typing import Any
+from typing import Protocol, TypedDict
 
 import numpy as np
+import numpy.typing as npt
 import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
@@ -33,6 +34,32 @@ from .ditl_log import DITLLog
 from .ditl_mixin import DITLMixin
 from .ditl_stats import DITLStats
 from .telemetry import Housekeeping, PayloadData
+
+
+class _PendingCommandStatus(TypedDict):
+    type: str
+    execution_time: float
+    time_formatted: str
+
+
+class ACSQueueStatus(TypedDict):
+    """Diagnostic snapshot of the ACS command queue, for debugging the state machine."""
+
+    queue_size: int
+    pending_commands: list[_PendingCommandStatus]
+    current_slew: str | None
+    acs_mode: str
+
+
+class _HasTimestampMethod(Protocol):
+    """An ephemeris timestamp entry exposing a datetime-like timestamp() method.
+
+    Covers datetime and datetime-like adapter objects (e.g. astropy Time
+    subclasses used in tests); real rust_ephem.Ephemeris.timestamp arrays
+    yield np.datetime64 scalars instead, which have no such method.
+    """
+
+    def timestamp(self) -> float: ...
 
 
 class TOORequest(BaseModel):
@@ -141,7 +168,7 @@ class QueueDITL(DITLMixin, DITLStats):
         # Eclipse tracking
         self.in_eclipse = list()
         self._ephem_utime_cache: list[float] | None = None
-        self._ephem_utime_cache_source: Any | None = None
+        self._ephem_utime_cache_source: npt.NDArray[np.datetime64] | None = None
         self._ppt_optimum_roll_cache: dict[
             tuple[float, float, float, int, int, int], float
         ] = {}
@@ -183,7 +210,7 @@ class QueueDITL(DITLMixin, DITLStats):
             starting_obsid=999000,
             log=self.log,
         )
-        self._temporary_rejected_ppts: list[tuple[Any, bool]] | None = None
+        self._temporary_rejected_ppts: list[tuple[Pointing, bool]] | None = None
         self._retry_ppt_fetch_requested = False
 
         # Track whether the last PPT fetch attempt was unsuccessful (no target dispatched).
@@ -197,7 +224,7 @@ class QueueDITL(DITLMixin, DITLStats):
         self._attitude_constraint_violations: list[tuple[str, str] | None] = []
         self._active_gsp_end_time: float | None = None
 
-    def get_acs_queue_status(self) -> dict[str, Any]:
+    def get_acs_queue_status(self) -> ACSQueueStatus:
         """
         Get the current status of the ACS command queue.
 
@@ -2189,7 +2216,9 @@ class QueueDITL(DITLMixin, DITLStats):
         return pass_slew_trigger_buffer(self.ephem.step_size)
 
     @staticmethod
-    def _ephem_timestamp_to_utime(timestamp: Any) -> float:
+    def _ephem_timestamp_to_utime(
+        timestamp: _HasTimestampMethod | np.datetime64,
+    ) -> float:
         """Convert an ephemeris timestamp entry to a Unix timestamp."""
         if hasattr(timestamp, "timestamp"):
             return float(timestamp.timestamp())

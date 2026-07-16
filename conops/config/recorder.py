@@ -1,6 +1,4 @@
-from typing import Any
-
-from pydantic import Field, field_validator
+from pydantic import Field, model_validator
 
 from ._base import ConfigModel
 
@@ -59,25 +57,14 @@ class OnboardRecorder(ConfigModel):
         default=0.9, ge=0.0, le=1.0, description="Fraction of capacity for red alert"
     )
 
-    @field_validator("current_volume_gb")
-    @classmethod
-    def validate_current_volume(cls, v: float, info: Any) -> float:
-        """Ensure current volume doesn't exceed capacity."""
-        data = info.data or {}
-        capacity: float = data.get("capacity_gb", 32.0)
-        if v > capacity:
-            return capacity
-        return v
-
-    @field_validator("red_threshold")
-    @classmethod
-    def validate_thresholds(cls, v: float, info: Any) -> float:
-        """Ensure red threshold is greater than or equal to yellow threshold."""
-        data = info.data or {}
-        yellow = data.get("yellow_threshold", 0.7)
-        if v < yellow:
+    @model_validator(mode="after")
+    def _validate_recorder_state(self) -> "OnboardRecorder":
+        """Clamp current volume to capacity; ensure red >= yellow threshold."""
+        if self.current_volume_gb > self.capacity_gb:
+            self.current_volume_gb = self.capacity_gb
+        if self.red_threshold < self.yellow_threshold:
             raise ValueError("red_threshold must be >= yellow_threshold")
-        return v
+        return self
 
     def add_data(self, data_gb: float) -> float:
         """Add data to the recorder.

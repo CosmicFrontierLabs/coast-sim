@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
+import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
 from .plan import Plan
@@ -50,7 +50,7 @@ class PlanMetadata(BaseModel):
     @classmethod
     def from_tle_record(
         cls,
-        tle_record: Any,
+        tle_record: rust_ephem.TLERecord,
         tle_file: str | Path | None = None,
         *,
         source: str = "TLE",
@@ -78,7 +78,7 @@ class PlanMetadata(BaseModel):
 
 def attach_tle_plan_metadata(
     plan: Plan,
-    tle_record: Any,
+    tle_record: rust_ephem.TLERecord,
     tle_file: str | Path | None = None,
     *,
     source: str = "TLE",
