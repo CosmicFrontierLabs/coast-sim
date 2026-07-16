@@ -84,11 +84,14 @@ class GroundStationRegistry(ConfigModel):
         If a station with the same code already exists it is replaced to keep
         code uniqueness invariant.
         """
-        for i, existing in enumerate(self.stations):
+        stations = list(self.stations)
+        for i, existing in enumerate(stations):
             if existing.code == station.code:
-                self.stations[i] = station
+                stations[i] = station
+                self.stations = stations
                 return
-        self.stations.append(station)
+        stations.append(station)
+        self.stations = stations
 
     def get(self, code: str) -> GroundStation:
         """Return station matching code or raise KeyError."""
