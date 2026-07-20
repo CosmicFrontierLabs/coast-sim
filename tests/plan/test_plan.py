@@ -13,6 +13,7 @@ from conops.targets import (
     AttitudeTimeseriesSchema,
     OrbitStateSampleSchema,
     OrbitStateTimeseriesSchema,
+    PlanSchema,
 )
 from conops.targets.plan_metadata import PlanMetadata
 
@@ -376,3 +377,80 @@ class TestPlanSaveLoad:
         assert loaded._end_ts == pytest.approx(plan.entries[-1].end)
         assert isinstance(loaded.version, int)
         assert loaded.metadata == plan.metadata
+
+
+class TestPlanSchemaFromPlan:
+    """Test the PlanSchema.from_plan() compatibility conversion entry point."""
+
+    def _plan_with_timeseries(self) -> Plan:
+        plan = _make_plan(1)
+        plan.attitude_timeseries = AttitudeTimeseriesSchema(
+            samples=[
+                AttitudeSampleSchema(
+                    utime=1_000_000.0,
+                    timestamp="1970-01-12T13:46:40+00:00",
+                    ra=11.0,
+                    dec=-19.0,
+                    roll=0.0,
+                    mode="SCIENCE",
+                    obsid=0,
+                )
+            ]
+        )
+        plan.orbit_state_timeseries = OrbitStateTimeseriesSchema(
+            samples=[
+                OrbitStateSampleSchema(
+                    utime=1_000_000.0,
+                    timestamp="1970-01-12T13:46:40+00:00",
+                    position_km=(7000.0, 0.0, 0.0),
+                    velocity_km_s=(0.0, 7.5, 0.0),
+                )
+            ]
+        )
+        return plan
+
+    def test_from_plan_preserves_sidecar_timeseries(self):
+        """from_plan() carries over the exclude=True telemetry objects."""
+
+        plan = self._plan_with_timeseries()
+
+        schema = PlanSchema.from_plan(plan)
+
+        assert schema.attitude_timeseries is not None
+        assert schema.orbit_state_timeseries is not None
+        assert schema.attitude_timeseries.samples[0].obsid == 0
+        assert schema.orbit_state_timeseries.samples[0].position_km == (
+            7000.0,
+            0.0,
+            0.0,
+        )
+
+    def test_from_plan_save_writes_sidecar_files(self, tmp_path):
+        """from_plan(plan).save() writes both sidecar files and links them."""
+
+        plan = self._plan_with_timeseries()
+        dest = tmp_path / "plan.json"
+
+        PlanSchema.from_plan(plan).save(dest)
+
+        raw = json.loads(dest.read_text())
+        attitude_path = tmp_path / raw["attitude_timeseries_file"]
+        orbit_path = tmp_path / raw["orbit_state_timeseries_file"]
+        assert attitude_path.exists()
+        assert orbit_path.exists()
+        assert json.loads(attitude_path.read_text())["samples"][0]["obsid"] == 0
+        assert json.loads(orbit_path.read_text())["samples"][0]["velocity_km_s"] == [
+            0.0,
+            7.5,
+            0.0,
+        ]
+
+    def test_from_plan_carries_entries(self):
+        """from_plan() carries the source plan's entries onto the result."""
+
+        plan = _make_plan(2)
+
+        schema = PlanSchema.from_plan(plan)
+
+        assert len(schema.entries) == len(plan.entries)
+        assert schema.entries[0].obsid == plan.entries[0].obsid

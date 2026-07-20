@@ -23,20 +23,21 @@ class PlanSchema(Plan):
     """Compatibility subclass for the old conops.targets.plan_schema.PlanSchema.
 
     Plan is directly serializable now, so PlanSchema no longer needs to be a
-    separate mirror type. This subclass exists only to keep the legacy
-    from_plan() conversion entry point working for existing callers.
+    separate mirror type. This subclass exists only to keep the legacy import
+    path and the from_plan() conversion entry point working for existing
+    callers.
     """
 
     @classmethod
     def from_plan(cls, plan: Plan) -> "PlanSchema":
         """Build a PlanSchema from an existing Plan instance.
 
-        Round-trips through JSON (matching Plan.save()/Plan.load()) so the
-        result is fully independent of ``plan`` and drops the same
-        runtime-only fields (config, ephem, constraint, acs_config, ...)
-        that the old PlanEntrySchema never carried either.
+        Validates from the source object's attributes, so all state carries
+        over — including the ``exclude=True`` attitude/orbit-state timeseries,
+        which save() needs in order to write the sidecar files and link them
+        from the plan JSON.
         """
-        return cls.model_validate(plan.model_dump(mode="json"))
+        return cls.model_validate(plan, from_attributes=True)
 
 
 __all__ = [
