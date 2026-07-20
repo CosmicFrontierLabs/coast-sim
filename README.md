@@ -24,6 +24,7 @@ The package is organized into logical submodules for better maintainability and 
 - **Attitude Control System**: Slew modeling, pointing accuracy, and settle time simulation
 - **South Atlantic Anomaly (SAA) Avoidance**: Radiation belt constraint handling
 - **DITL Generation**: Comprehensive day-in-the-life timeline simulation
+- **Plan Export**: Versioned JSON plans with optional TLE provenance and executed attitude and orbit-state sidecars
 
 ## Installation
 
@@ -77,6 +78,10 @@ ditl.ephem = ephemeris
 ditl.begin = begin
 ditl.end = end
 ditl.calc()
+
+# Export the executed plan. When available, attitude and orbit-state sidecars
+# are written beside the plan JSON and linked from it.
+plan_path = ditl.plan.save("observation_plan.json")
 
 # Analyze results
 ditl.plot()
@@ -190,7 +195,8 @@ Target observation queue management and intelligent scheduling algorithms (DumbS
 
 ### Targets (`conops.targets`)
 
-Target management classes including Pointing, Queue, Plan, PlanEntry, and Plan for observation planning.
+Target management classes including Pointing, Queue, TargetList, Plan, and PlanEntry for
+observation planning and portable plan export.
 
 ### Simulation (`conops.simulation`)
 
