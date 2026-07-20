@@ -49,7 +49,7 @@ Features
 * **South Atlantic Anomaly (SAA) Avoidance**: Radiation belt constraint handling
 * **DITL Generation**: Comprehensive day-in-the-life timeline simulation
 * **Instantaneous Field of Regard**: Optional computation of accessible sky solid angle at each simulation timestep
-* **Plan Serialisation**: Save and reload observation plans as portable, version-stamped JSON files
+* **Plan Serialisation**: Save and reload observation plans as portable, version-stamped JSON files with optional TLE provenance and executed attitude/orbit-state sidecars
 * **3-D Spacecraft Visualizer**: Interactive rotatable 3-D model of the spacecraft from its MissionConfig — bus, telescope, solar panels, radiators, and star trackers with body-frame axes and normal vectors
 
 Quick Example
