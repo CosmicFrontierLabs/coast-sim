@@ -4,13 +4,17 @@ from unittest.mock import Mock
 
 import numpy as np
 import pytest
+import rust_ephem
 
-from conops import Slew
+from conops import AttitudeControlSystem, Constraint, MissionConfig, Slew
 
 
 @pytest.fixture
 def ephem():
     mock = Mock()
+    # Satisfies isinstance checks (e.g. Slew's pydantic field) without the
+    # attribute-restriction that Mock(spec=...) would impose.
+    mock.__class__ = rust_ephem.Ephemeris
     mock.step_size = 60
     return mock
 
@@ -18,18 +22,29 @@ def ephem():
 @pytest.fixture
 def constraint(ephem):
     constraint = Mock()
+    constraint.__class__ = Constraint
     constraint.ephem = ephem
     return constraint
 
 
 @pytest.fixture
 def acs_config():
-    return Mock()
+    mock = Mock()
+    mock.__class__ = AttitudeControlSystem
+    return mock
 
 
 @pytest.fixture
 def mock_config(constraint, acs_config):
     config = Mock()
+    # Satisfies isinstance checks (e.g. Slew's pydantic "config" field) without
+    # the attribute-restriction that Mock(spec=...) would impose.
+    config.__class__ = MissionConfig
+    # MissionConfig's init_fault_management_defaults model_validator re-runs
+    # whenever this config is embedded as a nested pydantic field elsewhere
+    # (e.g. on Slew.config) and iterates fault_management.thresholds; None
+    # short-circuits it via the validator's own early-return guard.
+    config.fault_management = None
     config.constraint = constraint
     config.spacecraft_bus = Mock()
     config.spacecraft_bus.attitude_control = acs_config

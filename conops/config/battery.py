@@ -1,5 +1,3 @@
-from typing import Any
-
 from pydantic import Field, PrivateAttr, model_validator
 
 from ..common import ChargeState
@@ -53,22 +51,35 @@ class Battery(ConfigModel):
 
     _last_charge_power: float = PrivateAttr(default=0.0)
 
-    @model_validator(mode="before")
-    @classmethod
-    def set_defaults(cls, values: dict[str, Any]) -> dict[str, Any]:
-        """Set derived default values"""
-        if "watthour" not in values:
-            values["watthour"] = values.get("amphour", 20) * values.get("voltage", 28)
+    @model_validator(mode="after")
+    def _apply_derived_defaults(self) -> "Battery":
+        """Derive watthour/recharge_clear_threshold when not explicitly provided.
 
-        if values.get("recharge_clear_threshold") is None:
-            recharge_threshold = float(
-                values.get("recharge_threshold", DEFAULT_RECHARGE_THRESHOLD)
-            )
-            values["recharge_clear_threshold"] = min(
-                1.0, recharge_threshold + DEFAULT_RECHARGE_CLEAR_HYSTERESIS
+        Runs after field validation, so amphour/voltage/recharge_threshold are
+        already real floats; model_fields_set distinguishes "not passed" from
+        "explicitly passed the same value as the default".
+
+        Uses getattr (not self.amphour) as a guard because pydantic re-runs this
+        "after" validator on any object that merely satisfies isinstance against
+        Battery — e.g. a test double such as Mock(spec=Battery) embedded in
+        another model's Battery-typed field — without going through real field
+        population first, so amphour may not exist. Unlike custom fields such as
+        Slew.config, model_fields_set is a genuine BaseModel property, so a Mock
+        auto-mocks it instead of raising; amphour is used as the tolerant guard.
+        """
+        amphour = getattr(self, "amphour", None)
+        if amphour is None:
+            return self
+
+        if "watthour" not in self.model_fields_set:
+            self.watthour = amphour * self.voltage
+
+        if self.recharge_clear_threshold is None:
+            self.recharge_clear_threshold = min(
+                1.0, self.recharge_threshold + DEFAULT_RECHARGE_CLEAR_HYSTERESIS
             )
 
-        return values
+        return self
 
     @model_validator(mode="after")
     def validate_recharge_thresholds(self) -> "Battery":

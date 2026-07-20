@@ -1,8 +1,8 @@
 """DITL event logging system."""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
-from ..common import ACSMode
+from ..common import ACSMode, DITLEventType
 from .ditl_event import DITLEvent
 from .ditl_log_store import DITLLogStore
 
@@ -17,6 +17,8 @@ class DITLLog(BaseModel):
         store: Optional persistent store to which events are appended
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     events: list[DITLEvent] = Field(
         default_factory=list, description="List of logged events"
     )
@@ -28,7 +30,7 @@ class DITLLog(BaseModel):
     def log_event(
         self,
         utime: float,
-        event_type: str,
+        event_type: DITLEventType,
         description: str,
         obsid: int | None = None,
         acs_mode: ACSMode | None = None,
@@ -40,8 +42,8 @@ class DITLLog(BaseModel):
         ----------
         utime : float
             Unix timestamp of the event
-        event_type : str
-            Category of event (e.g., 'PASS', 'SLEW', 'OBSERVATION', 'ERROR', 'INFO')
+        event_type : DITLEventType
+            Category of event
         description : str
             Human-readable description of the event
         obsid : int | None

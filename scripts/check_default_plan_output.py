@@ -21,6 +21,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
+import rust_ephem
 
 _MPLCONFIGDIR = Path(tempfile.gettempdir()) / "coast-sim-matplotlib"
 _MPLCONFIGDIR.mkdir(parents=True, exist_ok=True)
@@ -44,7 +45,6 @@ from conops.config import (  # noqa: E402
     SpacecraftBus,
     StarTrackerConfiguration,
 )
-from conops.targets import PlanSchema  # noqa: E402
 
 
 class DeterministicConstraint(Constraint):
@@ -116,6 +116,11 @@ class DeterministicEphemeris:
             seconds = time.timestamp() - self.begin.timestamp()
         idx = int(round(seconds / self.step_size))
         return max(0, min(len(self.timestamp) - 1, idx))
+
+
+# Register as a virtual subclass so isinstance checks (e.g. Slew's pydantic
+# field) pass without implementing every abstract Ephemeris member.
+rust_ephem.Ephemeris.register(DeterministicEphemeris)
 
 
 @dataclass(frozen=True)
@@ -207,7 +212,7 @@ def build_default_plan_payload() -> dict[str, Any]:
     if not ditl.calc():
         raise RuntimeError("Default plan scenario failed to calculate")
 
-    schema = PlanSchema.from_plan(ditl.plan)
+    schema = ditl.plan
     plan_payload = schema.model_dump(mode="json", exclude_none=True)
     plan_payload.pop("created_at", None)
     plan_payload.pop("coast_sim_version", None)

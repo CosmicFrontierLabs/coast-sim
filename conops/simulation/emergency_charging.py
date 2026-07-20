@@ -10,7 +10,7 @@ import rust_ephem
 from conops.config.battery import Battery
 
 from ..common import unixtime2date
-from ..common.enums import ACSMode, ObsType
+from ..common.enums import ACSMode, DITLEventType, ObsType
 from ..common.vector import angular_separation, sort_by_angular_separation
 from ..config import AttitudeConstraintScope, MissionConfig
 from ..config.constraint import (
@@ -90,7 +90,7 @@ class EmergencyCharging:
     def _log_or_print(
         self,
         utime: float,
-        event_type: str,
+        event_type: DITLEventType,
         description: str,
         obsid: int | None = None,
         acs_mode: ACSMode | None = None,
@@ -551,8 +551,8 @@ class EmergencyCharging:
             roll=roll,
             name=f"EMERGENCY_CHARGE_{self.next_charging_obsid}",
             obsid=self.next_charging_obsid,
-            exptime=86400,
         )
+        charging_ppt.exptime = 86400
         charging_ppt.obstype = ObsType.CHARGE
         self.next_charging_obsid += 1
         charging_ppt.begin = int(utime)

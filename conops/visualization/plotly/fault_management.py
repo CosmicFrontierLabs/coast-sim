@@ -344,7 +344,8 @@ def _build_state_shapes_plotly(
         y_idx = y_map[name]
         tevents_sorted = sorted(tevents, key=lambda e: e.utime)
         for i, e in enumerate(tevents_sorted):
-            new_state = (e.metadata or {}).get("new_state", "nominal")
+            new_state_raw = (e.metadata or {}).get("new_state", "nominal")
+            new_state = new_state_raw if isinstance(new_state_raw, str) else "nominal"
             color = state_colors.get(new_state, "rgba(128,128,128,0.2)")
             x0 = _x_val_plotly(e.utime, t0, x_axis)
             if i + 1 < len(tevents_sorted):

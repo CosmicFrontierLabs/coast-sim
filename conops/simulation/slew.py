@@ -2,6 +2,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import rust_ephem
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from ..common import dtutcfromtimestamp, roll_over_angle, separation, unixtime2date
 from ..common.enums import ObsType, SlewAlgorithm
@@ -17,7 +18,7 @@ if TYPE_CHECKING:
     from ..targets.pointing import Pointing
 
 
-class Slew:
+class Slew(BaseModel):
     """Class defines a Spacecraft Slew. Calculates slew time and slew path.
 
     Supports two path algorithms selected via the ACS configuration:
@@ -25,58 +26,61 @@ class Slew:
     - CONSTRAINT_AVOIDING: generalized constraint-avoiding SLERP.
     """
 
-    ephem: rust_ephem.Ephemeris
-    constraint: Constraint
-    config: MissionConfig
-    slewstart: float
-    slewend: float
-    startra: float
-    startdec: float
-    startroll: float
-    endra: float
-    enddec: float
-    endroll: float
-    slewtime: float
-    slewpath: tuple[list[float], list[float]]
-    slewdist: float
-    obstype: ObsType
-    obsid: int
-    mode: int
-    slewrequest: float
-    at: "Pointing | None"  # In quotes to avoid circular import
-    acs_config: AttitudeControlSystem
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    config: MissionConfig | None = Field(default=None, exclude=True)
+    ephem: rust_ephem.Ephemeris | None = Field(default=None, exclude=True)
+    constraint: Constraint | None = Field(default=None, exclude=True)
+    acs_config: AttitudeControlSystem | None = Field(default=None, exclude=True)
+    slewrequest: float = 0.0  # When was the slew requested
+    slewstart: float = 0.0
+    slewend: float = 0.0
+    startra: float = 0.0
+    startdec: float = 0.0
+    startroll: float = 0.0
+    endra: float = 0.0
+    enddec: float = 0.0
+    endroll: float = 0.0
+    slewtime: float = 0.0
+    slewdist: float = 0.0
+    slewpath: tuple[list[float], list[float]] = Field(default_factory=lambda: ([], []))
+    obstype: ObsType = ObsType.PPT
+    obsid: int = 0
+    at: "Pointing | None" = None  # In quotes to avoid circular import
     # Quaternion SLERP: intermediate roll values along the path
-    _quat_roll_path: list[float]
+    _quat_roll_path: list[float] = PrivateAttr(default_factory=list)
 
-    def __init__(
-        self,
-        config: MissionConfig,
-    ):
-        self.constraint = config.constraint
-        self.acs_config = config.spacecraft_bus.attitude_control
+    @model_validator(mode="after")
+    def _derive_from_config(self) -> "Slew":
+        """Populate ephem/constraint/acs_config from config, when not already set.
 
-        assert self.constraint.ephem is not None, "Ephemeris must be set for Slew class"
+        Uses ``getattr`` (not ``self.config``) because pydantic re-runs this
+        "after" validator on any object that merely satisfies ``isinstance``
+        against ``Slew`` — e.g. a test double such as ``Mock(spec=Slew)``
+        embedded in another model's ``Slew``-typed field — without going
+        through real field population first, so ``config`` may not exist.
+        """
+        config = getattr(self, "config", None)
+        if config is None:
+            return self
+        if self.constraint is None:
+            self.constraint = config.constraint
+        assert self.constraint is not None, "Constraint must be set for Slew class"
+        if self.ephem is None:
+            self.ephem = self.constraint.ephem
+        assert self.ephem is not None, "Ephemeris must be set for Slew class"
+        if self.acs_config is None:
+            self.acs_config = config.spacecraft_bus.attitude_control
+        assert self.acs_config is not None, "ACS config must be set for Slew class"
+        return self
 
-        self.ephem = self.constraint.ephem
+    def __eq__(self, other: object) -> bool:
+        """Compare by identity, matching plain-object semantics (Slew instances are used as dict keys)."""
+        return self is other
 
-        self.slewrequest = 0  # When was the slew requested
-        self.slewstart = 0
-        self.slewend = 0
-        self.startra = 0
-        self.startdec = 0
-        self.startroll = 0
-        self.endra = 0
-        self.enddec = 0
-        self.endroll = 0
-        self.slewtime = 0
-        self.slewdist = 0
-        self.slewpath = ([], [])
-
-        self.obstype = ObsType.PPT
-        self.obsid = 0
-        self.mode = 0
-        self.at = None  # What's the target associated with this slew?
-        self._quat_roll_path: list[float] = []  # roll path for QUATERNION algorithm
+    def __hash__(self) -> int:
+        """Hash by identity, matching plain-object semantics (Slew instances are used as dict keys)."""
+        return id(self)
 
     @classmethod
     def idle_hold(
@@ -88,21 +92,23 @@ class Slew:
         utime: float,
     ) -> "Slew":
         """Create a zero-duration IDLE hold at the given attitude."""
-        hold = cls(config=config)
-        hold.slewrequest = utime
-        hold.slewstart = utime
-        hold.slewend = utime
-        hold.slewtime = 0.0
-        hold.slewdist = 0.0
-        hold.startra = ra
-        hold.startdec = dec
-        hold.startroll = roll
-        hold.endra = ra
-        hold.enddec = dec
-        hold.endroll = roll
-        hold.obstype = ObsType.IDLE
-        hold.obsid = 0
-        hold.at = None
+        hold = cls(
+            config=config,
+            slewrequest=utime,
+            slewstart=utime,
+            slewend=utime,
+            slewtime=0.0,
+            slewdist=0.0,
+            startra=ra,
+            startdec=dec,
+            startroll=roll,
+            endra=ra,
+            enddec=dec,
+            endroll=roll,
+            obstype=ObsType.IDLE,
+            obsid=0,
+            at=None,
+        )
         return hold
 
     def __str__(self) -> str:
@@ -121,6 +127,9 @@ class Slew:
 
     def _slew_fraction(self, t: float) -> float:
         """Return progress fraction [0,1] along the bang-bang profile at elapsed time t."""
+        assert self.acs_config is not None, (
+            "ACS config must be set to calculate slew fraction"
+        )
         total_dist = float(self.slewdist)
         s = self.acs_config.s_of_t(total_dist, t)
         return 0.0 if total_dist == 0 else max(0.0, min(1.0, s / total_dist))
@@ -196,6 +205,9 @@ class Slew:
             )
 
         # Calculate slew time using AttitudeControlSystem
+        assert self.acs_config is not None, (
+            "ACS config must be set to calculate slew time"
+        )
         self.slewtime = round(self.acs_config.slew_time(distance))
 
         self.slewend = self.slewstart + self.slewtime
@@ -218,6 +230,7 @@ class Slew:
         In all cases self.slewdist is the total angular distance (degrees) and
         self.slewpath is the (ra_list, dec_list) path used for interpolation.
         """
+        assert self.acs_config is not None, "ACS config must be set to predict slew"
         steps = 100
         if self.acs_config.slew_algorithm == SlewAlgorithm.CONSTRAINT_AVOIDING:
             self._predict_slew_constraint_avoiding(steps)
@@ -257,6 +270,11 @@ class Slew:
         from two consecutive SLERP segments.  Falls back to plain quaternion SLERP
         when no violation is detected.
         """
+        assert self.acs_config is not None, "ACS config must be set to predict slew"
+        assert self.constraint is not None, "Constraint must be set to predict slew"
+        ephem = self.ephem
+        assert ephem is not None, "Ephemeris must be set to predict slew"
+
         # Determine which constraint to use: ACS slew_constraint or spacecraft constraint
         slew_constraint = (
             self.acs_config.slew_constraint
@@ -271,12 +289,12 @@ class Slew:
                 return False
             # Round time to nearest ephemeris step to ensure it exists in ephemeris
             # rust-ephem's in_constraint requires exact timestamp matches
-            step_size: float = getattr(self.ephem, "step_size", 60)
+            step_size: float = getattr(ephem, "step_size", 60)
             rounded_time = round(time / step_size) * step_size
             dt = dtutcfromtimestamp(rounded_time)
             return bool(
                 slew_constraint.in_constraint(
-                    ephemeris=self.ephem,
+                    ephemeris=ephem,
                     target_ra=ra,
                     target_dec=dec,
                     time=dt,

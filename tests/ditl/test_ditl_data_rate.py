@@ -117,7 +117,7 @@ class TestEffectiveDataRate:
             spacecraft_bus=spacecraft_bus,
             solar_panel=SolarPanelSet(panels=[]),
             payload=Payload(instruments=[]),
-            battery=Battery(capacity_wh=1000, max_depth_of_discharge=0.8),
+            battery=Battery(watthour=1000, max_depth_of_discharge=0.8),
             constraint=constraint,
             ground_stations=GroundStationRegistry.default(),
         )
@@ -154,7 +154,7 @@ class TestEffectiveDataRate:
             spacecraft_bus=spacecraft_bus,
             solar_panel=SolarPanelSet(panels=[]),
             payload=Payload(instruments=[]),
-            battery=Battery(capacity_wh=1000, max_depth_of_discharge=0.8),
+            battery=Battery(watthour=1000, max_depth_of_discharge=0.8),
             constraint=constraint,
             ground_stations=GroundStationRegistry.default(),
         )
@@ -196,7 +196,7 @@ class TestEffectiveDataRate:
             spacecraft_bus=spacecraft_bus,
             solar_panel=SolarPanelSet(panels=[]),
             payload=Payload(instruments=[]),
-            battery=Battery(capacity_wh=1000, max_depth_of_discharge=0.8),
+            battery=Battery(watthour=1000, max_depth_of_discharge=0.8),
             constraint=constraint,
             ground_stations=GroundStationRegistry.default(),
         )
@@ -238,7 +238,7 @@ class TestEffectiveDataRate:
             spacecraft_bus=spacecraft_bus,
             solar_panel=SolarPanelSet(panels=[]),
             payload=Payload(instruments=[]),
-            battery=Battery(capacity_wh=1000, max_depth_of_discharge=0.8),
+            battery=Battery(watthour=1000, max_depth_of_discharge=0.8),
             constraint=constraint,
             ground_stations=GroundStationRegistry.default(),
         )
@@ -283,7 +283,7 @@ class TestEffectiveDataRate:
             spacecraft_bus=spacecraft_bus,
             solar_panel=SolarPanelSet(panels=[]),
             payload=Payload(instruments=[]),
-            battery=Battery(capacity_wh=1000, max_depth_of_discharge=0.8),
+            battery=Battery(watthour=1000, max_depth_of_discharge=0.8),
             constraint=constraint,
             ground_stations=GroundStationRegistry.default(),
         )
@@ -333,7 +333,7 @@ class TestEffectiveDataRate:
             spacecraft_bus=spacecraft_bus,
             solar_panel=SolarPanelSet(panels=[]),
             payload=Payload(instruments=[]),
-            battery=Battery(capacity_wh=1000, max_depth_of_discharge=0.8),
+            battery=Battery(watthour=1000, max_depth_of_discharge=0.8),
             constraint=constraint,
             ground_stations=GroundStationRegistry.default(),
         )
@@ -376,7 +376,7 @@ class TestEffectiveDataRate:
             spacecraft_bus=spacecraft_bus,
             solar_panel=SolarPanelSet(panels=[]),
             payload=Payload(instruments=[]),
-            battery=Battery(capacity_wh=1000, max_depth_of_discharge=0.8),
+            battery=Battery(watthour=1000, max_depth_of_discharge=0.8),
             constraint=constraint,
             ground_stations=GroundStationRegistry.default(),
         )
@@ -420,7 +420,7 @@ class TestEffectiveDataRate:
             spacecraft_bus=spacecraft_bus,
             solar_panel=SolarPanelSet(panels=[]),
             payload=Payload(instruments=[]),
-            battery=Battery(capacity_wh=1000, max_depth_of_discharge=0.8),
+            battery=Battery(watthour=1000, max_depth_of_discharge=0.8),
             constraint=constraint,
             ground_stations=GroundStationRegistry.default(),
         )

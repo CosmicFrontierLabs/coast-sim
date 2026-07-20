@@ -5,10 +5,12 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
+import rust_ephem
 from matplotlib import pyplot as plt
 
 from conops import DITL, ACSMode, Queue
 from conops.config import (
+    AttitudeControlSystem,
     BandCapability,
     Battery,
     Constraint,
@@ -62,6 +64,11 @@ class DummyEphemeris:
         return 0
 
 
+# Register as a virtual subclass so isinstance checks (e.g. Slew's pydantic
+# field) pass without implementing every abstract Ephemeris member.
+rust_ephem.Ephemeris.register(DummyEphemeris)
+
+
 class MockDITL(DITLMixin, DITLStats):
     """Mock DITL class for statistics testing."""
 
@@ -86,6 +93,7 @@ def create_statistics_test_config(ephem: DummyEphemeris | None = None) -> Missio
 
     spacecraft_bus = Mock(spec=SpacecraftBus)
     spacecraft_bus.attitude_control = Mock()
+    spacecraft_bus.attitude_control.__class__ = AttitudeControlSystem
     spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))
     spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
     spacecraft_bus.star_trackers = Mock()
@@ -180,9 +188,14 @@ def ditl_with_queue(statistics_test_config: MissionConfig) -> MockDITL:
 def mock_config():
     """Create a minimal mock config with required attributes for DITLMixin."""
     cfg = Mock()
+    # Satisfies isinstance checks (e.g. Slew's pydantic "config" field) without
+    # the attribute-restriction that Mock(spec=...) would impose.
+    cfg.__class__ = MissionConfig
     cfg.name = "test"
     cfg.constraint = Mock()
+    cfg.constraint.__class__ = Constraint
     cfg.constraint.ephem = Mock()  # DITLMixin asserts this is not None
+    cfg.constraint.ephem.__class__ = rust_ephem.Ephemeris
     cfg.constraint.ephem.earth = [Mock(ra=Mock(deg=0.0), dec=Mock(deg=0.0))]
     cfg.constraint.ephem.earth_ra_deg = [0.0]
     cfg.constraint.ephem.earth_dec_deg = [0.0]
@@ -195,6 +208,24 @@ def mock_config():
     ]
     cfg.battery = Mock()
     cfg.battery.max_depth_of_discharge = 0.5
+    cfg.recorder = Mock()
+    cfg.recorder.yellow_threshold = 0.7
+    cfg.recorder.red_threshold = 0.9
+    cfg.spacecraft_bus.attitude_control.__class__ = AttitudeControlSystem
+    cfg.spacecraft_bus.star_trackers = Mock()
+    cfg.spacecraft_bus.star_trackers.num_trackers = Mock(return_value=0)
+    cfg.spacecraft_bus.radiators = Mock()
+    cfg.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
+    # MissionConfig's init_fault_management_defaults model_validator re-runs
+    # whenever this config is embedded as a nested pydantic field elsewhere
+    # (e.g. on Slew.config) and iterates fault_management.thresholds, while
+    # DITL/DITLMixin call fault_management.check()/.safe_mode_requested/.events
+    # directly — so fault_management must be a populated mock, not None.
+    cfg.fault_management = Mock()
+    cfg.fault_management.check = Mock()
+    cfg.fault_management.safe_mode_requested = False
+    cfg.fault_management.events = []
+    cfg.fault_management.thresholds = []
     return cfg
 
 
@@ -208,9 +239,11 @@ def mock_ephem():
 def mock_config_detailed():
     """Create a mock config with all required subsystems."""
     config = Mock()
+    config.__class__ = MissionConfig
 
     # Mock constraint
     config.constraint = Mock()
+    config.constraint.__class__ = Constraint
     config.constraint.ephem = DummyEphemeris()
     config.constraint.panel_constraint = Mock()
     config.constraint.panel_constraint.solar_panel = Mock()
@@ -226,13 +259,17 @@ def mock_config_detailed():
     config.battery.drain = Mock()
     config.battery.charge = Mock()
     config.battery.panel_charge_rate = 100.0
+    config.battery.max_depth_of_discharge = 0.5
 
     # Mock spacecraft bus
     config.spacecraft_bus = Mock()
     config.spacecraft_bus.power = Mock(return_value=50.0)
     config.spacecraft_bus.attitude_control = Mock()
+    config.spacecraft_bus.attitude_control.__class__ = AttitudeControlSystem
     config.spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))
     config.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
+    config.spacecraft_bus.star_trackers = Mock()
+    config.spacecraft_bus.star_trackers.num_trackers = Mock(return_value=0)
     config.spacecraft_bus.radiators = Mock()
     config.spacecraft_bus.radiators.set_ephem = Mock()
     config.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
@@ -245,6 +282,8 @@ def mock_config_detailed():
     # Mock recorder
     config.recorder = Mock()
     config.recorder.current_volume_gb = 0.0
+    config.recorder.yellow_threshold = 0.7
+    config.recorder.red_threshold = 0.9
     config.recorder.get_fill_fraction = Mock(return_value=0.0)
     config.recorder.get_alert_level = Mock(return_value=0)  # 0 = no alert
     config.recorder.add_data = Mock()
@@ -260,6 +299,17 @@ def mock_config_detailed():
 
     # Mock ground stations
     config.ground_stations = Mock()
+
+    # MissionConfig's init_fault_management_defaults model_validator re-runs
+    # whenever this config is embedded as a nested pydantic field elsewhere
+    # (e.g. on Slew.config) and iterates fault_management.thresholds, while
+    # DITL/DITLMixin call fault_management.check()/.safe_mode_requested/.events
+    # directly — so fault_management must be a populated mock, not None.
+    config.fault_management = Mock()
+    config.fault_management.check = Mock()
+    config.fault_management.safe_mode_requested = False
+    config.fault_management.events = []
+    config.fault_management.thresholds = []
 
     return config
 

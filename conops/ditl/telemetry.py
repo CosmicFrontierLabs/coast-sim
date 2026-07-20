@@ -1,11 +1,16 @@
 """Telemetry data storage for DITL simulations."""
 
 from datetime import datetime
-from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..common import ACSMode
+
+# Union of every possible Housekeeping field's value type, for dynamic
+# by-name field extraction (extract_field/extract_fields below).
+HousekeepingFieldValue = (
+    datetime | float | int | bool | str | ACSMode | list[bool] | list[float] | None
+)
 
 
 class Housekeeping(BaseModel):
@@ -178,7 +183,9 @@ class Housekeeping(BaseModel):
     )
 
     @classmethod
-    def extract_field(cls, records: list["Housekeeping"], field_name: str) -> list[Any]:
+    def extract_field(
+        cls, records: list["Housekeeping"], field_name: str
+    ) -> list[HousekeepingFieldValue]:
         """
         Extract a single field from a list of Housekeeping records.
 
@@ -191,7 +198,7 @@ class Housekeeping(BaseModel):
 
         Returns
         -------
-        list[Any]
+        list[HousekeepingFieldValue]
             List of field values from all records
 
         Raises
@@ -206,7 +213,7 @@ class Housekeeping(BaseModel):
     @classmethod
     def extract_fields(
         cls, records: list["Housekeeping"], field_names: list[str]
-    ) -> dict[str, list[Any]]:
+    ) -> dict[str, list[HousekeepingFieldValue]]:
         """
         Extract multiple fields from a list of Housekeeping records.
 
@@ -219,7 +226,7 @@ class Housekeeping(BaseModel):
 
         Returns
         -------
-        dict[str, list]
+        dict[str, list[HousekeepingFieldValue]]
             Dictionary mapping field names to lists of values
 
         Raises

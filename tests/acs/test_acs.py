@@ -4,6 +4,7 @@ from unittest.mock import Mock
 
 import numpy as np
 import pytest
+import rust_ephem
 
 from conops import ACS, ACSCommandType, ACSMode, AttitudeConstraintScope
 from conops.common.enums import ObsType
@@ -30,6 +31,11 @@ class DummyEphemeris:
 
     def index(self, time):
         return 0
+
+
+# Register as a virtual subclass so isinstance checks (e.g. Slew's pydantic
+# field) pass without implementing every abstract Ephemeris member.
+rust_ephem.Ephemeris.register(DummyEphemeris)
 
 
 class TestACSInitialization:
@@ -234,7 +240,7 @@ class TestACSStateManagement:
         acs.config.attitude_constraint_scopes_for_mode = Mock(
             return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
         )
-        acs.config.fault_management.events = []
+        acs.config.fault_management = Mock(events=[])
         monkeypatch.setattr("conops.simulation.acs.optimum_roll", lambda *args: 5.0)
         acs.constraint.in_star_tracker_hard = Mock(return_value=True)
 

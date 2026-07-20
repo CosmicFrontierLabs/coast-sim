@@ -21,6 +21,29 @@
 # Mission name/identifier
 name: Example Spacecraft Configuration
 
+# Constraint validation scopes by ACS mode for executed attitude samples. Values are lists containing 'hardware_safety', 'imaging_quality', 'power_generation', and/or 'ground_contact'. Omitted modes use the default scopes.
+attitude_constraint_scopes:
+  SCIENCE:
+  - hardware_safety
+  - imaging_quality
+  - power_generation
+  CHARGING:
+  - hardware_safety
+  - power_generation
+  SLEWING:
+  - hardware_safety
+  PASS:
+  - hardware_safety
+  - power_generation
+  - ground_contact
+  SAA:
+  - hardware_safety
+  SAFE:
+  - hardware_safety
+  - power_generation
+  IDLE:
+  - hardware_safety
+
 # Spacecraft Bus Configuration. Defines the main spacecraft platform including power, attitude control, and communications
 spacecraft_bus:
   # name: Name of the spacecraft bus
@@ -35,8 +58,6 @@ spacecraft_bus:
     power_mode:
       '0': 70.0
       '1': 100.0
-    # eclipse_power: Optional power draw during eclipse in Watts
-    eclipse_power: null
     # eclipse_power_mode: Mode-specific power draw during eclipse (mode -> Watts)
     eclipse_power_mode: {}
   # attitude_control: Attitude control system (ACS) configuration
@@ -49,16 +70,25 @@ spacecraft_bus:
     slew_accuracy: 0.01
     # settle_time: Time to settle after slew completion in seconds
     settle_time: 10.0
-  # communications: Communications system configuration
-  communications: null
+    # slew_algorithm: Algorithm used to compute slew paths. 'quaternion' (default): full SO(3) SLERP coupling pointing and roll. 'constraint_avoiding': quaternion SLERP with automatic detour around any configured slew constraint (uses slew_constraint if set, otherwise falls back to the spacecraft's general pointing constraint).
+    slew_algorithm: quaternion
+    # gsp_tracking_phase_step_deg: Ground-station-pass roll phase search increment in degrees. Smaller values search more candidate tracking attitudes at higher CPU cost.
+    gsp_tracking_phase_step_deg: 5.0
   # heater: Heater system configuration
   heater:
+    # name: Name/identifier for the heater
     name: Bus Heaters
+    # power_draw: Power draw characteristics for the heater
     power_draw:
+      # nominal_power: Nominal power draw in Watts
       nominal_power: 25.0
+      # peak_power: Peak power draw in Watts
       peak_power: 300.0
+      # power_mode: Mode-specific power draw mapping (mode -> Watts)
       power_mode: {}
+      # eclipse_power: Optional power draw during eclipse in Watts
       eclipse_power: 75.0
+      # eclipse_power_mode: Mode-specific power draw during eclipse (mode -> Watts)
       eclipse_power_mode: {}
   # data_generation: Data generation specifications for bus-level data
   data_generation:
@@ -79,33 +109,12 @@ spacecraft_bus:
           sun_constraint:
             type: sun
             min_angle: 25.0
-            max_angle: null
-          anti_sun_constraint:
-            type: sun
-            min_angle: 0.0
-            max_angle: 180.0
-          moon_constraint:
-            type: moon
-            min_angle: 20.0
-            max_angle: null
           earth_constraint:
             type: earth_limb
             min_angle: 12.0
-            max_angle: null
             include_refraction: false
             horizon_dip: false
-          panel_constraint:
-            type: and
-            constraints:
-            - type: sun
-              min_angle: 45.0
-              max_angle: 135.0
-            - type: not
-              constraint:
-                type: eclipse
-                umbra_only: true
-        soft_constraint: null
-        modes_require_lock: null
+          ignore_roll: false
       - name: ST-ZenithSide
         orientation:
           boresight:
@@ -116,34 +125,44 @@ spacecraft_bus:
           sun_constraint:
             type: sun
             min_angle: 20.0
-            max_angle: null
-          anti_sun_constraint:
-            type: sun
-            min_angle: 0.0
-            max_angle: 180.0
-          moon_constraint:
-            type: moon
-            min_angle: 20.0
-            max_angle: null
           earth_constraint:
             type: earth_limb
             min_angle: 12.0
-            max_angle: null
             include_refraction: false
             horizon_dip: false
-          panel_constraint:
-            type: and
-            constraints:
-            - type: sun
-              min_angle: 45.0
-              max_angle: 135.0
-            - type: not
-              constraint:
-                type: eclipse
-                umbra_only: true
-        soft_constraint: null
-        modes_require_lock: null
+          ignore_roll: false
     min_functional_trackers: 1
+  # radiators: Body-mounted radiator configuration
+  radiators:
+    radiators:
+      - name: Default Radiator
+        width_m: 1.0
+        height_m: 1.0
+        orientation:
+          normal:
+          - 0.0
+          - -1.0
+          - 0.0
+        # subsystem: Subsystem served by this radiator (e.g. payload, bus)
+        subsystem: spacecraft_bus
+        efficiency: 0.9
+        emissivity: 0.85
+        # dissipation_coefficient_w_per_m2: Upper bound on emitted thermal flux used for calibration/backward compatibility
+        dissipation_coefficient_w_per_m2: 220.0
+        # absorptivity: Effective absorptivity for incoming radiative flux
+        absorptivity: 0.2
+        # radiator_temperature_k: Representative radiator surface temperature in Kelvin
+        radiator_temperature_k: 300.0
+        # sink_temperature_k: Background sink temperature in Kelvin
+        sink_temperature_k: 3.0
+        # solar_constant_w_per_m2: Solar constant used for absorbed Sun flux term (W/m^2)
+        solar_constant_w_per_m2: 1361.0
+        # earth_ir_flux_w_per_m2: Effective Earth IR flux term (W/m^2)
+        earth_ir_flux_w_per_m2: 237.0
+        sun_loading_factor: 0.7
+        earth_loading_factor: 0.3
+        # shadowed_by: Names of solar panels (SolarPanel.name) that can cast shadows onto this radiator. Shadow computation is active only when both this radiator and the referenced panels have geometry set.
+        shadowed_by: []
 
 # Solar Panel Configuration. Defines solar array characteristics and power generation capability
 solar_panel:
@@ -169,19 +188,21 @@ solar_panel:
 # Payload/Instrument Configuration. Defines science instruments with power draw and data generation rates
 payload:
   instruments:
-    - name: Default Instrument
+    - name: Optical Imager
+      # instrument_type: Discriminator tag for polymorphic payload deserialization
+      instrument_type: Instrument
       # power_draw: Power draw characteristics for the instrument
       power_draw:
         nominal_power: 50.0
-        peak_power: 100.0
-        power_mode: {}
-        eclipse_power: null
+        peak_power: 300.0
+        power_mode:
+          '0': 200.0
+          '1': 50.0
+          '2': 50.0
         eclipse_power_mode: {}
-      # heater: Optional heater system for the instrument
-      heater: null
       # data_generation: Data generation characteristics
       data_generation:
-        rate_gbps: 0.0
+        rate_gbps: 0.0001953125
         per_observation_gb: 0.0
 
 # Battery Configuration. Defines battery capacity, voltage, and charging parameters
@@ -198,8 +219,10 @@ battery:
   emergency_recharge: false
   # max_depth_of_discharge: Maximum allowed depth of discharge (0.0-1.0)
   max_depth_of_discharge: 0.4
-  # recharge_threshold: Battery level fraction to stop charging (0.0-1.0)
+  # recharge_threshold: Battery level fraction that starts emergency recharge (0.0-1.0)
   recharge_threshold: 0.95
+  # recharge_clear_threshold: Battery level fraction that clears emergency recharge. Defaults to recharge_threshold + 0.005, capped at 1.0.
+  recharge_clear_threshold: 0.955
   # charge_level: Current battery charge level (Wh)
   charge_level: 1000.0
   # emergency_charging_min_illumination: Illumination threshold for emergency charging (0.0-1.0)
@@ -213,29 +236,22 @@ constraint:
     constraints:
     - type: sun
       min_angle: 90.0
-      max_angle: null
     - type: not
       constraint:
         type: eclipse
         umbra_only: true
-  # anti_sun_constraint: Anti-sun constraint configuration
-  anti_sun_constraint:
-    type: sun
-    min_angle: 0.0
-    max_angle: 180.0
   # moon_constraint: Moon constraint configuration
   moon_constraint:
     type: moon
+    # min_angle: Minimum angle from Sun in degrees
     min_angle: 20.0
-    max_angle: null
   # earth_constraint: Earth constraint configuration
   earth_constraint:
     type: earth_limb
     min_angle: 20.0
-    max_angle: null
     include_refraction: false
     horizon_dip: false
-  # panel_constraint: Solar panel constraint configuration
+  # panel_constraint: Power-generation / solar panel constraint configuration
   panel_constraint:
     type: and
     constraints:
@@ -246,6 +262,42 @@ constraint:
       constraint:
         type: eclipse
         umbra_only: true
+  # star_tracker_hard_constraint: Star tracker hard exclusion constraint
+  star_tracker_hard_constraint:
+    type: or
+    constraints:
+    - type: boresight_offset
+      constraint:
+        type: or
+        constraints:
+        - type: sun
+          min_angle: 25.0
+        - type: earth_limb
+          min_angle: 12.0
+          include_refraction: false
+          horizon_dip: false
+      roll_deg: 0.0
+      roll_clockwise: true
+      roll_reference: north
+      pitch_deg: 0.0
+      yaw_deg: 90.0
+    - type: boresight_offset
+      constraint:
+        type: or
+        constraints:
+        - type: sun
+          min_angle: 20.0
+        - type: earth_limb
+          min_angle: 12.0
+          include_refraction: false
+          horizon_dip: false
+      roll_deg: 0.0
+      roll_clockwise: true
+      roll_reference: north
+      pitch_deg: 0.0
+      yaw_deg: -90.0
+  # ignore_roll: When True, roll is intended to be treated as a free parameter for constraint checks (e.g. callers may pass target_roll=None so that rust-ephem returns False (visible) for any pointing that is accessible at some roll angle). This field does not itself modify or override the target_roll values passed by callers; it is a configuration flag interpreted by higher-level logic.
+  ignore_roll: false
 
 # Ground Station Network. Defines ground station locations and communication capabilities
 ground_stations:
@@ -263,13 +315,13 @@ ground_stations:
       min_elevation_deg: 10.0
       # schedule_probability: Probability of scheduling a pass when available
       schedule_probability: 0.7
+      # schedule_for_tracking: Whether visible passes from this station may be scheduled as spacecraft-tracking ground-station passes. Set false for uplink-only contacts that should not drive GSP attitude planning.
+      schedule_for_tracking: true
       # bands: Per-band capabilities (uplink/downlink rates)
       bands:
       - band: S
         uplink_rate_mbps: 2.0
         downlink_rate_mbps: 10.0
-      # gain_db: Antenna gain in dB
-      gain_db: null
     - name: South Pole
       # code: Short code identifier (e.g., GHA, RWA)
       code: SPO
@@ -283,13 +335,13 @@ ground_stations:
       min_elevation_deg: 10.0
       # schedule_probability: Probability of scheduling a pass when available
       schedule_probability: 0.2
+      # schedule_for_tracking: Whether visible passes from this station may be scheduled as spacecraft-tracking ground-station passes. Set false for uplink-only contacts that should not drive GSP attitude planning.
+      schedule_for_tracking: true
       # bands: Per-band capabilities (uplink/downlink rates)
       bands:
       - band: S
         uplink_rate_mbps: 2.0
         downlink_rate_mbps: 10.0
-      # gain_db: Antenna gain in dB
-      gain_db: null
     - name: North Pole
       # code: Short code identifier (e.g., GHA, RWA)
       code: NPO
@@ -303,13 +355,13 @@ ground_stations:
       min_elevation_deg: 10.0
       # schedule_probability: Probability of scheduling a pass when available
       schedule_probability: 0.2
+      # schedule_for_tracking: Whether visible passes from this station may be scheduled as spacecraft-tracking ground-station passes. Set false for uplink-only contacts that should not drive GSP attitude planning.
+      schedule_for_tracking: true
       # bands: Per-band capabilities (uplink/downlink rates)
       bands:
       - band: S
         uplink_rate_mbps: 2.0
         downlink_rate_mbps: 10.0
-      # gain_db: Antenna gain in dB
-      gain_db: null
     - name: Punta Veija
       # code: Short code identifier (e.g., GHA, RWA)
       code: PVG
@@ -323,13 +375,13 @@ ground_stations:
       min_elevation_deg: 10.0
       # schedule_probability: Probability of scheduling a pass when available
       schedule_probability: 0.5
+      # schedule_for_tracking: Whether visible passes from this station may be scheduled as spacecraft-tracking ground-station passes. Set false for uplink-only contacts that should not drive GSP attitude planning.
+      schedule_for_tracking: true
       # bands: Per-band capabilities (uplink/downlink rates)
       bands:
       - band: S
         uplink_rate_mbps: 2.0
         downlink_rate_mbps: 10.0
-      # gain_db: Antenna gain in dB
-      gain_db: null
 
 # Onboard Data Recorder. Defines storage capacity and fill thresholds
 recorder:
@@ -355,8 +407,10 @@ fault_management:
       red: 0.5
       # direction: Fault direction: 'below' or 'above'
       direction: below
-      # acs_modes: ACS modes where this parameter should be checked
-      acs_modes: null
+      # triggers_safe_mode: Whether a RED classification triggers safe mode (default True). Set False for monitoring-only thresholds that should alert but not safehold.
+      triggers_safe_mode: true
+      # safe_mode_delay_seconds: Continuous RED duration required before triggering safe mode. 0.0 triggers immediately on RED.
+      safe_mode_delay_seconds: 0.0
     - name: recorder_fill_fraction
       # yellow: Yellow threshold value
       yellow: 0.7
@@ -364,17 +418,54 @@ fault_management:
       red: 0.9
       # direction: Fault direction: 'below' or 'above'
       direction: above
-      # acs_modes: ACS modes where this parameter should be checked
-      acs_modes: null
+      # triggers_safe_mode: Whether a RED classification triggers safe mode (default True). Set False for monitoring-only thresholds that should alert but not safehold.
+      triggers_safe_mode: true
+      # safe_mode_delay_seconds: Continuous RED duration required before triggering safe mode. 0.0 triggers immediately on RED.
+      safe_mode_delay_seconds: 0.0
     - name: star_tracker_functional_count
       # yellow: Yellow threshold value
-      yellow: 1.0
+      yellow: 0.0
       # red: Red threshold value
       red: 0.0
       # direction: Fault direction: 'below' or 'above'
       direction: below
-      # acs_modes: ACS modes where this parameter should be checked
-      acs_modes: null
+      # triggers_safe_mode: Whether a RED classification triggers safe mode (default True). Set False for monitoring-only thresholds that should alert but not safehold.
+      triggers_safe_mode: false
+      # safe_mode_delay_seconds: Continuous RED duration required before triggering safe mode. 0.0 triggers immediately on RED.
+      safe_mode_delay_seconds: 0.0
+    - name: star_tracker_hard_violations
+      # yellow: Yellow threshold value
+      yellow: 0.5
+      # red: Red threshold value
+      red: 0.5
+      # direction: Fault direction: 'below' or 'above'
+      direction: above
+      # triggers_safe_mode: Whether a RED classification triggers safe mode (default True). Set False for monitoring-only thresholds that should alert but not safehold.
+      triggers_safe_mode: false
+      # safe_mode_delay_seconds: Continuous RED duration required before triggering safe mode. 0.0 triggers immediately on RED.
+      safe_mode_delay_seconds: 0.0
+    - name: ppt_unavailable
+      # yellow: Yellow threshold value
+      yellow: 0.5
+      # red: Red threshold value
+      red: 1.5
+      # direction: Fault direction: 'below' or 'above'
+      direction: above
+      # triggers_safe_mode: Whether a RED classification triggers safe mode (default True). Set False for monitoring-only thresholds that should alert but not safehold.
+      triggers_safe_mode: true
+      # safe_mode_delay_seconds: Continuous RED duration required before triggering safe mode. 0.0 triggers immediately on RED.
+      safe_mode_delay_seconds: 0.0
+    - name: radiator_hard_violations
+      # yellow: Yellow threshold value
+      yellow: 0.5
+      # red: Red threshold value
+      red: 0.5
+      # direction: Fault direction: 'below' or 'above'
+      direction: above
+      # triggers_safe_mode: Whether a RED classification triggers safe mode (default True). Set False for monitoring-only thresholds that should alert but not safehold.
+      triggers_safe_mode: false
+      # safe_mode_delay_seconds: Continuous RED duration required before triggering safe mode. 0.0 triggers immediately on RED.
+      safe_mode_delay_seconds: 0.0
   # red_limit_constraints: List of spacecraft-level red limit constraints
   red_limit_constraints:
     - name: Sun Avoidance
@@ -384,7 +475,6 @@ fault_management:
         constraints:
         - type: sun
           min_angle: 20.0
-          max_angle: null
         - type: not
           constraint:
             type: eclipse
@@ -449,13 +539,13 @@ observation_categories:
 
 # Target Configuration. Defines observational targets and scheduling parameters
 targets:
-  # slew_distance_weight: Merit penalty per degree of slew distance when selecting next target
+  # slew_distance_weight: Weight to penalize long slews when selecting next target
   slew_distance_weight: 0.0
-  # slew_time_weight: Merit penalty per minute of estimated slew time
+  # slew_time_weight: Weight to penalize slew time during target selection, in merit points per minute
   slew_time_weight: 0.0
-  # collection_time_weight: Merit reward per minute of useful science collection time
+  # collection_time_weight: Weight to reward expected useful collection time during target selection, in merit points per minute
   collection_time_weight: 0.0
-  # radiator_sun_exposure_weight: Merit penalty per unit radiator Sun exposure
+  # radiator_sun_exposure_weight: Weight to penalize radiator sun exposure during target selection
   radiator_sun_exposure_weight: 0.0
-  # radiator_earth_exposure_weight: Merit penalty per unit radiator Earth exposure
+  # radiator_earth_exposure_weight: Weight to penalize radiator earth exposure during target selection
   radiator_earth_exposure_weight: 0.0

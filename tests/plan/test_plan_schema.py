@@ -1,4 +1,18 @@
-"""Tests for conops.targets.plan_schema (PlanSchema / PlanEntrySchema)."""
+"""Tests for the JSON-export/import behavior of PlanEntry / Pointing / Plan.
+
+These tests used to target the standalone ``PlanEntrySchema`` / ``PlanSchema``
+mirror classes (removed from ``conops.targets.plan_schema``). That behavior
+now lives directly on ``PlanEntry`` (``conops.targets.plan_entry``),
+``Pointing`` (``conops.targets.pointing``), and ``Plan``
+(``conops.targets.plan``), so these tests exercise those classes directly.
+
+Coverage that is already exercised by ``tests/plan/test_plan.py`` (basic
+save/load roundtrips, directory auto-naming/versioning, attitude-timeseries
+companion files, plan-level metadata roundtrips) is intentionally not
+duplicated here; this file focuses on behavior unique to the old schema
+tests: target-attitude generation, GSP field roundtripping, version
+coercion, legacy-JSON compatibility, and TLE metadata merging.
+"""
 
 import json
 import pathlib
@@ -6,68 +20,69 @@ from datetime import datetime, timezone
 from unittest.mock import Mock
 
 import pytest
+import rust_ephem
 from pydantic import ValidationError
 from rust_ephem.tle import TLERecord
 
+from conops import (
+    AttitudeControlSystem,
+    Constraint,
+    MissionConfig,
+    Plan,
+    PlanEntry,
+    Pointing,
+)
 from conops.common.enums import ObsType
 from conops.common.vector import attitude_to_quat
 from conops.targets import (
     AttitudePointingSchema,
     AttitudeRotationSchema,
-    AttitudeSampleSchema,
-    AttitudeTimeseriesSchema,
-    OrbitStateSampleSchema,
-    OrbitStateTimeseriesSchema,
-    PlanEntrySchema,
-    PlanSchema,
     TargetAttitudeSchema,
 )
-from conops.targets.plan_metadata import PlanMetadata
+from conops.targets.plan_metadata import PlanMetadata, attach_tle_plan_metadata
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-_ENTRY_DICT = {
-    "name": "TEST",
-    "ra": 123.45,
-    "dec": -45.0,
-    "roll": 0.0,
-    "begin": 1_000_000.0,
-    "end": 1_001_000.0,
-    "merit": 50.0,
-    "slewtime": 120,
-    "insaa": 0,
-    "obsid": 99,
-    "obstype": "AT",
-    "slewdist": 10.0,
-    "ss_min": 300.0,
-    "ss_max": 1_000_000.0,
-    "exptime": 880,
-    "exporig": 1000,
-    "isat": False,
-    "done": True,
-    "exposure": 880,
-}
+_ENTRY_KWARGS = dict(
+    name="TEST",
+    ra=123.45,
+    dec=-45.0,
+    roll=0.0,
+    begin=1_000_000.0,
+    end=1_001_000.0,
+    merit=50.0,
+    slewtime=120,
+    insaa=0,
+    obsid=99,
+    obstype=ObsType.AT,
+    slewdist=10.0,
+    ss_min=300.0,
+    ss_max=1_000_000.0,
+)
 
 
-def _make_schema(n: int = 2) -> PlanSchema:
-    """Build a PlanSchema from raw dicts (no Plan object required)."""
-    entries = [
-        dict(
-            _ENTRY_DICT,
-            obsid=i,
-            begin=float(1_000_000 + i * 2000),
-            end=float(1_001_000 + i * 2000),
-        )
-        for i in range(n)
-    ]
-    return PlanSchema(
-        version="test-1.0",
-        created_at="2025-01-01T00:00:00+00:00",
-        start=entries[0]["begin"],
-        end=entries[-1]["end"],
-        num_entries=n,
-        entries=[PlanEntrySchema(**e) for e in entries],
-    )
+def _make_entry(
+    exptime: int = 880, exporig: int = 1000, **overrides: object
+) -> PlanEntry:
+    """Build a bare PlanEntry with private exptime/exporig attrs initialized."""
+    kwargs = dict(_ENTRY_KWARGS)
+    kwargs.update(overrides)
+    entry = PlanEntry(**kwargs)
+    entry._exptime = exptime
+    entry._exporig = exporig
+    return entry
+
+
+def _make_pointing(
+    exptime: int = 880, exporig: int = 1000, **overrides: object
+) -> Pointing:
+    """Build a bare Pointing with private exptime/exporig attrs initialized."""
+    kwargs = dict(_ENTRY_KWARGS)
+    kwargs.update(overrides)
+    entry = Pointing(**kwargs)
+    entry._exptime = exptime
+    entry._exporig = exporig
+    return entry
 
 
 _TLE1 = "1 43613U 18070A   26060.00000000  .00000000  00000-0  00000-0 0  9991"
@@ -84,30 +99,12 @@ def tle_record() -> TLERecord:
     )
 
 
-# ── PlanEntrySchema ────────────────────────────────────────────────────────────
+# ── PlanEntry / Pointing export ───────────────────────────────────────────────
 
 
-class TestPlanEntrySchema:
-    def test_from_dict_roundtrip(self):
-        entry = PlanEntrySchema(**_ENTRY_DICT)
-        assert entry.name == "TEST"
-        assert entry.ra == pytest.approx(123.45)
-        assert entry.dec == pytest.approx(-45.0)
-        assert entry.obsid == 99
-        assert entry.done is True
-        assert entry.isat is False
-        assert entry.exptime == 880
-        assert entry.exporig == 1000
-
-    def test_defaults_for_missing_optional_fields(self):
-        entry = PlanEntrySchema(
-            **{k: v for k, v in _ENTRY_DICT.items() if k not in ("isat", "done")}
-        )
-        assert entry.isat is False
-        assert entry.done is False
-
-    def test_model_dump_contains_all_keys(self):
-        entry = PlanEntrySchema(**_ENTRY_DICT)
+class TestPlanEntryExport:
+    def test_model_dump_contains_expected_keys_and_excludes_config(self):
+        entry = _make_entry()
         dumped = entry.model_dump()
         for key in (
             "name",
@@ -126,14 +123,29 @@ class TestPlanEntrySchema:
             "ss_max",
             "exptime",
             "exporig",
-            "isat",
-            "done",
             "exposure",
         ):
             assert key in dumped, f"Missing key: {key}"
+        for key in ("config", "constraint", "acs_config", "ephem", "saa", "windows"):
+            assert key not in dumped, f"Field should be excluded: {key}"
+
+    def test_pointing_model_dump_contains_isat_and_done_but_not_fom(self):
+        entry = _make_pointing(exptime=880, exporig=1000)
+        dumped = entry.model_dump()
+        assert dumped["isat"] is False
+        assert dumped["done"] is False
+        assert "fom" not in dumped
+
+        done_entry = _make_pointing(exptime=0, exporig=1000)
+        assert done_entry.model_dump()["done"] is True
+
+    def test_pointing_defaults_isat_false_done_false(self):
+        entry = _make_pointing(exptime=880, exporig=1000)
+        assert entry.isat is False
+        assert entry.done is False
 
     def test_static_entries_export_generic_target_attitude(self):
-        entry = PlanEntrySchema(**dict(_ENTRY_DICT, ra=15.0, dec=45.0, roll=10.0))
+        entry = _make_entry(ra=15.0, dec=45.0, roll=10.0, obstype=ObsType.AT)
 
         dumped = entry.model_dump(mode="json")
 
@@ -189,12 +201,12 @@ class TestPlanEntrySchema:
             )
 
     def test_unconstrained_roll_sentinel_exports_zero_roll_attitude(self):
-        entry = PlanEntrySchema(**dict(_ENTRY_DICT, roll=-1.0))
+        entry = _make_entry(roll=-1.0, obstype=ObsType.AT)
 
         attitude = entry.model_dump(mode="json")["target_attitude"]
 
         assert attitude["rotation"]["values"] == pytest.approx(
-            attitude_to_quat(_ENTRY_DICT["ra"], _ENTRY_DICT["dec"], 0.0).tolist()
+            attitude_to_quat(_ENTRY_KWARGS["ra"], _ENTRY_KWARGS["dec"], 0.0).tolist()
         )
         assert attitude["pointing"]["roll_deg"] == 0.0
         assert (
@@ -203,23 +215,20 @@ class TestPlanEntrySchema:
         )
 
     def test_gsp_contact_metadata_roundtrips(self):
-        entry = PlanEntrySchema(
-            **dict(
-                _ENTRY_DICT,
-                obstype="GSP",
-                station="TRO",
-                station_lat_deg=12.34,
-                station_lon_deg=-56.78,
-                station_alt_m=910.0,
-                contact_begin=1_000_120.0,
-                contact_end=1_000_720.0,
-                track_start_ra=12.5,
-                track_start_dec=-4.25,
-                track_start_roll=11.0,
-                track_end_ra=48.75,
-                track_end_dec=9.5,
-                track_end_roll=13.0,
-            )
+        entry = _make_entry(
+            obstype=ObsType.GSP,
+            station="TRO",
+            station_lat_deg=12.34,
+            station_lon_deg=-56.78,
+            station_alt_m=910.0,
+            contact_begin=1_000_120.0,
+            contact_end=1_000_720.0,
+            track_start_ra=12.5,
+            track_start_dec=-4.25,
+            track_start_roll=11.0,
+            track_end_ra=48.75,
+            track_end_dec=9.5,
+            track_end_roll=13.0,
         )
 
         dumped = entry.model_dump(mode="json")
@@ -236,7 +245,7 @@ class TestPlanEntrySchema:
         assert dumped["track_end_dec"] == pytest.approx(9.5)
         assert dumped["track_end_roll"] == pytest.approx(13.0)
 
-        reloaded = PlanEntrySchema(**dumped)
+        reloaded = PlanEntry(**dumped)
         assert reloaded.station == "TRO"
         assert reloaded.station_lat_deg == pytest.approx(12.34)
         assert reloaded.station_lon_deg == pytest.approx(-56.78)
@@ -250,245 +259,75 @@ class TestPlanEntrySchema:
         assert reloaded.track_end_dec == pytest.approx(9.5)
         assert reloaded.track_end_roll == pytest.approx(13.0)
 
-    def test_dynamic_pass_entries_do_not_export_fixed_target_attitude(self):
-        entry = PlanEntrySchema(**dict(_ENTRY_DICT, obstype="GSP"))
+    def test_gsp_entries_do_not_export_fixed_target_attitude(self):
+        entry = _make_entry(obstype=ObsType.GSP)
 
         dumped = entry.model_dump(mode="json", exclude_none=True)
 
         assert "target_attitude" not in dumped
 
+    def test_entry_fields_absent_when_none(self):
+        entry = _make_entry(obstype=ObsType.AT)
+        dumped = entry.model_dump(mode="json", exclude_none=True)
+        for key in (
+            "station",
+            "station_lat_deg",
+            "station_lon_deg",
+            "station_alt_m",
+            "contact_begin",
+            "contact_end",
+            "track_start_ra",
+            "track_start_dec",
+            "track_start_roll",
+            "track_end_ra",
+            "track_end_dec",
+            "track_end_roll",
+        ):
+            assert key not in dumped, f"Field should be absent when None: {key}"
 
-# ── PlanSchema ─────────────────────────────────────────────────────────────────
+
+# ── Plan version coercion ─────────────────────────────────────────────────────
 
 
-class TestPlanSchema:
-    def test_construction_and_basic_fields(self):
-        schema = _make_schema(3)
-        assert schema.num_entries == 3
-        assert len(schema.entries) == 3
-        assert schema.version == 0  # coerced from "test-1.0"
-        assert schema.start == pytest.approx(1_000_000.0)
+class TestPlanVersionCoercion:
+    def test_legacy_semver_string_coerces_to_zero(self):
+        plan = Plan(version="test-1.0")
+        assert plan.version == 0
 
-    def test_save_to_directory_autogenerates_filename(self, tmp_path):
-        schema = _make_schema(1)
-        returned_path = schema.save(str(tmp_path) + "/")
-        assert returned_path.parent == tmp_path.resolve()
-        assert returned_path.suffix == ".json"
-        assert returned_path.name.startswith("plan_")
-        assert returned_path.exists()
+    def test_integer_version_passes_through(self):
+        plan = Plan(version=5)
+        assert plan.version == 5
 
-    def test_save_to_existing_directory_autogenerates_filename(self, tmp_path):
-        schema = _make_schema(1)
-        returned_path = schema.save(tmp_path)  # tmp_path already exists as dir
-        assert returned_path.parent == tmp_path.resolve()
-        assert returned_path.name.startswith("plan_")
+    def test_numeric_string_version_coerces_to_int(self):
+        plan = Plan(version="3")
+        assert plan.version == 3
 
+
+# ── Plan I/O: filenames, legacy compatibility, TLE metadata ──────────────────
+
+
+class TestPlanIO:
     def test_default_filename_format(self):
-        schema = _make_schema(1)
-        name = schema._default_filename()
-        # e.g. plan_19700101T277H46M40Z_..._vtest-1.0.json
+        plan = Plan()
+        plan.append(_make_entry(begin=1_000_000.0, end=1_001_000.0))
+        name = plan._default_filename()
         assert name.startswith("plan_")
-        assert name.endswith(".json")
+        assert name.endswith("_v0.json")
         parts = name[len("plan_") : name.rfind("_v")]
         assert "T" in parts  # ISO date component present
 
-    def test_save_and_load_roundtrip(self, tmp_path):
-        original = _make_schema(2)
-        dest = tmp_path / "plan.json"
-        returned_path = original.save(dest)
-        assert returned_path == dest.resolve()
-
-        loaded = PlanSchema.load(dest)
-        assert loaded.version == original.version
-        assert loaded.created_at == original.created_at
-        assert loaded.num_entries == original.num_entries
-        assert len(loaded.entries) == len(original.entries)
-        assert loaded.entries[0].obsid == original.entries[0].obsid
-        assert loaded.entries[0].ra == pytest.approx(original.entries[0].ra)
-        assert loaded.entries[0].begin == pytest.approx(original.entries[0].begin)
-        assert loaded.entries[0].end == pytest.approx(original.entries[0].end)
-        assert loaded.start == pytest.approx(original.start)
-        assert loaded.end == pytest.approx(original.end)
-
-    def test_save_and_load_roundtrip_metadata(self, tmp_path):
-        original = _make_schema(1)
-        original.metadata = PlanMetadata.model_validate(
-            {
-                "ephemeris": {
-                    "source": "TLE",
-                    "tle_name": "Aperture-1",
-                    "tle_epoch_utc": "2026-03-01T00:00:00Z",
-                    "norad_id": 43613,
-                    "line1": "1 43613U 18070A   26060.00000000  .00000000  00000-0  00000-0 0  9991",
-                    "line2": "2 43613  97.7898  39.6457 0016466  83.3495 116.0254 15.13083683    09",
-                    "classical_elements": {"SemimajorAxis_m": 6_900_000.0},
-                }
-            }
-        )
-        dest = tmp_path / "plan.json"
-
-        original.save(dest)
-
-        raw = json.loads(dest.read_text())
-        assert raw["metadata"] == original.metadata.model_dump(
-            mode="json", exclude_none=True
-        )
-        loaded = PlanSchema.load(dest)
-        assert loaded.metadata is not None
-        assert loaded.metadata.model_dump(
-            mode="json", exclude_none=True
-        ) == original.metadata.model_dump(mode="json", exclude_none=True)
-
-    def test_save_omits_empty_metadata(self, tmp_path):
-        schema = _make_schema(1)
-        dest = tmp_path / "plan.json"
-
-        schema.save(dest)
-
-        raw = json.loads(dest.read_text())
-        assert "metadata" not in raw
-
     def test_save_writes_target_attitude_for_static_entries(self, tmp_path):
-        schema = _make_schema(1)
+        plan = Plan()
+        plan.append(_make_entry(obstype=ObsType.AT))
         dest = tmp_path / "plan.json"
 
-        schema.save(dest)
+        plan.save(dest)
 
         raw = json.loads(dest.read_text())
         attitude = raw["entries"][0]["target_attitude"]
         assert attitude["rotation"]["direction"] == "inertial_to_body"
         assert attitude["rotation"]["order"] == "wxyz"
         assert attitude["pointing"]["boresight_axis"] == "+X"
-
-    def test_save_produces_valid_json(self, tmp_path):
-        schema = _make_schema(1)
-        dest = tmp_path / "plan.json"
-        schema.save(dest)
-        raw = json.loads(dest.read_text())
-        assert "version" in raw
-        assert "created_at" in raw
-        assert "start" in raw
-        assert "end" in raw
-        assert "num_entries" in raw
-        assert isinstance(raw["start"], str), "start should be an ISO-8601 string"
-        assert isinstance(raw["end"], str), "end should be an ISO-8601 string"
-        assert "T" in raw["start"]  # sanity-check ISO format
-        assert isinstance(raw["entries"], list)
-        assert len(raw["entries"]) == 1
-
-    def test_save_writes_linked_attitude_timeseries(self, tmp_path):
-        schema = _make_schema(1)
-        schema.attitude_timeseries = AttitudeTimeseriesSchema(
-            samples=[
-                AttitudeSampleSchema(
-                    utime=1_000_000.0,
-                    timestamp="1970-01-12T13:46:40+00:00",
-                    ra=12.0,
-                    dec=-4.0,
-                    roll=30.0,
-                    mode="SCIENCE",
-                    obsid=99,
-                    quat_w=1.0,
-                    quat_x=0.0,
-                    quat_y=0.0,
-                    quat_z=0.0,
-                )
-            ]
-        )
-        dest = tmp_path / "plan.json"
-
-        schema.save(dest)
-
-        raw = json.loads(dest.read_text())
-        assert raw["attitude_timeseries_file"] == "plan_attitude_timeseries.json"
-        assert "attitude_timeseries" not in raw
-
-        attitude_path = tmp_path / raw["attitude_timeseries_file"]
-        attitude_raw = json.loads(attitude_path.read_text())
-        assert attitude_raw["plan_file"] == "plan.json"
-        assert attitude_raw["plan_version"] == raw["version"]
-        assert attitude_raw["plan_start"] == raw["start"]
-        assert attitude_raw["plan_end"] == raw["end"]
-        assert attitude_raw["num_samples"] == 1
-        assert attitude_raw["samples"][0]["mode"] == "SCIENCE"
-
-    def test_save_writes_linked_orbit_state_timeseries(self, tmp_path):
-        schema = _make_schema(1)
-        schema.orbit_state_timeseries = OrbitStateTimeseriesSchema(
-            samples=[
-                OrbitStateSampleSchema(
-                    utime=1_000_000.0,
-                    timestamp="1970-01-12T13:46:40+00:00",
-                    position_km=(7000.0, 0.0, 0.0),
-                    velocity_km_s=(0.0, 7.5, 0.0),
-                )
-            ]
-        )
-        dest = tmp_path / "plan.json"
-
-        schema.save(dest)
-
-        raw = json.loads(dest.read_text())
-        assert raw["orbit_state_timeseries_file"] == (
-            "plan_orbit_state_timeseries.json"
-        )
-        assert "orbit_state_timeseries" not in raw
-
-        orbit_path = tmp_path / raw["orbit_state_timeseries_file"]
-        orbit_raw = json.loads(orbit_path.read_text())
-        assert orbit_raw["plan_file"] == "plan.json"
-        assert orbit_raw["plan_version"] == raw["version"]
-        assert orbit_raw["plan_start"] == raw["start"]
-        assert orbit_raw["plan_end"] == raw["end"]
-        assert orbit_raw["frame"] == "GCRS"
-        assert orbit_raw["position_unit"] == "km"
-        assert orbit_raw["velocity_unit"] == "km/s"
-        assert orbit_raw["num_samples"] == 1
-        assert orbit_raw["samples"][0]["position_km"] == [7000.0, 0.0, 0.0]
-
-    def test_entry_fields_in_json(self, tmp_path):
-        schema = _make_schema(1)
-        dest = tmp_path / "plan.json"
-        schema.save(dest)
-        raw = json.loads(dest.read_text())
-        entry = raw["entries"][0]
-        for key in (
-            "name",
-            "ra",
-            "dec",
-            "roll",
-            "begin",
-            "end",
-            "merit",
-            "slewtime",
-            "insaa",
-            "obsid",
-            "obstype",
-            "slewdist",
-            "ss_min",
-            "ss_max",
-            "exptime",
-            "exporig",
-            "isat",
-            "done",
-            "exposure",
-        ):
-            assert key in entry, f"JSON entry missing key: {key}"
-        assert isinstance(entry["begin"], str), "begin should be an ISO-8601 string"
-        assert isinstance(entry["end"], str), "end should be an ISO-8601 string"
-        assert "T" in entry["begin"]
-        assert "station" not in entry
-        assert "station_lat_deg" not in entry
-        assert "station_lon_deg" not in entry
-        assert "station_alt_m" not in entry
-        assert "contact_begin" not in entry
-        assert "contact_end" not in entry
-        assert "track_start_ra" not in entry
-        assert "track_start_dec" not in entry
-        assert "track_start_roll" not in entry
-        assert "track_end_ra" not in entry
-        assert "track_end_dec" not in entry
-        assert "track_end_roll" not in entry
 
     def test_load_existing_example_json(self):
         """Load a plan JSON file produced by a previous version (backward compat)."""
@@ -499,27 +338,26 @@ class TestPlanSchema:
         )
         if not example.exists():
             pytest.skip("Example JSON file not found")
-        schema = PlanSchema.load(example)
-        assert schema.num_entries >= 0
-        assert isinstance(schema.entries, list)
-        assert isinstance(schema.version, int)
+        plan = Plan.load(example)
+        assert plan.num_entries >= 0
+        assert isinstance(plan.entries, list)
+        assert isinstance(plan.version, int)
 
     def test_load_legacy_json_without_metadata(self, tmp_path):
-        """Files produced before PlanSchema existed may lack created_at / num_entries."""
+        """Files produced before created_at/num_entries existed should still load."""
         legacy = {
             "version": "0.1.0",
             "start": 1_000_000,
             "end": 1_002_000,
-            "entries": [_ENTRY_DICT],
+            "entries": [{"begin": 1_000_000.0, "end": 1_001_000.0}],
         }
         dest = tmp_path / "legacy.json"
         dest.write_text(json.dumps(legacy))
-        schema = PlanSchema.load(dest)
-        assert schema.version == 0  # legacy semver coerced to 0
-        assert len(schema.entries) == 1
-        assert schema.num_entries == len(schema.entries)
-        # num_entries and created_at will have schema defaults
-        assert isinstance(schema.created_at, str)
+        plan = Plan.load(dest)
+        assert plan.version == 0  # legacy semver coerced to 0
+        assert len(plan.entries) == 1
+        assert plan.num_entries == len(plan.entries)
+        assert isinstance(plan.created_at, str)
 
     def test_reconcile_num_entries_when_missing(self, tmp_path):
         """num_entries is recomputed from entries when absent in JSON."""
@@ -527,116 +365,126 @@ class TestPlanSchema:
             "version": 0,
             "start": 1_000_000,
             "end": 1_002_000,
-            "entries": [_ENTRY_DICT, _ENTRY_DICT],
+            "entries": [
+                {"begin": 1_000_000.0, "end": 1_001_000.0},
+                {"begin": 1_001_000.0, "end": 1_002_000.0},
+            ],
             # no num_entries key
         }
         dest = tmp_path / "plan.json"
         dest.write_text(json.dumps(raw))
-        schema = PlanSchema.load(dest)
-        assert schema.num_entries == 2
+        plan = Plan.load(dest)
+        assert plan.num_entries == 2
 
     def test_reconcile_num_entries_when_stale(self, tmp_path):
-        """num_entries is corrected when it disagrees with the actual entries list."""
+        """num_entries (even if present, since it's computed) reflects real entries."""
         raw = {
             "version": 0,
             "start": 1_000_000,
             "end": 1_002_000,
-            "num_entries": 99,  # intentionally wrong
-            "entries": [_ENTRY_DICT],
+            "num_entries": 99,  # intentionally wrong / ignored since computed
+            "entries": [{"begin": 1_000_000.0, "end": 1_001_000.0}],
         }
         dest = tmp_path / "plan.json"
         dest.write_text(json.dumps(raw))
-        schema = PlanSchema.load(dest)
-        assert schema.num_entries == 1
+        plan = Plan.load(dest)
+        assert plan.num_entries == 1
 
     def test_reconcile_start_when_missing(self, tmp_path):
-        """start is inferred from the first entry's begin time when absent."""
+        """start is always derived live from the first entry's begin time,
+        regardless of whether a (now-ignored) legacy 'start' key is present."""
         raw = {
             "version": 0,
-            "end": 1_001_000,
-            "entries": [_ENTRY_DICT],
+            "entries": [{"begin": 1_000_000.0, "end": 1_001_000.0}],
             # no start key
         }
         dest = tmp_path / "plan.json"
         dest.write_text(json.dumps(raw))
-        schema = PlanSchema.load(dest)
-        assert schema.start == pytest.approx(_ENTRY_DICT["begin"])
+        plan = Plan.load(dest)
+        assert plan._start_ts == pytest.approx(1_000_000.0)
 
     def test_reconcile_end_when_missing(self, tmp_path):
-        """end is inferred from the last entry's end time when absent."""
+        """end is always derived live from the last entry's end time,
+        regardless of whether a (now-ignored) legacy 'end' key is present."""
         raw = {
             "version": 0,
-            "start": 1_000_000,
-            "entries": [_ENTRY_DICT],
+            "entries": [{"begin": 1_000_000.0, "end": 1_001_000.0}],
             # no end key
         }
         dest = tmp_path / "plan.json"
         dest.write_text(json.dumps(raw))
-        schema = PlanSchema.load(dest)
-        assert schema.end == pytest.approx(_ENTRY_DICT["end"])
+        plan = Plan.load(dest)
+        assert plan._end_ts == pytest.approx(1_001_000.0)
 
-    def test_from_plan_classmethod_empty_plan(self):
-        """from_plan on an empty Plan should produce zero entries and start/end=0."""
-        from conops.targets.plan import Plan
-
+    def test_tle_metadata_merge_survives_save_and_load(self, tmp_path, tle_record):
+        """attach_tle_plan_metadata-populated metadata roundtrips through save/load."""
         plan = Plan()
-        schema = PlanSchema.from_plan(plan)
-        assert schema.num_entries == 0
-        assert schema.entries == []
-        assert schema.start == 0.0
-        assert schema.end == 0.0
+        plan.metadata = {"generator": {"name": "unit-test"}}
 
-    def test_from_plan_manual_tle_metadata_merge(self, tle_record: TLERecord):
-        from conops.targets.plan import Plan
-
-        plan = Plan()
-        schema = PlanSchema.from_plan(plan)
-        schema.metadata = PlanMetadata.model_validate(
-            {"generator": {"name": "unit-test"}}
+        attach_tle_plan_metadata(
+            plan, tle_record=tle_record, tle_file="tle/example.tle"
         )
 
-        schema.metadata = PlanMetadata.model_validate(
+        assert plan.metadata["generator"] == {"name": "unit-test"}
+        assert plan.metadata["ephemeris"]["source"] == "TLE"
+        assert plan.metadata["ephemeris"]["norad_id"] == 43613
+        assert plan.metadata["ephemeris"]["tle_file"] == "tle/example.tle"
+
+        dest = tmp_path / "plan.json"
+        plan.save(dest)
+
+        raw = json.loads(dest.read_text())
+        assert raw["metadata"] == plan.metadata
+
+        loaded = Plan.load(dest)
+        assert loaded.metadata == plan.metadata
+
+    def test_manual_tle_metadata_dict_merge(self, tle_record):
+        """Manually merging PlanMetadata dumps into plan.metadata (fact #6 pattern)."""
+        plan = Plan()
+        plan.metadata = PlanMetadata.model_validate(
+            {"generator": {"name": "unit-test"}}
+        ).model_dump(mode="json", exclude_none=True)
+
+        plan.metadata = PlanMetadata.model_validate(
             {
-                **(schema.metadata.model_dump(mode="json") if schema.metadata else {}),
+                **plan.metadata,
                 **PlanMetadata.from_tle_record(
                     tle_record=tle_record,
                     tle_file="tle/example.tle",
                 ).model_dump(mode="json"),
             }
-        )
+        ).model_dump(mode="json", exclude_none=True)
 
-        metadata = schema.metadata.model_dump(mode="json") if schema.metadata else {}
-        assert metadata["generator"] == {"name": "unit-test"}
-        assert metadata["ephemeris"]["source"] == "TLE"
-        assert metadata["ephemeris"]["norad_id"] == 43613
-        assert metadata["ephemeris"]["tle_file"] == "tle/example.tle"
+        assert plan.metadata["generator"] == {"name": "unit-test"}
+        assert plan.metadata["ephemeris"]["source"] == "TLE"
+        assert plan.metadata["ephemeris"]["norad_id"] == 43613
+        assert plan.metadata["ephemeris"]["tle_file"] == "tle/example.tle"
 
-    def test_from_plan_preserves_metadata(self):
-        from conops.targets.plan import Plan
 
-        plan = Plan()
-        plan.metadata = {"generator": {"name": "test"}}
+# ── Exposure computation (non-mutating, clamped) ─────────────────────────────
 
-        schema = PlanSchema.from_plan(plan)
 
-        assert schema.metadata is not None
-        assert (
-            schema.metadata.model_dump(mode="json", exclude_none=True) == plan.metadata
-        )
+def _make_from_config_entry() -> PlanEntry:
+    config = Mock()
+    config.__class__ = MissionConfig
+    config.fault_management = None
+    config.constraint = Mock()
+    config.constraint.__class__ = Constraint
+    config.constraint.ephem = Mock()
+    config.constraint.ephem.__class__ = rust_ephem.Ephemeris
+    config.spacecraft_bus = Mock()
+    config.spacecraft_bus.attitude_control = Mock()
+    config.spacecraft_bus.attitude_control.__class__ = AttitudeControlSystem
 
-    def test_from_plan_clamps_negative_exposure(self, tmp_path):
+    return PlanEntry(config=config)
+
+
+class TestExposureViaPlan:
+    def test_clamps_negative_exposure(self, tmp_path):
         """Generated JSON should not contain negative exposure for truncated entries."""
-        from conops.targets.plan import Plan
-        from conops.targets.plan_entry import PlanEntry
-
-        config = Mock()
-        config.constraint = Mock()
-        config.constraint.ephem = Mock()
-        config.spacecraft_bus = Mock()
-        config.spacecraft_bus.attitude_control = Mock()
-
-        entry = PlanEntry(config=config)
-        entry.obstype = "AT"
+        entry = _make_from_config_entry()
+        entry.obstype = ObsType.AT
         entry.begin = 1000.0
         entry.end = 1060.0
         entry.slewtime = 224
@@ -645,26 +493,16 @@ class TestPlanSchema:
         plan = Plan()
         plan.append(entry)
 
-        schema = PlanSchema.from_plan(plan)
-        assert schema.entries[0].exposure == 0
+        assert plan.entries[0].exposure == 0
 
         dest = tmp_path / "plan.json"
-        schema.save(dest)
+        plan.save(dest)
         raw = json.loads(dest.read_text())
         assert raw["entries"][0]["exposure"] == 0
 
-    def test_from_plan_computes_exposure_without_mutating_entry(self) -> None:
-        """Serialising a plan should not modify the source PlanEntry."""
-        from conops.targets.plan import Plan
-        from conops.targets.plan_entry import PlanEntry
-
-        config = Mock()
-        config.constraint = Mock()
-        config.constraint.ephem = Mock()
-        config.spacecraft_bus = Mock()
-        config.spacecraft_bus.attitude_control = Mock()
-
-        entry = PlanEntry(config=config)
+    def test_computes_exposure_without_mutating_entry(self):
+        """Reading exposure should not modify the source PlanEntry."""
+        entry = _make_from_config_entry()
         entry.obstype = ObsType.AT
         entry.begin = 1000.0
         entry.end = 1200.0
@@ -674,7 +512,5 @@ class TestPlanSchema:
         plan = Plan()
         plan.append(entry)
 
-        schema = PlanSchema.from_plan(plan)
-
-        assert schema.entries[0].exposure == 120
+        assert plan.entries[0].exposure == 120
         assert entry.insaa == 30

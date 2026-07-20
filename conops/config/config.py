@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
-
 import yaml
 from pydantic import Field, field_validator, model_validator
 from rust_ephem.constraints import ConstraintConfig
@@ -462,8 +460,8 @@ class MissionConfig(ConfigModel):
     def _add_annotated_yaml_content(
         self,
         lines: list[str],
-        content: dict[str, Any] | list[Any] | Any,
-        model_class: Any,
+        content: object,
+        model_class: object,
         indent: int = 1,
     ) -> None:
         """Add YAML content with annotations from Pydantic model field descriptions.
@@ -532,7 +530,7 @@ class MissionConfig(ConfigModel):
                             self._add_annotated_yaml_content(
                                 lines,
                                 field_value,
-                                item_model if item_model else Any,
+                                item_model if item_model else object,
                                 indent + 1,
                             )
                     # Handle nested models
@@ -592,7 +590,7 @@ class MissionConfig(ConfigModel):
             )
             lines.append(ind + yaml_str.rstrip())
 
-    def _resolve_annotation(self, annotation: Any) -> Any:
+    def _resolve_annotation(self, annotation: object) -> object:
         """Unwrap Annotated and Union annotations to the underlying type."""
         import types
         import typing
@@ -614,7 +612,7 @@ class MissionConfig(ConfigModel):
 
         return annotation
 
-    def _get_list_item_type(self, model_class: Any) -> Any:
+    def _get_list_item_type(self, model_class: object) -> object | None:
         """Extract the item type from a list annotation.
 
         Args:

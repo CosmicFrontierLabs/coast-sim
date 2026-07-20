@@ -1,94 +1,187 @@
 from __future__ import annotations
 
-from typing import Literal
+from datetime import datetime, timezone
+from typing import ClassVar, Literal
 
 import rust_ephem
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ModelWrapValidatorHandler,
+    PrivateAttr,
+    computed_field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from ..common import givename, unixtime2date
 from ..common.enums import ObsType
-from ..config import Constraint, MissionConfig
+from ..common.vector import attitude_to_quat
+from ..config import AttitudeControlSystem, Constraint, MissionConfig
 from ..simulation.saa import SAA
 
+BodyAxis = Literal["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
+RollSource = Literal["planned", "defaulted_from_unconstrained_sentinel"]
 
-class PlanEntry:
+
+class AttitudeRotationSchema(BaseModel):
+    """Generic attitude rotation representation."""
+
+    representation: Literal["quaternion"] = "quaternion"
+    direction: Literal["inertial_to_body"] = "inertial_to_body"
+    order: Literal["wxyz"] = "wxyz"
+    values: tuple[float, float, float, float]
+
+
+class AttitudePointingSchema(BaseModel):
+    """Pointing parameters used to generate a target attitude."""
+
+    ra_deg: float
+    dec_deg: float
+    roll_deg: float
+    boresight_axis: BodyAxis = "+X"
+    roll_axis: BodyAxis = "+X"
+    roll_source: RollSource = "planned"
+
+
+class TargetAttitudeSchema(BaseModel):
+    """Commanded target attitude for a fixed-attitude plan entry."""
+
+    frame: Literal["GCRS"] = "GCRS"
+    body_frame: Literal["COAST_BODY"] = "COAST_BODY"
+    rotation: AttitudeRotationSchema
+    pointing: AttitudePointingSchema
+
+
+class PlanEntry(BaseModel):
     """Class to define a entry in the Plan"""
 
-    ra: float
-    dec: float
-    roll: float
-    begin: float
-    end: float
-    windows: list[list[float]]
-    ephem: rust_ephem.Ephemeris | None
-    constraint: Constraint
-    config: MissionConfig
-    merit: float
-    saa: SAA | None
-    slewpath: tuple[list[float], list[float]]
-    station: str | None
-    station_lat_deg: float | None
-    station_lon_deg: float | None
-    station_alt_m: float | None
-    contact_begin: float | None
-    contact_end: float | None
-    track_start_ra: float | None
-    track_start_dec: float | None
-    track_start_roll: float | None
-    track_end_ra: float | None
-    track_end_dec: float | None
-    track_end_roll: float | None
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    def __init__(
-        self,
-        config: MissionConfig | None = None,
-        exptime: int = 1000,
-    ) -> None:
-        # Extract config parameters from Config object
-        if config is None:
-            raise ValueError("Config must be provided to PlanEntry")
-        self.config = config
-        self.constraint = config.constraint
-        self.acs_config = config.spacecraft_bus.attitude_control
+    _STATIC_TARGET_OBSTYPES: ClassVar[frozenset[ObsType]] = frozenset(
+        {ObsType.PPT, ObsType.AT, ObsType.TOO}
+    )
 
+    config: MissionConfig | None = Field(default=None, exclude=True)
+    constraint: Constraint | None = Field(default=None, exclude=True)
+    acs_config: AttitudeControlSystem | None = Field(default=None, exclude=True)
+    ephem: rust_ephem.Ephemeris | None = Field(default=None, exclude=True)
+    name: str = ""
+    ra: float = 0.0
+    dec: float = 0.0
+    roll: float = -1.0
+    begin: float = 0  # start of window, not observation
+    slewtime: int = 0
+    insaa: int = 0
+    end: float = 0
+    obsid: int = 0
+    station: str | None = None
+    station_lat_deg: float | None = None
+    station_lon_deg: float | None = None
+    station_alt_m: float | None = None
+    contact_begin: float | None = None
+    contact_end: float | None = None
+    track_start_ra: float | None = None
+    track_start_dec: float | None = None
+    track_start_roll: float | None = None
+    track_end_ra: float | None = None
+    track_end_dec: float | None = None
+    track_end_roll: float | None = None
+    saa: SAA | None = Field(default=None, exclude=True)
+    merit: float = 101
+    windows: list[list[float]] = Field(default_factory=list, exclude=True)
+    obstype: ObsType = ObsType.PPT
+    slewpath: tuple[list[float], list[float]] = Field(
+        default_factory=lambda: ([], []), exclude=True
+    )
+    slewdist: float = 0.0
+    ss_min: float = 1000
+    ss_max: float = 1e6
+    _exptime: int | None = PrivateAttr(default=None)
+    _exporig: int | None = PrivateAttr(default=None)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _set_exptime_exporig_from_input(
+        cls, data: object, handler: ModelWrapValidatorHandler[PlanEntry]
+    ) -> PlanEntry:
+        """Set _exptime/_exporig private attrs from raw input dict keys.
+
+        exptime/exporig are @computed_field properties backed by private
+        attrs, not real pydantic fields, so they serialize out via
+        model_dump() but are otherwise silently dropped as unrecognized
+        input during model_validate()/JSON load. This reads them from the
+        raw input before that happens and assigns them directly to the
+        private attrs on the constructed instance.
+        """
+        exptime = data.get("exptime") if isinstance(data, dict) else None
+        exporig = data.get("exporig") if isinstance(data, dict) else None
+        instance = handler(data)
+        if exptime is not None:
+            instance._exptime = exptime
+        if exporig is not None:
+            instance._exporig = exporig
+        return instance
+
+    @model_validator(mode="after")
+    def _derive_from_config(self) -> PlanEntry:
+        """Populate constraint/ephem/acs_config from config, when not already set."""
+        if self.config is None:
+            return self
+        if self.constraint is None:
+            self.constraint = self.config.constraint
         assert self.constraint is not None, "Constraint must be set for PlanEntry class"
-        self.ephem = self.constraint.ephem
+        if self.ephem is None:
+            self.ephem = self.constraint.ephem
         assert self.ephem is not None, "Ephemeris must be set for PlanEntry class"
+        if self.acs_config is None:
+            self.acs_config = self.config.spacecraft_bus.attitude_control
         assert self.acs_config is not None, "ACS config must be set for PlanEntry class"
-        self.name = ""
-        self.ra = 0.0
-        self.dec = 0.0
-        self.roll = -1.0
-        self.begin = 0  # start of window, not observation
-        self.slewtime = 0
-        self.insaa = 0
-        self.end = 0
-        self.obsid = 0
-        self.station = None
-        self.station_lat_deg = None
-        self.station_lon_deg = None
-        self.station_alt_m = None
-        self.contact_begin = None
-        self.contact_end = None
-        self.track_start_ra = None
-        self.track_start_dec = None
-        self.track_start_roll = None
-        self.track_end_ra = None
-        self.track_end_dec = None
-        self.track_end_roll = None
+        return self
 
-        self.saa = None
-        self.merit = 101
-        self.windows = list()
-        self.obstype: ObsType = ObsType.PPT
-        self.slewpath = ([], [])
-        self.slewdist = 0.0
-        self.ss_min = 1000
-        self.ss_max = 1e6
-        self._exptime = exptime
-        self._exporig = exptime
+    @model_validator(mode="after")
+    def _validate_time_ordering(self) -> PlanEntry:
+        """Check begin/end and contact_begin/contact_end ordering.
 
+        Only runs at construction: validate_assignment is disabled on this
+        model (see model_config above), so begin/end set individually via
+        post-construction attribute assignment - the common pattern used
+        throughout the scheduler/DITL code - are not re-checked here.
+        """
+        if self.begin > self.end:
+            raise ValueError(f"begin ({self.begin}) must be <= end ({self.end})")
+        if (
+            self.contact_begin is not None
+            and self.contact_end is not None
+            and self.contact_begin > self.contact_end
+        ):
+            raise ValueError(
+                f"contact_begin ({self.contact_begin}) must be <= "
+                f"contact_end ({self.contact_end})"
+            )
+        return self
+
+    @field_validator("begin", "end", "contact_begin", "contact_end", mode="before")
+    @classmethod
+    def _coerce_time(cls, v: float | int | str | None) -> float | None:
+        """Accept Unix timestamps (float/int) or ISO-8601 strings."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            return datetime.fromisoformat(v).timestamp()
+        return float(v)
+
+    @field_serializer("begin", "end", "contact_begin", "contact_end")
+    def _serialize_time(self, v: float | None) -> str | None:
+        if v is None:
+            return None
+        return datetime.fromtimestamp(v, tz=timezone.utc).isoformat()
+
+    @computed_field  # type: ignore[prop-decorator]
     @property
-    def exptime(self) -> int:
+    def exptime(self) -> int | None:
         return self._exptime
 
     @exptime.setter
@@ -97,17 +190,17 @@ class PlanEntry:
             self._exporig = t
         self._exptime = t
 
-    def copy(self) -> PlanEntry:
-        """Create a copy of this class"""
-        obj = type(self).__new__(self.__class__)
-        obj.__dict__.update(self.__dict__)
-        return obj
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def exporig(self) -> int | None:
+        return self._exporig
 
     def __str__(self) -> str:
         return f"{unixtime2date(self.begin)} Target: {self.name} ({self.obsid}) Exp: {self.exposure}s "
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
-    def exposure(self) -> int:  # (),excludesaa=False):
+    def exposure(self) -> int:
         if (
             self.obstype == ObsType.GSP
             and self.contact_begin is not None
@@ -115,7 +208,6 @@ class PlanEntry:
         ):
             contact_start = max(float(self.contact_begin), float(self.begin))
             return max(0, int(self.contact_end - contact_start))
-        self.insaa = 0
         exposure = self.end - self.begin - self.slewtime - self.insaa
         return max(0, int(exposure))  # always an integer number of seconds
 
@@ -123,6 +215,37 @@ class PlanEntry:
     def exposure(self, value: int) -> None:
         """Setter for exposure - accepts but ignores the value since exposure is computed."""
         pass
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def target_attitude(self) -> TargetAttitudeSchema | None:
+        """Fixed target attitude generated from COAST's RA/Dec/Roll convention."""
+        if self.obstype not in self._STATIC_TARGET_OBSTYPES:
+            return None
+
+        roll_deg = float(self.roll)
+        roll_source: RollSource = "planned"
+        if roll_deg == -1.0:
+            roll_deg = 0.0
+            roll_source = "defaulted_from_unconstrained_sentinel"
+
+        quat = attitude_to_quat(self.ra, self.dec, roll_deg)
+        return TargetAttitudeSchema(
+            rotation=AttitudeRotationSchema(
+                values=(
+                    float(quat[0]),
+                    float(quat[1]),
+                    float(quat[2]),
+                    float(quat[3]),
+                )
+            ),
+            pointing=AttitudePointingSchema(
+                ra_deg=float(self.ra),
+                dec_deg=float(self.dec),
+                roll_deg=roll_deg,
+                roll_source=roll_source,
+            ),
+        )
 
     def givename(self, stem: str = "") -> None:
         self.name = givename(self.ra, self.dec, stem=stem)
@@ -137,12 +260,16 @@ class PlanEntry:
         the entire ephemeris time range.
         """
 
+        assert self.config is not None, "Config must be set to calculate visibility"
         assert self.config.constraint is not None, (
             "Constraint must be set to calculate visibility"
         )
         assert self.ephem is not None, "Ephemeris must be set to calculate visibility"
 
         # Calculate the visibility of this target
+        assert self.constraint is not None, (
+            "Constraint must be set to calculate visibility"
+        )
         if self.constraint.ignore_roll:
             # ignore_roll=True → field-of-regard scheduling.
             #
@@ -217,6 +344,9 @@ class PlanEntry:
         # Use the more accurate slew distance instead of angular distance
         self.predict_slew(lastra, lastdec)
 
+        assert self.acs_config is not None, (
+            "ACS config must be set to calculate slew time"
+        )
         # Calculate slew time using AttitudeControlSystem
         slewtime = round(self.acs_config.slew_time(self.slewdist))
 
@@ -224,6 +354,7 @@ class PlanEntry:
 
     def predict_slew(self, lastra: float, lastdec: float) -> None:
         """Calculate great circle slew distance and path using ACS configuration."""
+        assert self.acs_config is not None, "ACS config must be set to predict slew"
         self.slewdist, self.slewpath = self.acs_config.predict_slew(
             lastra, lastdec, self.ra, self.dec
         )

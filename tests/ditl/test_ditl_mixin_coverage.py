@@ -4,7 +4,9 @@ from unittest.mock import Mock, patch
 
 import matplotlib.pyplot as plt
 import pytest
+import rust_ephem
 
+from conops import Constraint
 from conops.common.enums import ACSMode
 from conops.config import MissionConfig
 from conops.ditl.ditl_mixin import DITLMixin
@@ -13,6 +15,11 @@ from conops.ditl.ditl_mixin import DITLMixin
 @pytest.fixture
 def mock_config(mock_spacecraft_bus):
     cfg = Mock(spec=MissionConfig)
+    # MissionConfig's init_fault_management_defaults model_validator re-runs
+    # whenever this config is embedded as a nested pydantic field elsewhere
+    # (e.g. on Slew.config); None short-circuits it via the validator's own
+    # early-return guard.
+    cfg.fault_management = None
     # constraint with ephem required for ACS init
     # Build a minimal ephem with earth[0].ra.deg and dec.deg (legacy SkyCoord style)
     ra = Mock()
@@ -23,6 +30,7 @@ def mock_config(mock_spacecraft_bus):
     earth_entry.ra = ra
     earth_entry.dec = dec
     ephem = Mock()
+    ephem.__class__ = rust_ephem.Ephemeris
     ephem.earth = [earth_entry]
     # Also provide sun and index for safe mode fallbacks (unused here but safe)
     sun_ra = Mock()
@@ -50,6 +58,7 @@ def mock_config(mock_spacecraft_bus):
     ]
 
     cfg.constraint = Mock()
+    cfg.constraint.__class__ = Constraint
     cfg.constraint.ephem = ephem
     cfg.random_seed = None
     # subsystems

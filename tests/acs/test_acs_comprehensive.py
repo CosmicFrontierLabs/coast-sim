@@ -285,6 +285,7 @@ class TestPointing:
         """Test pointing with no slew."""
         mock_roll.return_value = 0.0
         acs.ephem = mock_ephem
+        acs.config.fault_management = Mock(events=[])
 
         ra, dec, roll, obsid = acs.pointing(1514764800.0)
 
@@ -297,6 +298,7 @@ class TestPointing:
     def test_pointing_slew_start_adjustment(self, mock_roll, acs) -> None:
         """Test pointing adjusts slew start when within step_size."""
         mock_roll.return_value = 0.0
+        acs.config.fault_management = Mock(events=[])
 
         # Setup slew request that should start now
         mock_slew = Mock(spec=Slew)
@@ -370,6 +372,7 @@ class TestPointing:
     def test_pointing_during_pass_dwell(self, mock_roll, acs) -> None:
         """Test pointing during pass dwell phase."""
         mock_roll.return_value = 0.0
+        acs.config.fault_management = Mock(events=[])
 
         # A GSP pass dwell is represented as a Slew with obstype=GSP.
         mock_gsp_slew = Mock(spec=Slew)
@@ -459,6 +462,7 @@ class TestPointing:
     ):
         """Test pointing constraint checks when slew has no at attribute."""
         mock_roll.return_value = 0.0
+        acs.config.fault_management = Mock(events=[])
 
         mock_slew = Mock(spec=Slew)
         mock_slew.is_slewing = Mock(return_value=False)
@@ -481,6 +485,7 @@ class TestPointing:
     def test_pointing_pass_after_dwell(self, mock_roll, acs) -> None:
         """Test pointing after pass dwell phase."""
         mock_roll.return_value = 0.0
+        acs.config.fault_management = Mock(events=[])
 
         # A GSP pass dwell is represented as a Slew with obstype=GSP.
         mock_gsp_slew = Mock(spec=Slew)

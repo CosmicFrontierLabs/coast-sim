@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
 from conops import PlanEntry
 from conops.common.enums import ObsType
@@ -61,15 +62,22 @@ class TestPlanEntryInit:
         assert pe.slewpath == ([], [])
         assert pe.slewdist == 0.0
 
-    def test_init_without_config_raises_assertion(self):
-        """Test that initialization without constraint raises AssertionError."""
-        with pytest.raises(ValueError, match="Config must be provided to PlanEntry"):
-            PlanEntry(config=None)
+    def test_init_without_config_leaves_derived_fields_unset(self):
+        """A bare PlanEntry (no config) is valid, used for deserialized/schema-only entries."""
+        pe = PlanEntry(config=None)
+        assert pe.config is None
+        assert pe.constraint is None
+        assert pe.ephem is None
+        assert pe.acs_config is None
 
     def test_init_with_constraint_missing_ephem(self, mock_config):
-        """Test that initialization with constraint missing ephem raises AssertionError."""
+        """Test that initialization with constraint missing ephem raises ValidationError.
+
+        The ephem assertion now runs inside a model_validator, so pydantic wraps
+        the AssertionError as a ValidationError rather than letting it propagate.
+        """
         mock_config.constraint.ephem = None
-        with pytest.raises(AssertionError, match="Ephemeris must be set"):
+        with pytest.raises(ValidationError, match="Ephemeris must be set"):
             PlanEntry(config=mock_config)
 
 
@@ -81,7 +89,7 @@ class TestPlanEntryCopy:
         plan_entry.dec = 67.89
         plan_entry.merit = 50
 
-        copied = plan_entry.copy()
+        copied = plan_entry.model_copy()
 
         assert copied is not plan_entry
         assert copied.name == plan_entry.name

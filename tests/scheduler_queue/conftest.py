@@ -7,10 +7,13 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
+import rust_ephem
 from astropy.time import Time  # type: ignore[import-untyped]
 
 from conops import (
     DAY_SECONDS,
+    AttitudeControlSystem,
+    Constraint,
     DumbQueueScheduler,
     MissionConfig,
     QueueDITL,
@@ -52,6 +55,11 @@ class DummyEphemeris:
         return False
 
 
+# Register as a virtual subclass so isinstance checks (e.g. Slew's pydantic
+# field) pass without implementing every abstract Ephemeris member.
+rust_ephem.Ephemeris.register(DummyEphemeris)
+
+
 @pytest.fixture
 def mock_ephem() -> DummyEphemeris:
     """Create a mock ephemeris object."""
@@ -62,9 +70,11 @@ def mock_ephem() -> DummyEphemeris:
 def mock_config() -> Mock:
     """Create a mock config with all required subsystems."""
     config = Mock()
+    config.__class__ = MissionConfig
 
     # Mock constraint
     config.constraint = Mock()
+    config.constraint.__class__ = Constraint
     config.constraint.ephem = DummyEphemeris()
     config.constraint.constraint = None  # no combined rust-ephem constraint in tests
     config.constraint.roll_dependent_constraint = None
@@ -96,12 +106,15 @@ def mock_config() -> Mock:
     config.battery.battery_alert = False
     config.battery.below_minimum_charge_level = False
     config.battery.charge_state = 0  # NOT_CHARGING
+    config.battery.max_depth_of_discharge = 0.3
     config.battery.drain = Mock()
     config.battery.charge = Mock()
 
     # Mock recorder
     config.recorder = Mock()
     config.recorder.current_volume_gb = 10.0
+    config.recorder.yellow_threshold = 0.7
+    config.recorder.red_threshold = 0.9
     config.recorder.get_fill_fraction = Mock(return_value=0.3)
     config.recorder.get_alert_level = Mock(return_value=0)
     config.recorder.add_data = Mock()
@@ -110,7 +123,12 @@ def mock_config() -> Mock:
     # Mock spacecraft bus
     config.spacecraft_bus = Mock()
     config.spacecraft_bus.power = Mock(return_value=50.0)
+    config.spacecraft_bus.star_trackers = Mock()
+    config.spacecraft_bus.star_trackers.num_trackers = Mock(return_value=0)
+    config.spacecraft_bus.radiators = Mock()
+    config.spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
     config.spacecraft_bus.attitude_control = Mock()
+    config.spacecraft_bus.attitude_control.__class__ = AttitudeControlSystem
     config.spacecraft_bus.attitude_control.predict_slew = Mock(
         return_value=(10.0, [])
     )  # Return (distance, path)
@@ -141,6 +159,10 @@ def mock_config() -> Mock:
     config.fault_management.check = Mock()
     config.fault_management.safe_mode_requested = False
     config.fault_management.events = []
+    # MissionConfig's init_fault_management_defaults model_validator re-runs
+    # whenever this config is embedded as a nested pydantic field elsewhere
+    # (e.g. on PlanEntry.config) and iterates fault_management.thresholds.
+    config.fault_management.thresholds = []
 
     # Mock payload
     config.payload = Mock()
@@ -483,9 +505,10 @@ def low_merit_current_ppt(queue_ditl: QueueDITL) -> Any:
         dec=0.0,
         obsid=1,
         name="Current obs",
+        fom=100.0,  # Lower merit than typical TOO
         merit=100.0,  # Lower merit than typical TOO
-        exptime=1800,
     )
+    ppt.exptime = 1800
     queue_ditl.ppt = ppt
     return ppt
 

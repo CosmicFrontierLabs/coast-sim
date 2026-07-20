@@ -73,10 +73,13 @@ class DumbScheduler:
             selected_slewtime = 0.0
 
             # Candidate targets (exptime > 0)
-            candidates = [t for t in self.targlist if t.exptime > 0]
+            candidates = [
+                t for t in self.targlist if t.exptime is not None and t.exptime > 0
+            ]
 
             # iterate until we find one suitable candidate at this time index
             for task in candidates:
+                assert task.exptime is not None
                 current_time = ephem_utime[i]
 
                 # Determine slew time based on prior plan entry (if any)
@@ -167,6 +170,7 @@ class DumbScheduler:
 
             # Create and populate the plan entry
             assert selected_target is not None
+            assert selected_target.exptime is not None
             ppt = PlanEntry(config=self.config)
 
             ppt.ephem = self.ephem

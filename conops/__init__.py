@@ -69,6 +69,7 @@ from .simulation import (
 from .targets import (
     AttitudeSampleSchema,
     AttitudeTimeseriesSchema,
+    OrbitStateTimeseriesSchema,
     Plan,
     PlanEntry,
     Pointing,
@@ -93,6 +94,7 @@ __all__ = [
     "ACSMode",
     "AttitudeSampleSchema",
     "AttitudeTimeseriesSchema",
+    "OrbitStateTimeseriesSchema",
     "AttitudeControlSystem",
     "AttitudeConstraintScope",
     "Battery",
@@ -160,3 +162,4 @@ __all__ = [
 
 # Resolve forward references in Pydantic models
 ACSCommand.model_rebuild()
+Slew.model_rebuild()

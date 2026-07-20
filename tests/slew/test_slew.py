@@ -4,8 +4,9 @@ from unittest.mock import Mock
 
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
-from conops import Slew
+from conops import MissionConfig, Slew
 from conops.common.enums import ObsType
 
 
@@ -28,7 +29,6 @@ class TestSlewInit:
             ("endra", 0),
             ("enddec", 0),
             ("obsid", 0),
-            ("mode", 0),
             ("at", None),
             ("obstype", "PPT"),
         ],
@@ -42,12 +42,16 @@ class TestSlewInit:
         assert getattr(slew, attr) == expected
 
     def test_slew_init_missing_ephemeris(self, constraint, acs_config):
+        """The ephem assertion runs inside a model_validator, so pydantic wraps
+        the AssertionError as a ValidationError rather than letting it propagate."""
         constraint.ephem = None
         mock_config = Mock()
+        mock_config.__class__ = MissionConfig
+        mock_config.fault_management = None
         mock_config.constraint = constraint
         mock_config.spacecraft_bus = Mock()
         mock_config.spacecraft_bus.attitude_control = acs_config
-        with pytest.raises(AssertionError, match="Ephemeris must be set"):
+        with pytest.raises(ValidationError, match="Ephemeris must be set"):
             Slew(config=mock_config)
 
     def test_idle_hold_builds_zero_duration_idle_slew(self, mock_config):
@@ -225,7 +229,7 @@ class TestCalcSlewtime:
             slew.slewpath = ([0.0], [0.0])
             slew._quat_roll_path = []
 
-        slew.predict_slew = inject_bad_distance
+        object.__setattr__(slew, "predict_slew", inject_bad_distance)
         with pytest.raises(ValueError, match="Invalid slew distance"):
             slew.calc_slewtime()
 

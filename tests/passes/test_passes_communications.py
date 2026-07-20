@@ -209,23 +209,6 @@ class TestPassDataVolume:
         """Test data volume calculation with no comms config."""
         assert basic_pass.calculate_data_volume("S") == 0.0
 
-    def test_calculate_data_volume_no_length(self, mock_config, mock_ephem):
-        """Test data volume calculation when pass has no length."""
-        comms = CommunicationsSystem(
-            band_capabilities=[BandCapability(band="S", downlink_rate_mbps=5.0)]
-        )
-        mock_config.spacecraft_bus.communications = comms
-        p = Pass(
-            config=mock_config,
-            ephem=mock_ephem,
-            station="SGS",
-            begin=1514764800.0,
-            length=100.0,  # Dummy length
-        )
-        p.length = None  # Set to None after creation
-
-        assert p.calculate_data_volume("S") == 0.0
-
     def test_calculate_downlink_volume(self, mock_config, mock_ephem):
         """Test calculating downlink data volume."""
         comms = CommunicationsSystem(

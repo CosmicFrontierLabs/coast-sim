@@ -2,11 +2,25 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TypedDict
 
 import matplotlib.colors as mcolors
 import numpy as np
 import plotly.graph_objects as go
+
+
+class _MarkerDict(TypedDict, total=False):
+    color: str
+    size: int
+    symbol: str
+
+
+class TraceDict(TypedDict, total=False):
+    """Per-frame Scattergeo-style trace payload shared across plotly visualizations."""
+
+    lon: list[float]
+    lat: list[float]
+    marker: _MarkerDict
 
 
 def lighten_color(color: str, factor: float = 0.5) -> str:
@@ -94,7 +108,7 @@ def _sky_circle_polygon(
 
 
 def _poly_trace(
-    data: dict[str, Any],
+    data: TraceDict,
     name: str,
     fill_color: str,
     line_color: str,
@@ -114,7 +128,7 @@ def _poly_trace(
 
 
 def _marker_trace(
-    data: dict[str, Any],
+    data: TraceDict,
     name: str,
     symbol: str,
     color: str,

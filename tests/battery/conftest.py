@@ -4,6 +4,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
+import rust_ephem
 
 from conops import (
     Battery,
@@ -54,6 +55,7 @@ def mock_constraint():
     constraint.constraint = None  # no combined rust-ephem constraint in tests
     constraint.roll_dependent_constraint = None
     constraint.ephem = Mock()  # Add ephem for Pointing initialization
+    constraint.ephem.__class__ = rust_ephem.Ephemeris
     # Add panel_constraint with solar_panel for EmergencyCharging initialization
     constraint.panel_constraint = Mock()
     constraint.panel_constraint.solar_panel = Mock(spec=SolarPanel)
@@ -96,7 +98,7 @@ def mock_config(mock_ephem):
 
     # Create minimal payload, battery, solar_panel
     payload = Payload(instruments=[])
-    battery = Battery(capacity_wh=1000, max_depth_of_discharge=0.8)
+    battery = Battery(watthour=1000, max_depth_of_discharge=0.8)
     # Body-mounted panel: points at sun (Z-dominant normal)
     solar_panel = SolarPanelSet(panels=[SolarPanel(normal=(0.0, 0.0, -1.0))])
 
@@ -264,6 +266,7 @@ def utime():
 def mock_ephem():
     """A default ephem object with sun at RA=180, Dec=0."""
     ephem = Mock()
+    ephem.__class__ = rust_ephem.Ephemeris
     ephem.index = Mock(return_value=0)
     sun_coord = Mock()
     sun_coord.ra = Mock()

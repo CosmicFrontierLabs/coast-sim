@@ -1,10 +1,10 @@
 import hashlib
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import Any, cast
+from typing import cast
 
 import numpy as np
 import rust_ephem
+from pydantic import BaseModel, ConfigDict
 
 from ..common import unixtime2date
 from ..config import AttitudeControlSystem, Constraint, MissionConfig
@@ -12,9 +12,10 @@ from ..ditl.ditl_log import DITLLog
 from . import Pointing
 
 
-@dataclass(frozen=True)
-class TargetSlewEstimate:
+class TargetSlewEstimate(BaseModel):
     """Estimated slew cost used for target selection."""
+
+    model_config = ConfigDict(frozen=True)
 
     slewtime: float
     slewdist: float
@@ -27,7 +28,6 @@ class TargetQueue:
     targets: list[Pointing]
     ephem: rust_ephem.Ephemeris | None
     utime: float
-    gs: Any
     log: DITLLog | None
     constraint: Constraint | None
     acs_config: AttitudeControlSystem | None
@@ -50,7 +50,6 @@ class TargetQueue:
         self.targets = []
         self.ephem = ephem
         self.utime = 0.0
-        self.gs = None
         self.log = log
         # Optional weight to penalize long slews when selecting next target
         self.slew_distance_weight = config.targets.slew_distance_weight
@@ -103,11 +102,12 @@ class TargetQueue:
             dec=dec,
             obsid=obsid,
             name=name,
+            fom=merit,
             merit=merit,
-            exptime=exptime,
             ss_min=ss_min,
             ss_max=ss_max,
         )
+        pointing.exptime = exptime
         pointing.visibility()
         self.targets.append(pointing)
 

@@ -1,10 +1,10 @@
 import time
 from numbers import Integral
-from typing import Protocol
+from typing import Literal, Protocol
 
 import numpy as np
 import rust_ephem
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..common import find_boundaries, ics_date_conv, unixtime2date
 from ..common.enums import ACSMode, AntennaType, ObsType, SlewAlgorithm
@@ -97,7 +97,7 @@ class Pass(BaseModel):
     The pass contains pointing profile information for ground station contacts.
     """
 
-    model_config = {"arbitrary_types_allowed": True}
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     # Core dependencies
     ephem: rust_ephem.Ephemeris | None = None
@@ -286,7 +286,9 @@ class Pass(BaseModel):
         dot = float(np.clip(dot, -1.0, 1.0))
         return float(np.rad2deg(np.arccos(dot)))
 
-    def get_data_rate(self, band: str, direction: str = "downlink") -> float:
+    def get_data_rate(
+        self, band: str, direction: Literal["downlink", "uplink"] = "downlink"
+    ) -> float:
         """Get data rate for this pass in the specified band.
 
         Args:
@@ -307,7 +309,9 @@ class Pass(BaseModel):
         else:
             return 0.0
 
-    def calculate_data_volume(self, band: str, direction: str = "downlink") -> float:
+    def calculate_data_volume(
+        self, band: str, direction: Literal["downlink", "uplink"] = "downlink"
+    ) -> float:
         """Calculate total data volume for this pass.
 
         Args:
@@ -318,7 +322,7 @@ class Pass(BaseModel):
             Data volume in Megabits
         """
         assert self.config is not None, "Config must be set for Pass class"
-        if self.length is None or self.config.spacecraft_bus.communications is None:
+        if self.config.spacecraft_bus.communications is None:
             return 0.0
 
         rate_mbps = self.get_data_rate(band, direction)

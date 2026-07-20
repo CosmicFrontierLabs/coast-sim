@@ -5,6 +5,7 @@ import rust_ephem
 from ..common import (
     ACSCommandType,
     ACSMode,
+    DITLEventType,
     ObsType,
     dtutcfromtimestamp,
     unixtime2date,
@@ -90,9 +91,7 @@ class ACS:
         # last slew to execute before the current DITL), so didn't
         # happen in our simulation, but defines a realistic boundary
         # condition for our simulation.
-        self.last_slew = Slew(
-            config=config,
-        )
+        self.last_slew = Slew(config=self.config)
         self.last_slew.endra = self.ra
         self.last_slew.enddec = self.dec
 
@@ -129,7 +128,9 @@ class ACS:
         self.slew_dists: list[float] = []
         self.saa = None
 
-    def _log_or_print(self, utime: float, event_type: str, description: str) -> None:
+    def _log_or_print(
+        self, utime: float, event_type: DITLEventType, description: str
+    ) -> None:
         """Log an event to DITLLog if available, otherwise print to stdout.
 
         Args:
@@ -401,9 +402,7 @@ class ACS:
         commands during battery charging operations.
         """
         # Create slew object
-        slew = Slew(
-            config=self.config,
-        )
+        slew = Slew(config=self.config)
         slew.ephem = self.ephem
         slew.slewrequest = utime
         slew.endra = ra
@@ -471,6 +470,7 @@ class ACS:
             roll=roll if roll is not None else slew.endroll,
             obsid=slew.obsid,
         )
+        target.exptime = 1000
         target.isat = slew.obstype != ObsType.PPT
 
         target.visibility()

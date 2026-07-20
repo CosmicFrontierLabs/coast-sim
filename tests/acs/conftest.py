@@ -5,12 +5,14 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
+import rust_ephem
 
 from conops import (
     ACS,
     AttitudeConstraintScope,
     AttitudeControlSystem,
     Constraint,
+    MissionConfig,
     SpacecraftBus,
 )
 from conops.config.solar_panel import SolarPanel, SolarPanelSet
@@ -39,6 +41,11 @@ class DummyEphemeris:
 
     def index(self, time: object) -> int:
         return 0
+
+
+# Register as a virtual subclass so isinstance checks (e.g. Slew's pydantic
+# field) pass without implementing every abstract Ephemeris member.
+rust_ephem.Ephemeris.register(DummyEphemeris)
 
 
 @pytest.fixture
@@ -71,6 +78,13 @@ def mock_config(
 ) -> Mock:
     """Create a mock config."""
     config = Mock()
+    config.__class__ = MissionConfig
+    # MissionConfig's init_fault_management_defaults model_validator re-runs
+    # whenever this config is embedded as a nested field elsewhere (e.g. on
+    # PlanEntry.config) and needs battery/recorder threshold fields this
+    # fixture doesn't populate; None short-circuits it via the validator's
+    # own early-return guard.
+    config.fault_management = None
     config.constraint = mock_constraint
     config.ground_stations = Mock()
 

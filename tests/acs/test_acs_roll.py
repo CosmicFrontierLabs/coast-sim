@@ -4,8 +4,9 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
+import rust_ephem
 
-from conops import ACS, ACSMode, AttitudeConstraintScope
+from conops import ACS, ACSMode, AttitudeConstraintScope, Constraint, MissionConfig
 from conops.config.solar_panel import SolarPanel, SolarPanelSet
 
 
@@ -29,6 +30,11 @@ class DummyEphemeris:
         return 0
 
 
+# Register as a virtual subclass so isinstance checks (e.g. Slew's pydantic
+# field) pass without implementing every abstract Ephemeris member.
+rust_ephem.Ephemeris.register(DummyEphemeris)
+
+
 @pytest.fixture
 def mock_ephem_roll():
     """Create a mock ephemeris for roll testing."""
@@ -39,6 +45,7 @@ def mock_ephem_roll():
 def mock_constraint_roll(mock_ephem_roll):
     """Create a mock constraint for roll testing."""
     constraint = Mock()
+    constraint.__class__ = Constraint
     constraint.ephem = mock_ephem_roll
     constraint.constraint = None  # no combined rust-ephem constraint in tests
     constraint.roll_dependent_constraint = None
@@ -56,6 +63,14 @@ def mock_constraint_roll(mock_ephem_roll):
 def mock_config_roll(mock_ephem_roll, mock_constraint_roll, mock_spacecraft_bus):
     """Create a mock config for roll testing."""
     config = Mock()
+    # Satisfies isinstance checks (e.g. Slew's pydantic "config" field) without
+    # the attribute-restriction that Mock(spec=...) would impose.
+    config.__class__ = MissionConfig
+    # MissionConfig's init_fault_management_defaults model_validator re-runs
+    # whenever this config is embedded as a nested pydantic field elsewhere
+    # (e.g. on Slew.config); None short-circuits it via the validator's own
+    # early-return guard.
+    config.fault_management = None
     config.constraint = mock_constraint_roll
     config.ground_stations = Mock()
 
@@ -133,6 +148,7 @@ class TestACSRollCalculation:
         # Create two ACS instances with different sun positions
         ephem1 = DummyEphemeris(sun_ra=0.0, sun_dec=0.0)
         constraint1 = Mock()
+        constraint1.__class__ = Constraint
         constraint1.ephem = ephem1
         constraint1.constraint = None  # no combined rust-ephem constraint in tests
         constraint1.roll_dependent_constraint = None
@@ -145,6 +161,8 @@ class TestACSRollCalculation:
         constraint1.in_eclipse = Mock(return_value=False)
 
         config1 = Mock()
+        config1.__class__ = MissionConfig
+        config1.fault_management = None
         config1.constraint = constraint1
         config1.ground_stations = Mock()
         panel1 = SolarPanel(
@@ -163,6 +181,7 @@ class TestACSRollCalculation:
 
         ephem2 = DummyEphemeris(sun_ra=90.0, sun_dec=0.0)
         constraint2 = Mock()
+        constraint2.__class__ = Constraint
         constraint2.ephem = ephem2
         constraint2.constraint = None  # no combined rust-ephem constraint in tests
         constraint2.roll_dependent_constraint = None
@@ -175,6 +194,8 @@ class TestACSRollCalculation:
         constraint2.in_eclipse = Mock(return_value=False)
 
         config2 = Mock()
+        config2.__class__ = MissionConfig
+        config2.fault_management = None
         config2.constraint = constraint2
         config2.ground_stations = Mock()
         panel2 = SolarPanel(
@@ -318,6 +339,7 @@ class TestACSRollEdgeCases:
         """Test roll calculation with spacecraft near poles."""
         ephem = DummyEphemeris(sun_ra=0.0, sun_dec=89.0)
         constraint = Mock()
+        constraint.__class__ = Constraint
         constraint.ephem = ephem
         constraint.constraint = None  # no combined rust-ephem constraint in tests
         constraint.roll_dependent_constraint = None
@@ -330,6 +352,8 @@ class TestACSRollEdgeCases:
         constraint.in_eclipse = Mock(return_value=False)
 
         config = Mock()
+        config.__class__ = MissionConfig
+        config.fault_management = None
         config.constraint = constraint
         config.ground_stations = Mock()
         panel = SolarPanel(

@@ -305,11 +305,11 @@ class TestConfig:
         """Test loading Config from JSON file."""
         json_data = {
             "name": "Test Config",
-            "spacecraft_bus": {"mass": 100.0},
-            "solar_panel": {"area": 10.0},
-            "payload": {"mass": 50.0},
-            "battery": {"capacity": 200.0, "max_depth_of_discharge": 0.8},
-            "constraint": {"some_constraint": "value"},
+            "spacecraft_bus": {},
+            "solar_panel": {},
+            "payload": {},
+            "battery": {"max_depth_of_discharge": 0.8},
+            "constraint": {},
             "ground_stations": {},
         }
         file_path = tmp_path / "config.json"
@@ -341,11 +341,11 @@ class TestConfig:
         """Test loading Config from YAML file."""
         yaml_data = {
             "name": "Test Config",
-            "spacecraft_bus": {"mass": 100.0},
-            "solar_panel": {"area": 10.0},
-            "payload": {"mass": 50.0},
-            "battery": {"capacity": 200.0, "max_depth_of_discharge": 0.8},
-            "constraint": {"some_constraint": "value"},
+            "spacecraft_bus": {},
+            "solar_panel": {},
+            "payload": {},
+            "battery": {"max_depth_of_discharge": 0.8},
+            "constraint": {},
             "ground_stations": {},
         }
         file_path = tmp_path / "config.yaml"

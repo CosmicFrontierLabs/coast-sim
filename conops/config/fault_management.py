@@ -119,10 +119,9 @@ ACS Mode Filtering:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Literal, cast
 
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 from rust_ephem.constraints import ConstraintConfig
 
 from ..common import ACSMode, normalize_acs_mode
@@ -133,9 +132,12 @@ if TYPE_CHECKING:
     from ..ditl.telemetry import Housekeeping
     from ..simulation import ACS
 
+# Event metadata is a free-form bag of diagnostic context (previous/new state
+# labels, measured values, thresholds, durations, constraint type names, etc.)
+FaultEventMetadataValue = str | float | int | None
 
-@dataclass
-class FaultEvent:
+
+class FaultEvent(BaseModel):
     """Records a single fault management event.
 
     Attributes:
@@ -150,7 +152,7 @@ class FaultEvent:
     event_type: str
     name: str
     cause: str
-    metadata: dict[str, Any] | None = None
+    metadata: dict[str, FaultEventMetadataValue] | None = None
 
     def __str__(self) -> str:
         """Concise human-readable summary for printing a list of events."""
@@ -179,8 +181,7 @@ class FaultEvent:
         return f"{base} | " + ", ".join(parts)
 
 
-@dataclass
-class FaultState:
+class FaultState(BaseModel):
     """Tracks constraint violations and threshold state durations.
 
     Attributes:
@@ -234,7 +235,7 @@ class FaultConstraint(ConfigModel):
         default="", description="Human-readable description of constraint purpose"
     )
 
-    model_config = {"arbitrary_types_allowed": True}
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class FaultThreshold(ConfigModel):
@@ -278,7 +279,7 @@ class FaultThreshold(ConfigModel):
     name: str = Field(description="Parameter name to monitor")
     yellow: float = Field(description="Yellow threshold value")
     red: float = Field(description="Red threshold value")
-    direction: str = Field(
+    direction: Literal["below", "above"] = Field(
         default="below", description="Fault direction: 'below' or 'above'"
     )
     acs_modes: list[ACSMode] | None = Field(
@@ -356,7 +357,7 @@ class FaultManagement(ConfigModel):
         utime: float,
         name: str,
         cause: str,
-        metadata: dict[str, Any],
+        metadata: dict[str, FaultEventMetadataValue],
         acs: ACS,
     ) -> None:
         if not self.safe_mode_on_red:
@@ -613,7 +614,7 @@ class FaultManagement(ConfigModel):
         name: str,
         yellow: float,
         red: float,
-        direction: str = "below",
+        direction: Literal["below", "above"] = "below",
         acs_modes: list[ACSMode] | None = None,
         triggers_safe_mode: bool = True,
         safe_mode_delay_seconds: float = 0.0,

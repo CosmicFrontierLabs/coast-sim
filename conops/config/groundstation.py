@@ -11,8 +11,10 @@ class GroundStation(ConfigModel):
 
     code: str = Field(description="Short code identifier (e.g., GHA, RWA)")
     name: str = Field(description="Human readable name")
-    latitude_deg: float = Field(description="Latitude in degrees")
-    longitude_deg: float = Field(description="Longitude in degrees")
+    latitude_deg: float = Field(ge=-90.0, le=90.0, description="Latitude in degrees")
+    longitude_deg: float = Field(
+        ge=-180.0, le=180.0, description="Longitude in degrees"
+    )
     elevation_m: float = Field(
         default=0.0, description="Elevation above sea level in meters"
     )
@@ -84,11 +86,14 @@ class GroundStationRegistry(ConfigModel):
         If a station with the same code already exists it is replaced to keep
         code uniqueness invariant.
         """
-        for i, existing in enumerate(self.stations):
+        stations = list(self.stations)
+        for i, existing in enumerate(stations):
             if existing.code == station.code:
-                self.stations[i] = station
+                stations[i] = station
+                self.stations = stations
                 return
-        self.stations.append(station)
+        stations.append(station)
+        self.stations = stations
 
     def get(self, code: str) -> GroundStation:
         """Return station matching code or raise KeyError."""

@@ -93,8 +93,6 @@ def mock_ditl() -> Mock:
     # Create telemetry container
     telemetry = Telemetry(
         housekeeping=HousekeepingList(housekeeping_records),
-        data_generated_gb=[0.1 * i for i in range(100)],
-        data_downlinked_gb=[0.05 * i for i in range(100)],
     )
     ditl.telemetry = telemetry
 
