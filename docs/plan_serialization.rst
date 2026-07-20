@@ -387,9 +387,9 @@ any metadata keys already present.
 
    # tle_record is the rust_ephem.TLERecord used to build the ephemeris.
    attach_tle_plan_metadata(
-     ditl.plan,
-     tle_record,
-     tle_file="examples/example.tle",
+       ditl.plan,
+       tle_record,
+       tle_file="examples/example.tle",
    )
    ditl.plan.save("plan_20251201.json")
 
@@ -553,12 +553,12 @@ Each element of ``samples`` is an :class:`~conops.targets.plan_schema.AttitudeSa
 
 .. code-block:: python
 
-   from conops.targets import PlanSchema, AttitudeTimeseriesSchema
+   from conops.targets import AttitudeTimeseriesSchema, Plan
    from pathlib import Path
 
-     plan = Plan.load("plan_20251201T000000Z_20251201T235900Z_v3.json")
+   plan = Plan.load("plan_20251201T000000Z_20251201T235900Z_v3.json")
 
-     if plan.attitude_timeseries_file:
+   if plan.attitude_timeseries_file:
        plan_dir = Path("plan_20251201T000000Z_20251201T235900Z_v3.json").parent
        timeseries_path = plan_dir / plan.attitude_timeseries_file
        raw = __import__("json").loads(timeseries_path.read_text())
