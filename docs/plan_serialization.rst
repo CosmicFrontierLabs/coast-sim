@@ -62,7 +62,7 @@ important to existing callers:
 
    from conops.targets import PlanSchema
 
-  legacy_schema = PlanSchema.load("plan_20251201.json")
+   legacy_schema = PlanSchema.load("plan_20251201.json")
 
 **Round-trip via model_validate**
 
