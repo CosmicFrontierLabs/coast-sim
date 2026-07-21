@@ -419,6 +419,53 @@ class TestACSStateTransitions:
             assert acs.acsmode == mode
 
 
+class TestIdleSafeAttitudeBoresightAxis:
+    """The IDLE-safe-attitude fallback path must honor the configured
+    boresight_axis rather than silently defaulting to "+X" (regression
+    coverage for a gap where these two call sites dropped the kwarg)."""
+
+    def test_idle_safe_attitude_candidates_passes_configured_boresight_axis(
+        self, acs, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        acs.config.spacecraft_bus.boresight_axis = "+Z"
+        received = {}
+
+        def fake_optimal_charging_pointing(self, *args, **kwargs):
+            received.update(kwargs)
+            return 10.0, 20.0
+
+        monkeypatch.setattr(
+            type(acs.solar_panel),
+            "optimal_charging_pointing",
+            fake_optimal_charging_pointing,
+        )
+
+        acs._idle_safe_attitude_candidates(1000.0)
+
+        assert received.get("boresight_axis") == "+Z"
+
+    def test_find_constraint_safe_idle_attitude_passes_configured_boresight_axis(
+        self, acs, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        acs.config.spacecraft_bus.boresight_axis = "+Z"
+        received = {}
+
+        def fake_optimum_roll(*args, **kwargs):
+            received.update(kwargs)
+            return 5.0
+
+        monkeypatch.setattr("conops.simulation.acs.optimum_roll", fake_optimum_roll)
+        acs.constraint.in_star_tracker_hard = Mock(return_value=False)
+        acs.constraint.in_radiator_hard = Mock(return_value=False)
+        acs.constraint.in_telescope_hard = Mock(return_value=False)
+
+        acs._find_constraint_safe_idle_attitude(
+            1000.0, [AttitudeConstraintScope.HARDWARE_SAFETY]
+        )
+
+        assert received.get("boresight_axis") == "+Z"
+
+
 class TestStarTrackerTelemetryModeGating:
     """star_tracker_status and star_tracker_functional_count answer different
     questions and are intentionally gated differently.

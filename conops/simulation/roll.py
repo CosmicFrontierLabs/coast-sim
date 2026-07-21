@@ -197,4 +197,4 @@ def optimum_roll_sidemount(
 ) -> float:
     """Calculate the optimum Roll angle (in degrees) for a given Ra, Dec
     and Unix Time"""
-    return optimum_roll(ra, dec, utime, ephem)
+    return optimum_roll(ra, dec, utime, ephem, boresight_axis=boresight_axis)

@@ -737,6 +737,7 @@ class ACS:
                 self.ephem,
                 self.solar_panel,
                 self.constraint,
+                boresight_axis=str(self.config.spacecraft_bus.boresight_axis),
             )
             for candidate_roll in self._idle_safe_roll_candidates(optimal_roll):
                 if not self._idle_attitude_unsafe(
@@ -812,7 +813,9 @@ class ACS:
 
         if self.solar_panel is not None:
             solar_ra, solar_dec = self.solar_panel.optimal_charging_pointing(
-                utime, self.ephem
+                utime,
+                self.ephem,
+                boresight_axis=str(self.config.spacecraft_bus.boresight_axis),
             )
             add(float(solar_ra), float(solar_dec))
 
