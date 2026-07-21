@@ -822,6 +822,7 @@ class TestFetchNewPPT:
             queue_ditl.acs.ephem,
             queue_ditl.config.solar_panel,
             queue_ditl.config.constraint,
+            boresight_axis=queue_ditl.config.boresight_axis,
         )
 
     def test_fetch_ppt_enqueues_slew_command(
