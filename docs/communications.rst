@@ -340,7 +340,10 @@ See :doc:`plan_serialization` for details on the GSP entry format and serializat
 Implementation Notes
 --------------------
 
-**Nadir pointing**: Default for fixed antennas (azimuth=0°, elevation=0°), points opposite to telescope/payload
+**Fixed-antenna pointing**: Ground-station-pass profiles use the unit body-frame vector in
+``fixed_boresight_body``. The default ``(-1, 0, 0)`` preserves the historical tracking
+convention. ``fixed_azimuth_deg`` and ``fixed_elevation_deg`` are retained only as deprecated
+metadata and do not steer the generated profile.
 
 **Omni antennas**: Always return ``True`` for ``can_communicate()`` regardless of pointing
 

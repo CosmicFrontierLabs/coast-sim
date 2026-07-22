@@ -2,22 +2,24 @@ Plan Serialisation
 ==================
 
 COASTSim can save an observation plan produced by a DITL run to a portable JSON file and
-reload it later.  The serialisation layer is built on `Pydantic v2`_ and lives in
-:mod:`conops.targets.plan_schema`.  Convenience methods are also available directly on
-:class:`~conops.targets.Plan` so you rarely need to import the schema classes explicitly.
+reload it later. :class:`~conops.targets.Plan` and :class:`~conops.targets.PlanEntry`
+are directly serializable `Pydantic v2`_ models. A completed DITL run also attaches
+executed attitude and orbit-state timelines, which :meth:`~conops.targets.Plan.save`
+writes as sibling JSON files.
 
 Overview
 --------
 
-Two Pydantic models handle the conversion:
+The primary models are:
 
-* :class:`~conops.targets.plan_schema.PlanEntrySchema` — represents a single observation
-  entry (a :class:`~conops.targets.PlanEntry` or :class:`~conops.targets.Pointing`).
-* :class:`~conops.targets.plan_schema.PlanSchema` — top-level container that bundles metadata
-  (version, timestamps, entry count) with the list of entries.
+* :class:`~conops.targets.PlanEntry` — a single observation or ground-station-pass entry.
+* :class:`~conops.targets.Plan` — the top-level plan, including its entries, file metadata,
+  and optional execution timeseries.
 
-Both models support ``model_validate(..., from_attributes=True)``, so they accept plain Python
-objects produced by the scheduler without any intermediate conversion step.
+The former :class:`~conops.targets.plan_schema.PlanSchema` and
+:class:`~conops.targets.plan_schema.PlanEntrySchema` names remain as compatibility exports.
+``PlanSchema.from_plan(plan)`` also remains available for callers that need it, but new code
+should use ``Plan`` and ``PlanEntry`` directly.
 
 Quick Start
 -----------
@@ -32,42 +34,41 @@ The simplest approach is to call :meth:`~conops.targets.Plan.save` directly on t
    saved_path = ditl.plan.save("plan_20251201.json")
    print(f"Saved to {saved_path}")
 
-You can also go via :class:`~conops.targets.plan_schema.PlanSchema` if you need access to the
-metadata fields before writing:
+``Plan`` exposes its file metadata before writing:
 
 .. code-block:: python
 
-   from conops.targets import PlanSchema
-
-   schema = PlanSchema.from_plan(ditl.plan)
-   print(f"Saving {schema.num_entries} entries (version {schema.version})")
-   schema.save("plan_20251201.json")
+  print(f"Saving {ditl.plan.num_entries} entries (version {ditl.plan.version})")
+  ditl.plan.save("plan_20251201.json")
 
 **Load it back**
 
 :meth:`~conops.targets.Plan.load` is a class method on :class:`~conops.targets.Plan` that
-returns a :class:`~conops.targets.plan_schema.PlanSchema` (preserving all metadata):
+returns a :class:`~conops.targets.Plan` with its serialized metadata and entries:
 
 .. code-block:: python
 
-   schema = Plan.load("plan_20251201.json")
-   print(schema.version)          # schema format version (integer)
-   print(schema.num_entries)      # number of plan entries
-   print(schema.entries[0].name)  # first target name
+  from conops.targets import Plan
 
-Or equivalently via :class:`~conops.targets.plan_schema.PlanSchema` directly:
+  plan = Plan.load("plan_20251201.json")
+  print(plan.version)          # plan-file revision (integer)
+  print(plan.num_entries)      # number of plan entries
+  print(plan.entries[0].name)  # first target name
+
+The compatibility ``PlanSchema`` class can still load a plan when preserving that type is
+important to existing callers:
 
 .. code-block:: python
 
    from conops.targets import PlanSchema
 
-   schema = PlanSchema.load("plan_20251201.json")
+   legacy_schema = PlanSchema.load("plan_20251201.json")
 
 **Round-trip via model_validate**
 
 .. code-block:: python
 
-   schema = PlanSchema.model_validate(ditl.plan, from_attributes=True)
+  plan = Plan.model_validate(ditl.plan, from_attributes=True)
 
 JSON File Format
 ----------------
@@ -83,6 +84,14 @@ The JSON file contains a metadata envelope followed by the entry list.
      "start": "2025-12-01T00:00:00+00:00",
      "end": "2025-12-01T23:59:00+00:00",
      "num_entries": 42,
+     "attitude_timeseries_file": "plan_20251201_attitude_timeseries.json",
+     "orbit_state_timeseries_file": "plan_20251201_orbit_state_timeseries.json",
+     "metadata": {
+       "ephemeris": {
+         "source": "TLE",
+         "norad_id": 25544
+       }
+     },
      "entries": [
        {
          "name": "TEST_001",
@@ -156,8 +165,8 @@ Metadata Fields
      - COASTSim package version that produced the file (e.g. ``"0.1.3"``).
    * - ``created_at``
      - string
-     - ISO-8601 UTC timestamp of when the :class:`~conops.targets.plan_schema.PlanSchema`
-       instance was created/validated (not updated by :meth:`~conops.targets.plan_schema.PlanSchema.save`).
+     - ISO-8601 UTC timestamp of when the :class:`~conops.targets.Plan` instance was created
+       (not updated by :meth:`~conops.targets.Plan.save`).
    * - ``start``
      - string
      - ISO-8601 UTC timestamp of the first entry's ``begin`` time
@@ -174,6 +183,15 @@ Metadata Fields
      - Filename (no path) of the sibling attitude-timeseries JSON file written alongside
        this plan, or ``null`` / absent when no timeseries was exported.
        See :ref:`attitude-timeseries` for the file format.
+   * - ``orbit_state_timeseries_file``
+     - string | null
+     - Filename (no path) of the sibling GCRS orbit-state JSON file written alongside this
+       plan, or ``null`` / absent when no orbit state was exported.
+       See :ref:`orbit-state-timeseries` for the file format.
+   * - ``metadata``
+     - object | null
+     - Optional producer provenance. COASTSim reserves the ``ephemeris`` object for typed
+       ephemeris details; callers may add their own JSON-compatible metadata keys.
 
 Entry Fields
 ~~~~~~~~~~~~
@@ -287,6 +305,15 @@ Entry Fields
      - float | null
      - Ground-station tracking roll used by ACS at pass end, in degrees. This is derived
        from the final tracking sample and matches ``Pass.attitude_at(contact_end)``.
+   * - ``station_lat_deg`` / ``station_lon_deg`` / ``station_alt_m``
+     - float | null
+     - Ground-station geodetic latitude and longitude in degrees, and altitude in metres.
+       Present for exported ``GSP`` entries when the station definition provides them.
+   * - ``target_attitude``
+     - object | null
+     - Commanded fixed target attitude for ``AT``, ``PPT``, and ``TOO`` entries. It contains
+       a GCRS-to-COAST-body quaternion in ``wxyz`` order and the RA/Dec/roll inputs used to
+       generate it. It is ``null`` for dynamically tracked entries such as ``GSP``.
 
 Ground Station Pass (GSP) Entries
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -345,6 +372,31 @@ and execution of data downlink passes.
 In this example, the spacecraft begins reserving the pass window at 12:00:00 (``begin``),
 uses 2 minutes for slew preparation (``slewtime``), and the actual ground station contact
 runs from 12:02:00 to 12:12:00 (``contact_begin`` to ``contact_end``).
+
+Plan Provenance
+~~~~~~~~~~~~~~~
+
+Use :func:`~conops.targets.attach_tle_plan_metadata` to store the TLE provenance used to
+create a plan. The helper records the source, TLE filename and lines, epoch, NORAD ID, and
+derived classical elements under the plan's ``metadata.ephemeris`` object while preserving
+any metadata keys already present.
+
+.. code-block:: python
+
+   from conops.targets import attach_tle_plan_metadata
+
+   # tle_record is the rust_ephem.TLERecord used to build the ephemeris.
+   attach_tle_plan_metadata(
+       ditl.plan,
+       tle_record,
+       tle_file="examples/example.tle",
+   )
+   ditl.plan.save("plan_20251201.json")
+
+For validation and programmatic construction, use
+:class:`~conops.targets.PlanMetadata` and :class:`~conops.targets.EphemerisMetadata`.
+``Plan.metadata`` itself remains a JSON-compatible dictionary so that mission tools can add
+producer-specific provenance alongside the typed ``ephemeris`` object.
 
 .. _auto-versioning:
 
@@ -501,26 +553,70 @@ Each element of ``samples`` is an :class:`~conops.targets.plan_schema.AttitudeSa
 
 .. code-block:: python
 
-   from conops.targets import PlanSchema, AttitudeTimeseriesSchema
+   from conops.targets import AttitudeTimeseriesSchema, Plan
    from pathlib import Path
 
-   schema = PlanSchema.load("plan_20251201T000000Z_20251201T235900Z_v3.json")
+   plan = Plan.load("plan_20251201T000000Z_20251201T235900Z_v3.json")
 
-   if schema.attitude_timeseries_file:
+   if plan.attitude_timeseries_file:
        plan_dir = Path("plan_20251201T000000Z_20251201T235900Z_v3.json").parent
-       timeseries_path = plan_dir / schema.attitude_timeseries_file
+       timeseries_path = plan_dir / plan.attitude_timeseries_file
        raw = __import__("json").loads(timeseries_path.read_text())
        timeseries = AttitudeTimeseriesSchema.model_validate(raw)
        print(f"Loaded {timeseries.num_samples} attitude samples")
 
+.. _orbit-state-timeseries:
+
+Orbit-State Timeseries
+~~~~~~~~~~~~~~~~~~~~~~
+
+When the ephemeris provides GCRS position and velocity samples, completed
+:class:`~conops.ditl.ditl.DITL` and :class:`~conops.ditl.queue_ditl.QueueDITL` runs attach an
+orbit-state timeline to the plan. :meth:`~conops.targets.Plan.save` writes it beside the plan
+as ``<plan_stem>_orbit_state_timeseries.json`` and stores that basename in
+``orbit_state_timeseries_file``.
+
+The file has the same common metadata fields as the attitude sidecar (``version``,
+``coast_sim_version``, ``created_at``, ``plan_file``, ``plan_version``, ``plan_start``,
+``plan_end``, and ``num_samples``). It also declares its coordinate conventions:
+``frame`` is ``"GCRS"``, ``origin`` is ``"Earth center"``, positions are in kilometres, and
+velocities are in kilometres per second. Each sample contains:
+
+.. code-block:: json
+
+   {
+     "utime": 1748736000.0,
+     "timestamp": "2025-12-01T00:00:00+00:00",
+     "position_km": [6524.834, 6862.875, 6448.296],
+     "velocity_km_s": [4.902, 5.533, -1.976]
+   }
+
+Load the sidecar through :class:`~conops.targets.OrbitStateTimeseriesSchema`:
+
+.. code-block:: python
+
+   import json
+   from pathlib import Path
+
+   from conops.targets import OrbitStateTimeseriesSchema, Plan
+
+   plan_path = Path("plan_20251201T000000Z_20251201T235900Z_v3.json")
+   plan = Plan.load(plan_path)
+   if plan.orbit_state_timeseries_file:
+       raw = json.loads(
+           (plan_path.parent / plan.orbit_state_timeseries_file).read_text()
+       )
+       orbit_states = OrbitStateTimeseriesSchema.model_validate(raw)
+       print(f"Loaded {orbit_states.num_samples} orbit-state samples")
+
 Backward Compatibility
 ----------------------
 
-:meth:`~conops.targets.plan_schema.PlanSchema.save` creates any missing parent directories
+:meth:`~conops.targets.Plan.save` creates any missing parent directories
 automatically, so you can pass a nested path without creating it first.
 
-:meth:`~conops.targets.plan_schema.PlanSchema.load` accepts files written by older versions of
-COASTSim that predate ``PlanSchema``.  Fields not present in the file (e.g. ``created_at``,
+:meth:`~conops.targets.Plan.load` accepts files written by older versions of
+COASTSim. Fields not present in the file (e.g. ``created_at``,
 ``num_entries``) are filled with schema defaults; ``num_entries`` is always recomputed from
 the actual entry list after loading.  Legacy files that store ``start``, ``end``, ``begin``,
 or ``end`` as numeric Unix timestamps (float/int) are accepted and converted to
@@ -558,5 +654,15 @@ API Reference
    :members:
    :undoc-members:
    :show-inheritance:
+
+.. autoclass:: conops.targets.plan_schema.OrbitStateTimeseriesSchema
+  :members:
+  :undoc-members:
+  :show-inheritance:
+
+.. autoclass:: conops.targets.plan_schema.OrbitStateSampleSchema
+  :members:
+  :undoc-members:
+  :show-inheritance:
 
 .. _Pydantic v2: https://docs.pydantic.dev/latest/
