@@ -1,6 +1,7 @@
 """Tests for communications system configuration."""
 
 import pytest
+from pydantic import ValidationError
 
 from conops.common.enums import AntennaType, Polarization
 from conops.config import (
@@ -49,6 +50,26 @@ class TestBandCapability:
         assert band.band == "UHF"
         assert band.uplink_rate_mbps == 0.0
         assert band.downlink_rate_mbps == 0.0
+
+    def test_legacy_synthetic_null_name_is_ignored(self):
+        """Legacy annotated YAML added a null name to unnamed list models."""
+        band = BandCapability.model_validate(
+            {
+                "name": None,
+                "band": "S",
+                "uplink_rate_mbps": 0.0384,
+                "downlink_rate_mbps": 0.0,
+            }
+        )
+
+        assert band.band == "S"
+        assert band.uplink_rate_mbps == 0.0384
+        assert band.downlink_rate_mbps == 0.0
+
+    def test_non_null_unknown_name_is_rejected(self):
+        """The legacy migration does not weaken strict unknown-field validation."""
+        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+            BandCapability.model_validate({"name": "S-band", "band": "S"})
 
 
 class TestAntennaPointing:
