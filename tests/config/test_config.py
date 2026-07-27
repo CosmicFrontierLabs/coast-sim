@@ -22,6 +22,8 @@ from conops import (
 )
 from conops.config import (
     AttitudeControlSystem,
+    BandCapability,
+    CommunicationsSystem,
     DataGeneration,
     PowerDraw,
     StarTracker,
@@ -434,3 +436,38 @@ class TestConfig:
             config2 = MissionConfig.from_yaml_file(str(yaml_path))
             # Compare the model dumps to ensure data integrity
             assert config1.model_dump() == config2.model_dump()
+
+    def test_yaml_roundtrip_with_unnamed_model_list_items(self, tmp_path: Path) -> None:
+        """Lists whose item model has no name field round-trip without synthetic keys."""
+        config = MissionConfig(
+            name="Communications Config",
+            spacecraft_bus=SpacecraftBus(
+                communications=CommunicationsSystem(
+                    band_capabilities=[
+                        BandCapability(
+                            band="S",
+                            uplink_rate_mbps=0.0384,
+                            downlink_rate_mbps=0.0,
+                        ),
+                        BandCapability(
+                            band="Ka",
+                            uplink_rate_mbps=0.0,
+                            downlink_rate_mbps=58.64,
+                        ),
+                    ]
+                )
+            ),
+        )
+        yaml_path = tmp_path / "communications.yaml"
+
+        config.to_yaml_file(str(yaml_path))
+
+        raw = yaml.safe_load(yaml_path.read_text())
+        serialized_bands = raw["spacecraft_bus"]["communications"]["band_capabilities"]
+        assert all("name" not in band for band in serialized_bands)
+
+        loaded = MissionConfig.from_yaml_file(str(yaml_path))
+        assert (
+            loaded.spacecraft_bus.communications.model_dump()
+            == config.spacecraft_bus.communications.model_dump()
+        )

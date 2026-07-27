@@ -502,29 +502,47 @@ class MissionConfig(ConfigModel):
                         ):
                             # For lists of dicts with a model, add annotated items
                             for item in field_value:
-                                lines.append(f"{ind}  - name: {item.get('name', '')}")
-                                for (
-                                    item_field_name,
-                                    item_field_info,
-                                ) in item_model.model_fields.items():
-                                    if (
-                                        item_field_name in ("name",)
-                                        or item_field_name not in item
-                                    ):
-                                        continue
+                                item_fields = [
+                                    (item_field_name, item_field_info)
+                                    for (
+                                        item_field_name,
+                                        item_field_info,
+                                    ) in item_model.model_fields.items()
+                                    if item_field_name in item
+                                ]
+                                item_fields.sort(key=lambda field: field[0] != "name")
+                                if not item_fields:
+                                    lines.append(f"{ind}  - {{}}")
+                                    continue
+
+                                first_field = True
+                                for item_field_name, item_field_info in item_fields:
                                     item_val = item[item_field_name]
-                                    if item_field_info.description:
+                                    if (
+                                        item_field_name != "name"
+                                        and item_field_info.description
+                                    ):
+                                        comment_indent = (
+                                            f"{ind}  " if first_field else f"{ind}    "
+                                        )
                                         lines.append(
-                                            f"{ind}    # {item_field_name}: {item_field_info.description}"
+                                            f"{comment_indent}# {item_field_name}: "
+                                            f"{item_field_info.description}"
                                         )
                                     yaml_str = yaml.safe_dump(
                                         {item_field_name: item_val},
                                         default_flow_style=False,
                                         sort_keys=False,
                                     )
-                                    for line in yaml_str.rstrip().split("\n"):
+                                    for line_index, line in enumerate(
+                                        yaml_str.rstrip().split("\n")
+                                    ):
                                         if line:
-                                            lines.append(ind + "    " + line)
+                                            if first_field and line_index == 0:
+                                                lines.append(f"{ind}  - {line}")
+                                            else:
+                                                lines.append(f"{ind}    {line}")
+                                    first_field = False
                         else:
                             # Default list handling
                             self._add_annotated_yaml_content(
