@@ -238,7 +238,11 @@ class TestPlanSaveLoad:
                 "norad_id": 12345,
                 "line1": "1 43613U 18070A   26060.00000000  .00000000  00000-0  00000-0 0  9991",
                 "line2": "2 43613  97.7898  39.6457 0016466  83.3495 116.0254 15.13083683    09",
-                "classical_elements": {"SemimajorAxis_m": 6_900_000.0},
+                "tle_mean_elements": {
+                    "epoch_utc": "2026-03-01T00:00:00Z",
+                    "elements": {"SemimajorAxis_m": 6_900_000.0},
+                    "note": "TLE mean elements for SGP4.",
+                },
             }
         }
         dest = tmp_path / "plan.json"

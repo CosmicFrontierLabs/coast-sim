@@ -15,6 +15,19 @@ def _format_utc_datetime(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+TLE_MEAN_ELEMENTS_NOTE = (
+    "TLE mean elements for SGP4, not propagated osculating elements. "
+    "RightAscension_deg is RAAN. SemimajorAxis_m is derived from TLE mean "
+    "motion, and TrueAnomaly_deg is derived from TLE mean anomaly."
+)
+
+
+class TLEMeanElementsMetadata(BaseModel):
+    epoch_utc: str
+    elements: dict[str, float]
+    note: str
+
+
 class EphemerisMetadata(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -25,15 +38,7 @@ class EphemerisMetadata(BaseModel):
     norad_id: int | None = None
     line1: str | None = None
     line2: str | None = None
-    classical_elements: dict[str, float] | None = None
-    classical_elements_note: str | None = None
-
-
-TLE_CLASSICAL_ELEMENTS_NOTE = (
-    "TLE mean elements at the TLE epoch; RightAscension_deg is RAAN. "
-    "SemimajorAxis_m is derived from TLE mean motion, and "
-    "TrueAnomaly_deg is derived from TLE mean anomaly."
-)
+    tle_mean_elements: TLEMeanElementsMetadata | None = None
 
 
 class PlanMetadata(BaseModel):
@@ -61,17 +66,21 @@ class PlanMetadata(BaseModel):
                 "tle_record must provide classical_elements(); install rust-ephem >= 0.11"
             )
 
+        tle_epoch_utc = _format_utc_datetime(tle_record.epoch)
         return cls(
             ephemeris=EphemerisMetadata(
                 source=source,
                 tle_file=str(tle_file) if tle_file is not None else None,
                 tle_name=tle_record.name,
-                tle_epoch_utc=_format_utc_datetime(tle_record.epoch),
+                tle_epoch_utc=tle_epoch_utc,
                 norad_id=tle_record.norad_id,
                 line1=tle_record.line1,
                 line2=tle_record.line2,
-                classical_elements=classical_elements(),
-                classical_elements_note=TLE_CLASSICAL_ELEMENTS_NOTE,
+                tle_mean_elements=TLEMeanElementsMetadata(
+                    epoch_utc=tle_epoch_utc,
+                    elements=classical_elements(),
+                    note=TLE_MEAN_ELEMENTS_NOTE,
+                ),
             )
         )
 
