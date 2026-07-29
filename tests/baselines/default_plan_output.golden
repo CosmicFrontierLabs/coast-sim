@@ -4048,6 +4048,25 @@
         }
       }
     ],
+    "metadata": {
+      "ephemeris": {
+        "osculating_elements": {
+          "elements": {
+            "ArgPeriapsis_deg": 180.0,
+            "Eccentricity": 0.9953563216507494,
+            "GravitationalParameter_m3_s2": 398600800000000.0,
+            "Inclination_deg": 8.13010235415598,
+            "RightAscension_deg": 0.0,
+            "SemimajorAxis_m": 3508145.3493022895,
+            "TrueAnomaly_deg": 180.0
+          },
+          "epoch_utc": "2026-01-01T00:00:00Z",
+          "frame": "GCRS",
+          "note": "Instantaneous two-body osculating elements derived from the GCRS position and velocity at epoch_utc. RightAscension_deg is RAAN. Angles are normalized to [0, 360) degrees.",
+          "origin": "Earth center"
+        }
+      }
+    },
     "num_entries": 5,
     "start": "2026-01-01T00:00:00+00:00",
     "version": 0

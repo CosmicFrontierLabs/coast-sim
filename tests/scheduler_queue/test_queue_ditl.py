@@ -77,8 +77,9 @@ class TestQueueDITLInitialization:
     def test_attach_orbit_state_timeseries_to_plan(
         self, queue_ditl: QueueDITL, tmp_path
     ) -> None:
+        queue_ditl.begin = datetime(2026, 1, 1, tzinfo=timezone.utc)
         queue_ditl.ephem.timestamp = [
-            datetime(2026, 1, 1, tzinfo=timezone.utc),
+            queue_ditl.begin,
             datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc),
         ]
         queue_ditl.ephem.gcrs_pv = Mock(
@@ -101,6 +102,10 @@ class TestQueueDITLInitialization:
         assert sample.timestamp == "2026-01-01T00:00:00+00:00"
         assert sample.position_km == pytest.approx((7000.0, 0.0, 0.0))
         assert sample.velocity_km_s == pytest.approx((0.0, 7.5, 0.0))
+        osculating = queue_ditl.plan.metadata["ephemeris"]["osculating_elements"]
+        assert osculating["epoch_utc"] == "2026-01-01T00:00:00Z"
+        assert osculating["frame"] == "GCRS"
+        assert osculating["origin"] == "Earth center"
 
         plan_path = queue_ditl.plan.save(tmp_path / "plan.json")
         raw = json.loads(plan_path.read_text())

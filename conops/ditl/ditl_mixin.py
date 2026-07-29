@@ -198,7 +198,11 @@ class DITLMixin:
 
     def _attach_orbit_state_timeseries_to_plan(self) -> None:
         """Attach GCRS spacecraft position/velocity samples to the current plan."""
-        from ..targets import OrbitStateSampleSchema, OrbitStateTimeseriesSchema
+        from ..targets import (
+            OrbitStateSampleSchema,
+            OrbitStateTimeseriesSchema,
+            attach_osculating_elements_metadata,
+        )
 
         pv = getattr(self.ephem, "gcrs_pv", None)
         positions = getattr(pv, "position", None)
@@ -243,6 +247,11 @@ class DITLMixin:
             )
 
         self.plan.orbit_state_timeseries = OrbitStateTimeseriesSchema(samples=samples)
+        attach_osculating_elements_metadata(
+            self.plan,
+            self.ephem,
+            self.begin,
+        )
 
     def plot(self) -> None:
         """Plot DITL timeline.
