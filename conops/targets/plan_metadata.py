@@ -149,15 +149,12 @@ def attach_osculating_elements_metadata(
     plan: Plan,
     ephemeris: rust_ephem.Ephemeris,
     epoch: datetime,
-    *,
-    mu_km3_s2: float = rust_ephem.WGS72_EARTH_MU_KM3_S2,
 ) -> None:
     """Attach GCRS osculating elements at an exact ephemeris timestamp.
 
-    ``mu_km3_s2`` defaults to the WGS-72 Earth value used by SGP4. Automatic
-    DITL plan export uses that default. Callers converting states generated
-    with another gravity model must pass its matching gravitational parameter;
-    the exact value used is included in the serialized elements.
+    rust-ephem owns the Cartesian-state conversion, including selection of its
+    central-body gravitational parameter. The exact value returned by
+    rust-ephem is included in the serialized elements.
     """
     timestamps = ephemeris.timestamp
     positions = ephemeris.gcrs_pv.position
@@ -185,7 +182,6 @@ def attach_osculating_elements_metadata(
     elements = rust_ephem.osculating_elements_from_state(
         position_km=positions[index],
         velocity_km_s=velocities[index],
-        mu_km3_s2=mu_km3_s2,
     )
     serialized_elements = {
         "SemimajorAxis_m": elements["semimajor_axis_km"] * 1_000.0,
