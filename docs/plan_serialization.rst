@@ -409,6 +409,13 @@ includes the selected state epoch, ``frame: "GCRS"``, ``origin: "Earth center"``
 the gravitational parameter used for the conversion. Element angles are normalized to
 ``[0, 360)`` degrees.
 
+Automatic DITL plan export uses the WGS-72 Earth gravitational parameter, matching the
+default used by SGP4. The exact value is serialized as
+``GravitationalParameter_m3_s2`` so consumers can reproduce the conversion. Callers
+converting an ephemeris generated with another gravity model should invoke
+:func:`~conops.targets.attach_osculating_elements_metadata` with that model's matching
+``mu_km3_s2`` value.
+
 For validation and programmatic construction, use
 :class:`~conops.targets.PlanMetadata` and :class:`~conops.targets.EphemerisMetadata`.
 ``Plan.metadata`` itself remains a JSON-compatible dictionary so that mission tools can add
