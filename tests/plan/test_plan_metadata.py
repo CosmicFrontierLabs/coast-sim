@@ -38,11 +38,16 @@ def test_plan_metadata_from_tle_record_uses_rust_ephem_elements(
     assert ephemeris["line1"] == _TLE1
     assert ephemeris["line2"] == _TLE2
 
-    elements = ephemeris["classical_elements"]
+    tle_mean_elements = ephemeris["tle_mean_elements"]
+    assert tle_mean_elements["epoch_utc"] == ephemeris["tle_epoch_utc"]
+    assert "not propagated osculating elements" in tle_mean_elements["note"]
+
+    elements = tle_mean_elements["elements"]
     assert elements == tle_record.classical_elements()
     assert elements["SemimajorAxis_m"] == pytest.approx(6904941.542146514)
     assert elements["Inclination_deg"] == pytest.approx(97.7898)
     assert elements["RightAscension_deg"] == pytest.approx(39.6457)
+    assert "classical_elements" not in ephemeris
 
 
 def test_attach_tle_plan_metadata_preserves_existing_metadata(
@@ -54,7 +59,7 @@ def test_attach_tle_plan_metadata_preserves_existing_metadata(
     attach_tle_plan_metadata(plan, tle_record=tle_record)
 
     assert plan.metadata["producer"] == {"name": "mission-generator"}
-    assert plan.metadata["ephemeris"]["classical_elements"] == (
+    assert plan.metadata["ephemeris"]["tle_mean_elements"]["elements"] == (
         tle_record.classical_elements()
     )
 
@@ -78,7 +83,7 @@ def test_plan_metadata_preserves_non_tle_ephemeris_payload() -> None:
 
     assert metadata["ephemeris"]["source"] == "SPICE"
     assert metadata["ephemeris"]["kernel"] == "example.bsp"
-    assert "classical_elements_note" not in metadata["ephemeris"]
+    assert "tle_mean_elements" not in metadata["ephemeris"]
 
 
 def test_plan_metadata_preserves_missing_source_ephemeris_payload() -> None:
@@ -88,7 +93,7 @@ def test_plan_metadata_preserves_missing_source_ephemeris_payload() -> None:
 
     assert metadata["ephemeris"]["kernel"] == "example.bsp"
     assert "source" not in metadata["ephemeris"]
-    assert "classical_elements_note" not in metadata["ephemeris"]
+    assert "tle_mean_elements" not in metadata["ephemeris"]
 
 
 def test_plan_metadata_preserves_empty_ephemeris_payload() -> None:
