@@ -335,6 +335,8 @@ def attitude_for_body_vector_tracking(
 # Attitude quaternion represents the rotation from ECI to spacecraft body
 # frame, matching the direction-cosine convention used in scbodyvector():
 #   R = R_x(+roll) @ R_y(dec) @ R_z(-ra)   (all angles in radians)
+# Hamilton vector action:
+#   [0, v_body] = q ⊗ [0, v_eci] ⊗ conjugate(q)
 # Body X = boresight, Body Z = "up" (defines roll).
 
 
@@ -358,7 +360,8 @@ def attitude_to_quat(
     """Convert spacecraft attitude (RA, Dec, Roll) in degrees to quaternion [w, x, y, z].
 
     The attitude quaternion encodes the rotation R = R_x(+roll) @ R_y(dec) @ R_z(-ra)
-    that transforms ECI vectors into spacecraft body frame.
+    that transforms ECI vectors into spacecraft body frame. It uses the
+    Hamilton product and vector action ``q * v * conjugate(q)``.
     """
     ra = np.deg2rad(ra_deg)
     dec = np.deg2rad(dec_deg)

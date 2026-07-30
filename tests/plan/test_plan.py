@@ -280,6 +280,13 @@ class TestPlanSaveLoad:
         assert attitude_path.exists()
         attitude_raw = json.loads(attitude_path.read_text())
         assert attitude_raw["plan_file"] == "plan.json"
+        assert attitude_raw["frame"] == "GCRS"
+        assert attitude_raw["body_frame"] == "COAST_BODY"
+        assert attitude_raw["representation"] == "quaternion"
+        assert attitude_raw["direction"] == "inertial_to_body"
+        assert attitude_raw["order"] == "wxyz"
+        assert attitude_raw["quaternion_product"] == "hamilton"
+        assert attitude_raw["vector_action"] == "q_v_q_conjugate"
         assert attitude_raw["samples"][0]["obsid"] == 0
 
     def test_save_writes_orbit_state_timeseries_companion(self, tmp_path):

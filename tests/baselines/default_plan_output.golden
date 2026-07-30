@@ -1,6 +1,12 @@
 {
   "attitude_timeseries": {
+    "body_frame": "COAST_BODY",
+    "direction": "inertial_to_body",
+    "frame": "GCRS",
     "num_samples": 288,
+    "order": "wxyz",
+    "quaternion_product": "hamilton",
+    "representation": "quaternion",
     "samples": [
       {
         "dec": 0.0,
@@ -3747,6 +3753,7 @@
         "utime": 1767311700.0
       }
     ],
+    "vector_action": "q_v_q_conjugate",
     "version": 0
   },
   "orbit_state_timeseries_summary": {
@@ -3844,13 +3851,15 @@
           "rotation": {
             "direction": "inertial_to_body",
             "order": "wxyz",
+            "quaternion_product": "hamilton",
             "representation": "quaternion",
             "values": [
               -0.33124285883428206,
               0.13811672678658393,
               0.26472108466300764,
               -0.8950556885400442
-            ]
+            ],
+            "vector_action": "q_v_q_conjugate"
           }
         }
       },
@@ -3888,13 +3897,15 @@
           "rotation": {
             "direction": "inertial_to_body",
             "order": "wxyz",
+            "quaternion_product": "hamilton",
             "representation": "quaternion",
             "values": [
               -0.017009829004397924,
               0.792860483291601,
               0.6053640995494111,
               0.06795017828218786
-            ]
+            ],
+            "vector_action": "q_v_q_conjugate"
           }
         }
       },
@@ -3932,13 +3943,15 @@
           "rotation": {
             "direction": "inertial_to_body",
             "order": "wxyz",
+            "quaternion_product": "hamilton",
             "representation": "quaternion",
             "values": [
               -0.40422188881944526,
               0.8940430380011926,
               0.1928557332398833,
               -0.009918515884208057
-            ]
+            ],
+            "vector_action": "q_v_q_conjugate"
           }
         }
       },
@@ -3976,13 +3989,15 @@
           "rotation": {
             "direction": "inertial_to_body",
             "order": "wxyz",
+            "quaternion_product": "hamilton",
             "representation": "quaternion",
             "values": [
               0.07608062768571641,
               0.3664540665546916,
               0.8829714475409405,
               0.2833453335135997
-            ]
+            ],
+            "vector_action": "q_v_q_conjugate"
           }
         }
       },
@@ -4020,13 +4035,15 @@
           "rotation": {
             "direction": "inertial_to_body",
             "order": "wxyz",
+            "quaternion_product": "hamilton",
             "representation": "quaternion",
             "values": [
               -0.8113660378157899,
               -0.21557635248643178,
               -0.2216618148063541,
               -0.4960625250757263
-            ]
+            ],
+            "vector_action": "q_v_q_conjugate"
           }
         }
       }
