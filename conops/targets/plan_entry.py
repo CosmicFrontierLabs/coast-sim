@@ -26,12 +26,19 @@ BodyAxis = Literal["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
 RollSource = Literal["planned", "defaulted_from_unconstrained_sentinel"]
 
 
-class AttitudeRotationSchema(BaseModel):
-    """Generic attitude rotation representation."""
+class AttitudeRotationConventionSchema(BaseModel):
+    """Machine-readable attitude rotation convention."""
 
     representation: Literal["quaternion"] = "quaternion"
     direction: Literal["inertial_to_body"] = "inertial_to_body"
     order: Literal["wxyz"] = "wxyz"
+    quaternion_product: Literal["hamilton"] = "hamilton"
+    vector_action: Literal["q_v_q_conjugate"] = "q_v_q_conjugate"
+
+
+class AttitudeRotationSchema(AttitudeRotationConventionSchema):
+    """Generic attitude rotation representation."""
+
     values: tuple[float, float, float, float]
 
 

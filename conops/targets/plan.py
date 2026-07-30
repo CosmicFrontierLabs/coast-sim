@@ -17,7 +17,7 @@ from pydantic import (
 )
 
 from .._version import __version__
-from .plan_entry import PlanEntry
+from .plan_entry import AttitudeRotationConventionSchema, PlanEntry
 
 
 class TargetList(BaseModel):
@@ -54,7 +54,7 @@ class AttitudeSampleSchema(BaseModel):
     quat_z: float | None = None
 
 
-class AttitudeTimeseriesSchema(BaseModel):
+class AttitudeTimeseriesSchema(AttitudeRotationConventionSchema):
     """Continuous executed spacecraft attitude timeline tied to a plan file."""
 
     version: int = 0
@@ -66,6 +66,8 @@ class AttitudeTimeseriesSchema(BaseModel):
     plan_version: int | None = None
     plan_start: float | None = None
     plan_end: float | None = None
+    frame: Literal["GCRS"] = "GCRS"
+    body_frame: Literal["COAST_BODY"] = "COAST_BODY"
     samples: list[AttitudeSampleSchema] = Field(default_factory=list)
 
     @computed_field  # type: ignore[prop-decorator]

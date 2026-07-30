@@ -313,7 +313,11 @@ Entry Fields
      - object | null
      - Commanded fixed target attitude for ``AT``, ``PPT``, and ``TOO`` entries. It contains
        a GCRS-to-COAST-body quaternion in ``wxyz`` order and the RA/Dec/roll inputs used to
-       generate it. It is ``null`` for dynamically tracked entries such as ``GSP``.
+       generate it. The rotation records ``quaternion_product: "hamilton"`` and
+       ``vector_action: "q_v_q_conjugate"`` explicitly: an inertial vector ``v`` is
+       transformed into body coordinates as ``q * v * conjugate(q)``. Consumers using
+       ``conjugate(q) * v * q`` must conjugate the exported quaternion. It is ``null`` for
+       dynamically tracked entries such as ``GSP``.
 
 Ground Station Pass (GSP) Entries
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -439,6 +443,13 @@ field so that consumers can locate it without scanning the directory.
      "plan_version": 3,
      "plan_start": "2025-12-01T00:00:00+00:00",
      "plan_end": "2025-12-01T23:59:00+00:00",
+     "frame": "GCRS",
+     "body_frame": "COAST_BODY",
+     "representation": "quaternion",
+     "direction": "inertial_to_body",
+     "order": "wxyz",
+     "quaternion_product": "hamilton",
+     "vector_action": "q_v_q_conjugate",
      "num_samples": 2,
      "samples": [
        {
@@ -500,6 +511,17 @@ field so that consumers can locate it without scanning the directory.
    * - ``plan_end``
      - string | null
      - ISO-8601 UTC timestamp matching the plan's ``end`` field.
+   * - ``frame`` / ``body_frame``
+     - string
+     - Source and destination frames for every sample quaternion: ``GCRS`` and
+       ``COAST_BODY``.
+   * - ``representation`` / ``direction`` / ``order``
+     - string
+     - Every sample uses an ``inertial_to_body`` quaternion in ``wxyz`` component order.
+   * - ``quaternion_product`` / ``vector_action``
+     - string
+     - Every sample uses the Hamilton product and transforms inertial vectors into body
+       coordinates as ``q * v * conjugate(q)``.
    * - ``num_samples``
      - int
      - Number of attitude samples in ``samples``.

@@ -155,6 +155,8 @@ class TestPlanEntryExport:
         assert attitude["rotation"]["representation"] == "quaternion"
         assert attitude["rotation"]["direction"] == "inertial_to_body"
         assert attitude["rotation"]["order"] == "wxyz"
+        assert attitude["rotation"]["quaternion_product"] == "hamilton"
+        assert attitude["rotation"]["vector_action"] == "q_v_q_conjugate"
         assert attitude["rotation"]["values"] == pytest.approx(
             attitude_to_quat(15.0, 45.0, 10.0).tolist()
         )
@@ -179,11 +181,23 @@ class TestPlanEntryExport:
         attitude = TargetAttitudeSchema(rotation=rotation, pointing=pointing)
 
         assert attitude.rotation.representation == "quaternion"
+        assert attitude.rotation.quaternion_product == "hamilton"
+        assert attitude.rotation.vector_action == "q_v_q_conjugate"
         assert attitude.pointing.boresight_axis == "+Z"
 
         with pytest.raises(ValidationError):
             AttitudeRotationSchema(
                 representation="matrix",
+                values=(1.0, 0.0, 0.0, 0.0),
+            )
+        with pytest.raises(ValidationError):
+            AttitudeRotationSchema(
+                quaternion_product="jpl",
+                values=(1.0, 0.0, 0.0, 0.0),
+            )
+        with pytest.raises(ValidationError):
+            AttitudeRotationSchema(
+                vector_action="q_conjugate_v_q",
                 values=(1.0, 0.0, 0.0, 0.0),
             )
         with pytest.raises(ValidationError):
@@ -327,6 +341,8 @@ class TestPlanIO:
         attitude = raw["entries"][0]["target_attitude"]
         assert attitude["rotation"]["direction"] == "inertial_to_body"
         assert attitude["rotation"]["order"] == "wxyz"
+        assert attitude["rotation"]["quaternion_product"] == "hamilton"
+        assert attitude["rotation"]["vector_action"] == "q_v_q_conjugate"
         assert attitude["pointing"]["boresight_axis"] == "+X"
 
     def test_load_existing_example_json(self):
