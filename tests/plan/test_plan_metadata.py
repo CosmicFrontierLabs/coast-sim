@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock
 
@@ -11,6 +12,7 @@ from rust_ephem.tle import TLERecord
 from conops.targets import (
     Plan,
     PlanMetadata,
+    attach_initialization_state_metadata,
     attach_osculating_elements_metadata,
     attach_tle_plan_metadata,
 )
@@ -129,9 +131,72 @@ def test_attach_osculating_elements_uses_exact_gcrs_state_and_preserves_tle(
     assert plan.metadata["ephemeris"]["osculating_elements"]["elements"] == elements
 
 
-def test_attach_osculating_elements_requires_exact_epoch() -> None:
+def test_attach_initialization_state_uses_ephemeris_provenance(
+    tle_record: TLERecord,
+) -> None:
+    epoch = datetime(2026, 3, 1, 17, 26, 40, tzinfo=timezone.utc)
+    ephemeris = Mock(spec=rust_ephem.TLEEphemeris)
+    ephemeris.timestamp = np.array(
+        [epoch, epoch + timedelta(seconds=1)],
+        dtype=object,
+    )
+    ephemeris.gcrs_pv = Mock(
+        position=np.array(
+            [
+                [4.8275072, -1221.9965709, 6777.3247990],
+                [-1.0399861, -1226.7677545, 6776.4697900],
+            ]
+        ),
+        velocity=np.array(
+            [
+                [-5.8674922, -4.7728658, -0.8511936],
+                [-5.8674944, -4.7694966, -0.8588244],
+            ]
+        ),
+    )
+    ephemeris.propagator = "SGP4"
+    ephemeris.gravity_model = "WGS-72"
+    ephemeris.sgp4_operation_mode = "improved"
+    plan = Plan()
+    plan.metadata = {"producer": {"name": "mission-generator"}}
+    attach_tle_plan_metadata(plan, tle_record=tle_record)
+
+    attach_initialization_state_metadata(plan, ephemeris, epoch)
+
+    assert plan.metadata["producer"] == {"name": "mission-generator"}
+    ephemeris_metadata = plan.metadata["ephemeris"]
+    assert "tle_mean_elements" in ephemeris_metadata
+    state = ephemeris_metadata["initialization_state"]
+    assert state["epoch_utc"] == "2026-03-01T17:26:40Z"
+    assert state["frame"] == "GCRS"
+    assert state["origin"] == "Earth center"
+    assert state["position_m"] == pytest.approx(
+        [4827.5072, -1221996.5709, 6777324.7990]
+    )
+    assert state["velocity_m_per_s"] == pytest.approx(
+        [-5867.4922, -4772.8658, -851.1936]
+    )
+    assert state["propagator"] == "SGP4"
+    assert state["gravity_model"] == "WGS-72"
+    assert state["sgp4_operation_mode"] == "improved"
+
+    attach_tle_plan_metadata(plan, tle_record=tle_record)
+    assert plan.metadata["ephemeris"]["initialization_state"] == state
+
+
+@pytest.mark.parametrize(
+    ("helper", "metadata_name"),
+    [
+        (attach_osculating_elements_metadata, "Osculating-element"),
+        (attach_initialization_state_metadata, "Initialization-state"),
+    ],
+)
+def test_state_metadata_requires_exact_epoch(
+    helper: Callable[..., None],
+    metadata_name: str,
+) -> None:
     epoch = datetime(2026, 3, 1, 18, 0, tzinfo=timezone.utc)
-    ephemeris = Mock(spec=rust_ephem.Ephemeris)
+    ephemeris = Mock(spec=rust_ephem.TLEEphemeris)
     ephemeris.timestamp = np.array(
         [epoch - timedelta(minutes=1)],
         dtype=object,
@@ -141,8 +206,8 @@ def test_attach_osculating_elements_requires_exact_epoch() -> None:
         velocity=np.array([[0.0, 7.5, 0.0]]),
     )
 
-    with pytest.raises(ValueError, match="found 0 matches"):
-        attach_osculating_elements_metadata(Plan(), ephemeris, epoch)
+    with pytest.raises(ValueError, match=f"{metadata_name}.*found 0 matches"):
+        helper(Plan(), ephemeris, epoch)
 
 
 def test_attach_osculating_elements_rejects_duplicate_epoch() -> None:
@@ -158,9 +223,18 @@ def test_attach_osculating_elements_rejects_duplicate_epoch() -> None:
         attach_osculating_elements_metadata(Plan(), ephemeris, epoch)
 
 
-def test_attach_osculating_elements_requires_aligned_state_arrays() -> None:
+@pytest.mark.parametrize(
+    "helper",
+    [
+        attach_osculating_elements_metadata,
+        attach_initialization_state_metadata,
+    ],
+)
+def test_state_metadata_requires_aligned_state_arrays(
+    helper: Callable[..., None],
+) -> None:
     epoch = datetime(2026, 3, 1, 18, 0, tzinfo=timezone.utc)
-    ephemeris = Mock(spec=rust_ephem.Ephemeris)
+    ephemeris = Mock(spec=rust_ephem.TLEEphemeris)
     ephemeris.timestamp = np.array([epoch], dtype=object)
     ephemeris.gcrs_pv = Mock(
         position=np.array([[7000.0, 0.0, 0.0]]),
@@ -168,7 +242,7 @@ def test_attach_osculating_elements_requires_aligned_state_arrays() -> None:
     )
 
     with pytest.raises(ValueError, match="matching lengths"):
-        attach_osculating_elements_metadata(Plan(), ephemeris, epoch)
+        helper(Plan(), ephemeris, epoch)
 
 
 def test_plan_metadata_requires_rust_ephem_element_api() -> None:

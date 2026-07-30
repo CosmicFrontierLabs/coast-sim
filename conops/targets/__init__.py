@@ -14,9 +14,11 @@ from .plan_entry import (
 )
 from .plan_metadata import (
     EphemerisMetadata,
+    InitializationStateMetadata,
     OsculatingElementsMetadata,
     PlanMetadata,
     TLEMeanElementsMetadata,
+    attach_initialization_state_metadata,
     attach_osculating_elements_metadata,
     attach_tle_plan_metadata,
 )
@@ -43,8 +45,10 @@ __all__ = [
     "TargetSlewEstimate",
     "EphemerisMetadata",
     "TLEMeanElementsMetadata",
+    "InitializationStateMetadata",
     "OsculatingElementsMetadata",
     "PlanMetadata",
+    "attach_initialization_state_metadata",
     "attach_osculating_elements_metadata",
     "attach_tle_plan_metadata",
 ]
