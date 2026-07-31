@@ -294,11 +294,16 @@ class ACS:
             )
             self.last_slew = None
 
+        # Preserve the final tracked attitude until another command starts motion.
+        # Future slew commands recalculate their start attitude when they execute.
+        self._hold_idle_attitude(self.ra, self.dec, self.roll, utime)
+
         last_ppt_obsid = self.last_ppt.obsid if self.last_ppt is not None else "unknown"
         self._log_or_print(
             utime,
             "PASS",
-            f"{unixtime2date(utime)}: Pass over - returning to last PPT {last_ppt_obsid}",
+            f"{unixtime2date(utime)}: Pass over - holding final tracked attitude "
+            f"(last PPT {last_ppt_obsid})",
         )
 
     # Handle Safe Mode Command
