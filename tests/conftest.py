@@ -60,6 +60,9 @@ def mock_spacecraft_bus() -> Mock:
     spacecraft_bus.attitude_control.__class__ = conops.AttitudeControlSystem
     spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))
     spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
+    spacecraft_bus.attitude_control.max_motion_angle = Mock(
+        side_effect=conops.AttitudeControlSystem().max_motion_angle
+    )
     spacecraft_bus.radiators = Mock()
     spacecraft_bus.radiators.num_radiators = Mock(return_value=0)
     spacecraft_bus.star_trackers = Mock()
