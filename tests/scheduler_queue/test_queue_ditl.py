@@ -4174,6 +4174,74 @@ class TestCheckAndManagePasses:
         assert "Skipping pass slew to GS_TEST" in log_text
         assert "Ground Contact" in log_text
 
+    def test_check_and_manage_passes_selects_reachable_safe_tracking_profile(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """GSP ingress selects an alternate pass-safe profile when needed."""
+        utime = 1000.0
+        unsafe_profile = [(100.0, 50.0, 37.0)]
+        safe_profile = [(120.0, 30.0, 10.0)]
+        pass_obj = Pass(
+            config=queue_ditl.config,
+            ephem=queue_ditl.ephem,
+            station="GS_TEST",
+            begin=1200.0,
+            length=600.0,
+            utime=[1200.0],
+            ra=[100.0],
+            dec=[50.0],
+            roll=[37.0],
+            tracking_attitude_profiles=[unsafe_profile, safe_profile],
+        )
+        queue_ditl.acs.passrequests.current_pass = Mock(return_value=None)
+        queue_ditl.acs.passrequests.next_pass = Mock(return_value=pass_obj)
+        queue_ditl.acs.acsmode = ACSMode.SCIENCE
+
+        with (
+            patch.object(Pass, "time_to_slew", return_value=True),
+            patch.object(
+                queue_ditl,
+                "_slew_attitude_constraint_violation",
+                side_effect=[(1060.0, "Panel", "hardware_safety"), None],
+            ),
+        ):
+            assert queue_ditl._check_and_manage_passes(
+                utime, ra=10.0, dec=20.0, roll=42.0
+            )
+
+        command = queue_ditl.acs.enqueue_command.call_args[0][0]
+        assert command.slew.endra == safe_profile[0][0]
+        assert command.slew.enddec == safe_profile[0][1]
+        assert command.slew.endroll == safe_profile[0][2]
+        assert pass_obj.ra == [safe_profile[0][0]]
+        assert pass_obj.dec == [safe_profile[0][1]]
+        assert pass_obj.roll == [safe_profile[0][2]]
+
+    def test_check_and_manage_passes_does_not_jump_to_tracking_at_aos(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """A pass cannot start unless its validated ingress attitude was reached."""
+        utime = 1200.0
+        pass_obj = Pass(
+            station="GS_TEST",
+            begin=utime,
+            length=600.0,
+            utime=[utime],
+            ra=[100.0],
+            dec=[50.0],
+            roll=[37.0],
+        )
+        queue_ditl.acs.passrequests.current_pass = Mock(return_value=pass_obj)
+        queue_ditl.acs.acsmode = ACSMode.SCIENCE
+
+        assert not queue_ditl._check_and_manage_passes(
+            utime, ra=10.0, dec=20.0, roll=42.0
+        )
+
+        queue_ditl.acs.enqueue_command.assert_not_called()
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "did not reach the selected safe tracking attitude" in log_text
+
     def test_check_and_manage_passes_exports_gsp_plan_entry_for_pass_slew(
         self, queue_ditl, tmp_path
     ) -> None:

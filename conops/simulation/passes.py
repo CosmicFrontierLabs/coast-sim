@@ -127,6 +127,10 @@ class Pass(BaseModel):
     roll: list[float] = Field(default_factory=list)
     station_ra: list[float] = Field(default_factory=list)
     station_dec: list[float] = Field(default_factory=list)
+    tracking_attitude_profiles: list[list[tuple[float, float, float]]] = Field(
+        default_factory=list,
+        exclude=True,
+    )
 
     # Scheduling / status
     slewrequired: float = 0.0
@@ -189,6 +193,91 @@ class Pass(BaseModel):
 
         ra, dec = self.ra_dec(utime)
         return ra, dec, self.roll_at(utime)
+
+    def attitude_for_profile_at(
+        self,
+        profile: list[tuple[float, float, float]],
+        utime: float,
+    ) -> tuple[float, float, float] | None:
+        idx = self._profile_index(utime)
+        if idx is None or idx >= len(profile):
+            return None
+        return profile[idx]
+
+    def available_tracking_profiles(
+        self,
+    ) -> list[list[tuple[float, float, float]]]:
+        if self.tracking_attitude_profiles:
+            return self.tracking_attitude_profiles
+        if not self.ra or not self.dec:
+            return []
+        return [
+            list(
+                zip(
+                    self.ra,
+                    self.dec,
+                    self.roll or [self.gsstartroll] * len(self.ra),
+                    strict=True,
+                )
+            )
+        ]
+
+    def select_tracking_profile(
+        self, profile: list[tuple[float, float, float]]
+    ) -> None:
+        """Use a constraint-safe tracking profile selected for the incoming slew."""
+        self.ra = [attitude[0] for attitude in profile]
+        self.dec = [attitude[1] for attitude in profile]
+        self.roll = [attitude[2] for attitude in profile]
+        self.gsstartra, self.gsstartdec, self.gsstartroll = profile[0]
+        self.gsendra, self.gsenddec, self.gsendroll = profile[-1]
+
+    def tracking_profiles_due_for_slew(
+        self, utime: float, ra: float, dec: float, roll: float = 0.0
+    ) -> list[list[tuple[float, float, float]]]:
+        """Return tracking profiles whose incoming slew must start by this step."""
+        assert self.ephem is not None, "Ephemeris must be set for Pass class"
+
+        due_profiles: list[list[tuple[float, float, float]]] = []
+        for profile in self.available_tracking_profiles():
+            if utime >= self.begin:
+                target = self.attitude_for_profile_at(profile, utime)
+            else:
+                target = profile[0] if profile else None
+            if target is None:
+                continue
+
+            slewtime = self._slew_time_to_target(utime, ra, dec, roll, *target)
+            time_until_slew = (self.begin - slewtime) - utime
+            if time_until_slew <= pass_slew_trigger_buffer(self.ephem.step_size):
+                due_profiles.append(profile)
+        return due_profiles
+
+    def at_selected_tracking_attitude(
+        self,
+        utime: float,
+        ra: float,
+        dec: float,
+        roll: float,
+        tolerance_deg: float = 1e-3,
+    ) -> bool:
+        """Return whether ACS reached the selected profile before starting contact."""
+        if not self.utime:
+            return True
+        target_ra, target_dec, target_roll = self.attitude_at(utime)
+        if target_ra is None or target_dec is None:
+            return False
+        return bool(
+            quaternion_attitude_distance(
+                ra,
+                dec,
+                roll,
+                target_ra,
+                target_dec,
+                target_roll,
+            )
+            <= tolerance_deg
+        )
 
     def station_ra_dec(self, utime: float) -> tuple[float | None, float | None]:
         """Return the spacecraft-to-ground-station line of sight."""
@@ -376,35 +465,7 @@ class Pass(BaseModel):
         If on time, slews to pass start. If late, slews to where the pass currently is.
         Returns True when the pass time minus slew time is less than 60 seconds away.
         """
-        assert self.ephem is not None, "Ephemeris must be set for Pass class"
-        assert self.config is not None, "Config must be set for Pass class"
-
-        # Determine target pointing: if we're late, target where pass currently is
-        if utime >= self.begin:
-            # We're late - target current pass position
-            target_ra, target_dec, target_roll = self.attitude_at(utime)
-            if target_ra is None or target_dec is None:
-                return False
-        else:
-            # On time - target pass start
-            if not self.ra or not self.dec:
-                return False
-            target_ra, target_dec, target_roll = (
-                self.ra[0],
-                self.dec[0],
-                self.roll[0] if self.roll else self.gsstartroll,
-            )
-
-        slewtime = self._slew_time_to_target(
-            utime, ra, dec, roll, target_ra, target_dec, target_roll
-        )
-        # Determine if we need to start slewing now
-        time_until_slew = (self.begin - slewtime) - utime
-
-        if time_until_slew <= pass_slew_trigger_buffer(self.ephem.step_size):
-            return True
-        else:
-            return False
+        return bool(self.tracking_profiles_due_for_slew(utime, ra, dec, roll))
 
 
 class PassTimes:
@@ -567,13 +628,17 @@ class PassTimes:
             attitude_profile.append(attitude)
         return attitude_profile
 
-    def _fixed_phase_tracking_attitude_profile(
+    def _fixed_phase_tracking_attitude_profiles(
         self,
         antenna_boresight: tuple[float, float, float],
         target_vectors: np.ndarray,
         track_utime: list[float],
-    ) -> tuple[list[tuple[float, float, float]] | None, bool]:
+    ) -> tuple[
+        list[tuple[float, float, float]] | None,
+        list[list[tuple[float, float, float]]],
+    ]:
         fallback_profile: list[tuple[float, float, float]] | None = None
+        safe_profiles: list[list[tuple[float, float, float]]] = []
         for phase_deg in self._gsp_tracking_phase_candidates():
             attitude_profile = self._tracking_attitude_profile_for_phase(
                 antenna_boresight, target_vectors, phase_deg
@@ -588,9 +653,9 @@ class PassTimes:
             if not self._pass_profile_violates_scopes(
                 track_utime, track_ra, track_dec, track_roll
             ):
-                return attitude_profile, True
+                safe_profiles.append(attitude_profile)
 
-        return fallback_profile, False
+        return fallback_profile, safe_profiles
 
     def _safe_tracking_attitudes_by_sample(
         self,
@@ -691,34 +756,124 @@ class PassTimes:
             for sample_index, phase in enumerate(phase_path)
         ]
 
+    def _dynamic_phase_tracking_attitude_profiles(
+        self,
+        safe_attitudes: list[dict[float, tuple[float, float, float]]],
+        track_utime: list[float],
+    ) -> list[list[tuple[float, float, float]]]:
+        """Return the preferred dynamic profile plus reachable alternatives."""
+        preferred = self._dynamic_phase_tracking_attitude_profile(
+            safe_attitudes, track_utime
+        )
+        if preferred is None:
+            return []
+
+        phase_rank = {
+            phase: index
+            for index, phase in enumerate(self._gsp_tracking_phase_candidates())
+        }
+        suffixes: dict[float, tuple[float, float, list[float]]] = {
+            phase: (0.0, 0.0, [phase]) for phase in safe_attitudes[-1]
+        }
+        for sample_index in range(len(safe_attitudes) - 2, -1, -1):
+            dt = float(track_utime[sample_index + 1] - track_utime[sample_index])
+            next_suffixes: dict[float, tuple[float, float, list[float]]] = {}
+            for phase, attitude in safe_attitudes[sample_index].items():
+                best: tuple[float, float, list[float]] | None = None
+                for next_phase, (
+                    suffix_max_step,
+                    suffix_total_step,
+                    suffix_path,
+                ) in suffixes.items():
+                    next_attitude = safe_attitudes[sample_index + 1][next_phase]
+                    if not self._step_motion_feasible(attitude, next_attitude, dt):
+                        continue
+                    step_distance = quaternion_attitude_distance(
+                        *attitude,
+                        *next_attitude,
+                    )
+                    candidate = (
+                        max(step_distance, suffix_max_step),
+                        step_distance + suffix_total_step,
+                        [phase] + suffix_path,
+                    )
+                    candidate_key = (
+                        candidate[0],
+                        candidate[1],
+                        [phase_rank[path_phase] for path_phase in candidate[2]],
+                    )
+                    if best is None:
+                        best = candidate
+                        best_key = candidate_key
+                    elif candidate_key < best_key:
+                        best = candidate
+                        best_key = candidate_key
+                if best is not None:
+                    next_suffixes[phase] = best
+            suffixes = next_suffixes
+            if not suffixes:
+                return [preferred]
+
+        profiles = [preferred]
+        for initial_phase in self._gsp_tracking_phase_candidates():
+            suffix = suffixes.get(initial_phase)
+            if suffix is None:
+                continue
+            phase_path = suffix[2]
+            profile = [
+                safe_attitudes[sample_index][phase]
+                for sample_index, phase in enumerate(phase_path)
+            ]
+            if profile != preferred:
+                profiles.append(profile)
+        return profiles
+
+    def _constraint_safe_tracking_attitude_profiles(
+        self,
+        antenna_boresight: tuple[float, float, float],
+        target_vectors: np.ndarray,
+        track_utime: list[float],
+    ) -> tuple[list[list[tuple[float, float, float]]], bool] | None:
+        fallback_profile, fixed_phase_profiles = (
+            self._fixed_phase_tracking_attitude_profiles(
+                antenna_boresight,
+                target_vectors,
+                track_utime,
+            )
+        )
+        if fixed_phase_profiles:
+            return fixed_phase_profiles, True
+
+        safe_attitudes = self._safe_tracking_attitudes_by_sample(
+            antenna_boresight, target_vectors, track_utime
+        )
+        if safe_attitudes is not None:
+            dynamic_profiles = self._dynamic_phase_tracking_attitude_profiles(
+                safe_attitudes, track_utime
+            )
+            if dynamic_profiles:
+                return dynamic_profiles, True
+
+        if fallback_profile is None:
+            return None
+        return [fallback_profile], False
+
     def _constraint_safe_tracking_attitude_profile(
         self,
         antenna_boresight: tuple[float, float, float],
         target_vectors: np.ndarray,
         track_utime: list[float],
     ) -> tuple[list[tuple[float, float, float]], bool] | None:
-        fallback_profile, fixed_phase_safe = (
-            self._fixed_phase_tracking_attitude_profile(
-                antenna_boresight, target_vectors, track_utime
-            )
+        """Return the preferred profile for callers that do not select an ingress."""
+        result = self._constraint_safe_tracking_attitude_profiles(
+            antenna_boresight,
+            target_vectors,
+            track_utime,
         )
-        if fixed_phase_safe:
-            assert fallback_profile is not None
-            return fallback_profile, True
-
-        safe_attitudes = self._safe_tracking_attitudes_by_sample(
-            antenna_boresight, target_vectors, track_utime
-        )
-        if safe_attitudes is not None:
-            dynamic_profile = self._dynamic_phase_tracking_attitude_profile(
-                safe_attitudes, track_utime
-            )
-            if dynamic_profile is not None:
-                return dynamic_profile, True
-
-        if fallback_profile is None:
+        if result is None:
             return None
-        return fallback_profile, False
+        profiles, profile_safe = result
+        return profiles[0], profile_safe
 
     def _deconflict_overlapping_passes(self) -> None:
         selected: list[Pass] = []
@@ -833,12 +988,13 @@ class PassTimes:
         antenna_boresight = self._gsp_antenna_boresight_body()
         if antenna_boresight is None:
             return None
-        profile_result = self._constraint_safe_tracking_attitude_profile(
+        profile_result = self._constraint_safe_tracking_attitude_profiles(
             antenna_boresight, target_vectors, track_utime
         )
         if profile_result is None:
             return None
-        attitude_profile, profile_safe = profile_result
+        attitude_profiles, profile_safe = profile_result
+        attitude_profile = attitude_profiles[0]
         track_ra = [attitude[0] for attitude in attitude_profile]
         track_dec = [attitude[1] for attitude in attitude_profile]
         track_roll = [attitude[2] for attitude in attitude_profile]
@@ -856,6 +1012,7 @@ class PassTimes:
             gsenddec=track_dec[-1],
             gsendroll=track_roll[-1],
             length=passlen,
+            tracking_attitude_profiles=attitude_profiles,
         )
 
         # Record the path during the pass
