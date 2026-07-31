@@ -755,6 +755,34 @@ class TestPassTimes:
         assert profile_safe is True
         assert [attitude[2] for attitude in profile] == [0.0, 90.0]
 
+    def test_fixed_phase_tracking_profile_rejects_infeasible_motion(
+        self, mock_constraint, mock_config
+    ):
+        """Constraint-safe fixed phases must also fit within ACS motion limits."""
+        mock_config.spacecraft_bus.attitude_control = AttitudeControlSystem(
+            max_slew_rate=0.1,
+            slew_acceleration=0.1,
+            settle_time=0.0,
+        )
+        pt = PassTimes(config=mock_config)
+        pt._gsp_tracking_phase_candidates = Mock(return_value=[0.0, 90.0])
+        pt._tracking_attitude_profile_for_phase = Mock(
+            side_effect=lambda antenna, targets, phase_deg: [
+                (phase_deg, 0.0, phase_deg),
+                (phase_deg + 180.0, 0.0, phase_deg + 180.0),
+            ]
+        )
+        mock_constraint.in_constraint = Mock(return_value=False)
+
+        fallback, safe_profiles = pt._fixed_phase_tracking_attitude_profiles(
+            antenna_boresight=(0.0, 1.0, 0.0),
+            target_vectors=np.array([[0.0, 1.0, 0.0], [0.0, 1.0, 0.0]], dtype=float),
+            track_utime=[1000.0, 1060.0],
+        )
+
+        assert fallback is not None
+        assert safe_profiles == []
+
     def test_dynamic_tracking_profiles_preserve_reachable_initial_phases(
         self, mock_constraint, mock_config
     ):

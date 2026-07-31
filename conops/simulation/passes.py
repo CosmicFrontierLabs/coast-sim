@@ -650,7 +650,15 @@ class PassTimes:
             track_ra = [attitude[0] for attitude in attitude_profile]
             track_dec = [attitude[1] for attitude in attitude_profile]
             track_roll = [attitude[2] for attitude in attitude_profile]
-            if not self._pass_profile_violates_scopes(
+            motion_feasible = all(
+                self._step_motion_feasible(
+                    attitude_profile[index - 1],
+                    attitude_profile[index],
+                    float(track_utime[index] - track_utime[index - 1]),
+                )
+                for index in range(1, len(attitude_profile))
+            )
+            if motion_feasible and not self._pass_profile_violates_scopes(
                 track_utime, track_ra, track_dec, track_roll
             ):
                 safe_profiles.append(attitude_profile)
