@@ -283,17 +283,6 @@ class ACS:
         self.current_pass = None
         self.acsmode = ACSMode.IDLE
 
-        # Clear any stale slew that was issued during the pass. Such slews have
-        # start positions from pass tracking that don't reflect where the
-        # spacecraft actually is now. Keeping them would cause teleportation.
-        if self.last_slew is not None and self.last_slew.slewstart < utime:
-            self._log_or_print(
-                utime,
-                "PASS",
-                f"{unixtime2date(utime)}: Clearing stale slew (started {self.last_slew.slewstart:.0f})",
-            )
-            self.last_slew = None
-
         # Preserve the final tracked attitude until another command starts motion.
         # Future slew commands recalculate their start attitude when they execute.
         self._hold_idle_attitude(self.ra, self.dec, self.roll, utime)
