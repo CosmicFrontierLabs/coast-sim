@@ -1936,6 +1936,12 @@ class QueueDITL(DITLMixin, DITLStats):
         if next_pass is None:
             return False
 
+        # An accepted reservation already owns its ingress and tracking profile.
+        # Replanning it after the ingress slew completes can select a different
+        # profile and leave the spacecraft off-attitude at contact start.
+        if self._ground_pass_key(next_pass) in self._planned_gsp_keys:
+            return False
+
         # Check if it's time to start slewing for the next pass. Tracking
         # profiles are all pass-safe, but their incoming slew paths depend on
         # the actual attitude at this step.

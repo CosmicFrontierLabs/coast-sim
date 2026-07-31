@@ -4217,6 +4217,31 @@ class TestCheckAndManagePasses:
         assert pass_obj.dec == [safe_profile[0][1]]
         assert pass_obj.roll == [safe_profile[0][2]]
 
+    def test_check_and_manage_passes_does_not_replan_reserved_ingress(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """A recorded GSP reservation keeps its selected tracking profile."""
+        pass_obj = Pass(
+            station="GS_TEST",
+            begin=1200.0,
+            length=600.0,
+            gsstartra=100.0,
+            gsstartdec=50.0,
+            gsstartroll=37.0,
+        )
+        queue_ditl.acs.passrequests.current_pass = Mock(return_value=None)
+        queue_ditl.acs.passrequests.next_pass = Mock(return_value=pass_obj)
+        queue_ditl.acs.acsmode = ACSMode.IDLE
+        queue_ditl._planned_gsp_keys.add(queue_ditl._ground_pass_key(pass_obj))
+
+        with patch.object(Pass, "time_to_slew") as time_to_slew:
+            assert not queue_ditl._check_and_manage_passes(
+                1100.0, ra=10.0, dec=20.0, roll=42.0
+            )
+
+        time_to_slew.assert_not_called()
+        queue_ditl.acs.enqueue_command.assert_not_called()
+
     def test_check_and_manage_passes_does_not_jump_to_tracking_at_aos(
         self, queue_ditl: QueueDITL
     ) -> None:
