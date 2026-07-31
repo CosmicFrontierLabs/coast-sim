@@ -1,6 +1,7 @@
 """Unit tests for spacecraft_bus module."""
 
 import numpy as np
+import pytest
 
 from conops import AttitudeControlSystem, PowerDraw, SpacecraftBus
 
@@ -133,6 +134,27 @@ class TestAttitudeControlSystem:
         # total = 2*0.5 + 39.5 = 40.5
         expected = 2 * 0.5 + 9.875 / 0.25
         assert abs(motion_time - expected) < 1e-6
+
+    def test_max_motion_angle_inverts_triangular_profile(self):
+        acs = AttitudeControlSystem(slew_acceleration=0.125, max_slew_rate=2.0)
+
+        angle = acs.max_motion_angle(16.0)
+
+        assert angle == pytest.approx(8.0)
+        assert acs.motion_time(angle) == pytest.approx(16.0)
+
+    def test_max_motion_angle_inverts_trapezoidal_profile(self):
+        acs = AttitudeControlSystem(slew_acceleration=0.125, max_slew_rate=2.0)
+
+        angle = acs.max_motion_angle(60.0)
+
+        assert angle == pytest.approx(88.0)
+        assert acs.motion_time(angle) == pytest.approx(60.0)
+
+    def test_max_motion_angle_rejects_invalid_inputs(self):
+        assert AttitudeControlSystem().max_motion_angle(0.0) == 0.0
+        assert AttitudeControlSystem(slew_acceleration=0).max_motion_angle(60.0) == 0.0
+        assert AttitudeControlSystem(max_slew_rate=0).max_motion_angle(60.0) == 0.0
 
     def test_s_of_t_zero_angle(self, default_acs):
         """Test s_of_t returns 0 for zero angle."""

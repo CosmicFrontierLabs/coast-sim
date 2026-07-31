@@ -6,7 +6,14 @@ import numpy as np
 import pytest
 import rust_ephem
 
-from conops import ACS, ACSMode, AttitudeConstraintScope, Constraint, MissionConfig
+from conops import (
+    ACS,
+    ACSMode,
+    AttitudeConstraintScope,
+    AttitudeControlSystem,
+    Constraint,
+    MissionConfig,
+)
 from conops.config.solar_panel import SolarPanel, SolarPanelSet
 
 
@@ -321,6 +328,31 @@ class TestACSRollMode:
         _, _, roll, _ = acs_roll.pointing(utime)
 
         assert 0.0 <= roll < 360.0
+
+    def test_charging_roll_search_is_limited_to_reachable_motion(
+        self, acs_roll
+    ) -> None:
+        acs_roll.config.spacecraft_bus.attitude_control = AttitudeControlSystem(
+            max_slew_rate=2.0,
+            slew_acceleration=0.125,
+            settle_time=0.0,
+        )
+        acs_roll.roll = 215.0
+
+        with (
+            patch.object(acs_roll, "_is_in_charging_mode", return_value=True),
+            patch(
+                "conops.simulation.acs.optimum_roll",
+                side_effect=lambda *args, **kwargs: kwargs["reference_roll"],
+            ) as mock_optimum_roll,
+        ):
+            acs_roll._compute_roll(1000.0)
+            acs_roll._compute_roll(1060.0)
+
+        first_call = mock_optimum_roll.call_args_list[0].kwargs
+        second_call = mock_optimum_roll.call_args_list[1].kwargs
+        assert first_call["max_roll_delta"] == 0.0
+        assert second_call["max_roll_delta"] == pytest.approx(88.0)
 
 
 class TestACSRollEdgeCases:

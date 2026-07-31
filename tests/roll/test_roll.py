@@ -1,6 +1,6 @@
 """Tests for conops.roll module."""
 
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -68,6 +68,45 @@ class TestOptimumRoll:
             ra, dec, utime, mock_ephem, solar_panel=mock_solar_panel_canted
         )
         assert isinstance(roll, float) and 0 <= roll < 360
+
+    def test_optimum_roll_restricts_search_to_reachable_rolls(
+        self, mock_ephem, mock_sun_coord
+    ):
+        valid_mask = np.zeros(360, dtype=bool)
+        valid_mask[209] = True
+        valid_mask[345] = True
+
+        with patch("conops.simulation.roll._roll_valid_mask", return_value=valid_mask):
+            roll = optimum_roll(
+                45.0,
+                30.0,
+                1700000000.0,
+                mock_ephem,
+                constraint=Mock(),
+                reference_roll=215.0,
+                max_roll_delta=88.0,
+            )
+
+        assert roll == 209.0
+
+    def test_optimum_roll_holds_reference_when_no_candidate_is_reachable(
+        self, mock_ephem, mock_sun_coord
+    ):
+        valid_mask = np.zeros(360, dtype=bool)
+        valid_mask[345] = True
+
+        with patch("conops.simulation.roll._roll_valid_mask", return_value=valid_mask):
+            roll = optimum_roll(
+                45.0,
+                30.0,
+                1700000000.0,
+                mock_ephem,
+                constraint=Mock(),
+                reference_roll=215.5,
+                max_roll_delta=0.0,
+            )
+
+        assert roll == 215.5
 
 
 class TestOptimumRollSidemount:

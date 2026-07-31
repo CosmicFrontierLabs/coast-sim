@@ -80,6 +80,19 @@ class AttitudeControlSystem(ConfigModel):
         t_cruise = d_cruise / vmax
         return float(2 * t_accel + t_cruise)
 
+    def max_motion_angle(self, duration_s: float) -> float:
+        """Maximum rest-to-rest angular motion in the available time."""
+        if duration_s <= 0:
+            return 0.0
+        a = float(self.slew_acceleration)
+        vmax = float(self.max_slew_rate)
+        if a <= 0 or vmax <= 0:
+            return 0.0
+        t_accel = vmax / a
+        if duration_s <= 2 * t_accel:
+            return float(0.25 * a * duration_s**2)
+        return float(vmax * (duration_s - t_accel))
+
     def s_of_t(self, angle_deg: float, t: float) -> float:
         """Distance traveled (deg) along the slew after t seconds under bang-bang control.
 

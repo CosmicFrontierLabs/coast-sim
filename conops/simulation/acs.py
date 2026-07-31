@@ -66,6 +66,8 @@ class ACS:
     radiator_earth_exposure: float
     radiator_heat_dissipation_w: float
     science_observation_active: bool
+    _last_roll_optimization_utime: float | None
+    _last_roll_optimization_mode: ACSMode | None
 
     def __init__(self, config: MissionConfig, log: "DITLLog | None" = None) -> None:
         """Initialize the Attitude Control System.
@@ -113,6 +115,8 @@ class ACS:
         self.radiator_sun_exposure = 0.0
         self.radiator_earth_exposure = 0.0
         self.radiator_heat_dissipation_w = 0.0
+        self._last_roll_optimization_utime = None
+        self._last_roll_optimization_mode = None
 
         # Command queue (sorted by execution_time)
         self.command_queue = []
@@ -643,11 +647,13 @@ class ACS:
         - Initial boundary condition (no real slew yet): use optimal roll.
         """
         if self._is_actively_slewing(utime) and self.current_slew is not None:
+            self._reset_roll_optimization()
             return self.current_slew.slew_roll(utime)
-        if self._is_in_charging_mode(utime) or self.in_safe_mode:
-            return optimum_roll(
-                self.ra, self.dec, utime, self.ephem, self.solar_panel, self.constraint
-            )
+        if self.in_safe_mode:
+            return self._continuous_optimum_roll(utime, ACSMode.SAFE)
+        if self._is_in_charging_mode(utime):
+            return self._continuous_optimum_roll(utime, ACSMode.CHARGING)
+        self._reset_roll_optimization()
         if self.current_pass is not None and self.current_pass.in_pass(utime):
             return self.current_pass.roll_at(utime)
         if self.last_slew is not None and self.last_slew.slewstart > 0:
@@ -655,6 +661,41 @@ class ACS:
         return optimum_roll(
             self.ra, self.dec, utime, self.ephem, self.solar_panel, self.constraint
         )
+
+    def _continuous_optimum_roll(self, utime: float, mode: ACSMode) -> float:
+        """Choose the best constrained roll reachable since the last dwell update."""
+        elapsed = 0.0
+        if (
+            self._last_roll_optimization_mode == mode
+            and self._last_roll_optimization_utime is not None
+        ):
+            elapsed = max(0.0, utime - self._last_roll_optimization_utime)
+        max_roll_delta = (
+            min(
+                180.0,
+                self.config.spacecraft_bus.attitude_control.max_motion_angle(elapsed),
+            )
+            if elapsed > 0.0
+            else 0.0
+        )
+        roll = optimum_roll(
+            self.ra,
+            self.dec,
+            utime,
+            self.ephem,
+            self.solar_panel,
+            self.constraint,
+            reference_roll=self.roll,
+            max_roll_delta=max_roll_delta,
+        )
+        self._last_roll_optimization_utime = utime
+        self._last_roll_optimization_mode = mode
+        return roll
+
+    def _reset_roll_optimization(self) -> None:
+        """Reset dwell-roll timing when another attitude controller is active."""
+        self._last_roll_optimization_utime = None
+        self._last_roll_optimization_mode = None
 
     def _enforce_idle_constraint_safe_attitude(self, utime: float) -> None:
         """Replace unsafe idle holds with an attitude that satisfies IDLE scopes."""
