@@ -42,7 +42,6 @@ from .config import (
 from .ditl import (
     DITL,
     AttitudeRateContinuityError,
-    AttitudeRateViolation,
     DITLEvent,
     DITLLog,
     DITLLogStore,
@@ -100,7 +99,6 @@ __all__ = [
     "AttitudeControlSystem",
     "AttitudeConstraintScope",
     "AttitudeRateContinuityError",
-    "AttitudeRateViolation",
     "Battery",
     "ChargeState",
     "MissionConfig",

@@ -77,7 +77,6 @@ class TestDITLCalc:
         ditl.calc()
         assert len(ditl.ra) > 0
         assert len(ditl.dec) > 0
-        assert len(ditl.roll) > 0
         assert len(ditl.mode) > 0
         assert len(ditl.panel) > 0
         assert len(ditl.obsid) > 0
@@ -91,7 +90,6 @@ class TestDITLCalc:
         simlen = len(ditl.utime)
         assert len(ditl.ra) == simlen
         assert len(ditl.dec) == simlen
-        assert len(ditl.roll) == simlen
         assert len(ditl.mode) == simlen
         assert len(ditl.panel) == simlen
         assert len(ditl.obsid) == simlen
@@ -160,7 +158,6 @@ class TestDITLSimulationLoop:
         # Check first recorded values
         assert ditl.ra[0] == 45.0
         assert ditl.dec[0] == 30.0
-        assert ditl.roll[0] == 90.0
         assert ditl.obsid[0] == 42
 
     def test_calc_rejects_attitude_rate_violation(self, ditl: DITL) -> None:

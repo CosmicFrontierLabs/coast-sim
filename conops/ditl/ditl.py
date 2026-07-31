@@ -134,7 +134,10 @@ class DITL(DITLMixin, DITLStats):
                 (missing ephemeris, missing plan, or invalid ephemeris date range).
 
         Raises:
-            No exceptions raised; errors are logged to stdout and return False.
+            ValueError: If the ephemeris or plan is missing, or the ephemeris does
+                not cover the simulation date range.
+            AttitudeRateContinuityError: If adjacent executed attitude samples
+                exceed the configured maximum slew rate.
 
         Note:
             The simulation respects the class attributes:
@@ -168,7 +171,6 @@ class DITL(DITLMixin, DITLStats):
         simlen = len(self.utime)
         self.ra = np.zeros(simlen).tolist()
         self.dec = np.zeros(simlen).tolist()
-        self.roll = np.zeros(simlen).tolist()
         self.mode = np.zeros(simlen).astype(int).tolist()
         self.panel = np.zeros(simlen).tolist()
         self.obsid = np.zeros(simlen).astype(int).tolist()
@@ -223,7 +225,6 @@ class DITL(DITLMixin, DITLStats):
             self.batteryalert[i] = self.battery.battery_alert
             self.ra[i] = ra
             self.dec[i] = dec
-            self.roll[i] = roll
             self.mode[i] = mode
             self.panel[i] = panel_illumination
             self.power[i] = power_usage

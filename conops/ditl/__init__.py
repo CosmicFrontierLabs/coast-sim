@@ -2,11 +2,7 @@ from .ditl import DITL, DITLs
 from .ditl_event import DITLEvent
 from .ditl_log import DITLLog
 from .ditl_log_store import DITLLogStore
-from .ditl_mixin import (
-    AttitudeRateContinuityError,
-    AttitudeRateViolation,
-    DITLMixin,
-)
+from .ditl_mixin import AttitudeRateContinuityError, DITLMixin
 from .ditl_stats import DITLStats
 from .queue_ditl import PlanExecutionMismatchError, QueueDITL, TOORequest
 from .telemetry import Housekeeping, PayloadData, Telemetry
@@ -15,7 +11,6 @@ __all__ = [
     "DITL",
     "DITLs",
     "AttitudeRateContinuityError",
-    "AttitudeRateViolation",
     "DITLEvent",
     "DITLLog",
     "DITLLogStore",

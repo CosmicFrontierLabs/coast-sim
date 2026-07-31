@@ -2109,27 +2109,72 @@ class TestPlanExecutionValidation:
         entry.ss_min = 60.0
         return entry
 
+    def _set_attitude_telemetry(
+        self,
+        queue_ditl: QueueDITL,
+        *,
+        utime: list[float],
+        mode: list[ACSMode],
+        obsid: list[int],
+        ra: list[float | None],
+        dec: list[float | None],
+        roll: list[float | None],
+    ) -> None:
+        """Populate both legacy execution arrays and exported housekeeping."""
+        queue_ditl.utime = utime
+        queue_ditl.mode = mode
+        queue_ditl.obsid = obsid
+        queue_ditl.ra = [0.0 if value is None else value for value in ra]
+        queue_ditl.dec = [0.0 if value is None else value for value in dec]
+        queue_ditl.roll = [0.0 if value is None else value for value in roll]
+        queue_ditl.telemetry.housekeeping.clear()
+        for values in zip(utime, mode, obsid, ra, dec, roll, strict=True):
+            timestamp, acs_mode, sample_obsid, sample_ra, sample_dec, sample_roll = (
+                values
+            )
+            queue_ditl.telemetry.housekeeping.append(
+                Housekeeping(
+                    timestamp=datetime.fromtimestamp(timestamp, tz=timezone.utc),
+                    acs_mode=acs_mode,
+                    obsid=sample_obsid,
+                    ra=sample_ra,
+                    dec=sample_dec,
+                    roll=sample_roll,
+                )
+            )
+
     def test_validation_accepts_attitude_motion_at_rate_limit(
         self, queue_ditl: QueueDITL
     ) -> None:
         queue_ditl.config.spacecraft_bus.attitude_control.max_slew_rate = 1.0
-        queue_ditl.utime = [1000.0, 1060.0]
-        queue_ditl.mode = [ACSMode.IDLE, ACSMode.SLEWING]
-        queue_ditl.obsid = [0, 0]
-        queue_ditl.ra = [0.0, 60.0]
-        queue_ditl.dec = [0.0, 0.0]
-        queue_ditl.roll = [0.0, 0.0]
+        self._set_attitude_telemetry(
+            queue_ditl,
+            utime=[1000.0, 1060.0],
+            mode=[ACSMode.IDLE, ACSMode.SLEWING],
+            obsid=[0, 0],
+            ra=[0.0, 60.0],
+            dec=[0.0, 0.0],
+            roll=[0.0, 0.0],
+        )
 
-        assert queue_ditl.attitude_rate_violations() == []
+        assert queue_ditl._attitude_rate_violations() == []
 
     def test_validation_rejects_attitude_jump_across_mode_boundary(
         self, queue_ditl: QueueDITL
     ) -> None:
         queue_ditl.config.spacecraft_bus.attitude_control.max_slew_rate = 1.0
-        queue_ditl.utime = [1000.0, 1060.0]
-        queue_ditl.mode = [ACSMode.IDLE, ACSMode.PASS]
-        queue_ditl.obsid = [0, 42]
-        queue_ditl.ra = [0.0, 61.0]
+        self._set_attitude_telemetry(
+            queue_ditl,
+            utime=[1000.0, 1060.0],
+            mode=[ACSMode.IDLE, ACSMode.PASS],
+            obsid=[0, 42],
+            ra=[0.0, 61.0],
+            dec=[0.0, 0.0],
+            roll=[0.0, 0.0],
+        )
+        # The safety check must use the housekeeping stream exported to the
+        # attitude sidecar, not these parallel legacy arrays.
+        queue_ditl.ra = [0.0, 0.0]
         queue_ditl.dec = [0.0, 0.0]
         queue_ditl.roll = [0.0, 0.0]
 
@@ -2142,14 +2187,17 @@ class TestPlanExecutionValidation:
         self, queue_ditl: QueueDITL
     ) -> None:
         queue_ditl.config.spacecraft_bus.attitude_control.max_slew_rate = 1.0
-        queue_ditl.utime = [1000.0, 1060.0]
-        queue_ditl.mode = [ACSMode.SLEWING, ACSMode.SLEWING]
-        queue_ditl.obsid = [0, 0]
-        queue_ditl.ra = [0.0, 0.0]
-        queue_ditl.dec = [0.0, 0.0]
-        queue_ditl.roll = [0.0, 61.0]
+        self._set_attitude_telemetry(
+            queue_ditl,
+            utime=[1000.0, 1060.0],
+            mode=[ACSMode.SLEWING, ACSMode.SLEWING],
+            obsid=[0, 0],
+            ra=[0.0, 0.0],
+            dec=[0.0, 0.0],
+            roll=[0.0, 61.0],
+        )
 
-        violations = queue_ditl.attitude_rate_violations()
+        violations = queue_ditl._attitude_rate_violations()
 
         assert len(violations) == 1
         assert violations[0].distance_deg == pytest.approx(61.0)
@@ -2157,41 +2205,45 @@ class TestPlanExecutionValidation:
     def test_validation_rejects_non_increasing_attitude_timestamps(
         self, queue_ditl: QueueDITL
     ) -> None:
-        queue_ditl.utime = [1000.0, 1000.0]
-        queue_ditl.mode = [ACSMode.IDLE, ACSMode.IDLE]
-        queue_ditl.obsid = [0, 0]
-        queue_ditl.ra = [0.0, 0.0]
-        queue_ditl.dec = [0.0, 0.0]
-        queue_ditl.roll = [0.0, 0.0]
+        self._set_attitude_telemetry(
+            queue_ditl,
+            utime=[1000.0, 1000.0],
+            mode=[ACSMode.IDLE, ACSMode.IDLE],
+            obsid=[0, 0],
+            ra=[0.0, 0.0],
+            dec=[0.0, 0.0],
+            roll=[0.0, 0.0],
+        )
 
-        violations = queue_ditl.attitude_rate_violations()
+        violations = queue_ditl._attitude_rate_violations()
 
         assert len(violations) == 1
         assert violations[0].reason == "non_increasing_timestamp"
 
     @pytest.mark.parametrize(
-        ("field", "values", "reason"),
+        ("roll", "reason"),
         [
-            ("utime", [1000.0, float("nan")], "non_finite_timestamp"),
-            ("roll", [0.0, float("nan")], "non_finite_attitude"),
+            ([0.0, float("nan")], "non_finite_attitude"),
+            ([0.0, None], "missing_attitude"),
         ],
     )
     def test_validation_rejects_non_finite_attitude_telemetry(
         self,
         queue_ditl: QueueDITL,
-        field: str,
-        values: list[float],
+        roll: list[float | None],
         reason: str,
     ) -> None:
-        queue_ditl.utime = [1000.0, 1060.0]
-        queue_ditl.mode = [ACSMode.IDLE, ACSMode.IDLE]
-        queue_ditl.obsid = [0, 0]
-        queue_ditl.ra = [0.0, 0.0]
-        queue_ditl.dec = [0.0, 0.0]
-        queue_ditl.roll = [0.0, 0.0]
-        setattr(queue_ditl, field, values)
+        self._set_attitude_telemetry(
+            queue_ditl,
+            utime=[1000.0, 1060.0],
+            mode=[ACSMode.IDLE, ACSMode.IDLE],
+            obsid=[0, 0],
+            ra=[0.0, 0.0],
+            dec=[0.0, 0.0],
+            roll=roll,
+        )
 
-        violations = queue_ditl.attitude_rate_violations()
+        violations = queue_ditl._attitude_rate_violations()
 
         assert len(violations) == 1
         assert violations[0].reason == reason
@@ -2200,12 +2252,15 @@ class TestPlanExecutionValidation:
         self, queue_ditl: QueueDITL
     ) -> None:
         queue_ditl.config.spacecraft_bus.attitude_control.max_slew_rate = 1.0
-        queue_ditl.utime = [1000.0, 1060.0]
-        queue_ditl.mode = [ACSMode.IDLE, ACSMode.PASS]
-        queue_ditl.obsid = [0, 42]
-        queue_ditl.ra = [0.0, 61.0]
-        queue_ditl.dec = [0.0, 0.0]
-        queue_ditl.roll = [0.0, 0.0]
+        self._set_attitude_telemetry(
+            queue_ditl,
+            utime=[1000.0, 1060.0],
+            mode=[ACSMode.IDLE, ACSMode.PASS],
+            obsid=[0, 42],
+            ra=[0.0, 61.0],
+            dec=[0.0, 0.0],
+            roll=[0.0, 0.0],
+        )
 
         with pytest.raises(PlanExecutionMismatchError, match="attitude_rate_violation"):
             queue_ditl._assert_plan_matches_execution()

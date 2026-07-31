@@ -1,7 +1,7 @@
 import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
 import matplotlib.pyplot as plt
 import rust_ephem
@@ -20,7 +20,7 @@ ATTITUDE_RATE_NUMERICAL_TOLERANCE_DEG = 1e-9
 
 
 @dataclass(frozen=True)
-class AttitudeRateViolation:
+class _AttitudeRateViolation:
     """An adjacent attitude sample pair that exceeds the configured slew rate."""
 
     previous_index: int
@@ -33,6 +33,7 @@ class AttitudeRateViolation:
     max_rate_deg_per_s: float
     previous_mode: str | None
     mode: str | None
+    obsid: int | None
     reason: str = "rate_limit_exceeded"
 
     @property
@@ -209,21 +210,8 @@ class DITLMixin:
             return dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc)
 
-    def attitude_rate_violations(self) -> list[AttitudeRateViolation]:
-        """Return all adjacent attitude samples that violate the maximum slew rate."""
-        lengths = {
-            "utime": len(self.utime),
-            "ra": len(self.ra),
-            "dec": len(self.dec),
-            "roll": len(self.roll),
-            "mode": len(self.mode),
-        }
-        if len(set(lengths.values())) != 1:
-            raise ValueError(
-                "Cannot validate attitude rate with mismatched telemetry lengths: "
-                f"{lengths}"
-            )
-
+    def _attitude_rate_violations(self) -> list[_AttitudeRateViolation]:
+        """Validate the housekeeping samples used for attitude-timeseries export."""
         max_rate = float(self.config.spacecraft_bus.attitude_control.max_slew_rate)
         if not math.isfinite(max_rate) or max_rate < 0:
             raise ValueError(
@@ -231,18 +219,23 @@ class DITLMixin:
             )
 
         violations = []
-        for index in range(1, len(self.utime)):
+        samples = self.telemetry.housekeeping
+        for index in range(1, len(samples)):
             previous_index = index - 1
-            previous_utime = float(self.utime[previous_index])
-            utime = float(self.utime[index])
+            previous_sample = samples[previous_index]
+            sample = samples[index]
+            previous_utime = self._timestamp_to_utc(
+                previous_sample.timestamp
+            ).timestamp()
+            utime = self._timestamp_to_utc(sample.timestamp).timestamp()
             elapsed_seconds = utime - previous_utime
-            attitudes = (
-                float(self.ra[previous_index]),
-                float(self.dec[previous_index]),
-                float(self.roll[previous_index]),
-                float(self.ra[index]),
-                float(self.dec[index]),
-                float(self.roll[index]),
+            attitude_values = (
+                previous_sample.ra,
+                previous_sample.dec,
+                previous_sample.roll,
+                sample.ra,
+                sample.dec,
+                sample.roll,
             )
 
             timestamps_are_finite = math.isfinite(previous_utime) and math.isfinite(
@@ -252,10 +245,19 @@ class DITLMixin:
             if not timestamps_are_finite:
                 distance_deg = math.inf
                 reason = "non_finite_timestamp"
-            elif not all(math.isfinite(value) for value in attitudes):
+            elif any(value is None for value in attitude_values):
                 distance_deg = math.inf
-                reason = "non_finite_attitude"
+                reason = "missing_attitude"
             else:
+                attitudes = cast(
+                    tuple[float, float, float, float, float, float],
+                    attitude_values,
+                )
+                if not all(math.isfinite(value) for value in attitudes):
+                    distance_deg = math.inf
+                    reason = "non_finite_attitude"
+
+            if reason == "rate_limit_exceeded":
                 distance_deg = quaternion_attitude_distance(*attitudes)
 
             allowed_distance_deg = (
@@ -274,7 +276,7 @@ class DITLMixin:
                 > allowed_distance_deg + ATTITUDE_RATE_NUMERICAL_TOLERANCE_DEG
             ):
                 violations.append(
-                    AttitudeRateViolation(
+                    _AttitudeRateViolation(
                         previous_index=previous_index,
                         index=index,
                         previous_utime=previous_utime,
@@ -284,9 +286,10 @@ class DITLMixin:
                         allowed_distance_deg=allowed_distance_deg,
                         max_rate_deg_per_s=max_rate,
                         previous_mode=self._attitude_mode_name(
-                            self.mode[previous_index]
+                            previous_sample.acs_mode
                         ),
-                        mode=self._attitude_mode_name(self.mode[index]),
+                        mode=self._attitude_mode_name(sample.acs_mode),
+                        obsid=sample.obsid,
                         reason=reason,
                     )
                 )
@@ -294,7 +297,7 @@ class DITLMixin:
 
     def _assert_attitude_rate_continuity(self) -> None:
         """Fail plan generation when adjacent attitudes exceed the slew-rate limit."""
-        violations = self.attitude_rate_violations()
+        violations = self._attitude_rate_violations()
         if not violations:
             return
         examples = "; ".join(str(violation) for violation in violations[:5])

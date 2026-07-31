@@ -1079,9 +1079,9 @@ class QueueDITL(DITLMixin, DITLStats):
             PlanExecutionMismatch(
                 utime=violation.utime,
                 message=str(violation),
-                obsid=int(self.obsid[violation.index]),
+                obsid=violation.obsid,
             )
-            for violation in self.attitude_rate_violations()
+            for violation in self._attitude_rate_violations()
         ]
         tolerance_deg = self._plan_execution_tolerance_deg()
         structure_mismatches = self._validate_plan_entry_structure()
