@@ -168,6 +168,7 @@ class DITL(DITLMixin, DITLStats):
         simlen = len(self.utime)
         self.ra = np.zeros(simlen).tolist()
         self.dec = np.zeros(simlen).tolist()
+        self.roll = np.zeros(simlen).tolist()
         self.mode = np.zeros(simlen).astype(int).tolist()
         self.panel = np.zeros(simlen).tolist()
         self.obsid = np.zeros(simlen).astype(int).tolist()
@@ -222,6 +223,7 @@ class DITL(DITLMixin, DITLStats):
             self.batteryalert[i] = self.battery.battery_alert
             self.ra[i] = ra
             self.dec[i] = dec
+            self.roll[i] = roll
             self.mode[i] = mode
             self.panel[i] = panel_illumination
             self.power[i] = power_usage
@@ -374,6 +376,7 @@ class DITL(DITLMixin, DITLStats):
                 )
                 self.telemetry.data.append(pd)
 
+        self._assert_attitude_rate_continuity()
         self._attach_execution_timeseries_to_plan()
         return True
 

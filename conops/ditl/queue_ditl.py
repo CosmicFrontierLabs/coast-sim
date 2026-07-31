@@ -1075,10 +1075,18 @@ class QueueDITL(DITLMixin, DITLStats):
         if mismatch is not None:
             return [mismatch]
 
+        mismatches = [
+            PlanExecutionMismatch(
+                utime=violation.utime,
+                message=str(violation),
+                obsid=int(self.obsid[violation.index]),
+            )
+            for violation in self.attitude_rate_violations()
+        ]
         tolerance_deg = self._plan_execution_tolerance_deg()
-        mismatches = self._validate_plan_entry_structure()
-        if mismatches:
-            return mismatches
+        structure_mismatches = self._validate_plan_entry_structure()
+        if structure_mismatches:
+            return mismatches + structure_mismatches
 
         for entry in self.plan:
             obstype = self._entry_obstype(entry)

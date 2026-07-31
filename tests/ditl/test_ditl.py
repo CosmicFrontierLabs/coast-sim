@@ -5,7 +5,13 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pytest
 
-from conops import DITL, ACSMode, AttitudeConstraintScope, DITLs
+from conops import (
+    DITL,
+    ACSMode,
+    AttitudeConstraintScope,
+    AttitudeRateContinuityError,
+    DITLs,
+)
 
 
 class TestDITLInit:
@@ -71,6 +77,7 @@ class TestDITLCalc:
         ditl.calc()
         assert len(ditl.ra) > 0
         assert len(ditl.dec) > 0
+        assert len(ditl.roll) > 0
         assert len(ditl.mode) > 0
         assert len(ditl.panel) > 0
         assert len(ditl.obsid) > 0
@@ -84,6 +91,7 @@ class TestDITLCalc:
         simlen = len(ditl.utime)
         assert len(ditl.ra) == simlen
         assert len(ditl.dec) == simlen
+        assert len(ditl.roll) == simlen
         assert len(ditl.mode) == simlen
         assert len(ditl.panel) == simlen
         assert len(ditl.obsid) == simlen
@@ -152,7 +160,26 @@ class TestDITLSimulationLoop:
         # Check first recorded values
         assert ditl.ra[0] == 45.0
         assert ditl.dec[0] == 30.0
+        assert ditl.roll[0] == 90.0
         assert ditl.obsid[0] == 42
+
+    def test_calc_rejects_attitude_rate_violation(self, ditl: DITL) -> None:
+        """DITL must reject an impossible adjacent roll change."""
+        ditl.config.spacecraft_bus.attitude_control.max_slew_rate = 1.0
+        attitudes = iter(
+            [
+                (0.0, 0.0, 0.0, 0),
+                (0.0, 0.0, 61.0, 0),
+                (0.0, 0.0, 61.0, 0),
+                (0.0, 0.0, 61.0, 0),
+            ]
+        )
+        ditl.acs.pointing.side_effect = attitudes
+
+        with pytest.raises(
+            AttitudeRateContinuityError, match="attitude_rate_violation"
+        ):
+            ditl.calc()
 
     def test_simulation_loop_drains_battery(self, ditl: DITL) -> None:
         """Test that battery is drained each timestep."""
