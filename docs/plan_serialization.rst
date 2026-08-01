@@ -193,6 +193,18 @@ Metadata Fields
      - Optional producer provenance. COASTSim reserves the ``ephemeris`` object for typed
        ephemeris details; callers may add their own JSON-compatible metadata keys.
 
+Initialization State
+~~~~~~~~~~~~~~~~~~~~
+
+``metadata.ephemeris.initialization_state`` provides a single Cartesian state
+for initializing an external simulation before plan execution. The block
+includes an explicit UTC epoch, ``GCRS`` frame, Earth-center origin, position
+in meters, velocity in meters per second, and the propagator, gravity model,
+and SGP4 operation mode reported by the source ``TLEEphemeris``. Callers
+cannot override those provenance fields. Producers should generate a dedicated
+ephemeris sample at the requested initialization epoch instead of
+extrapolating plan-start orbital elements.
+
 Entry Fields
 ~~~~~~~~~~~~
 

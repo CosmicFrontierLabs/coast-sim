@@ -32,6 +32,11 @@ OSCULATING_ELEMENTS_NOTE = (
     "Angles are normalized to [0, 360) degrees."
 )
 
+INITIALIZATION_STATE_NOTE = (
+    "Cartesian spacecraft state at epoch_utc for initializing an external "
+    "simulation before plan execution."
+)
+
 
 class TLEMeanElementsMetadata(BaseModel):
     epoch_utc: str
@@ -47,6 +52,18 @@ class OsculatingElementsMetadata(BaseModel):
     note: str = OSCULATING_ELEMENTS_NOTE
 
 
+class InitializationStateMetadata(BaseModel):
+    epoch_utc: str
+    frame: Literal["GCRS"] = "GCRS"
+    origin: Literal["Earth center"] = "Earth center"
+    position_m: tuple[float, float, float]
+    velocity_m_per_s: tuple[float, float, float]
+    propagator: Literal["SGP4"]
+    gravity_model: Literal["WGS-72"]
+    sgp4_operation_mode: Literal["improved"]
+    note: str = INITIALIZATION_STATE_NOTE
+
+
 class EphemerisMetadata(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -59,6 +76,7 @@ class EphemerisMetadata(BaseModel):
     line2: str | None = None
     tle_mean_elements: TLEMeanElementsMetadata | None = None
     osculating_elements: OsculatingElementsMetadata | None = None
+    initialization_state: InitializationStateMetadata | None = None
 
 
 class PlanMetadata(BaseModel):
@@ -145,17 +163,12 @@ def attach_tle_plan_metadata(
     _attach_ephemeris_metadata(plan, ephemeris_metadata)
 
 
-def attach_osculating_elements_metadata(
-    plan: Plan,
+def _exact_ephemeris_index(
     ephemeris: rust_ephem.Ephemeris,
     epoch: datetime,
-) -> None:
-    """Attach GCRS osculating elements at an exact ephemeris timestamp.
-
-    rust-ephem owns the Cartesian-state conversion, including selection of its
-    central-body gravitational parameter. The exact value returned by
-    rust-ephem is included in the serialized elements.
-    """
+    *,
+    metadata_name: str,
+) -> tuple[int, datetime]:
     timestamps = ephemeris.timestamp
     positions = ephemeris.gcrs_pv.position
     velocities = ephemeris.gcrs_pv.velocity
@@ -173,12 +186,31 @@ def attach_osculating_elements_metadata(
     ]
     if len(matching_indices) != 1:
         raise ValueError(
-            "Osculating-element epoch must match exactly one ephemeris "
+            f"{metadata_name} epoch must match exactly one ephemeris "
             f"timestamp; found {len(matching_indices)} matches for "
             f"{_format_utc_datetime(epoch_utc)}"
         )
+    return matching_indices[0], epoch_utc
 
-    index = matching_indices[0]
+
+def attach_osculating_elements_metadata(
+    plan: Plan,
+    ephemeris: rust_ephem.Ephemeris,
+    epoch: datetime,
+) -> None:
+    """Attach GCRS osculating elements at an exact ephemeris timestamp.
+
+    rust-ephem owns the Cartesian-state conversion, including selection of its
+    central-body gravitational parameter. The exact value returned by
+    rust-ephem is included in the serialized elements.
+    """
+    index, epoch_utc = _exact_ephemeris_index(
+        ephemeris,
+        epoch,
+        metadata_name="Osculating-element",
+    )
+    positions = ephemeris.gcrs_pv.position
+    velocities = ephemeris.gcrs_pv.velocity
     elements = rust_ephem.osculating_elements_from_state(
         position_km=positions[index],
         velocity_km_s=velocities[index],
@@ -201,6 +233,47 @@ def attach_osculating_elements_metadata(
             osculating_elements=OsculatingElementsMetadata(
                 epoch_utc=_format_utc_datetime(epoch_utc),
                 elements=serialized_elements,
+            )
+        ),
+    )
+
+
+def attach_initialization_state_metadata(
+    plan: Plan,
+    ephemeris: rust_ephem.Ephemeris,
+    epoch: datetime,
+) -> None:
+    """Attach one exact GCRS state for initializing an external simulation."""
+    if not isinstance(ephemeris, rust_ephem.TLEEphemeris):
+        return
+
+    index, epoch_utc = _exact_ephemeris_index(
+        ephemeris,
+        epoch,
+        metadata_name="Initialization-state",
+    )
+    positions = ephemeris.gcrs_pv.position
+    velocities = ephemeris.gcrs_pv.velocity
+    position = positions[index]
+    velocity = velocities[index]
+    _attach_ephemeris_metadata(
+        plan,
+        EphemerisMetadata(
+            initialization_state=InitializationStateMetadata(
+                epoch_utc=_format_utc_datetime(epoch_utc),
+                position_m=(
+                    float(position[0]) * 1_000.0,
+                    float(position[1]) * 1_000.0,
+                    float(position[2]) * 1_000.0,
+                ),
+                velocity_m_per_s=(
+                    float(velocity[0]) * 1_000.0,
+                    float(velocity[1]) * 1_000.0,
+                    float(velocity[2]) * 1_000.0,
+                ),
+                propagator=ephemeris.propagator,
+                gravity_model=ephemeris.gravity_model,
+                sgp4_operation_mode=ephemeris.sgp4_operation_mode,
             )
         ),
     )
