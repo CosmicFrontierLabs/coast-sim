@@ -1,10 +1,10 @@
 import math
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, cast
 
 import matplotlib.pyplot as plt
 import rust_ephem
+from pydantic import BaseModel, ConfigDict
 
 from conops.common.enums import ACSMode
 from conops.common.vector import quaternion_attitude_distance
@@ -19,9 +19,10 @@ from .telemetry import Telemetry
 ATTITUDE_RATE_NUMERICAL_TOLERANCE_DEG = 1e-9
 
 
-@dataclass(frozen=True)
-class _AttitudeRateViolation:
+class _AttitudeRateViolation(BaseModel):
     """An adjacent attitude sample pair that exceeds the configured slew rate."""
+
+    model_config = ConfigDict(frozen=True)
 
     previous_index: int
     index: int

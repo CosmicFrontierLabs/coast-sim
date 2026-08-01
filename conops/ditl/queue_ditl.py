@@ -541,6 +541,7 @@ class QueueDITL(DITLMixin, DITLStats):
         if self.plan and self.ppt is not None:
             self._close_last_plan_entry(self.uend)
 
+        self._assert_attitude_rate_continuity()
         self._assert_plan_matches_execution()
         self._attach_execution_timeseries_to_plan()
 
