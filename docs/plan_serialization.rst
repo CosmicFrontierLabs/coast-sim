@@ -382,8 +382,14 @@ Plan Provenance
 
 Use :func:`~conops.targets.attach_tle_plan_metadata` to store the TLE provenance used to
 create a plan. The helper records the source, TLE filename and lines, epoch, NORAD ID, and
-derived classical elements under the plan's ``metadata.ephemeris`` object while preserving
-any metadata keys already present.
+TLE mean elements under the plan's ``metadata.ephemeris`` object.
+
+Use :func:`~conops.targets.attach_osculating_elements_metadata` separately to record
+instantaneous osculating elements derived from the propagated GCRS position and velocity.
+The requested epoch must match exactly one ephemeris timestamp. Both helpers preserve
+metadata keys already present. :class:`~conops.ditl.ditl.DITL` and
+:class:`~conops.ditl.queue_ditl.QueueDITL` call this helper automatically at the
+simulation start epoch when attaching the orbit-state timeseries.
 
 .. code-block:: python
 
@@ -396,6 +402,18 @@ any metadata keys already present.
        tle_file="examples/example.tle",
    )
    ditl.plan.save("plan_20251201.json")
+
+The resulting ``metadata.ephemeris`` object keeps the two element sets distinct:
+``tle_mean_elements`` is associated with the TLE epoch, while ``osculating_elements``
+includes the selected state epoch, ``frame: "GCRS"``, ``origin: "Earth center"``, and
+the gravitational parameter used for the conversion. Element angles are normalized to
+``[0, 360)`` degrees.
+
+rust-ephem owns the Cartesian-state conversion and selection of the central-body
+gravitational parameter; its current default is the WGS-72 Earth value used by SGP4.
+Coast does not select or implement a gravity model. It serializes the exact value returned
+by rust-ephem as ``GravitationalParameter_m3_s2`` so consumers can reproduce the
+conversion.
 
 For validation and programmatic construction, use
 :class:`~conops.targets.PlanMetadata` and :class:`~conops.targets.EphemerisMetadata`.

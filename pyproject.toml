@@ -36,7 +36,7 @@ dependencies = [
     "pydantic>=2.12",
     "pyproj>=3.7.0",
     "pytz>=2025.2",
-    "rust-ephem>=0.11.0",
+    "rust-ephem @ git+https://github.com/CosmicFrontierLabs/rust-ephem.git@bc05341",
     "shapely>=2",
     "tqdm>=4.67",
 ]
