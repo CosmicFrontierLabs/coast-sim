@@ -71,6 +71,8 @@ def optimum_roll(
     ephem: rust_ephem.Ephemeris,
     solar_panel: SolarPanelSet | None = None,
     constraint: Constraint | None = None,
+    reference_roll: float | None = None,
+    max_roll_delta: float | None = None,
 ) -> float:
     """Calculate the optimum roll angle (degrees in [0,360)).
 
@@ -84,7 +86,15 @@ def optimum_roll(
       the combined constraint (via ``roll_range``).  If the constraint blocks all
       rolls (fully blocked pointing) the function falls back to the unconstrained
       optimum.
+    - If `reference_roll` and `max_roll_delta` are provided: restrict the search
+      to rolls within that shortest-path angular distance. If no integer-degree
+      candidate is reachable, hold the reference roll.
     """
+    if (reference_roll is None) != (max_roll_delta is None):
+        raise ValueError("reference_roll and max_roll_delta must be provided together")
+    if max_roll_delta is not None and max_roll_delta < 0:
+        raise ValueError("max_roll_delta must be non-negative")
+
     # Fetch ephemeris index and Sun vector from pre-computed arrays
     index = ephem.index(dtutcfromtimestamp(utime))
     sunvec = ephem.sun_pv.position[index] - ephem.gcrs_pv.position[index]  # km
@@ -95,7 +105,19 @@ def optimum_roll(
     s_norm = s / np.linalg.norm(s)
 
     # Build valid-roll mask from constraint (None if unconstrained or all valid)
-    valid_mask = _roll_valid_mask(ra, dec, utime, ephem, constraint)
+    candidate_mask = _roll_valid_mask(ra, dec, utime, ephem, constraint)
+    deg = np.arange(360.0, dtype=float)
+    if reference_roll is not None and max_roll_delta is not None:
+        reference_roll %= 360.0
+        roll_delta = np.abs((deg - reference_roll + 180.0) % 360.0 - 180.0)
+        reachable_mask = roll_delta <= max_roll_delta + 1e-9
+        candidate_mask = (
+            reachable_mask
+            if candidate_mask is None
+            else candidate_mask & reachable_mask
+        )
+        if not candidate_mask.any():
+            return reference_roll
 
     def _analytic_roll() -> float:
         roll_rad = np.arctan2(-s_norm[2], s_norm[1])
@@ -104,15 +126,12 @@ def optimum_roll(
     if solar_panel is None or not solar_panel.panels:
         # Analytic optimum for side-mounted panel (0,1,0): max y_body = cos(θ)*y0 - sin(θ)*z0
         # d/dθ = 0 → θ = atan2(-z0, y0)
-        if valid_mask is None:
+        if candidate_mask is None:
             return _analytic_roll()
         # Constraint present: scan 360° with illumination model for a (0,1,0) panel
-        deg = np.arange(360.0, dtype=float)
         ang = deg * DTOR
         illum = np.cos(ang) * s_norm[1] - np.sin(ang) * s_norm[2]
-        totals = np.where(valid_mask, illum, -np.inf)
-        if not valid_mask.any():
-            return _analytic_roll()
+        totals = np.where(candidate_mask, illum, -np.inf)
         return float(deg[int(np.argmax(totals))])
 
     # Weighted optimization using actual panel geometry (vectorized).
@@ -151,7 +170,6 @@ def optimum_roll(
     c_coef = n_mat[:, 2] * s_norm[1] - n_mat[:, 1] * s_norm[2]
 
     # Angles 0..359 degrees
-    deg = np.arange(360.0, dtype=float)
     ang = deg * DTOR
     cos_t = np.cos(ang)  # (360,)
     sin_t = np.sin(ang)  # (360,)
@@ -170,8 +188,8 @@ def optimum_roll(
     totals = totals.sum(axis=1)
 
     # Apply valid-roll mask if present
-    if valid_mask is not None and valid_mask.any():
-        totals = np.where(valid_mask, totals, -np.inf)
+    if candidate_mask is not None:
+        totals = np.where(candidate_mask, totals, -np.inf)
 
     # Argmax over angles
     best_idx = int(np.argmax(totals))
