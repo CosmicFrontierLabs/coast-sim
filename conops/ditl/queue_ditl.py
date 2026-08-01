@@ -1808,6 +1808,34 @@ class QueueDITL(DITLMixin, DITLStats):
                 return entry
         return None
 
+    def _gsp_slew_for_profile(
+        self,
+        gspass: Pass,
+        profile: list[tuple[float, float, float]],
+        utime: float,
+        ra: float,
+        dec: float,
+        roll: float,
+    ) -> Slew | None:
+        """Build the incoming slew for one tracking-profile candidate."""
+        if utime >= gspass.begin:
+            target = gspass.attitude_for_profile_at(profile, utime)
+        else:
+            target = profile[0] if profile else None
+        if target is None:
+            return None
+
+        slew = Slew(config=self.config)
+        slew.startra = ra
+        slew.startdec = dec
+        slew.startroll = roll
+        slew.slewstart = utime
+        slew.endra, slew.enddec, slew.endroll = target
+        slew.obstype = ObsType.GSP
+        slew.obsid = gspass.obsid
+        slew.calc_slewtime()
+        return slew
+
     def _close_gsp_plan_entry(self, gspass: Pass, executed_end: float) -> None:
         """Extend a GSP plan entry's end time to match when the pass actually ended."""
         entry = self._planned_gsp_entry(gspass)
@@ -1848,6 +1876,19 @@ class QueueDITL(DITLMixin, DITLStats):
         # Check if we're in a pass, if yes, command ACS to start the pass
         current_pass = self.acs.passrequests.current_pass(utime)
         if current_pass is not None and self.acs.acsmode != ACSMode.PASS:
+            if not current_pass.at_selected_tracking_attitude(utime, ra, dec, roll):
+                self.log.log_event(
+                    utime=utime,
+                    event_type="PASS",
+                    description=(
+                        f"Skipping pass start for {current_pass.station} - "
+                        "spacecraft did not reach the selected safe tracking "
+                        "attitude before contact"
+                    ),
+                    obsid=current_pass.obsid,
+                    acs_mode=self.acs.acsmode,
+                )
+                return False
             if not self._gsp_plan_entry_allowed(current_pass, reserved_begin=utime):
                 return False
             self.log.log_event(
@@ -1895,54 +1936,93 @@ class QueueDITL(DITLMixin, DITLStats):
         if next_pass is None:
             return False
 
-        # Check if it's time to start slewing for the next pass
+        # An accepted reservation already owns its ingress and tracking profile.
+        # Replanning it after the ingress slew completes can select a different
+        # profile and leave the spacecraft off-attitude at contact start.
+        if self._ground_pass_key(next_pass) in self._planned_gsp_keys:
+            return False
+
+        # Check if it's time to start slewing for the next pass. Tracking
+        # profiles are all pass-safe, but their incoming slew paths depend on
+        # the actual attitude at this step.
         if next_pass.time_to_slew(utime=utime, ra=ra, dec=dec, roll=roll):
+            due_profiles = (
+                next_pass.tracking_profiles_due_for_slew(
+                    utime=utime,
+                    ra=ra,
+                    dec=dec,
+                    roll=roll,
+                )
+                if next_pass.ephem is not None
+                else []
+            )
+            if not due_profiles:
+                # Preserve support for externally constructed Pass objects that
+                # only provide the legacy start-attitude fields.
+                due_profiles = next_pass.available_tracking_profiles() or [
+                    [
+                        (
+                            next_pass.gsstartra,
+                            next_pass.gsstartdec,
+                            next_pass.gsstartroll,
+                        )
+                    ]
+                ]
             if not self._gsp_plan_entry_allowed(next_pass, reserved_begin=utime):
                 return False
-            # If it's time to slew, enqueue the slew command
-            self.log.log_event(
-                utime=utime,
-                event_type="SLEW",
-                description=f"Slewing for pass to {next_pass.station}",
-                acs_mode=self.acs.acsmode,
-            )
+            first_violation: tuple[float, str, str] | None = None
+            for profile in due_profiles:
+                slew = self._gsp_slew_for_profile(
+                    next_pass,
+                    profile,
+                    utime,
+                    ra,
+                    dec,
+                    roll,
+                )
+                if slew is None:
+                    continue
+                violation = self._slew_attitude_constraint_violation(slew, ACSMode.PASS)
+                if violation is not None:
+                    if first_violation is None:
+                        first_violation = violation
+                    continue
 
-            # Create slew object for the pass
-            slew = Slew(config=self.config)
-
-            slew.startra = ra
-            slew.startdec = dec
-            slew.startroll = roll
-            slew.slewstart = utime
-            slew.endra = next_pass.gsstartra
-            slew.enddec = next_pass.gsstartdec
-            slew.endroll = next_pass.gsstartroll
-            slew.obstype = ObsType.GSP  # Ground Station Pass slew
-            slew.obsid = next_pass.obsid
-            slew.calc_slewtime()
-            violation = self._slew_attitude_constraint_violation(slew, ACSMode.PASS)
-            if violation is not None:
-                violation_time, constraint_name, scope_label = violation
+                next_pass.select_tracking_profile(profile)
                 self.log.log_event(
                     utime=utime,
-                    event_type="PASS",
-                    description=(
-                        f"Skipping pass slew to {next_pass.station} - path violates "
-                        f"{constraint_name} ({scope_label}) at "
-                        f"{unixtime2date(violation_time)}"
-                    ),
-                    obsid=next_pass.obsid,
+                    event_type="SLEW",
+                    description=f"Slewing for pass to {next_pass.station}",
                     acs_mode=self.acs.acsmode,
                 )
-                return False
-            command = ACSCommand(
-                command_type=ACSCommandType.SLEW_TO_TARGET,
-                execution_time=utime,
-                slew=slew,
+                command = ACSCommand(
+                    command_type=ACSCommandType.SLEW_TO_TARGET,
+                    execution_time=utime,
+                    slew=slew,
+                )
+                self.acs.enqueue_command(command)
+                self._record_gsp_plan_entry(next_pass, reserved_begin=utime, slew=slew)
+                return True
+
+            if first_violation is not None:
+                violation_time, constraint_name, scope_label = first_violation
+                detail = (
+                    f"first candidate violates {constraint_name} ({scope_label}) "
+                    f"at {unixtime2date(violation_time)}"
+                )
+            else:
+                detail = "no candidate produced a valid slew"
+            self.log.log_event(
+                utime=utime,
+                event_type="PASS",
+                description=(
+                    f"Skipping pass slew to {next_pass.station} - no "
+                    f"constraint-safe tracking-profile ingress; {detail}"
+                ),
+                obsid=next_pass.obsid,
+                acs_mode=self.acs.acsmode,
             )
-            self.acs.enqueue_command(command)
-            self._record_gsp_plan_entry(next_pass, reserved_begin=utime, slew=slew)
-            return True
+            return False
 
         return False
 
