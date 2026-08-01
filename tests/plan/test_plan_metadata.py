@@ -184,6 +184,19 @@ def test_attach_initialization_state_uses_ephemeris_provenance(
     assert plan.metadata["ephemeris"]["initialization_state"] == state
 
 
+def test_attach_initialization_state_ignores_non_tle_ephemeris() -> None:
+    plan = Plan()
+    plan.metadata = {"producer": {"name": "mission-generator"}}
+
+    attach_initialization_state_metadata(
+        plan,
+        Mock(spec=rust_ephem.Ephemeris),
+        datetime(2026, 3, 1, 17, 26, 40, tzinfo=timezone.utc),
+    )
+
+    assert plan.metadata == {"producer": {"name": "mission-generator"}}
+
+
 @pytest.mark.parametrize(
     ("helper", "metadata_name"),
     [

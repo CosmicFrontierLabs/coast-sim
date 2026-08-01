@@ -240,10 +240,13 @@ def attach_osculating_elements_metadata(
 
 def attach_initialization_state_metadata(
     plan: Plan,
-    ephemeris: rust_ephem.TLEEphemeris,
+    ephemeris: rust_ephem.Ephemeris,
     epoch: datetime,
 ) -> None:
     """Attach one exact GCRS state for initializing an external simulation."""
+    if not isinstance(ephemeris, rust_ephem.TLEEphemeris):
+        return
+
     index, epoch_utc = _exact_ephemeris_index(
         ephemeris,
         epoch,
