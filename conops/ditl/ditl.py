@@ -134,7 +134,10 @@ class DITL(DITLMixin, DITLStats):
                 (missing ephemeris, missing plan, or invalid ephemeris date range).
 
         Raises:
-            No exceptions raised; errors are logged to stdout and return False.
+            ValueError: If the ephemeris or plan is missing, or the ephemeris does
+                not cover the simulation date range.
+            AttitudeRateContinuityError: If adjacent executed attitude samples
+                exceed the configured maximum slew rate.
 
         Note:
             The simulation respects the class attributes:
@@ -374,6 +377,7 @@ class DITL(DITLMixin, DITLStats):
                 )
                 self.telemetry.data.append(pd)
 
+        self._assert_attitude_rate_continuity()
         self._attach_execution_timeseries_to_plan()
         return True
 

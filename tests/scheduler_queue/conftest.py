@@ -136,6 +136,7 @@ def mock_config() -> Mock:
         return_value=100.0
     )  # Return slew time in seconds
     config.spacecraft_bus.attitude_control.slew_accuracy = 0.01
+    config.spacecraft_bus.attitude_control.max_slew_rate = 10.0
     config.spacecraft_bus.attitude_control.motion_time = Mock(
         side_effect=lambda distance: float(
             config.spacecraft_bus.attitude_control.slew_time(distance)

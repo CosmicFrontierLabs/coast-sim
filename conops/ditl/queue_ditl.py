@@ -541,6 +541,7 @@ class QueueDITL(DITLMixin, DITLStats):
         if self.plan and self.ppt is not None:
             self._close_last_plan_entry(self.uend)
 
+        self._assert_attitude_rate_continuity()
         self._assert_plan_matches_execution()
         self._attach_execution_timeseries_to_plan()
 
@@ -1075,10 +1076,18 @@ class QueueDITL(DITLMixin, DITLStats):
         if mismatch is not None:
             return [mismatch]
 
+        mismatches = [
+            PlanExecutionMismatch(
+                utime=violation.utime,
+                message=str(violation),
+                obsid=violation.obsid,
+            )
+            for violation in self._attitude_rate_violations()
+        ]
         tolerance_deg = self._plan_execution_tolerance_deg()
-        mismatches = self._validate_plan_entry_structure()
-        if mismatches:
-            return mismatches
+        structure_mismatches = self._validate_plan_entry_structure()
+        if structure_mismatches:
+            return mismatches + structure_mismatches
 
         for entry in self.plan:
             obstype = self._entry_obstype(entry)

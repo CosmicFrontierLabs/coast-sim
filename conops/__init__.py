@@ -41,6 +41,7 @@ from .config import (
 )
 from .ditl import (
     DITL,
+    AttitudeRateContinuityError,
     DITLEvent,
     DITLLog,
     DITLLogStore,
@@ -97,6 +98,7 @@ __all__ = [
     "OrbitStateTimeseriesSchema",
     "AttitudeControlSystem",
     "AttitudeConstraintScope",
+    "AttitudeRateContinuityError",
     "Battery",
     "ChargeState",
     "MissionConfig",

@@ -1,10 +1,13 @@
+import math
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
 import matplotlib.pyplot as plt
 import rust_ephem
+from pydantic import BaseModel, ConfigDict
 
 from conops.common.enums import ACSMode
+from conops.common.vector import quaternion_attitude_distance
 from conops.config.groundstation import GroundStation
 
 from ..config import MissionConfig
@@ -12,6 +15,51 @@ from ..simulation.acs import ACS
 from ..simulation.passes import Pass, PassTimes
 from ..targets import Plan, PlanEntry
 from .telemetry import Telemetry
+
+ATTITUDE_RATE_NUMERICAL_TOLERANCE_DEG = 1e-9
+
+
+class _AttitudeRateViolation(BaseModel):
+    """An adjacent attitude sample pair that exceeds the configured slew rate."""
+
+    model_config = ConfigDict(frozen=True)
+
+    previous_index: int
+    index: int
+    previous_utime: float
+    utime: float
+    elapsed_seconds: float
+    distance_deg: float
+    allowed_distance_deg: float
+    max_rate_deg_per_s: float
+    previous_mode: str | None
+    mode: str | None
+    obsid: int | None
+    reason: str = "rate_limit_exceeded"
+
+    @property
+    def actual_rate_deg_per_s(self) -> float:
+        """Return the average angular rate over the sample interval."""
+        if not math.isfinite(self.elapsed_seconds) or self.elapsed_seconds <= 0:
+            return math.inf
+        return self.distance_deg / self.elapsed_seconds
+
+    def __str__(self) -> str:
+        """Return a concise diagnostic suitable for plan-generation errors."""
+        return (
+            f"attitude_rate_violation: samples {self.previous_index}->{self.index} "
+            f"at {self.previous_utime:.3f}->{self.utime:.3f}, "
+            f"modes {self.previous_mode}->{self.mode}, reason {self.reason}, "
+            f"rotation {self.distance_deg:.6f} deg over "
+            f"{self.elapsed_seconds:.3f} s "
+            f"({self.actual_rate_deg_per_s:.6f} deg/s), allowed "
+            f"{self.allowed_distance_deg:.6f} deg "
+            f"({self.max_rate_deg_per_s:.6f} deg/s)"
+        )
+
+
+class AttitudeRateContinuityError(RuntimeError):
+    """Raised when adjacent executed attitudes violate the configured slew rate."""
 
 
 class DITLMixin:
@@ -162,6 +210,102 @@ class DITLMixin:
         if dt.tzinfo is None:
             return dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc)
+
+    def _attitude_rate_violations(self) -> list[_AttitudeRateViolation]:
+        """Validate the housekeeping samples used for attitude-timeseries export."""
+        max_rate = float(self.config.spacecraft_bus.attitude_control.max_slew_rate)
+        if not math.isfinite(max_rate) or max_rate < 0:
+            raise ValueError(
+                f"max_slew_rate must be a finite, non-negative value, got {max_rate}"
+            )
+
+        violations = []
+        samples = self.telemetry.housekeeping
+        for index in range(1, len(samples)):
+            previous_index = index - 1
+            previous_sample = samples[previous_index]
+            sample = samples[index]
+            previous_utime = self._timestamp_to_utc(
+                previous_sample.timestamp
+            ).timestamp()
+            utime = self._timestamp_to_utc(sample.timestamp).timestamp()
+            elapsed_seconds = utime - previous_utime
+            attitude_values = (
+                previous_sample.ra,
+                previous_sample.dec,
+                previous_sample.roll,
+                sample.ra,
+                sample.dec,
+                sample.roll,
+            )
+
+            timestamps_are_finite = math.isfinite(previous_utime) and math.isfinite(
+                utime
+            )
+            reason = "rate_limit_exceeded"
+            if not timestamps_are_finite:
+                distance_deg = math.inf
+                reason = "non_finite_timestamp"
+            elif any(value is None for value in attitude_values):
+                distance_deg = math.inf
+                reason = "missing_attitude"
+            else:
+                attitudes = cast(
+                    tuple[float, float, float, float, float, float],
+                    attitude_values,
+                )
+                if not all(math.isfinite(value) for value in attitudes):
+                    distance_deg = math.inf
+                    reason = "non_finite_attitude"
+
+            if reason == "rate_limit_exceeded":
+                distance_deg = quaternion_attitude_distance(*attitudes)
+
+            allowed_distance_deg = (
+                max_rate * elapsed_seconds
+                if math.isfinite(elapsed_seconds) and elapsed_seconds > 0
+                else 0.0
+            )
+            if timestamps_are_finite and elapsed_seconds <= 0:
+                reason = "non_increasing_timestamp"
+
+            if (
+                not timestamps_are_finite
+                or elapsed_seconds <= 0
+                or not math.isfinite(distance_deg)
+                or distance_deg
+                > allowed_distance_deg + ATTITUDE_RATE_NUMERICAL_TOLERANCE_DEG
+            ):
+                violations.append(
+                    _AttitudeRateViolation(
+                        previous_index=previous_index,
+                        index=index,
+                        previous_utime=previous_utime,
+                        utime=utime,
+                        elapsed_seconds=elapsed_seconds,
+                        distance_deg=distance_deg,
+                        allowed_distance_deg=allowed_distance_deg,
+                        max_rate_deg_per_s=max_rate,
+                        previous_mode=self._attitude_mode_name(
+                            previous_sample.acs_mode
+                        ),
+                        mode=self._attitude_mode_name(sample.acs_mode),
+                        obsid=sample.obsid,
+                        reason=reason,
+                    )
+                )
+        return violations
+
+    def _assert_attitude_rate_continuity(self) -> None:
+        """Fail plan generation when adjacent attitudes exceed the slew-rate limit."""
+        violations = self._attitude_rate_violations()
+        if not violations:
+            return
+        examples = "; ".join(str(violation) for violation in violations[:5])
+        raise AttitudeRateContinuityError(
+            f"Attitude rate validation failed with {len(violations)} "
+            f"violation(s): {examples}"
+        )
 
     def _attach_execution_timeseries_to_plan(self) -> None:
         """Attach executed attitude and orbit-state timelines to the current plan."""
