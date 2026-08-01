@@ -523,8 +523,8 @@ class TestEndPassCoverage:
         acs._end_pass(1514764800.0)
         assert len(acs.command_queue) == 0
 
-    def test_end_pass_clears_stale_slew(self, acs) -> None:
-        """Test that _end_pass clears slews that started before current time (stale slews)."""
+    def test_end_pass_replaces_stale_slew_with_attitude_hold(self, acs) -> None:
+        """A stale pass-ingress slew is replaced with the final tracked attitude."""
         from conops.simulation.slew import Slew
 
         # Create a slew that started in the past (stale)
@@ -535,19 +535,27 @@ class TestEndPassCoverage:
         # Set up pass state
         acs.current_pass = Mock(spec=Pass)
         acs.acsmode = ACSMode.PASS
+        acs.ra = 45.0
+        acs.dec = -30.0
+        acs.roll = 210.0
 
         # End the pass
         acs._end_pass(1514764800.0)
 
-        # Stale slew should be cleared
-        assert acs.last_slew is None
+        assert acs.last_slew is not None
+        assert acs.last_slew.obstype == ObsType.IDLE
+        assert (acs.last_slew.endra, acs.last_slew.enddec, acs.last_slew.endroll) == (
+            45.0,
+            -30.0,
+            210.0,
+        )
         # Pass should be cleared
         assert acs.current_pass is None
         # Mode should be IDLE
         assert acs.acsmode == ACSMode.IDLE
 
-    def test_end_pass_preserves_fresh_slew(self, acs) -> None:
-        """Test that _end_pass preserves slews that start in the future (fresh slews)."""
+    def test_end_pass_replaces_precomputed_slew_with_attitude_hold(self, acs) -> None:
+        """A future command must not change physical attitude before it executes."""
         from conops.simulation.slew import Slew
 
         # Create a slew that starts in the future (fresh)
@@ -558,12 +566,17 @@ class TestEndPassCoverage:
         # Set up pass state
         acs.current_pass = Mock(spec=Pass)
         acs.acsmode = ACSMode.PASS
+        acs.ra = 45.0
+        acs.dec = -30.0
+        acs.roll = 210.0
 
         # End the pass
         acs._end_pass(1514764800.0)
 
-        # Fresh slew should be preserved
-        assert acs.last_slew is mock_slew
+        assert acs.last_slew is not mock_slew
+        assert acs.last_slew is not None
+        assert acs.last_slew.obstype == ObsType.IDLE
+        assert acs._compute_roll(1514764800.0) == 210.0
         # Pass should still be cleared
         assert acs.current_pass is None
         # Mode should be IDLE
@@ -581,13 +594,14 @@ class TestEndPassCoverage:
         # End the pass (should not error)
         acs._end_pass(1514764800.0)
 
-        # Everything should work as expected
-        assert acs.last_slew is None
+        # The current attitude becomes an explicit IDLE hold.
+        assert acs.last_slew is not None
+        assert acs.last_slew.obstype == ObsType.IDLE
         assert acs.current_pass is None
         assert acs.acsmode == ACSMode.IDLE
 
-    def test_end_pass_clears_slew_starting_exactly_at_current_time(self, acs) -> None:
-        """Test edge case where slew starts exactly at current time."""
+    def test_end_pass_replaces_slew_starting_at_current_time(self, acs) -> None:
+        """END_PASS owns the boundary until a queued slew command executes."""
         from conops.simulation.slew import Slew
 
         # Create a slew that starts exactly at current time
@@ -602,9 +616,9 @@ class TestEndPassCoverage:
         # End the pass
         acs._end_pass(1514764800.0)
 
-        # Slew starting at current time should be cleared (< is not satisfied, so preserved)
-        assert acs.last_slew is mock_slew
-        # This documents the current behavior: slews at exactly utime are kept
+        assert acs.last_slew is not mock_slew
+        assert acs.last_slew is not None
+        assert acs.last_slew.obstype == ObsType.IDLE
 
 
 class TestProcessCommandsCoverage:
