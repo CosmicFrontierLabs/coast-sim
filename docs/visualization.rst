@@ -33,10 +33,73 @@ The following plotting functions are available under `conops.visualization`:
 - `plot_data_management_telemetry()` — recorder volume, fill fraction, generated/downlinked data, and alerts from telemetry data.
 - `plot_acs_mode_distribution()` — pie chart showing the distribution of time spent in each ACS mode from telemetry data.
 - `plot_ditl_timeline()` — timeline with orbit numbers, observations, slews, SAA, and eclipses.
+- `plot_radiator_telemetry()` — Sun/Earth exposure, net heat dissipation, and hard-constraint
+  violations for body-mounted radiators. See :doc:`radiator_shadowing`.
+- `plot_fault_management_timeline()` — event timeline of threshold/red-limit transitions and
+  safe-mode triggers. See :doc:`fault_management`.
 - `plot_sky_pointing()` — an interactive Mollweide sky projection with current pointing and constraints.
 - `save_sky_pointing_movie()` — export the entire DITL sky pointing visualization as a movie (MP4, AVI, or GIF).
 - `plot_spacecraft_3d()` — rotatable 3-D spacecraft model built directly from a ``MissionConfig`` (no simulation required).
   See :doc:`spacecraft_3d_visualization` for full details.
+
+Every function above (except ``plot_spacecraft_3d``) also has an interactive Plotly
+counterpart — see `Interactive (Plotly) variants`_ below.
+
+Interactive (Plotly) variants
+------------------------------
+
+Each matplotlib function above has a same-named ``_plotly`` counterpart that plots the
+same data as an interactive `Plotly <https://plotly.com/python/>`_ figure — useful for
+zooming/panning or embedding in a notebook or web page:
+
+- `plot_ditl_telemetry_plotly()`
+- `plot_data_management_telemetry_plotly()`
+- `plot_acs_mode_distribution_plotly()`
+- `plot_ditl_timeline_plotly()`
+- `plot_radiator_telemetry_plotly()`
+- `plot_fault_management_timeline_plotly()`
+- `plot_sky_pointing_plotly()`
+
+They take the same arguments as their matplotlib counterparts (``config``, and any
+function-specific options such as ``show_saa`` or ``t_end``), but return a single
+``plotly.graph_objects.Figure`` instead of a ``(fig, ax)`` tuple — call ``fig.show()``
+instead of ``plt.show()``:
+
+.. code-block:: python
+
+   from conops.visualization import plot_ditl_timeline_plotly
+
+   fig = plot_ditl_timeline_plotly(ditl, show_saa=True)
+   fig.show()
+
+There is also a Plotly-only 3-D globe view, :func:`~conops.visualization.plot_sky_pointing_globe`,
+with no matplotlib equivalent — see :doc:`spacecraft_3d_visualization`.
+
+Annotating Slew Distances
+--------------------------
+
+:func:`~conops.visualization.annotate_slew_distances` adds arrow annotations labelled
+with the angular slew distance (in degrees) onto an existing :func:`~conops.visualization.plot_ditl_timeline`
+figure, for specific slews you want to call out — for example, the largest slews in a
+run:
+
+.. code-block:: python
+
+   from conops.visualization import plot_ditl_timeline, annotate_slew_distances
+
+   fig, ax = plot_ditl_timeline(ditl)
+   t_start = ditl.plan[0].begin
+
+   # Annotate the three largest slews in the plan
+   largest_slews = sorted(
+       range(len(ditl.plan)),
+       key=lambda i: ditl.plan[i].slewdist,
+       reverse=True,
+   )[:3]
+   annotate_slew_distances(ax, ditl, t_start, offset_hours=0.0, slew_indices=largest_slews)
+
+``slew_indices`` are indices into ``ditl.plan``; entries with no slew (``slewtime == 0``)
+are skipped.
 
 Examples and advanced usage
 ---------------------------

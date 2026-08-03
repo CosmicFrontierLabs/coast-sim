@@ -236,6 +236,43 @@ do:
 The above ``sun_constraint`` only applies when the spacecraft is not in eclipse
 (i.e. in the Earth's shadow).
 
+Why Wasn't My Target Scheduled?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Every target added to a queue (:class:`~conops.targets.Pointing`) exposes helpers for
+inspecting its own visibility, without needing to run a full DITL simulation.
+``queue.add()`` already calls these internally, so a target's visibility windows are
+available as soon as it's added:
+
+.. code-block:: python
+
+   target = ditl.queue.targets[-1]  # the target we just added
+   utime = ephemeris.begin.timestamp()
+
+   # Which single constraint is blocking this target right now, if any?
+   target.in_sun(utime)              # True if too close to the Sun
+   target.in_earth(utime)            # True if occulted by / too close to Earth's limb
+   target.in_moon(utime)             # True if too close to the Moon
+   target.in_panel(utime)            # True if violating the solar-panel keepout
+   target.in_orbit(utime)            # True if outside the configured orbit constraint
+   target.in_star_tracker_hard(utime)  # True if in a star-tracker hard keepout
+   target.in_star_tracker_soft(utime)  # True if in a star-tracker soft keepout
+
+   # All visibility windows over the ephemeris span, as [start, end] Unix timestamps
+   target.windows
+
+   # Is it visible over a specific interval? Returns the covering window, or False
+   target.visible(utime, utime + 60)
+
+   # When does it next become visible? Returns a Unix timestamp, or False if never
+   target.next_vis(utime)
+
+Each ``in_*`` check evaluates the target's own ``roll`` attribute (``0.0`` unless you
+set it) at that instant, so it answers "is this specific attitude blocked right now?"
+If ``config.constraint.ignore_roll`` is set (field-of-regard scheduling), ``windows``
+and ``visible()``/``next_vis()`` instead reflect whether *some* roll is unblocked —
+which can differ from what an individual ``in_*`` check reports at a fixed roll.
+
 Module Structure
 ----------------
 

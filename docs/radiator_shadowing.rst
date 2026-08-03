@@ -281,6 +281,24 @@ Violations are counted by
 :meth:`~conops.config.RadiatorConfiguration.radiators_violating_hard_constraints`
 and logged by the ACS at every timestep where any radiator is in violation.
 
+Visualizing Radiator Telemetry
+-------------------------------
+
+After a DITL run, :func:`~conops.visualization.plot_radiator_telemetry` plots the
+radiator behavior described above over the simulation timeline: area-weighted Sun and
+Earth exposure fractions, net heat dissipation in Watts (positive = rejecting heat),
+and a count of radiators violating their hard keep-out constraint at each timestep.
+:func:`~conops.visualization.plot_radiator_telemetry_plotly` produces the same
+three-panel figure as an interactive Plotly figure.
+
+.. code-block:: python
+
+   from conops.visualization import plot_radiator_telemetry
+
+   ditl.calc()
+   fig, axes = plot_radiator_telemetry(ditl)
+   fig.savefig("radiator_telemetry.png")
+
 API Reference
 -------------
 
@@ -291,3 +309,5 @@ descriptions:
   and :func:`~conops.config.geometry.compute_shadow_fraction`
 * :mod:`conops.config.radiator` — :class:`~conops.config.radiator.Radiator`,
   :class:`~conops.config.radiator.RadiatorConfiguration`
+* :mod:`conops.visualization` — :func:`~conops.visualization.plot_radiator_telemetry`
+  and :func:`~conops.visualization.plot_radiator_telemetry_plotly`

@@ -504,6 +504,29 @@ Filtering events:
 
 The event log is append-only for the duration of a simulation; clear with ``fm.events.clear()`` if needed between runs.
 
+Visualizing the Event Log
+--------------------------
+
+:func:`~conops.visualization.plot_fault_management_timeline` turns ``fm.events`` into a
+timeline chart: one row per monitored threshold or red-limit constraint, with
+colour-coded state bands (green=nominal, yellow=yellow, red=red, purple=safe mode
+trigger) and a marker at each transition. It's a quick way to see when — and for how
+long — a parameter spent time in a degraded state, and whether that led to a safe-mode
+trigger.
+
+.. code-block:: python
+
+   from conops.visualization import plot_fault_management_timeline
+
+   fig, ax = plot_fault_management_timeline(config.fault_management)
+   fig.savefig("faults.png", dpi=150, bbox_inches="tight")
+
+Pass ``t_end=ditl.end.timestamp()`` to pin the X-axis to the full DITL window even if
+the last fault event occurred earlier, and ``x_axis="datetime"`` to show absolute UTC
+times instead of elapsed hours.
+:func:`~conops.visualization.plot_fault_management_timeline_plotly` produces the same
+chart as an interactive Plotly figure.
+
 Housekeeping Schema and New Metrics
 -----------------------------------
 
@@ -514,7 +537,9 @@ If you need to monitor a new metric, first add it to the ``Housekeeping`` model 
 API Reference
 -------------
 
-See :mod:`conops.fault_management` for detailed API documentation.
+See :mod:`conops.fault_management` for detailed API documentation, and
+:mod:`conops.visualization` for :func:`~conops.visualization.plot_fault_management_timeline`
+and :func:`~conops.visualization.plot_fault_management_timeline_plotly`.
 
 Best Practices
 --------------
