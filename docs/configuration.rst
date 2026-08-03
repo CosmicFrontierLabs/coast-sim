@@ -300,6 +300,34 @@ scope strings as the value.  Omitted modes retain their defaults.
        - power_generation
        - ground_contact
 
+Attitude Rate Continuity
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+In addition to the constraint-scope check above, plan execution validation confirms that
+consecutive executed attitude samples never rotate faster than the spacecraft can
+physically slew.
+
+**Background**
+
+Every pair of adjacent housekeeping samples in the executed telemetry is checked against
+the ``attitude_control.max_slew_rate`` configured on the spacecraft bus (see
+**AttitudeControlSystem Configuration** below). The allowed rotation between two samples
+is ``max_slew_rate * elapsed_seconds``; a sample pair fails this check if the quaternion
+attitude distance between them exceeds that bound (beyond a small numerical tolerance),
+or if the pair has a non-finite/non-increasing timestamp or a missing attitude value.
+
+If any pair fails, :meth:`~conops.ditl.ditl.DITL.calc` and
+:meth:`~conops.ditl.queue_ditl.QueueDITL.run` raise
+:exc:`~conops.ditl.ditl_mixin.AttitudeRateContinuityError` before returning. The error
+message includes the first few violations — sample indices, timestamps, ACS modes, and the
+actual vs. allowed rotation rate — to aid debugging.
+
+For :class:`~conops.ditl.queue_ditl.QueueDITL`, the same violations are also reported as
+:class:`~conops.ditl.queue_ditl.PlanExecutionMismatch` entries from
+:meth:`~conops.ditl.queue_ditl.QueueDITL.validate_plan_matches_execution`, so callers that
+want the complete mismatch list without ``run()``'s raise-on-first-check behavior can
+inspect them directly.
+
 spacecraft_bus
 ~~~~~~~~~~~~~~
 

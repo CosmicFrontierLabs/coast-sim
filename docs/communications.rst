@@ -314,6 +314,14 @@ observation plan. These entries capture:
 * Overlapping pass opportunities are automatically deconflicted; the highest-value pass is selected
 * Passes are not commanded (and no GSP entry is created) when the spacecraft is in SAFE mode
 * GSP entries are excluded from science observation timelines in visualization plots
+* A pass can offer several constraint-safe tracking-attitude profiles; COASTSim evaluates
+  each candidate in turn and commands the ingress slew for the first one whose path clears
+  all configured attitude constraints for ``PASS`` mode
+* A pass is skipped entirely (no ingress slew and no GSP entry) if none of its available
+  tracking profiles produce a constraint-safe ingress slew, or if the spacecraft has not
+  reached its selected tracking attitude by contact start
+* Once a pass reservation is accepted, its selected tracking profile is held fixed for that
+  pass rather than re-evaluated after the ingress slew completes
 
 **Example workflow:**
 
@@ -344,6 +352,11 @@ Implementation Notes
 ``fixed_boresight_body``. The default ``(-1, 0, 0)`` preserves the historical tracking
 convention. ``fixed_azimuth_deg`` and ``fixed_elevation_deg`` are retained only as deprecated
 metadata and do not steer the generated profile.
+
+**Unreachable pass profiles**: If no tracking-attitude profile candidate yields a
+constraint-safe ingress slew from the spacecraft's current attitude, the pass slew is
+skipped and logged (event type ``PASS``) rather than falling back to a profile that would
+violate a configured attitude constraint.
 
 **Omni antennas**: Always return ``True`` for ``can_communicate()`` regardless of pointing
 
