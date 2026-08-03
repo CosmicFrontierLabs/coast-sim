@@ -510,6 +510,35 @@ simplifies this by generating unit normal vectors based on mount type and cant a
        conversion_efficiency=0.95,
    )
 
+Automatic Roll Optimization
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Roll is frequently *not* something a mission specifies directly. Wherever COASTSim
+holds an attitude without an explicit mission roll — science and PPT pointings, pass
+and target ingress slews, ``SAFE`` mode, and emergency charging — it computes roll
+automatically with :func:`~conops.simulation.roll.optimum_roll` to maximize solar-panel
+illumination at that RA/Dec and time:
+
+* With no panel geometry configured, it uses the closed-form roll that maximizes
+  illumination on a side-mounted (``(0, 1, 0)``-normal) panel.
+* With :class:`~conops.config.SolarPanelSet` panels configured, it scans all 360
+  integer-degree rolls and picks the one that maximizes total power across every
+  panel, weighted by each panel's ``max_power`` and efficiency.
+* If a roll-dependent attitude constraint is configured (star-tracker or radiator
+  keep-outs, telescope boresight offsets) and ``constraint.ignore_roll`` is ``True``,
+  the search is restricted to rolls the constraint allows; if every roll is blocked, it
+  falls back to the unconstrained optimum rather than refusing to produce a roll.
+* Slews and continuous holds additionally bound the search to rolls reachable within
+  a maximum angular step of the current roll, so the spacecraft never jumps to a
+  power-optimal roll that would require an instantaneous, physically impossible
+  rotation — it holds the current roll instead if no reachable candidate improves on it.
+
+Because roll is filled in this way rather than specified by the mission, most executed
+plan entries carry a real, automatically-chosen roll rather than a value the mission
+requested. (The ``roll: -1`` sentinel documented in :doc:`plan_serialization` marks an
+entry whose roll was never populated at all — e.g. before execution — not the result of
+automatic optimization.)
+
 star_tracker
 ~~~~~~~~~~~~
 
@@ -1021,6 +1050,50 @@ The :class:`~conops.config.Battery` models the spacecraft battery system.
        recharge_threshold=0.95,     # Start emergency recharge below 95% SOC
        recharge_clear_threshold=0.955,  # Continue charging until 95.5% SOC
    )
+
+Emergency Charging
+~~~~~~~~~~~~~~~~~~
+
+When ``battery.battery_alert`` becomes true (state of charge drops below
+``recharge_threshold``, or below the ``max_depth_of_discharge`` floor),
+:class:`~conops.ditl.queue_ditl.QueueDITL` automatically interrupts whatever the
+spacecraft is doing and commands an emergency charging pointing. This behavior is
+built into ``QueueDITL`` — it always runs and has no separate on/off configuration.
+
+**What happens when charging starts:**
+
+* Any active science observation ends early (marked ``done``) so the charging
+  pointing can take over immediately.
+* The target pointing is chosen to maximize solar-panel illumination. COASTSim first
+  tries the solar array's geometrically optimal charging attitude
+  (:meth:`~conops.config.SolarPanelSet.optimal_charging_pointing`). If that attitude
+  violates a configured ``CHARGING``-mode attitude constraint, it searches nearby
+  RA/Dec offsets instead — or, for side-mounted panels, points around the great circle
+  90° from the Sun (any such pointing is equally power-positive) — for the best
+  illuminated attitude that doesn't. A candidate is accepted once its illumination
+  fraction reaches ``battery.emergency_charging_min_illumination``; if none reaches it,
+  the best illuminated non-violating candidate found is used instead.
+* Roll is chosen automatically to further optimize solar-panel illumination at the
+  selected pointing, the same as for other automatically-rolled pointings.
+* Charging is never initiated while the spacecraft is in eclipse. Once an alert has
+  been suppressed for entering eclipse, it stays suppressed until sunlight returns,
+  rather than repeatedly starting and aborting a charging attempt every eclipse.
+
+**Ending emergency charging:**
+
+Charging ends for one of three reasons:
+
+* ``battery_recharged`` — battery level has climbed back above
+  ``recharge_clear_threshold``, the hysteresis band above ``recharge_threshold`` that
+  prevents charge/resume "chatter" right at the threshold.
+* ``constraint`` — the current charging pointing has started violating a configured
+  attitude constraint (e.g. the target drifted into an exclusion zone).
+* ``eclipse`` — the spacecraft has entered eclipse.
+
+Once charging ends, normal queue scheduling resumes. Charging pointings appear in the
+saved plan with ``obstype="CHARGE"`` (see :doc:`plan_serialization`), and
+``charge_state`` in the housekeeping telemetry (see :doc:`telemetry`) reflects whether
+the battery is charging at the time.
 
 constraint
 ~~~~~~~~~~
