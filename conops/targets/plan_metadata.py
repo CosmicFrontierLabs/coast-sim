@@ -216,14 +216,14 @@ def attach_osculating_elements_metadata(
         velocity_km_s=velocities[index],
     )
     serialized_elements = {
-        "SemimajorAxis_m": elements["semimajor_axis_km"] * 1_000.0,
-        "Eccentricity": elements["eccentricity"],
-        "Inclination_deg": elements["inclination_deg"],
-        "RightAscension_deg": elements["right_ascension_of_ascending_node_deg"],
-        "ArgPeriapsis_deg": elements["argument_of_periapsis_deg"],
-        "TrueAnomaly_deg": elements["true_anomaly_deg"],
+        "SemimajorAxis_m": elements.semimajor_axis_km * 1_000.0,
+        "Eccentricity": elements.eccentricity,
+        "Inclination_deg": elements.inclination_deg,
+        "RightAscension_deg": elements.right_ascension_of_ascending_node_deg,
+        "ArgPeriapsis_deg": elements.argument_of_periapsis_deg,
+        "TrueAnomaly_deg": elements.true_anomaly_deg,
         "GravitationalParameter_m3_s2": (
-            elements["gravitational_parameter_km3_s2"] * 1.0e9
+            elements.gravitational_parameter_km3_s2 * 1.0e9
         ),
     }
 
