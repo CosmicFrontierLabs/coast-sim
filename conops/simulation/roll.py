@@ -79,7 +79,7 @@ def optimum_roll(
     - If `solar_panel` is None: return the closed-form optimum that **maximises
       the Sun's Y-component** in the spacecraft body frame (i.e. maximises
       illumination on a +Y-normal panel), obtained by differentiating
-      ``s_y(θ) = s_y0·cos(θ) − s_z0·sin(θ)`` and solving.
+      ``s_y(θ) = s_y0·cos(θ) + s_z0·sin(θ)`` and solving.
     - If provided: maximise the total weighted power across all panels by
       scanning roll in 1° increments.
     - If `constraint` is provided: restrict candidate rolls to those allowed by
@@ -120,17 +120,17 @@ def optimum_roll(
             return reference_roll
 
     def _analytic_roll() -> float:
-        roll_rad = np.arctan2(-s_norm[2], s_norm[1])
+        roll_rad = np.arctan2(s_norm[2], s_norm[1])
         return float((roll_rad / DTOR) % 360.0)
 
     if solar_panel is None or not solar_panel.panels:
-        # Analytic optimum for side-mounted panel (0,1,0): max y_body = cos(θ)*y0 - sin(θ)*z0
-        # d/dθ = 0 → θ = atan2(-z0, y0)
+        # Analytic optimum for side-mounted panel (0,1,0): max y_body = cos(θ)*y0 + sin(θ)*z0
+        # d/dθ = 0 → θ = atan2(z0, y0)
         if candidate_mask is None:
             return _analytic_roll()
         # Constraint present: scan 360° with illumination model for a (0,1,0) panel
         ang = deg * DTOR
-        illum = np.cos(ang) * s_norm[1] - np.sin(ang) * s_norm[2]
+        illum = np.cos(ang) * s_norm[1] + np.sin(ang) * s_norm[2]
         totals = np.where(candidate_mask, illum, -np.inf)
         return float(deg[int(np.argmax(totals))])
 
@@ -154,20 +154,20 @@ def optimum_roll(
     w_vec = np.asarray(weights, dtype=float)  # shape (P,)
 
     # For a spacecraft roll of θ about the body +X (boresight) axis the Sun
-    # vector expressed in the body frame evolves as (right-hand rule):
-    #   s_body_y(θ) = s_y · cos(θ) − s_z · sin(θ)
-    #   s_body_z(θ) = s_y · sin(θ) + s_z · cos(θ)
+    # vector expressed in the body frame evolves as:
+    #   s_body_y(θ) = s_y · cos(θ) + s_z · sin(θ)
+    #   s_body_z(θ) = -s_y · sin(θ) + s_z · cos(θ)
     # (s_x is unchanged; s_y, s_z are the roll=0 body-frame components)
     #
     # Panel illumination = n · s_body(θ)  (panel normal n is fixed in the body frame):
-    #   illum(θ) = n_x·s_x + cos(θ)·(n_y·s_y + n_z·s_z) + sin(θ)·(n_z·s_y − n_y·s_z)
+    #   illum(θ) = n_x·s_x + cos(θ)·(n_y·s_y + n_z·s_z) + sin(θ)·(n_y·s_z − n_z·s_y)
 
     # Precompute per-panel coefficients:
     #   illum(θ) = a + cos(θ)·b + sin(θ)·c
-    # where a = nx·sx, b = ny·sy + nz·sz, c = nz·sy − ny·sz
+    # where a = nx·sx, b = ny·sy + nz·sz, c = ny·sz − nz·sy
     a_coef = n_mat[:, 0] * s_norm[0]
     b_coef = n_mat[:, 1] * s_norm[1] + n_mat[:, 2] * s_norm[2]
-    c_coef = n_mat[:, 2] * s_norm[1] - n_mat[:, 1] * s_norm[2]
+    c_coef = n_mat[:, 1] * s_norm[2] - n_mat[:, 2] * s_norm[1]
 
     # Angles 0..359 degrees
     ang = deg * DTOR

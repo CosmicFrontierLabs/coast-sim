@@ -139,6 +139,22 @@ class TestUnixtimeToYearday:
 class TestBodyVectorTrackingAttitude:
     """Test attitude solutions for tracking arbitrary body vectors."""
 
+    def test_positive_roll_is_right_handed_about_body_x(self):
+        body_y_eci = body_vector_to_eci(0.0, 0.0, 90.0, (0.0, 1.0, 0.0))
+        body_z_eci = body_vector_to_eci(0.0, 0.0, 90.0, (0.0, 0.0, 1.0))
+
+        assert body_y_eci == pytest.approx((0.0, 0.0, 1.0), abs=1e-9)
+        assert body_z_eci == pytest.approx((0.0, -1.0, 0.0), abs=1e-9)
+
+    def test_positive_roll_quaternion_applies_inverse_coordinate_transform(self):
+        quat = attitude_to_quat(0.0, 0.0, 90.0)
+        eci_to_body = _quat_to_rot(quat)
+
+        assert quat == pytest.approx((np.sqrt(0.5), -np.sqrt(0.5), 0.0, 0.0), abs=1e-9)
+        assert eci_to_body @ np.array([0.0, 0.0, 1.0]) == pytest.approx(
+            (0.0, 1.0, 0.0), abs=1e-9
+        )
+
     @pytest.mark.parametrize(
         "body_vector",
         [

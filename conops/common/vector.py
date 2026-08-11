@@ -18,12 +18,16 @@ def radec2vec(ra: float, dec: float) -> npt.NDArray[np.float64]:
 def scbodyvector(
     ra: float, dec: float, roll: float, eciarr: npt.NDArray[np.float64]
 ) -> npt.NDArray[np.float64]:
-    """For a given RA,Dec and Roll, and vector, return that vector that in
-    the spacecraft body coordinate system"""
+    """Express an ECI vector in the spacecraft body frame.
+
+    ``roll`` is a right-handed physical spacecraft rotation about body +X.
+    The ECI-to-body direction-cosine matrix therefore applies its inverse,
+    ``R_x(-roll)``.
+    """
 
     # Precalculate, to cut by half the number of trig commands we do (optimising)
-    croll = np.cos(-roll)
-    sroll = np.sin(-roll)
+    croll = np.cos(roll)
+    sroll = np.sin(roll)
     cra = np.cos(ra)
     sra = np.sin(ra)
     cdec = np.cos(-dec)
@@ -238,7 +242,7 @@ def attitude_from_body_axes(
     if n_hat is None:
         return None
     y_hat = np.cross(n_hat, x_axis)
-    roll_rad = float(np.arctan2(np.dot(z_axis, y_hat), np.dot(z_axis, n_hat)))
+    roll_rad = float(np.arctan2(-np.dot(z_axis, y_hat), np.dot(z_axis, n_hat)))
     roll_deg = float(np.rad2deg(roll_rad) % 360.0)
     if abs(roll_deg - 360.0) < 1e-9:
         roll_deg = 0.0
@@ -272,8 +276,8 @@ def body_vector_to_eci(
     roll_rad = np.deg2rad(roll_deg)
     c = np.cos(roll_rad)
     s = np.sin(roll_rad)
-    y_hat = y0 * c - z0 * s
-    z_hat = y0 * s + z0 * c
+    y_hat = y0 * c + z0 * s
+    z_hat = -y0 * s + z0 * c
 
     body = _unit_vector_or_none(body_vector)
     if body is None:
@@ -334,7 +338,7 @@ def attitude_for_body_vector_tracking(
 # Convention: q = [w, x, y, z] (scalar-first).
 # Attitude quaternion represents the rotation from ECI to spacecraft body
 # frame, matching the direction-cosine convention used in scbodyvector():
-#   R = R_x(+roll) @ R_y(dec) @ R_z(-ra)   (all angles in radians)
+#   R = R_x(-roll) @ R_y(dec) @ R_z(-ra)   (all angles in radians)
 # Hamilton vector action:
 #   [0, v_body] = q ⊗ [0, v_eci] ⊗ conjugate(q)
 # Body X = boresight, Body Z = "up" (defines roll).
@@ -359,9 +363,10 @@ def attitude_to_quat(
 ) -> npt.NDArray[np.float64]:
     """Convert spacecraft attitude (RA, Dec, Roll) in degrees to quaternion [w, x, y, z].
 
-    The attitude quaternion encodes the rotation R = R_x(+roll) @ R_y(dec) @ R_z(-ra)
-    that transforms ECI vectors into spacecraft body frame. It uses the
-    Hamilton product and vector action ``q * v * conjugate(q)``.
+    ``roll`` is a right-handed physical spacecraft rotation about body +X.
+    The attitude quaternion encodes the inverse ECI-to-body rotation
+    ``R = R_x(-roll) @ R_y(dec) @ R_z(-ra)``. It uses the Hamilton product
+    and vector action ``q * v * conjugate(q)``.
     """
     ra = np.deg2rad(ra_deg)
     dec = np.deg2rad(dec_deg)
@@ -374,8 +379,8 @@ def attitude_to_quat(
         [np.cos(dec / 2), 0.0, np.sin(dec / 2), 0.0], dtype=np.float64
     )  # R_y(+dec)
     q_x = np.array(
-        [np.cos(roll / 2), np.sin(roll / 2), 0.0, 0.0], dtype=np.float64
-    )  # R_x(+roll)
+        [np.cos(roll / 2), -np.sin(roll / 2), 0.0, 0.0], dtype=np.float64
+    )  # R_x(-roll)
     # Compose: q = q_x ⊗ q_y ⊗ q_z  (rightmost applied first)
     return _quat_mul(_quat_mul(q_x, q_y), q_z)
 
@@ -436,7 +441,7 @@ def quat_to_attitude(q: npt.NDArray[np.float64]) -> tuple[float, float, float]:
         n_norm = float(np.linalg.norm(n_proj))
     n_hat = n_proj / n_norm
     y_hat = np.cross(n_hat, b)
-    roll_rad = float(np.arctan2(np.dot(body_z_eci, y_hat), np.dot(body_z_eci, n_hat)))
+    roll_rad = float(np.arctan2(-np.dot(body_z_eci, y_hat), np.dot(body_z_eci, n_hat)))
 
     return (
         float(np.rad2deg(ra_rad)),
@@ -552,7 +557,7 @@ def _batch_quat_to_attitudes(
 
     dot_z_y = np.einsum("ni,ni->n", body_z, y_hat)
     dot_z_n = np.einsum("ni,ni->n", body_z, n_hat)
-    roll_rad = np.arctan2(dot_z_y, dot_z_n)
+    roll_rad = np.arctan2(-dot_z_y, dot_z_n)
 
     return np.rad2deg(ra_rad), np.rad2deg(dec_rad), np.rad2deg(roll_rad)
 

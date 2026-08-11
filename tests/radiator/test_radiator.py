@@ -92,6 +92,7 @@ class TestRadiator:
 
         assert rad.in_hard_constraint(1.0, 2.0, 1000.0, 3.0) is True
         offset_constraint.in_constraint.assert_called_once()
+        assert offset_constraint.in_constraint.call_args.kwargs["target_roll"] == 3.0
 
     def test_exposure_factors_zeroes_sun_when_in_eclipse(self) -> None:
         ephem = Mock()

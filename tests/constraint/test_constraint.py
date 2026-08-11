@@ -509,7 +509,7 @@ class TestConstraintFloatTimeReturnsScalar:
 
 
 class TestConstraintRollPassthrough:
-    """Test roll passthrough to rust-ephem constraint APIs."""
+    """Test the shared COAST/rust-ephem physical roll convention."""
 
     @patch("rust_ephem.SunConstraint.in_constraint")
     def test_in_sun_forwards_target_roll(

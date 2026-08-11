@@ -282,6 +282,8 @@ class TestPlanSaveLoad:
         assert attitude_raw["plan_file"] == "plan.json"
         assert attitude_raw["frame"] == "GCRS"
         assert attitude_raw["body_frame"] == "COAST_BODY"
+        assert attitude_raw["roll_axis"] == "+X"
+        assert attitude_raw["roll_convention"] == "right_handed_body_rotation"
         assert attitude_raw["representation"] == "quaternion"
         assert attitude_raw["direction"] == "inertial_to_body"
         assert attitude_raw["order"] == "wxyz"

@@ -226,7 +226,9 @@ Entry Fields
      - Declination in degrees (J2000).
    * - ``roll``
      - float
-     - Spacecraft roll angle in degrees (``-1`` = unset).
+     - Right-handed physical spacecraft rotation about body ``+X``, in degrees
+       (``-1`` = unset). At zero RA/Dec, ``+90`` degrees places body ``+Y``
+       along inertial ``+Z``.
    * - ``begin``
      - string
      - Start of the observation window (ISO-8601 UTC).
@@ -329,7 +331,8 @@ Entry Fields
        ``vector_action: "q_v_q_conjugate"`` explicitly: an inertial vector ``v`` is
        transformed into body coordinates as ``q * v * conjugate(q)``. Consumers using
        ``conjugate(q) * v * q`` must conjugate the exported quaternion. It is ``null`` for
-       dynamically tracked entries such as ``GSP``.
+       dynamically tracked entries such as ``GSP``. The pointing metadata records
+       ``roll_convention: "right_handed_body_rotation"``.
 
 Ground Station Pass (GSP) Entries
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -475,6 +478,8 @@ field so that consumers can locate it without scanning the directory.
      "plan_end": "2025-12-01T23:59:00+00:00",
      "frame": "GCRS",
      "body_frame": "COAST_BODY",
+     "roll_axis": "+X",
+     "roll_convention": "right_handed_body_rotation",
      "representation": "quaternion",
      "direction": "inertial_to_body",
      "order": "wxyz",
@@ -545,6 +550,10 @@ field so that consumers can locate it without scanning the directory.
      - string
      - Source and destination frames for every sample quaternion: ``GCRS`` and
        ``COAST_BODY``.
+   * - ``roll_axis`` / ``roll_convention``
+     - string
+     - Roll is a right-handed physical body rotation about ``+X``. At zero
+       RA/Dec, ``+90`` degrees places body ``+Y`` along inertial ``+Z``.
    * - ``representation`` / ``direction`` / ``order``
      - string
      - Every sample uses an ``inertial_to_body`` quaternion in ``wxyz`` component order.
@@ -581,7 +590,7 @@ Each element of ``samples`` is an :class:`~conops.targets.plan_schema.AttitudeSa
      - Declination of the spacecraft boresight in degrees (J2000).
    * - ``roll``
      - float | null
-     - Spacecraft roll angle in degrees.
+     - Right-handed physical spacecraft rotation about body ``+X``, in degrees.
    * - ``mode``
      - string | null
      - ACS mode name at this sample (e.g. ``"SCIENCE"``, ``"SLEWING"``, ``"PASS"``).

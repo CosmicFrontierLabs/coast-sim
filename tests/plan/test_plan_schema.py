@@ -166,6 +166,7 @@ class TestPlanEntryExport:
             "roll_deg": 10.0,
             "boresight_axis": "+X",
             "roll_axis": "+X",
+            "roll_convention": "right_handed_body_rotation",
             "roll_source": "planned",
         }
 

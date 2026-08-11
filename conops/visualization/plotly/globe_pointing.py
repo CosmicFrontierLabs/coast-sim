@@ -119,8 +119,8 @@ def _build_st_boresights(
     z0 = z0 / np.linalg.norm(z0)
 
     cr, sr = np.cos(np.radians(roll_deg)), np.sin(np.radians(roll_deg))
-    y_hat = y0 * cr - z0 * sr
-    z_hat = y0 * sr + z0 * cr
+    y_hat = y0 * cr + z0 * sr
+    z_hat = -y0 * sr + z0 * cr
 
     st_colors = ["cyan", "lime", "orange", "hotpink", "white", "yellow"]
     result: list[tuple[float, float, str, str]] = []

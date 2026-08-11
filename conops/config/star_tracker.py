@@ -214,12 +214,12 @@ class StarTrackerOrientation(ConfigModel):
         y0 = vecnorm(y0)
         z0 = vecnorm(np.cross(x_hat, y0))
 
-        # Roll is a position-angle rotation about boresight (+X).
+        # Positive roll is a right-handed physical rotation about body +X.
         roll_rad = np.deg2rad(roll_deg)
         c = np.cos(roll_rad)
         s = np.sin(roll_rad)
-        y_hat = y0 * c - z0 * s
-        z_hat = y0 * s + z0 * c
+        y_hat = y0 * c + z0 * s
+        z_hat = -y0 * s + z0 * c
 
         # Tracker boresight in inertial frame: linear combination of body axes.
         b = np.asarray(self.boresight, dtype=np.float64)

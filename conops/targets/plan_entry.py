@@ -49,7 +49,10 @@ class AttitudePointingSchema(BaseModel):
     dec_deg: float
     roll_deg: float
     boresight_axis: BodyAxis = "+X"
-    roll_axis: BodyAxis = "+X"
+    roll_axis: Literal["+X"] = "+X"
+    roll_convention: Literal["right_handed_body_rotation"] = (
+        "right_handed_body_rotation"
+    )
     roll_source: RollSource = "planned"
 
 

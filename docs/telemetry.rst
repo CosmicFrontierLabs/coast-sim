@@ -57,13 +57,18 @@ Housekeeping Fields
    - ``timestamp``: UTC timestamp of the record
    - ``ra``: Right ascension in degrees
    - ``dec``: Declination in degrees
-   - ``roll``: Roll angle in degrees
-   - ``roll_offset_deg``: Signed offset from the solar-optimal roll in degrees (range
-     [-180, 180)); meaningful only during SCIENCE mode.
+   - ``roll``: Right-handed physical spacecraft rotation about body ``+X``, in degrees.
+     At zero RA/Dec, ``+90`` degrees places body ``+Y`` along inertial ``+Z``.
+   - ``roll_offset_deg``: Signed offset from the solar-optimal roll using the same
+     right-handed convention (range [-180, 180)); meaningful only during SCIENCE mode.
    - ``quat_w``: Attitude quaternion scalar component (w)
    - ``quat_x``: Attitude quaternion vector component (x)
    - ``quat_y``: Attitude quaternion vector component (y)
    - ``quat_z``: Attitude quaternion vector component (z)
+
+The quaternion remains an inertial-to-body coordinate transform. Consequently, at
+``RA=0`` and ``Dec=0`` its roll component applies the inverse rotation
+``R_x(-roll)`` for the same physical attitude.
 
 **ACS State**
    - ``acs_mode``: Current ACS mode (SCIENCE, SLEWING, SAFE, SAA, etc.)

@@ -68,6 +68,10 @@ class AttitudeTimeseriesSchema(AttitudeRotationConventionSchema):
     plan_end: float | None = None
     frame: Literal["GCRS"] = "GCRS"
     body_frame: Literal["COAST_BODY"] = "COAST_BODY"
+    roll_axis: Literal["+X"] = "+X"
+    roll_convention: Literal["right_handed_body_rotation"] = (
+        "right_handed_body_rotation"
+    )
     samples: list[AttitudeSampleSchema] = Field(default_factory=list)
 
     @computed_field  # type: ignore[prop-decorator]
