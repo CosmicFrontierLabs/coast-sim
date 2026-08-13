@@ -198,19 +198,20 @@ def vec2radec(v: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     return np.array([ra, dec])
 
 
-def normal_to_euler_deg(
+def normal_to_boresight_offset_euler_deg(
     normal: tuple[float, float, float] | npt.NDArray[np.float64],
 ) -> tuple[float, float, float]:
-    """Convert a body-frame normal vector to (roll, pitch, yaw) in degrees.
+    """Convert a body-frame normal to rust-ephem boresight-offset Euler angles.
 
-    The mapping is equivalent to the prior radiator-local helper:
-    - roll is fixed at 0 deg
-    - pitch = atan2(z, hypot(x, y))
-    - yaw = atan2(y, x)
+    ``rust_ephem.Constraint.boresight_offset`` uses intrinsic Z-Y-X Euler
+    rotations.  Applied to local +X, that convention produces
+    ``(cos(pitch) cos(yaw), cos(pitch) sin(yaw), -sin(pitch))``.  Therefore a
+    body normal's positive Z component maps to negative pitch.  Roll about the
+    normal is underdetermined and fixed at zero.
     """
     x, y, z = vecnorm(np.asarray(normal, dtype=np.float64))
     yaw_deg = float(np.rad2deg(np.arctan2(y, x)))
-    pitch_deg = float(np.rad2deg(np.arctan2(z, np.hypot(x, y))))
+    pitch_deg = float(np.rad2deg(np.arctan2(-z, np.hypot(x, y))))
     return 0.0, pitch_deg, yaw_deg
 
 

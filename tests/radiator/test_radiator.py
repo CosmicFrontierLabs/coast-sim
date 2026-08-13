@@ -5,7 +5,7 @@ from unittest.mock import Mock, PropertyMock, patch
 import numpy as np
 import pytest
 
-from conops.common.vector import normal_to_euler_deg
+from conops.common.vector import normal_to_boresight_offset_euler_deg
 from conops.config import (
     Constraint,
     Radiator,
@@ -23,7 +23,7 @@ class TestRadiatorOrientation:
 
 class TestRadiator:
     def test_normal_to_euler_converts_expected_axes(self) -> None:
-        roll, pitch, yaw = normal_to_euler_deg((0.0, 1.0, 0.0))
+        roll, pitch, yaw = normal_to_boresight_offset_euler_deg((0.0, 1.0, 0.0))
         assert roll == pytest.approx(0.0)
         assert pitch == pytest.approx(0.0)
         assert yaw == pytest.approx(90.0)

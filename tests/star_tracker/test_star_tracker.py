@@ -586,6 +586,69 @@ class TestStarTrackerComputedConstraint:
         )
         np.testing.assert_array_equal(mask, expected_mask)
 
+    def test_non_planar_boresights_match_fixed_roll_planning_constraint(self):
+        """rust-ephem offsets must match COAST body geometry at fixed rolls."""
+        from datetime import datetime
+        from pathlib import Path
+
+        tle_path = Path(__file__).parents[2] / "examples" / "example.tle"
+        if not tle_path.exists():
+            pytest.skip("example.tle not available")
+
+        ephem = rust_ephem.TLEEphemeris(
+            begin=datetime(2025, 12, 1, 0, 0, 0),
+            end=datetime(2025, 12, 1, 1, 0, 0),
+            step_size=60,
+            tle=str(tle_path),
+        )
+        sample_utime = ephem.timestamp[0].timestamp()
+        inv_sqrt_3 = 3**-0.5
+        boresights = [
+            (0.0, 0.0, 1.0),
+            (0.0, 0.0, -1.0),
+            (inv_sqrt_3, inv_sqrt_3, inv_sqrt_3),
+            (inv_sqrt_3, -inv_sqrt_3, -inv_sqrt_3),
+        ]
+
+        for boresight in boresights:
+            tracker = StarTracker(
+                name="STR",
+                orientation=StarTrackerOrientation(boresight=boresight),
+                soft_constraint=Constraint(
+                    sun_constraint=rust_ephem.SunConstraint(min_angle=45.0)
+                ),
+            )
+            cfg = StarTrackerConfiguration(
+                star_trackers=[tracker],
+                min_functional_trackers=1,
+                modes_require_lock=[0],
+            )
+            tracker.set_ephem(ephem)
+            combined = cfg.startracker_constraint
+            assert combined is not None
+            planning_constraint = Constraint(
+                star_tracker_soft_constraint=combined,
+                star_tracker_enforce_modes=[0],
+                ephem=ephem,
+            )
+
+            for roll in (-60.0, 0.0, 75.0):
+                for ra in range(0, 360, 60):
+                    for dec in (-60.0, 0.0, 60.0):
+                        direct = tracker.in_soft_constraint(
+                            float(ra), dec, sample_utime, roll
+                        )
+                        wrapped = planning_constraint.in_star_tracker_soft(
+                            float(ra),
+                            dec,
+                            sample_utime,
+                            target_roll=roll,
+                            acs_mode=0,
+                        )
+                        assert bool(wrapped) is direct, (
+                            f"boresight={boresight}, attitude=({ra}, {dec}, {roll})"
+                        )
+
     def test_startracker_constraint_none_when_threshold_unreachable_from_soft_only(
         self,
     ):
@@ -610,134 +673,3 @@ class TestStarTrackerComputedConstraint:
         )
 
         assert cfg.startracker_constraint is None
-
-
-class TestBoresightToEulerDeg:
-    """Tests for StarTrackerConfiguration._boresight_to_euler_deg.
-
-    The method returns (roll=0, pitch, yaw) spherical-coordinate decomposition:
-        yaw   = atan2(by, bx)            (azimuth in xy-plane)
-        pitch = atan2(bz, hypot(bx, by)) (elevation from xy-plane)
-
-    These match what boresight_offset() expects: the angles that shift the
-    constraint exclusion zone from +X to the boresight direction.
-    """
-
-    def test_identity_boresight(self):
-        """Default +X boresight → zero angles."""
-        from conops.config.star_tracker import StarTrackerConfiguration
-
-        roll, pitch, yaw = StarTrackerConfiguration._boresight_to_euler_deg(
-            (1.0, 0.0, 0.0)
-        )
-        assert roll == pytest.approx(0.0, abs=1e-9)
-        assert pitch == pytest.approx(0.0, abs=1e-9)
-        assert yaw == pytest.approx(0.0, abs=1e-9)
-
-    def test_plus_y_boresight(self):
-        """Boresight along +Y → yaw=90°, pitch=0°."""
-        from conops.config.star_tracker import StarTrackerConfiguration
-
-        roll, pitch, yaw = StarTrackerConfiguration._boresight_to_euler_deg(
-            (0.0, 1.0, 0.0)
-        )
-        assert roll == pytest.approx(0.0, abs=1e-9)
-        assert pitch == pytest.approx(0.0, abs=1e-9)
-        assert yaw == pytest.approx(90.0, abs=1e-9)
-
-    def test_minus_y_boresight(self):
-        """Boresight along -Y → yaw=-90°, pitch=0°."""
-        from conops.config.star_tracker import StarTrackerConfiguration
-
-        roll, pitch, yaw = StarTrackerConfiguration._boresight_to_euler_deg(
-            (0.0, -1.0, 0.0)
-        )
-        assert roll == pytest.approx(0.0, abs=1e-9)
-        assert pitch == pytest.approx(0.0, abs=1e-9)
-        assert yaw == pytest.approx(-90.0, abs=1e-9)
-
-    def test_plus_z_boresight(self):
-        """Boresight along +Z → yaw=0°, pitch=90°."""
-        from conops.config.star_tracker import StarTrackerConfiguration
-
-        roll, pitch, yaw = StarTrackerConfiguration._boresight_to_euler_deg(
-            (0.0, 0.0, 1.0)
-        )
-        assert roll == pytest.approx(0.0, abs=1e-9)
-        assert pitch == pytest.approx(90.0, abs=1e-9)
-        assert yaw == pytest.approx(0.0, abs=1e-9)
-
-    def test_boresight_in_xz_plane(self):
-        """Boresight in xz-plane → non-zero pitch, zero yaw."""
-        import numpy as np
-
-        from conops.config.star_tracker import StarTrackerConfiguration
-
-        angle = 45.0
-        bx = np.cos(np.deg2rad(angle))
-        bz = np.sin(np.deg2rad(angle))
-        roll, pitch, yaw = StarTrackerConfiguration._boresight_to_euler_deg(
-            (bx, 0.0, bz)
-        )
-        assert roll == pytest.approx(0.0, abs=1e-9)
-        assert pitch == pytest.approx(angle, abs=1e-9)
-        assert yaw == pytest.approx(0.0, abs=1e-9)
-
-    def test_boresight_in_xy_plane(self):
-        """Boresight in xy-plane → non-zero yaw, zero pitch."""
-        import numpy as np
-
-        from conops.config.star_tracker import StarTrackerConfiguration
-
-        angle = -30.0
-        bx = np.cos(np.deg2rad(angle))
-        by = np.sin(np.deg2rad(angle))
-        roll, pitch, yaw = StarTrackerConfiguration._boresight_to_euler_deg(
-            (bx, by, 0.0)
-        )
-        assert roll == pytest.approx(0.0, abs=1e-9)
-        assert pitch == pytest.approx(0.0, abs=1e-9)
-        assert yaw == pytest.approx(angle, abs=1e-9)
-
-    def test_boresight_produces_transform_pointing_agreement(self):
-        """The angles from _boresight_to_euler_deg agree with transform_pointing at (RA=0, Dec=0).
-
-        For spacecraft pointing at (RA=0, Dec=0) with roll=0, transform_pointing
-        gives the star tracker boresight direction in inertial coordinates.
-        That direction should be the same as the spherical-coord (yaw, pitch) angles,
-        which are what boresight_offset() uses to shift the constraint exclusion zone.
-        """
-        import numpy as np
-
-        from conops.config.star_tracker import (
-            StarTrackerConfiguration,
-            StarTrackerOrientation,
-        )
-
-        boresights = [
-            (1.0, 0.0, 0.0),
-            (0.0, 1.0, 0.0),
-            (0.0, -1.0, 0.0),
-            (0.0, 0.0, 1.0),
-            (float(np.cos(np.deg2rad(45))), 0.0, float(np.sin(np.deg2rad(45)))),
-        ]
-
-        for boresight in boresights:
-            ori = StarTrackerOrientation(boresight=boresight)
-            # transform_pointing at (RA=0, Dec=0, roll=0) gives the ST boresight direction
-            ra_st, dec_st = ori.transform_pointing(0.0, 0.0, roll_deg=0.0)
-
-            # _boresight_to_euler_deg should give the spherical coords of the boresight
-            _, pitch_deg, yaw_deg = StarTrackerConfiguration._boresight_to_euler_deg(
-                boresight
-            )
-
-            # Normalise both to [-180, 180] before comparing (vec2radec returns [0,360],
-            # atan2 returns [-180,180] — they should be congruent mod 360).
-            ra_st_norm = (ra_st + 180.0) % 360.0 - 180.0
-            assert yaw_deg == pytest.approx(ra_st_norm, abs=1e-6), (
-                f"boresight={boresight}: yaw={yaw_deg:.4f} != ra_st_norm={ra_st_norm:.4f}"
-            )
-            assert pitch_deg == pytest.approx(dec_st, abs=1e-6), (
-                f"boresight={boresight}: pitch={pitch_deg:.4f} != dec_st={dec_st:.4f}"
-            )

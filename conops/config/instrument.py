@@ -6,7 +6,7 @@ import numpy as np
 from pydantic import AliasChoices, Field, field_validator, model_validator
 from rust_ephem.constraints import ConstraintConfig
 
-from ..common.vector import normal_to_euler_deg
+from ..common.vector import normal_to_boresight_offset_euler_deg
 from ._base import ConfigModel
 from .constraint import Constraint
 from .data_generator import DataGeneration
@@ -243,7 +243,7 @@ class Telescope(Instrument):
             return None
         if self.boresight == (1.0, 0.0, 0.0):
             return base
-        roll_deg, pitch_deg, yaw_deg = normal_to_euler_deg(
+        roll_deg, pitch_deg, yaw_deg = normal_to_boresight_offset_euler_deg(
             np.asarray(self.boresight, dtype=np.float64)
         )
         return base.boresight_offset(

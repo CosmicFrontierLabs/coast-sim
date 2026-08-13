@@ -19,7 +19,7 @@ from pydantic import Field, field_validator
 from rust_ephem.constraints import ConstraintConfig
 
 from ..common import dtutcfromtimestamp, scbodyvector
-from ..common.vector import normal_to_euler_deg, radec2vec
+from ..common.vector import normal_to_boresight_offset_euler_deg, radec2vec
 from ._base import ConfigModel
 from .constraint import Constraint
 from .geometry import PanelGeometry, compute_shadow_fraction
@@ -130,7 +130,9 @@ class Radiator(ConfigModel):
         if base_constraint is None:
             return None
 
-        roll_deg, pitch_deg, yaw_deg = normal_to_euler_deg(self.orientation.normal)
+        roll_deg, pitch_deg, yaw_deg = normal_to_boresight_offset_euler_deg(
+            self.orientation.normal
+        )
         return base_constraint.boresight_offset(
             roll_deg=roll_deg,
             pitch_deg=pitch_deg,

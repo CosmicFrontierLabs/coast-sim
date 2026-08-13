@@ -10,7 +10,7 @@ from conops import (
     scbodyvector,
     separation,
 )
-from conops.common.vector import normal_to_euler_deg
+from conops.common.vector import normal_to_boresight_offset_euler_deg
 
 
 class TestQuaternionAttitudeDistance:
@@ -195,27 +195,41 @@ class TestRollOverAngle:
         assert abs(diff2) < 180, f"Expected short path for step 2, got {diff2}°"
 
 
-class TestNormalToEulerDeg:
-    def test_normal_to_euler_plus_y(self) -> None:
-        roll, pitch, yaw = normal_to_euler_deg((0.0, 1.0, 0.0))
+class TestNormalToBoresightOffsetEulerDeg:
+    @pytest.mark.parametrize(
+        ("normal", "expected_pitch", "expected_yaw"),
+        [
+            ((1.0, 0.0, 0.0), 0.0, 0.0),
+            ((0.0, 1.0, 0.0), 0.0, 90.0),
+            ((0.0, -1.0, 0.0), 0.0, -90.0),
+            ((0.0, 0.0, 1.0), -90.0, 0.0),
+            ((0.0, 0.0, -1.0), 90.0, 0.0),
+            ((2**-0.5, 0.0, 2**-0.5), -45.0, 0.0),
+            ((3**0.5 / 2.0, -0.5, 0.0), 0.0, -30.0),
+        ],
+        ids=("+X", "+Y", "-Y", "+Z", "-Z", "XZ", "XY"),
+    )
+    def test_expected_axis_mapping(
+        self,
+        normal: tuple[float, float, float],
+        expected_pitch: float,
+        expected_yaw: float,
+    ) -> None:
+        roll, pitch, yaw = normal_to_boresight_offset_euler_deg(normal)
         assert roll == pytest.approx(0.0)
-        assert pitch == pytest.approx(0.0)
-        assert yaw == pytest.approx(90.0)
+        assert pitch == pytest.approx(expected_pitch)
+        assert yaw == pytest.approx(expected_yaw)
 
-    def test_normal_to_euler_plus_z(self) -> None:
-        roll, pitch, yaw = normal_to_euler_deg((0.0, 0.0, 1.0))
+    def test_generic_non_planar_normal(self) -> None:
+        roll, pitch, yaw = normal_to_boresight_offset_euler_deg((1.0, 1.0, 1.0))
         assert roll == pytest.approx(0.0)
-        assert pitch == pytest.approx(90.0)
-        assert yaw == pytest.approx(0.0)
+        assert pitch == pytest.approx(-35.264389682754654)
+        assert yaw == pytest.approx(45.0)
 
-    def test_normal_to_euler_minus_z(self) -> None:
-        roll, pitch, yaw = normal_to_euler_deg((0.0, 0.0, -1.0))
-        assert roll == pytest.approx(0.0)
-        assert pitch == pytest.approx(-90.0)
-        assert yaw == pytest.approx(0.0)
-
-    def test_normal_to_euler_normalizes_input(self) -> None:
-        roll, pitch, yaw = normal_to_euler_deg(np.array([0.0, 2.0, 0.0]))
+    def test_normalizes_input(self) -> None:
+        roll, pitch, yaw = normal_to_boresight_offset_euler_deg(
+            np.array([0.0, 2.0, 0.0])
+        )
         assert roll == pytest.approx(0.0)
         assert pitch == pytest.approx(0.0)
         assert yaw == pytest.approx(90.0)
