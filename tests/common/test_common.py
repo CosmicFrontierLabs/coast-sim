@@ -16,7 +16,12 @@ from conops.common import (
     body_vector_to_eci,
     scbodyvector,
 )
-from conops.common.vector import _quat_to_rot, attitude_to_quat
+from conops.common.vector import (
+    _batch_quat_to_attitudes,
+    _quat_to_rot,
+    attitude_to_quat,
+    quat_to_attitude,
+)
 
 
 class TestACSMode:
@@ -188,6 +193,8 @@ class TestBodyVectorTrackingAttitude:
             (0.0, 0.0, 30.0),
             (90.0, 45.0, 30.0),
             (120.0, -20.0, 275.0),
+            (45.0, 90.0, 30.0),
+            (120.0, -90.0, 275.0),
         ],
     )
     @pytest.mark.parametrize(
@@ -221,6 +228,8 @@ class TestBodyVectorTrackingAttitude:
             (0.0, 0.0, 90.0),
             (45.0, 30.0, 15.0),
             (120.0, -20.0, 275.0),
+            (45.0, 90.0, 30.0),
+            (120.0, -90.0, 275.0),
         ],
     )
     @pytest.mark.parametrize(
@@ -243,6 +252,25 @@ class TestBodyVectorTrackingAttitude:
         expected = body_vector_to_eci(ra, dec, roll, body_vector)
         assert expected is not None
         assert quat_body_to_eci == pytest.approx(expected, abs=1e-9)
+
+    @pytest.mark.parametrize(
+        "attitude",
+        [
+            (0.0, 90.0, 0.0),
+            (45.0, 90.0, 30.0),
+            (180.0, -90.0, 90.0),
+        ],
+    )
+    def test_pole_quaternion_roundtrip_preserves_physical_attitude(self, attitude):
+        quat = attitude_to_quat(*attitude)
+        recovered = quat_to_attitude(quat)
+        recovered_quat = attitude_to_quat(*recovered)
+
+        assert abs(float(np.dot(quat, recovered_quat))) == pytest.approx(1.0, abs=1e-12)
+
+        ras, decs, rolls = _batch_quat_to_attitudes(np.asarray([quat]))
+        batch_quat = attitude_to_quat(float(ras[0]), float(decs[0]), float(rolls[0]))
+        assert abs(float(np.dot(quat, batch_quat))) == pytest.approx(1.0, abs=1e-12)
 
     def test_legacy_minus_x_tracking_keeps_zero_roll(self):
         target = np.array([0.3, -0.4, 0.8660254])

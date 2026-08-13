@@ -9,6 +9,8 @@
     "representation": "quaternion",
     "roll_axis": "+X",
     "roll_convention": "right_handed_body_rotation",
+    "roll_reference": "projected_celestial_north",
+    "roll_reference_axis": "+Z",
     "samples": [
       {
         "dec": 0.0,
@@ -3849,6 +3851,8 @@
             "roll_axis": "+X",
             "roll_convention": "right_handed_body_rotation",
             "roll_deg": 335.0447988855596,
+            "roll_reference": "projected_celestial_north",
+            "roll_reference_axis": "+Z",
             "roll_source": "planned"
           },
           "rotation": {
@@ -3896,6 +3900,8 @@
             "roll_axis": "+X",
             "roll_convention": "right_handed_body_rotation",
             "roll_deg": 173.70432239651115,
+            "roll_reference": "projected_celestial_north",
+            "roll_reference_axis": "+Z",
             "roll_source": "planned"
           },
           "rotation": {
@@ -3943,6 +3949,8 @@
             "roll_axis": "+X",
             "roll_convention": "right_handed_body_rotation",
             "roll_deg": 133.10950386906987,
+            "roll_reference": "projected_celestial_north",
+            "roll_reference_axis": "+Z",
             "roll_source": "planned"
           },
           "rotation": {
@@ -3990,6 +3998,8 @@
             "roll_axis": "+X",
             "roll_convention": "right_handed_body_rotation",
             "roll_deg": 151.76131163886302,
+            "roll_reference": "projected_celestial_north",
+            "roll_reference_axis": "+Z",
             "roll_source": "planned"
           },
           "rotation": {
@@ -4037,6 +4047,8 @@
             "roll_axis": "+X",
             "roll_convention": "right_handed_body_rotation",
             "roll_deg": 350.87514117978384,
+            "roll_reference": "projected_celestial_north",
+            "roll_reference_axis": "+Z",
             "roll_source": "planned"
           },
           "rotation": {
@@ -4075,6 +4087,10 @@
       }
     },
     "num_entries": 5,
+    "roll_axis": "+X",
+    "roll_convention": "right_handed_body_rotation",
+    "roll_reference": "projected_celestial_north",
+    "roll_reference_axis": "+Z",
     "start": "2026-01-01T00:00:00+00:00",
     "version": 0
   },

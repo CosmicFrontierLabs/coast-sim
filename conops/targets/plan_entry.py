@@ -53,6 +53,8 @@ class AttitudePointingSchema(BaseModel):
     roll_convention: Literal["right_handed_body_rotation"] = (
         "right_handed_body_rotation"
     )
+    roll_reference_axis: Literal["+Z"] = "+Z"
+    roll_reference: Literal["projected_celestial_north"] = "projected_celestial_north"
     roll_source: RollSource = "planned"
 
 

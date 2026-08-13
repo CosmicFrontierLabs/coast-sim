@@ -72,6 +72,8 @@ class AttitudeTimeseriesSchema(AttitudeRotationConventionSchema):
     roll_convention: Literal["right_handed_body_rotation"] = (
         "right_handed_body_rotation"
     )
+    roll_reference_axis: Literal["+Z"] = "+Z"
+    roll_reference: Literal["projected_celestial_north"] = "projected_celestial_north"
     samples: list[AttitudeSampleSchema] = Field(default_factory=list)
 
     @computed_field  # type: ignore[prop-decorator]
@@ -183,6 +185,12 @@ class Plan(BaseModel):
     )
     attitude_timeseries_file: str | None = None
     orbit_state_timeseries_file: str | None = None
+    roll_axis: Literal["+X"] = "+X"
+    roll_convention: Literal["right_handed_body_rotation"] = (
+        "right_handed_body_rotation"
+    )
+    roll_reference_axis: Literal["+Z"] = "+Z"
+    roll_reference: Literal["projected_celestial_north"] = "projected_celestial_north"
     metadata: dict[str, object] | None = None
     entries: list[SerializeAsAny[PlanEntry]] = Field(default_factory=list)
     attitude_timeseries: AttitudeTimeseriesSchema | None = Field(

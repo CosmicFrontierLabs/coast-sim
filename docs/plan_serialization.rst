@@ -86,6 +86,10 @@ The JSON file contains a metadata envelope followed by the entry list.
      "num_entries": 42,
      "attitude_timeseries_file": "plan_20251201_attitude_timeseries.json",
      "orbit_state_timeseries_file": "plan_20251201_orbit_state_timeseries.json",
+     "roll_axis": "+X",
+     "roll_convention": "right_handed_body_rotation",
+     "roll_reference_axis": "+Z",
+     "roll_reference": "projected_celestial_north",
      "metadata": {
        "ephemeris": {
          "source": "TLE",
@@ -188,6 +192,16 @@ Metadata Fields
      - Filename (no path) of the sibling GCRS orbit-state JSON file written alongside this
        plan, or ``null`` / absent when no orbit state was exported.
        See :ref:`orbit-state-timeseries` for the file format.
+   * - ``roll_axis`` / ``roll_convention``
+     - string
+     - Every plan roll field is a right-handed physical spacecraft rotation about
+       body ``+X``.
+   * - ``roll_reference_axis`` / ``roll_reference``
+     - string
+     - At zero roll, body ``+Z`` aligns with celestial north projected into the
+       plane normal to the boresight. At a celestial pole, where that projection
+       is undefined, COAST uses the analytical continuation of its RA/Dec Euler
+       sequence.
    * - ``metadata``
      - object | null
      - Optional producer provenance. COASTSim reserves the ``ephemeris`` object for typed
@@ -227,8 +241,8 @@ Entry Fields
    * - ``roll``
      - float
      - Right-handed physical spacecraft rotation about body ``+X``, in degrees
-       (``-1`` = unset). At zero RA/Dec, ``+90`` degrees places body ``+Y``
-       along inertial ``+Z``.
+       (``-1`` = unset), using the plan-level roll reference. At zero RA/Dec,
+       ``+90`` degrees places body ``+Y`` along inertial ``+Z``.
    * - ``begin``
      - string
      - Start of the observation window (ISO-8601 UTC).
@@ -480,6 +494,8 @@ field so that consumers can locate it without scanning the directory.
      "body_frame": "COAST_BODY",
      "roll_axis": "+X",
      "roll_convention": "right_handed_body_rotation",
+     "roll_reference_axis": "+Z",
+     "roll_reference": "projected_celestial_north",
      "representation": "quaternion",
      "direction": "inertial_to_body",
      "order": "wxyz",
@@ -554,6 +570,11 @@ field so that consumers can locate it without scanning the directory.
      - string
      - Roll is a right-handed physical body rotation about ``+X``. At zero
        RA/Dec, ``+90`` degrees places body ``+Y`` along inertial ``+Z``.
+   * - ``roll_reference_axis`` / ``roll_reference``
+     - string
+     - At zero roll, body ``+Z`` aligns with projected celestial north. The
+       celestial-pole fallback follows the same RA/Dec Euler sequence as the
+       exported quaternion.
    * - ``representation`` / ``direction`` / ``order``
      - string
      - Every sample uses an ``inertial_to_body`` quaternion in ``wxyz`` component order.

@@ -58,7 +58,8 @@ Housekeeping Fields
    - ``ra``: Right ascension in degrees
    - ``dec``: Declination in degrees
    - ``roll``: Right-handed physical spacecraft rotation about body ``+X``, in degrees.
-     At zero RA/Dec, ``+90`` degrees places body ``+Y`` along inertial ``+Z``.
+     At zero roll, body ``+Z`` aligns with projected celestial north. At zero
+     RA/Dec, ``+90`` degrees places body ``+Y`` along inertial ``+Z``.
    - ``roll_offset_deg``: Signed offset from the solar-optimal roll using the same
      right-handed convention (range [-180, 180)); meaningful only during SCIENCE mode.
    - ``quat_w``: Attitude quaternion scalar component (w)
