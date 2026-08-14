@@ -6,7 +6,15 @@ from typing import cast
 import numpy as np
 import rust_ephem
 from pydantic import ConfigDict, Field, PrivateAttr
-from rust_ephem.constraints import ConstraintConfig
+from rust_ephem.constraints import (
+    AndConstraint,
+    AtLeastConstraint,
+    BoresightOffsetConstraint,
+    ConstraintConfig,
+    NotConstraint,
+    OrConstraint,
+    XorConstraint,
+)
 
 from ..common import dtutcfromtimestamp
 from ..common.enums import ACSMode
@@ -406,41 +414,54 @@ class Constraint(ConfigModel):
                 self.ground_contact_constraint,
             )
             if constraint is not None
-            and not self._boresight_offset_constraints(constraint)
+            and not self._contains_boresight_offset(constraint)
         )
         return self._combine_constraints(components)
 
     @staticmethod
-    def _boresight_offset_constraints(
-        constraint: ConstraintConfig,
-    ) -> list[ConstraintConfig]:
-        """Return roll-dependent boresight-offset leaves from a constraint tree."""
-        from rust_ephem.constraints import BoresightOffsetConstraint
-
+    def _contains_boresight_offset(constraint: ConstraintConfig) -> bool:
+        """Return whether a constraint tree contains a boresight-offset node."""
         if isinstance(constraint, BoresightOffsetConstraint):
-            return [constraint]
-        leaves: list[ConstraintConfig] = []
-        if hasattr(constraint, "constraints"):
-            for subconstraint in constraint.constraints:
-                leaves.extend(Constraint._boresight_offset_constraints(subconstraint))
-        return leaves
+            return True
+        if isinstance(constraint, NotConstraint):
+            return Constraint._contains_boresight_offset(constraint.constraint)
+        if isinstance(
+            constraint,
+            (AndConstraint, OrConstraint, XorConstraint, AtLeastConstraint),
+        ):
+            return any(
+                Constraint._contains_boresight_offset(subconstraint)
+                for subconstraint in constraint.constraints
+            )
+        return False
+
+    @staticmethod
+    def _roll_dependent_subtree(
+        constraint: ConstraintConfig,
+    ) -> ConstraintConfig | None:
+        """Return a roll-dependent tree without changing its boolean semantics.
+
+        Pure roll-independent trees impose no roll-dependent restriction and are
+        omitted. If any descendant depends on roll, retain the complete tree:
+        roll-independent siblings may be either violated or clear for a given
+        target and time, so removing them would change AND, OR, NOT, XOR, or
+        AtLeast behavior. ``roll_range()`` evaluates those siblings as constants
+        while sweeping the roll-dependent descendants.
+        """
+        if Constraint._contains_boresight_offset(constraint):
+            return constraint
+        return None
 
     @cached_property
     def roll_dependent_constraint(self) -> ConstraintConfig | None:
         """Combined constraint from roll-dependent components only.
 
-        Walks the constraint trees of the boresight-offset-capable fields and
-        collects every ``BoresightOffsetConstraint`` leaf node, then OR-combines
-        them.  Only ``BoresightOffsetConstraint`` implements ``roll_range()``
-        correctly; ``AtLeastConstraint`` returns ``True`` for ``_is_roll_dependent``
-        but has an unimplemented ``roll_range()``, so we filter by concrete type
-        rather than the flag.
-
-        Roll-independent constraints (sun/earth/moon/panel on the main boresight)
-        contain no ``BoresightOffsetConstraint`` nodes and are therefore excluded
-        automatically.
+        Projects each configured tree onto its boresight-offset-dependent portion
+        while preserving compound violation logic and AtLeast thresholds. The
+        projected field trees are OR-combined because the fields themselves are
+        independent constraint scopes.
         """
-        leaves: list[ConstraintConfig] = []
+        subtrees: list[ConstraintConfig | None] = []
         for field in (
             self.star_tracker_hard_constraint,
             self.star_tracker_soft_constraint,
@@ -451,14 +472,11 @@ class Constraint(ConfigModel):
             self.safety_constraint,
         ):
             if field is not None:
-                leaves.extend(self._boresight_offset_constraints(field))
+                subtree = self._roll_dependent_subtree(field)
+                if subtree is not None:
+                    subtrees.append(subtree)
 
-        if not leaves:
-            return None
-        combined: ConstraintConfig = leaves[0]
-        for c in leaves[1:]:
-            combined = combined | c
-        return combined
+        return self._combine_constraints(subtrees)
 
     def in_sun(
         self, ra: float, dec: float, time: float, target_roll: float | None = None
