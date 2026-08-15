@@ -15,15 +15,40 @@ def radec2vec(ra: float, dec: float) -> npt.NDArray[np.float64]:
     return np.array([v1, v2, v3], dtype=np.float64)
 
 
+def _zero_roll_body_axes(
+    ra: float, dec: float
+) -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+]:
+    """Return body +X/+Y/+Z in ECI at zero roll.
+
+    Body +Z follows projected celestial north away from the poles.  The
+    analytical continuation preserves the RA-based Euler convention at the
+    poles, where that projection is otherwise undefined.
+    """
+    cra, sra = np.cos(ra), np.sin(ra)
+    cdec, sdec = np.cos(dec), np.sin(dec)
+    x_hat = np.array([cdec * cra, cdec * sra, sdec], dtype=np.float64)
+    y_hat = np.array([-sra, cra, 0.0], dtype=np.float64)
+    z_hat = np.array([-sdec * cra, -sdec * sra, cdec], dtype=np.float64)
+    return x_hat, y_hat, z_hat
+
+
 def scbodyvector(
     ra: float, dec: float, roll: float, eciarr: npt.NDArray[np.float64]
 ) -> npt.NDArray[np.float64]:
-    """For a given RA,Dec and Roll, and vector, return that vector that in
-    the spacecraft body coordinate system"""
+    """Express an ECI vector in the spacecraft body frame.
+
+    ``roll`` is a right-handed physical spacecraft rotation about body +X.
+    The ECI-to-body direction-cosine matrix therefore applies its inverse,
+    ``R_x(-roll)``.
+    """
 
     # Precalculate, to cut by half the number of trig commands we do (optimising)
-    croll = np.cos(-roll)
-    sroll = np.sin(-roll)
+    croll = np.cos(roll)
+    sroll = np.sin(roll)
     cra = np.cos(ra)
     sra = np.sin(ra)
     cdec = np.cos(-dec)
@@ -233,12 +258,10 @@ def attitude_from_body_axes(
         return None
 
     ra_rad, dec_rad = vec2radec(x_axis)
-
-    n_hat = _perpendicular_reference(x_axis, (0.0, 0.0, 1.0))
-    if n_hat is None:
-        return None
-    y_hat = np.cross(n_hat, x_axis)
-    roll_rad = float(np.arctan2(np.dot(z_axis, y_hat), np.dot(z_axis, n_hat)))
+    if np.hypot(x_axis[0], x_axis[1]) < 1e-10:
+        ra_rad = 0.0
+    _, y0, z0 = _zero_roll_body_axes(float(ra_rad), float(dec_rad))
+    roll_rad = float(np.arctan2(-np.dot(z_axis, y0), np.dot(z_axis, z0)))
     roll_deg = float(np.rad2deg(roll_rad) % 360.0)
     if abs(roll_deg - 360.0) < 1e-9:
         roll_deg = 0.0
@@ -261,19 +284,13 @@ def body_vector_to_eci(
     This is the inverse of the ``scbodyvector`` body-frame transform.
     """
 
-    x_hat = radec2vec(np.deg2rad(ra_deg), np.deg2rad(dec_deg))
-    ref = np.array([0.0, 0.0, 1.0], dtype=np.float64)
-    y0 = np.cross(ref, x_hat)
-    if np.linalg.norm(y0) < 1e-12:
-        y0 = np.cross(np.array([0.0, 1.0, 0.0], dtype=np.float64), x_hat)
-    y0 = vecnorm(y0)
-    z0 = vecnorm(np.cross(x_hat, y0))
+    x_hat, y0, z0 = _zero_roll_body_axes(np.deg2rad(ra_deg), np.deg2rad(dec_deg))
 
     roll_rad = np.deg2rad(roll_deg)
     c = np.cos(roll_rad)
     s = np.sin(roll_rad)
-    y_hat = y0 * c - z0 * s
-    z_hat = y0 * s + z0 * c
+    y_hat = y0 * c + z0 * s
+    z_hat = -y0 * s + z0 * c
 
     body = _unit_vector_or_none(body_vector)
     if body is None:
@@ -334,7 +351,7 @@ def attitude_for_body_vector_tracking(
 # Convention: q = [w, x, y, z] (scalar-first).
 # Attitude quaternion represents the rotation from ECI to spacecraft body
 # frame, matching the direction-cosine convention used in scbodyvector():
-#   R = R_x(+roll) @ R_y(dec) @ R_z(-ra)   (all angles in radians)
+#   R = R_x(-roll) @ R_y(dec) @ R_z(-ra)   (all angles in radians)
 # Hamilton vector action:
 #   [0, v_body] = q ⊗ [0, v_eci] ⊗ conjugate(q)
 # Body X = boresight, Body Z = "up" (defines roll).
@@ -359,9 +376,10 @@ def attitude_to_quat(
 ) -> npt.NDArray[np.float64]:
     """Convert spacecraft attitude (RA, Dec, Roll) in degrees to quaternion [w, x, y, z].
 
-    The attitude quaternion encodes the rotation R = R_x(+roll) @ R_y(dec) @ R_z(-ra)
-    that transforms ECI vectors into spacecraft body frame. It uses the
-    Hamilton product and vector action ``q * v * conjugate(q)``.
+    ``roll`` is a right-handed physical spacecraft rotation about body +X.
+    The attitude quaternion encodes the inverse ECI-to-body rotation
+    ``R = R_x(-roll) @ R_y(dec) @ R_z(-ra)``. It uses the Hamilton product
+    and vector action ``q * v * conjugate(q)``.
     """
     ra = np.deg2rad(ra_deg)
     dec = np.deg2rad(dec_deg)
@@ -374,8 +392,8 @@ def attitude_to_quat(
         [np.cos(dec / 2), 0.0, np.sin(dec / 2), 0.0], dtype=np.float64
     )  # R_y(+dec)
     q_x = np.array(
-        [np.cos(roll / 2), np.sin(roll / 2), 0.0, 0.0], dtype=np.float64
-    )  # R_x(+roll)
+        [np.cos(roll / 2), -np.sin(roll / 2), 0.0, 0.0], dtype=np.float64
+    )  # R_x(-roll)
     # Compose: q = q_x ⊗ q_y ⊗ q_z  (rightmost applied first)
     return _quat_mul(_quat_mul(q_x, q_y), q_z)
 
@@ -422,21 +440,13 @@ def quat_to_attitude(q: npt.NDArray[np.float64]) -> tuple[float, float, float]:
     bx, by, bz = float(rot[0, 0]), float(rot[0, 1]), float(rot[0, 2])
     dec_rad = float(np.arcsin(np.clip(bz, -1.0, 1.0)))
     ra_rad = float(np.arctan2(by, bx)) % (2 * np.pi)
+    if np.hypot(bx, by) < 1e-10:
+        ra_rad = 0.0
 
     # Row 2 of rot is the body-Z (up) direction in ECI
-    b = np.array([bx, by, bz])
     body_z_eci = np.array([float(rot[2, 0]), float(rot[2, 1]), float(rot[2, 2])])
-    north = np.array([0.0, 0.0, 1.0])
-    n_proj = north - np.dot(north, b) * b
-    n_norm = float(np.linalg.norm(n_proj))
-    if n_norm < 1e-10:
-        # Boresight near celestial pole – use RA=0 direction as reference
-        north = np.array([1.0, 0.0, 0.0])
-        n_proj = north - np.dot(north, b) * b
-        n_norm = float(np.linalg.norm(n_proj))
-    n_hat = n_proj / n_norm
-    y_hat = np.cross(n_hat, b)
-    roll_rad = float(np.arctan2(np.dot(body_z_eci, y_hat), np.dot(body_z_eci, n_hat)))
+    _, y0, z0 = _zero_roll_body_axes(ra_rad, dec_rad)
+    roll_rad = float(np.arctan2(-np.dot(body_z_eci, y0), np.dot(body_z_eci, z0)))
 
     return (
         float(np.rad2deg(ra_rad)),
@@ -531,28 +541,18 @@ def _batch_quat_to_attitudes(
 
     dec_rad = np.arcsin(np.clip(bz, -1.0, 1.0))
     ra_rad = np.arctan2(by, bx) % (2.0 * np.pi)
+    near_pole = np.hypot(bx, by) < 1e-10
+    ra_rad[near_pole] = 0.0
 
-    # Roll: project north pole onto boresight-perpendicular plane
-    b = np.stack([bx, by, bz], axis=1)  # (N, 3)
-    north = np.array([[0.0, 0.0, 1.0]])
-    n_proj = north - bz[:, np.newaxis] * b  # (N, 3)
-    n_norm = np.linalg.norm(n_proj, axis=1)  # (N,)
-
-    # Near-pole fallback: use RA=0 direction when north is aligned with boresight
-    near_pole = n_norm < 1e-10
-    if np.any(near_pole):
-        north2 = np.array([[1.0, 0.0, 0.0]])
-        n_proj2 = north2 - bx[:, np.newaxis] * b
-        n_proj[near_pole] = n_proj2[near_pole]
-        n_norm[near_pole] = np.linalg.norm(n_proj2[near_pole], axis=1)
-
-    n_hat = n_proj / n_norm[:, np.newaxis]  # (N, 3)
-    y_hat = np.cross(n_hat, b)  # (N, 3)
+    cra, sra = np.cos(ra_rad), np.sin(ra_rad)
+    cdec, sdec = np.cos(dec_rad), np.sin(dec_rad)
+    y0 = np.stack([-sra, cra, np.zeros_like(ra_rad)], axis=1)
+    z0 = np.stack([-sdec * cra, -sdec * sra, cdec], axis=1)
     body_z = np.stack([r20, r21, r22], axis=1)  # (N, 3)
 
-    dot_z_y = np.einsum("ni,ni->n", body_z, y_hat)
-    dot_z_n = np.einsum("ni,ni->n", body_z, n_hat)
-    roll_rad = np.arctan2(dot_z_y, dot_z_n)
+    dot_z_y = np.einsum("ni,ni->n", body_z, y0)
+    dot_z_z = np.einsum("ni,ni->n", body_z, z0)
+    roll_rad = np.arctan2(-dot_z_y, dot_z_z)
 
     return np.rad2deg(ra_rad), np.rad2deg(dec_rad), np.rad2deg(roll_rad)
 

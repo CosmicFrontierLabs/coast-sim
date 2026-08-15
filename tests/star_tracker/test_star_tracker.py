@@ -12,6 +12,7 @@ from conops.config import (
     StarTrackerConfiguration,
     StarTrackerOrientation,
 )
+from conops.simulation.roll import _roll_valid_mask
 
 
 class TestStarTrackerConstraints:
@@ -534,6 +535,11 @@ class TestStarTrackerComputedConstraint:
 
         combined = cfg.startracker_constraint
         assert combined is not None
+        planning_constraint = Constraint(
+            star_tracker_soft_constraint=combined,
+            star_tracker_enforce_modes=[0],
+            ephem=ephem,
+        )
         sample_time = ephem.timestamp[0]
         sample_utime = sample_time.timestamp()
         cases = [
@@ -549,14 +555,36 @@ class TestStarTrackerComputedConstraint:
                 for tracker in cfg.star_trackers
             )
             expected = per_tracker_violations >= 1
-            actual = combined.in_constraint(
-                ephemeris=ephem,
-                target_ra=ra,
-                target_dec=dec,
-                time=sample_time,
+            actual = planning_constraint.in_star_tracker_soft(
+                ra,
+                dec,
+                sample_utime,
                 target_roll=roll,
+                acs_mode=0,
             )
             assert bool(actual) is expected
+
+        planning_constraint.ignore_roll = True
+        mask = _roll_valid_mask(
+            0.0,
+            -60.0,
+            sample_utime,
+            ephem,
+            planning_constraint,
+        )
+        assert mask is not None
+        expected_mask = np.array(
+            [
+                sum(
+                    tracker.in_soft_constraint(0.0, -60.0, sample_utime, float(roll))
+                    for tracker in cfg.star_trackers
+                )
+                < 1
+                for roll in range(360)
+            ],
+            dtype=bool,
+        )
+        np.testing.assert_array_equal(mask, expected_mask)
 
     def test_startracker_constraint_none_when_threshold_unreachable_from_soft_only(
         self,

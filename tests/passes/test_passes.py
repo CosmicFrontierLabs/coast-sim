@@ -26,7 +26,7 @@ from conops.config import (
     CommunicationsSystem,
     GroundStation,
 )
-from conops.simulation.passes import pass_slew_trigger_buffer
+from conops.simulation.passes import _tracking_path_cost_key, pass_slew_trigger_buffer
 
 
 class TestPassInitialization:
@@ -585,6 +585,24 @@ class TestPassTimes:
         pt = PassTimes(config=mock_config)
 
         assert pt._gsp_tracking_phase_candidates() == [0.0, 90.0, 270.0, 180.0]
+
+    def test_tracking_path_cost_ignores_subnanodegree_max_step_noise(self):
+        phase_rank = {0.0: 0, 90.0: 1}
+
+        lower_total_motion = _tracking_path_cost_key(
+            46.30003116488229,
+            156.59674852352776,
+            [0.0],
+            phase_rank,
+        )
+        numerically_smaller_max_step = _tracking_path_cost_key(
+            46.30003116488226,
+            167.06247916835073,
+            [90.0],
+            phase_rank,
+        )
+
+        assert lower_total_motion < numerically_smaller_max_step
 
     def test_get_skips_stations_not_scheduled_for_tracking(
         self, mock_constraint, mock_config

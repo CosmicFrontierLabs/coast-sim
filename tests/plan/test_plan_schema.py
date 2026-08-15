@@ -166,6 +166,9 @@ class TestPlanEntryExport:
             "roll_deg": 10.0,
             "boresight_axis": "+X",
             "roll_axis": "+X",
+            "roll_convention": "right_handed_body_rotation",
+            "roll_reference_axis": "+Z",
+            "roll_reference": "projected_celestial_north",
             "roll_source": "planned",
         }
 
@@ -206,6 +209,13 @@ class TestPlanEntryExport:
                 dec_deg=45.0,
                 roll_deg=10.0,
                 boresight_axis="Z",
+            )
+        with pytest.raises(ValidationError):
+            AttitudePointingSchema(
+                ra_deg=15.0,
+                dec_deg=45.0,
+                roll_deg=10.0,
+                roll_reference="sun",
             )
         with pytest.raises(ValidationError):
             TargetAttitudeSchema(

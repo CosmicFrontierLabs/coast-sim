@@ -29,6 +29,22 @@ from .slew import Slew
 # Legacy ground-pass roll for profiles without explicit roll samples.
 GSP_TRACK_ROLL = 0.0
 LEGACY_GSP_ANTENNA_BODY_VECTOR = (-1.0, 0.0, 0.0)
+# Suppress representation-level noise without masking operationally meaningful motion.
+_TRACKING_PATH_COST_DECIMALS = 9
+
+
+def _tracking_path_cost_key(
+    max_step: float,
+    total_step: float,
+    phase_path: list[float],
+    phase_rank: dict[float, int],
+) -> tuple[float, float, tuple[int, ...]]:
+    """Return a stable ordering key for dynamic ground-track paths."""
+    return (
+        round(max_step, _TRACKING_PATH_COST_DECIMALS),
+        round(total_step, _TRACKING_PATH_COST_DECIMALS),
+        tuple(phase_rank[phase] for phase in phase_path),
+    )
 
 
 def pass_slew_trigger_buffer(step_size: float) -> float:
@@ -723,6 +739,7 @@ class PassTimes:
             next_paths: dict[float, tuple[float, float, list[float]]] = {}
             for phase, attitude in safe_attitudes[sample_index].items():
                 best: tuple[float, float, list[float]] | None = None
+                best_key: tuple[float, float, tuple[int, ...]] | None = None
                 for previous_phase, (
                     previous_max_step,
                     previous_total_step,
@@ -740,11 +757,13 @@ class PassTimes:
                         previous_total_step + step_distance,
                         previous_path + [phase],
                     )
-                    if best is None or (candidate[0], candidate[1]) < (
-                        best[0],
-                        best[1],
-                    ):
+                    candidate_key = _tracking_path_cost_key(
+                        *candidate,
+                        phase_rank,
+                    )
+                    if best_key is None or candidate_key < best_key:
                         best = candidate
+                        best_key = candidate_key
                 if best is not None:
                     next_paths[phase] = best
             paths = next_paths
@@ -753,10 +772,11 @@ class PassTimes:
 
         _, (_, _, phase_path) = min(
             paths.items(),
-            key=lambda item: (
+            key=lambda item: _tracking_path_cost_key(
                 item[1][0],
                 item[1][1],
-                [phase_rank[phase] for phase in item[1][2]],
+                item[1][2],
+                phase_rank,
             ),
         )
         return [
@@ -805,10 +825,9 @@ class PassTimes:
                         step_distance + suffix_total_step,
                         [phase] + suffix_path,
                     )
-                    candidate_key = (
-                        candidate[0],
-                        candidate[1],
-                        [phase_rank[path_phase] for path_phase in candidate[2]],
+                    candidate_key = _tracking_path_cost_key(
+                        *candidate,
+                        phase_rank,
                     )
                     if best is None:
                         best = candidate

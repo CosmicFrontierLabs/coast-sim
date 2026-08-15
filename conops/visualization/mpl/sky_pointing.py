@@ -566,8 +566,8 @@ class SkyPointingController:
 
         roll_rad = np.deg2rad(roll_deg)
         c_r, s_r = np.cos(roll_rad), np.sin(roll_rad)
-        y_hat = y0 * c_r - z0 * s_r
-        z_hat = y0 * s_r + z0 * c_r
+        y_hat = y0 * c_r + z0 * s_r
+        z_hat = -y0 * s_r + z0 * c_r
 
         # Resolve per-tracker functional status from housekeeping telemetry.
         # Green = functional (not in soft constraint), Red = degraded.
@@ -1218,8 +1218,8 @@ class SkyPointingController:
         for roll_deg_s in np.linspace(0.0, 360.0, 36, endpoint=False):
             rr = np.deg2rad(float(roll_deg_s))
             c_s, s_s = float(np.cos(rr)), float(np.sin(rr))
-            y_hat_s = y0 * c_s - z0 * s_s
-            z_hat_s = y0 * s_s + z0 * c_s
+            y_hat_s = y0 * c_s + z0 * s_s
+            z_hat_s = -y0 * s_s + z0 * c_s
             mask = _eval_radiators(y_hat_s, z_hat_s)
             if mask is None:
                 continue
@@ -1363,8 +1363,8 @@ class SkyPointingController:
             for roll_deg_s in np.linspace(0.0, 360.0, 36, endpoint=False):
                 rr = np.deg2rad(float(roll_deg_s))
                 c_s, s_s = float(np.cos(rr)), float(np.sin(rr))
-                y_hat_s = y0 * c_s - z0 * s_s
-                z_hat_s = y0 * s_s + z0 * c_s
+                y_hat_s = y0 * c_s + z0 * s_s
+                z_hat_s = -y0 * s_s + z0 * c_s
                 mask = _eval_trackers(y_hat_s, z_hat_s)
                 if mask is None:
                     continue
@@ -1428,7 +1428,7 @@ class SkyPointingController:
                     panel_weights.append(float(max_power) * eff_val)
 
                 if len(panel_normals) == 0 or len(panel_weights) == 0:
-                    roll_rad_per_point = np.arctan2(-sy0, sz0)
+                    roll_rad_per_point = np.arctan2(sy0, sz0)
                     roll_deg_per_point = (roll_rad_per_point / DTOR) % 360.0
                 else:
                     n_mat = np.asarray(panel_normals, dtype=np.float64)  # (P, 3)
@@ -1456,19 +1456,19 @@ class SkyPointingController:
                     best_idx = np.argmax(totals, axis=1)
                     roll_deg_per_point = deg_grid[best_idx]
             else:
-                roll_rad_per_point = np.arctan2(-sy0, sz0)
+                roll_rad_per_point = np.arctan2(sy0, sz0)
                 roll_deg_per_point = (roll_rad_per_point / DTOR) % 360.0
 
             self._optimal_roll_cache[roll_cache_key] = roll_deg_per_point
             while len(self._optimal_roll_cache) > self._optimal_roll_cache_max_entries:
                 self._optimal_roll_cache.pop(next(iter(self._optimal_roll_cache)))
 
-        # Apply per-point roll as position-angle rotations around boresight (+X).
+        # Apply each right-handed physical roll about spacecraft +X.
         roll_rad_per_point = np.deg2rad(roll_deg_per_point)
         c = np.cos(roll_rad_per_point)[:, None]
         s = np.sin(roll_rad_per_point)[:, None]
-        y_hat = y0 * c - z0 * s
-        z_hat = y0 * s + z0 * c
+        y_hat = y0 * c + z0 * s
+        z_hat = -y0 * s + z0 * c
 
         return _eval_trackers(y_hat, z_hat)
 

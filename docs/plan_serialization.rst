@@ -86,6 +86,10 @@ The JSON file contains a metadata envelope followed by the entry list.
      "num_entries": 42,
      "attitude_timeseries_file": "plan_20251201_attitude_timeseries.json",
      "orbit_state_timeseries_file": "plan_20251201_orbit_state_timeseries.json",
+     "roll_axis": "+X",
+     "roll_convention": "right_handed_body_rotation",
+     "roll_reference_axis": "+Z",
+     "roll_reference": "projected_celestial_north",
      "metadata": {
        "ephemeris": {
          "source": "TLE",
@@ -188,6 +192,16 @@ Metadata Fields
      - Filename (no path) of the sibling GCRS orbit-state JSON file written alongside this
        plan, or ``null`` / absent when no orbit state was exported.
        See :ref:`orbit-state-timeseries` for the file format.
+   * - ``roll_axis`` / ``roll_convention``
+     - string
+     - Every plan roll field is a right-handed physical spacecraft rotation about
+       body ``+X``.
+   * - ``roll_reference_axis`` / ``roll_reference``
+     - string
+     - At zero roll, body ``+Z`` aligns with celestial north projected into the
+       plane normal to the boresight. At a celestial pole, where that projection
+       is undefined, COAST uses the analytical continuation of its RA/Dec Euler
+       sequence.
    * - ``metadata``
      - object | null
      - Optional producer provenance. COASTSim reserves the ``ephemeris`` object for typed
@@ -226,7 +240,9 @@ Entry Fields
      - Declination in degrees (J2000).
    * - ``roll``
      - float
-     - Spacecraft roll angle in degrees (``-1`` = unset).
+     - Right-handed physical spacecraft rotation about body ``+X``, in degrees
+       (``-1`` = unset), using the plan-level roll reference. At zero RA/Dec,
+       ``+90`` degrees places body ``+Y`` along inertial ``+Z``.
    * - ``begin``
      - string
      - Start of the observation window (ISO-8601 UTC).
@@ -329,7 +345,8 @@ Entry Fields
        ``vector_action: "q_v_q_conjugate"`` explicitly: an inertial vector ``v`` is
        transformed into body coordinates as ``q * v * conjugate(q)``. Consumers using
        ``conjugate(q) * v * q`` must conjugate the exported quaternion. It is ``null`` for
-       dynamically tracked entries such as ``GSP``.
+       dynamically tracked entries such as ``GSP``. The pointing metadata records
+       ``roll_convention: "right_handed_body_rotation"``.
 
 Ground Station Pass (GSP) Entries
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -475,6 +492,10 @@ field so that consumers can locate it without scanning the directory.
      "plan_end": "2025-12-01T23:59:00+00:00",
      "frame": "GCRS",
      "body_frame": "COAST_BODY",
+     "roll_axis": "+X",
+     "roll_convention": "right_handed_body_rotation",
+     "roll_reference_axis": "+Z",
+     "roll_reference": "projected_celestial_north",
      "representation": "quaternion",
      "direction": "inertial_to_body",
      "order": "wxyz",
@@ -545,6 +566,15 @@ field so that consumers can locate it without scanning the directory.
      - string
      - Source and destination frames for every sample quaternion: ``GCRS`` and
        ``COAST_BODY``.
+   * - ``roll_axis`` / ``roll_convention``
+     - string
+     - Roll is a right-handed physical body rotation about ``+X``. At zero
+       RA/Dec, ``+90`` degrees places body ``+Y`` along inertial ``+Z``.
+   * - ``roll_reference_axis`` / ``roll_reference``
+     - string
+     - At zero roll, body ``+Z`` aligns with projected celestial north. The
+       celestial-pole fallback follows the same RA/Dec Euler sequence as the
+       exported quaternion.
    * - ``representation`` / ``direction`` / ``order``
      - string
      - Every sample uses an ``inertial_to_body`` quaternion in ``wxyz`` component order.
@@ -581,7 +611,7 @@ Each element of ``samples`` is an :class:`~conops.targets.plan_schema.AttitudeSa
      - Declination of the spacecraft boresight in degrees (J2000).
    * - ``roll``
      - float | null
-     - Spacecraft roll angle in degrees.
+     - Right-handed physical spacecraft rotation about body ``+X``, in degrees.
    * - ``mode``
      - string | null
      - ACS mode name at this sample (e.g. ``"SCIENCE"``, ``"SLEWING"``, ``"PASS"``).

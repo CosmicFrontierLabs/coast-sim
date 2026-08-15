@@ -224,6 +224,10 @@ class TestPlanSaveLoad:
         assert "created_at" in raw
         assert "start" in raw
         assert "end" in raw
+        assert raw["roll_axis"] == "+X"
+        assert raw["roll_convention"] == "right_handed_body_rotation"
+        assert raw["roll_reference_axis"] == "+Z"
+        assert raw["roll_reference"] == "projected_celestial_north"
         assert raw["num_entries"] == 2
         assert len(raw["entries"]) == 2
 
@@ -282,6 +286,10 @@ class TestPlanSaveLoad:
         assert attitude_raw["plan_file"] == "plan.json"
         assert attitude_raw["frame"] == "GCRS"
         assert attitude_raw["body_frame"] == "COAST_BODY"
+        assert attitude_raw["roll_axis"] == "+X"
+        assert attitude_raw["roll_convention"] == "right_handed_body_rotation"
+        assert attitude_raw["roll_reference_axis"] == "+Z"
+        assert attitude_raw["roll_reference"] == "projected_celestial_north"
         assert attitude_raw["representation"] == "quaternion"
         assert attitude_raw["direction"] == "inertial_to_body"
         assert attitude_raw["order"] == "wxyz"

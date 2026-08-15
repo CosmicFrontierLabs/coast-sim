@@ -41,6 +41,23 @@ class TestOptimumRoll:
         )
         assert isinstance(roll, float) and 0 <= roll < 360
 
+    def test_constrained_sidemount_scan_uses_right_handed_roll(self, mock_ephem):
+        mock_ephem.sun_pv.position = [np.array([0.0, 0.0, 1.0])]
+
+        with patch(
+            "conops.simulation.roll._roll_valid_mask",
+            return_value=np.ones(360, dtype=bool),
+        ):
+            roll = optimum_roll(
+                0.0,
+                0.0,
+                1700000000.0,
+                mock_ephem,
+                constraint=Mock(),
+            )
+
+        assert roll == 90.0
+
     def test_optimum_roll_with_multiple_panels(
         self, mock_ephem, mock_sun_coord, mock_solar_panel_multiple
     ):
