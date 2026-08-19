@@ -54,8 +54,11 @@ def create_star_tracker_vector(
 ) -> tuple[float, float, float]:
     """Create a star tracker boresight vector from Euler angles.
 
-    Converts roll, pitch, yaw angles to a unit boresight vector using the ZYX
-    Euler angle convention (yaw about Z, then pitch about Y, then roll about X).
+    Converts roll, pitch, yaw body-mount angles to a unit boresight vector.
+    Positive pitch rotates the default +X boresight toward body +Z.  This is a
+    body-frame configuration convention, not the rust-ephem boresight-offset
+    convention; :func:`normal_to_boresight_offset_euler_deg` performs that
+    conversion at the constraint API boundary.
 
     Args:
         roll_deg: Rotation about X axis (degrees). Default is 0.
@@ -69,7 +72,7 @@ def create_star_tracker_vector(
     Example:
         create_star_tracker_vector(0, 0, 0)  # Returns (1, 0, 0) - default boresight
         create_star_tracker_vector(0, 90, 0)  # Returns (0, 0, 1) - points along +Z
-        create_star_tracker_vector(0, 0, 90)  # Returns (0, 1, 0) - points along +Y
+        create_star_tracker_vector(0, 0, 90)  # Returns (0, -1, 0) - points along -Y
     """
     # Convert angles to radians
     roll_rad = np.deg2rad(roll_deg)
@@ -380,15 +383,18 @@ class StarTrackerConfiguration(ConfigModel):
             if base_constraint is None:
                 continue
 
-            roll_deg, pitch_deg, yaw_deg = normal_to_boresight_offset_euler_deg(
-                st.orientation.boresight
-            )
-            offset_constraint = base_constraint.boresight_offset(
-                roll_deg=roll_deg,
-                pitch_deg=pitch_deg,
-                yaw_deg=yaw_deg,
-                roll_clockwise=True,
-            )
+            if st.orientation.boresight == (1.0, 0.0, 0.0):
+                offset_constraint = base_constraint
+            else:
+                roll_deg, pitch_deg, yaw_deg = normal_to_boresight_offset_euler_deg(
+                    st.orientation.boresight
+                )
+                offset_constraint = base_constraint.boresight_offset(
+                    roll_deg=roll_deg,
+                    pitch_deg=pitch_deg,
+                    yaw_deg=yaw_deg,
+                    roll_clockwise=True,
+                )
 
             if combined is None:
                 combined = offset_constraint
@@ -420,15 +426,18 @@ class StarTrackerConfiguration(ConfigModel):
             base_constraint = st.soft_constraint.constraint
             if base_constraint is None:
                 continue
-            roll_deg, pitch_deg, yaw_deg = normal_to_boresight_offset_euler_deg(
-                st.orientation.boresight
-            )
-            offset_constraint = base_constraint.boresight_offset(
-                roll_deg=roll_deg,
-                pitch_deg=pitch_deg,
-                yaw_deg=yaw_deg,
-                roll_clockwise=True,
-            )
+            if st.orientation.boresight == (1.0, 0.0, 0.0):
+                offset_constraint = base_constraint
+            else:
+                roll_deg, pitch_deg, yaw_deg = normal_to_boresight_offset_euler_deg(
+                    st.orientation.boresight
+                )
+                offset_constraint = base_constraint.boresight_offset(
+                    roll_deg=roll_deg,
+                    pitch_deg=pitch_deg,
+                    yaw_deg=yaw_deg,
+                    roll_clockwise=True,
+                )
             offset_constraints.append(offset_constraint)
 
         if not offset_constraints:

@@ -129,6 +129,8 @@ class Radiator(ConfigModel):
         base_constraint = self.hard_constraint.constraint
         if base_constraint is None:
             return None
+        if self.orientation.normal == (1.0, 0.0, 0.0):
+            return base_constraint
 
         roll_deg, pitch_deg, yaw_deg = normal_to_boresight_offset_euler_deg(
             self.orientation.normal

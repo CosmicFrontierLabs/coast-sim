@@ -45,6 +45,18 @@ class TestRadiator:
         rad = Radiator(hard_constraint=hard_constraint)
         assert rad._hard_constraint_with_offset is None
 
+    def test_plus_x_hard_constraint_uses_base_constraint_directly(self) -> None:
+        base_constraint = Mock()
+        hard_constraint = Constraint()
+        hard_constraint.constraint = base_constraint
+        rad = Radiator(
+            orientation=RadiatorOrientation(normal=(1.0, 0.0, 0.0)),
+            hard_constraint=hard_constraint,
+        )
+
+        assert rad._hard_constraint_with_offset is base_constraint
+        base_constraint.boresight_offset.assert_not_called()
+
     def test_in_hard_constraint_false_when_no_constraint(self) -> None:
         rad = Radiator()
         assert rad.in_hard_constraint(10.0, -5.0, 1000.0, 7.0) is False
@@ -226,7 +238,16 @@ class TestRadiatorConfiguration:
         offset1.__or__ = Mock(return_value=combined)
 
         cfg = RadiatorConfiguration(
-            radiators=[Radiator(hard_constraint=c1), Radiator(hard_constraint=c2)]
+            radiators=[
+                Radiator(
+                    orientation=RadiatorOrientation(normal=(0.0, 1.0, 0.0)),
+                    hard_constraint=c1,
+                ),
+                Radiator(
+                    orientation=RadiatorOrientation(normal=(0.0, -1.0, 0.0)),
+                    hard_constraint=c2,
+                ),
+            ]
         )
         assert cfg.radiator_hard_constraint is combined
 
@@ -241,7 +262,13 @@ class TestRadiatorConfiguration:
         c2.constraint = base2
 
         cfg = RadiatorConfiguration(
-            radiators=[Radiator(hard_constraint=c1), Radiator(hard_constraint=c2)]
+            radiators=[
+                Radiator(hard_constraint=c1),
+                Radiator(
+                    orientation=RadiatorOrientation(normal=(0.0, 1.0, 0.0)),
+                    hard_constraint=c2,
+                ),
+            ]
         )
         assert cfg.radiator_hard_constraint is offset2
 

@@ -6,13 +6,25 @@ import numpy as np
 import pytest
 import rust_ephem
 
+from conops.common.vector import normal_to_boresight_offset_euler_deg
 from conops.config import (
     Constraint,
     StarTracker,
     StarTrackerConfiguration,
     StarTrackerOrientation,
+    create_star_tracker_vector,
 )
 from conops.simulation.roll import _roll_valid_mask
+
+
+def test_positive_body_mount_pitch_maps_to_negative_rust_offset_pitch() -> None:
+    boresight = create_star_tracker_vector(pitch_deg=45.0)
+    assert boresight == pytest.approx((2**-0.5, 0.0, 2**-0.5))
+
+    roll_deg, pitch_deg, yaw_deg = normal_to_boresight_offset_euler_deg(boresight)
+    assert roll_deg == pytest.approx(0.0)
+    assert pitch_deg == pytest.approx(-45.0)
+    assert yaw_deg == pytest.approx(0.0)
 
 
 class TestStarTrackerConstraints:
@@ -381,8 +393,20 @@ class TestStarTrackerComputedConstraint:
         assert c is not None
         assert c.type == "or"
         assert len(c.constraints) == 2
-        assert all(child.type == "boresight_offset" for child in c.constraints)
-        assert all(child.roll_clockwise for child in c.constraints)
+        assert c.constraints[0].type == "sun"
+        assert c.constraints[1].type == "boresight_offset"
+        assert c.constraints[1].roll_clockwise is True
+
+    def test_startracker_hard_constraint_plus_x_uses_base_constraint(self):
+        st = StarTracker(
+            name="ST1",
+            hard_constraint=Constraint(
+                sun_constraint=rust_ephem.SunConstraint(min_angle=20.0)
+            ),
+        )
+        cfg = StarTrackerConfiguration(star_trackers=[st])
+
+        assert cfg.startracker_hard_constraint is st.hard_constraint.constraint
 
     def test_startracker_hard_constraint_min_functional_does_not_affect_hard(self):
         """min_functional_trackers has no effect on hard constraints — they are always OR."""
@@ -460,8 +484,22 @@ class TestStarTrackerComputedConstraint:
         assert c.type == "at_least"
         assert c.min_violated == 2
         assert len(c.constraints) == 2
-        assert all(child.type == "boresight_offset" for child in c.constraints)
-        assert all(child.roll_clockwise for child in c.constraints)
+        assert c.constraints[0].type == "sun"
+        assert c.constraints[1].type == "boresight_offset"
+        assert c.constraints[1].roll_clockwise is True
+
+    def test_startracker_soft_constraint_plus_x_uses_base_constraint(self):
+        st = StarTracker(
+            name="ST1",
+            soft_constraint=Constraint(
+                sun_constraint=rust_ephem.SunConstraint(min_angle=20.0)
+            ),
+        )
+        cfg = StarTrackerConfiguration(star_trackers=[st])
+
+        constraint = cfg.startracker_constraint
+        assert constraint is not None
+        assert constraint.constraints[0] is st.soft_constraint.constraint
 
     def test_startracker_constraint_respects_min_functional_trackers_threshold(self):
         from conops.config import Constraint, StarTrackerConfiguration
