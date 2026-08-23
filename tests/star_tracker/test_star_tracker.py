@@ -101,6 +101,14 @@ class TestStarTrackerConstraints:
         assert not np.isclose(ra0, ra1, atol=1e-6)
         assert not np.isclose(dec0, dec1, atol=1e-6)
 
+    def test_off_axis_boresight_preserves_ra_basis_at_celestial_pole(self):
+        ori = StarTrackerOrientation(boresight=(0.0, 1.0, 0.0))
+
+        ra_st, dec_st = ori.transform_pointing(40.0, 90.0, roll_deg=0.0)
+
+        assert ra_st == pytest.approx(130.0, abs=1e-9)
+        assert dec_st == pytest.approx(0.0, abs=1e-9)
+
 
 class TestStarTrackerModeLockRequirements:
     """Test mode-dependent lock requirements on StarTrackerConfiguration."""

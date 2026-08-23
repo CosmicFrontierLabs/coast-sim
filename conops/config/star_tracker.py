@@ -39,8 +39,8 @@ from rust_ephem.constraints import ConstraintConfig
 
 from ..common.enums import ACSMode
 from ..common.vector import (
+    _zero_roll_body_axes,
     normal_to_boresight_offset_euler_deg,
-    radec2vec,
     rotvec,
     vec2radec,
     vecnorm,
@@ -209,19 +209,8 @@ class StarTrackerOrientation(ConfigModel):
             and roll=90° give the same (RA, Dec) for the boresight. Roll only changes
             the apparent (RA, Dec) for trackers whose boresight is offset from +X.
         """
-        # Spacecraft boresight (+X body axis) in inertial coordinates.
-        ra_rad = np.deg2rad(ra_deg)
-        dec_rad = np.deg2rad(dec_deg)
-        x_hat = radec2vec(ra_rad, dec_rad)
-
-        # Build the body Y/Z basis around boresight using sky north as reference.
-        ref = np.array([0.0, 0.0, 1.0], dtype=np.float64)
-        y0 = np.cross(ref, x_hat)
-        if np.linalg.norm(y0) < 1e-12:
-            # Near celestial poles, choose a different reference for numerical stability.
-            y0 = np.cross(np.array([0.0, 1.0, 0.0], dtype=np.float64), x_hat)
-        y0 = vecnorm(y0)
-        z0 = vecnorm(np.cross(x_hat, y0))
+        # Spacecraft boresight (+X) and the zero-roll Y/Z basis in ECI.
+        x_hat, y0, z0 = _zero_roll_body_axes(np.deg2rad(ra_deg), np.deg2rad(dec_deg))
 
         # Positive roll is a right-handed physical rotation about body +X.
         roll_rad = np.deg2rad(roll_deg)
