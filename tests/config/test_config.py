@@ -419,7 +419,8 @@ class TestConfig:
         assert "constraint:" in content
         assert "star_tracker_soft_constraint:" in content
         assert "constraints:" in content
-        assert "boresight_offset" in content
+        assert "type: at_least" in content
+        assert "type: sun" in content
 
     def test_yaml_roundtrip(self, tmp_path: Path) -> None:
         """Test that YAML save and load maintains data integrity."""

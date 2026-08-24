@@ -5,7 +5,7 @@ from unittest.mock import Mock, PropertyMock, patch
 import numpy as np
 import pytest
 
-from conops.common.vector import normal_to_euler_deg
+from conops.common.vector import normal_to_boresight_offset_euler_deg
 from conops.config import (
     Constraint,
     Radiator,
@@ -23,7 +23,7 @@ class TestRadiatorOrientation:
 
 class TestRadiator:
     def test_normal_to_euler_converts_expected_axes(self) -> None:
-        roll, pitch, yaw = normal_to_euler_deg((0.0, 1.0, 0.0))
+        roll, pitch, yaw = normal_to_boresight_offset_euler_deg((0.0, 1.0, 0.0))
         assert roll == pytest.approx(0.0)
         assert pitch == pytest.approx(0.0)
         assert yaw == pytest.approx(90.0)
@@ -44,6 +44,18 @@ class TestRadiator:
         hard_constraint.constraint = None
         rad = Radiator(hard_constraint=hard_constraint)
         assert rad._hard_constraint_with_offset is None
+
+    def test_plus_x_hard_constraint_uses_base_constraint_directly(self) -> None:
+        base_constraint = Mock()
+        hard_constraint = Constraint()
+        hard_constraint.constraint = base_constraint
+        rad = Radiator(
+            orientation=RadiatorOrientation(normal=(1.0, 0.0, 0.0)),
+            hard_constraint=hard_constraint,
+        )
+
+        assert rad._hard_constraint_with_offset is base_constraint
+        base_constraint.boresight_offset.assert_not_called()
 
     def test_in_hard_constraint_false_when_no_constraint(self) -> None:
         rad = Radiator()
@@ -226,7 +238,16 @@ class TestRadiatorConfiguration:
         offset1.__or__ = Mock(return_value=combined)
 
         cfg = RadiatorConfiguration(
-            radiators=[Radiator(hard_constraint=c1), Radiator(hard_constraint=c2)]
+            radiators=[
+                Radiator(
+                    orientation=RadiatorOrientation(normal=(0.0, 1.0, 0.0)),
+                    hard_constraint=c1,
+                ),
+                Radiator(
+                    orientation=RadiatorOrientation(normal=(0.0, -1.0, 0.0)),
+                    hard_constraint=c2,
+                ),
+            ]
         )
         assert cfg.radiator_hard_constraint is combined
 
@@ -241,7 +262,13 @@ class TestRadiatorConfiguration:
         c2.constraint = base2
 
         cfg = RadiatorConfiguration(
-            radiators=[Radiator(hard_constraint=c1), Radiator(hard_constraint=c2)]
+            radiators=[
+                Radiator(hard_constraint=c1),
+                Radiator(
+                    orientation=RadiatorOrientation(normal=(0.0, 1.0, 0.0)),
+                    hard_constraint=c2,
+                ),
+            ]
         )
         assert cfg.radiator_hard_constraint is offset2
 

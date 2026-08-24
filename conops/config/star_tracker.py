@@ -38,7 +38,13 @@ from rust_ephem import AtLeastConstraint, EarthLimbConstraint, SunConstraint
 from rust_ephem.constraints import ConstraintConfig
 
 from ..common.enums import ACSMode
-from ..common.vector import radec2vec, rotvec, vec2radec, vecnorm
+from ..common.vector import (
+    _zero_roll_body_axes,
+    normal_to_boresight_offset_euler_deg,
+    rotvec,
+    vec2radec,
+    vecnorm,
+)
 from ._base import ConfigModel
 from .constraint import Constraint
 
@@ -48,8 +54,11 @@ def create_star_tracker_vector(
 ) -> tuple[float, float, float]:
     """Create a star tracker boresight vector from Euler angles.
 
-    Converts roll, pitch, yaw angles to a unit boresight vector using the ZYX
-    Euler angle convention (yaw about Z, then pitch about Y, then roll about X).
+    Converts roll, pitch, yaw body-mount angles to a unit boresight vector.
+    Positive pitch rotates the default +X boresight toward body +Z.  This is a
+    body-frame configuration convention, not the rust-ephem boresight-offset
+    convention; :func:`normal_to_boresight_offset_euler_deg` performs that
+    conversion at the constraint API boundary.
 
     Args:
         roll_deg: Rotation about X axis (degrees). Default is 0.
@@ -63,7 +72,7 @@ def create_star_tracker_vector(
     Example:
         create_star_tracker_vector(0, 0, 0)  # Returns (1, 0, 0) - default boresight
         create_star_tracker_vector(0, 90, 0)  # Returns (0, 0, 1) - points along +Z
-        create_star_tracker_vector(0, 0, 90)  # Returns (0, 1, 0) - points along +Y
+        create_star_tracker_vector(0, 0, 90)  # Returns (0, -1, 0) - points along -Y
     """
     # Convert angles to radians
     roll_rad = np.deg2rad(roll_deg)
@@ -200,19 +209,8 @@ class StarTrackerOrientation(ConfigModel):
             and roll=90° give the same (RA, Dec) for the boresight. Roll only changes
             the apparent (RA, Dec) for trackers whose boresight is offset from +X.
         """
-        # Spacecraft boresight (+X body axis) in inertial coordinates.
-        ra_rad = np.deg2rad(ra_deg)
-        dec_rad = np.deg2rad(dec_deg)
-        x_hat = radec2vec(ra_rad, dec_rad)
-
-        # Build the body Y/Z basis around boresight using sky north as reference.
-        ref = np.array([0.0, 0.0, 1.0], dtype=np.float64)
-        y0 = np.cross(ref, x_hat)
-        if np.linalg.norm(y0) < 1e-12:
-            # Near celestial poles, choose a different reference for numerical stability.
-            y0 = np.cross(np.array([0.0, 1.0, 0.0], dtype=np.float64), x_hat)
-        y0 = vecnorm(y0)
-        z0 = vecnorm(np.cross(x_hat, y0))
+        # Spacecraft boresight (+X) and the zero-roll Y/Z basis in ECI.
+        x_hat, y0, z0 = _zero_roll_body_axes(np.deg2rad(ra_deg), np.deg2rad(dec_deg))
 
         # Positive roll is a right-handed physical rotation about body +X.
         roll_rad = np.deg2rad(roll_deg)
@@ -352,28 +350,6 @@ class StarTrackerConfiguration(ConfigModel):
             return False
         return mode in self.modes_require_lock
 
-    @staticmethod
-    def _boresight_to_euler_deg(
-        boresight: tuple[float, float, float],
-    ) -> tuple[float, float, float]:
-        """Convert boresight unit vector to azimuth/elevation angles for boresight_offset.
-
-        Returns (roll=0, pitch, yaw) angles such that
-        ``boresight_offset(roll, pitch, yaw)`` of a constraint shifts the
-        constraint from its natural +X direction to the direction of
-        ``boresight`` in the spacecraft body frame.
-
-        Concretely: yaw is the azimuthal angle of the boresight in the body
-        xy-plane, and pitch is its elevation above that plane — the standard
-        spherical-coordinate decomposition that ``boresight_offset`` expects.
-        Roll about the boresight is underdetermined; we set it to 0.
-        """
-        x, y, z = vecnorm(np.asarray(boresight, dtype=np.float64))
-        yaw_deg = float(np.rad2deg(np.arctan2(y, x)))
-        pitch_deg = float(np.rad2deg(np.arctan2(z, np.hypot(x, y))))
-        roll_deg = 0.0
-        return roll_deg, pitch_deg, yaw_deg
-
     @cached_property
     def startracker_hard_constraint(self) -> ConstraintConfig | None:
         """Combined hard constraint from all star trackers.
@@ -396,15 +372,18 @@ class StarTrackerConfiguration(ConfigModel):
             if base_constraint is None:
                 continue
 
-            roll_deg, pitch_deg, yaw_deg = self._boresight_to_euler_deg(
-                st.orientation.boresight
-            )
-            offset_constraint = base_constraint.boresight_offset(
-                roll_deg=roll_deg,
-                pitch_deg=pitch_deg,
-                yaw_deg=yaw_deg,
-                roll_clockwise=True,
-            )
+            if st.orientation.boresight == (1.0, 0.0, 0.0):
+                offset_constraint = base_constraint
+            else:
+                roll_deg, pitch_deg, yaw_deg = normal_to_boresight_offset_euler_deg(
+                    st.orientation.boresight
+                )
+                offset_constraint = base_constraint.boresight_offset(
+                    roll_deg=roll_deg,
+                    pitch_deg=pitch_deg,
+                    yaw_deg=yaw_deg,
+                    roll_clockwise=True,
+                )
 
             if combined is None:
                 combined = offset_constraint
@@ -436,15 +415,18 @@ class StarTrackerConfiguration(ConfigModel):
             base_constraint = st.soft_constraint.constraint
             if base_constraint is None:
                 continue
-            roll_deg, pitch_deg, yaw_deg = self._boresight_to_euler_deg(
-                st.orientation.boresight
-            )
-            offset_constraint = base_constraint.boresight_offset(
-                roll_deg=roll_deg,
-                pitch_deg=pitch_deg,
-                yaw_deg=yaw_deg,
-                roll_clockwise=True,
-            )
+            if st.orientation.boresight == (1.0, 0.0, 0.0):
+                offset_constraint = base_constraint
+            else:
+                roll_deg, pitch_deg, yaw_deg = normal_to_boresight_offset_euler_deg(
+                    st.orientation.boresight
+                )
+                offset_constraint = base_constraint.boresight_offset(
+                    roll_deg=roll_deg,
+                    pitch_deg=pitch_deg,
+                    yaw_deg=yaw_deg,
+                    roll_clockwise=True,
+                )
             offset_constraints.append(offset_constraint)
 
         if not offset_constraints:
