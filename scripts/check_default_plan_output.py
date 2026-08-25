@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import numpy as np
 import rust_ephem
@@ -216,16 +217,9 @@ def build_default_plan_payload() -> dict[str, Any]:
         "ut1": {"available": False},
         "polar_motion": {"available": False},
     }
-    original_get_provenance = getattr(rust_ephem, "get_eop_provenance", None)
-    rust_ephem.get_eop_provenance = lambda: provenance_override
-    try:
+    with patch.object(rust_ephem, "get_eop_provenance", lambda: provenance_override):
         if not ditl.calc():
             raise RuntimeError("Default plan scenario failed to calculate")
-    finally:
-        if original_get_provenance is None:
-            del rust_ephem.get_eop_provenance
-        else:
-            rust_ephem.get_eop_provenance = original_get_provenance
 
     schema = ditl.plan
     plan_payload = schema.model_dump(mode="json", exclude_none=True)

@@ -330,12 +330,9 @@ def attach_initialization_state_metadata(
 
 def attach_earth_orientation_metadata(plan: Plan) -> None:
     """Attach provenance for EOP2 data already loaded by rust-ephem providers."""
-    get_provenance = getattr(rust_ephem, "get_eop_provenance", None)
-    if not callable(get_provenance):
-        raise TypeError(
-            "rust-ephem must provide get_eop_provenance(); install a compatible version"
-        )
-    provenance = EarthOrientationMetadata.model_validate(get_provenance())
+    provenance = EarthOrientationMetadata.model_validate(
+        rust_ephem.get_eop_provenance()
+    )
     _attach_ephemeris_metadata(
         plan,
         EphemerisMetadata(earth_orientation=provenance),
