@@ -209,8 +209,23 @@ def build_default_plan_payload() -> dict[str, Any]:
             name=target.name,
         )
 
-    if not ditl.calc():
-        raise RuntimeError("Default plan scenario failed to calculate")
+    # This synthetic ephemeris deliberately performs no Earth-orientation
+    # transformations. Override process-global provider state so a provider
+    # initialized by an earlier test cannot make the golden output host-dependent.
+    provenance_override = {
+        "ut1": {"available": False},
+        "polar_motion": {"available": False},
+    }
+    original_get_provenance = getattr(rust_ephem, "get_eop_provenance", None)
+    rust_ephem.get_eop_provenance = lambda: provenance_override
+    try:
+        if not ditl.calc():
+            raise RuntimeError("Default plan scenario failed to calculate")
+    finally:
+        if original_get_provenance is None:
+            del rust_ephem.get_eop_provenance
+        else:
+            rust_ephem.get_eop_provenance = original_get_provenance
 
     schema = ditl.plan
     plan_payload = schema.model_dump(mode="json", exclude_none=True)

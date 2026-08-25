@@ -345,6 +345,7 @@ class DITLMixin:
         from ..targets import (
             OrbitStateSampleSchema,
             OrbitStateTimeseriesSchema,
+            attach_earth_orientation_metadata,
             attach_osculating_elements_metadata,
         )
 
@@ -396,6 +397,7 @@ class DITLMixin:
             self.ephem,
             self.begin,
         )
+        attach_earth_orientation_metadata(self.plan)
 
     def plot(self) -> None:
         """Plot DITL timeline.
