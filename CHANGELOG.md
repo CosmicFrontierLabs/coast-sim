@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.8.0](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.7.0...v0.8.0) (2026-08-25)
+
+
+### Features
+
+* adopt right-handed spacecraft roll convention ([#240](https://github.com/CosmicFrontierLabs/coast-sim/issues/240)) ([93ae035](https://github.com/CosmicFrontierLabs/coast-sim/commit/93ae035039f7749b254a54434d1b38b79d416d80))
+* export external simulation initialization state ([#231](https://github.com/CosmicFrontierLabs/coast-sim/issues/231)) ([9702884](https://github.com/CosmicFrontierLabs/coast-sim/commit/9702884aaa83e848d24e1cb46dbc100f59d3707e))
+* export plan-start osculating elements ([#229](https://github.com/CosmicFrontierLabs/coast-sim/issues/229)) ([ace0c7a](https://github.com/CosmicFrontierLabs/coast-sim/commit/ace0c7ac6d4f6cccfed046ffd7b58065d71f348b))
+* serialize earth orientation provenance in plans ([#246](https://github.com/CosmicFrontierLabs/coast-sim/issues/246)) ([d454d8b](https://github.com/CosmicFrontierLabs/coast-sim/commit/d454d8b468688d43b91191a71739887fe78b9df6))
+
+
+### Bug Fixes
+
+* align boresight pitch convention with rust-ephem ([#243](https://github.com/CosmicFrontierLabs/coast-sim/issues/243)) ([81b0efc](https://github.com/CosmicFrontierLabs/coast-sim/commit/81b0efcb5233218d28560f6dd98330f546cb901c))
+* keep optimized roll within ACS motion limits ([#235](https://github.com/CosmicFrontierLabs/coast-sim/issues/235)) ([f5de9cb](https://github.com/CosmicFrontierLabs/coast-sim/commit/f5de9cb6773241f4d933e95ab52c578f121e7c2a))
+* osculating element model integration ([#239](https://github.com/CosmicFrontierLabs/coast-sim/issues/239)) ([d3067ec](https://github.com/CosmicFrontierLabs/coast-sim/commit/d3067ec8fb45879c724fee73d7f8c19c58308e37))
+* preserve attitude continuity after ground passes ([#234](https://github.com/CosmicFrontierLabs/coast-sim/issues/234)) ([afaa937](https://github.com/CosmicFrontierLabs/coast-sim/commit/afaa93704d77e7b561d8ed24dfdcb23421b119e8))
+* reject attitude telemetry that exceeds slew-rate limit ([#233](https://github.com/CosmicFrontierLabs/coast-sim/issues/233)) ([84d6bad](https://github.com/CosmicFrontierLabs/coast-sim/commit/84d6bad3861ab43fd89cf3eaec388870f7dde983))
+* select reachable safe ground-pass profiles ([#232](https://github.com/CosmicFrontierLabs/coast-sim/issues/232)) ([95849cb](https://github.com/CosmicFrontierLabs/coast-sim/commit/95849cb38a32d2c53790482006cf9dee659355d9))
+
 ## [0.7.0](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.6.0...v0.7.0) (2026-07-22)
 
 
