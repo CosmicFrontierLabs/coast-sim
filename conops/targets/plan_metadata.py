@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 import rust_ephem
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from .plan import Plan
 
@@ -64,6 +64,54 @@ class InitializationStateMetadata(BaseModel):
     note: str = INITIALIZATION_STATE_NOTE
 
 
+class EopProviderProvenanceMetadata(BaseModel):
+    available: bool
+    source_url: str | None = None
+    sha256: str | None = None
+    loaded_from: Literal["download", "fresh_cache", "stale_cache"] | None = None
+    stale: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_available_provenance(self) -> EopProviderProvenanceMetadata:
+        if not self.available:
+            unexpected = {
+                "source_url": self.source_url,
+                "sha256": self.sha256,
+                "loaded_from": self.loaded_from,
+                "stale": self.stale,
+            }
+            present = [name for name, value in unexpected.items() if value is not None]
+            if present:
+                raise ValueError(
+                    "Unavailable EOP provider provenance includes: "
+                    + ", ".join(present)
+                )
+            return self
+        required = {
+            "source_url": self.source_url,
+            "sha256": self.sha256,
+            "loaded_from": self.loaded_from,
+            "stale": self.stale,
+        }
+        missing = [name for name, value in required.items() if value is None]
+        if missing:
+            raise ValueError(
+                "Available EOP provider provenance is missing: " + ", ".join(missing)
+            )
+        if len(self.sha256 or "") != 64 or any(
+            char not in "0123456789abcdef" for char in self.sha256 or ""
+        ):
+            raise ValueError("EOP provider sha256 must be 64 lowercase hex characters")
+        if self.stale != (self.loaded_from == "stale_cache"):
+            raise ValueError("EOP provider stale status must match loaded_from")
+        return self
+
+
+class EarthOrientationMetadata(BaseModel):
+    ut1: EopProviderProvenanceMetadata
+    polar_motion: EopProviderProvenanceMetadata
+
+
 class EphemerisMetadata(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -77,6 +125,7 @@ class EphemerisMetadata(BaseModel):
     tle_mean_elements: TLEMeanElementsMetadata | None = None
     osculating_elements: OsculatingElementsMetadata | None = None
     initialization_state: InitializationStateMetadata | None = None
+    earth_orientation: EarthOrientationMetadata | None = None
 
 
 class PlanMetadata(BaseModel):
@@ -276,4 +325,15 @@ def attach_initialization_state_metadata(
                 sgp4_operation_mode=ephemeris.sgp4_operation_mode,
             )
         ),
+    )
+
+
+def attach_earth_orientation_metadata(plan: Plan) -> None:
+    """Attach provenance for EOP2 data already loaded by rust-ephem providers."""
+    provenance = EarthOrientationMetadata.model_validate(
+        rust_ephem.get_eop_provenance()
+    )
+    _attach_ephemeris_metadata(
+        plan,
+        EphemerisMetadata(earth_orientation=provenance),
     )

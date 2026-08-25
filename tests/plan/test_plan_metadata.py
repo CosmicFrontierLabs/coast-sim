@@ -12,6 +12,7 @@ from rust_ephem.tle import TLERecord
 from conops.targets import (
     Plan,
     PlanMetadata,
+    attach_earth_orientation_metadata,
     attach_initialization_state_metadata,
     attach_osculating_elements_metadata,
     attach_tle_plan_metadata,
@@ -195,6 +196,56 @@ def test_attach_initialization_state_ignores_non_tle_ephemeris() -> None:
     )
 
     assert plan.metadata == {"producer": {"name": "mission-generator"}}
+
+
+def test_attach_earth_orientation_records_exact_provider_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        rust_ephem,
+        "get_eop_provenance",
+        lambda: {
+            "ut1": {
+                "available": True,
+                "source_url": "https://example.test/eop2",
+                "sha256": "a" * 64,
+                "loaded_from": "fresh_cache",
+                "stale": False,
+            },
+            "polar_motion": {"available": False},
+        },
+        raising=False,
+    )
+    plan = Plan()
+
+    attach_earth_orientation_metadata(plan)
+
+    earth_orientation = plan.metadata["ephemeris"]["earth_orientation"]
+    assert earth_orientation["ut1"] == {
+        "available": True,
+        "source_url": "https://example.test/eop2",
+        "sha256": "a" * 64,
+        "loaded_from": "fresh_cache",
+        "stale": False,
+    }
+    assert earth_orientation["polar_motion"] == {"available": False}
+
+
+def test_attach_earth_orientation_rejects_incomplete_available_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        rust_ephem,
+        "get_eop_provenance",
+        lambda: {
+            "ut1": {"available": True},
+            "polar_motion": {"available": False},
+        },
+        raising=False,
+    )
+
+    with pytest.raises(ValueError, match="missing"):
+        attach_earth_orientation_metadata(Plan())
 
 
 @pytest.mark.parametrize(

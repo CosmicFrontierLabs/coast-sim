@@ -4069,6 +4069,14 @@
     ],
     "metadata": {
       "ephemeris": {
+        "earth_orientation": {
+          "polar_motion": {
+            "available": false
+          },
+          "ut1": {
+            "available": false
+          }
+        },
         "osculating_elements": {
           "elements": {
             "ArgPeriapsis_deg": 180.0,

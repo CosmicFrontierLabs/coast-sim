@@ -420,6 +420,12 @@ metadata keys already present. :class:`~conops.ditl.ditl.DITL` and
 :class:`~conops.ditl.queue_ditl.QueueDITL` call this helper automatically at the
 simulation start epoch when attaching the orbit-state timeseries.
 
+Orbit-state attachment also records ``metadata.ephemeris.earth_orientation``
+provenance for the exact JPL EOP2 text loaded by rust-ephem's UT1 and
+polar-motion providers. Each provider reports availability, source URL,
+SHA-256, download/cache source, and whether stale-cache fallback was used.
+Unused or unavailable providers remain explicit with ``available: false``.
+
 .. code-block:: python
 
    from conops.targets import attach_tle_plan_metadata

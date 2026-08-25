@@ -6,6 +6,7 @@ from typing import cast
 from unittest.mock import ANY, Mock, patch
 
 import pytest
+import rust_ephem
 
 from conops import (
     ACS,
@@ -75,8 +76,20 @@ class TestQueueDITLInitialization:
         assert (tmp_path / "plan_attitude_timeseries.json").exists()
 
     def test_attach_orbit_state_timeseries_to_plan(
-        self, queue_ditl: QueueDITL, tmp_path
+        self,
+        queue_ditl: QueueDITL,
+        tmp_path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        monkeypatch.setattr(
+            rust_ephem,
+            "get_eop_provenance",
+            lambda: {
+                "ut1": {"available": False},
+                "polar_motion": {"available": False},
+            },
+            raising=False,
+        )
         queue_ditl.begin = datetime(2026, 1, 1, tzinfo=timezone.utc)
         queue_ditl.ephem.timestamp = [
             queue_ditl.begin,
@@ -106,6 +119,11 @@ class TestQueueDITLInitialization:
         assert osculating["epoch_utc"] == "2026-01-01T00:00:00Z"
         assert osculating["frame"] == "GCRS"
         assert osculating["origin"] == "Earth center"
+        earth_orientation = queue_ditl.plan.metadata["ephemeris"]["earth_orientation"]
+        assert earth_orientation == {
+            "ut1": {"available": False},
+            "polar_motion": {"available": False},
+        }
 
         plan_path = queue_ditl.plan.save(tmp_path / "plan.json")
         raw = json.loads(plan_path.read_text())
