@@ -50,8 +50,12 @@ class Slew(BaseModel):
     # Quaternion SLERP: intermediate roll values along the path
     _quat_roll_path: list[float] = PrivateAttr(default_factory=list)
     # Shortest maneuver axis resolved in the initial spacecraft body frame.
-    # Constraint-avoiding paths use None because their axis changes by segment.
     _rotation_axis_body: tuple[float, float, float] | None = PrivateAttr(default=None)
+    # Constraint-avoiding maneuvers are rest-to-rest SLERP segments, each with
+    # its own angular distance and initial body-frame rotation axis.
+    _slew_segments: list[tuple[float, tuple[float, float, float]]] = PrivateAttr(
+        default_factory=list
+    )
 
     @model_validator(mode="after")
     def _derive_from_config(self) -> "Slew":
@@ -134,7 +138,19 @@ class Slew(BaseModel):
             "ACS config must be set to calculate slew fraction"
         )
         total_dist = float(self.slewdist)
-        s = self.acs_config.s_of_t(total_dist, t, self._rotation_axis_body)
+        if self._slew_segments:
+            remaining_time = max(0.0, float(t))
+            s = 0.0
+            for distance, axis in self._slew_segments:
+                segment_time = self.acs_config.motion_time(distance, axis)
+                if remaining_time >= segment_time:
+                    s += distance
+                    remaining_time -= segment_time
+                    continue
+                s += self.acs_config.s_of_t(distance, remaining_time, axis)
+                break
+        else:
+            s = self.acs_config.s_of_t(total_dist, t, self._rotation_axis_body)
         return 0.0 if total_dist == 0 else max(0.0, min(1.0, s / total_dist))
 
     @staticmethod
@@ -211,9 +227,19 @@ class Slew(BaseModel):
         assert self.acs_config is not None, (
             "ACS config must be set to calculate slew time"
         )
-        self.slewtime = round(
-            self.acs_config.slew_time(distance, self._rotation_axis_body)
-        )
+        if self._slew_segments:
+            if distance <= 0.0:
+                self.slewtime = 0
+            else:
+                motion_time = sum(
+                    self.acs_config.motion_time(segment_distance, segment_axis)
+                    for segment_distance, segment_axis in self._slew_segments
+                )
+                self.slewtime = round(motion_time + self.acs_config.settle_time)
+        else:
+            self.slewtime = round(
+                self.acs_config.slew_time(distance, self._rotation_axis_body)
+            )
 
         self.slewend = self.slewstart + self.slewtime
         return self.slewtime
@@ -244,6 +270,8 @@ class Slew(BaseModel):
 
     def _predict_slew_quaternion(self, steps: int) -> None:
         """Compute slew path via full quaternion SLERP."""
+
+        self._slew_segments = []
 
         ras, decs, rolls = quaternion_slew_path(
             self.startra,
@@ -345,7 +373,7 @@ class Slew(BaseModel):
         roll_diff = self._shortest_roll_diff(self.startroll, self.endroll)
         w_roll = (self.startroll + pointing_frac * roll_diff) % 360
 
-        segment_dist1, _ = quaternion_attitude_delta(
+        segment_dist1, segment_axis1 = quaternion_attitude_delta(
             self.startra,
             self.startdec,
             self.startroll,
@@ -353,7 +381,7 @@ class Slew(BaseModel):
             w_dec,
             w_roll,
         )
-        segment_dist2, _ = quaternion_attitude_delta(
+        segment_dist2, segment_axis2 = quaternion_attitude_delta(
             w_ra,
             w_dec,
             w_roll,
@@ -395,7 +423,9 @@ class Slew(BaseModel):
 
         self.slewpath = (all_ras, all_decs)
         self._quat_roll_path = all_rolls
-        # The two SLERP segments generally rotate about different axes. Passing
-        # None selects the conservative slowest configured body-axis envelope.
         self._rotation_axis_body = None
+        self._slew_segments = [
+            (segment_dist1, segment_axis1),
+            (segment_dist2, segment_axis2),
+        ]
         self.slewdist = attitude_total

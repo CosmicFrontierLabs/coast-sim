@@ -71,6 +71,7 @@ class DumbScheduler:
             selected_target: PlanEntry | None = None
             selected_obslen = 0.0
             selected_slewtime = 0.0
+            selected_roll = 0.0
 
             # Candidate targets (exptime > 0)
             candidates = [
@@ -82,26 +83,9 @@ class DumbScheduler:
                 assert task.exptime is not None
                 current_time = ephem_utime[i]
 
-                # Determine slew time based on prior plan entry (if any)
-                if self.plan and len(self.plan) > 0:
-                    try:
-                        last_entry = self.plan[-1]
-                        task.calc_slewtime(last_entry.ra, last_entry.dec)
-                        slewtime = task.slewtime
-                    except Exception:
-                        # fallback to default if last entry isn't usable
-                        slewtime = self._get_default_slew()
-                else:
-                    slewtime = self._get_default_slew()
-
-                # Check constraints for the observation window
+                # Compute and assign the complete target attitude before timing
+                # the maneuver so direction-dependent limits have both endpoints.
                 obs_start = current_time
-                obs_end = current_time + task.exptime + slewtime
-
-                # Compute the roll that will be locked for this observation.
-                # The ACS computes optimum_roll at the slew execution time and
-                # then holds it constant throughout the observation; replicate
-                # that here so the scheduler validates the same fixed roll.
                 solar_panel = (
                     self.config.solar_panel if self.config is not None else None
                 )
@@ -113,6 +97,24 @@ class DumbScheduler:
                     solar_panel,
                     self.constraint,
                 )
+                task.roll = obs_roll
+
+                # Determine slew time based on prior plan entry (if any)
+                if self.plan and len(self.plan) > 0:
+                    last_entry = self.plan[-1]
+                    estimated_slewtime = task.calc_slewtime(
+                        last_entry.ra,
+                        last_entry.dec,
+                        last_entry.roll,
+                    )
+                    if estimated_slewtime is not None:
+                        task.slewtime = estimated_slewtime
+                    slewtime = task.slewtime
+                else:
+                    slewtime = self._get_default_slew()
+
+                # Check constraints for the observation window
+                obs_end = current_time + task.exptime + slewtime
 
                 # Get ephemeris time indices for observation window
                 begin_idx = self.ephem.index(dtutcfromtimestamp(obs_start))
@@ -151,6 +153,7 @@ class DumbScheduler:
                     selected_target = task
                     selected_obslen = obslen
                     selected_slewtime = slewtime
+                    selected_roll = obs_roll
                     break
 
             if not found:
@@ -177,6 +180,7 @@ class DumbScheduler:
             # keep entry angles in units that other code expects (note: original used target.ra)
             ppt.ra = selected_target.ra
             ppt.dec = selected_target.dec
+            ppt.roll = selected_roll
             ppt.begin = ephem_utime[i]  # numeric start time
             ppt.slewtime = int(selected_slewtime)
 

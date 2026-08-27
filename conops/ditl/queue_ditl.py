@@ -2617,6 +2617,7 @@ class QueueDITL(DITLMixin, DITLStats):
             utime,
             collection_deadline=collection_deadline,
             slew_estimator=lambda target: self._estimate_ppt_slew(target, utime),
+            roll=self.acs.roll,
         )
 
         if self.ppt is not None:

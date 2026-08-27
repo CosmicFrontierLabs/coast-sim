@@ -339,10 +339,12 @@ coupled-axis envelope.  For a unit maneuver axis :math:`u` and axis limits
 :math:`1 / \sqrt{\sum_i (u_i/L_i)^2}`.  For example, equal X/Y limits of
 0.2 deg/s produce a total rate of 0.2 deg/s about a 45-degree X/Y axis, or
 approximately 0.141 deg/s on each component. Quaternion slews resolve the
-maneuver axis in the initial spacecraft body frame. Pointing-only legacy paths
-and multi-segment constraint-avoiding paths conservatively use the smallest
-configured body-axis limit. If the tuples are omitted, the scalar fields retain
-their existing behavior.
+maneuver axis in the initial spacecraft body frame. When a body-axis tuple is
+configured, slew estimates require complete starting and target attitudes
+(RA, Dec, and roll); kinematic calls without a maneuver axis raise an error.
+Constraint-avoiding paths are evaluated as rest-to-rest segments using each
+segment's own body-frame rotation axis. If both tuples are omitted, the scalar
+fields retain their existing behavior, including legacy RA/Dec-only estimates.
 
 .. code-block:: python
 

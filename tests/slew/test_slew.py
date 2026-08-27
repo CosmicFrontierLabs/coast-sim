@@ -706,7 +706,7 @@ class TestConstraintAvoidingSlew:
         waypoint_roll = (
             slew.endroll * pointing_dist1 / (pointing_dist1 + pointing_dist2)
         )
-        segment_dist1, _ = quaternion_attitude_delta(
+        segment_dist1, segment_axis1 = quaternion_attitude_delta(
             slew.startra,
             slew.startdec,
             slew.startroll,
@@ -714,7 +714,7 @@ class TestConstraintAvoidingSlew:
             waypoint[1],
             waypoint_roll,
         )
-        segment_dist2, _ = quaternion_attitude_delta(
+        segment_dist2, segment_axis2 = quaternion_attitude_delta(
             waypoint[0],
             waypoint[1],
             waypoint_roll,
@@ -723,15 +723,34 @@ class TestConstraintAvoidingSlew:
             slew.endroll,
         )
 
+        directional_acs = AttitudeControlSystem(
+            slew_acceleration_body=(0.02, 0.03, 0.2),
+            max_slew_rate_body=(0.2, 0.3, 2.0),
+            settle_time=7.0,
+            slew_algorithm=SlewAlgorithm.CONSTRAINT_AVOIDING,
+        )
+        slew.acs_config = directional_acs
+
         with patch(
             "conops.simulation.slew.constraint_avoiding_waypoint",
             return_value=waypoint,
         ):
             slew.predict_slew()
 
+            expected_time = round(
+                directional_acs.motion_time(segment_dist1, segment_axis1)
+                + directional_acs.motion_time(segment_dist2, segment_axis2)
+                + directional_acs.settle_time
+            )
+            assert slew.calc_slewtime() == expected_time
+
         assert slew.slewdist == pytest.approx(segment_dist1 + segment_dist2)
         assert slew.slewdist > pointing_dist1 + pointing_dist2
         assert slew._rotation_axis_body is None
+        assert slew._slew_segments[0][0] == pytest.approx(segment_dist1)
+        assert slew._slew_segments[0][1] == pytest.approx(segment_axis1)
+        assert slew._slew_segments[1][0] == pytest.approx(segment_dist2)
+        assert slew._slew_segments[1][1] == pytest.approx(segment_axis2)
 
     def test_constraint_avoiding_uses_acs_slew_constraint(self, slew, acs_config):
         """When ACS slew_constraint is set, it should be used instead of spacecraft constraint."""

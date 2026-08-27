@@ -98,19 +98,27 @@ class AttitudeControlSystem(ConfigModel):
         if body_limits is None:
             return float(scalar_limit)
         if rotation_axis_body is None:
-            # Pointing-only legacy paths cannot resolve a body-frame rotation
-            # axis. Use the slowest axis so their timing remains conservative.
-            return float(min(body_limits))
+            raise ValueError(
+                "rotation_axis_body is required when body-axis slew limits are configured"
+            )
 
         axis = np.asarray(rotation_axis_body, dtype=np.float64)
         if axis.shape != (3,) or not np.all(np.isfinite(axis)):
             raise ValueError("rotation_axis_body must contain three finite values")
         norm = float(np.linalg.norm(axis))
         if norm < 1e-12:
-            return float(min(body_limits))
+            raise ValueError("rotation_axis_body must have nonzero magnitude")
         unit_axis = axis / norm
         limits = np.asarray(body_limits, dtype=np.float64)
         return float(1.0 / np.linalg.norm(unit_axis / limits))
+
+    @property
+    def direction_dependent_slew(self) -> bool:
+        """Whether any slew kinematic limit depends on the maneuver axis."""
+        return (
+            self.slew_acceleration_body is not None
+            or self.max_slew_rate_body is not None
+        )
 
     def effective_slew_acceleration(
         self,

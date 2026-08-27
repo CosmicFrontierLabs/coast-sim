@@ -73,6 +73,7 @@ class TestAttitudeControlSystem:
     def test_initialization_defaults_directional_limits_disabled(self, default_acs):
         assert default_acs.slew_acceleration_body is None
         assert default_acs.max_slew_rate_body is None
+        assert default_acs.direction_dependent_slew is False
 
     def test_initialization_defaults_slew_accuracy(self, default_acs):
         """Test ACS initializes with default slew_accuracy."""
@@ -123,14 +124,23 @@ class TestAttitudeControlSystem:
         assert coupled_rate * xy_axis[0] == pytest.approx(np.sqrt(0.02))
         assert coupled_rate * xy_axis[1] == pytest.approx(np.sqrt(0.02))
 
-    def test_directional_limits_use_slowest_axis_without_attitude_axis(self):
+    def test_directional_limits_require_attitude_axis(self):
         acs = AttitudeControlSystem(
             slew_acceleration_body=(0.02, 0.03, 0.2),
             max_slew_rate_body=(0.2, 0.3, 2.0),
         )
 
-        assert acs.effective_slew_acceleration() == pytest.approx(0.02)
-        assert acs.effective_max_slew_rate() == pytest.approx(0.2)
+        assert acs.direction_dependent_slew is True
+        with pytest.raises(ValueError, match="rotation_axis_body is required"):
+            acs.effective_slew_acceleration()
+        with pytest.raises(ValueError, match="rotation_axis_body is required"):
+            acs.effective_max_slew_rate()
+
+    def test_directional_limits_reject_zero_attitude_axis(self):
+        acs = AttitudeControlSystem(max_slew_rate_body=(0.2, 0.3, 2.0))
+
+        with pytest.raises(ValueError, match="nonzero magnitude"):
+            acs.effective_max_slew_rate((0.0, 0.0, 0.0))
 
     def test_directional_limits_change_bang_bang_maneuver_time(self):
         acs = AttitudeControlSystem(

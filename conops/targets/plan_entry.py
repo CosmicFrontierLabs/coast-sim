@@ -18,7 +18,7 @@ from pydantic import (
 
 from ..common import givename, unixtime2date
 from ..common.enums import ObsType
-from ..common.vector import attitude_to_quat
+from ..common.vector import attitude_to_quat, quaternion_attitude_delta
 from ..config import AttitudeControlSystem, Constraint, MissionConfig
 from ..simulation.saa import SAA
 
@@ -346,11 +346,12 @@ class PlanEntry(BaseModel):
         self,
         lastra: float,
         lastdec: float,
+        lastroll: float | None = None,
     ) -> int:
-        """Calculate time to slew between 2 coordinates, given in degrees.
+        """Calculate time to slew from the prior pointing or attitude.
 
-        Uses the AttitudeControlSystem configuration for accurate slew time
-        calculation with bang-bang control profile.
+        Scalar slew limits support legacy RA/Dec-only callers. Direction-dependent
+        limits require the complete starting RA/Dec/roll attitude.
         """
 
         # Use the more accurate slew distance instead of angular distance
@@ -359,8 +360,30 @@ class PlanEntry(BaseModel):
         assert self.acs_config is not None, (
             "ACS config must be set to calculate slew time"
         )
-        # Calculate slew time using AttitudeControlSystem
-        slewtime = round(self.acs_config.slew_time(self.slewdist))
+        if self.acs_config.direction_dependent_slew:
+            if lastroll is None or lastroll == -1.0:
+                raise ValueError(
+                    "a planned starting roll is required to estimate a slew with "
+                    "body-axis limits"
+                )
+            if self.roll == -1.0:
+                raise ValueError(
+                    "a planned target roll is required to estimate a slew with "
+                    "body-axis limits"
+                )
+            self.slewdist, rotation_axis_body = quaternion_attitude_delta(
+                lastra,
+                lastdec,
+                lastroll,
+                self.ra,
+                self.dec,
+                self.roll,
+            )
+            slewtime = round(
+                self.acs_config.slew_time(self.slewdist, rotation_axis_body)
+            )
+        else:
+            slewtime = round(self.acs_config.slew_time(self.slewdist))
 
         return slewtime
 

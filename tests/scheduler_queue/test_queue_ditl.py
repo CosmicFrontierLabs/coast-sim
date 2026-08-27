@@ -739,6 +739,7 @@ class TestFetchNewPPT:
             1000.0,
             collection_deadline=ANY,
             slew_estimator=ANY,
+            roll=0.0,
         )
 
     def test_fetch_ppt_reuses_charge_deadline_for_candidate_scoring(
@@ -1250,6 +1251,7 @@ class TestFetchNewPPT:
             1000.0,
             collection_deadline=ANY,
             slew_estimator=ANY,
+            roll=0.0,
         )
         cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
@@ -1310,6 +1312,7 @@ class TestFetchNewPPT:
             utime,
             collection_deadline=ANY,
             slew_estimator=ANY,
+            roll=0.0,
         )
         cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
@@ -2339,6 +2342,30 @@ class TestPlanExecutionValidation:
 
         assert len(violations) == 1
         assert violations[0].reason == reason
+
+    def test_directional_validation_does_not_invent_axis_for_missing_attitude(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.config.spacecraft_bus.attitude_control = AttitudeControlSystem(
+            max_slew_rate_body=(0.2, 0.2, 2.0)
+        )
+        self._set_attitude_telemetry(
+            queue_ditl,
+            utime=[1000.0, 1060.0],
+            mode=[ACSMode.IDLE, ACSMode.IDLE],
+            obsid=[0, 0],
+            ra=[0.0, 0.0],
+            dec=[0.0, 0.0],
+            roll=[0.0, None],
+        )
+
+        violations = queue_ditl._attitude_rate_violations()
+
+        assert len(violations) == 1
+        assert violations[0].reason == "missing_attitude"
+        assert violations[0].max_rate_deg_per_s is None
+        assert violations[0].allowed_distance_deg is None
+        assert "maneuver axis unavailable" in str(violations[0])
 
     def test_assertion_fails_plan_generation_for_attitude_jump(
         self, queue_ditl: QueueDITL
