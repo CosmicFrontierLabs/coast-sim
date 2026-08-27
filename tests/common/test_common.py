@@ -14,6 +14,7 @@ from conops.common import (
     attitude_for_body_vector_tracking,
     attitude_from_body_axes,
     body_vector_to_eci,
+    quaternion_attitude_delta,
     scbodyvector,
 )
 from conops.common.vector import (
@@ -150,6 +151,21 @@ class TestBodyVectorTrackingAttitude:
 
         assert body_y_eci == pytest.approx((0.0, 0.0, 1.0), abs=1e-9)
         assert body_z_eci == pytest.approx((0.0, -1.0, 0.0), abs=1e-9)
+
+    def test_attitude_delta_reports_initial_body_axis(self):
+        roll_angle, roll_axis = quaternion_attitude_delta(0, 0, 0, 0, 0, 90)
+        ra_angle, ra_axis = quaternion_attitude_delta(0, 0, 0, 90, 0, 0)
+
+        assert roll_angle == pytest.approx(90.0)
+        assert roll_axis == pytest.approx((1.0, 0.0, 0.0), abs=1e-9)
+        assert ra_angle == pytest.approx(90.0)
+        assert ra_axis == pytest.approx((0.0, 0.0, 1.0), abs=1e-9)
+
+    def test_attitude_delta_returns_zero_axis_for_no_motion(self):
+        angle, axis = quaternion_attitude_delta(45, 30, 20, 45, 30, 20)
+
+        assert angle == pytest.approx(0.0)
+        assert axis == pytest.approx((0.0, 0.0, 0.0))
 
     def test_positive_roll_quaternion_applies_inverse_coordinate_transform(self):
         quat = attitude_to_quat(0.0, 0.0, 90.0)

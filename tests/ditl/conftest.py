@@ -269,6 +269,11 @@ def mock_config_detailed():
     config.spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))
     config.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
     config.spacecraft_bus.attitude_control.max_slew_rate = 10.0
+    config.spacecraft_bus.attitude_control.effective_max_slew_rate = Mock(
+        side_effect=lambda _axis=None: float(
+            config.spacecraft_bus.attitude_control.max_slew_rate
+        )
+    )
     config.spacecraft_bus.star_trackers = Mock()
     config.spacecraft_bus.star_trackers.num_trackers = Mock(return_value=0)
     config.spacecraft_bus.radiators = Mock()

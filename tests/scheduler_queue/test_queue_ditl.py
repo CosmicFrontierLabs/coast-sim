@@ -14,6 +14,7 @@ from conops import (
     ACSCommandType,
     ACSMode,
     AttitudeConstraintScope,
+    AttitudeControlSystem,
     Battery,
     GroundStation,
     GroundStationRegistry,
@@ -788,7 +789,7 @@ class TestFetchNewPPT:
         queue_ditl.acs.dec = 20.0
         queue_ditl.acs.roll = 30.0
         cast(Mock, queue_ditl.config.spacecraft_bus.attitude_control).slew_time = Mock(
-            side_effect=lambda distance: distance * 2.0
+            side_effect=lambda distance, _axis: distance * 2.0
         )
         target = Mock()
         target.ra = 45.0
@@ -797,9 +798,9 @@ class TestFetchNewPPT:
         with (
             patch("conops.ditl.queue_ditl.optimum_roll", return_value=70.0),
             patch(
-                "conops.ditl.queue_ditl.quaternion_attitude_distance",
-                return_value=12.5,
-            ) as distance,
+                "conops.ditl.queue_ditl.quaternion_attitude_delta",
+                return_value=(12.5, (0.0, 0.0, 1.0)),
+            ) as delta,
             patch(
                 "conops.ditl.queue_ditl.Slew.calc_slewtime",
                 side_effect=AssertionError("candidate scoring must stay cheap"),
@@ -807,13 +808,13 @@ class TestFetchNewPPT:
         ):
             estimate = queue_ditl._estimate_ppt_slew(target, 1000.0)
 
-        distance.assert_called_once_with(10.0, 20.0, 30.0, 45.0, -10.0, 70.0)
+        delta.assert_called_once_with(10.0, 20.0, 30.0, 45.0, -10.0, 70.0)
         assert estimate.slewdist == pytest.approx(12.5)
         assert estimate.slewtime == pytest.approx(25.0)
         slew_time = cast(
             Mock, queue_ditl.config.spacecraft_bus.attitude_control.slew_time
         )
-        slew_time.assert_called_once_with(12.5)
+        slew_time.assert_called_once_with(12.5, (0.0, 0.0, 1.0))
 
     def test_estimate_ppt_slew_reuses_optimum_roll_cache(
         self, queue_ditl: QueueDITL
@@ -831,8 +832,8 @@ class TestFetchNewPPT:
                 return_value=70.0,
             ) as roll,
             patch(
-                "conops.ditl.queue_ditl.quaternion_attitude_distance",
-                return_value=12.5,
+                "conops.ditl.queue_ditl.quaternion_attitude_delta",
+                return_value=(12.5, (0.0, 0.0, 1.0)),
             ),
         ):
             queue_ditl._estimate_ppt_slew(target, 1000.0)
@@ -2181,6 +2182,38 @@ class TestPlanExecutionValidation:
         )
 
         assert queue_ditl._attitude_rate_violations() == []
+
+    def test_validation_applies_body_axis_rate_limit(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.config.spacecraft_bus.attitude_control = AttitudeControlSystem(
+            max_slew_rate_body=(0.2, 0.2, 2.0)
+        )
+
+        self._set_attitude_telemetry(
+            queue_ditl,
+            utime=[1000.0, 1060.0],
+            mode=[ACSMode.SLEWING, ACSMode.SLEWING],
+            obsid=[0, 0],
+            ra=[0.0, 60.0],
+            dec=[0.0, 0.0],
+            roll=[0.0, 0.0],
+        )
+        assert queue_ditl._attitude_rate_violations() == []
+
+        self._set_attitude_telemetry(
+            queue_ditl,
+            utime=[1000.0, 1060.0],
+            mode=[ACSMode.SLEWING, ACSMode.SLEWING],
+            obsid=[0, 0],
+            ra=[0.0, 0.0],
+            dec=[0.0, 0.0],
+            roll=[0.0, 60.0],
+        )
+        violations = queue_ditl._attitude_rate_violations()
+
+        assert len(violations) == 1
+        assert violations[0].max_rate_deg_per_s == pytest.approx(0.2)
 
     def test_validation_rejects_attitude_jump_across_mode_boundary(
         self, queue_ditl: QueueDITL

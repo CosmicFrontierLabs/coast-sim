@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
-from conops import MissionConfig, Slew
+from conops import AttitudeControlSystem, MissionConfig, Slew
 from conops.common.enums import ObsType
 
 
@@ -286,6 +286,36 @@ class TestPureRollManeuver:
     rotate about the boresight axis.
     """
 
+    def test_directional_limits_distinguish_roll_and_ra_slews(self):
+        acs = AttitudeControlSystem(
+            slew_acceleration_body=(0.02, 0.02, 0.2),
+            max_slew_rate_body=(0.2, 0.2, 2.0),
+            settle_time=0.0,
+        )
+        roll_slew = Slew(
+            acs_config=acs,
+            startra=0.0,
+            startdec=0.0,
+            startroll=0.0,
+            endra=0.0,
+            enddec=0.0,
+            endroll=90.0,
+        )
+        ra_slew = Slew(
+            acs_config=acs,
+            startra=0.0,
+            startdec=0.0,
+            startroll=0.0,
+            endra=90.0,
+            enddec=0.0,
+            endroll=0.0,
+        )
+
+        assert roll_slew.calc_slewtime() == 460.0
+        assert roll_slew._rotation_axis_body == pytest.approx((1.0, 0.0, 0.0))
+        assert ra_slew.calc_slewtime() == 55.0
+        assert ra_slew._rotation_axis_body == pytest.approx((0.0, 0.0, 1.0))
+
     def test_pure_roll_zero_radec_distance(self, slew_predict_setup):
         """Pure roll maneuver should have non-zero quaternion distance matching roll change."""
         slew_predict_setup.startra = 45.0
@@ -415,7 +445,7 @@ class TestPureRollManeuver:
         """slew_roll() should interpolate correctly during pure roll maneuver."""
         # Set up ACS config for bang-bang motion
         acs_config.motion_time = Mock(return_value=100.0)
-        acs_config.s_of_t = Mock(side_effect=lambda dist, t: t / 100.0 * dist)
+        acs_config.s_of_t = Mock(side_effect=lambda dist, t, _axis: t / 100.0 * dist)
 
         slew_predict_setup.startra = 45.0
         slew_predict_setup.startdec = 30.0

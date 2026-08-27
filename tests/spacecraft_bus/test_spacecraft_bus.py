@@ -70,6 +70,10 @@ class TestAttitudeControlSystem:
         """Test ACS initializes with default max_slew_rate."""
         assert default_acs.max_slew_rate == 0.25
 
+    def test_initialization_defaults_directional_limits_disabled(self, default_acs):
+        assert default_acs.slew_acceleration_body is None
+        assert default_acs.max_slew_rate_body is None
+
     def test_initialization_defaults_slew_accuracy(self, default_acs):
         """Test ACS initializes with default slew_accuracy."""
         assert default_acs.slew_accuracy == 0.01
@@ -93,6 +97,50 @@ class TestAttitudeControlSystem:
     def test_initialization_custom_settle_time(self, custom_acs):
         """Test ACS initializes with custom settle_time."""
         assert custom_acs.settle_time == 60.0
+
+    @pytest.mark.parametrize(
+        "field_value",
+        [
+            (0.2, 0.0, 2.0),
+            (0.2, -0.2, 2.0),
+            (0.2, np.inf, 2.0),
+            (0.2, np.nan, 2.0),
+        ],
+    )
+    def test_directional_limits_must_be_finite_and_positive(self, field_value):
+        with pytest.raises(ValueError, match="finite and positive"):
+            AttitudeControlSystem(max_slew_rate_body=field_value)
+
+    def test_directional_rate_uses_ellipsoidal_body_axis_envelope(self):
+        acs = AttitudeControlSystem(max_slew_rate_body=(0.2, 0.2, 2.0))
+
+        assert acs.effective_max_slew_rate((1.0, 0.0, 0.0)) == pytest.approx(0.2)
+        assert acs.effective_max_slew_rate((0.0, 0.0, 1.0)) == pytest.approx(2.0)
+
+        xy_axis = (np.sqrt(0.5), np.sqrt(0.5), 0.0)
+        coupled_rate = acs.effective_max_slew_rate(xy_axis)
+        assert coupled_rate == pytest.approx(0.2)
+        assert coupled_rate * xy_axis[0] == pytest.approx(np.sqrt(0.02))
+        assert coupled_rate * xy_axis[1] == pytest.approx(np.sqrt(0.02))
+
+    def test_directional_limits_use_slowest_axis_without_attitude_axis(self):
+        acs = AttitudeControlSystem(
+            slew_acceleration_body=(0.02, 0.03, 0.2),
+            max_slew_rate_body=(0.2, 0.3, 2.0),
+        )
+
+        assert acs.effective_slew_acceleration() == pytest.approx(0.02)
+        assert acs.effective_max_slew_rate() == pytest.approx(0.2)
+
+    def test_directional_limits_change_bang_bang_maneuver_time(self):
+        acs = AttitudeControlSystem(
+            slew_acceleration_body=(0.02, 0.02, 0.2),
+            max_slew_rate_body=(0.2, 0.2, 2.0),
+            settle_time=0.0,
+        )
+
+        assert acs.motion_time(90.0, (1.0, 0.0, 0.0)) == pytest.approx(460.0)
+        assert acs.motion_time(90.0, (0.0, 0.0, 1.0)) == pytest.approx(55.0)
 
     def test_motion_time_zero_angle(self, default_acs):
         """Test motion_time returns 0 for zero angle."""

@@ -7,7 +7,7 @@ import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
 from conops.common.enums import ACSMode
-from conops.common.vector import quaternion_attitude_distance
+from conops.common.vector import quaternion_attitude_delta
 from conops.config.groundstation import GroundStation
 
 from ..config import MissionConfig
@@ -213,15 +213,18 @@ class DITLMixin:
 
     def _attitude_rate_violations(self) -> list[_AttitudeRateViolation]:
         """Validate the housekeeping samples used for attitude-timeseries export."""
-        max_rate = float(self.config.spacecraft_bus.attitude_control.max_slew_rate)
-        if not math.isfinite(max_rate) or max_rate < 0:
+        acs_config = self.config.spacecraft_bus.attitude_control
+        fallback_max_rate = acs_config.effective_max_slew_rate()
+        if not math.isfinite(fallback_max_rate) or fallback_max_rate < 0:
             raise ValueError(
-                f"max_slew_rate must be a finite, non-negative value, got {max_rate}"
+                "configured slew-rate limit must be finite and non-negative, "
+                f"got {fallback_max_rate}"
             )
 
         violations = []
         samples = self.telemetry.housekeeping
         for index in range(1, len(samples)):
+            max_rate = fallback_max_rate
             previous_index = index - 1
             previous_sample = samples[previous_index]
             sample = samples[index]
@@ -259,7 +262,8 @@ class DITLMixin:
                     reason = "non_finite_attitude"
 
             if reason == "rate_limit_exceeded":
-                distance_deg = quaternion_attitude_distance(*attitudes)
+                distance_deg, rotation_axis_body = quaternion_attitude_delta(*attitudes)
+                max_rate = acs_config.effective_max_slew_rate(rotation_axis_body)
 
             allowed_distance_deg = (
                 max_rate * elapsed_seconds

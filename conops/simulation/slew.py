@@ -8,7 +8,7 @@ from ..common import dtutcfromtimestamp, roll_over_angle, separation, unixtime2d
 from ..common.enums import ObsType, SlewAlgorithm
 from ..common.vector import (
     constraint_avoiding_waypoint,
-    quaternion_attitude_distance,
+    quaternion_attitude_delta,
     quaternion_slew_path,
 )
 from ..config import AttitudeControlSystem, Constraint, MissionConfig
@@ -49,6 +49,9 @@ class Slew(BaseModel):
     at: "Pointing | None" = None  # In quotes to avoid circular import
     # Quaternion SLERP: intermediate roll values along the path
     _quat_roll_path: list[float] = PrivateAttr(default_factory=list)
+    # Shortest maneuver axis resolved in the initial spacecraft body frame.
+    # Constraint-avoiding paths use None because their axis changes by segment.
+    _rotation_axis_body: tuple[float, float, float] | None = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def _derive_from_config(self) -> "Slew":
@@ -131,7 +134,7 @@ class Slew(BaseModel):
             "ACS config must be set to calculate slew fraction"
         )
         total_dist = float(self.slewdist)
-        s = self.acs_config.s_of_t(total_dist, t)
+        s = self.acs_config.s_of_t(total_dist, t, self._rotation_axis_body)
         return 0.0 if total_dist == 0 else max(0.0, min(1.0, s / total_dist))
 
     @staticmethod
@@ -208,7 +211,9 @@ class Slew(BaseModel):
         assert self.acs_config is not None, (
             "ACS config must be set to calculate slew time"
         )
-        self.slewtime = round(self.acs_config.slew_time(distance))
+        self.slewtime = round(
+            self.acs_config.slew_time(distance, self._rotation_axis_body)
+        )
 
         self.slewend = self.slewstart + self.slewtime
         return self.slewtime
@@ -252,7 +257,7 @@ class Slew(BaseModel):
         self.slewpath = (ras, decs)
         self._quat_roll_path = rolls
 
-        self.slewdist = quaternion_attitude_distance(
+        self.slewdist, self._rotation_axis_body = quaternion_attitude_delta(
             self.startra,
             self.startdec,
             self.startroll,
@@ -370,4 +375,7 @@ class Slew(BaseModel):
 
         self.slewpath = (all_ras, all_decs)
         self._quat_roll_path = all_rolls
+        # The two SLERP segments generally rotate about different axes. Passing
+        # None selects the conservative slowest configured body-axis envelope.
+        self._rotation_axis_body = None
         self.slewdist = dist1 + dist2

@@ -414,6 +414,48 @@ def quaternion_attitude_distance(
     return float(np.rad2deg(2.0 * np.arccos(dot)))
 
 
+def quaternion_attitude_delta(
+    ra1: float,
+    dec1: float,
+    roll1: float,
+    ra2: float,
+    dec2: float,
+    roll2: float,
+) -> tuple[float, tuple[float, float, float]]:
+    """Return the shortest attitude rotation angle and its initial body-frame axis.
+
+    The returned angle is in degrees and the axis is a unit vector resolved in
+    the spacecraft body frame at the start of the maneuver.  This makes the
+    result suitable for applying body-axis-dependent rate and acceleration
+    limits.  Identical attitudes return a zero angle and a zero vector.
+    """
+    q1 = attitude_to_quat(ra1, dec1, roll1)
+    q2 = attitude_to_quat(ra2, dec2, roll2)
+
+    # Attitude quaternions map ECI into body coordinates.  q1 * conjugate(q2)
+    # therefore represents the physical body rotation from attitude 1 to 2,
+    # resolved in the initial body frame.
+    q2_conjugate = q2.copy()
+    q2_conjugate[1:] *= -1.0
+    delta = _quat_mul(q1, q2_conjugate)
+    delta /= float(np.linalg.norm(delta))
+
+    # q and -q represent the same rotation.  Choose the representative whose
+    # scalar component is non-negative so the angle follows the shortest arc.
+    if delta[0] < 0.0:
+        delta = -delta
+
+    vector_norm = float(np.linalg.norm(delta[1:]))
+    angle_deg = float(
+        np.rad2deg(2.0 * np.arctan2(vector_norm, max(0.0, float(delta[0]))))
+    )
+    if vector_norm < 1e-12:
+        return 0.0, (0.0, 0.0, 0.0)
+
+    axis = delta[1:] / vector_norm
+    return angle_deg, (float(axis[0]), float(axis[1]), float(axis[2]))
+
+
 def _quat_mul(
     a: npt.NDArray[np.float64], b: npt.NDArray[np.float64]
 ) -> npt.NDArray[np.float64]:

@@ -17,7 +17,7 @@ from ..common import (
     unixtime2date,
 )
 from ..common.enums import ACSCommandType
-from ..common.vector import attitude_to_quat, quaternion_attitude_distance
+from ..common.vector import attitude_to_quat, quaternion_attitude_delta
 from ..config import DAY_SECONDS, MissionConfig
 from ..config.constraint import (
     all_attitude_constraint_name,
@@ -2449,7 +2449,7 @@ class QueueDITL(DITLMixin, DITLStats):
             utime, execution_time
         )
         endroll = self._ppt_optimum_roll(target, execution_time)
-        slewdist = quaternion_attitude_distance(
+        slewdist, rotation_axis_body = quaternion_attitude_delta(
             startra,
             startdec,
             startroll,
@@ -2458,7 +2458,9 @@ class QueueDITL(DITLMixin, DITLStats):
             endroll,
         )
         slewtime = round(
-            self.config.spacecraft_bus.attitude_control.slew_time(slewdist)
+            self.config.spacecraft_bus.attitude_control.slew_time(
+                slewdist, rotation_axis_body
+            )
         )
         return TargetSlewEstimate(slewtime=float(slewtime), slewdist=slewdist)
 
