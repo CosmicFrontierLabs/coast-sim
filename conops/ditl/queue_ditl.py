@@ -2292,11 +2292,16 @@ class QueueDITL(DITLMixin, DITLStats):
         if next_pass is None:
             return None
 
-        pass_slew_dist = angular_separation(
-            ppt.ra, ppt.dec, next_pass.gsstartra, next_pass.gsstartdec
+        pass_slew_dist, rotation_axis_body = quaternion_attitude_delta(
+            ppt.ra,
+            ppt.dec,
+            ppt.roll,
+            next_pass.gsstartra,
+            next_pass.gsstartdec,
+            next_pass.gsstartroll,
         )
         acs_cfg = self.config.spacecraft_bus.attitude_control
-        pass_slew_time = float(acs_cfg.slew_time(pass_slew_dist))
+        pass_slew_time = float(acs_cfg.slew_time(pass_slew_dist, rotation_axis_body))
 
         return next_pass.begin - pass_slew_time - self._pass_slew_trigger_buffer()
 

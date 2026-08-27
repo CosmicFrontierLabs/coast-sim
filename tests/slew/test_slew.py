@@ -1,6 +1,6 @@
 """Tests for conops.slew module."""
 
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
@@ -671,6 +671,67 @@ class TestConstraintAvoidingSlew:
         # Roll should start at 0 and end at 90
         assert abs(slew._quat_roll_path[0] - 0.0) < 1.0
         assert abs(slew._quat_roll_path[-1] - 90.0) < 1.0
+
+    def test_constraint_avoiding_distance_includes_roll_in_each_segment(
+        self, slew, acs_config
+    ) -> None:
+        from conops.common.enums import SlewAlgorithm
+        from conops.common.vector import quaternion_attitude_delta, separation
+        from conops.config.constants import DTOR
+
+        acs_config.slew_algorithm = SlewAlgorithm.CONSTRAINT_AVOIDING
+        slew.startra = 0.0
+        slew.startdec = 0.0
+        slew.startroll = 0.0
+        slew.endra = 90.0
+        slew.enddec = 0.0
+        slew.endroll = 120.0
+        slew.slewstart = 1700000000.0
+        waypoint = (45.0, 30.0)
+
+        pointing_dist1 = (
+            separation(
+                [slew.startra * DTOR, slew.startdec * DTOR],
+                [waypoint[0] * DTOR, waypoint[1] * DTOR],
+            )
+            / DTOR
+        )
+        pointing_dist2 = (
+            separation(
+                [waypoint[0] * DTOR, waypoint[1] * DTOR],
+                [slew.endra * DTOR, slew.enddec * DTOR],
+            )
+            / DTOR
+        )
+        waypoint_roll = (
+            slew.endroll * pointing_dist1 / (pointing_dist1 + pointing_dist2)
+        )
+        segment_dist1, _ = quaternion_attitude_delta(
+            slew.startra,
+            slew.startdec,
+            slew.startroll,
+            waypoint[0],
+            waypoint[1],
+            waypoint_roll,
+        )
+        segment_dist2, _ = quaternion_attitude_delta(
+            waypoint[0],
+            waypoint[1],
+            waypoint_roll,
+            slew.endra,
+            slew.enddec,
+            slew.endroll,
+        )
+
+        with patch(
+            "conops.simulation.slew.constraint_avoiding_waypoint",
+            return_value=waypoint,
+        ):
+            slew.predict_slew()
+
+        assert slew.slewdist == pytest.approx(segment_dist1 + segment_dist2)
+        assert slew.slewdist > pointing_dist1 + pointing_dist2
+        assert slew._rotation_axis_body is None
 
     def test_constraint_avoiding_uses_acs_slew_constraint(self, slew, acs_config):
         """When ACS slew_constraint is set, it should be used instead of spacecraft constraint."""

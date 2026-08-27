@@ -326,27 +326,47 @@ class Slew(BaseModel):
 
         # Estimate roll at waypoint by linear interpolation of the total arc fraction
 
-        dist1 = (
+        pointing_dist1 = (
             separation(
                 [self.startra * DTOR, self.startdec * DTOR],
                 [w_ra * DTOR, w_dec * DTOR],
             )
             / DTOR
         )
-        dist2 = (
+        pointing_dist2 = (
             separation(
                 [w_ra * DTOR, w_dec * DTOR],
                 [self.endra * DTOR, self.enddec * DTOR],
             )
             / DTOR
         )
-        total = dist1 + dist2
-        frac = dist1 / total if total > 0 else 0.5
+        pointing_total = pointing_dist1 + pointing_dist2
+        pointing_frac = pointing_dist1 / pointing_total if pointing_total > 0 else 0.5
         roll_diff = self._shortest_roll_diff(self.startroll, self.endroll)
-        w_roll = (self.startroll + frac * roll_diff) % 360
+        w_roll = (self.startroll + pointing_frac * roll_diff) % 360
 
-        # Build two SLERP segments; split steps proportionally
-        steps1 = max(1, round(steps * frac))
+        segment_dist1, _ = quaternion_attitude_delta(
+            self.startra,
+            self.startdec,
+            self.startroll,
+            w_ra,
+            w_dec,
+            w_roll,
+        )
+        segment_dist2, _ = quaternion_attitude_delta(
+            w_ra,
+            w_dec,
+            w_roll,
+            self.endra,
+            self.enddec,
+            self.endroll,
+        )
+        attitude_total = segment_dist1 + segment_dist2
+        attitude_frac = segment_dist1 / attitude_total if attitude_total > 0 else 0.5
+
+        # Build two SLERP segments; split samples by full attitude distance so
+        # progress remains uniform when a segment also contains roll motion.
+        steps1 = max(1, round(steps * attitude_frac))
         steps2 = max(1, steps - steps1)
 
         ras1, decs1, rolls1 = quaternion_slew_path(
@@ -378,4 +398,4 @@ class Slew(BaseModel):
         # The two SLERP segments generally rotate about different axes. Passing
         # None selects the conservative slowest configured body-axis envelope.
         self._rotation_axis_body = None
-        self.slewdist = dist1 + dist2
+        self.slewdist = attitude_total

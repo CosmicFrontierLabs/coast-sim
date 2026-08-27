@@ -782,6 +782,33 @@ class TestFetchNewPPT:
 
         charge_deadline.assert_not_called()
 
+    def test_pass_deadline_uses_full_attitude_and_directional_limit(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        target = Mock(ra=10.0, dec=20.0, roll=30.0)
+        next_pass = Mock(
+            begin=2000.0,
+            gsstartra=40.0,
+            gsstartdec=-15.0,
+            gsstartroll=70.0,
+        )
+        queue_ditl.acs.passrequests.next_pass = Mock(return_value=next_pass)
+        acs = cast(Mock, queue_ditl.config.spacecraft_bus.attitude_control)
+        acs.slew_time = Mock(return_value=45.0)
+        rotation_axis_body = (0.2, -0.3, 0.9)
+
+        with patch(
+            "conops.ditl.queue_ditl.quaternion_attitude_delta",
+            return_value=(12.5, rotation_axis_body),
+        ) as delta:
+            deadline = queue_ditl._next_pass_science_deadline(1000.0, target=target)
+
+        delta.assert_called_once_with(10.0, 20.0, 30.0, 40.0, -15.0, 70.0)
+        acs.slew_time.assert_called_once_with(12.5, rotation_axis_body)
+        assert deadline == pytest.approx(
+            next_pass.begin - 45.0 - queue_ditl._pass_slew_trigger_buffer()
+        )
+
     def test_estimate_ppt_slew_uses_quaternion_distance_without_full_path(
         self, queue_ditl: QueueDITL
     ) -> None:
@@ -1402,6 +1429,7 @@ class TestFetchNewPPT:
         mock_ppt = Mock()
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
+        mock_ppt.roll = 0.0
         mock_ppt.obsid = 1001
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
@@ -1418,6 +1446,7 @@ class TestFetchNewPPT:
         mock_next_pass.begin = 1200.0  # Pass begins in 200 seconds
         mock_next_pass.gsstartra = 100.0
         mock_next_pass.gsstartdec = 50.0
+        mock_next_pass.gsstartroll = 0.0
         cast(Mock, queue_ditl.acs.passrequests).next_pass = Mock(
             return_value=mock_next_pass
         )
@@ -1443,6 +1472,7 @@ class TestFetchNewPPT:
         mock_ppt = Mock()
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
+        mock_ppt.roll = 0.0
         mock_ppt.obsid = 1001
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
@@ -1457,6 +1487,7 @@ class TestFetchNewPPT:
         mock_next_pass.begin = 1450.0
         mock_next_pass.gsstartra = 100.0
         mock_next_pass.gsstartdec = 50.0
+        mock_next_pass.gsstartroll = 0.0
         cast(Mock, queue_ditl.acs.passrequests).next_pass = Mock(
             return_value=mock_next_pass
         )
@@ -1477,6 +1508,7 @@ class TestFetchNewPPT:
         mock_ppt = Mock()
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
+        mock_ppt.roll = 0.0
         mock_ppt.obsid = 1001
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
@@ -1492,6 +1524,7 @@ class TestFetchNewPPT:
         mock_next_pass.begin = 2000.0  # Pass begins in 1000 seconds
         mock_next_pass.gsstartra = 100.0
         mock_next_pass.gsstartdec = 50.0
+        mock_next_pass.gsstartroll = 0.0
         cast(Mock, queue_ditl.acs.passrequests).next_pass = Mock(
             return_value=mock_next_pass
         )
@@ -1643,6 +1676,7 @@ class TestFetchNewPPT:
         bad_ppt = Mock()
         bad_ppt.ra = 45.0
         bad_ppt.dec = 30.0
+        bad_ppt.roll = 0.0
         bad_ppt.obsid = 1001
         bad_ppt.done = False
         bad_ppt.windows = []
@@ -1654,6 +1688,7 @@ class TestFetchNewPPT:
         good_ppt = Mock()
         good_ppt.ra = 46.0
         good_ppt.dec = 31.0
+        good_ppt.roll = 0.0
         good_ppt.obsid = 1002
         good_ppt.done = False
         good_ppt.windows = []
@@ -1677,6 +1712,7 @@ class TestFetchNewPPT:
         mock_next_pass.begin = 1400.0
         mock_next_pass.gsstartra = 100.0
         mock_next_pass.gsstartdec = 50.0
+        mock_next_pass.gsstartroll = 0.0
         cast(Mock, queue_ditl.acs.passrequests).next_pass = Mock(
             return_value=mock_next_pass
         )
