@@ -845,6 +845,7 @@ class TestFetchNewPPT:
             queue_ditl.acs.ephem,
             queue_ditl.config.solar_panel,
             queue_ditl.config.constraint,
+            acs_mode=ACSMode.SCIENCE,
         )
 
     def test_fetch_ppt_enqueues_slew_command(

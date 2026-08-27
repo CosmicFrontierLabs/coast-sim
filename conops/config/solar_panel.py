@@ -7,6 +7,7 @@ import rust_ephem
 from pydantic import Field, PrivateAttr, field_validator, model_validator
 
 from ..common import dtutcfromtimestamp
+from ..common.enums import ACSMode
 from ..common.vector import vecnorm
 from ._base import ConfigModel
 from .geometry import PanelGeometry
@@ -42,6 +43,38 @@ class IncidenceLossPoint(ConfigModel):
     )
 
 
+class SolarArrayDriveControl(ConfigModel):
+    """Operational policy for a finite solar-array drive.
+
+    Drive kinematics are configured separately by
+    :class:`SingleAxisSolarArrayDrive`.  An empty ``sun_tracking_modes`` list is
+    the conservative default: the drive holds its current angle in every mode.
+    """
+
+    sun_tracking_modes: list[ACSMode] = Field(
+        default_factory=list,
+        description=(
+            "ACS modes in which the drive autonomously tracks the best "
+            "reachable Sun-facing angle; unlisted modes hold the current angle"
+        ),
+    )
+    track_in_eclipse: bool = Field(
+        default=False,
+        description=(
+            "Continue Sun tracking in eclipse when the current ACS mode is "
+            "listed in sun_tracking_modes"
+        ),
+    )
+
+    def tracks_sun(self, acs_mode: ACSMode | None, *, in_eclipse: bool) -> bool:
+        """Return whether the controller commands Sun tracking for this sample."""
+        return (
+            acs_mode is not None
+            and acs_mode in self.sun_tracking_modes
+            and (not in_eclipse or self.track_in_eclipse)
+        )
+
+
 class SingleAxisSolarArrayDrive(ConfigModel):
     """Finite, rate-limited rotation of a panel about one body-frame axis.
 
@@ -60,6 +93,13 @@ class SingleAxisSolarArrayDrive(ConfigModel):
     initial_angle_deg: float = Field(
         default=0.0, description="Drive angle at the start of each simulation run"
     )
+    rotation_origin_m: tuple[float, float, float] | None = Field(
+        default=None,
+        description=(
+            "Point on the body-frame rotation axis in metres. Required when "
+            "the panel has 3D geometry."
+        ),
+    )
 
     @field_validator("rotation_axis")
     @classmethod
@@ -68,6 +108,18 @@ class SingleAxisSolarArrayDrive(ConfigModel):
     ) -> tuple[float, float, float]:
         axis = _unit_vector(value, field_name="rotation_axis")
         return (float(axis[0]), float(axis[1]), float(axis[2]))
+
+    @field_validator("rotation_origin_m")
+    @classmethod
+    def _validate_rotation_origin(
+        cls, value: tuple[float, float, float] | None
+    ) -> tuple[float, float, float] | None:
+        if value is None:
+            return None
+        origin = np.asarray(value, dtype=np.float64)
+        if origin.shape != (3,) or not np.all(np.isfinite(origin)):
+            raise ValueError("rotation_origin_m must contain three finite components")
+        return (float(origin[0]), float(origin[1]), float(origin[2]))
 
     @model_validator(mode="after")
     def _validate_travel(self) -> "SingleAxisSolarArrayDrive":
@@ -97,6 +149,27 @@ class SingleAxisSolarArrayDrive(ConfigModel):
             npt.NDArray[np.float64],
             self.normals_at_angles(reference_normal, np.asarray([angle_deg]))[0],
         )
+
+    def rotate_vectors_at_angle(
+        self,
+        vectors: npt.ArrayLike,
+        angle_deg: float,
+    ) -> npt.NDArray[np.float64]:
+        """Rotate one or more body-frame vectors about the drive axis."""
+        array = np.asarray(vectors, dtype=np.float64)
+        scalar = array.ndim == 1
+        if scalar:
+            array = array[None, :]
+        if array.ndim != 2 or array.shape[1] != 3 or not np.all(np.isfinite(array)):
+            raise ValueError("vectors must have shape (3,) or (N, 3) and be finite")
+        axis = np.asarray(self.rotation_axis, dtype=np.float64)
+        theta = np.deg2rad(angle_deg)
+        rotated = (
+            array * np.cos(theta)
+            + np.cross(axis, array) * np.sin(theta)
+            + np.outer(array @ axis, axis) * (1.0 - np.cos(theta))
+        )
+        return cast(npt.NDArray[np.float64], rotated[0] if scalar else rotated)
 
     def normals_at_angles(
         self,
@@ -287,6 +360,13 @@ class SolarPanel(ConfigModel):
             "zero-angle reference normal."
         ),
     )
+    drive_control: SolarArrayDriveControl = Field(
+        default_factory=SolarArrayDriveControl,
+        description=(
+            "Explicit operational policy for a finite drive. The default holds "
+            "the configured initial angle in every ACS mode."
+        ),
+    )
     incidence_loss_curve: list[IncidenceLossPoint] | None = Field(
         default=None,
         description=(
@@ -304,6 +384,18 @@ class SolarPanel(ConfigModel):
             raise ValueError(
                 "gimbled and single_axis_drive are mutually exclusive; "
                 "gimbled is the legacy ideal Sun-tracking model"
+            )
+        if self.single_axis_drive is None and (
+            self.drive_control.sun_tracking_modes or self.drive_control.track_in_eclipse
+        ):
+            raise ValueError("drive_control requires single_axis_drive")
+        if (
+            self.geometry is not None
+            and self.single_axis_drive is not None
+            and self.single_axis_drive.rotation_origin_m is None
+        ):
+            raise ValueError(
+                "single_axis_drive.rotation_origin_m is required for articulated geometry"
             )
         if self.incidence_loss_curve:
             angles = [point.incidence_angle_deg for point in self.incidence_loss_curve]
@@ -336,6 +428,39 @@ class SolarPanel(ConfigModel):
             return self.single_axis_drive.initial_angle_deg
         return self._drive_angle_deg
 
+    def tracks_sun(self, acs_mode: ACSMode | None, *, in_eclipse: bool) -> bool:
+        """Return the explicit control decision for this panel and sample."""
+        return self.drive_control.tracks_sun(acs_mode, in_eclipse=in_eclipse)
+
+    def geometry_at_drive_angle(
+        self, angle_deg: float | None = None
+    ) -> PanelGeometry | None:
+        """Return panel geometry rotated to a physical drive angle.
+
+        Undriven geometry is returned unchanged. Driven geometry rotates its
+        centre and spanning vectors about the configured body-frame axis line.
+        """
+        geometry = self.geometry
+        drive = self.single_axis_drive
+        if geometry is None or drive is None:
+            return geometry
+        origin_value = drive.rotation_origin_m
+        assert origin_value is not None
+        angle = self.drive_angle_deg if angle_deg is None else angle_deg
+        assert angle is not None
+        origin = np.asarray(origin_value, dtype=np.float64)
+        center_offset = np.asarray(geometry.center_m, dtype=np.float64) - origin
+        center = origin + drive.rotate_vectors_at_angle(center_offset, angle)
+        u = drive.rotate_vectors_at_angle(geometry.u, angle)
+        v = drive.rotate_vectors_at_angle(geometry.v, angle)
+        return PanelGeometry(
+            center_m=(float(center[0]), float(center[1]), float(center[2])),
+            u=(float(u[0]), float(u[1]), float(u[2])),
+            v=(float(v[0]), float(v[1]), float(v[2])),
+            width_m=geometry.width_m,
+            height_m=geometry.height_m,
+        )
+
     def incidence_power_factor(self, illumination_fraction: float) -> float:
         """Return the extra incidence-dependent multiplier for panel power."""
         if not self.incidence_loss_curve:
@@ -358,6 +483,7 @@ class SolarPanel(ConfigModel):
         time_s: float,
         sun_body: npt.NDArray[np.float64],
         *,
+        track_sun: bool,
         advance_drive_state: bool,
     ) -> float | None:
         drive = self.single_axis_drive
@@ -377,7 +503,11 @@ class SolarPanel(ConfigModel):
                     )
                 elapsed_seconds = 0.0
 
-        target = drive.optimal_angle(self.normal, sun_body, reference_angle_deg=current)
+        target = (
+            drive.optimal_angle(self.normal, sun_body, reference_angle_deg=current)
+            if track_sun
+            else current
+        )
         projected = drive.step_toward(current, target, elapsed_seconds)
         if advance_drive_state:
             self._drive_angle_deg = projected
@@ -389,6 +519,7 @@ class SolarPanel(ConfigModel):
         time_s: float,
         sun_body: tuple[float, float, float] | npt.NDArray[np.float64],
         *,
+        track_sun: bool = False,
         advance_drive_state: bool = False,
     ) -> tuple[float, float]:
         """Return geometric illumination and incidence-adjusted power factor.
@@ -402,7 +533,10 @@ class SolarPanel(ConfigModel):
             illumination = 1.0
         else:
             angle = self._project_drive_angle(
-                time_s, sun, advance_drive_state=advance_drive_state
+                time_s,
+                sun,
+                track_sun=track_sun,
+                advance_drive_state=advance_drive_state,
             )
             drive = self.single_axis_drive
             if angle is None:
@@ -419,6 +553,8 @@ class SolarPanel(ConfigModel):
         self,
         time_s: float,
         sun_body: npt.NDArray[np.float64],
+        *,
+        track_sun: bool = False,
     ) -> npt.NDArray[np.float64]:
         """Vectorize non-mutating power-factor previews for candidate attitudes."""
         sun = np.asarray(sun_body, dtype=np.float64)
@@ -443,8 +579,10 @@ class SolarPanel(ConfigModel):
                 if self._drive_time_s is None
                 else max(0.0, time_s - self._drive_time_s)
             )
-            targets = drive.optimal_angles(
-                self.normal, sun, reference_angle_deg=current
+            targets = (
+                drive.optimal_angles(self.normal, sun, reference_angle_deg=current)
+                if track_sun
+                else np.full(len(sun), current, dtype=np.float64)
             )
             max_step = drive.max_rate_deg_per_s * elapsed_seconds
             angles = current + np.clip(targets - current, -max_step, max_step)
@@ -472,6 +610,7 @@ class SolarPanel(ConfigModel):
         ra: float,
         dec: float,
         roll: float = 0.0,
+        acs_mode: ACSMode | None = None,
         advance_drive_state: bool = False,
     ) -> float | npt.NDArray[np.float64]:
         """Calculate the fraction of sunlight on this solar panel.
@@ -482,6 +621,8 @@ class SolarPanel(ConfigModel):
             ra: Current spacecraft RA in degrees
             dec: Current spacecraft Dec in degrees
             roll: Spacecraft roll angle in degrees (rotation about boresight axis)
+            acs_mode: Executed or candidate ACS mode used by the explicit drive
+                control policy. ``None`` conservatively holds finite drives.
             advance_drive_state: Commit rate-limited drive motion. Candidate
                 calculations should leave this false; DITL execution sets it true.
 
@@ -504,6 +645,7 @@ class SolarPanel(ConfigModel):
                             ra=ra,
                             dec=dec,
                             roll=roll,
+                            acs_mode=acs_mode,
                             advance_drive_state=True,
                         ),
                     )
@@ -539,12 +681,13 @@ class SolarPanel(ConfigModel):
             in_eclipse = self._eclipse_constraint.in_constraint(
                 ephemeris=ephem, target_ra=0.0, target_dec=0.0, time=time[0]
             )
-            not_in_eclipse = np.array([not in_eclipse])
+            eclipse_flags = np.array([in_eclipse], dtype=bool)
         else:
             result = self._eclipse_constraint.evaluate(
                 ephemeris=ephem, target_ra=0.0, target_dec=0.0, times=time
             )
-            not_in_eclipse = ~np.array(result.constraint_array)
+            eclipse_flags = np.array(result.constraint_array, dtype=bool)
+        not_in_eclipse = ~eclipse_flags
 
         # Preserve the legacy ideal-gimbal shortcut, including support for
         # callers whose ephemeris provides eclipse state but no position vectors.
@@ -577,6 +720,9 @@ class SolarPanel(ConfigModel):
                 illum[idx], _ = self.illumination_from_sun_body(
                     sample_time_s,
                     sun_normalized,
+                    track_sun=self.tracks_sun(
+                        acs_mode, in_eclipse=bool(eclipse_flags[idx])
+                    ),
                     advance_drive_state=advance_drive_state,
                 )
             else:
@@ -818,6 +964,49 @@ class SolarPanelSet(ConfigModel):
         ]
         return angles or None
 
+    def shadow_geometries(
+        self,
+        *,
+        time_s: float,
+        ra: float,
+        dec: float,
+        roll: float,
+        ephem: rust_ephem.Ephemeris,
+        acs_mode: ACSMode | None,
+        in_eclipse: bool,
+    ) -> dict[str, PanelGeometry]:
+        """Return static or projected articulated geometry for shadow modelling."""
+        from ..common import scbodyvector
+
+        idx = ephem.index(dtutcfromtimestamp(time_s))
+        sunvec = ephem.sun_pv.position[idx] - ephem.gcrs_pv.position[idx]
+        sun_body = scbodyvector(
+            np.deg2rad(ra), np.deg2rad(dec), np.deg2rad(roll), sunvec
+        )
+        sun_magnitude = float(np.linalg.norm(sun_body))
+        sun_normalized = (
+            np.asarray(sun_body, dtype=np.float64) / sun_magnitude
+            if sun_magnitude > 0.0
+            else None
+        )
+
+        geometries: dict[str, PanelGeometry] = {}
+        for panel in self.panels:
+            if panel.geometry is None:
+                continue
+            angle = panel.drive_angle_deg
+            if panel.single_axis_drive is not None and sun_normalized is not None:
+                angle = panel._project_drive_angle(
+                    time_s,
+                    sun_normalized,
+                    track_sun=panel.tracks_sun(acs_mode, in_eclipse=in_eclipse),
+                    advance_drive_state=False,
+                )
+            geometry = panel.geometry_at_drive_angle(angle)
+            assert geometry is not None
+            geometries[panel.name] = geometry
+        return geometries
+
     @property
     def sidemount(self) -> bool:
         """DEPRECATED: Return True if any panel is primarily side-mounted (y-component dominant).
@@ -872,6 +1061,7 @@ class SolarPanelSet(ConfigModel):
         ra: float,
         dec: float,
         roll: float = 0.0,
+        acs_mode: ACSMode | None = None,
         advance_drive_state: bool = False,
     ) -> float | np.ndarray:
         """Calculate the weighted average fraction of sunlight on the solar panel set.
@@ -884,6 +1074,7 @@ class SolarPanelSet(ConfigModel):
             ra: Current spacecraft RA in degrees
             dec: Current spacecraft Dec in degrees
             roll: Spacecraft roll angle in degrees (rotation about boresight axis)
+            acs_mode: Operational mode used by finite-drive control policies.
             advance_drive_state: Commit rate-limited drive motion.
 
         Returns:
@@ -923,6 +1114,7 @@ class SolarPanelSet(ConfigModel):
                 ra=ra,
                 dec=dec,
                 roll=roll,
+                acs_mode=acs_mode,
                 advance_drive_state=advance_drive_state,
             )
             weight = p.max_power / total_max
@@ -942,6 +1134,7 @@ class SolarPanelSet(ConfigModel):
         dec: float,
         ephem: rust_ephem.Ephemeris,
         roll: float = 0.0,
+        acs_mode: ACSMode | None = None,
         advance_drive_state: bool = False,
     ) -> float | np.ndarray:
         """Calculate the power generated by the solar panel set.
@@ -954,6 +1147,7 @@ class SolarPanelSet(ConfigModel):
             dec: Current spacecraft Dec in degrees
             ephem: Ephemeris object
             roll: Spacecraft roll angle in degrees (rotation about boresight axis)
+            acs_mode: Operational mode used by finite-drive control policies.
             advance_drive_state: Commit rate-limited drive motion.
 
         Returns:
@@ -976,6 +1170,7 @@ class SolarPanelSet(ConfigModel):
                 ra=ra,
                 dec=dec,
                 roll=roll,
+                acs_mode=acs_mode,
                 advance_drive_state=advance_drive_state,
             )
             loss_factor: float | np.ndarray
@@ -1003,6 +1198,7 @@ class SolarPanelSet(ConfigModel):
         dec: float,
         ephem: rust_ephem.Ephemeris,
         roll: float = 0.0,
+        acs_mode: ACSMode | None = None,
         advance_drive_state: bool = False,
     ) -> tuple[float | np.ndarray, float | np.ndarray]:
         """Calculate both illumination fraction and power in a single call.
@@ -1016,6 +1212,7 @@ class SolarPanelSet(ConfigModel):
             dec: Current spacecraft Dec in degrees
             ephem: Ephemeris object
             roll: Spacecraft roll angle in degrees (rotation about boresight axis)
+            acs_mode: Operational mode used by finite-drive control policies.
             advance_drive_state: Commit rate-limited drive motion. This should
                 be true only for executed simulation samples.
 
@@ -1049,6 +1246,7 @@ class SolarPanelSet(ConfigModel):
                 dec,
                 ephem,
                 roll=roll,
+                acs_mode=acs_mode,
                 advance_drive_state=advance_drive_state,
             )
 
@@ -1095,6 +1293,7 @@ class SolarPanelSet(ConfigModel):
                 illumination, power_factor = panel.illumination_from_sun_body(
                     dt.timestamp(),
                     sun_normalized,
+                    track_sun=panel.tracks_sun(acs_mode, in_eclipse=bool(in_eclipse)),
                     advance_drive_state=advance_drive_state,
                 )
                 panel_illum[panel_index] = illumination
@@ -1119,6 +1318,7 @@ class SolarPanelSet(ConfigModel):
         dec: float,
         ephem: rust_ephem.Ephemeris,
         roll: float = 0.0,
+        acs_mode: ACSMode | None = None,
         advance_drive_state: bool = False,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Fallback loop-based implementation for list of times."""
@@ -1140,6 +1340,7 @@ class SolarPanelSet(ConfigModel):
                 ra=ra,
                 dec=dec,
                 roll=roll,
+                acs_mode=acs_mode,
                 advance_drive_state=advance_drive_state,
             )
             assert isinstance(panel_illum, np.ndarray)

@@ -1220,7 +1220,14 @@ class QueueDITL(DITLMixin, DITLStats):
         _pos = np.asarray(self.ephem.gcrs_pv.position[ei], dtype=np.float64)
         earth_body_vector: list[float] = list(-_pos / np.linalg.norm(_pos))
 
-        nominal_roll = optimum_roll(ra, dec, utime, self.ephem, self.config.solar_panel)
+        nominal_roll = optimum_roll(
+            ra,
+            dec,
+            utime,
+            self.ephem,
+            self.config.solar_panel,
+            acs_mode=mode,
+        )
         roll_offset_deg = (roll - nominal_roll + 180.0) % 360.0 - 180.0
 
         _q = attitude_to_quat(ra, dec, roll)
@@ -2443,6 +2450,7 @@ class QueueDITL(DITLMixin, DITLStats):
             self.acs.ephem,
             self.config.solar_panel,
             self.config.constraint,
+            acs_mode=ACSMode.SCIENCE,
         )
         self._ppt_optimum_roll_cache[key] = roll
         return roll
@@ -2822,7 +2830,7 @@ class QueueDITL(DITLMixin, DITLStats):
         """Calculate and record power generation, consumption, and battery state."""
         # Calculate solar panel power
         panel_illumination, panel_power = self._calculate_panel_power(
-            i, utime, ra, dec, roll
+            i, utime, ra, dec, roll, mode
         )
         self.panel.append(panel_illumination)
         self.panel_power.append(panel_power)
@@ -2839,7 +2847,13 @@ class QueueDITL(DITLMixin, DITLStats):
         self._update_battery_state(total_power, panel_power)
 
     def _calculate_panel_power(
-        self, i: int, utime: float, ra: float, dec: float, roll: float
+        self,
+        i: int,
+        utime: float,
+        ra: float,
+        dec: float,
+        roll: float,
+        mode: ACSMode,
     ) -> tuple[float, float]:
         """Calculate solar panel illumination and power generation."""
         panel_illumination, panel_power = (
@@ -2849,6 +2863,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 dec=dec,
                 ephem=self.ephem,
                 roll=roll,
+                acs_mode=mode,
                 advance_drive_state=True,
             )
         )

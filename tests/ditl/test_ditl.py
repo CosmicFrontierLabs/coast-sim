@@ -11,6 +11,10 @@ from conops import (
     AttitudeConstraintScope,
     AttitudeRateContinuityError,
     DITLs,
+    SingleAxisSolarArrayDrive,
+    SolarArrayDriveControl,
+    SolarPanel,
+    SolarPanelSet,
 )
 
 
@@ -96,6 +100,56 @@ class TestDITLCalc:
         assert len(ditl.batterylevel) == simlen
         assert len(ditl.batteryalert) == simlen
         assert len(ditl.power) == simlen
+
+    def test_calc_resets_advances_and_exports_array_drive_state(
+        self, ditl: DITL
+    ) -> None:
+        panel = SolarPanel(
+            normal=(0.0, 1.0, 0.0),
+            max_power=100.0,
+            conversion_efficiency=1.0,
+            single_axis_drive=SingleAxisSolarArrayDrive(
+                rotation_axis=(0.0, 0.0, 1.0),
+                min_angle_deg=-180.0,
+                max_angle_deg=180.0,
+                max_rate_deg_per_s=1.0,
+                initial_angle_deg=0.0,
+            ),
+            drive_control=SolarArrayDriveControl(sun_tracking_modes=[ACSMode.SCIENCE]),
+        )
+        panel_set = SolarPanelSet(panels=[panel], conversion_efficiency=1.0)
+        ditl.solar_panel = panel_set
+        ditl.config.solar_panel = panel_set
+
+        panel.illumination_from_sun_body(
+            0.0,
+            (1.0, 0.0, 0.0),
+            track_sun=True,
+            advance_drive_state=True,
+        )
+        panel.illumination_from_sun_body(
+            90.0,
+            (1.0, 0.0, 0.0),
+            track_sun=True,
+            advance_drive_state=True,
+        )
+        assert abs(panel.drive_angle_deg or 0.0) == pytest.approx(90.0)
+
+        eclipse = Mock()
+        eclipse.in_constraint.return_value = False
+        with patch(
+            "conops.config.solar_panel._get_eclipse_constraint",
+            return_value=eclipse,
+        ):
+            ditl.calc()
+
+        angles = [
+            sample.solar_array_drive_angles_deg
+            for sample in ditl.telemetry.housekeeping
+        ]
+        assert angles[0] == [pytest.approx(0.0)]
+        assert angles[1] == [pytest.approx(-60.0)]
+        assert angles[-1] == [pytest.approx(-90.0)]
 
     def test_calc_housekeeping_separates_global_from_scoped_constraints(
         self, ditl: DITL

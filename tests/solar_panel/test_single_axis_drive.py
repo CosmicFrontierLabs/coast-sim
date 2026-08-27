@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -6,12 +6,15 @@ import pytest
 from pydantic import ValidationError
 
 from conops import (
+    ACSMode,
     IncidenceLossPoint,
     SingleAxisSolarArrayDrive,
+    SolarArrayDriveControl,
     SolarPanel,
     SolarPanelSet,
     optimum_roll,
 )
+from conops.config import PanelGeometry
 
 
 def _drive(**overrides: object) -> SingleAxisSolarArrayDrive:
@@ -75,6 +78,30 @@ class TestSingleAxisSolarArrayDrive:
 
 
 class TestDrivenPanelRuntime:
+    def test_drive_holds_without_an_explicit_tracking_command(self) -> None:
+        panel = SolarPanel(normal=(1.0, 0.0, 0.0), single_axis_drive=_drive())
+
+        panel.illumination_from_sun_body(0.0, (0.0, 1.0, 0.0), advance_drive_state=True)
+        illumination, _ = panel.illumination_from_sun_body(
+            60.0, (0.0, 1.0, 0.0), advance_drive_state=True
+        )
+
+        assert panel.drive_angle_deg == pytest.approx(0.0)
+        assert illumination == pytest.approx(0.0, abs=1e-12)
+
+    def test_control_policy_is_explicitly_mode_and_eclipse_dependent(self) -> None:
+        panel = SolarPanel(
+            single_axis_drive=_drive(),
+            drive_control=SolarArrayDriveControl(sun_tracking_modes=[ACSMode.SCIENCE]),
+        )
+
+        assert panel.tracks_sun(ACSMode.SCIENCE, in_eclipse=False)
+        assert not panel.tracks_sun(ACSMode.PASS, in_eclipse=False)
+        assert not panel.tracks_sun(ACSMode.SCIENCE, in_eclipse=True)
+        assert not SolarPanel(single_axis_drive=_drive()).tracks_sun(
+            ACSMode.SCIENCE, in_eclipse=False
+        )
+
     def test_configuration_round_trips_without_runtime_state(self) -> None:
         panel = SolarPanel(
             normal=(1.0, 0.0, 0.0),
@@ -85,10 +112,16 @@ class TestDrivenPanelRuntime:
             ],
         )
         panel.illumination_from_sun_body(
-            60.0, (0.0, 1.0, 0.0), advance_drive_state=True
+            60.0,
+            (0.0, 1.0, 0.0),
+            track_sun=True,
+            advance_drive_state=True,
         )
         panel.illumination_from_sun_body(
-            90.0, (0.0, 1.0, 0.0), advance_drive_state=True
+            90.0,
+            (0.0, 1.0, 0.0),
+            track_sun=True,
+            advance_drive_state=True,
         )
 
         restored = SolarPanel.model_validate(panel.model_dump())
@@ -102,10 +135,16 @@ class TestDrivenPanelRuntime:
         panel.reset_drive_state()
 
         initial, _ = panel.illumination_from_sun_body(
-            0.0, (0.0, 1.0, 0.0), advance_drive_state=True
+            0.0,
+            (0.0, 1.0, 0.0),
+            track_sun=True,
+            advance_drive_state=True,
         )
         after_30_s, _ = panel.illumination_from_sun_body(
-            30.0, (0.0, 1.0, 0.0), advance_drive_state=True
+            30.0,
+            (0.0, 1.0, 0.0),
+            track_sun=True,
+            advance_drive_state=True,
         )
 
         assert initial == pytest.approx(0.0, abs=1e-12)
@@ -114,10 +153,18 @@ class TestDrivenPanelRuntime:
 
     def test_candidate_preview_does_not_mutate_drive_state(self) -> None:
         panel = SolarPanel(normal=(1.0, 0.0, 0.0), single_axis_drive=_drive())
-        panel.illumination_from_sun_body(0.0, (0.0, 1.0, 0.0), advance_drive_state=True)
+        panel.illumination_from_sun_body(
+            0.0,
+            (0.0, 1.0, 0.0),
+            track_sun=True,
+            advance_drive_state=True,
+        )
 
         preview, _ = panel.illumination_from_sun_body(
-            60.0, (0.0, 1.0, 0.0), advance_drive_state=False
+            60.0,
+            (0.0, 1.0, 0.0),
+            track_sun=True,
+            advance_drive_state=False,
         )
 
         assert preview == pytest.approx(np.sin(np.deg2rad(60.0)))
@@ -125,7 +172,12 @@ class TestDrivenPanelRuntime:
 
     def test_vectorized_candidate_preview_matches_rate_limited_geometry(self) -> None:
         panel = SolarPanel(normal=(1.0, 0.0, 0.0), single_axis_drive=_drive())
-        panel.illumination_from_sun_body(0.0, (0.0, 1.0, 0.0), advance_drive_state=True)
+        panel.illumination_from_sun_body(
+            0.0,
+            (0.0, 1.0, 0.0),
+            track_sun=True,
+            advance_drive_state=True,
+        )
 
         factors = panel.preview_power_factors_from_sun_body(
             30.0,
@@ -135,6 +187,7 @@ class TestDrivenPanelRuntime:
                     (1.0, 0.0, 0.0),
                 ]
             ),
+            track_sun=True,
         )
 
         assert factors == pytest.approx((0.5, 1.0))
@@ -143,7 +196,10 @@ class TestDrivenPanelRuntime:
     def test_executed_samples_cannot_advance_backward_in_time(self) -> None:
         panel = SolarPanel(normal=(1.0, 0.0, 0.0), single_axis_drive=_drive())
         panel.illumination_from_sun_body(
-            60.0, (0.0, 1.0, 0.0), advance_drive_state=True
+            60.0,
+            (0.0, 1.0, 0.0),
+            track_sun=True,
+            advance_drive_state=True,
         )
 
         with pytest.raises(ValueError, match="backward in time"):
@@ -154,6 +210,36 @@ class TestDrivenPanelRuntime:
     def test_legacy_ideal_gimbal_cannot_also_use_finite_drive(self) -> None:
         with pytest.raises(ValidationError, match="mutually exclusive"):
             SolarPanel(gimbled=True, single_axis_drive=_drive())
+
+    def test_articulated_geometry_rotates_about_explicit_axis_line(self) -> None:
+        panel = SolarPanel(
+            normal=(1.0, 0.0, 0.0),
+            geometry=PanelGeometry(
+                center_m=(1.0, 0.0, 0.0),
+                u=(0.0, 1.0, 0.0),
+                v=(0.0, 0.0, 1.0),
+                width_m=2.0,
+                height_m=1.0,
+            ),
+            single_axis_drive=_drive(rotation_origin_m=(0.0, 0.0, 0.0)),
+        )
+
+        geometry = panel.geometry_at_drive_angle(90.0)
+
+        assert geometry is not None
+        assert geometry.center_m == pytest.approx((0.0, 1.0, 0.0), abs=1e-12)
+        assert geometry.u == pytest.approx((-1.0, 0.0, 0.0), abs=1e-12)
+        assert geometry.v == pytest.approx((0.0, 0.0, 1.0), abs=1e-12)
+
+    def test_articulated_geometry_requires_axis_origin(self) -> None:
+        with pytest.raises(ValidationError, match="rotation_origin_m"):
+            SolarPanel(
+                geometry=PanelGeometry(
+                    u=(1.0, 0.0, 0.0),
+                    v=(0.0, 0.0, 1.0),
+                ),
+                single_axis_drive=_drive(),
+            )
 
 
 class TestIncidenceLoss:
@@ -194,6 +280,92 @@ class TestIncidenceLoss:
 
 
 class TestDrivenPanelSet:
+    def test_shadow_geometry_previews_the_same_angle_execution_commits(self) -> None:
+        panel = SolarPanel(
+            name="Wing",
+            normal=(1.0, 0.0, 0.0),
+            geometry=PanelGeometry(
+                center_m=(1.0, 0.0, 0.0),
+                u=(0.0, 1.0, 0.0),
+                v=(0.0, 0.0, 1.0),
+            ),
+            single_axis_drive=_drive(rotation_origin_m=(0.0, 0.0, 0.0)),
+            drive_control=SolarArrayDriveControl(sun_tracking_modes=[ACSMode.SCIENCE]),
+        )
+        panel_set = SolarPanelSet(panels=[panel])
+        ephem = _ephem_with_sun((0.0, 1.0, 0.0))
+        eclipse = Mock()
+        eclipse.in_constraint.return_value = False
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        with patch(
+            "conops.config.solar_panel._get_eclipse_constraint",
+            return_value=eclipse,
+        ):
+            panel_set.illumination_and_power(
+                time=start,
+                ra=0.0,
+                dec=0.0,
+                ephem=ephem,
+                acs_mode=ACSMode.SCIENCE,
+                advance_drive_state=True,
+            )
+            projected = panel_set.shadow_geometries(
+                time_s=(start + timedelta(seconds=30)).timestamp(),
+                ra=0.0,
+                dec=0.0,
+                roll=0.0,
+                ephem=ephem,
+                acs_mode=ACSMode.SCIENCE,
+                in_eclipse=False,
+            )["Wing"]
+            assert panel.drive_angle_deg == pytest.approx(0.0)
+
+            panel_set.illumination_and_power(
+                time=start + timedelta(seconds=30),
+                ra=0.0,
+                dec=0.0,
+                ephem=ephem,
+                acs_mode=ACSMode.SCIENCE,
+                advance_drive_state=True,
+            )
+
+        committed = panel.geometry_at_drive_angle()
+        assert committed is not None
+        assert projected.center_m == pytest.approx(committed.center_m)
+        assert projected.u == pytest.approx(committed.u)
+        assert projected.v == pytest.approx(committed.v)
+
+    def test_drive_holds_in_eclipse_without_accumulating_motion_time(self) -> None:
+        panel = SolarPanel(
+            normal=(1.0, 0.0, 0.0),
+            single_axis_drive=_drive(),
+            drive_control=SolarArrayDriveControl(sun_tracking_modes=[ACSMode.SCIENCE]),
+        )
+        panel_set = SolarPanelSet(panels=[panel])
+        ephem = _ephem_with_sun((0.0, 1.0, 0.0))
+        eclipse = Mock()
+        eclipse.in_constraint.side_effect = [False, True, False]
+
+        with patch(
+            "conops.config.solar_panel._get_eclipse_constraint",
+            return_value=eclipse,
+        ):
+            for seconds in (0, 30, 60):
+                _, power = panel_set.illumination_and_power(
+                    time=datetime(2026, 1, 1, tzinfo=timezone.utc)
+                    + timedelta(seconds=seconds),
+                    ra=0.0,
+                    dec=0.0,
+                    ephem=ephem,
+                    acs_mode=ACSMode.SCIENCE,
+                    advance_drive_state=True,
+                )
+                if seconds == 30:
+                    assert power == pytest.approx(0.0)
+
+        assert panel.drive_angle_deg == pytest.approx(30.0)
+
     def test_power_calculation_advances_and_reports_drive_angle(self) -> None:
         panel_set = SolarPanelSet(
             panels=[
@@ -202,6 +374,9 @@ class TestDrivenPanelSet:
                     max_power=100.0,
                     conversion_efficiency=1.0,
                     single_axis_drive=_drive(),
+                    drive_control=SolarArrayDriveControl(
+                        sun_tracking_modes=[ACSMode.SCIENCE]
+                    ),
                 )
             ]
         )
@@ -218,6 +393,7 @@ class TestDrivenPanelSet:
                 ra=0.0,
                 dec=0.0,
                 ephem=ephem,
+                acs_mode=ACSMode.SCIENCE,
                 advance_drive_state=True,
             )
             illumination, power = panel_set.illumination_and_power(
@@ -225,6 +401,7 @@ class TestDrivenPanelSet:
                 ra=0.0,
                 dec=0.0,
                 ephem=ephem,
+                acs_mode=ACSMode.SCIENCE,
                 advance_drive_state=True,
             )
 
@@ -237,12 +414,18 @@ class TestDrivenPanelSet:
             normal=(1.0, 0.0, 0.0),
             max_power=100.0,
             single_axis_drive=_drive(),
+            drive_control=SolarArrayDriveControl(sun_tracking_modes=[ACSMode.SCIENCE]),
         )
         panel_set = SolarPanelSet(panels=[panel])
-        panel.illumination_from_sun_body(0.0, (0.0, 1.0, 0.0), advance_drive_state=True)
+        panel.illumination_from_sun_body(
+            0.0,
+            (0.0, 1.0, 0.0),
+            track_sun=True,
+            advance_drive_state=True,
+        )
         ephem = _ephem_with_sun((0.0, 1.0, 0.0))
 
-        roll = optimum_roll(0.0, 0.0, 30.0, ephem, panel_set)
+        roll = optimum_roll(0.0, 0.0, 30.0, ephem, panel_set, acs_mode=ACSMode.SCIENCE)
 
         assert roll == pytest.approx(0.0)
         assert panel.drive_angle_deg == pytest.approx(0.0)

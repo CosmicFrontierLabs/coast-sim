@@ -392,6 +392,8 @@ The :class:`~conops.config.SolarPanelSet` defines the solar array configuration.
 * ``conversion_efficiency`` (float | None): Per-panel efficiency override
 * ``single_axis_drive`` (SingleAxisSolarArrayDrive | None): Optional finite,
   rate-limited rotation about one spacecraft-body axis
+* ``drive_control`` (SolarArrayDriveControl): Mode-aware operational policy for
+  a finite drive; the default holds the initial/current angle in every mode
 * ``incidence_loss_curve`` (list[IncidenceLossPoint] | None): Optional
   additional power factor versus solar-incidence angle
 
@@ -427,8 +429,16 @@ Use :class:`~conops.config.SingleAxisSolarArrayDrive` when a panel rotates about
 one physical axis. The panel's configured ``normal`` is its zero-angle reference
 normal. Positive drive angles follow the right-hand rule about
 ``rotation_axis``. The drive begins each simulation at ``initial_angle_deg`` and
-moves toward the best available Sun-facing angle without exceeding its travel or
-rate limits.
+holds there unless an explicit :class:`~conops.config.SolarArrayDriveControl`
+lists the current ACS mode for Sun tracking. In a listed mode, it moves toward
+the best available Sun-facing angle without exceeding its travel or rate limits.
+Tracking in eclipse is disabled unless ``track_in_eclipse=True`` is explicitly
+configured.
+
+The drive kinematics and control policy are separate so hardware capability does
+not silently impose an operations concept. When a driven panel also has
+``geometry``, ``rotation_origin_m`` is required. Its centre and spanning vectors
+are then rotated about that body-frame axis line for radiator-shadow calculations.
 
 The optional incidence-loss curve multiplies the normal cosine-incidence power
 response. Angles must increase and power factors must be non-increasing. Curve
@@ -441,9 +451,11 @@ illumination fraction.
    from conops.config import (
        IncidenceLossPoint,
        SingleAxisSolarArrayDrive,
+       SolarArrayDriveControl,
        SolarPanel,
        SolarPanelSet,
    )
+   from conops import ACSMode
 
    solar_panel = SolarPanelSet(
        panels=[
@@ -457,6 +469,15 @@ illumination fraction.
                    max_angle_deg=165.0,
                    max_rate_deg_per_s=0.25,
                    initial_angle_deg=0.0,
+                   rotation_origin_m=(0.0, 0.0, 0.0),
+               ),
+               drive_control=SolarArrayDriveControl(
+                   sun_tracking_modes=[
+                       ACSMode.SCIENCE,
+                       ACSMode.CHARGING,
+                       ACSMode.SAFE,
+                   ],
+                   track_in_eclipse=False,
                ),
                incidence_loss_curve=[
                    IncidenceLossPoint(
@@ -474,8 +495,9 @@ illumination fraction.
        conversion_efficiency=0.95,
    )
 
-Candidate pointing and roll calculations preview rate-limited drive motion
-without modifying runtime state. Executed DITL samples advance the state, and
+Candidate pointing, roll, and shadow calculations preview the applicable
+rate-limited drive command without modifying runtime state. Executed DITL
+samples advance the state, and
 ``solar_array_drive_angles_deg`` housekeeping telemetry records the resulting
 angles in configured driven-panel order.
 

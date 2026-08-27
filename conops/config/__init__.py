@@ -31,6 +31,7 @@ from .recorder import OnboardRecorder
 from .solar_panel import (
     IncidenceLossPoint,
     SingleAxisSolarArrayDrive,
+    SolarArrayDriveControl,
     SolarPanel,
     SolarPanelSet,
     create_solar_panel_vector,
@@ -84,6 +85,7 @@ __all__ = [
     "RadiatorOrientation",
     "SolarPanel",
     "SolarPanelSet",
+    "SolarArrayDriveControl",
     "SingleAxisSolarArrayDrive",
     "SpacecraftBus",
     "StarTracker",

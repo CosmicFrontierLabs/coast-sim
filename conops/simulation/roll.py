@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import rust_ephem
 
-from ..common import dtutcfromtimestamp, scbodyvector
+from ..common import ACSMode, dtutcfromtimestamp, scbodyvector
 from ..config import DTOR, Constraint, SolarPanel, SolarPanelSet
 
 
@@ -73,6 +73,7 @@ def optimum_roll(
     constraint: Constraint | None = None,
     reference_roll: float | None = None,
     max_roll_delta: float | None = None,
+    acs_mode: ACSMode | None = None,
 ) -> float:
     """Calculate the optimum roll angle (degrees in [0,360)).
 
@@ -169,7 +170,11 @@ def optimum_roll(
         totals = np.zeros(len(deg), dtype=float)
         for panel, weight in zip(panels, weights):
             totals += (
-                panel.preview_power_factors_from_sun_body(utime, sun_body_candidates)
+                panel.preview_power_factors_from_sun_body(
+                    utime,
+                    sun_body_candidates,
+                    track_sun=panel.tracks_sun(acs_mode, in_eclipse=False),
+                )
                 * weight
             )
         if candidate_mask is not None:

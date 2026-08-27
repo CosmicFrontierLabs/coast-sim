@@ -223,6 +223,7 @@ class DITL(DITLMixin, DITLStats):
                 dec=dec,
                 ephem=self.ephem,
                 roll=roll,
+                acs_mode=mode,
                 advance_drive_state=True,
             )
             assert isinstance(panel_illumination, float)
@@ -248,7 +249,12 @@ class DITL(DITLMixin, DITLStats):
 
             # Create housekeeping telemetry record for fault checking
             nominal_roll = optimum_roll(
-                ra, dec, self.utime[i], self.ephem, self.solar_panel
+                ra,
+                dec,
+                self.utime[i],
+                self.ephem,
+                self.solar_panel,
+                acs_mode=mode,
             )
             roll_offset_deg = (roll - nominal_roll + 180.0) % 360.0 - 180.0
             sun_angle_deg = self._compute_sun_angle(self.utime[i], ra, dec)

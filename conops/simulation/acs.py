@@ -407,8 +407,19 @@ class ACS:
         slew.enddec = dec
         # If roll not provided, calculate optimal roll at target position
         if roll is None:
+            target_mode = {
+                ObsType.SAFE: ACSMode.SAFE,
+                ObsType.CHARGE: ACSMode.CHARGING,
+                ObsType.GSP: ACSMode.PASS,
+            }.get(obstype, ACSMode.SCIENCE)
             slew.endroll = optimum_roll(
-                ra, dec, utime, self.ephem, self.solar_panel, self.constraint
+                ra,
+                dec,
+                utime,
+                self.ephem,
+                self.solar_panel,
+                self.constraint,
+                acs_mode=target_mode,
             )
         else:
             slew.endroll = roll
@@ -653,7 +664,13 @@ class ACS:
         if self.last_slew is not None and self.last_slew.slewstart > 0:
             return self.last_slew.endroll
         return optimum_roll(
-            self.ra, self.dec, utime, self.ephem, self.solar_panel, self.constraint
+            self.ra,
+            self.dec,
+            utime,
+            self.ephem,
+            self.solar_panel,
+            self.constraint,
+            acs_mode=self.get_mode(utime),
         )
 
     def _continuous_optimum_roll(self, utime: float, mode: ACSMode) -> float:
@@ -681,6 +698,7 @@ class ACS:
             self.constraint,
             reference_roll=self.roll,
             max_roll_delta=max_roll_delta,
+            acs_mode=mode,
         )
         self._last_roll_optimization_utime = utime
         self._last_roll_optimization_mode = mode
@@ -752,6 +770,7 @@ class ACS:
                 self.ephem,
                 self.solar_panel,
                 self.constraint,
+                acs_mode=ACSMode.IDLE,
             )
             for candidate_roll in self._idle_safe_roll_candidates(optimal_roll):
                 if not self._idle_attitude_unsafe(
@@ -1035,14 +1054,19 @@ class ACS:
         current_dec = self.dec
         current_roll = self.roll
 
-        # Build solar panel geometry lookup so radiators can compute shadow fractions.
+        # Project finite-drive geometry to this sample without committing drive
+        # state; executed power calculation later commits the same projection.
         solar_panel_geometries = None
         if self.config.solar_panel is not None:
-            geom_map = {
-                p.name: p.geometry
-                for p in self.config.solar_panel.panels
-                if p.geometry is not None
-            }
+            geom_map = self.config.solar_panel.shadow_geometries(
+                time_s=utime,
+                ra=current_ra,
+                dec=current_dec,
+                roll=current_roll,
+                ephem=self.ephem,
+                acs_mode=self.get_mode(utime),
+                in_eclipse=self.in_eclipse,
+            )
             if geom_map:
                 solar_panel_geometries = geom_map
 
