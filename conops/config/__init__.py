@@ -28,7 +28,13 @@ from .radiator import (
     RadiatorOrientation,
 )
 from .recorder import OnboardRecorder
-from .solar_panel import SolarPanel, SolarPanelSet, create_solar_panel_vector
+from .solar_panel import (
+    IncidenceLossPoint,
+    SingleAxisSolarArrayDrive,
+    SolarPanel,
+    SolarPanelSet,
+    create_solar_panel_vector,
+)
 from .spacecraft_bus import SpacecraftBus
 from .star_tracker import (
     DefaultStarTrackerConfiguration,
@@ -61,6 +67,7 @@ __all__ = [
     "GroundStationRegistry",
     "Heater",
     "Instrument",
+    "IncidenceLossPoint",
     "Telescope",
     "TelescopeConfig",
     "TelescopeType",
@@ -77,6 +84,7 @@ __all__ = [
     "RadiatorOrientation",
     "SolarPanel",
     "SolarPanelSet",
+    "SingleAxisSolarArrayDrive",
     "SpacecraftBus",
     "StarTracker",
     "DefaultStarTrackerConfiguration",

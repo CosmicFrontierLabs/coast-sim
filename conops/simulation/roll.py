@@ -6,7 +6,7 @@ import numpy as np
 import rust_ephem
 
 from ..common import dtutcfromtimestamp, scbodyvector
-from ..config import DTOR, Constraint, SolarPanelSet
+from ..config import DTOR, Constraint, SolarPanel, SolarPanelSet
 
 
 def _roll_valid_mask(
@@ -148,6 +148,33 @@ def optimum_roll(
             else default_eff
         )
         weights.append(p.max_power * eff)
+
+    # Finite drives and incidence-loss curves make the effective panel normal
+    # and power response candidate-dependent. Evaluate those configurations
+    # explicitly while leaving runtime drive state untouched. The legacy fixed-
+    # panel path below remains vectorized.
+    if any(
+        isinstance(p, SolarPanel)
+        and (p.single_axis_drive is not None or bool(p.incidence_loss_curve))
+        for p in panels
+    ):
+        angles_rad = deg * DTOR
+        sun_body_candidates = np.column_stack(
+            (
+                np.full_like(deg, s_norm[0]),
+                np.cos(angles_rad) * s_norm[1] + np.sin(angles_rad) * s_norm[2],
+                -np.sin(angles_rad) * s_norm[1] + np.cos(angles_rad) * s_norm[2],
+            )
+        )
+        totals = np.zeros(len(deg), dtype=float)
+        for panel, weight in zip(panels, weights):
+            totals += (
+                panel.preview_power_factors_from_sun_body(utime, sun_body_candidates)
+                * weight
+            )
+        if candidate_mask is not None:
+            totals = np.where(candidate_mask, totals, -np.inf)
+        return float(deg[int(np.argmax(totals))])
 
     # Convert lists to arrays
     n_mat = np.asarray(base_normals, dtype=float)  # shape (P,3)

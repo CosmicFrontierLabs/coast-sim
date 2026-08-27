@@ -455,6 +455,7 @@ class QueueDITL(DITLMixin, DITLStats):
         # Reset per-run state so re-runs on the same instance start clean
         self._attitude_constraint_violations = []
         self._active_gsp_end_time = None
+        self.config.solar_panel.reset_drive_state()
 
         # If begin/end datetimes are naive, assume UTC by making them timezone-aware
         if self.begin.tzinfo is None:
@@ -1223,6 +1224,9 @@ class QueueDITL(DITLMixin, DITLStats):
         roll_offset_deg = (roll - nominal_roll + 180.0) % 360.0 - 180.0
 
         _q = attitude_to_quat(ra, dec, roll)
+        drive_angles = getattr(self.config.solar_panel, "drive_angles_deg", None)
+        if not isinstance(drive_angles, list):
+            drive_angles = None
         return Housekeeping(
             timestamp=datetime.fromtimestamp(utime, tz=timezone.utc),
             ra=ra,
@@ -1231,6 +1235,7 @@ class QueueDITL(DITLMixin, DITLStats):
             roll_offset_deg=roll_offset_deg,
             acs_mode=mode,
             panel_illumination=panel_illumination,
+            solar_array_drive_angles_deg=drive_angles,
             power_usage=total_power,
             power_bus=bus_power,
             power_payload=payload_power,
@@ -2839,7 +2844,12 @@ class QueueDITL(DITLMixin, DITLStats):
         """Calculate solar panel illumination and power generation."""
         panel_illumination, panel_power = (
             self.config.solar_panel.illumination_and_power(
-                time=self.utime[i], ra=ra, dec=dec, ephem=self.ephem, roll=roll
+                time=self.utime[i],
+                ra=ra,
+                dec=dec,
+                ephem=self.ephem,
+                roll=roll,
+                advance_drive_state=True,
             )
         )
         assert isinstance(panel_illumination, float)

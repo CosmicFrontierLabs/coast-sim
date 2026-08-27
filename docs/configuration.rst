@@ -379,7 +379,8 @@ The :class:`~conops.config.SolarPanelSet` defines the solar array configuration.
 **SolarPanel Attributes:**
 
 * ``name`` (str): Panel identifier
-* ``gimbled`` (bool): Whether the panel can track the Sun
+* ``gimbled`` (bool): Whether the panel uses the legacy ideal Sun-tracking
+  model, with no travel or rate limits
 * ``normal`` (tuple[float, float, float]): Panel normal vector in spacecraft body frame
 
   - +x is the spacecraft pointing direction (boresight)
@@ -389,6 +390,10 @@ The :class:`~conops.config.SolarPanelSet` defines the solar array configuration.
 
 * ``max_power`` (float): Maximum power output at full illumination (Watts)
 * ``conversion_efficiency`` (float | None): Per-panel efficiency override
+* ``single_axis_drive`` (SingleAxisSolarArrayDrive | None): Optional finite,
+  rate-limited rotation about one spacecraft-body axis
+* ``incidence_loss_curve`` (list[IncidenceLossPoint] | None): Optional
+  additional power factor versus solar-incidence angle
 
 .. code-block:: python
 
@@ -414,6 +419,65 @@ The :class:`~conops.config.SolarPanelSet` defines the solar array configuration.
        ],
        conversion_efficiency=0.95,
    )
+
+Finite Single-Axis Array Drives
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Use :class:`~conops.config.SingleAxisSolarArrayDrive` when a panel rotates about
+one physical axis. The panel's configured ``normal`` is its zero-angle reference
+normal. Positive drive angles follow the right-hand rule about
+``rotation_axis``. The drive begins each simulation at ``initial_angle_deg`` and
+moves toward the best available Sun-facing angle without exceeding its travel or
+rate limits.
+
+The optional incidence-loss curve multiplies the normal cosine-incidence power
+response. Angles must increase and power factors must be non-increasing. Curve
+values are linearly interpolated and endpoint-clamped. It changes generated
+power, while ``panel_illumination`` telemetry continues to report the geometric
+illumination fraction.
+
+.. code-block:: python
+
+   from conops.config import (
+       IncidenceLossPoint,
+       SingleAxisSolarArrayDrive,
+       SolarPanel,
+       SolarPanelSet,
+   )
+
+   solar_panel = SolarPanelSet(
+       panels=[
+           SolarPanel(
+               name="Articulated wing",
+               normal=(1.0, 0.0, 0.0),
+               max_power=3000.0,
+               single_axis_drive=SingleAxisSolarArrayDrive(
+                   rotation_axis=(0.0, 0.0, 1.0),
+                   min_angle_deg=-165.0,
+                   max_angle_deg=165.0,
+                   max_rate_deg_per_s=0.25,
+                   initial_angle_deg=0.0,
+               ),
+               incidence_loss_curve=[
+                   IncidenceLossPoint(
+                       incidence_angle_deg=0.0, power_factor=1.0
+                   ),
+                   IncidenceLossPoint(
+                       incidence_angle_deg=60.0, power_factor=0.9
+                   ),
+                   IncidenceLossPoint(
+                       incidence_angle_deg=90.0, power_factor=0.5
+                   ),
+               ],
+           )
+       ],
+       conversion_efficiency=0.95,
+   )
+
+Candidate pointing and roll calculations preview rate-limited drive motion
+without modifying runtime state. Executed DITL samples advance the state, and
+``solar_array_drive_angles_deg`` housekeeping telemetry records the resulting
+angles in configured driven-panel order.
 
 Solar Panel Vector Helper Function
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
