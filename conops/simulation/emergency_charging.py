@@ -189,8 +189,6 @@ class EmergencyCharging:
             ephem,
             self.solar_panel,
             self.constraint,
-            acs_mode=ACSMode.CHARGING,
-            in_eclipse=False,
         )
 
         # Create the charging PPT
@@ -289,8 +287,6 @@ class EmergencyCharging:
             ephem,
             self.solar_panel,
             self.constraint,
-            acs_mode=ACSMode.CHARGING,
-            in_eclipse=False,
         )
         if not self._charging_attitude_violates_scopes(
             optimal_ra, optimal_dec, utime, roll=optimal_roll
@@ -376,8 +372,6 @@ class EmergencyCharging:
                 ephem,
                 self.solar_panel,
                 self.constraint,
-                acs_mode=ACSMode.CHARGING,
-                in_eclipse=False,
             )
 
             # Calculate solar panel illumination for this pointing with optimal roll

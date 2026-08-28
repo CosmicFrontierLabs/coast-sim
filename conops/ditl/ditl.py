@@ -254,8 +254,6 @@ class DITL(DITLMixin, DITLStats):
                 self.utime[i],
                 self.ephem,
                 self.solar_panel,
-                acs_mode=mode,
-                in_eclipse=self.acs.in_eclipse,
             )
             roll_offset_deg = (roll - nominal_roll + 180.0) % 360.0 - 180.0
             sun_angle_deg = self._compute_sun_angle(self.utime[i], ra, dec)

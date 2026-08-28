@@ -28,21 +28,6 @@ def _unit_vector(
     return array / magnitude
 
 
-class IncidenceLossPoint(ConfigModel):
-    """Additional panel power factor at a solar-incidence angle."""
-
-    incidence_angle_deg: float = Field(
-        ge=0.0,
-        le=90.0,
-        description="Solar-incidence angle in degrees (zero is panel-normal)",
-    )
-    power_factor: float = Field(
-        ge=0.0,
-        le=1.0,
-        description="Multiplicative power factor in addition to cosine incidence",
-    )
-
-
 class SolarArrayDriveControl(ConfigModel):
     """Operational policy for a finite solar-array drive.
 
@@ -93,13 +78,6 @@ class SingleAxisSolarArrayDrive(ConfigModel):
     initial_angle_deg: float = Field(
         default=0.0, description="Drive angle at the start of each simulation run"
     )
-    rotation_origin_m: tuple[float, float, float] | None = Field(
-        default=None,
-        description=(
-            "Point on the body-frame rotation axis in metres. Required when "
-            "the panel has 3D geometry."
-        ),
-    )
 
     @field_validator("rotation_axis")
     @classmethod
@@ -108,18 +86,6 @@ class SingleAxisSolarArrayDrive(ConfigModel):
     ) -> tuple[float, float, float]:
         axis = _unit_vector(value, field_name="rotation_axis")
         return (float(axis[0]), float(axis[1]), float(axis[2]))
-
-    @field_validator("rotation_origin_m")
-    @classmethod
-    def _validate_rotation_origin(
-        cls, value: tuple[float, float, float] | None
-    ) -> tuple[float, float, float] | None:
-        if value is None:
-            return None
-        origin = np.asarray(value, dtype=np.float64)
-        if origin.shape != (3,) or not np.all(np.isfinite(origin)):
-            raise ValueError("rotation_origin_m must contain three finite components")
-        return (float(origin[0]), float(origin[1]), float(origin[2]))
 
     @model_validator(mode="after")
     def _validate_travel(self) -> "SingleAxisSolarArrayDrive":
@@ -139,38 +105,6 @@ class SingleAxisSolarArrayDrive(ConfigModel):
             raise ValueError("initial_angle_deg must lie within the drive travel")
         return self
 
-    def normal_at_angle(
-        self,
-        reference_normal: tuple[float, float, float] | npt.NDArray[np.float64],
-        angle_deg: float,
-    ) -> npt.NDArray[np.float64]:
-        """Rotate a reference normal to a physical drive angle."""
-        return cast(
-            npt.NDArray[np.float64],
-            self.normals_at_angles(reference_normal, np.asarray([angle_deg]))[0],
-        )
-
-    def rotate_vectors_at_angle(
-        self,
-        vectors: npt.ArrayLike,
-        angle_deg: float,
-    ) -> npt.NDArray[np.float64]:
-        """Rotate one or more body-frame vectors about the drive axis."""
-        array = np.asarray(vectors, dtype=np.float64)
-        scalar = array.ndim == 1
-        if scalar:
-            array = array[None, :]
-        if array.ndim != 2 or array.shape[1] != 3 or not np.all(np.isfinite(array)):
-            raise ValueError("vectors must have shape (3,) or (N, 3) and be finite")
-        axis = np.asarray(self.rotation_axis, dtype=np.float64)
-        theta = np.deg2rad(angle_deg)
-        rotated = (
-            array * np.cos(theta)
-            + np.cross(axis, array) * np.sin(theta)
-            + np.outer(array @ axis, axis) * (1.0 - np.cos(theta))
-        )
-        return cast(npt.NDArray[np.float64], rotated[0] if scalar else rotated)
-
     def normals_at_angles(
         self,
         reference_normal: tuple[float, float, float] | npt.NDArray[np.float64],
@@ -189,20 +123,6 @@ class SingleAxisSolarArrayDrive(ConfigModel):
         if not np.all(np.isfinite(rotated)) or np.any(magnitudes <= 0.0):
             raise ValueError("rotated panel normals must be finite and non-zero")
         return cast(npt.NDArray[np.float64], rotated / magnitudes[:, None])
-
-    def optimal_angle(
-        self,
-        reference_normal: tuple[float, float, float] | npt.NDArray[np.float64],
-        sun_body: tuple[float, float, float] | npt.NDArray[np.float64],
-        reference_angle_deg: float | None = None,
-    ) -> float:
-        """Return the in-travel angle with the greatest Sun-normal dot product."""
-        angles = self.optimal_angles(
-            reference_normal,
-            np.asarray([sun_body], dtype=np.float64),
-            reference_angle_deg=reference_angle_deg,
-        )
-        return float(angles[0])
 
     def optimal_angles(
         self,
@@ -330,8 +250,6 @@ class SolarPanel(ConfigModel):
         single_axis_drive (SingleAxisSolarArrayDrive | None): Optional finite,
             rate-limited articulation model. This is distinct from the legacy
             ideal ``gimbled`` behavior.
-        incidence_loss_curve (list[IncidenceLossPoint] | None): Optional
-            additional power-factor curve versus incidence angle.
     """
 
     # Class-level eclipse constraint (stateless, shared across all instances)
@@ -373,14 +291,6 @@ class SolarPanel(ConfigModel):
             "the configured initial angle in every ACS mode."
         ),
     )
-    incidence_loss_curve: list[IncidenceLossPoint] | None = Field(
-        default=None,
-        description=(
-            "Optional additional power factor versus solar-incidence angle. "
-            "Values are linearly interpolated and endpoint-clamped."
-        ),
-    )
-
     _drive_angle_deg: float | None = PrivateAttr(default=None)
     _drive_time_s: float | None = PrivateAttr(default=None)
 
@@ -395,25 +305,6 @@ class SolarPanel(ConfigModel):
             self.drive_control.sun_tracking_modes or self.drive_control.track_in_eclipse
         ):
             raise ValueError("drive_control requires single_axis_drive")
-        if (
-            self.geometry is not None
-            and self.single_axis_drive is not None
-            and self.single_axis_drive.rotation_origin_m is None
-        ):
-            raise ValueError(
-                "single_axis_drive.rotation_origin_m is required for articulated geometry"
-            )
-        if self.incidence_loss_curve:
-            angles = [point.incidence_angle_deg for point in self.incidence_loss_curve]
-            if any(right <= left for left, right in zip(angles, angles[1:])):
-                raise ValueError(
-                    "incidence_loss_curve angles must be strictly increasing"
-                )
-            factors = [point.power_factor for point in self.incidence_loss_curve]
-            if any(right > left for left, right in zip(factors, factors[1:])):
-                raise ValueError(
-                    "incidence_loss_curve power factors must be non-increasing"
-                )
         return self
 
     def reset_drive_state(self) -> None:
@@ -437,57 +328,6 @@ class SolarPanel(ConfigModel):
     def tracks_sun(self, acs_mode: ACSMode | None, *, in_eclipse: bool) -> bool:
         """Return the explicit control decision for this panel and sample."""
         return self.drive_control.tracks_sun(acs_mode, in_eclipse=in_eclipse)
-
-    def geometry_at_drive_angle(
-        self, angle_deg: float | None = None
-    ) -> PanelGeometry | None:
-        """Return panel geometry rotated to a physical drive angle.
-
-        Undriven geometry is returned unchanged. Driven geometry rotates its
-        centre and spanning vectors about the configured body-frame axis line.
-        """
-        geometry = self.geometry
-        drive = self.single_axis_drive
-        if geometry is None or drive is None:
-            return geometry
-        origin_value = drive.rotation_origin_m
-        assert origin_value is not None
-        angle = self.drive_angle_deg if angle_deg is None else angle_deg
-        assert angle is not None
-        origin = np.asarray(origin_value, dtype=np.float64)
-        center_offset = np.asarray(geometry.center_m, dtype=np.float64) - origin
-        center = origin + drive.rotate_vectors_at_angle(center_offset, angle)
-        u = drive.rotate_vectors_at_angle(geometry.u, angle)
-        v = drive.rotate_vectors_at_angle(geometry.v, angle)
-        return PanelGeometry(
-            center_m=(float(center[0]), float(center[1]), float(center[2])),
-            u=(float(u[0]), float(u[1]), float(u[2])),
-            v=(float(v[0]), float(v[1]), float(v[2])),
-            width_m=geometry.width_m,
-            height_m=geometry.height_m,
-        )
-
-    def incidence_power_factor(self, illumination_fraction: float) -> float:
-        """Return the extra incidence-dependent multiplier for panel power."""
-        return float(self._incidence_power_factors(illumination_fraction))
-
-    def _incidence_power_factors(
-        self, illumination_fraction: npt.ArrayLike
-    ) -> npt.NDArray[np.float64]:
-        """Vectorized implementation of the incidence-loss curve."""
-        illumination = np.asarray(illumination_fraction, dtype=np.float64)
-        if not self.incidence_loss_curve:
-            return np.ones_like(illumination)
-        incidence_angle_deg = np.rad2deg(np.arccos(np.clip(illumination, 0.0, 1.0)))
-        angles = np.asarray(
-            [point.incidence_angle_deg for point in self.incidence_loss_curve],
-            dtype=np.float64,
-        )
-        factors = np.asarray(
-            [point.power_factor for point in self.incidence_loss_curve],
-            dtype=np.float64,
-        )
-        return np.asarray(np.interp(incidence_angle_deg, angles, factors))
 
     def _project_drive_angle(
         self,
@@ -514,16 +354,40 @@ class SolarPanel(ConfigModel):
                     )
                 elapsed_seconds = 0.0
 
-        target = (
-            drive.optimal_angle(self.normal, sun_body, reference_angle_deg=current)
-            if track_sun
-            else current
-        )
+        target = current
+        if track_sun:
+            target = float(
+                drive.optimal_angles(
+                    self.normal,
+                    sun_body[None, :],
+                    reference_angle_deg=current,
+                )[0]
+            )
         projected = drive.step_toward(current, target, elapsed_seconds)
         if advance_drive_state:
             self._drive_angle_deg = projected
             self._drive_time_s = time_s
         return projected
+
+    def _illumination_factors(
+        self,
+        sun_body: npt.NDArray[np.float64],
+        drive_angles_deg: npt.NDArray[np.float64] | None = None,
+    ) -> npt.NDArray[np.float64]:
+        """Evaluate normalized Sun vectors through one panel-response kernel."""
+        if self.gimbled:
+            return np.ones(len(sun_body), dtype=np.float64)
+        if self.single_axis_drive is None:
+            normal = _unit_vector(self.normal, field_name="panel normal")
+            return np.clip(sun_body @ normal, 0.0, 1.0)
+        assert drive_angles_deg is not None
+        normals = self.single_axis_drive.normals_at_angles(
+            self.normal, drive_angles_deg
+        )
+        return cast(
+            npt.NDArray[np.float64],
+            np.clip(np.einsum("nj,nj->n", normals, sun_body), 0.0, 1.0),
+        )
 
     def illumination_from_sun_body(
         self,
@@ -532,42 +396,26 @@ class SolarPanel(ConfigModel):
         *,
         track_sun: bool = False,
         advance_drive_state: bool = False,
-    ) -> tuple[float, float]:
-        """Return geometric illumination and incidence-adjusted power factor.
-
-        Eclipse is intentionally not handled here. The second return value is
-        the geometric cosine illumination multiplied by the optional
-        incidence-loss curve.
-        """
+    ) -> float:
+        """Return geometric illumination, optionally advancing drive state."""
         sun = _unit_vector(sun_body, field_name="Sun body vector")
-        if self.gimbled:
-            illumination = 1.0
-        else:
-            angle = self._project_drive_angle(
-                time_s,
-                sun,
-                track_sun=track_sun,
-                advance_drive_state=advance_drive_state,
-            )
-            drive = self.single_axis_drive
-            if angle is None:
-                normal = _unit_vector(self.normal, field_name="panel normal")
-            else:
-                assert drive is not None
-                normal = drive.normal_at_angle(self.normal, angle)
-            illumination = float(np.clip(np.dot(normal, sun), 0.0, 1.0))
+        angle = self._project_drive_angle(
+            time_s,
+            sun,
+            track_sun=track_sun,
+            advance_drive_state=advance_drive_state,
+        )
+        angles = None if angle is None else np.asarray([angle])
+        return float(self._illumination_factors(sun[None, :], angles)[0])
 
-        power_factor = illumination * self.incidence_power_factor(illumination)
-        return illumination, power_factor
-
-    def preview_power_factors_from_sun_body(
+    def preview_illumination_from_sun_body(
         self,
         sun_body: npt.NDArray[np.float64],
         *,
         track_sun: bool = False,
         elapsed_seconds: float = 0.0,
     ) -> npt.NDArray[np.float64]:
-        """Preview candidate power without mutating drive state.
+        """Preview candidate illumination without mutating drive state.
 
         Drive motion is disabled unless the caller explicitly supplies a
         positive control interval through ``elapsed_seconds``.
@@ -582,27 +430,24 @@ class SolarPanel(ConfigModel):
             raise ValueError("Sun body vectors must be non-zero")
         sun = sun / magnitudes[:, None]
 
-        if self.gimbled:
-            illumination = np.ones(len(sun), dtype=np.float64)
-        elif self.single_axis_drive is None:
-            normal = _unit_vector(self.normal, field_name="panel normal")
-            illumination = np.clip(sun @ normal, 0.0, 1.0)
-        else:
-            drive = self.single_axis_drive
-            current = self.drive_angle_deg
-            assert current is not None
-            targets = (
-                drive.optimal_angles(self.normal, sun, reference_angle_deg=current)
-                if track_sun
-                else np.full(len(sun), current, dtype=np.float64)
-            )
-            max_step = drive.max_rate_deg_per_s * elapsed_seconds
-            angles = current + np.clip(targets - current, -max_step, max_step)
-            angles = np.clip(angles, drive.min_angle_deg, drive.max_angle_deg)
-            normals = drive.normals_at_angles(self.normal, angles)
-            illumination = np.clip(np.einsum("nj,nj->n", normals, sun), 0.0, 1.0)
+        drive = self.single_axis_drive
+        if drive is None:
+            return self._illumination_factors(sun)
 
-        return illumination * self._incidence_power_factors(illumination)
+        current = self.drive_angle_deg
+        assert current is not None
+        targets = (
+            drive.optimal_angles(self.normal, sun, reference_angle_deg=current)
+            if track_sun
+            else np.full(len(sun), current, dtype=np.float64)
+        )
+        max_step = drive.max_rate_deg_per_s * elapsed_seconds
+        angles = np.clip(
+            current + np.clip(targets - current, -max_step, max_step),
+            drive.min_angle_deg,
+            drive.max_angle_deg,
+        )
+        return self._illumination_factors(sun, angles)
 
     def panel_illumination_fraction(
         self,
@@ -718,7 +563,7 @@ class SolarPanel(ConfigModel):
                     if isinstance(sample_time, datetime)
                     else float(sample_time)
                 )
-                illum[idx], _ = self.illumination_from_sun_body(
+                illum[idx] = self.illumination_from_sun_body(
                     sample_time_s,
                     sun_normalized,
                     track_sun=self.tracks_sun(
@@ -965,49 +810,6 @@ class SolarPanelSet(ConfigModel):
         ]
         return angles or None
 
-    def shadow_geometries(
-        self,
-        *,
-        time_s: float,
-        ra: float,
-        dec: float,
-        roll: float,
-        ephem: rust_ephem.Ephemeris,
-        acs_mode: ACSMode | None,
-        in_eclipse: bool,
-    ) -> dict[str, PanelGeometry]:
-        """Return static or projected articulated geometry for shadow modelling."""
-        from ..common import scbodyvector
-
-        idx = ephem.index(dtutcfromtimestamp(time_s))
-        sunvec = ephem.sun_pv.position[idx] - ephem.gcrs_pv.position[idx]
-        sun_body = scbodyvector(
-            np.deg2rad(ra), np.deg2rad(dec), np.deg2rad(roll), sunvec
-        )
-        sun_magnitude = float(np.linalg.norm(sun_body))
-        sun_normalized = (
-            np.asarray(sun_body, dtype=np.float64) / sun_magnitude
-            if sun_magnitude > 0.0
-            else None
-        )
-
-        geometries: dict[str, PanelGeometry] = {}
-        for panel in self.panels:
-            if panel.geometry is None:
-                continue
-            angle = panel.drive_angle_deg
-            if panel.single_axis_drive is not None and sun_normalized is not None:
-                angle = panel._project_drive_angle(
-                    time_s,
-                    sun_normalized,
-                    track_sun=panel.tracks_sun(acs_mode, in_eclipse=in_eclipse),
-                    advance_drive_state=False,
-                )
-            geometry = panel.geometry_at_drive_angle(angle)
-            assert geometry is not None
-            geometries[panel.name] = geometry
-        return geometries
-
     @property
     def sidemount(self) -> bool:
         """DEPRECATED: Return True if any panel is primarily side-mounted (y-component dominant).
@@ -1054,6 +856,45 @@ class SolarPanelSet(ConfigModel):
             weights=weights,
         )
         return self._geometry_cache
+
+    def preview_power_from_normalized_sun_body(
+        self,
+        sun_body: npt.NDArray[np.float64],
+        *,
+        acs_mode: ACSMode | None = None,
+        in_eclipse: bool = False,
+        elapsed_seconds: float = 0.0,
+    ) -> npt.NDArray[np.float64]:
+        """Evaluate aggregate power for normalized body-frame Sun vectors."""
+        sun = np.asarray(sun_body, dtype=np.float64)
+        if not self.panels:
+            return np.zeros(len(sun), dtype=np.float64)
+
+        weights = np.asarray(
+            [
+                panel.max_power
+                * (
+                    panel.conversion_efficiency
+                    if panel.conversion_efficiency is not None
+                    else self.conversion_efficiency
+                )
+                for panel in self.panels
+            ],
+            dtype=np.float64,
+        )
+        if not any(panel.single_axis_drive is not None for panel in self.panels):
+            normals = np.asarray([panel.normal for panel in self.panels], dtype=float)
+            illumination = np.maximum(sun @ normals.T, 0.0)
+            return cast(npt.NDArray[np.float64], illumination @ weights)
+
+        total = np.zeros(len(sun), dtype=np.float64)
+        for panel, weight in zip(self.panels, weights):
+            total += weight * panel.preview_illumination_from_sun_body(
+                sun,
+                track_sun=panel.tracks_sun(acs_mode, in_eclipse=in_eclipse),
+                elapsed_seconds=elapsed_seconds,
+            )
+        return total
 
     def panel_illumination_fraction(
         self,
@@ -1213,39 +1054,28 @@ class SolarPanelSet(ConfigModel):
             # No sun direction - return zero illumination
             return (0.0, 0.0) if scalar else (np.array([0.0]), np.array([0.0]))
 
-        uses_finite_drive_or_loss = any(
-            panel.single_axis_drive is not None or bool(panel.incidence_loss_curve)
-            for panel in panels
-        )
-        if not uses_finite_drive_or_loss:
+        if not has_finite_drive:
             # Preserve the established vectorized fixed/ideal-gimbal behavior
             # exactly for existing configurations.
             panel_illum = np.dot(geom.normal, sun_normalized)
             panel_illum = np.where(geom.gimbled, 1.0, panel_illum)
             panel_illum = np.maximum(panel_illum, 0.0)
-            panel_power_factor = panel_illum.copy()
         else:
             panel_illum = np.zeros(len(panels), dtype=np.float64)
-            panel_power_factor = np.zeros(len(panels), dtype=np.float64)
             for panel_index, panel in enumerate(panels):
-                illumination, power_factor = panel.illumination_from_sun_body(
+                panel_illum[panel_index] = panel.illumination_from_sun_body(
                     dt.timestamp(),
                     sun_normalized,
                     track_sun=panel.tracks_sun(acs_mode, in_eclipse=bool(in_eclipse)),
                     advance_drive_state=advance_drive_state,
                 )
-                panel_illum[panel_index] = illumination
-                panel_power_factor[panel_index] = power_factor
 
         if in_eclipse:
             panel_illum.fill(0.0)
-            panel_power_factor.fill(0.0)
 
         # Compute weighted illumination and power
         weighted_illum = float(np.sum(panel_illum * geom.weights))
-        total_power = float(
-            np.sum(panel_power_factor * geom.max_power * geom.efficiency)
-        )
+        total_power = float(np.sum(panel_illum * geom.max_power * geom.efficiency))
 
         return weighted_illum, total_power
 
@@ -1283,8 +1113,7 @@ class SolarPanelSet(ConfigModel):
             )
             assert isinstance(panel_illum, np.ndarray)
             weight = p.max_power / total_max
-            loss_factor = p._incidence_power_factors(panel_illum)
-            panel_power = panel_illum * loss_factor * p.max_power * eff
+            panel_power = panel_illum * p.max_power * eff
 
             illum_accum = illum_accum + (panel_illum * weight)
             power_accum = power_accum + panel_power

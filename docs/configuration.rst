@@ -394,8 +394,6 @@ The :class:`~conops.config.SolarPanelSet` defines the solar array configuration.
   rate-limited rotation about one spacecraft-body axis
 * ``drive_control`` (SolarArrayDriveControl): Mode-aware operational policy for
   a finite drive; the default holds the initial/current angle in every mode
-* ``incidence_loss_curve`` (list[IncidenceLossPoint] | None): Optional
-  additional power factor versus solar-incidence angle
 
 .. code-block:: python
 
@@ -436,20 +434,11 @@ Tracking in eclipse is disabled unless ``track_in_eclipse=True`` is explicitly
 configured.
 
 The drive kinematics and control policy are separate so hardware capability does
-not silently impose an operations concept. When a driven panel also has
-``geometry``, ``rotation_origin_m`` is required. Its centre and spanning vectors
-are then rotated about that body-frame axis line for radiator-shadow calculations.
-
-The optional incidence-loss curve multiplies the normal cosine-incidence power
-response. Angles must increase and power factors must be non-increasing. Curve
-values are linearly interpolated and endpoint-clamped. It changes generated
-power, while ``panel_illumination`` telemetry continues to report the geometric
-illumination fraction.
+not silently impose an operations concept.
 
 .. code-block:: python
 
    from conops.config import (
-       IncidenceLossPoint,
        SingleAxisSolarArrayDrive,
        SolarArrayDriveControl,
        SolarPanel,
@@ -469,7 +458,6 @@ illumination fraction.
                    max_angle_deg=165.0,
                    max_rate_deg_per_s=0.25,
                    initial_angle_deg=0.0,
-                   rotation_origin_m=(0.0, 0.0, 0.0),
                ),
                drive_control=SolarArrayDriveControl(
                    sun_tracking_modes=[
@@ -479,17 +467,6 @@ illumination fraction.
                    ],
                    track_in_eclipse=False,
                ),
-               incidence_loss_curve=[
-                   IncidenceLossPoint(
-                       incidence_angle_deg=0.0, power_factor=1.0
-                   ),
-                   IncidenceLossPoint(
-                       incidence_angle_deg=60.0, power_factor=0.9
-                   ),
-                   IncidenceLossPoint(
-                       incidence_angle_deg=90.0, power_factor=0.5
-                   ),
-               ],
            )
        ],
        conversion_efficiency=0.95,
@@ -498,9 +475,7 @@ illumination fraction.
 Candidate pointing and roll calculations use the current physical drive angle
 without modifying runtime state or granting motion under an attitude that has
 not executed. Continuous executed control may explicitly preview motion over its
-elapsed control interval. Shadow calculations preview the same rate-limited
-drive command that the current DITL sample will commit. Executed DITL samples
-advance the state, and
+elapsed control interval. Executed DITL samples advance the state, and
 ``solar_array_drive_angles_deg`` housekeeping telemetry records the resulting
 angles in configured driven-panel order.
 

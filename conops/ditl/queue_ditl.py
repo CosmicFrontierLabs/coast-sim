@@ -1226,8 +1226,6 @@ class QueueDITL(DITLMixin, DITLStats):
             utime,
             self.ephem,
             self.config.solar_panel,
-            acs_mode=mode,
-            in_eclipse=self.acs.in_eclipse,
         )
         roll_offset_deg = (roll - nominal_roll + 180.0) % 360.0 - 180.0
 
@@ -2451,7 +2449,6 @@ class QueueDITL(DITLMixin, DITLStats):
             self.acs.ephem,
             self.config.solar_panel,
             self.config.constraint,
-            acs_mode=ACSMode.SCIENCE,
         )
         self._ppt_optimum_roll_cache[key] = roll
         return roll

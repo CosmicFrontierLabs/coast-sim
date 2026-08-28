@@ -407,11 +407,6 @@ class ACS:
         slew.enddec = dec
         # If roll not provided, calculate optimal roll at target position
         if roll is None:
-            target_mode = {
-                ObsType.SAFE: ACSMode.SAFE,
-                ObsType.CHARGE: ACSMode.CHARGING,
-                ObsType.GSP: ACSMode.PASS,
-            }.get(obstype, ACSMode.SCIENCE)
             slew.endroll = optimum_roll(
                 ra,
                 dec,
@@ -419,7 +414,6 @@ class ACS:
                 self.ephem,
                 self.solar_panel,
                 self.constraint,
-                acs_mode=target_mode,
             )
         else:
             slew.endroll = roll
@@ -670,8 +664,6 @@ class ACS:
             self.ephem,
             self.solar_panel,
             self.constraint,
-            acs_mode=self.get_mode(utime),
-            in_eclipse=self.in_eclipse,
         )
 
     def _continuous_optimum_roll(self, utime: float, mode: ACSMode) -> float:
@@ -773,8 +765,6 @@ class ACS:
                 self.ephem,
                 self.solar_panel,
                 self.constraint,
-                acs_mode=ACSMode.IDLE,
-                in_eclipse=self.in_eclipse,
             )
             for candidate_roll in self._idle_safe_roll_candidates(optimal_roll):
                 if not self._idle_attitude_unsafe(
@@ -1058,29 +1048,12 @@ class ACS:
         current_dec = self.dec
         current_roll = self.roll
 
-        # Project finite-drive geometry to this sample without committing drive
-        # state; executed power calculation later commits the same projection.
-        solar_panel_geometries = None
-        if self.config.solar_panel is not None:
-            geom_map = self.config.solar_panel.shadow_geometries(
-                time_s=utime,
-                ra=current_ra,
-                dec=current_dec,
-                roll=current_roll,
-                ephem=self.ephem,
-                acs_mode=self.get_mode(utime),
-                in_eclipse=self.in_eclipse,
-            )
-            if geom_map:
-                solar_panel_geometries = geom_map
-
         metrics = radiators.exposure_metrics(
             ra_deg=current_ra,
             dec_deg=current_dec,
             utime=utime,
             ephem=self.ephem,
             roll_deg=current_roll,
-            solar_panel_geometries=solar_panel_geometries,
         )
 
         per_radiator = cast(

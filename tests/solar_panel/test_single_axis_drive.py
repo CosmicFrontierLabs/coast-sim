@@ -7,14 +7,12 @@ from pydantic import ValidationError
 
 from conops import (
     ACSMode,
-    IncidenceLossPoint,
     SingleAxisSolarArrayDrive,
     SolarArrayDriveControl,
     SolarPanel,
     SolarPanelSet,
     optimum_roll,
 )
-from conops.config import PanelGeometry
 
 _START = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
@@ -46,7 +44,7 @@ def _sample(
     *,
     track_sun: bool = True,
     advance_drive_state: bool = True,
-) -> tuple[float, float]:
+) -> float:
     return panel.illumination_from_sun_body(
         time_s,
         sun,
@@ -59,7 +57,6 @@ def _tracking_panel(
     *,
     normal: tuple[float, float, float] = (1.0, 0.0, 0.0),
     rotation_axis: tuple[float, float, float] = (0.0, 0.0, 1.0),
-    geometry: PanelGeometry | None = None,
     conversion_efficiency: float | None = None,
 ) -> SolarPanel:
     """Build the common finite-drive panel used by integration tests."""
@@ -68,10 +65,8 @@ def _tracking_panel(
         normal=normal,
         max_power=100.0,
         conversion_efficiency=conversion_efficiency,
-        geometry=geometry,
         single_axis_drive=_drive(
             rotation_axis=rotation_axis,
-            rotation_origin_m=(0.0, 0.0, 0.0) if geometry is not None else None,
         ),
         drive_control=SolarArrayDriveControl(sun_tracking_modes=[ACSMode.SCIENCE]),
     )
@@ -124,17 +119,22 @@ def eclipse(monkeypatch: pytest.MonkeyPatch) -> Mock:
 
 class TestSingleAxisSolarArrayDrive:
     def test_positive_rotation_uses_right_hand_rule(self) -> None:
-        normal = _drive().normal_at_angle((1.0, 0.0, 0.0), 90.0)
+        normal = _drive().normals_at_angles((1.0, 0.0, 0.0), np.asarray([90.0]))[0]
 
         assert normal == pytest.approx((0.0, 1.0, 0.0), abs=1e-12)
 
     def test_optimal_angle_respects_finite_travel(self) -> None:
-        angle = _drive().optimal_angle(
-            (1.0, 0.0, 0.0), (-1.0, 0.0, 0.0), reference_angle_deg=0.0
+        drive = _drive()
+        angle = float(
+            drive.optimal_angles(
+                (1.0, 0.0, 0.0),
+                np.asarray([(-1.0, 0.0, 0.0)]),
+                reference_angle_deg=0.0,
+            )[0]
         )
 
         assert abs(angle) == pytest.approx(165.0)
-        normal = _drive().normal_at_angle((1.0, 0.0, 0.0), angle)
+        normal = drive.normals_at_angles((1.0, 0.0, 0.0), np.asarray([angle]))[0]
         assert np.dot(normal, (-1.0, 0.0, 0.0)) == pytest.approx(
             np.cos(np.deg2rad(15.0))
         )
@@ -154,11 +154,11 @@ class TestSingleAxisSolarArrayDrive:
     ) -> None:
         drive = _drive(rotation_axis=rotation_axis, initial_angle_deg=73.0)
 
-        angle = drive.optimal_angle(
+        angle = drive.optimal_angles(
             normal,
-            sun_body,
+            np.asarray([sun_body]),
             reference_angle_deg=73.0,
-        )
+        )[0]
 
         assert angle == pytest.approx(73.0)
 
@@ -190,7 +190,7 @@ class TestDrivenPanelRuntime:
         panel = SolarPanel(normal=(1.0, 0.0, 0.0), single_axis_drive=_drive())
 
         _sample(panel, 0.0, track_sun=False)
-        illumination, _ = _sample(panel, 60.0, track_sun=False)
+        illumination = _sample(panel, 60.0, track_sun=False)
 
         assert panel.drive_angle_deg == pytest.approx(0.0)
         assert illumination == pytest.approx(0.0, abs=1e-12)
@@ -212,10 +212,6 @@ class TestDrivenPanelRuntime:
         panel = SolarPanel(
             normal=(1.0, 0.0, 0.0),
             single_axis_drive=_drive(initial_angle_deg=15.0),
-            incidence_loss_curve=[
-                IncidenceLossPoint(incidence_angle_deg=0.0, power_factor=1.0),
-                IncidenceLossPoint(incidence_angle_deg=90.0, power_factor=0.5),
-            ],
         )
         _sample(panel, 60.0)
         _sample(panel, 90.0)
@@ -230,8 +226,8 @@ class TestDrivenPanelRuntime:
         panel = SolarPanel(normal=(1.0, 0.0, 0.0), single_axis_drive=_drive())
         panel.reset_drive_state()
 
-        initial, _ = _sample(panel, 0.0)
-        after_30_s, _ = _sample(panel, 30.0)
+        initial = _sample(panel, 0.0)
+        after_30_s = _sample(panel, 30.0)
 
         assert initial == pytest.approx(0.0, abs=1e-12)
         assert panel.drive_angle_deg == pytest.approx(30.0)
@@ -241,7 +237,7 @@ class TestDrivenPanelRuntime:
         panel = SolarPanel(normal=(1.0, 0.0, 0.0), single_axis_drive=_drive())
         _sample(panel, 0.0)
 
-        preview, _ = _sample(panel, 60.0, advance_drive_state=False)
+        preview = _sample(panel, 60.0, advance_drive_state=False)
 
         assert preview == pytest.approx(np.sin(np.deg2rad(60.0)))
         assert panel.drive_angle_deg == pytest.approx(0.0)
@@ -250,7 +246,7 @@ class TestDrivenPanelRuntime:
         panel = SolarPanel(normal=(1.0, 0.0, 0.0), single_axis_drive=_drive())
         _sample(panel, 0.0)
 
-        factors = panel.preview_power_factors_from_sun_body(
+        illumination = panel.preview_illumination_from_sun_body(
             np.asarray(
                 [
                     (0.0, 1.0, 0.0),
@@ -261,7 +257,7 @@ class TestDrivenPanelRuntime:
             elapsed_seconds=30.0,
         )
 
-        assert factors == pytest.approx((0.5, 1.0))
+        assert illumination == pytest.approx((0.5, 1.0))
         assert panel.drive_angle_deg == pytest.approx(0.0)
 
     def test_executed_samples_cannot_advance_backward_in_time(self) -> None:
@@ -275,106 +271,9 @@ class TestDrivenPanelRuntime:
         with pytest.raises(ValidationError, match="mutually exclusive"):
             SolarPanel(gimbled=True, single_axis_drive=_drive())
 
-    def test_articulated_geometry_rotates_about_explicit_axis_line(self) -> None:
-        panel = SolarPanel(
-            normal=(1.0, 0.0, 0.0),
-            geometry=PanelGeometry(
-                center_m=(1.0, 0.0, 0.0),
-                u=(0.0, 1.0, 0.0),
-                v=(0.0, 0.0, 1.0),
-                width_m=2.0,
-                height_m=1.0,
-            ),
-            single_axis_drive=_drive(rotation_origin_m=(0.0, 0.0, 0.0)),
-        )
-
-        geometry = panel.geometry_at_drive_angle(90.0)
-
-        assert geometry is not None
-        assert geometry.center_m == pytest.approx((0.0, 1.0, 0.0), abs=1e-12)
-        assert geometry.u == pytest.approx((-1.0, 0.0, 0.0), abs=1e-12)
-        assert geometry.v == pytest.approx((0.0, 0.0, 1.0), abs=1e-12)
-
-    def test_articulated_geometry_requires_axis_origin(self) -> None:
-        with pytest.raises(ValidationError, match="rotation_origin_m"):
-            SolarPanel(
-                geometry=PanelGeometry(
-                    u=(1.0, 0.0, 0.0),
-                    v=(0.0, 0.0, 1.0),
-                ),
-                single_axis_drive=_drive(),
-            )
-
-
-class TestIncidenceLoss:
-    def test_curve_reduces_power_beyond_cosine_incidence(self) -> None:
-        panel = SolarPanel(
-            normal=(1.0, 0.0, 0.0),
-            incidence_loss_curve=[
-                IncidenceLossPoint(incidence_angle_deg=0.0, power_factor=1.0),
-                IncidenceLossPoint(incidence_angle_deg=60.0, power_factor=0.8),
-                IncidenceLossPoint(incidence_angle_deg=90.0, power_factor=0.5),
-            ],
-        )
-
-        illumination, power_factor = panel.illumination_from_sun_body(
-            0.0, (0.5, np.sqrt(3.0) / 2.0, 0.0)
-        )
-
-        assert illumination == pytest.approx(0.5)
-        assert power_factor == pytest.approx(0.4)
-
-    def test_curve_angles_must_be_strictly_increasing(self) -> None:
-        with pytest.raises(ValidationError, match="strictly increasing"):
-            SolarPanel(
-                incidence_loss_curve=[
-                    IncidenceLossPoint(incidence_angle_deg=60.0, power_factor=0.8),
-                    IncidenceLossPoint(incidence_angle_deg=30.0, power_factor=0.9),
-                ]
-            )
-
-    def test_curve_power_factors_must_not_increase_with_incidence(self) -> None:
-        with pytest.raises(ValidationError, match="must be non-increasing"):
-            SolarPanel(
-                incidence_loss_curve=[
-                    IncidenceLossPoint(incidence_angle_deg=0.0, power_factor=0.8),
-                    IncidenceLossPoint(incidence_angle_deg=60.0, power_factor=0.9),
-                ]
-            )
-
 
 @pytest.mark.usefixtures("eclipse")
 class TestDrivenPanelSet:
-    def test_shadow_geometry_previews_the_same_angle_execution_commits(self) -> None:
-        panel = _tracking_panel(
-            geometry=PanelGeometry(
-                center_m=(1.0, 0.0, 0.0),
-                u=(0.0, 1.0, 0.0),
-                v=(0.0, 0.0, 1.0),
-            )
-        )
-        panel_set = SolarPanelSet(panels=[panel])
-        ephem = _ephem_with_sun((0.0, 1.0, 0.0))
-
-        _execute(panel_set, ephem)
-        projected = panel_set.shadow_geometries(
-            time_s=(_START + timedelta(seconds=30)).timestamp(),
-            ra=0.0,
-            dec=0.0,
-            roll=0.0,
-            ephem=ephem,
-            acs_mode=ACSMode.SCIENCE,
-            in_eclipse=False,
-        )["Wing"]
-        assert panel.drive_angle_deg == pytest.approx(0.0)
-        _execute(panel_set, ephem, 30.0)
-
-        committed = panel.geometry_at_drive_angle()
-        assert committed is not None
-        assert projected.center_m == pytest.approx(committed.center_m)
-        assert projected.u == pytest.approx(committed.u)
-        assert projected.v == pytest.approx(committed.v)
-
     def test_drive_holds_in_eclipse_without_accumulating_motion_time(
         self, eclipse: Mock
     ) -> None:

@@ -29,7 +29,6 @@ from .radiator import (
 )
 from .recorder import OnboardRecorder
 from .solar_panel import (
-    IncidenceLossPoint,
     SingleAxisSolarArrayDrive,
     SolarArrayDriveControl,
     SolarPanel,
@@ -68,7 +67,6 @@ __all__ = [
     "GroundStationRegistry",
     "Heater",
     "Instrument",
-    "IncidenceLossPoint",
     "Telescope",
     "TelescopeConfig",
     "TelescopeType",
