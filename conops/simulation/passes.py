@@ -11,6 +11,7 @@ from ..common.enums import ACSMode, AntennaType, ObsType, SlewAlgorithm
 from ..common.vector import (
     attitude_for_body_vector_tracking,
     body_vector_to_eci,
+    quaternion_attitude_delta,
     quaternion_attitude_distance,
     radec2vec,
     separation,
@@ -452,7 +453,7 @@ class Pass(BaseModel):
         # quaternion slews. Constraint-avoiding and future slew algorithms keep
         # the full path unless their scalar equivalence has been proven.
         if acs_config.slew_algorithm == SlewAlgorithm.QUATERNION:
-            slewdist = quaternion_attitude_distance(
+            slewdist, rotation_axis_body = quaternion_attitude_delta(
                 ra,
                 dec,
                 roll,
@@ -460,7 +461,7 @@ class Pass(BaseModel):
                 target_dec,
                 target_roll,
             )
-            return round(acs_config.slew_time(slewdist))
+            return round(acs_config.slew_time(slewdist, rotation_axis_body))
 
         slew = Slew(config=self.config)
         slew.startra = ra
@@ -714,12 +715,12 @@ class PassTimes:
     ) -> bool:
         if dt <= 0.0:
             return False
-        attitude_distance = quaternion_attitude_distance(
+        attitude_distance, rotation_axis_body = quaternion_attitude_delta(
             *previous_attitude,
             *attitude,
         )
         acs = self.config.spacecraft_bus.attitude_control
-        return bool(acs.motion_time(attitude_distance) <= dt)
+        return bool(acs.motion_time(attitude_distance, rotation_axis_body) <= dt)
 
     def _dynamic_phase_tracking_attitude_profile(
         self,

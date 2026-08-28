@@ -667,7 +667,9 @@ class ACS:
         max_roll_delta = (
             min(
                 180.0,
-                self.config.spacecraft_bus.attitude_control.max_motion_angle(elapsed),
+                self.config.spacecraft_bus.attitude_control.max_motion_angle(
+                    elapsed, (1.0, 0.0, 0.0)
+                ),
             )
             if elapsed > 0.0
             else 0.0

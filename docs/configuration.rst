@@ -322,6 +322,8 @@ The :class:`~conops.config.AttitudeControlSystem` defines slew performance and p
 
 * ``slew_acceleration`` (float): Maximum angular acceleration in deg/s²
 * ``max_slew_rate`` (float): Maximum slew rate in deg/s
+* ``slew_acceleration_body`` (tuple[float, float, float] | None): Optional body +X/+Y/+Z acceleration limits in deg/s²
+* ``max_slew_rate_body`` (tuple[float, float, float] | None): Optional body +X/+Y/+Z slew-rate limits in deg/s
 * ``slew_accuracy`` (float): Pointing accuracy after slew completion in degrees
 * ``settle_time`` (float): Time to settle after slew completion in seconds
 * ``slew_algorithm`` (:class:`~conops.common.enums.SlewAlgorithm`): Algorithm for computing slew paths:
@@ -330,6 +332,19 @@ The :class:`~conops.config.AttitudeControlSystem` defines slew performance and p
   - ``CONSTRAINT_AVOIDING``: Routes around any configured constraints (Sun, Earth, Moon, etc.)
 
 * ``slew_constraint`` (ConstraintConfig | None): Optional rust-ephem constraint for slew path planning. When set and ``slew_algorithm`` is ``CONSTRAINT_AVOIDING``, this constraint is used instead of the spacecraft's general pointing constraint. This allows different safety margins for slewing vs. science pointing.
+
+When either body-axis tuple is present, COAST applies it as an ellipsoidal
+coupled-axis envelope.  For a unit maneuver axis :math:`u` and axis limits
+:math:`L=(L_x,L_y,L_z)`, the effective limit along the path is
+:math:`1 / \sqrt{\sum_i (u_i/L_i)^2}`.  For example, equal X/Y limits of
+0.2 deg/s produce a total rate of 0.2 deg/s about a 45-degree X/Y axis, or
+approximately 0.141 deg/s on each component. Quaternion slews resolve the
+maneuver axis in the initial spacecraft body frame. When a body-axis tuple is
+configured, slew estimates require complete starting and target attitudes
+(RA, Dec, and roll); kinematic calls without a maneuver axis raise an error.
+Constraint-avoiding paths are evaluated as rest-to-rest segments using each
+segment's own body-frame rotation axis. If both tuples are omitted, the scalar
+fields retain their existing behavior, including legacy RA/Dec-only estimates.
 
 .. code-block:: python
 
@@ -348,6 +363,9 @@ The :class:`~conops.config.AttitudeControlSystem` defines slew performance and p
        attitude_control=AttitudeControlSystem(
            slew_acceleration=0.01,  # deg/s² - angular acceleration
            max_slew_rate=0.3,       # deg/s - maximum slew rate
+           # Optional ellipsoidal (+X, +Y, +Z) body-axis envelopes:
+           slew_acceleration_body=(0.02, 0.02, 0.2),  # deg/s²
+           max_slew_rate_body=(0.2, 0.2, 2.0),        # deg/s
            slew_accuracy=0.01,      # deg - pointing accuracy
            settle_time=10.0,        # seconds - time to settle after slew
            slew_algorithm=SlewAlgorithm.CONSTRAINT_AVOIDING,  # Avoid all constraints

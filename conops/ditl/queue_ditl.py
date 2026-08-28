@@ -17,7 +17,7 @@ from ..common import (
     unixtime2date,
 )
 from ..common.enums import ACSCommandType
-from ..common.vector import attitude_to_quat, quaternion_attitude_distance
+from ..common.vector import attitude_to_quat, quaternion_attitude_delta
 from ..config import DAY_SECONDS, MissionConfig
 from ..config.constraint import (
     all_attitude_constraint_name,
@@ -2282,7 +2282,11 @@ class QueueDITL(DITLMixin, DITLStats):
         return None
 
     def _next_pass_science_deadline(
-        self, slew_end: float, target: Pointing | None = None
+        self,
+        slew_end: float,
+        *,
+        target_roll: float,
+        target: Pointing | None = None,
     ) -> float | None:
         """Calculate the next pass deadline after the slew ends, accounting for
         slew time to the pass start."""
@@ -2292,11 +2296,16 @@ class QueueDITL(DITLMixin, DITLStats):
         if next_pass is None:
             return None
 
-        pass_slew_dist = angular_separation(
-            ppt.ra, ppt.dec, next_pass.gsstartra, next_pass.gsstartdec
+        pass_slew_dist, rotation_axis_body = quaternion_attitude_delta(
+            ppt.ra,
+            ppt.dec,
+            target_roll,
+            next_pass.gsstartra,
+            next_pass.gsstartdec,
+            next_pass.gsstartroll,
         )
         acs_cfg = self.config.spacecraft_bus.attitude_control
-        pass_slew_time = float(acs_cfg.slew_time(pass_slew_dist))
+        pass_slew_time = float(acs_cfg.slew_time(pass_slew_dist, rotation_axis_body))
 
         return next_pass.begin - pass_slew_time - self._pass_slew_trigger_buffer()
 
@@ -2358,6 +2367,8 @@ class QueueDITL(DITLMixin, DITLStats):
         self,
         slew_end: float,
         current_time: float,
+        *,
+        target_roll: float,
         target: Pointing | None = None,
         deadline_inputs: _ScienceDeadlineInputs | None = None,
     ) -> tuple[float, str]:
@@ -2375,7 +2386,11 @@ class QueueDITL(DITLMixin, DITLStats):
         if visibility_end is not None:
             deadlines.append((visibility_end, "visibility window"))
 
-        pass_deadline = self._next_pass_science_deadline(slew_end, target=target)
+        pass_deadline = self._next_pass_science_deadline(
+            slew_end,
+            target=target,
+            target_roll=target_roll,
+        )
         if pass_deadline is not None:
             deadlines.append((pass_deadline, "pass"))
 
@@ -2449,7 +2464,7 @@ class QueueDITL(DITLMixin, DITLStats):
             utime, execution_time
         )
         endroll = self._ppt_optimum_roll(target, execution_time)
-        slewdist = quaternion_attitude_distance(
+        slewdist, rotation_axis_body = quaternion_attitude_delta(
             startra,
             startdec,
             startroll,
@@ -2458,7 +2473,9 @@ class QueueDITL(DITLMixin, DITLStats):
             endroll,
         )
         slewtime = round(
-            self.config.spacecraft_bus.attitude_control.slew_time(slewdist)
+            self.config.spacecraft_bus.attitude_control.slew_time(
+                slewdist, rotation_axis_body
+            )
         )
         return TargetSlewEstimate(slewtime=float(slewtime), slewdist=slewdist)
 
@@ -2495,7 +2512,12 @@ class QueueDITL(DITLMixin, DITLStats):
             rejected_ppt.done = was_done
 
     def _reject_current_ppt_if_insufficient_collect_time(
-        self, slew_end: float, utime: float, ra: float, dec: float
+        self,
+        slew_end: float,
+        utime: float,
+        ra: float,
+        dec: float,
+        target_roll: float,
     ) -> bool:
         """Check if the current PPT has enough time to collect before the next
         science deadline."""
@@ -2505,7 +2527,11 @@ class QueueDITL(DITLMixin, DITLStats):
 
         # Check if there's enough time to collect before the next science
         # deadline (visibility window end, next pass, or simulation end)
-        deadline, reason = self._next_science_deadline(slew_end, current_time=utime)
+        deadline, reason = self._next_science_deadline(
+            slew_end,
+            current_time=utime,
+            target_roll=target_roll,
+        )
         available_collect_time = deadline - slew_end
         if available_collect_time >= self.ppt.ss_min:
             return False
@@ -2595,12 +2621,17 @@ class QueueDITL(DITLMixin, DITLStats):
             nonlocal deadline_inputs
             if deadline_inputs is None:
                 deadline_inputs = self._science_deadline_inputs(utime)
+            target_roll = self._ppt_optimum_roll(
+                target,
+                self._ppt_slew_execution_time(utime),
+            )
             # The cached inputs cover only fetch-wide pieces; each callback
             # still evaluates target-specific visibility and pass deadlines.
             return self._next_science_deadline(
                 slew_end,
                 current_time=utime,
                 target=target,
+                target_roll=target_roll,
                 deadline_inputs=deadline_inputs,
             )[0]
 
@@ -2610,6 +2641,7 @@ class QueueDITL(DITLMixin, DITLStats):
             utime,
             collection_deadline=collection_deadline,
             slew_estimator=lambda target: self._estimate_ppt_slew(target, utime),
+            roll=self.acs.roll,
         )
 
         if self.ppt is not None:
@@ -2757,7 +2789,11 @@ class QueueDITL(DITLMixin, DITLStats):
                 return
 
             if self._reject_current_ppt_if_insufficient_collect_time(
-                slew_end, utime, ra, dec
+                slew_end,
+                utime,
+                ra,
+                dec,
+                target_roll=slew.endroll,
             ):
                 return
 

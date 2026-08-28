@@ -7,7 +7,7 @@ import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
 from conops.common.enums import ACSMode
-from conops.common.vector import quaternion_attitude_distance
+from conops.common.vector import quaternion_attitude_delta
 from conops.config.groundstation import GroundStation
 
 from ..config import MissionConfig
@@ -30,8 +30,8 @@ class _AttitudeRateViolation(BaseModel):
     utime: float
     elapsed_seconds: float
     distance_deg: float
-    allowed_distance_deg: float
-    max_rate_deg_per_s: float
+    allowed_distance_deg: float | None
+    max_rate_deg_per_s: float | None
     previous_mode: str | None
     mode: str | None
     obsid: int | None
@@ -46,15 +46,20 @@ class _AttitudeRateViolation(BaseModel):
 
     def __str__(self) -> str:
         """Return a concise diagnostic suitable for plan-generation errors."""
+        if self.allowed_distance_deg is None or self.max_rate_deg_per_s is None:
+            allowed = "unknown (maneuver axis unavailable)"
+        else:
+            allowed = (
+                f"{self.allowed_distance_deg:.6f} deg "
+                f"({self.max_rate_deg_per_s:.6f} deg/s)"
+            )
         return (
             f"attitude_rate_violation: samples {self.previous_index}->{self.index} "
             f"at {self.previous_utime:.3f}->{self.utime:.3f}, "
             f"modes {self.previous_mode}->{self.mode}, reason {self.reason}, "
             f"rotation {self.distance_deg:.6f} deg over "
             f"{self.elapsed_seconds:.3f} s "
-            f"({self.actual_rate_deg_per_s:.6f} deg/s), allowed "
-            f"{self.allowed_distance_deg:.6f} deg "
-            f"({self.max_rate_deg_per_s:.6f} deg/s)"
+            f"({self.actual_rate_deg_per_s:.6f} deg/s), allowed {allowed}"
         )
 
 
@@ -213,15 +218,24 @@ class DITLMixin:
 
     def _attitude_rate_violations(self) -> list[_AttitudeRateViolation]:
         """Validate the housekeeping samples used for attitude-timeseries export."""
-        max_rate = float(self.config.spacecraft_bus.attitude_control.max_slew_rate)
-        if not math.isfinite(max_rate) or max_rate < 0:
+        acs_config = self.config.spacecraft_bus.attitude_control
+        fallback_max_rate = (
+            None
+            if acs_config.max_slew_rate_body is not None
+            else acs_config.effective_max_slew_rate()
+        )
+        if fallback_max_rate is not None and (
+            not math.isfinite(fallback_max_rate) or fallback_max_rate < 0
+        ):
             raise ValueError(
-                f"max_slew_rate must be a finite, non-negative value, got {max_rate}"
+                "configured slew-rate limit must be finite and non-negative, "
+                f"got {fallback_max_rate}"
             )
 
         violations = []
         samples = self.telemetry.housekeeping
         for index in range(1, len(samples)):
+            max_rate = fallback_max_rate
             previous_index = index - 1
             previous_sample = samples[previous_index]
             sample = samples[index]
@@ -259,22 +273,31 @@ class DITLMixin:
                     reason = "non_finite_attitude"
 
             if reason == "rate_limit_exceeded":
-                distance_deg = quaternion_attitude_distance(*attitudes)
+                distance_deg, rotation_axis_body = quaternion_attitude_delta(*attitudes)
+                if distance_deg > 0.0:
+                    max_rate = acs_config.effective_max_slew_rate(rotation_axis_body)
 
             allowed_distance_deg = (
                 max_rate * elapsed_seconds
-                if math.isfinite(elapsed_seconds) and elapsed_seconds > 0
-                else 0.0
+                if max_rate is not None
+                and math.isfinite(elapsed_seconds)
+                and elapsed_seconds > 0
+                else None
             )
             if timestamps_are_finite and elapsed_seconds <= 0:
                 reason = "non_increasing_timestamp"
 
+            exceeds_rate_limit = (
+                math.isfinite(distance_deg)
+                and allowed_distance_deg is not None
+                and distance_deg
+                > allowed_distance_deg + ATTITUDE_RATE_NUMERICAL_TOLERANCE_DEG
+            )
             if (
                 not timestamps_are_finite
                 or elapsed_seconds <= 0
                 or not math.isfinite(distance_deg)
-                or distance_deg
-                > allowed_distance_deg + ATTITUDE_RATE_NUMERICAL_TOLERANCE_DEG
+                or exceeds_rate_limit
             ):
                 violations.append(
                     _AttitudeRateViolation(

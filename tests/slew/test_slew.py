@@ -1,12 +1,12 @@
 """Tests for conops.slew module."""
 
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
 from pydantic import ValidationError
 
-from conops import MissionConfig, Slew
+from conops import AttitudeControlSystem, MissionConfig, Slew
 from conops.common.enums import ObsType
 
 
@@ -286,6 +286,36 @@ class TestPureRollManeuver:
     rotate about the boresight axis.
     """
 
+    def test_directional_limits_distinguish_roll_and_ra_slews(self):
+        acs = AttitudeControlSystem(
+            slew_acceleration_body=(0.02, 0.02, 0.2),
+            max_slew_rate_body=(0.2, 0.2, 2.0),
+            settle_time=0.0,
+        )
+        roll_slew = Slew(
+            acs_config=acs,
+            startra=0.0,
+            startdec=0.0,
+            startroll=0.0,
+            endra=0.0,
+            enddec=0.0,
+            endroll=90.0,
+        )
+        ra_slew = Slew(
+            acs_config=acs,
+            startra=0.0,
+            startdec=0.0,
+            startroll=0.0,
+            endra=90.0,
+            enddec=0.0,
+            endroll=0.0,
+        )
+
+        assert roll_slew.calc_slewtime() == 460.0
+        assert roll_slew._rotation_axis_body == pytest.approx((1.0, 0.0, 0.0))
+        assert ra_slew.calc_slewtime() == 55.0
+        assert ra_slew._rotation_axis_body == pytest.approx((0.0, 0.0, 1.0))
+
     def test_pure_roll_zero_radec_distance(self, slew_predict_setup):
         """Pure roll maneuver should have non-zero quaternion distance matching roll change."""
         slew_predict_setup.startra = 45.0
@@ -415,7 +445,7 @@ class TestPureRollManeuver:
         """slew_roll() should interpolate correctly during pure roll maneuver."""
         # Set up ACS config for bang-bang motion
         acs_config.motion_time = Mock(return_value=100.0)
-        acs_config.s_of_t = Mock(side_effect=lambda dist, t: t / 100.0 * dist)
+        acs_config.s_of_t = Mock(side_effect=lambda dist, t, _axis: t / 100.0 * dist)
 
         slew_predict_setup.startra = 45.0
         slew_predict_setup.startdec = 30.0
@@ -641,6 +671,86 @@ class TestConstraintAvoidingSlew:
         # Roll should start at 0 and end at 90
         assert abs(slew._quat_roll_path[0] - 0.0) < 1.0
         assert abs(slew._quat_roll_path[-1] - 90.0) < 1.0
+
+    def test_constraint_avoiding_distance_includes_roll_in_each_segment(
+        self, slew, acs_config
+    ) -> None:
+        from conops.common.enums import SlewAlgorithm
+        from conops.common.vector import quaternion_attitude_delta, separation
+        from conops.config.constants import DTOR
+
+        acs_config.slew_algorithm = SlewAlgorithm.CONSTRAINT_AVOIDING
+        slew.startra = 0.0
+        slew.startdec = 0.0
+        slew.startroll = 0.0
+        slew.endra = 90.0
+        slew.enddec = 0.0
+        slew.endroll = 120.0
+        slew.slewstart = 1700000000.0
+        waypoint = (45.0, 30.0)
+
+        pointing_dist1 = (
+            separation(
+                [slew.startra * DTOR, slew.startdec * DTOR],
+                [waypoint[0] * DTOR, waypoint[1] * DTOR],
+            )
+            / DTOR
+        )
+        pointing_dist2 = (
+            separation(
+                [waypoint[0] * DTOR, waypoint[1] * DTOR],
+                [slew.endra * DTOR, slew.enddec * DTOR],
+            )
+            / DTOR
+        )
+        waypoint_roll = (
+            slew.endroll * pointing_dist1 / (pointing_dist1 + pointing_dist2)
+        )
+        segment_dist1, segment_axis1 = quaternion_attitude_delta(
+            slew.startra,
+            slew.startdec,
+            slew.startroll,
+            waypoint[0],
+            waypoint[1],
+            waypoint_roll,
+        )
+        segment_dist2, segment_axis2 = quaternion_attitude_delta(
+            waypoint[0],
+            waypoint[1],
+            waypoint_roll,
+            slew.endra,
+            slew.enddec,
+            slew.endroll,
+        )
+
+        directional_acs = AttitudeControlSystem(
+            slew_acceleration_body=(0.02, 0.03, 0.2),
+            max_slew_rate_body=(0.2, 0.3, 2.0),
+            settle_time=7.0,
+            slew_algorithm=SlewAlgorithm.CONSTRAINT_AVOIDING,
+        )
+        slew.acs_config = directional_acs
+
+        with patch(
+            "conops.simulation.slew.constraint_avoiding_waypoint",
+            return_value=waypoint,
+        ):
+            slew.predict_slew()
+
+            expected_time = round(
+                directional_acs.motion_time(segment_dist1, segment_axis1)
+                + directional_acs.motion_time(segment_dist2, segment_axis2)
+                + directional_acs.settle_time
+            )
+            assert slew.calc_slewtime() == expected_time
+
+        assert slew.slewdist == pytest.approx(segment_dist1 + segment_dist2)
+        assert slew.slewdist > pointing_dist1 + pointing_dist2
+        assert slew._rotation_axis_body is None
+        assert slew._slew_segments[0][0] == pytest.approx(segment_dist1)
+        assert slew._slew_segments[0][1] == pytest.approx(segment_axis1)
+        assert slew._slew_segments[1][0] == pytest.approx(segment_dist2)
+        assert slew._slew_segments[1][1] == pytest.approx(segment_axis2)
 
     def test_constraint_avoiding_uses_acs_slew_constraint(self, slew, acs_config):
         """When ACS slew_constraint is set, it should be used instead of spacecraft constraint."""

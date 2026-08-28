@@ -2,8 +2,9 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
-from conops import PlanEntry
+from conops import AttitudeControlSystem, PlanEntry
 from conops.common.enums import ObsType
+from conops.common.vector import quaternion_attitude_delta
 
 
 class MockSAA:
@@ -364,6 +365,41 @@ class TestCalcSlewtime:
         # calc_slewtime always calls predict_slew which recalculates distance
         assert plan_entry.slewdist > 0
         assert slewtime == round(plan_entry.acs_config.slew_time(plan_entry.slewdist))
+
+    @pytest.mark.parametrize("lastroll", [None, -1.0])
+    def test_directional_slew_requires_planned_start_roll(self, plan_entry, lastroll):
+        plan_entry.acs_config = AttitudeControlSystem(
+            max_slew_rate_body=(0.2, 0.3, 2.0)
+        )
+        plan_entry.roll = 0.0
+
+        with pytest.raises(ValueError, match="planned starting roll"):
+            plan_entry.calc_slewtime(0.0, 0.0, lastroll)
+
+    def test_directional_slew_requires_planned_target_roll(self, plan_entry):
+        plan_entry.acs_config = AttitudeControlSystem(
+            max_slew_rate_body=(0.2, 0.3, 2.0)
+        )
+
+        with pytest.raises(ValueError, match="planned target roll"):
+            plan_entry.calc_slewtime(0.0, 0.0, 0.0)
+
+    def test_directional_slew_uses_complete_attitudes(self, plan_entry):
+        acs = AttitudeControlSystem(
+            slew_acceleration_body=(0.02, 0.02, 0.2),
+            max_slew_rate_body=(0.2, 0.2, 2.0),
+            settle_time=0.0,
+        )
+        plan_entry.acs_config = acs
+        plan_entry.ra = 0.0
+        plan_entry.dec = 0.0
+        plan_entry.roll = 90.0
+        distance, axis = quaternion_attitude_delta(0.0, 0.0, 0.0, 0.0, 0.0, 90.0)
+
+        slewtime = plan_entry.calc_slewtime(0.0, 0.0, 0.0)
+
+        assert plan_entry.slewdist == pytest.approx(distance)
+        assert slewtime == round(acs.slew_time(distance, axis))
 
 
 class TestPredictSlew:

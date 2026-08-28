@@ -253,10 +253,15 @@ class TargetQueue:
         target: Pointing,
         ra: float,
         dec: float,
+        roll: float | None,
         slew_estimator: Callable[[Pointing], TargetSlewEstimate] | None,
     ) -> None:
         if slew_estimator is None:
-            target.slewtime = target.calc_slewtime(ra, dec)
+            assert self.acs_config is not None
+            if self.acs_config.direction_dependent_slew:
+                target.slewtime = target.calc_slewtime(ra, dec, roll)
+            else:
+                target.slewtime = target.calc_slewtime(ra, dec)
             return
 
         estimate = slew_estimator(target)
@@ -272,6 +277,7 @@ class TargetQueue:
         utime: float,
         collection_deadline: Callable[[Pointing, float], float | None] | None = None,
         slew_estimator: Callable[[Pointing], TargetSlewEstimate] | None = None,
+        roll: float | None = None,
     ) -> Pointing | None:
         """Get the next best target to observe from the queue.
 
@@ -286,6 +292,8 @@ class TargetQueue:
                 science may be collected for a candidate target after its slew.
             slew_estimator: Optional callback returning attitude-aware slew
                 cost for a candidate target.
+            roll: Current roll in degrees. Required when body-axis slew limits
+                are configured and no attitude-aware slew estimator is supplied.
 
         Returns:
             Next target to observe, or None if no suitable target found.
@@ -353,6 +361,7 @@ class TargetQueue:
                 target,
                 ra,
                 dec,
+                roll,
                 slew_estimator if score_candidates else None,
             )
 

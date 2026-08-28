@@ -137,13 +137,18 @@ def mock_config() -> Mock:
     )  # Return slew time in seconds
     config.spacecraft_bus.attitude_control.slew_accuracy = 0.01
     config.spacecraft_bus.attitude_control.max_slew_rate = 10.0
+    config.spacecraft_bus.attitude_control.effective_max_slew_rate = Mock(
+        side_effect=lambda _axis=None: float(
+            config.spacecraft_bus.attitude_control.max_slew_rate
+        )
+    )
     config.spacecraft_bus.attitude_control.motion_time = Mock(
-        side_effect=lambda distance: float(
+        side_effect=lambda distance, _axis=None: float(
             config.spacecraft_bus.attitude_control.slew_time(distance)
         )
     )
     config.spacecraft_bus.attitude_control.s_of_t = Mock(
-        side_effect=lambda distance, tau: (
+        side_effect=lambda distance, tau, _axis=None: (
             0.0
             if config.spacecraft_bus.attitude_control.motion_time(distance) <= 0
             else float(distance)
@@ -310,7 +315,9 @@ class MockPointing:
         self.begin = 0
         self.end = 0
 
-    def calc_slewtime(self, ra_from: float, dec_from: float) -> None:
+    def calc_slewtime(
+        self, ra_from: float, dec_from: float, roll_from: float | None = None
+    ) -> None:
         """Calculate slew time from prior position."""
         dist = np.sqrt((self.ra - ra_from) ** 2 + (self.dec - dec_from) ** 2)
         self.slewtime = max(0, int(dist / 0.5))  # Slew rate of 0.5 deg/sec
@@ -337,7 +344,12 @@ def mock_queue(mock_ephemeris: Mock) -> Mock:
     queue.__len__ = Mock(return_value=len(queue.targets))
     queue.__getitem__ = Mock(side_effect=lambda i: queue.targets[i])
 
-    def mock_get(ra: float, dec: float, utime: float) -> MockPointing | None:
+    def mock_get(
+        ra: float,
+        dec: float,
+        utime: float,
+        roll: float | None = None,
+    ) -> MockPointing | None:
         """Mock get method that returns next available target."""
         for target in queue.targets:
             if not target.done and target.merit > 0:
@@ -446,7 +458,12 @@ def queue_get_from_list() -> Callable[..., list[tuple[float, float]]]:
         call_count = {"count": 0}
         positions: list[tuple[float, float]] = []
 
-        def getter(ra: float, dec: float, utime: float) -> Any:
+        def getter(
+            ra: float,
+            dec: float,
+            utime: float,
+            roll: float | None = None,
+        ) -> Any:
             if track_positions:
                 positions.append((ra, dec))
             if call_count["count"] < len(targets):
