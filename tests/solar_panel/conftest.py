@@ -197,8 +197,12 @@ def mock_ephemeris_with_sun_vectors() -> Mock:
 
 
 @pytest.fixture
-def panel_set(mock_eclipse_constraint: Mock) -> SolarPanelSet:
+def panel_set(mock_eclipse_constraint: Mock, monkeypatch) -> SolarPanelSet:
     """Create a test panel set with multiple panels."""
+    monkeypatch.setattr(
+        "conops.config.solar_panel._get_eclipse_constraint",
+        lambda: mock_eclipse_constraint,
+    )
     panels = [
         SolarPanel(name="Panel1", normal=(0.0, 1.0, 0.0), max_power=100.0),
         SolarPanel(name="Panel2", normal=(0.0, 1.0, 0.0), max_power=100.0),
