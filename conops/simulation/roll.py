@@ -74,6 +74,8 @@ def optimum_roll(
     reference_roll: float | None = None,
     max_roll_delta: float | None = None,
     acs_mode: ACSMode | None = None,
+    in_eclipse: bool | None = None,
+    drive_preview_seconds: float = 0.0,
 ) -> float:
     """Calculate the optimum roll angle (degrees in [0,360)).
 
@@ -90,11 +92,21 @@ def optimum_roll(
     - If `reference_roll` and `max_roll_delta` are provided: restrict the search
       to rolls within that shortest-path angular distance. If no integer-degree
       candidate is reachable, hold the reference roll.
+    - Finite array drives hold their current physical angle during candidate
+      evaluation unless ``drive_preview_seconds`` explicitly grants motion.
+      ``in_eclipse`` controls whether each drive's eclipse tracking policy permits
+      that motion and is required when the interval is positive.
     """
     if (reference_roll is None) != (max_roll_delta is None):
         raise ValueError("reference_roll and max_roll_delta must be provided together")
     if max_roll_delta is not None and max_roll_delta < 0:
         raise ValueError("max_roll_delta must be non-negative")
+    if not np.isfinite(drive_preview_seconds) or drive_preview_seconds < 0.0:
+        raise ValueError("drive_preview_seconds must be finite and non-negative")
+    if drive_preview_seconds > 0.0 and in_eclipse is None:
+        raise ValueError(
+            "in_eclipse must be provided when candidate drive motion is enabled"
+        )
 
     # Fetch ephemeris index and Sun vector from pre-computed arrays
     index = ephem.index(dtutcfromtimestamp(utime))
@@ -171,9 +183,12 @@ def optimum_roll(
         for panel, weight in zip(panels, weights):
             totals += (
                 panel.preview_power_factors_from_sun_body(
-                    utime,
                     sun_body_candidates,
-                    track_sun=panel.tracks_sun(acs_mode, in_eclipse=False),
+                    track_sun=panel.tracks_sun(
+                        acs_mode,
+                        in_eclipse=bool(in_eclipse),
+                    ),
+                    elapsed_seconds=drive_preview_seconds,
                 )
                 * weight
             )

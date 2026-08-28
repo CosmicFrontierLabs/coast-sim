@@ -1227,6 +1227,7 @@ class QueueDITL(DITLMixin, DITLStats):
             self.ephem,
             self.config.solar_panel,
             acs_mode=mode,
+            in_eclipse=self.acs.in_eclipse,
         )
         roll_offset_deg = (roll - nominal_roll + 180.0) % 360.0 - 180.0
 

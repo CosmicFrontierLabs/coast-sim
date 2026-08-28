@@ -221,6 +221,14 @@ class SingleAxisSolarArrayDrive(ConfigModel):
         sun = sun / sun_magnitudes[:, None]
         axis = np.asarray(self.rotation_axis, dtype=np.float64)
 
+        reference = (
+            self.initial_angle_deg
+            if reference_angle_deg is None
+            else float(
+                np.clip(reference_angle_deg, self.min_angle_deg, self.max_angle_deg)
+            )
+        )
+
         cosine_coefficient = sun @ normal - np.dot(axis, normal) * (sun @ axis)
         sine_coefficient = sun @ np.cross(axis, normal)
         unconstrained_deg = np.rad2deg(np.arctan2(sine_coefficient, cosine_coefficient))
@@ -240,13 +248,6 @@ class SingleAxisSolarArrayDrive(ConfigModel):
             )
         )
 
-        reference = (
-            self.initial_angle_deg
-            if reference_angle_deg is None
-            else float(
-                np.clip(reference_angle_deg, self.min_angle_deg, self.max_angle_deg)
-            )
-        )
         candidate_normals = self.normals_at_angles(normal, candidates.ravel()).reshape(
             len(sun), 3, 3
         )
@@ -257,10 +258,15 @@ class SingleAxisSolarArrayDrive(ConfigModel):
         tied = np.isclose(scores, best_scores, rtol=0.0, atol=1e-12)
         distances = np.where(tied, np.abs(candidates - reference), np.inf)
         best_indices = np.argmin(distances, axis=1)
-        return cast(
+        best_angles = cast(
             npt.NDArray[np.float64],
             candidates[np.arange(len(sun)), best_indices],
         )
+        # When the Sun is parallel to the drive axis, or the reference normal
+        # is parallel to it, rotation cannot change illumination. Hold the
+        # current physical angle instead of commanding an arbitrary endpoint.
+        flat_objective = np.hypot(cosine_coefficient, sine_coefficient) <= 1e-12
+        return np.where(flat_objective, reference, best_angles)
 
     def step_toward(
         self, current_angle_deg: float, target_angle_deg: float, elapsed_seconds: float
@@ -551,12 +557,18 @@ class SolarPanel(ConfigModel):
 
     def preview_power_factors_from_sun_body(
         self,
-        time_s: float,
         sun_body: npt.NDArray[np.float64],
         *,
         track_sun: bool = False,
+        elapsed_seconds: float = 0.0,
     ) -> npt.NDArray[np.float64]:
-        """Vectorize non-mutating power-factor previews for candidate attitudes."""
+        """Preview candidate power without mutating drive state.
+
+        Drive motion is disabled unless the caller explicitly supplies a
+        positive control interval through ``elapsed_seconds``.
+        """
+        if not np.isfinite(elapsed_seconds) or elapsed_seconds < 0.0:
+            raise ValueError("elapsed_seconds must be finite and non-negative")
         sun = np.asarray(sun_body, dtype=np.float64)
         if sun.ndim != 2 or sun.shape[1] != 3 or not np.all(np.isfinite(sun)):
             raise ValueError("Sun body vectors must have shape (N, 3) and be finite")
@@ -574,11 +586,6 @@ class SolarPanel(ConfigModel):
             drive = self.single_axis_drive
             current = self.drive_angle_deg
             assert current is not None
-            elapsed_seconds = (
-                0.0
-                if self._drive_time_s is None
-                else max(0.0, time_s - self._drive_time_s)
-            )
             targets = (
                 drive.optimal_angles(self.normal, sun, reference_angle_deg=current)
                 if track_sun

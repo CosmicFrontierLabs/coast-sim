@@ -54,6 +54,29 @@ class TestSingleAxisSolarArrayDrive:
             np.cos(np.deg2rad(15.0))
         )
 
+    @pytest.mark.parametrize(
+        ("rotation_axis", "normal", "sun_body"),
+        [
+            ((1.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+            ((0.0, 0.0, 1.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+        ],
+    )
+    def test_optimal_angle_holds_when_rotation_cannot_change_illumination(
+        self,
+        rotation_axis: tuple[float, float, float],
+        normal: tuple[float, float, float],
+        sun_body: tuple[float, float, float],
+    ) -> None:
+        drive = _drive(rotation_axis=rotation_axis, initial_angle_deg=73.0)
+
+        angle = drive.optimal_angle(
+            normal,
+            sun_body,
+            reference_angle_deg=73.0,
+        )
+
+        assert angle == pytest.approx(73.0)
+
     def test_step_toward_applies_rate_and_travel_limits(self) -> None:
         drive = _drive(max_rate_deg_per_s=2.0)
 
@@ -180,7 +203,6 @@ class TestDrivenPanelRuntime:
         )
 
         factors = panel.preview_power_factors_from_sun_body(
-            30.0,
             np.asarray(
                 [
                     (0.0, 1.0, 0.0),
@@ -188,6 +210,7 @@ class TestDrivenPanelRuntime:
                 ]
             ),
             track_sun=True,
+            elapsed_seconds=30.0,
         )
 
         assert factors == pytest.approx((0.5, 1.0))
@@ -428,4 +451,101 @@ class TestDrivenPanelSet:
         roll = optimum_roll(0.0, 0.0, 30.0, ephem, panel_set, acs_mode=ACSMode.SCIENCE)
 
         assert roll == pytest.approx(0.0)
+        assert panel.drive_angle_deg == pytest.approx(0.0)
+
+    def test_roll_search_requires_explicit_candidate_drive_motion(self) -> None:
+        panel = SolarPanel(
+            normal=(0.0, 1.0, 0.0),
+            max_power=100.0,
+            single_axis_drive=_drive(rotation_axis=(1.0, 0.0, 0.0)),
+            drive_control=SolarArrayDriveControl(sun_tracking_modes=[ACSMode.SCIENCE]),
+        )
+        panel_set = SolarPanelSet(panels=[panel])
+        panel.illumination_from_sun_body(
+            0.0,
+            (1.0, 0.0, 1.0),
+            track_sun=False,
+            advance_drive_state=True,
+        )
+        ephem = _ephem_with_sun((1.0, 0.0, 1.0))
+
+        held_roll = optimum_roll(
+            0.0,
+            0.0,
+            30.0,
+            ephem,
+            panel_set,
+            acs_mode=ACSMode.SCIENCE,
+        )
+        moving_roll = optimum_roll(
+            0.0,
+            0.0,
+            30.0,
+            ephem,
+            panel_set,
+            acs_mode=ACSMode.SCIENCE,
+            in_eclipse=False,
+            drive_preview_seconds=30.0,
+        )
+
+        assert held_roll == pytest.approx(90.0)
+        assert moving_roll != held_roll
+        assert panel.drive_angle_deg == pytest.approx(0.0)
+
+    def test_roll_search_requires_eclipse_state_for_candidate_drive_motion(
+        self,
+    ) -> None:
+        panel_set = SolarPanelSet(
+            panels=[
+                SolarPanel(
+                    normal=(0.0, 1.0, 0.0),
+                    single_axis_drive=_drive(rotation_axis=(1.0, 0.0, 0.0)),
+                )
+            ]
+        )
+
+        with pytest.raises(ValueError, match="in_eclipse must be provided"):
+            optimum_roll(
+                0.0,
+                0.0,
+                30.0,
+                _ephem_with_sun((1.0, 0.0, 1.0)),
+                panel_set,
+                acs_mode=ACSMode.SCIENCE,
+                drive_preview_seconds=30.0,
+            )
+
+    def test_roll_search_respects_eclipse_drive_hold_policy(self) -> None:
+        panel = SolarPanel(
+            normal=(0.0, 1.0, 0.0),
+            max_power=100.0,
+            single_axis_drive=_drive(rotation_axis=(1.0, 0.0, 0.0)),
+            drive_control=SolarArrayDriveControl(sun_tracking_modes=[ACSMode.SCIENCE]),
+        )
+        panel_set = SolarPanelSet(panels=[panel])
+        ephem = _ephem_with_sun((1.0, 0.0, 1.0))
+
+        sunlit_roll = optimum_roll(
+            0.0,
+            0.0,
+            30.0,
+            ephem,
+            panel_set,
+            acs_mode=ACSMode.SCIENCE,
+            in_eclipse=False,
+            drive_preview_seconds=30.0,
+        )
+        eclipse_roll = optimum_roll(
+            0.0,
+            0.0,
+            30.0,
+            ephem,
+            panel_set,
+            acs_mode=ACSMode.SCIENCE,
+            in_eclipse=True,
+            drive_preview_seconds=30.0,
+        )
+
+        assert eclipse_roll == pytest.approx(90.0)
+        assert sunlit_roll != eclipse_roll
         assert panel.drive_angle_deg == pytest.approx(0.0)

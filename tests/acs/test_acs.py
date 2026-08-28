@@ -1,6 +1,6 @@
 """Unit tests for Attitude Control System (ACS) class."""
 
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
@@ -151,6 +151,21 @@ class TestACSStateManagement:
         assert acs.roll == 0.0
         acs.roll = 90.0
         assert acs.roll == 90.0
+
+    def test_continuous_roll_threads_executed_drive_interval_and_eclipse(
+        self, acs
+    ) -> None:
+        acs.in_eclipse = True
+        acs.roll = 10.0
+        acs._last_roll_optimization_mode = ACSMode.CHARGING
+        acs._last_roll_optimization_utime = 970.0
+
+        with patch("conops.simulation.acs.optimum_roll", return_value=20.0) as roll:
+            result = acs._continuous_optimum_roll(1000.0, ACSMode.CHARGING)
+
+        assert result == 20.0
+        assert roll.call_args.kwargs["in_eclipse"] is True
+        assert roll.call_args.kwargs["drive_preview_seconds"] == pytest.approx(30.0)
 
     def test_slew_dists_tracking(self, acs) -> None:
         """Test that slew_dists list is tracked."""

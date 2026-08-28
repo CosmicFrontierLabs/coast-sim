@@ -495,9 +495,12 @@ illumination fraction.
        conversion_efficiency=0.95,
    )
 
-Candidate pointing, roll, and shadow calculations preview the applicable
-rate-limited drive command without modifying runtime state. Executed DITL
-samples advance the state, and
+Candidate pointing and roll calculations use the current physical drive angle
+without modifying runtime state or granting motion under an attitude that has
+not executed. Continuous executed control may explicitly preview motion over its
+elapsed control interval. Shadow calculations preview the same rate-limited
+drive command that the current DITL sample will commit. Executed DITL samples
+advance the state, and
 ``solar_array_drive_angles_deg`` housekeeping telemetry records the resulting
 angles in configured driven-panel order.
 

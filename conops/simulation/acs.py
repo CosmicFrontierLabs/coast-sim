@@ -671,6 +671,7 @@ class ACS:
             self.solar_panel,
             self.constraint,
             acs_mode=self.get_mode(utime),
+            in_eclipse=self.in_eclipse,
         )
 
     def _continuous_optimum_roll(self, utime: float, mode: ACSMode) -> float:
@@ -699,6 +700,8 @@ class ACS:
             reference_roll=self.roll,
             max_roll_delta=max_roll_delta,
             acs_mode=mode,
+            in_eclipse=self.in_eclipse,
+            drive_preview_seconds=elapsed,
         )
         self._last_roll_optimization_utime = utime
         self._last_roll_optimization_mode = mode
@@ -771,6 +774,7 @@ class ACS:
                 self.solar_panel,
                 self.constraint,
                 acs_mode=ACSMode.IDLE,
+                in_eclipse=self.in_eclipse,
             )
             for candidate_roll in self._idle_safe_roll_candidates(optimal_roll):
                 if not self._idle_attitude_unsafe(
