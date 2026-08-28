@@ -274,7 +274,8 @@ class DITLMixin:
 
             if reason == "rate_limit_exceeded":
                 distance_deg, rotation_axis_body = quaternion_attitude_delta(*attitudes)
-                max_rate = acs_config.effective_max_slew_rate(rotation_axis_body)
+                if distance_deg > 0.0:
+                    max_rate = acs_config.effective_max_slew_rate(rotation_axis_body)
 
             allowed_distance_deg = (
                 max_rate * elapsed_seconds

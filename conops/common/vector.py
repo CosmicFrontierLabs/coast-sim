@@ -435,9 +435,7 @@ def quaternion_attitude_delta(
     # Attitude quaternions map ECI into body coordinates.  q1 * conjugate(q2)
     # therefore represents the physical body rotation from attitude 1 to 2,
     # resolved in the initial body frame.
-    q2_conjugate = q2.copy()
-    q2_conjugate[1:] *= -1.0
-    delta = _quat_mul(q1, q2_conjugate)
+    delta = _quat_mul(q1, q2, conjugate_b=True)
     delta /= float(np.linalg.norm(delta))
 
     # q and -q represent the same rotation.  Choose the representative whose
@@ -457,11 +455,16 @@ def quaternion_attitude_delta(
 
 
 def _quat_mul(
-    a: npt.NDArray[np.float64], b: npt.NDArray[np.float64]
+    a: npt.NDArray[np.float64],
+    b: npt.NDArray[np.float64],
+    *,
+    conjugate_b: bool = False,
 ) -> npt.NDArray[np.float64]:
-    """Quaternion product a ⊗ b, both [w, x, y, z]."""
+    """Quaternion product a ⊗ b, optionally using b's conjugate without a copy."""
     aw, ax, ay, az = float(a[0]), float(a[1]), float(a[2]), float(a[3])
     bw, bx, by, bz = float(b[0]), float(b[1]), float(b[2]), float(b[3])
+    if conjugate_b:
+        bx, by, bz = -bx, -by, -bz
     return np.array(
         [
             aw * bw - ax * bx - ay * by - az * bz,

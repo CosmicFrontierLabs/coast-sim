@@ -770,6 +770,36 @@ class TestFetchNewPPT:
         charge_deadline.assert_called_once_with(1000.0)
         assert observed_deadlines == [1500.0, 1500.0]
 
+    def test_candidate_deadline_uses_computed_science_roll(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Queue scoring should not use a target's uncommitted default roll."""
+        target = Mock(ra=40.0, dec=10.0, roll=0.0)
+
+        def queue_get(*_args, collection_deadline, **_kwargs):
+            collection_deadline(target, 1100.0)
+            return None
+
+        cast(Mock, queue_ditl.queue).get = Mock(side_effect=queue_get)
+        with (
+            patch.object(queue_ditl, "_ppt_optimum_roll", return_value=70.0) as roll,
+            patch.object(
+                queue_ditl,
+                "_next_science_deadline",
+                return_value=(1500.0, "pass"),
+            ) as deadline,
+        ):
+            queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        roll.assert_called_once_with(target, 1000.0)
+        deadline.assert_called_once_with(
+            1100.0,
+            current_time=1000.0,
+            target=target,
+            target_roll=70.0,
+            deadline_inputs=ANY,
+        )
+
     def test_fetch_ppt_does_not_build_deadline_inputs_until_scoring_uses_them(
         self, queue_ditl: QueueDITL
     ) -> None:
@@ -802,7 +832,11 @@ class TestFetchNewPPT:
             "conops.ditl.queue_ditl.quaternion_attitude_delta",
             return_value=(12.5, rotation_axis_body),
         ) as delta:
-            deadline = queue_ditl._next_pass_science_deadline(1000.0, target=target)
+            deadline = queue_ditl._next_pass_science_deadline(
+                1000.0,
+                target_roll=target.roll,
+                target=target,
+            )
 
         delta.assert_called_once_with(10.0, 20.0, 30.0, 40.0, -15.0, 70.0)
         acs.slew_time.assert_called_once_with(12.5, rotation_axis_body)
@@ -920,6 +954,40 @@ class TestFetchNewPPT:
         assert mock_ppt.roll == command.slew.endroll
         assert mock_ppt.slewtime == int(round(command.slew.slewtime))
         assert mock_ppt.slewdist == pytest.approx(command.slew.slewdist)
+
+    def test_fetch_ppt_pass_deadline_uses_completed_slew_roll(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Final target admission should use the roll computed for its slew."""
+        mock_ppt = Mock()
+        mock_ppt.ra = 45.0
+        mock_ppt.dec = 30.0
+        mock_ppt.roll = 0.0
+        mock_ppt.obsid = 1001
+        mock_ppt.next_vis = Mock(return_value=1000.0)
+        mock_ppt.ss_max = 3600.0
+        mock_ppt.ss_min = 300.0
+        mock_ppt.windows = [[0.0, 1e12]]
+        cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
+        queue_ditl.acs.passrequests.next_pass = Mock(
+            return_value=Mock(
+                begin=10_000.0,
+                gsstartra=40.0,
+                gsstartdec=-15.0,
+                gsstartroll=30.0,
+            )
+        )
+
+        with (
+            patch.object(queue_ditl, "_ppt_optimum_roll", return_value=70.0),
+            patch(
+                "conops.ditl.queue_ditl.quaternion_attitude_delta",
+                return_value=(12.5, (0.0, 0.0, 1.0)),
+            ) as delta,
+        ):
+            queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        delta.assert_called_once_with(45.0, 30.0, 70.0, 40.0, -15.0, 30.0)
 
     def test_sync_acs_slew_metadata_updates_exported_plan_entry(
         self, queue_ditl: QueueDITL
@@ -2253,6 +2321,24 @@ class TestPlanExecutionValidation:
 
         assert len(violations) == 1
         assert violations[0].max_rate_deg_per_s == pytest.approx(0.2)
+
+    def test_validation_accepts_identical_directional_attitude_samples(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.config.spacecraft_bus.attitude_control = AttitudeControlSystem(
+            max_slew_rate_body=(0.2, 0.2, 2.0)
+        )
+        self._set_attitude_telemetry(
+            queue_ditl,
+            utime=[1000.0, 1060.0],
+            mode=[ACSMode.SLEWING, ACSMode.SLEWING],
+            obsid=[0, 0],
+            ra=[10.0, 10.0],
+            dec=[20.0, 20.0],
+            roll=[30.0, 30.0],
+        )
+
+        assert queue_ditl._attitude_rate_violations() == []
 
     def test_validation_rejects_attitude_jump_across_mode_boundary(
         self, queue_ditl: QueueDITL
