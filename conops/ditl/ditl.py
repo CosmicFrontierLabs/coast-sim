@@ -5,15 +5,22 @@ import rust_ephem
 
 from conops.targets.plan import Plan
 
-from ..common import angular_separation, dtutcfromtimestamp, radec2vec, scbodyvector
+from ..common import (
+    ACSMode,
+    angular_separation,
+    dtutcfromtimestamp,
+    radec2vec,
+    scbodyvector,
+)
 from ..common.vector import attitude_to_quat
-from ..config import MissionConfig
+from ..config import AttitudeConstraintScope, MissionConfig
 from ..config.constraint import (
     all_attitude_constraint_name,
     attitude_constraint_name_for_scopes,
     attitude_constraint_scope_label,
 )
 from ..simulation.roll import optimum_roll
+from ..targets import PlanEntry
 from .ditl_log import DITLLog
 from .ditl_mixin import DITLMixin
 from .ditl_stats import DITLStats
@@ -154,6 +161,12 @@ class DITL(DITLMixin, DITLStats):
         if self.plan is None:
             raise ValueError("ERROR: No plan loaded")
 
+        # Plans intentionally exclude runtime objects from their serialized form.
+        # Rebind here as well as during construction so assigning Plan.load(...)
+        # after DITL initialization remains safe.
+        if isinstance(self.plan, Plan):
+            self.plan.bind_runtime(self.config, self.ephem)
+
         # Set up ACS ephemeris if not already set
         if self.acs.ephem is None:
             self.acs.ephem = self.ephem
@@ -191,13 +204,44 @@ class DITL(DITLMixin, DITLStats):
         # Set up initial target in ACS
         self.ppt = self.plan.which_ppt(self.utime[0])
         if self.ppt is not None:
-            self.acs._enqueue_slew(
-                self.ppt.ra,
-                self.ppt.dec,
-                self.ppt.obsid,
-                self.utime[0],
-                obstype=self.ppt.obstype,
-            )
+            if issubclass(type(self.ppt), PlanEntry):
+                instrument_roll = self.ppt.roll
+                mounted = self.ppt.uses_mounted_attitude()
+                if mounted and instrument_roll == -1.0:
+                    instrument_roll = optimum_roll(
+                        self.ppt.ra,
+                        self.ppt.dec,
+                        self.utime[0],
+                        self.ephem,
+                        self.solar_panel,
+                        self.constraint,
+                        telescope=self.ppt.science_telescope(),
+                    )
+                    self.ppt.roll = instrument_roll
+                body_ra, body_dec, body_roll = self.ppt.target_body_attitude(
+                    instrument_roll
+                )
+                self.ppt.spacecraft_attitude = (
+                    (body_ra, body_dec, body_roll) if mounted else None
+                )
+                self.acs._enqueue_slew(
+                    body_ra,
+                    body_dec,
+                    self.ppt.obsid,
+                    self.utime[0],
+                    obstype=self.ppt.obstype,
+                    roll=body_roll,
+                    target_request=self.ppt,
+                    instrument_roll=instrument_roll,
+                )
+            else:
+                self.acs._enqueue_slew(
+                    self.ppt.ra,
+                    self.ppt.dec,
+                    self.ppt.obsid,
+                    self.utime[0],
+                    obstype=self.ppt.obstype,
+                )
 
         ##
         ## DITL LOOP
@@ -240,10 +284,43 @@ class DITL(DITLMixin, DITLStats):
             self.obsid[i] = obsid
 
             # Create housekeeping telemetry record for fault checking
-            nominal_roll = optimum_roll(
-                ra, dec, self.utime[i], self.ephem, self.solar_panel
+            science_target = (
+                self.ppt
+                if self.ppt is not None
+                and issubclass(type(self.ppt), PlanEntry)
+                and mode == ACSMode.SCIENCE
+                else None
             )
-            roll_offset_deg = (roll - nominal_roll + 180.0) % 360.0 - 180.0
+            mounted_target = (
+                science_target
+                if science_target is not None and science_target.uses_mounted_attitude()
+                else None
+            )
+            instrument_roll = (
+                mounted_target.roll if mounted_target is not None else roll
+            )
+            if (
+                mounted_target is not None
+                and self.acs.last_slew is not None
+                and self.acs.last_slew.instrument_roll is not None
+            ):
+                instrument_roll = self.acs.last_slew.instrument_roll
+            if instrument_roll == -1.0:
+                instrument_roll = 0.0
+            nominal_roll = (
+                optimum_roll(
+                    mounted_target.ra,
+                    mounted_target.dec,
+                    self.utime[i],
+                    self.ephem,
+                    self.solar_panel,
+                    self.constraint,
+                    telescope=mounted_target.science_telescope(),
+                )
+                if mounted_target is not None
+                else optimum_roll(ra, dec, self.utime[i], self.ephem, self.solar_panel)
+            )
+            roll_offset_deg = (instrument_roll - nominal_roll + 180.0) % 360.0 - 180.0
             sun_angle_deg = self._compute_sun_angle(self.utime[i], ra, dec)
             _sun_bv = scbodyvector(
                 np.radians(ra),
@@ -266,32 +343,54 @@ class DITL(DITLMixin, DITLStats):
                 if self.calculate_field_of_regard
                 else None
             )
-            violated = self.constraint.in_constraint(
-                ra, dec, self.utime[i], target_roll=roll, acs_mode=mode
-            )
-            in_constraint_name = None
-            if violated:
-                in_constraint_name = (
-                    all_attitude_constraint_name(
-                        self.constraint,
-                        ra,
-                        dec,
-                        self.utime[i],
-                        target_roll=roll,
-                        acs_mode=mode,
-                    )
-                    or "Unknown"
+            if mounted_target is not None:
+                all_names = mounted_target.attitude_constraint_names(
+                    list(AttitudeConstraintScope),
+                    (ra, dec, roll),
+                    self.utime[i],
+                    mode,
                 )
+                in_constraint_name = all_names[0] if all_names else None
+            else:
+                violated = self.constraint.in_constraint(
+                    ra, dec, self.utime[i], target_roll=roll, acs_mode=mode
+                )
+                in_constraint_name = None
+                if violated:
+                    in_constraint_name = (
+                        all_attitude_constraint_name(
+                            self.constraint,
+                            ra,
+                            dec,
+                            self.utime[i],
+                            target_roll=roll,
+                            acs_mode=mode,
+                        )
+                        or "Unknown"
+                    )
             scopes = self.config.attitude_constraint_scopes_for_mode(mode)
-            scope_constraint_name = attitude_constraint_name_for_scopes(
-                self.constraint,
-                scopes,
-                ra,
-                dec,
-                self.utime[i],
-                target_roll=roll,
-                acs_mode=mode,
+            scoped_names = (
+                mounted_target.attitude_constraint_names(
+                    scopes,
+                    (ra, dec, roll),
+                    self.utime[i],
+                    mode,
+                )
+                if mounted_target is not None
+                else []
             )
+            if mounted_target is not None:
+                scope_constraint_name = scoped_names[0] if scoped_names else None
+            else:
+                scope_constraint_name = attitude_constraint_name_for_scopes(
+                    self.constraint,
+                    scopes,
+                    ra,
+                    dec,
+                    self.utime[i],
+                    target_roll=roll,
+                    acs_mode=mode,
+                )
             scope_label = attitude_constraint_scope_label(scopes)
             _q = attitude_to_quat(ra, dec, roll)
             hk = Housekeeping(

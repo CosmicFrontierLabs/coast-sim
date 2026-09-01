@@ -11,6 +11,7 @@ from conops import (
     AttitudeConstraintScope,
     AttitudeRateContinuityError,
     DITLs,
+    Plan,
 )
 
 
@@ -71,6 +72,15 @@ class TestDITLCalc:
         """Test that calc returns True with valid inputs."""
         result = ditl.calc()
         assert result is True
+
+    def test_calc_rebinds_a_plan_assigned_after_initialization(
+        self, ditl: DITL
+    ) -> None:
+        ditl.plan = Plan()
+        with patch.object(Plan, "bind_runtime") as bind_runtime:
+            ditl.calc()
+
+        bind_runtime.assert_called_once_with(ditl.config, ditl.ephem)
 
     def test_calc_initializes_telemetry_arrays(self, ditl: DITL) -> None:
         """Test that calc initializes all telemetry arrays."""

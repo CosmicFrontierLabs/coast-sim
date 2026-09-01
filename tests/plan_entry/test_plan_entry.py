@@ -2,9 +2,14 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
-from conops import AttitudeControlSystem, PlanEntry
+from conops import AttitudeControlSystem, Payload, PlanEntry
 from conops.common.enums import ObsType
-from conops.common.vector import quaternion_attitude_delta
+from conops.common.vector import (
+    attitude_to_quat,
+    quaternion_attitude_delta,
+    quaternion_rotate_vector,
+)
+from conops.config import Telescope
 
 
 class MockSAA:
@@ -236,6 +241,61 @@ class TestVisibility:
         assert result == 0
         # Should have calculated windows
         assert isinstance(plan_entry.windows, list)
+
+    def test_mounted_telescope_visibility_uses_science_line_of_sight(
+        self, mock_config, mock_constraint
+    ):
+        telescope_constraint = type(mock_constraint)()
+        telescope_constraint.roll_independent_constraint = (
+            telescope_constraint.constraint
+        )
+        telescope = Telescope(
+            name="Science Telescope",
+            boresight=(0.0, 1.0, 0.0),
+            constraint=telescope_constraint,
+        )
+        mock_config.payload = Payload(instruments=[telescope])
+        entry = PlanEntry(
+            config=mock_config,
+            instrument_name=telescope.name,
+            ra=123.0,
+            dec=-20.0,
+        )
+
+        entry.visibility()
+
+        telescope_constraint.constraint.evaluate.assert_called_once_with(
+            ephemeris=entry.ephem,
+            target_ra=123.0,
+            target_dec=-20.0,
+            target_roll=None,
+        )
+        mock_constraint.constraint.evaluate.assert_not_called()
+
+
+class TestInstrumentMounting:
+    def test_target_maps_to_configured_body_boresight(self, mock_config):
+        telescope = Telescope(
+            name="Science Telescope",
+            boresight=(0.0, 1.0, 0.0),
+        )
+        mock_config.payload = Payload(instruments=[telescope])
+        entry = PlanEntry(
+            config=mock_config,
+            instrument_name=telescope.name,
+            ra=0.0,
+            dec=0.0,
+            roll=0.0,
+        )
+
+        body_attitude = entry.target_body_attitude()
+        target_in_body = quaternion_rotate_vector(
+            attitude_to_quat(*body_attitude),
+            (1.0, 0.0, 0.0),
+        )
+
+        assert target_in_body == pytest.approx(telescope.boresight, abs=1e-10)
+        assert body_attitude[0] == pytest.approx(270.0)
 
 
 class TestVisible:

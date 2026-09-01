@@ -2,11 +2,13 @@
 
 import pathlib
 
+import numpy as np
 import pytest
 import rust_ephem
 
 from conops.config import (
     Instrument,
+    InstrumentMounting,
     MissionConfig,
     Payload,
     Telescope,
@@ -148,6 +150,71 @@ class TestTelescope:
     def test_custom_boresight_accepted(self) -> None:
         t = Telescope(boresight=(0.0, 1.0, 0.0))
         assert t.boresight == (0.0, 1.0, 0.0)
+        assert t.mounting is not None
+        assert t.mounting.boresight_body == pytest.approx((0.0, 1.0, 0.0))
+
+    def test_legacy_boresight_is_normalized_into_mounting(self) -> None:
+        t = Telescope(boresight=(0.0, 0.995, 0.0))
+        assert t.boresight == (0.0, 1.0, 0.0)
+
+    def test_boresight_assignment_atomically_replaces_mounting(self) -> None:
+        t = Telescope()
+        original_mounting = t.mounting
+
+        t.boresight = (0.0, 1.0, 0.0)
+
+        assert t.mounting is not original_mounting
+        assert t.boresight == (0.0, 1.0, 0.0)
+
+    def test_mounting_assignment_updates_derived_boresight(self) -> None:
+        t = Telescope()
+        t.mounting = InstrumentMounting(
+            body_from_instrument_quaternion_wxyz=(
+                np.sqrt(0.5),
+                0.0,
+                0.0,
+                np.sqrt(0.5),
+            )
+        )
+        assert t.boresight == pytest.approx((0.0, 1.0, 0.0), abs=1e-10)
+
+    def test_mounting_cannot_be_mutated_behind_derived_boresight(self) -> None:
+        t = Telescope()
+        with pytest.raises(ValueError, match="frozen"):
+            t.mounting.body_from_instrument_quaternion_wxyz = (0.0, 1.0, 0.0, 0.0)
+
+    def test_mounting_quaternion_defines_boresight_and_clocking(self) -> None:
+        half_angle = np.deg2rad(45.0)
+        t = Telescope(
+            mounting=InstrumentMounting(
+                body_from_instrument_quaternion_wxyz=(
+                    float(np.cos(half_angle)),
+                    0.0,
+                    0.0,
+                    float(np.sin(half_angle)),
+                )
+            )
+        )
+
+        assert t.boresight == pytest.approx((0.0, 1.0, 0.0), abs=1e-10)
+        assert t.mounting is not None
+        assert t.mounting.roll_reference_body == pytest.approx(
+            (0.0, 0.0, 1.0), abs=1e-10
+        )
+
+    def test_mounting_and_boresight_must_agree(self) -> None:
+        with pytest.raises(ValueError, match="inconsistent"):
+            Telescope(
+                boresight=(1.0, 0.0, 0.0),
+                mounting=InstrumentMounting(
+                    body_from_instrument_quaternion_wxyz=(
+                        np.sqrt(0.5),
+                        0.0,
+                        0.0,
+                        np.sqrt(0.5),
+                    )
+                ),
+            )
 
     def test_non_unit_boresight_raises(self) -> None:
         with pytest.raises(ValueError, match="unit vector"):
@@ -296,7 +363,6 @@ class TestTelescope:
     def test_config_alias_serializes_correctly_to_yaml(
         self, tmp_path: pathlib.Path
     ) -> None:
-
         tc = TelescopeConfig(
             aperture_m=0.5,
             f_number=12,
@@ -363,6 +429,34 @@ class TestTelescopeConstraint:
         assert t.spacecraft_constraint is not None
         assert t.spacecraft_constraint is not c.constraint
 
+    def test_spacecraft_constraint_ignores_clocking_for_directional_keepout(
+        self,
+    ) -> None:
+        half_angle = np.deg2rad(45.0)
+        constraint = self._sun_constraint()
+        telescope = Telescope(
+            mounting=InstrumentMounting(
+                body_from_instrument_quaternion_wxyz=(
+                    float(np.cos(half_angle)),
+                    float(np.sin(half_angle)),
+                    0.0,
+                    0.0,
+                )
+            ),
+            constraint=constraint,
+        )
+
+        assert telescope.boresight == (1.0, 0.0, 0.0)
+        assert telescope.spacecraft_constraint is constraint.constraint
+
+    def test_roll_dependent_telescope_local_constraint_is_rejected(self) -> None:
+        local_offset = rust_ephem.SunConstraint(min_angle=45.0).boresight_offset(
+            yaw_deg=20.0
+        )
+
+        with pytest.raises(ValueError, match="must be roll-independent"):
+            Telescope(constraint=Constraint(sun_constraint=local_offset))
+
     def test_combined_telescope_spacecraft_constraint_no_telescopes(self) -> None:
         payload = Payload(instruments=[Instrument()])
         assert payload.combined_telescope_spacecraft_constraint() is None
@@ -393,17 +487,27 @@ class TestTelescopeConstraint:
         result = payload.combined_telescope_spacecraft_constraint()
         assert result is not None
 
-    def test_invalidate_spacecraft_constraint_cache(self) -> None:
-        c = self._sun_constraint()
-        t = Telescope(boresight=(0.0, 0.0, 1.0), constraint=c)
-        first = t.spacecraft_constraint
-        assert first is not None
-        # Cache is populated; invalidate and verify a fresh object is returned
-        t.invalidate_spacecraft_constraint_cache()
-        second = t.spacecraft_constraint
-        assert second is not None
-        # After invalidation a new ConstraintConfig is computed (different object)
-        assert first is not second
+    def test_spacecraft_constraint_tracks_mounting_replacement(self) -> None:
+        t = Telescope(constraint=self._sun_constraint())
+        assert t.spacecraft_constraint is t.constraint.constraint
+
+        t.boresight = (0.0, 1.0, 0.0)
+
+        transformed = t.spacecraft_constraint
+        assert isinstance(transformed, rust_ephem.BoresightOffsetConstraint)
+        assert transformed.yaw_deg == pytest.approx(90.0)
+
+    def test_full_mount_round_trip_preserves_clocking(self) -> None:
+        mounting = InstrumentMounting(
+            body_from_instrument_quaternion_wxyz=(0.5, 0.5, 0.5, 0.5)
+        )
+        restored = Telescope.model_validate_json(
+            Telescope(mounting=mounting).model_dump_json()
+        )
+
+        assert restored.mounting.body_from_instrument_quaternion_wxyz == pytest.approx(
+            mounting.body_from_instrument_quaternion_wxyz
+        )
 
 
 class TestTelescopeConstraintMissionConfig:
@@ -422,14 +526,12 @@ class TestTelescopeConstraintMissionConfig:
         assert config.constraint.telescope_hard_constraint is not None
 
     def test_no_telescope_constraint_leaves_field_none(self) -> None:
-
         scope = Telescope()  # no constraint
         payload = Payload(instruments=[scope])
         config = MissionConfig(payload=payload)
         assert config.constraint.telescope_hard_constraint is None
 
     def test_plain_instrument_payload_leaves_telescope_field_none(self) -> None:
-
         payload = Payload(instruments=[Instrument()])
         config = MissionConfig(payload=payload)
         assert config.constraint.telescope_hard_constraint is None
