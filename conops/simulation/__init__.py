@@ -1,6 +1,11 @@
 from .acs import ACS
 from .acs_command import ACSCommand
 from .emergency_charging import EmergencyCharging
+from .momentum import (
+    MomentumSample,
+    StoredMomentumTracker,
+    gravity_gradient_torque_body,
+)
 from .passes import Pass, PassTimes
 from .roll import optimum_roll, optimum_roll_sidemount
 from .saa import SAA
@@ -14,6 +19,9 @@ __all__ = [
     "optimum_roll_sidemount",
     "Pass",
     "PassTimes",
+    "MomentumSample",
+    "StoredMomentumTracker",
+    "gravity_gradient_torque_body",
     "SAA",
     "Slew",
 ]

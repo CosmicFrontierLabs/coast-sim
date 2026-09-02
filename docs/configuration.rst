@@ -308,6 +308,7 @@ The :class:`~conops.config.SpacecraftBus` defines the spacecraft bus subsystems.
 **Attributes:**
 
 * ``name`` (str): Bus identifier
+* ``inertia_tensor_body_kg_m2`` (3x3 matrix | None): Spacecraft body-frame inertia tensor in kg m²
 * ``power_draw`` (:class:`~conops.config.PowerDraw`): Power consumption characteristics
 * ``attitude_control`` (:class:`~conops.config.AttitudeControlSystem`): ACS configuration
 * ``communications`` (:class:`~conops.config.CommunicationsSystem`): Optional comms system
@@ -326,6 +327,7 @@ The :class:`~conops.config.AttitudeControlSystem` defines slew performance and p
 * ``max_slew_rate_body`` (tuple[float, float, float] | None): Optional body +X/+Y/+Z slew-rate limits in deg/s
 * ``slew_accuracy`` (float): Pointing accuracy after slew completion in degrees
 * ``settle_time`` (float): Time to settle after slew completion in seconds
+* ``stored_momentum`` (:class:`~conops.config.momentum.StoredMomentumConfig`): Optional planning-level momentum tracking
 * ``slew_algorithm`` (:class:`~conops.common.enums.SlewAlgorithm`): Algorithm for computing slew paths:
 
   - ``QUATERNION`` (default): Full 3-DOF SLERP coupling pointing and roll changes
@@ -345,6 +347,25 @@ configured, slew estimates require complete starting and target attitudes
 Constraint-avoiding paths are evaluated as rest-to-rest segments using each
 segment's own body-frame rotation axis. If both tuples are omitted, the scalar
 fields retain their existing behavior, including legacy RA/Dec-only estimates.
+
+Gravity-gradient momentum tracking is disabled by default. Enable it by supplying
+a physical body-frame inertia tensor and setting ``gravity_gradient_enabled``.
+COAST integrates the angular impulse in inertial coordinates, then reports the
+stored-momentum vector in the current body frame. This prevents attitude changes
+alone from appearing to generate momentum. Capacity enforcement and desaturation
+scheduling are not part of this tracking model.
+
+.. code-block:: yaml
+
+   spacecraft_bus:
+     inertia_tensor_body_kg_m2:
+       - [1000.0, 0.0, 0.0]
+       - [0.0, 1200.0, 0.0]
+       - [0.0, 0.0, 800.0]
+     attitude_control:
+       stored_momentum:
+         gravity_gradient_enabled: true
+         initial_momentum_body_n_m_s: [0.0, 0.0, 0.0]
 
 .. code-block:: python
 
