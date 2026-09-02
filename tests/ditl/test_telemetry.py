@@ -14,6 +14,7 @@ from conops.ditl.telemetry import (
     PayloadData,
     Telemetry,
 )
+from conops.simulation.momentum import StoredMomentumTracker
 
 
 class TestHousekeeping:
@@ -478,6 +479,48 @@ class TestBodyVectorFields:
         tm = Telemetry(housekeeping=HousekeepingList([hk]))
         assert tm.housekeeping.sun_body_vector == [sbv]
         assert tm.housekeeping.earth_body_vector == [ebv]
+
+
+class TestStoredMomentumFields:
+    """Tests for gravity-gradient and stored-momentum telemetry."""
+
+    def _ts(self) -> datetime:
+        return datetime.fromtimestamp(1000.0, tz=timezone.utc)
+
+    def test_fields_default_to_none(self) -> None:
+        hk = Housekeeping(timestamp=self._ts())
+
+        assert hk.gravity_gradient_torque_body_n_m is None
+        assert hk.stored_momentum_body_n_m_s is None
+        assert hk.stored_momentum_norm_n_m_s is None
+
+    def test_fields_are_available_from_housekeeping_list(self) -> None:
+        torque = [1.0e-5, -2.0e-5, 3.0e-5]
+        momentum = [0.1, -0.2, 0.3]
+        hk = Housekeeping(
+            timestamp=self._ts(),
+            gravity_gradient_torque_body_n_m=torque,
+            stored_momentum_body_n_m_s=momentum,
+            stored_momentum_norm_n_m_s=0.4,
+        )
+        hkl = HousekeepingList([hk])
+
+        assert hkl.gravity_gradient_torque_body_n_m == [torque]
+        assert hkl.stored_momentum_body_n_m_s == [momentum]
+        assert hkl.stored_momentum_norm_n_m_s == [pytest.approx(0.4)]
+
+    def test_ditl_writes_enabled_momentum_telemetry(self, ditl: DITL) -> None:
+        ditl._stored_momentum_tracker = StoredMomentumTracker(
+            ((10.0, 0.0, 0.0), (0.0, 5.0, 0.0), (0.0, 0.0, 1.0))
+        )
+        ditl.acs.pointing.return_value = (45.0, 0.0, 0.0, 1)
+
+        ditl.calc()
+
+        hk = ditl.telemetry.housekeeping[0]
+        assert hk.gravity_gradient_torque_body_n_m is not None
+        assert hk.stored_momentum_body_n_m_s == pytest.approx((0.0, 0.0, 0.0))
+        assert hk.stored_momentum_norm_n_m_s == pytest.approx(0.0)
 
 
 class TestQuaternionFields:

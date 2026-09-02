@@ -455,6 +455,7 @@ class QueueDITL(DITLMixin, DITLStats):
         # Reset per-run state so re-runs on the same instance start clean
         self._attitude_constraint_violations = []
         self._active_gsp_end_time = None
+        self._reset_stored_momentum_tracker()
 
         # If begin/end datetimes are naive, assume UTC by making them timezone-aware
         if self.begin.tzinfo is None:
@@ -1223,6 +1224,7 @@ class QueueDITL(DITLMixin, DITLStats):
         roll_offset_deg = (roll - nominal_roll + 180.0) % 360.0 - 180.0
 
         _q = attitude_to_quat(ra, dec, roll)
+        momentum_sample = self._update_stored_momentum(utime, ra, dec, roll)
         return Housekeeping(
             timestamp=datetime.fromtimestamp(utime, tz=timezone.utc),
             ra=ra,
@@ -1271,6 +1273,21 @@ class QueueDITL(DITLMixin, DITLStats):
             quat_x=float(_q[1]),
             quat_y=float(_q[2]),
             quat_z=float(_q[3]),
+            gravity_gradient_torque_body_n_m=(
+                list(momentum_sample.gravity_gradient_torque_body_n_m)
+                if momentum_sample is not None
+                else None
+            ),
+            stored_momentum_body_n_m_s=(
+                list(momentum_sample.stored_momentum_body_n_m_s)
+                if momentum_sample is not None
+                else None
+            ),
+            stored_momentum_norm_n_m_s=(
+                momentum_sample.stored_momentum_norm_n_m_s
+                if momentum_sample is not None
+                else None
+            ),
         )
 
     def _track_ppt_in_timeline(self) -> None:

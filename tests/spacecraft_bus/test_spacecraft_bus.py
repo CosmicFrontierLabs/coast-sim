@@ -3,7 +3,12 @@
 import numpy as np
 import pytest
 
-from conops import AttitudeControlSystem, PowerDraw, SpacecraftBus
+from conops import (
+    AttitudeControlSystem,
+    PowerDraw,
+    SpacecraftBus,
+    StoredMomentumConfig,
+)
 
 
 class TestPowerDraw:
@@ -82,6 +87,18 @@ class TestAttitudeControlSystem:
     def test_initialization_defaults_settle_time(self, default_acs):
         """Test ACS initializes with default settle_time."""
         assert default_acs.settle_time == 120.0
+
+    def test_stored_momentum_tracking_defaults_off(self, default_acs):
+        assert default_acs.stored_momentum.gravity_gradient_enabled is False
+        assert default_acs.stored_momentum.initial_momentum_body_n_m_s == (
+            0.0,
+            0.0,
+            0.0,
+        )
+
+    def test_initial_stored_momentum_must_be_finite(self):
+        with pytest.raises(ValueError, match="finite"):
+            StoredMomentumConfig(initial_momentum_body_n_m_s=(0.0, np.nan, 0.0))
 
     def test_initialization_custom_slew_acceleration(self, custom_acs):
         """Test ACS initializes with custom slew_acceleration."""
@@ -437,6 +454,55 @@ class TestSpacecraftBus:
         pd = PowerDraw(nominal_power=100, power_mode={1: 120})
         bus = SpacecraftBus(power_draw=pd)
         assert bus.power() == 100
+
+    def test_bus_accepts_positive_definite_inertia_tensor(self):
+        bus = SpacecraftBus(
+            inertia_tensor_body_kg_m2=(
+                (10.0, 1.0, 0.0),
+                (1.0, 20.0, 0.0),
+                (0.0, 0.0, 30.0),
+            )
+        )
+
+        assert bus.inertia_tensor_body_kg_m2 == (
+            (10.0, 1.0, 0.0),
+            (1.0, 20.0, 0.0),
+            (0.0, 0.0, 30.0),
+        )
+
+    @pytest.mark.parametrize(
+        "inertia, message",
+        [
+            (((1.0, 0.0), (0.0, 1.0)), "3x3"),
+            (
+                (
+                    (1.0, 1.0, 0.0),
+                    (0.0, 1.0, 0.0),
+                    (0.0, 0.0, 1.0),
+                ),
+                "symmetric",
+            ),
+            (
+                (
+                    (1.0, 0.0, 0.0),
+                    (0.0, -1.0, 0.0),
+                    (0.0, 0.0, 1.0),
+                ),
+                "positive definite",
+            ),
+        ],
+    )
+    def test_bus_rejects_invalid_inertia_tensor(self, inertia, message):
+        with pytest.raises(ValueError, match=message):
+            SpacecraftBus(inertia_tensor_body_kg_m2=inertia)
+
+    def test_gravity_gradient_tracking_requires_inertia_tensor(self):
+        acs = AttitudeControlSystem(
+            stored_momentum=StoredMomentumConfig(gravity_gradient_enabled=True)
+        )
+
+        with pytest.raises(ValueError, match="inertia_tensor_body_kg_m2"):
+            SpacecraftBus(attitude_control=acs)
 
     def test_power_delegates_to_power_draw_mode_1(self):
         """Test SpacecraftBus.power() delegates to PowerDraw for mode 1."""

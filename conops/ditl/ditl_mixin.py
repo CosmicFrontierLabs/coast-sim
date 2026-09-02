@@ -6,12 +6,14 @@ import matplotlib.pyplot as plt
 import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
+from conops.common import dtutcfromtimestamp
 from conops.common.enums import ACSMode
-from conops.common.vector import quaternion_attitude_delta
+from conops.common.vector import attitude_to_quat, quaternion_attitude_delta
 from conops.config.groundstation import GroundStation
 
 from ..config import MissionConfig
 from ..simulation.acs import ACS
+from ..simulation.momentum import MomentumSample, StoredMomentumTracker
 from ..simulation.passes import Pass, PassTimes
 from ..targets import Plan, PlanEntry
 from .telemetry import Telemetry
@@ -100,6 +102,7 @@ class DITLMixin:
     # Telemetry container
     telemetry: Telemetry
     calculate_field_of_regard: bool
+    _stored_momentum_tracker: StoredMomentumTracker | None
 
     def __init__(
         self,
@@ -185,6 +188,7 @@ class DITLMixin:
 
         # Initialize common subsystems (can be overridden by subclasses)
         self._init_subsystems()
+        self._stored_momentum_tracker = self._build_stored_momentum_tracker()
 
     def _init_subsystems(self) -> None:
         """Initialize subsystems from config. Can be overridden by subclasses."""
@@ -193,6 +197,42 @@ class DITLMixin:
         self.spacecraft_bus = self.config.spacecraft_bus
         self.payload = self.config.payload
         self.recorder = self.config.recorder
+
+    def _build_stored_momentum_tracker(self) -> StoredMomentumTracker | None:
+        momentum_config = getattr(
+            self.config.spacecraft_bus.attitude_control, "stored_momentum", None
+        )
+        if getattr(momentum_config, "gravity_gradient_enabled", False) is not True:
+            return None
+        assert momentum_config is not None
+        inertia = getattr(self.config.spacecraft_bus, "inertia_tensor_body_kg_m2", None)
+        if inertia is None:
+            raise ValueError(
+                "inertia_tensor_body_kg_m2 is required when gravity-gradient "
+                "momentum tracking is enabled"
+            )
+        return StoredMomentumTracker(
+            inertia_tensor_body_kg_m2=inertia,
+            initial_momentum_body_n_m_s=(momentum_config.initial_momentum_body_n_m_s),
+        )
+
+    def _reset_stored_momentum_tracker(self) -> None:
+        if self._stored_momentum_tracker is not None:
+            self._stored_momentum_tracker.reset()
+
+    def _update_stored_momentum(
+        self, utime: float, ra: float, dec: float, roll: float
+    ) -> MomentumSample | None:
+        if self._stored_momentum_tracker is None:
+            return None
+        ephem_index = self.ephem.index(dtutcfromtimestamp(utime))
+        position_eci_km = self.ephem.gcrs_pv.position[ephem_index]
+        attitude_quaternion = attitude_to_quat(ra, dec, roll)
+        return self._stored_momentum_tracker.update(
+            utime=utime,
+            position_eci_km=position_eci_km,
+            attitude_quaternion_eci_to_body=attitude_quaternion,
+        )
 
     @staticmethod
     def _attitude_mode_name(mode: ACSMode | int | None) -> str | None:

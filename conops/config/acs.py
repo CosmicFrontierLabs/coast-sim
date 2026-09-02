@@ -6,6 +6,7 @@ from ..common import separation
 from ..common.enums import SlewAlgorithm
 from ._base import ConfigModel
 from .constants import DTOR
+from .momentum import StoredMomentumConfig
 
 
 class AttitudeControlSystem(ConfigModel):
@@ -45,6 +46,10 @@ class AttitudeControlSystem(ConfigModel):
     )
     settle_time: float = Field(
         default=120.0, description="Time to settle after slew completion in seconds"
+    )
+    stored_momentum: StoredMomentumConfig = Field(
+        default_factory=StoredMomentumConfig,
+        description="Optional planning-level stored-momentum tracking configuration.",
     )
     slew_algorithm: SlewAlgorithm = Field(
         default=SlewAlgorithm.QUATERNION,

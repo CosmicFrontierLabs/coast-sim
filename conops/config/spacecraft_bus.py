@@ -1,4 +1,5 @@
-from pydantic import Field
+import numpy as np
+from pydantic import Field, field_validator, model_validator
 
 from ._base import ConfigModel
 from .acs import AttitudeControlSystem
@@ -12,6 +13,17 @@ from .thermal import Heater
 
 class SpacecraftBus(ConfigModel):
     name: str = Field(default="Default Bus", description="Name of the spacecraft bus")
+    inertia_tensor_body_kg_m2: (
+        tuple[
+            tuple[float, float, float],
+            tuple[float, float, float],
+            tuple[float, float, float],
+        ]
+        | None
+    ) = Field(
+        default=None,
+        description="Spacecraft inertia tensor in body coordinates, in kg m².",
+    )
     power_draw: PowerDraw = Field(
         default_factory=PowerDraw,
         description="Power draw specifications for bus systems",
@@ -38,6 +50,49 @@ class SpacecraftBus(ConfigModel):
         default_factory=DefaultRadiatorConfiguration,
         description="Body-mounted radiator configuration",
     )
+
+    @field_validator("inertia_tensor_body_kg_m2", mode="before")
+    @classmethod
+    def _validate_inertia_tensor(
+        cls, value: object
+    ) -> (
+        tuple[
+            tuple[float, float, float],
+            tuple[float, float, float],
+            tuple[float, float, float],
+        ]
+        | None
+    ):
+        if value is None:
+            return None
+        try:
+            inertia = np.asarray(value, dtype=np.float64)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("inertia tensor must be a finite 3x3 matrix") from exc
+        if inertia.shape != (3, 3) or not np.all(np.isfinite(inertia)):
+            raise ValueError("inertia tensor must be a finite 3x3 matrix")
+        if not np.allclose(inertia, inertia.T, rtol=1e-12, atol=1e-12):
+            raise ValueError("inertia tensor must be symmetric")
+        if np.any(np.linalg.eigvalsh(inertia) <= 0.0):
+            raise ValueError("inertia tensor must be positive definite")
+        return tuple(tuple(float(x) for x in row) for row in inertia)  # type: ignore[return-value]
+
+    @model_validator(mode="after")
+    def _require_inertia_for_gravity_gradient(self) -> "SpacecraftBus":
+        attitude_control = getattr(self, "attitude_control", None)
+        stored_momentum = getattr(attitude_control, "stored_momentum", None)
+        gravity_gradient_enabled = getattr(
+            stored_momentum, "gravity_gradient_enabled", False
+        )
+        if (
+            gravity_gradient_enabled is True
+            and getattr(self, "inertia_tensor_body_kg_m2", None) is None
+        ):
+            raise ValueError(
+                "inertia_tensor_body_kg_m2 is required when gravity-gradient "
+                "momentum tracking is enabled"
+            )
+        return self
 
     def power(self, mode: int | None = None, in_eclipse: bool = False) -> float:
         """Get the power draw for the spacecraft bus in the given mode.
