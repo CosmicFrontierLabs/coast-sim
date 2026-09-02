@@ -5,6 +5,8 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
+from conops import SolarPanel, SolarPanelSet
+
 
 @pytest.fixture
 def mock_ephem():
@@ -27,44 +29,38 @@ def mock_sun_coord():
     return sun_coord
 
 
+def _solar_panel_set(
+    *panels: tuple[tuple[float, float, float], float],
+) -> SolarPanelSet:
+    return SolarPanelSet(
+        panels=[
+            SolarPanel(
+                normal=normal,
+                conversion_efficiency=0.3,
+                max_power=max_power,
+            )
+            for normal, max_power in panels
+        ],
+        conversion_efficiency=0.3,
+    )
+
+
 @pytest.fixture
 def mock_solar_panel_single():
-    solar_panel = Mock()
-    mock_panel = Mock()
-    mock_panel.normal = (0.0, 1.0, 0.0)  # Side-mounted
-    mock_panel.conversion_efficiency = 0.3
-    mock_panel.max_power = 800.0
-    solar_panel.panels = [mock_panel]
-    solar_panel.conversion_efficiency = 0.3
-    return solar_panel
+    return _solar_panel_set(((0.0, 1.0, 0.0), 800.0))
 
 
 @pytest.fixture
 def mock_solar_panel_multiple():
-    solar_panel = Mock()
-    mock_panel1 = Mock()
-    mock_panel1.normal = (0.0, 1.0, 0.0)  # Side-mounted
-    mock_panel1.conversion_efficiency = 0.3
-    mock_panel1.max_power = 800.0
-    mock_panel2 = Mock()
-    mock_panel2.normal = (0.0, 0.0, -1.0)  # Body-mounted
-    mock_panel2.conversion_efficiency = 0.3
-    mock_panel2.max_power = 600.0
-    solar_panel.panels = [mock_panel1, mock_panel2]
-    solar_panel.conversion_efficiency = 0.3
-    return solar_panel
+    return _solar_panel_set(
+        ((0.0, 1.0, 0.0), 800.0),
+        ((0.0, 0.0, -1.0), 600.0),
+    )
 
 
 @pytest.fixture
 def mock_solar_panel_canted():
-    solar_panel = Mock()
-    mock_panel = Mock()
-    mock_panel.normal = (0.1, 0.866, -0.5)  # Canted normal vector
-    mock_panel.conversion_efficiency = 0.3
-    mock_panel.max_power = 800.0
-    solar_panel.panels = [mock_panel]
-    solar_panel.conversion_efficiency = 0.3
-    return solar_panel
+    return _solar_panel_set(((0.1, 0.866, -0.5), 800.0))
 
 
 @pytest.fixture

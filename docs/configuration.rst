@@ -397,7 +397,8 @@ The :class:`~conops.config.SolarPanelSet` defines the solar array configuration.
 **SolarPanel Attributes:**
 
 * ``name`` (str): Panel identifier
-* ``gimbled`` (bool): Whether the panel can track the Sun
+* ``gimbled`` (bool): Whether the panel uses the legacy ideal Sun-tracking
+  model, with no travel or rate limits
 * ``normal`` (tuple[float, float, float]): Panel normal vector in spacecraft body frame
 
   - +x is the spacecraft pointing direction (boresight)
@@ -407,6 +408,10 @@ The :class:`~conops.config.SolarPanelSet` defines the solar array configuration.
 
 * ``max_power`` (float): Maximum power output at full illumination (Watts)
 * ``conversion_efficiency`` (float | None): Per-panel efficiency override
+* ``single_axis_drive`` (SingleAxisSolarArrayDrive | None): Optional finite,
+  rate-limited rotation about one spacecraft-body axis
+* ``drive_control`` (SolarArrayDriveControl): Mode-aware operational policy for
+  a finite drive; the default holds the initial/current angle in every mode
 
 .. code-block:: python
 
@@ -432,6 +437,65 @@ The :class:`~conops.config.SolarPanelSet` defines the solar array configuration.
        ],
        conversion_efficiency=0.95,
    )
+
+Finite Single-Axis Array Drives
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Use :class:`~conops.config.SingleAxisSolarArrayDrive` when a panel rotates about
+one physical axis. The panel's configured ``normal`` is its zero-angle reference
+normal. Positive drive angles follow the right-hand rule about
+``rotation_axis``. The drive begins each simulation at ``initial_angle_deg`` and
+holds there unless an explicit :class:`~conops.config.SolarArrayDriveControl`
+lists the current ACS mode for Sun tracking. In a listed mode, it moves toward
+the best available Sun-facing angle without exceeding its travel or rate limits.
+Tracking in eclipse is disabled unless ``track_in_eclipse=True`` is explicitly
+configured.
+
+The drive kinematics and control policy are separate so hardware capability does
+not silently impose an operations concept.
+
+.. code-block:: python
+
+   from conops.config import (
+       SingleAxisSolarArrayDrive,
+       SolarArrayDriveControl,
+       SolarPanel,
+       SolarPanelSet,
+   )
+   from conops import ACSMode
+
+   solar_panel = SolarPanelSet(
+       panels=[
+           SolarPanel(
+               name="Articulated wing",
+               normal=(1.0, 0.0, 0.0),
+               max_power=3000.0,
+               single_axis_drive=SingleAxisSolarArrayDrive(
+                   rotation_axis=(0.0, 0.0, 1.0),
+                   min_angle_deg=-165.0,
+                   max_angle_deg=165.0,
+                   max_rate_deg_per_s=0.25,
+                   initial_angle_deg=0.0,
+               ),
+               drive_control=SolarArrayDriveControl(
+                   sun_tracking_modes=[
+                       ACSMode.SCIENCE,
+                       ACSMode.CHARGING,
+                       ACSMode.SAFE,
+                   ],
+                   track_in_eclipse=False,
+               ),
+           )
+       ],
+       conversion_efficiency=0.95,
+   )
+
+Candidate pointing and roll calculations use the current physical drive angle
+without modifying runtime state or granting motion under an attitude that has
+not executed. Continuous executed control may explicitly preview motion over its
+elapsed control interval. Executed DITL samples advance the state, and
+``solar_array_drive_angles_deg`` housekeeping telemetry records the resulting
+angles in configured driven-panel order.
 
 Solar Panel Vector Helper Function
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -154,6 +154,8 @@ class DITL(DITLMixin, DITLStats):
         if self.plan is None:
             raise ValueError("ERROR: No plan loaded")
 
+        self.solar_panel.reset_drive_state()
+
         # Set up ACS ephemeris if not already set
         if self.acs.ephem is None:
             self.acs.ephem = self.ephem
@@ -216,7 +218,13 @@ class DITL(DITLMixin, DITLStats):
 
             # Calculate solar panel illumination and power (more efficient than separate calls)
             panel_illumination, panel_power = self.solar_panel.illumination_and_power(
-                time=self.utime[i], ra=ra, dec=dec, ephem=self.ephem, roll=roll
+                time=self.utime[i],
+                ra=ra,
+                dec=dec,
+                ephem=self.ephem,
+                roll=roll,
+                acs_mode=mode,
+                advance_drive_state=True,
             )
             assert isinstance(panel_illumination, float)
             assert isinstance(panel_power, float)
@@ -241,7 +249,11 @@ class DITL(DITLMixin, DITLStats):
 
             # Create housekeeping telemetry record for fault checking
             nominal_roll = optimum_roll(
-                ra, dec, self.utime[i], self.ephem, self.solar_panel
+                ra,
+                dec,
+                self.utime[i],
+                self.ephem,
+                self.solar_panel,
             )
             roll_offset_deg = (roll - nominal_roll + 180.0) % 360.0 - 180.0
             sun_angle_deg = self._compute_sun_angle(self.utime[i], ra, dec)
@@ -294,6 +306,9 @@ class DITL(DITLMixin, DITLStats):
             )
             scope_label = attitude_constraint_scope_label(scopes)
             _q = attitude_to_quat(ra, dec, roll)
+            drive_angles = getattr(self.solar_panel, "drive_angles_deg", None)
+            if not isinstance(drive_angles, list):
+                drive_angles = None
             hk = Housekeeping(
                 timestamp=datetime.fromtimestamp(self.utime[i], tz=timezone.utc),
                 ra=ra,
@@ -302,6 +317,7 @@ class DITL(DITLMixin, DITLStats):
                 roll_offset_deg=roll_offset_deg,
                 acs_mode=mode,
                 panel_illumination=panel_illumination,
+                solar_array_drive_angles_deg=drive_angles,
                 power_usage=power_usage,
                 power_bus=bus_power,
                 power_payload=payload_power,

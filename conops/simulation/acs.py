@@ -408,7 +408,12 @@ class ACS:
         # If roll not provided, calculate optimal roll at target position
         if roll is None:
             slew.endroll = optimum_roll(
-                ra, dec, utime, self.ephem, self.solar_panel, self.constraint
+                ra,
+                dec,
+                utime,
+                self.ephem,
+                self.solar_panel,
+                self.constraint,
             )
         else:
             slew.endroll = roll
@@ -653,7 +658,12 @@ class ACS:
         if self.last_slew is not None and self.last_slew.slewstart > 0:
             return self.last_slew.endroll
         return optimum_roll(
-            self.ra, self.dec, utime, self.ephem, self.solar_panel, self.constraint
+            self.ra,
+            self.dec,
+            utime,
+            self.ephem,
+            self.solar_panel,
+            self.constraint,
         )
 
     def _continuous_optimum_roll(self, utime: float, mode: ACSMode) -> float:
@@ -683,6 +693,9 @@ class ACS:
             self.constraint,
             reference_roll=self.roll,
             max_roll_delta=max_roll_delta,
+            acs_mode=mode,
+            in_eclipse=self.in_eclipse,
+            drive_preview_seconds=elapsed,
         )
         self._last_roll_optimization_utime = utime
         self._last_roll_optimization_mode = mode
@@ -1037,24 +1050,12 @@ class ACS:
         current_dec = self.dec
         current_roll = self.roll
 
-        # Build solar panel geometry lookup so radiators can compute shadow fractions.
-        solar_panel_geometries = None
-        if self.config.solar_panel is not None:
-            geom_map = {
-                p.name: p.geometry
-                for p in self.config.solar_panel.panels
-                if p.geometry is not None
-            }
-            if geom_map:
-                solar_panel_geometries = geom_map
-
         metrics = radiators.exposure_metrics(
             ra_deg=current_ra,
             dec_deg=current_dec,
             utime=utime,
             ephem=self.ephem,
             roll_deg=current_roll,
-            solar_panel_geometries=solar_panel_geometries,
         )
 
         per_radiator = cast(

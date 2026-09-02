@@ -183,7 +183,12 @@ class EmergencyCharging:
 
         # Calculate optimal roll angle for solar panel pointing
         roll_angle = optimum_roll(
-            charging_ra, charging_dec, utime, ephem, self.solar_panel, self.constraint
+            charging_ra,
+            charging_dec,
+            utime,
+            ephem,
+            self.solar_panel,
+            self.constraint,
         )
 
         # Create the charging PPT
@@ -276,7 +281,12 @@ class EmergencyCharging:
         """
         # Validate optimal pointing
         optimal_roll = optimum_roll(
-            optimal_ra, optimal_dec, utime, ephem, self.solar_panel, self.constraint
+            optimal_ra,
+            optimal_dec,
+            utime,
+            ephem,
+            self.solar_panel,
+            self.constraint,
         )
         if not self._charging_attitude_violates_scopes(
             optimal_ra, optimal_dec, utime, roll=optimal_roll
@@ -356,12 +366,22 @@ class EmergencyCharging:
 
             # Calculate optimal roll angle for this pointing
             optimal_roll = optimum_roll(
-                alt_ra, alt_dec, utime, ephem, self.solar_panel, self.constraint
+                alt_ra,
+                alt_dec,
+                utime,
+                ephem,
+                self.solar_panel,
+                self.constraint,
             )
 
             # Calculate solar panel illumination for this pointing with optimal roll
             illumination = self.solar_panel.panel_illumination_fraction(
-                time=utime, ra=alt_ra, dec=alt_dec, ephem=ephem, roll=optimal_roll
+                time=utime,
+                ra=alt_ra,
+                dec=alt_dec,
+                ephem=ephem,
+                roll=optimal_roll,
+                acs_mode=ACSMode.CHARGING,
             )
 
             # Ensure we have a float (should be scalar for single time)

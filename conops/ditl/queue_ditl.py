@@ -455,6 +455,7 @@ class QueueDITL(DITLMixin, DITLStats):
         # Reset per-run state so re-runs on the same instance start clean
         self._attitude_constraint_violations = []
         self._active_gsp_end_time = None
+        self.config.solar_panel.reset_drive_state()
 
         # If begin/end datetimes are naive, assume UTC by making them timezone-aware
         if self.begin.tzinfo is None:
@@ -1219,10 +1220,19 @@ class QueueDITL(DITLMixin, DITLStats):
         _pos = np.asarray(self.ephem.gcrs_pv.position[ei], dtype=np.float64)
         earth_body_vector: list[float] = list(-_pos / np.linalg.norm(_pos))
 
-        nominal_roll = optimum_roll(ra, dec, utime, self.ephem, self.config.solar_panel)
+        nominal_roll = optimum_roll(
+            ra,
+            dec,
+            utime,
+            self.ephem,
+            self.config.solar_panel,
+        )
         roll_offset_deg = (roll - nominal_roll + 180.0) % 360.0 - 180.0
 
         _q = attitude_to_quat(ra, dec, roll)
+        drive_angles = getattr(self.config.solar_panel, "drive_angles_deg", None)
+        if not isinstance(drive_angles, list):
+            drive_angles = None
         return Housekeeping(
             timestamp=datetime.fromtimestamp(utime, tz=timezone.utc),
             ra=ra,
@@ -1231,6 +1241,7 @@ class QueueDITL(DITLMixin, DITLStats):
             roll_offset_deg=roll_offset_deg,
             acs_mode=mode,
             panel_illumination=panel_illumination,
+            solar_array_drive_angles_deg=drive_angles,
             power_usage=total_power,
             power_bus=bus_power,
             power_payload=payload_power,
@@ -2853,7 +2864,7 @@ class QueueDITL(DITLMixin, DITLStats):
         """Calculate and record power generation, consumption, and battery state."""
         # Calculate solar panel power
         panel_illumination, panel_power = self._calculate_panel_power(
-            i, utime, ra, dec, roll
+            i, utime, ra, dec, roll, mode
         )
         self.panel.append(panel_illumination)
         self.panel_power.append(panel_power)
@@ -2870,12 +2881,24 @@ class QueueDITL(DITLMixin, DITLStats):
         self._update_battery_state(total_power, panel_power)
 
     def _calculate_panel_power(
-        self, i: int, utime: float, ra: float, dec: float, roll: float
+        self,
+        i: int,
+        utime: float,
+        ra: float,
+        dec: float,
+        roll: float,
+        mode: ACSMode,
     ) -> tuple[float, float]:
         """Calculate solar panel illumination and power generation."""
         panel_illumination, panel_power = (
             self.config.solar_panel.illumination_and_power(
-                time=self.utime[i], ra=ra, dec=dec, ephem=self.ephem, roll=roll
+                time=self.utime[i],
+                ra=ra,
+                dec=dec,
+                ephem=self.ephem,
+                roll=roll,
+                acs_mode=mode,
+                advance_drive_state=True,
             )
         )
         assert isinstance(panel_illumination, float)

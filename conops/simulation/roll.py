@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import rust_ephem
 
-from ..common import dtutcfromtimestamp, scbodyvector
+from ..common import ACSMode, dtutcfromtimestamp, scbodyvector
 from ..config import DTOR, Constraint, SolarPanelSet
 
 
@@ -73,6 +73,9 @@ def optimum_roll(
     constraint: Constraint | None = None,
     reference_roll: float | None = None,
     max_roll_delta: float | None = None,
+    acs_mode: ACSMode | None = None,
+    in_eclipse: bool | None = None,
+    drive_preview_seconds: float = 0.0,
 ) -> float:
     """Calculate the optimum roll angle (degrees in [0,360)).
 
@@ -89,11 +92,21 @@ def optimum_roll(
     - If `reference_roll` and `max_roll_delta` are provided: restrict the search
       to rolls within that shortest-path angular distance. If no integer-degree
       candidate is reachable, hold the reference roll.
+    - Finite array drives hold their current physical angle during candidate
+      evaluation unless ``drive_preview_seconds`` explicitly grants motion.
+      ``in_eclipse`` controls whether each drive's eclipse tracking policy permits
+      that motion and is required when the interval is positive.
     """
     if (reference_roll is None) != (max_roll_delta is None):
         raise ValueError("reference_roll and max_roll_delta must be provided together")
     if max_roll_delta is not None and max_roll_delta < 0:
         raise ValueError("max_roll_delta must be non-negative")
+    if not np.isfinite(drive_preview_seconds) or drive_preview_seconds < 0.0:
+        raise ValueError("drive_preview_seconds must be finite and non-negative")
+    if drive_preview_seconds > 0.0 and in_eclipse is None:
+        raise ValueError(
+            "in_eclipse must be provided when candidate drive motion is enabled"
+        )
 
     # Fetch ephemeris index and Sun vector from pre-computed arrays
     index = ephem.index(dtutcfromtimestamp(utime))
@@ -134,66 +147,23 @@ def optimum_roll(
         totals = np.where(candidate_mask, illum, -np.inf)
         return float(deg[int(np.argmax(totals))])
 
-    # Weighted optimization using actual panel geometry (vectorized).
-    # solar_panel is non-None and has panels here.
-    panels = solar_panel.panels
-    default_eff = solar_panel.conversion_efficiency
-    base_normals = []
-    weights = []  # max_power * efficiency
-    for p in panels:
-        base_normals.append(np.array(p.normal, dtype=float))
-        eff = (
-            p.conversion_efficiency
-            if p.conversion_efficiency is not None
-            else default_eff
+    angles_rad = deg * DTOR
+    sun_body_candidates = np.column_stack(
+        (
+            np.full_like(deg, s_norm[0]),
+            np.cos(angles_rad) * s_norm[1] + np.sin(angles_rad) * s_norm[2],
+            -np.sin(angles_rad) * s_norm[1] + np.cos(angles_rad) * s_norm[2],
         )
-        weights.append(p.max_power * eff)
-
-    # Convert lists to arrays
-    n_mat = np.asarray(base_normals, dtype=float)  # shape (P,3)
-    w_vec = np.asarray(weights, dtype=float)  # shape (P,)
-
-    # For a spacecraft roll of θ about the body +X (boresight) axis the Sun
-    # vector expressed in the body frame evolves as:
-    #   s_body_y(θ) = s_y · cos(θ) + s_z · sin(θ)
-    #   s_body_z(θ) = -s_y · sin(θ) + s_z · cos(θ)
-    # (s_x is unchanged; s_y, s_z are the roll=0 body-frame components)
-    #
-    # Panel illumination = n · s_body(θ)  (panel normal n is fixed in the body frame):
-    #   illum(θ) = n_x·s_x + cos(θ)·(n_y·s_y + n_z·s_z) + sin(θ)·(n_y·s_z − n_z·s_y)
-
-    # Precompute per-panel coefficients:
-    #   illum(θ) = a + cos(θ)·b + sin(θ)·c
-    # where a = nx·sx, b = ny·sy + nz·sz, c = ny·sz − nz·sy
-    a_coef = n_mat[:, 0] * s_norm[0]
-    b_coef = n_mat[:, 1] * s_norm[1] + n_mat[:, 2] * s_norm[2]
-    c_coef = n_mat[:, 1] * s_norm[2] - n_mat[:, 2] * s_norm[1]
-
-    # Angles 0..359 degrees
-    ang = deg * DTOR
-    cos_t = np.cos(ang)  # (360,)
-    sin_t = np.sin(ang)  # (360,)
-
-    # Illumination per angle and panel: (360,P)
-    # Broadcasting: cos_t[:,None]*B[None,:] etc.
-    illum = (
-        a_coef[None, :]
-        + cos_t[:, None] * b_coef[None, :]
-        + sin_t[:, None] * c_coef[None, :]
     )
-    illum = np.maximum(illum, 0.0)
-
-    # Total weighted power per angle: (360,)
-    totals = illum * w_vec[None, :]
-    totals = totals.sum(axis=1)
-
-    # Apply valid-roll mask if present
+    totals = solar_panel.preview_power_from_normalized_sun_body(
+        sun_body_candidates,
+        acs_mode=acs_mode,
+        in_eclipse=bool(in_eclipse),
+        elapsed_seconds=drive_preview_seconds,
+    )
     if candidate_mask is not None:
         totals = np.where(candidate_mask, totals, -np.inf)
-
-    # Argmax over angles
-    best_idx = int(np.argmax(totals))
-    return float(deg[best_idx])
+    return float(deg[int(np.argmax(totals))])
 
 
 def optimum_roll_sidemount(
