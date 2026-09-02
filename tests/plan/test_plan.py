@@ -1,6 +1,7 @@
 """Tests for conops.plan module."""
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -396,6 +397,52 @@ class TestPlanSaveLoad:
         assert loaded._end_ts == pytest.approx(plan.entries[-1].end)
         assert isinstance(loaded.version, int)
         assert loaded.metadata == plan.metadata
+
+    def test_bind_runtime_rehydrates_loaded_entries(self, tmp_path) -> None:
+        plan = _make_plan(1)
+        dest = tmp_path / "plan.json"
+        plan.save(dest)
+        loaded = Plan.load(dest)
+        config = Mock()
+        config.constraint = Mock()
+        config.constraint.constraint = None
+        config.constraint.ignore_roll = False
+        config.constraint.ephem = Mock(
+            begin=datetime.fromtimestamp(900_000, tz=timezone.utc),
+            end=datetime.fromtimestamp(1_100_000, tz=timezone.utc),
+        )
+        config.payload.telescope_for_target = Mock(return_value=None)
+        config.spacecraft_bus.attitude_control = Mock()
+
+        loaded.bind_runtime(config)
+
+        entry = loaded.entries[0]
+        assert entry.config is config
+        assert entry.constraint is config.constraint
+        assert entry.ephem is config.constraint.ephem
+        assert entry.acs_config is config.spacecraft_bus.attitude_control
+        assert entry.visibility() == 0
+        assert entry.windows == [[900_000.0, 1_100_000.0]]
+
+    def test_bind_runtime_requires_ephemeris(self) -> None:
+        plan = _make_plan(1)
+        config = Mock()
+        config.constraint.ephem = None
+
+        with pytest.raises(ValueError, match="ephemeris"):
+            plan.bind_runtime(config)
+
+    def test_bind_runtime_synchronizes_explicit_ephemeris(self) -> None:
+        plan = _make_plan(1)
+        config = Mock()
+        config.constraint.ephem = None
+        config.spacecraft_bus.attitude_control = Mock()
+        ephem = Mock()
+
+        plan.bind_runtime(config, ephem)
+
+        assert config.constraint.ephem is ephem
+        assert plan.entries[0].ephem is ephem
 
 
 class TestPlanSchemaFromPlan:

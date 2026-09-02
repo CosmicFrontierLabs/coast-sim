@@ -3,10 +3,140 @@
 from __future__ import annotations
 
 import numpy as np
+import numpy.typing as npt
 import rust_ephem
 
 from ..common import dtutcfromtimestamp, scbodyvector
-from ..config import DTOR, Constraint, SolarPanelSet
+from ..common.enums import ACSMode
+from ..config import DTOR, Constraint, SolarPanelSet, Telescope
+from ..config.constraint import (
+    AttitudeConstraintScope,
+    mounted_science_attitude_constraint_names,
+)
+
+
+def _panel_power_inputs(
+    solar_panel: SolarPanelSet | None,
+    telescope: Telescope | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return panel normals, weights, and gimbal flags in the pointing frame."""
+    panels = solar_panel.panels if solar_panel is not None else []
+    if not panels:
+        normals = [(0.0, 1.0, 0.0)]
+        weights = [1.0]
+        gimbled = [False]
+    else:
+        assert solar_panel is not None
+        default_efficiency = solar_panel.conversion_efficiency
+        normals = [panel.normal for panel in panels]
+        weights = [
+            panel.max_power
+            * (
+                panel.conversion_efficiency
+                if panel.conversion_efficiency is not None
+                else default_efficiency
+            )
+            for panel in panels
+        ]
+        gimbled = [panel.gimbled for panel in panels]
+
+    if telescope is not None:
+        normals = [telescope.mounting.instrument_vector(normal) for normal in normals]
+    return (
+        np.asarray(normals, dtype=float),
+        np.asarray(weights, dtype=float),
+        np.asarray(gimbled, dtype=bool),
+    )
+
+
+def _panel_power_by_roll(
+    sun_at_zero_roll: npt.NDArray[np.float64],
+    normals: npt.NDArray[np.float64],
+    weights: npt.NDArray[np.float64],
+    gimbled: npt.NDArray[np.bool_],
+) -> npt.NDArray[np.float64]:
+    """Vectorized panel power score for integer rolls from 0 through 359 degrees."""
+    sun = sun_at_zero_roll / np.linalg.norm(sun_at_zero_roll)
+    angles = np.arange(360.0) * DTOR
+    cosine = np.cos(angles)[:, None]
+    sine = np.sin(angles)[:, None]
+    illumination = (
+        normals[None, :, 0] * sun[0]
+        + cosine * (normals[None, :, 1] * sun[1] + normals[None, :, 2] * sun[2])
+        + sine * (normals[None, :, 1] * sun[2] - normals[None, :, 2] * sun[1])
+    )
+    illumination = np.maximum(illumination, 0.0)
+    illumination[:, gimbled] = 1.0
+    result: npt.NDArray[np.float64] = np.asarray(
+        illumination @ weights, dtype=np.float64
+    )
+    return result
+
+
+def _mounted_optimum_roll(
+    ra: float,
+    dec: float,
+    utime: float,
+    ephem: rust_ephem.Ephemeris,
+    telescope: Telescope,
+    solar_panel: SolarPanelSet | None,
+    constraint: Constraint | None,
+    reference_roll: float | None,
+    max_roll_delta: float | None,
+) -> float:
+    """Optimize instrument roll while evaluating the physical body attitude."""
+    degrees = np.arange(360.0, dtype=float)
+    candidate_mask = np.ones(360, dtype=bool)
+    if reference_roll is not None and max_roll_delta is not None:
+        reference_roll %= 360.0
+        roll_delta = np.abs((degrees - reference_roll + 180.0) % 360.0 - 180.0)
+        candidate_mask &= roll_delta <= max_roll_delta + 1e-9
+        if not candidate_mask.any():
+            return reference_roll
+
+    index = ephem.index(dtutcfromtimestamp(utime))
+    sun_eci = np.asarray(
+        ephem.sun_pv.position[index] - ephem.gcrs_pv.position[index],
+        dtype=float,
+    )
+    sun_instrument = scbodyvector(ra * DTOR, dec * DTOR, 0.0, sun_eci)
+    scores = _panel_power_by_roll(
+        sun_instrument, *_panel_power_inputs(solar_panel, telescope)
+    )
+    scores[~candidate_mask] = -np.inf
+
+    # Test candidates in descending power order. Break equal-power ties by the
+    # smallest roll change when a reference exists, then by increasing angle.
+    # This keeps a flat power curve at 0 degrees instead of selecting 359 degrees.
+    tie_distance = (
+        np.abs((degrees - reference_roll + 180.0) % 360.0 - 180.0)
+        if reference_roll is not None
+        else degrees
+    )
+    candidate_order = np.lexsort((degrees, tie_distance, -scores))
+    for candidate in candidate_order:
+        if not np.isfinite(scores[candidate]):
+            break
+        attitude = telescope.target_body_attitude(ra, dec, float(candidate))
+        violations = (
+            mounted_science_attitude_constraint_names(
+                constraint,
+                list(AttitudeConstraintScope),
+                (ra, dec, float(candidate)),
+                attitude,
+                utime,
+                ACSMode.SCIENCE,
+            )
+            if constraint is not None
+            else []
+        )
+        if not violations:
+            return float(candidate)
+
+    # Match the legacy fail-open return contract; the caller's locked-attitude
+    # validation rejects the target when every candidate is constrained.
+    best = int(np.argmax(scores))
+    return float(best) if np.isfinite(scores[best]) else float(reference_roll or 0.0)
 
 
 def _roll_valid_mask(
@@ -73,6 +203,7 @@ def optimum_roll(
     constraint: Constraint | None = None,
     reference_roll: float | None = None,
     max_roll_delta: float | None = None,
+    telescope: Telescope | None = None,
 ) -> float:
     """Calculate the optimum roll angle (degrees in [0,360)).
 
@@ -94,6 +225,19 @@ def optimum_roll(
         raise ValueError("reference_roll and max_roll_delta must be provided together")
     if max_roll_delta is not None and max_roll_delta < 0:
         raise ValueError("max_roll_delta must be non-negative")
+
+    if telescope is not None and not telescope.mounting.is_identity:
+        return _mounted_optimum_roll(
+            ra,
+            dec,
+            utime,
+            ephem,
+            telescope,
+            solar_panel,
+            constraint,
+            reference_roll,
+            max_roll_delta,
+        )
 
     # Fetch ephemeris index and Sun vector from pre-computed arrays
     index = ephem.index(dtutcfromtimestamp(utime))
@@ -134,58 +278,7 @@ def optimum_roll(
         totals = np.where(candidate_mask, illum, -np.inf)
         return float(deg[int(np.argmax(totals))])
 
-    # Weighted optimization using actual panel geometry (vectorized).
-    # solar_panel is non-None and has panels here.
-    panels = solar_panel.panels
-    default_eff = solar_panel.conversion_efficiency
-    base_normals = []
-    weights = []  # max_power * efficiency
-    for p in panels:
-        base_normals.append(np.array(p.normal, dtype=float))
-        eff = (
-            p.conversion_efficiency
-            if p.conversion_efficiency is not None
-            else default_eff
-        )
-        weights.append(p.max_power * eff)
-
-    # Convert lists to arrays
-    n_mat = np.asarray(base_normals, dtype=float)  # shape (P,3)
-    w_vec = np.asarray(weights, dtype=float)  # shape (P,)
-
-    # For a spacecraft roll of θ about the body +X (boresight) axis the Sun
-    # vector expressed in the body frame evolves as:
-    #   s_body_y(θ) = s_y · cos(θ) + s_z · sin(θ)
-    #   s_body_z(θ) = -s_y · sin(θ) + s_z · cos(θ)
-    # (s_x is unchanged; s_y, s_z are the roll=0 body-frame components)
-    #
-    # Panel illumination = n · s_body(θ)  (panel normal n is fixed in the body frame):
-    #   illum(θ) = n_x·s_x + cos(θ)·(n_y·s_y + n_z·s_z) + sin(θ)·(n_y·s_z − n_z·s_y)
-
-    # Precompute per-panel coefficients:
-    #   illum(θ) = a + cos(θ)·b + sin(θ)·c
-    # where a = nx·sx, b = ny·sy + nz·sz, c = ny·sz − nz·sy
-    a_coef = n_mat[:, 0] * s_norm[0]
-    b_coef = n_mat[:, 1] * s_norm[1] + n_mat[:, 2] * s_norm[2]
-    c_coef = n_mat[:, 1] * s_norm[2] - n_mat[:, 2] * s_norm[1]
-
-    # Angles 0..359 degrees
-    ang = deg * DTOR
-    cos_t = np.cos(ang)  # (360,)
-    sin_t = np.sin(ang)  # (360,)
-
-    # Illumination per angle and panel: (360,P)
-    # Broadcasting: cos_t[:,None]*B[None,:] etc.
-    illum = (
-        a_coef[None, :]
-        + cos_t[:, None] * b_coef[None, :]
-        + sin_t[:, None] * c_coef[None, :]
-    )
-    illum = np.maximum(illum, 0.0)
-
-    # Total weighted power per angle: (360,)
-    totals = illum * w_vec[None, :]
-    totals = totals.sum(axis=1)
+    totals = _panel_power_by_roll(s_norm, *_panel_power_inputs(solar_panel))
 
     # Apply valid-roll mask if present
     if candidate_mask is not None:

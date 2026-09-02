@@ -15,7 +15,7 @@ from ..config import AttitudeControlSystem, Constraint, MissionConfig
 from ..config.constants import DTOR
 
 if TYPE_CHECKING:
-    from ..targets.pointing import Pointing
+    from ..targets import PlanEntry
 
 
 class Slew(BaseModel):
@@ -46,7 +46,9 @@ class Slew(BaseModel):
     slewpath: tuple[list[float], list[float]] = Field(default_factory=lambda: ([], []))
     obstype: ObsType = ObsType.PPT
     obsid: int = 0
-    at: "Pointing | None" = None  # In quotes to avoid circular import
+    instrument_name: str | None = None
+    instrument_roll: float | None = None
+    at: "PlanEntry | None" = None  # In quotes to avoid circular import
     # Quaternion SLERP: intermediate roll values along the path
     _quat_roll_path: list[float] = PrivateAttr(default_factory=list)
     # Shortest maneuver axis resolved in the initial spacecraft body frame.

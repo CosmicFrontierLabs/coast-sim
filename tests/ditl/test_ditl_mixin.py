@@ -98,6 +98,12 @@ class TestDITLMixin:
         ditl, _, _ = ditl_instance
         assert ditl.ppt is None
 
+    def test_init_binds_plan_runtime_dependencies(
+        self, ditl_instance: tuple[DITLMixin, Mock, Mock], mock_config: Mock
+    ) -> None:
+        ditl, _, _ = ditl_instance
+        ditl.plan.bind_runtime.assert_called_once_with(mock_config, ditl.ephem)
+
     def test_plot_creates_seven_subplots(self, plot_figure: Figure) -> None:
         """Plot should create 7 subplots."""
         fig = plot_figure

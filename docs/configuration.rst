@@ -855,10 +855,26 @@ A ``Telescope`` can be placed directly in ``Payload.instruments`` alongside any 
 
 **Telescope Attributes** (in addition to Instrument fields):
 
-* ``boresight`` (tuple[float, float, float]): Unit vector in spacecraft body frame
-  giving the direction the telescope points.  Defaults to ``(1, 0, 0)`` (spacecraft
-  forward/primary boresight).  Must be a unit vector (magnitude within 1 %).
+* ``boresight`` (tuple[float, float, float]): Compatibility input and derived
+  property giving instrument ``+X`` in spacecraft body coordinates. Defaults to
+  ``(1, 0, 0)``. When supplied without ``mounting``, COAST normalizes the vector
+  and derives a deterministic mounting. Assigning it later replaces the complete
+  mounting atomically.
+* ``mounting`` (:class:`~conops.config.InstrumentMounting`): Full rigid
+  instrument-to-body rotation. The scalar-first Hamilton quaternion maps instrument
+  vectors into spacecraft body coordinates. Instrument ``+X`` is the science
+  boresight and instrument ``+Z`` is the zero-roll reference. This is the
+  authoritative geometry. Mounting objects are immutable; replace the complete
+  object to change the installation.
 * ``optics`` (:class:`~conops.config.TelescopeConfig`): Optical configuration
+
+Science target RA/Dec and roll are defined in the selected telescope frame. COAST
+converts them to the physical spacecraft attitude before evaluating body-mounted
+panels, radiators, trackers, slew-axis limits, and executed-attitude constraints.
+Telescope-local keep-outs must be roll-independent and are evaluated against the
+science line of sight during target selection and against the transformed telescope
+boresight during execution. Put roll-dependent constraints for body-mounted hardware
+on the spacecraft constraint configuration, where spacecraft roll is defined.
 
 **TelescopeConfig Attributes:**
 
@@ -911,6 +927,7 @@ A ``Telescope`` can be placed directly in ``Payload.instruments`` alongside any 
    from conops.config import (
        Payload,
        Instrument,
+       InstrumentMounting,
        Telescope,
        TelescopeConfig,
        TelescopeType,
@@ -940,6 +957,15 @@ A ``Telescope`` can be placed directly in ``Payload.instruments`` alongside any 
        name="Secondary Telescope",
        boresight=off_axis_boresight,
        optics=TelescopeConfig(aperture_m=0.15, focal_length_m=1.5),
+   )
+
+   # Full +Y mount with instrument +Z aligned to body +Z. A positive 90°
+   # rotation about body +Z maps instrument +X onto body +Y.
+   side_mounted = Telescope(
+       name="Side-mounted Telescope",
+       mounting=InstrumentMounting(
+           body_from_instrument_quaternion_wxyz=(2**-0.5, 0.0, 0.0, 2**-0.5),
+       ),
    )
 
    print(primary.optics.f_number)                     # 10.0

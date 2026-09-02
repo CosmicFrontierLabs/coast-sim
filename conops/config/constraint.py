@@ -296,6 +296,7 @@ class Constraint(ConfigModel):
         self.__dict__.pop("power_generation_constraint_config", None)
         self.__dict__.pop("ground_contact_constraint_config", None)
         self.__dict__.pop("science_constraint_config", None)
+        self.__dict__.pop("science_line_of_sight_constraint", None)
         self.__dict__.pop("safety_constraint_config", None)
         self.__dict__.pop("roll_independent_constraint", None)
         self.__dict__.pop("roll_dependent_constraint", None)
@@ -374,6 +375,22 @@ class Constraint(ConfigModel):
                 self.power_generation_constraint_config,
             ]
         )
+
+    @cached_property
+    def science_line_of_sight_constraint(self) -> ConstraintConfig | None:
+        """Roll-independent constraints defined on the science line of sight."""
+        components = [
+            self.sun_constraint,
+            self.moon_constraint,
+            self.earth_constraint,
+            self.orbit_constraint,
+            self.anti_sun_constraint,
+        ]
+        if self.science_constraint is not None and not self._contains_boresight_offset(
+            self.science_constraint
+        ):
+            components.append(self.science_constraint)
+        return self._combine_constraints(components)
 
     @cached_property
     def safety_constraint_config(self) -> ConstraintConfig | None:
@@ -1524,6 +1541,67 @@ def attitude_constraint_names_for_scopes(
                 acs_mode=acs_mode,
             )
         )
+    return names
+
+
+def mounted_science_attitude_constraint_names(
+    constraint: Constraint,
+    scopes: Sequence[str | Enum],
+    science_attitude: tuple[float, float, float],
+    spacecraft_attitude: tuple[float, float, float],
+    utime: float,
+    acs_mode: ACSMode | int | None = None,
+) -> list[str]:
+    """Return violations with science and bus constraints in their native frames."""
+    science_ra, science_dec, science_roll = science_attitude
+    body_ra, body_dec, body_roll = spacecraft_attitude
+    names: list[str] = []
+    for scope in _attitude_scope_values(scopes):
+        if scope != AttitudeConstraintScope.IMAGING_QUALITY.value:
+            names.extend(
+                attitude_constraint_names_for_scope(
+                    constraint,
+                    scope,
+                    body_ra,
+                    body_dec,
+                    utime,
+                    target_roll=body_roll,
+                    acs_mode=acs_mode,
+                )
+            )
+            continue
+
+        for violated, name in (
+            (constraint.in_sun(science_ra, science_dec, utime), "Sun"),
+            (constraint.in_earth(science_ra, science_dec, utime), "Earth Limb"),
+            (constraint.in_moon(science_ra, science_dec, utime), "Moon"),
+            (constraint.in_anti_sun(science_ra, science_dec, utime), "Anti-Sun"),
+            (constraint.in_orbit(science_ra, science_dec, utime), "Orbit"),
+        ):
+            if violated:
+                names.append(name)
+        if constraint.in_star_tracker_soft(
+            body_ra,
+            body_dec,
+            utime,
+            target_roll=body_roll,
+            acs_mode=acs_mode,
+        ):
+            names.append("ST Soft")
+        if _has_real_constraint_method(constraint, "in_explicit_science"):
+            science_config = constraint.science_constraint
+            body_relative = (
+                science_config is not None
+                and constraint._contains_boresight_offset(science_config)
+            )
+            attitude = spacecraft_attitude if body_relative else science_attitude
+            if constraint.in_explicit_science(
+                attitude[0],
+                attitude[1],
+                utime,
+                target_roll=attitude[2],
+            ):
+                names.append("Science")
     return names
 
 

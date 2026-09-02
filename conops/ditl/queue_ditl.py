@@ -18,7 +18,7 @@ from ..common import (
 )
 from ..common.enums import ACSCommandType
 from ..common.vector import attitude_to_quat, quaternion_attitude_delta
-from ..config import DAY_SECONDS, MissionConfig
+from ..config import DAY_SECONDS, AttitudeConstraintScope, MissionConfig
 from ..config.constraint import (
     all_attitude_constraint_name,
     attitude_constraint_name_for_scopes,
@@ -170,7 +170,7 @@ class QueueDITL(DITLMixin, DITLStats):
         self._ephem_utime_cache: list[float] | None = None
         self._ephem_utime_cache_source: npt.NDArray[np.datetime64] | None = None
         self._ppt_optimum_roll_cache: dict[
-            tuple[float, float, float, int, int, int], float
+            tuple[float, float, float, int, int, int, int], float
         ] = {}
         # Subsystem power tracking
         self.power_bus = list()
@@ -846,8 +846,16 @@ class QueueDITL(DITLMixin, DITLStats):
                     self._obsid_mismatch(entry, utime, self.obsid[i], "science")
                 )
 
+            expected_attitude = entry.spacecraft_attitude or (
+                entry.ra,
+                entry.dec,
+                entry.roll,
+            )
             error_deg = angular_separation(
-                float(self.ra[i]), float(self.dec[i]), float(entry.ra), float(entry.dec)
+                float(self.ra[i]),
+                float(self.dec[i]),
+                float(expected_attitude[0]),
+                float(expected_attitude[1]),
             )
             if error_deg > tolerance_deg:
                 mismatches.append(
@@ -927,15 +935,30 @@ class QueueDITL(DITLMixin, DITLStats):
     ) -> tuple[str, str] | None:
         """Return the violated constraint name and scope label for one attitude."""
         scopes = self.config.attitude_constraint_scopes_for_mode(mode)
-        name = attitude_constraint_name_for_scopes(
-            self.constraint,
-            scopes,
-            ra,
-            dec,
-            utime,
-            target_roll=roll,
-            acs_mode=mode,
+        mounted_science = (
+            mode == ACSMode.SCIENCE
+            and self.ppt is not None
+            and self.ppt.uses_mounted_attitude() is True
         )
+        if mounted_science:
+            assert self.ppt is not None
+            names = self.ppt.attitude_constraint_names(
+                scopes,
+                (ra, dec, roll),
+                utime,
+                mode,
+            )
+            name = names[0] if names else None
+        else:
+            name = attitude_constraint_name_for_scopes(
+                self.constraint,
+                scopes,
+                ra,
+                dec,
+                utime,
+                target_roll=roll,
+                acs_mode=mode,
+            )
         if name is not None:
             return name, attitude_constraint_scope_label(scopes)
         return None
@@ -1172,26 +1195,38 @@ class QueueDITL(DITLMixin, DITLStats):
         bus_power = self.power_bus[-1] if self.power_bus else None
         payload_power = self.power_payload[-1] if self.power_payload else None
 
-        violated = self.constraint.in_constraint(
-            ra, dec, utime, target_roll=roll, acs_mode=mode
+        mounted_science = (
+            mode == ACSMode.SCIENCE
+            and self.ppt is not None
+            and self.ppt.uses_mounted_attitude() is True
         )
-        in_constraint_name = (
-            self._get_constraint_name(ra, dec, utime, roll=roll, mode=mode)
-            if violated
-            else None
-        )
+        if mounted_science:
+            assert self.ppt is not None
+            all_names = self.ppt.attitude_constraint_names(
+                list(AttitudeConstraintScope),
+                (ra, dec, roll),
+                utime,
+                mode,
+            )
+            in_constraint_name = all_names[0] if all_names else None
+        else:
+            violated = self.constraint.in_constraint(
+                ra, dec, utime, target_roll=roll, acs_mode=mode
+            )
+            in_constraint_name = (
+                self._get_constraint_name(ra, dec, utime, roll=roll, mode=mode)
+                if violated
+                else None
+            )
 
         # Pre-compute scope-scoped attitude constraint violations for
         # post-simulation validation.
         scopes = self.config.attitude_constraint_scopes_for_mode(mode)
-        scope_constraint_name = attitude_constraint_name_for_scopes(
-            self.constraint,
-            scopes,
-            ra,
-            dec,
-            utime,
-            target_roll=roll,
-            acs_mode=mode,
+        scope_violation = self._attitude_constraint_name_for_attitude(
+            ra, dec, roll, utime, mode
+        )
+        scope_constraint_name = (
+            scope_violation[0] if scope_violation is not None else None
         )
         scope_label = attitude_constraint_scope_label(scopes)
         _constraint_violation = (
@@ -1365,12 +1400,22 @@ class QueueDITL(DITLMixin, DITLStats):
     def _apply_slew_metadata(
         entry: PlanEntry, slew: Slew, *, update_end: bool = False
     ) -> None:
-        """Copy executed slew timing, distance, and roll onto a plan entry."""
+        """Copy executed slew timing and physical attitude onto a plan entry."""
         entry.begin = int(slew.slewstart)
         entry.slewtime = int(round(slew.slewtime))
         entry.slewdist = float(slew.slewdist)
         entry.slewpath = slew.slewpath
-        entry.roll = float(slew.endroll)
+        if entry.uses_mounted_attitude():
+            entry.spacecraft_attitude = (
+                float(slew.endra),
+                float(slew.enddec),
+                float(slew.endroll),
+            )
+        if slew.instrument_roll is None:
+            entry.roll = float(slew.endroll)
+        else:
+            entry.roll = float(slew.instrument_roll)
+            entry.instrument_name = slew.instrument_name
         if update_end:
             entry.end = int(slew.slewstart + slew.slewtime + entry.ss_max)
 
@@ -2115,8 +2160,8 @@ class QueueDITL(DITLMixin, DITLStats):
         assert self.ppt is not None
 
         violation = self._attitude_constraint_name_for_attitude(
-            self.ppt.ra,
-            self.ppt.dec,
+            self.acs.ra,
+            self.acs.dec,
             self.acs.roll,
             utime,
             ACSMode.SCIENCE,
@@ -2151,7 +2196,7 @@ class QueueDITL(DITLMixin, DITLStats):
         self,
         obs_start_time: float,
         obs_val_end: float,
-        target_roll: float,
+        spacecraft_attitude: tuple[float, float, float],
     ) -> tuple[float, str, str] | None:
         """Check whether a locked roll stays constraint-free for the minimum observation window."""
         assert self.ppt is not None
@@ -2163,9 +2208,9 @@ class QueueDITL(DITLMixin, DITLStats):
         for t in ephem.timestamp[begin_idx:end_idx]:
             t_unix = self._ephem_timestamp_to_utime(t)
             violation = self._constraint_name_for_science_attitude(
-                self.ppt.ra,
-                self.ppt.dec,
-                target_roll,
+                spacecraft_attitude[0],
+                spacecraft_attitude[1],
+                spacecraft_attitude[2],
                 t_unix,
             )
             if violation is not None:
@@ -2296,10 +2341,14 @@ class QueueDITL(DITLMixin, DITLStats):
         if next_pass is None:
             return None
 
+        ppt_is_plan_entry = issubclass(type(ppt), PlanEntry)
+        spacecraft_attitude = (
+            ppt.spacecraft_attitude
+            if ppt_is_plan_entry and ppt.spacecraft_attitude is not None
+            else (ppt.ra, ppt.dec, target_roll)
+        )
         pass_slew_dist, rotation_axis_body = quaternion_attitude_delta(
-            ppt.ra,
-            ppt.dec,
-            target_roll,
+            *spacecraft_attitude,
             next_pass.gsstartra,
             next_pass.gsstartdec,
             next_pass.gsstartroll,
@@ -2405,13 +2454,25 @@ class QueueDITL(DITLMixin, DITLStats):
             return self.acs.last_slew.slewstart + self.acs.last_slew.slewtime
         return utime
 
+    @staticmethod
+    def _target_body_attitude(
+        target: Pointing, instrument_roll: float | None = None
+    ) -> tuple[float, float, float]:
+        """Resolve a science target into physical body coordinates."""
+        if issubclass(type(target), PlanEntry):
+            return target.target_body_attitude(instrument_roll)
+        roll = target.roll if instrument_roll is None else instrument_roll
+        if not isinstance(roll, (int, float, np.floating)):
+            roll = 0.0
+        return float(target.ra), float(target.dec), float(roll)
+
     def _new_ppt_slew(self, target: Pointing, utime: float) -> Slew:
         """Build a new, not-yet-timed Slew object targeting a Pointing."""
         slew = Slew(config=self.config)
         slew.ephem = self.acs.ephem
         slew.slewrequest = utime
-        slew.endra = target.ra
-        slew.enddec = target.dec
+        body_attitude = self._target_body_attitude(target)
+        slew.endra, slew.enddec, slew.endroll = body_attitude
         slew.obstype = ObsType.PPT
         slew.obsid = target.obsid
         slew.at = target
@@ -2429,11 +2490,29 @@ class QueueDITL(DITLMixin, DITLStats):
         slew.startra, slew.startdec, slew.startroll = (
             self._expected_slew_start_attitude(utime, execution_time)
         )
-        slew.endroll = self._ppt_optimum_roll(target, execution_time)
+        instrument_roll = self._ppt_optimum_roll(target, execution_time)
+        slew.endra, slew.enddec, slew.endroll = self._target_body_attitude(
+            target, instrument_roll
+        )
+        telescope = (
+            target.science_telescope() if issubclass(type(target), PlanEntry) else None
+        )
+        slew.instrument_name = telescope.name if telescope is not None else None
+        slew.instrument_roll = instrument_roll
+        if telescope is not None and not telescope.mounting.is_identity:
+            target.roll = instrument_roll
+            target.spacecraft_attitude = (
+                slew.endra,
+                slew.enddec,
+                slew.endroll,
+            )
         slew.calc_slewtime()
 
     def _ppt_optimum_roll(self, target: Pointing, execution_time: float) -> float:
         """Return the optimum roll for a target at the given time, caching the result."""
+        telescope = (
+            target.science_telescope() if issubclass(type(target), PlanEntry) else None
+        )
         key = (
             float(target.ra),
             float(target.dec),
@@ -2441,18 +2520,24 @@ class QueueDITL(DITLMixin, DITLStats):
             id(self.acs.ephem),
             id(self.config.solar_panel),
             id(self.config.constraint),
+            id(telescope),
         )
         cached = self._ppt_optimum_roll_cache.get(key)
         if cached is not None:
             return cached
 
-        roll = optimum_roll(
+        args = (
             target.ra,
             target.dec,
             execution_time,
             self.acs.ephem,
             self.config.solar_panel,
             self.config.constraint,
+        )
+        roll = (
+            optimum_roll(*args, telescope=telescope)
+            if telescope is not None
+            else optimum_roll(*args)
         )
         self._ppt_optimum_roll_cache[key] = roll
         return roll
@@ -2464,20 +2549,31 @@ class QueueDITL(DITLMixin, DITLStats):
             utime, execution_time
         )
         endroll = self._ppt_optimum_roll(target, execution_time)
+        endra, enddec, body_roll = self._target_body_attitude(target, endroll)
         slewdist, rotation_axis_body = quaternion_attitude_delta(
             startra,
             startdec,
             startroll,
-            target.ra,
-            target.dec,
-            endroll,
+            endra,
+            enddec,
+            body_roll,
         )
         slewtime = round(
             self.config.spacecraft_bus.attitude_control.slew_time(
                 slewdist, rotation_axis_body
             )
         )
-        return TargetSlewEstimate(slewtime=float(slewtime), slewdist=slewdist)
+        mounted_telescope = (
+            issubclass(type(target), PlanEntry) and target.uses_mounted_attitude()
+        )
+        return TargetSlewEstimate(
+            slewtime=float(slewtime),
+            slewdist=slewdist,
+            instrument_roll=endroll,
+            spacecraft_attitude=(endra, enddec, body_roll)
+            if mounted_telescope
+            else None,
+        )
 
     def _can_retry_without_current_ppt(self) -> bool:
         """Sanity check to see if we can retry fetching a new PPT without just
@@ -2625,13 +2721,19 @@ class QueueDITL(DITLMixin, DITLStats):
                 target,
                 self._ppt_slew_execution_time(utime),
             )
+            body_attitude = self._target_body_attitude(target, target_roll)
+            body_roll = body_attitude[2]
+            if issubclass(type(target), PlanEntry) and target.uses_mounted_attitude():
+                target.spacecraft_attitude = body_attitude
+            else:
+                target.spacecraft_attitude = None
             # The cached inputs cover only fetch-wide pieces; each callback
             # still evaluates target-specific visibility and pass deadlines.
             return self._next_science_deadline(
                 slew_end,
                 current_time=utime,
                 target=target,
-                target_roll=target_roll,
+                target_roll=body_roll,
                 deadline_inputs=deadline_inputs,
             )[0]
 
@@ -2689,7 +2791,11 @@ class QueueDITL(DITLMixin, DITLStats):
             # roll_range() is empty (no roll satisfies all constraints), which
             # would put star trackers into a constraint zone.  Skip the target
             # instead so a better one can be selected.
-            if self.config.constraint.ignore_roll:
+            mounted_telescope = (
+                issubclass(type(self.ppt), PlanEntry)
+                and self.ppt.uses_mounted_attitude()
+            )
+            if self.config.constraint.ignore_roll and not mounted_telescope:
                 _constraint_obj = self.config.constraint.constraint
                 if _constraint_obj is not None:
                     # Snap to the nearest ephemeris timestamp — roll_range() requires
@@ -2744,7 +2850,7 @@ class QueueDITL(DITLMixin, DITLStats):
             violation = self._check_locked_roll_window(
                 obs_start_time,
                 obs_val_end,
-                slew.endroll,
+                (slew.endra, slew.enddec, slew.endroll),
             )
             if violation is not None:
                 t_unix, constraint_name, scope_label = violation
