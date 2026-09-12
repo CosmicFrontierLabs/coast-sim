@@ -247,6 +247,12 @@ class DITL(DITLMixin, DITLStats):
         ## DITL LOOP
         ##
         for i in range(simlen):
+            # Advance the current plan entry. Plan entries are not guaranteed to
+            # be time-ordered, so only fall back to a full lookup when the
+            # cached entry no longer covers this timestep.
+            if self.ppt is None or not (self.ppt.begin <= self.utime[i] < self.ppt.end):
+                self.ppt = self.plan.which_ppt(self.utime[i])
+
             # Obtain the current pointing information
             ra, dec, roll, obsid = self.acs.pointing(self.utime[i])
 

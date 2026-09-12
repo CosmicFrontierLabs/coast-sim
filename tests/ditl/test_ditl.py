@@ -13,6 +13,7 @@ from conops import (
     DITLs,
     Plan,
 )
+from conops.targets.plan_entry import PlanEntry
 
 
 class TestDITLInit:
@@ -152,6 +153,18 @@ class TestDITLCalc:
         assert hk.attitude_constraint_scope == "power_generation"
 
 
+def _plan_entry_stub(begin: float, end: float, obsid: int) -> Mock:
+    """A stand-in plan entry covering [begin, end) for DITL loop tests."""
+    entry = Mock(spec=PlanEntry)
+    entry.begin = begin
+    entry.end = end
+    entry.ra = 0.0
+    entry.dec = 0.0
+    entry.obsid = obsid
+    entry.obstype = "science"
+    return entry
+
+
 class TestDITLSimulationLoop:
     """Test DITL simulation loop behavior."""
 
@@ -169,6 +182,37 @@ class TestDITLSimulationLoop:
         assert ditl.ra[0] == 45.0
         assert ditl.dec[0] == 30.0
         assert ditl.obsid[0] == 42
+
+    def test_simulation_loop_advances_to_the_current_plan_entry(
+        self, ditl: DITL
+    ) -> None:
+        """The loop must re-resolve the plan entry as the simulation advances."""
+        first = _plan_entry_stub(ditl.ephem.utime[0], ditl.ephem.utime[2], obsid=1)
+        second = _plan_entry_stub(
+            ditl.ephem.utime[2], ditl.ephem.utime[-1] + 60, obsid=2
+        )
+        plan = Plan()
+        plan.entries = [first, second]
+        ditl.plan = plan
+
+        ditl.calc()
+
+        # The final timestep falls inside the second entry, so the tracked
+        # entry must have moved on from the one that seeded the ACS.
+        assert ditl.ppt is second
+
+    def test_simulation_loop_clears_plan_entry_outside_any_window(
+        self, ditl: DITL
+    ) -> None:
+        """A timestep covered by no plan entry must not keep a stale entry."""
+        only = _plan_entry_stub(ditl.ephem.utime[0], ditl.ephem.utime[2], obsid=1)
+        plan = Plan()
+        plan.entries = [only]
+        ditl.plan = plan
+
+        ditl.calc()
+
+        assert ditl.ppt is None
 
     def test_calc_rejects_attitude_rate_violation(self, ditl: DITL) -> None:
         """DITL must reject an impossible adjacent roll change."""
