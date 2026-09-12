@@ -207,7 +207,7 @@ class DITL(DITLMixin, DITLStats):
             if issubclass(type(self.ppt), PlanEntry):
                 instrument_roll = self.ppt.roll
                 mounted = self.ppt.uses_mounted_attitude()
-                if mounted and instrument_roll == -1.0:
+                if instrument_roll == -1.0:
                     instrument_roll = optimum_roll(
                         self.ppt.ra,
                         self.ppt.dec,

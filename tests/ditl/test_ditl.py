@@ -214,6 +214,51 @@ class TestDITLSimulationLoop:
 
         assert ditl.ppt is None
 
+    def test_initial_slew_resolves_an_unconstrained_roll(self, ditl: DITL) -> None:
+        """A -1.0 roll must reach the ACS as the optimum, not as 0 degrees."""
+        entry = PlanEntry(
+            ra=10.0,
+            dec=20.0,
+            roll=-1.0,
+            obsid=7,
+            begin=ditl.ephem.utime[0],
+            end=ditl.ephem.utime[-1] + 60,
+        )
+        plan = Plan()
+        plan.entries = [entry]
+        ditl.plan = plan
+
+        with patch("conops.ditl.ditl.optimum_roll", return_value=137.0):
+            ditl.calc()
+
+        _, kwargs = ditl.acs._enqueue_slew.call_args
+        assert kwargs["roll"] == 137.0
+        assert kwargs["instrument_roll"] == 137.0
+        # The resolved roll is written back so visibility and serialization
+        # see the roll that was actually flown.
+        assert entry.roll == 137.0
+
+    def test_initial_slew_keeps_an_explicit_roll(self, ditl: DITL) -> None:
+        """A planned roll must be flown as planned, not re-optimized."""
+        entry = PlanEntry(
+            ra=10.0,
+            dec=20.0,
+            roll=45.0,
+            obsid=7,
+            begin=ditl.ephem.utime[0],
+            end=ditl.ephem.utime[-1] + 60,
+        )
+        plan = Plan()
+        plan.entries = [entry]
+        ditl.plan = plan
+
+        with patch("conops.ditl.ditl.optimum_roll", return_value=137.0):
+            ditl.calc()
+
+        _, kwargs = ditl.acs._enqueue_slew.call_args
+        assert kwargs["roll"] == 45.0
+        assert entry.roll == 45.0
+
     def test_calc_rejects_attitude_rate_violation(self, ditl: DITL) -> None:
         """DITL must reject an impossible adjacent roll change."""
         ditl.config.spacecraft_bus.attitude_control.max_slew_rate = 1.0
