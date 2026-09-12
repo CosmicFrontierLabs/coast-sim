@@ -480,6 +480,27 @@ class TestTelescopeConstraint:
         result = payload.combined_telescope_spacecraft_constraint()
         assert result is not None
 
+    def test_telescope_for_target_ambiguous_payload_returns_none(self) -> None:
+        """A nameless target on two telescopes degrades to body-+X, not a raise."""
+        payload = Payload(
+            instruments=[
+                Telescope(name="T1"),
+                Telescope(name="T2", boresight=(0.0, 0.0, 1.0)),
+            ]
+        )
+        assert payload.telescope_for_target(None) is None
+
+    def test_telescope_for_target_unknown_name_raises(self) -> None:
+        """An unresolvable name stays a hard error."""
+        payload = Payload(instruments=[Telescope(name="T1")])
+        with pytest.raises(ValueError, match="does not identify"):
+            payload.telescope_for_target("T9")
+
+    def test_telescope_for_target_single_telescope_needs_no_name(self) -> None:
+        scope = Telescope(name="T1")
+        payload = Payload(instruments=[scope])
+        assert payload.telescope_for_target(None) is scope
+
     def test_combined_skips_non_telescope_instruments(self) -> None:
         cam = Instrument(name="Camera")
         scope = Telescope(constraint=self._sun_constraint())

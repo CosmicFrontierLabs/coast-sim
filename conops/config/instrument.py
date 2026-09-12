@@ -549,8 +549,9 @@ class Payload(ConfigModel):
     ) -> Telescope | None:
         """Resolve the telescope used by one target.
 
-        A name is required only when multiple telescopes are configured. Missions
-        without a telescope retain legacy body-+X target behavior.
+        A name that does not identify exactly one telescope is an error.
+        Anything else that cannot be resolved to a single telescope retains
+        legacy body-+X target behavior.
         """
         telescopes = [
             instrument
@@ -570,9 +571,7 @@ class Payload(ConfigModel):
                 )
             return matches[0]
         if len(telescopes) > 1:
-            raise ValueError(
-                "instrument_name is required when multiple telescopes are configured"
-            )
+            return None
         return telescopes[0] if telescopes else None
 
     def data_generated(self, duration_seconds: float) -> float:
