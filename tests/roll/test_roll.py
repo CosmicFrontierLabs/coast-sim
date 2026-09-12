@@ -3,8 +3,11 @@
 from unittest.mock import Mock, patch
 
 import numpy as np
+import pytest
 
 from conops import optimum_roll, optimum_roll_sidemount
+from conops.common.vector import attitude_to_quat, quaternion_rotate_vector
+from conops.config import Telescope
 
 
 class TestOptimumRoll:
@@ -124,6 +127,65 @@ class TestOptimumRoll:
             )
 
         assert roll == 215.5
+
+    def test_mounted_roll_optimizes_panel_in_physical_body_frame(
+        self, mock_ephem, mock_solar_panel_single
+    ):
+        mock_ephem.sun_pv.position = [np.array([0.0, 0.0, 1.0])]
+        mock_solar_panel_single.panels[0].normal = (1.0, 0.0, 0.0)
+        telescope = Telescope(boresight=(0.0, 1.0, 0.0))
+
+        roll = optimum_roll(
+            0.0,
+            0.0,
+            1700000000.0,
+            mock_ephem,
+            solar_panel=mock_solar_panel_single,
+            telescope=telescope,
+        )
+
+        body_attitude = telescope.target_body_attitude(0.0, 0.0, roll)
+        sun_body = quaternion_rotate_vector(
+            attitude_to_quat(*body_attitude), (0.0, 0.0, 1.0)
+        )
+        assert roll == 270.0
+        assert sun_body == pytest.approx((1.0, 0.0, 0.0), abs=1e-10)
+
+    def test_mounted_roll_uses_zero_for_equal_power_without_reference(
+        self, mock_ephem, mock_solar_panel_single
+    ) -> None:
+        telescope = Telescope(boresight=(0.0, 1.0, 0.0))
+        mock_solar_panel_single.panels[0].normal = (0.0, -1.0, 0.0)
+
+        roll = optimum_roll(
+            0.0,
+            0.0,
+            1700000000.0,
+            mock_ephem,
+            solar_panel=mock_solar_panel_single,
+            telescope=telescope,
+        )
+
+        assert roll == 0.0
+
+    def test_mounted_roll_uses_reference_for_equal_power(
+        self, mock_ephem, mock_solar_panel_single
+    ) -> None:
+        telescope = Telescope(boresight=(0.0, 1.0, 0.0))
+        mock_solar_panel_single.panels[0].normal = (0.0, -1.0, 0.0)
+
+        roll = optimum_roll(
+            0.0,
+            0.0,
+            1700000000.0,
+            mock_ephem,
+            solar_panel=mock_solar_panel_single,
+            telescope=telescope,
+            reference_roll=10.0,
+            max_roll_delta=5.0,
+        )
+
+        assert roll == 10.0
 
 
 class TestOptimumRollSidemount:
