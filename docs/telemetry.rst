@@ -76,6 +76,8 @@ The quaternion remains an inertial-to-body coordinate transform. Consequently, a
 
 **Power System**
    - ``panel_illumination``: Solar panel illumination fraction (0-1)
+   - ``solar_array_drive_angles_deg``: Current finite single-axis array-drive
+     angles in configured driven-panel order
    - ``power_usage``: Total spacecraft power consumption in W
    - ``power_bus``: Spacecraft bus power consumption in W
    - ``power_payload``: Payload power consumption in W

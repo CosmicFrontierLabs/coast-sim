@@ -64,6 +64,13 @@ class Housekeeping(BaseModel):
     panel_illumination: float | None = Field(
         default=None, description="Solar panel illumination fraction (0-1)"
     )
+    solar_array_drive_angles_deg: list[float] | None = Field(
+        default=None,
+        description=(
+            "Current finite single-axis solar-array drive angles in configured "
+            "driven-panel order"
+        ),
+    )
     power_usage: float | None = Field(
         default=None, description="Total power usage in W"
     )

@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import rust_ephem
 
-from ..common import dtutcfromtimestamp
+from ..common import ACSMode, dtutcfromtimestamp
 from ..config import MissionConfig
 from ..simulation.roll import optimum_roll
 from ..simulation.saa import SAA
@@ -96,6 +96,7 @@ class DumbScheduler:
                     self.ephem,
                     solar_panel,
                     self.constraint,
+                    acs_mode=ACSMode.SCIENCE,
                 )
                 task.roll = obs_roll
 
