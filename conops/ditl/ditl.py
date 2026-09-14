@@ -248,6 +248,7 @@ class DITL(DITLMixin, DITLStats):
             self.obsid[i] = obsid
 
             # Create housekeeping telemetry record for fault checking
+            # Score the already-executed drive angle without advancing its clock.
             nominal_roll = optimum_roll(
                 ra,
                 dec,

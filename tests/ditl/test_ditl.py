@@ -109,7 +109,7 @@ class TestDITLCalc:
             max_power=100.0,
             conversion_efficiency=1.0,
             single_axis_drive=SingleAxisSolarArrayDrive(
-                rotation_axis=(0.0, 0.0, 1.0),
+                rotation_axis=(1.0, 0.0, 0.0),
                 min_angle_deg=-180.0,
                 max_angle_deg=180.0,
                 max_rate_deg_per_s=1.0,
@@ -120,16 +120,17 @@ class TestDITLCalc:
         panel_set = SolarPanelSet(panels=[panel], conversion_efficiency=1.0)
         ditl.solar_panel = panel_set
         ditl.config.solar_panel = panel_set
+        ditl.ephem.sun_pv.position = ditl.ephem.gcrs_pv.position + (0.0, 0.0, 1.0)
 
         panel.illumination_from_sun_body(
             0.0,
-            (1.0, 0.0, 0.0),
+            (0.0, 0.0, 1.0),
             track_sun=True,
             advance_drive_state=True,
         )
         panel.illumination_from_sun_body(
             90.0,
-            (1.0, 0.0, 0.0),
+            (0.0, 0.0, 1.0),
             track_sun=True,
             advance_drive_state=True,
         )
@@ -148,8 +149,11 @@ class TestDITLCalc:
             for sample in ditl.telemetry.housekeeping
         ]
         assert angles[0] == [pytest.approx(0.0)]
-        assert angles[1] == [pytest.approx(-60.0)]
-        assert angles[-1] == [pytest.approx(-90.0)]
+        assert angles[1] == [pytest.approx(60.0)]
+        assert angles[-1] == [pytest.approx(90.0)]
+        offsets = [sample.roll_offset_deg for sample in ditl.telemetry.housekeeping]
+        assert offsets == pytest.approx([-90.0, -30.0, 0.0, 0.0])
+        assert panel._drive_time_s == ditl.utime[-1]
 
     def test_calc_housekeeping_separates_global_from_scoped_constraints(
         self, ditl: DITL

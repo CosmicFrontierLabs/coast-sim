@@ -479,6 +479,13 @@ elapsed control interval. Executed DITL samples advance the state, and
 ``solar_array_drive_angles_deg`` housekeeping telemetry records the resulting
 angles in configured driven-panel order.
 
+Housekeeping roll offsets use a read-only roll search after the executed power
+sample, so they reflect the resulting physical drive angle without advancing its
+timestamp again. Existing fixed-panel radiator shadowing is preserved. Panels
+with ``single_axis_drive`` are excluded from radiator occluders until articulated
+shadow geometry is supported; their zero-angle rectangles are not used as a
+substitute for the executed geometry.
+
 Solar Panel Vector Helper Function
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 

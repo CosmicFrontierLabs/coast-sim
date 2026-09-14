@@ -311,6 +311,29 @@ class TestDrivenPanelSet:
         assert roll == pytest.approx(0.0)
         assert panel.drive_angle_deg == pytest.approx(0.0)
 
+    @pytest.mark.parametrize("seed_state", [False, True])
+    @pytest.mark.parametrize("preview_seconds", [0.0, 30.0])
+    def test_roll_search_does_not_initialize_or_advance_drive_clock(
+        self, seed_state: bool, preview_seconds: float
+    ) -> None:
+        panel = _tracking_panel()
+        if seed_state:
+            _sample(panel, 0.0)
+        before = (panel._drive_angle_deg, panel._drive_time_s)
+        panel_set = SolarPanelSet(panels=[panel])
+
+        _roll(
+            panel_set,
+            _ephem_with_sun((0.0, 1.0, 0.0)),
+            in_eclipse=False,
+            drive_preview_seconds=preview_seconds,
+        )
+
+        assert (panel._drive_angle_deg, panel._drive_time_s) == before
+        if seed_state:
+            _sample(panel, 60.0)
+            assert panel.drive_angle_deg == pytest.approx(60.0)
+
     def test_roll_search_requires_explicit_candidate_drive_motion(self) -> None:
         panel = _tracking_panel(
             normal=(0.0, 1.0, 0.0),

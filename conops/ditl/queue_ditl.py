@@ -1220,6 +1220,7 @@ class QueueDITL(DITLMixin, DITLStats):
         _pos = np.asarray(self.ephem.gcrs_pv.position[ei], dtype=np.float64)
         earth_body_vector: list[float] = list(-_pos / np.linalg.norm(_pos))
 
+        # Score the already-executed drive angle without advancing its clock.
         nominal_roll = optimum_roll(
             ra,
             dec,

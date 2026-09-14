@@ -1048,12 +1048,24 @@ class ACS:
         current_dec = self.dec
         current_roll = self.roll
 
+        # Preserve fixed-panel shadowing. Finite-drive shadow geometry needs a
+        # hinge transform; its zero-angle rectangle is not an executed occluder.
+        solar_panel_geometries = (
+            {
+                panel.name: panel.geometry
+                for panel in self.config.solar_panel.panels
+                if panel.geometry is not None and panel.single_axis_drive is None
+            }
+            if self.config.solar_panel is not None
+            else {}
+        )
         metrics = radiators.exposure_metrics(
             ra_deg=current_ra,
             dec_deg=current_dec,
             utime=utime,
             ephem=self.ephem,
             roll_deg=current_roll,
+            solar_panel_geometries=solar_panel_geometries or None,
         )
 
         per_radiator = cast(

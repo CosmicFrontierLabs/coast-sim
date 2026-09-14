@@ -96,6 +96,7 @@ def optimum_roll(
       evaluation unless ``drive_preview_seconds`` explicitly grants motion.
       ``in_eclipse`` controls whether each drive's eclipse tracking policy permits
       that motion and is required when the interval is positive.
+      Neither the drive angle nor its timestamp is mutated by this function.
     """
     if (reference_roll is None) != (max_roll_delta is None):
         raise ValueError("reference_roll and max_roll_delta must be provided together")
