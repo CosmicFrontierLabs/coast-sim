@@ -1,13 +1,17 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
+import numpy.typing as npt
 import rust_ephem
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from ..common import dtutcfromtimestamp, roll_over_angle, separation, unixtime2date
 from ..common.enums import ObsType, SlewAlgorithm
 from ..common.vector import (
+    attitude_to_quat,
     constraint_avoiding_waypoint,
+    quat_slerp,
+    quat_to_attitude,
     quaternion_attitude_delta,
     quaternion_slew_path,
 )
@@ -16,6 +20,13 @@ from ..config.constants import DTOR
 
 if TYPE_CHECKING:
     from ..targets.pointing import Pointing
+
+
+class _SlewSegment(NamedTuple):
+    distance_deg: float
+    axis_body: tuple[float, float, float]
+    start_quat: npt.NDArray[np.float64]
+    end_quat: npt.NDArray[np.float64]
 
 
 class Slew(BaseModel):
@@ -51,10 +62,11 @@ class Slew(BaseModel):
     _quat_roll_path: list[float] = PrivateAttr(default_factory=list)
     # Shortest maneuver axis resolved in the initial spacecraft body frame.
     _rotation_axis_body: tuple[float, float, float] | None = PrivateAttr(default=None)
-    # Constraint-avoiding maneuvers are rest-to-rest SLERP segments, each with
-    # its own angular distance and initial body-frame rotation axis.
-    _slew_segments: list[tuple[float, tuple[float, float, float]]] = PrivateAttr(
-        default_factory=list
+    # Maneuvers are rest-to-rest SLERP segments, each with its own angular
+    # distance, initial body-frame rotation axis, and exact quaternion endpoints.
+    _slew_segments: list[_SlewSegment] = PrivateAttr(default_factory=list)
+    _attitude_cache: tuple[float, tuple[float, float, float]] | None = PrivateAttr(
+        default=None
     )
 
     @model_validator(mode="after")
@@ -132,6 +144,11 @@ class Slew(BaseModel):
         """Return roll angle at the given time during the slew."""
         return self.slew_roll(utime)
 
+    def attitude(self, utime: float) -> tuple[float, float, float]:
+        """Return the complete executed attitude at a given time."""
+        ra, dec = self.slew_ra_dec(utime)
+        return ra, dec, self.slew_roll(utime)
+
     def _slew_fraction(self, t: float) -> float:
         """Return progress fraction [0,1] along the bang-bang profile at elapsed time t."""
         assert self.acs_config is not None, (
@@ -141,13 +158,17 @@ class Slew(BaseModel):
         if self._slew_segments:
             remaining_time = max(0.0, float(t))
             s = 0.0
-            for distance, axis in self._slew_segments:
-                segment_time = self.acs_config.motion_time(distance, axis)
+            for segment in self._slew_segments:
+                segment_time = self.acs_config.motion_time(
+                    segment.distance_deg, segment.axis_body
+                )
                 if remaining_time >= segment_time:
-                    s += distance
+                    s += segment.distance_deg
                     remaining_time -= segment_time
                     continue
-                s += self.acs_config.s_of_t(distance, remaining_time, axis)
+                s += self.acs_config.s_of_t(
+                    segment.distance_deg, remaining_time, segment.axis_body
+                )
                 break
         else:
             s = self.acs_config.s_of_t(total_dist, t, self._rotation_axis_body)
@@ -157,6 +178,35 @@ class Slew(BaseModel):
     def _shortest_roll_diff(start: float, end: float) -> float:
         """Return end - start adjusted to take the shortest path around the circle."""
         return float(roll_over_angle([start, end])[1] - start)
+
+    def _quaternion_attitude(
+        self, utime: float, fraction: float
+    ) -> tuple[float, float, float]:
+        """Evaluate the direct or waypoint-routed quaternion trajectory."""
+        if self._attitude_cache is not None and self._attitude_cache[0] == utime:
+            return self._attitude_cache[1]
+
+        remaining_distance = fraction * float(self.slewdist)
+        attitude: tuple[float, float, float] | None = None
+        for index, segment in enumerate(self._slew_segments):
+            is_last = index == len(self._slew_segments) - 1
+            if remaining_distance <= segment.distance_deg or is_last:
+                segment_fraction = (
+                    0.0
+                    if segment.distance_deg <= 0.0
+                    else min(1.0, max(0.0, remaining_distance / segment.distance_deg))
+                )
+                ra, dec, roll = quat_to_attitude(
+                    quat_slerp(segment.start_quat, segment.end_quat, segment_fraction)
+                )
+                attitude = float(ra) % 360.0, float(dec), float(roll) % 360.0
+                break
+            remaining_distance -= segment.distance_deg
+
+        if attitude is None:
+            raise RuntimeError("slew has no quaternion segment to evaluate")
+        self._attitude_cache = utime, attitude
+        return attitude
 
     def slew_ra_dec(self, utime: float) -> tuple[float, float]:
         """Return RA/Dec at time using bang-bang slew profile when configured.
@@ -174,6 +224,10 @@ class Slew(BaseModel):
             return self.startra, self.startdec
 
         f = self._slew_fraction(t)
+
+        if self._slew_segments:
+            ra, dec, _roll = self._quaternion_attitude(utime, f)
+            return ra, dec
 
         ra_path, dec_path = self.slewpath
         n = len(ra_path)
@@ -197,6 +251,9 @@ class Slew(BaseModel):
 
         if self._quat_roll_path:
             f = self._slew_fraction(t)
+            if self._slew_segments:
+                _ra, _dec, roll = self._quaternion_attitude(utime, f)
+                return roll
             n = len(self._quat_roll_path)
             idx = f * (n - 1)
             rolls = roll_over_angle(self._quat_roll_path)
@@ -227,13 +284,13 @@ class Slew(BaseModel):
         assert self.acs_config is not None, (
             "ACS config must be set to calculate slew time"
         )
-        if self._slew_segments:
+        if len(self._slew_segments) > 1:
             if distance <= 0.0:
                 self.slewtime = 0
             else:
                 motion_time = sum(
-                    self.acs_config.motion_time(segment_distance, segment_axis)
-                    for segment_distance, segment_axis in self._slew_segments
+                    self.acs_config.motion_time(segment.distance_deg, segment.axis_body)
+                    for segment in self._slew_segments
                 )
                 self.slewtime = round(motion_time + self.acs_config.settle_time)
         else:
@@ -258,10 +315,14 @@ class Slew(BaseModel):
             Earth, Moon, and other exclusion zones.  Falls back to QUATERNION
             when no constraint violation is detected on the direct arc.
 
-        In all cases self.slewdist is the total angular distance (degrees) and
-        self.slewpath is the (ra_list, dec_list) path used for interpolation.
+        In all cases self.slewdist is the total angular distance (degrees).
+        self.slewpath retains sampled RA/Dec values for route inspection and
+        visualization; executed attitudes are evaluated from quaternion segment
+        endpoints rather than interpolated in Euler coordinates.
         """
         assert self.acs_config is not None, "ACS config must be set to predict slew"
+        self._slew_segments = []
+        self._attitude_cache = None
         steps = 100
         if self.acs_config.slew_algorithm == SlewAlgorithm.CONSTRAINT_AVOIDING:
             self._predict_slew_constraint_avoiding(steps)
@@ -270,8 +331,6 @@ class Slew(BaseModel):
 
     def _predict_slew_quaternion(self, steps: int) -> None:
         """Compute slew path via full quaternion SLERP."""
-
-        self._slew_segments = []
 
         ras, decs, rolls = quaternion_slew_path(
             self.startra,
@@ -285,7 +344,7 @@ class Slew(BaseModel):
         self.slewpath = (ras, decs)
         self._quat_roll_path = rolls
 
-        self.slewdist, self._rotation_axis_body = quaternion_attitude_delta(
+        self.slewdist, rotation_axis_body = quaternion_attitude_delta(
             self.startra,
             self.startdec,
             self.startroll,
@@ -293,6 +352,17 @@ class Slew(BaseModel):
             self.enddec,
             self.endroll,
         )
+        self._rotation_axis_body = rotation_axis_body
+        self._slew_segments = [
+            _SlewSegment(
+                distance_deg=self.slewdist,
+                axis_body=rotation_axis_body,
+                start_quat=attitude_to_quat(
+                    self.startra, self.startdec, self.startroll
+                ),
+                end_quat=attitude_to_quat(self.endra, self.enddec, self.endroll),
+            )
+        ]
 
     def _predict_slew_constraint_avoiding(self, steps: int) -> None:
         """Compute constraint-avoiding slew path using quaternion SLERP segments.
@@ -425,7 +495,19 @@ class Slew(BaseModel):
         self._quat_roll_path = all_rolls
         self._rotation_axis_body = None
         self._slew_segments = [
-            (segment_dist1, segment_axis1),
-            (segment_dist2, segment_axis2),
+            _SlewSegment(
+                distance_deg=segment_dist1,
+                axis_body=segment_axis1,
+                start_quat=attitude_to_quat(
+                    self.startra, self.startdec, self.startroll
+                ),
+                end_quat=attitude_to_quat(w_ra, w_dec, w_roll),
+            ),
+            _SlewSegment(
+                distance_deg=segment_dist2,
+                axis_body=segment_axis2,
+                start_quat=attitude_to_quat(w_ra, w_dec, w_roll),
+                end_quat=attitude_to_quat(self.endra, self.enddec, self.endroll),
+            ),
         ]
         self.slewdist = attitude_total
