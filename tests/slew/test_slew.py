@@ -276,6 +276,57 @@ class TestPredictSlew:
         slew_predict_setup.predict_slew()
         assert len(slew_predict_setup._quat_roll_path) == 101
 
+    def test_executed_attitude_stays_on_directional_rate_envelope(self):
+        """Euler interpolation must not perturb an exactly rate-limited trajectory."""
+        from conops.common.vector import quaternion_attitude_delta
+
+        acs = AttitudeControlSystem(
+            slew_acceleration_body=(0.02, 0.02, 0.2),
+            max_slew_rate_body=(0.2, 0.2, 2.0),
+            settle_time=0.0,
+        )
+        slew = Slew(
+            acs_config=acs,
+            slewstart=1700000000.0,
+            startra=359.6063610940845,
+            startdec=-0.17772999101815262,
+            startroll=0.0,
+            endra=308.134338,
+            enddec=30.224134,
+            endroll=304.0,
+        )
+        slew.calc_slewtime()
+
+        first = slew.attitude(slew.slewstart + 120.0)
+        second = slew.attitude(slew.slewstart + 180.0)
+        distance, axis = quaternion_attitude_delta(*first, *second)
+        allowed_distance = acs.effective_max_slew_rate(axis) * 60.0
+
+        assert distance == pytest.approx(allowed_distance, abs=1e-10)
+
+    def test_reuses_complete_attitude_at_same_timestamp(self):
+        from conops.common.vector import quat_slerp
+
+        acs = AttitudeControlSystem()
+        slew = Slew(
+            acs_config=acs,
+            slewstart=1700000000.0,
+            startra=350.0,
+            startdec=-20.0,
+            startroll=15.0,
+            endra=40.0,
+            enddec=60.0,
+            endroll=275.0,
+        )
+        slew.calc_slewtime()
+        sample_time = slew.slewstart + slew.slewtime / 2.0
+
+        with patch("conops.simulation.slew.quat_slerp", wraps=quat_slerp) as slerp:
+            attitude = slew.attitude(sample_time)
+            assert (*slew.ra_dec(sample_time), slew.roll(sample_time)) == attitude
+
+        slerp.assert_called_once()
+
 
 class TestPureRollManeuver:
     """Test quaternion slew algorithm with pure roll maneuvers.
@@ -473,11 +524,11 @@ class TestPureRollManeuver:
 
 
 class TestSlewPathResolution:
-    """Tests demonstrating why 100 steps is better than 20 for slew paths.
+    """Test sampled-path fidelity for route inspection and visualization.
 
     Near celestial poles, small great-circle distances correspond to large RA
-    changes. When interpolating linearly in RA/Dec between sparse path points,
-    the interpolated position deviates from the true great circle path.
+    changes. Sparse RA/Dec samples provide a less faithful representation of the
+    underlying quaternion trajectory even though they no longer drive execution.
 
     This test class quantifies the interpolation deviation for different step counts.
     """
@@ -502,7 +553,7 @@ class TestSlewPathResolution:
 
         max_deviation = 0.0
         for i in range(len(ra_path) - 1):
-            # Linear interpolation midpoint (what slew code does)
+            # Linear midpoint of the sampled representation
             lin_ra = (ra_path[i] + ra_path[i + 1]) / 2
             lin_dec = (dec_path[i] + dec_path[i + 1]) / 2
 
@@ -533,7 +584,7 @@ class TestSlewPathResolution:
         )
 
     def test_100_steps_is_better_than_20_steps(self):
-        """100 steps reduces interpolation deviation by ~5x vs 20 steps.
+        """100 steps reduces sampled-path deviation by ~5x vs 20 steps.
 
         With 5x more path points, the deviation scales roughly as 1/N,
         so we expect approximately 5x improvement.
@@ -747,10 +798,22 @@ class TestConstraintAvoidingSlew:
         assert slew.slewdist == pytest.approx(segment_dist1 + segment_dist2)
         assert slew.slewdist > pointing_dist1 + pointing_dist2
         assert slew._rotation_axis_body is None
-        assert slew._slew_segments[0][0] == pytest.approx(segment_dist1)
-        assert slew._slew_segments[0][1] == pytest.approx(segment_axis1)
-        assert slew._slew_segments[1][0] == pytest.approx(segment_dist2)
-        assert slew._slew_segments[1][1] == pytest.approx(segment_axis2)
+        assert slew._slew_segments[0].distance_deg == pytest.approx(segment_dist1)
+        assert slew._slew_segments[0].axis_body == pytest.approx(segment_axis1)
+        assert slew._slew_segments[1].distance_deg == pytest.approx(segment_dist2)
+        assert slew._slew_segments[1].axis_body == pytest.approx(segment_axis2)
+        waypoint_time = slew.slewstart + directional_acs.motion_time(
+            segment_dist1, segment_axis1
+        )
+        executed_waypoint = slew.attitude(waypoint_time)
+        waypoint_error, _axis = quaternion_attitude_delta(
+            *executed_waypoint,
+            waypoint[0],
+            waypoint[1],
+            waypoint_roll,
+        )
+
+        assert waypoint_error == pytest.approx(0.0, abs=1e-10)
 
     def test_constraint_avoiding_uses_acs_slew_constraint(self, slew, acs_config):
         """When ACS slew_constraint is set, it should be used instead of spacecraft constraint."""
