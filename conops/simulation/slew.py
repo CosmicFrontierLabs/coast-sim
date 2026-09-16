@@ -65,9 +65,6 @@ class Slew(BaseModel):
     # Maneuvers are rest-to-rest SLERP segments, each with its own angular
     # distance, initial body-frame rotation axis, and exact quaternion endpoints.
     _slew_segments: list[_SlewSegment] = PrivateAttr(default_factory=list)
-    _attitude_cache: tuple[float, tuple[float, float, float]] | None = PrivateAttr(
-        default=None
-    )
 
     @model_validator(mode="after")
     def _derive_from_config(self) -> "Slew":
@@ -145,7 +142,20 @@ class Slew(BaseModel):
         return self.slew_roll(utime)
 
     def attitude(self, utime: float) -> tuple[float, float, float]:
-        """Return the complete executed attitude at a given time."""
+        """Return the complete executed attitude from one trajectory evaluation."""
+        if self._slew_segments:
+            t = utime - self.slewstart
+            if (
+                t <= 0
+                or self.slewtime <= 0
+                or len(self.slewpath[0]) == 0
+                or self.slewdist <= 0
+            ):
+                return self.startra, self.startdec, self.startroll
+            return self._quaternion_attitude(self._slew_fraction(t))
+
+        # Compatibility for manually constructed sampled paths that predate
+        # quaternion segment metadata.
         ra, dec = self.slew_ra_dec(utime)
         return ra, dec, self.slew_roll(utime)
 
@@ -179,13 +189,8 @@ class Slew(BaseModel):
         """Return end - start adjusted to take the shortest path around the circle."""
         return float(roll_over_angle([start, end])[1] - start)
 
-    def _quaternion_attitude(
-        self, utime: float, fraction: float
-    ) -> tuple[float, float, float]:
+    def _quaternion_attitude(self, fraction: float) -> tuple[float, float, float]:
         """Evaluate the direct or waypoint-routed quaternion trajectory."""
-        if self._attitude_cache is not None and self._attitude_cache[0] == utime:
-            return self._attitude_cache[1]
-
         remaining_distance = fraction * float(self.slewdist)
         attitude: tuple[float, float, float] | None = None
         for index, segment in enumerate(self._slew_segments):
@@ -205,7 +210,6 @@ class Slew(BaseModel):
 
         if attitude is None:
             raise RuntimeError("slew has no quaternion segment to evaluate")
-        self._attitude_cache = utime, attitude
         return attitude
 
     def slew_ra_dec(self, utime: float) -> tuple[float, float]:
@@ -216,6 +220,10 @@ class Slew(BaseModel):
         The path may be a great-circle arc, quaternion SLERP, or sun-avoiding arc
         depending on the configured slew algorithm.
         """
+        if self._slew_segments:
+            ra, dec, _roll = self.attitude(utime)
+            return ra, dec
+
         t = utime - self.slewstart
         if t <= 0:
             return self.startra, self.startdec
@@ -224,10 +232,6 @@ class Slew(BaseModel):
             return self.startra, self.startdec
 
         f = self._slew_fraction(t)
-
-        if self._slew_segments:
-            ra, dec, _roll = self._quaternion_attitude(utime, f)
-            return ra, dec
 
         ra_path, dec_path = self.slewpath
         n = len(ra_path)
@@ -243,6 +247,9 @@ class Slew(BaseModel):
 
     def slew_roll(self, utime: float) -> float:
         """Return roll angle at time during slew, drawn from the SLERP path."""
+        if self._slew_segments:
+            return self.attitude(utime)[2]
+
         t = utime - self.slewstart
         if t <= 0:
             return self.startroll
@@ -251,9 +258,6 @@ class Slew(BaseModel):
 
         if self._quat_roll_path:
             f = self._slew_fraction(t)
-            if self._slew_segments:
-                _ra, _dec, roll = self._quaternion_attitude(utime, f)
-                return roll
             n = len(self._quat_roll_path)
             idx = f * (n - 1)
             rolls = roll_over_angle(self._quat_roll_path)
@@ -322,7 +326,6 @@ class Slew(BaseModel):
         """
         assert self.acs_config is not None, "ACS config must be set to predict slew"
         self._slew_segments = []
-        self._attitude_cache = None
         steps = 100
         if self.acs_config.slew_algorithm == SlewAlgorithm.CONSTRAINT_AVOIDING:
             self._predict_slew_constraint_avoiding(steps)

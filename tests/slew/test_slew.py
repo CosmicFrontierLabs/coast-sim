@@ -304,7 +304,7 @@ class TestPredictSlew:
 
         assert distance == pytest.approx(allowed_distance, abs=1e-10)
 
-    def test_reuses_complete_attitude_at_same_timestamp(self):
+    def test_complete_attitude_uses_one_quaternion_evaluation(self):
         from conops.common.vector import quat_slerp
 
         acs = AttitudeControlSystem()
@@ -323,9 +323,11 @@ class TestPredictSlew:
 
         with patch("conops.simulation.slew.quat_slerp", wraps=quat_slerp) as slerp:
             attitude = slew.attitude(sample_time)
-            assert (*slew.ra_dec(sample_time), slew.roll(sample_time)) == attitude
 
         slerp.assert_called_once()
+        assert (*slew.ra_dec(sample_time), slew.roll(sample_time)) == pytest.approx(
+            attitude
+        )
 
 
 class TestPureRollManeuver:
