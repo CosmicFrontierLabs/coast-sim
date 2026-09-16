@@ -18,7 +18,14 @@ from .fault_management import (
 )
 from .geometry import PanelGeometry, compute_shadow_fraction
 from .groundstation import GroundStation, GroundStationRegistry
-from .instrument import Instrument, Payload, Telescope, TelescopeConfig, TelescopeType
+from .instrument import (
+    Instrument,
+    InstrumentMounting,
+    Payload,
+    Telescope,
+    TelescopeConfig,
+    TelescopeType,
+)
 from .momentum import StoredMomentumConfig
 from .observation_categories import ObservationCategories, ObservationCategory
 from .power import PowerDraw
@@ -62,6 +69,7 @@ __all__ = [
     "GroundStationRegistry",
     "Heater",
     "Instrument",
+    "InstrumentMounting",
     "Telescope",
     "TelescopeConfig",
     "TelescopeType",

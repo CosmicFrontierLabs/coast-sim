@@ -364,8 +364,17 @@ def ditl(mock_config_detailed, mock_ephem) -> DITL:
         ditl.ephem = mock_ephem
         ditl.acs = mock_acs
         ditl.plan = Mock()
+        # begin/end span the whole simulation so the DITL loop treats this as
+        # the current plan entry for every timestep.
         ditl.plan.which_ppt = Mock(
-            return_value=Mock(ra=0.0, dec=0.0, obsid=1, obstype="science")
+            return_value=Mock(
+                ra=0.0,
+                dec=0.0,
+                obsid=1,
+                obstype="science",
+                begin=0.0,
+                end=float("inf"),
+            )
         )
 
         return ditl

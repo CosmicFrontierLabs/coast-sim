@@ -388,7 +388,7 @@ class TestPassTimeToSlew:
         )
 
         def slew_time(_acs_config, distance, _axis):
-            return 123.0
+            return 123.4
 
         with (
             patch(
@@ -417,7 +417,7 @@ class TestPassTimeToSlew:
                 target_roll=37.0,
             )
 
-        assert slewtime == 123.0
+        assert slewtime == 124.0
         delta.assert_called_once_with(10.0, 20.0, 42.0, 30.0, 40.0, 37.0)
         slew_time_mock.assert_called_once_with(
             mock_config.spacecraft_bus.attitude_control,

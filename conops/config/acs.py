@@ -9,6 +9,11 @@ from .constants import DTOR
 from .momentum import StoredMomentumConfig
 
 
+def scheduled_slew_time(duration_s: float) -> int:
+    """Convert a physical duration to whole seconds without ending it early."""
+    return 0 if duration_s <= 0.0 else int(np.ceil(duration_s))
+
+
 class AttitudeControlSystem(ConfigModel):
     """
     Attitude Control System (ACS) configuration parameters.

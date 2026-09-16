@@ -332,8 +332,7 @@ class TestPointing:
         mock_slew.is_slewing = Mock(return_value=True)
         mock_slew.obstype = "PPT"
         mock_slew.obsid = 100
-        mock_slew.ra_dec = Mock(return_value=(45.0, 30.0))
-        mock_slew.slew_roll = Mock(return_value=45.0)
+        mock_slew.attitude = Mock(return_value=(45.0, 30.0, 45.0))
         mock_slew.at = None
 
         acs.last_slew = mock_slew
@@ -344,6 +343,8 @@ class TestPointing:
         assert acs.acsmode == ACSMode.SLEWING
         assert ra == 45.0
         assert dec == 30.0
+        assert roll == 45.0
+        mock_slew.attitude.assert_called_once_with(1514764800.0)
 
     @patch("conops.optimum_roll")
     def test_pointing_during_pass_slew(self, mock_roll, acs) -> None:
@@ -356,8 +357,7 @@ class TestPointing:
         mock_gsp_slew.is_slewing = Mock(return_value=True)
         mock_gsp_slew.obstype = "GSP"
         mock_gsp_slew.obsid = 200
-        mock_gsp_slew.ra_dec = Mock(return_value=(45.0, 30.0))
-        mock_gsp_slew.slew_roll = Mock(return_value=45.0)
+        mock_gsp_slew.attitude = Mock(return_value=(45.0, 30.0, 45.0))
         mock_gsp_slew.at = None
 
         acs.last_slew = mock_gsp_slew

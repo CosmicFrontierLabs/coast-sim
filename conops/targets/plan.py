@@ -5,7 +5,7 @@ import re
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import (
     BaseModel,
@@ -18,6 +18,11 @@ from pydantic import (
 
 from .._version import __version__
 from .plan_entry import AttitudeRotationConventionSchema, PlanEntry
+
+if TYPE_CHECKING:
+    import rust_ephem
+
+    from ..config import MissionConfig
 
 
 class TargetList(BaseModel):
@@ -251,6 +256,22 @@ class Plan(BaseModel):
             if ppt.begin <= utime < ppt.end:
                 return ppt
         return None
+
+    def bind_runtime(
+        self,
+        config: MissionConfig,
+        ephem: rust_ephem.Ephemeris | None = None,
+    ) -> None:
+        """Attach non-serialized runtime dependencies to every plan entry."""
+        runtime_ephem = ephem if ephem is not None else config.constraint.ephem
+        if runtime_ephem is None:
+            raise ValueError("an ephemeris is required to execute a plan")
+        config.constraint.ephem = runtime_ephem
+        for entry in self.entries:
+            entry.config = config
+            entry.constraint = config.constraint
+            entry.ephem = runtime_ephem
+            entry.acs_config = config.spacecraft_bus.attitude_control
 
     def extend(self, ppt: list[PlanEntry]) -> None:
         self.entries.extend(ppt)

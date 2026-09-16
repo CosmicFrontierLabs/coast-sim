@@ -26,7 +26,7 @@ from .slew import Slew
 
 if TYPE_CHECKING:
     from ..ditl.ditl_log import DITLLog
-    from ..targets import Pointing
+    from ..targets import PlanEntry, Pointing
 
 
 IDLE_OBSID = 0
@@ -393,6 +393,8 @@ class ACS:
         utime: float,
         obstype: ObsType = ObsType.PPT,
         roll: float | None = None,
+        target_request: "PlanEntry | None" = None,
+        instrument_roll: float | None = None,
     ) -> bool:
         """Create and enqueue a slew command.
 
@@ -414,6 +416,7 @@ class ACS:
             slew.endroll = roll
         slew.obstype = obstype
         slew.obsid = obsid
+        slew.instrument_roll = instrument_roll
 
         # For SAFE mode, skip visibility checking (emergency situation)
         if obstype == ObsType.SAFE:
@@ -423,7 +426,10 @@ class ACS:
             execution_time = utime  # Execute immediately
         else:
             # Set up target observation request and check visibility
-            target_request = self._create_target_request(slew, roll)
+            if target_request is None:
+                target_request = self._create_target_request(slew, roll)
+            else:
+                target_request.visibility()
             slew.at = target_request
 
             visstart = target_request.next_vis(utime)
@@ -457,7 +463,7 @@ class ACS:
 
     def _create_target_request(
         self, slew: Slew, roll: float | None = None
-    ) -> "Pointing":
+    ) -> "PlanEntry":
         """Create and configure a target observation request for visibility checking."""
         from ..targets import Pointing
 
@@ -467,6 +473,7 @@ class ACS:
             dec=slew.enddec,
             roll=roll if roll is not None else slew.endroll,
             obsid=slew.obsid,
+            obstype=slew.obstype,
         )
         target.exptime = 1000
         target.isat = slew.obstype != ObsType.PPT
@@ -556,11 +563,18 @@ class ACS:
         # Update ACS mode based on current state
         self._update_mode(utime)
 
-        # Calculate current RA/Dec pointing
-        self._calculate_pointing(utime)
+        # Evaluate an active slew once, then pass that immutable result through
+        # the existing pointing and roll precedence rules.
+        slew_attitude = (
+            self.current_slew.attitude(utime)
+            if self._is_actively_slewing(utime) and self.current_slew is not None
+            else None
+        )
+        self._calculate_pointing(utime, slew_attitude)
 
-        # Calculate roll angle (must run after _calculate_pointing so ra/dec are current).
-        self.roll = self._compute_roll(utime)
+        # Calculate roll after pointing so non-slew roll optimization uses the
+        # current RA/Dec.
+        self.roll = self._compute_roll(utime, slew_attitude)
 
         # Idle is an executed attitude, not a constraint-free gap. If a completed
         # observation is being held after science ends, move the hold to an
@@ -631,7 +645,11 @@ class ACS:
         """Check if spacecraft is currently executing a slew."""
         return self.current_slew is not None and self.current_slew.is_slewing(utime)
 
-    def _compute_roll(self, utime: float) -> float:
+    def _compute_roll(
+        self,
+        utime: float,
+        slew_attitude: tuple[float, float, float] | None = None,
+    ) -> float:
         """Return the roll angle for the current timestep.
 
         - During a slew: interpolate along the SLERP path.
@@ -642,7 +660,9 @@ class ACS:
         """
         if self._is_actively_slewing(utime) and self.current_slew is not None:
             self._reset_roll_optimization()
-            return self.current_slew.slew_roll(utime)
+            if slew_attitude is None:
+                slew_attitude = self.current_slew.attitude(utime)
+            return slew_attitude[2]
         if self.in_safe_mode:
             return self._continuous_optimum_roll(utime, ACSMode.SAFE)
         if self._is_in_charging_mode(utime):
@@ -917,15 +937,27 @@ class ACS:
             and self.last_slew.obstype == ObsType.PPT
         ):
             scopes = self.config.attitude_constraint_scopes_for_mode(self.acsmode)
-            constraint_names = attitude_constraint_names_for_scopes(
-                self.constraint,
-                scopes,
-                self.last_slew.at.ra,
-                self.last_slew.at.dec,
-                utime,
-                target_roll=self.roll,
-                acs_mode=self.acsmode,
-            )
+            target = self.last_slew.at
+            if (
+                self.acsmode == ACSMode.SCIENCE
+                and target.uses_mounted_attitude() is True
+            ):
+                constraint_names = target.attitude_constraint_names(
+                    scopes,
+                    (self.ra, self.dec, self.roll),
+                    utime,
+                    self.acsmode,
+                )
+            else:
+                constraint_names = attitude_constraint_names_for_scopes(
+                    self.constraint,
+                    scopes,
+                    self.ra,
+                    self.dec,
+                    utime,
+                    target_roll=self.roll,
+                    acs_mode=self.acsmode,
+                )
 
             if constraint_names:
                 self._log_or_print(
@@ -934,8 +966,8 @@ class ACS:
                     "%s: CONSTRAINT: RA=%s Dec=%s obsid=%s %s (%s)"
                     % (
                         unixtime2date(utime),
-                        self.last_slew.at.ra,
-                        self.last_slew.at.dec,
+                        self.ra,
+                        self.dec,
                         self.last_slew.obsid,
                         " ".join(constraint_names),
                         attitude_constraint_scope_label(scopes),
@@ -1095,11 +1127,15 @@ class ACS:
                 f"roll={self.roll:.3f}°",
             )
 
-    def _calculate_pointing(self, utime: float) -> None:
+    def _calculate_pointing(
+        self,
+        utime: float,
+        slew_attitude: tuple[float, float, float] | None = None,
+    ) -> None:
         """Calculate current RA/Dec based on slew state or safe mode."""
         # Safe mode overrides all other pointing
         if self.in_safe_mode:
-            self._calculate_safe_mode_pointing(utime)
+            self._calculate_safe_mode_pointing(utime, slew_attitude)
         # If we are in a groundstations pass
         elif self.current_pass is not None:
             pass_ra, pass_dec = self.current_pass.ra_dec(utime)
@@ -1107,12 +1143,19 @@ class ACS:
                 self.ra, self.dec = pass_ra, pass_dec
         # If we are actively slewing
         elif self.last_slew is not None:
-            self.ra, self.dec = self.last_slew.ra_dec(utime)
+            if slew_attitude is not None and self.last_slew is self.current_slew:
+                self.ra, self.dec = slew_attitude[:2]
+            else:
+                self.ra, self.dec = self.last_slew.ra_dec(utime)
         else:
             # If there's no slew or pass, maintain current pointing
             pass
 
-    def _calculate_safe_mode_pointing(self, utime: float) -> None:
+    def _calculate_safe_mode_pointing(
+        self,
+        utime: float,
+        slew_attitude: tuple[float, float, float] | None = None,
+    ) -> None:
         """Calculate safe mode pointing - point solar panels at the Sun.
 
         In safe mode, the spacecraft points to maximize solar panel illumination.
@@ -1137,8 +1180,9 @@ class ACS:
             and self.current_slew.obstype == ObsType.SAFE
             and self.current_slew.is_slewing(utime)
         ):
-            self.ra, self.dec = self.current_slew.ra_dec(utime)
-            self.roll = self.current_slew.roll(utime)
+            if slew_attitude is None:
+                slew_attitude = self.current_slew.attitude(utime)
+            self.ra, self.dec, self.roll = slew_attitude
         else:
             # After slew completes or for continuous tracking, maintain optimal pointing
             self.ra = target_ra

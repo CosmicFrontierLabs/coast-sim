@@ -4,7 +4,7 @@ import numpy as np
 import rust_ephem
 
 from ..common import dtutcfromtimestamp
-from ..config import MissionConfig
+from ..config import AttitudeConstraintScope, MissionConfig
 from ..simulation.roll import optimum_roll
 from ..simulation.saa import SAA
 from ..targets import Plan, PlanEntry, TargetList
@@ -89,6 +89,8 @@ class DumbScheduler:
                 solar_panel = (
                     self.config.solar_panel if self.config is not None else None
                 )
+                task_is_plan_entry = issubclass(type(task), PlanEntry)
+                telescope = task.science_telescope() if task_is_plan_entry else None
                 obs_roll = optimum_roll(
                     task.ra,
                     task.dec,
@@ -96,16 +98,29 @@ class DumbScheduler:
                     self.ephem,
                     solar_panel,
                     self.constraint,
+                    telescope=telescope,
                 )
                 task.roll = obs_roll
+                body_ra, body_dec, body_roll = (
+                    task.target_body_attitude(obs_roll)
+                    if task_is_plan_entry
+                    else (task.ra, task.dec, obs_roll)
+                )
+                if task_is_plan_entry and task.uses_mounted_attitude():
+                    task.spacecraft_attitude = (body_ra, body_dec, body_roll)
+                else:
+                    task.spacecraft_attitude = None
 
                 # Determine slew time based on prior plan entry (if any)
                 if self.plan and len(self.plan) > 0:
                     last_entry = self.plan[-1]
-                    estimated_slewtime = task.calc_slewtime(
+                    last_attitude = last_entry.spacecraft_attitude or (
                         last_entry.ra,
                         last_entry.dec,
                         last_entry.roll,
+                    )
+                    estimated_slewtime = task.calc_slewtime(
+                        *last_attitude,
                     )
                     if estimated_slewtime is not None:
                         task.slewtime = estimated_slewtime
@@ -123,15 +138,27 @@ class DumbScheduler:
                 # Evaluate constraints at each timestep using the fixed roll.
                 time_window = self.ephem.timestamp[begin_idx:end_idx]
 
-                in_occult = [
-                    self.constraint.in_constraint(
-                        ra=task.ra,
-                        dec=task.dec,
-                        utime=t.timestamp(),
-                        target_roll=obs_roll,
-                    )
-                    for t in time_window
-                ]
+                if task_is_plan_entry and task.uses_mounted_attitude():
+                    in_occult = [
+                        bool(
+                            task.attitude_constraint_names(
+                                list(AttitudeConstraintScope),
+                                (body_ra, body_dec, body_roll),
+                                t.timestamp(),
+                            )
+                        )
+                        for t in time_window
+                    ]
+                else:
+                    in_occult = [
+                        self.constraint.in_constraint(
+                            ra=body_ra,
+                            dec=body_dec,
+                            utime=t.timestamp(),
+                            target_roll=body_roll,
+                        )
+                        for t in time_window
+                    ]
 
                 # goodtime = 1 where constraints are satisfied (NOT in occult)
                 goodtime = np.bitwise_not(in_occult).astype(int).tolist()
@@ -181,6 +208,15 @@ class DumbScheduler:
             ppt.ra = selected_target.ra
             ppt.dec = selected_target.dec
             ppt.roll = selected_roll
+            selected_telescope = (
+                selected_target.science_telescope()
+                if issubclass(type(selected_target), PlanEntry)
+                else None
+            )
+            ppt.instrument_name = (
+                selected_telescope.name if selected_telescope is not None else None
+            )
+            ppt.spacecraft_attitude = selected_target.spacecraft_attitude
             ppt.begin = ephem_utime[i]  # numeric start time
             ppt.slewtime = int(selected_slewtime)
 
