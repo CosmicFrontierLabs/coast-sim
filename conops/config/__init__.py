@@ -26,6 +26,7 @@ from .instrument import (
     TelescopeConfig,
     TelescopeType,
 )
+from .momentum import StoredMomentumConfig
 from .observation_categories import ObservationCategories, ObservationCategory
 from .power import PowerDraw
 from .radiator import (
@@ -86,6 +87,7 @@ __all__ = [
     "SolarPanel",
     "SolarPanelSet",
     "SpacecraftBus",
+    "StoredMomentumConfig",
     "StarTracker",
     "DefaultStarTrackerConfiguration",
     "StarTrackerConfiguration",

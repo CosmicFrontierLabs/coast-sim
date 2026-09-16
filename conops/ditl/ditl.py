@@ -167,6 +167,8 @@ class DITL(DITLMixin, DITLStats):
         if isinstance(self.plan, Plan):
             self.plan.bind_runtime(self.config, self.ephem)
 
+        self._reset_stored_momentum_tracker()
+
         # Set up ACS ephemeris if not already set
         if self.acs.ephem is None:
             self.acs.ephem = self.ephem
@@ -399,6 +401,7 @@ class DITL(DITLMixin, DITLStats):
                 )
             scope_label = attitude_constraint_scope_label(scopes)
             _q = attitude_to_quat(ra, dec, roll)
+            momentum_sample = self._update_stored_momentum(self.utime[i], ra, dec, roll)
             hk = Housekeeping(
                 timestamp=datetime.fromtimestamp(self.utime[i], tz=timezone.utc),
                 ra=ra,
@@ -440,6 +443,21 @@ class DITL(DITLMixin, DITLStats):
                 quat_x=float(_q[1]),
                 quat_y=float(_q[2]),
                 quat_z=float(_q[3]),
+                gravity_gradient_torque_body_n_m=(
+                    list(momentum_sample.gravity_gradient_torque_body_n_m)
+                    if momentum_sample is not None
+                    else None
+                ),
+                stored_momentum_body_n_m_s=(
+                    list(momentum_sample.stored_momentum_body_n_m_s)
+                    if momentum_sample is not None
+                    else None
+                ),
+                stored_momentum_norm_n_m_s=(
+                    momentum_sample.stored_momentum_norm_n_m_s
+                    if momentum_sample is not None
+                    else None
+                ),
             )
 
             # Check fault management thresholds and red limit constraints
