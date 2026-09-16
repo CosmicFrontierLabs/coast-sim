@@ -17,6 +17,7 @@ from conops import (
     DumbQueueScheduler,
     MissionConfig,
     QueueDITL,
+    SolarArrayDriveState,
 )
 from conops.targets.plan import Plan
 
@@ -180,6 +181,11 @@ def mock_config() -> Mock:
     config.solar_panel.panels = []
     config.solar_panel.optimal_charging_pointing = Mock(return_value=(45.0, 23.5))
     config.solar_panel.illumination_and_power = Mock(return_value=(0.5, 100.0))
+    drive_state = SolarArrayDriveState(angles_deg=())
+    config.solar_panel.initial_drive_state = Mock(return_value=drive_state)
+    config.solar_panel.evaluate_executed_attitude = Mock(
+        return_value=(0.5, 100.0, drive_state)
+    )
 
     # Mock ground stations
     config.ground_stations = Mock()
@@ -249,6 +255,7 @@ def queue_ditl(mock_config: Mock, mock_ephem: DummyEphemeris) -> QueueDITL:
             radiator_sun_exposure=0.0,
             radiator_earth_exposure=0.0,
             radiator_heat_dissipation_w=0.0,
+            solar_array_drive_state=SolarArrayDriveState(angles_deg=()),
         )
         # Mock the helper methods used in _fetch_new_ppt
         mock_target_request = Mock()

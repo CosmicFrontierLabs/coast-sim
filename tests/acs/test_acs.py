@@ -1,6 +1,6 @@
 """Unit tests for Attitude Control System (ACS) class."""
 
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
@@ -8,6 +8,8 @@ import rust_ephem
 
 from conops import ACS, ACSCommandType, ACSMode, AttitudeConstraintScope
 from conops.common.enums import ObsType
+from conops.config import SingleAxisSolarArrayDrive, SolarPanel, SolarPanelSet
+from conops.config.geometry import PanelGeometry
 from conops.simulation.acs import IDLE_OBSID
 from conops.simulation.slew import Slew
 
@@ -65,6 +67,51 @@ class TestACSInitialization:
         mock_config.constraint.ephem = None
         with pytest.raises(AssertionError, match="Ephemeris must be set"):
             ACS(config=mock_config)
+
+
+class TestRadiatorPanelGeometry:
+    @pytest.mark.parametrize("include_fixed", [False, True])
+    def test_shadowing_preserves_fixed_panels_but_excludes_finite_drives(
+        self, acs: ACS, include_fixed: bool
+    ) -> None:
+        geometry = PanelGeometry(u=(1.0, 0.0, 0.0), v=(0.0, 0.0, 1.0))
+        panels = [
+            SolarPanel(
+                name="Driven",
+                geometry=geometry,
+                single_axis_drive=SingleAxisSolarArrayDrive(
+                    rotation_axis=(1.0, 0.0, 0.0),
+                    min_angle_deg=-90.0,
+                    max_angle_deg=90.0,
+                    max_rate_deg_per_s=1.0,
+                    initial_angle_deg=45.0,
+                ),
+            ),
+            SolarPanel(name="No geometry"),
+        ]
+        if include_fixed:
+            panels.append(SolarPanel(name="Fixed", geometry=geometry))
+        acs.config.solar_panel = SolarPanelSet(panels=panels)
+        radiators = acs.config.spacecraft_bus.radiators
+        radiators.num_radiators.return_value = 1
+        radiators.exposure_metrics.return_value = {
+            "sun_exposure": 0.25,
+            "earth_exposure": 0.5,
+            "heat_dissipation_w": 100.0,
+            "per_radiator": [],
+        }
+
+        acs._check_radiator_constraints(1000.0)
+
+        radiators.exposure_metrics.assert_called_once_with(
+            ra_deg=acs.ra,
+            dec_deg=acs.dec,
+            utime=1000.0,
+            ephem=acs.ephem,
+            roll_deg=acs.roll,
+            solar_panel_geometries={"Fixed": geometry} if include_fixed else None,
+        )
+        assert acs.radiator_sun_exposure == 0.25
 
 
 class TestACSAttributes:
@@ -152,6 +199,21 @@ class TestACSStateManagement:
         acs.roll = 90.0
         assert acs.roll == 90.0
 
+    def test_continuous_roll_scores_the_current_drive_state(self, acs) -> None:
+        acs.in_eclipse = True
+        acs.roll = 10.0
+        acs._last_roll_optimization_mode = ACSMode.CHARGING
+        acs._last_roll_optimization_utime = 970.0
+
+        with patch(
+            "conops.simulation.acs.optimum_body_roll", return_value=20.0
+        ) as roll:
+            result = acs._continuous_optimum_roll(1000.0, ACSMode.CHARGING)
+
+        assert result == 20.0
+        assert roll.call_args.kwargs["drive_state"] is acs.solar_array_drive_state
+        assert "drive_preview_seconds" not in roll.call_args.kwargs
+
     def test_slew_dists_tracking(self, acs) -> None:
         """Test that slew_dists list is tracked."""
         assert acs.slew_dists == []
@@ -193,7 +255,9 @@ class TestACSStateManagement:
             return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
         )
 
-        monkeypatch.setattr("conops.simulation.acs.optimum_roll", lambda *args: 5.0)
+        monkeypatch.setattr(
+            "conops.simulation.acs.optimum_body_roll", lambda *args, **kwargs: 5.0
+        )
         acs.constraint.in_star_tracker_hard = Mock(side_effect=[True, False])
 
         ra, dec, roll, obsid = acs.pointing(1000.0)
@@ -224,7 +288,9 @@ class TestACSStateManagement:
             return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
         )
 
-        monkeypatch.setattr("conops.simulation.acs.optimum_roll", lambda *args: 5.0)
+        monkeypatch.setattr(
+            "conops.simulation.acs.optimum_body_roll", lambda *args, **kwargs: 5.0
+        )
         acs.constraint.in_constraint = Mock(return_value=True)
         acs.constraint.in_star_tracker_hard = Mock(side_effect=[True, False])
 
@@ -241,7 +307,9 @@ class TestACSStateManagement:
             return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
         )
         acs.config.fault_management = Mock(events=[])
-        monkeypatch.setattr("conops.simulation.acs.optimum_roll", lambda *args: 5.0)
+        monkeypatch.setattr(
+            "conops.simulation.acs.optimum_body_roll", lambda *args, **kwargs: 5.0
+        )
         acs.constraint.in_star_tracker_hard = Mock(return_value=True)
 
         ra, dec, roll, obsid = acs.pointing(1000.0)
