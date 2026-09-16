@@ -5,6 +5,7 @@ from pydantic import ValidationError
 from conops import AttitudeControlSystem, PlanEntry
 from conops.common.enums import ObsType
 from conops.common.vector import quaternion_attitude_delta
+from conops.config.acs import scheduled_slew_time
 
 
 class MockSAA:
@@ -364,7 +365,8 @@ class TestCalcSlewtime:
 
         # calc_slewtime always calls predict_slew which recalculates distance
         assert plan_entry.slewdist > 0
-        assert slewtime == round(plan_entry.acs_config.slew_time(plan_entry.slewdist))
+        expected = plan_entry.acs_config.slew_time(plan_entry.slewdist)
+        assert slewtime == scheduled_slew_time(expected)
 
     @pytest.mark.parametrize("lastroll", [None, -1.0])
     def test_directional_slew_requires_planned_start_roll(self, plan_entry, lastroll):
@@ -399,7 +401,7 @@ class TestCalcSlewtime:
         slewtime = plan_entry.calc_slewtime(0.0, 0.0, 0.0)
 
         assert plan_entry.slewdist == pytest.approx(distance)
-        assert slewtime == round(acs.slew_time(distance, axis))
+        assert slewtime == scheduled_slew_time(acs.slew_time(distance, axis))
 
 
 class TestPredictSlew:

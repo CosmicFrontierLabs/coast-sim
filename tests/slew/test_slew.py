@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from conops import AttitudeControlSystem, MissionConfig, Slew
 from conops.common.enums import ObsType
+from conops.config.acs import scheduled_slew_time
 
 
 class TestSlewInit:
@@ -329,7 +330,7 @@ class TestPredictSlew:
             attitude
         )
 
-    def test_rounded_zero_duration_reaches_nonzero_endpoint(self):
+    def test_subsecond_slew_has_positive_execution_window(self):
         acs = AttitudeControlSystem(
             slew_acceleration=1000.0,
             max_slew_rate=1000.0,
@@ -346,9 +347,14 @@ class TestPredictSlew:
             endroll=0.0,
         )
 
-        assert slew.calc_slewtime() == 0.0
+        assert slew.calc_slewtime() == 1.0
         assert slew.slewdist > 0.0
-        assert slew.attitude(slew.slewstart + 1.0) == pytest.approx(
+        assert slew.is_slewing(slew.slewstart)
+        assert slew.attitude(slew.slewstart) == pytest.approx(
+            (slew.startra, slew.startdec, slew.startroll)
+        )
+        assert not slew.is_slewing(slew.slewend)
+        assert slew.attitude(slew.slewend) == pytest.approx(
             (slew.endra, slew.enddec, slew.endroll)
         )
 
@@ -833,7 +839,7 @@ class TestConstraintAvoidingSlew:
         ):
             slew.predict_slew()
 
-            expected_time = round(
+            expected_time = scheduled_slew_time(
                 directional_acs.motion_time(segment_dist1, segment_axis1)
                 + directional_acs.motion_time(segment_dist2, segment_axis2)
                 + directional_acs.settle_time

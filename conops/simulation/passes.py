@@ -23,6 +23,7 @@ from ..config import (
     GroundStationRegistry,
     MissionConfig,
 )
+from ..config.acs import scheduled_slew_time
 from ..config.constants import DTOR
 from ..config.constraint import in_attitude_constraint_scopes
 from .slew import Slew
@@ -461,7 +462,9 @@ class Pass(BaseModel):
                 target_dec,
                 target_roll,
             )
-            return round(acs_config.slew_time(slewdist, rotation_axis_body))
+            return scheduled_slew_time(
+                acs_config.slew_time(slewdist, rotation_axis_body)
+            )
 
         slew = Slew(config=self.config)
         slew.startra = ra

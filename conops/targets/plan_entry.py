@@ -20,6 +20,7 @@ from ..common import givename, unixtime2date
 from ..common.enums import ObsType
 from ..common.vector import attitude_to_quat, quaternion_attitude_delta
 from ..config import AttitudeControlSystem, Constraint, MissionConfig
+from ..config.acs import scheduled_slew_time
 from ..simulation.saa import SAA
 
 BodyAxis = Literal["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
@@ -379,11 +380,11 @@ class PlanEntry(BaseModel):
                 self.dec,
                 self.roll,
             )
-            slewtime = round(
+            slewtime = scheduled_slew_time(
                 self.acs_config.slew_time(self.slewdist, rotation_axis_body)
             )
         else:
-            slewtime = round(self.acs_config.slew_time(self.slewdist))
+            slewtime = scheduled_slew_time(self.acs_config.slew_time(self.slewdist))
 
         return slewtime
 

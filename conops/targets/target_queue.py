@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict
 
 from ..common import unixtime2date
 from ..config import AttitudeControlSystem, Constraint, MissionConfig
+from ..config.acs import scheduled_slew_time
 from ..ditl.ditl_log import DITLLog
 from . import Pointing
 
@@ -265,7 +266,7 @@ class TargetQueue:
             return
 
         estimate = slew_estimator(target)
-        target.slewtime = round(estimate.slewtime)
+        target.slewtime = scheduled_slew_time(estimate.slewtime)
         target.slewdist = estimate.slewdist
         if estimate.slewpath is not None:
             target.slewpath = estimate.slewpath

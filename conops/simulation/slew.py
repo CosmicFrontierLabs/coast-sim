@@ -16,6 +16,7 @@ from ..common.vector import (
     quaternion_slew_path,
 )
 from ..config import AttitudeControlSystem, Constraint, MissionConfig
+from ..config.acs import scheduled_slew_time
 from ..config.constants import DTOR
 
 if TYPE_CHECKING:
@@ -291,9 +292,11 @@ class Slew(BaseModel):
                     self.acs_config.motion_time(segment.distance_deg, segment.axis_body)
                     for segment in self._slew_segments
                 )
-                self.slewtime = round(motion_time + self.acs_config.settle_time)
+                self.slewtime = scheduled_slew_time(
+                    motion_time + self.acs_config.settle_time
+                )
         else:
-            self.slewtime = round(
+            self.slewtime = scheduled_slew_time(
                 self.acs_config.slew_time(distance, self._rotation_axis_body)
             )
 
