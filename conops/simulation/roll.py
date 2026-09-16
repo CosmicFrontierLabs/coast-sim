@@ -14,6 +14,9 @@ from ..config.constraint import (
     mounted_science_attitude_constraint_names,
 )
 
+_POWER_SCORE_RTOL = 1e-12
+_POWER_SCORE_ATOL_W = 1e-12
+
 
 def _panel_power_inputs(
     solar_panel: SolarPanelSet | None,
@@ -73,6 +76,34 @@ def _panel_power_by_roll(
     return result
 
 
+def _power_score_order(
+    scores: npt.NDArray[np.float64],
+    tie_distance: npt.NDArray[np.float64],
+    degrees: npt.NDArray[np.float64],
+) -> npt.NDArray[np.int64]:
+    """Order finite candidates by power, treating numerical noise as a tie."""
+    finite = np.flatnonzero(np.isfinite(scores))
+    ranked = finite[np.argsort(-scores[finite], kind="stable")]
+    ordered: list[int] = []
+    start = 0
+    while start < ranked.size:
+        stop = start + 1
+        while stop < ranked.size and np.isclose(
+            scores[ranked[stop]],
+            scores[ranked[start]],
+            rtol=_POWER_SCORE_RTOL,
+            atol=_POWER_SCORE_ATOL_W,
+        ):
+            stop += 1
+        tied_candidates = ranked[start:stop]
+        tie_order = np.lexsort(
+            (degrees[tied_candidates], tie_distance[tied_candidates])
+        )
+        ordered.extend(int(candidate) for candidate in tied_candidates[tie_order])
+        start = stop
+    return np.asarray(ordered, dtype=np.int64)
+
+
 def _mounted_optimum_roll(
     ra: float,
     dec: float,
@@ -113,10 +144,8 @@ def _mounted_optimum_roll(
         if reference_roll is not None
         else degrees
     )
-    candidate_order = np.lexsort((degrees, tie_distance, -scores))
+    candidate_order = _power_score_order(scores, tie_distance, degrees)
     for candidate in candidate_order:
-        if not np.isfinite(scores[candidate]):
-            break
         attitude = telescope.target_body_attitude(ra, dec, float(candidate))
         violations = (
             mounted_science_attitude_constraint_names(
@@ -135,8 +164,11 @@ def _mounted_optimum_roll(
 
     # Match the legacy fail-open return contract; the caller's locked-attitude
     # validation rejects the target when every candidate is constrained.
-    best = int(np.argmax(scores))
-    return float(best) if np.isfinite(scores[best]) else float(reference_roll or 0.0)
+    return (
+        float(candidate_order[0])
+        if candidate_order.size
+        else float(reference_roll or 0.0)
+    )
 
 
 def _roll_valid_mask(

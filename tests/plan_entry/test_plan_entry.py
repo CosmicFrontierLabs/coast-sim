@@ -1,8 +1,10 @@
+import json
+
 import numpy as np
 import pytest
 from pydantic import ValidationError
 
-from conops import AttitudeControlSystem, Payload, PlanEntry
+from conops import AttitudeControlSystem, Payload, Plan, PlanEntry
 from conops.common.enums import ObsType
 from conops.common.vector import (
     attitude_to_quat,
@@ -347,6 +349,42 @@ class TestInstrumentMounting:
 
         with pytest.raises(ValueError, match="does not identify"):
             entry.science_telescope()
+
+    def test_mounted_attitude_survives_unbound_plan_roundtrip(
+        self, mock_config, tmp_path
+    ) -> None:
+        telescope = Telescope(
+            name="Science Telescope",
+            boresight=(0.0, 1.0, 0.0),
+        )
+        mock_config.payload = Payload(instruments=[telescope])
+        entry = PlanEntry(
+            config=mock_config,
+            instrument_name=telescope.name,
+            ra=10.0,
+            dec=20.0,
+            roll=30.0,
+        )
+        original_path = tmp_path / "original.json"
+        reexported_path = tmp_path / "reexported.json"
+
+        Plan(entries=[entry]).save(original_path)
+        loaded = Plan.load(original_path)
+        loaded.save(reexported_path)
+
+        original_attitude = json.loads(original_path.read_text())["entries"][0][
+            "target_attitude"
+        ]
+        reexported_attitude = json.loads(reexported_path.read_text())["entries"][0][
+            "target_attitude"
+        ]
+        assert loaded.entries[0].config is None
+        assert loaded.entries[0].target_body_attitude() == pytest.approx(
+            entry.target_body_attitude(), abs=1e-10
+        )
+        assert reexported_attitude == original_attitude
+        assert reexported_attitude["pointing"]["boresight_axis"] == "+Y"
+        assert reexported_attitude["pointing"]["boresight_body"] == [0.0, 1.0, 0.0]
 
 
 class TestVisible:

@@ -151,11 +151,14 @@ class TestOptimumRoll:
         assert roll == 270.0
         assert sun_body == pytest.approx((1.0, 0.0, 0.0), abs=1e-10)
 
-    def test_mounted_roll_uses_zero_for_equal_power_without_reference(
+    def test_mounted_roll_uses_zero_for_illuminated_equal_power_without_reference(
         self, mock_ephem, mock_solar_panel_single
     ) -> None:
         telescope = Telescope(boresight=(0.0, 1.0, 0.0))
         mock_solar_panel_single.panels[0].normal = (0.0, -1.0, 0.0)
+        mock_solar_panel_single.panels[0].max_power = 6000.0
+        mock_solar_panel_single.panels[0].conversion_efficiency = 1.0
+        mock_ephem.sun_pv.position = [np.array([-1000.0, 500.0, 800.0])]
 
         roll = optimum_roll(
             0.0,

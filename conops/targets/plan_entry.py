@@ -21,7 +21,11 @@ from pydantic import (
 
 from ..common import givename, unixtime2date
 from ..common.enums import ACSMode, ObsType
-from ..common.vector import attitude_to_quat, quaternion_attitude_delta
+from ..common.vector import (
+    attitude_to_quat,
+    quat_to_attitude,
+    quaternion_attitude_delta,
+)
 from ..config import AttitudeControlSystem, Constraint, MissionConfig, Telescope
 from ..config.constraint import (
     attitude_constraint_names_for_scopes,
@@ -146,28 +150,35 @@ class PlanEntry(BaseModel):
     ss_max: float = 1e6
     _exptime: int | None = PrivateAttr(default=None)
     _exporig: int | None = PrivateAttr(default=None)
+    _serialized_target_attitude: TargetAttitudeSchema | None = PrivateAttr(default=None)
 
     @model_validator(mode="wrap")
     @classmethod
-    def _set_exptime_exporig_from_input(
+    def _restore_computed_fields_from_input(
         cls, data: object, handler: ModelWrapValidatorHandler[PlanEntry]
     ) -> PlanEntry:
-        """Set _exptime/_exporig private attrs from raw input dict keys.
+        """Restore serialized computed fields into their private backing state.
 
-        exptime/exporig are @computed_field properties backed by private
-        attrs, not real pydantic fields, so they serialize out via
-        model_dump() but are otherwise silently dropped as unrecognized
-        input during model_validate()/JSON load. This reads them from the
-        raw input before that happens and assigns them directly to the
-        private attrs on the constructed instance.
+        Computed fields serialize out via ``model_dump()`` but are otherwise
+        dropped as unrecognized input during validation. Preserve the fields
+        that must survive a load followed by another export.
         """
         exptime = data.get("exptime") if isinstance(data, dict) else None
         exporig = data.get("exporig") if isinstance(data, dict) else None
+        target_attitude = (
+            data.get("target_attitude") if isinstance(data, dict) else None
+        )
         instance = handler(data)
         if exptime is not None:
             instance._exptime = exptime
         if exporig is not None:
             instance._exporig = exporig
+        if target_attitude is not None:
+            instance._serialized_target_attitude = (
+                target_attitude
+                if isinstance(target_attitude, TargetAttitudeSchema)
+                else TargetAttitudeSchema.model_validate(target_attitude)
+            )
         return instance
 
     @model_validator(mode="after")
@@ -275,6 +286,12 @@ class PlanEntry(BaseModel):
             roll_source = "defaulted_from_unconstrained_sentinel"
 
         telescope = self.science_telescope()
+        if (
+            telescope is None
+            and self.config is None
+            and self._serialized_target_attitude is not None
+        ):
+            return self._serialized_target_attitude
         if self.spacecraft_attitude is not None:
             body_attitude = self.spacecraft_attitude
         elif telescope is not None:
@@ -345,6 +362,13 @@ class PlanEntry(BaseModel):
             roll = 0.0
         telescope = self.science_telescope()
         if telescope is None:
+            if self.config is None and self._serialized_target_attitude is not None:
+                return quat_to_attitude(
+                    np.asarray(
+                        self._serialized_target_attitude.rotation.values,
+                        dtype=np.float64,
+                    )
+                )
             return self.ra, self.dec, float(roll)
         return telescope.target_body_attitude(self.ra, self.dec, float(roll))
 
