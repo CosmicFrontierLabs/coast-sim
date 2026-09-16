@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from conops import AttitudeControlSystem, PowerDraw, SpacecraftBus
+from conops.config.acs import scheduled_slew_time
 
 
 class TestPowerDraw:
@@ -169,6 +170,15 @@ class TestAttitudeControlSystem:
         """Test motion_time returns 0 for zero max_slew_rate."""
         acs = AttitudeControlSystem(max_slew_rate=0)
         assert acs.motion_time(10) == 0.0
+
+    @pytest.mark.parametrize(
+        ("physical_duration", "scheduled_duration"),
+        [(0.0, 0), (0.01, 1), (1.0, 1), (1.01, 2)],
+    )
+    def test_scheduled_slew_time_never_ends_motion_early(
+        self, physical_duration, scheduled_duration
+    ):
+        assert scheduled_slew_time(physical_duration) == scheduled_duration
 
     def test_motion_time_triangular_profile(self):
         """Test motion_time for small angle (triangular velocity profile)."""

@@ -409,7 +409,7 @@ class TestCollectionTimeWeight:
         for target in queue_instance.targets[2:]:
             target.visible.return_value = False
 
-        estimator = Mock(return_value=TargetSlewEstimate(slewtime=10.0, slewdist=1.0))
+        estimator = Mock(return_value=TargetSlewEstimate(slewtime=10.1, slewdist=1.0))
 
         with patch.object(queue_instance, "meritsort"):
             target = queue_instance.get(
@@ -420,6 +420,7 @@ class TestCollectionTimeWeight:
             )
 
         assert target == feasible_target
+        assert feasible_target.slewtime == 11
         estimator.assert_called_once_with(feasible_target)
         impossible_target.calc_slewtime.assert_not_called()
 

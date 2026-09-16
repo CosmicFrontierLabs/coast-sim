@@ -4,6 +4,7 @@ from unittest.mock import Mock
 import rust_ephem
 
 from conops import AttitudeControlSystem, Constraint, MissionConfig, Slew, SpacecraftBus
+from conops.config.acs import scheduled_slew_time
 
 
 class DummyConstraint(Constraint):
@@ -33,7 +34,7 @@ def test_slew_uses_acs_config() -> None:
     s.enddec = 0
     expected = acs.slew_time(90.0)
     calc = s.calc_slewtime()
-    assert calc == round(expected)
+    assert calc == scheduled_slew_time(expected)
 
 
 def test_slew_path_and_secs_lengths() -> None:

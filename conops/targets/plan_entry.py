@@ -27,6 +27,7 @@ from ..common.vector import (
     quaternion_attitude_delta,
 )
 from ..config import AttitudeControlSystem, Constraint, MissionConfig, Telescope
+from ..config.acs import scheduled_slew_time
 from ..config.constraint import (
     attitude_constraint_names_for_scopes,
     mounted_science_attitude_constraint_names,
@@ -549,11 +550,11 @@ class PlanEntry(BaseModel):
                 enddec,
                 endroll,
             )
-            slewtime = round(
+            slewtime = scheduled_slew_time(
                 self.acs_config.slew_time(self.slewdist, rotation_axis_body)
             )
         else:
-            slewtime = round(self.acs_config.slew_time(self.slewdist))
+            slewtime = scheduled_slew_time(self.acs_config.slew_time(self.slewdist))
 
         return slewtime
 

@@ -4280,6 +4280,25 @@ class TestGetConstraintName:
 class TestCheckAndManagePasses:
     """Tests for _check_and_manage_passes helper method."""
 
+    def test_slew_constraint_sampling_uses_complete_attitude(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        sample_time = 1060.0
+        queue_ditl.ephem.timestamp = [datetime.fromtimestamp(sample_time, timezone.utc)]
+        queue_ditl._ephem_utime_cache = None
+        slew = Mock(spec=Slew)
+        slew.slewstart = 1000.0
+        slew.slewend = 1120.0
+        slew.slewtime = 120.0
+        slew.attitude = Mock(return_value=(10.0, 20.0, 30.0))
+        queue_ditl._attitude_constraint_name_for_attitude = Mock(return_value=None)
+
+        assert (
+            queue_ditl._slew_attitude_constraint_violation(slew, ACSMode.SLEWING)
+            is None
+        )
+        slew.attitude.assert_called_once_with(sample_time)
+
     def test_check_and_manage_passes_end_pass_calls_check_pass_timing(
         self, queue_ditl
     ) -> None:
