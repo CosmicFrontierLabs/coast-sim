@@ -2266,8 +2266,7 @@ class QueueDITL(DITLMixin, DITLStats):
             if sample_utime >= slew.slewend:
                 break
 
-            sample_ra, sample_dec = slew.ra_dec(sample_utime)
-            sample_roll = slew.slew_roll(sample_utime)
+            sample_ra, sample_dec, sample_roll = slew.attitude(sample_utime)
             violation = self._attitude_constraint_name_for_attitude(
                 float(sample_ra),
                 float(sample_dec),

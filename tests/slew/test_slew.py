@@ -329,6 +329,49 @@ class TestPredictSlew:
             attitude
         )
 
+    def test_rounded_zero_duration_reaches_nonzero_endpoint(self):
+        acs = AttitudeControlSystem(
+            slew_acceleration=1000.0,
+            max_slew_rate=1000.0,
+            settle_time=0.0,
+        )
+        slew = Slew(
+            acs_config=acs,
+            slewstart=1700000000.0,
+            startra=0.0,
+            startdec=0.0,
+            startroll=0.0,
+            endra=0.01,
+            enddec=0.0,
+            endroll=0.0,
+        )
+
+        assert slew.calc_slewtime() == 0.0
+        assert slew.slewdist > 0.0
+        assert slew.attitude(slew.slewstart + 1.0) == pytest.approx(
+            (slew.endra, slew.enddec, slew.endroll)
+        )
+
+    def test_executed_attitude_does_not_depend_on_sampled_path(self):
+        acs = AttitudeControlSystem(settle_time=0.0)
+        slew = Slew(
+            acs_config=acs,
+            slewstart=1700000000.0,
+            startra=350.0,
+            startdec=-20.0,
+            startroll=15.0,
+            endra=40.0,
+            enddec=60.0,
+            endroll=275.0,
+        )
+        slew.calc_slewtime()
+        sample_time = slew.slewstart + slew.slewtime / 2.0
+        expected = slew.attitude(sample_time)
+
+        slew.slewpath = ([], [])
+
+        assert slew.attitude(sample_time) == pytest.approx(expected)
+
 
 class TestPureRollManeuver:
     """Test quaternion slew algorithm with pure roll maneuvers.

@@ -145,12 +145,7 @@ class Slew(BaseModel):
         """Return the complete executed attitude from one trajectory evaluation."""
         if self._slew_segments:
             t = utime - self.slewstart
-            if (
-                t <= 0
-                or self.slewtime <= 0
-                or len(self.slewpath[0]) == 0
-                or self.slewdist <= 0
-            ):
+            if t <= 0 or self.slewdist <= 0:
                 return self.startra, self.startdec, self.startroll
             return self._quaternion_attitude(self._slew_fraction(t))
 
