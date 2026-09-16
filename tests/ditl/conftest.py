@@ -21,6 +21,7 @@ from conops.config import (
     MissionConfig,
     OnboardRecorder,
     Payload,
+    SolarArrayDriveState,
     SolarPanelSet,
     SpacecraftBus,
 )
@@ -269,6 +270,11 @@ def mock_config_detailed():
     config.spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))
     config.spacecraft_bus.attitude_control.slew_time = Mock(return_value=100.0)
     config.spacecraft_bus.attitude_control.max_slew_rate = 10.0
+    config.spacecraft_bus.attitude_control.effective_max_slew_rate = Mock(
+        side_effect=lambda _axis=None: float(
+            config.spacecraft_bus.attitude_control.max_slew_rate
+        )
+    )
     config.spacecraft_bus.star_trackers = Mock()
     config.spacecraft_bus.star_trackers.num_trackers = Mock(return_value=0)
     config.spacecraft_bus.radiators = Mock()
@@ -295,6 +301,11 @@ def mock_config_detailed():
     config.solar_panel.power = Mock(return_value=100.0)
     config.solar_panel.panel_illumination_fraction = Mock(return_value=0.5)
     config.solar_panel.illumination_and_power = Mock(return_value=(0.5, 100.0))
+    drive_state = SolarArrayDriveState(angles_deg=())
+    config.solar_panel.initial_drive_state = Mock(return_value=drive_state)
+    config.solar_panel.evaluate_executed_attitude = Mock(
+        return_value=(0.5, 100.0, drive_state)
+    )
     config.solar_panel.optimal_charging_pointing = Mock(return_value=(45.0, 23.5))
     config.solar_panel.panels = []  # empty → optimum_roll uses analytic path
 
@@ -353,14 +364,24 @@ def ditl(mock_config_detailed, mock_ephem) -> DITL:
         mock_acs.radiator_sun_exposure = 0.0
         mock_acs.radiator_earth_exposure = 0.0
         mock_acs.radiator_heat_dissipation_w = 0.0
+        mock_acs.solar_array_drive_state = SolarArrayDriveState(angles_deg=())
         mock_acs_class.return_value = mock_acs
 
         ditl = DITL(config=mock_config_detailed)
         ditl.ephem = mock_ephem
         ditl.acs = mock_acs
         ditl.plan = Mock()
+        # begin/end span the whole simulation so the DITL loop treats this as
+        # the current plan entry for every timestep.
         ditl.plan.which_ppt = Mock(
-            return_value=Mock(ra=0.0, dec=0.0, obsid=1, obstype="science")
+            return_value=Mock(
+                ra=0.0,
+                dec=0.0,
+                obsid=1,
+                obstype="science",
+                begin=0.0,
+                end=float("inf"),
+            )
         )
 
         return ditl

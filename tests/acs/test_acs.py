@@ -199,20 +199,20 @@ class TestACSStateManagement:
         acs.roll = 90.0
         assert acs.roll == 90.0
 
-    def test_continuous_roll_threads_executed_drive_interval_and_eclipse(
-        self, acs
-    ) -> None:
+    def test_continuous_roll_scores_the_current_drive_state(self, acs) -> None:
         acs.in_eclipse = True
         acs.roll = 10.0
         acs._last_roll_optimization_mode = ACSMode.CHARGING
         acs._last_roll_optimization_utime = 970.0
 
-        with patch("conops.simulation.acs.optimum_roll", return_value=20.0) as roll:
+        with patch(
+            "conops.simulation.acs.optimum_body_roll", return_value=20.0
+        ) as roll:
             result = acs._continuous_optimum_roll(1000.0, ACSMode.CHARGING)
 
         assert result == 20.0
-        assert roll.call_args.kwargs["in_eclipse"] is True
-        assert roll.call_args.kwargs["drive_preview_seconds"] == pytest.approx(30.0)
+        assert roll.call_args.kwargs["drive_state"] is acs.solar_array_drive_state
+        assert "drive_preview_seconds" not in roll.call_args.kwargs
 
     def test_slew_dists_tracking(self, acs) -> None:
         """Test that slew_dists list is tracked."""
@@ -256,7 +256,7 @@ class TestACSStateManagement:
         )
 
         monkeypatch.setattr(
-            "conops.simulation.acs.optimum_roll", lambda *args, **kwargs: 5.0
+            "conops.simulation.acs.optimum_body_roll", lambda *args, **kwargs: 5.0
         )
         acs.constraint.in_star_tracker_hard = Mock(side_effect=[True, False])
 
@@ -289,7 +289,7 @@ class TestACSStateManagement:
         )
 
         monkeypatch.setattr(
-            "conops.simulation.acs.optimum_roll", lambda *args, **kwargs: 5.0
+            "conops.simulation.acs.optimum_body_roll", lambda *args, **kwargs: 5.0
         )
         acs.constraint.in_constraint = Mock(return_value=True)
         acs.constraint.in_star_tracker_hard = Mock(side_effect=[True, False])
@@ -308,7 +308,7 @@ class TestACSStateManagement:
         )
         acs.config.fault_management = Mock(events=[])
         monkeypatch.setattr(
-            "conops.simulation.acs.optimum_roll", lambda *args, **kwargs: 5.0
+            "conops.simulation.acs.optimum_body_roll", lambda *args, **kwargs: 5.0
         )
         acs.constraint.in_star_tracker_hard = Mock(return_value=True)
 

@@ -6,10 +6,30 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..common import ACSMode
 
+
+class SolarArrayDriveAngle(BaseModel):
+    """Executed finite-drive angle identified independently of list ordering."""
+
+    model_config = ConfigDict(frozen=True)
+
+    panel_index: int = Field(ge=0, description="Index in the configured panel list")
+    panel_name: str = Field(description="Configured panel name")
+    angle_deg: float = Field(description="Executed physical drive angle in degrees")
+
+
 # Union of every possible Housekeeping field's value type, for dynamic
 # by-name field extraction (extract_field/extract_fields below).
 HousekeepingFieldValue = (
-    datetime | float | int | bool | str | ACSMode | list[bool] | list[float] | None
+    datetime
+    | float
+    | int
+    | bool
+    | str
+    | ACSMode
+    | list[bool]
+    | list[float]
+    | list[SolarArrayDriveAngle]
+    | None
 )
 
 
@@ -64,13 +84,21 @@ class Housekeeping(BaseModel):
     panel_illumination: float | None = Field(
         default=None, description="Solar panel illumination fraction (0-1)"
     )
-    solar_array_drive_angles_deg: list[float] | None = Field(
+    solar_array_drive_angles: list[SolarArrayDriveAngle] | None = Field(
         default=None,
         description=(
-            "Current finite single-axis solar-array drive angles in configured "
-            "driven-panel order"
+            "Executed finite single-axis solar-array drive angles with stable "
+            "configured panel identity"
         ),
     )
+
+    @property
+    def solar_array_drive_angles_deg(self) -> list[float] | None:
+        """Compatibility view of drive angles in configured driven-panel order."""
+        if self.solar_array_drive_angles is None:
+            return None
+        return [entry.angle_deg for entry in self.solar_array_drive_angles]
+
     power_usage: float | None = Field(
         default=None, description="Total power usage in W"
     )

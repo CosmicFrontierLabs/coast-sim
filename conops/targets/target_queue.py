@@ -20,6 +20,8 @@ class TargetSlewEstimate(BaseModel):
     slewtime: float
     slewdist: float
     slewpath: tuple[list[float], list[float]] | None = None
+    instrument_roll: float | None = None
+    spacecraft_attitude: tuple[float, float, float] | None = None
 
 
 class TargetQueue:
@@ -80,6 +82,7 @@ class TargetQueue:
         exptime: int = 1000,
         ss_min: int = 300,
         ss_max: int = 86400,
+        instrument_name: str | None = None,
     ) -> None:
         """Add a pointing target to the queue.
 
@@ -96,6 +99,8 @@ class TargetQueue:
             ss_max: Maximum snapshot size in seconds
         """
 
+        assert self.config is not None
+        telescope = self.config.payload.telescope_for_target(instrument_name)
         pointing = Pointing(
             config=self.config,
             ra=ra,
@@ -106,6 +111,7 @@ class TargetQueue:
             merit=merit,
             ss_min=ss_min,
             ss_max=ss_max,
+            instrument_name=telescope.name if telescope is not None else None,
         )
         pointing.exptime = exptime
         pointing.visibility()
@@ -253,15 +259,25 @@ class TargetQueue:
         target: Pointing,
         ra: float,
         dec: float,
+        roll: float | None,
         slew_estimator: Callable[[Pointing], TargetSlewEstimate] | None,
     ) -> None:
         if slew_estimator is None:
-            target.slewtime = target.calc_slewtime(ra, dec)
+            assert self.acs_config is not None
+            if self.acs_config.direction_dependent_slew:
+                target.slewtime = target.calc_slewtime(ra, dec, roll)
+            else:
+                target.slewtime = target.calc_slewtime(ra, dec)
+            if issubclass(type(target), Pointing) and target.uses_mounted_attitude():
+                target.spacecraft_attitude = target.target_body_attitude()
             return
 
         estimate = slew_estimator(target)
         target.slewtime = round(estimate.slewtime)
         target.slewdist = estimate.slewdist
+        if estimate.instrument_roll is not None:
+            target.roll = estimate.instrument_roll
+        target.spacecraft_attitude = estimate.spacecraft_attitude
         if estimate.slewpath is not None:
             target.slewpath = estimate.slewpath
 
@@ -272,6 +288,7 @@ class TargetQueue:
         utime: float,
         collection_deadline: Callable[[Pointing, float], float | None] | None = None,
         slew_estimator: Callable[[Pointing], TargetSlewEstimate] | None = None,
+        roll: float | None = None,
     ) -> Pointing | None:
         """Get the next best target to observe from the queue.
 
@@ -286,6 +303,8 @@ class TargetQueue:
                 science may be collected for a candidate target after its slew.
             slew_estimator: Optional callback returning attitude-aware slew
                 cost for a candidate target.
+            roll: Current roll in degrees. Required when body-axis slew limits
+                are configured and no attitude-aware slew estimator is supplied.
 
         Returns:
             Next target to observe, or None if no suitable target found.
@@ -353,7 +372,10 @@ class TargetQueue:
                 target,
                 ra,
                 dec,
-                slew_estimator if score_candidates else None,
+                roll,
+                slew_estimator
+                if score_candidates or target.uses_mounted_attitude() is True
+                else None,
             )
 
             # Calculate observation window
@@ -405,12 +427,19 @@ class TargetQueue:
                     assert self.config is not None
                     radiators = self.config.spacecraft_bus.radiators
                     if radiators.num_radiators() > 0 and self.ephem is not None:
+                        target_is_pointing = issubclass(type(target), Pointing)
+                        spacecraft_attitude = (
+                            target.spacecraft_attitude
+                            if target_is_pointing
+                            and target.spacecraft_attitude is not None
+                            else (target.ra, target.dec, getattr(target, "roll", 0.0))
+                        )
                         metrics = radiators.exposure_metrics(
-                            ra_deg=target.ra,
-                            dec_deg=target.dec,
+                            ra_deg=spacecraft_attitude[0],
+                            dec_deg=spacecraft_attitude[1],
                             utime=utime,
                             ephem=self.ephem,
-                            roll_deg=getattr(target, "roll", 0.0),
+                            roll_deg=spacecraft_attitude[2],
                         )
                         sun_exposure = cast(float, metrics.get("sun_exposure", 0.0))
                         earth_exposure = cast(float, metrics.get("earth_exposure", 0.0))

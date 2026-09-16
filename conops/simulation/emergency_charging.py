@@ -12,12 +12,12 @@ from conops.config.battery import Battery
 from ..common import unixtime2date
 from ..common.enums import ACSMode, DITLEventType, ObsType
 from ..common.vector import angular_separation, sort_by_angular_separation
-from ..config import AttitudeConstraintScope, MissionConfig
+from ..config import AttitudeConstraintScope, MissionConfig, SolarArrayDriveState
 from ..config.constraint import (
     in_attitude_constraint_scopes,
     in_attitude_constraint_scopes_batch,
 )
-from .roll import optimum_roll
+from .roll import optimum_body_roll
 
 if TYPE_CHECKING:
     from ..ditl.ditl_log import DITLLog
@@ -137,6 +137,8 @@ class EmergencyCharging:
         ephem: rust_ephem.Ephemeris,
         lastra: float = 0.0,
         lastdec: float = 0.0,
+        *,
+        drive_state: SolarArrayDriveState | None = None,
     ) -> Pointing | None:
         """
         Create an emergency charging pointing to recover battery charge.
@@ -174,7 +176,13 @@ class EmergencyCharging:
             )
         else:
             charging_ra, charging_dec = self._find_valid_pointing(
-                optimal_ra, optimal_dec, utime, ephem, lastra, lastdec
+                optimal_ra,
+                optimal_dec,
+                utime,
+                ephem,
+                lastra,
+                lastdec,
+                drive_state=drive_state,
             )
 
         if charging_ra is None or charging_dec is None:
@@ -182,13 +190,14 @@ class EmergencyCharging:
             return None
 
         # Calculate optimal roll angle for solar panel pointing
-        roll_angle = optimum_roll(
+        roll_angle = optimum_body_roll(
             charging_ra,
             charging_dec,
             utime,
             ephem,
             self.solar_panel,
             self.constraint,
+            drive_state=drive_state,
         )
 
         # Create the charging PPT
@@ -212,6 +221,8 @@ class EmergencyCharging:
         lastra: float,
         lastdec: float,
         current_ppt: Pointing | None,
+        *,
+        drive_state: SolarArrayDriveState | None = None,
     ) -> Pointing | None:
         """Terminate current science PPT (if any) and create a charging PPT.
 
@@ -221,7 +232,9 @@ class EmergencyCharging:
 
         Returns the created charging Pointing or None if not possible.
         """
-        charging_ppt = self.create_charging_pointing(utime, ephem, lastra, lastdec)
+        charging_ppt = self.create_charging_pointing(
+            utime, ephem, lastra, lastdec, drive_state=drive_state
+        )
         if charging_ppt is None:
             return None
 
@@ -259,6 +272,8 @@ class EmergencyCharging:
         ephem: rust_ephem.Ephemeris,
         current_ra: float = 0.0,
         current_dec: float = 0.0,
+        *,
+        drive_state: SolarArrayDriveState | None = None,
     ) -> tuple[float | None, float | None]:
         """
         Find a valid pointing that doesn't violate constraints.
@@ -280,13 +295,14 @@ class EmergencyCharging:
             Tuple of (ra, dec) if valid pointing found, or (None, None) if not
         """
         # Validate optimal pointing
-        optimal_roll = optimum_roll(
+        optimal_roll = optimum_body_roll(
             optimal_ra,
             optimal_dec,
             utime,
             ephem,
             self.solar_panel,
             self.constraint,
+            drive_state=drive_state,
         )
         if not self._charging_attitude_violates_scopes(
             optimal_ra, optimal_dec, utime, roll=optimal_roll
@@ -365,23 +381,34 @@ class EmergencyCharging:
                     continue  # Skip pointings beyond slew limit
 
             # Calculate optimal roll angle for this pointing
-            optimal_roll = optimum_roll(
+            optimal_roll = optimum_body_roll(
                 alt_ra,
                 alt_dec,
                 utime,
                 ephem,
                 self.solar_panel,
                 self.constraint,
+                drive_state=drive_state,
             )
 
             # Calculate solar panel illumination for this pointing with optimal roll
-            illumination = self.solar_panel.panel_illumination_fraction(
-                time=utime,
-                ra=alt_ra,
-                dec=alt_dec,
-                ephem=ephem,
-                roll=optimal_roll,
-                acs_mode=ACSMode.CHARGING,
+            illumination = (
+                self.solar_panel.panel_illumination_fraction(
+                    time=utime,
+                    ra=alt_ra,
+                    dec=alt_dec,
+                    ephem=ephem,
+                    roll=optimal_roll,
+                )
+                if drive_state is None
+                else self.solar_panel.panel_illumination_fraction(
+                    time=utime,
+                    ra=alt_ra,
+                    dec=alt_dec,
+                    ephem=ephem,
+                    roll=optimal_roll,
+                    drive_state=drive_state,
+                )
             )
 
             # Ensure we have a float (should be scalar for single time)

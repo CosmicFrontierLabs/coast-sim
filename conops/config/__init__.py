@@ -18,7 +18,14 @@ from .fault_management import (
 )
 from .geometry import PanelGeometry, compute_shadow_fraction
 from .groundstation import GroundStation, GroundStationRegistry
-from .instrument import Instrument, Payload, Telescope, TelescopeConfig, TelescopeType
+from .instrument import (
+    Instrument,
+    InstrumentMounting,
+    Payload,
+    Telescope,
+    TelescopeConfig,
+    TelescopeType,
+)
 from .observation_categories import ObservationCategories, ObservationCategory
 from .power import PowerDraw
 from .radiator import (
@@ -31,6 +38,7 @@ from .recorder import OnboardRecorder
 from .solar_panel import (
     SingleAxisSolarArrayDrive,
     SolarArrayDriveControl,
+    SolarArrayDriveState,
     SolarPanel,
     SolarPanelSet,
     create_solar_panel_vector,
@@ -67,6 +75,7 @@ __all__ = [
     "GroundStationRegistry",
     "Heater",
     "Instrument",
+    "InstrumentMounting",
     "Telescope",
     "TelescopeConfig",
     "TelescopeType",
@@ -84,6 +93,7 @@ __all__ = [
     "SolarPanel",
     "SolarPanelSet",
     "SolarArrayDriveControl",
+    "SolarArrayDriveState",
     "SingleAxisSolarArrayDrive",
     "SpacecraftBus",
     "StarTracker",

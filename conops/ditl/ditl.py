@@ -5,15 +5,22 @@ import rust_ephem
 
 from conops.targets.plan import Plan
 
-from ..common import angular_separation, dtutcfromtimestamp, radec2vec, scbodyvector
+from ..common import (
+    ACSMode,
+    angular_separation,
+    dtutcfromtimestamp,
+    radec2vec,
+    scbodyvector,
+)
 from ..common.vector import attitude_to_quat
-from ..config import MissionConfig
+from ..config import AttitudeConstraintScope, MissionConfig
 from ..config.constraint import (
     all_attitude_constraint_name,
     attitude_constraint_name_for_scopes,
     attitude_constraint_scope_label,
 )
-from ..simulation.roll import optimum_roll
+from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
+from ..targets import PlanEntry
 from .ditl_log import DITLLog
 from .ditl_mixin import DITLMixin
 from .ditl_stats import DITLStats
@@ -154,7 +161,12 @@ class DITL(DITLMixin, DITLStats):
         if self.plan is None:
             raise ValueError("ERROR: No plan loaded")
 
-        self.solar_panel.reset_drive_state()
+        self.acs.solar_array_drive_state = self.solar_panel.initial_drive_state()
+        # Plans intentionally exclude runtime objects from their serialized form.
+        # Rebind here as well as during construction so assigning Plan.load(...)
+        # after DITL initialization remains safe.
+        if isinstance(self.plan, Plan):
+            self.plan.bind_runtime(self.config, self.ephem)
 
         # Set up ACS ephemeris if not already set
         if self.acs.ephem is None:
@@ -193,18 +205,69 @@ class DITL(DITLMixin, DITLStats):
         # Set up initial target in ACS
         self.ppt = self.plan.which_ppt(self.utime[0])
         if self.ppt is not None:
-            self.acs._enqueue_slew(
-                self.ppt.ra,
-                self.ppt.dec,
-                self.ppt.obsid,
-                self.utime[0],
-                obstype=self.ppt.obstype,
-            )
+            if issubclass(type(self.ppt), PlanEntry):
+                instrument_roll = self.ppt.roll
+                mounted = self.ppt.uses_mounted_attitude()
+                if instrument_roll == -1.0:
+                    telescope = self.ppt.science_telescope()
+                    instrument_roll = (
+                        optimum_instrument_roll(
+                            self.ppt.ra,
+                            self.ppt.dec,
+                            self.utime[0],
+                            self.ephem,
+                            telescope,
+                            self.solar_panel,
+                            self.constraint,
+                            drive_state=self.acs.solar_array_drive_state,
+                        )
+                        if telescope is not None
+                        else optimum_body_roll(
+                            self.ppt.ra,
+                            self.ppt.dec,
+                            self.utime[0],
+                            self.ephem,
+                            self.solar_panel,
+                            self.constraint,
+                            drive_state=self.acs.solar_array_drive_state,
+                        )
+                    )
+                    self.ppt.roll = instrument_roll
+                body_ra, body_dec, body_roll = self.ppt.target_body_attitude(
+                    instrument_roll
+                )
+                self.ppt.spacecraft_attitude = (
+                    (body_ra, body_dec, body_roll) if mounted else None
+                )
+                self.acs._enqueue_slew(
+                    body_ra,
+                    body_dec,
+                    self.ppt.obsid,
+                    self.utime[0],
+                    obstype=self.ppt.obstype,
+                    roll=body_roll,
+                    target_request=self.ppt,
+                    instrument_roll=instrument_roll,
+                )
+            else:
+                self.acs._enqueue_slew(
+                    self.ppt.ra,
+                    self.ppt.dec,
+                    self.ppt.obsid,
+                    self.utime[0],
+                    obstype=self.ppt.obstype,
+                )
 
         ##
         ## DITL LOOP
         ##
         for i in range(simlen):
+            # Advance the current plan entry. Plan entries are not guaranteed to
+            # be time-ordered, so only fall back to a full lookup when the
+            # cached entry no longer covers this timestep.
+            if self.ppt is None or not (self.ppt.begin <= self.utime[i] < self.ppt.end):
+                self.ppt = self.plan.which_ppt(self.utime[i])
+
             # Obtain the current pointing information
             ra, dec, roll, obsid = self.acs.pointing(self.utime[i])
 
@@ -217,15 +280,18 @@ class DITL(DITLMixin, DITLStats):
             power_usage = bus_power + payload_power
 
             # Calculate solar panel illumination and power (more efficient than separate calls)
-            panel_illumination, panel_power = self.solar_panel.illumination_and_power(
-                time=self.utime[i],
-                ra=ra,
-                dec=dec,
-                ephem=self.ephem,
-                roll=roll,
-                acs_mode=mode,
-                advance_drive_state=True,
+            panel_illumination, panel_power, drive_state = (
+                self.solar_panel.evaluate_executed_attitude(
+                    time=self.utime[i],
+                    ra=ra,
+                    dec=dec,
+                    ephem=self.ephem,
+                    drive_state=self.acs.solar_array_drive_state,
+                    roll=roll,
+                    acs_mode=mode,
+                )
             )
+            self.acs.solar_array_drive_state = drive_state
             assert isinstance(panel_illumination, float)
             assert isinstance(panel_power, float)
 
@@ -248,15 +314,52 @@ class DITL(DITLMixin, DITLStats):
             self.obsid[i] = obsid
 
             # Create housekeeping telemetry record for fault checking
-            # Score the already-executed drive angle without advancing its clock.
-            nominal_roll = optimum_roll(
-                ra,
-                dec,
-                self.utime[i],
-                self.ephem,
-                self.solar_panel,
+            science_target = (
+                self.ppt
+                if self.ppt is not None
+                and issubclass(type(self.ppt), PlanEntry)
+                and mode == ACSMode.SCIENCE
+                else None
             )
-            roll_offset_deg = (roll - nominal_roll + 180.0) % 360.0 - 180.0
+            mounted_target = (
+                science_target
+                if science_target is not None and science_target.uses_mounted_attitude()
+                else None
+            )
+            instrument_roll = (
+                mounted_target.roll if mounted_target is not None else roll
+            )
+            if (
+                mounted_target is not None
+                and self.acs.last_slew is not None
+                and self.acs.last_slew.instrument_roll is not None
+            ):
+                instrument_roll = self.acs.last_slew.instrument_roll
+            if instrument_roll == -1.0:
+                instrument_roll = 0.0
+            if mounted_target is not None:
+                telescope = mounted_target.science_telescope()
+                assert telescope is not None
+                nominal_roll = optimum_instrument_roll(
+                    mounted_target.ra,
+                    mounted_target.dec,
+                    self.utime[i],
+                    self.ephem,
+                    telescope,
+                    self.solar_panel,
+                    self.constraint,
+                    drive_state=self.acs.solar_array_drive_state,
+                )
+            else:
+                nominal_roll = optimum_body_roll(
+                    ra,
+                    dec,
+                    self.utime[i],
+                    self.ephem,
+                    self.solar_panel,
+                    drive_state=self.acs.solar_array_drive_state,
+                )
+            roll_offset_deg = (instrument_roll - nominal_roll + 180.0) % 360.0 - 180.0
             sun_angle_deg = self._compute_sun_angle(self.utime[i], ra, dec)
             _sun_bv = scbodyvector(
                 np.radians(ra),
@@ -279,37 +382,57 @@ class DITL(DITLMixin, DITLStats):
                 if self.calculate_field_of_regard
                 else None
             )
-            violated = self.constraint.in_constraint(
-                ra, dec, self.utime[i], target_roll=roll, acs_mode=mode
-            )
-            in_constraint_name = None
-            if violated:
-                in_constraint_name = (
-                    all_attitude_constraint_name(
-                        self.constraint,
-                        ra,
-                        dec,
-                        self.utime[i],
-                        target_roll=roll,
-                        acs_mode=mode,
-                    )
-                    or "Unknown"
+            if mounted_target is not None:
+                all_names = mounted_target.attitude_constraint_names(
+                    list(AttitudeConstraintScope),
+                    (ra, dec, roll),
+                    self.utime[i],
+                    mode,
                 )
+                in_constraint_name = all_names[0] if all_names else None
+            else:
+                violated = self.constraint.in_constraint(
+                    ra, dec, self.utime[i], target_roll=roll, acs_mode=mode
+                )
+                in_constraint_name = None
+                if violated:
+                    in_constraint_name = (
+                        all_attitude_constraint_name(
+                            self.constraint,
+                            ra,
+                            dec,
+                            self.utime[i],
+                            target_roll=roll,
+                            acs_mode=mode,
+                        )
+                        or "Unknown"
+                    )
             scopes = self.config.attitude_constraint_scopes_for_mode(mode)
-            scope_constraint_name = attitude_constraint_name_for_scopes(
-                self.constraint,
-                scopes,
-                ra,
-                dec,
-                self.utime[i],
-                target_roll=roll,
-                acs_mode=mode,
+            scoped_names = (
+                mounted_target.attitude_constraint_names(
+                    scopes,
+                    (ra, dec, roll),
+                    self.utime[i],
+                    mode,
+                )
+                if mounted_target is not None
+                else []
             )
+            if mounted_target is not None:
+                scope_constraint_name = scoped_names[0] if scoped_names else None
+            else:
+                scope_constraint_name = attitude_constraint_name_for_scopes(
+                    self.constraint,
+                    scopes,
+                    ra,
+                    dec,
+                    self.utime[i],
+                    target_roll=roll,
+                    acs_mode=mode,
+                )
             scope_label = attitude_constraint_scope_label(scopes)
             _q = attitude_to_quat(ra, dec, roll)
-            drive_angles = getattr(self.solar_panel, "drive_angles_deg", None)
-            if not isinstance(drive_angles, list):
-                drive_angles = None
+            drive_angles = self._solar_array_drive_telemetry()
             hk = Housekeeping(
                 timestamp=datetime.fromtimestamp(self.utime[i], tz=timezone.utc),
                 ra=ra,
@@ -318,7 +441,7 @@ class DITL(DITLMixin, DITLStats):
                 roll_offset_deg=roll_offset_deg,
                 acs_mode=mode,
                 panel_illumination=panel_illumination,
-                solar_array_drive_angles_deg=drive_angles,
+                solar_array_drive_angles=drive_angles,
                 power_usage=power_usage,
                 power_bus=bus_power,
                 power_payload=payload_power,

@@ -34,8 +34,9 @@ class SimpleTarget:
         self.name = name or f"Target_{obsid}"
         self.merit = 100
         self.slewtime = 0
+        self.roll = 0.0
 
-    def calc_slewtime(self, ra_from, dec_from):
+    def calc_slewtime(self, ra_from, dec_from, roll_from=None):
         """Calculate slew time from prior position."""
         dist = np.sqrt((self.ra - ra_from) ** 2 + (self.dec - dec_from) ** 2)
         self.slewtime = int(dist / 0.25)

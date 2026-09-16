@@ -11,11 +11,13 @@ from conops import (
     AttitudeConstraintScope,
     AttitudeRateContinuityError,
     DITLs,
+    Plan,
     SingleAxisSolarArrayDrive,
     SolarArrayDriveControl,
     SolarPanel,
     SolarPanelSet,
 )
+from conops.targets.plan_entry import PlanEntry
 
 
 class TestDITLInit:
@@ -76,6 +78,15 @@ class TestDITLCalc:
         result = ditl.calc()
         assert result is True
 
+    def test_calc_rebinds_a_plan_assigned_after_initialization(
+        self, ditl: DITL
+    ) -> None:
+        ditl.plan = Plan()
+        with patch.object(Plan, "bind_runtime") as bind_runtime:
+            ditl.calc()
+
+        bind_runtime.assert_called_once_with(ditl.config, ditl.ephem)
+
     def test_calc_initializes_telemetry_arrays(self, ditl: DITL) -> None:
         """Test that calc initializes all telemetry arrays."""
         ditl.calc()
@@ -122,19 +133,22 @@ class TestDITLCalc:
         ditl.config.solar_panel = panel_set
         ditl.ephem.sun_pv.position = ditl.ephem.gcrs_pv.position + (0.0, 0.0, 1.0)
 
-        panel.illumination_from_sun_body(
+        state = panel_set.advance_drive_state(
             0.0,
             (0.0, 0.0, 1.0),
-            track_sun=True,
-            advance_drive_state=True,
+            panel_set.initial_drive_state(),
+            acs_mode=ACSMode.SCIENCE,
+            in_eclipse=False,
         )
-        panel.illumination_from_sun_body(
+        state = panel_set.advance_drive_state(
             90.0,
             (0.0, 0.0, 1.0),
-            track_sun=True,
-            advance_drive_state=True,
+            state,
+            acs_mode=ACSMode.SCIENCE,
+            in_eclipse=False,
         )
-        assert abs(panel.drive_angle_deg or 0.0) == pytest.approx(90.0)
+        ditl.acs.solar_array_drive_state = state
+        assert abs(state.driven_angles_deg[0]) == pytest.approx(90.0)
 
         eclipse = Mock()
         eclipse.in_constraint.return_value = False
@@ -151,9 +165,13 @@ class TestDITLCalc:
         assert angles[0] == [pytest.approx(0.0)]
         assert angles[1] == [pytest.approx(60.0)]
         assert angles[-1] == [pytest.approx(90.0)]
+        drive_sample = ditl.telemetry.housekeeping[-1].solar_array_drive_angles
+        assert drive_sample is not None
+        assert drive_sample[0].panel_index == 0
+        assert drive_sample[0].panel_name == "Panel"
         offsets = [sample.roll_offset_deg for sample in ditl.telemetry.housekeeping]
         assert offsets == pytest.approx([-90.0, -30.0, 0.0, 0.0])
-        assert panel._drive_time_s == ditl.utime[-1]
+        assert ditl.acs.solar_array_drive_state.updated_at_s == ditl.utime[-1]
 
     def test_calc_housekeeping_separates_global_from_scoped_constraints(
         self, ditl: DITL
@@ -200,6 +218,18 @@ class TestDITLCalc:
         assert hk.attitude_constraint_scope == "power_generation"
 
 
+def _plan_entry_stub(begin: float, end: float, obsid: int) -> Mock:
+    """A stand-in plan entry covering [begin, end) for DITL loop tests."""
+    entry = Mock(spec=PlanEntry)
+    entry.begin = begin
+    entry.end = end
+    entry.ra = 0.0
+    entry.dec = 0.0
+    entry.obsid = obsid
+    entry.obstype = "science"
+    return entry
+
+
 class TestDITLSimulationLoop:
     """Test DITL simulation loop behavior."""
 
@@ -217,6 +247,82 @@ class TestDITLSimulationLoop:
         assert ditl.ra[0] == 45.0
         assert ditl.dec[0] == 30.0
         assert ditl.obsid[0] == 42
+
+    def test_simulation_loop_advances_to_the_current_plan_entry(
+        self, ditl: DITL
+    ) -> None:
+        """The loop must re-resolve the plan entry as the simulation advances."""
+        first = _plan_entry_stub(ditl.ephem.utime[0], ditl.ephem.utime[2], obsid=1)
+        second = _plan_entry_stub(
+            ditl.ephem.utime[2], ditl.ephem.utime[-1] + 60, obsid=2
+        )
+        plan = Plan()
+        plan.entries = [first, second]
+        ditl.plan = plan
+
+        ditl.calc()
+
+        # The final timestep falls inside the second entry, so the tracked
+        # entry must have moved on from the one that seeded the ACS.
+        assert ditl.ppt is second
+
+    def test_simulation_loop_clears_plan_entry_outside_any_window(
+        self, ditl: DITL
+    ) -> None:
+        """A timestep covered by no plan entry must not keep a stale entry."""
+        only = _plan_entry_stub(ditl.ephem.utime[0], ditl.ephem.utime[2], obsid=1)
+        plan = Plan()
+        plan.entries = [only]
+        ditl.plan = plan
+
+        ditl.calc()
+
+        assert ditl.ppt is None
+
+    def test_initial_slew_resolves_an_unconstrained_roll(self, ditl: DITL) -> None:
+        """A -1.0 roll must reach the ACS as the optimum, not as 0 degrees."""
+        entry = PlanEntry(
+            ra=10.0,
+            dec=20.0,
+            roll=-1.0,
+            obsid=7,
+            begin=ditl.ephem.utime[0],
+            end=ditl.ephem.utime[-1] + 60,
+        )
+        plan = Plan()
+        plan.entries = [entry]
+        ditl.plan = plan
+
+        with patch("conops.ditl.ditl.optimum_body_roll", return_value=137.0):
+            ditl.calc()
+
+        _, kwargs = ditl.acs._enqueue_slew.call_args
+        assert kwargs["roll"] == 137.0
+        assert kwargs["instrument_roll"] == 137.0
+        # The resolved roll is written back so visibility and serialization
+        # see the roll that was actually flown.
+        assert entry.roll == 137.0
+
+    def test_initial_slew_keeps_an_explicit_roll(self, ditl: DITL) -> None:
+        """A planned roll must be flown as planned, not re-optimized."""
+        entry = PlanEntry(
+            ra=10.0,
+            dec=20.0,
+            roll=45.0,
+            obsid=7,
+            begin=ditl.ephem.utime[0],
+            end=ditl.ephem.utime[-1] + 60,
+        )
+        plan = Plan()
+        plan.entries = [entry]
+        ditl.plan = plan
+
+        with patch("conops.ditl.ditl.optimum_body_roll", return_value=137.0):
+            ditl.calc()
+
+        _, kwargs = ditl.acs._enqueue_slew.call_args
+        assert kwargs["roll"] == 45.0
+        assert entry.roll == 45.0
 
     def test_calc_rejects_attitude_rate_violation(self, ditl: DITL) -> None:
         """DITL must reject an impossible adjacent roll change."""
@@ -258,7 +364,10 @@ class TestDITLSimulationLoop:
 
     def test_battery_charge_uses_solar_panel_power(self, ditl: DITL) -> None:
         """Test that battery charge uses solar panel power."""
-        ditl.solar_panel.illumination_and_power = Mock(return_value=(0.8, 200.0))
+        state = ditl.solar_panel.initial_drive_state()
+        ditl.solar_panel.evaluate_executed_attitude = Mock(
+            return_value=(0.8, 200.0, state)
+        )
         ditl.calc()
         # Each charge call should have the solar panel power
         ditl.battery.charge.assert_called_with(200.0, ditl.step_size)
@@ -339,11 +448,11 @@ class TestDITLPowerCalculations:
         assert np.mean(ditl.power) == 80.0
 
     def test_solar_panel_power_called_with_correct_args(self, ditl: DITL) -> None:
-        """Test that solar panel illumination_and_power is called with time, ra, dec, ephem."""
+        """Test that executed panel evaluation receives the current attitude."""
         ditl.acs.pointing.return_value = (10.0, 20.0, 30.0, 0)
         ditl.calc()
         # Should be called with (time=utime[i], ra=ra, dec=dec, ephem=ephem)
-        assert ditl.solar_panel.illumination_and_power.call_count > 0
+        assert ditl.solar_panel.evaluate_executed_attitude.call_count > 0
 
 
 class TestDITLs:

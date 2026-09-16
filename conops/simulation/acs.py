@@ -11,14 +11,20 @@ from ..common import (
     unixtime2date,
 )
 from ..common.vector import sort_by_angular_separation
-from ..config import AttitudeConstraintScope, FaultEvent, MissionConfig
+from ..config import (
+    AttitudeConstraintScope,
+    FaultEvent,
+    MissionConfig,
+    SolarArrayDriveState,
+    SolarPanelSet,
+)
 from ..config.constraint import (
     attitude_constraint_names_for_scopes,
     attitude_constraint_scope_label,
     in_attitude_constraint_scopes,
 )
 from ..simulation.passes import PassTimes
-from ..simulation.roll import optimum_roll
+from ..simulation.roll import optimum_body_roll
 from .acs_command import ACSCommand
 from .emergency_charging import EmergencyCharging
 from .passes import Pass
@@ -26,7 +32,7 @@ from .slew import Slew
 
 if TYPE_CHECKING:
     from ..ditl.ditl_log import DITLLog
-    from ..targets import Pointing
+    from ..targets import PlanEntry, Pointing
 
 
 IDLE_OBSID = 0
@@ -68,6 +74,7 @@ class ACS:
     science_observation_active: bool
     _last_roll_optimization_utime: float | None
     _last_roll_optimization_mode: ACSMode | None
+    solar_array_drive_state: SolarArrayDriveState
 
     def __init__(self, config: MissionConfig, log: "DITLLog | None" = None) -> None:
         """Initialize the Attitude Control System.
@@ -128,7 +135,8 @@ class ACS:
 
         self.passrequests = PassTimes(config=config)
         self.current_pass: Pass | None = None
-        self.solar_panel = config.solar_panel
+        self.solar_panel = config.solar_panel or SolarPanelSet()
+        self.solar_array_drive_state = self.solar_panel.initial_drive_state()
         self.slew_dists: list[float] = []
         self.saa = None
 
@@ -393,6 +401,8 @@ class ACS:
         utime: float,
         obstype: ObsType = ObsType.PPT,
         roll: float | None = None,
+        target_request: "PlanEntry | None" = None,
+        instrument_roll: float | None = None,
     ) -> bool:
         """Create and enqueue a slew command.
 
@@ -407,18 +417,20 @@ class ACS:
         slew.enddec = dec
         # If roll not provided, calculate optimal roll at target position
         if roll is None:
-            slew.endroll = optimum_roll(
+            slew.endroll = optimum_body_roll(
                 ra,
                 dec,
                 utime,
                 self.ephem,
                 self.solar_panel,
                 self.constraint,
+                drive_state=self.solar_array_drive_state,
             )
         else:
             slew.endroll = roll
         slew.obstype = obstype
         slew.obsid = obsid
+        slew.instrument_roll = instrument_roll
 
         # For SAFE mode, skip visibility checking (emergency situation)
         if obstype == ObsType.SAFE:
@@ -428,7 +440,10 @@ class ACS:
             execution_time = utime  # Execute immediately
         else:
             # Set up target observation request and check visibility
-            target_request = self._create_target_request(slew, roll)
+            if target_request is None:
+                target_request = self._create_target_request(slew, roll)
+            else:
+                target_request.visibility()
             slew.at = target_request
 
             visstart = target_request.next_vis(utime)
@@ -462,7 +477,7 @@ class ACS:
 
     def _create_target_request(
         self, slew: Slew, roll: float | None = None
-    ) -> "Pointing":
+    ) -> "PlanEntry":
         """Create and configure a target observation request for visibility checking."""
         from ..targets import Pointing
 
@@ -472,6 +487,7 @@ class ACS:
             dec=slew.enddec,
             roll=roll if roll is not None else slew.endroll,
             obsid=slew.obsid,
+            obstype=slew.obstype,
         )
         target.exptime = 1000
         target.isat = slew.obstype != ObsType.PPT
@@ -657,13 +673,14 @@ class ACS:
             return self.current_pass.roll_at(utime)
         if self.last_slew is not None and self.last_slew.slewstart > 0:
             return self.last_slew.endroll
-        return optimum_roll(
+        return optimum_body_roll(
             self.ra,
             self.dec,
             utime,
             self.ephem,
             self.solar_panel,
             self.constraint,
+            drive_state=self.solar_array_drive_state,
         )
 
     def _continuous_optimum_roll(self, utime: float, mode: ACSMode) -> float:
@@ -677,12 +694,14 @@ class ACS:
         max_roll_delta = (
             min(
                 180.0,
-                self.config.spacecraft_bus.attitude_control.max_motion_angle(elapsed),
+                self.config.spacecraft_bus.attitude_control.max_motion_angle(
+                    elapsed, (1.0, 0.0, 0.0)
+                ),
             )
             if elapsed > 0.0
             else 0.0
         )
-        roll = optimum_roll(
+        roll = optimum_body_roll(
             self.ra,
             self.dec,
             utime,
@@ -691,9 +710,7 @@ class ACS:
             self.constraint,
             reference_roll=self.roll,
             max_roll_delta=max_roll_delta,
-            acs_mode=mode,
-            in_eclipse=self.in_eclipse,
-            drive_preview_seconds=elapsed,
+            drive_state=self.solar_array_drive_state,
         )
         self._last_roll_optimization_utime = utime
         self._last_roll_optimization_mode = mode
@@ -758,13 +775,14 @@ class ACS:
         """Find a deterministic nearby attitude that satisfies IDLE scopes."""
         candidates = self._idle_safe_attitude_candidates(utime)
         for candidate_ra, candidate_dec in candidates:
-            optimal_roll = optimum_roll(
+            optimal_roll = optimum_body_roll(
                 candidate_ra,
                 candidate_dec,
                 utime,
                 self.ephem,
                 self.solar_panel,
                 self.constraint,
+                drive_state=self.solar_array_drive_state,
             )
             for candidate_roll in self._idle_safe_roll_candidates(optimal_roll):
                 if not self._idle_attitude_unsafe(
@@ -928,15 +946,27 @@ class ACS:
             and self.last_slew.obstype == ObsType.PPT
         ):
             scopes = self.config.attitude_constraint_scopes_for_mode(self.acsmode)
-            constraint_names = attitude_constraint_names_for_scopes(
-                self.constraint,
-                scopes,
-                self.last_slew.at.ra,
-                self.last_slew.at.dec,
-                utime,
-                target_roll=self.roll,
-                acs_mode=self.acsmode,
-            )
+            target = self.last_slew.at
+            if (
+                self.acsmode == ACSMode.SCIENCE
+                and target.uses_mounted_attitude() is True
+            ):
+                constraint_names = target.attitude_constraint_names(
+                    scopes,
+                    (self.ra, self.dec, self.roll),
+                    utime,
+                    self.acsmode,
+                )
+            else:
+                constraint_names = attitude_constraint_names_for_scopes(
+                    self.constraint,
+                    scopes,
+                    self.ra,
+                    self.dec,
+                    utime,
+                    target_roll=self.roll,
+                    acs_mode=self.acsmode,
+                )
 
             if constraint_names:
                 self._log_or_print(
@@ -945,8 +975,8 @@ class ACS:
                     "%s: CONSTRAINT: RA=%s Dec=%s obsid=%s %s (%s)"
                     % (
                         unixtime2date(utime),
-                        self.last_slew.at.ra,
-                        self.last_slew.at.dec,
+                        self.ra,
+                        self.dec,
                         self.last_slew.obsid,
                         " ".join(constraint_names),
                         attitude_constraint_scope_label(scopes),
@@ -1247,7 +1277,12 @@ class ACS:
             created charging pointing or None if charging could not be initiated.
         """
         charging_ppt = emergency_charging.initiate_emergency_charging(
-            utime, ephem, lastra, lastdec, current_ppt
+            utime,
+            ephem,
+            lastra,
+            lastdec,
+            current_ppt,
+            drive_state=self.solar_array_drive_state,
         )
         if charging_ppt is not None:
             self.request_battery_charge(

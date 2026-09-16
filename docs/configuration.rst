@@ -322,6 +322,8 @@ The :class:`~conops.config.AttitudeControlSystem` defines slew performance and p
 
 * ``slew_acceleration`` (float): Maximum angular acceleration in deg/s²
 * ``max_slew_rate`` (float): Maximum slew rate in deg/s
+* ``slew_acceleration_body`` (tuple[float, float, float] | None): Optional body +X/+Y/+Z acceleration limits in deg/s²
+* ``max_slew_rate_body`` (tuple[float, float, float] | None): Optional body +X/+Y/+Z slew-rate limits in deg/s
 * ``slew_accuracy`` (float): Pointing accuracy after slew completion in degrees
 * ``settle_time`` (float): Time to settle after slew completion in seconds
 * ``slew_algorithm`` (:class:`~conops.common.enums.SlewAlgorithm`): Algorithm for computing slew paths:
@@ -330,6 +332,19 @@ The :class:`~conops.config.AttitudeControlSystem` defines slew performance and p
   - ``CONSTRAINT_AVOIDING``: Routes around any configured constraints (Sun, Earth, Moon, etc.)
 
 * ``slew_constraint`` (ConstraintConfig | None): Optional rust-ephem constraint for slew path planning. When set and ``slew_algorithm`` is ``CONSTRAINT_AVOIDING``, this constraint is used instead of the spacecraft's general pointing constraint. This allows different safety margins for slewing vs. science pointing.
+
+When either body-axis tuple is present, COAST applies it as an ellipsoidal
+coupled-axis envelope.  For a unit maneuver axis :math:`u` and axis limits
+:math:`L=(L_x,L_y,L_z)`, the effective limit along the path is
+:math:`1 / \sqrt{\sum_i (u_i/L_i)^2}`.  For example, equal X/Y limits of
+0.2 deg/s produce a total rate of 0.2 deg/s about a 45-degree X/Y axis, or
+approximately 0.141 deg/s on each component. Quaternion slews resolve the
+maneuver axis in the initial spacecraft body frame. When a body-axis tuple is
+configured, slew estimates require complete starting and target attitudes
+(RA, Dec, and roll); kinematic calls without a maneuver axis raise an error.
+Constraint-avoiding paths are evaluated as rest-to-rest segments using each
+segment's own body-frame rotation axis. If both tuples are omitted, the scalar
+fields retain their existing behavior, including legacy RA/Dec-only estimates.
 
 .. code-block:: python
 
@@ -348,6 +363,9 @@ The :class:`~conops.config.AttitudeControlSystem` defines slew performance and p
        attitude_control=AttitudeControlSystem(
            slew_acceleration=0.01,  # deg/s² - angular acceleration
            max_slew_rate=0.3,       # deg/s - maximum slew rate
+           # Optional ellipsoidal (+X, +Y, +Z) body-axis envelopes:
+           slew_acceleration_body=(0.02, 0.02, 0.2),  # deg/s²
+           max_slew_rate_body=(0.2, 0.2, 2.0),        # deg/s
            slew_accuracy=0.01,      # deg - pointing accuracy
            settle_time=10.0,        # seconds - time to settle after slew
            slew_algorithm=SlewAlgorithm.CONSTRAINT_AVOIDING,  # Avoid all constraints
@@ -472,16 +490,22 @@ not silently impose an operations concept.
        conversion_efficiency=0.95,
    )
 
-Candidate pointing and roll calculations use the current physical drive angle
-without modifying runtime state or granting motion under an attitude that has
-not executed. Continuous executed control may explicitly preview motion over its
-elapsed control interval. Executed DITL samples advance the state, and
-``solar_array_drive_angles_deg`` housekeeping telemetry records the resulting
-angles in configured driven-panel order.
+Drive configuration is immutable. Each simulation owns a separate
+:class:`~conops.config.SolarArrayDriveState` containing the executed angles,
+last update time, and state revision. Candidate pointing and roll calculations
+score one state snapshot without modifying it or granting motion under an
+attitude that has not executed. After attitude selection, each DITL sample
+advances the array exactly once under the executed attitude and reports endpoint
+power.
+
+``solar_array_drive_angles`` housekeeping telemetry records each resulting
+angle with its configured panel index and name. The
+``solar_array_drive_angles_deg`` property remains as an order-based compatibility
+view.
 
 Housekeeping roll offsets use a read-only roll search after the executed power
 sample, so they reflect the resulting physical drive angle without advancing its
-timestamp again. Existing fixed-panel radiator shadowing is preserved. Panels
+state again. Existing fixed-panel radiator shadowing is preserved. Panels
 with ``single_axis_drive`` are excluded from radiator occluders until articulated
 shadow geometry is supported; their zero-angle rectangles are not used as a
 substitute for the executed geometry.
@@ -908,10 +932,26 @@ A ``Telescope`` can be placed directly in ``Payload.instruments`` alongside any 
 
 **Telescope Attributes** (in addition to Instrument fields):
 
-* ``boresight`` (tuple[float, float, float]): Unit vector in spacecraft body frame
-  giving the direction the telescope points.  Defaults to ``(1, 0, 0)`` (spacecraft
-  forward/primary boresight).  Must be a unit vector (magnitude within 1 %).
+* ``boresight`` (tuple[float, float, float]): Compatibility input and derived
+  property giving instrument ``+X`` in spacecraft body coordinates. Defaults to
+  ``(1, 0, 0)``. When supplied without ``mounting``, COAST normalizes the vector
+  and derives a deterministic mounting. Assigning it later replaces the complete
+  mounting atomically.
+* ``mounting`` (:class:`~conops.config.InstrumentMounting`): Full rigid
+  instrument-to-body rotation. The scalar-first Hamilton quaternion maps instrument
+  vectors into spacecraft body coordinates. Instrument ``+X`` is the science
+  boresight and instrument ``+Z`` is the zero-roll reference. This is the
+  authoritative geometry. Mounting objects are immutable; replace the complete
+  object to change the installation.
 * ``optics`` (:class:`~conops.config.TelescopeConfig`): Optical configuration
+
+Science target RA/Dec and roll are defined in the selected telescope frame. COAST
+converts them to the physical spacecraft attitude before evaluating body-mounted
+panels, radiators, trackers, slew-axis limits, and executed-attitude constraints.
+Telescope-local keep-outs must be roll-independent and are evaluated against the
+science line of sight during target selection and against the transformed telescope
+boresight during execution. Put roll-dependent constraints for body-mounted hardware
+on the spacecraft constraint configuration, where spacecraft roll is defined.
 
 **TelescopeConfig Attributes:**
 
@@ -964,6 +1004,7 @@ A ``Telescope`` can be placed directly in ``Payload.instruments`` alongside any 
    from conops.config import (
        Payload,
        Instrument,
+       InstrumentMounting,
        Telescope,
        TelescopeConfig,
        TelescopeType,
@@ -993,6 +1034,15 @@ A ``Telescope`` can be placed directly in ``Payload.instruments`` alongside any 
        name="Secondary Telescope",
        boresight=off_axis_boresight,
        optics=TelescopeConfig(aperture_m=0.15, focal_length_m=1.5),
+   )
+
+   # Full +Y mount with instrument +Z aligned to body +Z. A positive 90°
+   # rotation about body +Z maps instrument +X onto body +Y.
+   side_mounted = Telescope(
+       name="Side-mounted Telescope",
+       mounting=InstrumentMounting(
+           body_from_instrument_quaternion_wxyz=(2**-0.5, 0.0, 0.0, 2**-0.5),
+       ),
    )
 
    print(primary.optics.f_number)                     # 10.0

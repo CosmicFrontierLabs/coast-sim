@@ -414,12 +414,57 @@ def quaternion_attitude_distance(
     return float(np.rad2deg(2.0 * np.arccos(dot)))
 
 
+def quaternion_attitude_delta(
+    ra1: float,
+    dec1: float,
+    roll1: float,
+    ra2: float,
+    dec2: float,
+    roll2: float,
+) -> tuple[float, tuple[float, float, float]]:
+    """Return the shortest attitude rotation angle and its initial body-frame axis.
+
+    The returned angle is in degrees and the axis is a unit vector resolved in
+    the spacecraft body frame at the start of the maneuver.  This makes the
+    result suitable for applying body-axis-dependent rate and acceleration
+    limits.  Identical attitudes return a zero angle and a zero vector.
+    """
+    q1 = attitude_to_quat(ra1, dec1, roll1)
+    q2 = attitude_to_quat(ra2, dec2, roll2)
+
+    # Attitude quaternions map ECI into body coordinates.  q1 * conjugate(q2)
+    # therefore represents the physical body rotation from attitude 1 to 2,
+    # resolved in the initial body frame.
+    delta = _quat_mul(q1, q2, conjugate_b=True)
+    delta /= float(np.linalg.norm(delta))
+
+    # q and -q represent the same rotation.  Choose the representative whose
+    # scalar component is non-negative so the angle follows the shortest arc.
+    if delta[0] < 0.0:
+        delta = -delta
+
+    vector_norm = float(np.linalg.norm(delta[1:]))
+    angle_deg = float(
+        np.rad2deg(2.0 * np.arctan2(vector_norm, max(0.0, float(delta[0]))))
+    )
+    if vector_norm < 1e-12:
+        return 0.0, (0.0, 0.0, 0.0)
+
+    axis = delta[1:] / vector_norm
+    return angle_deg, (float(axis[0]), float(axis[1]), float(axis[2]))
+
+
 def _quat_mul(
-    a: npt.NDArray[np.float64], b: npt.NDArray[np.float64]
+    a: npt.NDArray[np.float64],
+    b: npt.NDArray[np.float64],
+    *,
+    conjugate_b: bool = False,
 ) -> npt.NDArray[np.float64]:
-    """Quaternion product a ⊗ b, both [w, x, y, z]."""
+    """Quaternion product a ⊗ b, optionally using b's conjugate without a copy."""
     aw, ax, ay, az = float(a[0]), float(a[1]), float(a[2]), float(a[3])
     bw, bx, by, bz = float(b[0]), float(b[1]), float(b[2]), float(b[3])
+    if conjugate_b:
+        bx, by, bz = -bx, -by, -bz
     return np.array(
         [
             aw * bw - ax * bx - ay * by - az * bz,
@@ -429,6 +474,68 @@ def _quat_mul(
         ],
         dtype=np.float64,
     )
+
+
+def quaternion_rotate_vector(
+    q: tuple[float, float, float, float] | npt.NDArray[np.float64],
+    vector: tuple[float, float, float] | npt.NDArray[np.float64],
+) -> npt.NDArray[np.float64]:
+    """Rotate a three-vector using the repository's Hamilton convention."""
+    vector_array = np.asarray(vector, dtype=np.float64)
+    if vector_array.shape != (3,):
+        raise ValueError("vector must contain exactly three values")
+    return _quat_to_rot(np.asarray(q, dtype=np.float64)) @ vector_array
+
+
+def mounting_quaternion_from_boresight(
+    boresight_body: tuple[float, float, float] | npt.NDArray[np.float64],
+) -> npt.NDArray[np.float64]:
+    """Construct a deterministic body-from-instrument mount from a boresight.
+
+    Instrument ``+X`` is aligned with ``boresight_body`` and mounting roll is
+    fixed at zero in the intrinsic Z-Y-X convention used by rust-ephem.
+    """
+    if _unit_vector_or_none(boresight_body) is None:
+        raise ValueError("boresight must be a unit vector")
+    _, pitch_deg, yaw_deg = normal_to_boresight_offset_euler_deg(boresight_body)
+    pitch = np.deg2rad(pitch_deg) / 2.0
+    yaw = np.deg2rad(yaw_deg) / 2.0
+    pitch_quaternion = np.array(
+        [np.cos(pitch), 0.0, np.sin(pitch), 0.0], dtype=np.float64
+    )
+    yaw_quaternion = np.array([np.cos(yaw), 0.0, 0.0, np.sin(yaw)], dtype=np.float64)
+    return _quat_mul(yaw_quaternion, pitch_quaternion)
+
+
+def mounted_attitude_to_quat(
+    ra_deg: float,
+    dec_deg: float,
+    roll_deg: float,
+    body_from_instrument_quaternion_wxyz: (
+        tuple[float, float, float, float] | npt.NDArray[np.float64]
+    ),
+) -> npt.NDArray[np.float64]:
+    """Return the physical body attitude for an instrument-frame pointing.
+
+    ``ra_deg``, ``dec_deg``, and ``roll_deg`` define the target attitude in an
+    instrument frame whose boresight is ``+X``. The mounting quaternion maps
+    instrument-frame vectors into the physical spacecraft body frame.
+    """
+    instrument_from_eci = attitude_to_quat(ra_deg, dec_deg, roll_deg)
+    body_from_instrument = np.asarray(
+        body_from_instrument_quaternion_wxyz, dtype=np.float64
+    )
+    if body_from_instrument.shape != (4,):
+        raise ValueError("mounting quaternion must contain exactly four values")
+    norm = float(np.linalg.norm(body_from_instrument))
+    if not np.isfinite(norm) or norm < 1e-12:
+        raise ValueError("mounting quaternion must have finite nonzero norm")
+    body_from_instrument = body_from_instrument / norm
+    result = _quat_mul(body_from_instrument, instrument_from_eci)
+    result /= float(np.linalg.norm(result))
+    if result[0] < 0.0:
+        result *= -1.0
+    return result
 
 
 def quat_to_attitude(q: npt.NDArray[np.float64]) -> tuple[float, float, float]:

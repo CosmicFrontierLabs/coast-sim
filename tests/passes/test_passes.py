@@ -387,14 +387,14 @@ class TestPassTimeToSlew:
             length=600.0,
         )
 
-        def slew_time(_acs_config, distance):
+        def slew_time(_acs_config, distance, _axis):
             return 123.0
 
         with (
             patch(
-                "conops.simulation.passes.quaternion_attitude_distance",
-                return_value=12.5,
-            ) as distance,
+                "conops.simulation.passes.quaternion_attitude_delta",
+                return_value=(12.5, (0.0, 0.0, 1.0)),
+            ) as delta,
             patch(
                 "conops.config.acs.AttitudeControlSystem.slew_time",
                 autospec=True,
@@ -418,9 +418,11 @@ class TestPassTimeToSlew:
             )
 
         assert slewtime == 123.0
-        distance.assert_called_once_with(10.0, 20.0, 42.0, 30.0, 40.0, 37.0)
+        delta.assert_called_once_with(10.0, 20.0, 42.0, 30.0, 40.0, 37.0)
         slew_time_mock.assert_called_once_with(
-            mock_config.spacecraft_bus.attitude_control, 12.5
+            mock_config.spacecraft_bus.attitude_control,
+            12.5,
+            (0.0, 0.0, 1.0),
         )
 
     def test_slew_time_to_target_constraint_avoiding_uses_full_slew(
@@ -772,6 +774,21 @@ class TestPassTimes:
         profile, profile_safe = result
         assert profile_safe is True
         assert [attitude[2] for attitude in profile] == [0.0, 90.0]
+
+    def test_step_motion_feasibility_applies_body_axis_limits(
+        self, mock_config
+    ) -> None:
+        mock_config.spacecraft_bus.attitude_control = AttitudeControlSystem(
+            slew_acceleration_body=(20.0, 20.0, 200.0),
+            max_slew_rate_body=(0.2, 0.2, 2.0),
+            settle_time=0.0,
+        )
+        pass_times = PassTimes(config=mock_config)
+
+        assert pass_times._step_motion_feasible((0.0, 0.0, 0.0), (90.0, 0.0, 0.0), 60.0)
+        assert not pass_times._step_motion_feasible(
+            (0.0, 0.0, 0.0), (0.0, 0.0, 90.0), 60.0
+        )
 
     def test_fixed_phase_tracking_profile_rejects_infeasible_motion(
         self, mock_constraint, mock_config

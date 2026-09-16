@@ -1,6 +1,6 @@
 """Tests for conops.constraint module."""
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
@@ -10,6 +10,7 @@ from conops.config.constraint import (
     attitude_constraint_name_for_scopes,
     attitude_constraint_names_for_scopes,
     in_attitude_constraint_scopes,
+    mounted_science_attitude_constraint_names,
 )
 
 
@@ -385,6 +386,62 @@ class TestRollIndependentConstraint:
         constraint = Constraint(ground_contact_constraint=ground_contact)
 
         assert constraint.roll_independent_constraint is ground_contact
+
+
+class TestScienceLineOfSightConstraint:
+    """Test constraints evaluated directly on a mounted instrument target."""
+
+    def test_includes_imaging_constraint(self) -> None:
+        import rust_ephem
+
+        sun = rust_ephem.SunConstraint(min_angle=45.0)
+        constraint = Constraint(sun_constraint=sun)
+
+        assert constraint.science_line_of_sight_constraint is sun
+
+    def test_excludes_bus_power_and_safety_constraints(self) -> None:
+        import rust_ephem
+
+        panel = rust_ephem.SunConstraint(min_angle=20.0)
+        safety = rust_ephem.SunConstraint(min_angle=30.0)
+        constraint = Constraint(
+            panel_constraint=panel,
+            safety_constraint=safety,
+        )
+
+        assert constraint.science_line_of_sight_constraint is None
+
+    def test_mounted_science_checks_each_constraint_in_its_native_frame(self) -> None:
+        constraint = Mock(spec=Constraint)
+        for method_name in (
+            "in_sun",
+            "in_earth",
+            "in_moon",
+            "in_anti_sun",
+            "in_orbit",
+            "in_star_tracker_soft",
+            "in_panel",
+        ):
+            getattr(constraint, method_name).return_value = False
+        constraint.in_sun.side_effect = lambda ra, *_args, **_kwargs: ra == 10.0
+        constraint.in_panel.side_effect = lambda ra, *_args, **_kwargs: ra == 40.0
+
+        names = mounted_science_attitude_constraint_names(
+            constraint,
+            [
+                AttitudeConstraintScope.IMAGING_QUALITY,
+                AttitudeConstraintScope.POWER_GENERATION,
+            ],
+            science_attitude=(10.0, 20.0, 30.0),
+            spacecraft_attitude=(40.0, 50.0, 60.0),
+            utime=1000.0,
+        )
+
+        assert names == ["Sun", "Panel"]
+        constraint.in_sun.assert_called_once_with(10.0, 20.0, 1000.0)
+        constraint.in_panel.assert_called_once_with(
+            40.0, 50.0, 1000.0, target_roll=60.0
+        )
 
 
 class TestInOccultCountMethod:

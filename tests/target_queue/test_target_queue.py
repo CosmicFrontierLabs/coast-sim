@@ -1,6 +1,6 @@
 from unittest.mock import Mock, patch
 
-from conops import Queue, TargetSlewEstimate
+from conops import AttitudeControlSystem, Queue, TargetSlewEstimate
 
 
 class TestQueueInitAndAppend:
@@ -127,6 +127,17 @@ class TestGetTarget:
         with patch.object(queue_instance, "meritsort"):
             target = queue_instance.get(ra=0, dec=0, utime=utime)
         target.calc_slewtime.assert_called_once_with(0, 0)
+
+    def test_get_target_passes_roll_for_directional_slew(self, queue_instance):
+        queue_instance.acs_config = AttitudeControlSystem(
+            max_slew_rate_body=(0.2, 0.3, 2.0)
+        )
+        utime = 1762924800.0
+
+        with patch.object(queue_instance, "meritsort"):
+            target = queue_instance.get(ra=0, dec=0, roll=42.0, utime=utime)
+
+        target.calc_slewtime.assert_called_once_with(0, 0, 42.0)
 
     def test_get_target_begin_set(self, queue_instance):
         """Test that the begin time is set correctly."""

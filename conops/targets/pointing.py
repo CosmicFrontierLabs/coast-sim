@@ -1,6 +1,3 @@
-from typing import Literal
-
-import numpy as np
 from pydantic import Field, PrivateAttr, computed_field
 
 from ..common import unixtime2date
@@ -72,22 +69,6 @@ class Pointing(PlanEntry):
         return self.config.constraint.in_star_tracker_soft(
             self.ra, self.dec, utime, target_roll=self.roll, acs_mode=acs_mode
         )
-
-    def next_vis(self, utime: float) -> float | Literal[False]:
-        """When is this target visible next?"""
-        # Are we currently in a visibility window, if yes, return back the current time
-        if self.visible(utime, utime):
-            return utime
-
-        # Are there no visibility windows? Then just return False
-        if len(self.windows) == 0:
-            return False
-        try:
-            visstarts = np.array(self.windows).transpose()[0]
-            windex = np.where(visstarts - utime > 0)[0][0]
-            return float(visstarts[windex])
-        except Exception:
-            return False
 
     def __str__(self) -> str:
         return f"{unixtime2date(self.begin)} {self.name} ({self.obsid}) RA={self.ra:.4f}, Dec={self.dec:4f}, Roll={self.roll:.1f}, Merit={self.merit}"

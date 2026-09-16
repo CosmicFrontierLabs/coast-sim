@@ -15,6 +15,7 @@ from conops import (
     ACSCommandType,
     ACSMode,
     AttitudeConstraintScope,
+    AttitudeControlSystem,
     Battery,
     GroundStation,
     GroundStationRegistry,
@@ -28,6 +29,7 @@ from conops import (
     SolarPanelSet,
 )
 from conops.common.enums import ObsType
+from conops.config import Payload, Telescope
 from conops.config.config import MissionConfig
 from conops.ditl.telemetry import Housekeeping
 from conops.simulation.acs import IDLE_OBSID
@@ -743,6 +745,7 @@ class TestFetchNewPPT:
             1000.0,
             collection_deadline=ANY,
             slew_estimator=ANY,
+            roll=0.0,
         )
 
     def test_fetch_ppt_reuses_charge_deadline_for_candidate_scoring(
@@ -773,6 +776,36 @@ class TestFetchNewPPT:
         charge_deadline.assert_called_once_with(1000.0)
         assert observed_deadlines == [1500.0, 1500.0]
 
+    def test_candidate_deadline_uses_computed_science_roll(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Queue scoring should not use a target's uncommitted default roll."""
+        target = Mock(ra=40.0, dec=10.0, roll=0.0)
+
+        def queue_get(*_args, collection_deadline, **_kwargs):
+            collection_deadline(target, 1100.0)
+            return None
+
+        cast(Mock, queue_ditl.queue).get = Mock(side_effect=queue_get)
+        with (
+            patch.object(queue_ditl, "_ppt_optimum_roll", return_value=70.0) as roll,
+            patch.object(
+                queue_ditl,
+                "_next_science_deadline",
+                return_value=(1500.0, "pass"),
+            ) as deadline,
+        ):
+            queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        roll.assert_called_once_with(target, 1000.0)
+        deadline.assert_called_once_with(
+            1100.0,
+            current_time=1000.0,
+            target=target,
+            target_roll=70.0,
+            deadline_inputs=ANY,
+        )
+
     def test_fetch_ppt_does_not_build_deadline_inputs_until_scoring_uses_them(
         self, queue_ditl: QueueDITL
     ) -> None:
@@ -786,6 +819,37 @@ class TestFetchNewPPT:
 
         charge_deadline.assert_not_called()
 
+    def test_pass_deadline_uses_full_attitude_and_directional_limit(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        target = Mock(ra=10.0, dec=20.0, roll=30.0)
+        next_pass = Mock(
+            begin=2000.0,
+            gsstartra=40.0,
+            gsstartdec=-15.0,
+            gsstartroll=70.0,
+        )
+        queue_ditl.acs.passrequests.next_pass = Mock(return_value=next_pass)
+        acs = cast(Mock, queue_ditl.config.spacecraft_bus.attitude_control)
+        acs.slew_time = Mock(return_value=45.0)
+        rotation_axis_body = (0.2, -0.3, 0.9)
+
+        with patch(
+            "conops.ditl.queue_ditl.quaternion_attitude_delta",
+            return_value=(12.5, rotation_axis_body),
+        ) as delta:
+            deadline = queue_ditl._next_pass_science_deadline(
+                1000.0,
+                target_roll=target.roll,
+                target=target,
+            )
+
+        delta.assert_called_once_with(10.0, 20.0, 30.0, 40.0, -15.0, 70.0)
+        acs.slew_time.assert_called_once_with(12.5, rotation_axis_body)
+        assert deadline == pytest.approx(
+            next_pass.begin - 45.0 - queue_ditl._pass_slew_trigger_buffer()
+        )
+
     def test_estimate_ppt_slew_uses_quaternion_distance_without_full_path(
         self, queue_ditl: QueueDITL
     ) -> None:
@@ -793,18 +857,18 @@ class TestFetchNewPPT:
         queue_ditl.acs.dec = 20.0
         queue_ditl.acs.roll = 30.0
         cast(Mock, queue_ditl.config.spacecraft_bus.attitude_control).slew_time = Mock(
-            side_effect=lambda distance: distance * 2.0
+            side_effect=lambda distance, _axis: distance * 2.0
         )
         target = Mock()
         target.ra = 45.0
         target.dec = -10.0
 
         with (
-            patch("conops.ditl.queue_ditl.optimum_roll", return_value=70.0),
+            patch("conops.ditl.queue_ditl.optimum_body_roll", return_value=70.0),
             patch(
-                "conops.ditl.queue_ditl.quaternion_attitude_distance",
-                return_value=12.5,
-            ) as distance,
+                "conops.ditl.queue_ditl.quaternion_attitude_delta",
+                return_value=(12.5, (0.0, 0.0, 1.0)),
+            ) as delta,
             patch(
                 "conops.ditl.queue_ditl.Slew.calc_slewtime",
                 side_effect=AssertionError("candidate scoring must stay cheap"),
@@ -812,13 +876,48 @@ class TestFetchNewPPT:
         ):
             estimate = queue_ditl._estimate_ppt_slew(target, 1000.0)
 
-        distance.assert_called_once_with(10.0, 20.0, 30.0, 45.0, -10.0, 70.0)
+        delta.assert_called_once_with(10.0, 20.0, 30.0, 45.0, -10.0, 70.0)
         assert estimate.slewdist == pytest.approx(12.5)
         assert estimate.slewtime == pytest.approx(25.0)
         slew_time = cast(
             Mock, queue_ditl.config.spacecraft_bus.attitude_control.slew_time
         )
-        slew_time.assert_called_once_with(12.5)
+        slew_time.assert_called_once_with(12.5, (0.0, 0.0, 1.0))
+
+    def test_estimate_ppt_slew_uses_mounted_bus_attitude(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        telescope = Telescope(
+            name="Science Telescope",
+            boresight=(0.0, 1.0, 0.0),
+        )
+        queue_ditl.config.payload = Payload(instruments=[telescope])
+        target = Pointing(
+            config=queue_ditl.config,
+            instrument_name=telescope.name,
+            ra=45.0,
+            dec=-10.0,
+            roll=0.0,
+        )
+        expected_body_attitude = target.target_body_attitude(0.0)
+
+        with (
+            patch("conops.ditl.queue_ditl.optimum_instrument_roll", return_value=0.0),
+            patch(
+                "conops.ditl.queue_ditl.quaternion_attitude_delta",
+                return_value=(12.5, (0.0, 0.0, 1.0)),
+            ) as delta,
+        ):
+            estimate = queue_ditl._estimate_ppt_slew(target, 1000.0)
+
+        delta.assert_called_once_with(
+            0.0,
+            0.0,
+            0.0,
+            *expected_body_attitude,
+        )
+        assert estimate.instrument_roll == 0.0
+        assert estimate.spacecraft_attitude == pytest.approx(expected_body_attitude)
 
     def test_estimate_ppt_slew_reuses_optimum_roll_cache(
         self, queue_ditl: QueueDITL
@@ -832,12 +931,12 @@ class TestFetchNewPPT:
 
         with (
             patch(
-                "conops.ditl.queue_ditl.optimum_roll",
+                "conops.ditl.queue_ditl.optimum_body_roll",
                 return_value=70.0,
             ) as roll,
             patch(
-                "conops.ditl.queue_ditl.quaternion_attitude_distance",
-                return_value=12.5,
+                "conops.ditl.queue_ditl.quaternion_attitude_delta",
+                return_value=(12.5, (0.0, 0.0, 1.0)),
             ),
         ):
             queue_ditl._estimate_ppt_slew(target, 1000.0)
@@ -850,6 +949,7 @@ class TestFetchNewPPT:
             queue_ditl.acs.ephem,
             queue_ditl.config.solar_panel,
             queue_ditl.config.constraint,
+            drive_state=queue_ditl.acs.solar_array_drive_state,
         )
 
     def test_fetch_ppt_enqueues_slew_command(
@@ -896,6 +996,40 @@ class TestFetchNewPPT:
         assert mock_ppt.roll == command.slew.endroll
         assert mock_ppt.slewtime == int(round(command.slew.slewtime))
         assert mock_ppt.slewdist == pytest.approx(command.slew.slewdist)
+
+    def test_fetch_ppt_pass_deadline_uses_completed_slew_roll(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Final target admission should use the roll computed for its slew."""
+        mock_ppt = Mock()
+        mock_ppt.ra = 45.0
+        mock_ppt.dec = 30.0
+        mock_ppt.roll = 0.0
+        mock_ppt.obsid = 1001
+        mock_ppt.next_vis = Mock(return_value=1000.0)
+        mock_ppt.ss_max = 3600.0
+        mock_ppt.ss_min = 300.0
+        mock_ppt.windows = [[0.0, 1e12]]
+        cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
+        queue_ditl.acs.passrequests.next_pass = Mock(
+            return_value=Mock(
+                begin=10_000.0,
+                gsstartra=40.0,
+                gsstartdec=-15.0,
+                gsstartroll=30.0,
+            )
+        )
+
+        with (
+            patch.object(queue_ditl, "_ppt_optimum_roll", return_value=70.0),
+            patch(
+                "conops.ditl.queue_ditl.quaternion_attitude_delta",
+                return_value=(12.5, (0.0, 0.0, 1.0)),
+            ) as delta,
+        ):
+            queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        delta.assert_called_once_with(45.0, 30.0, 70.0, 40.0, -15.0, 30.0)
 
     def test_sync_acs_slew_metadata_updates_exported_plan_entry(
         self, queue_ditl: QueueDITL
@@ -1227,6 +1361,7 @@ class TestFetchNewPPT:
             1000.0,
             collection_deadline=ANY,
             slew_estimator=ANY,
+            roll=0.0,
         )
         cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
@@ -1287,6 +1422,7 @@ class TestFetchNewPPT:
             utime,
             collection_deadline=ANY,
             slew_estimator=ANY,
+            roll=0.0,
         )
         cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
@@ -1406,6 +1542,7 @@ class TestFetchNewPPT:
         mock_ppt = Mock()
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
+        mock_ppt.roll = 0.0
         mock_ppt.obsid = 1001
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
@@ -1422,6 +1559,7 @@ class TestFetchNewPPT:
         mock_next_pass.begin = 1200.0  # Pass begins in 200 seconds
         mock_next_pass.gsstartra = 100.0
         mock_next_pass.gsstartdec = 50.0
+        mock_next_pass.gsstartroll = 0.0
         cast(Mock, queue_ditl.acs.passrequests).next_pass = Mock(
             return_value=mock_next_pass
         )
@@ -1447,6 +1585,7 @@ class TestFetchNewPPT:
         mock_ppt = Mock()
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
+        mock_ppt.roll = 0.0
         mock_ppt.obsid = 1001
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
@@ -1461,6 +1600,7 @@ class TestFetchNewPPT:
         mock_next_pass.begin = 1450.0
         mock_next_pass.gsstartra = 100.0
         mock_next_pass.gsstartdec = 50.0
+        mock_next_pass.gsstartroll = 0.0
         cast(Mock, queue_ditl.acs.passrequests).next_pass = Mock(
             return_value=mock_next_pass
         )
@@ -1481,6 +1621,7 @@ class TestFetchNewPPT:
         mock_ppt = Mock()
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
+        mock_ppt.roll = 0.0
         mock_ppt.obsid = 1001
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
@@ -1496,6 +1637,7 @@ class TestFetchNewPPT:
         mock_next_pass.begin = 2000.0  # Pass begins in 1000 seconds
         mock_next_pass.gsstartra = 100.0
         mock_next_pass.gsstartdec = 50.0
+        mock_next_pass.gsstartroll = 0.0
         cast(Mock, queue_ditl.acs.passrequests).next_pass = Mock(
             return_value=mock_next_pass
         )
@@ -1647,6 +1789,7 @@ class TestFetchNewPPT:
         bad_ppt = Mock()
         bad_ppt.ra = 45.0
         bad_ppt.dec = 30.0
+        bad_ppt.roll = 0.0
         bad_ppt.obsid = 1001
         bad_ppt.done = False
         bad_ppt.windows = []
@@ -1658,6 +1801,7 @@ class TestFetchNewPPT:
         good_ppt = Mock()
         good_ppt.ra = 46.0
         good_ppt.dec = 31.0
+        good_ppt.roll = 0.0
         good_ppt.obsid = 1002
         good_ppt.done = False
         good_ppt.windows = []
@@ -1681,6 +1825,7 @@ class TestFetchNewPPT:
         mock_next_pass.begin = 1400.0
         mock_next_pass.gsstartra = 100.0
         mock_next_pass.gsstartdec = 50.0
+        mock_next_pass.gsstartroll = 0.0
         cast(Mock, queue_ditl.acs.passrequests).next_pass = Mock(
             return_value=mock_next_pass
         )
@@ -2187,6 +2332,56 @@ class TestPlanExecutionValidation:
 
         assert queue_ditl._attitude_rate_violations() == []
 
+    def test_validation_applies_body_axis_rate_limit(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.config.spacecraft_bus.attitude_control = AttitudeControlSystem(
+            max_slew_rate_body=(0.2, 0.2, 2.0)
+        )
+
+        self._set_attitude_telemetry(
+            queue_ditl,
+            utime=[1000.0, 1060.0],
+            mode=[ACSMode.SLEWING, ACSMode.SLEWING],
+            obsid=[0, 0],
+            ra=[0.0, 60.0],
+            dec=[0.0, 0.0],
+            roll=[0.0, 0.0],
+        )
+        assert queue_ditl._attitude_rate_violations() == []
+
+        self._set_attitude_telemetry(
+            queue_ditl,
+            utime=[1000.0, 1060.0],
+            mode=[ACSMode.SLEWING, ACSMode.SLEWING],
+            obsid=[0, 0],
+            ra=[0.0, 0.0],
+            dec=[0.0, 0.0],
+            roll=[0.0, 60.0],
+        )
+        violations = queue_ditl._attitude_rate_violations()
+
+        assert len(violations) == 1
+        assert violations[0].max_rate_deg_per_s == pytest.approx(0.2)
+
+    def test_validation_accepts_identical_directional_attitude_samples(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.config.spacecraft_bus.attitude_control = AttitudeControlSystem(
+            max_slew_rate_body=(0.2, 0.2, 2.0)
+        )
+        self._set_attitude_telemetry(
+            queue_ditl,
+            utime=[1000.0, 1060.0],
+            mode=[ACSMode.SLEWING, ACSMode.SLEWING],
+            obsid=[0, 0],
+            ra=[10.0, 10.0],
+            dec=[20.0, 20.0],
+            roll=[30.0, 30.0],
+        )
+
+        assert queue_ditl._attitude_rate_violations() == []
+
     def test_validation_rejects_attitude_jump_across_mode_boundary(
         self, queue_ditl: QueueDITL
     ) -> None:
@@ -2275,6 +2470,30 @@ class TestPlanExecutionValidation:
 
         assert len(violations) == 1
         assert violations[0].reason == reason
+
+    def test_directional_validation_does_not_invent_axis_for_missing_attitude(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.config.spacecraft_bus.attitude_control = AttitudeControlSystem(
+            max_slew_rate_body=(0.2, 0.2, 2.0)
+        )
+        self._set_attitude_telemetry(
+            queue_ditl,
+            utime=[1000.0, 1060.0],
+            mode=[ACSMode.IDLE, ACSMode.IDLE],
+            obsid=[0, 0],
+            ra=[0.0, 0.0],
+            dec=[0.0, 0.0],
+            roll=[0.0, None],
+        )
+
+        violations = queue_ditl._attitude_rate_violations()
+
+        assert len(violations) == 1
+        assert violations[0].reason == "missing_attitude"
+        assert violations[0].max_rate_deg_per_s is None
+        assert violations[0].allowed_distance_deg is None
+        assert "maneuver axis unavailable" in str(violations[0])
 
     def test_assertion_fails_plan_generation_for_attitude_jump(
         self, queue_ditl: QueueDITL
@@ -3502,7 +3721,11 @@ class TestCalcMethod:
         assert [sample.solar_array_drive_angles_deg[0] for sample in samples] == (
             pytest.approx([0.0, 60.0, 90.0, 90.0])
         )
-        assert panel._drive_time_s == queue_ditl.utime[-1]
+        assert samples[-1].solar_array_drive_angles[0].panel_index == 0
+        assert samples[-1].solar_array_drive_angles[0].panel_name == "Panel"
+        assert (
+            queue_ditl.acs.solar_array_drive_state.updated_at_s == queue_ditl.utime[-1]
+        )
 
     def test_create_housekeeping_record_uses_current_state(self, queue_ditl) -> None:
         """Housekeeping helper should capture post-update recorder values."""

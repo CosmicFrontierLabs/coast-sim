@@ -5,7 +5,7 @@ from .ditl_log_store import DITLLogStore
 from .ditl_mixin import AttitudeRateContinuityError, DITLMixin
 from .ditl_stats import DITLStats
 from .queue_ditl import PlanExecutionMismatchError, QueueDITL, TOORequest
-from .telemetry import Housekeeping, PayloadData, Telemetry
+from .telemetry import Housekeeping, PayloadData, SolarArrayDriveAngle, Telemetry
 
 __all__ = [
     "DITL",
@@ -20,6 +20,7 @@ __all__ = [
     "PlanExecutionMismatchError",
     "TOORequest",
     "Housekeeping",
+    "SolarArrayDriveAngle",
     "PayloadData",
     "Telemetry",
 ]

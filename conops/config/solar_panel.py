@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
@@ -205,6 +206,38 @@ class SingleAxisSolarArrayDrive(ConfigModel):
         return float(np.clip(current + delta, self.min_angle_deg, self.max_angle_deg))
 
 
+@dataclass(frozen=True, slots=True)
+class SolarArrayDriveState:
+    """Executed finite-drive state, kept separate from panel configuration.
+
+    ``angles_deg`` is aligned with ``SolarPanelSet.panels``. Entries are ``None``
+    for fixed and ideal-gimballed panels. ``updated_at_s`` is the endpoint time
+    of the last executed sample; a newly initialized state has no elapsed motion
+    interval. ``revision`` changes on every executed transition so dependent
+    caches can identify the state snapshot they scored.
+    """
+
+    angles_deg: tuple[float | None, ...]
+    updated_at_s: float | None = None
+    revision: int = 0
+
+    def __post_init__(self) -> None:
+        if self.updated_at_s is not None and not np.isfinite(self.updated_at_s):
+            raise ValueError("drive-state update time must be finite")
+        if self.revision < 0:
+            raise ValueError("drive-state revision must be non-negative")
+        if any(
+            angle is not None and not np.isfinite(angle) for angle in self.angles_deg
+        ):
+            raise ValueError("drive-state angles must be finite")
+
+    @property
+    def driven_angles_deg(self) -> list[float] | None:
+        """Return finite-drive angles in configured panel order."""
+        angles = [float(angle) for angle in self.angles_deg if angle is not None]
+        return angles or None
+
+
 def get_ephemeris_indices(
     time: datetime | list[datetime], ephemeris: rust_ephem.Ephemeris
 ) -> np.ndarray:
@@ -291,8 +324,6 @@ class SolarPanel(ConfigModel):
             "the configured initial angle in every ACS mode."
         ),
     )
-    _drive_angle_deg: float | None = PrivateAttr(default=None)
-    _drive_time_s: float | None = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def _validate_articulation(self) -> "SolarPanel":
@@ -307,67 +338,9 @@ class SolarPanel(ConfigModel):
             raise ValueError("drive_control requires single_axis_drive")
         return self
 
-    def reset_drive_state(self) -> None:
-        """Reset runtime articulation state to the configured initial angle."""
-        self._drive_angle_deg = (
-            self.single_axis_drive.initial_angle_deg
-            if self.single_axis_drive is not None
-            else None
-        )
-        self._drive_time_s = None
-
-    @property
-    def drive_angle_deg(self) -> float | None:
-        """Return the current runtime drive angle, if this panel is driven."""
-        if self.single_axis_drive is None:
-            return None
-        if self._drive_angle_deg is None:
-            return self.single_axis_drive.initial_angle_deg
-        return self._drive_angle_deg
-
     def tracks_sun(self, acs_mode: ACSMode | None, *, in_eclipse: bool) -> bool:
         """Return the explicit control decision for this panel and sample."""
         return self.drive_control.tracks_sun(acs_mode, in_eclipse=in_eclipse)
-
-    def _project_drive_angle(
-        self,
-        time_s: float,
-        sun_body: npt.NDArray[np.float64],
-        *,
-        track_sun: bool,
-        advance_drive_state: bool,
-    ) -> float | None:
-        drive = self.single_axis_drive
-        if drive is None:
-            return None
-
-        current = self.drive_angle_deg
-        assert current is not None
-        if self._drive_time_s is None:
-            elapsed_seconds = 0.0
-        else:
-            elapsed_seconds = time_s - self._drive_time_s
-            if elapsed_seconds < 0.0:
-                if advance_drive_state:
-                    raise ValueError(
-                        "cannot advance single-axis drive state backward in time"
-                    )
-                elapsed_seconds = 0.0
-
-        target = current
-        if track_sun:
-            target = float(
-                drive.optimal_angles(
-                    self.normal,
-                    sun_body[None, :],
-                    reference_angle_deg=current,
-                )[0]
-            )
-        projected = drive.step_toward(current, target, elapsed_seconds)
-        if advance_drive_state:
-            self._drive_angle_deg = projected
-            self._drive_time_s = time_s
-        return projected
 
     def _illumination_factors(
         self,
@@ -391,63 +364,17 @@ class SolarPanel(ConfigModel):
 
     def illumination_from_sun_body(
         self,
-        time_s: float,
         sun_body: tuple[float, float, float] | npt.NDArray[np.float64],
         *,
-        track_sun: bool = False,
-        advance_drive_state: bool = False,
+        drive_angle_deg: float | None = None,
     ) -> float:
-        """Return geometric illumination, optionally advancing drive state."""
+        """Return geometric illumination at an explicit physical drive angle."""
         sun = _unit_vector(sun_body, field_name="Sun body vector")
-        angle = self._project_drive_angle(
-            time_s,
-            sun,
-            track_sun=track_sun,
-            advance_drive_state=advance_drive_state,
-        )
+        angle = drive_angle_deg
+        if self.single_axis_drive is not None and angle is None:
+            angle = self.single_axis_drive.initial_angle_deg
         angles = None if angle is None else np.asarray([angle])
         return float(self._illumination_factors(sun[None, :], angles)[0])
-
-    def preview_illumination_from_sun_body(
-        self,
-        sun_body: npt.NDArray[np.float64],
-        *,
-        track_sun: bool = False,
-        elapsed_seconds: float = 0.0,
-    ) -> npt.NDArray[np.float64]:
-        """Preview candidate illumination without mutating drive state.
-
-        Drive motion is disabled unless the caller explicitly supplies a
-        positive control interval through ``elapsed_seconds``.
-        """
-        if not np.isfinite(elapsed_seconds) or elapsed_seconds < 0.0:
-            raise ValueError("elapsed_seconds must be finite and non-negative")
-        sun = np.asarray(sun_body, dtype=np.float64)
-        if sun.ndim != 2 or sun.shape[1] != 3 or not np.all(np.isfinite(sun)):
-            raise ValueError("Sun body vectors must have shape (N, 3) and be finite")
-        magnitudes = np.linalg.norm(sun, axis=1)
-        if np.any(magnitudes <= 0.0):
-            raise ValueError("Sun body vectors must be non-zero")
-        sun = sun / magnitudes[:, None]
-
-        drive = self.single_axis_drive
-        if drive is None:
-            return self._illumination_factors(sun)
-
-        current = self.drive_angle_deg
-        assert current is not None
-        targets = (
-            drive.optimal_angles(self.normal, sun, reference_angle_deg=current)
-            if track_sun
-            else np.full(len(sun), current, dtype=np.float64)
-        )
-        max_step = drive.max_rate_deg_per_s * elapsed_seconds
-        angles = np.clip(
-            current + np.clip(targets - current, -max_step, max_step),
-            drive.min_angle_deg,
-            drive.max_angle_deg,
-        )
-        return self._illumination_factors(sun, angles)
 
     def panel_illumination_fraction(
         self,
@@ -456,10 +383,9 @@ class SolarPanel(ConfigModel):
         ra: float,
         dec: float,
         roll: float = 0.0,
-        acs_mode: ACSMode | None = None,
-        advance_drive_state: bool = False,
+        drive_angle_deg: float | None = None,
     ) -> float | npt.NDArray[np.float64]:
-        """Calculate the fraction of sunlight on this solar panel.
+        """Calculate illumination at a fixed, explicitly supplied drive angle.
 
         Args:
             time: Unix timestamp, datetime object, or list of datetime objects
@@ -467,40 +393,13 @@ class SolarPanel(ConfigModel):
             ra: Current spacecraft RA in degrees
             dec: Current spacecraft Dec in degrees
             roll: Spacecraft roll angle in degrees (rotation about boresight axis)
-            acs_mode: Executed or candidate ACS mode used by the explicit drive
-                control policy. ``None`` conservatively holds finite drives.
-            advance_drive_state: Commit rate-limited drive motion. Candidate
-                calculations should leave this false; DITL execution sets it true.
+            drive_angle_deg: Physical finite-drive angle. When omitted, the
+                configured initial angle is used.
 
         Returns:
             float or np.ndarray: Fraction of panel illumination (0.0 to 1.0)
         """
         from ..common import scbodyvector
-
-        if self.single_axis_drive is not None and not isinstance(
-            time, (int, float, datetime)
-        ):
-            previous_state = (self._drive_angle_deg, self._drive_time_s)
-            try:
-                values = [
-                    cast(
-                        float,
-                        self.panel_illumination_fraction(
-                            time=item,
-                            ephem=ephem,
-                            ra=ra,
-                            dec=dec,
-                            roll=roll,
-                            acs_mode=acs_mode,
-                            advance_drive_state=True,
-                        ),
-                    )
-                    for item in time
-                ]
-            finally:
-                if not advance_drive_state:
-                    self._drive_angle_deg, self._drive_time_s = previous_state
-            return np.asarray(values, dtype=np.float64)
 
         # Convert unix time to datetime if needed
         if isinstance(time, (int, float)):
@@ -557,19 +456,9 @@ class SolarPanel(ConfigModel):
             sun_mag = np.linalg.norm(sun_body)
             if sun_mag > 0:
                 sun_normalized = sun_body / sun_mag
-                sample_time = time[idx]
-                sample_time_s = (
-                    sample_time.timestamp()
-                    if isinstance(sample_time, datetime)
-                    else float(sample_time)
-                )
                 illum[idx] = self.illumination_from_sun_body(
-                    sample_time_s,
                     sun_normalized,
-                    track_sun=self.tracks_sun(
-                        acs_mode, in_eclipse=bool(eclipse_flags[idx])
-                    ),
-                    advance_drive_state=advance_drive_state,
+                    drive_angle_deg=drive_angle_deg,
                 )
             else:
                 illum[idx] = 0.0
@@ -795,20 +684,87 @@ class SolarPanelSet(ConfigModel):
     # Cached panel geometry for vectorized calculations
     _geometry_cache: _PanelGeometry | None = PrivateAttr(default=None)
 
-    def reset_drive_state(self) -> None:
-        """Reset every rate-limited panel drive for a new simulation run."""
-        for panel in self.panels:
-            panel.reset_drive_state()
+    def initial_drive_state(self) -> SolarArrayDriveState:
+        """Return a fresh runtime state aligned with the configured panels."""
+        return SolarArrayDriveState(
+            angles_deg=tuple(
+                panel.single_axis_drive.initial_angle_deg
+                if panel.single_axis_drive is not None
+                else None
+                for panel in self.panels
+            )
+        )
 
-    @property
-    def drive_angles_deg(self) -> list[float] | None:
-        """Return current driven-panel angles in panel-list order."""
-        angles = [
-            angle
-            for panel in self.panels
-            if (angle := panel.drive_angle_deg) is not None
-        ]
-        return angles or None
+    def _validated_drive_state(
+        self, state: SolarArrayDriveState | None
+    ) -> SolarArrayDriveState:
+        resolved = self.initial_drive_state() if state is None else state
+        if len(resolved.angles_deg) != len(self.panels):
+            raise ValueError("drive state must contain one entry per configured panel")
+        for index, (panel, angle) in enumerate(zip(self.panels, resolved.angles_deg)):
+            drive = panel.single_axis_drive
+            if drive is None:
+                if angle is not None:
+                    raise ValueError(
+                        f"drive state entry {index} must be None for an undriven panel"
+                    )
+                continue
+            if angle is None:
+                raise ValueError(
+                    f"drive state entry {index} is missing for a driven panel"
+                )
+            if not drive.min_angle_deg <= angle <= drive.max_angle_deg:
+                raise ValueError(f"drive state entry {index} lies outside drive travel")
+        return resolved
+
+    def advance_drive_state(
+        self,
+        time_s: float,
+        sun_body: tuple[float, float, float] | npt.NDArray[np.float64],
+        state: SolarArrayDriveState,
+        *,
+        acs_mode: ACSMode | None,
+        in_eclipse: bool,
+    ) -> SolarArrayDriveState:
+        """Return the state after one causal, executed-attitude transition."""
+        if not np.isfinite(time_s):
+            raise ValueError("drive-state update time must be finite")
+        current_state = self._validated_drive_state(state)
+        if not any(panel.single_axis_drive is not None for panel in self.panels):
+            return current_state
+        if current_state.updated_at_s is None:
+            elapsed_seconds = 0.0
+        else:
+            elapsed_seconds = time_s - current_state.updated_at_s
+            if elapsed_seconds < 0.0:
+                raise ValueError(
+                    "cannot advance single-axis drive state backward in time"
+                )
+
+        sun = _unit_vector(sun_body, field_name="Sun body vector")
+        angles: list[float | None] = []
+        for panel, current in zip(self.panels, current_state.angles_deg):
+            drive = panel.single_axis_drive
+            if drive is None:
+                angles.append(None)
+                continue
+            assert current is not None
+            target = current
+            if panel.tracks_sun(acs_mode, in_eclipse=in_eclipse):
+                target = float(
+                    drive.optimal_angles(
+                        panel.normal,
+                        sun[None, :],
+                        reference_angle_deg=current,
+                    )[0]
+                )
+            angles.append(drive.step_toward(current, target, elapsed_seconds))
+
+        return SolarArrayDriveState(
+            angles_deg=tuple(angles),
+            updated_at_s=float(time_s),
+            revision=current_state.revision + 1,
+        )
 
     @property
     def sidemount(self) -> bool:
@@ -857,16 +813,20 @@ class SolarPanelSet(ConfigModel):
         )
         return self._geometry_cache
 
-    def preview_power_from_normalized_sun_body(
+    def power_from_normalized_sun_body(
         self,
         sun_body: npt.NDArray[np.float64],
         *,
-        acs_mode: ACSMode | None = None,
-        in_eclipse: bool = False,
-        elapsed_seconds: float = 0.0,
+        drive_state: SolarArrayDriveState | None = None,
     ) -> npt.NDArray[np.float64]:
-        """Evaluate aggregate power for normalized body-frame Sun vectors."""
+        """Purely score body-frame Sun candidates at one drive-state snapshot."""
         sun = np.asarray(sun_body, dtype=np.float64)
+        if sun.ndim != 2 or sun.shape[1] != 3 or not np.all(np.isfinite(sun)):
+            raise ValueError("Sun body vectors must have shape (N, 3) and be finite")
+        magnitudes = np.linalg.norm(sun, axis=1)
+        if np.any(magnitudes <= 0.0):
+            raise ValueError("Sun body vectors must be non-zero")
+        sun = sun / magnitudes[:, None]
         if not self.panels:
             return np.zeros(len(sun), dtype=np.float64)
 
@@ -885,15 +845,17 @@ class SolarPanelSet(ConfigModel):
         if not any(panel.single_axis_drive is not None for panel in self.panels):
             normals = np.asarray([panel.normal for panel in self.panels], dtype=float)
             illumination = np.maximum(sun @ normals.T, 0.0)
+            gimbled = np.asarray([panel.gimbled for panel in self.panels], dtype=bool)
+            illumination[:, gimbled] = 1.0
             return cast(npt.NDArray[np.float64], illumination @ weights)
 
+        state = self._validated_drive_state(drive_state)
         total = np.zeros(len(sun), dtype=np.float64)
-        for panel, weight in zip(self.panels, weights):
-            total += weight * panel.preview_illumination_from_sun_body(
-                sun,
-                track_sun=panel.tracks_sun(acs_mode, in_eclipse=in_eclipse),
-                elapsed_seconds=elapsed_seconds,
+        for panel, weight, angle in zip(self.panels, weights, state.angles_deg):
+            drive_angles = (
+                None if angle is None else np.full(len(sun), angle, dtype=np.float64)
             )
+            total += weight * panel._illumination_factors(sun, drive_angles)
         return total
 
     def panel_illumination_fraction(
@@ -903,8 +865,7 @@ class SolarPanelSet(ConfigModel):
         ra: float,
         dec: float,
         roll: float = 0.0,
-        acs_mode: ACSMode | None = None,
-        advance_drive_state: bool = False,
+        drive_state: SolarArrayDriveState | None = None,
     ) -> float | np.ndarray:
         """Calculate the weighted average fraction of sunlight on the solar panel set.
 
@@ -916,8 +877,8 @@ class SolarPanelSet(ConfigModel):
             ra: Current spacecraft RA in degrees
             dec: Current spacecraft Dec in degrees
             roll: Spacecraft roll angle in degrees (rotation about boresight axis)
-            acs_mode: Operational mode used by finite-drive control policies.
-            advance_drive_state: Commit rate-limited drive motion.
+            drive_state: Immutable runtime state to score. The configured
+                initial state is used when omitted.
 
         Returns:
             float or np.ndarray: Weighted average fraction of panel illumination (0.0 to 1.0)
@@ -928,8 +889,7 @@ class SolarPanelSet(ConfigModel):
             dec=dec,
             ephem=ephem,
             roll=roll,
-            acs_mode=acs_mode,
-            advance_drive_state=advance_drive_state,
+            drive_state=drive_state,
         )
         return illumination
 
@@ -940,8 +900,7 @@ class SolarPanelSet(ConfigModel):
         dec: float,
         ephem: rust_ephem.Ephemeris,
         roll: float = 0.0,
-        acs_mode: ACSMode | None = None,
-        advance_drive_state: bool = False,
+        drive_state: SolarArrayDriveState | None = None,
     ) -> float | np.ndarray:
         """Calculate the power generated by the solar panel set.
 
@@ -953,8 +912,8 @@ class SolarPanelSet(ConfigModel):
             dec: Current spacecraft Dec in degrees
             ephem: Ephemeris object
             roll: Spacecraft roll angle in degrees (rotation about boresight axis)
-            acs_mode: Operational mode used by finite-drive control policies.
-            advance_drive_state: Commit rate-limited drive motion.
+            drive_state: Immutable runtime state to score. The configured
+                initial state is used when omitted.
 
         Returns:
             float or np.ndarray: Power generated by the solar panels in Watts
@@ -965,10 +924,120 @@ class SolarPanelSet(ConfigModel):
             dec=dec,
             ephem=ephem,
             roll=roll,
-            acs_mode=acs_mode,
-            advance_drive_state=advance_drive_state,
+            drive_state=drive_state,
         )
         return power
+
+    def _sun_body_and_eclipse(
+        self,
+        time: datetime | float,
+        ra: float,
+        dec: float,
+        ephem: rust_ephem.Ephemeris,
+        roll: float,
+    ) -> tuple[float, npt.NDArray[np.float64] | None, bool]:
+        """Resolve one attitude sample into time, normalized Sun vector, and eclipse."""
+        from ..common import scbodyvector
+
+        dt = dtutcfromtimestamp(time) if isinstance(time, (int, float)) else time
+        idx = ephem.index(dt)
+        in_eclipse = bool(
+            _get_eclipse_constraint().in_constraint(
+                ephemeris=ephem, target_ra=0.0, target_dec=0.0, time=dt
+            )
+        )
+        if in_eclipse and not any(
+            panel.single_axis_drive is not None for panel in self.panels
+        ):
+            return dt.timestamp(), None, True
+        sunvec = ephem.sun_pv.position[idx] - ephem.gcrs_pv.position[idx]
+        sun_body = np.asarray(
+            scbodyvector(np.deg2rad(ra), np.deg2rad(dec), np.deg2rad(roll), sunvec),
+            dtype=np.float64,
+        )
+        magnitude = float(np.linalg.norm(sun_body))
+        normalized = None if magnitude <= 0.0 else sun_body / magnitude
+        return dt.timestamp(), normalized, in_eclipse
+
+    def _illumination_and_power_from_sun_body(
+        self,
+        sun_body: npt.NDArray[np.float64] | None,
+        *,
+        in_eclipse: bool,
+        drive_state: SolarArrayDriveState,
+    ) -> tuple[float, float]:
+        """Score one normalized body-frame Sun vector without changing state."""
+        panels = self.panels
+        if (
+            sun_body is None
+            or not panels
+            or sum(panel.max_power for panel in panels) <= 0.0
+            or in_eclipse
+        ):
+            return 0.0, 0.0
+
+        state = self._validated_drive_state(drive_state)
+        geom = self._get_geometry()
+        if not any(panel.single_axis_drive is not None for panel in panels):
+            panel_illum = np.dot(geom.normal, sun_body)
+            panel_illum = np.where(geom.gimbled, 1.0, panel_illum)
+            panel_illum = np.maximum(panel_illum, 0.0)
+        else:
+            panel_illum = np.asarray(
+                [
+                    panel.illumination_from_sun_body(sun_body, drive_angle_deg=angle)
+                    for panel, angle in zip(panels, state.angles_deg)
+                ],
+                dtype=np.float64,
+            )
+
+        weighted_illum = float(np.sum(panel_illum * geom.weights))
+        total_power = float(np.sum(panel_illum * geom.max_power * geom.efficiency))
+        return weighted_illum, total_power
+
+    def evaluate_executed_attitude(
+        self,
+        time: datetime | float,
+        ra: float,
+        dec: float,
+        ephem: rust_ephem.Ephemeris,
+        drive_state: SolarArrayDriveState,
+        *,
+        roll: float = 0.0,
+        acs_mode: ACSMode | None = None,
+    ) -> tuple[float, float, SolarArrayDriveState]:
+        """Advance once under an executed attitude, then return endpoint power.
+
+        This is the only high-level operation that advances finite drives. Roll
+        optimization and candidate scoring use the prior immutable state.
+        """
+        time_s, sun_body, in_eclipse = self._sun_body_and_eclipse(
+            time, ra, dec, ephem, roll
+        )
+        current_state = self._validated_drive_state(drive_state)
+        next_state = (
+            self.advance_drive_state(
+                time_s,
+                sun_body,
+                current_state,
+                acs_mode=acs_mode,
+                in_eclipse=in_eclipse,
+            )
+            if sun_body is not None
+            else (
+                SolarArrayDriveState(
+                    angles_deg=current_state.angles_deg,
+                    updated_at_s=time_s,
+                    revision=current_state.revision + 1,
+                )
+                if any(panel.single_axis_drive is not None for panel in self.panels)
+                else current_state
+            )
+        )
+        illumination, power = self._illumination_and_power_from_sun_body(
+            sun_body, in_eclipse=in_eclipse, drive_state=next_state
+        )
+        return illumination, power, next_state
 
     def illumination_and_power(
         self,
@@ -977,10 +1046,9 @@ class SolarPanelSet(ConfigModel):
         dec: float,
         ephem: rust_ephem.Ephemeris,
         roll: float = 0.0,
-        acs_mode: ACSMode | None = None,
-        advance_drive_state: bool = False,
+        drive_state: SolarArrayDriveState | None = None,
     ) -> tuple[float | np.ndarray, float | np.ndarray]:
-        """Calculate both illumination fraction and power in a single call.
+        """Calculate illumination and power without advancing runtime state.
 
         This is a vectorized implementation that computes all panels efficiently
         by looking up sun position and eclipse state only once per call.
@@ -991,134 +1059,39 @@ class SolarPanelSet(ConfigModel):
             dec: Current spacecraft Dec in degrees
             ephem: Ephemeris object
             roll: Spacecraft roll angle in degrees (rotation about boresight axis)
-            acs_mode: Operational mode used by finite-drive control policies.
-            advance_drive_state: Commit rate-limited drive motion. This should
-                be true only for executed simulation samples.
+            drive_state: Immutable runtime state to score. The configured
+                initial state is used when omitted.
 
         Returns:
             tuple: (illumination_fraction, power_watts)
         """
-        from ..common import scbodyvector
-
         panels = self.panels
         if not panels or sum(panel.max_power for panel in panels) <= 0.0:
             if isinstance(time, (float, int, datetime)):
                 return 0.0, 0.0
             return np.zeros(len(time)), np.zeros(len(time))
 
-        # Get cached panel geometry
-        geom = self._get_geometry()
-
-        # Handle time conversion - we only need scalar case for DITL
-        if isinstance(time, (int, float)):
-            dt = dtutcfromtimestamp(time)
-            scalar = True
-        elif isinstance(time, datetime):
-            dt = time
-            scalar = True
-        else:
-            # List of times - fall back to per-panel loop for now
-            # (vectorizing across both panels AND times is more complex)
-            return self._illumination_and_power_loop(
-                time,
-                ra,
-                dec,
-                ephem,
-                roll=roll,
-                acs_mode=acs_mode,
-                advance_drive_state=advance_drive_state,
+        state = self._validated_drive_state(drive_state)
+        if isinstance(time, (int, float, datetime)):
+            _, sun_body, in_eclipse = self._sun_body_and_eclipse(
+                time, ra, dec, ephem, roll
+            )
+            return self._illumination_and_power_from_sun_body(
+                sun_body, in_eclipse=in_eclipse, drive_state=state
             )
 
-        # Get ephemeris index ONCE
-        idx = ephem.index(dt)
-
-        # Check eclipse ONCE (use SolarPanel's constraint for test compatibility)
-        in_eclipse = _get_eclipse_constraint().in_constraint(
-            ephemeris=ephem, target_ra=0.0, target_dec=0.0, time=dt
-        )
-        has_finite_drive = any(panel.single_axis_drive is not None for panel in panels)
-        if in_eclipse and not has_finite_drive:
-            return (0.0, 0.0) if scalar else (np.array([0.0]), np.array([0.0]))
-
-        # Get sun vector in body frame
-        sunvec = ephem.sun_pv.position[idx] - ephem.gcrs_pv.position[idx]  # km
-        sun_body = scbodyvector(
-            np.deg2rad(ra), np.deg2rad(dec), np.deg2rad(roll), sunvec
-        )
-
-        # Normalize sun vector
-        sun_mag = np.linalg.norm(sun_body)
-        if sun_mag > 0:
-            sun_normalized = sun_body / sun_mag
-        else:
-            # No sun direction - return zero illumination
-            return (0.0, 0.0) if scalar else (np.array([0.0]), np.array([0.0]))
-
-        if not has_finite_drive:
-            # Preserve the established vectorized fixed/ideal-gimbal behavior
-            # exactly for existing configurations.
-            panel_illum = np.dot(geom.normal, sun_normalized)
-            panel_illum = np.where(geom.gimbled, 1.0, panel_illum)
-            panel_illum = np.maximum(panel_illum, 0.0)
-        else:
-            panel_illum = np.zeros(len(panels), dtype=np.float64)
-            for panel_index, panel in enumerate(panels):
-                panel_illum[panel_index] = panel.illumination_from_sun_body(
-                    dt.timestamp(),
-                    sun_normalized,
-                    track_sun=panel.tracks_sun(acs_mode, in_eclipse=bool(in_eclipse)),
-                    advance_drive_state=advance_drive_state,
+        illumination = np.zeros(len(time), dtype=np.float64)
+        power = np.zeros(len(time), dtype=np.float64)
+        for index, sample_time in enumerate(time):
+            _, sun_body, in_eclipse = self._sun_body_and_eclipse(
+                sample_time, ra, dec, ephem, roll
+            )
+            illumination[index], power[index] = (
+                self._illumination_and_power_from_sun_body(
+                    sun_body, in_eclipse=in_eclipse, drive_state=state
                 )
-
-        if in_eclipse:
-            panel_illum.fill(0.0)
-
-        # Compute weighted illumination and power
-        weighted_illum = float(np.sum(panel_illum * geom.weights))
-        total_power = float(np.sum(panel_illum * geom.max_power * geom.efficiency))
-
-        return weighted_illum, total_power
-
-    def _illumination_and_power_loop(
-        self,
-        time: list[datetime],
-        ra: float,
-        dec: float,
-        ephem: rust_ephem.Ephemeris,
-        roll: float = 0.0,
-        acs_mode: ACSMode | None = None,
-        advance_drive_state: bool = False,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Fallback loop-based implementation for list of times."""
-        panels = self.panels
-        total_max = sum(p.max_power for p in panels)
-
-        illum_accum = np.zeros(len(time))
-        power_accum = np.zeros(len(time))
-
-        for p in panels:
-            eff = (
-                p.conversion_efficiency
-                if p.conversion_efficiency is not None
-                else self.conversion_efficiency
             )
-            panel_illum = p.panel_illumination_fraction(
-                time=time,
-                ephem=ephem,
-                ra=ra,
-                dec=dec,
-                roll=roll,
-                acs_mode=acs_mode,
-                advance_drive_state=advance_drive_state,
-            )
-            assert isinstance(panel_illum, np.ndarray)
-            weight = p.max_power / total_max
-            panel_power = panel_illum * p.max_power * eff
-
-            illum_accum = illum_accum + (panel_illum * weight)
-            power_accum = power_accum + panel_power
-
-        return illum_accum, power_accum
+        return illumination, power
 
     def optimal_charging_pointing(
         self, time: float, ephem: rust_ephem.Ephemeris

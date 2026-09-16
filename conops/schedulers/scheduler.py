@@ -3,9 +3,9 @@ from typing import TYPE_CHECKING
 import numpy as np
 import rust_ephem
 
-from ..common import ACSMode, dtutcfromtimestamp
-from ..config import MissionConfig
-from ..simulation.roll import optimum_roll
+from ..common import dtutcfromtimestamp
+from ..config import AttitudeConstraintScope, MissionConfig
+from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
 from ..simulation.saa import SAA
 from ..targets import Plan, PlanEntry, TargetList
 
@@ -71,6 +71,7 @@ class DumbScheduler:
             selected_target: PlanEntry | None = None
             selected_obslen = 0.0
             selected_slewtime = 0.0
+            selected_roll = 0.0
 
             # Candidate targets (exptime > 0)
             candidates = [
@@ -82,38 +83,64 @@ class DumbScheduler:
                 assert task.exptime is not None
                 current_time = ephem_utime[i]
 
+                # Compute and assign the complete target attitude before timing
+                # the maneuver so direction-dependent limits have both endpoints.
+                obs_start = current_time
+                solar_panel = (
+                    self.config.solar_panel if self.config is not None else None
+                )
+                task_is_plan_entry = issubclass(type(task), PlanEntry)
+                telescope = task.science_telescope() if task_is_plan_entry else None
+                obs_roll = (
+                    optimum_instrument_roll(
+                        task.ra,
+                        task.dec,
+                        obs_start,
+                        self.ephem,
+                        telescope,
+                        solar_panel,
+                        self.constraint,
+                    )
+                    if telescope is not None
+                    else optimum_body_roll(
+                        task.ra,
+                        task.dec,
+                        obs_start,
+                        self.ephem,
+                        solar_panel,
+                        self.constraint,
+                    )
+                )
+                task.roll = obs_roll
+                body_ra, body_dec, body_roll = (
+                    task.target_body_attitude(obs_roll)
+                    if task_is_plan_entry
+                    else (task.ra, task.dec, obs_roll)
+                )
+                if task_is_plan_entry and task.uses_mounted_attitude():
+                    task.spacecraft_attitude = (body_ra, body_dec, body_roll)
+                else:
+                    task.spacecraft_attitude = None
+
                 # Determine slew time based on prior plan entry (if any)
                 if self.plan and len(self.plan) > 0:
-                    try:
-                        last_entry = self.plan[-1]
-                        task.calc_slewtime(last_entry.ra, last_entry.dec)
-                        slewtime = task.slewtime
-                    except Exception:
-                        # fallback to default if last entry isn't usable
-                        slewtime = self._get_default_slew()
+                    last_entry = self.plan[-1]
+                    last_attitude = last_entry.spacecraft_attitude or (
+                        last_entry.ra,
+                        last_entry.dec,
+                        last_entry.roll,
+                    )
+                    estimated_slewtime = task.calc_slewtime(
+                        *last_attitude,
+                    )
+                    if estimated_slewtime is not None:
+                        task.slewtime = estimated_slewtime
+                    slewtime = task.slewtime
                 else:
                     slewtime = self._get_default_slew()
 
                 # Check constraints for the observation window
-                obs_start = current_time
                 obs_end = current_time + task.exptime + slewtime
-
-                # Compute the roll that will be locked for this observation.
-                # The ACS computes optimum_roll at the slew execution time and
-                # then holds it constant throughout the observation; replicate
-                # that here so the scheduler validates the same fixed roll.
-                solar_panel = (
-                    self.config.solar_panel if self.config is not None else None
-                )
-                obs_roll = optimum_roll(
-                    task.ra,
-                    task.dec,
-                    obs_start,
-                    self.ephem,
-                    solar_panel,
-                    self.constraint,
-                    acs_mode=ACSMode.SCIENCE,
-                )
 
                 # Get ephemeris time indices for observation window
                 begin_idx = self.ephem.index(dtutcfromtimestamp(obs_start))
@@ -122,15 +149,27 @@ class DumbScheduler:
                 # Evaluate constraints at each timestep using the fixed roll.
                 time_window = self.ephem.timestamp[begin_idx:end_idx]
 
-                in_occult = [
-                    self.constraint.in_constraint(
-                        ra=task.ra,
-                        dec=task.dec,
-                        utime=t.timestamp(),
-                        target_roll=obs_roll,
-                    )
-                    for t in time_window
-                ]
+                if task_is_plan_entry and task.uses_mounted_attitude():
+                    in_occult = [
+                        bool(
+                            task.attitude_constraint_names(
+                                list(AttitudeConstraintScope),
+                                (body_ra, body_dec, body_roll),
+                                t.timestamp(),
+                            )
+                        )
+                        for t in time_window
+                    ]
+                else:
+                    in_occult = [
+                        self.constraint.in_constraint(
+                            ra=body_ra,
+                            dec=body_dec,
+                            utime=t.timestamp(),
+                            target_roll=body_roll,
+                        )
+                        for t in time_window
+                    ]
 
                 # goodtime = 1 where constraints are satisfied (NOT in occult)
                 goodtime = np.bitwise_not(in_occult).astype(int).tolist()
@@ -152,6 +191,7 @@ class DumbScheduler:
                     selected_target = task
                     selected_obslen = obslen
                     selected_slewtime = slewtime
+                    selected_roll = obs_roll
                     break
 
             if not found:
@@ -178,6 +218,16 @@ class DumbScheduler:
             # keep entry angles in units that other code expects (note: original used target.ra)
             ppt.ra = selected_target.ra
             ppt.dec = selected_target.dec
+            ppt.roll = selected_roll
+            selected_telescope = (
+                selected_target.science_telescope()
+                if issubclass(type(selected_target), PlanEntry)
+                else None
+            )
+            ppt.instrument_name = (
+                selected_telescope.name if selected_telescope is not None else None
+            )
+            ppt.spacecraft_attitude = selected_target.spacecraft_attitude
             ppt.begin = ephem_utime[i]  # numeric start time
             ppt.slewtime = int(selected_slewtime)
 

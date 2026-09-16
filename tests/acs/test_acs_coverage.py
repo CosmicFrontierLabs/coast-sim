@@ -993,7 +993,12 @@ class TestBatteryChargingMethods:
                 utime, mock_ephem, mock_emergency_charging, lastra, lastdec, current_ppt
             )
             mock_emergency_charging.initiate_emergency_charging.assert_called_once_with(
-                utime, mock_ephem, lastra, lastdec, current_ppt
+                utime,
+                mock_ephem,
+                lastra,
+                lastdec,
+                current_ppt,
+                drive_state=acs.solar_array_drive_state,
             )
 
     def test_initiate_emergency_charging_requests_charge(self, acs) -> None:

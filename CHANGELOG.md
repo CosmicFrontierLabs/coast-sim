@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.8.0...v0.9.0) (2026-08-28)
+
+
+### Features
+
+* model direction-dependent slew capability ([#247](https://github.com/CosmicFrontierLabs/coast-sim/issues/247)) ([227e810](https://github.com/CosmicFrontierLabs/coast-sim/commit/227e810d0ec58d00a533641c8438ae9df557673d))
+
 ## [0.8.0](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.7.0...v0.8.0) (2026-08-25)
 
 

@@ -36,6 +36,7 @@ class DumbQueueScheduler:
         elapsed = 0.0
         last_ra = 0.0
         last_dec = 0.0
+        last_roll = 0.0
 
         self.ustart = self.begin.timestamp()
         end_time = self.end.timestamp()
@@ -45,7 +46,7 @@ class DumbQueueScheduler:
             if utime >= end_time:
                 break
 
-            item = self.queue.get(last_ra, last_dec, utime)
+            item = self.queue.get(last_ra, last_dec, utime, roll=last_roll)
             if item is None:
                 break
 
@@ -55,8 +56,12 @@ class DumbQueueScheduler:
                 break
 
             elapsed += duration
-            last_ra = item.ra
-            last_dec = item.dec
+            spacecraft_attitude = item.spacecraft_attitude
+            last_ra, last_dec, last_roll = (
+                spacecraft_attitude
+                if isinstance(spacecraft_attitude, tuple)
+                else (item.ra, item.dec, item.roll)
+            )
             item.done = True
             self.plan.extend([item])
 
