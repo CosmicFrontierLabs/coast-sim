@@ -55,6 +55,15 @@ returns a :class:`~conops.targets.Plan` with its serialized metadata and entries
   print(plan.num_entries)      # number of plan entries
   print(plan.entries[0].name)  # first target name
 
+Runtime-only configuration and ephemeris references are intentionally absent from
+the JSON. :class:`~conops.ditl.ditl.DITL` restores them when the loaded plan is
+passed to the constructor or assigned before :meth:`~conops.ditl.ditl.DITL.calc`:
+
+.. code-block:: python
+
+  ditl = DITL(config=config, ephem=ephem, plan=plan)
+  ditl.calc()
+
 The compatibility ``PlanSchema`` class can still load a plan when preserving that type is
 important to existing callers:
 
@@ -194,8 +203,9 @@ Metadata Fields
        See :ref:`orbit-state-timeseries` for the file format.
    * - ``roll_axis`` / ``roll_convention``
      - string
-     - Every plan roll field is a right-handed physical spacecraft rotation about
-       body ``+X``.
+     - By default, plan roll is a right-handed physical spacecraft rotation about
+       body ``+X``. A mounted science instrument overrides this per entry in
+       ``target_attitude.pointing``.
    * - ``roll_reference_axis`` / ``roll_reference``
      - string
      - At zero roll, body ``+Z`` aligns with celestial north projected into the
@@ -234,15 +244,24 @@ Entry Fields
      - Human-readable target name (e.g. ``"Crab Nebula"``).
    * - ``ra``
      - float
-     - Right ascension in degrees (J2000).
+     - Science-target right ascension in degrees (J2000). For a mounted telescope,
+       this is the instrument ``+X`` line of sight rather than spacecraft body ``+X``.
    * - ``dec``
      - float
      - Declination in degrees (J2000).
    * - ``roll``
      - float
-     - Right-handed physical spacecraft rotation about body ``+X``, in degrees
-       (``-1`` = unset), using the plan-level roll reference. At zero RA/Dec,
-       ``+90`` degrees places body ``+Y`` along inertial ``+Z``.
+     - Right-handed roll in degrees (``-1`` = unset). This is about spacecraft body
+       ``+X`` for legacy/default pointing, or about the selected instrument ``+X``
+       science boresight when ``instrument_name`` identifies a mounted telescope.
+   * - ``instrument_name``
+     - string | null
+     - Telescope whose frame defines ``ra``, ``dec``, and ``roll``. Omitted for
+       legacy body-``+X`` targets.
+   * - ``spacecraft_attitude``
+     - array[float, float, float] | null
+     - Physical spacecraft body-``+X`` RA, Dec, and roll derived for a mounted
+       science instrument. Omitted when it is identical to ``ra``/``dec``/``roll``.
    * - ``begin``
      - string
      - Start of the observation window (ISO-8601 UTC).
@@ -346,7 +365,9 @@ Entry Fields
        transformed into body coordinates as ``q * v * conjugate(q)``. Consumers using
        ``conjugate(q) * v * q`` must conjugate the exported quaternion. It is ``null`` for
        dynamically tracked entries such as ``GSP``. The pointing metadata records
-       ``roll_convention: "right_handed_body_rotation"``.
+       ``roll_convention: "right_handed_body_rotation"``. For mounted instruments it
+       also records ``instrument_name``, ``boresight_body``, and
+       ``roll_reference_body``.
 
 Ground Station Pass (GSP) Entries
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

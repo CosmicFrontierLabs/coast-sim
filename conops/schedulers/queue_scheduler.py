@@ -56,9 +56,12 @@ class DumbQueueScheduler:
                 break
 
             elapsed += duration
-            last_ra = item.ra
-            last_dec = item.dec
-            last_roll = item.roll
+            spacecraft_attitude = item.spacecraft_attitude
+            last_ra, last_dec, last_roll = (
+                spacecraft_attitude
+                if isinstance(spacecraft_attitude, tuple)
+                else (item.ra, item.dec, item.roll)
+            )
             item.done = True
             self.plan.extend([item])
 
