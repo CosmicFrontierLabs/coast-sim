@@ -25,6 +25,15 @@ Instrument
    :show-inheritance:
    :special-members: __init__
 
+InstrumentMounting
+------------------
+
+.. autoclass:: conops.config.instrument.InstrumentMounting
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+
 TelescopeType
 -------------
 

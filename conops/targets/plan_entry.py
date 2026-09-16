@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timezone
+from enum import Enum
 from typing import ClassVar, Literal
 
+import numpy as np
 import rust_ephem
 from pydantic import (
     BaseModel,
@@ -17,14 +20,37 @@ from pydantic import (
 )
 
 from ..common import givename, unixtime2date
-from ..common.enums import ObsType
-from ..common.vector import attitude_to_quat, quaternion_attitude_delta
-from ..config import AttitudeControlSystem, Constraint, MissionConfig
+from ..common.enums import ACSMode, ObsType
+from ..common.vector import (
+    attitude_to_quat,
+    quat_to_attitude,
+    quaternion_attitude_delta,
+)
+from ..config import AttitudeControlSystem, Constraint, MissionConfig, Telescope
 from ..config.acs import scheduled_slew_time
+from ..config.constraint import (
+    attitude_constraint_names_for_scopes,
+    mounted_science_attitude_constraint_names,
+)
 from ..simulation.saa import SAA
 
 BodyAxis = Literal["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
 RollSource = Literal["planned", "defaulted_from_unconstrained_sentinel"]
+
+
+def _cardinal_body_axis(vector: tuple[float, float, float]) -> BodyAxis | None:
+    axes: dict[BodyAxis, tuple[float, float, float]] = {
+        "+X": (1.0, 0.0, 0.0),
+        "-X": (-1.0, 0.0, 0.0),
+        "+Y": (0.0, 1.0, 0.0),
+        "-Y": (0.0, -1.0, 0.0),
+        "+Z": (0.0, 0.0, 1.0),
+        "-Z": (0.0, 0.0, -1.0),
+    }
+    for name, axis in axes.items():
+        if np.allclose(vector, axis, atol=1e-10):
+            return name
+    return None
 
 
 class AttitudeRotationConventionSchema(BaseModel):
@@ -49,12 +75,21 @@ class AttitudePointingSchema(BaseModel):
     ra_deg: float
     dec_deg: float
     roll_deg: float
-    boresight_axis: BodyAxis = "+X"
-    roll_axis: Literal["+X"] = "+X"
+    instrument_name: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    boresight_axis: BodyAxis | None = "+X"
+    boresight_body: tuple[float, float, float] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    roll_axis: BodyAxis | None = "+X"
     roll_convention: Literal["right_handed_body_rotation"] = (
         "right_handed_body_rotation"
     )
-    roll_reference_axis: Literal["+Z"] = "+Z"
+    roll_reference_axis: BodyAxis | None = "+Z"
+    roll_reference_body: tuple[float, float, float] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     roll_reference: Literal["projected_celestial_north"] = "projected_celestial_north"
     roll_source: RollSource = "planned"
 
@@ -82,9 +117,11 @@ class PlanEntry(BaseModel):
     acs_config: AttitudeControlSystem | None = Field(default=None, exclude=True)
     ephem: rust_ephem.Ephemeris | None = Field(default=None, exclude=True)
     name: str = ""
+    instrument_name: str | None = None
     ra: float = 0.0
     dec: float = 0.0
     roll: float = -1.0
+    spacecraft_attitude: tuple[float, float, float] | None = None
     begin: float = 0  # start of window, not observation
     slewtime: int = 0
     insaa: int = 0
@@ -114,28 +151,35 @@ class PlanEntry(BaseModel):
     ss_max: float = 1e6
     _exptime: int | None = PrivateAttr(default=None)
     _exporig: int | None = PrivateAttr(default=None)
+    _serialized_target_attitude: TargetAttitudeSchema | None = PrivateAttr(default=None)
 
     @model_validator(mode="wrap")
     @classmethod
-    def _set_exptime_exporig_from_input(
+    def _restore_computed_fields_from_input(
         cls, data: object, handler: ModelWrapValidatorHandler[PlanEntry]
     ) -> PlanEntry:
-        """Set _exptime/_exporig private attrs from raw input dict keys.
+        """Restore serialized computed fields into their private backing state.
 
-        exptime/exporig are @computed_field properties backed by private
-        attrs, not real pydantic fields, so they serialize out via
-        model_dump() but are otherwise silently dropped as unrecognized
-        input during model_validate()/JSON load. This reads them from the
-        raw input before that happens and assigns them directly to the
-        private attrs on the constructed instance.
+        Computed fields serialize out via ``model_dump()`` but are otherwise
+        dropped as unrecognized input during validation. Preserve the fields
+        that must survive a load followed by another export.
         """
         exptime = data.get("exptime") if isinstance(data, dict) else None
         exporig = data.get("exporig") if isinstance(data, dict) else None
+        target_attitude = (
+            data.get("target_attitude") if isinstance(data, dict) else None
+        )
         instance = handler(data)
         if exptime is not None:
             instance._exptime = exptime
         if exporig is not None:
             instance._exporig = exporig
+        if target_attitude is not None:
+            instance._serialized_target_attitude = (
+                target_attitude
+                if isinstance(target_attitude, TargetAttitudeSchema)
+                else TargetAttitudeSchema.model_validate(target_attitude)
+            )
         return instance
 
     @model_validator(mode="after")
@@ -232,7 +276,7 @@ class PlanEntry(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def target_attitude(self) -> TargetAttitudeSchema | None:
-        """Fixed target attitude generated from COAST's RA/Dec/Roll convention."""
+        """Physical body attitude generated for a fixed science target."""
         if self.obstype not in self._STATIC_TARGET_OBSTYPES:
             return None
 
@@ -242,7 +286,25 @@ class PlanEntry(BaseModel):
             roll_deg = 0.0
             roll_source = "defaulted_from_unconstrained_sentinel"
 
-        quat = attitude_to_quat(self.ra, self.dec, roll_deg)
+        telescope = self.science_telescope()
+        if (
+            telescope is None
+            and self.config is None
+            and self._serialized_target_attitude is not None
+        ):
+            return self._serialized_target_attitude
+        if self.spacecraft_attitude is not None:
+            body_attitude = self.spacecraft_attitude
+        elif telescope is not None:
+            body_attitude = telescope.target_body_attitude(self.ra, self.dec, roll_deg)
+        else:
+            body_attitude = (self.ra, self.dec, roll_deg)
+
+        quat = attitude_to_quat(*body_attitude)
+        boresight_body = telescope.boresight if telescope is not None else None
+        roll_reference_body = (
+            telescope.mounting.roll_reference_body if telescope is not None else None
+        )
         return TargetAttitudeSchema(
             rotation=AttitudeRotationSchema(
                 values=(
@@ -256,8 +318,88 @@ class PlanEntry(BaseModel):
                 ra_deg=float(self.ra),
                 dec_deg=float(self.dec),
                 roll_deg=roll_deg,
+                instrument_name=(
+                    telescope.name if telescope is not None else self.instrument_name
+                ),
+                boresight_axis=(
+                    _cardinal_body_axis(boresight_body)
+                    if boresight_body is not None
+                    else "+X"
+                ),
+                boresight_body=boresight_body,
+                roll_axis=(
+                    _cardinal_body_axis(boresight_body)
+                    if boresight_body is not None
+                    else "+X"
+                ),
+                roll_reference_axis=(
+                    _cardinal_body_axis(roll_reference_body)
+                    if roll_reference_body is not None
+                    else "+Z"
+                ),
+                roll_reference_body=roll_reference_body,
                 roll_source=roll_source,
             ),
+        )
+
+    def science_telescope(self) -> Telescope | None:
+        """Return the telescope assigned to this target, if configured."""
+        if self.config is None or self.obstype not in self._STATIC_TARGET_OBSTYPES:
+            return None
+        telescope = self.config.payload.telescope_for_target(self.instrument_name)
+        return telescope if issubclass(type(telescope), Telescope) else None
+
+    def uses_mounted_attitude(self) -> bool:
+        """Return whether science coordinates differ from the body attitude."""
+        telescope = self.science_telescope()
+        return bool(telescope is not None and not telescope.mounting.is_identity)
+
+    def target_body_attitude(
+        self, instrument_roll_deg: float | None = None
+    ) -> tuple[float, float, float]:
+        """Return physical body +X RA/Dec/roll for this science target."""
+        roll = self.roll if instrument_roll_deg is None else instrument_roll_deg
+        if roll == -1.0:
+            roll = 0.0
+        telescope = self.science_telescope()
+        if telescope is None:
+            if self.config is None and self._serialized_target_attitude is not None:
+                return quat_to_attitude(
+                    np.asarray(
+                        self._serialized_target_attitude.rotation.values,
+                        dtype=np.float64,
+                    )
+                )
+            return self.ra, self.dec, float(roll)
+        return telescope.target_body_attitude(self.ra, self.dec, float(roll))
+
+    def attitude_constraint_names(
+        self,
+        scopes: Sequence[str | Enum],
+        spacecraft_attitude: tuple[float, float, float],
+        utime: float,
+        acs_mode: ACSMode | int | None = None,
+    ) -> list[str]:
+        """Return violations using science and body attitudes in native frames."""
+        if self.constraint is None:
+            return []
+        if self.uses_mounted_attitude():
+            return mounted_science_attitude_constraint_names(
+                self.constraint,
+                scopes,
+                (self.ra, self.dec, self.roll),
+                spacecraft_attitude,
+                utime,
+                acs_mode,
+            )
+        return attitude_constraint_names_for_scopes(
+            self.constraint,
+            scopes,
+            spacecraft_attitude[0],
+            spacecraft_attitude[1],
+            utime,
+            target_roll=spacecraft_attitude[2],
+            acs_mode=acs_mode,
         )
 
     def givename(self, stem: str = "") -> None:
@@ -283,7 +425,24 @@ class PlanEntry(BaseModel):
         assert self.constraint is not None, (
             "Constraint must be set to calculate visibility"
         )
-        if self.constraint.ignore_roll:
+        telescope = self.science_telescope()
+        if self.uses_mounted_attitude():
+            assert telescope is not None
+            # Visibility belongs to the selected science line of sight. Physical
+            # bus hardware constraints are checked after a concrete instrument
+            # roll has been converted to a body attitude.
+            combined_constraint = self.constraint.science_line_of_sight_constraint
+            telescope_constraint = (
+                telescope.constraint.roll_independent_constraint
+                if telescope.constraint is not None
+                else None
+            )
+            if combined_constraint is None:
+                combined_constraint = telescope_constraint
+            elif telescope_constraint is not None:
+                combined_constraint = combined_constraint | telescope_constraint
+            effective_roll = None
+        elif self.constraint.ignore_roll:
             # ignore_roll=True → field-of-regard scheduling.
             #
             # The combined constraint may include star-tracker components wrapped in
@@ -336,6 +495,15 @@ class PlanEntry(BaseModel):
                 return window
         return False
 
+    def next_vis(self, utime: float) -> float | Literal[False]:
+        """Return the current or next visibility-window start."""
+        if self.visible(utime, utime):
+            return utime
+        return next(
+            (float(window[0]) for window in self.windows if window[0] > utime),
+            False,
+        )
+
     def ra_dec(self, utime: float) -> tuple[float, float] | list[int]:
         """Return Spacecraft RA/Dec for any time during the current PPT"""
         if utime >= self.begin and utime <= self.end:
@@ -355,8 +523,10 @@ class PlanEntry(BaseModel):
         limits require the complete starting RA/Dec/roll attitude.
         """
 
-        # Use the more accurate slew distance instead of angular distance
-        self.predict_slew(lastra, lastdec)
+        # Slew endpoints are physical body attitudes even when the science
+        # coordinates are defined in an off-axis instrument frame.
+        endra, enddec, endroll = self.target_body_attitude()
+        self.predict_slew(lastra, lastdec, endra=endra, enddec=enddec)
 
         assert self.acs_config is not None, (
             "ACS config must be set to calculate slew time"
@@ -376,9 +546,9 @@ class PlanEntry(BaseModel):
                 lastra,
                 lastdec,
                 lastroll,
-                self.ra,
-                self.dec,
-                self.roll,
+                endra,
+                enddec,
+                endroll,
             )
             slewtime = scheduled_slew_time(
                 self.acs_config.slew_time(self.slewdist, rotation_axis_body)
@@ -388,9 +558,18 @@ class PlanEntry(BaseModel):
 
         return slewtime
 
-    def predict_slew(self, lastra: float, lastdec: float) -> None:
+    def predict_slew(
+        self,
+        lastra: float,
+        lastdec: float,
+        *,
+        endra: float | None = None,
+        enddec: float | None = None,
+    ) -> None:
         """Calculate great circle slew distance and path using ACS configuration."""
         assert self.acs_config is not None, "ACS config must be set to predict slew"
+        if endra is None or enddec is None:
+            endra, enddec, _ = self.target_body_attitude()
         self.slewdist, self.slewpath = self.acs_config.predict_slew(
-            lastra, lastdec, self.ra, self.dec
+            lastra, lastdec, endra, enddec
         )

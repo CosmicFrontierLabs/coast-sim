@@ -24,6 +24,7 @@ from conops import (
     Slew,
 )
 from conops.common.enums import ObsType
+from conops.config import Payload, Telescope
 from conops.config.config import MissionConfig
 from conops.ditl.telemetry import Housekeeping
 from conops.simulation.acs import IDLE_OBSID
@@ -877,6 +878,41 @@ class TestFetchNewPPT:
             Mock, queue_ditl.config.spacecraft_bus.attitude_control.slew_time
         )
         slew_time.assert_called_once_with(12.5, (0.0, 0.0, 1.0))
+
+    def test_estimate_ppt_slew_uses_mounted_bus_attitude(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        telescope = Telescope(
+            name="Science Telescope",
+            boresight=(0.0, 1.0, 0.0),
+        )
+        queue_ditl.config.payload = Payload(instruments=[telescope])
+        target = Pointing(
+            config=queue_ditl.config,
+            instrument_name=telescope.name,
+            ra=45.0,
+            dec=-10.0,
+            roll=0.0,
+        )
+        expected_body_attitude = target.target_body_attitude(0.0)
+
+        with (
+            patch("conops.ditl.queue_ditl.optimum_roll", return_value=0.0),
+            patch(
+                "conops.ditl.queue_ditl.quaternion_attitude_delta",
+                return_value=(12.5, (0.0, 0.0, 1.0)),
+            ) as delta,
+        ):
+            estimate = queue_ditl._estimate_ppt_slew(target, 1000.0)
+
+        delta.assert_called_once_with(
+            0.0,
+            0.0,
+            0.0,
+            *expected_body_attitude,
+        )
+        assert estimate.instrument_roll == 0.0
+        assert estimate.spacecraft_attitude == pytest.approx(expected_body_attitude)
 
     def test_estimate_ppt_slew_reuses_optimum_roll_cache(
         self, queue_ditl: QueueDITL

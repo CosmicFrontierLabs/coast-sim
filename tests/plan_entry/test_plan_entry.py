@@ -1,10 +1,17 @@
+import json
+
 import numpy as np
 import pytest
 from pydantic import ValidationError
 
-from conops import AttitudeControlSystem, PlanEntry
+from conops import AttitudeControlSystem, Payload, Plan, PlanEntry
 from conops.common.enums import ObsType
-from conops.common.vector import quaternion_attitude_delta
+from conops.common.vector import (
+    attitude_to_quat,
+    quaternion_attitude_delta,
+    quaternion_rotate_vector,
+)
+from conops.config import Telescope
 from conops.config.acs import scheduled_slew_time
 
 
@@ -237,6 +244,148 @@ class TestVisibility:
         assert result == 0
         # Should have calculated windows
         assert isinstance(plan_entry.windows, list)
+
+    def test_mounted_telescope_visibility_uses_science_line_of_sight(
+        self, mock_config, mock_constraint
+    ):
+        telescope_constraint = type(mock_constraint)()
+        telescope_constraint.roll_independent_constraint = (
+            telescope_constraint.constraint
+        )
+        telescope = Telescope(
+            name="Science Telescope",
+            boresight=(0.0, 1.0, 0.0),
+            constraint=telescope_constraint,
+        )
+        mock_config.payload = Payload(instruments=[telescope])
+        entry = PlanEntry(
+            config=mock_config,
+            instrument_name=telescope.name,
+            ra=123.0,
+            dec=-20.0,
+        )
+
+        entry.visibility()
+
+        telescope_constraint.constraint.evaluate.assert_called_once_with(
+            ephemeris=entry.ephem,
+            target_ra=123.0,
+            target_dec=-20.0,
+            target_roll=None,
+        )
+        mock_constraint.constraint.evaluate.assert_not_called()
+
+
+class TestInstrumentMounting:
+    def test_target_maps_to_configured_body_boresight(self, mock_config):
+        telescope = Telescope(
+            name="Science Telescope",
+            boresight=(0.0, 1.0, 0.0),
+        )
+        mock_config.payload = Payload(instruments=[telescope])
+        entry = PlanEntry(
+            config=mock_config,
+            instrument_name=telescope.name,
+            ra=0.0,
+            dec=0.0,
+            roll=0.0,
+        )
+
+        body_attitude = entry.target_body_attitude()
+        target_in_body = quaternion_rotate_vector(
+            attitude_to_quat(*body_attitude),
+            (1.0, 0.0, 0.0),
+        )
+
+        assert target_in_body == pytest.approx(telescope.boresight, abs=1e-10)
+        assert body_attitude[0] == pytest.approx(270.0)
+
+    def test_nameless_target_on_ambiguous_payload_is_unmounted(self, mock_config):
+        """Two telescopes and no name must degrade, not raise."""
+        mock_config.payload = Payload(
+            instruments=[
+                Telescope(name="A"),
+                Telescope(name="B", boresight=(0.0, 1.0, 0.0)),
+            ]
+        )
+        entry = PlanEntry(config=mock_config, ra=10.0, dec=20.0, roll=30.0)
+
+        assert entry.science_telescope() is None
+        assert entry.uses_mounted_attitude() is False
+        assert entry.target_body_attitude() == (10.0, 20.0, 30.0)
+
+    def test_ambiguous_payload_still_serializes(self, mock_config):
+        """model_dump must survive a payload it cannot disambiguate."""
+        mock_config.payload = Payload(
+            instruments=[
+                Telescope(name="A"),
+                Telescope(name="B", boresight=(0.0, 1.0, 0.0)),
+            ]
+        )
+        entry = PlanEntry(config=mock_config, ra=10.0, dec=20.0, roll=30.0)
+
+        dumped = entry.model_dump()
+
+        assert dumped["target_attitude"]["pointing"]["ra_deg"] == 10.0
+
+    def test_named_target_resolves_on_ambiguous_payload(self, mock_config):
+        """A name still selects its telescope when several are configured."""
+        mounted = Telescope(name="B", boresight=(0.0, 1.0, 0.0))
+        mock_config.payload = Payload(instruments=[Telescope(name="A"), mounted])
+        entry = PlanEntry(
+            config=mock_config,
+            instrument_name="B",
+            ra=10.0,
+            dec=20.0,
+            roll=30.0,
+        )
+
+        assert entry.science_telescope() is mounted
+        assert entry.uses_mounted_attitude() is True
+
+    def test_unknown_instrument_name_still_raises(self, mock_config):
+        """A name that matches no telescope stays a hard error."""
+        mock_config.payload = Payload(instruments=[Telescope(name="A")])
+        entry = PlanEntry(config=mock_config, instrument_name="missing")
+
+        with pytest.raises(ValueError, match="does not identify"):
+            entry.science_telescope()
+
+    def test_mounted_attitude_survives_unbound_plan_roundtrip(
+        self, mock_config, tmp_path
+    ) -> None:
+        telescope = Telescope(
+            name="Science Telescope",
+            boresight=(0.0, 1.0, 0.0),
+        )
+        mock_config.payload = Payload(instruments=[telescope])
+        entry = PlanEntry(
+            config=mock_config,
+            instrument_name=telescope.name,
+            ra=10.0,
+            dec=20.0,
+            roll=30.0,
+        )
+        original_path = tmp_path / "original.json"
+        reexported_path = tmp_path / "reexported.json"
+
+        Plan(entries=[entry]).save(original_path)
+        loaded = Plan.load(original_path)
+        loaded.save(reexported_path)
+
+        original_attitude = json.loads(original_path.read_text())["entries"][0][
+            "target_attitude"
+        ]
+        reexported_attitude = json.loads(reexported_path.read_text())["entries"][0][
+            "target_attitude"
+        ]
+        assert loaded.entries[0].config is None
+        assert loaded.entries[0].target_body_attitude() == pytest.approx(
+            entry.target_body_attitude(), abs=1e-10
+        )
+        assert reexported_attitude == original_attitude
+        assert reexported_attitude["pointing"]["boresight_axis"] == "+Y"
+        assert reexported_attitude["pointing"]["boresight_body"] == [0.0, 1.0, 0.0]
 
 
 class TestVisible:

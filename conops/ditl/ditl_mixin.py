@@ -168,6 +168,7 @@ class DITLMixin:
         self.ustart = 0.0  # Calculate these
         self.uend = 0.0  # later
         self.plan = plan if plan is not None else Plan()
+        self.plan.bind_runtime(self.config, self.ephem)
         self.saa = None
         self.passes = PassTimes(config=config)
         self.executed_passes = PassTimes(config=config)
