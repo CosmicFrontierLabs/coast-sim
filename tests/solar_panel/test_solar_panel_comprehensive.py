@@ -726,12 +726,12 @@ class TestIlluminationAndPower:
         assert power == pytest.approx(450.0, rel=1e-4)  # 1.0 * 500 * 0.9
 
     def test_illumination_and_power_multiple_panels(self) -> None:
-        """Test illumination_and_power with multiple panels - physically correct scenario.
+        """Each co-aligned panel retains its own unit normal.
 
         Setup: Two identical panels both pointing along body +X (boresight).
         Sun is at inertial +X, spacecraft at RA=0, Dec=0.
-        The coordinate transformation results in ~45° angle between panel normal
-        and sun direction (cos(45°) ≈ 0.707), which is physically valid.
+        Both panels therefore receive full illumination; adding another panel
+        must not shorten either panel's normal.
         """
         # Create two panels both pointing toward +X (boresight direction)
         panels = [
@@ -769,12 +769,9 @@ class TestIlluminationAndPower:
                 dec=0.0,  # Boresight points at Dec=0°
             )
 
-        # Coordinate transformation gives ~45° angle (cos(45°) ≈ 0.707)
-        expected_illumination = 1.0 / math.sqrt(2)  # cos(45°)
+        expected_illumination = 1.0
         # Power = sum(illumination * max_power * efficiency) for each panel
-        expected_power = (1.0 / math.sqrt(2)) * 300.0 * 0.95 + (
-            1.0 / math.sqrt(2)
-        ) * 400.0 * 0.90
+        expected_power = 300.0 * 0.95 + 400.0 * 0.90
 
         assert illumination == pytest.approx(expected_illumination, rel=1e-10)
         assert power == pytest.approx(expected_power, rel=1e-10)
@@ -1031,6 +1028,18 @@ class TestCoverageCompletion:
 
         # Should be the same object (cached)
         assert geom1 is geom2
+
+    def test_geometry_normalizes_each_panel_independently(self) -> None:
+        panel_set = SolarPanelSet(
+            panels=[
+                SolarPanel(normal=(0.0, 2.0, 0.0)),
+                SolarPanel(normal=(0.0, 0.0, -3.0)),
+            ]
+        )
+
+        assert panel_set._get_geometry().normal == pytest.approx(
+            np.asarray([[0.0, 1.0, 0.0], [0.0, 0.0, -1.0]])
+        )
 
     def test_illumination_method_empty_panels_different_time_types(
         self, zero_power_panel_set: SolarPanelSet

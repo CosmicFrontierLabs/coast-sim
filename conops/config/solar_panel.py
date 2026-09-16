@@ -9,7 +9,6 @@ from pydantic import Field, PrivateAttr, field_validator, model_validator
 
 from ..common import dtutcfromtimestamp
 from ..common.enums import ACSMode
-from ..common.vector import vecnorm
 from ._base import ConfigModel
 from .geometry import PanelGeometry
 
@@ -648,7 +647,13 @@ class _PanelGeometry:
         weights: npt.NDArray[np.float64],
     ) -> None:
         self.gimbled = gimbled
-        self.normal = vecnorm(normal)  # shape (P, 3)
+        magnitudes = np.linalg.norm(normal, axis=1, keepdims=True)
+        self.normal = np.divide(
+            normal,
+            magnitudes,
+            out=normal.copy(),
+            where=magnitudes > 1e-15,
+        )
         self.max_power = max_power
         self.efficiency = efficiency
         self.weights = weights
