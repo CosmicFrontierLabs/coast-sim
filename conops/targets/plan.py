@@ -17,7 +17,6 @@ from pydantic import (
 )
 
 from .._version import __version__
-from ..simulation.attitude_profile import ExecutedAttitudeInterval
 from .plan_entry import AttitudeRotationConventionSchema, PlanEntry
 
 if TYPE_CHECKING:
@@ -61,7 +60,7 @@ class AttitudeSampleSchema(BaseModel):
 
 
 class AttitudeTimeseriesSchema(AttitudeRotationConventionSchema):
-    """Sampled executed attitudes, optionally augmented by exact motion spans."""
+    """Continuous executed spacecraft attitude timeline tied to a plan file."""
 
     version: int = 0
     coast_sim_version: str = Field(default_factory=lambda: __version__)
@@ -81,7 +80,6 @@ class AttitudeTimeseriesSchema(AttitudeRotationConventionSchema):
     roll_reference_axis: Literal["+Z"] = "+Z"
     roll_reference: Literal["projected_celestial_north"] = "projected_celestial_north"
     samples: list[AttitudeSampleSchema] = Field(default_factory=list)
-    resolved_intervals: list[ExecutedAttitudeInterval] = Field(default_factory=list)
 
     @computed_field  # type: ignore[prop-decorator]
     @property

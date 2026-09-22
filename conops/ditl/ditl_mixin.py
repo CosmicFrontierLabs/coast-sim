@@ -420,29 +420,7 @@ class DITLMixin:
                 )
             )
 
-        from ..simulation.attitude_profile import ExecutedAttitudeInterval
-
-        intervals: list[ExecutedAttitudeInterval] = []
-        if samples and isinstance(self.acs.executed_attitude_intervals, list):
-            for interval in self.acs.executed_attitude_intervals:
-                start = max(interval.start_utime, samples[0].utime)
-                end = min(interval.end_utime, samples[-1].utime)
-                if end <= start:
-                    continue
-                interval = interval.model_copy(
-                    update={"start_utime": start, "end_utime": end}
-                )
-                if (
-                    intervals
-                    and intervals[-1].end_utime == start
-                    and intervals[-1].motion == interval.motion
-                ):
-                    intervals[-1] = intervals[-1].model_copy(update={"end_utime": end})
-                else:
-                    intervals.append(interval)
-        self.plan.attitude_timeseries = AttitudeTimeseriesSchema(
-            version=1, samples=samples, resolved_intervals=intervals
-        )
+        self.plan.attitude_timeseries = AttitudeTimeseriesSchema(samples=samples)
 
     def _attach_orbit_state_timeseries_to_plan(self) -> None:
         """Attach GCRS spacecraft position/velocity samples to the current plan."""
