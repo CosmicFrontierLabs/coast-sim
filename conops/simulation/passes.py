@@ -1,4 +1,6 @@
 import time
+from collections.abc import Iterator
+from functools import lru_cache
 from numbers import Integral
 from typing import Literal, Protocol
 
@@ -52,6 +54,14 @@ def _tracking_path_cost_key(
 def pass_slew_trigger_buffer(step_size: float) -> float:
     """Return how early pass handling can trigger a slew, in seconds."""
     return max(0.0, 2.0 * float(step_size))
+
+
+@lru_cache(maxsize=32768)
+def _cached_pass_attitude_delta(
+    start: tuple[float, float, float], end: tuple[float, float, float]
+) -> tuple[float, tuple[float, float, float]]:
+    # Only geometry is reusable: slew limits and constraint paths remain live.
+    return quaternion_attitude_delta(*start, *end)
 
 
 def _config_random_seed(config: MissionConfig) -> int | None:
@@ -250,13 +260,30 @@ class Pass(BaseModel):
         self.gsstartra, self.gsstartdec, self.gsstartroll = profile[0]
         self.gsendra, self.gsenddec, self.gsendroll = profile[-1]
 
-    def tracking_profiles_due_for_slew(
-        self, utime: float, ra: float, dec: float, roll: float = 0.0
-    ) -> list[list[tuple[float, float, float]]]:
-        """Return tracking profiles whose incoming slew must start by this step."""
-        assert self.ephem is not None, "Ephemeris must be set for Pass class"
+    def tracking_profile_slew_deadlines(
+        self,
+        utime: float,
+        ra: float,
+        dec: float,
+        roll: float = 0.0,
+        *,
+        for_admission: bool = False,
+    ) -> Iterator[tuple[list[tuple[float, float, float]], float]]:
+        """Yield each available tracking profile and its incoming-slew trigger time.
 
-        due_profiles: list[list[tuple[float, float, float]]] = []
+        Science admission must finish before the earliest of these times, since
+        execution can select any profile whose ingress is constraint-safe.
+        Admission bounds time-dependent paths rather than assuming a path
+        calculated now will have the same duration at ingress.
+        """
+        assert self.ephem is not None, "Ephemeris must be set for Pass class"
+        duration_bound = None
+        if for_admission:
+            assert self.config is not None, "Config must be set for Pass class"
+            acs_config = self.config.spacecraft_bus.attitude_control
+            if acs_config.slew_algorithm != SlewAlgorithm.QUATERNION:
+                duration_bound = Slew.duration_upper_bound(acs_config)
+
         for profile in self.available_tracking_profiles():
             if utime >= self.begin:
                 target = self.attitude_for_profile_at(profile, utime)
@@ -265,11 +292,31 @@ class Pass(BaseModel):
             if target is None:
                 continue
 
-            slewtime = self._slew_time_to_target(utime, ra, dec, roll, *target)
-            time_until_slew = (self.begin - slewtime) - utime
-            if time_until_slew <= pass_slew_trigger_buffer(self.ephem.step_size):
-                due_profiles.append(profile)
-        return due_profiles
+            slewtime = (
+                duration_bound
+                if duration_bound is not None
+                else self._slew_time_to_target(utime, ra, dec, roll, *target)
+            )
+            yield (
+                profile,
+                (
+                    self.begin
+                    - slewtime
+                    - pass_slew_trigger_buffer(self.ephem.step_size)
+                ),
+            )
+
+    def tracking_profiles_due_for_slew(
+        self, utime: float, ra: float, dec: float, roll: float = 0.0
+    ) -> list[list[tuple[float, float, float]]]:
+        """Return tracking profiles whose incoming slew must start by this step."""
+        return [
+            profile
+            for profile, deadline in self.tracking_profile_slew_deadlines(
+                utime, ra, dec, roll
+            )
+            if utime >= deadline
+        ]
 
     def at_selected_tracking_attitude(
         self,
@@ -454,13 +501,8 @@ class Pass(BaseModel):
         # quaternion slews. Constraint-avoiding and future slew algorithms keep
         # the full path unless their scalar equivalence has been proven.
         if acs_config.slew_algorithm == SlewAlgorithm.QUATERNION:
-            slewdist, rotation_axis_body = quaternion_attitude_delta(
-                ra,
-                dec,
-                roll,
-                target_ra,
-                target_dec,
-                target_roll,
+            slewdist, rotation_axis_body = _cached_pass_attitude_delta(
+                (ra, dec, roll), (target_ra, target_dec, target_roll)
             )
             return scheduled_slew_time(
                 acs_config.slew_time(slewdist, rotation_axis_body)
