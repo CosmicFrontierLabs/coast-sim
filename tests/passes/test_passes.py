@@ -18,6 +18,7 @@ from conops.common import (
     radec2vec,
 )
 from conops.common.enums import ACSMode, AntennaType, ObsType, SlewAlgorithm
+from conops.common.vector import quaternion_attitude_delta
 from conops.config import (
     AntennaPointing,
     AttitudeConstraintScope,
@@ -398,6 +399,7 @@ class TestPassTimeToSlew:
         mock_constraint,
         create_ephem,
         base_begin,
+        cleared_pass_attitude_cache,
     ):
         begin_dt = datetime(2025, 8, 15, 0, 0, 0, tzinfo=timezone.utc)
         end_dt = datetime(2025, 8, 15, 0, 15, 0, tzinfo=timezone.utc)
@@ -449,6 +451,26 @@ class TestPassTimeToSlew:
             12.5,
             (0.0, 0.0, 1.0),
         )
+
+    def test_geometry_cache_reuses_angles_but_not_slew_limits(
+        self, basic_pass_mock, cleared_pass_attitude_cache
+    ):
+        p = basic_pass_mock
+        acs = p.config.spacecraft_bus.attitude_control
+        acs.slew_algorithm = SlewAlgorithm.QUATERNION
+        acs.max_slew_rate = 0.25
+        with patch(
+            "conops.simulation.passes.quaternion_attitude_delta",
+            wraps=quaternion_attitude_delta,
+        ) as delta:
+            first = p._slew_time_to_target(100, 10, 20, 30, 80, 40, 50)
+            assert p._slew_time_to_target(200, 10, 20, 30, 80, 40, 50) == first
+            assert delta.call_count == 1
+            acs.max_slew_rate = 2.0
+            assert p._slew_time_to_target(200, 10, 20, 30, 80, 40, 50) < first
+            assert delta.call_count == 1
+            p._slew_time_to_target(200, 10, 20, 30, 80, 40, 180)
+            assert delta.call_count == 2
 
     def test_slew_time_to_target_constraint_avoiding_uses_full_slew(
         self,

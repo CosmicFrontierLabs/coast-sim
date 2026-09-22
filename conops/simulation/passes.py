@@ -1,5 +1,6 @@
 import time
 from collections.abc import Iterator
+from functools import lru_cache
 from numbers import Integral
 from typing import Literal, Protocol
 
@@ -53,6 +54,14 @@ def _tracking_path_cost_key(
 def pass_slew_trigger_buffer(step_size: float) -> float:
     """Return how early pass handling can trigger a slew, in seconds."""
     return max(0.0, 2.0 * float(step_size))
+
+
+@lru_cache(maxsize=32768)
+def _cached_pass_attitude_delta(
+    start: tuple[float, float, float], end: tuple[float, float, float]
+) -> tuple[float, tuple[float, float, float]]:
+    # Only geometry is reusable: slew limits and constraint paths remain live.
+    return quaternion_attitude_delta(*start, *end)
 
 
 def _config_random_seed(config: MissionConfig) -> int | None:
@@ -474,13 +483,8 @@ class Pass(BaseModel):
         # quaternion slews. Constraint-avoiding and future slew algorithms keep
         # the full path unless their scalar equivalence has been proven.
         if acs_config.slew_algorithm == SlewAlgorithm.QUATERNION:
-            slewdist, rotation_axis_body = quaternion_attitude_delta(
-                ra,
-                dec,
-                roll,
-                target_ra,
-                target_dec,
-                target_roll,
+            slewdist, rotation_axis_body = _cached_pass_attitude_delta(
+                (ra, dec, roll), (target_ra, target_dec, target_roll)
             )
             return scheduled_slew_time(
                 acs_config.slew_time(slewdist, rotation_axis_body)
