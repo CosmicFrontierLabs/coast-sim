@@ -878,6 +878,17 @@ pass, and simulation deadlines. For a pass with multiple tracking profiles, the
 deadline is the earliest possible ingress trigger across those profiles, not
 just the default pass attitude. Science cleanup and handoff finish before that
 deadline; ingress constraints still determine which profile actually executes.
+For ``CONSTRAINT_AVOIDING``, a path evaluated at admission may change before
+ingress as constraints move. Admission therefore reserves a time-independent
+upper bound: two rest-to-rest rotations of at most 180 degrees, using the
+slowest configured rate and acceleration, plus one settling period, one second
+of numerical rounding headroom, and the existing pass-trigger buffer.
+Execution still evaluates the actual path and
+constraints at ingress. This can reserve extra idle time, but cannot move
+ingress ahead of the reserved cleanup deadline under the configured kinematic
+limits. Quaternion admission continues to use the exact attitude-specific
+duration. New slew algorithms must supply a duration bound before admission
+can use them; extending the waypoint planner also requires updating its bound.
 A pending recharge discovered by a timestep's
 power integration also shortens the collection window before data is counted,
 without delaying the charge command. If a later interruption cannot leave the

@@ -2408,7 +2408,7 @@ class QueueDITL(DITLMixin, DITLStats):
             (
                 deadline
                 for _, deadline in next_pass.tracking_profile_slew_deadlines(
-                    slew_end, *spacecraft_attitude
+                    slew_end, *spacecraft_attitude, for_admission=True
                 )
             ),
             default=None,

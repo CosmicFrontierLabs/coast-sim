@@ -261,14 +261,28 @@ class Pass(BaseModel):
         self.gsendra, self.gsenddec, self.gsendroll = profile[-1]
 
     def tracking_profile_slew_deadlines(
-        self, utime: float, ra: float, dec: float, roll: float = 0.0
+        self,
+        utime: float,
+        ra: float,
+        dec: float,
+        roll: float = 0.0,
+        *,
+        for_admission: bool = False,
     ) -> Iterator[tuple[list[tuple[float, float, float]], float]]:
         """Yield each available tracking profile and its incoming-slew trigger time.
 
         Science admission must finish before the earliest of these times, since
         execution can select any profile whose ingress is constraint-safe.
+        Admission bounds time-dependent paths rather than assuming a path
+        calculated now will have the same duration at ingress.
         """
         assert self.ephem is not None, "Ephemeris must be set for Pass class"
+        duration_bound = None
+        if for_admission:
+            assert self.config is not None, "Config must be set for Pass class"
+            acs_config = self.config.spacecraft_bus.attitude_control
+            if acs_config.slew_algorithm != SlewAlgorithm.QUATERNION:
+                duration_bound = Slew.duration_upper_bound(acs_config)
 
         for profile in self.available_tracking_profiles():
             if utime >= self.begin:
@@ -278,7 +292,11 @@ class Pass(BaseModel):
             if target is None:
                 continue
 
-            slewtime = self._slew_time_to_target(utime, ra, dec, roll, *target)
+            slewtime = (
+                duration_bound
+                if duration_bound is not None
+                else self._slew_time_to_target(utime, ra, dec, roll, *target)
+            )
             yield (
                 profile,
                 (

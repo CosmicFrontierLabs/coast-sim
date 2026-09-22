@@ -836,7 +836,7 @@ class TestFetchNewPPT:
             1000.0, target_roll=target.roll, target=target
         )
         next_pass.tracking_profile_slew_deadlines.assert_called_once_with(
-            1000.0, 10.0, 20.0, 30.0
+            1000.0, 10.0, 20.0, 30.0, for_admission=True
         )
         assert deadline == 1750.0
 
@@ -1021,7 +1021,7 @@ class TestFetchNewPPT:
             queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
 
         assert deadlines.call_count == 2  # feasibility and final task deadline
-        deadlines.assert_called_with(1100.0, 45.0, 30.0, 70.0)
+        deadlines.assert_called_with(1100.0, 45.0, 30.0, 70.0, for_admission=True)
 
     def test_sync_acs_slew_metadata_updates_exported_plan_entry(
         self, queue_ditl: QueueDITL
