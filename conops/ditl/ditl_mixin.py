@@ -10,11 +10,11 @@ from conops.common.enums import ACSMode
 from conops.common.vector import quaternion_attitude_delta
 from conops.config.groundstation import GroundStation
 
-from ..config import MissionConfig
+from ..config import MissionConfig, SolarArrayDriveState
 from ..simulation.acs import ACS
 from ..simulation.passes import Pass, PassTimes
 from ..targets import Plan, PlanEntry
-from .telemetry import Telemetry
+from .telemetry import SolarArrayDriveAngle, Telemetry
 
 ATTITUDE_RATE_NUMERICAL_TOLERANCE_DEG = 1e-9
 
@@ -194,6 +194,24 @@ class DITLMixin:
         self.spacecraft_bus = self.config.spacecraft_bus
         self.payload = self.config.payload
         self.recorder = self.config.recorder
+
+    def _solar_array_drive_telemetry(self) -> list[SolarArrayDriveAngle] | None:
+        """Return executed drive angles with stable configured panel identity."""
+        state = self.acs.solar_array_drive_state
+        if not isinstance(state, SolarArrayDriveState):
+            return None
+        entries = [
+            SolarArrayDriveAngle(
+                panel_index=index,
+                panel_name=panel.name,
+                angle_deg=angle,
+            )
+            for index, (panel, angle) in enumerate(
+                zip(self.config.solar_panel.panels, state.angles_deg)
+            )
+            if angle is not None
+        ]
+        return entries or None
 
     @staticmethod
     def _attitude_mode_name(mode: ACSMode | int | None) -> str | None:

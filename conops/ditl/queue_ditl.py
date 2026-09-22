@@ -28,7 +28,7 @@ from ..config.constraint import (
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
 from ..simulation.passes import Pass, pass_slew_trigger_buffer
-from ..simulation.roll import optimum_roll
+from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing, Queue, TargetSlewEstimate
 from .ditl_log import DITLLog
@@ -171,7 +171,7 @@ class QueueDITL(DITLMixin, DITLStats):
         self._ephem_utime_cache: list[float] | None = None
         self._ephem_utime_cache_source: npt.NDArray[np.datetime64] | None = None
         self._ppt_optimum_roll_cache: dict[
-            tuple[float, float, float, int, int, int, int], float
+            tuple[float, float, float, int, int, int, int, int], float
         ] = {}
         # Subsystem power tracking
         self.power_bus = list()
@@ -456,6 +456,8 @@ class QueueDITL(DITLMixin, DITLStats):
         # Reset per-run state so re-runs on the same instance start clean
         self._attitude_constraint_violations = []
         self._active_gsp_end_time = None
+        self.acs.solar_array_drive_state = self.config.solar_panel.initial_drive_state()
+        self._ppt_optimum_roll_cache.clear()
 
         # If begin/end datetimes are naive, assume UTC by making them timezone-aware
         if self.begin.tzinfo is None:
@@ -1255,10 +1257,40 @@ class QueueDITL(DITLMixin, DITLStats):
         _pos = np.asarray(self.ephem.gcrs_pv.position[ei], dtype=np.float64)
         earth_body_vector: list[float] = list(-_pos / np.linalg.norm(_pos))
 
-        nominal_roll = optimum_roll(ra, dec, utime, self.ephem, self.config.solar_panel)
-        roll_offset_deg = (roll - nominal_roll + 180.0) % 360.0 - 180.0
+        if mounted_science:
+            assert self.ppt is not None
+            telescope = self.ppt.science_telescope()
+            assert telescope is not None
+            instrument_roll = (
+                self.acs.last_slew.instrument_roll
+                if self.acs.last_slew is not None
+                and self.acs.last_slew.instrument_roll is not None
+                else self.ppt.roll
+            )
+            nominal_roll = optimum_instrument_roll(
+                self.ppt.ra,
+                self.ppt.dec,
+                utime,
+                self.ephem,
+                telescope,
+                self.config.solar_panel,
+                self.constraint,
+                drive_state=self.acs.solar_array_drive_state,
+            )
+            roll_offset_deg = (instrument_roll - nominal_roll + 180.0) % 360.0 - 180.0
+        else:
+            nominal_roll = optimum_body_roll(
+                ra,
+                dec,
+                utime,
+                self.ephem,
+                self.config.solar_panel,
+                drive_state=self.acs.solar_array_drive_state,
+            )
+            roll_offset_deg = (roll - nominal_roll + 180.0) % 360.0 - 180.0
 
         _q = attitude_to_quat(ra, dec, roll)
+        drive_angles = self._solar_array_drive_telemetry()
         return Housekeeping(
             timestamp=datetime.fromtimestamp(utime, tz=timezone.utc),
             ra=ra,
@@ -1267,6 +1299,7 @@ class QueueDITL(DITLMixin, DITLStats):
             roll_offset_deg=roll_offset_deg,
             acs_mode=mode,
             panel_illumination=panel_illumination,
+            solar_array_drive_angles=drive_angles,
             power_usage=total_power,
             power_bus=bus_power,
             power_payload=payload_power,
@@ -1576,7 +1609,11 @@ class QueueDITL(DITLMixin, DITLStats):
     def _initiate_charging(self, utime: float, ra: float, dec: float) -> None:
         """Initiate emergency charging by creating charging PPT and sending command to ACS."""
         charging_ppt = self.emergency_charging.create_charging_pointing(
-            utime, self.ephem, ra, dec
+            utime,
+            self.ephem,
+            ra,
+            dec,
+            drive_state=self.acs.solar_array_drive_state,
         )
         if charging_ppt is None:
             return
@@ -2253,7 +2290,7 @@ class QueueDITL(DITLMixin, DITLStats):
         self.acs.end_science_observation()
         # Do NOT clear last_slew here. The spacecraft is physically still pointing
         # at the science target; clearing last_slew would cause pointing() to call
-        # optimum_roll() and jump the roll on the next tick. Roll stays locked to
+        # roll optimization and jump the roll on the next tick. Roll stays locked to
         # last_slew.endroll until the next executed slew replaces last_slew.
 
     def _get_constraint_name(
@@ -2523,23 +2560,33 @@ class QueueDITL(DITLMixin, DITLStats):
             id(self.config.solar_panel),
             id(self.config.constraint),
             id(telescope),
+            self.acs.solar_array_drive_state.revision,
         )
         cached = self._ppt_optimum_roll_cache.get(key)
         if cached is not None:
             return cached
 
-        args = (
-            target.ra,
-            target.dec,
-            execution_time,
-            self.acs.ephem,
-            self.config.solar_panel,
-            self.config.constraint,
-        )
         roll = (
-            optimum_roll(*args, telescope=telescope)
+            optimum_instrument_roll(
+                target.ra,
+                target.dec,
+                execution_time,
+                self.acs.ephem,
+                telescope,
+                self.config.solar_panel,
+                self.config.constraint,
+                drive_state=self.acs.solar_array_drive_state,
+            )
             if telescope is not None
-            else optimum_roll(*args)
+            else optimum_body_roll(
+                target.ra,
+                target.dec,
+                execution_time,
+                self.acs.ephem,
+                self.config.solar_panel,
+                self.config.constraint,
+                drive_state=self.acs.solar_array_drive_state,
+            )
         )
         self._ppt_optimum_roll_cache[key] = roll
         return roll
@@ -2788,7 +2835,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 execution_time = visstart
 
             # When ignore_roll=True, verify that a valid roll exists before slewing.
-            # optimum_roll() falls back to the unconstrained solar roll when
+            # Roll optimization falls back to the unconstrained solar roll when
             # roll_range() is empty (no roll satisfies all constraints), which
             # would put star trackers into a constraint zone.  Skip the target
             # instead so a better one can be selected.
@@ -2960,7 +3007,7 @@ class QueueDITL(DITLMixin, DITLStats):
         """Calculate and record power generation, consumption, and battery state."""
         # Calculate solar panel power
         panel_illumination, panel_power = self._calculate_panel_power(
-            i, utime, ra, dec, roll
+            i, utime, ra, dec, roll, mode
         )
         self.panel.append(panel_illumination)
         self.panel_power.append(panel_power)
@@ -2977,14 +3024,27 @@ class QueueDITL(DITLMixin, DITLStats):
         self._update_battery_state(total_power, panel_power)
 
     def _calculate_panel_power(
-        self, i: int, utime: float, ra: float, dec: float, roll: float
+        self,
+        i: int,
+        utime: float,
+        ra: float,
+        dec: float,
+        roll: float,
+        mode: ACSMode,
     ) -> tuple[float, float]:
         """Calculate solar panel illumination and power generation."""
-        panel_illumination, panel_power = (
-            self.config.solar_panel.illumination_and_power(
-                time=self.utime[i], ra=ra, dec=dec, ephem=self.ephem, roll=roll
+        panel_illumination, panel_power, drive_state = (
+            self.config.solar_panel.evaluate_executed_attitude(
+                time=self.utime[i],
+                ra=ra,
+                dec=dec,
+                ephem=self.ephem,
+                drive_state=self.acs.solar_array_drive_state,
+                roll=roll,
+                acs_mode=mode,
             )
         )
+        self.acs.solar_array_drive_state = drive_state
         assert isinstance(panel_illumination, float)
         assert isinstance(panel_power, float)
         return panel_illumination, panel_power

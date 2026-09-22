@@ -19,7 +19,7 @@ from ..config.constraint import (
     attitude_constraint_name_for_scopes,
     attitude_constraint_scope_label,
 )
-from ..simulation.roll import optimum_roll
+from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
 from ..targets import PlanEntry
 from .ditl_log import DITLLog
 from .ditl_mixin import DITLMixin
@@ -161,6 +161,7 @@ class DITL(DITLMixin, DITLStats):
         if self.plan is None:
             raise ValueError("ERROR: No plan loaded")
 
+        self.acs.solar_array_drive_state = self.solar_panel.initial_drive_state()
         # Plans intentionally exclude runtime objects from their serialized form.
         # Rebind here as well as during construction so assigning Plan.load(...)
         # after DITL initialization remains safe.
@@ -208,14 +209,28 @@ class DITL(DITLMixin, DITLStats):
                 instrument_roll = self.ppt.roll
                 mounted = self.ppt.uses_mounted_attitude()
                 if instrument_roll == -1.0:
-                    instrument_roll = optimum_roll(
-                        self.ppt.ra,
-                        self.ppt.dec,
-                        self.utime[0],
-                        self.ephem,
-                        self.solar_panel,
-                        self.constraint,
-                        telescope=self.ppt.science_telescope(),
+                    telescope = self.ppt.science_telescope()
+                    instrument_roll = (
+                        optimum_instrument_roll(
+                            self.ppt.ra,
+                            self.ppt.dec,
+                            self.utime[0],
+                            self.ephem,
+                            telescope,
+                            self.solar_panel,
+                            self.constraint,
+                            drive_state=self.acs.solar_array_drive_state,
+                        )
+                        if telescope is not None
+                        else optimum_body_roll(
+                            self.ppt.ra,
+                            self.ppt.dec,
+                            self.utime[0],
+                            self.ephem,
+                            self.solar_panel,
+                            self.constraint,
+                            drive_state=self.acs.solar_array_drive_state,
+                        )
                     )
                     self.ppt.roll = instrument_roll
                 body_ra, body_dec, body_roll = self.ppt.target_body_attitude(
@@ -265,9 +280,18 @@ class DITL(DITLMixin, DITLStats):
             power_usage = bus_power + payload_power
 
             # Calculate solar panel illumination and power (more efficient than separate calls)
-            panel_illumination, panel_power = self.solar_panel.illumination_and_power(
-                time=self.utime[i], ra=ra, dec=dec, ephem=self.ephem, roll=roll
+            panel_illumination, panel_power, drive_state = (
+                self.solar_panel.evaluate_executed_attitude(
+                    time=self.utime[i],
+                    ra=ra,
+                    dec=dec,
+                    ephem=self.ephem,
+                    drive_state=self.acs.solar_array_drive_state,
+                    roll=roll,
+                    acs_mode=mode,
+                )
             )
+            self.acs.solar_array_drive_state = drive_state
             assert isinstance(panel_illumination, float)
             assert isinstance(panel_power, float)
 
@@ -313,19 +337,28 @@ class DITL(DITLMixin, DITLStats):
                 instrument_roll = self.acs.last_slew.instrument_roll
             if instrument_roll == -1.0:
                 instrument_roll = 0.0
-            nominal_roll = (
-                optimum_roll(
+            if mounted_target is not None:
+                telescope = mounted_target.science_telescope()
+                assert telescope is not None
+                nominal_roll = optimum_instrument_roll(
                     mounted_target.ra,
                     mounted_target.dec,
                     self.utime[i],
                     self.ephem,
+                    telescope,
                     self.solar_panel,
                     self.constraint,
-                    telescope=mounted_target.science_telescope(),
+                    drive_state=self.acs.solar_array_drive_state,
                 )
-                if mounted_target is not None
-                else optimum_roll(ra, dec, self.utime[i], self.ephem, self.solar_panel)
-            )
+            else:
+                nominal_roll = optimum_body_roll(
+                    ra,
+                    dec,
+                    self.utime[i],
+                    self.ephem,
+                    self.solar_panel,
+                    drive_state=self.acs.solar_array_drive_state,
+                )
             roll_offset_deg = (instrument_roll - nominal_roll + 180.0) % 360.0 - 180.0
             sun_angle_deg = self._compute_sun_angle(self.utime[i], ra, dec)
             _sun_bv = scbodyvector(
@@ -399,6 +432,7 @@ class DITL(DITLMixin, DITLStats):
                 )
             scope_label = attitude_constraint_scope_label(scopes)
             _q = attitude_to_quat(ra, dec, roll)
+            drive_angles = self._solar_array_drive_telemetry()
             hk = Housekeeping(
                 timestamp=datetime.fromtimestamp(self.utime[i], tz=timezone.utc),
                 ra=ra,
@@ -407,6 +441,7 @@ class DITL(DITLMixin, DITLStats):
                 roll_offset_deg=roll_offset_deg,
                 acs_mode=mode,
                 panel_illumination=panel_illumination,
+                solar_array_drive_angles=drive_angles,
                 power_usage=power_usage,
                 power_bus=bus_power,
                 power_payload=payload_power,

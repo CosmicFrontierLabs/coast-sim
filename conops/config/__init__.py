@@ -35,7 +35,14 @@ from .radiator import (
     RadiatorOrientation,
 )
 from .recorder import OnboardRecorder
-from .solar_panel import SolarPanel, SolarPanelSet, create_solar_panel_vector
+from .solar_panel import (
+    SingleAxisSolarArrayDrive,
+    SolarArrayDriveControl,
+    SolarArrayDriveState,
+    SolarPanel,
+    SolarPanelSet,
+    create_solar_panel_vector,
+)
 from .spacecraft_bus import SpacecraftBus
 from .star_tracker import (
     DefaultStarTrackerConfiguration,
@@ -85,6 +92,9 @@ __all__ = [
     "RadiatorOrientation",
     "SolarPanel",
     "SolarPanelSet",
+    "SolarArrayDriveControl",
+    "SolarArrayDriveState",
+    "SingleAxisSolarArrayDrive",
     "SpacecraftBus",
     "StarTracker",
     "DefaultStarTrackerConfiguration",

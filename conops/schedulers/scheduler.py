@@ -5,7 +5,7 @@ import rust_ephem
 
 from ..common import dtutcfromtimestamp
 from ..config import AttitudeConstraintScope, MissionConfig
-from ..simulation.roll import optimum_roll
+from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
 from ..simulation.saa import SAA
 from ..targets import Plan, PlanEntry, TargetList
 
@@ -41,7 +41,7 @@ class DumbScheduler:
         self.targlist: TargetList = TargetList()
         self.step_size = self.ephem.step_size
         self.issurvey = False
-        self.config: MissionConfig | None = None  # optional: can be set externally
+        self.config: MissionConfig | None = config
         self.gimbled = False  # Default: not gimbled
         self.sidemount = False  # Default: not side-mounted
         self.log = log  # Optional log for event recording
@@ -58,6 +58,16 @@ class DumbScheduler:
 
     def schedule(self) -> None:
         """Main scheduling loop."""
+        if self.config is not None and any(
+            panel.single_axis_drive is not None
+            and bool(panel.drive_control.sun_tracking_modes)
+            for panel in self.config.solar_panel.panels
+        ):
+            raise NotImplementedError(
+                "DumbScheduler cannot propagate evolving single-axis solar-array "
+                "drive state; use the queue simulation for dynamic finite drives"
+            )
+
         # Ensure SAA object and its passages are computed
         self._init_saa()
 
@@ -91,14 +101,25 @@ class DumbScheduler:
                 )
                 task_is_plan_entry = issubclass(type(task), PlanEntry)
                 telescope = task.science_telescope() if task_is_plan_entry else None
-                obs_roll = optimum_roll(
-                    task.ra,
-                    task.dec,
-                    obs_start,
-                    self.ephem,
-                    solar_panel,
-                    self.constraint,
-                    telescope=telescope,
+                obs_roll = (
+                    optimum_instrument_roll(
+                        task.ra,
+                        task.dec,
+                        obs_start,
+                        self.ephem,
+                        telescope,
+                        solar_panel,
+                        self.constraint,
+                    )
+                    if telescope is not None
+                    else optimum_body_roll(
+                        task.ra,
+                        task.dec,
+                        obs_start,
+                        self.ephem,
+                        solar_panel,
+                        self.constraint,
+                    )
                 )
                 task.roll = obs_roll
                 body_ra, body_dec, body_roll = (
