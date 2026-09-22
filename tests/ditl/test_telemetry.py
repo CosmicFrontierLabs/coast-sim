@@ -1,12 +1,13 @@
 """Unit tests for telemetry.py."""
 
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from conops.common.enums import ACSMode
 from conops.common.vector import attitude_to_quat, quat_to_attitude
+from conops.config import AttitudeControlSystem, StoredMomentumConfig
 from conops.ditl.ditl import DITL
 from conops.ditl.telemetry import (
     Housekeeping,
@@ -478,6 +479,63 @@ class TestBodyVectorFields:
         tm = Telemetry(housekeeping=HousekeepingList([hk]))
         assert tm.housekeeping.sun_body_vector == [sbv]
         assert tm.housekeeping.earth_body_vector == [ebv]
+
+
+class TestStoredMomentumFields:
+    """Tests for gravity-gradient and stored-momentum telemetry."""
+
+    def _ts(self) -> datetime:
+        return datetime.fromtimestamp(1000.0, tz=timezone.utc)
+
+    def test_fields_default_to_none(self) -> None:
+        hk = Housekeeping(timestamp=self._ts())
+
+        assert hk.gravity_gradient_torque_body_n_m is None
+        assert hk.stored_momentum_body_n_m_s is None
+        assert hk.stored_momentum_norm_n_m_s is None
+
+    def test_fields_are_available_from_housekeeping_list(self) -> None:
+        torque = [1.0e-5, -2.0e-5, 3.0e-5]
+        momentum = [0.1, -0.2, 0.3]
+        hk = Housekeeping(
+            timestamp=self._ts(),
+            gravity_gradient_torque_body_n_m=torque,
+            stored_momentum_body_n_m_s=momentum,
+            stored_momentum_norm_n_m_s=0.4,
+        )
+        hkl = HousekeepingList([hk])
+
+        assert hkl.gravity_gradient_torque_body_n_m == [torque]
+        assert hkl.stored_momentum_body_n_m_s == [momentum]
+        assert hkl.stored_momentum_norm_n_m_s == [pytest.approx(0.4)]
+
+    def test_ditl_writes_enabled_momentum_telemetry(self, ditl: DITL) -> None:
+        ditl.config.spacecraft_bus.inertia_tensor_body_kg_m2 = (
+            (10.0, 0.0, 0.0),
+            (0.0, 8.0, 0.0),
+            (0.0, 0.0, 6.0),
+        )
+        ditl.config.spacecraft_bus.attitude_control = AttitudeControlSystem(
+            stored_momentum=StoredMomentumConfig(gravity_gradient_enabled=True)
+        )
+        ditl.step_size = ditl.ephem.step_size = 1
+        ditl.ephem.timestamp = [ditl.begin + timedelta(seconds=i) for i in range(5)]
+        ditl.end = ditl.ephem.timestamp[-1]
+        ditl.acs.pointing.return_value = (0.0, 45.0, 0.0, 1)
+        ditl.plan.which_ppt.return_value = None
+
+        ditl.calc()
+
+        hk = ditl.telemetry.housekeeping[0]
+        assert hk.gravity_gradient_torque_body_n_m is not None
+        assert hk.stored_momentum_body_n_m_s == pytest.approx((0.0, 0.0, 0.0))
+        assert hk.stored_momentum_norm_n_m_s == pytest.approx(0.0)
+        last = ditl.telemetry.housekeeping[-1]
+        assert last.stored_momentum_norm_n_m_s > 0.0
+        assert last.stored_momentum_norm_n_m_s == pytest.approx(
+            math.sqrt(sum(value**2 for value in last.gravity_gradient_torque_body_n_m))
+            * (last.timestamp - hk.timestamp).total_seconds()
+        )
 
 
 class TestQuaternionFields:

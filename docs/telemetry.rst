@@ -73,6 +73,9 @@ The quaternion remains an inertial-to-body coordinate transform. Consequently, a
 
 **ACS State**
    - ``acs_mode``: Current ACS mode (SCIENCE, SLEWING, SAFE, SAA, etc.)
+   - ``gravity_gradient_torque_body_n_m``: Gravity-gradient torque vector in spacecraft body coordinates (N m), or ``None`` when tracking is disabled
+   - ``stored_momentum_body_n_m_s``: Accumulated stored-momentum vector in spacecraft body coordinates (N m s), or ``None`` when tracking is disabled
+   - ``stored_momentum_norm_n_m_s``: Coordinate-invariant norm of accumulated stored momentum (N m s), or ``None`` when tracking is disabled
 
 **Power System**
    - ``panel_illumination``: Solar panel illumination fraction (0-1)
