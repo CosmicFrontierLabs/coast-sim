@@ -8,7 +8,7 @@ import rust_ephem
 
 from conops import ACS, ACSCommandType, ACSMode, AttitudeConstraintScope
 from conops.common.enums import ObsType
-from conops.config import SingleAxisSolarArrayDrive, SolarPanel, SolarPanelSet
+from conops.config import SolarPanel, SolarPanelSet
 from conops.config.geometry import PanelGeometry
 from conops.simulation.acs import IDLE_OBSID
 from conops.simulation.slew import Slew
@@ -70,27 +70,12 @@ class TestACSInitialization:
 
 
 class TestRadiatorPanelGeometry:
-    @pytest.mark.parametrize("include_fixed", [False, True])
-    def test_shadowing_preserves_fixed_panels_but_excludes_finite_drives(
-        self, acs: ACS, include_fixed: bool
-    ) -> None:
+    def test_shadowing_preserves_fixed_panel_geometry(self, acs: ACS) -> None:
         geometry = PanelGeometry(u=(1.0, 0.0, 0.0), v=(0.0, 0.0, 1.0))
         panels = [
-            SolarPanel(
-                name="Driven",
-                geometry=geometry,
-                single_axis_drive=SingleAxisSolarArrayDrive(
-                    rotation_axis=(1.0, 0.0, 0.0),
-                    min_angle_deg=-90.0,
-                    max_angle_deg=90.0,
-                    max_rate_deg_per_s=1.0,
-                    initial_angle_deg=45.0,
-                ),
-            ),
             SolarPanel(name="No geometry"),
+            SolarPanel(name="Fixed", geometry=geometry),
         ]
-        if include_fixed:
-            panels.append(SolarPanel(name="Fixed", geometry=geometry))
         acs.config.solar_panel = SolarPanelSet(panels=panels)
         radiators = acs.config.spacecraft_bus.radiators
         radiators.num_radiators.return_value = 1
@@ -109,7 +94,7 @@ class TestRadiatorPanelGeometry:
             utime=1000.0,
             ephem=acs.ephem,
             roll_deg=acs.roll,
-            solar_panel_geometries={"Fixed": geometry} if include_fixed else None,
+            solar_panel_geometries={"Fixed": geometry},
         )
         assert acs.radiator_sun_exposure == 0.25
 

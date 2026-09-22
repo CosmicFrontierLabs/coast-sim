@@ -41,7 +41,7 @@ class DumbScheduler:
         self.targlist: TargetList = TargetList()
         self.step_size = self.ephem.step_size
         self.issurvey = False
-        self.config: MissionConfig | None = None  # optional: can be set externally
+        self.config: MissionConfig | None = config
         self.gimbled = False  # Default: not gimbled
         self.sidemount = False  # Default: not side-mounted
         self.log = log  # Optional log for event recording
@@ -58,6 +58,16 @@ class DumbScheduler:
 
     def schedule(self) -> None:
         """Main scheduling loop."""
+        if self.config is not None and any(
+            panel.single_axis_drive is not None
+            and bool(panel.drive_control.sun_tracking_modes)
+            for panel in self.config.solar_panel.panels
+        ):
+            raise NotImplementedError(
+                "DumbScheduler cannot propagate evolving single-axis solar-array "
+                "drive state; use the queue simulation for dynamic finite drives"
+            )
+
         # Ensure SAA object and its passages are computed
         self._init_saa()
 

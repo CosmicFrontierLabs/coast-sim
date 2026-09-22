@@ -305,8 +305,9 @@ class SolarPanel(ConfigModel):
     geometry: PanelGeometry | None = Field(
         default=None,
         description=(
-            "Optional 3D geometry for shadow computation. "
-            "When set, this panel can cast shadows onto radiators that list its name in shadowed_by."
+            "Optional fixed 3D geometry for shadow computation. When set, "
+            "this panel can cast shadows onto radiators that list its name in "
+            "shadowed_by. Articulated panel geometry is not yet supported."
         ),
     )
     single_axis_drive: SingleAxisSolarArrayDrive | None = Field(
@@ -330,6 +331,11 @@ class SolarPanel(ConfigModel):
             raise ValueError(
                 "gimbled and single_axis_drive are mutually exclusive; "
                 "gimbled is the legacy ideal Sun-tracking model"
+            )
+        if self.geometry is not None and self.single_axis_drive is not None:
+            raise ValueError(
+                "geometry cannot be combined with single_axis_drive until "
+                "articulated shadow transforms are supported"
             )
         if self.single_axis_drive is None and (
             self.drive_control.sun_tracking_modes or self.drive_control.track_in_eclipse
@@ -848,7 +854,7 @@ class SolarPanelSet(ConfigModel):
             dtype=np.float64,
         )
         if not any(panel.single_axis_drive is not None for panel in self.panels):
-            normals = np.asarray([panel.normal for panel in self.panels], dtype=float)
+            normals = self._get_geometry().normal
             illumination = np.maximum(sun @ normals.T, 0.0)
             gimbled = np.asarray([panel.gimbled for panel in self.panels], dtype=bool)
             illumination[:, gimbled] = 1.0

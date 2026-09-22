@@ -505,10 +505,12 @@ view.
 
 Housekeeping roll offsets use a read-only roll search after the executed power
 sample, so they reflect the resulting physical drive angle without advancing its
-state again. Existing fixed-panel radiator shadowing is preserved. Panels
-with ``single_axis_drive`` are excluded from radiator occluders until articulated
-shadow geometry is supported; their zero-angle rectangles are not used as a
-substitute for the executed geometry.
+state again. Existing fixed-panel radiator shadowing is preserved. Combining
+``PanelGeometry`` with ``single_axis_drive`` is rejected until articulated shadow
+transforms are supported, rather than treating the zero-angle rectangle as the
+executed geometry. ``DumbScheduler`` also rejects a finite drive with active
+tracking modes because it cannot propagate runtime drive state; use the queue
+simulation for dynamic finite drives.
 
 Solar Panel Vector Helper Function
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

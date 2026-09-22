@@ -17,6 +17,7 @@ from conops import (
 )
 from conops.common import scbodyvector
 from conops.config import DTOR, Telescope
+from conops.config.geometry import PanelGeometry
 
 _START = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
@@ -232,6 +233,11 @@ class TestSolarArrayDriveState:
         with pytest.raises(ValidationError, match="mutually exclusive"):
             SolarPanel(gimbled=True, single_axis_drive=_drive())
 
+    def test_static_shadow_geometry_cannot_use_finite_drive(self) -> None:
+        geometry = PanelGeometry(u=(1.0, 0.0, 0.0), v=(0.0, 0.0, 1.0))
+        with pytest.raises(ValidationError, match="articulated shadow transforms"):
+            SolarPanel(geometry=geometry, single_axis_drive=_drive())
+
 
 @pytest.mark.usefixtures("eclipse")
 class TestExecutedEvaluation:
@@ -271,6 +277,28 @@ class TestExecutedEvaluation:
 
 
 class TestDriveAwareRollSelection:
+    def test_fixed_panel_scoring_normalizes_each_panel_independently(self) -> None:
+        panel_set = SolarPanelSet(
+            panels=[
+                SolarPanel(
+                    normal=(0.0, 2.0, 0.0),
+                    max_power=1.0,
+                    conversion_efficiency=1.0,
+                ),
+                SolarPanel(
+                    normal=(0.0, 0.0, 3.0),
+                    max_power=1.0,
+                    conversion_efficiency=1.0,
+                ),
+            ],
+            conversion_efficiency=1.0,
+        )
+        diagonal = 1.0 / np.sqrt(2.0)
+        scores = panel_set.power_from_normalized_sun_body(
+            np.asarray([(0.0, 1.0, 0.0), (0.0, diagonal, diagonal)])
+        )
+        assert scores == pytest.approx((1.0, np.sqrt(2.0)))
+
     def test_roll_search_reads_state_without_advancing_it(self) -> None:
         panel_set = SolarPanelSet(
             panels=[
