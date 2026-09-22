@@ -18,6 +18,7 @@ from conops import (
     MissionConfig,
     QueueDITL,
 )
+from conops.config import ObservationTiming
 from conops.targets.plan import Plan
 
 
@@ -172,6 +173,7 @@ def mock_config() -> Mock:
 
     # Mock payload
     config.payload = Mock()
+    config.payload.observation_timing = ObservationTiming()
     config.payload.power = Mock(return_value=30.0)
     config.payload.data_generated = Mock(return_value=1.0)
 

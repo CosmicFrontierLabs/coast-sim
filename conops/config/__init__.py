@@ -27,6 +27,7 @@ from .instrument import (
     TelescopeType,
 )
 from .observation_categories import ObservationCategories, ObservationCategory
+from .observation_timing import ObservationTiming
 from .power import PowerDraw
 from .radiator import (
     DefaultRadiatorConfiguration,
@@ -74,6 +75,7 @@ __all__ = [
     "TelescopeType",
     "ObservationCategories",
     "ObservationCategory",
+    "ObservationTiming",
     "OnboardRecorder",
     "Payload",
     "PowerDraw",

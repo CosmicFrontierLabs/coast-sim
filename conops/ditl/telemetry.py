@@ -61,6 +61,12 @@ class Housekeeping(BaseModel):
         ),
     )
     acs_mode: ACSMode | int | None = Field(default=None, description="ACS mode")
+    collection_seconds: float | None = Field(
+        default=None,
+        ge=0,
+        allow_inf_nan=False,
+        description="Useful science collection in the timestep starting at this timestamp; excludes setup and teardown",
+    )
     panel_illumination: float | None = Field(
         default=None, description="Solar panel illumination fraction (0-1)"
     )
