@@ -76,13 +76,26 @@ class StoredMomentumTracker:
 
     Momentum is integrated in ECI so changing spacecraft attitude only changes
     its body-frame components; it does not create spurious stored momentum.
+    This is a sampled integrator, not a trajectory interpolator. Callers must
+    supply sufficiently fine executed-attitude and orbit samples, and lower
+    ``max_sample_interval_s`` for fast motion or convergence studies.
     """
 
     def __init__(
         self,
         inertia_tensor_body_kg_m2: npt.ArrayLike,
         initial_momentum_body_n_m_s: npt.ArrayLike = (0.0, 0.0, 0.0),
+        *,
+        max_sample_interval_s: float = 10.0,
     ) -> None:
+        if (
+            not np.isfinite(max_sample_interval_s)
+            or not 0.0 < max_sample_interval_s <= 10.0
+        ):
+            raise ValueError(
+                "max_sample_interval_s must be finite, positive, and <= 10 s"
+            )
+        self.max_sample_interval_s = float(max_sample_interval_s)
         self.inertia_tensor_body_kg_m2 = _finite_matrix3(
             inertia_tensor_body_kg_m2, name="inertia_tensor_body_kg_m2"
         )
@@ -97,6 +110,17 @@ class StoredMomentumTracker:
         self._previous_torque_eci_n_m: npt.NDArray[np.float64] | None = None
         self._previous_utime: float | None = None
 
+    def validate_sample_interval(self, elapsed_s: float) -> None:
+        """Reject undersampling without changing integration state."""
+        if not np.isfinite(elapsed_s) or elapsed_s <= 0.0:
+            raise ValueError("momentum sample interval must be finite and positive")
+        if elapsed_s > self.max_sample_interval_s * (1.0 + 1e-12):
+            raise ValueError(
+                f"stored momentum sample interval {elapsed_s:g} s exceeds "
+                f"{self.max_sample_interval_s:g} s; supply finer executed-attitude "
+                "and ephemeris samples"
+            )
+
     def update(
         self,
         *,
@@ -107,6 +131,16 @@ class StoredMomentumTracker:
         """Advance to one attitude sample using trapezoidal torque integration."""
         if not np.isfinite(utime):
             raise ValueError("utime must be finite")
+
+        elapsed_s = (
+            0.0 if self._previous_utime is None else float(utime - self._previous_utime)
+        )
+        if elapsed_s < 0.0:
+            raise ValueError("momentum samples must have nondecreasing timestamps")
+        # Subtracting Unix timestamps can round a nominally valid gap upward.
+        time_resolution = float(np.spacing(abs(utime))) * 2.0
+        if elapsed_s > self.max_sample_interval_s + time_resolution:
+            self.validate_sample_interval(elapsed_s)
 
         rotation_eci_to_body = quaternion_to_rotation_matrix(
             attitude_quaternion_eci_to_body
@@ -123,9 +157,6 @@ class StoredMomentumTracker:
                 rotation_eci_to_body.T @ self.initial_momentum_body_n_m_s
             )
         else:
-            elapsed_s = float(utime - self._previous_utime)
-            if elapsed_s < 0.0:
-                raise ValueError("momentum samples must have nondecreasing timestamps")
             assert self._momentum_eci_n_m_s is not None
             assert self._previous_torque_eci_n_m is not None
             self._momentum_eci_n_m_s += (

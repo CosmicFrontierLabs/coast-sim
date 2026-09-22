@@ -14,6 +14,17 @@ class StoredMomentumConfig(ConfigModel):
             "gravity-gradient torque."
         ),
     )
+    max_sample_interval_s: float = Field(
+        default=10.0,
+        gt=0.0,
+        le=10.0,
+        allow_inf_nan=False,
+        description=(
+            "Maximum executed-attitude and ephemeris sample interval in seconds. "
+            "Further limited to five degrees of motion at the fastest configured "
+            "body slew rate. Coarser runs fail instead of aliasing torque."
+        ),
+    )
     initial_momentum_body_n_m_s: tuple[float, float, float] = Field(
         default=(0.0, 0.0, 0.0),
         description=(

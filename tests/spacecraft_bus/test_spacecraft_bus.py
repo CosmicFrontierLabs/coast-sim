@@ -101,6 +101,11 @@ class TestAttitudeControlSystem:
         with pytest.raises(ValueError, match="finite"):
             StoredMomentumConfig(initial_momentum_body_n_m_s=(0.0, np.nan, 0.0))
 
+    @pytest.mark.parametrize("interval", [0.0, -1.0, np.nan, np.inf, 10.1])
+    def test_momentum_sampling_limit_is_bounded(self, interval):
+        with pytest.raises(ValueError, match="max_sample_interval_s"):
+            StoredMomentumConfig(max_sample_interval_s=interval)
+
     def test_initialization_custom_slew_acceleration(self, custom_acs):
         """Test ACS initializes with custom slew_acceleration."""
         assert custom_acs.slew_acceleration == 1.0
@@ -479,6 +484,26 @@ class TestSpacecraftBus:
             (1.0, 20.0, 0.0),
             (0.0, 0.0, 30.0),
         )
+
+    @pytest.mark.parametrize("scale", [1e-15, 1.0, 1e15])
+    @pytest.mark.parametrize("excess", [0.0, 1e-13])
+    def test_inertia_triangle_boundary_allows_roundoff(self, scale, excess):
+        SpacecraftBus(
+            inertia_tensor_body_kg_m2=np.diag([1.0, 1.0, 2.0 + excess]) * scale
+        )
+
+    @pytest.mark.parametrize("scale", [1e-15, 1.0, 1e15])
+    @pytest.mark.parametrize(
+        "inertia",
+        [
+            np.diag([1.0, 1.0, 10.0]),
+            np.eye(3) + 3.0 * np.ones((3, 3)),
+            np.diag([1.0, 1.0, 2.0 + 1e-9]),
+        ],
+    )
+    def test_inertia_triangle_check_uses_principal_moments(self, scale, inertia):
+        with pytest.raises(ValueError, match="triangle inequality"):
+            SpacecraftBus(inertia_tensor_body_kg_m2=inertia * scale)
 
     @pytest.mark.parametrize(
         "inertia, message",

@@ -22,7 +22,7 @@ class SpacecraftBus(ConfigModel):
         | None
     ) = Field(
         default=None,
-        description="Spacecraft inertia tensor in body coordinates, in kg m².",
+        description="Spacecraft inertia tensor about its center of mass in body coordinates, in kg m².",
     )
     power_draw: PowerDraw = Field(
         default_factory=PowerDraw,
@@ -73,8 +73,14 @@ class SpacecraftBus(ConfigModel):
             raise ValueError("inertia tensor must be a finite 3x3 matrix")
         if not np.allclose(inertia, inertia.T, rtol=1e-12, atol=1e-12):
             raise ValueError("inertia tensor must be symmetric")
-        if np.any(np.linalg.eigvalsh(inertia) <= 0.0):
+        principal_moments = np.linalg.eigvalsh(inertia)
+        if np.any(principal_moments <= 0.0):
             raise ValueError("inertia tensor must be positive definite")
+        tolerance = 1e-12 * principal_moments[-1]
+        if principal_moments[-1] > principal_moments[:2].sum() + tolerance:
+            raise ValueError(
+                "principal inertia moments must satisfy the triangle inequality"
+            )
         return tuple(tuple(float(x) for x in row) for row in inertia)  # type: ignore[return-value]
 
     @model_validator(mode="after")

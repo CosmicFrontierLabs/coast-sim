@@ -1,12 +1,13 @@
 """Unit tests for telemetry.py."""
 
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from conops.common.enums import ACSMode
 from conops.common.vector import attitude_to_quat, quat_to_attitude
+from conops.config import AttitudeControlSystem, StoredMomentumConfig
 from conops.ditl.ditl import DITL
 from conops.ditl.telemetry import (
     Housekeeping,
@@ -14,7 +15,6 @@ from conops.ditl.telemetry import (
     PayloadData,
     Telemetry,
 )
-from conops.simulation.momentum import StoredMomentumTracker
 
 
 class TestHousekeeping:
@@ -510,10 +510,18 @@ class TestStoredMomentumFields:
         assert hkl.stored_momentum_norm_n_m_s == [pytest.approx(0.4)]
 
     def test_ditl_writes_enabled_momentum_telemetry(self, ditl: DITL) -> None:
-        ditl._stored_momentum_tracker = StoredMomentumTracker(
-            ((10.0, 0.0, 0.0), (0.0, 5.0, 0.0), (0.0, 0.0, 1.0))
+        ditl.config.spacecraft_bus.inertia_tensor_body_kg_m2 = (
+            (10.0, 0.0, 0.0),
+            (0.0, 8.0, 0.0),
+            (0.0, 0.0, 6.0),
         )
-        ditl.acs.pointing.return_value = (45.0, 0.0, 0.0, 1)
+        ditl.config.spacecraft_bus.attitude_control = AttitudeControlSystem(
+            stored_momentum=StoredMomentumConfig(gravity_gradient_enabled=True)
+        )
+        ditl.step_size = ditl.ephem.step_size = 1
+        ditl.ephem.timestamp = [ditl.begin + timedelta(seconds=i) for i in range(5)]
+        ditl.end = ditl.ephem.timestamp[-1]
+        ditl.acs.pointing.return_value = (0.0, 45.0, 0.0, 1)
 
         ditl.calc()
 
@@ -521,6 +529,12 @@ class TestStoredMomentumFields:
         assert hk.gravity_gradient_torque_body_n_m is not None
         assert hk.stored_momentum_body_n_m_s == pytest.approx((0.0, 0.0, 0.0))
         assert hk.stored_momentum_norm_n_m_s == pytest.approx(0.0)
+        last = ditl.telemetry.housekeeping[-1]
+        assert last.stored_momentum_norm_n_m_s > 0.0
+        assert last.stored_momentum_norm_n_m_s == pytest.approx(
+            math.sqrt(sum(value**2 for value in last.gravity_gradient_torque_body_n_m))
+            * (last.timestamp - hk.timestamp).total_seconds()
+        )
 
 
 class TestQuaternionFields:

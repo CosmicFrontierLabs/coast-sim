@@ -349,11 +349,38 @@ segment's own body-frame rotation axis. If both tuples are omitted, the scalar
 fields retain their existing behavior, including legacy RA/Dec-only estimates.
 
 Gravity-gradient momentum tracking is disabled by default. Enable it by supplying
-a physical body-frame inertia tensor and setting ``gravity_gradient_enabled``.
+a physical body-frame inertia tensor about the spacecraft center of mass and
+setting ``gravity_gradient_enabled``. Its principal moments must be positive and
+satisfy the triangle inequalities; a planar-body equality is allowed, including
+relative numerical roundoff of 1e-12.
 COAST integrates the angular impulse in inertial coordinates, then reports the
 stored-momentum vector in the current body frame. This prevents attitude changes
 alone from appearing to generate momentum. Capacity enforcement and desaturation
 scheduling are not part of this tracking model.
+
+The tracker reloads the inertia, initial momentum, and enable flag at the start
+of every run. Configuration changes between runs therefore take effect without
+reconstructing the simulation.
+
+This is a sampled torque integrator, not an attitude-trajectory interpolator.
+To guard against missing torque between samples, enabled runs require both the
+executed-attitude and ephemeris intervals to be no greater than the smaller of:
+
+* ``stored_momentum.max_sample_interval_s`` (default 10 seconds, configurable downward);
+* 5 degrees divided by the fastest configured body-axis slew rate (or scalar
+  ``max_slew_rate`` when body-axis limits are absent).
+
+For example, a fastest rate of 2 degrees/second requires intervals of at most
+2.5 seconds. Set ``DITL.step_size`` and generate an ephemeris at an appropriate
+resolution; ``QueueDITL`` uses the ephemeris step as its execution step. Coarse
+runs fail before ACS execution or power updates; a fine execution step cannot
+compensate for a coarse ephemeris. Disabled tracking leaves existing runs unchanged.
+
+These are conservative sampling guards, not a guaranteed integration-error
+tolerance. Verify convergence at finer cadence for final studies. The guard
+does not change scheduling cadence automatically or call the ACS state machine
+at synthetic intermediate times. Use fixed-plan replay when comparing numerical
+cadences without replanning the science schedule.
 
 .. code-block:: yaml
 
@@ -365,6 +392,7 @@ scheduling are not part of this tracking model.
      attitude_control:
        stored_momentum:
          gravity_gradient_enabled: true
+         max_sample_interval_s: 10.0
          initial_momentum_body_n_m_s: [0.0, 0.0, 0.0]
 
 .. code-block:: python

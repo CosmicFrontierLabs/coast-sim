@@ -456,7 +456,6 @@ class QueueDITL(DITLMixin, DITLStats):
         # Reset per-run state so re-runs on the same instance start clean
         self._attitude_constraint_violations = []
         self._active_gsp_end_time = None
-        self._reset_stored_momentum_tracker()
 
         # If begin/end datetimes are naive, assume UTC by making them timezone-aware
         if self.begin.tzinfo is None:
@@ -469,6 +468,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
         # Set step_size from ephem
         self.step_size = self.ephem.step_size
+        self._reset_stored_momentum_tracker()
 
         # Set ACS ephemeris if not already set
         if self.acs.ephem is None:
