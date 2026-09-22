@@ -529,6 +529,8 @@ class QueueDITL(DITLMixin, DITLStats):
                 i, utime, ra, dec, roll, mode, in_eclipse=self.acs.in_eclipse
             )
 
+            self._reserve_pending_charge_cleanup(utime)
+
             # Handle data generation and downlink
             self._handle_data_management(utime, mode)
 
@@ -551,9 +553,16 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _handle_data_management(self, utime: float, mode: ACSMode) -> None:
         """Handle data generation during observations and downlink during passes."""
+        collection_seconds = self._collection_seconds_for_step(utime, mode)
+        if (
+            collection_seconds > 0
+            and self.ppt is not None
+            and self.ppt.exptime is not None
+        ):
+            self.ppt.exptime = max(0, self.ppt.exptime - collection_seconds)
         # Use the mixin method to process data generation and downlink
         data_generated, data_downlinked = self._process_data_management(
-            utime, mode, self.step_size
+            utime, mode, self.step_size, collection_seconds=collection_seconds
         )
 
         # Record data telemetry (cumulative values)
@@ -575,6 +584,31 @@ class QueueDITL(DITLMixin, DITLStats):
                 data_size_gb=data_generated,
             )
             self.telemetry.data.append(pd)
+
+    def _reserve_pending_charge_cleanup(self, utime: float) -> None:
+        """Reserve teardown before a recharge requested by this step's power update.
+
+        Power has already been integrated through the next tick, but collection
+        has not. This lets us stop collection before charging without delaying
+        the charge command or retroactively subtracting generated data.
+        """
+        timing = self.config.payload.observation_timing
+        if self.ppt is None or self.ppt.collection_end is None:
+            return
+        deadline = self._next_charge_science_deadline(utime + self.step_size)
+        if deadline is None or deadline >= self.ppt.end:
+            return
+        collection_end = deadline - timing.post_collection_seconds
+        if collection_end < utime and self.ppt.collection_end > collection_end:
+            raise ValueError(
+                "Recharge interrupts observation before its cleanup/handoff budget "
+                "can be reserved; no executable observation timeline can be exported"
+            )
+        self.ppt.end = deadline
+        self.ppt.set_collection_window(timing)
+        if self.plan and self.plan[-1].begin == self.ppt.begin:
+            self.plan[-1].end = deadline
+            self.plan[-1].set_collection_window(timing)
 
     def _handle_fault_management(
         self, utime: float, hk: Housekeeping | None = None
@@ -621,6 +655,10 @@ class QueueDITL(DITLMixin, DITLStats):
         if entry.obstype != ObsType.AT:
             return None
         end = end_time if end_time is not None else float(entry.end)
+        if entry.collection_begin is not None:
+            return entry.collection_seconds_between(entry.begin, end) - max(
+                0.0, float(entry.insaa)
+            )
         return (
             end
             - entry.begin
@@ -680,6 +718,8 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _science_start_time(self, entry: PlanEntry) -> float:
         """Return the time science collection begins for an entry, after its slew."""
+        if entry.collection_begin is not None:
+            return entry.collection_begin
         return float(entry.begin) + max(0.0, float(entry.slewtime))
 
     def _window_indices(self, start: float, end: float) -> range:
@@ -823,7 +863,11 @@ class QueueDITL(DITLMixin, DITLStats):
     ) -> list[PlanExecutionMismatch]:
         """Check telemetry over a science entry's window against expected mode, obsid, and pointing."""
         start = self._science_start_time(entry)
-        end = float(entry.end)
+        end = (
+            min(entry.end, entry.collection_end)
+            if entry.collection_end is not None
+            else float(entry.end)
+        )
         mismatches: list[PlanExecutionMismatch] = []
         if end <= start:
             return mismatches
@@ -1166,8 +1210,31 @@ class QueueDITL(DITLMixin, DITLStats):
         # or trimming a finalized one earlier (e.g. to free room for a ground
         # station pass) is still allowed.
         is_open = entry_end >= entry_begin + DAY_SECONDS
+        timed = entry.collection_end is not None
         if not is_open and end_time >= entry_end:
-            return
+            if not timed:
+                return
+            end_time = entry_end
+        if timed:
+            assert entry.collection_begin is not None
+            assert entry.collection_end is not None
+            cutoff = max(
+                entry.collection_begin,
+                end_time
+                - self.config.payload.observation_timing.post_collection_seconds,
+            )
+            # Future collection can be cancelled, but already executed collection
+            # cannot be relabelled as cleanup to make an interruption fit.
+            if min(end_time, entry.collection_end) > cutoff:
+                raise ValueError(
+                    f"Observation {entry.obsid} interrupted before reserved cleanup/"
+                    "handoff finished; refusing to export an executable task with "
+                    "unaccounted collection time"
+                )
+            entry.collection_begin = min(entry.collection_begin, end_time)
+            entry.collection_end = max(
+                entry.collection_begin, min(entry.collection_end, cutoff, end_time)
+            )
         self.plan[-1].end = end_time
         if self._is_short_science_entry(self.plan[-1]):
             entry = self.plan[-1]
@@ -1268,6 +1335,7 @@ class QueueDITL(DITLMixin, DITLStats):
             roll=roll,
             roll_offset_deg=roll_offset_deg,
             acs_mode=mode,
+            collection_seconds=self._collection_seconds_for_step(utime, mode),
             panel_illumination=panel_illumination,
             power_usage=total_power,
             power_bus=bus_power,
@@ -1435,7 +1503,11 @@ class QueueDITL(DITLMixin, DITLStats):
             entry.roll = float(slew.instrument_roll)
             entry.instrument_name = slew.instrument_name
         if update_end:
-            entry.end = int(slew.slewstart + slew.slewtime + entry.ss_max)
+            if entry.collection_end is None:
+                entry.end = int(slew.slewstart + slew.slewtime + entry.ss_max)
+        if entry.config is not None:
+            timing = entry.config.payload.observation_timing
+            entry.set_collection_window(timing)
 
     @staticmethod
     def _entry_matches_science_slew(entry: PlanEntry, slew: Slew) -> bool:
@@ -2160,18 +2232,8 @@ class QueueDITL(DITLMixin, DITLStats):
         if mode == ACSMode.SLEWING:
             return
 
-        # Decrement exposure time when actively observing
-        if mode == ACSMode.SCIENCE:
-            self._decrement_exposure_time()
-
         # Check termination conditions
         self._check_ppt_termination(utime)
-
-    def _decrement_exposure_time(self) -> None:
-        """Decrement PPT exposure time by one timestep."""
-        assert self.ppt is not None
-        assert self.ppt.exptime is not None, "Exposure time should not be None here"
-        self.ppt.exptime -= self.step_size
 
     def _check_ppt_termination(self, utime: float) -> None:
         """Check if PPT should terminate due to constraints, completion, or timeout."""
@@ -2190,10 +2252,6 @@ class QueueDITL(DITLMixin, DITLStats):
             self._terminate_ppt(
                 utime,
                 reason=f"Target {constraint_text} constrained, ending observation",
-            )
-        elif self.ppt.exptime is None or self.ppt.exptime <= 0:
-            self._terminate_ppt(
-                utime, reason="Exposure complete, ending observation", mark_done=True
             )
         elif utime >= self.ppt.end:
             self._terminate_ppt(utime, reason="Time window elapsed, ending observation")
@@ -2646,7 +2704,9 @@ class QueueDITL(DITLMixin, DITLStats):
             current_time=utime,
             target_roll=target_roll,
         )
-        available_collect_time = deadline - slew_end
+        available_collect_time = (
+            deadline - slew_end - self.config.payload.observation_timing.total_seconds
+        )
         if available_collect_time >= self.ppt.ss_min:
             return False
 
@@ -2864,7 +2924,12 @@ class QueueDITL(DITLMixin, DITLStats):
             obs_start_time = execution_time + slew.slewtime
             ephem = self.acs.ephem
             ephem_end = self._ephem_timestamp_to_utime(ephem.timestamp[-1])
-            obs_val_end = min(obs_start_time + self.ppt.ss_min, ephem_end)
+            obs_val_end = min(
+                obs_start_time
+                + self.ppt.ss_min
+                + self.config.payload.observation_timing.total_seconds,
+                ephem_end,
+            )
             violation = self._check_locked_roll_window(
                 obs_start_time,
                 obs_val_end,
@@ -2922,6 +2987,25 @@ class QueueDITL(DITLMixin, DITLStats):
                 return
 
             self._apply_slew_metadata(self.ppt, slew, update_end=True)
+            timing = self.config.payload.observation_timing
+            deadline, _ = self._next_science_deadline(
+                slew_end, current_time=utime, target_roll=slew.endroll
+            )
+            remaining = min(
+                self.ppt.ss_max,
+                self.ppt.exptime if self.ppt.exptime is not None else self.ppt.ss_max,
+            )
+            self.ppt.end = min(deadline, slew_end + timing.total_seconds + remaining)
+            violation = self._check_locked_roll_window(
+                slew_end, self.ppt.end, (slew.endra, slew.enddec, slew.endroll)
+            )
+            if violation is not None:
+                # Leave from a still-valid sample, with teardown already over.
+                self.ppt.end = min(self.ppt.end, violation[0] - self.step_size)
+            self.ppt.set_collection_window(timing)
+            if self.ppt.exposure < self.ppt.ss_min:
+                self._retry_fetch_without_current_ppt(utime, ra, dec)
+                return
             self.acs.slew_dists.append(slew.slewdist)
 
             self.log.log_event(

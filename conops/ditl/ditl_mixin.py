@@ -83,6 +83,7 @@ class DITLMixin:
     begin: datetime
     end: datetime
     step_size: int
+    uend: float
     panel_power: list[float]
     batterylevel: list[float]
     charge_state: list[int]
@@ -537,8 +538,41 @@ class DITLMixin:
 
         return None
 
+    def _collection_seconds_for_step(
+        self, utime: float, mode: ACSMode, obsid: int | None = None
+    ) -> float:
+        """Intersect the planned collection window with executed slew/setup readiness."""
+        if (
+            self.ppt is None
+            or self.ppt.collection_end is None
+            or mode not in (ACSMode.SCIENCE, ACSMode.SLEWING)
+            or (obsid is not None and obsid != self.ppt.obsid)
+        ):
+            return 0.0
+        start = utime
+        slew = self.acs.current_slew if mode == ACSMode.SLEWING else self.acs.last_slew
+        if slew is not None:
+            if slew.obsid != self.ppt.obsid:
+                return 0.0
+            assert self.ppt.collection_begin is not None
+            # Infer setup from the saved window, not a possibly changed replay config.
+            setup = max(
+                0.0, self.ppt.collection_begin - self.ppt.begin - self.ppt.slewtime
+            )
+            start = max(start, slew.slewend + setup)
+        elif mode == ACSMode.SLEWING:
+            return 0.0
+        return self.ppt.collection_seconds_between(
+            start, min(utime + self.step_size, self.uend)
+        )
+
     def _process_data_management(
-        self, utime: float, mode: ACSMode, step_size: int
+        self,
+        utime: float,
+        mode: ACSMode,
+        step_size: int,
+        *,
+        collection_seconds: float,
     ) -> tuple[float, float]:
         """Process data generation and downlink for a single timestep.
 
@@ -546,6 +580,8 @@ class DITLMixin:
             utime: Unix timestamp for current timestep.
             mode: Current ACS mode.
             step_size: Time step in seconds.
+            collection_seconds: Useful collection in this step, computed from the
+                observation window rather than inferred from the ACS mode.
 
         Returns:
             Tuple of (data_generated, data_downlinked) in Gb for this timestep.
@@ -553,9 +589,9 @@ class DITLMixin:
         data_generated = 0.0
         data_downlinked = 0.0
 
-        # Generate data during SCIENCE mode
-        if mode == ACSMode.SCIENCE:
-            data_generated = self.payload.data_generated(step_size)
+        # ACS science pointing can include payload setup and cleanup.
+        if collection_seconds > 0:
+            data_generated = self.payload.data_generated(collection_seconds)
             self.recorder.add_data(data_generated)
 
         # Downlink data during PASS mode

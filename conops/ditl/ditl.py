@@ -261,6 +261,16 @@ class DITL(DITLMixin, DITLStats):
             # Get current mode from ACS (it now determines mode internally)
             mode = self.acs.get_mode(self.utime[i])
 
+            if (
+                self.ppt is not None
+                and self.ppt.collection_begin is None
+                and mode in (ACSMode.SCIENCE, ACSMode.SLEWING)
+            ):
+                self.ppt.set_collection_window(self.config.payload.observation_timing)
+            collection_seconds = self._collection_seconds_for_step(
+                self.utime[i], mode, obsid
+            )
+
             # Determine the power usage in Watts based on mode from config
             bus_power = self.spacecraft_bus.power(mode, in_eclipse=self.acs.in_eclipse)
             payload_power = self.payload.power(mode, in_eclipse=self.acs.in_eclipse)
@@ -409,6 +419,7 @@ class DITL(DITLMixin, DITLStats):
                 roll=roll,
                 roll_offset_deg=roll_offset_deg,
                 acs_mode=mode,
+                collection_seconds=collection_seconds,
                 panel_illumination=panel_illumination,
                 power_usage=power_usage,
                 power_bus=bus_power,
@@ -479,7 +490,10 @@ class DITL(DITLMixin, DITLStats):
 
             # Data management: generate and downlink data
             data_generated, data_downlinked = self._process_data_management(
-                self.utime[i], mode, self.step_size
+                self.utime[i],
+                mode,
+                self.step_size,
+                collection_seconds=collection_seconds,
             )
 
             # Record data telemetry (cumulative values)

@@ -27,6 +27,10 @@ class DumbScheduler:
     ) -> None:
         if config is None:
             raise ValueError("Config must be provided to DumbScheduler")
+        if config.payload.observation_timing.total_seconds > 0:
+            raise ValueError(
+                "Observation timing budgets require QueueDITL, not DumbScheduler"
+            )
 
         self.mintime = 5 * 60  # seconds (5 minutes)
         self.constraint = config.constraint
@@ -229,7 +233,7 @@ class DumbScheduler:
 
             # Compute actual exposure assigned to this plan entry (seconds)
             # exposure is time after slew and before end
-            exposure_time = int(max(0, endtime - ppt.begin - ppt.slewtime))
+            exposure_time: float = int(max(0, endtime - ppt.begin - ppt.slewtime))
             # Do not exceed the target's remaining requested exposure
             exposure_time = min(exposure_time, selected_target.exptime)
             # assign to the PlanEntry if the attribute exists; fallback to attribute assignment

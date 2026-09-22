@@ -155,7 +155,7 @@ class TestDITLCalc:
 
 def _plan_entry_stub(begin: float, end: float, obsid: int) -> Mock:
     """A stand-in plan entry covering [begin, end) for DITL loop tests."""
-    entry = Mock(spec=PlanEntry)
+    entry = Mock(spec=PlanEntry, collection_begin=None, collection_end=None)
     entry.begin = begin
     entry.end = end
     entry.ra = 0.0
