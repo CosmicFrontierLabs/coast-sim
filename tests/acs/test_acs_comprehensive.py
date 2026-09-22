@@ -333,6 +333,8 @@ class TestPointing:
         mock_slew.obstype = "PPT"
         mock_slew.obsid = 100
         mock_slew.attitude = Mock(return_value=(45.0, 30.0, 45.0))
+        mock_slew.slewstart = 1514764800.0
+        mock_slew.motion_profile.return_value = None
         mock_slew.at = None
 
         acs.last_slew = mock_slew
@@ -358,6 +360,8 @@ class TestPointing:
         mock_gsp_slew.obstype = "GSP"
         mock_gsp_slew.obsid = 200
         mock_gsp_slew.attitude = Mock(return_value=(45.0, 30.0, 45.0))
+        mock_gsp_slew.slewstart = 1514764800.0
+        mock_gsp_slew.motion_profile.return_value = None
         mock_gsp_slew.at = None
 
         acs.last_slew = mock_gsp_slew
@@ -383,6 +387,7 @@ class TestPointing:
         mock_gsp_slew.slewstart = 1514764800.0
         mock_gsp_slew.endroll = 0.0
         mock_gsp_slew.begin = 1514764800.0
+        mock_gsp_slew.motion_profile.return_value = None
         mock_gsp_slew.length = 600.0
         mock_gsp_slew.ra_dec = Mock(return_value=(45.0, 30.0))
         mock_gsp_slew.at = None

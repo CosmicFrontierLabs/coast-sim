@@ -18,6 +18,7 @@ from ..common.vector import (
 from ..config import AttitudeControlSystem, Constraint, MissionConfig
 from ..config.acs import scheduled_slew_time
 from ..config.constants import DTOR
+from .attitude_profile import SlewMotionProfile, SlewMotionSegment
 
 if TYPE_CHECKING:
     from ..targets import PlanEntry
@@ -68,6 +69,8 @@ class Slew(BaseModel):
     # Maneuvers are rest-to-rest SLERP segments, each with its own angular
     # distance, initial body-frame rotation axis, and exact quaternion endpoints.
     _slew_segments: list[_SlewSegment] = PrivateAttr(default_factory=list)
+    _motion_snapshot_key: tuple[object, ...] | None = PrivateAttr(default=None)
+    _motion_snapshot: SlewMotionProfile | None = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def _derive_from_config(self) -> "Slew":
@@ -156,6 +159,48 @@ class Slew(BaseModel):
         # quaternion segment metadata.
         ra, dec = self.slew_ra_dec(utime)
         return ra, dec, self.slew_roll(utime)
+
+    def motion_profile(self) -> SlewMotionProfile | None:
+        """Snapshot the resolved motion without retaining runtime configuration."""
+        if not self._slew_segments or self.acs_config is None:
+            return None
+        segments = []
+        for segment in self._slew_segments:
+            # A zero-angle hold has no maneuver axis or meaningful rate limit.
+            axis = segment.axis_body if segment.distance_deg else (1.0, 0.0, 0.0)
+            acceleration = self.acs_config.effective_slew_acceleration(axis)
+            rate = self.acs_config.effective_max_slew_rate(axis)
+            if (
+                not np.isfinite((acceleration, rate)).all()
+                or min(acceleration, rate) <= 0
+            ):
+                return None  # Legacy non-kinematic fallback cannot be reconstructed.
+            segments.append(
+                (
+                    tuple(segment.start_quat),
+                    tuple(segment.end_quat),
+                    segment.distance_deg,
+                    acceleration,
+                    rate,
+                )
+            )
+        key = (self.slewstart, tuple(segments))
+        if key != self._motion_snapshot_key:
+            self._motion_snapshot = SlewMotionProfile(
+                start_utime=self.slewstart,
+                segments=tuple(
+                    SlewMotionSegment(
+                        start_quaternion=start,
+                        end_quaternion=end,
+                        distance_deg=distance,
+                        acceleration_deg_s2=acceleration,
+                        max_rate_deg_s=rate,
+                    )
+                    for start, end, distance, acceleration, rate in segments
+                ),
+            )
+            self._motion_snapshot_key = key
+        return self._motion_snapshot
 
     def _slew_fraction(self, t: float) -> float:
         """Return progress fraction [0,1] along the bang-bang profile at elapsed time t."""

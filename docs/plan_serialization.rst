@@ -570,7 +570,8 @@ field so that consumers can locate it without scanning the directory.
      - Description
    * - ``version``
      - int
-     - Schema format version (currently always ``0``).
+     - Schema format version: ``0`` for sampled-only exports, ``1`` permits
+       optional resolved slew/hold intervals in addition to samples.
    * - ``coast_sim_version``
      - string
      - COASTSim package version that produced the file.
@@ -673,6 +674,75 @@ Each element of ``samples`` is an :class:`~conops.targets.plan_schema.AttitudeSa
        raw = __import__("json").loads(timeseries_path.read_text())
        timeseries = AttitudeTimeseriesSchema.model_validate(raw)
        print(f"Loaded {timeseries.num_samples} attitude samples")
+
+Read-only trajectory analysis
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``ExecutionTrajectory`` reads the existing sidecars without binding a mission
+configuration or running the scheduler/ACS again. It validates the sidecar links,
+plan provenance, frame conventions, quaternions, time ordering and input cadence.
+Legacy version-0 sampled exports remain supported when sufficiently resolved.
+
+New attitude exports use version 1 and optionally include ``resolved_intervals``:
+actual validity bounds and immutable rest-to-rest quaternion slew segments with
+their resolved rate/acceleration limits. The prescribed motion includes the
+subsequent fixed hold (including settling). These are *executed* profiles, not
+predicted plan-entry slew times. Interrupted or discontinuous spans, initial
+conditions, ground tracking and solar-tracking attitudes remain sampled; they
+are not labelled exact merely because their endpoints happen to agree.
+
+The adapter evaluates those known profiles exactly using the runtime slew law.
+Elsewhere it uses shortest-arc quaternion interpolation only across input gaps
+within the explicitly supplied limit. Orbit interpolation is cubic Hermite using
+the exported GCRS position and velocity, with a separate input-gap limit (60 s
+by default). Finer output cannot repair an unresolved input gap. Both sampled
+interpolation limits require convergence checks for the intended analysis.
+
+For example, integrate the existing gravity-gradient diagnostic independently
+of scheduling and housekeeping cadence. The inline DITL momentum tracker retains
+its existing cadence guard; leave ``gravity_gradient_enabled`` false when using
+this offline path with a coarser execution cadence. Motion metadata is exported
+regardless of that setting::
+
+   from conops.simulation.execution_trajectory import ExecutionTrajectory
+   from conops.simulation.momentum import StoredMomentumTracker
+
+   trajectory = ExecutionTrajectory.load(
+       "output/plan.json",
+       max_attitude_gap_s=2.5,  # Example: fastest body rate is 2 deg/s.
+       max_orbit_gap_s=60.0,
+   )
+   print("Actual common coverage:", trajectory.start_utime, trajectory.end_utime)
+   tracker = StoredMomentumTracker(
+       inertia_tensor_body_kg_m2, max_sample_interval_s=1.0
+   )
+   results = []
+   for state in trajectory.samples(step_s=1.0):
+       momentum = tracker.update(
+           utime=state.utime,
+           position_eci_km=state.position_km,
+           attitude_quaternion_eci_to_body=state.quaternion,
+       )
+       results.append((state.utime, momentum))
+
+For momentum work, use at most ``min(10 s, 5 deg / fastest bus rate)`` for the
+unresolved attitude gap and integration step, then decrease the step to check
+convergence. Quadrature samples include motion phase and source boundaries;
+``step_s`` is a maximum gap, not a promise of uniform spacing. Choose plot cadence
+by thinning results *after* integration. ``state_at(utime)`` also provides pure,
+order-independent random access for an external analysis tool.
+
+Coverage defaults to the intersection of the actual attitude and orbit sample
+ranges, not the plan's declared window. Explicit requests outside that range
+raise an error: in particular, the unsampled tail after the final housekeeping
+tick is never extrapolated. Shorter requested analysis windows can be supplied
+to ``samples`` using ``start_utime`` and ``end_utime``.
+
+This is a prescribed-trajectory adapter, not a control/actuator physics engine.
+The diagnostic still integrates external angular impulse; it does not predict
+wheel/CMG states during slews, torque-rod control, jitter, or internal momentum
+exchange. Panel-angle and inertia histories or additional environment inputs
+needed by a higher-fidelity backend are not inferred from these sidecars.
 
 .. _orbit-state-timeseries:
 

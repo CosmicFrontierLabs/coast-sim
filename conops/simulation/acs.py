@@ -10,7 +10,7 @@ from ..common import (
     dtutcfromtimestamp,
     unixtime2date,
 )
-from ..common.vector import sort_by_angular_separation
+from ..common.vector import attitude_to_quat, sort_by_angular_separation
 from ..config import AttitudeConstraintScope, FaultEvent, MissionConfig
 from ..config.constraint import (
     attitude_constraint_names_for_scopes,
@@ -20,6 +20,7 @@ from ..config.constraint import (
 from ..simulation.passes import PassTimes
 from ..simulation.roll import optimum_roll
 from .acs_command import ACSCommand
+from .attitude_profile import ExecutedAttitudeInterval, same_rotation
 from .emergency_charging import EmergencyCharging
 from .passes import Pass
 from .slew import Slew
@@ -121,6 +122,8 @@ class ACS:
         # Command queue (sorted by execution_time)
         self.command_queue = []
         self.executed_commands = []
+        self.executed_attitude_intervals: list[ExecutedAttitudeInterval] = []
+        self._pending_attitude_interval: ExecutedAttitudeInterval | None = None
 
         # Current and historical state
         self.current_slew = None
@@ -584,6 +587,8 @@ class ACS:
         # Check current constraints (must run after roll is updated)
         self._check_constraints(utime)
 
+        self._record_attitude_interval(utime)
+
         # Return current pointing
         if self.current_pass is not None:
             return self.ra, self.dec, self.roll, self.current_pass.obsid
@@ -598,6 +603,49 @@ class ACS:
             return self.ra, self.dec, self.roll, self.last_slew.obsid
         else:
             return self.ra, self.dec, self.roll, IDLE_OBSID
+
+    def _record_attitude_interval(self, utime: float) -> None:
+        """Record only known slew/hold spans, without advancing the controller.
+
+        Commands execute on pointing ticks. A prior tick's prescribed motion is
+        valid up to this tick only if its endpoint agrees with the actual state.
+        Dynamic tracking, initial conditions and discontinuities remain sampled.
+        """
+        quaternion = attitude_to_quat(self.ra, self.dec, self.roll)
+        pending = self._pending_attitude_interval
+        if pending is not None and utime > pending.start_utime:
+            if same_rotation(pending.motion.quaternion_at(utime), quaternion):
+                self.executed_attitude_intervals.append(
+                    pending.model_copy(update={"end_utime": utime})
+                )
+        # Repeated calls at a tick may change its final recorded attitude.
+        while self.executed_attitude_intervals:
+            last = self.executed_attitude_intervals[-1]
+            if last.end_utime < utime or (
+                last.end_utime == utime
+                and same_rotation(last.motion.quaternion_at(utime), quaternion)
+            ):
+                break
+            self.executed_attitude_intervals.pop()
+        self._pending_attitude_interval = None
+        slew = self.last_slew
+        if (
+            self.in_safe_mode
+            or self.current_pass is not None
+            or slew is None
+            or slew.obstype in (ObsType.CHARGE, ObsType.SAFE)
+            or slew.slewstart <= 0.0
+            or utime < slew.slewstart
+            or (self.current_slew is not None and self.current_slew is not slew)
+        ):
+            return
+        motion = slew.motion_profile()
+        if motion is not None and same_rotation(
+            motion.quaternion_at(utime), quaternion
+        ):
+            self._pending_attitude_interval = ExecutedAttitudeInterval(
+                start_utime=utime, end_utime=utime, motion=motion
+            )
 
     def get_mode(self, utime: float) -> ACSMode:
         """Determine current spacecraft mode based on ACS state and external factors.

@@ -7,6 +7,138 @@
     "order": "wxyz",
     "quaternion_product": "hamilton",
     "representation": "quaternion",
+    "resolved_intervals": [
+      {
+        "end_utime": 1767226200.0,
+        "motion": {
+          "segments": [
+            {
+              "acceleration_deg_s2": 0.5,
+              "distance_deg": 138.48857561531804,
+              "end_quaternion": [
+                0.331242858834282,
+                -0.138116726786584,
+                -0.2647210846630075,
+                0.8950556885400444
+              ],
+              "max_rate_deg_s": 1.0,
+              "start_quaternion": [
+                0.85065080835204,
+                -0.5257311121191336,
+                0.0,
+                0.0
+              ]
+            }
+          ],
+          "start_utime": 1767225600.0
+        },
+        "start_utime": 1767225600.0
+      },
+      {
+        "end_utime": 1767227100.0,
+        "motion": {
+          "segments": [
+            {
+              "acceleration_deg_s2": 0.5,
+              "distance_deg": 155.21879576670457,
+              "end_quaternion": [
+                0.017009829004398028,
+                -0.792860483291601,
+                -0.6053640995494111,
+                -0.06795017828218793
+              ],
+              "max_rate_deg_s": 1.0,
+              "start_quaternion": [
+                0.3312428588342819,
+                -0.13811672678658404,
+                -0.2647210846630075,
+                0.8950556885400444
+              ]
+            }
+          ],
+          "start_utime": 1767226200.0
+        },
+        "start_utime": 1767226200.0
+      },
+      {
+        "end_utime": 1767228000.0,
+        "motion": {
+          "segments": [
+            {
+              "acceleration_deg_s2": 0.5,
+              "distance_deg": 67.43159436483128,
+              "end_quaternion": [
+                0.4042218888194454,
+                -0.8940430380011924,
+                -0.1928557332398833,
+                0.009918515884208029
+              ],
+              "max_rate_deg_s": 1.0,
+              "start_quaternion": [
+                0.017009829004398014,
+                -0.7928604832916009,
+                -0.6053640995494112,
+                -0.06795017828218794
+              ]
+            }
+          ],
+          "start_utime": 1767227100.0
+        },
+        "start_utime": 1767227100.0
+      },
+      {
+        "end_utime": 1767229200.0,
+        "motion": {
+          "segments": [
+            {
+              "acceleration_deg_s2": 0.5,
+              "distance_deg": 124.66393317010257,
+              "end_quaternion": [
+                -0.07608062768571637,
+                -0.3664540665546916,
+                -0.8829714475409405,
+                -0.2833453335135998
+              ],
+              "max_rate_deg_s": 1.0,
+              "start_quaternion": [
+                0.4042218888194454,
+                -0.8940430380011924,
+                -0.1928557332398833,
+                0.009918515884208029
+              ]
+            }
+          ],
+          "start_utime": 1767228000.0
+        },
+        "start_utime": 1767228000.0
+      },
+      {
+        "end_utime": 1767311700.0,
+        "motion": {
+          "segments": [
+            {
+              "acceleration_deg_s2": 0.5,
+              "distance_deg": 123.01990181224784,
+              "end_quaternion": [
+                0.8113660378157899,
+                0.2155763524864321,
+                0.2216618148063539,
+                0.4960625250757264
+              ],
+              "max_rate_deg_s": 1.0,
+              "start_quaternion": [
+                -0.07608062768571643,
+                -0.36645406655469165,
+                -0.8829714475409405,
+                -0.2833453335135998
+              ]
+            }
+          ],
+          "start_utime": 1767229200.0
+        },
+        "start_utime": 1767229200.0
+      }
+    ],
     "roll_axis": "+X",
     "roll_convention": "right_handed_body_rotation",
     "roll_reference": "projected_celestial_north",
@@ -3758,7 +3890,7 @@
       }
     ],
     "vector_action": "q_v_q_conjugate",
-    "version": 0
+    "version": 1
   },
   "orbit_state_timeseries_summary": {
     "component_order": "x_y_z",
