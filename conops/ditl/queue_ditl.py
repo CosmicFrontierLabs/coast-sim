@@ -19,6 +19,7 @@ from ..common import (
 from ..common.enums import ACSCommandType
 from ..common.vector import attitude_to_quat, quaternion_attitude_delta
 from ..config import DAY_SECONDS, AttitudeConstraintScope, MissionConfig
+from ..config.acs import scheduled_slew_time
 from ..config.constraint import (
     all_attitude_constraint_name,
     attitude_constraint_name_for_scopes,
@@ -2348,8 +2349,7 @@ class QueueDITL(DITLMixin, DITLStats):
             if sample_utime >= slew.slewend:
                 break
 
-            sample_ra, sample_dec = slew.ra_dec(sample_utime)
-            sample_roll = slew.slew_roll(sample_utime)
+            sample_ra, sample_dec, sample_roll = slew.attitude(sample_utime)
             violation = self._attitude_constraint_name_for_attitude(
                 float(sample_ra),
                 float(sample_dec),
@@ -2391,7 +2391,9 @@ class QueueDITL(DITLMixin, DITLStats):
             next_pass.gsstartroll,
         )
         acs_cfg = self.config.spacecraft_bus.attitude_control
-        pass_slew_time = float(acs_cfg.slew_time(pass_slew_dist, rotation_axis_body))
+        pass_slew_time = float(
+            scheduled_slew_time(acs_cfg.slew_time(pass_slew_dist, rotation_axis_body))
+        )
 
         return next_pass.begin - pass_slew_time - self._pass_slew_trigger_buffer()
 
@@ -2605,10 +2607,9 @@ class QueueDITL(DITLMixin, DITLStats):
             enddec,
             body_roll,
         )
-        slewtime = round(
-            self.config.spacecraft_bus.attitude_control.slew_time(
-                slewdist, rotation_axis_body
-            )
+        attitude_control = self.config.spacecraft_bus.attitude_control
+        slewtime = scheduled_slew_time(
+            attitude_control.slew_time(slewdist, rotation_axis_body)
         )
         mounted_telescope = (
             issubclass(type(target), PlanEntry) and target.uses_mounted_attitude()
