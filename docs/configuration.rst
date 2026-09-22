@@ -864,7 +864,7 @@ again in these payload budgets.
 The task boundaries remain ``begin`` and ``end``. Useful collection starts at
 ``begin + slewtime + setup_seconds`` and stops at
 ``end - cleanup_seconds - handoff_seconds``. These are exported as
-``collection_begin`` and ``collection_end`` when budgets are enabled.
+``collection_begin`` and ``collection_end``, including with zero budgets.
 ``ss_min``, ``ss_max``, requested exposure, and queue collection scoring refer
 to useful collection, not setup or teardown. Charging and ground contacts do
 not acquire these payload overheads.
@@ -883,21 +883,13 @@ or a cleanup/handoff budget longer than the available recharge warning time.
 
 Housekeeping ``collection_seconds`` integrates the useful part of each timestep,
 including partial steps. Data generation and remaining requested exposure use
-this duration. ``setup_seconds``, ``cleanup_seconds``, ``handoff_seconds``, and
-``observation_slew_seconds`` separately account for the other phases in the same
-timestep. The last field includes ACS settling but only for science tasks, not
-slews to ground contacts or charging attitudes. These fields are seconds, not
-sample counts, and partition the modeled observation time without overlap.
-They are unavailable (``None``) when timing budgets are disabled, rather than
-falsely claiming zero overhead. ``DITL.observation_time_totals()`` and
-``QueueDITL.observation_time_totals()`` return the corresponding totals;
-``print_statistics()`` shows them as a separate observation-time breakdown.
-Totals include time spent on aborted attempts, even when an under-collected
-attempt is omitted from the delivered plan. They describe simulated time
-allocation, not measurements from the flight procedure.
-Do not add these totals to the ACS mode distribution: they account for the
-same time using a different classification. ACS ``SCIENCE`` still describes pointing during setup and teardown;
-its duration must not be used as useful exposure when budgets are enabled.
+this duration for both zero and nonzero budgets. Detailed phase reporting is
+separate from this collection-window contract. ACS ``SCIENCE`` still describes pointing during setup and teardown;
+its duration must not be used as useful exposure. Zero-budget plans also use
+exact collection windows instead of whole-timestep exposure decrements; legacy
+rounded exposure totals and observation boundaries can therefore change.
+Collection telemetry includes executed time on attempts later dropped for not
+meeting the minimum snapshot; it can exceed exposure in the delivered entries.
 Power remains governed by the existing mode-dependent model. ``DITL`` replay
 also uses collection windows for data accounting. ``DumbScheduler`` does not
 support these budgets and rejects nonzero values; use ``QueueDITL`` to generate

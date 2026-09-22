@@ -61,35 +61,11 @@ class Housekeeping(BaseModel):
         ),
     )
     acs_mode: ACSMode | int | None = Field(default=None, description="ACS mode")
-    observation_slew_seconds: float | None = Field(
-        default=None,
-        ge=0,
-        allow_inf_nan=False,
-        description="Science-task slew and ACS settling in this timestep; not all spacecraft slews",
-    )
-    setup_seconds: float | None = Field(
-        default=None,
-        ge=0,
-        allow_inf_nan=False,
-        description="Generic observation setup in this timestep, excluding slew and ACS settling",
-    )
     collection_seconds: float | None = Field(
         default=None,
         ge=0,
         allow_inf_nan=False,
         description="Useful science collection in the timestep starting at this timestamp; excludes setup and teardown",
-    )
-    cleanup_seconds: float | None = Field(
-        default=None,
-        ge=0,
-        allow_inf_nan=False,
-        description="Observation cleanup in this timestep after collection stops",
-    )
-    handoff_seconds: float | None = Field(
-        default=None,
-        ge=0,
-        allow_inf_nan=False,
-        description="Reserved handoff time in this timestep after cleanup",
     )
     panel_illumination: float | None = Field(
         default=None, description="Solar panel illumination fraction (0-1)"

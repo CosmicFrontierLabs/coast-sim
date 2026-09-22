@@ -24,14 +24,14 @@ def timed_ditl(queue_ditl):
     ("time", "expected"), [(100, 0), (160, 27), (220, 60), (340, 48), (388, 0)]
 )
 def test_partial_step_science_accounting(timed_ditl, time, expected):
-    assert timed_ditl._timed_collection_seconds(time, ACSMode.SCIENCE) == expected
+    assert timed_ditl._collection_seconds_for_step(time, ACSMode.SCIENCE) == expected
 
 
 @pytest.mark.parametrize(
     "mode", [ACSMode.PASS, ACSMode.SAA, ACSMode.SAFE, ACSMode.CHARGING]
 )
 def test_no_collection_in_other_operational_modes(timed_ditl, mode):
-    assert timed_ditl._timed_collection_seconds(220, mode) == 0
+    assert timed_ditl._collection_seconds_for_step(220, mode) == 0
 
 
 def test_data_generation_and_remaining_exposure_use_collection_seconds(timed_ditl):
@@ -63,7 +63,7 @@ def test_charge_forecast_reserves_cleanup_before_data_is_counted(timed_ditl):
     assert timed_ditl.ppt.end == 280
     assert timed_ditl.ppt.collection_end == 268
     assert timed_ditl.plan[-1].collection_end == 268
-    assert timed_ditl._timed_collection_seconds(220, ACSMode.SCIENCE) == 48
+    assert timed_ditl._collection_seconds_for_step(220, ACSMode.SCIENCE) == 48
 
 
 def test_charge_cannot_retroactively_erase_collection(timed_ditl):
@@ -77,6 +77,17 @@ def test_unanticipated_interrupt_fails_closed(timed_ditl):
     timed_ditl.plan.append(timed_ditl.ppt.model_copy())
     with pytest.raises(ValueError, match="interrupted before reserved cleanup"):
         timed_ditl._close_last_plan_entry(280)
+
+
+def test_interrupt_with_zero_teardown_only_cancels_future_collection(timed_ditl):
+    timing = ObservationTiming()
+    timed_ditl.config.payload.observation_timing = timing
+    timed_ditl.ppt.ss_min = 100
+    timed_ditl.ppt.set_collection_window(timing)
+    timed_ditl.plan.append(timed_ditl.ppt.model_copy())
+    timed_ditl._close_last_plan_entry(280)
+    assert timed_ditl.plan[-1].collection_end == 280
+    assert timed_ditl.plan[-1].exposure == 130
 
 
 def test_aborted_slew_does_not_export_zero_collection_observation(timed_ditl):

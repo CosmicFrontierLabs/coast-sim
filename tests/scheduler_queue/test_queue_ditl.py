@@ -630,7 +630,7 @@ class TestHandleChargingMode:
 class TestManagePPTLifecycle:
     """Test _manage_ppt_lifecycle helper method."""
 
-    def test_manage_ppt_science_mode_exposure_decrements(
+    def test_manage_ppt_does_not_double_count_collection(
         self, queue_ditl: QueueDITL
     ) -> None:
         mock_ppt = Mock()
@@ -642,7 +642,7 @@ class TestManagePPTLifecycle:
         queue_ditl.charging_ppt = None
         queue_ditl.step_size = 60
         queue_ditl._manage_ppt_lifecycle(1000.0, ACSMode.SCIENCE)
-        assert mock_ppt.exptime == 240.0
+        assert mock_ppt.exptime == 300.0
         assert queue_ditl.ppt is mock_ppt
 
     def test_manage_ppt_slewing_no_exptime_decrement(
@@ -677,11 +677,11 @@ class TestManagePPTLifecycle:
         queue_ditl._manage_ppt_lifecycle(1000.0, ACSMode.SCIENCE)
         assert queue_ditl.ppt is None
 
-    def test_manage_ppt_exposure_complete_terminates(
+    def test_manage_ppt_waits_for_task_end_after_collection(
         self, queue_ditl: QueueDITL
     ) -> None:
         mock_ppt = Mock()
-        mock_ppt.exptime = 30.0
+        mock_ppt.exptime = 0.0
         mock_ppt.ra = 10.0
         mock_ppt.dec = 20.0
         mock_ppt.end = 2000.0
@@ -691,8 +691,9 @@ class TestManagePPTLifecycle:
         queue_ditl.charging_ppt = None
         queue_ditl.step_size = 60
         queue_ditl._manage_ppt_lifecycle(1000.0, ACSMode.SCIENCE)
+        assert queue_ditl.ppt is mock_ppt
+        queue_ditl._manage_ppt_lifecycle(2000.0, ACSMode.SCIENCE)
         assert queue_ditl.ppt is None
-        assert mock_ppt.done is True
 
     def test_manage_ppt_time_window_elapsed_terminate(
         self, queue_ditl: QueueDITL
@@ -723,7 +724,9 @@ class TestFetchNewPPT:
     def test_fetch_ppt_sets_ppt_and_returns_last_positions(
         self, queue_ditl: QueueDITL, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        mock_ppt = Mock()
+        mock_ppt = Mock(
+            exptime=None, exposure=3600.0, collection_begin=None, collection_end=None
+        )
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.obsid = 1001
@@ -949,7 +952,9 @@ class TestFetchNewPPT:
     def test_fetch_ppt_enqueues_slew_command(
         self, queue_ditl: QueueDITL, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        mock_ppt = Mock()
+        mock_ppt = Mock(
+            exptime=None, exposure=3600.0, collection_begin=None, collection_end=None
+        )
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.obsid = 1001
@@ -970,7 +975,9 @@ class TestFetchNewPPT:
     def test_fetch_ppt_copies_command_slew_metadata_to_target(
         self, queue_ditl: QueueDITL
     ) -> None:
-        mock_ppt = Mock()
+        mock_ppt = Mock(
+            exptime=None, exposure=3600.0, collection_begin=None, collection_end=None
+        )
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.obsid = 1001
@@ -995,7 +1002,9 @@ class TestFetchNewPPT:
         self, queue_ditl: QueueDITL
     ) -> None:
         """Final target admission should use the roll computed for its slew."""
-        mock_ppt = Mock()
+        mock_ppt = Mock(
+            exptime=None, exposure=3600.0, collection_begin=None, collection_end=None
+        )
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.roll = 0.0
@@ -1023,7 +1032,8 @@ class TestFetchNewPPT:
         ):
             queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
 
-        delta.assert_called_once_with(45.0, 30.0, 70.0, 40.0, -15.0, 30.0)
+        assert delta.call_count == 2  # feasibility check and final task deadline
+        delta.assert_called_with(45.0, 30.0, 70.0, 40.0, -15.0, 30.0)
 
     def test_sync_acs_slew_metadata_updates_exported_plan_entry(
         self, queue_ditl: QueueDITL
@@ -1296,7 +1306,9 @@ class TestFetchNewPPT:
     def test_fetch_ppt_prints_messages(
         self, queue_ditl: QueueDITL, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        mock_ppt = Mock()
+        mock_ppt = Mock(
+            exptime=None, exposure=3600.0, collection_begin=None, collection_end=None
+        )
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.obsid = 1001
@@ -1390,7 +1402,7 @@ class TestFetchNewPPT:
         science.ra = 10.0
         science.dec = 20.0
         science.begin = utime - 600.0
-        science.end = utime + 86400.0
+        science.end = utime
         science.slewtime = 0.0
         science.insaa = 0.0
         science.ss_min = 300.0
@@ -1420,7 +1432,7 @@ class TestFetchNewPPT:
         )
         cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
-        assert "Exposure complete, ending observation" in log_text
+        assert "Time window elapsed, ending observation" in log_text
         assert "Fetching new PPT from Queue" in log_text
         assert (
             "Deferring PPT fetch - battery below minimum charge level" not in log_text
@@ -1438,7 +1450,7 @@ class TestFetchNewPPT:
         science.ra = 10.0
         science.dec = 20.0
         science.begin = utime - 600.0
-        science.end = utime + 86400.0
+        science.end = utime
         science.slewtime = 0.0
         science.insaa = 0.0
         science.ss_min = 300.0
@@ -1459,7 +1471,7 @@ class TestFetchNewPPT:
         cast(Mock, queue_ditl.queue.get).assert_not_called()
         cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
-        assert "Exposure complete, ending observation" in log_text
+        assert "Time window elapsed, ending observation" in log_text
         assert "Deferring PPT fetch - battery below minimum charge level" in log_text
 
     def test_fetch_ppt_rejects_slew_execution_during_pass(
@@ -1612,7 +1624,9 @@ class TestFetchNewPPT:
         """Test target acceptance when there's enough time before next pass."""
         queue_ditl.ephem.step_size = 60
         # Setup mock PPT
-        mock_ppt = Mock()
+        mock_ppt = Mock(
+            exptime=None, exposure=3600.0, collection_begin=None, collection_end=None
+        )
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.roll = 0.0
@@ -1758,7 +1772,9 @@ class TestFetchNewPPT:
             side_effect=lambda ra, dec, time: time < 1180.0
         )
 
-        mock_ppt = Mock()
+        mock_ppt = Mock(
+            exptime=None, exposure=3600.0, collection_begin=None, collection_end=None
+        )
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.obsid = 1001
@@ -1792,7 +1808,7 @@ class TestFetchNewPPT:
         bad_ppt.ss_max = 3600.0
         bad_ppt.ss_min = 300.0
 
-        good_ppt = Mock()
+        good_ppt = Mock(exptime=None, exposure=3600.0, collection_end=None)
         good_ppt.ra = 46.0
         good_ppt.dec = 31.0
         good_ppt.roll = 0.0
@@ -1855,7 +1871,7 @@ class TestFetchNewPPT:
             target.windows = [[0.0, 1100.0]]
             targets.append(target)
 
-        good_ppt = Mock()
+        good_ppt = Mock(exptime=None, exposure=3600.0, collection_end=None)
         good_ppt.ra = 46.0
         good_ppt.dec = 31.0
         good_ppt.obsid = 9999
@@ -1941,7 +1957,7 @@ class TestFetchNewPPT:
         bad_ppt.ss_min = 300.0
         bad_ppt.windows = [[0.0, 1e12]]
 
-        good_ppt = Mock()
+        good_ppt = Mock(exptime=None, exposure=3600.0, collection_end=None)
         good_ppt.ra = 46.0
         good_ppt.dec = 31.0
         good_ppt.obsid = 1002
@@ -1982,7 +1998,9 @@ class TestFetchNewPPT:
         self, queue_ditl
     ) -> None:
         """Target is accepted when locked roll clears all constraints across ss_min window."""
-        mock_ppt = Mock()
+        mock_ppt = Mock(
+            exptime=None, exposure=3600.0, collection_begin=None, collection_end=None
+        )
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.obsid = 1002
@@ -3307,7 +3325,9 @@ class TestCalcMethod:
         queue_ditl.length = 1
         queue_ditl.step_size = 3600
 
-        mock_ppt = Mock()
+        mock_ppt = Mock(
+            exptime=None, exposure=3600.0, collection_begin=None, collection_end=None
+        )
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.obsid = 1001
@@ -3319,7 +3339,7 @@ class TestCalcMethod:
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 300.0
         mock_ppt.windows = [[0.0, 1e12]]
-        mock_ppt.model_copy = Mock(return_value=Mock())
+        mock_ppt.model_copy = Mock(return_value=Mock(collection_end=None))
         mock_ppt.model_copy.return_value.begin = 1543622400
         mock_ppt.model_copy.return_value.end = 1543629600
         mock_ppt.model_copy.return_value.obstype = "PPT"
@@ -3417,7 +3437,7 @@ class TestCalcMethod:
         mock_charging.roll = 0.0
         mock_charging.begin = 1543622400
         mock_charging.end = 1543622400 + 86400
-        mock_charging.model_copy = Mock(return_value=Mock())
+        mock_charging.model_copy = Mock(return_value=Mock(collection_end=None))
         mock_charging.model_copy.return_value.begin = 1543622400
         mock_charging.model_copy.return_value.end = 1543622400 + 86400
         queue_ditl.emergency_charging.should_initiate_charging = Mock(return_value=True)
@@ -3444,7 +3464,7 @@ class TestCalcMethod:
         mock_charging.roll = 0.0
         mock_charging.begin = 1543622400
         mock_charging.end = 1543622400 + 86400
-        mock_charging.model_copy = Mock(return_value=Mock())
+        mock_charging.model_copy = Mock(return_value=Mock(collection_end=None))
         mock_charging.model_copy.return_value.begin = 1543622400
         mock_charging.model_copy.return_value.end = 1543622400 + 86400
         queue_ditl.emergency_charging.should_initiate_charging = Mock(return_value=True)
@@ -3469,6 +3489,7 @@ class TestCalcMethod:
         science_ppt.end = 1000.0 + 86400
         science_ppt.slewtime = 200.0
         science_ppt.collection_begin = None
+        science_ppt.collection_end = None
         science_ppt.insaa = 0.0
         science_ppt.ss_min = 300.0
         science_ppt.done = False
@@ -3486,6 +3507,7 @@ class TestCalcMethod:
         plan_entry.end = 1000.0 + 86400
         plan_entry.slewtime = 200.0
         plan_entry.collection_begin = None
+        plan_entry.collection_end = None
         plan_entry.insaa = 0.0
         plan_entry.ss_min = 300.0
         plan_entry.obsid = 1001
@@ -3576,6 +3598,7 @@ class TestCalcMethod:
         science_entry.end = begin.timestamp() + 86400
         science_entry.slewtime = 120.0
         science_entry.collection_begin = None
+        science_entry.collection_end = None
         science_entry.insaa = 0.0
         science_entry.ss_min = 300.0
         science_entry.done = False
@@ -3589,12 +3612,13 @@ class TestCalcMethod:
         science_copy.end = science_entry.end
         science_copy.slewtime = science_entry.slewtime
         science_copy.collection_begin = None
+        science_copy.collection_end = None
         science_copy.insaa = science_entry.insaa
         science_copy.ss_min = science_entry.ss_min
         science_copy.obsid = science_entry.obsid
         science_entry.model_copy = Mock(return_value=science_copy)
 
-        charging_entry = Mock()
+        charging_entry = Mock(collection_end=None)
         charging_entry.obstype = "CHARGE"
         charging_entry.begin = begin.timestamp()
         charging_entry.end = begin.timestamp() + 86400
@@ -3626,7 +3650,9 @@ class TestCalcMethod:
         queue_ditl.day = 331
         queue_ditl.length = 1
         queue_ditl.step_size = 3600
-        mock_ppt = Mock()
+        mock_ppt = Mock(
+            exptime=None, exposure=3600.0, collection_begin=None, collection_end=None
+        )
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.obsid = 1001
@@ -3638,7 +3664,7 @@ class TestCalcMethod:
         mock_ppt.ss_max = 3600.0
         mock_ppt.ss_min = 300.0
         mock_ppt.windows = [[0.0, 1e12]]
-        mock_ppt.model_copy = Mock(return_value=Mock())
+        mock_ppt.model_copy = Mock(return_value=Mock(collection_end=None))
         mock_ppt.model_copy.return_value.begin = 1543622400
         mock_ppt.model_copy.return_value.end = 1543708800
         mock_ppt.model_copy.return_value.obstype = "PPT"
@@ -3784,14 +3810,14 @@ class TestCalcMethod:
         from conops.targets import PlanEntry
 
         # Create a mock PPT with placeholder end time
-        mock_previous_ppt = Mock(spec=PlanEntry)
+        mock_previous_ppt = Mock(spec=PlanEntry, collection_end=None)
         mock_previous_ppt.begin = 1000.0
         mock_previous_ppt.end = 1000.0 + 86400 + 100  # Placeholder end time
         mock_previous_ppt.obstype = "PPT"
         mock_previous_ppt.model_copy = Mock(return_value=mock_previous_ppt)
 
         # Create current PPT
-        mock_current_ppt = Mock(spec=PlanEntry)
+        mock_current_ppt = Mock(spec=PlanEntry, collection_end=None)
         mock_current_ppt.begin = 2000.0
         mock_current_ppt.end = 3000.0
         mock_current_ppt.model_copy = Mock(return_value=mock_current_ppt)
@@ -3819,6 +3845,7 @@ class TestCalcMethod:
         previous_ppt.end = 1000.0 + 86400 + 100
         previous_ppt.slewtime = 224.0
         previous_ppt.collection_begin = None
+        previous_ppt.collection_end = None
         previous_ppt.insaa = 0.0
         previous_ppt.ss_min = 300
         previous_ppt.obsid = 1001
@@ -3847,6 +3874,7 @@ class TestCalcMethod:
         previous_ppt.end = 1000.0 + 86400 + 100
         previous_ppt.slewtime = 100.0
         previous_ppt.collection_begin = None
+        previous_ppt.collection_end = None
         previous_ppt.insaa = 0.0
         previous_ppt.ss_min = 300.0
         previous_ppt.obsid = 1002
@@ -3874,7 +3902,7 @@ class TestCalcMethod:
         from conops.targets import PlanEntry
 
         # Create a mock PPT with placeholder end time
-        mock_ppt = Mock(spec=PlanEntry)
+        mock_ppt = Mock(spec=PlanEntry, collection_end=None)
         mock_ppt.begin = 1000.0
         mock_ppt.end = 1000.0 + 86400 + 100  # Placeholder end time
         mock_ppt.obstype = "PPT"
@@ -3894,7 +3922,7 @@ class TestCalcMethod:
         from conops.targets import PlanEntry
 
         # Create a mock PPT
-        mock_ppt = Mock(spec=PlanEntry)
+        mock_ppt = Mock(spec=PlanEntry, collection_end=None)
         mock_ppt.begin = 1000.0
         mock_ppt.end = 2000.0
         mock_ppt.obsid = 1001  # Add obsid attribute
@@ -3917,7 +3945,9 @@ class TestCalcMethod:
         from conops.simulation.slew import Slew
 
         # Create mock PPT
-        mock_ppt = Mock()
+        mock_ppt = Mock(
+            exptime=None, exposure=3600.0, collection_begin=None, collection_end=None
+        )
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.obsid = 1001
@@ -3952,7 +3982,9 @@ class TestCalcMethod:
     def test_fetch_ppt_delays_for_visibility(self, queue_ditl, capsys) -> None:
         """Test _fetch_new_ppt delays slew when target visibility requires it."""
         # Create mock PPT
-        mock_ppt = Mock()
+        mock_ppt = Mock(
+            exptime=None, exposure=3600.0, collection_begin=None, collection_end=None
+        )
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.obsid = 1001
@@ -3980,7 +4012,7 @@ class TestCalcMethod:
         from conops.targets import PlanEntry
 
         # Create a mock PPT
-        mock_ppt = Mock(spec=PlanEntry)
+        mock_ppt = Mock(spec=PlanEntry, collection_end=None)
         mock_ppt.begin = 1000.0
         mock_ppt.end = 2000.0
         mock_ppt.obstype = "PPT"
@@ -4002,7 +4034,7 @@ class TestCalcMethod:
         from conops.targets import PlanEntry
 
         # Create a mock charging PPT
-        mock_charging_ppt = Mock(spec=PlanEntry)
+        mock_charging_ppt = Mock(spec=PlanEntry, collection_end=None)
         mock_charging_ppt.begin = 1000.0
         mock_charging_ppt.end = 2000.0
         mock_charging_ppt.obstype = "PPT"
@@ -4064,7 +4096,7 @@ class TestCalcMethod:
         Without the fix, the orphaned ppt causes _track_ppt_in_timeline to append
         a zero-duration entry (begin==end) on the next step → invalid_interval mismatch.
         """
-        mock_ppt = Mock(spec=PlanEntry)
+        mock_ppt = Mock(spec=PlanEntry, collection_end=None)
         queue_ditl.charging_ppt = mock_ppt
         queue_ditl.ppt = mock_ppt
 
@@ -4079,8 +4111,8 @@ class TestCalcMethod:
         self, queue_ditl
     ) -> None:
         """_terminate_charging_ppt must not clear self.ppt when it is a different object."""
-        mock_science_ppt = Mock(spec=PlanEntry)
-        queue_ditl.charging_ppt = Mock(spec=PlanEntry)
+        mock_science_ppt = Mock(spec=PlanEntry, collection_end=None)
+        queue_ditl.charging_ppt = Mock(spec=PlanEntry, collection_end=None)
         queue_ditl.ppt = mock_science_ppt
 
         queue_ditl._terminate_charging_ppt(1500.0)

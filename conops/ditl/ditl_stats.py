@@ -1,12 +1,10 @@
 from collections import Counter
 from datetime import datetime
-from math import isfinite
 
 import numpy as np
 
 from ..common import ChargeState, normalize_acs_mode
 from ..config.config import MissionConfig
-from ..config.observation_timing import OBSERVATION_TIME_FIELDS
 from ..simulation.acs import ACS
 from ..simulation.passes import PassTimes
 
@@ -32,35 +30,6 @@ class DITLStats:
     data_downlinked_gb: list[float]
     executed_passes: PassTimes
     acs: ACS
-
-    def observation_time_totals(self) -> dict[str, float] | None:
-        """Sum generic phase telemetry, or return None for unavailable accounting.
-
-        These durations partition active observation time, not the whole mission.
-        They overlap ACS mode totals and must not be added to those totals.
-        """
-        telemetry = getattr(self, "telemetry", None)
-        if telemetry is None or not telemetry.housekeeping:
-            return None
-        samples = telemetry.housekeeping
-        if len(samples) != len(self.utime):
-            return None
-        totals = dict.fromkeys(OBSERVATION_TIME_FIELDS, 0.0)
-        for i, sample in enumerate(samples):
-            values: dict[str, float] = {}
-            for field in totals:
-                value = getattr(sample, field, None)
-                if value is None or not isfinite(value) or value < 0:
-                    return None
-                values[field] = float(value)
-            stop = (
-                self.utime[i + 1] if i + 1 < len(self.utime) else self.end.timestamp()
-            )
-            if sum(values.values()) > max(0.0, stop - self.utime[i]) + 1e-6:
-                return None
-            for field, value in values.items():
-                totals[field] += value
-        return totals
 
     def print_statistics(self) -> None:
         """Print comprehensive statistics about the DITL simulation.
@@ -107,22 +76,6 @@ class DITLStats:
                 print(
                     f"{mode_name:<20} {count:<10} {percentage:>6.2f}%      {time_hours:>10.2f}"
                 )
-
-        observation_seconds = self.observation_time_totals()
-        if observation_seconds is not None:
-            print("\n" + "-" * 70)
-            print("OBSERVATION TIME ACCOUNTING")
-            print("-" * 70)
-            print("Phase breakdown, not additional time on top of ACS modes.")
-            labels = {
-                "observation_slew_seconds": "Slew + ACS settling",
-                "setup_seconds": "Setup",
-                "collection_seconds": "Science collection",
-                "cleanup_seconds": "Cleanup",
-                "handoff_seconds": "Handoff margin",
-            }
-            for field, label in labels.items():
-                print(f"{label:<24} {observation_seconds[field]:>12.2f} seconds")
 
         # Observation statistics
         print("\n" + "-" * 70)

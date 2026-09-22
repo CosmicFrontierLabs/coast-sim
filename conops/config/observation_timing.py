@@ -4,14 +4,6 @@ from pydantic import Field
 
 from ._base import ConfigModel
 
-OBSERVATION_TIME_FIELDS = (
-    "observation_slew_seconds",
-    "setup_seconds",
-    "collection_seconds",
-    "cleanup_seconds",
-    "handoff_seconds",
-)
-
 
 class ObservationTiming(ConfigModel):
     """Payload timing budgets, separate from ACS motion and settling."""

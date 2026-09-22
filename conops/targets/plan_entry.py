@@ -32,7 +32,7 @@ from ..config.constraint import (
     attitude_constraint_names_for_scopes,
     mounted_science_attitude_constraint_names,
 )
-from ..config.observation_timing import OBSERVATION_TIME_FIELDS, ObservationTiming
+from ..config.observation_timing import ObservationTiming
 from ..simulation.saa import SAA
 
 BodyAxis = Literal["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
@@ -318,10 +318,7 @@ class PlanEntry(BaseModel):
 
     def set_collection_window(self, timing: ObservationTiming) -> None:
         """Record the planned collection interval without changing the task boundary."""
-        if (
-            self.obstype not in self._STATIC_TARGET_OBSTYPES
-            or timing.total_seconds == 0
-        ):
+        if self.obstype not in self._STATIC_TARGET_OBSTYPES:
             return
         self.collection_begin, self.collection_end = timing.collection_window(
             self.begin, self.slewtime, self.end
@@ -336,39 +333,6 @@ class PlanEntry(BaseModel):
         )
         stop = self.collection_end if self.collection_end is not None else self.end
         return max(0.0, min(end, stop, self.end) - max(begin, start, self.begin))
-
-    def observation_seconds_between(
-        self, begin: float, end: float, timing: ObservationTiming
-    ) -> dict[str, float]:
-        """Account for non-overlapping observation phases within a time interval."""
-        if self.obstype not in self._STATIC_TARGET_OBSTYPES:
-            return dict.fromkeys(OBSERVATION_TIME_FIELDS, 0.0)
-        slew_end = min(self.end, self.begin + max(0.0, float(self.slewtime)))
-        collection_begin, collection_end = timing.collection_window(
-            self.begin, self.slewtime, self.end
-        )
-        if self.collection_begin is not None and self.collection_end is not None:
-            collection_begin, collection_end = (
-                self.collection_begin,
-                self.collection_end,
-            )
-        collection_begin = max(slew_end, min(self.end, collection_begin))
-        collection_end = max(collection_begin, min(self.end, collection_end))
-        cleanup_end = min(self.end, collection_end + timing.cleanup_seconds)
-        boundaries = (
-            self.begin,
-            slew_end,
-            collection_begin,
-            collection_end,
-            cleanup_end,
-            self.end,
-        )
-        return {
-            field: max(0.0, min(end, right) - max(begin, left))
-            for field, left, right in zip(
-                OBSERVATION_TIME_FIELDS, boundaries, boundaries[1:]
-            )
-        }
 
     @computed_field  # type: ignore[prop-decorator]
     @property

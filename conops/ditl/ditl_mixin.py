@@ -11,7 +11,6 @@ from conops.common.vector import quaternion_attitude_delta
 from conops.config.groundstation import GroundStation
 
 from ..config import MissionConfig
-from ..config.observation_timing import OBSERVATION_TIME_FIELDS
 from ..simulation.acs import ACS
 from ..simulation.passes import Pass, PassTimes
 from ..targets import Plan, PlanEntry
@@ -460,21 +459,19 @@ class DITLMixin:
 
         return None
 
-    def _observation_seconds_for_step(
+    def _collection_seconds_for_step(
         self, utime: float, mode: ACSMode, obsid: int | None = None
-    ) -> dict[str, float] | None:
-        """Report generic observation phases, independent of the setup procedure."""
-        timing = self.config.payload.observation_timing
-        if timing.total_seconds == 0:
-            return None
+    ) -> float:
+        """Intersect this timestep with the active observation's collection window."""
         if (
             self.ppt is None
+            or self.ppt.collection_end is None
             or mode not in (ACSMode.SCIENCE, ACSMode.SLEWING)
             or (obsid is not None and obsid != self.ppt.obsid)
         ):
-            return dict.fromkeys(OBSERVATION_TIME_FIELDS, 0.0)
-        return self.ppt.observation_seconds_between(
-            utime, min(utime + self.step_size, self.uend), timing
+            return 0.0
+        return self.ppt.collection_seconds_between(
+            utime, min(utime + self.step_size, self.uend)
         )
 
     def _process_data_management(
@@ -483,7 +480,7 @@ class DITLMixin:
         mode: ACSMode,
         step_size: int,
         *,
-        collection_seconds: float | None = None,
+        collection_seconds: float,
     ) -> tuple[float, float]:
         """Process data generation and downlink for a single timestep.
 
@@ -491,6 +488,8 @@ class DITLMixin:
             utime: Unix timestamp for current timestep.
             mode: Current ACS mode.
             step_size: Time step in seconds.
+            collection_seconds: Useful collection in this step, computed from the
+                observation window rather than inferred from the ACS mode.
 
         Returns:
             Tuple of (data_generated, data_downlinked) in Gb for this timestep.
@@ -499,8 +498,6 @@ class DITLMixin:
         data_downlinked = 0.0
 
         # ACS science pointing can include payload setup and cleanup.
-        if collection_seconds is None:
-            collection_seconds = float(step_size) if mode == ACSMode.SCIENCE else 0.0
         if collection_seconds > 0:
             data_generated = self.payload.data_generated(collection_seconds)
             self.recorder.add_data(data_generated)

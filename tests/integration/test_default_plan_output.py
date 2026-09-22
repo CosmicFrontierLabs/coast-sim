@@ -18,14 +18,17 @@ def test_default_plan_output_matches_baseline() -> None:
     assert not diffs, "\n".join(diffs[:25])
 
 
-def test_budgeted_plan_matches_fractional_collection_and_data(monkeypatch):
+@pytest.mark.parametrize("budgets", [(0, 0, 0), (8.25, 1.5, 2.5)])
+def test_budgeted_plan_matches_fractional_collection_and_data(monkeypatch, budgets):
     constructor = scenario.QueueDITL
     simulations = []
 
     def timed_simulation(**kwargs):
         payload = kwargs["config"].payload
         payload.observation_timing = ObservationTiming(
-            setup_seconds=8.25, cleanup_seconds=1.5, handoff_seconds=2.5
+            setup_seconds=budgets[0],
+            cleanup_seconds=budgets[1],
+            handoff_seconds=budgets[2],
         )
         payload.instruments = [
             Instrument(data_generation=DataGeneration(rate_gbps=0.001))
@@ -44,19 +47,13 @@ def test_budgeted_plan_matches_fractional_collection_and_data(monkeypatch):
     assert science
     assert not ditl.validate_plan_matches_execution()
     assert all(
-        entry.collection_begin == entry.begin + entry.slewtime + 8.25
+        entry.collection_begin == entry.begin + entry.slewtime + budgets[0]
         for entry in science
     )
-    assert all(entry.collection_end == entry.end - 4 for entry in science)
+    assert all(
+        entry.collection_end == entry.end - sum(budgets[1:]) for entry in science
+    )
     assert sum(
         hk.collection_seconds for hk in ditl.telemetry.housekeeping
     ) == pytest.approx(planned_collection)
     assert ditl.data_generated_gb[-1] == pytest.approx(planned_collection * 0.001)
-    totals = ditl.observation_time_totals()
-    assert totals is not None
-    assert totals["setup_seconds"] == pytest.approx(len(science) * 8.25)
-    assert totals["cleanup_seconds"] == pytest.approx(len(science) * 1.5)
-    assert totals["handoff_seconds"] == pytest.approx(len(science) * 2.5)
-    assert sum(totals.values()) == pytest.approx(
-        sum(entry.end - entry.begin for entry in science)
-    )

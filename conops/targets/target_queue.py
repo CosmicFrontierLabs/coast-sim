@@ -169,15 +169,12 @@ class TargetQueue:
         slewtime: float | None = None,
     ) -> float:
         """Estimate useful science collection available after the slew."""
-        collection_start = (
-            utime
-            + self.observation_timing.setup_seconds
-            + float(target.slewtime if slewtime is None else slewtime)
-        )
-        collection_end = float(visibility_window[1])
+        end = float(visibility_window[1])
         if deadline is not None:
-            collection_end = min(collection_end, float(deadline))
-        collection_end -= self.observation_timing.post_collection_seconds
+            end = min(end, float(deadline))
+        collection_start, collection_end = self.observation_timing.collection_window(
+            utime, float(target.slewtime if slewtime is None else slewtime), end
+        )
         window_seconds = max(0.0, collection_end - collection_start)
         max_snapshot = float(target.ss_max)
         remaining_exposure = target.exptime
@@ -206,9 +203,6 @@ class TargetQueue:
         visibility_window = target.visible(utime, zero_slew_endtime)
         if not visibility_window:
             return False
-
-        if collection_deadline is None and self.observation_timing.total_seconds == 0:
-            return True
 
         deadline = (
             collection_deadline(target, utime)
@@ -407,21 +401,19 @@ class TargetQueue:
             visibility_window = target.visible(utime, endtime)
             if visibility_window:
                 target.begin = int(utime)
-                target.end = int(utime + target.slewtime + target.ss_max)
-                if self.observation_timing.total_seconds > 0:
-                    collection = self._candidate_collection_seconds(
-                        target, visibility_window, utime
-                    )
-                    if collection < target.ss_min:
-                        continue
-                    target.end = min(
-                        float(visibility_window[1]),
-                        utime
-                        + target.slewtime
-                        + collection
-                        + self.observation_timing.total_seconds,
-                    )
-                    target.set_collection_window(self.observation_timing)
+                collection = self._candidate_collection_seconds(
+                    target, visibility_window, utime
+                )
+                if collection < target.ss_min:
+                    continue
+                target.end = min(
+                    float(visibility_window[1]),
+                    utime
+                    + target.slewtime
+                    + collection
+                    + self.observation_timing.total_seconds,
+                )
+                target.set_collection_window(self.observation_timing)
                 # If no slew weighting, return first visible target (fast path)
                 if not score_candidates:
                     return target
