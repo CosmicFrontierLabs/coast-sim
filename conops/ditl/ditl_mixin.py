@@ -11,6 +11,7 @@ from conops.common.vector import quaternion_attitude_delta
 from conops.config.groundstation import GroundStation
 
 from ..config import MissionConfig
+from ..config.observation_timing import OBSERVATION_TIME_FIELDS
 from ..simulation.acs import ACS
 from ..simulation.passes import Pass, PassTimes
 from ..targets import Plan, PlanEntry
@@ -81,6 +82,7 @@ class DITLMixin:
     begin: datetime
     end: datetime
     step_size: int
+    uend: float
     panel_power: list[float]
     batterylevel: list[float]
     charge_state: list[int]
@@ -458,8 +460,30 @@ class DITLMixin:
 
         return None
 
+    def _observation_seconds_for_step(
+        self, utime: float, mode: ACSMode, obsid: int | None = None
+    ) -> dict[str, float] | None:
+        """Report generic observation phases, independent of the setup procedure."""
+        timing = self.config.payload.observation_timing
+        if timing.total_seconds == 0:
+            return None
+        if (
+            self.ppt is None
+            or mode not in (ACSMode.SCIENCE, ACSMode.SLEWING)
+            or (obsid is not None and obsid != self.ppt.obsid)
+        ):
+            return dict.fromkeys(OBSERVATION_TIME_FIELDS, 0.0)
+        return self.ppt.observation_seconds_between(
+            utime, min(utime + self.step_size, self.uend), timing
+        )
+
     def _process_data_management(
-        self, utime: float, mode: ACSMode, step_size: int
+        self,
+        utime: float,
+        mode: ACSMode,
+        step_size: int,
+        *,
+        collection_seconds: float | None = None,
     ) -> tuple[float, float]:
         """Process data generation and downlink for a single timestep.
 
@@ -474,9 +498,11 @@ class DITLMixin:
         data_generated = 0.0
         data_downlinked = 0.0
 
-        # Generate data during SCIENCE mode
-        if mode == ACSMode.SCIENCE:
-            data_generated = self.payload.data_generated(step_size)
+        # ACS science pointing can include payload setup and cleanup.
+        if collection_seconds is None:
+            collection_seconds = float(step_size) if mode == ACSMode.SCIENCE else 0.0
+        if collection_seconds > 0:
+            data_generated = self.payload.data_generated(collection_seconds)
             self.recorder.add_data(data_generated)
 
         # Downlink data during PASS mode

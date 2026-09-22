@@ -3468,6 +3468,7 @@ class TestCalcMethod:
         science_ppt.begin = 1000.0
         science_ppt.end = 1000.0 + 86400
         science_ppt.slewtime = 200.0
+        science_ppt.collection_begin = None
         science_ppt.insaa = 0.0
         science_ppt.ss_min = 300.0
         science_ppt.done = False
@@ -3484,6 +3485,7 @@ class TestCalcMethod:
         plan_entry.begin = 1000.0
         plan_entry.end = 1000.0 + 86400
         plan_entry.slewtime = 200.0
+        plan_entry.collection_begin = None
         plan_entry.insaa = 0.0
         plan_entry.ss_min = 300.0
         plan_entry.obsid = 1001
@@ -3573,6 +3575,7 @@ class TestCalcMethod:
         science_entry.begin = begin.timestamp()
         science_entry.end = begin.timestamp() + 86400
         science_entry.slewtime = 120.0
+        science_entry.collection_begin = None
         science_entry.insaa = 0.0
         science_entry.ss_min = 300.0
         science_entry.done = False
@@ -3585,6 +3588,7 @@ class TestCalcMethod:
         science_copy.begin = science_entry.begin
         science_copy.end = science_entry.end
         science_copy.slewtime = science_entry.slewtime
+        science_copy.collection_begin = None
         science_copy.insaa = science_entry.insaa
         science_copy.ss_min = science_entry.ss_min
         science_copy.obsid = science_entry.obsid
@@ -3814,6 +3818,7 @@ class TestCalcMethod:
         previous_ppt.begin = 1000.0
         previous_ppt.end = 1000.0 + 86400 + 100
         previous_ppt.slewtime = 224.0
+        previous_ppt.collection_begin = None
         previous_ppt.insaa = 0.0
         previous_ppt.ss_min = 300
         previous_ppt.obsid = 1001
@@ -3841,6 +3846,7 @@ class TestCalcMethod:
         previous_ppt.begin = 1000.0
         previous_ppt.end = 1000.0 + 86400 + 100
         previous_ppt.slewtime = 100.0
+        previous_ppt.collection_begin = None
         previous_ppt.insaa = 0.0
         previous_ppt.ss_min = 300.0
         previous_ppt.obsid = 1002

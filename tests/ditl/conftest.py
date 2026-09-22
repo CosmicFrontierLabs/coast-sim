@@ -19,6 +19,7 @@ from conops.config import (
     GroundStationRegistry,
     Instrument,
     MissionConfig,
+    ObservationTiming,
     OnboardRecorder,
     Payload,
     SolarPanelSet,
@@ -107,6 +108,7 @@ def create_statistics_test_config(ephem: DummyEphemeris | None = None) -> Missio
     solar_panel.optimal_charging_pointing = Mock(return_value=(45.0, 23.5))
 
     payload = Mock(spec=Payload)
+    payload.observation_timing = ObservationTiming()
     battery = Mock(spec=Battery)
     battery.watthour = 100.0
     battery.max_depth_of_discharge = 0.3
@@ -282,6 +284,7 @@ def mock_config_detailed():
 
     # Mock payload
     config.payload = Mock()
+    config.payload.observation_timing = ObservationTiming()
     config.payload.power = Mock(return_value=30.0)
     config.payload.data_generated = Mock(return_value=0.0)
 

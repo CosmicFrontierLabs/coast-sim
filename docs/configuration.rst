@@ -845,6 +845,68 @@ The :class:`~conops.config.Payload` contains the science instruments.
        ]
    )
 
+Observation Timing Budgets
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``payload.observation_timing`` reserves non-collection time inside each fixed
+science task. All three values are finite, nonnegative seconds and default to
+zero. ACS ``settle_time`` is already included in ``slewtime``; do not include it
+again in these payload budgets.
+
+.. code-block:: yaml
+
+   payload:
+     observation_timing:
+       setup_seconds: 30
+       cleanup_seconds: 5
+       handoff_seconds: 10
+
+The task boundaries remain ``begin`` and ``end``. Useful collection starts at
+``begin + slewtime + setup_seconds`` and stops at
+``end - cleanup_seconds - handoff_seconds``. These are exported as
+``collection_begin`` and ``collection_end`` when budgets are enabled.
+``ss_min``, ``ss_max``, requested exposure, and queue collection scoring refer
+to useful collection, not setup or teardown. Charging and ground contacts do
+not acquire these payload overheads.
+
+Setup is a generic budget for any pre-collection activity: configuration,
+calibration, acquisition, or another procedure. COAST does not prescribe how
+that time is used.
+
+``QueueDITL`` reserves the budgets before visibility, locked-attitude constraint,
+pass, and simulation deadlines. A pending recharge discovered by a timestep's
+power integration also shortens the collection window before data is counted,
+without delaying the charge command. If a later interruption cannot leave the
+reserved cleanup/handoff time, generation fails instead of exporting a normal
+observation with impossible timing. This can occur with unanticipated interrupts
+or a cleanup/handoff budget longer than the available recharge warning time.
+
+Housekeeping ``collection_seconds`` integrates the useful part of each timestep,
+including partial steps. Data generation and remaining requested exposure use
+this duration. ``setup_seconds``, ``cleanup_seconds``, ``handoff_seconds``, and
+``observation_slew_seconds`` separately account for the other phases in the same
+timestep. The last field includes ACS settling but only for science tasks, not
+slews to ground contacts or charging attitudes. These fields are seconds, not
+sample counts, and partition the modeled observation time without overlap.
+They are unavailable (``None``) when timing budgets are disabled, rather than
+falsely claiming zero overhead. ``DITL.observation_time_totals()`` and
+``QueueDITL.observation_time_totals()`` return the corresponding totals;
+``print_statistics()`` shows them as a separate observation-time breakdown.
+Totals include time spent on aborted attempts, even when an under-collected
+attempt is omitted from the delivered plan. They describe simulated time
+allocation, not measurements from the flight procedure.
+Do not add these totals to the ACS mode distribution: they account for the
+same time using a different classification. ACS ``SCIENCE`` still describes pointing during setup and teardown;
+its duration must not be used as useful exposure when budgets are enabled.
+Power remains governed by the existing mode-dependent model. ``DITL`` replay
+also uses collection windows for data accounting. ``DumbScheduler`` does not
+support these budgets and rejects nonzero values; use ``QueueDITL`` to generate
+budgeted plans.
+
+These are planning budgets, not flight-procedure timeouts or a guarantee of
+on-time return. The procedure must independently bound startup, handle settling
+failure, and enforce the collection cutoff and cleanup deadline.
+
 Telescope Instruments
 ^^^^^^^^^^^^^^^^^^^^^
 
