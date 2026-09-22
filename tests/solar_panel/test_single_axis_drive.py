@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock
 
@@ -276,7 +277,110 @@ class TestExecutedEvaluation:
         assert state is before
 
 
+@pytest.mark.usefixtures("eclipse")
+class TestGeometryCacheUpdates:
+    @pytest.mark.parametrize("driven", [False, True], ids=["fixed", "mixed"])
+    @pytest.mark.parametrize(
+        "mutate",
+        [
+            pytest.param(
+                lambda s: setattr(s.panels[0], "normal", (0.0, 0.0, 3.0)),
+                id="normal",
+            ),
+            pytest.param(
+                lambda s: setattr(s.panels[0], "max_power", 200.0), id="power"
+            ),
+            pytest.param(
+                lambda s: setattr(s.panels[0], "conversion_efficiency", 0.5),
+                id="override-efficiency",
+            ),
+            pytest.param(
+                lambda s: setattr(s.panels[1], "conversion_efficiency", None),
+                id="inherit-efficiency",
+            ),
+            pytest.param(
+                lambda s: setattr(s, "conversion_efficiency", 0.4),
+                id="array-efficiency",
+            ),
+            pytest.param(
+                lambda s: setattr(s.panels[0], "gimbled", True), id="ideal-gimbal"
+            ),
+            pytest.param(
+                lambda s: setattr(s, "panels", [SolarPanel()]), id="replace-list"
+            ),
+            pytest.param(
+                lambda s: s.panels.__setitem__(0, SolarPanel()), id="replace-panel"
+            ),
+            pytest.param(lambda s: s.panels.append(SolarPanel()), id="append"),
+            pytest.param(lambda s: s.panels.pop(), id="remove"),
+            pytest.param(lambda s: s.panels.reverse(), id="reorder"),
+            pytest.param(lambda s: s.panels.clear(), id="empty"),
+        ],
+    )
+    def test_warmed_configuration_matches_fresh_after_edit(
+        self, mutate: Callable[[SolarPanelSet], object], driven: bool
+    ) -> None:
+        panel_set = SolarPanelSet(
+            conversion_efficiency=0.9,
+            panels=[
+                SolarPanel(normal=(0.0, 1.0, 0.0), max_power=100.0),
+                SolarPanel(
+                    normal=(1.0, 0.0, 0.0),
+                    max_power=50.0,
+                    conversion_efficiency=0.6,
+                    single_axis_drive=_drive(initial_angle_deg=30.0)
+                    if driven
+                    else None,
+                ),
+            ],
+        )
+        sun_vectors = np.vstack((np.eye(3), -np.eye(3), np.ones(3)))
+        panel_set.power_from_normalized_sun_body(sun_vectors)
+        panel_set.evaluate_executed_attitude(
+            _START,
+            0.0,
+            0.0,
+            _ephem_with_sun((0.0, 1.0, 0.0)),
+            panel_set.initial_drive_state(),
+        )
+
+        mutate(panel_set)
+        fresh = SolarPanelSet.model_validate(panel_set.model_dump())
+        scores = panel_set.power_from_normalized_sun_body(sun_vectors)
+        assert scores == pytest.approx(
+            fresh.power_from_normalized_sun_body(sun_vectors)
+        )
+        for sun, score in zip(sun_vectors, scores):
+            ephem = _ephem_with_sun(tuple(sun))
+            executed = panel_set.evaluate_executed_attitude(
+                _START, 0.0, 0.0, ephem, panel_set.initial_drive_state()
+            )
+            expected = fresh.evaluate_executed_attitude(
+                _START, 0.0, 0.0, ephem, fresh.initial_drive_state()
+            )
+            assert executed[:2] == pytest.approx(expected[:2])
+            assert executed[1] == pytest.approx(score)
+
+
 class TestDriveAwareRollSelection:
+    @pytest.mark.usefixtures("eclipse")
+    def test_roll_and_power_follow_edits_after_cache_is_warm(self) -> None:
+        panel = SolarPanel(
+            normal=(0.0, 1.0, 0.0), max_power=100.0, conversion_efficiency=1.0
+        )
+        panel_set = SolarPanelSet(panels=[panel])
+        ephem = _ephem_with_sun((0.0, 1.0, 0.0))
+        assert optimum_roll(0.0, 0.0, 0.0, ephem, panel_set) == 0.0
+
+        panel.normal = (0.0, 0.0, 2.0)
+        panel.max_power = 200.0
+        roll = optimum_roll(0.0, 0.0, 0.0, ephem, panel_set)
+        assert roll == 270.0
+        _, power, _ = panel_set.evaluate_executed_attitude(
+            _START, 0.0, 0.0, ephem, panel_set.initial_drive_state(), roll=roll
+        )
+        assert power == pytest.approx(200.0)
+
     def test_fixed_panel_scoring_normalizes_each_panel_independently(self) -> None:
         panel_set = SolarPanelSet(
             panels=[

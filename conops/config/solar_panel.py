@@ -694,6 +694,9 @@ class SolarPanelSet(ConfigModel):
 
     # Cached panel geometry for vectorized calculations
     _geometry_cache: _PanelGeometry | None = PrivateAttr(default=None)
+    _geometry_cache_key: (
+        tuple[tuple[bool, tuple[float, float, float], float, float], ...] | None
+    ) = PrivateAttr(default=None)
 
     def initial_drive_state(self) -> SolarArrayDriveState:
         """Return a fresh runtime state aligned with the configured panels."""
@@ -792,11 +795,24 @@ class SolarPanelSet(ConfigModel):
         return False
 
     def _get_geometry(self) -> _PanelGeometry:
-        """Get or compute cached panel geometry arrays."""
-        if self._geometry_cache is not None:
+        """Reuse panel arrays only while their configuration inputs match."""
+        panels = self.panels
+        # Nested field edits and in-place list edits bypass parent assignment
+        # validation, so compare values in panel order rather than identities.
+        key = tuple(
+            (
+                p.gimbled,
+                p.normal,
+                p.max_power,
+                p.conversion_efficiency
+                if p.conversion_efficiency is not None
+                else self.conversion_efficiency,
+            )
+            for p in panels
+        )
+        if self._geometry_cache is not None and self._geometry_cache_key == key:
             return self._geometry_cache
 
-        panels = self.panels
         n = len(panels)
 
         gimbled = np.array([p.gimbled for p in panels], dtype=bool)
@@ -822,6 +838,7 @@ class SolarPanelSet(ConfigModel):
             efficiency=efficiency,
             weights=weights,
         )
+        self._geometry_cache_key = key
         return self._geometry_cache
 
     def power_from_normalized_sun_body(
@@ -841,23 +858,11 @@ class SolarPanelSet(ConfigModel):
         if not self.panels:
             return np.zeros(len(sun), dtype=np.float64)
 
-        weights = np.asarray(
-            [
-                panel.max_power
-                * (
-                    panel.conversion_efficiency
-                    if panel.conversion_efficiency is not None
-                    else self.conversion_efficiency
-                )
-                for panel in self.panels
-            ],
-            dtype=np.float64,
-        )
+        geom = self._get_geometry()
+        weights = geom.max_power * geom.efficiency
         if not any(panel.single_axis_drive is not None for panel in self.panels):
-            normals = self._get_geometry().normal
-            illumination = np.maximum(sun @ normals.T, 0.0)
-            gimbled = np.asarray([panel.gimbled for panel in self.panels], dtype=bool)
-            illumination[:, gimbled] = 1.0
+            illumination = np.maximum(sun @ geom.normal.T, 0.0)
+            illumination[:, geom.gimbled] = 1.0
             return cast(npt.NDArray[np.float64], illumination @ weights)
 
         state = self._validated_drive_state(drive_state)
