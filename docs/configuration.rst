@@ -891,7 +891,11 @@ rounded exposure totals and observation boundaries can therefore change.
 Collection telemetry includes executed time on attempts later dropped for not
 meeting the minimum snapshot; it can exceed exposure in the delivered entries.
 Power remains governed by the existing mode-dependent model. ``DITL`` replay
-also uses collection windows for data accounting. ``DumbScheduler`` does not
+preserves serialized collection windows, deriving them from configuration only
+when absent. Collection cannot begin before the executed slew and setup finish,
+even if the slew takes longer than planned. A late start reduces collection;
+it does not move the planned cutoff or rewrite the delivered plan.
+``DumbScheduler`` does not
 support these budgets and rejects nonzero values; use ``QueueDITL`` to generate
 budgeted plans.
 

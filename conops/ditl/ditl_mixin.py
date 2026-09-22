@@ -462,7 +462,7 @@ class DITLMixin:
     def _collection_seconds_for_step(
         self, utime: float, mode: ACSMode, obsid: int | None = None
     ) -> float:
-        """Intersect this timestep with the active observation's collection window."""
+        """Intersect the planned collection window with executed slew/setup readiness."""
         if (
             self.ppt is None
             or self.ppt.collection_end is None
@@ -470,8 +470,21 @@ class DITLMixin:
             or (obsid is not None and obsid != self.ppt.obsid)
         ):
             return 0.0
+        start = utime
+        slew = self.acs.current_slew if mode == ACSMode.SLEWING else self.acs.last_slew
+        if slew is not None:
+            if slew.obsid != self.ppt.obsid:
+                return 0.0
+            assert self.ppt.collection_begin is not None
+            # Infer setup from the saved window, not a possibly changed replay config.
+            setup = max(
+                0.0, self.ppt.collection_begin - self.ppt.begin - self.ppt.slewtime
+            )
+            start = max(start, slew.slewend + setup)
+        elif mode == ACSMode.SLEWING:
+            return 0.0
         return self.ppt.collection_seconds_between(
-            utime, min(utime + self.step_size, self.uend)
+            start, min(utime + self.step_size, self.uend)
         )
 
     def _process_data_management(

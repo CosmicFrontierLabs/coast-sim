@@ -1,6 +1,22 @@
+from datetime import timedelta
+
 import pytest
 
-from conops.config import DataGeneration, Instrument, ObservationTiming
+from conops import DITL
+from conops.common import ACSMode
+from conops.config import (
+    AttitudeControlSystem,
+    DataGeneration,
+    GroundStationRegistry,
+    Instrument,
+    MissionConfig,
+    ObservationTiming,
+    RadiatorConfiguration,
+    SolarPanelSet,
+    SpacecraftBus,
+    StarTrackerConfiguration,
+)
+from conops.targets import Plan, PlanEntry
 from scripts import check_default_plan_output as scenario
 from scripts.check_default_plan_output import (
     DEFAULT_BASELINE,
@@ -57,3 +73,45 @@ def test_budgeted_plan_matches_fractional_collection_and_data(monkeypatch, budge
         hk.collection_seconds for hk in ditl.telemetry.housekeeping
     ) == pytest.approx(planned_collection)
     assert ditl.data_generated_gb[-1] == pytest.approx(planned_collection * 0.001)
+
+
+def test_replay_with_real_acs_does_not_collect_during_a_longer_than_planned_slew():
+    config = MissionConfig(
+        constraint=scenario.DeterministicConstraint(),
+        ground_stations=GroundStationRegistry(stations=[]),
+        solar_panel=SolarPanelSet(panels=[]),
+        spacecraft_bus=SpacecraftBus(
+            attitude_control=AttitudeControlSystem(
+                max_slew_rate=2, slew_acceleration=0.125, settle_time=36
+            ),
+            star_trackers=StarTrackerConfiguration(
+                star_trackers=[], min_functional_trackers=0, modes_require_lock=[]
+            ),
+            radiators=RadiatorConfiguration(radiators=[]),
+        ),
+    )
+    config.payload.instruments = [
+        Instrument(data_generation=DataGeneration(rate_gbps=0.01))
+    ]
+    begin = scenario.SCENARIO_BEGIN
+    end = begin + timedelta(seconds=120)
+    ephem = scenario.DeterministicEphemeris(begin, end, step_size_seconds=60)
+    config.constraint.ephem = ephem
+    entry = PlanEntry(
+        begin=begin.timestamp(),
+        end=end.timestamp(),
+        slewtime=50,
+        ra=180,
+        dec=0,
+        roll=0,
+        obsid=7,
+    )
+    ditl = DITL(
+        config=config, ephem=ephem, plan=Plan(entries=[entry]), begin=begin, end=end
+    )
+
+    assert ditl.calc()
+    assert 120 < ditl.acs.last_slew.slewtime <= 143
+    assert all(h.acs_mode == ACSMode.SLEWING for h in ditl.telemetry.housekeeping)
+    assert all(h.collection_seconds == 0 for h in ditl.telemetry.housekeeping)
+    assert ditl.data_generated_gb[-1] == 0

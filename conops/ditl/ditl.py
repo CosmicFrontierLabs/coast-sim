@@ -259,7 +259,11 @@ class DITL(DITLMixin, DITLStats):
             # Get current mode from ACS (it now determines mode internally)
             mode = self.acs.get_mode(self.utime[i])
 
-            if self.ppt is not None and mode in (ACSMode.SCIENCE, ACSMode.SLEWING):
+            if (
+                self.ppt is not None
+                and self.ppt.collection_begin is None
+                and mode in (ACSMode.SCIENCE, ACSMode.SLEWING)
+            ):
                 self.ppt.set_collection_window(self.config.payload.observation_timing)
             collection_seconds = self._collection_seconds_for_step(
                 self.utime[i], mode, obsid

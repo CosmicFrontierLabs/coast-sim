@@ -340,6 +340,8 @@ def ditl(mock_config_detailed, mock_ephem) -> DITL:
         mock_acs = Mock()
         mock_acs.ephem = None
         mock_acs.slewing = False
+        mock_acs.current_slew = None
+        mock_acs.last_slew = None
         mock_acs.inpass = False
         mock_acs.saa = None
         mock_acs.in_eclipse = False  # Set as attribute
