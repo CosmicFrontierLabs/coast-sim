@@ -27,7 +27,7 @@ from ..config.constraint import (
 )
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
-from ..simulation.passes import Pass, pass_slew_trigger_buffer
+from ..simulation.passes import Pass
 from ..simulation.roll import optimum_roll
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing, Queue, TargetSlewEstimate
@@ -2391,8 +2391,7 @@ class QueueDITL(DITLMixin, DITLStats):
         target_roll: float,
         target: Pointing | None = None,
     ) -> float | None:
-        """Calculate the next pass deadline after the slew ends, accounting for
-        slew time to the pass start."""
+        """Finish science teardown before any tracking profile can trigger ingress."""
         ppt = target or self.ppt
         assert ppt is not None
         next_pass = self.acs.passrequests.next_pass(slew_end)
@@ -2405,22 +2404,15 @@ class QueueDITL(DITLMixin, DITLStats):
             if ppt_is_plan_entry and ppt.spacecraft_attitude is not None
             else (ppt.ra, ppt.dec, target_roll)
         )
-        pass_slew_dist, rotation_axis_body = quaternion_attitude_delta(
-            *spacecraft_attitude,
-            next_pass.gsstartra,
-            next_pass.gsstartdec,
-            next_pass.gsstartroll,
+        return min(
+            (
+                deadline
+                for _, deadline in next_pass.tracking_profile_slew_deadlines(
+                    slew_end, *spacecraft_attitude
+                )
+            ),
+            default=None,
         )
-        acs_cfg = self.config.spacecraft_bus.attitude_control
-        pass_slew_time = float(
-            scheduled_slew_time(acs_cfg.slew_time(pass_slew_dist, rotation_axis_body))
-        )
-
-        return next_pass.begin - pass_slew_time - self._pass_slew_trigger_buffer()
-
-    def _pass_slew_trigger_buffer(self) -> float:
-        """Return the lead time to trigger a pass slew, based on the ephemeris step size."""
-        return pass_slew_trigger_buffer(self.ephem.step_size)
 
     @staticmethod
     def _ephem_timestamp_to_utime(

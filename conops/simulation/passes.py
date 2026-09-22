@@ -1,4 +1,5 @@
 import time
+from collections.abc import Iterator
 from numbers import Integral
 from typing import Literal, Protocol
 
@@ -250,13 +251,16 @@ class Pass(BaseModel):
         self.gsstartra, self.gsstartdec, self.gsstartroll = profile[0]
         self.gsendra, self.gsenddec, self.gsendroll = profile[-1]
 
-    def tracking_profiles_due_for_slew(
+    def tracking_profile_slew_deadlines(
         self, utime: float, ra: float, dec: float, roll: float = 0.0
-    ) -> list[list[tuple[float, float, float]]]:
-        """Return tracking profiles whose incoming slew must start by this step."""
+    ) -> Iterator[tuple[list[tuple[float, float, float]], float]]:
+        """Yield each available tracking profile and its incoming-slew trigger time.
+
+        Science admission must finish before the earliest of these times, since
+        execution can select any profile whose ingress is constraint-safe.
+        """
         assert self.ephem is not None, "Ephemeris must be set for Pass class"
 
-        due_profiles: list[list[tuple[float, float, float]]] = []
         for profile in self.available_tracking_profiles():
             if utime >= self.begin:
                 target = self.attitude_for_profile_at(profile, utime)
@@ -266,10 +270,26 @@ class Pass(BaseModel):
                 continue
 
             slewtime = self._slew_time_to_target(utime, ra, dec, roll, *target)
-            time_until_slew = (self.begin - slewtime) - utime
-            if time_until_slew <= pass_slew_trigger_buffer(self.ephem.step_size):
-                due_profiles.append(profile)
-        return due_profiles
+            yield (
+                profile,
+                (
+                    self.begin
+                    - slewtime
+                    - pass_slew_trigger_buffer(self.ephem.step_size)
+                ),
+            )
+
+    def tracking_profiles_due_for_slew(
+        self, utime: float, ra: float, dec: float, roll: float = 0.0
+    ) -> list[list[tuple[float, float, float]]]:
+        """Return tracking profiles whose incoming slew must start by this step."""
+        return [
+            profile
+            for profile, deadline in self.tracking_profile_slew_deadlines(
+                utime, ra, dec, roll
+            )
+            if utime >= deadline
+        ]
 
     def at_selected_tracking_attitude(
         self,

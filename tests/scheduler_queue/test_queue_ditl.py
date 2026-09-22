@@ -817,7 +817,7 @@ class TestFetchNewPPT:
 
         charge_deadline.assert_not_called()
 
-    def test_pass_deadline_uses_full_attitude_and_directional_limit(
+    def test_pass_deadline_uses_earliest_profile_and_full_attitude(
         self, queue_ditl: QueueDITL
     ) -> None:
         target = Mock(ra=10.0, dec=20.0, roll=30.0)
@@ -828,25 +828,17 @@ class TestFetchNewPPT:
             gsstartroll=70.0,
         )
         queue_ditl.acs.passrequests.next_pass = Mock(return_value=next_pass)
-        acs = cast(Mock, queue_ditl.config.spacecraft_bus.attitude_control)
-        acs.slew_time = Mock(return_value=45.0)
-        rotation_axis_body = (0.2, -0.3, 0.9)
-
-        with patch(
-            "conops.ditl.queue_ditl.quaternion_attitude_delta",
-            return_value=(12.5, rotation_axis_body),
-        ) as delta:
-            deadline = queue_ditl._next_pass_science_deadline(
-                1000.0,
-                target_roll=target.roll,
-                target=target,
-            )
-
-        delta.assert_called_once_with(10.0, 20.0, 30.0, 40.0, -15.0, 70.0)
-        acs.slew_time.assert_called_once_with(12.5, rotation_axis_body)
-        assert deadline == pytest.approx(
-            next_pass.begin - 45.0 - queue_ditl._pass_slew_trigger_buffer()
+        next_pass.tracking_profile_slew_deadlines.return_value = [
+            ([(40.0, -15.0, 70.0)], 1800.0),
+            ([(40.0, -15.0, 160.0)], 1750.0),
+        ]
+        deadline = queue_ditl._next_pass_science_deadline(
+            1000.0, target_roll=target.roll, target=target
         )
+        next_pass.tracking_profile_slew_deadlines.assert_called_once_with(
+            1000.0, 10.0, 20.0, 30.0
+        )
+        assert deadline == 1750.0
 
     def test_estimate_ppt_slew_uses_quaternion_distance_without_full_path(
         self, queue_ditl: QueueDITL
@@ -1023,17 +1015,13 @@ class TestFetchNewPPT:
             )
         )
 
-        with (
-            patch.object(queue_ditl, "_ppt_optimum_roll", return_value=70.0),
-            patch(
-                "conops.ditl.queue_ditl.quaternion_attitude_delta",
-                return_value=(12.5, (0.0, 0.0, 1.0)),
-            ) as delta,
-        ):
+        deadlines = queue_ditl.acs.passrequests.next_pass.return_value.tracking_profile_slew_deadlines
+        deadlines.return_value = [([], 9780.0)]
+        with patch.object(queue_ditl, "_ppt_optimum_roll", return_value=70.0):
             queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
 
-        assert delta.call_count == 2  # feasibility check and final task deadline
-        delta.assert_called_with(45.0, 30.0, 70.0, 40.0, -15.0, 30.0)
+        assert deadlines.call_count == 2  # feasibility and final task deadline
+        deadlines.assert_called_with(1100.0, 45.0, 30.0, 70.0)
 
     def test_sync_acs_slew_metadata_updates_exported_plan_entry(
         self, queue_ditl: QueueDITL
@@ -1563,6 +1551,7 @@ class TestFetchNewPPT:
         # Mock a pass that starts too soon
         mock_next_pass = Mock()
         mock_next_pass.begin = 1200.0  # Pass begins in 200 seconds
+        mock_next_pass.tracking_profile_slew_deadlines.return_value = [([], 980.0)]
         mock_next_pass.gsstartra = 100.0
         mock_next_pass.gsstartdec = 50.0
         mock_next_pass.gsstartroll = 0.0
@@ -1604,6 +1593,7 @@ class TestFetchNewPPT:
 
         mock_next_pass = Mock()
         mock_next_pass.begin = 1450.0
+        mock_next_pass.tracking_profile_slew_deadlines.return_value = [([], 1230.0)]
         mock_next_pass.gsstartra = 100.0
         mock_next_pass.gsstartdec = 50.0
         mock_next_pass.gsstartroll = 0.0
@@ -1643,6 +1633,7 @@ class TestFetchNewPPT:
         # Mock a pass with plenty of time
         mock_next_pass = Mock()
         mock_next_pass.begin = 2000.0  # Pass begins in 1000 seconds
+        mock_next_pass.tracking_profile_slew_deadlines.return_value = [([], 1780.0)]
         mock_next_pass.gsstartra = 100.0
         mock_next_pass.gsstartdec = 50.0
         mock_next_pass.gsstartroll = 0.0
@@ -1833,6 +1824,7 @@ class TestFetchNewPPT:
 
         mock_next_pass = Mock()
         mock_next_pass.begin = 1400.0
+        mock_next_pass.tracking_profile_slew_deadlines.return_value = [([], 1180.0)]
         mock_next_pass.gsstartra = 100.0
         mock_next_pass.gsstartdec = 50.0
         mock_next_pass.gsstartroll = 0.0

@@ -239,6 +239,31 @@ class TestPassTimeToSlew:
         result = basic_pass_mock.time_to_slew(1514764700.0, ra=10.0, dec=20.0)
         assert result is False
 
+    def test_profile_deadlines_match_trigger_boundaries(self, basic_pass_mock):
+        profiles = [[(10.0, 20.0, 0.0)], [], [(10.0, 20.0, 180.0)]]
+        basic_pass_mock.tracking_attitude_profiles = profiles
+        buffer = pass_slew_trigger_buffer(basic_pass_mock.ephem.step_size)
+        with patch.object(
+            Pass, "_slew_time_to_target", side_effect=lambda *args: 45 + args[-1]
+        ):
+            deadlines = list(
+                basic_pass_mock.tracking_profile_slew_deadlines(
+                    basic_pass_mock.begin - 1000, 10, 20, 0
+                )
+            )
+            assert deadlines == [
+                (profiles[0], basic_pass_mock.begin - 45 - buffer),
+                (profiles[2], basic_pass_mock.begin - 225 - buffer),
+            ]
+            earliest = deadlines[1][1]
+            assert not basic_pass_mock.time_to_slew(earliest - 1, 10, 20, 0)
+            assert basic_pass_mock.tracking_profiles_due_for_slew(
+                earliest, 10, 20, 0
+            ) == [profiles[2]]
+            assert basic_pass_mock.tracking_profiles_due_for_slew(
+                deadlines[0][1], 10, 20, 0
+            ) == [profiles[0], profiles[2]]
+
     def test_time_to_slew_early_with_valid_profile(
         self, basic_pass_mock, start_ra, start_dec, two_step_utime
     ):

@@ -874,7 +874,11 @@ calibration, acquisition, or another procedure. COAST does not prescribe how
 that time is used.
 
 ``QueueDITL`` reserves the budgets before visibility, locked-attitude constraint,
-pass, and simulation deadlines. A pending recharge discovered by a timestep's
+pass, and simulation deadlines. For a pass with multiple tracking profiles, the
+deadline is the earliest possible ingress trigger across those profiles, not
+just the default pass attitude. Science cleanup and handoff finish before that
+deadline; ingress constraints still determine which profile actually executes.
+A pending recharge discovered by a timestep's
 power integration also shortens the collection window before data is counted,
 without delaying the charge command. If a later interruption cannot leave the
 reserved cleanup/handoff time, generation fails instead of exporting a normal

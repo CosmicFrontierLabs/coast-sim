@@ -1,9 +1,11 @@
+import math
 from unittest.mock import Mock
 
 import pytest
 
 from conops.common import ACSMode, ObsType
-from conops.config import ObservationTiming
+from conops.config import AttitudeControlSystem, ObservationTiming
+from conops.simulation.passes import Pass
 from conops.targets import PlanEntry
 
 
@@ -77,6 +79,55 @@ def test_unanticipated_interrupt_fails_closed(timed_ditl):
     timed_ditl.plan.append(timed_ditl.ppt.model_copy())
     with pytest.raises(ValueError, match="interrupted before reserved cleanup"):
         timed_ditl._close_last_plan_entry(280)
+
+
+def test_pass_alternate_profile_reserves_cleanup_before_ingress(timed_ditl):
+    timed_ditl.uend = 2600
+    timed_ditl.ephem.step_size = 60
+    timed_ditl.config.spacecraft_bus.attitude_control = AttitudeControlSystem(
+        max_slew_rate=2.0, slew_acceleration=0.125, settle_time=36.0
+    )
+    profiles = [[(10.0, 20.0, 30.0)], [(10.0, 20.0, 170.0)]]
+    upcoming = Pass.model_construct(
+        config=timed_ditl.config,
+        ephem=timed_ditl.ephem,
+        station="GS",
+        begin=2000.0,
+        length=600.0,
+        gsstartra=10.0,
+        gsstartdec=20.0,
+        gsstartroll=30.0,
+        tracking_attitude_profiles=profiles,
+    )
+    timed_ditl.acs.passrequests.next_pass = Mock(return_value=upcoming)
+    entry = PlanEntry(
+        begin=1000,
+        end=2000,
+        slewtime=50,
+        ra=10,
+        dec=20,
+        roll=30,
+        obstype=ObsType.AT,
+        ss_min=100,
+    )
+    deadline = timed_ditl._next_pass_science_deadline(
+        1050, target=entry, target_roll=entry.roll
+    )
+    assert deadline is not None
+    entry.end = deadline
+    entry.set_collection_window(timed_ditl.config.payload.observation_timing)
+    timed_ditl.ppt = entry
+    timed_ditl.plan.append(entry.model_copy())
+
+    ingress = math.ceil(deadline / timed_ditl.step_size) * timed_ditl.step_size
+    assert upcoming.tracking_profiles_due_for_slew(ingress, 10, 20, 30) == [profiles[1]]
+    default_deadline = next(upcoming.tracking_profile_slew_deadlines(1050, 10, 20, 30))[
+        1
+    ]
+    assert default_deadline - 12 > ingress  # Old admission still claimed collection.
+    timed_ditl._close_last_plan_entry(ingress)
+    assert entry.collection_end + 12 <= ingress
+    assert timed_ditl.plan[-1].end == deadline
 
 
 def test_interrupt_with_zero_teardown_only_cancels_future_collection(timed_ditl):
