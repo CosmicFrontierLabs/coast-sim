@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Check for Lint
-        uses: astral-sh/ruff-action@v3
+        uses: astral-sh/ruff-action@v4
 
   formatting:
     name: Formatting
@@ -27,7 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Check Formatting
-        uses: astral-sh/ruff-action@v3
+        uses: astral-sh/ruff-action@v4
         with:
           args: format --check
 
