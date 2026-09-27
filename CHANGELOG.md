@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.9.0...v0.10.0) (2026-09-22)
+
+
+### Features
+
+* model mounted science-instrument attitudes ([#129](https://github.com/CosmicFrontierLabs/coast-sim/issues/129)) ([26758a5](https://github.com/CosmicFrontierLabs/coast-sim/commit/26758a5320ddf97dec78cdc9f2dfe64c742c9bb8))
+
 ## [0.9.0](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.8.0...v0.9.0) (2026-08-28)
 
 
