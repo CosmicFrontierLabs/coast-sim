@@ -72,16 +72,21 @@ def _power_score_order(
     start = 0
     while start < ranked.size:
         stop = start + 1
-        while stop < ranked.size and np.isclose(
-            scores[ranked[stop]],
-            scores[ranked[start]],
-            rtol=_POWER_SCORE_RTOL,
-            atol=_POWER_SCORE_ATOL_W,
+        reference_score = float(scores[ranked[start]])
+        tolerance = _POWER_SCORE_ATOL_W + _POWER_SCORE_RTOL * abs(reference_score)
+        # All scores here are finite. This is np.isclose's scalar criterion,
+        # without allocating NumPy temporaries for each of 360 candidates.
+        while (
+            stop < ranked.size
+            and abs(float(scores[ranked[stop]]) - reference_score) <= tolerance
         ):
             stop += 1
         tied = ranked[start:stop]
-        tie_order = np.lexsort((_ROLL_DEGREES[tied], tie_distance[tied]))
-        ordered.extend(int(candidate) for candidate in tied[tie_order])
+        if stop == start + 1:
+            ordered.append(int(tied[0]))
+        else:
+            tie_order = np.lexsort((_ROLL_DEGREES[tied], tie_distance[tied]))
+            ordered.extend(int(candidate) for candidate in tied[tie_order])
         start = stop
     return np.asarray(ordered, dtype=np.int64)
 
