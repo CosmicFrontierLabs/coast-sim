@@ -1572,13 +1572,8 @@ class QueueDITL(DITLMixin, DITLStats):
     def _expected_slew_start_attitude(
         self, utime: float, execution_time: float
     ) -> tuple[float, float, float]:
-        """Return the attitude a new slew should start from, accounting for an in-progress slew."""
-        active_slew = self.acs.last_slew
-        if active_slew is not None and active_slew.is_slewing(utime):
-            slewend = active_slew.slewstart + active_slew.slewtime
-            if execution_time >= slewend:
-                return active_slew.endra, active_slew.enddec, active_slew.endroll
-        return self.acs.ra, self.acs.dec, self.acs.roll
+        """Predict the physical start, including tracking as well as target slews."""
+        return self.acs.predicted_attitude(execution_time)
 
     def _handle_mode_operations(
         self, mode: ACSMode, utime: float, ra: float, dec: float
@@ -2610,7 +2605,7 @@ class QueueDITL(DITLMixin, DITLStats):
         """Return when a new slew can execute, waiting for an in-progress slew to finish."""
         if self.acs.last_slew is not None and self.acs.last_slew.is_slewing(utime):
             return self.acs.last_slew.slewstart + self.acs.last_slew.slewtime
-        return utime
+        return self.acs.motion_ready_time(utime)
 
     @staticmethod
     def _target_body_attitude(
@@ -2811,6 +2806,11 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _fetch_new_ppt(self, utime: float, ra: float, dec: float) -> None:
         """Fetch a new pointing target from the queue and enqueue slew command."""
+        # A just-issued charge/pass termination can replace tracking with a
+        # braking arc. Commit that command before predicting a new slew's start.
+        pointing = self._process_due_acs_commands(utime)
+        if pointing is not None:
+            ra, dec = pointing[:2]
         self._temporary_rejected_ppts = []
         self._retry_ppt_fetch_requested = False
         try:

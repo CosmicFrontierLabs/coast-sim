@@ -186,6 +186,7 @@ class TestACSStateManagement:
         science_slew.endra = 10.0
         science_slew.enddec = 20.0
         science_slew.endroll = 30.0
+        acs.ra, acs.dec, acs.roll = 10.0, 20.0, 30.0
         acs.last_slew = science_slew
         acs.science_observation_active = False
         acs.config.attitude_constraint_scopes_for_mode = Mock(
@@ -197,7 +198,7 @@ class TestACSStateManagement:
 
         with pytest.raises(RuntimeError, match="Unsafe IDLE"):
             acs.pointing(1000.0)
-        assert (acs.ra, acs.dec, acs.roll) == (10.0, 20.0, 30.0)
+        assert (acs.ra, acs.dec, acs.roll) == pytest.approx((10.0, 20.0, 30.0))
         assert acs.last_slew is science_slew
 
     def test_pointing_rejects_hard_constrained_idle_hold(
@@ -215,6 +216,7 @@ class TestACSStateManagement:
         science_slew.endra = 10.0
         science_slew.enddec = 20.0
         science_slew.endroll = 30.0
+        acs.ra, acs.dec, acs.roll = 10.0, 20.0, 30.0
         acs.last_slew = science_slew
         acs.science_observation_active = False
         acs.config.attitude_constraint_scopes_for_mode = Mock(
@@ -227,7 +229,7 @@ class TestACSStateManagement:
 
         with pytest.raises(RuntimeError, match="Unsafe IDLE"):
             acs.pointing(1000.0)
-        assert (acs.ra, acs.dec, acs.roll) == (10.0, 20.0, 30.0)
+        assert (acs.ra, acs.dec, acs.roll) == pytest.approx((10.0, 20.0, 30.0))
         acs.constraint.in_constraint.assert_not_called()
 
     def test_unsafe_idle_does_not_blindly_request_unvalidated_safe_mode(

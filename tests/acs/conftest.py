@@ -127,6 +127,7 @@ def acs(mock_constraint: Mock, mock_config: Mock) -> Generator[ACS, None, None]:
         mock_pt = Mock()
         mock_pt.passes = []
         mock_pt.next_pass = Mock(return_value=None)
+        mock_pt.current_pass = Mock(return_value=None)
         mock_pt.__iter__ = Mock(return_value=iter([]))
         mock_passtimes.return_value = mock_pt
         acs_instance = ACS(config=mock_config)

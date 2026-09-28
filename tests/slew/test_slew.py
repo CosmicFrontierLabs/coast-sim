@@ -58,6 +58,9 @@ class TestSlewDurationUpperBound:
     @pytest.mark.parametrize("directional", [False, True])
     @pytest.mark.parametrize("waypoint", [None, (45.0, 30.0), (180.0, 0.0)])
     def test_real_paths_obey_bound(self, slew, directional, waypoint):
+        from conops.common.vector import quaternion_attitude_delta
+        from conops.simulation.attitude import AttitudeTrajectory
+
         acs = AttitudeControlSystem(
             slew_algorithm=SlewAlgorithm.CONSTRAINT_AVOIDING,
             max_slew_rate=2.0,
@@ -78,6 +81,12 @@ class TestSlewDurationUpperBound:
                 )
                 slew.startdec, slew.enddec = rng.uniform(-90, 90, 2)
                 assert slew.calc_slewtime() <= bound
+                trajectory = AttitudeTrajectory.from_slew(slew, acs)
+                for time in np.linspace(slew.slewstart, slew.slewend, 11):
+                    difference, _ = quaternion_attitude_delta(
+                        *trajectory.state(time).attitude, *slew.attitude(time)
+                    )
+                    assert difference < 1e-7
 
     def test_unsupported_algorithm_fails_closed(self):
         acs = AttitudeControlSystem.model_construct(slew_algorithm="future_algorithm")

@@ -1,4 +1,5 @@
 from collections.abc import Callable, Sequence
+from math import sin
 
 import numpy as np
 import numpy.typing as npt
@@ -431,6 +432,14 @@ def quaternion_attitude_delta(
     """
     q1 = attitude_to_quat(ra1, dec1, roll1)
     q2 = attitude_to_quat(ra2, dec2, roll2)
+    return _quaternion_delta(q1, q2)
+
+
+def _quaternion_delta(
+    q1: Sequence[float] | npt.NDArray[np.float64],
+    q2: Sequence[float] | npt.NDArray[np.float64],
+) -> tuple[float, tuple[float, float, float]]:
+    """Shortest rotation and initial body axis from already-converted quaternions."""
 
     # Attitude quaternions map ECI into body coordinates.  q1 * conjugate(q2)
     # therefore represents the physical body rotation from attitude 1 to 2,
@@ -455,8 +464,8 @@ def quaternion_attitude_delta(
 
 
 def _quat_mul(
-    a: npt.NDArray[np.float64],
-    b: npt.NDArray[np.float64],
+    a: Sequence[float] | npt.NDArray[np.float64],
+    b: Sequence[float] | npt.NDArray[np.float64],
     *,
     conjugate_b: bool = False,
 ) -> npt.NDArray[np.float64]:
@@ -584,16 +593,15 @@ def quat_slerp(
         q2 = -q2
         dot = -dot
     dot = min(dot, 1.0)
-    if dot > 0.9995:
-        # Quaternions nearly identical – linear blend then normalise
-        result: npt.NDArray[np.float64] = q1 + t * (q2 - q1)
-        return result / float(np.linalg.norm(result))
-    theta_0 = float(np.arccos(dot))
-    sin_theta_0 = float(np.sin(theta_0))
+    # atan2 resolves tiny turns without acos cancellation. Keep exact spherical
+    # interpolation: normalized linear interpolation introduces a rate error.
+    theta_0 = float(np.arctan2(np.linalg.norm(q2 - dot * q1), dot))
+    if theta_0 == 0.0:
+        return q1
     interp: npt.NDArray[np.float64] = (
-        np.sin((1.0 - t) * theta_0) * q1 + np.sin(t * theta_0) * q2
-    ) / sin_theta_0
-    return interp
+        sin((1.0 - t) * theta_0) * q1 + sin(t * theta_0) * q2
+    ) / sin(theta_0)
+    return interp / float(np.linalg.norm(interp))
 
 
 def _batch_quat_slerp(
