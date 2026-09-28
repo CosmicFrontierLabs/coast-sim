@@ -27,7 +27,8 @@ from ..config.constraint import (
 )
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
-from ..simulation.passes import Pass
+from ..simulation.idle_safety import IdleSafetyPlanner
+from ..simulation.passes import Pass, pass_slew_trigger_buffer
 from ..simulation.roll import optimum_roll
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing, Queue, TargetSlewEstimate
@@ -173,6 +174,7 @@ class QueueDITL(DITLMixin, DITLStats):
         self._ppt_optimum_roll_cache: dict[
             tuple[float, float, float, int, int, int, int], float
         ] = {}
+        self._idle_safety: IdleSafetyPlanner | None = None
         # Subsystem power tracking
         self.power_bus = list()
         self.power_payload = list()
@@ -476,6 +478,7 @@ class QueueDITL(DITLMixin, DITLStats):
         # Set up timing and schedule passes
         if not self._setup_simulation_timing():
             return False
+        self._idle_safety = IdleSafetyPlanner(self.config, self.uend)
 
         # Schedule groundstation passes (these will be queued in ACS)
         self._schedule_groundstation_passes()
@@ -1617,6 +1620,13 @@ class QueueDITL(DITLMixin, DITLStats):
         self, utime: float, ra: float, dec: float, mode: ACSMode
     ) -> None:
         """Handle science mode operations: charging, observations, and target acquisition."""
+        # Finish protective motion before considering discretionary preemption.
+        if (
+            self.acs.current_slew is not None
+            and self.acs.current_slew.obstype == ObsType.IDLE
+            and self.acs.current_slew.is_slewing(utime)
+        ):
+            return
         # Check for battery alert and initiate emergency charging if needed
         if self._should_initiate_charging(utime):
             self._initiate_charging(utime, ra, dec)
@@ -1635,6 +1645,99 @@ class QueueDITL(DITLMixin, DITLStats):
                 self._ppt_unavailable = None
                 return
             self._fetch_new_ppt(utime, ra, dec)
+            if self.ppt is None:
+                self._schedule_idle_recovery(utime)
+
+    def _schedule_idle_recovery(self, utime: float) -> None:
+        """Reserve and command a safe inertial hold before the current one expires."""
+        planner = self._idle_safety
+        if planner is None or self.acs.get_mode(utime) not in (
+            ACSMode.IDLE,
+            ACSMode.SAA,
+        ):
+            return
+        attitude = (self.acs.ra, self.acs.dec, self.acs.roll)
+        if utime + self.step_size < planner.departure_deadline(attitude, utime):
+            return
+        if planner.first_violation(attitude, utime) <= utime:
+            raise RuntimeError(
+                "Cannot plan an idle escape from an already unsafe attitude"
+            )
+        for ra, dec in self.acs._idle_safe_attitude_candidates(utime):
+            preferred_roll = optimum_roll(
+                ra,
+                dec,
+                utime,
+                self.ephem,
+                self.config.solar_panel,
+                self.constraint,
+            )
+            for roll in self.acs._idle_safe_roll_candidates(preferred_roll):
+                slew = Slew(
+                    config=self.config,
+                    slewrequest=utime,
+                    slewstart=utime,
+                    startra=attitude[0],
+                    startdec=attitude[1],
+                    startroll=attitude[2],
+                    endra=ra,
+                    enddec=dec,
+                    endroll=roll,
+                    obstype=ObsType.IDLE,
+                    obsid=0,
+                )
+                slew.calc_slewtime()
+                if (
+                    slew.slewtime <= 0
+                    or slew.slewend >= self._simulation_end_deadline()
+                ):
+                    continue
+                next_pass = self.acs.passrequests.next_pass(utime)
+                if next_pass is not None:
+                    angle, axis = quaternion_attitude_delta(
+                        ra,
+                        dec,
+                        roll,
+                        next_pass.gsstartra,
+                        next_pass.gsstartdec,
+                        next_pass.gsstartroll,
+                    )
+                    pass_slew = scheduled_slew_time(
+                        self.config.spacecraft_bus.attitude_control.slew_time(
+                            angle, axis
+                        )
+                    )
+                    if (
+                        slew.slewend
+                        + pass_slew
+                        + pass_slew_trigger_buffer(self.step_size)
+                        >= next_pass.begin
+                    ):
+                        continue
+                if not planner.hold_is_safe((ra, dec, roll), slew.slewend):
+                    continue
+                if (
+                    self._slew_attitude_constraint_violation(slew, ACSMode.SLEWING)
+                    is not None
+                ):
+                    continue
+                self.acs.enqueue_command(
+                    ACSCommand(
+                        command_type=ACSCommandType.SLEW_TO_TARGET,
+                        execution_time=utime,
+                        slew=slew,
+                    )
+                )
+                self.log.log_event(
+                    utime=utime,
+                    event_type="ACS",
+                    acs_mode=ACSMode.IDLE,
+                    description="Scheduled rate-limited safe-IDLE recovery slew",
+                )
+                return
+        raise RuntimeError(
+            "No path-validated safe-IDLE recovery found before hold expiry"
+        )
 
     def _should_initiate_charging(self, utime: float) -> bool:
         """Check if emergency charging should be initiated."""
@@ -2498,6 +2601,22 @@ class QueueDITL(DITLMixin, DITLStats):
         if deadline_inputs.charge_deadline is not None:
             deadlines.append((deadline_inputs.charge_deadline, "charge opportunity"))
 
+        if self._idle_safety is not None:
+            ppt = target or self.ppt
+            assert ppt is not None
+            attitude = (
+                ppt.spacecraft_attitude
+                if issubclass(type(ppt), PlanEntry)
+                and ppt.spacecraft_attitude is not None
+                else (ppt.ra, ppt.dec, target_roll)
+            )
+            deadlines.append(
+                (
+                    self._idle_safety.departure_deadline(attitude, slew_end),
+                    "safe-IDLE escape reserve",
+                )
+            )
+
         return min(deadlines, key=lambda item: item[0])
 
     def _ppt_slew_execution_time(self, utime: float) -> float:
@@ -2838,6 +2957,18 @@ class QueueDITL(DITLMixin, DITLStats):
                     acs_mode=self.acs.acsmode,
                 )
                 execution_time = visstart
+
+            if (
+                self._idle_safety is not None
+                and not self.acs._is_actively_slewing(utime)
+                and self._idle_safety.first_violation(
+                    (self.acs.ra, self.acs.dec, self.acs.roll), utime
+                )
+                < execution_time
+            ):
+                # A safe future path does not justify an unsafe wait for it.
+                self._retry_fetch_without_current_ppt(utime, ra, dec)
+                return
 
             # When ignore_roll=True, verify that a valid roll exists before slewing.
             # optimum_roll() falls back to the unconstrained solar roll when

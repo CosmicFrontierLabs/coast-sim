@@ -51,6 +51,12 @@ class AttitudeControlSystem(ConfigModel):
     settle_time: float = Field(
         default=120.0, description="Time to settle after slew completion in seconds"
     )
+    idle_min_hold_s: float = Field(
+        default=300.0,
+        ge=0.0,
+        allow_inf_nan=False,
+        description="Minimum safe idle dwell after arrival, in addition to a conservative escape-slew reserve.",
+    )
     slew_algorithm: SlewAlgorithm = Field(
         default=SlewAlgorithm.QUATERNION,
         description=(
