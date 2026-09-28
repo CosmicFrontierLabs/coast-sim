@@ -92,6 +92,19 @@ def test_config_with_panels(
     constraint.roll_dependent_constraint = None
     constraint.panel_constraint = Mock()
     constraint.in_constraint = Mock(return_value=False)
+    for method in (
+        "in_explicit_safety",
+        "in_sun",
+        "in_earth",
+        "in_moon",
+        "in_anti_sun",
+        "in_orbit",
+        "in_explicit_science",
+        "in_star_tracker_soft",
+        "in_panel",
+        "in_ground_contact",
+    ):
+        setattr(constraint, method, Mock(return_value=False))
     constraint.in_star_tracker_hard = Mock(return_value=False)
     constraint.in_radiator_hard = Mock(return_value=False)
     constraint.in_telescope_hard = Mock(return_value=False)
