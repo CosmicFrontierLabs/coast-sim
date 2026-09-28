@@ -11,7 +11,7 @@ from functools import cached_property, lru_cache
 from math import comb
 
 import numpy as np
-from numpy.polynomial.polynomial import polyder, polymul, polyval
+from numpy.polynomial.polynomial import polyval
 
 from .vector import _quat_mul
 
@@ -95,42 +95,31 @@ class QuaternionHermite:
     @cached_property
     def _polynomials(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         p = self._coefficients
-        dp = polyder(p)
-        products_norm = [polymul(component, component) for component in p.T]
-        norm = sum(
-            (np.pad(term, (0, 7 - len(term))) for term in products_norm),
-            start=np.zeros(7),
-        )
+        # Ascending-power coefficients have fixed sizes: p is cubic, |p|²
+        # degree six, and the rate numerator degree five. Direct convolution
+        # retains trailing zeros, avoiding polynomial trimming and repadding.
+        dp = p[1:] * np.arange(1, 4)[:, None]
+        norm = np.zeros(7)
+        for component in p.T:
+            norm += np.convolve(component, component)
         # Vector part of p' * conjugate(p); all polynomials use normalized time.
-        products = []
+        rate = np.empty((6, 3))
         for i, j, k in ((1, 2, 3), (2, 3, 1), (3, 1, 2)):
-            terms = [
-                polymul(dp[:, i], p[:, 0]),
-                -polymul(dp[:, 0], p[:, i]),
-                -polymul(dp[:, j], p[:, k]),
-                polymul(dp[:, k], p[:, j]),
-            ]
-            products.append(
-                sum(
-                    (np.pad(term, (0, 6 - len(term))) for term in terms),
-                    start=np.zeros(6),
-                )
+            rate[:, i - 1] = (
+                np.convolve(dp[:, i], p[:, 0])
+                - np.convolve(dp[:, 0], p[:, i])
+                - np.convolve(dp[:, j], p[:, k])
+                + np.convolve(dp[:, k], p[:, j])
             )
-        rate = -2 * np.rad2deg(1.0) / self.duration * np.asarray(products).T
-        acceleration = []
-        for component in rate.T:
-            first = polymul(polyder(component), norm)
-            second = polymul(component, polyder(norm))
-            size = max(len(first), len(second))
-            acceleration.append(
-                np.pad(first, (0, size - len(first)))
-                - np.pad(second, (0, size - len(second)))
+        rate *= -2 * np.rad2deg(1.0) / self.duration
+        dnorm = norm[1:] * np.arange(1, 7)
+        drate = rate[1:] * np.arange(1, 6)[:, None]
+        accel = np.empty((11, 3))
+        for axis in range(3):
+            accel[:, axis] = np.convolve(drate[:, axis], norm) - np.convolve(
+                rate[:, axis], dnorm
             )
-        size = max(map(len, acceleration))
-        accel = (
-            np.asarray([np.pad(term, (0, size - len(term))) for term in acceleration]).T
-            / self.duration
-        )
+        accel /= self.duration
         return norm, rate, accel
 
     def evaluate(self, fraction: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

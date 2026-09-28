@@ -1,7 +1,10 @@
 """Continuous-rate tracking, interval bounds, and interruption regressions."""
 
+from functools import cached_property
+
 import numpy as np
 import pytest
+from numpy.polynomial import Polynomial
 
 from conops import AttitudeControlSystem
 from conops.common.quaternion_curve import QuaternionHermite
@@ -193,3 +196,63 @@ def test_nonuniform_tracking_wrap_pole_half_turn_and_reversal(attitudes):
 def test_curve_rejects_invalid_duration(duration):
     with pytest.raises(ValueError, match="duration"):
         QuaternionHermite((1, 0, 0, 0), (1, 0, 0, 0), (0, 0, 0), (0, 0, 0), duration)
+
+
+class _PolynomialReference(QuaternionHermite):
+    """Independent, general-purpose algebra for the optimized coefficient builder."""
+
+    @cached_property
+    def _polynomials(self):
+        p = [Polynomial(component) for component in self._coefficients.T]
+        dp = [component.deriv() for component in p]
+        norm = sum(component * component for component in p)
+        rate = [
+            -2
+            * np.rad2deg(1.0)
+            / self.duration
+            * (dp[i] * p[0] - dp[0] * p[i] - dp[j] * p[k] + dp[k] * p[j])
+            for i, j, k in ((1, 2, 3), (2, 3, 1), (3, 1, 2))
+        ]
+        accel = [(w.deriv() * norm - w * norm.deriv()) / self.duration for w in rate]
+
+        def columns(polynomials):
+            size = max(len(polynomial.coef) for polynomial in polynomials)
+            return np.column_stack(
+                [
+                    np.pad(polynomial.coef, (0, size - len(polynomial.coef)))
+                    for polynomial in polynomials
+                ]
+            )
+
+        return norm.coef, columns(rate), columns(accel)
+
+
+@pytest.mark.parametrize("seed", range(30))
+def test_fixed_size_polynomials_match_generic_reference(seed):
+    rng = np.random.default_rng(seed)
+    endpoints = rng.normal(size=(2, 4))
+    endpoints /= np.linalg.norm(endpoints, axis=1)[:, None]
+    duration = 10 ** rng.uniform(0, 3)
+    rates = rng.normal(size=(2, 3)) / duration
+    if seed == 0:  # Trailing-zero coefficients: stationary identity quaternion.
+        endpoints[:] = (1, 0, 0, 0)
+        rates[:] = 0
+    elif seed == 1:  # Single-axis, rest-to-rest curve.
+        endpoints = np.array([attitude_to_quat(0, 0, 0), attitude_to_quat(6, 0, 0)])
+        rates[:] = 0
+    args = (*map(tuple, endpoints), *map(tuple, rates), duration)
+    actual, reference = QuaternionHermite(*args), _PolynomialReference(*args)
+    fractions = np.linspace(0, 1, 51)
+    expected = np.array([reference.evaluate(fraction)[1:] for fraction in fractions])
+    for fraction in fractions:
+        for value, oracle in zip(
+            actual.evaluate(fraction), reference.evaluate(fraction)
+        ):
+            np.testing.assert_allclose(value, oracle, rtol=1e-10, atol=1e-8)
+    axes = rng.uniform(0.5, 2.0, (2, 3))
+    peaks = np.max(np.linalg.norm(expected / axes, axis=2), axis=0)
+    for margin in (0.99, 1.1):
+        rate_axes, accel_axes = axes * np.maximum(peaks, 1e-6)[:, None] * margin
+        assert actual.within_limits(
+            tuple(rate_axes), tuple(accel_axes)
+        ) == reference.within_limits(tuple(rate_axes), tuple(accel_axes))
