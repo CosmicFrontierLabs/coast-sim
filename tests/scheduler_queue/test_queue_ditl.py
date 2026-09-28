@@ -3964,8 +3964,8 @@ class TestCalcMethod:
         queue_ditl.acs.enqueue_command.assert_called_once()
         call_args = queue_ditl.acs.enqueue_command.call_args
         command = call_args[0][0]
-        # Execution time should be delayed to current_slew.slewstart + slewtime = 1100.0
-        assert command.execution_time == 1100.0
+        # The preceding slew ends at 1100; execute on the next 60-second tick.
+        assert command.execution_time == 1120.0
 
         # Check that the delay message was logged
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
@@ -3992,8 +3992,8 @@ class TestCalcMethod:
         queue_ditl.acs.enqueue_command.assert_called_once()
         call_args = queue_ditl.acs.enqueue_command.call_args
         command = call_args[0][0]
-        # Execution time should be delayed to visibility time (1200.0)
-        assert command.execution_time == 1200.0
+        # Visibility begins at 1200; execute on the next 60-second tick.
+        assert command.execution_time == 1240.0
 
         # Check that the visibility delay message was logged
         log_text = "\n".join(event.description for event in queue_ditl.log.events)

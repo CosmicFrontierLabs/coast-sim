@@ -9,8 +9,10 @@ import numpy as np
 import pytest
 
 from conops import ACSMode, AttitudeControlSystem, Constraint, MissionConfig
-from conops.common import ACSCommandType, ObsType
+from conops.common import ACSCommandType, ObsType, SlewAlgorithm
+from conops.simulation.acs import ACS
 from conops.simulation.idle_safety import IdleSafetyPlanner
+from conops.simulation.passes import Pass
 from conops.simulation.slew import Slew
 
 
@@ -107,6 +109,7 @@ def recovery_queue(queue_ditl, monkeypatch):
     start = ditl.begin.timestamp()
     ditl.uend = start + 6000
     ditl.step_size = 2
+    ditl.ephem.step_size = 2
     ditl.acs.ra, ditl.acs.dec, ditl.acs.roll = 0.0, 0.0, 0.0
     ditl.acs.get_mode = Mock(return_value=ACSMode.IDLE)
     ditl.acs._idle_safe_attitude_candidates = Mock(return_value=[(20.0, 0.0)])
@@ -172,21 +175,124 @@ def test_safe_hold_does_not_schedule_premature_recovery(recovery_queue):
     ditl.acs.enqueue_command.assert_not_called()
 
 
-@pytest.mark.parametrize("pass_offset", [114, 115])
-def test_recovery_reserves_pass_ingress_buffer(recovery_queue, pass_offset):
+@pytest.mark.parametrize(
+    "pass_offset, rolls, routed, accepted",
+    [
+        (114, [0.0], False, False),
+        (115, [0.0], False, True),
+        (200, [0.0, 20.0], False, False),
+        (400, [0.0, 20.0], False, True),
+        (200, [0.0], True, False),
+    ],
+)
+def test_recovery_reserves_all_pass_ingress_deadlines(
+    recovery_queue, pass_offset, rolls, routed, accepted
+):
     ditl, start = recovery_queue
-    ditl.acs.passrequests.next_pass.return_value = SimpleNamespace(
-        gsstartra=20.0, gsstartdec=0.0, gsstartroll=0.0, begin=start + pass_offset
+    if routed:
+        ditl.config.spacecraft_bus.attitude_control.slew_algorithm = (
+            SlewAlgorithm.CONSTRAINT_AVOIDING
+        )
+    contact = Pass(
+        config=ditl.config,
+        ephem=ditl.ephem,
+        station="TEST",
+        begin=start + pass_offset,
+        length=100,
+        gsstartra=20.0,
+        gsstartdec=0.0,
+        gsstartroll=0.0,
+        utime=[start + pass_offset],
+        tracking_attitude_profiles=[[(20.0, 0.0, roll)] for roll in rolls],
     )
+    ditl.acs.passrequests.next_pass.return_value = contact
     # Recovery takes 110 s; the aligned pass needs no turn but still needs
-    # the existing two-tick ingress buffer (4 s at this cadence).
-    if pass_offset == 114:
+    # the two-tick ingress buffer. The alternative 20-degree roll needs another
+    # 110 s: its deadline is +86, not the aligned profile's +196.
+    if not accepted:
         with pytest.raises(RuntimeError, match="No path-validated"):
             ditl._schedule_idle_recovery(start)
         ditl.acs.enqueue_command.assert_not_called()
     else:
         ditl._schedule_idle_recovery(start)
         ditl.acs.enqueue_command.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "step, delay, accepted",
+    [
+        (2, 1, True),
+        (2, 3, False),
+        (60, 0, True),
+        (60, 90, True),
+        (60, 120, True),
+        (60, 120.01, False),
+        (60, 150, False),
+        (60, 180, False),
+    ],
+)
+@pytest.mark.parametrize("active_slew", [False, True])
+def test_delayed_science_slew_checks_wait_through_execution_tick(
+    recovery_queue, step, delay, accepted, active_slew
+):
+    ditl, start = recovery_queue
+    ditl.step_size = ditl.ephem.step_size = step
+    ditl.ephem.timestamp = [
+        datetime.fromtimestamp(start + i * step, timezone.utc)
+        for i in range(6000 // step + 1)
+    ]
+    ditl.ephem.index = lambda time: int((time.timestamp() - start) // step)
+    unsafe_at = start + (4 if step == 2 else 180)
+    first_violation = Mock(return_value=unsafe_at)
+    ditl._idle_safety = SimpleNamespace(
+        step=step,
+        first_violation=first_violation,
+        departure_deadline=lambda *args: inf,
+    )
+    # The preceding slew finishes after half a tick. Only its endpoint is held
+    # while waiting; evaluating its current attitude would check the wrong hold.
+    hold_attitude = (10.0, 0.0, 0.0) if active_slew else (0.0, 0.0, 0.0)
+    hold_start = start + step / 2 if active_slew else start
+    if active_slew:
+        ditl.acs.last_slew = SimpleNamespace(
+            is_slewing=lambda time: True,
+            slewstart=start,
+            slewtime=step / 2,
+            endra=10.0,
+            enddec=0.0,
+            endroll=0.0,
+        )
+    ditl.acs._is_actively_slewing = Mock(return_value=active_slew)
+    target = Mock(
+        exptime=None,
+        exposure=3600.0,
+        collection_begin=None,
+        collection_end=None,
+        ra=45.0,
+        dec=30.0,
+        obsid=1001,
+        ss_max=3600.0,
+        ss_min=300.0,
+        windows=[[start, start + 6000]],
+    )
+    target.next_vis.return_value = start + delay
+    ditl.queue.get.return_value = target
+    ditl.queue.targets = [target]
+    ditl._fetch_new_ppt(start, 0.0, 0.0)
+    if not accepted:
+        ditl.acs.enqueue_command.assert_not_called()
+        assert ditl.ppt is None
+    else:
+        command = ditl.acs.enqueue_command.call_args.args[0]
+        expected_start = start + np.ceil(max(delay, hold_start - start) / step) * step
+        assert command.execution_time == expected_start
+        assert command.execution_time <= unsafe_at - step
+        executor = ACS(config=ditl.config)
+        executor.ra, executor.dec, executor.roll = hold_attitude
+        predicted = command.slew.attitude(expected_start + step)
+        executor._start_slew(command.slew, expected_start)
+        assert command.slew.attitude(expected_start + step) == pytest.approx(predicted)
+    first_violation.assert_called_once_with(hold_attitude, hold_start)
 
 
 def test_active_recovery_is_not_replaced_by_target_selection(recovery_queue):
