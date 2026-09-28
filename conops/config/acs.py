@@ -7,6 +7,7 @@ from ..common.enums import SlewAlgorithm
 from ..common.motion import RestToRestMotion
 from ._base import ConfigModel
 from .constants import DTOR
+from .momentum import StoredMomentumConfig
 
 
 def scheduled_slew_time(duration_s: float) -> int:
@@ -57,6 +58,10 @@ class AttitudeControlSystem(ConfigModel):
         ge=0.0,
         allow_inf_nan=False,
         description="Minimum safe idle dwell after arrival, in addition to a conservative escape-slew reserve.",
+    )
+    stored_momentum: StoredMomentumConfig = Field(
+        default_factory=StoredMomentumConfig,
+        description="Optional planning-level stored-momentum tracking configuration.",
     )
     slew_algorithm: SlewAlgorithm = Field(
         default=SlewAlgorithm.QUATERNION,
