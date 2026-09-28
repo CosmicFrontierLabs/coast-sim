@@ -1,4 +1,4 @@
-"""Scalar tie grouping must preserve the original NumPy ranking exactly."""
+"""Lazy tie grouping must preserve the original NumPy ranking exactly."""
 
 import numpy as np
 import pytest
@@ -42,6 +42,21 @@ def test_order_matches_numpy_for_exact_near_and_nonfinite_ties(reference_roll):
         np.resize([np.nan, np.inf, -np.inf, 0.0, 0.5e-12, 1.5e-12], 360),
     ):
         np.testing.assert_array_equal(
-            _power_score_order(scores, reference_roll),
+            list(_power_score_order(scores, reference_roll)),
             numpy_reference(scores, reference_roll),
         )
+
+
+def test_only_requested_tie_groups_are_sorted(monkeypatch):
+    from unittest.mock import Mock
+
+    lexsort = Mock(wraps=np.lexsort)
+    monkeypatch.setattr(np, "lexsort", lexsort)
+    # The best candidate is unique; the 359 lower-power ties are never needed.
+    scores = np.zeros(360)
+    scores[123] = 100.0
+    order = _power_score_order(scores, None)
+    assert next(order) == 123
+    lexsort.assert_not_called()
+    assert list(order) == [i for i in range(360) if i != 123]
+    lexsort.assert_called_once()

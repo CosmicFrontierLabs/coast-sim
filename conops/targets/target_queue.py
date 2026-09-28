@@ -204,11 +204,15 @@ class TargetQueue:
         if not visibility_window:
             return False
 
-        deadline = (
-            collection_deadline(target, utime)
-            if collection_deadline is not None
-            else None
-        )
+        # A deadline can only shorten collection. Reject insufficient exposure
+        # or visibility before asking the caller to optimize the attitude.
+        if self._candidate_collection_seconds(
+            target, visibility_window, utime, slewtime=0.0
+        ) < float(target.ss_min):
+            return False
+        if collection_deadline is None:
+            return True
+        deadline = collection_deadline(target, utime)
         collection_seconds = self._candidate_collection_seconds(
             target=target,
             visibility_window=visibility_window,
@@ -358,14 +362,8 @@ class TargetQueue:
             if target.exptime is not None and target.exptime < target.ss_min:
                 continue
 
-            if not self._can_fit_min_snapshot_with_zero_slew(
-                target=target,
-                utime=utime,
-                last_unix=last_unix,
-                collection_deadline=collection_deadline if score_candidates else None,
-            ):
-                continue
-
+            # This optimistic bound needs no roll/deadline calculation. Reject
+            # non-winners before the potentially expensive visibility prefilter.
             if prune_by_score_bound:
                 upper_bound = self._candidate_score_upper_bound(
                     target=target,
@@ -374,6 +372,14 @@ class TargetQueue:
                 )
                 if upper_bound <= best_score:
                     continue
+
+            if not self._can_fit_min_snapshot_with_zero_slew(
+                target=target,
+                utime=utime,
+                last_unix=last_unix,
+                collection_deadline=collection_deadline if score_candidates else None,
+            ):
+                continue
 
             self._estimate_slew(
                 target,
