@@ -85,6 +85,7 @@ class IdleSafetyPlanner:
     def first_violation(
         self, attitude: tuple[float, float, float], start: float
     ) -> float:
+        """Return the first violating sample, not an exact crossing time."""
         violations = self._violations(attitude)
         index = int(np.searchsorted(violations, start))
         return float(violations[index]) if index < len(violations) else inf
@@ -94,11 +95,17 @@ class IdleSafetyPlanner:
     ) -> float:
         """Latest conservative departure, or infinity if safe to simulation end."""
         violation = self.first_violation(attitude, start)
-        return violation - self.reserve if violation < self.end else inf
+        # A crossing can precede its first violating sample by up to one tick,
+        # including when that sample is at or just beyond the simulation end.
+        # The existing two-tick reserve already covers this sampling uncertainty
+        # and the scheduler's reaction time; don't subtract another tick from it.
+        return violation - self.reserve if violation - self.step < self.end else inf
 
     def hold_is_safe(self, attitude: tuple[float, float, float], start: float) -> bool:
         """Require a useful dwell after arrival, not just a safe endpoint."""
-        return self.first_violation(attitude, start) >= min(
+        # Require the whole hold to precede the potentially unsafe interval,
+        # not merely the first violating sample at its right-hand edge.
+        return self.first_violation(attitude, start) - self.step >= min(
             self.end,
             start
             + self.reserve

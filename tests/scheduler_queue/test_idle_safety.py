@@ -14,8 +14,7 @@ from conops.simulation.idle_safety import IdleSafetyPlanner
 from conops.simulation.slew import Slew
 
 
-@pytest.fixture
-def planner():
+def make_planner(step=2, violation_offset=4000):
     config = MissionConfig(constraint=Constraint())
     config.spacecraft_bus.attitude_control = AttitudeControlSystem(
         max_slew_rate_body=(0.2, 2, 0.2),
@@ -23,19 +22,27 @@ def planner():
         settle_time=0,
     )
     epoch = datetime(2027, 1, 1, tzinfo=timezone.utc)
-    times = [epoch + timedelta(seconds=i) for i in range(0, 6002, 2)]
-    config.constraint.ephem = SimpleNamespace(timestamp=times, step_size=2)
+    times = [epoch + timedelta(seconds=i) for i in range(0, 6000 + step, step)]
+    config.constraint.ephem = SimpleNamespace(timestamp=times, step_size=step)
     tree = SimpleNamespace(
         evaluate=Mock(
             return_value=SimpleNamespace(
                 constraint_array=np.array(
-                    [time >= epoch + timedelta(seconds=4000) for time in times]
+                    [
+                        time >= epoch + timedelta(seconds=violation_offset)
+                        for time in times
+                    ]
                 )
             )
         )
     )
     config.constraint.__dict__["hardware_safety_constraint_config"] = tree
     return IdleSafetyPlanner(config, times[-1].timestamp())
+
+
+@pytest.fixture
+def planner():
+    return make_planner()
 
 
 def test_forecast_reserves_slowest_axis_and_two_ticks(planner):
@@ -67,9 +74,39 @@ def test_repeated_large_queue_scan_reuses_hold_forecasts(planner):
     )
 
 
-def test_simulation_end_does_not_require_post_run_escape(planner):
-    planner.end = planner.times[0] + 4000
-    assert planner.departure_deadline((0.0, 0.0, 0.0), planner.times[0]) == inf
+@pytest.mark.parametrize("step", [2, 60])
+@pytest.mark.parametrize("end_offset", [0, -0.5, -1.0])
+def test_final_interval_crossing_requires_escape_and_rejects_hold(step, end_offset):
+    planner = make_planner(step, violation_offset=6000)
+    start = planner.times[0]
+    planner.end = start + 6000 + end_offset
+    attitude = (0.0, 0.0, 0.0)
+    # The last safe sample is before the end, but the first failing one is at
+    # or after it. Neither an exact-grid nor an off-grid end erases that risk.
+    assert planner.departure_deadline(attitude, start) == start + 6000 - planner.reserve
+    assert not planner.hold_is_safe(attitude, start + 5800)
+
+
+@pytest.mark.parametrize("step", [2, 60])
+def test_crossing_interval_entirely_after_end_needs_no_escape(step):
+    planner = make_planner(step, violation_offset=6000)
+    start = planner.times[0]
+    planner.end = start + 6000 - step
+    attitude = (0.0, 0.0, 0.0)
+    assert planner.departure_deadline(attitude, start) == inf
+    assert planner.hold_is_safe(attitude, start + 5800)
+
+
+@pytest.mark.parametrize("step", [2, 60])
+def test_recovery_dwell_must_end_before_crossing_interval(step):
+    planner = make_planner(step, violation_offset=3000)
+    attitude = (0.0, 0.0, 0.0)
+    last_safe = planner.times[0] + 3000 - step
+    dwell = (
+        planner.reserve + planner.config.spacecraft_bus.attitude_control.idle_min_hold_s
+    )
+    assert planner.hold_is_safe(attitude, last_safe - dwell)
+    assert not planner.hold_is_safe(attitude, last_safe - dwell + 0.5)
 
 
 def test_empty_scopes_do_not_create_a_safety_deadline(planner):
