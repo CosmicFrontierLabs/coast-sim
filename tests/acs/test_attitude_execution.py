@@ -224,7 +224,7 @@ def test_dwell_guidance_cannot_teleport(physical_acs, safe):
     with (
         patch.object(acs, "_is_in_charging_mode", return_value=not safe),
         patch(
-            "conops.simulation.acs.optimum_roll",
+            "conops.simulation.acs.optimum_body_roll",
             return_value=90,
         ),
     ):
@@ -254,7 +254,7 @@ def test_future_charge_end_does_not_freeze_solar_guidance(physical_acs):
     )
     with (
         patch.object(acs, "_is_in_charging_mode", return_value=True),
-        patch("conops.simulation.acs.optimum_roll", return_value=90),
+        patch("conops.simulation.acs.optimum_body_roll", return_value=90),
     ):
         acs.pointing(1000)
         acs.pointing(1001)

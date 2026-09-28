@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict
 
 from conops.common import dtutcfromtimestamp
 from conops.common.enums import ACSMode
+from conops.common.ephemeris import position_vectors
 from conops.common.vector import attitude_to_quat, quaternion_attitude_delta
 from conops.config.groundstation import GroundStation
 
@@ -263,7 +264,7 @@ class DITLMixin:
         if self._stored_momentum_tracker is None:
             return None
         ephem_index = self.ephem.index(dtutcfromtimestamp(utime))
-        position_eci_km = self.ephem.gcrs_pv.position[ephem_index]
+        position_eci_km = position_vectors(self.ephem, "gcrs")[ephem_index]
         attitude_quaternion = attitude_to_quat(ra, dec, roll)
         return self._stored_momentum_tracker.update(
             utime=utime,

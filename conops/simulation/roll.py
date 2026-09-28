@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import numpy as np
 import numpy.typing as npt
 import rust_ephem
 
 from ..common import dtutcfromtimestamp, scbodyvector
 from ..common.enums import ACSMode
+from ..common.ephemeris import position_vectors
 from ..config import (
     DTOR,
     Constraint,
@@ -59,8 +62,8 @@ def _power_scores(
 def _power_score_order(
     scores: npt.NDArray[np.float64],
     reference_roll: float | None,
-) -> npt.NDArray[np.int64]:
-    """Order finite candidates by power with deterministic tolerance-aware ties."""
+) -> Iterator[int]:
+    """Yield power-ranked candidates, resolving only the ties the caller needs."""
     finite = np.flatnonzero(np.isfinite(scores))
     ranked = finite[np.argsort(-scores[finite], kind="stable")]
     tie_distance = (
@@ -68,22 +71,17 @@ def _power_score_order(
         if reference_roll is not None
         else _ROLL_DEGREES
     )
-    ordered: list[int] = []
     start = 0
     while start < ranked.size:
         stop = start + 1
-        while stop < ranked.size and np.isclose(
-            scores[ranked[stop]],
-            scores[ranked[start]],
-            rtol=_POWER_SCORE_RTOL,
-            atol=_POWER_SCORE_ATOL_W,
-        ):
+        reference_score = float(scores[ranked[start]])
+        tolerance = _POWER_SCORE_ATOL_W + _POWER_SCORE_RTOL * abs(reference_score)
+        while stop < ranked.size and abs(float(scores[ranked[stop]]) - reference_score) <= tolerance:
             stop += 1
         tied = ranked[start:stop]
         tie_order = np.lexsort((_ROLL_DEGREES[tied], tie_distance[tied]))
-        ordered.extend(int(candidate) for candidate in tied[tie_order])
+        yield from (int(candidate) for candidate in tied[tie_order])
         start = stop
-    return np.asarray(ordered, dtype=np.int64)
 
 
 def _validate_reachable_rolls(
@@ -140,7 +138,7 @@ def _sun_at_zero_roll(
     ra: float, dec: float, utime: float, ephem: rust_ephem.Ephemeris
 ) -> npt.NDArray[np.float64]:
     index = ephem.index(dtutcfromtimestamp(utime))
-    sun_eci = ephem.sun_pv.position[index] - ephem.gcrs_pv.position[index]
+    sun_eci = position_vectors(ephem, "sun")[index] - position_vectors(ephem, "gcrs")[index]
     return np.asarray(scbodyvector(ra * DTOR, dec * DTOR, 0.0, sun_eci), dtype=float)
 
 
@@ -181,7 +179,8 @@ def optimum_body_roll(
     if candidate_mask is not None:
         scores = np.where(candidate_mask, scores, -np.inf)
     order = _power_score_order(scores, reference)
-    return float(_ROLL_DEGREES[order[0]]) if order.size else float(reference or 0.0)
+    candidate = next(order, None)
+    return float(_ROLL_DEGREES[candidate]) if candidate is not None else float(reference or 0.0)
 
 
 def optimum_instrument_roll(
@@ -229,8 +228,11 @@ def optimum_instrument_roll(
             return reference
 
     order = _power_score_order(scores, reference)
+    best_roll = None
     for candidate in order:
         instrument_roll = float(_ROLL_DEGREES[candidate])
+        if best_roll is None:
+            best_roll = instrument_roll
         attitude = telescope.target_body_attitude(ra, dec, instrument_roll)
         violations = (
             mounted_science_attitude_constraint_names(
@@ -249,7 +251,7 @@ def optimum_instrument_roll(
 
     # Preserve the established fail-open contract. Locked-attitude validation
     # rejects a target when every science-roll candidate is constrained.
-    return float(_ROLL_DEGREES[order[0]]) if order.size else float(reference or 0.0)
+    return best_roll if best_roll is not None else float(reference or 0.0)
 
 
 def optimum_roll(
