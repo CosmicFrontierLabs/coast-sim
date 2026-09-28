@@ -342,7 +342,7 @@ class TestACSRollMode:
         with (
             patch.object(acs_roll, "_is_in_charging_mode", return_value=True),
             patch(
-                "conops.simulation.acs.optimum_roll",
+                "conops.simulation.acs.optimum_body_roll",
                 return_value=0.0,
             ) as mock_optimum_roll,
         ):

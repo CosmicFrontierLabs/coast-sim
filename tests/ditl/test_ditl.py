@@ -12,6 +12,10 @@ from conops import (
     AttitudeRateContinuityError,
     DITLs,
     Plan,
+    SingleAxisSolarArrayDrive,
+    SolarArrayDriveControl,
+    SolarPanel,
+    SolarPanelSet,
 )
 from conops.targets.plan_entry import PlanEntry
 
@@ -107,6 +111,67 @@ class TestDITLCalc:
         assert len(ditl.batterylevel) == simlen
         assert len(ditl.batteryalert) == simlen
         assert len(ditl.power) == simlen
+
+    def test_calc_resets_advances_and_exports_array_drive_state(
+        self, ditl: DITL
+    ) -> None:
+        panel = SolarPanel(
+            normal=(0.0, 1.0, 0.0),
+            max_power=100.0,
+            conversion_efficiency=1.0,
+            single_axis_drive=SingleAxisSolarArrayDrive(
+                rotation_axis=(1.0, 0.0, 0.0),
+                min_angle_deg=-180.0,
+                max_angle_deg=180.0,
+                max_rate_deg_per_s=1.0,
+                initial_angle_deg=0.0,
+            ),
+            drive_control=SolarArrayDriveControl(sun_tracking_modes=[ACSMode.SCIENCE]),
+        )
+        panel_set = SolarPanelSet(panels=[panel], conversion_efficiency=1.0)
+        ditl.solar_panel = panel_set
+        ditl.config.solar_panel = panel_set
+        ditl.ephem.sun_pv.position = ditl.ephem.gcrs_pv.position + (0.0, 0.0, 1.0)
+
+        state = panel_set.advance_drive_state(
+            0.0,
+            (0.0, 0.0, 1.0),
+            panel_set.initial_drive_state(),
+            acs_mode=ACSMode.SCIENCE,
+            in_eclipse=False,
+        )
+        state = panel_set.advance_drive_state(
+            90.0,
+            (0.0, 0.0, 1.0),
+            state,
+            acs_mode=ACSMode.SCIENCE,
+            in_eclipse=False,
+        )
+        ditl.acs.solar_array_drive_state = state
+        assert abs(state.driven_angles_deg[0]) == pytest.approx(90.0)
+
+        eclipse = Mock()
+        eclipse.in_constraint.return_value = False
+        with patch(
+            "conops.config.solar_panel._get_eclipse_constraint",
+            return_value=eclipse,
+        ):
+            ditl.calc()
+
+        angles = [
+            sample.solar_array_drive_angles_deg
+            for sample in ditl.telemetry.housekeeping
+        ]
+        assert angles[0] == [pytest.approx(0.0)]
+        assert angles[1] == [pytest.approx(60.0)]
+        assert angles[-1] == [pytest.approx(90.0)]
+        drive_sample = ditl.telemetry.housekeeping[-1].solar_array_drive_angles
+        assert drive_sample is not None
+        assert drive_sample[0].panel_index == 0
+        assert drive_sample[0].panel_name == "Panel"
+        offsets = [sample.roll_offset_deg for sample in ditl.telemetry.housekeeping]
+        assert offsets == pytest.approx([-90.0, -30.0, 0.0, 0.0])
+        assert ditl.acs.solar_array_drive_state.updated_at_s == ditl.utime[-1]
 
     def test_calc_housekeeping_separates_global_from_scoped_constraints(
         self, ditl: DITL
@@ -228,7 +293,7 @@ class TestDITLSimulationLoop:
         plan.entries = [entry]
         ditl.plan = plan
 
-        with patch("conops.ditl.ditl.optimum_roll", return_value=137.0):
+        with patch("conops.ditl.ditl.optimum_body_roll", return_value=137.0):
             ditl.calc()
 
         _, kwargs = ditl.acs._enqueue_slew.call_args
@@ -252,7 +317,7 @@ class TestDITLSimulationLoop:
         plan.entries = [entry]
         ditl.plan = plan
 
-        with patch("conops.ditl.ditl.optimum_roll", return_value=137.0):
+        with patch("conops.ditl.ditl.optimum_body_roll", return_value=137.0):
             ditl.calc()
 
         _, kwargs = ditl.acs._enqueue_slew.call_args
@@ -299,7 +364,10 @@ class TestDITLSimulationLoop:
 
     def test_battery_charge_uses_solar_panel_power(self, ditl: DITL) -> None:
         """Test that battery charge uses solar panel power."""
-        ditl.solar_panel.illumination_and_power = Mock(return_value=(0.8, 200.0))
+        state = ditl.solar_panel.initial_drive_state()
+        ditl.solar_panel.evaluate_executed_attitude = Mock(
+            return_value=(0.8, 200.0, state)
+        )
         ditl.calc()
         # Each charge call should have the solar panel power
         ditl.battery.charge.assert_called_with(200.0, ditl.step_size)
@@ -380,11 +448,11 @@ class TestDITLPowerCalculations:
         assert np.mean(ditl.power) == 80.0
 
     def test_solar_panel_power_called_with_correct_args(self, ditl: DITL) -> None:
-        """Test that solar panel illumination_and_power is called with time, ra, dec, ephem."""
+        """Test that executed panel evaluation receives the current attitude."""
         ditl.acs.pointing.return_value = (10.0, 20.0, 30.0, 0)
         ditl.calc()
         # Should be called with (time=utime[i], ra=ra, dec=dec, ephem=ephem)
-        assert ditl.solar_panel.illumination_and_power.call_count > 0
+        assert ditl.solar_panel.evaluate_executed_attitude.call_count > 0
 
 
 class TestDITLs:

@@ -11,14 +11,19 @@ from ..common import (
     unixtime2date,
 )
 from ..common.vector import quaternion_attitude_delta, sort_by_angular_separation
-from ..config import AttitudeConstraintScope, MissionConfig
+from ..config import (
+    AttitudeConstraintScope,
+    MissionConfig,
+    SolarArrayDriveState,
+    SolarPanelSet,
+)
 from ..config.constraint import (
     attitude_constraint_names_for_scopes,
     attitude_constraint_scope_label,
     in_attitude_constraint_scopes,
 )
 from ..simulation.passes import PassTimes
-from ..simulation.roll import optimum_roll
+from ..simulation.roll import optimum_body_roll
 from .acs_command import ACSCommand
 from .attitude import (
     Attitude,
@@ -69,6 +74,7 @@ class ACS:
     radiator_earth_exposure: float
     radiator_heat_dissipation_w: float
     science_observation_active: bool
+    solar_array_drive_state: SolarArrayDriveState
 
     def __init__(self, config: MissionConfig, log: "DITLLog | None" = None) -> None:
         """Initialize the Attitude Control System.
@@ -130,7 +136,8 @@ class ACS:
 
         self.passrequests = PassTimes(config=config)
         self.current_pass: Pass | None = None
-        self.solar_panel = config.solar_panel
+        self.solar_panel = config.solar_panel or SolarPanelSet()
+        self.solar_array_drive_state = self.solar_panel.initial_drive_state()
         self.slew_dists: list[float] = []
         self.saa = None
 
@@ -186,13 +193,14 @@ class ACS:
     def _advance_attitude(self, utime: float) -> AttitudeExecutor:
         if self._executor is None:
             if not self._initial_roll_explicit:
-                self.roll = optimum_roll(
+                self.roll = optimum_body_roll(
                     self.ra,
                     self.dec,
                     utime,
                     self.ephem,
                     self.solar_panel,
                     self.constraint,
+                    drive_state=self.solar_array_drive_state,
                 )
             self._executor = AttitudeExecutor(utime, self._initial_attitude)
         self._executor.advance(utime)
@@ -550,8 +558,14 @@ class ACS:
         slew.enddec = dec
         # If roll not provided, calculate optimal roll at target position
         if roll is None:
-            slew.endroll = optimum_roll(
-                ra, dec, utime, self.ephem, self.solar_panel, self.constraint
+            slew.endroll = optimum_body_roll(
+                ra,
+                dec,
+                utime,
+                self.ephem,
+                self.solar_panel,
+                self.constraint,
+                drive_state=self.solar_array_drive_state,
             )
         else:
             slew.endroll = roll
@@ -799,7 +813,7 @@ class ACS:
             else:
                 index = self.ephem.index(dtutcfromtimestamp(utime))
                 ra, dec = self.ephem.sun_ra_deg[index], self.ephem.sun_dec_deg[index]
-        roll = optimum_roll(
+        roll = optimum_body_roll(
             ra,
             dec,
             utime,
@@ -808,6 +822,7 @@ class ACS:
             self.constraint,
             reference_roll=self.roll,
             max_roll_delta=180.0,
+            drive_state=self.solar_array_drive_state,
         )
         target = (ra, dec, roll)
         distance, _ = quaternion_attitude_delta(*executor.state.attitude, *target)
@@ -1125,24 +1140,24 @@ class ACS:
         current_dec = self.dec
         current_roll = self.roll
 
-        # Build solar panel geometry lookup so radiators can compute shadow fractions.
-        solar_panel_geometries = None
-        if self.config.solar_panel is not None:
-            geom_map = {
-                p.name: p.geometry
-                for p in self.config.solar_panel.panels
-                if p.geometry is not None
+        # Driven panels cannot currently be configured with static geometry, so
+        # every geometry here represents an executed fixed-panel occluder.
+        solar_panel_geometries = (
+            {
+                panel.name: panel.geometry
+                for panel in self.config.solar_panel.panels
+                if panel.geometry is not None
             }
-            if geom_map:
-                solar_panel_geometries = geom_map
-
+            if self.config.solar_panel is not None
+            else {}
+        )
         metrics = radiators.exposure_metrics(
             ra_deg=current_ra,
             dec_deg=current_dec,
             utime=utime,
             ephem=self.ephem,
             roll_deg=current_roll,
-            solar_panel_geometries=solar_panel_geometries,
+            solar_panel_geometries=solar_panel_geometries or None,
         )
 
         per_radiator = cast(
@@ -1275,7 +1290,12 @@ class ACS:
             created charging pointing or None if charging could not be initiated.
         """
         charging_ppt = emergency_charging.initiate_emergency_charging(
-            utime, ephem, lastra, lastdec, current_ppt
+            utime,
+            ephem,
+            lastra,
+            lastdec,
+            current_ppt,
+            drive_state=self.solar_array_drive_state,
         )
         if charging_ppt is not None:
             self.request_battery_charge(
