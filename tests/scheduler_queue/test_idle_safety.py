@@ -61,6 +61,19 @@ def test_safe_endpoint_alone_is_not_a_safe_hold(planner):
     assert not planner.hold_is_safe((0.0, 0.0, 0.0), start + 3000)
 
 
+def test_repeated_large_queue_scan_reuses_hold_forecasts(planner):
+    start = planner.times[0]
+    for _ in range(2):
+        for index in range(500):
+            assert (
+                planner.first_violation((index * 0.5, 0.0, 0.0), start) == start + 4000
+            )
+    assert (
+        planner.config.constraint.hardware_safety_constraint_config.evaluate.call_count
+        == 500
+    )
+
+
 @pytest.mark.parametrize("step", [2, 60])
 @pytest.mark.parametrize("end_offset", [0, -0.5, -1.0])
 def test_final_interval_crossing_requires_escape_and_rejects_hold(step, end_offset):

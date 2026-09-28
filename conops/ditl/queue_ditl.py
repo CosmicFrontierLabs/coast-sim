@@ -17,6 +17,7 @@ from ..common import (
     unixtime2date,
 )
 from ..common.enums import ACSCommandType
+from ..common.ephemeris import position_vectors
 from ..common.vector import attitude_to_quat, quaternion_attitude_delta
 from ..config import DAY_SECONDS, AttitudeConstraintScope, MissionConfig
 from ..config.acs import scheduled_slew_time
@@ -1322,7 +1323,7 @@ class QueueDITL(DITLMixin, DITLStats):
             float(_sun_bv[1]),
             float(_sun_bv[2]),
         ]
-        _pos = np.asarray(self.ephem.gcrs_pv.position[ei], dtype=np.float64)
+        _pos = np.asarray(position_vectors(self.ephem, "gcrs")[ei], dtype=np.float64)
         earth_body_vector: list[float] = list(-_pos / np.linalg.norm(_pos))
 
         nominal_roll = optimum_roll(ra, dec, utime, self.ephem, self.config.solar_panel)

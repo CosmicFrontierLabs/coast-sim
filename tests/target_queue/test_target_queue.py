@@ -465,6 +465,19 @@ class TestCollectionTimeWeight:
         estimator.assert_called_once_with(feasible_target)
         impossible_target.calc_slewtime.assert_not_called()
 
+    def test_short_visibility_skips_expensive_deadline(self, queue_instance):
+        """A clamped end-of-run window cannot fit a minimum snapshot."""
+        last = queue_instance.ephem.timestamp[-1].timestamp()
+        target = queue_instance.targets[0]
+        target.ss_min = 300
+        target.ss_max = 1500
+        target.visible.return_value = [last - 1000, last]
+        deadline = Mock(return_value=last)
+        assert not queue_instance._can_fit_min_snapshot_with_zero_slew(
+            target, last - 100, last, deadline
+        )
+        deadline.assert_not_called()
+
     def test_deadline_prefilter_is_skipped_when_scoring_disabled(self, queue_instance):
         """Preserve the unscored fast path, which ignores collection deadlines."""
         utime = 1762924800.0
@@ -490,7 +503,7 @@ class TestCollectionTimeWeight:
         target.calc_slewtime.assert_called_once_with(0, 0)
 
     def test_score_bound_skips_candidate_that_cannot_beat_best(self, queue_instance):
-        """Candidates whose optimistic score cannot win should skip slew scoring."""
+        """Non-winners skip both slew scoring and expensive roll/deadline work."""
         utime = 1762924800.0
         queue_instance.slew_distance_weight = 1.0
 
@@ -507,6 +520,7 @@ class TestCollectionTimeWeight:
             target.visible.return_value = [utime, utime + 1000]
 
         estimator = Mock(return_value=TargetSlewEstimate(slewtime=0.0, slewdist=0.0))
+        deadline = Mock(return_value=None)
 
         with patch.object(queue_instance, "meritsort"):
             target = queue_instance.get(
@@ -514,11 +528,14 @@ class TestCollectionTimeWeight:
                 dec=0,
                 utime=utime,
                 slew_estimator=estimator,
+                collection_deadline=deadline,
             )
 
         assert target == best_target
         estimator.assert_called_once_with(best_target)
         beaten_target.calc_slewtime.assert_not_called()
+        assert deadline.call_count > 0
+        assert all(call.args[0] is best_target for call in deadline.call_args_list)
 
     def test_score_bound_still_scores_candidate_that_could_beat_best(
         self, queue_instance
