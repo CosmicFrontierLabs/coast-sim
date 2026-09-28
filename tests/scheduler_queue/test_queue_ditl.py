@@ -1067,6 +1067,9 @@ class TestFetchNewPPT:
     def test_exported_slew_metadata_matches_acs_slew_event(
         self, queue_ditl: QueueDITL
     ) -> None:
+        from conops import AttitudeControlSystem
+
+        queue_ditl.config.spacecraft_bus.attitude_control = AttitudeControlSystem()
         acs = ACS(config=queue_ditl.config, log=queue_ditl.log)
         acs.ra = 10.0
         acs.dec = 20.0
