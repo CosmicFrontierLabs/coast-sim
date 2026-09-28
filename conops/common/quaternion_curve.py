@@ -8,7 +8,7 @@ both envelopes over whole intervals, not just a grid of evaluation times.
 
 from dataclasses import dataclass
 from functools import cached_property, lru_cache
-from math import comb
+from math import comb, isclose, isfinite
 
 import numpy as np
 from numpy.polynomial.polynomial import polyval
@@ -67,12 +67,18 @@ class QuaternionHermite:
     duration: float
 
     def __post_init__(self) -> None:
-        if not np.isfinite(self.duration) or self.duration <= 0:
+        if not isfinite(self.duration) or self.duration <= 0:
             raise ValueError("Curve duration must be finite and positive")
         for quaternion in (self.first, self.last):
-            if not np.isclose(np.linalg.norm(quaternion), 1.0, rtol=0, atol=1e-10):
+            if not isclose(
+                float(np.linalg.norm(quaternion)), 1.0, rel_tol=0, abs_tol=1e-10
+            ):
                 raise ValueError("Curve endpoints must be finite unit quaternions")
-        if not np.all(np.isfinite((self.first_rate, self.last_rate))):
+        if not all(
+            isfinite(value)
+            for rate in (self.first_rate, self.last_rate)
+            for value in rate
+        ):
             raise ValueError("Curve endpoint rates must be finite")
 
     @cached_property
@@ -137,13 +143,12 @@ class QuaternionHermite:
         rate_axes: tuple[float, float, float],
         acceleration_axes: tuple[float, float, float],
     ) -> bool:
-        norm, rate, acceleration = self._polynomials
         if not all(
-            np.all(np.isfinite(values))
-            for values in (norm, rate, acceleration, rate_axes, acceleration_axes)
+            isfinite(value) and value > 0 for value in (*rate_axes, *acceleration_axes)
         ):
             return False
-        if min(*rate_axes, *acceleration_axes) <= 0:
+        norm, rate, acceleration = self._polynomials
+        if not all(np.isfinite(values).all() for values in (norm, rate, acceleration)):
             return False
         denominator = _bernstein_matrix(len(norm) - 1) @ norm
         for coefficients, axes, power in (

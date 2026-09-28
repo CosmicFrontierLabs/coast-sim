@@ -1,6 +1,7 @@
 """Continuous-rate tracking, interval bounds, and interruption regressions."""
 
 from functools import cached_property
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -17,6 +18,7 @@ from conops.simulation.attitude import (
     AttitudeExecutionError,
     AttitudeExecutor,
     AttitudeTrajectory,
+    _SpinLeg,
 )
 
 
@@ -196,6 +198,65 @@ def test_nonuniform_tracking_wrap_pole_half_turn_and_reversal(attitudes):
 def test_curve_rejects_invalid_duration(duration):
     with pytest.raises(ValueError, match="duration"):
         QuaternionHermite((1, 0, 0, 0), (1, 0, 0, 0), (0, 0, 0), (0, 0, 0), duration)
+
+
+def test_tracking_converts_each_sample_once(limits):
+    samples = [(float(t), (0.01 * t, 0.004 * t, 0.003 * t)) for t in range(0, 601, 60)]
+    with (
+        patch(
+            "conops.simulation.attitude.attitude_to_quat", wraps=attitude_to_quat
+        ) as convert,
+        patch("conops.common.vector.attitude_to_quat", convert),
+    ):
+        AttitudeTrajectory.tracking(samples, limits, initial_rate=(0, 0, 0))
+    assert convert.call_count == len(samples)
+
+
+@pytest.mark.parametrize("endpoint", [0, 1])
+def test_unit_quaternion_check_preserves_numpy_tolerance(endpoint):
+    boundaries = (1 - 1e-10, 1 + 1e-10)
+    values = [0, 1, -1, float("nan"), float("inf"), -float("inf")]
+    values += [
+        np.nextafter(bound, direction)
+        for bound in boundaries
+        for direction in (-np.inf, bound, np.inf)
+    ]
+    for value in values:
+        quaternions = [(1, 0, 0, 0), (1, 0, 0, 0)]
+        quaternions[endpoint] = (value, 0, 0, 0)
+        valid = np.isclose(np.linalg.norm(quaternions[endpoint]), 1, rtol=0, atol=1e-10)
+        if valid:
+            QuaternionHermite(*quaternions, (0, 0, 0), (0, 0, 0), 60)
+        else:
+            with pytest.raises(ValueError, match="unit quaternions"):
+                QuaternionHermite(*quaternions, (0, 0, 0), (0, 0, 0), 60)
+
+
+@pytest.mark.parametrize("axis", range(3))
+def test_constant_spin_check_preserves_numpy_tolerance(limits, axis):
+    samples = [(0, (0, 0, 0)), (60, (0, 0, 0))]
+    offsets = [0, np.nextafter(1e-11, 0), 1e-11, np.nextafter(1e-11, np.inf)]
+    for offset in offsets + [-value for value in offsets]:
+        rate = [0.0, 0.0, 0.0]
+        rate[axis] = offset
+        expected = np.allclose(rate, (0, 0, 0), rtol=0, atol=1e-11)
+        trajectory = AttitudeTrajectory.tracking(
+            samples, limits, initial_rate=tuple(rate)
+        )
+        assert isinstance(trajectory.legs[0], _SpinLeg) == expected
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_nonfinite_rates_and_limits_still_rejected(limits, value):
+    with pytest.raises(ValueError, match="rates must be finite"):
+        QuaternionHermite((1, 0, 0, 0), (1, 0, 0, 0), (value, 0, 0), (0, 0, 0), 60)
+    with pytest.raises(AttitudeExecutionError, match="angular velocity must be finite"):
+        AttitudeTrajectory.tracking(
+            [(0, (0, 0, 0)), (60, (0, 0, 0))], limits, initial_rate=(0, value, 0)
+        )
+    curve = QuaternionHermite((1, 0, 0, 0), (1, 0, 0, 0), (0, 0, 0), (0, 0, 0), 60)
+    assert not curve.within_limits((value, 1, 1), (1, 1, 1))
+    assert not curve.within_limits((1, 1, 1), (1, value, 1))
 
 
 class _PolynomialReference(QuaternionHermite):

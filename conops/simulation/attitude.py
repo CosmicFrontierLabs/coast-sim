@@ -7,7 +7,7 @@ snapshots; guidance changes cannot rewrite previously executed motion.
 from bisect import bisect_right
 from dataclasses import dataclass
 from functools import cached_property
-from math import inf, isfinite, nextafter
+from math import inf, isclose, isfinite, nextafter
 from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
@@ -16,6 +16,7 @@ from ..common.motion import RestToRestMotion
 from ..common.quaternion_curve import QuaternionHermite
 from ..common.vector import (
     _quat_mul,
+    _quaternion_delta,
     attitude_to_quat,
     quat_slerp,
     quat_to_attitude,
@@ -274,10 +275,9 @@ class AttitudeTrajectory:
             raise AttitudeExecutionError(
                 "Tracking requires at least two timed attitudes"
             )
+        quaternions = [_quaternion(attitude) for _, attitude in samples]
         intervals, rates = [], []
-        for (start, first), (end, last) in zip(samples, samples[1:]):
-            _quaternion(first)
-            _quaternion(last)
+        for index, ((start, _), (end, _)) in enumerate(zip(samples, samples[1:])):
             if (
                 not all(isfinite(time) for time in (start, end, end - start))
                 or end <= start
@@ -285,7 +285,9 @@ class AttitudeTrajectory:
                 raise AttitudeExecutionError(
                     "Tracking times must be finite and increase strictly"
                 )
-            distance, axis = quaternion_attitude_delta(*first, *last)
+            distance, axis = _quaternion_delta(
+                quaternions[index], quaternions[index + 1]
+            )
             intervals.append(end - start)
             rates.append(np.asarray(axis) * distance / (end - start))
         node_rates = [rates[0]]
@@ -307,19 +309,19 @@ class AttitudeTrajectory:
         ):
             raise AttitudeExecutionError("Motion limits must be finite and positive")
         legs: list[_Leg] = []
-        for index, ((start, first), (end, last)) in enumerate(
-            zip(samples, samples[1:])
-        ):
-            q0, q1 = _quaternion(first), _quaternion(last)
+        for index, ((start, _), (end, _)) in enumerate(zip(samples, samples[1:])):
+            q0, q1 = quaternions[index], quaternions[index + 1]
             w0, w1 = _vector(node_rates[index]), _vector(node_rates[index + 1])
-            if np.allclose(w0, rates[index], rtol=0, atol=1e-11) and np.allclose(
-                w1, rates[index], rtol=0, atol=1e-11
+            spin = _vector(rates[index])
+            if all(
+                isclose(first, speed, rel_tol=0, abs_tol=1e-11)
+                and isclose(last, speed, rel_tol=0, abs_tol=1e-11)
+                for first, last, speed in zip(w0, w1, spin)
             ):
                 if np.linalg.norm(rates[index] / rate_axes) > 1 + 1e-10:
                     raise AttitudeExecutionError("Tracking rate exceeds motion limits")
                 # Snap roundoff-equivalent knot rates to the exact secant so
                 # this analytic leg has zero acceleration and one fixed axis.
-                spin = _vector(rates[index])
                 legs.append(_SpinLeg(start, end, q0, spin, spin))
             else:
                 curve = QuaternionHermite(q0, q1, w0, w1, end - start)
