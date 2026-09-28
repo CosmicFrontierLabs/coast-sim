@@ -6,9 +6,8 @@ import numpy as np
 import pytest
 import rust_ephem
 
-from conops import ACS, ACSCommandType, ACSMode, AttitudeConstraintScope
+from conops import ACS, ACSMode, AttitudeConstraintScope
 from conops.common.enums import ObsType
-from conops.simulation.acs import IDLE_OBSID
 from conops.simulation.slew import Slew
 
 
@@ -172,10 +171,10 @@ class TestACSStateManagement:
                 acs.acsmode = mode
                 assert acs.acsmode == mode
 
-    def test_pointing_replaces_constrained_idle_hold(
+    def test_pointing_rejects_constrained_idle_hold_without_teleportation(
         self, acs, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """IDLE telemetry should not keep holding a constrained science attitude."""
+        """An unsafe hold cannot be repaired by an instantaneous attitude change."""
         science_slew = Slew(config=acs.config)
         science_slew.obstype = ObsType.PPT
         science_slew.obsid = 42
@@ -196,14 +195,12 @@ class TestACSStateManagement:
         monkeypatch.setattr("conops.simulation.acs.optimum_roll", lambda *args: 5.0)
         acs.constraint.in_star_tracker_hard = Mock(side_effect=[True, False])
 
-        ra, dec, roll, obsid = acs.pointing(1000.0)
+        with pytest.raises(RuntimeError, match="Unsafe IDLE"):
+            acs.pointing(1000.0)
+        assert (acs.ra, acs.dec, acs.roll) == (10.0, 20.0, 30.0)
+        assert acs.last_slew is science_slew
 
-        assert (ra, dec, roll, obsid) == (10.0, 20.0, 5.0, IDLE_OBSID)
-        assert acs.last_slew is not None
-        assert acs.last_slew.obstype == ObsType.IDLE
-        assert acs.get_mode(1000.0) == ACSMode.IDLE
-
-    def test_pointing_replaces_hard_constrained_idle_hold(
+    def test_pointing_rejects_hard_constrained_idle_hold(
         self, acs, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """IDLE enforcement should use configured hardware-safety scopes."""
@@ -228,15 +225,15 @@ class TestACSStateManagement:
         acs.constraint.in_constraint = Mock(return_value=True)
         acs.constraint.in_star_tracker_hard = Mock(side_effect=[True, False])
 
-        ra, dec, roll, obsid = acs.pointing(1000.0)
-
-        assert (ra, dec, roll, obsid) == (10.0, 20.0, 5.0, IDLE_OBSID)
+        with pytest.raises(RuntimeError, match="Unsafe IDLE"):
+            acs.pointing(1000.0)
+        assert (acs.ra, acs.dec, acs.roll) == (10.0, 20.0, 30.0)
         acs.constraint.in_constraint.assert_not_called()
 
-    def test_pointing_requests_safe_mode_when_no_idle_attitude_is_safe(
+    def test_unsafe_idle_does_not_blindly_request_unvalidated_safe_mode(
         self, acs, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """IDLE enforcement should safe-mode instead of crashing on no safe hold."""
+        """Fail closed instead of dispatching an unvalidated solar-pointing slew."""
         acs.config.attitude_constraint_scopes_for_mode = Mock(
             return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
         )
@@ -244,13 +241,9 @@ class TestACSStateManagement:
         monkeypatch.setattr("conops.simulation.acs.optimum_roll", lambda *args: 5.0)
         acs.constraint.in_star_tracker_hard = Mock(return_value=True)
 
-        ra, dec, roll, obsid = acs.pointing(1000.0)
-
-        assert (ra, dec, roll, obsid) == (acs.ra, acs.dec, acs.roll, IDLE_OBSID)
-        assert acs.command_queue[-1].command_type == ACSCommandType.ENTER_SAFE_MODE
-        assert acs.command_queue[-1].execution_time == 1000.0
-        assert acs.config.fault_management.events[-1].event_type == "safe_mode_trigger"
-        assert acs.config.fault_management.events[-1].name == "idle_attitude_constraint"
+        with pytest.raises(RuntimeError, match="Unsafe IDLE"):
+            acs.pointing(1000.0)
+        assert acs.command_queue == []
 
     def test_constraint_logging_uses_idle_scopes(self, acs) -> None:
         """Legacy CONSTRAINT telemetry should respect the current ACS mode scopes."""
