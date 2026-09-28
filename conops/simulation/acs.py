@@ -325,7 +325,9 @@ class ACS:
                 )
                 and self.motion_ready_time(utime) > utime
             ):
-                command.execution_time = executor.request_stop(utime)
+                command.execution_time = executor.request_stop(
+                    utime, self.config.spacecraft_bus.attitude_control
+                )
                 self.command_queue.append(command)
                 self.command_queue.sort(key=lambda item: item.execution_time)
                 self._log_or_print(
@@ -395,7 +397,9 @@ class ACS:
         if len(samples) > 1:
             executor.install(
                 AttitudeTrajectory.tracking(
-                    samples, self.config.spacecraft_bus.attitude_control
+                    samples,
+                    self.config.spacecraft_bus.attitude_control,
+                    initial_rate=executor.state.angular_velocity_body,
                 )
             )
         else:
@@ -749,6 +753,11 @@ class ACS:
         if self._is_in_pass_dwell(utime):
             return ACSMode.PASS
 
+        # Tracking can be braking after contact ends, independently of the
+        # stale ingress-slew metadata. Do not report that moving tail as IDLE.
+        if any(abs(rate) > 1e-10 for rate in self.angular_velocity_body):
+            return ACSMode.SLEWING
+
         # Check if in SAA region
         if self.saa is not None and self.saa.insaa(utime):
             return ACSMode.SAA
@@ -775,7 +784,10 @@ class ACS:
         """
         if not (self.in_safe_mode or self._is_in_charging_mode(utime)):
             return
-        if self.command_queue or self._is_actively_slewing(utime):
+        if self._is_actively_slewing(utime) or any(
+            command.command_type != ACSCommandType.END_BATTERY_CHARGE
+            for command in self.command_queue
+        ):
             return
         executor = self._advance_attitude(utime)
         if executor.next_rest_time(utime) > utime:
@@ -962,7 +974,7 @@ class ACS:
         return not self.in_eclipse
 
     def _is_in_pass_dwell(self, utime: float) -> bool:
-        """Check if spacecraft is in pass dwell phase (stationary during groundstation contact)."""
+        """Check if spacecraft is tracking during an active ground contact."""
         if self.current_pass is None:
             return False
         if self.current_pass.in_pass(utime):

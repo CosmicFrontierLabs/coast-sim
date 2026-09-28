@@ -1,4 +1,4 @@
-"""Continuous, rest-to-rest attitude execution independent of operating mode.
+"""Continuous attitude execution independent of operating mode.
 
 Only this executor advances physical attitude. Trajectories are immutable
 snapshots; guidance changes cannot rewrite previously executed motion.
@@ -8,12 +8,14 @@ from bisect import bisect_right
 from dataclasses import dataclass
 from functools import cached_property
 from math import inf, isfinite, nextafter
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 
 from ..common.motion import RestToRestMotion
+from ..common.quaternion_curve import QuaternionHermite
 from ..common.vector import (
+    _quat_mul,
     attitude_to_quat,
     quat_slerp,
     quat_to_attitude,
@@ -51,6 +53,100 @@ class AttitudeState:
     def attitude(self) -> Attitude:
         ra, dec, roll = quat_to_attitude(np.asarray(self.quaternion))
         return float(ra) % 360.0, float(dec), float(roll) % 360.0
+
+
+def _vector(values: np.ndarray) -> Attitude:
+    return float(values[0]), float(values[1]), float(values[2])
+
+
+def _body_rotation(quaternion: Quaternion, angle_body: np.ndarray) -> Quaternion:
+    angle = float(np.linalg.norm(angle_body))
+    if angle == 0:
+        return quaternion
+    half_angle = np.deg2rad(angle) / 2
+    delta = np.r_[np.cos(half_angle), -np.sin(half_angle) * angle_body / angle]
+    q = _quat_mul(delta, np.asarray(quaternion))
+    q /= np.linalg.norm(q)
+    return float(q[0]), float(q[1]), float(q[2]), float(q[3])
+
+
+class _Leg(Protocol):
+    @property
+    def start(self) -> float: ...
+
+    @property
+    def end(self) -> float: ...
+
+    def state(self, utime: float) -> AttitudeState: ...
+
+
+@dataclass(frozen=True)
+class _SpinLeg:
+    """Constant-axis coasting or linear braking of body angular velocity."""
+
+    start: float
+    end: float
+    quaternion: Quaternion
+    first_rate: Attitude
+    last_rate: Attitude
+
+    def state(self, utime: float) -> AttitudeState:
+        duration = self.end - self.start
+        elapsed = min(duration, max(0.0, utime - self.start))
+        first, last = np.asarray(self.first_rate), np.asarray(self.last_rate)
+        acceleration = (last - first) / duration
+        q = _body_rotation(
+            self.quaternion, elapsed * first + 0.5 * elapsed**2 * acceleration
+        )
+        rate = (
+            self.last_rate
+            if elapsed == duration
+            else _vector(first + elapsed * acceleration)
+        )
+        return AttitudeState(utime, q, rate)
+
+
+@dataclass(frozen=True)
+class _TrackingLeg:
+    start: float
+    end: float
+    curve: QuaternionHermite
+
+    def state(self, utime: float) -> AttitudeState:
+        fraction = min(1.0, max(0.0, (utime - self.start) / (self.end - self.start)))
+        q, rate, _ = self.curve.evaluate(fraction)
+        return AttitudeState(
+            utime, (float(q[0]), float(q[1]), float(q[2]), float(q[3])), _vector(rate)
+        )
+
+
+def _braking_leg(
+    state: AttitudeState, limits: AttitudeControlSystem
+) -> _SpinLeg | None:
+    rate = np.asarray(state.angular_velocity_body)
+    speed = float(np.linalg.norm(rate))
+    if speed < 1e-12:
+        return None
+    axis = _vector(rate / speed)
+    acceleration = limits.effective_slew_acceleration(axis)
+    maximum = limits.effective_max_slew_rate(axis)
+    if not all(
+        isfinite(value) and value > 0 for value in (speed, acceleration, maximum)
+    ):
+        raise AttitudeExecutionError(
+            "Motion limits and rates must be finite and positive"
+        )
+    if speed > maximum * (1 + 1e-10):
+        raise AttitudeExecutionError("Initial angular velocity exceeds motion limits")
+    duration = speed / acceleration
+    end = state.utime + duration
+    if end - state.utime < duration:
+        end = nextafter(end, inf)
+    if not isfinite(end) or end <= state.utime:
+        raise AttitudeExecutionError("Braking duration must be finite and positive")
+    return _SpinLeg(
+        state.utime, end, state.quaternion, state.angular_velocity_body, _ZERO
+    )
 
 
 @dataclass(frozen=True)
@@ -99,7 +195,7 @@ class _MotionLeg:
             raise AttitudeExecutionError(
                 "Tracking interval exceeds rate or acceleration limits"
             )
-        # Stretch a feasible rest-to-rest turn across a fixed tracking interval.
+        # Never speed up the profile when rounding its physical time interval.
         scale = min(1.0, duration / interval) if interval > 0 else 1.0
         return cls(start, end, q0, q1, angle, axis, motion, scale)
 
@@ -124,9 +220,9 @@ class _MotionLeg:
 
 @dataclass(frozen=True)
 class AttitudeTrajectory:
-    """Piecewise bounded turns, at rest at each knot and outside the trajectory."""
+    """Bounded, rate-continuous motion with a physical stop at its end."""
 
-    legs: tuple[_MotionLeg, ...]
+    legs: tuple[_Leg, ...]
     end: float
 
     @property
@@ -172,51 +268,115 @@ class AttitudeTrajectory:
         cls,
         samples: list[tuple[float, Attitude]],
         limits: AttitudeControlSystem,
+        initial_rate: Attitude | None = None,
     ) -> "AttitudeTrajectory":
         if len(samples) < 2:
             raise AttitudeExecutionError(
                 "Tracking requires at least two timed attitudes"
             )
-        legs = []
+        intervals, rates = [], []
         for (start, first), (end, last) in zip(samples, samples[1:]):
-            if end <= start:
-                raise AttitudeExecutionError("Tracking times must increase strictly")
-            legs.append(_MotionLeg.between(start, first, last, limits, end))
-        return cls(tuple(legs), samples[-1][0])
+            _quaternion(first)
+            _quaternion(last)
+            if (
+                not all(isfinite(time) for time in (start, end, end - start))
+                or end <= start
+            ):
+                raise AttitudeExecutionError(
+                    "Tracking times must be finite and increase strictly"
+                )
+            distance, axis = quaternion_attitude_delta(*first, *last)
+            intervals.append(end - start)
+            rates.append(np.asarray(axis) * distance / (end - start))
+        node_rates = [rates[0]]
+        for index in range(1, len(samples) - 1):
+            previous, following = intervals[index - 1], intervals[index]
+            node_rates.append(
+                (following * rates[index - 1] + previous * rates[index])
+                / (previous + following)
+            )
+        node_rates.append(rates[-1])
+        if initial_rate is not None:
+            if not all(isfinite(value) for value in initial_rate):
+                raise AttitudeExecutionError("Initial angular velocity must be finite")
+            node_rates[0] = np.asarray(initial_rate)
+        rate_axes = limits.max_slew_rate_body or (limits.max_slew_rate,) * 3
+        accel_axes = limits.slew_acceleration_body or (limits.slew_acceleration,) * 3
+        if not all(
+            isfinite(value) and value > 0 for value in (*rate_axes, *accel_axes)
+        ):
+            raise AttitudeExecutionError("Motion limits must be finite and positive")
+        legs: list[_Leg] = []
+        for index, ((start, first), (end, last)) in enumerate(
+            zip(samples, samples[1:])
+        ):
+            q0, q1 = _quaternion(first), _quaternion(last)
+            w0, w1 = _vector(node_rates[index]), _vector(node_rates[index + 1])
+            if np.allclose(w0, rates[index], rtol=0, atol=1e-11) and np.allclose(
+                w1, rates[index], rtol=0, atol=1e-11
+            ):
+                if np.linalg.norm(rates[index] / rate_axes) > 1 + 1e-10:
+                    raise AttitudeExecutionError("Tracking rate exceeds motion limits")
+                # Snap roundoff-equivalent knot rates to the exact secant so
+                # this analytic leg has zero acceleration and one fixed axis.
+                spin = _vector(rates[index])
+                legs.append(_SpinLeg(start, end, q0, spin, spin))
+            else:
+                curve = QuaternionHermite(q0, q1, w0, w1, end - start)
+                if not curve.within_limits(rate_axes, accel_axes):
+                    raise AttitudeExecutionError(
+                        "Tracking interval cannot be certified within rate and acceleration limits"
+                    )
+                legs.append(_TrackingLeg(start, end, curve))
+        # Profile exhaustion cannot reset a nonzero terminal tracking rate.
+        stop = _braking_leg(legs[-1].state(samples[-1][0]), limits)
+        if stop is not None:
+            legs.append(stop)
+        return cls(tuple(legs), legs[-1].end)
+
+    @classmethod
+    def braking(
+        cls, state: AttitudeState, limits: AttitudeControlSystem
+    ) -> "AttitudeTrajectory | None":
+        leg = _braking_leg(state, limits)
+        return cls((leg,), leg.end) if leg is not None else None
 
     @cached_property
     def _starts(self) -> tuple[float, ...]:
         return tuple(leg.start for leg in self.legs)
 
-    def _leg_at(self, utime: float) -> _MotionLeg:
+    def _leg_at(self, utime: float) -> _Leg:
         index = max(0, bisect_right(self._starts, utime) - 1)
         return self.legs[index]
 
     def state(self, utime: float) -> AttitudeState:
+        if utime < self.start:
+            raise AttitudeExecutionError("Cannot evaluate motion before its start")
         return self._leg_at(utime).state(utime)
 
     def next_rest_time(self, utime: float) -> float:
-        leg = self._leg_at(utime)
-        if leg.start < utime < leg.end and leg.angle > 0:
-            return leg.end
-        return utime
-
-    def stopped_at(self, utime: float) -> "AttitudeTrajectory":
-        """Discard future legs at a rest boundary, preserving motion up to it."""
-        if self.next_rest_time(utime) != utime:
-            raise AttitudeExecutionError("Cannot truncate a trajectory during motion")
-        return AttitudeTrajectory(
-            tuple(leg for leg in self.legs if leg.start < utime), utime
-        )
+        if np.linalg.norm(self.state(utime).angular_velocity_body) < 1e-10:
+            return utime
+        for leg in self.legs:
+            if (
+                leg.end >= utime
+                and np.linalg.norm(leg.state(leg.end).angular_velocity_body) < 1e-10
+            ):
+                return leg.end
+        raise AttitudeExecutionError("Trajectory has no physical stopping boundary")
 
 
 class AttitudeExecutor:
     """The sole owner of executed orientation and angular velocity."""
 
-    def __init__(self, utime: float, attitude: Attitude) -> None:
+    def __init__(
+        self, utime: float, attitude: Attitude, angular_velocity_body: Attitude = _ZERO
+    ) -> None:
         if not isfinite(utime):
             raise AttitudeExecutionError("Execution time must be finite")
-        self._state = AttitudeState(utime, _quaternion(attitude))
+        if not all(isfinite(rate) for rate in angular_velocity_body):
+            raise AttitudeExecutionError("Initial angular velocity must be finite")
+        self._state = AttitudeState(utime, _quaternion(attitude), angular_velocity_body)
         self._trajectory: AttitudeTrajectory | None = None
 
     @property
@@ -233,34 +393,50 @@ class AttitudeExecutor:
             return self._state
         if self._trajectory is not None:
             return self._trajectory.state(utime)
-        return AttitudeState(utime, self._state.quaternion)
+        elapsed = utime - self._state.utime
+        return AttitudeState(
+            utime,
+            _body_rotation(
+                self._state.quaternion,
+                elapsed * np.asarray(self._state.angular_velocity_body),
+            ),
+            self._state.angular_velocity_body,
+        )
 
     def advance(self, utime: float) -> None:
         self._state = self.predict(utime)
 
     def next_rest_time(self, utime: float) -> float:
         self._check_time(utime)
-        return self._trajectory.next_rest_time(utime) if self._trajectory else utime
+        if self._trajectory is not None:
+            return self._trajectory.next_rest_time(utime)
+        return (
+            inf
+            if any(abs(rate) > 1e-10 for rate in self._state.angular_velocity_body)
+            else utime
+        )
 
-    def request_stop(self, utime: float) -> float:
-        """Finish the current turn, then hold even if the next tick skips the knot."""
-        ready = self.next_rest_time(utime)
-        if ready == utime:
+    def request_stop(self, utime: float, limits: AttitudeControlSystem) -> float:
+        """Brake from the current rate, then hold even if a coarse tick skips it."""
+        trajectory = AttitudeTrajectory.braking(self.predict(utime), limits)
+        if trajectory is None:
             self.hold(utime)
-        elif self._trajectory is not None:
-            self._trajectory = self._trajectory.stopped_at(ready)
-        return ready
+            return utime
+        self.install(trajectory)
+        return trajectory.end
 
     def install(self, trajectory: AttitudeTrajectory) -> None:
         state = self.predict(trajectory.start)
         angle, _ = quaternion_attitude_delta(
             *state.attitude, *trajectory.state(trajectory.start).attitude
         )
-        if angle > _ANGLE_TOL or any(
-            abs(rate) > 1e-10 for rate in state.angular_velocity_body
-        ):
+        rate_difference = (
+            np.asarray(state.angular_velocity_body)
+            - trajectory.state(trajectory.start).angular_velocity_body
+        )
+        if angle > _ANGLE_TOL or np.linalg.norm(rate_difference) > 1e-9:
             raise AttitudeExecutionError(
-                "A new trajectory must join the current attitude at rest"
+                "A new trajectory must join the current attitude and angular velocity"
             )
         self._state = state
         self._trajectory = trajectory

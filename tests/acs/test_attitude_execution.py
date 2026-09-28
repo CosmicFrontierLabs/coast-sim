@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from conops import ACSCommand, ACSCommandType, AttitudeControlSystem, Pass, Slew
-from conops.common import ObsType
+from conops.common import ACSMode, ObsType
 from conops.common.vector import quaternion_attitude_delta
 from conops.simulation.attitude import (
     AttitudeExecutionError,
@@ -73,7 +73,7 @@ def test_motion_obeys_directional_rate_and_acceleration(limits, first, last):
         )
 
 
-def test_tracking_stretches_motion_and_joins_at_rest(limits):
+def test_tracking_joins_with_continuous_nonzero_rate(limits):
     track = AttitudeTrajectory.tracking(
         [
             (100, (0, 0, 0)),
@@ -84,14 +84,19 @@ def test_tracking_stretches_motion_and_joins_at_rest(limits):
     )
     for time, attitude in [(100, (0, 0, 0)), (130, (4, 2, 8)), (160, (8, 4, 0))]:
         assert_attitude(track.state(time).attitude, attitude)
-        assert track.state(time).angular_velocity_body == (0, 0, 0)
+        assert np.linalg.norm(track.state(time).angular_velocity_body) > 0
     assert 0 < track.state(115).attitude[0] < 4
     np.testing.assert_allclose(
-        track.state(130 - 1e-5).angular_velocity_body, 0, atol=1e-5
+        track.state(130 - 1e-5).angular_velocity_body,
+        track.state(130).angular_velocity_body,
+        atol=1e-5,
     )
     np.testing.assert_allclose(
-        track.state(130 + 1e-5).angular_velocity_body, 0, atol=1e-5
+        track.state(130 + 1e-5).angular_velocity_body,
+        track.state(130).angular_velocity_body,
+        atol=1e-5,
     )
+    assert track.state(track.end).angular_velocity_body == (0, 0, 0)
 
 
 @pytest.mark.parametrize(
@@ -125,8 +130,8 @@ def test_executor_rejects_discontinuity_and_time_reversal(limits):
         executor.state.utime = 11
 
 
-def test_stop_request_holds_at_skipped_tracking_knot(limits):
-    executor = AttitudeExecutor(0, (0, 0, 0))
+def test_stop_request_brakes_before_next_tracking_knot(limits):
+    executor = AttitudeExecutor(0, (0, 0, 0), (0, 0, 4 / 30))
     executor.install(
         AttitudeTrajectory.tracking(
             [
@@ -138,9 +143,10 @@ def test_stop_request_holds_at_skipped_tracking_knot(limits):
         )
     )
     executor.advance(10)
-    assert executor.request_stop(10) == 30
+    assert executor.request_stop(10, limits) == pytest.approx(10 + (4 / 30) / 0.125)
     executor.advance(65)
-    assert_attitude(executor.state.attitude, (4, 0, 0))
+    stop_angle = (4 / 30) * 10 + 0.5 * (4 / 30) ** 2 / 0.125
+    assert_attitude(executor.state.attitude, (stop_angle, 0, 0))
     assert executor.state.angular_velocity_body == (0, 0, 0)
 
 
@@ -205,9 +211,10 @@ def test_midmotion_command_waits_without_resetting_rate(physical_acs):
     assert acs.current_slew is first
     assert np.linalg.norm(acs.angular_velocity_body) > 0
     assert len(acs.command_queue) == 1
+    assert acs.command_queue[0].execution_time == pytest.approx(1009)
     acs.pointing(1060)
     assert acs.current_slew is second
-    assert_attitude((second.startra, second.startdec, second.startroll), (10, 0, 0))
+    assert_attitude((second.startra, second.startdec, second.startroll), (2.5, 0, 0))
 
 
 @pytest.mark.parametrize("safe", [False, True])
@@ -238,6 +245,36 @@ def test_execution_attitude_is_read_only_after_initialization(physical_acs):
     for attribute in ("ra", "dec", "roll"):
         with pytest.raises(AttitudeExecutionError, match="read-only"):
             setattr(acs, attribute, 0)
+
+
+def test_future_charge_end_does_not_freeze_solar_guidance(physical_acs):
+    acs = physical_acs
+    acs.enqueue_command(
+        ACSCommand(command_type=ACSCommandType.END_BATTERY_CHARGE, execution_time=1100)
+    )
+    with (
+        patch.object(acs, "_is_in_charging_mode", return_value=True),
+        patch("conops.simulation.acs.optimum_roll", return_value=90),
+    ):
+        acs.pointing(1000)
+        acs.pointing(1001)
+    assert np.linalg.norm(acs.angular_velocity_body) > 0
+    assert acs.command_queue[0].execution_time == 1100
+
+
+def test_terminal_tracking_brake_is_not_idle(physical_acs):
+    acs = physical_acs
+    executor = acs._advance_attitude(1000)
+    trajectory = AttitudeTrajectory.tracking(
+        [(1000, (0, 0, 0)), (1060, (6, 0, 0))],
+        acs.config.spacecraft_bus.attitude_control,
+        initial_rate=(0, 0, 0),
+    )
+    executor.install(trajectory)
+    acs.pointing(1060.1)
+    assert acs.get_mode(1060.1) == ACSMode.SLEWING
+    acs.pointing(trajectory.end)
+    assert acs.get_mode(trajectory.end) == ACSMode.IDLE
 
 
 @pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf")])
@@ -278,7 +315,7 @@ def test_safe_entry_during_motion_cannot_reset_velocity(physical_acs):
     assert acs.angular_velocity_body == expected.angular_velocity_body
     acs.pointing(1060)
     assert acs.current_slew.obstype == ObsType.SAFE
-    assert_attitude((acs.ra, acs.dec, acs.roll), (10, 0, 0))
+    assert_attitude((acs.ra, acs.dec, acs.roll), (2.5, 0, 0))
 
 
 def test_pass_acquisition_tracking_and_exit_use_executor(physical_acs):
@@ -299,12 +336,16 @@ def test_pass_acquisition_tracking_and_exit_use_executor(physical_acs):
     )
     acs.pointing(1015)
     assert 0 < acs.ra < 4
+    stopping = AttitudeTrajectory.braking(
+        acs._executor.state, acs.config.spacecraft_bus.attitude_control
+    )
+    expected_stop = stopping.state(stopping.end).attitude
     acs.enqueue_command(
         ACSCommand(command_type=ACSCommandType.END_PASS, execution_time=1015)
     )
     acs.pointing(1015)
     acs.pointing(1070)
-    assert_attitude((acs.ra, acs.dec, acs.roll), (4, 0, 0))
+    assert_attitude((acs.ra, acs.dec, acs.roll), expected_stop)
     assert acs.current_pass is None
     assert acs.angular_velocity_body == (0, 0, 0)
 

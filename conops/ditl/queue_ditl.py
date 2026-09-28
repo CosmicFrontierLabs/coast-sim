@@ -2806,6 +2806,11 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _fetch_new_ppt(self, utime: float, ra: float, dec: float) -> None:
         """Fetch a new pointing target from the queue and enqueue slew command."""
+        # A just-issued charge/pass termination can replace tracking with a
+        # braking arc. Commit that command before predicting a new slew's start.
+        pointing = self._process_due_acs_commands(utime)
+        if pointing is not None:
+            ra, dec = pointing[:2]
         self._temporary_rejected_ppts = []
         self._retry_ppt_fetch_requested = False
         try:

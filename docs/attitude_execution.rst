@@ -10,31 +10,40 @@ does not move the spacecraft.
 Execution contract
 ------------------
 
-* Every turn is an analytic quaternion trajectory with the configured scalar or
-  directional rate and acceleration limits. Planning and execution share the
-  same rest-to-rest motion profile.
+* Every motion uses a quaternion trajectory with the configured scalar or
+  directional rate and acceleration limits. Ordinary slews share the planner's
+  analytic rest-to-rest motion profile; tracking preserves rate through knots.
 * Trajectories snapshot geometry and motion coefficients. Mutating a command's
   slew object cannot rewrite installed motion. Changing configuration during a
   run remains unsupported; start a new run after configuration changes.
-* Handoffs must match orientation and occur at zero angular velocity. An
-  interrupting slew or end-of-tracking command finishes the current turn, then
-  holds at that rest boundary until the next execution tick. It does not reset
-  velocity. This is conservative preemption, not an optimal braking maneuver.
+* Handoffs must match both orientation and body angular velocity, including at
+  nonzero rates. An interrupting slew or end-of-tracking command brakes along
+  the current rate axis within the directional acceleration envelope, then
+  holds until the next execution tick. The next target slew starts from that
+  actual stopping attitude; it does not wait for the old target to be reached.
 * SAFE entry changes mode immediately, but its repointing follows that same
   handoff policy. Charging and SAFE solar guidance also request bounded turns;
   an unreachable target is tracked with lag, not an instantaneous correction.
   Queued commands take priority over these discretionary guidance corrections.
-* Ground-contact attitudes are connected by time-stretched rest-to-rest turns.
-  Acquisition must already meet the selected profile's pointing tolerance, and
-  every interval must be kinematically feasible. Infeasible execution raises
+* Ground-contact attitudes use normalized quaternion Hermite curves, with shared
+  knot rates estimated from neighboring shortest-arc secants. Constant-spin
+  intervals use an exact analytic rotation. Admission and execution check rate
+  and acceleration over entire intervals using subdivided Bernstein bounds,
+  rather than relying on time samples. Failure to certify a curve rejects it.
+* Acquisition must already meet the selected profile's pointing tolerance.
+  Current ingress slews arrive at rest: the first tracking interval must allow
+  acceleration from that boundary rate, but internal knots need not stop.
+  Execution matches the actual initial rate, and a final braking arc prevents
+  an instantaneous stop when the profile ends. Infeasible execution raises
   ``AttitudeExecutionError`` rather than stretching a contact window silently.
 * After initialization, ``acs.ra``, ``acs.dec`` and ``acs.roll`` are read-only.
   Set an initial attitude before the first update, then use ACS commands.
   Without an explicit initial roll, solar-optimal roll is selected once at the
   initial boundary. ``angular_velocity_body`` reports degrees per second.
 
-The scheduler predicts from this installed physical state, including tracking,
-rather than extrapolating the last target's metadata. Repeating an update at the
+The scheduler predicts from this installed physical state, including tracking
+and any newly commanded braking arc, rather than extrapolating the last target's
+metadata. Repeating an update at the
 same timestamp cannot advance motion. Coarse telemetry samples do not make the
 underlying analytic trajectory instantaneous.
 
@@ -46,10 +55,17 @@ It enforces angular rate and acceleration, but does not model actuator torque,
 wheel momentum, flexible modes, jerk limits or pointing-control error. Acceleration
 can change discontinuously within the specified bound; angular velocity cannot.
 
-The contact model stops at each profile knot. It preserves sampled contact
-attitudes, but is not an exact continuously tracking antenna solution between
-knots. Likewise, changing guidance or profile cadence can change the requested
-trajectory; only sampling an already installed trajectory is cadence-independent.
+The contact model preserves sampled attitudes and continuous angular velocity,
+but is not an exact antenna-tracking solution between knots. Its terminal brake
+can move beyond the last pointing sample. Established constant-spin tracking is
+independent of knot spacing; acquisition from rest and curved profiles are not
+generally cadence-independent. Changing guidance cadence can also change the
+requested trajectory. Sampling an already installed trajectory does not change it.
+
+The phase search and interval certificates are conservative, not globally optimal:
+failure to find or certify a feasible curve does not prove no such curve exists.
+Braking follows the current rate axis; it is not a time-optimal controller for
+arbitrary multi-axis dynamics.
 
 Keepout and visibility checks remain separate planning/validation concerns.
 Kinematic feasibility does not prove continuous-time clearance, nor guarantee

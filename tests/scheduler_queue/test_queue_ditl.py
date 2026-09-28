@@ -1109,6 +1109,43 @@ class TestFetchNewPPT:
         assert f"duration: {float(entry.slewtime):.1f}s" in slew_event.description
         assert f"distance: {entry.slewdist:.1f} deg" in slew_event.description
 
+    def test_new_target_is_planned_from_braking_endpoint(self, queue_ditl):
+        queue_ditl.config.spacecraft_bus.attitude_control = AttitudeControlSystem(
+            max_slew_rate=0.2,
+            slew_acceleration=0.05,
+            settle_time=0,
+        )
+        acs = ACS(config=queue_ditl.config, log=queue_ditl.log)
+        acs.ra, acs.dec, acs.roll = 0, 0, 0
+        slew = Slew(
+            config=queue_ditl.config,
+            endra=100,
+            enddec=0,
+            endroll=0,
+            obstype=ObsType.CHARGE,
+        )
+        acs._start_slew(slew, 1000)
+        acs.pointing(1100)
+        acs.enqueue_command(
+            ACSCommand(
+                command_type=ACSCommandType.END_BATTERY_CHARGE, execution_time=1100
+            )
+        )
+        # Charging lifecycle bookkeeping has closed its old plan entry.
+        acs.last_slew = None
+        queue_ditl.acs = acs
+
+        def inspect_prediction(time, ra, dec):
+            assert queue_ditl._ppt_slew_execution_time(time) == pytest.approx(1104)
+            assert queue_ditl._expected_slew_start_attitude(
+                time, 1104
+            ) == pytest.approx((20, 0, 0), abs=1e-8)
+
+        with patch.object(
+            queue_ditl, "_fetch_new_ppt_inner", side_effect=inspect_prediction
+        ):
+            queue_ditl._fetch_new_ppt(1100, acs.ra, acs.dec)
+
     def test_syncs_each_executed_science_slew_command(
         self, queue_ditl: QueueDITL
     ) -> None:
@@ -6344,6 +6381,7 @@ class TestQueueDITLCoverage:
             mock_acs.passrequests = mock_pt
             mock_acs.slew_dists = []
             mock_acs.last_slew = None
+            mock_acs.command_queue = []
             mock_acs.ra = 0.0
             mock_acs.dec = 0.0
             from conops import ACSMode
