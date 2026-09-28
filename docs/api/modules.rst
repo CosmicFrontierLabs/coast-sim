@@ -14,6 +14,7 @@ Core Modules
    conops.config.communications
    conops.config.data_generator
    conops.config.fault_management
+   conops.config.momentum
    conops.config.observation_categories
    conops.config.power
    conops.config.spacecraft_bus
@@ -30,6 +31,7 @@ Core Modules
    conops.simulation
    conops.simulation.acs
    conops.simulation.acs_command
+   conops.simulation.momentum
    conops.simulation.roll
 
 Scheduling and Planning

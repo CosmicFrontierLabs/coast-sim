@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from conops import AttitudeControlSystem, Pointing, Queue
+from conops.config import ObservationTiming
 
 
 @pytest.fixture
@@ -64,6 +65,7 @@ def mock_targets(mock_target):
 def mock_config():
     """Fixture for a mock config."""
     config = Mock()
+    config.payload.observation_timing = ObservationTiming()
     config.constraint = Mock()
     config.spacecraft_bus = Mock()
     config.spacecraft_bus.attitude_control = AttitudeControlSystem()

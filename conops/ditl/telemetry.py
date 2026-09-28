@@ -64,6 +64,9 @@ class Housekeeping(BaseModel):
         quat_x: Attitude quaternion vector component (x)
         quat_y: Attitude quaternion vector component (y)
         quat_z: Attitude quaternion vector component (z)
+        gravity_gradient_torque_body_n_m: Gravity-gradient torque in body coordinates (N m)
+        stored_momentum_body_n_m_s: Accumulated stored momentum in body coordinates (N m s)
+        stored_momentum_norm_n_m_s: Norm of accumulated stored momentum (N m s)
     """
 
     timestamp: datetime = Field(description="UTC timestamp")
@@ -81,6 +84,12 @@ class Housekeeping(BaseModel):
         ),
     )
     acs_mode: ACSMode | int | None = Field(default=None, description="ACS mode")
+    collection_seconds: float | None = Field(
+        default=None,
+        ge=0,
+        allow_inf_nan=False,
+        description="Useful science collection in the timestep starting at this timestamp; excludes setup and teardown",
+    )
     panel_illumination: float | None = Field(
         default=None, description="Solar panel illumination fraction (0-1)"
     )
@@ -215,6 +224,18 @@ class Housekeeping(BaseModel):
     )
     quat_z: float | None = Field(
         default=None, description="Attitude quaternion vector component z"
+    )
+    gravity_gradient_torque_body_n_m: list[float] | None = Field(
+        default=None,
+        description="Gravity-gradient torque in body coordinates [x, y, z], in N m",
+    )
+    stored_momentum_body_n_m_s: list[float] | None = Field(
+        default=None,
+        description="Accumulated stored momentum in body coordinates [x, y, z], in N m s",
+    )
+    stored_momentum_norm_n_m_s: float | None = Field(
+        default=None,
+        description="Norm of accumulated stored momentum, in N m s",
     )
 
     @classmethod
@@ -491,6 +512,21 @@ class HousekeepingList(list[Housekeeping]):
     def quat_z(self) -> list[float | None]:
         """Get attitude quaternion z components from all housekeeping records."""
         return [hk.quat_z for hk in self]
+
+    @property
+    def gravity_gradient_torque_body_n_m(self) -> list[list[float] | None]:
+        """Get body-frame gravity-gradient torque vectors from all records."""
+        return [hk.gravity_gradient_torque_body_n_m for hk in self]
+
+    @property
+    def stored_momentum_body_n_m_s(self) -> list[list[float] | None]:
+        """Get body-frame stored-momentum vectors from all records."""
+        return [hk.stored_momentum_body_n_m_s for hk in self]
+
+    @property
+    def stored_momentum_norm_n_m_s(self) -> list[float | None]:
+        """Get stored-momentum norms from all records."""
+        return [hk.stored_momentum_norm_n_m_s for hk in self]
 
 
 class Telemetry(BaseModel):

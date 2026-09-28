@@ -308,6 +308,7 @@ The :class:`~conops.config.SpacecraftBus` defines the spacecraft bus subsystems.
 **Attributes:**
 
 * ``name`` (str): Bus identifier
+* ``inertia_tensor_body_kg_m2`` (3x3 matrix | None): Spacecraft body-frame inertia tensor in kg m²
 * ``power_draw`` (:class:`~conops.config.PowerDraw`): Power consumption characteristics
 * ``attitude_control`` (:class:`~conops.config.AttitudeControlSystem`): ACS configuration
 * ``communications`` (:class:`~conops.config.CommunicationsSystem`): Optional comms system
@@ -326,6 +327,7 @@ The :class:`~conops.config.AttitudeControlSystem` defines slew performance and p
 * ``max_slew_rate_body`` (tuple[float, float, float] | None): Optional body +X/+Y/+Z slew-rate limits in deg/s
 * ``slew_accuracy`` (float): Pointing accuracy after slew completion in degrees
 * ``settle_time`` (float): Time to settle after slew completion in seconds
+* ``stored_momentum`` (:class:`~conops.config.momentum.StoredMomentumConfig`): Optional planning-level momentum tracking
 * ``slew_algorithm`` (:class:`~conops.common.enums.SlewAlgorithm`): Algorithm for computing slew paths:
 
   - ``QUATERNION`` (default): Full 3-DOF SLERP coupling pointing and roll changes
@@ -345,6 +347,53 @@ configured, slew estimates require complete starting and target attitudes
 Constraint-avoiding paths are evaluated as rest-to-rest segments using each
 segment's own body-frame rotation axis. If both tuples are omitted, the scalar
 fields retain their existing behavior, including legacy RA/Dec-only estimates.
+
+Gravity-gradient momentum tracking is disabled by default. Enable it by supplying
+a physical body-frame inertia tensor about the spacecraft center of mass and
+setting ``gravity_gradient_enabled``. Its principal moments must be positive and
+satisfy the triangle inequalities; a planar-body equality is allowed, including
+relative numerical roundoff of 1e-12.
+COAST integrates the angular impulse in inertial coordinates, then reports the
+stored-momentum vector in the current body frame. This prevents attitude changes
+alone from appearing to generate momentum. Capacity enforcement and desaturation
+scheduling are not part of this tracking model.
+
+The tracker reloads the inertia, initial momentum, and enable flag at the start
+of every run. Configuration changes between runs therefore take effect without
+reconstructing the simulation.
+
+This is a sampled torque integrator, not an attitude-trajectory interpolator.
+To guard against missing torque between samples, enabled runs require both the
+executed-attitude and ephemeris intervals to be no greater than the smaller of:
+
+* ``stored_momentum.max_sample_interval_s`` (default 10 seconds, configurable downward);
+* 5 degrees divided by the fastest configured body-axis slew rate (or scalar
+  ``max_slew_rate`` when body-axis limits are absent).
+
+For example, a fastest rate of 2 degrees/second requires intervals of at most
+2.5 seconds. Set ``DITL.step_size`` and generate an ephemeris at an appropriate
+resolution; ``QueueDITL`` uses the ephemeris step as its execution step. Coarse
+runs fail before ACS execution or power updates; a fine execution step cannot
+compensate for a coarse ephemeris. Disabled tracking leaves existing runs unchanged.
+
+These are conservative sampling guards, not a guaranteed integration-error
+tolerance. Verify convergence at finer cadence for final studies. The guard
+does not change scheduling cadence automatically or call the ACS state machine
+at synthetic intermediate times. Use fixed-plan replay when comparing numerical
+cadences without replanning the science schedule.
+
+.. code-block:: yaml
+
+   spacecraft_bus:
+     inertia_tensor_body_kg_m2:
+       - [1000.0, 0.0, 0.0]
+       - [0.0, 1200.0, 0.0]
+       - [0.0, 0.0, 800.0]
+     attitude_control:
+       stored_momentum:
+         gravity_gradient_enabled: true
+         max_sample_interval_s: 10.0
+         initial_momentum_body_n_m_s: [0.0, 0.0, 0.0]
 
 .. code-block:: python
 
@@ -923,6 +972,64 @@ The :class:`~conops.config.Payload` contains the science instruments.
            ),
        ]
    )
+
+Observation Timing Budgets
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``payload.observation_timing`` reserves non-collection time inside each fixed
+science task. All three values are finite, nonnegative seconds and default to
+zero. ACS ``settle_time`` is already included in ``slewtime``; do not include it
+again in these payload budgets.
+
+.. code-block:: yaml
+
+   payload:
+     observation_timing:
+       setup_seconds: 30
+       cleanup_seconds: 5
+       handoff_seconds: 10
+
+The task boundaries remain ``begin`` and ``end``. Useful collection starts at
+``begin + slewtime + setup_seconds`` and stops at
+``end - cleanup_seconds - handoff_seconds``. These are exported as
+``collection_begin`` and ``collection_end``, including with zero budgets.
+``ss_min``, ``ss_max``, requested exposure, and queue collection scoring refer
+to useful collection, not setup or teardown. Charging and ground contacts do
+not acquire these payload overheads.
+
+Setup is a generic budget for any pre-collection activity: configuration,
+calibration, acquisition, or another procedure. COAST does not prescribe how
+that time is used.
+
+``QueueDITL`` reserves the budgets before visibility, locked-attitude constraint,
+pass, and simulation deadlines. A pending recharge discovered by a timestep's
+power integration also shortens the collection window before data is counted,
+without delaying the charge command. If a later interruption cannot leave the
+reserved cleanup/handoff time, generation fails instead of exporting a normal
+observation with impossible timing. This can occur with unanticipated interrupts
+or a cleanup/handoff budget longer than the available recharge warning time.
+
+Housekeeping ``collection_seconds`` integrates the useful part of each timestep,
+including partial steps. Data generation and remaining requested exposure use
+this duration for both zero and nonzero budgets. Detailed phase reporting is
+separate from this collection-window contract. ACS ``SCIENCE`` still describes pointing during setup and teardown;
+its duration must not be used as useful exposure. Zero-budget plans also use
+exact collection windows instead of whole-timestep exposure decrements; legacy
+rounded exposure totals and observation boundaries can therefore change.
+Collection telemetry includes executed time on attempts later dropped for not
+meeting the minimum snapshot; it can exceed exposure in the delivered entries.
+Power remains governed by the existing mode-dependent model. ``DITL`` replay
+preserves serialized collection windows, deriving them from configuration only
+when absent. Collection cannot begin before the executed slew and setup finish,
+even if the slew takes longer than planned. A late start reduces collection;
+it does not move the planned cutoff or rewrite the delivered plan.
+``DumbScheduler`` does not
+support these budgets and rejects nonzero values; use ``QueueDITL`` to generate
+budgeted plans.
+
+These are planning budgets, not flight-procedure timeouts or a guarantee of
+on-time return. The procedure must independently bound startup, handle settling
+failure, and enforce the collection cutoff and cleanup deadline.
 
 Telescope Instruments
 ^^^^^^^^^^^^^^^^^^^^^

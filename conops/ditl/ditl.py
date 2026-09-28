@@ -168,6 +168,8 @@ class DITL(DITLMixin, DITLStats):
         if isinstance(self.plan, Plan):
             self.plan.bind_runtime(self.config, self.ephem)
 
+        self._reset_stored_momentum_tracker()
+
         # Set up ACS ephemeris if not already set
         if self.acs.ephem is None:
             self.acs.ephem = self.ephem
@@ -273,6 +275,16 @@ class DITL(DITLMixin, DITLStats):
 
             # Get current mode from ACS (it now determines mode internally)
             mode = self.acs.get_mode(self.utime[i])
+
+            if (
+                self.ppt is not None
+                and self.ppt.collection_begin is None
+                and mode in (ACSMode.SCIENCE, ACSMode.SLEWING)
+            ):
+                self.ppt.set_collection_window(self.config.payload.observation_timing)
+            collection_seconds = self._collection_seconds_for_step(
+                self.utime[i], mode, obsid
+            )
 
             # Determine the power usage in Watts based on mode from config
             bus_power = self.spacecraft_bus.power(mode, in_eclipse=self.acs.in_eclipse)
@@ -433,6 +445,7 @@ class DITL(DITLMixin, DITLStats):
             scope_label = attitude_constraint_scope_label(scopes)
             _q = attitude_to_quat(ra, dec, roll)
             drive_angles = self._solar_array_drive_telemetry()
+            momentum_sample = self._update_stored_momentum(self.utime[i], ra, dec, roll)
             hk = Housekeeping(
                 timestamp=datetime.fromtimestamp(self.utime[i], tz=timezone.utc),
                 ra=ra,
@@ -440,6 +453,7 @@ class DITL(DITLMixin, DITLStats):
                 roll=roll,
                 roll_offset_deg=roll_offset_deg,
                 acs_mode=mode,
+                collection_seconds=collection_seconds,
                 panel_illumination=panel_illumination,
                 solar_array_drive_angles=drive_angles,
                 power_usage=power_usage,
@@ -475,6 +489,21 @@ class DITL(DITLMixin, DITLStats):
                 quat_x=float(_q[1]),
                 quat_y=float(_q[2]),
                 quat_z=float(_q[3]),
+                gravity_gradient_torque_body_n_m=(
+                    list(momentum_sample.gravity_gradient_torque_body_n_m)
+                    if momentum_sample is not None
+                    else None
+                ),
+                stored_momentum_body_n_m_s=(
+                    list(momentum_sample.stored_momentum_body_n_m_s)
+                    if momentum_sample is not None
+                    else None
+                ),
+                stored_momentum_norm_n_m_s=(
+                    momentum_sample.stored_momentum_norm_n_m_s
+                    if momentum_sample is not None
+                    else None
+                ),
             )
 
             # Check fault management thresholds and red limit constraints
@@ -496,7 +525,10 @@ class DITL(DITLMixin, DITLStats):
 
             # Data management: generate and downlink data
             data_generated, data_downlinked = self._process_data_management(
-                self.utime[i], mode, self.step_size
+                self.utime[i],
+                mode,
+                self.step_size,
+                collection_seconds=collection_seconds,
             )
 
             # Record data telemetry (cumulative values)

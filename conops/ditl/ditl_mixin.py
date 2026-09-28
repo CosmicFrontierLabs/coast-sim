@@ -6,12 +6,14 @@ import matplotlib.pyplot as plt
 import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
+from conops.common import dtutcfromtimestamp
 from conops.common.enums import ACSMode
-from conops.common.vector import quaternion_attitude_delta
+from conops.common.vector import attitude_to_quat, quaternion_attitude_delta
 from conops.config.groundstation import GroundStation
 
 from ..config import MissionConfig, SolarArrayDriveState
 from ..simulation.acs import ACS
+from ..simulation.momentum import MomentumSample, StoredMomentumTracker
 from ..simulation.passes import Pass, PassTimes
 from ..targets import Plan, PlanEntry
 from .telemetry import SolarArrayDriveAngle, Telemetry
@@ -81,6 +83,7 @@ class DITLMixin:
     begin: datetime
     end: datetime
     step_size: int
+    uend: float
     panel_power: list[float]
     batterylevel: list[float]
     charge_state: list[int]
@@ -100,6 +103,7 @@ class DITLMixin:
     # Telemetry container
     telemetry: Telemetry
     calculate_field_of_regard: bool
+    _stored_momentum_tracker: StoredMomentumTracker | None
 
     def __init__(
         self,
@@ -186,6 +190,7 @@ class DITLMixin:
 
         # Initialize common subsystems (can be overridden by subclasses)
         self._init_subsystems()
+        self._stored_momentum_tracker = self._build_stored_momentum_tracker()
 
     def _init_subsystems(self) -> None:
         """Initialize subsystems from config. Can be overridden by subclasses."""
@@ -212,6 +217,59 @@ class DITLMixin:
             if angle is not None
         ]
         return entries or None
+
+    def _build_stored_momentum_tracker(self) -> StoredMomentumTracker | None:
+        attitude_control = self.config.spacecraft_bus.attitude_control
+        momentum_config = getattr(attitude_control, "stored_momentum", None)
+        if getattr(momentum_config, "gravity_gradient_enabled", False) is not True:
+            return None
+        assert momentum_config is not None
+        inertia = getattr(self.config.spacecraft_bus, "inertia_tensor_body_kg_m2", None)
+        if inertia is None:
+            raise ValueError(
+                "inertia_tensor_body_kg_m2 is required when gravity-gradient "
+                "momentum tracking is enabled"
+            )
+        # A coupled-axis ellipsoid cannot exceed its fastest principal rate.
+        # Bound possible motion, not just endpoint separation: a complete slew
+        # can occur between samples even when both endpoint torques are zero.
+        fastest_rate = (
+            max(attitude_control.max_slew_rate_body)
+            if attitude_control.max_slew_rate_body is not None
+            else attitude_control.max_slew_rate
+        )
+        if not math.isfinite(fastest_rate) or fastest_rate <= 0.0:
+            raise ValueError(
+                "momentum tracking requires a finite positive maximum slew rate"
+            )
+        return StoredMomentumTracker(
+            inertia_tensor_body_kg_m2=inertia,
+            initial_momentum_body_n_m_s=(momentum_config.initial_momentum_body_n_m_s),
+            max_sample_interval_s=min(
+                momentum_config.max_sample_interval_s, 5.0 / fastest_rate
+            ),
+        )
+
+    def _reset_stored_momentum_tracker(self) -> None:
+        """Reload run inputs and fail before execution if sampling is too coarse."""
+        self._stored_momentum_tracker = self._build_stored_momentum_tracker()
+        if self._stored_momentum_tracker is not None:
+            self._stored_momentum_tracker.validate_sample_interval(self.step_size)
+            self._stored_momentum_tracker.validate_sample_interval(self.ephem.step_size)
+
+    def _update_stored_momentum(
+        self, utime: float, ra: float, dec: float, roll: float
+    ) -> MomentumSample | None:
+        if self._stored_momentum_tracker is None:
+            return None
+        ephem_index = self.ephem.index(dtutcfromtimestamp(utime))
+        position_eci_km = self.ephem.gcrs_pv.position[ephem_index]
+        attitude_quaternion = attitude_to_quat(ra, dec, roll)
+        return self._stored_momentum_tracker.update(
+            utime=utime,
+            position_eci_km=position_eci_km,
+            attitude_quaternion_eci_to_body=attitude_quaternion,
+        )
 
     @staticmethod
     def _attitude_mode_name(mode: ACSMode | int | None) -> str | None:
@@ -476,8 +534,41 @@ class DITLMixin:
 
         return None
 
+    def _collection_seconds_for_step(
+        self, utime: float, mode: ACSMode, obsid: int | None = None
+    ) -> float:
+        """Intersect the planned collection window with executed slew/setup readiness."""
+        if (
+            self.ppt is None
+            or self.ppt.collection_end is None
+            or mode not in (ACSMode.SCIENCE, ACSMode.SLEWING)
+            or (obsid is not None and obsid != self.ppt.obsid)
+        ):
+            return 0.0
+        start = utime
+        slew = self.acs.current_slew if mode == ACSMode.SLEWING else self.acs.last_slew
+        if slew is not None:
+            if slew.obsid != self.ppt.obsid:
+                return 0.0
+            assert self.ppt.collection_begin is not None
+            # Infer setup from the saved window, not a possibly changed replay config.
+            setup = max(
+                0.0, self.ppt.collection_begin - self.ppt.begin - self.ppt.slewtime
+            )
+            start = max(start, slew.slewend + setup)
+        elif mode == ACSMode.SLEWING:
+            return 0.0
+        return self.ppt.collection_seconds_between(
+            start, min(utime + self.step_size, self.uend)
+        )
+
     def _process_data_management(
-        self, utime: float, mode: ACSMode, step_size: int
+        self,
+        utime: float,
+        mode: ACSMode,
+        step_size: int,
+        *,
+        collection_seconds: float,
     ) -> tuple[float, float]:
         """Process data generation and downlink for a single timestep.
 
@@ -485,6 +576,8 @@ class DITLMixin:
             utime: Unix timestamp for current timestep.
             mode: Current ACS mode.
             step_size: Time step in seconds.
+            collection_seconds: Useful collection in this step, computed from the
+                observation window rather than inferred from the ACS mode.
 
         Returns:
             Tuple of (data_generated, data_downlinked) in Gb for this timestep.
@@ -492,9 +585,9 @@ class DITLMixin:
         data_generated = 0.0
         data_downlinked = 0.0
 
-        # Generate data during SCIENCE mode
-        if mode == ACSMode.SCIENCE:
-            data_generated = self.payload.data_generated(step_size)
+        # ACS science pointing can include payload setup and cleanup.
+        if collection_seconds > 0:
+            data_generated = self.payload.data_generated(collection_seconds)
             self.recorder.add_data(data_generated)
 
         # Downlink data during PASS mode

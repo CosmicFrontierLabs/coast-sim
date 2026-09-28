@@ -22,6 +22,7 @@ from ..common.vector import (
 from ._base import ConfigModel
 from .constraint import Constraint
 from .data_generator import DataGeneration
+from .observation_timing import ObservationTiming
 from .power import PowerDraw
 from .thermal import Heater
 
@@ -472,6 +473,10 @@ class Payload(ConfigModel):
     """
 
     instruments: list[_AnyInstrument] = [Instrument()]
+    observation_timing: ObservationTiming = Field(
+        default_factory=ObservationTiming,
+        description="Non-collection setup, cleanup, and handoff budgets for science tasks",
+    )
 
     @field_validator("instruments", mode="before")
     @classmethod
