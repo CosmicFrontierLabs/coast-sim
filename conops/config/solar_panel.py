@@ -970,7 +970,9 @@ class SolarPanelSet(ConfigModel):
             panel.single_axis_drive is not None for panel in self.panels
         ):
             return dt.timestamp(), None, True
-        sunvec = position_vectors(ephem, "sun")[idx] - position_vectors(ephem, "gcrs")[idx]
+        sunvec = (
+            position_vectors(ephem, "sun")[idx] - position_vectors(ephem, "gcrs")[idx]
+        )
         sun_body = np.asarray(
             scbodyvector(np.deg2rad(ra), np.deg2rad(dec), np.deg2rad(roll), sunvec),
             dtype=np.float64,
