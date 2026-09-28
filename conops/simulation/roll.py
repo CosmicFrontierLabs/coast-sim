@@ -76,11 +76,17 @@ def _power_score_order(
         stop = start + 1
         reference_score = float(scores[ranked[start]])
         tolerance = _POWER_SCORE_ATOL_W + _POWER_SCORE_RTOL * abs(reference_score)
-        while stop < ranked.size and abs(float(scores[ranked[stop]]) - reference_score) <= tolerance:
+        while (
+            stop < ranked.size
+            and abs(float(scores[ranked[stop]]) - reference_score) <= tolerance
+        ):
             stop += 1
         tied = ranked[start:stop]
-        tie_order = np.lexsort((_ROLL_DEGREES[tied], tie_distance[tied]))
-        yield from (int(candidate) for candidate in tied[tie_order])
+        if len(tied) == 1:
+            yield int(tied[0])
+        else:
+            tie_order = np.lexsort((_ROLL_DEGREES[tied], tie_distance[tied]))
+            yield from (int(candidate) for candidate in tied[tie_order])
         start = stop
 
 
@@ -138,7 +144,9 @@ def _sun_at_zero_roll(
     ra: float, dec: float, utime: float, ephem: rust_ephem.Ephemeris
 ) -> npt.NDArray[np.float64]:
     index = ephem.index(dtutcfromtimestamp(utime))
-    sun_eci = position_vectors(ephem, "sun")[index] - position_vectors(ephem, "gcrs")[index]
+    sun_eci = (
+        position_vectors(ephem, "sun")[index] - position_vectors(ephem, "gcrs")[index]
+    )
     return np.asarray(scbodyvector(ra * DTOR, dec * DTOR, 0.0, sun_eci), dtype=float)
 
 
@@ -180,7 +188,11 @@ def optimum_body_roll(
         scores = np.where(candidate_mask, scores, -np.inf)
     order = _power_score_order(scores, reference)
     candidate = next(order, None)
-    return float(_ROLL_DEGREES[candidate]) if candidate is not None else float(reference or 0.0)
+    return (
+        float(_ROLL_DEGREES[candidate])
+        if candidate is not None
+        else float(reference or 0.0)
+    )
 
 
 def optimum_instrument_roll(

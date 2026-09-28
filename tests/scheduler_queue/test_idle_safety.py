@@ -134,7 +134,7 @@ def recovery_queue(queue_ditl, monkeypatch):
     )
     ditl._slew_attitude_constraint_violation = Mock(return_value=None)
     monkeypatch.setattr(
-        "conops.ditl.queue_ditl.optimum_roll", lambda *args, **kwargs: 0.0
+        "conops.ditl.queue_ditl.optimum_body_roll", lambda *args, **kwargs: 0.0
     )
     # Real kinematics and quaternion trajectory, not a teleporting test double.
     ditl.config.spacecraft_bus.attitude_control = AttitudeControlSystem(

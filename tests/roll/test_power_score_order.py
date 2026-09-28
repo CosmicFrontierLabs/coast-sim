@@ -7,13 +7,7 @@ from conops.simulation.roll import _power_score_order
 
 
 def candidate_order(scores, reference_roll):
-    angles = np.arange(360.0)
-    distance = (
-        angles
-        if reference_roll is None
-        else np.abs((angles - reference_roll + 180.0) % 360.0 - 180.0)
-    )
-    return _power_score_order(scores, distance, angles)
+    return _power_score_order(scores, reference_roll)
 
 
 def numpy_reference(scores, reference_roll):
