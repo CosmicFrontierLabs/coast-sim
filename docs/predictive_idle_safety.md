@@ -16,6 +16,11 @@ therefore still requires escape when that preceding interval overlaps the run.
 Recovery holds must also end before the potentially unsafe interval. Crossings
 whose entire preceding interval is after the run do not require post-run escape.
 
+Delayed science commands are rounded up to their actual scheduler execution
+tick before path and observation validation. The attitude held while waiting
+(including after an in-progress slew) must remain safe through that tick;
+departure cannot be later than the sample preceding the first violation.
+
 If no science target is available when the current hold reaches its departure
 deadline, the scheduler searches deterministic nearby attitudes and roll
 alternatives. A candidate must have:
@@ -25,7 +30,9 @@ alternatives. A candidate must have:
 - an IDLE-safe hold after arrival for another escape reserve plus
   `spacecraft_bus.attitude_control.idle_min_hold_s` (default 300 seconds),
   clipped to the simulation end;
-- enough time for the next planned ground-station acquisition, if any.
+- enough time for every available tracking profile of the next planned
+  ground-station acquisition, using the same admission deadlines as science
+  (including routed-slew bounds and the pass trigger buffer).
 
 The selected maneuver is executed through the ordinary ACS command queue as
 an `IDLE`-destination slew. It contributes normal SLEWING telemetry and power.

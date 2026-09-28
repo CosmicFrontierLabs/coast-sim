@@ -1,5 +1,6 @@
 from bisect import bisect_left
 from datetime import datetime, timezone
+from math import ceil
 from typing import Protocol, TypedDict
 
 import numpy as np
@@ -29,7 +30,7 @@ from ..config.constraint import (
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
 from ..simulation.idle_safety import IdleSafetyPlanner
-from ..simulation.passes import Pass, pass_slew_trigger_buffer
+from ..simulation.passes import Pass
 from ..simulation.roll import optimum_roll
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing, Queue, TargetSlewEstimate
@@ -1694,27 +1695,13 @@ class QueueDITL(DITLMixin, DITLStats):
                 ):
                     continue
                 next_pass = self.acs.passrequests.next_pass(utime)
-                if next_pass is not None:
-                    angle, axis = quaternion_attitude_delta(
-                        ra,
-                        dec,
-                        roll,
-                        next_pass.gsstartra,
-                        next_pass.gsstartdec,
-                        next_pass.gsstartroll,
+                if next_pass is not None and any(
+                    slew.slewend >= deadline
+                    for _, deadline in next_pass.tracking_profile_slew_deadlines(
+                        utime, ra, dec, roll, for_admission=True
                     )
-                    pass_slew = scheduled_slew_time(
-                        self.config.spacecraft_bus.attitude_control.slew_time(
-                            angle, axis
-                        )
-                    )
-                    if (
-                        slew.slewend
-                        + pass_slew
-                        + pass_slew_trigger_buffer(self.step_size)
-                        >= next_pass.begin
-                    ):
-                        continue
+                ):
+                    continue
                 if not planner.hold_is_safe((ra, dec, roll), slew.slewend):
                     continue
                 if (
@@ -2936,7 +2923,8 @@ class QueueDITL(DITLMixin, DITLStats):
                 return
 
             # Calculate slew timing
-            execution_time = self._ppt_slew_execution_time(utime)
+            hold_start = self._ppt_slew_execution_time(utime)
+            execution_time = hold_start
 
             # Wait for current slew to finish if in progress
             if execution_time > utime:
@@ -2959,15 +2947,21 @@ class QueueDITL(DITLMixin, DITLStats):
                 )
                 execution_time = visstart
 
+            # Commands execute only on scheduler ticks. Validate the same epoch
+            # that ACS will execute, including any hold after an active slew.
+            execution_time = (
+                utime + ceil((execution_time - utime) / self.step_size) * self.step_size
+            )
             if (
                 self._idle_safety is not None
-                and not self.acs._is_actively_slewing(utime)
                 and self._idle_safety.first_violation(
-                    (self.acs.ra, self.acs.dec, self.acs.roll), utime
+                    self._expected_slew_start_attitude(utime, execution_time),
+                    hold_start,
                 )
+                - self._idle_safety.step
                 < execution_time
             ):
-                # A safe future path does not justify an unsafe wait for it.
+                # Leave no later than the last safe sample, not the first bad one.
                 self._retry_fetch_without_current_ppt(utime, ra, dec)
                 return
 
