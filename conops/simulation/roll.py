@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import numpy as np
 import numpy.typing as npt
 import rust_ephem
 
 from ..common import dtutcfromtimestamp, scbodyvector
 from ..common.enums import ACSMode
+from ..common.ephemeris import position_vectors
 from ..config import DTOR, Constraint, SolarPanelSet, Telescope
 from ..config.constraint import (
     AttitudeConstraintScope,
@@ -80,28 +83,34 @@ def _power_score_order(
     scores: npt.NDArray[np.float64],
     tie_distance: npt.NDArray[np.float64],
     degrees: npt.NDArray[np.float64],
-) -> npt.NDArray[np.int64]:
-    """Order finite candidates by power, treating numerical noise as a tie."""
+) -> Iterator[int]:
+    """Yield power-ranked candidates, resolving only the ties the caller needs."""
     finite = np.flatnonzero(np.isfinite(scores))
     ranked = finite[np.argsort(-scores[finite], kind="stable")]
-    ordered: list[int] = []
     start = 0
     while start < ranked.size:
         stop = start + 1
-        while stop < ranked.size and np.isclose(
-            scores[ranked[stop]],
-            scores[ranked[start]],
-            rtol=_POWER_SCORE_RTOL,
-            atol=_POWER_SCORE_ATOL_W,
-        ):
-            stop += 1
+        reference_score = float(scores[ranked[start]])
+        tolerance = _POWER_SCORE_ATOL_W + _POWER_SCORE_RTOL * abs(reference_score)
+        # All scores here are finite. Preserve np.isclose's scalar criterion
+        # without allocating NumPy temporaries for every candidate.
+        if abs(float(scores[ranked[-1]]) - reference_score) <= tolerance:
+            stop = ranked.size
+        else:
+            while (
+                stop < ranked.size
+                and abs(float(scores[ranked[stop]]) - reference_score) <= tolerance
+            ):
+                stop += 1
         tied_candidates = ranked[start:stop]
-        tie_order = np.lexsort(
-            (degrees[tied_candidates], tie_distance[tied_candidates])
-        )
-        ordered.extend(int(candidate) for candidate in tied_candidates[tie_order])
+        if stop == start + 1:
+            yield int(tied_candidates[0])
+        else:
+            tie_order = np.lexsort(
+                (degrees[tied_candidates], tie_distance[tied_candidates])
+            )
+            yield from (int(candidate) for candidate in tied_candidates[tie_order])
         start = stop
-    return np.asarray(ordered, dtype=np.int64)
 
 
 def _mounted_optimum_roll(
@@ -127,7 +136,7 @@ def _mounted_optimum_roll(
 
     index = ephem.index(dtutcfromtimestamp(utime))
     sun_eci = np.asarray(
-        ephem.sun_pv.position[index] - ephem.gcrs_pv.position[index],
+        position_vectors(ephem, "sun")[index] - position_vectors(ephem, "gcrs")[index],
         dtype=float,
     )
     sun_instrument = scbodyvector(ra * DTOR, dec * DTOR, 0.0, sun_eci)
@@ -145,7 +154,10 @@ def _mounted_optimum_roll(
         else degrees
     )
     candidate_order = _power_score_order(scores, tie_distance, degrees)
+    best_roll = None
     for candidate in candidate_order:
+        if best_roll is None:
+            best_roll = float(candidate)
         attitude = telescope.target_body_attitude(ra, dec, float(candidate))
         violations = (
             mounted_science_attitude_constraint_names(
@@ -164,11 +176,7 @@ def _mounted_optimum_roll(
 
     # Match the legacy fail-open return contract; the caller's locked-attitude
     # validation rejects the target when every candidate is constrained.
-    return (
-        float(candidate_order[0])
-        if candidate_order.size
-        else float(reference_roll or 0.0)
-    )
+    return best_roll if best_roll is not None else float(reference_roll or 0.0)
 
 
 def _roll_valid_mask(
@@ -273,7 +281,9 @@ def optimum_roll(
 
     # Fetch ephemeris index and Sun vector from pre-computed arrays
     index = ephem.index(dtutcfromtimestamp(utime))
-    sunvec = ephem.sun_pv.position[index] - ephem.gcrs_pv.position[index]  # km
+    sunvec = (
+        position_vectors(ephem, "sun")[index] - position_vectors(ephem, "gcrs")[index]
+    )  # km
 
     # Sun vector in body coordinates for roll=0
     s_body_0 = scbodyvector(ra * DTOR, dec * DTOR, 0.0, sunvec)

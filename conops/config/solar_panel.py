@@ -7,6 +7,7 @@ import rust_ephem
 from pydantic import Field, PrivateAttr
 
 from ..common import dtutcfromtimestamp
+from ..common.ephemeris import position_vectors
 from ..common.vector import vecnorm
 from ._base import ConfigModel
 from .geometry import PanelGeometry
@@ -151,7 +152,10 @@ class SolarPanel(ConfigModel):
         illum = np.zeros(len(indices))
         for idx, time_idx in enumerate(indices):
             # Get sun position vector from ephemeris
-            sunvec = ephem.sun_pv.position[time_idx] - ephem.gcrs_pv.position[time_idx]
+            sunvec = (
+                position_vectors(ephem, "sun")[time_idx]
+                - position_vectors(ephem, "gcrs")[time_idx]
+            )
 
             # Convert sun vector to body frame
             sun_body = scbodyvector(
@@ -604,7 +608,9 @@ class SolarPanelSet(ConfigModel):
             return (0.0, 0.0) if scalar else (np.array([0.0]), np.array([0.0]))
 
         # Get sun vector in body frame
-        sunvec = ephem.sun_pv.position[idx] - ephem.gcrs_pv.position[idx]  # km
+        sunvec = (
+            position_vectors(ephem, "sun")[idx] - position_vectors(ephem, "gcrs")[idx]
+        )  # km
         sun_body = scbodyvector(
             np.deg2rad(ra), np.deg2rad(dec), np.deg2rad(roll), sunvec
         )
