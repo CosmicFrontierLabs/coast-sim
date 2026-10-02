@@ -309,7 +309,10 @@ Entry Fields
    * - ``exposure``
      - int
      - Net science exposure time in seconds. For ``AT``/``PPT``/``TOO`` entries:
-       ``end − begin − slewtime − insaa``. For ``GSP`` entries: the actual downlink
+       ``collection_end - collection_begin - insaa`` when collection bounds
+       are present, otherwise ``end - begin - slewtime - insaa``.
+       Collection bounds are optional ISO-8601 UTC timestamps; task ``end``
+       still includes cleanup and handoff time. For ``GSP`` entries: the actual downlink
        contact duration, computed as ``contact_end − max(contact_begin, begin)``.
    * - ``station``
      - string | null

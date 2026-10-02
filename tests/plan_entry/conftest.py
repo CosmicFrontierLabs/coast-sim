@@ -12,6 +12,7 @@ from conops import (
     MissionConfig,
     PlanEntry,
 )
+from conops.config import ObservationTiming
 
 
 class MockEphemeris:
@@ -102,6 +103,7 @@ def mock_acs():
 def mock_config(mock_constraint, mock_acs):
     """Fixture for mock config."""
     config = Mock()
+    config.payload.observation_timing = ObservationTiming()
     config.__class__ = MissionConfig
     # MissionConfig's init_fault_management_defaults model_validator re-runs
     # whenever this config is embedded as a nested field elsewhere (e.g. on

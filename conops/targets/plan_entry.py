@@ -32,6 +32,7 @@ from ..config.constraint import (
     attitude_constraint_names_for_scopes,
     mounted_science_attitude_constraint_names,
 )
+from ..config.observation_timing import ObservationTiming
 from ..simulation.saa import SAA
 
 BodyAxis = Literal["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
@@ -126,6 +127,12 @@ class PlanEntry(BaseModel):
     slewtime: int = 0
     insaa: int = 0
     end: float = 0
+    collection_begin: float | None = Field(
+        default=None, allow_inf_nan=False, exclude_if=lambda v: v is None
+    )
+    collection_end: float | None = Field(
+        default=None, allow_inf_nan=False, exclude_if=lambda v: v is None
+    )
     obsid: int = 0
     station: str | None = None
     station_lat_deg: float | None = None
@@ -149,8 +156,8 @@ class PlanEntry(BaseModel):
     slewdist: float = 0.0
     ss_min: float = 1000
     ss_max: float = 1e6
-    _exptime: int | None = PrivateAttr(default=None)
-    _exporig: int | None = PrivateAttr(default=None)
+    _exptime: float | None = PrivateAttr(default=None)
+    _exporig: float | None = PrivateAttr(default=None)
     _serialized_target_attitude: TargetAttitudeSchema | None = PrivateAttr(default=None)
 
     @model_validator(mode="wrap")
@@ -209,6 +216,20 @@ class PlanEntry(BaseModel):
         """
         if self.begin > self.end:
             raise ValueError(f"begin ({self.begin}) must be <= end ({self.end})")
+        if (self.collection_begin is None) != (self.collection_end is None):
+            raise ValueError(
+                "collection_begin and collection_end must be provided together"
+            )
+        if self.collection_begin is not None and self.collection_end is not None:
+            if (
+                not self.begin
+                <= self.collection_begin
+                <= self.collection_end
+                <= self.end
+            ):
+                raise ValueError(
+                    "collection interval must lie inside the task interval"
+                )
         if (
             self.contact_begin is not None
             and self.contact_end is not None
@@ -220,7 +241,15 @@ class PlanEntry(BaseModel):
             )
         return self
 
-    @field_validator("begin", "end", "contact_begin", "contact_end", mode="before")
+    @field_validator(
+        "begin",
+        "end",
+        "contact_begin",
+        "contact_end",
+        "collection_begin",
+        "collection_end",
+        mode="before",
+    )
     @classmethod
     def _coerce_time(cls, v: float | int | str | None) -> float | None:
         """Accept Unix timestamps (float/int) or ISO-8601 strings."""
@@ -230,7 +259,14 @@ class PlanEntry(BaseModel):
             return datetime.fromisoformat(v).timestamp()
         return float(v)
 
-    @field_serializer("begin", "end", "contact_begin", "contact_end")
+    @field_serializer(
+        "begin",
+        "end",
+        "contact_begin",
+        "contact_end",
+        "collection_begin",
+        "collection_end",
+    )
     def _serialize_time(self, v: float | None) -> str | None:
         if v is None:
             return None
@@ -238,18 +274,18 @@ class PlanEntry(BaseModel):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
-    def exptime(self) -> int | None:
+    def exptime(self) -> float | None:
         return self._exptime
 
     @exptime.setter
-    def exptime(self, t: int) -> None:
+    def exptime(self, t: float) -> None:
         if self._exptime is None:
             self._exporig = t
         self._exptime = t
 
     @computed_field  # type: ignore[prop-decorator]
     @property
-    def exporig(self) -> int | None:
+    def exporig(self) -> float | None:
         return self._exporig
 
     def __str__(self) -> str:
@@ -265,13 +301,38 @@ class PlanEntry(BaseModel):
         ):
             contact_start = max(float(self.contact_begin), float(self.begin))
             return max(0, int(self.contact_end - contact_start))
-        exposure = self.end - self.begin - self.slewtime - self.insaa
+        if self.collection_begin is not None and self.collection_end is not None:
+            exposure = (
+                min(self.end, self.collection_end)
+                - max(self.begin, self.collection_begin)
+                - self.insaa
+            )
+        else:
+            exposure = self.end - self.begin - self.slewtime - self.insaa
         return max(0, int(exposure))  # always an integer number of seconds
 
     @exposure.setter
-    def exposure(self, value: int) -> None:
-        """Setter for exposure - accepts but ignores the value since exposure is computed."""
+    def exposure(self, value: float) -> None:
+        """Accept legacy assignment; exposure is derived from the collection window."""
         pass
+
+    def set_collection_window(self, timing: ObservationTiming) -> None:
+        """Record the planned collection interval without changing the task boundary."""
+        if self.obstype not in self._STATIC_TARGET_OBSTYPES:
+            return
+        self.collection_begin, self.collection_end = timing.collection_window(
+            self.begin, self.slewtime, self.end
+        )
+
+    def collection_seconds_between(self, begin: float, end: float) -> float:
+        """Intersect one time interval with this observation's collection window."""
+        start = (
+            self.collection_begin
+            if self.collection_begin is not None
+            else self.begin + max(0.0, float(self.slewtime))
+        )
+        stop = self.collection_end if self.collection_end is not None else self.end
+        return max(0.0, min(end, stop, self.end) - max(begin, start, self.begin))
 
     @computed_field  # type: ignore[prop-decorator]
     @property

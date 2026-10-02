@@ -112,7 +112,9 @@ def test_process_data_management_generates_and_downlinks(mock_config):
     # SCIENCE mode generates data
     mock_config.payload.data_generated = Mock(return_value=0.5)  # Gb per step
     mock_config.recorder.add_data = Mock()
-    gen, dl = mixin._process_data_management(utime, ACSMode.SCIENCE, step)
+    gen, dl = mixin._process_data_management(
+        utime, ACSMode.SCIENCE, step, collection_seconds=step
+    )
     assert gen == 0.5
     mock_config.recorder.add_data.assert_called_once_with(0.5)
     assert dl == 0.0
@@ -144,7 +146,9 @@ def test_process_data_management_generates_and_downlinks(mock_config):
     # recorder remove_data returns the amount actually removed (Gb)
     mock_config.recorder.remove_data = Mock(return_value=0.3)
 
-    gen2, dl2 = mixin._process_data_management(utime, ACSMode.PASS, step)
+    gen2, dl2 = mixin._process_data_management(
+        utime, ACSMode.PASS, step, collection_seconds=0
+    )
     # 50 Mbps effective => 50*60 / 1000 / 8 = 0.375 Gb per step, but recorder returns 0.3
     assert gen2 == 0.0
     assert dl2 == 0.3

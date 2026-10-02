@@ -175,9 +175,7 @@ class TestGetTarget:
         with patch.object(queue_instance, "meritsort"):
             target = queue_instance.get(ra=0, dec=0, utime=utime)
 
-        endtime = utime + target.slewtime + target.ss_min
-        expected_endtime_check = queue_instance.ephem.timestamp[-1].timestamp()
-        assert endtime > expected_endtime_check
+        assert target is None  # Fewer than ss_min collection seconds remain.
 
     def test_get_target_visible_called_with_constrained_end(self, queue_instance):
         """Test that visible() is called with the constrained ephemeris end."""
@@ -192,15 +190,14 @@ class TestGetTarget:
         )
 
     def test_get_target_returns_target_still_visible(self, queue_instance):
-        """Test that get() can still return a target when observation is constrained by ephem."""
-        utime = queue_instance.ephem.timestamp[-1].timestamp() - 50
+        """A shortened window is usable if slew plus ss_min still fit."""
+        utime = queue_instance.ephem.timestamp[-1].timestamp() - 70
 
         with patch.object(queue_instance, "meritsort"):
             target = queue_instance.get(ra=0, dec=0, utime=utime)
 
-        assert (
-            target is not None
-        )  # Assuming it is still visible in the shortened window
+        assert target is not None
+        assert target.end <= queue_instance.ephem.timestamp[-1].timestamp()
 
 
 class TestSlewDistanceWeight:

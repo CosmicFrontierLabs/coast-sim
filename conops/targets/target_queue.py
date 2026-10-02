@@ -49,6 +49,7 @@ class TargetQueue:
         self.config = config
         self.constraint = config.constraint
         self.acs_config = config.spacecraft_bus.attitude_control
+        self.observation_timing = config.payload.observation_timing
 
         self.targets = []
         self.ephem = ephem
@@ -168,12 +169,12 @@ class TargetQueue:
         slewtime: float | None = None,
     ) -> float:
         """Estimate useful science collection available after the slew."""
-        collection_start = utime + float(
-            target.slewtime if slewtime is None else slewtime
-        )
-        collection_end = float(visibility_window[1])
+        end = float(visibility_window[1])
         if deadline is not None:
-            collection_end = min(collection_end, float(deadline))
+            end = min(end, float(deadline))
+        collection_start, collection_end = self.observation_timing.collection_window(
+            utime, float(target.slewtime if slewtime is None else slewtime), end
+        )
         window_seconds = max(0.0, collection_end - collection_start)
         max_snapshot = float(target.ss_max)
         remaining_exposure = target.exptime
@@ -193,7 +194,9 @@ class TargetQueue:
         This is only an impossibility filter. If zero slew cannot fit the
         immediate visibility/deadline window, any nonnegative slew also cannot.
         """
-        zero_slew_endtime = utime + float(target.ss_min)
+        zero_slew_endtime = (
+            utime + float(target.ss_min) + self.observation_timing.total_seconds
+        )
         if zero_slew_endtime > last_unix:
             zero_slew_endtime = last_unix
 
@@ -201,10 +204,11 @@ class TargetQueue:
         if not visibility_window:
             return False
 
-        if collection_deadline is None:
-            return True
-
-        deadline = collection_deadline(target, utime)
+        deadline = (
+            collection_deadline(target, utime)
+            if collection_deadline is not None
+            else None
+        )
         collection_seconds = self._candidate_collection_seconds(
             target=target,
             visibility_window=visibility_window,
@@ -236,7 +240,9 @@ class TargetQueue:
         optimistic score cannot beat the current best score, the real score
         cannot either.
         """
-        zero_slew_endtime = utime + float(target.ss_min)
+        zero_slew_endtime = (
+            utime + float(target.ss_min) + self.observation_timing.total_seconds
+        )
         if zero_slew_endtime > last_unix:
             zero_slew_endtime = last_unix
 
@@ -380,7 +386,12 @@ class TargetQueue:
             )
 
             # Calculate observation window
-            endtime = utime + target.slewtime + target.ss_min
+            endtime = (
+                utime
+                + target.slewtime
+                + target.ss_min
+                + self.observation_timing.total_seconds
+            )
 
             # If the end time exceeds ephemeris, clamp it
             if endtime > last_unix:
@@ -390,7 +401,19 @@ class TargetQueue:
             visibility_window = target.visible(utime, endtime)
             if visibility_window:
                 target.begin = int(utime)
-                target.end = int(utime + target.slewtime + target.ss_max)
+                collection = self._candidate_collection_seconds(
+                    target, visibility_window, utime
+                )
+                if collection < target.ss_min:
+                    continue
+                target.end = min(
+                    float(visibility_window[1]),
+                    utime
+                    + target.slewtime
+                    + collection
+                    + self.observation_timing.total_seconds,
+                )
+                target.set_collection_window(self.observation_timing)
                 # If no slew weighting, return first visible target (fast path)
                 if not score_candidates:
                     return target

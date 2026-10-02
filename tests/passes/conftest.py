@@ -17,6 +17,14 @@ from conops.config import (
     SolarPanelSet,
     SpacecraftBus,
 )
+from conops.simulation.passes import _cached_pass_attitude_delta
+
+
+@pytest.fixture
+def cleared_pass_attitude_cache():
+    _cached_pass_attitude_delta.cache_clear()
+    yield
+    _cached_pass_attitude_delta.cache_clear()
 
 
 class MockEphemeris:

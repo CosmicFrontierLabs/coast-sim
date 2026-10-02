@@ -255,7 +255,9 @@ class TestDITLMixin:
         ditl = ditl_with_payload_and_recorder
         from conops.common.enums import ACSMode
 
-        data_gen, data_dl = ditl._process_data_management(1000.0, ACSMode.SCIENCE, 60)
+        data_gen, data_dl = ditl._process_data_management(
+            1000.0, ACSMode.SCIENCE, 60, collection_seconds=60
+        )
         assert data_gen == 0.1
 
     def test_process_data_management_science_mode_data_dl_zero(
@@ -265,7 +267,9 @@ class TestDITLMixin:
         ditl = ditl_with_payload_and_recorder
         from conops.common.enums import ACSMode
 
-        data_gen, data_dl = ditl._process_data_management(1000.0, ACSMode.SCIENCE, 60)
+        data_gen, data_dl = ditl._process_data_management(
+            1000.0, ACSMode.SCIENCE, 60, collection_seconds=60
+        )
         assert data_dl == 0.0
 
     def test_process_data_management_science_mode_calls_data_generated(
@@ -275,7 +279,9 @@ class TestDITLMixin:
         ditl = ditl_with_payload_and_recorder
         from conops.common.enums import ACSMode
 
-        ditl._process_data_management(1000.0, ACSMode.SCIENCE, 60)
+        ditl._process_data_management(
+            1000.0, ACSMode.SCIENCE, 60, collection_seconds=60
+        )
         ditl.payload.data_generated.assert_called_with(60)
 
     def test_process_data_management_science_mode_calls_add_data(
@@ -285,7 +291,9 @@ class TestDITLMixin:
         ditl = ditl_with_payload_and_recorder
         from conops.common.enums import ACSMode
 
-        ditl._process_data_management(1000.0, ACSMode.SCIENCE, 60)
+        ditl._process_data_management(
+            1000.0, ACSMode.SCIENCE, 60, collection_seconds=60
+        )
         ditl.recorder.add_data.assert_called_with(0.1)
 
     def test_process_data_management_pass_mode_data_gen_zero(
@@ -295,7 +303,9 @@ class TestDITLMixin:
         ditl = ditl_with_pass_setup
         from conops.common.enums import ACSMode
 
-        data_gen, data_dl = ditl._process_data_management(1000.0, ACSMode.PASS, 60)
+        data_gen, data_dl = ditl._process_data_management(
+            1000.0, ACSMode.PASS, 60, collection_seconds=0
+        )
         assert data_gen == 0.0
 
     def test_process_data_management_pass_mode_data_dl(
@@ -305,7 +315,9 @@ class TestDITLMixin:
         ditl = ditl_with_pass_setup
         from conops.common.enums import ACSMode
 
-        data_gen, data_dl = ditl._process_data_management(1000.0, ACSMode.PASS, 60)
+        data_gen, data_dl = ditl._process_data_management(
+            1000.0, ACSMode.PASS, 60, collection_seconds=0
+        )
         assert data_dl == 0.05
 
     def test_process_data_management_pass_mode_calls_remove_data(
@@ -315,7 +327,7 @@ class TestDITLMixin:
         ditl = ditl_with_pass_setup
         from conops.common.enums import ACSMode
 
-        ditl._process_data_management(1000.0, ACSMode.PASS, 60)
+        ditl._process_data_management(1000.0, ACSMode.PASS, 60, collection_seconds=0)
         ditl.recorder.remove_data.assert_called_with(0.75)
 
     def test_process_data_management_other_modes_data_gen_zero(
@@ -325,7 +337,9 @@ class TestDITLMixin:
         ditl, _, _ = ditl_instance
         from conops.common.enums import ACSMode
 
-        data_gen, data_dl = ditl._process_data_management(1000.0, ACSMode.SLEWING, 60)
+        data_gen, data_dl = ditl._process_data_management(
+            1000.0, ACSMode.SLEWING, 60, collection_seconds=0
+        )
         assert data_gen == 0.0
 
     def test_process_data_management_other_modes_data_dl_zero(
@@ -335,7 +349,9 @@ class TestDITLMixin:
         ditl, _, _ = ditl_instance
         from conops.common.enums import ACSMode
 
-        data_gen, data_dl = ditl._process_data_management(1000.0, ACSMode.SLEWING, 60)
+        data_gen, data_dl = ditl._process_data_management(
+            1000.0, ACSMode.SLEWING, 60, collection_seconds=0
+        )
         assert data_dl == 0.0
 
     def test_init_subsystems_called(self, mock_config: Mock) -> None:

@@ -23,6 +23,10 @@ if TYPE_CHECKING:
     from ..targets import PlanEntry
 
 
+# The constraint-avoiding planner inserts at most one waypoint.
+_MAX_CONSTRAINT_AVOIDING_SEGMENTS = 2
+
+
 class _SlewSegment(NamedTuple):
     distance_deg: float
     axis_body: tuple[float, float, float]
@@ -266,6 +270,47 @@ class Slew(BaseModel):
         roll_diff = self._shortest_roll_diff(self.startroll, self.endroll)
         return (self.startroll + f * roll_diff) % 360
 
+    @staticmethod
+    def duration_upper_bound(acs_config: AttitudeControlSystem) -> int:
+        """Bound any path from the selected algorithm, independent of epoch.
+
+        Each shortest quaternion segment is at most 180 degrees. Using the
+        slowest rate and acceleration bounds every direction of the ellipsoidal
+        body-axis limits, even when their minima occur on different axes.
+        """
+        if acs_config.slew_algorithm == SlewAlgorithm.QUATERNION:
+            segments = 1
+        elif acs_config.slew_algorithm == SlewAlgorithm.CONSTRAINT_AVOIDING:
+            segments = _MAX_CONSTRAINT_AVOIDING_SEGMENTS
+        else:
+            raise ValueError("No slew duration bound for the configured algorithm")
+
+        slowest = acs_config.model_copy(
+            update={
+                "max_slew_rate": min(acs_config.max_slew_rate_body)
+                if acs_config.max_slew_rate_body is not None
+                else acs_config.max_slew_rate,
+                "slew_acceleration": min(acs_config.slew_acceleration_body)
+                if acs_config.slew_acceleration_body is not None
+                else acs_config.slew_acceleration,
+                "max_slew_rate_body": None,
+                "slew_acceleration_body": None,
+            }
+        )
+        if not all(
+            np.isfinite(value) and value > 0.0
+            for value in (slowest.max_slew_rate, slowest.slew_acceleration)
+        ) or not (np.isfinite(slowest.settle_time) and slowest.settle_time >= 0.0):
+            raise ValueError("Cannot bound slew duration with invalid kinematic limits")
+        # Directional floating-point arithmetic can cross an integer boundary
+        # before execution rounds up; reserve that extra second as well.
+        return (
+            scheduled_slew_time(
+                segments * slowest.motion_time(180.0) + slowest.settle_time
+            )
+            + 1
+        )
+
     def calc_slewtime(self) -> float:
         """Calculate time to slew between 2 coordinates, given in degrees.
 
@@ -274,6 +319,12 @@ class Slew(BaseModel):
         """
         # Calculate slew distance along great circle path
         self.predict_slew()
+        if (
+            self.acs_config is not None
+            and self.acs_config.slew_algorithm == SlewAlgorithm.CONSTRAINT_AVOIDING
+            and len(self._slew_segments) > _MAX_CONSTRAINT_AVOIDING_SEGMENTS
+        ):
+            raise ValueError("Slew path exceeds the segment bound used by admission")
         distance = self.slewdist
 
         # Handle invalid distances

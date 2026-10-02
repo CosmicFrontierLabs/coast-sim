@@ -661,6 +661,7 @@ class TestQuaternionFields:
     def test_ditl_simulation_writes_quaternion(self, ditl: DITL) -> None:  # type: ignore[name-defined]
         """After calc(), every housekeeping record has a non-None unit quaternion."""
         ditl.acs.pointing.return_value = (45.0, 30.0, 15.0, 1)
+        ditl.plan.which_ppt.return_value = None
         ditl.calc()
         hk = ditl.telemetry.housekeeping[0]
         assert hk.quat_w is not None
