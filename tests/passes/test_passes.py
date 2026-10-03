@@ -18,6 +18,7 @@ from conops.common import (
     radec2vec,
 )
 from conops.common.enums import ACSMode, AntennaType, ObsType, SlewAlgorithm
+from conops.common.vector import quaternion_attitude_delta
 from conops.config import (
     AntennaPointing,
     AttitudeConstraintScope,
@@ -239,6 +240,31 @@ class TestPassTimeToSlew:
         result = basic_pass_mock.time_to_slew(1514764700.0, ra=10.0, dec=20.0)
         assert result is False
 
+    def test_profile_deadlines_match_trigger_boundaries(self, basic_pass_mock):
+        profiles = [[(10.0, 20.0, 0.0)], [], [(10.0, 20.0, 180.0)]]
+        basic_pass_mock.tracking_attitude_profiles = profiles
+        buffer = pass_slew_trigger_buffer(basic_pass_mock.ephem.step_size)
+        with patch.object(
+            Pass, "_slew_time_to_target", side_effect=lambda *args: 45 + args[-1]
+        ):
+            deadlines = list(
+                basic_pass_mock.tracking_profile_slew_deadlines(
+                    basic_pass_mock.begin - 1000, 10, 20, 0
+                )
+            )
+            assert deadlines == [
+                (profiles[0], basic_pass_mock.begin - 45 - buffer),
+                (profiles[2], basic_pass_mock.begin - 225 - buffer),
+            ]
+            earliest = deadlines[1][1]
+            assert not basic_pass_mock.time_to_slew(earliest - 1, 10, 20, 0)
+            assert basic_pass_mock.tracking_profiles_due_for_slew(
+                earliest, 10, 20, 0
+            ) == [profiles[2]]
+            assert basic_pass_mock.tracking_profiles_due_for_slew(
+                deadlines[0][1], 10, 20, 0
+            ) == [profiles[0], profiles[2]]
+
     def test_time_to_slew_early_with_valid_profile(
         self, basic_pass_mock, start_ra, start_dec, two_step_utime
     ):
@@ -373,6 +399,7 @@ class TestPassTimeToSlew:
         mock_constraint,
         create_ephem,
         base_begin,
+        cleared_pass_attitude_cache,
     ):
         begin_dt = datetime(2025, 8, 15, 0, 0, 0, tzinfo=timezone.utc)
         end_dt = datetime(2025, 8, 15, 0, 15, 0, tzinfo=timezone.utc)
@@ -424,6 +451,26 @@ class TestPassTimeToSlew:
             12.5,
             (0.0, 0.0, 1.0),
         )
+
+    def test_geometry_cache_reuses_angles_but_not_slew_limits(
+        self, basic_pass_mock, cleared_pass_attitude_cache
+    ):
+        p = basic_pass_mock
+        acs = p.config.spacecraft_bus.attitude_control
+        acs.slew_algorithm = SlewAlgorithm.QUATERNION
+        acs.max_slew_rate = 0.25
+        with patch(
+            "conops.simulation.passes.quaternion_attitude_delta",
+            wraps=quaternion_attitude_delta,
+        ) as delta:
+            first = p._slew_time_to_target(100, 10, 20, 30, 80, 40, 50)
+            assert p._slew_time_to_target(200, 10, 20, 30, 80, 40, 50) == first
+            assert delta.call_count == 1
+            acs.max_slew_rate = 2.0
+            assert p._slew_time_to_target(200, 10, 20, 30, 80, 40, 50) < first
+            assert delta.call_count == 1
+            p._slew_time_to_target(200, 10, 20, 30, 80, 40, 180)
+            assert delta.call_count == 2
 
     def test_slew_time_to_target_constraint_avoiding_uses_full_slew(
         self,

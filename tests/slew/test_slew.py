@@ -7,8 +7,114 @@ import pytest
 from pydantic import ValidationError
 
 from conops import AttitudeControlSystem, MissionConfig, Slew
-from conops.common.enums import ObsType
+from conops.common.enums import ObsType, SlewAlgorithm
 from conops.config.acs import scheduled_slew_time
+
+
+class TestSlewDurationUpperBound:
+    @pytest.mark.parametrize(
+        "algorithm,segments",
+        [
+            (SlewAlgorithm.QUATERNION, 1),
+            (SlewAlgorithm.CONSTRAINT_AVOIDING, 2),
+        ],
+    )
+    @pytest.mark.parametrize("directional", [False, True])
+    def test_bound_uses_slowest_limits_and_one_settle(
+        self, algorithm, segments, directional
+    ):
+        acs = AttitudeControlSystem(
+            slew_algorithm=algorithm,
+            max_slew_rate=2.0,
+            slew_acceleration=0.125,
+            settle_time=36.1,
+            max_slew_rate_body=(0.5, 2.0, 3.0) if directional else None,
+            slew_acceleration_body=(0.2, 0.03, 0.1) if directional else None,
+        )
+        original = acs.model_dump()
+        slowest = AttitudeControlSystem(
+            max_slew_rate=0.5 if directional else 2.0,
+            slew_acceleration=0.03 if directional else 0.125,
+        )
+        assert Slew.duration_upper_bound(acs) == 1 + scheduled_slew_time(
+            segments * slowest.motion_time(180.0) + 36.1
+        )
+        assert acs.model_dump() == original
+
+    def test_directional_rounding_at_integer_duration(self):
+        acs = AttitudeControlSystem(
+            slew_algorithm=SlewAlgorithm.CONSTRAINT_AVOIDING,
+            max_slew_rate_body=(2.0, 2.0, 2.0),
+            slew_acceleration_body=(0.125, 0.125, 0.125),
+            settle_time=36.0,
+        )
+        # Nominal duration is 248 s; directional normalization can make it
+        # 248.00000000000003 s, which execution must round UP to 249 s.
+        axis = (-0.6600342418706184, -0.7767034063404081, 1.0068535680942634)
+        executed = scheduled_slew_time(2 * acs.motion_time(180, axis) + 36)
+        assert Slew.duration_upper_bound(acs) == 249
+        assert executed <= Slew.duration_upper_bound(acs)
+
+    @pytest.mark.parametrize("directional", [False, True])
+    @pytest.mark.parametrize("waypoint", [None, (45.0, 30.0), (180.0, 0.0)])
+    def test_real_paths_obey_bound(self, slew, directional, waypoint):
+        acs = AttitudeControlSystem(
+            slew_algorithm=SlewAlgorithm.CONSTRAINT_AVOIDING,
+            max_slew_rate=2.0,
+            slew_acceleration=0.125,
+            settle_time=36.1,
+            max_slew_rate_body=(0.5, 2.0, 3.0) if directional else None,
+            slew_acceleration_body=(0.2, 0.03, 0.1) if directional else None,
+        )
+        slew.acs_config = acs
+        bound = Slew.duration_upper_bound(acs)
+        rng = np.random.default_rng(254)
+        with patch(
+            "conops.simulation.slew.constraint_avoiding_waypoint", return_value=waypoint
+        ):
+            for _ in range(20):
+                slew.startra, slew.startroll, slew.endra, slew.endroll = rng.uniform(
+                    0, 360, 4
+                )
+                slew.startdec, slew.enddec = rng.uniform(-90, 90, 2)
+                assert slew.calc_slewtime() <= bound
+
+    def test_unsupported_algorithm_fails_closed(self):
+        acs = AttitudeControlSystem.model_construct(slew_algorithm="future_algorithm")
+        with pytest.raises(ValueError, match="No slew duration bound"):
+            Slew.duration_upper_bound(acs)
+
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("max_slew_rate", 0),
+            ("slew_acceleration", -1),
+            ("max_slew_rate", float("nan")),
+            ("settle_time", float("inf")),
+            ("settle_time", -1),
+        ],
+    )
+    def test_invalid_limits_fail_closed(self, field, value):
+        acs = AttitudeControlSystem(**{field: value})
+        with pytest.raises(ValueError, match="invalid kinematic limits"):
+            Slew.duration_upper_bound(acs)
+
+    def test_more_waypoints_require_updating_admission_bound(self, slew):
+        slew.acs_config = AttitudeControlSystem(
+            slew_algorithm=SlewAlgorithm.CONSTRAINT_AVOIDING
+        )
+        with patch(
+            "conops.simulation.slew.constraint_avoiding_waypoint",
+            return_value=(45.0, 30.0),
+        ):
+            slew.endra = 90
+            slew.predict_slew()
+        slew._slew_segments.append(slew._slew_segments[-1])
+        with (
+            patch.object(Slew, "predict_slew"),
+            pytest.raises(ValueError, match="segment bound"),
+        ):
+            slew.calc_slewtime()
 
 
 class TestSlewInit:
