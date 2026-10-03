@@ -22,6 +22,7 @@ from conops import (
     PlanExecutionMismatchError,
     QueueDITL,
     Slew,
+    StoredMomentumConfig,
 )
 from conops.common.enums import ObsType
 from conops.config import Payload, Telescope
@@ -29,6 +30,26 @@ from conops.config.config import MissionConfig
 from conops.ditl.telemetry import Housekeeping
 from conops.simulation.acs import IDLE_OBSID
 from conops.targets import Plan, PlanEntry, Pointing
+
+
+def test_enabled_momentum_is_written_to_queue_housekeeping(queue_ditl):
+    bus = queue_ditl.config.spacecraft_bus
+    bus.inertia_tensor_body_kg_m2 = ((10.0, 0.0, 0.0), (0.0, 8.0, 0.0), (0.0, 0.0, 6.0))
+    bus.attitude_control = AttitudeControlSystem(
+        stored_momentum=StoredMomentumConfig(gravity_gradient_enabled=True)
+    )
+    queue_ditl.step_size = queue_ditl.ephem.step_size = 1
+    queue_ditl._reset_stored_momentum_tracker()
+    time = queue_ditl.begin.timestamp()
+    first = queue_ditl._create_housekeeping_record(time, 0.0, 45.0, 0.0, ACSMode.IDLE)
+    second = queue_ditl._create_housekeeping_record(
+        time + 1.0, 0.0, 45.0, 0.0, ACSMode.IDLE
+    )
+    assert first.stored_momentum_norm_n_m_s == 0.0
+    assert second.stored_momentum_norm_n_m_s > 0.0
+    assert second.stored_momentum_body_n_m_s == pytest.approx(
+        second.gravity_gradient_torque_body_n_m
+    )
 
 
 class TestQueueDITLInitialization:

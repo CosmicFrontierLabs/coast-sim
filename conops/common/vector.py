@@ -358,9 +358,17 @@ def attitude_for_body_vector_tracking(
 # Body X = boresight, Body Z = "up" (defines roll).
 
 
-def _quat_to_rot(q: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-    """Convert quaternion [w, x, y, z] to 3×3 rotation matrix."""
-    q = q / np.linalg.norm(q)
+def quaternion_to_rotation_matrix(
+    q: npt.ArrayLike,
+) -> npt.NDArray[np.float64]:
+    """Convert a finite, nonzero quaternion [w, x, y, z] to a rotation matrix."""
+    q = np.asarray(q, dtype=np.float64)
+    if q.shape != (4,) or not np.all(np.isfinite(q)):
+        raise ValueError("quaternion must contain four finite values")
+    norm = float(np.linalg.norm(q))
+    if norm <= 0.0:
+        raise ValueError("quaternion must have nonzero magnitude")
+    q = q / norm
     w, x, y, z = float(q[0]), float(q[1]), float(q[2]), float(q[3])
     return np.array(
         [
@@ -370,6 +378,11 @@ def _quat_to_rot(q: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
         ],
         dtype=np.float64,
     )
+
+
+def _quat_to_rot(q: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Backward-compatible private alias for quaternion rotation conversion."""
+    return quaternion_to_rotation_matrix(q)
 
 
 def attitude_to_quat(
