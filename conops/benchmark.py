@@ -10,6 +10,8 @@ targets and the Targets of Opportunity that arrive during the run. Each
   to ToOs, so they are never observed.
 * :func:`rolling`: :class:`~conops.ditl.RollingHorizonDITL` replans as the run
   goes, including rapid replans for ToOs.
+* :func:`configured`: whatever the scenario configuration's ``scheduler``
+  section selects, built with :func:`~conops.ditl.create_ditl`.
 
 :func:`run_benchmark` runs every contender on fresh copies of the scenario and
 returns a :class:`BenchmarkResult` for each, measured the same way from
@@ -24,8 +26,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .common import ACSMode
 from .config import MissionConfig
-from .ditl import DITL, QueueDITL, RollingHorizonDITL
+from .ditl import DITL, QueueDITL, RollingHorizonDITL, create_ditl
 from .ditl.ditl_mixin import DITLMixin
+from .ditl.factory import queue_targets
 from .ditl.plan_validator import PLAN_SCIENCE_OBSTYPES, entry_obstype
 from .schedulers import PriorityPlanner
 from .targets import Pointing
@@ -123,19 +126,7 @@ def dispatch(name: str = "dispatch") -> Contender:
     def simulate(scenario: BenchmarkScenario) -> _Run:
         config = scenario.make_config()
         ditl = QueueDITL(config=config, begin=scenario.begin, end=scenario.end)
-        for target in scenario.make_targets(config):
-            ditl.queue.add(
-                ra=target.ra,
-                dec=target.dec,
-                obsid=target.obsid,
-                name=target.name,
-                merit=float(target.fom),
-                exptime=int(target.exptime or target.ss_max),
-                ss_min=int(target.ss_min),
-                ss_max=int(target.ss_max),
-                instrument_name=target.instrument_name,
-                deadline=target.deadline,
-            )
+        queue_targets(ditl, scenario.make_targets(config))
         for too in scenario.toos:
             ditl.submit_too(**too.model_dump())
         ditl.calc()
@@ -221,6 +212,29 @@ def rolling(
         )
 
     return Contender(name=name or f"rolling:{planner.planner_name}", simulate=simulate)
+
+
+def configured(name: str = "configured") -> Contender:
+    """Whatever the scenario's configuration selects in its ``scheduler`` section."""
+
+    def simulate(scenario: BenchmarkScenario) -> _Run:
+        config = scenario.make_config()
+        began = time.perf_counter()
+        ditl = create_ditl(
+            config, scenario.make_targets(config), scenario.begin, scenario.end
+        )
+        planning: float | None = time.perf_counter() - began
+        if isinstance(ditl, (QueueDITL, RollingHorizonDITL)):
+            for too in scenario.toos:
+                ditl.submit_too(**too.model_dump())
+        ditl.calc()
+        if isinstance(ditl, RollingHorizonDITL):
+            planning = sum(r.planning_seconds for r in ditl.replans)
+        elif isinstance(ditl, QueueDITL):
+            planning = None
+        return _Run(simulation=ditl, planning_seconds=planning)
+
+    return Contender(name=name, simulate=simulate)
 
 
 # ── Running and reporting ────────────────────────────────────────────────

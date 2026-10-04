@@ -17,6 +17,7 @@ Core Modules
    conops.config.momentum
    conops.config.observation_categories
    conops.config.power
+   conops.config.scheduler
    conops.config.spacecraft_bus
    conops.config.thermal
    conops.ditl
@@ -26,6 +27,7 @@ Core Modules
    conops.ditl.ditl_log_store
    conops.ditl.ditl_mixin
    conops.ditl.ditl_stats
+   conops.ditl.factory
    conops.ditl.plan_validator
    conops.ditl.queue_ditl
    conops.ditl.rolling_ditl
@@ -51,6 +53,7 @@ Scheduling and Planning
    conops.schedulers.protocols
    conops.schedulers.scheduler
    conops.schedulers.queue_scheduler
+   conops.schedulers.registry
    conops.targets
    conops.targets.merit
    conops.targets.pointing
