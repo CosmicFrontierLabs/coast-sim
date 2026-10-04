@@ -196,7 +196,9 @@ class PriorityPlanner:
 
         def tie_break(request: _Request) -> int:
             payload = f"{seed}:{request.target.obsid}".encode()
-            return int.from_bytes(hashlib.blake2b(payload, digest_size=8).digest())
+            return int.from_bytes(
+                hashlib.blake2b(payload, digest_size=8).digest(), "big"
+            )
 
         requests.sort(
             key=lambda r: (r.merit.value_rank, tie_break(r)),
