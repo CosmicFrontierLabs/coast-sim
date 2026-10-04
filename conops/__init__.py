@@ -55,13 +55,17 @@ from .ditl import (
     DITLMixin,
     DITLs,
     DITLStats,
+    PlanExecutionMismatch,
     PlanExecutionMismatchError,
+    PlanExecutionValidator,
     QueueDITL,
     TOORequest,
 )
 from .schedulers import (
+    DispatchPolicy,
     DumbQueueScheduler,
     DumbScheduler,
+    Planner,
 )
 from .simulation import (
     ACS,
@@ -124,8 +128,10 @@ __all__ = [
     "DITLMixin",
     "dtutcfromtimestamp",
     "DTOR",
+    "DispatchPolicy",
     "DumbQueueScheduler",
     "DumbScheduler",
+    "Planner",
     "EmergencyCharging",
     "optimum_body_roll",
     "optimum_instrument_roll",
@@ -146,7 +152,9 @@ __all__ = [
     "PassTimes",
     "Plan",
     "PlanEntry",
+    "PlanExecutionMismatch",
     "PlanExecutionMismatchError",
+    "PlanExecutionValidator",
     "plot_ditl_timeline",
     "plot_fault_management_timeline",
     "plot_fault_management_timeline_plotly",

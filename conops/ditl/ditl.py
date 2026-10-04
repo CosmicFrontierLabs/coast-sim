@@ -7,11 +7,14 @@ from conops.targets.plan import Plan
 
 from ..common import (
     ACSMode,
+    ObsType,
     angular_separation,
     dtutcfromtimestamp,
     radec2vec,
     scbodyvector,
+    unixtime2date,
 )
+from ..common.enums import ACSCommandType
 from ..common.vector import attitude_to_quat
 from ..config import AttitudeConstraintScope, MissionConfig
 from ..config.constraint import (
@@ -19,20 +22,46 @@ from ..config.constraint import (
     attitude_constraint_name_for_scopes,
     attitude_constraint_scope_label,
 )
+from ..simulation.acs_command import ACSCommand
+from ..simulation.passes import Pass
 from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
+from ..simulation.slew import Slew
 from ..targets import PlanEntry
 from .ditl_log import DITLLog
 from .ditl_mixin import DITLMixin
 from .ditl_stats import DITLStats
+from .plan_validator import (
+    PLAN_SCIENCE_OBSTYPES,
+    PlanExecutionMismatch,
+    PlanExecutionValidator,
+    entry_obstype,
+    matching_pass_for_entry,
+)
 from .telemetry import Housekeeping, PayloadData
 
 
 class DITL(DITLMixin, DITLStats):
     """Day In The Life (DITL) simulation class.
 
-    Simulates a single day of spacecraft operations by executing a pre-planned
-    observing schedule  and tracking spacecraft state including power usage,
-    battery levels, pointing angles, and data management.
+    Simulates spacecraft operations by executing a pre-planned observing
+    schedule and tracking spacecraft state including power usage, battery
+    levels, pointing angles, and data management.
+
+    Every plan entry is commanded when its ``begin`` is reached:
+
+    - Science entries (PPT, AT, TOO) slew to the target and collect until
+      ``end``.
+    - Ground-station entries (GSP) slew to the pass tracking profile, start
+      the contact at ``contact_begin`` and end it at ``end``. Passes are
+      predicted from the configured ground stations and matched to the entry
+      by station and contact window.
+    - Charging entries (CHARGE) slew to the charging attitude and charge
+      until ``end``.
+
+    The plan is authoritative: no science, contact or charging activity
+    outside it is started. Use
+    :meth:`validate_plan_matches_execution` after :meth:`calc` to compare the
+    executed telemetry with the plan.
 
     Inherits from DITLMixin which provides shared initialization and plotting
     functionality for DITL simulations.
@@ -117,6 +146,8 @@ class DITL(DITLMixin, DITLStats):
         self.log = DITLLog()
         # Wire log into ACS so it can log events
         self.acs.log = self.log
+        # Per-step attitude constraint violation, recorded by calc()
+        self._attitude_constraint_violations: list[tuple[str, str] | None] = []
 
     def calc(self) -> bool:
         """Execute Day In The Life simulation.
@@ -205,61 +236,10 @@ class DITL(DITLMixin, DITLStats):
         self.data_generated_gb = np.zeros(simlen).tolist()
         self.data_downlinked_gb = np.zeros(simlen).tolist()
 
-        # Set up initial target in ACS
-        self.ppt = self.plan.which_ppt(self.utime[0])
-        if self.ppt is not None:
-            if issubclass(type(self.ppt), PlanEntry):
-                instrument_roll = self.ppt.roll
-                mounted = self.ppt.uses_mounted_attitude()
-                if instrument_roll == -1.0:
-                    telescope = self.ppt.science_telescope()
-                    instrument_roll = (
-                        optimum_instrument_roll(
-                            self.ppt.ra,
-                            self.ppt.dec,
-                            self.utime[0],
-                            self.ephem,
-                            telescope,
-                            self.solar_panel,
-                            self.constraint,
-                            drive_state=self.acs.solar_array_drive_state,
-                        )
-                        if telescope is not None
-                        else optimum_body_roll(
-                            self.ppt.ra,
-                            self.ppt.dec,
-                            self.utime[0],
-                            self.ephem,
-                            self.solar_panel,
-                            self.constraint,
-                            drive_state=self.acs.solar_array_drive_state,
-                        )
-                    )
-                    self.ppt.roll = instrument_roll
-                body_ra, body_dec, body_roll = self.ppt.target_body_attitude(
-                    instrument_roll
-                )
-                self.ppt.spacecraft_attitude = (
-                    (body_ra, body_dec, body_roll) if mounted else None
-                )
-                self.acs._enqueue_slew(
-                    body_ra,
-                    body_dec,
-                    self.ppt.obsid,
-                    self.utime[0],
-                    obstype=self.ppt.obstype,
-                    roll=body_roll,
-                    target_request=self.ppt,
-                    instrument_roll=instrument_roll,
-                )
-            else:
-                self.acs._enqueue_slew(
-                    self.ppt.ra,
-                    self.ppt.dec,
-                    self.ppt.obsid,
-                    self.utime[0],
-                    obstype=self.ppt.obstype,
-                )
+        self.roll = np.zeros(simlen).tolist()
+        self._attitude_constraint_violations = []
+
+        self._start_plan_execution()
 
         ##
         ## DITL LOOP
@@ -273,6 +253,11 @@ class DITL(DITLMixin, DITLStats):
 
             # Obtain the current pointing information
             ra, dec, roll, obsid = self.acs.pointing(self.utime[i])
+
+            # Command the plan activities due now from the attitude ACS holds at
+            # this step, then re-enter ACS so they take effect at this step.
+            if self._execute_plan(self.utime[i]):
+                ra, dec, roll, obsid = self.acs.pointing(self.utime[i])
 
             # Get current mode from ACS (it now determines mode internally)
             mode = self.acs.get_mode(self.utime[i])
@@ -312,6 +297,7 @@ class DITL(DITLMixin, DITLStats):
             self.batteryalert[i] = self.battery.battery_alert
             self.ra[i] = ra
             self.dec[i] = dec
+            self.roll[i] = roll
             self.mode[i] = mode
             self.panel[i] = panel_illumination
             self.power[i] = power_usage
@@ -444,6 +430,11 @@ class DITL(DITLMixin, DITLStats):
                     acs_mode=mode,
                 )
             scope_label = attitude_constraint_scope_label(scopes)
+            self._attitude_constraint_violations.append(
+                (scope_constraint_name, scope_label)
+                if scope_constraint_name is not None
+                else None
+            )
             _q = attitude_to_quat(ra, dec, roll)
             momentum_sample = self._update_stored_momentum(self.utime[i], _pos, _q)
             drive_angles = self._solar_array_drive_telemetry()
@@ -555,6 +546,282 @@ class DITL(DITLMixin, DITLStats):
             and event.event_type == "operational_fault"
             for event in self.fault_management.events
         )
+
+    def validate_plan_matches_execution(self) -> list[PlanExecutionMismatch]:
+        """Compare the executed telemetry from :meth:`calc` with the plan.
+
+        Returns:
+            list[PlanExecutionMismatch]: Science, contact, attitude-constraint
+                and attitude-rate mismatches. Empty when the plan executed as
+                written.
+        """
+        return PlanExecutionValidator(
+            config=self.config,
+            plan=self.plan,
+            utime=self.utime,
+            ra=self.ra,
+            dec=self.dec,
+            roll=self.roll,
+            obsid=self.obsid,
+            mode=self.mode,
+            end_time=self.uend or self.ustart,
+            passes=self.acs.passrequests.passes,
+            attitude_violation_at=lambda index, _mode: (
+                self._attitude_constraint_violations[index]
+            ),
+            rate_mismatches=[
+                PlanExecutionMismatch(
+                    utime=violation.utime,
+                    message=str(violation),
+                    obsid=violation.obsid,
+                )
+                for violation in self._attitude_rate_violations()
+            ],
+            science_obstypes=PLAN_SCIENCE_OBSTYPES,
+        ).validate()
+
+    def _start_plan_execution(self) -> None:
+        """Order the plan entries for commanding and predict the passes they use."""
+        self._entries_to_command = sorted(
+            (entry for entry in self.plan if float(entry.end) > self.ustart),
+            key=lambda entry: float(entry.begin),
+        )
+        self._next_entry_index = 0
+        self._active_entry: PlanEntry | None = None
+        self._active_pass: Pass | None = None
+        self._entry_passes: dict[int, Pass] = {}
+        if any(
+            entry_obstype(entry) == ObsType.GSP for entry in self._entries_to_command
+        ):
+            self._resolve_planned_passes()
+
+    def _resolve_planned_passes(self) -> None:
+        """Match each GSP entry to a predicted pass and drop unplanned passes.
+
+        The ACS starts whichever pass is current when a START_PASS command
+        executes, so only the passes the plan schedules are kept.
+        """
+        passrequests = self.acs.passrequests
+        if not passrequests.passes:
+            length = max(1, int(np.ceil((self.uend - self.ustart) / 86400)))
+            passrequests.get(self.begin.year, self.begin.timetuple().tm_yday, length)
+        planned: list[Pass] = []
+        for entry in self._entries_to_command:
+            if entry_obstype(entry) != ObsType.GSP:
+                continue
+            gspass = matching_pass_for_entry(entry, passrequests.passes)
+            if gspass is None:
+                self.log.log_event(
+                    utime=float(entry.begin),
+                    event_type="ERROR",
+                    description=(
+                        f"No predicted pass matches planned contact at station "
+                        f"{entry.station} from {unixtime2date(entry.contact_begin or 0)}"
+                        f" to {unixtime2date(entry.contact_end or 0)}"
+                    ),
+                    obsid=entry.obsid,
+                )
+                continue
+            self._entry_passes[id(entry)] = gspass
+            planned.append(gspass)
+        passrequests.passes = planned
+
+    def _execute_plan(self, utime: float) -> bool:
+        """Issue the ACS commands that the plan makes due at ``utime``.
+
+        Returns:
+            bool: True if the ACS state changed and must be re-evaluated.
+        """
+        if self.acs.in_safe_mode:
+            return False
+        changed = False
+        if self._active_entry is not None and utime >= float(self._active_entry.end):
+            self._finish_active_entry(utime)
+            changed = True
+        if (
+            self._active_pass is not None
+            and self.acs.current_pass is None
+            and self._active_pass.in_pass(utime)
+            and self._active_pass.at_selected_tracking_attitude(
+                utime, self.acs.ra, self.acs.dec, self.acs.roll
+            )
+        ):
+            self.acs.enqueue_command(
+                ACSCommand(
+                    command_type=ACSCommandType.START_PASS,
+                    execution_time=utime,
+                )
+            )
+            changed = True
+        while self._next_entry_index < len(self._entries_to_command):
+            entry = self._entries_to_command[self._next_entry_index]
+            if float(entry.begin) > utime:
+                break
+            self._next_entry_index += 1
+            if float(entry.end) <= utime:
+                continue
+            if self._active_entry is not None:
+                self._finish_active_entry(utime)
+                changed = True
+            changed = self._command_entry(entry, utime) or changed
+        return changed
+
+    def _finish_active_entry(self, utime: float) -> None:
+        """End the activity commanded for the active plan entry."""
+        entry = self._active_entry
+        assert entry is not None
+        obstype = entry_obstype(entry)
+        if obstype == ObsType.GSP:
+            if self.acs.current_pass is not None:
+                self.acs.enqueue_command(
+                    ACSCommand(
+                        command_type=ACSCommandType.END_PASS,
+                        execution_time=utime,
+                    )
+                )
+            self._active_pass = None
+        elif obstype == ObsType.CHARGE:
+            self.acs.request_end_battery_charge(utime)
+        else:
+            self.acs.end_science_observation()
+        self._active_entry = None
+
+    def _command_entry(self, entry: PlanEntry, utime: float) -> bool:
+        """Command the activity a plan entry describes, starting at ``utime``.
+
+        Returns:
+            bool: True if the entry was commanded.
+        """
+        obstype = entry_obstype(entry)
+        if obstype in PLAN_SCIENCE_OBSTYPES:
+            self._command_science_entry(entry, utime)
+        elif obstype == ObsType.GSP:
+            if not self._command_pass_entry(entry, utime):
+                return False
+        elif obstype == ObsType.CHARGE:
+            self.acs.request_battery_charge(
+                utime, entry.ra, entry.dec, entry.roll, entry.obsid
+            )
+        else:
+            self.log.log_event(
+                utime=utime,
+                event_type="ERROR",
+                description=(
+                    f"Plan entry {entry.obsid} has obstype {entry.obstype!r}, "
+                    "which DITL cannot execute; skipping it"
+                ),
+                obsid=entry.obsid,
+            )
+            return False
+        self._active_entry = entry
+        return True
+
+    def _command_science_entry(self, entry: PlanEntry, utime: float) -> None:
+        """Slew to a science entry's target attitude."""
+        instrument_roll = entry.roll
+        mounted = entry.uses_mounted_attitude()
+        if instrument_roll == -1.0:
+            telescope = entry.science_telescope()
+            instrument_roll = (
+                optimum_instrument_roll(
+                    entry.ra,
+                    entry.dec,
+                    utime,
+                    self.ephem,
+                    telescope,
+                    self.solar_panel,
+                    self.constraint,
+                    drive_state=self.acs.solar_array_drive_state,
+                )
+                if telescope is not None
+                else optimum_body_roll(
+                    entry.ra,
+                    entry.dec,
+                    utime,
+                    self.ephem,
+                    self.solar_panel,
+                    self.constraint,
+                    drive_state=self.acs.solar_array_drive_state,
+                )
+            )
+            entry.roll = instrument_roll
+        body_ra, body_dec, body_roll = entry.target_body_attitude(instrument_roll)
+        entry.spacecraft_attitude = (body_ra, body_dec, body_roll) if mounted else None
+        self.acs._enqueue_slew(
+            body_ra,
+            body_dec,
+            entry.obsid,
+            utime,
+            obstype=ObsType.PPT,
+            roll=body_roll,
+            target_request=entry,
+            instrument_roll=instrument_roll,
+        )
+
+    def _command_pass_entry(self, entry: PlanEntry, utime: float) -> bool:
+        """Slew onto the tracking profile of a GSP entry's pass.
+
+        Returns:
+            bool: False if no predicted pass matches the entry.
+        """
+        gspass = self._entry_passes.get(id(entry))
+        if gspass is None:
+            return False
+        profile = self._planned_tracking_profile(entry, gspass)
+        if profile:
+            gspass.select_tracking_profile(profile)
+        # Join an already-running contact on the profile, as QueueDITL does.
+        end_ra, end_dec, end_roll = (
+            gspass.gsstartra,
+            gspass.gsstartdec,
+            gspass.gsstartroll,
+        )
+        if utime >= gspass.begin:
+            ra, dec, roll = gspass.attitude_at(utime)
+            if ra is not None and dec is not None:
+                end_ra, end_dec, end_roll = ra, dec, roll
+        slew = Slew(config=self.config)
+        slew.startra, slew.startdec, slew.startroll = (
+            self.acs.ra,
+            self.acs.dec,
+            self.acs.roll,
+        )
+        slew.slewstart = utime
+        slew.endra, slew.enddec, slew.endroll = end_ra, end_dec, end_roll
+        slew.obstype = ObsType.GSP
+        slew.obsid = gspass.obsid
+        slew.calc_slewtime()
+        self.acs.enqueue_command(
+            ACSCommand(
+                command_type=ACSCommandType.SLEW_TO_TARGET,
+                execution_time=utime,
+                slew=slew,
+            )
+        )
+        self._active_pass = gspass
+        return True
+
+    @staticmethod
+    def _planned_tracking_profile(
+        entry: PlanEntry, gspass: Pass
+    ) -> list[tuple[float, float, float]] | None:
+        """Return the pass tracking profile that starts at the entry's planned attitude."""
+        profiles = gspass.available_tracking_profiles()
+        if (
+            entry.track_start_ra is None
+            or entry.track_start_dec is None
+            or entry.track_start_roll is None
+        ):
+            return profiles[0] if profiles else None
+        for profile in profiles:
+            ra, dec, roll = profile[0]
+            if (
+                angular_separation(ra, dec, entry.track_start_ra, entry.track_start_dec)
+                <= 1e-6
+                and abs((roll - entry.track_start_roll + 180.0) % 360.0 - 180.0) <= 1e-6
+            ):
+                return profile
+        return profiles[0] if profiles else None
 
     def _compute_sun_angle(self, utime: float, ra: float, dec: float) -> float | None:
         """Compute angular distance from pointing to the Sun in degrees."""

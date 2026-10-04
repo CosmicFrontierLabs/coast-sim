@@ -112,6 +112,12 @@ class TestDumbSchedulerScheduling:
         scheduler.schedule()
         assert len(scheduler.plan) > 0
 
+    def test_schedule_returns_its_plan(self, scheduler, sample_targets):
+        """DumbScheduler satisfies the Planner contract."""
+        for target in sample_targets:
+            scheduler.targlist.add_target(target)
+        assert scheduler.schedule() is scheduler.plan
+
     def test_schedule_records_scheduled_ids(self, scheduler, sample_targets):
         for target in sample_targets:
             scheduler.targlist.add_target(target)
