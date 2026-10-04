@@ -274,6 +274,8 @@ class DITL(DITLMixin, DITLStats):
             collection_seconds = self._collection_seconds_for_step(
                 self.utime[i], mode, obsid
             )
+            if collection_seconds > 0 and self.ppt is not None:
+                self._credit_collection(self.ppt, self.utime[i], collection_seconds)
 
             # Determine the power usage in Watts based on mode from config
             bus_power = self.spacecraft_bus.power(mode, in_eclipse=self.acs.in_eclipse)
@@ -581,6 +583,15 @@ class DITL(DITLMixin, DITLStats):
             science_obstypes=PLAN_SCIENCE_OBSTYPES,
         ).validate()
 
+    def _credit_collection(
+        self, entry: PlanEntry, utime: float, seconds: float
+    ) -> None:
+        """Hook called for each step that collects science for ``entry``.
+
+        DITL executes a fixed plan, so nothing needs crediting. Subclasses that
+        track the requests behind a plan override this.
+        """
+
     def _start_plan_execution(self) -> None:
         """Order the plan entries for commanding and predict the passes they use."""
         self._entries_to_command = sorted(
@@ -591,26 +602,38 @@ class DITL(DITLMixin, DITLStats):
         self._active_entry: PlanEntry | None = None
         self._active_pass: Pass | None = None
         self._entry_passes: dict[int, Pass] = {}
-        if any(
-            entry_obstype(entry) == ObsType.GSP for entry in self._entries_to_command
-        ):
-            self._resolve_planned_passes()
+        self._predicted_passes: list[Pass] | None = None
+        self._sync_planned_passes()
 
-    def _resolve_planned_passes(self) -> None:
+    def _sync_planned_passes(self) -> None:
         """Match each GSP entry to a predicted pass and drop unplanned passes.
 
         The ACS starts whichever pass is current when a START_PASS command
-        executes, so only the passes the plan schedules are kept.
+        executes, so only the passes the plan schedules are kept. Passes are
+        predicted once; this can be called again after the plan changes.
         """
+        gsp_entries = [
+            entry
+            for entry in self._entries_to_command
+            if entry_obstype(entry) == ObsType.GSP
+        ]
+        if not gsp_entries and self._predicted_passes is None:
+            return
         passrequests = self.acs.passrequests
-        if not passrequests.passes:
-            length = max(1, int(np.ceil((self.uend - self.ustart) / 86400)))
-            passrequests.get(self.begin.year, self.begin.timetuple().tm_yday, length)
+        if self._predicted_passes is None:
+            if not passrequests.passes:
+                length = max(1, int(np.ceil((self.uend - self.ustart) / 86400)))
+                passrequests.get(
+                    self.begin.year, self.begin.timetuple().tm_yday, length
+                )
+            self._predicted_passes = list(passrequests.passes)
         planned: list[Pass] = []
-        for entry in self._entries_to_command:
-            if entry_obstype(entry) != ObsType.GSP:
+        for entry in gsp_entries:
+            known = self._entry_passes.get(id(entry))
+            if known is not None:
+                planned.append(known)
                 continue
-            gspass = matching_pass_for_entry(entry, passrequests.passes)
+            gspass = matching_pass_for_entry(entry, self._predicted_passes)
             if gspass is None:
                 self.log.log_event(
                     utime=float(entry.begin),

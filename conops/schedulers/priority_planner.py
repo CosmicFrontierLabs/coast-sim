@@ -8,10 +8,11 @@ block a better packing.
 """
 
 import hashlib
-from collections.abc import Sequence
-from dataclasses import dataclass, field
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from enum import Enum, auto
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..common import ACSMode, ObsType, unixtime2date
 from ..config import MissionConfig
@@ -35,8 +36,7 @@ class _Verdict(Enum):
     """The wait at the block's attitude fails; earlier starts only lengthen it."""
 
 
-@dataclass
-class _Block:
+class _Block(BaseModel):
     """One commanded activity on the timeline, with the slew that reaches it."""
 
     entry: PlanEntry
@@ -63,14 +63,29 @@ class _Block:
         return float(self.slew.slewend)
 
 
-@dataclass
-class _Request:
+class StartState(BaseModel):
+    """Where the spacecraft is when a plan takes over part-way through a run.
+
+    Attributes:
+        time: First time (Unix seconds) a new activity may start; the planner
+            rounds it up to a simulation step.
+        attitude: Body attitude the spacecraft holds from ``time`` until the
+            first planned slew.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    time: float
+    attitude: Attitude
+
+
+class _Request(BaseModel):
     """A target being planned, with its remaining exposure."""
 
     target: Pointing
     merit: MeritBreakdown
     remaining: float
-    windows: list[tuple[float, float]] = field(default_factory=list)
+    windows: list[tuple[float, float]] = Field(default_factory=list)
 
 
 class PriorityPlanner:
@@ -104,6 +119,15 @@ class PriorityPlanner:
         locked: Science entries to keep exactly where their collection windows
             are; the slews into them are recomputed.
         log: Event log for placements and rejections.
+        simulation_start: Start of the simulation that will execute the plan,
+            when the plan covers only part of it. Defaults to ``begin``.
+        simulation_end: End of that simulation. Defaults to ``end``.
+        start_state: Time and attitude the plan starts from, when it takes
+            over from activities already committed. Without it the plan
+            starts at ``begin`` from a freshly started spacecraft.
+        reserved_seconds: Exposure, by obsid, already scheduled outside this
+            plan and not yet collected; it is subtracted from each target's
+            remaining exposure.
     """
 
     def __init__(
@@ -117,6 +141,10 @@ class PriorityPlanner:
         include_passes: bool = True,
         locked: Sequence[PlanEntry] = (),
         log: DITLLog | None = None,
+        simulation_start: datetime | None = None,
+        simulation_end: datetime | None = None,
+        start_state: StartState | None = None,
+        reserved_seconds: Mapping[int, float] | None = None,
     ) -> None:
         self.config = config
         self.targets = list(targets)
@@ -126,6 +154,10 @@ class PriorityPlanner:
         self.include_passes = include_passes
         self.locked = list(locked)
         self.log = log if log is not None else DITLLog()
+        self.simulation_start = simulation_start
+        self.simulation_end = simulation_end
+        self.start_state = start_state
+        self.reserved_seconds = dict(reserved_seconds or {})
         self.unplaced: list[Pointing] = []
         """Targets left with at least ``ss_min`` of exposure unplanned."""
         self.plan = Plan()
@@ -135,10 +167,26 @@ class PriorityPlanner:
     def schedule(self) -> Plan:
         """Build and return the plan."""
         self.ctx = SchedulingContext(
-            self.config, self.begin, self.end, step_size=self.step_size
+            self.config,
+            self.begin,
+            self.end,
+            step_size=self.step_size,
+            simulation_start=self.simulation_start,
+            simulation_end=self.simulation_end,
         )
         self.timeline: list[_Block] = []
         self.unplaced = []
+        self._origin: _Block | None = None
+        if self.start_state is not None:
+            time = self.ctx.ceil_step(self.start_state.time)
+            attitude = self.start_state.attitude
+            self._origin = _Block(
+                entry=PlanEntry(),
+                attitude_in=attitude,
+                attitude_out=attitude,
+                ready=time,
+                end=time,
+            )
 
         for entry in self.locked:
             self._place_locked(entry)
@@ -181,6 +229,7 @@ class PriorityPlanner:
         requests = []
         for target in self.targets:
             exptime = target.exptime if target.exptime is not None else target.ss_max
+            exptime -= self.reserved_seconds.get(int(target.obsid), 0.0)
             if target.done or exptime < target.ss_min:
                 continue
             requests.append(
@@ -207,6 +256,13 @@ class PriorityPlanner:
         return requests
 
     # ── Timeline neighbours and connections ──────────────────────────────
+
+    def _pred_at(self, index: int) -> _Block | None:
+        """Return the block before timeline position ``index``.
+
+        The first position follows the start state, if the plan has one.
+        """
+        return self.timeline[index - 1] if index > 0 else self._origin
 
     def _start_attitude(self, pred: _Block | None, utime: float) -> Attitude:
         """Return the attitude a slew starting at ``utime`` leaves from."""
@@ -308,7 +364,7 @@ class PriorityPlanner:
     def _insert_fixed(self, block: _Block) -> bool:
         """Insert a block whose timing is fixed, reconnecting its successor."""
         index = self._insertion_index(block.ready)
-        pred = self.timeline[index - 1] if index > 0 else None
+        pred = self._pred_at(index)
         succ = self.timeline[index] if index < len(self.timeline) else None
         if pred is not None and self.ctx.ceil_step(pred.end) > block.ready:
             return False
@@ -425,7 +481,7 @@ class PriorityPlanner:
     def _place_snapshot(self, request: _Request) -> _Block | None:
         """Place one snapshot of a request in the earliest slot that fits."""
         for index in range(len(self.timeline) + 1):
-            pred = self.timeline[index - 1] if index > 0 else None
+            pred = self._pred_at(index)
             succ = self.timeline[index] if index < len(self.timeline) else None
             candidate = self._fit_in_gap(request, pred, succ)
             if candidate is None:

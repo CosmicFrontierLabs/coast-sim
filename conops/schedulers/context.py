@@ -31,8 +31,8 @@ class SchedulingContext:
     """Spacecraft, sky and timing model for offline planning.
 
     Times are Unix seconds. Plans execute on a fixed step grid starting at
-    ``begin``; activities start on grid steps and constraints are evaluated at
-    grid steps, exactly as :class:`~conops.ditl.DITL` samples them.
+    the simulation start; activities start on grid steps and constraints are
+    evaluated at grid steps, exactly as :class:`~conops.ditl.DITL` samples them.
 
     Args:
         config: Mission configuration, with an ephemeris on its constraint.
@@ -40,6 +40,12 @@ class SchedulingContext:
         end: End of the planning horizon.
         step_size: Simulation step in seconds. Defaults to the ephemeris step.
             Execute the plan with a DITL using the same step.
+        simulation_start: Start of the simulation that will execute the plan,
+            which anchors the step grid and the initial attitude. Defaults to
+            ``begin``; set it when replanning part-way through a simulation.
+        simulation_end: End of that simulation. Ground passes are predicted
+            over the whole simulation, as DITL predicts them, so that a plan for
+            part of it reserves the same passes. Defaults to ``end``.
     """
 
     def __init__(
@@ -48,6 +54,8 @@ class SchedulingContext:
         begin: datetime,
         end: datetime,
         step_size: int | None = None,
+        simulation_start: datetime | None = None,
+        simulation_end: datetime | None = None,
     ) -> None:
         ephem = config.constraint.ephem
         if ephem is None:
@@ -59,6 +67,11 @@ class SchedulingContext:
         self.end = end
         self.ustart = begin.timestamp()
         self.uend = end.timestamp()
+        self.simulation_start = simulation_start or begin
+        self.simulation_end = simulation_end or end
+        self.origin = self.simulation_start.timestamp()
+        if self.origin > self.ustart:
+            raise ValueError("simulation_start must not be after begin")
         self.step_size = int(step_size if step_size is not None else ephem.step_size)
         if self.step_size <= 0:
             raise ValueError("step_size must be positive")
@@ -79,13 +92,13 @@ class SchedulingContext:
 
     def ceil_step(self, utime: float) -> float:
         """Return the first grid step at or after ``utime``."""
-        steps = np.ceil((utime - self.ustart) / self.step_size - 1e-9)
-        return self.ustart + max(0.0, float(steps)) * self.step_size
+        steps = np.ceil((utime - self.origin) / self.step_size - 1e-9)
+        return self.origin + max(0.0, float(steps)) * self.step_size
 
     def floor_step(self, utime: float) -> float:
         """Return the last grid step at or before ``utime``."""
-        steps = np.floor((utime - self.ustart) / self.step_size + 1e-9)
-        return self.ustart + float(steps) * self.step_size
+        steps = np.floor((utime - self.origin) / self.step_size + 1e-9)
+        return self.origin + float(steps) * self.step_size
 
     def steps(self, begin: float, end: float) -> np.ndarray:
         """Return the grid steps in ``[begin, end)``."""
@@ -105,9 +118,9 @@ class SchedulingContext:
         """
         if self._initial_acs is None:
             self._initial_acs = ACS(config=self.config)
-        index = int(round((self.floor_step(utime) - self.ustart) / self.step_size))
+        index = int(round((self.floor_step(utime) - self.origin) / self.step_size))
         while len(self._initial_attitudes) <= index:
-            step = self.ustart + len(self._initial_attitudes) * self.step_size
+            step = self.origin + len(self._initial_attitudes) * self.step_size
             ra, dec, roll, _ = self._initial_acs.pointing(step)
             self._initial_attitudes.append((float(ra), float(dec), float(roll)))
         return self._initial_attitudes[index]
@@ -248,8 +261,10 @@ class SchedulingContext:
         when the plan is executed.
         """
         passtimes = PassTimes(config=self.config)
-        length = max(1, int(np.ceil((self.uend - self.ustart) / 86400)))
-        passtimes.get(self.begin.year, self.begin.timetuple().tm_yday, length)
+        span = self.simulation_end.timestamp() - self.origin
+        length = max(1, int(np.ceil(span / 86400)))
+        start = self.simulation_start
+        passtimes.get(start.year, start.timetuple().tm_yday, length)
         return [
             gspass
             for gspass in passtimes.passes

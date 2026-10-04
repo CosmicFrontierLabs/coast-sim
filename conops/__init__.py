@@ -58,6 +58,9 @@ from .ditl import (
     PlanExecutionMismatchError,
     PlanExecutionValidator,
     QueueDITL,
+    ReplanReason,
+    ReplanRecord,
+    RollingHorizonDITL,
     TOORequest,
 )
 from .schedulers import (
@@ -169,6 +172,9 @@ __all__ = [
     "RadiatorConfiguration",
     "Queue",
     "QueueDITL",
+    "ReplanReason",
+    "ReplanRecord",
+    "RollingHorizonDITL",
     "radec2vec",
     "roll_over_angle",
     "rotvec",
