@@ -4,6 +4,7 @@ from unittest.mock import Mock, patch
 
 # ACSCommandType removed because tests rely on internal enqueue API
 from conops import ACSMode, Pass, Pointing, Slew
+from conops.common import ObsType
 
 
 class TestAddSlew:
@@ -396,6 +397,35 @@ class TestPointing:
         assert obsid == 200  # Should use pass obsid
         assert ra == 45.0
         assert dec == 30.0
+
+    @patch("conops.optimum_roll")
+    def test_roll_follows_commanded_pass_after_contact_window_closes(
+        self, mock_roll, acs
+    ) -> None:
+        """Until END_PASS executes, roll comes from the pass track like RA/Dec.
+
+        Falling back to the ingress slew's end roll for the step after contact
+        jumped the attitude by up to the whole roll range in one step.
+        """
+        mock_roll.return_value = 0.0
+        current_pass = Mock(spec=Pass)
+        current_pass.in_pass = Mock(return_value=False)
+        current_pass.ra_dec = Mock(return_value=(238.0, 78.0))
+        current_pass.roll_at = Mock(return_value=80.0)
+        current_pass.obsid = 0xFFFF
+        ingress = Mock(spec=Slew)
+        ingress.slewstart = 1514764000.0
+        ingress.endroll = 295.0
+        ingress.is_slewing = Mock(return_value=False)
+        ingress.obstype = ObsType.GSP
+        ingress.at = None
+
+        acs.current_pass = current_pass
+        acs.last_slew = ingress
+
+        _, _, roll, _ = acs.pointing(1514765000.0)
+
+        assert roll == 80.0
 
     @patch("conops.optimum_roll")
     def test_pointing_current_pass_reports_pass_obsid(self, mock_roll, acs) -> None:
