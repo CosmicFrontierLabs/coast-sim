@@ -1,7 +1,7 @@
 """Simulate a spacecraft that follows a plan rebuilt on a rolling horizon."""
 
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 
@@ -62,7 +62,8 @@ class RollingHorizonDITL(DITL):
     """Follow a plan rebuilt from the spacecraft's actual state as time passes.
 
     This models a ground-planned mission. A plan for the next ``horizon`` is
-    built with :class:`~conops.schedulers.PriorityPlanner` at the start and
+    built with ``planner`` (by default
+    :class:`~conops.schedulers.PriorityPlanner`) at the start and
     every ``replan_interval`` after that. Each replan keeps everything already
     commanded or due to start within ``commit_lead_time`` (the time a new plan
     takes to reach the spacecraft), and plans the rest again from the
@@ -98,6 +99,11 @@ class RollingHorizonDITL(DITL):
         allow_interrupts: Whether a rapid replan may cut short the
             observation in progress.
         include_passes: Whether plans reserve ground-station passes.
+        planner: Planner class that builds each plan:
+            :class:`~conops.schedulers.PriorityPlanner` or a subclass such as
+            :class:`~conops.schedulers.LocalSearchPlanner`.
+        planner_options: Extra keyword arguments for the planner, such as
+            ``{"time_limit": 5.0}`` for a local-search planner.
         calculate_field_of_regard: Whether to compute field-of-regard telemetry.
     """
 
@@ -115,6 +121,8 @@ class RollingHorizonDITL(DITL):
         rapid_replans: bool = True,
         allow_interrupts: bool = True,
         include_passes: bool = True,
+        planner: type[PriorityPlanner] = PriorityPlanner,
+        planner_options: Mapping[str, object] | None = None,
         calculate_field_of_regard: bool = False,
     ) -> None:
         if horizon <= timedelta(0) or replan_interval <= timedelta(0):
@@ -136,6 +144,8 @@ class RollingHorizonDITL(DITL):
         self.rapid_replans = rapid_replans
         self.allow_interrupts = allow_interrupts
         self.include_passes = include_passes
+        self.planner = planner
+        self.planner_options = dict(planner_options or {})
         self.merit_model = MeritModel(config)
         self.too_register: list[TOORequest] = []
         self.replans: list[ReplanRecord] = []
@@ -314,7 +324,7 @@ class RollingHorizonDITL(DITL):
         unplaced = 0
         began = time.perf_counter()
         if horizon_end > start:
-            planner = PriorityPlanner(
+            planner = self.planner(
                 self.config,
                 [t for t in self.targets if not t.done],
                 _as_datetime(start),
@@ -326,6 +336,7 @@ class RollingHorizonDITL(DITL):
                 simulation_end=self.end,
                 start_state=start_state,
                 reserved_seconds=self._reserved_seconds(committed, utime),
+                **self.planner_options,  # type: ignore[arg-type]
             )
             new_entries = list(planner.schedule().entries)
             unplaced = len(planner.unplaced)

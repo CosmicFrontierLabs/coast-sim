@@ -112,6 +112,57 @@ Limitations
   could use, and that request goes unplaced. Urgency avoids this when it raises the
   short-window request above the flexible one, so it is placed first.
 
+Improving plans by local search
+-------------------------------
+
+Placing requests in priority order leaves gaps: a high-priority snapshot placed
+early can strand time around it that nothing else fits into.
+:class:`~conops.schedulers.LocalSearchPlanner` builds the priority-first plan and
+then improves it.
+
+The search works on the *order* of the plan's science snapshots. A decoder turns an
+order into a timeline by placing each snapshot at the earliest time it fits after the
+one before, with every check described above, so every plan it considers executes as
+planned. Each snapshot starts out tied to the time and length the priority-first plan
+gave it, so the starting point is exactly that plan. The search then tries:
+
+* **inserting** a snapshot of a request that still has exposure to place;
+* **releasing** a snapshot from its earlier time and length, letting it move earlier
+  and run to its full ``ss_max``;
+* **removing** a snapshot;
+* **swapping** two nearby snapshots, or **moving** one a few positions.
+
+A change is kept when it is no worse than the current plan, or than the plan of
+``history_length`` steps ago (late-acceptance hill climbing), which lets the search
+cross plateaus. The objective is merit-weighted science time, compared tier by tier
+from the highest. The best plan found is returned, and it is never worse than the
+priority-first plan.
+
+.. code-block:: python
+
+   from conops import LocalSearchPlanner
+
+   planner = LocalSearchPlanner(config, targets, begin, end, time_limit=30.0)
+   plan = planner.schedule()
+   print(planner.initial_score, "->", planner.score, f"after {planner.iterations} changes")
+
+``LocalSearchPlanner`` takes the same arguments as ``PriorityPlanner``, plus:
+
+* ``time_limit``: seconds of search after the priority-first plan is built
+  (default 10);
+* ``max_iterations``: changes to try at most. A run limited only by time depends on
+  machine speed; set ``max_iterations`` (and ``seed``) for reproducible plans;
+* ``seed``: random seed, defaulting to the configuration's;
+* ``neighborhood``: how many positions apart a swap or move can be;
+* ``history_length``: length of the late-acceptance history.
+
+Ground passes and locked entries stay where the priority-first plan put them.
+
+**Limitations.** The objective rewards merit and science time, not earliness: within
+its deadline, a request with a deadline may be placed later than the priority-first
+plan put it. Each change is decoded from the point it touches, so a search of a few
+thousand changes takes tens of seconds for a day with a few hundred targets.
+
 The scheduling context
 ----------------------
 
@@ -170,6 +221,9 @@ rebuilds it as the simulation runs:
        print(replan.reason.value, replan.kept, replan.dropped, replan.added)
    print(ditl.too_response_times())       # seconds to first science, by obsid
    assert ditl.validate_plan_matches_execution() == []
+
+Pass ``planner=LocalSearchPlanner`` (and, for example,
+``planner_options={"time_limit": 10.0}``) to build each plan by local search.
 
 **Results**
 
