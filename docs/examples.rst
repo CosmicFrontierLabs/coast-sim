@@ -73,6 +73,23 @@ This approach is ideal for rapid prototyping and testing different configuration
    # Analyze
    ditl.plot()
 
+Dynamic Merit and Targets of Opportunity
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Location**: ``examples/Dynamic_Merit_Example.ipynb``
+
+This notebook demonstrates how the queue scheduler chooses its next target, turning on
+each dynamic merit term in turn:
+
+* Urgency, which observes a short-window request that priority order would lose
+* Tiers, which give a class of work absolute priority
+* Cadence, which revisits monitoring targets on schedule
+* Completion deficit, which keeps programs near their allocated share of time
+* Targets of Opportunity as ordinary short-window requests, including when they
+  interrupt and when they wait
+
+See :doc:`configuration` (Dynamic Merit) and :doc:`target_of_opportunity` for reference.
+
 Example Configuration
 ~~~~~~~~~~~~~~~~~~~~~
 

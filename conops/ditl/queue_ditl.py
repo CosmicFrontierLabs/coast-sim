@@ -32,6 +32,7 @@ from ..simulation.passes import Pass
 from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing, Queue, TargetSlewEstimate
+from ..targets.merit import MeritModel
 from .ditl_log import DITLLog
 from .ditl_mixin import DITLMixin
 from .ditl_stats import DITLStats
@@ -82,7 +83,11 @@ class TOORequest(BaseModel):
         name: Human-readable name for the TOO target
         submit_time: Unix timestamp when the TOO becomes active. If 0.0,
             the TOO is active immediately from simulation start.
-        executed: Whether this TOO has been executed
+        deadline: Latest Unix time science collection may begin, or None for
+            no deadline. Urgency rises as it approaches, and the TOO cannot be
+            selected after it.
+        executed: Whether this TOO has been dispatched as the current
+            observation
     """
 
     obsid: int
@@ -92,6 +97,7 @@ class TOORequest(BaseModel):
     exptime: int
     name: str
     submit_time: float = 0.0
+    deadline: float | None = None
     executed: bool = False
 
 
@@ -182,6 +188,9 @@ class QueueDITL(DITLMixin, DITLStats):
 
         # TOO (Target of Opportunity) register - holds pending TOOs
         self.too_register: list[TOORequest] = []
+        # Queue target created for each activated TOO, keyed by id(TOORequest)
+        self._too_targets: dict[int, Pointing] = {}
+        self.merit_model = MeritModel(self.config)
 
         # Target Queue (use provided queue or create default)
         if queue is not None:
@@ -251,36 +260,35 @@ class QueueDITL(DITLMixin, DITLStats):
         exptime: int,
         name: str,
         submit_time: float | datetime | None = None,
+        deadline: float | datetime | None = None,
     ) -> TOORequest:
         """Submit a Target of Opportunity (TOO) request.
 
-        The TOO is added to a special register and will be checked during
-        the simulation. When the TOO's merit is higher than the current
-        observation's merit and the TOO target is visible, the current
-        observation will be abandoned and the TOO will be observed immediately.
-
-        The TOO can be scheduled before the DITL starts running by setting
-        `submit_time` to a future time. The TOO will not become active until
-        that time is reached during the simulation.
+        A TOO is an ordinary queue request with a short window. Once its
+        ``submit_time`` is reached it joins the target queue with its own merit
+        and deadline, and is selected whenever it ranks highest. It interrupts
+        the observation in progress only when it is visible and its tier and
+        value, evaluated now, beat the tier and value frozen onto the current
+        observation when it was selected.
 
         Args:
             obsid: Unique observation identifier for this TOO
             ra: Right ascension in degrees
             dec: Declination in degrees
-            merit: Priority merit value (higher = more urgent). Should be higher
-                   than normal queue targets to ensure immediate observation.
+            merit: Base merit. Within a tier, a TOO interrupts only if its value
+                exceeds the current observation's.
             exptime: Requested exposure time in seconds
             name: Human-readable name for the TOO target
-            submit_time: When the TOO becomes active. Can be:
-                - None: TOO is active immediately from simulation start
-                - float: Unix timestamp when TOO becomes active
-                - datetime: Datetime when TOO becomes active (will be converted to Unix timestamp)
+            submit_time: When the TOO becomes active, as a Unix timestamp or a
+                datetime. None means active from the start of the simulation.
+            deadline: Latest time science collection may begin, as a Unix
+                timestamp or a datetime. None means no deadline.
 
         Returns:
             The created TOORequest object
 
         Example:
-            >>> # TOO active immediately
+            >>> # TOO active immediately, to be observed within 4 hours
             >>> ditl.submit_too(
             ...     obsid=1000001,
             ...     ra=180.0,
@@ -288,9 +296,10 @@ class QueueDITL(DITLMixin, DITLStats):
             ...     merit=10000.0,
             ...     exptime=3600,
             ...     name="GRB 250101A",
+            ...     deadline=ditl.ustart + 4 * 3600,
             ... )
 
-            >>> # TOO scheduled for 1 hour into the simulation (using Unix timestamp)
+            >>> # TOO arriving 1 hour into the simulation
             >>> ditl.submit_too(
             ...     obsid=1000002,
             ...     ra=90.0,
@@ -300,31 +309,7 @@ class QueueDITL(DITLMixin, DITLStats):
             ...     name="GRB 250101B",
             ...     submit_time=ditl.ustart + 3600,
             ... )
-
-            >>> # TOO scheduled for a specific datetime
-            >>> from datetime import datetime
-            >>> ditl.submit_too(
-            ...     obsid=1000003,
-            ...     ra=270.0,
-            ...     dec=60.0,
-            ...     merit=10000.0,
-            ...     exptime=2400,
-            ...     name="GRB 250101C",
-            ...     submit_time=datetime(2025, 11, 1, 12, 0, 0),
-            ... )
         """
-        # Convert datetime to Unix timestamp if needed
-        if isinstance(submit_time, datetime):
-            # Ensure timezone-aware datetime
-            if submit_time.tzinfo is None:
-                submit_time = submit_time.replace(tzinfo=timezone.utc)
-            effective_submit_time = submit_time.timestamp()
-        elif submit_time is not None:
-            effective_submit_time = submit_time
-        else:
-            # None means active immediately (use 0.0 which is always <= any simulation time)
-            effective_submit_time = 0.0
-
         too = TOORequest(
             obsid=obsid,
             ra=ra,
@@ -332,20 +317,70 @@ class QueueDITL(DITLMixin, DITLStats):
             merit=merit,
             exptime=exptime,
             name=name,
-            submit_time=effective_submit_time,
+            # None means active immediately (0.0 is always <= any simulation time)
+            submit_time=self._unix_time(submit_time)
+            if submit_time is not None
+            else 0.0,
+            deadline=self._unix_time(deadline) if deadline is not None else None,
             executed=False,
         )
         self.too_register.append(too)
         return too
 
-    def _check_too_interrupt(self, utime: float, ra: float, dec: float) -> bool:
-        """Check if a pending TOO should interrupt the current observation.
+    @staticmethod
+    def _unix_time(value: float | datetime) -> float:
+        """Convert a Unix timestamp or datetime (naive means UTC) to Unix seconds."""
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return value.timestamp()
+        return float(value)
 
-        A TOO will interrupt the current observation if:
-        1. The TOO has been submitted (submit_time <= utime)
-        2. The TOO has not yet been executed
-        3. The TOO target is currently visible
-        4. The TOO's merit is higher than the current PPT's merit
+    def _too_target(self, too: TOORequest) -> Pointing:
+        """Return the queue target for an active TOO, adding it on first use."""
+        target = self._too_targets.get(id(too))
+        if target is None:
+            target = self.queue.add(
+                ra=too.ra,
+                dec=too.dec,
+                obsid=too.obsid,
+                name=too.name,
+                merit=too.merit,
+                exptime=too.exptime,
+                deadline=too.deadline,
+            )
+            self._too_targets[id(too)] = target
+            self.log.log_event(
+                utime=max(too.submit_time, self.ustart),
+                event_type="TOO",
+                description=f"Queued TOO {too.name} (obsid={too.obsid}, merit={too.merit})",
+                obsid=too.obsid,
+                acs_mode=self.acs.acsmode,
+            )
+        return target
+
+    def _current_value_rank(self) -> tuple[int, float]:
+        """Return the tier and frozen value of the observation in progress."""
+        if self.ppt is None:
+            return np.iinfo(np.int64).min, -np.inf
+        breakdown = self.ppt.merit_breakdown
+        if breakdown is not None:
+            return breakdown.value_rank
+        return self.merit_model.tier(self.ppt), float(self.ppt.merit)
+
+    def _check_too_interrupt(self, utime: float, ra: float, dec: float) -> bool:
+        """Queue newly active TOOs and interrupt the current observation for one.
+
+        A TOO interrupts the observation in progress when:
+
+        1. It is active (``submit_time <= utime``) and not yet dispatched.
+        2. Its deadline, if any, has not passed.
+        3. Its target is visible now.
+        4. Its tier and value now beat the current observation's frozen tier
+           and value.
+
+        With no observation in progress nothing is interrupted; the TOO is
+        already in the queue for the next selection.
 
         Args:
             utime: Current simulation time
@@ -355,86 +390,62 @@ class QueueDITL(DITLMixin, DITLStats):
         Returns:
             True if a TOO interrupt occurred, False otherwise
         """
-        # Get pending TOOs that are ready and not executed
         pending_toos = [
             too
             for too in self.too_register
             if too.submit_time <= utime and not too.executed
         ]
-
-        if not pending_toos:
-            return False
-
-        # Get current PPT merit (if any)
-        current_merit = self.ppt.merit if self.ppt is not None else -float("inf")
-
-        # Check each pending TOO
+        current_rank: tuple[int, float] | None = None
         for too in pending_toos:
-            # Skip if TOO merit is not higher than current
-            if too.merit <= current_merit:
+            target = self._too_target(too)
+            if self.ppt is target or target.collected_seconds > 0:
+                too.executed = True
                 continue
-
-            # Create a temporary Pointing to check visibility
-            too_pointing = Pointing(
-                config=self.config,
-                ra=too.ra,
-                dec=too.dec,
-                obsid=too.obsid,
-                name=too.name,
-                fom=too.merit,
-                merit=too.merit,
+            if self.ppt is None:
+                continue
+            if too.deadline is not None and utime > too.deadline:
+                continue
+            if not target.visible(utime, utime):
+                continue
+            value = self.merit_model.value_terms(
+                target,
+                utime,
+                base=too.merit,
+                delivered_shares=self.merit_model.delivered_shares(self.queue.targets)
+                if self.merit_model.completion_deficit_weight > 0.0
+                else None,
             )
-            too_pointing.exptime = too.exptime
-            too_pointing.visibility()
-
-            # Check if TOO is currently visible
-            if not too_pointing.visible(utime, utime):
+            if current_rank is None:
+                current_rank = self._current_value_rank()
+            if value.value_rank <= current_rank:
                 continue
 
-            # TOO should interrupt! Log the event
+            interrupted = self.ppt
             self.log.log_event(
                 utime=utime,
                 event_type="TOO",
-                description=f"TOO interrupt: {too.name} (obsid={too.obsid}, merit={too.merit}) "
-                f"preempting current observation (merit={current_merit})",
+                description=(
+                    f"TOO interrupt: {too.name} (obsid={too.obsid}, "
+                    f"{value.describe()}) preempting current observation "
+                    f"(tier={current_rank[0]}, value={current_rank[1]:g})"
+                ),
                 obsid=too.obsid,
                 acs_mode=self.acs.acsmode,
             )
-
-            # Terminate current observation if any
-            if self.ppt is not None:
-                self._terminate_ppt(
-                    utime,
-                    reason=f"Preempted by TOO {too.name} (obsid={too.obsid})",
-                    mark_done=False,  # Don't mark as done, it was interrupted
-                )
-
-            # Add TOO to queue with boosted merit to ensure immediate observation
-            # Use merit + 100000 to guarantee it's selected next
-            boosted_merit = too.merit + 100000.0
-            self.queue.add(
-                ra=too.ra,
-                dec=too.dec,
-                obsid=too.obsid,
-                name=too.name,
-                merit=boosted_merit,
-                exptime=too.exptime,
+            self._terminate_ppt(
+                utime,
+                reason=f"Preempted by TOO {too.name} (obsid={too.obsid})",
+                mark_done=False,  # Don't mark as done, it was interrupted
             )
-
-            self.log.log_event(
-                utime=utime,
-                event_type="TOO",
-                description=f"Added TOO {too.name} to queue with boosted merit {boosted_merit}",
-                obsid=too.obsid,
-                acs_mode=self.acs.acsmode,
-            )
-
-            # Mark TOO as executed
-            too.executed = True
-
-            # Fetch the TOO as the new PPT
-            self._fetch_new_ppt(utime, ra, dec)
-
+            # Keep the interrupted observation out of this selection so the
+            # interrupt cannot simply resume it.
+            was_done = interrupted.done
+            interrupted.done = True
+            try:
+                self._fetch_new_ppt(utime, ra, dec)
+            finally:
+                interrupted.done = was_done
+            too.executed = self.ppt is target
             return True
 
         return False
@@ -550,12 +561,8 @@ class QueueDITL(DITLMixin, DITLStats):
     def _handle_data_management(self, utime: float, mode: ACSMode) -> None:
         """Handle data generation during observations and downlink during passes."""
         collection_seconds = self._collection_seconds_for_step(utime, mode)
-        if (
-            collection_seconds > 0
-            and self.ppt is not None
-            and self.ppt.exptime is not None
-        ):
-            self.ppt.exptime = max(0, self.ppt.exptime - collection_seconds)
+        if collection_seconds > 0 and self.ppt is not None:
+            self.ppt.record_collection(utime, collection_seconds)
         # Use the mixin method to process data generation and downlink
         data_generated, data_downlinked = self._process_data_management(
             utime, mode, self.step_size, collection_seconds=collection_seconds
