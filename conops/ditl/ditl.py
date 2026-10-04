@@ -252,6 +252,10 @@ class DITL(DITLMixin, DITLStats):
             if self.ppt is None or not (self.ppt.begin <= self.utime[i] < self.ppt.end):
                 self.ppt = self.plan.which_ppt(self.utime[i])
 
+            # End an expired plan entry before ACS processes this step's
+            # commands, so a slew it deferred to this step cannot start.
+            self._finish_expired_entry(self.utime[i])
+
             # Obtain the current pointing information
             ra, dec, roll, obsid = self.acs.pointing(self.utime[i])
 
@@ -647,9 +651,6 @@ class DITL(DITLMixin, DITLStats):
         if self.acs.in_safe_mode:
             return False
         changed = False
-        if self._active_entry is not None and utime >= float(self._active_entry.end):
-            self._finish_active_entry(utime)
-            changed = True
         if (
             self._active_pass is not None
             and self.acs.current_pass is None
@@ -677,6 +678,13 @@ class DITL(DITLMixin, DITLStats):
                 changed = True
             changed = self._command_entry(entry, utime) or changed
         return changed
+
+    def _finish_expired_entry(self, utime: float) -> None:
+        """End the active plan entry if it has expired by ``utime``."""
+        if self.acs.in_safe_mode:
+            return
+        if self._active_entry is not None and utime >= float(self._active_entry.end):
+            self._finish_active_entry(utime)
 
     def _finish_active_entry(self, utime: float) -> None:
         """End the activity commanded for the active plan entry."""
