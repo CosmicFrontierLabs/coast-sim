@@ -637,14 +637,25 @@ def unix_timestamp_too(queue_ditl: QueueDITL) -> Any:
 
 @pytest.fixture
 def mock_too_interrupt_success(
+    queue_ditl: QueueDITL,
     mock_pointing_visibility: Mock,
     mock_pointing_visible: Mock,
     mock_terminate_ppt: Mock,
     mock_fetch_new_ppt: Mock,
 ) -> dict[str, Mock]:
-    """Combined mock setup for successful TOO interrupt tests."""
+    """Combined mock setup for successful TOO interrupt tests.
+
+    The mocked fetch admits the first queue target that is not held out.
+    """
     mock_pointing_visibility.return_value = None  # visibility() just populates windows
     mock_pointing_visible.return_value = True  # Target is visible
+
+    def admit_first_offered(utime: float, ra: float, dec: float) -> None:
+        queue_ditl.ppt = next(
+            (target for target in queue_ditl.queue.targets if not target.done), None
+        )
+
+    mock_fetch_new_ppt.side_effect = admit_first_offered
     return {
         "visibility": mock_pointing_visibility,
         "visible": mock_pointing_visible,
