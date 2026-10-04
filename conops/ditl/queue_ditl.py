@@ -32,7 +32,7 @@ from ..simulation.passes import Pass
 from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing, Queue, TargetSlewEstimate
-from ..targets.merit import MeritModel
+from ..targets.merit import MeritBreakdown, MeritModel
 from .ditl_log import DITLLog
 from .ditl_mixin import DITLMixin
 from .ditl_stats import DITLStats
@@ -371,13 +371,20 @@ class QueueDITL(DITLMixin, DITLStats):
     def _check_too_interrupt(self, utime: float, ra: float, dec: float) -> bool:
         """Queue newly active TOOs and interrupt the current observation for one.
 
-        A TOO interrupts the observation in progress when:
+        Every active TOO is queued before any interruption decision, so the
+        choice does not depend on registration order. A TOO is a candidate to
+        interrupt the observation in progress when:
 
         1. It is active (``submit_time <= utime``) and not yet dispatched.
         2. Its deadline, if any, has not passed.
         3. Its target is visible now.
         4. Its tier and value now beat the current observation's frozen tier
            and value.
+
+        The best candidate must then pass normal dispatch admission (minimum
+        exposure, slew timing, deadline and constraints) before the current
+        observation is terminated. If none is admissible, the current
+        observation keeps running.
 
         With no observation in progress nothing is interrupted; the TOO is
         already in the queue for the next selection.
@@ -390,65 +397,88 @@ class QueueDITL(DITLMixin, DITLStats):
         Returns:
             True if a TOO interrupt occurred, False otherwise
         """
-        pending_toos = [
-            too
-            for too in self.too_register
-            if too.submit_time <= utime and not too.executed
-        ]
-        current_rank: tuple[int, float] | None = None
-        for too in pending_toos:
+        active: list[tuple[TOORequest, Pointing]] = []
+        for too in self.too_register:
+            if too.submit_time > utime or too.executed:
+                continue
             target = self._too_target(too)
             if self.ppt is target or target.collected_seconds > 0:
                 too.executed = True
                 continue
-            if self.ppt is None:
-                continue
+            active.append((too, target))
+        if self.ppt is None or not active:
+            return False
+
+        current_rank = self._current_value_rank()
+        delivered_shares = (
+            self.merit_model.delivered_shares(self.queue.targets)
+            if self.merit_model.completion_deficit_weight > 0.0
+            else None
+        )
+        outranking: list[tuple[TOORequest, Pointing, MeritBreakdown]] = []
+        for too, target in active:
             if too.deadline is not None and utime > too.deadline:
                 continue
-            if not target.visible(utime, utime):
+            visibility_window = target.visible(utime, utime)
+            if not visibility_window:
                 continue
             value = self.merit_model.value_terms(
                 target,
                 utime,
                 base=too.merit,
-                delivered_shares=self.merit_model.delivered_shares(self.queue.targets)
-                if self.merit_model.completion_deficit_weight > 0.0
-                else None,
+                visibility_window=visibility_window,
+                delivered_shares=delivered_shares,
             )
-            if current_rank is None:
-                current_rank = self._current_value_rank()
-            if value.value_rank <= current_rank:
-                continue
+            if value.value_rank > current_rank:
+                outranking.append((too, target, value))
+        if not outranking:
+            return False
 
-            interrupted = self.ppt
-            self.log.log_event(
-                utime=utime,
-                event_type="TOO",
-                description=(
-                    f"TOO interrupt: {too.name} (obsid={too.obsid}, "
-                    f"{value.describe()}) preempting current observation "
-                    f"(tier={current_rank[0]}, value={current_rank[1]:g})"
-                ),
-                obsid=too.obsid,
-                acs_mode=self.acs.acsmode,
-            )
-            self._terminate_ppt(
-                utime,
-                reason=f"Preempted by TOO {too.name} (obsid={too.obsid})",
-                mark_done=False,  # Don't mark as done, it was interrupted
-            )
-            # Keep the interrupted observation out of this selection so the
-            # interrupt cannot simply resume it.
-            was_done = interrupted.done
-            interrupted.done = True
-            try:
-                self._fetch_new_ppt(utime, ra, dec)
-            finally:
-                interrupted.done = was_done
-            too.executed = self.ppt is target
-            return True
+        # Admit a replacement before touching the current observation. Only
+        # the outranking TOOs are offered: every other target, including the
+        # interrupted observation, is held out of this selection.
+        interrupted = self.ppt
+        ppt_unavailable = self._ppt_unavailable
+        offered = {id(target) for _, target, _ in outranking}
+        held_out = [
+            target
+            for target in [*self.queue.targets, interrupted]
+            if not target.done and id(target) not in offered
+        ]
+        for target in held_out:
+            target.done = True
+        self.ppt = None
+        try:
+            self._fetch_new_ppt(utime, ra, dec)
+        finally:
+            for target in held_out:
+                target.done = False
+        replacement = self.ppt
+        self.ppt = interrupted
+        if replacement is None:
+            self._ppt_unavailable = ppt_unavailable
+            return False
 
-        return False
+        too, _, value = next(item for item in outranking if item[1] is replacement)
+        self.log.log_event(
+            utime=utime,
+            event_type="TOO",
+            description=(
+                f"TOO interrupt: {too.name} (obsid={too.obsid}, "
+                f"{value.describe()}) preempting current observation "
+                f"(tier={current_rank[0]}, value={current_rank[1]:g})"
+            ),
+            obsid=too.obsid,
+            acs_mode=self.acs.acsmode,
+        )
+        self._terminate_ppt(
+            utime,
+            reason=f"Preempted by TOO {too.name} (obsid={too.obsid})",
+            mark_done=False,  # Don't mark as done, it was interrupted
+        )
+        self.ppt = replacement
+        too.executed = True
+        return True
 
     def calc(self) -> bool:
         """
@@ -2556,6 +2586,28 @@ class QueueDITL(DITLMixin, DITLStats):
                         return
 
             self._complete_ppt_slew(slew, self.ppt, utime, execution_time)
+
+            # Queue selection checks the deadline against an estimated slew;
+            # enforce it again against the slew that will actually execute.
+            collection_start = (
+                execution_time
+                + slew.slewtime
+                + self.config.payload.observation_timing.setup_seconds
+            )
+            if self.ppt.deadline is not None and collection_start > self.ppt.deadline:
+                self.log.log_event(
+                    utime=utime,
+                    event_type="QUEUE",
+                    description=(
+                        f"Target {self.ppt.obsid} skipped - collection would start "
+                        f"{collection_start - self.ppt.deadline:.0f}s after its deadline"
+                    ),
+                    obsid=self.ppt.obsid,
+                    acs_mode=self.acs.acsmode,
+                )
+                self._retry_fetch_without_current_ppt(utime, ra, dec)
+                return
+
             violation = self._slew_attitude_constraint_violation(slew, ACSMode.SLEWING)
             if violation is not None:
                 violation_time, constraint_name, scope_label = violation
