@@ -13,6 +13,8 @@ import time
 from datetime import datetime, timedelta
 from typing import Any
 
+import numpy as np
+import numpy.typing as npt
 from rust_ephem import TLEEphemeris
 
 from conops.config.solar_panel import SolarPanel, SolarPanelSet
@@ -27,6 +29,40 @@ def create_test_panel_set() -> SolarPanelSet:
         SolarPanel(name="Panel4", normal=(0.0, -0.966, -0.259), max_power=400),
     ]
     return SolarPanelSet(panels=panels)
+
+
+def reference_illumination_and_power(
+    panel_set: SolarPanelSet,
+    times: list[datetime],
+    ra: float,
+    dec: float,
+    ephem: TLEEphemeris,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Reproduce the pre-vectorization per-panel loop for comparison."""
+    illumination = np.zeros(len(times), dtype=np.float64)
+    power = np.zeros(len(times), dtype=np.float64)
+    total_max_power = sum(panel.max_power for panel in panel_set.panels)
+    if total_max_power <= 0.0:
+        return illumination, power
+
+    for panel in panel_set.panels:
+        panel_illumination = np.asarray(
+            panel.panel_illumination_fraction(
+                time=times,
+                ephem=ephem,
+                ra=ra,
+                dec=dec,
+            ),
+            dtype=np.float64,
+        )
+        efficiency = (
+            panel.conversion_efficiency
+            if panel.conversion_efficiency is not None
+            else panel_set.conversion_efficiency
+        )
+        illumination += panel_illumination * panel.max_power / total_max_power
+        power += panel_illumination * panel.max_power * efficiency
+    return illumination, power
 
 
 def run_benchmark(num_timesteps: int = 4320) -> dict[str, Any]:
@@ -60,7 +96,7 @@ def run_benchmark(num_timesteps: int = 4320) -> dict[str, Any]:
     print()
 
     # Warm up both implementations
-    _ = panel_set_old._illumination_and_power_loop([begin], ra, dec, ephem)
+    _ = reference_illumination_and_power(panel_set_old, [begin], ra, dec, ephem)
     _ = panel_set_new.illumination_and_power(
         time=timesteps[0], ra=ra, dec=dec, ephem=ephem
     )
@@ -75,8 +111,12 @@ def run_benchmark(num_timesteps: int = 4320) -> dict[str, Any]:
     start = time.perf_counter()
     for t in timesteps:
         # Use the old loop implementation by wrapping as list
-        illum, power = panel_set_old._illumination_and_power_loop(
-            [begin + timedelta(seconds=t - begin.timestamp())], ra, dec, ephem
+        illum, power = reference_illumination_and_power(
+            panel_set_old,
+            [begin + timedelta(seconds=t - begin.timestamp())],
+            ra,
+            dec,
+            ephem,
         )
         old_illum_total += float(illum[0])
         old_power_total += float(power[0])
