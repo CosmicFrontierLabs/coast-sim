@@ -14,6 +14,7 @@ from .groundstation import GroundStationRegistry
 from .instrument import Payload
 from .observation_categories import ObservationCategories
 from .recorder import OnboardRecorder
+from .scheduler import SchedulerConfig
 from .solar_panel import SolarPanelSet
 from .spacecraft_bus import SpacecraftBus
 from .targets import TargetConfig
@@ -140,6 +141,13 @@ class MissionConfig(ConfigModel):
     targets: TargetConfig = Field(
         default_factory=TargetConfig,
         description="Target Configuration. Defines observational targets and scheduling parameters",
+    )
+    scheduler: SchedulerConfig = Field(
+        default_factory=SchedulerConfig,
+        description=(
+            "Scheduler. How simulations built with create_ditl decide what to "
+            "observe: queue dispatch, one plan, or rolling replanning"
+        ),
     )
 
     @field_validator("attitude_constraint_scopes", mode="before")

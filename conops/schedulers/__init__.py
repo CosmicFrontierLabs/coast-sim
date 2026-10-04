@@ -4,9 +4,11 @@ from .local_search import LocalSearchPlanner
 from .priority_planner import PriorityPlanner
 from .protocols import DispatchPolicy, Planner
 from .queue_scheduler import DumbQueueScheduler
+from .registry import PLANNERS, planner_class
 from .scheduler import DumbScheduler
 
 __all__ = [
+    "PLANNERS",
     "CpSatPlanner",
     "DispatchPolicy",
     "DumbQueueScheduler",
@@ -15,4 +17,5 @@ __all__ = [
     "Planner",
     "PriorityPlanner",
     "SchedulingContext",
+    "planner_class",
 ]

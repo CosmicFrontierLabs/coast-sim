@@ -1519,6 +1519,58 @@ Each :class:`~conops.config.ObservationCategory` also carries:
    # Or use defaults
    categories = ObservationCategories.default_categories()
 
+scheduler
+~~~~~~~~~
+
+The :class:`~conops.config.SchedulerConfig` selects how a simulation built with
+:func:`~conops.ditl.create_ditl` decides what to observe. The default is queue
+dispatch, so configurations without this section behave as before.
+
+**Attributes:**
+
+* ``mode`` (str): ``dispatch`` (:class:`~conops.ditl.QueueDITL` picks each next
+  target), ``planned`` (one plan built up front, executed by
+  :class:`~conops.ditl.DITL`) or ``rolling`` (:class:`~conops.ditl.RollingHorizonDITL`
+  rebuilds the plan as it runs)
+* ``planner`` (:class:`~conops.config.PlannerSettings`): the planner for ``planned`` and
+  ``rolling`` modes
+
+  * ``kind``: ``priority``, ``local_search`` or ``cp_sat`` (needs ``coast-sim[cpsat]``)
+  * ``include_passes`` (default true) and ``seed``
+  * local search, for ``local_search`` and ``cp_sat``: ``time_limit``,
+    ``max_iterations``, ``earliness_weight``, ``neighborhood``, ``history_length``
+  * CP-SAT, for ``cp_sat`` only: ``solver_time_limit``, ``chunk_seconds``,
+    ``workers``, ``max_candidates``
+
+  Settings left unset use the planner's defaults; setting one that does not apply to
+  the chosen planner is an error.
+* ``replanning`` (:class:`~conops.config.ReplanSettings`): for ``rolling`` mode,
+  ``horizon_seconds`` (default one day), ``replan_interval_seconds`` (default 12
+  hours), ``commit_lead_time_seconds`` (default 0), ``rapid_replans`` and
+  ``allow_interrupts`` (both default true)
+
+See :doc:`planning` for what each mode and planner does.
+
+.. code-block:: yaml
+
+   scheduler:
+     mode: rolling
+     planner:
+       kind: cp_sat
+       solver_time_limit: 10
+       time_limit: 5
+     replanning:
+       horizon_seconds: 43200
+       replan_interval_seconds: 21600
+       commit_lead_time_seconds: 1800
+
+.. code-block:: python
+
+   from conops import create_ditl
+
+   ditl = create_ditl(config, targets, begin, end)  # QueueDITL, DITL or RollingHorizonDITL
+   ditl.calc()
+
 visualization
 ~~~~~~~~~~~~~
 

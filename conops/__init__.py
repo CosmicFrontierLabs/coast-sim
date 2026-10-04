@@ -62,6 +62,7 @@ from .ditl import (
     ReplanRecord,
     RollingHorizonDITL,
     TOORequest,
+    create_ditl,
 )
 from .schedulers import (
     CpSatPlanner,
@@ -200,6 +201,7 @@ __all__ = [
     "TargetQueue",
     "TargetSlewEstimate",
     "TOORequest",
+    "create_ditl",
     "unixtime2date",
     "unixtime2yearday",
     "DITLLogStore",
