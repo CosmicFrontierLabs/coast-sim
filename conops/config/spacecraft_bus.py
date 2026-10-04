@@ -10,6 +10,10 @@ from .radiator import DefaultRadiatorConfiguration, RadiatorConfiguration
 from .star_tracker import DefaultStarTrackerConfiguration, StarTrackerConfiguration
 from .thermal import Heater
 
+# Allow roughly eight significant digits of input precision. This is a
+# numerical-consistency tolerance, not a mass-properties uncertainty budget.
+INERTIA_RELATIVE_TOLERANCE = float(np.sqrt(np.finfo(np.float64).eps))
+
 
 class SpacecraftBus(ConfigModel):
     name: str = Field(default="Default Bus", description="Name of the spacecraft bus")
@@ -71,17 +75,23 @@ class SpacecraftBus(ConfigModel):
             raise ValueError("inertia tensor must be a finite 3x3 matrix") from exc
         if inertia.shape != (3, 3) or not np.all(np.isfinite(inertia)):
             raise ValueError("inertia tensor must be a finite 3x3 matrix")
-        if not np.allclose(inertia, inertia.T, rtol=1e-12, atol=1e-12):
+        scale = float(np.max(np.abs(inertia)))
+        if scale == 0.0:
+            raise ValueError("inertia tensor must be positive definite")
+        scaled = inertia / scale
+        if not np.allclose(scaled, scaled.T, rtol=0.0, atol=INERTIA_RELATIVE_TOLERANCE):
             raise ValueError("inertia tensor must be symmetric")
-        principal_moments = np.linalg.eigvalsh(inertia)
+        # Canonicalize accepted rounding asymmetry before using either triangle.
+        scaled = (scaled + scaled.T) / 2.0
+        principal_moments = np.linalg.eigvalsh(scaled)
         if np.any(principal_moments <= 0.0):
             raise ValueError("inertia tensor must be positive definite")
-        tolerance = 1e-12 * principal_moments[-1]
+        tolerance = INERTIA_RELATIVE_TOLERANCE * principal_moments[-1]
         if principal_moments[-1] > principal_moments[:2].sum() + tolerance:
             raise ValueError(
                 "principal inertia moments must satisfy the triangle inequality"
             )
-        return tuple(tuple(float(x) for x in row) for row in inertia)  # type: ignore[return-value]
+        return tuple(tuple(float(x) for x in row) for row in scaled * scale)  # type: ignore[return-value]
 
     @model_validator(mode="after")
     def _require_inertia_for_gravity_gradient(self) -> "SpacecraftBus":

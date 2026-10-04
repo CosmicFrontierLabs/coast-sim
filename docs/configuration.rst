@@ -352,27 +352,35 @@ Gravity-gradient momentum tracking is disabled by default. Enable it by supplyin
 a physical body-frame inertia tensor about the spacecraft center of mass and
 setting ``gravity_gradient_enabled``. Its principal moments must be positive and
 satisfy the triangle inequalities; a planar-body equality is allowed, including
-relative numerical roundoff of 1e-12.
+relative rounding of approximately 1.5e-8 (the square root of float64 machine
+epsilon). The named ``INERTIA_RELATIVE_TOLERANCE`` allows roughly eight significant
+digits of input precision, not physical mass-properties uncertainty. Symmetry
+uses the same tolerance relative to the largest tensor entry; accepted rounding
+asymmetry is averaged before validation and storage.
 COAST integrates the angular impulse in inertial coordinates, then reports the
 stored-momentum vector in the current body frame. This prevents attitude changes
 alone from appearing to generate momentum. Capacity enforcement and desaturation
 scheduling are not part of this tracking model.
 
-The tracker reloads the inertia, initial momentum, and enable flag at the start
-of every run. Configuration changes between runs therefore take effect without
-reconstructing the simulation.
+The tracker reloads the inertia, initial momentum, sampling limits, and enable
+flag at the start of every run. Configuration changes between runs therefore
+take effect without reconstructing the simulation.
 
 This is a sampled torque integrator, not an attitude-trajectory interpolator.
 To guard against missing torque between samples, enabled runs require both the
 executed-attitude and ephemeris intervals to be no greater than the smaller of:
 
 * ``stored_momentum.max_sample_interval_s`` (default 10 seconds, configurable downward);
-* 5 degrees divided by the fastest configured body-axis slew rate (or scalar
+* ``stored_momentum.max_attitude_step_deg`` (default 5 degrees, configurable
+  downward) divided by the fastest configured body-axis slew rate (or scalar
   ``max_slew_rate`` when body-axis limits are absent).
 
-For example, a fastest rate of 2 degrees/second requires intervals of at most
-2.5 seconds. Set ``DITL.step_size`` and generate an ephemeris at an appropriate
-resolution; ``QueueDITL`` uses the ephemeris step as its execution step. Coarse
+For example, with the default angular limit, a fastest rate of 2 degrees/second
+requires intervals of at most 2.5 seconds; lowering ``max_attitude_step_deg`` to
+2 degrees requires intervals of at most 1 second. Both settings can tighten,
+but not relax, the default sampling guards. Set ``DITL.step_size`` and generate
+an ephemeris at an appropriate resolution; ``QueueDITL`` uses the ephemeris step
+as its execution step. Coarse
 runs fail before ACS execution or power updates; a fine execution step cannot
 compensate for a coarse ephemeris. Disabled tracking leaves existing runs unchanged.
 
@@ -393,6 +401,7 @@ cadences without replanning the science schedule.
        stored_momentum:
          gravity_gradient_enabled: true
          max_sample_interval_s: 10.0
+         max_attitude_step_deg: 5.0
          initial_momentum_body_n_m_s: [0.0, 0.0, 0.0]
 
 .. code-block:: python

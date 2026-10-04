@@ -411,7 +411,7 @@ class DITL(DITLMixin, DITLStats):
                 )
             scope_label = attitude_constraint_scope_label(scopes)
             _q = attitude_to_quat(ra, dec, roll)
-            momentum_sample = self._update_stored_momentum(self.utime[i], ra, dec, roll)
+            momentum_sample = self._update_stored_momentum(self.utime[i], _pos, _q)
             hk = Housekeeping(
                 timestamp=datetime.fromtimestamp(self.utime[i], tz=timezone.utc),
                 ra=ra,

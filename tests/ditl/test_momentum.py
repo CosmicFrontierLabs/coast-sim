@@ -12,6 +12,7 @@ from conops import (
     SpacecraftBus,
     StoredMomentumConfig,
 )
+from conops.common.vector import attitude_to_quat
 
 from .conftest import DummyEphemeris
 
@@ -36,12 +37,14 @@ def simulation(request):
 def _sample(sim):
     time = sim.begin.timestamp()
     sim._reset_stored_momentum_tracker()
-    sim._update_stored_momentum(time, 0.0, 45.0, 0.0)
-    return sim._update_stored_momentum(time + 1.0, 0.0, 45.0, 0.0)
+    position = sim.ephem.gcrs_pv.position[0]
+    quaternion = attitude_to_quat(0.0, 45.0, 0.0)
+    sim._update_stored_momentum(time, position, quaternion)
+    return sim._update_stored_momentum(time + 1.0, position, quaternion)
 
 
 @pytest.mark.parametrize(
-    "edit", ["inertia", "initial", "disable", "enable", "rate", "interval"]
+    "edit", ["inertia", "initial", "disable", "enable", "rate", "interval", "angle"]
 )
 def test_run_reload_matches_fresh_configuration(simulation, edit):
     bus = simulation.config.spacecraft_bus
@@ -57,8 +60,10 @@ def test_run_reload_matches_fresh_configuration(simulation, edit):
         control.stored_momentum.gravity_gradient_enabled = edit == "enable"
     elif edit == "rate":
         control.max_slew_rate_body = (0.2, 0.2, 4.0)
-    else:
+    elif edit == "interval":
         control.stored_momentum.max_sample_interval_s = 1.0
+    else:
+        control.stored_momentum.max_attitude_step_deg = 2.0
 
     fresh_bus = SpacecraftBus.model_validate(bus.model_dump())
     fresh = type(simulation)(
@@ -73,8 +78,30 @@ def test_run_reload_matches_fresh_configuration(simulation, edit):
         )
     elif edit == "rate":
         assert simulation._stored_momentum_tracker.max_sample_interval_s == 1.25
-    elif edit == "interval":
+    elif edit in ("interval", "angle"):
         assert simulation._stored_momentum_tracker.max_sample_interval_s == 1.0
+
+
+def test_update_reuses_supplied_position_and_quaternion(simulation):
+    position = np.array([100.0, 200.0, 7000.0])
+    quaternion = attitude_to_quat(10.0, 20.0, 30.0)
+    tracker = Mock()
+    simulation._stored_momentum_tracker = tracker
+    # No ephemeris access or angle conversion should be needed here.
+    simulation.ephem = None
+    sample = simulation._update_stored_momentum(1000.0, position, quaternion)
+    tracker.update.assert_called_once()
+    args = tracker.update.call_args.kwargs
+    assert args["utime"] == 1000.0
+    assert args["position_eci_km"] is position
+    assert args["attitude_quaternion_eci_to_body"] is quaternion
+    assert sample is tracker.update.return_value
+
+
+def test_configured_angular_limit_rejects_coarse_sampling(simulation):
+    simulation.config.spacecraft_bus.attitude_control.stored_momentum.max_attitude_step_deg = 1.0
+    with pytest.raises(ValueError, match="sample interval 1 s exceeds 0.5 s"):
+        simulation._reset_stored_momentum_tracker()
 
 
 def test_calc_rejects_coarse_cadence_before_execution(simulation, monkeypatch):

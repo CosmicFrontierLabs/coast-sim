@@ -91,6 +91,8 @@ class TestAttitudeControlSystem:
 
     def test_stored_momentum_tracking_defaults_off(self, default_acs):
         assert default_acs.stored_momentum.gravity_gradient_enabled is False
+        assert default_acs.stored_momentum.max_sample_interval_s == 10.0
+        assert default_acs.stored_momentum.max_attitude_step_deg == 5.0
         assert default_acs.stored_momentum.initial_momentum_body_n_m_s == (
             0.0,
             0.0,
@@ -101,10 +103,22 @@ class TestAttitudeControlSystem:
         with pytest.raises(ValueError, match="finite"):
             StoredMomentumConfig(initial_momentum_body_n_m_s=(0.0, np.nan, 0.0))
 
-    @pytest.mark.parametrize("interval", [0.0, -1.0, np.nan, np.inf, 10.1])
-    def test_momentum_sampling_limit_is_bounded(self, interval):
-        with pytest.raises(ValueError, match="max_sample_interval_s"):
-            StoredMomentumConfig(max_sample_interval_s=interval)
+    @pytest.mark.parametrize(
+        "field, limit",
+        [("max_sample_interval_s", 10.0), ("max_attitude_step_deg", 5.0)],
+    )
+    @pytest.mark.parametrize("value", [0.0, -1.0, np.nan, np.inf, -np.inf, "above"])
+    def test_momentum_sampling_limit_is_bounded(self, field, limit, value):
+        with pytest.raises(ValueError, match=field):
+            StoredMomentumConfig(**{field: limit + 0.1 if value == "above" else value})
+
+    def test_momentum_sampling_limits_roundtrip(self):
+        config = StoredMomentumConfig(
+            max_sample_interval_s=0.5, max_attitude_step_deg=1.0
+        )
+        restored = StoredMomentumConfig.model_validate_json(config.model_dump_json())
+        assert restored == config
+        assert restored.max_attitude_step_deg == 1.0
 
     def test_initialization_custom_slew_acceleration(self, custom_acs):
         """Test ACS initializes with custom slew_acceleration."""
@@ -485,29 +499,43 @@ class TestSpacecraftBus:
             (0.0, 0.0, 30.0),
         )
 
-    @pytest.mark.parametrize("scale", [1e-15, 1.0, 1e15])
-    @pytest.mark.parametrize("excess", [0.0, 1e-13])
+    @pytest.mark.parametrize("scale", [1e-200, 1.0, 1e200])
+    @pytest.mark.parametrize("excess", [0.0, 1e-13, 1e-8])
     def test_inertia_triangle_boundary_allows_roundoff(self, scale, excess):
         SpacecraftBus(
             inertia_tensor_body_kg_m2=np.diag([1.0, 1.0, 2.0 + excess]) * scale
         )
 
-    @pytest.mark.parametrize("scale", [1e-15, 1.0, 1e15])
+    @pytest.mark.parametrize("scale", [1e-200, 1.0, 1e200])
     @pytest.mark.parametrize(
         "inertia",
         [
             np.diag([1.0, 1.0, 10.0]),
             np.eye(3) + 3.0 * np.ones((3, 3)),
-            np.diag([1.0, 1.0, 2.0 + 1e-9]),
+            np.diag([1.0, 1.0, 2.0 + 1e-7]),
         ],
     )
     def test_inertia_triangle_check_uses_principal_moments(self, scale, inertia):
         with pytest.raises(ValueError, match="triangle inequality"):
             SpacecraftBus(inertia_tensor_body_kg_m2=inertia * scale)
 
+    @pytest.mark.parametrize("scale", [1e-200, 1.0, 1e200])
+    def test_inertia_symmetry_tolerance_is_relative_to_tensor_scale(self, scale):
+        inertia = np.eye(3)
+        inertia[0, 1] = 1e-8
+        bus = SpacecraftBus(inertia_tensor_body_kg_m2=inertia * scale)
+        expected = (inertia + inertia.T) / 2.0
+        np.testing.assert_allclose(
+            np.asarray(bus.inertia_tensor_body_kg_m2) / scale, expected, atol=0.0
+        )
+        inertia[0, 1] = 1e-7
+        with pytest.raises(ValueError, match="symmetric"):
+            SpacecraftBus(inertia_tensor_body_kg_m2=inertia * scale)
+
     @pytest.mark.parametrize(
         "inertia, message",
         [
+            (np.zeros((3, 3)), "positive definite"),
             (((1.0, 0.0), (0.0, 1.0)), "3x3"),
             (
                 (

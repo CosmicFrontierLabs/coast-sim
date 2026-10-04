@@ -3,12 +3,13 @@ from datetime import datetime, timezone
 from typing import Any, cast
 
 import matplotlib.pyplot as plt
+import numpy as np
+import numpy.typing as npt
 import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
-from conops.common import dtutcfromtimestamp
 from conops.common.enums import ACSMode
-from conops.common.vector import attitude_to_quat, quaternion_attitude_delta
+from conops.common.vector import quaternion_attitude_delta
 from conops.config.groundstation import GroundStation
 
 from ..config import MissionConfig
@@ -228,7 +229,8 @@ class DITLMixin:
             inertia_tensor_body_kg_m2=inertia,
             initial_momentum_body_n_m_s=(momentum_config.initial_momentum_body_n_m_s),
             max_sample_interval_s=min(
-                momentum_config.max_sample_interval_s, 5.0 / fastest_rate
+                momentum_config.max_sample_interval_s,
+                momentum_config.max_attitude_step_deg / fastest_rate,
             ),
         )
 
@@ -240,17 +242,18 @@ class DITLMixin:
             self._stored_momentum_tracker.validate_sample_interval(self.ephem.step_size)
 
     def _update_stored_momentum(
-        self, utime: float, ra: float, dec: float, roll: float
+        self,
+        utime: float,
+        position_eci_km: npt.NDArray[np.float64],
+        attitude_quaternion_eci_to_body: npt.NDArray[np.float64],
     ) -> MomentumSample | None:
+        """Advance the tracker using values already computed for housekeeping."""
         if self._stored_momentum_tracker is None:
             return None
-        ephem_index = self.ephem.index(dtutcfromtimestamp(utime))
-        position_eci_km = self.ephem.gcrs_pv.position[ephem_index]
-        attitude_quaternion = attitude_to_quat(ra, dec, roll)
         return self._stored_momentum_tracker.update(
             utime=utime,
             position_eci_km=position_eci_km,
-            attitude_quaternion_eci_to_body=attitude_quaternion,
+            attitude_quaternion_eci_to_body=attitude_quaternion_eci_to_body,
         )
 
     @staticmethod

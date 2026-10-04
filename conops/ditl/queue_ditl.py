@@ -1327,7 +1327,7 @@ class QueueDITL(DITLMixin, DITLStats):
         roll_offset_deg = (roll - nominal_roll + 180.0) % 360.0 - 180.0
 
         _q = attitude_to_quat(ra, dec, roll)
-        momentum_sample = self._update_stored_momentum(utime, ra, dec, roll)
+        momentum_sample = self._update_stored_momentum(utime, _pos, _q)
         return Housekeeping(
             timestamp=datetime.fromtimestamp(utime, tz=timezone.utc),
             ra=ra,
