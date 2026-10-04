@@ -31,7 +31,7 @@ def test_replay_collection_and_data_exclude_setup_and_teardown(
         entry.set_collection_window(ditl.config.payload.observation_timing)
         entry = PlanEntry.model_validate_json(entry.model_dump_json())
         ditl.config.payload.observation_timing = ObservationTiming()
-    ditl.plan.which_ppt.return_value = entry
+    ditl.plan.entries = [entry]
     ditl.acs.pointing.return_value = (0, 0, 0, 7)
     ditl.payload.data_generated = Mock(side_effect=lambda seconds: seconds * 0.01)
 
@@ -61,7 +61,7 @@ def test_replay_waits_for_executed_slew_and_saved_setup(
         ObservationTiming(setup_seconds=setup, cleanup_seconds=2, handoff_seconds=10)
     )
     saved = (entry.collection_begin, entry.collection_end)
-    ditl.plan.which_ppt.return_value = entry
+    ditl.plan.entries = [entry]
     ditl.acs.pointing.return_value = (0, 0, 0, 7)
     ditl.acs.current_slew = ditl.acs.last_slew = Mock(
         obsid=7, slewend=start + actual_slew
