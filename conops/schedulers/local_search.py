@@ -149,6 +149,12 @@ class LocalSearchPlanner(PriorityPlanner):
 
     def schedule(self) -> Plan:
         """Build the priority-first plan, then search for a better one."""
+        start = self._start_from_priority_plan()
+        best = self._best = self._search(start)
+        return self._finish_best(best)
+
+    def _start_from_priority_plan(self) -> _Decoded:
+        """Build the priority-first plan and return it as a decoded sequence."""
         self._reserve_fixed()
         fixed = [self._copy_block(block) for block in self.timeline]
         requests = self._requests()
@@ -160,14 +166,11 @@ class LocalSearchPlanner(PriorityPlanner):
         fixed_entries = {id(block.entry) for block in self.timeline}
 
         self._place_requests(requests)
-        greedy_timeline = list(self.timeline)
-        greedy_score = self._timeline_score(
-            [b for b in greedy_timeline if id(b.entry) not in fixed_entries]
-        )
-        self.initial_score = greedy_score
+        self._greedy_timeline = list(self.timeline)
+        science = [b for b in self._greedy_timeline if id(b.entry) not in fixed_entries]
+        self.initial_score = self._timeline_score(science)
 
         self._fixed = fixed
-        science = [b for b in greedy_timeline if id(b.entry) not in fixed_entries]
         # Released at their priority-first times, the snapshots decode to
         # the priority-first plan; moves release them one at a time.
         start = self._decode(
@@ -183,15 +186,17 @@ class LocalSearchPlanner(PriorityPlanner):
             ]
         )
         self.start_score = self._objective(start.final)
-        best = self._best = self._search(start)
+        return start
 
+    def _finish_best(self, best: _Decoded) -> Plan:
+        """Return the best plan found, or the priority-first plan if better."""
         best_score = self._objective(best.final)
-        if best_score >= greedy_score:
+        if best_score >= self.initial_score:
             self.score = best_score
             self._set_unplaced(best.final.remaining)
             return self._finish(best.final.timeline)
-        self.score = greedy_score
-        return self._finish(greedy_timeline)
+        self.score = self.initial_score
+        return self._finish(self._greedy_timeline)
 
     # ── Objective ────────────────────────────────────────────────────────
 

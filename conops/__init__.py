@@ -64,6 +64,7 @@ from .ditl import (
     TOORequest,
 )
 from .schedulers import (
+    CpSatPlanner,
     DispatchPolicy,
     DumbQueueScheduler,
     DumbScheduler,
@@ -133,6 +134,7 @@ __all__ = [
     "DITLMixin",
     "dtutcfromtimestamp",
     "DTOR",
+    "CpSatPlanner",
     "DispatchPolicy",
     "DumbQueueScheduler",
     "DumbScheduler",
