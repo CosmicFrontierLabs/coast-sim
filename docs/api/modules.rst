@@ -42,6 +42,7 @@ Scheduling and Planning
 .. toctree::
    :maxdepth: 2
 
+   conops.benchmark
    conops.schedulers
    conops.schedulers.context
    conops.schedulers.local_search

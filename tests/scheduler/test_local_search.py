@@ -162,10 +162,55 @@ class TestShortWindowRequest:
         assert planner.score > planner.initial_score
 
 
+class TestEarliness:
+    def test_deadline_request_moves_ahead_at_no_cost_in_science(self) -> None:
+        """Equal science either way, so the deadline request should start first."""
+        config = _config(3)
+        filler = _target(config, 1, 105.0, 10.0, merit=60, minutes=20)
+        deadline = _target(
+            config, 2, 110.0, 10.0, merit=50, minutes=20, deadline=T0 + 2 * 3600
+        )
+
+        planner = LocalSearchPlanner(
+            config,
+            [filler, deadline],
+            BEGIN,
+            BEGIN + timedelta(hours=3),
+            max_iterations=300,
+            seed=1,
+        )
+        plan = planner.schedule()
+
+        assert [obsid for obsid, _, _ in _science(plan)] == [2, 1]
+        assert planner.score > planner.initial_score
+
+    def test_late_snapshot_still_counts(self) -> None:
+        """A snapshot starting at its deadline keeps part of its value."""
+        config = _config(2)
+        target = _target(config, 1, 105.0, 10.0, merit=50, deadline=T0 + 3600)
+        planner = LocalSearchPlanner(
+            config,
+            [target],
+            BEGIN,
+            BEGIN + timedelta(hours=2),
+            max_iterations=0,
+            earliness_weight=1.0,
+        )
+
+        planner.schedule()
+
+        assert planner.score[0] > 0
+
+
 class TestArguments:
     @pytest.mark.parametrize(
         "options",
-        [{"time_limit": -1.0}, {"neighborhood": 0}, {"history_length": 0}],
+        [
+            {"time_limit": -1.0},
+            {"neighborhood": 0},
+            {"history_length": 0},
+            {"earliness_weight": 1.5},
+        ],
     )
     def test_rejects_invalid_search_settings(
         self, options: dict[str, float | int]

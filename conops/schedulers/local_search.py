@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict
 
 from ..config import MissionConfig
 from ..targets import Plan, Pointing
-from .priority_planner import PriorityPlanner, _Block
+from .priority_planner import PriorityPlanner, _Block, _Request
 
 Score = tuple[float, ...]
 """Merit-weighted science seconds per tier, highest tier first."""
@@ -75,6 +75,8 @@ class LocalSearchPlanner(PriorityPlanner):
     each order into a timeline (see the module description). It tries:
 
     * inserting a snapshot of a request with exposure left to place,
+    * releasing a snapshot from the time and length the priority-first plan
+      gave it,
     * removing a snapshot,
     * swapping two nearby snapshots, and
     * moving a snapshot to a nearby position.
@@ -82,8 +84,11 @@ class LocalSearchPlanner(PriorityPlanner):
     A change is kept by late-acceptance hill climbing: when it is no worse than
     the current plan, or than the plan of ``history_length`` steps ago, so the
     search can cross plateaus. The objective is merit-weighted science time,
-    compared tier by tier from the highest. The best plan found is returned,
-    and never one worse than the priority-first plan.
+    compared tier by tier from the highest. A snapshot of a request with a
+    deadline is worth less the later it starts: starting at the deadline
+    rather than the start of the horizon costs ``earliness_weight`` of its
+    value. The best plan found is returned, and never one worse than the
+    priority-first plan.
 
     Ground passes and locked entries stay where the priority-first plan put
     them. Takes the same arguments as
@@ -96,6 +101,9 @@ class LocalSearchPlanner(PriorityPlanner):
         seed: Random seed; defaults to the configuration's.
         neighborhood: How many positions apart a swap or move can be.
         history_length: Length of the late-acceptance history.
+        earliness_weight: Fraction of a deadline request's value lost by
+            starting at its deadline, in [0, 1]. Values below 1 keep a late
+            snapshot worth more than none.
     """
 
     planner_name = "local_search"
@@ -112,6 +120,7 @@ class LocalSearchPlanner(PriorityPlanner):
         seed: int | None = None,
         neighborhood: int = 3,
         history_length: int = 50,
+        earliness_weight: float = 0.5,
         **options: object,
     ) -> None:
         super().__init__(config, targets, begin, end, **options)  # type: ignore[arg-type]
@@ -119,11 +128,14 @@ class LocalSearchPlanner(PriorityPlanner):
             raise ValueError("time_limit must not be negative")
         if neighborhood < 1 or history_length < 1:
             raise ValueError("neighborhood and history_length must be positive")
+        if not 0.0 <= earliness_weight <= 1.0:
+            raise ValueError("earliness_weight must be between 0 and 1")
         self.time_limit = time_limit
         self.max_iterations = max_iterations
         self.seed = seed if seed is not None else (config.random_seed or 0)
         self.neighborhood = neighborhood
         self.history_length = history_length
+        self.earliness_weight = earliness_weight
         self.iterations = 0
         """Changes tried in the last :meth:`schedule`."""
         self.accepted = 0
@@ -193,12 +205,24 @@ class LocalSearchPlanner(PriorityPlanner):
             request = self._by_obsid.get(int(block.entry.obsid))
             if request is None:
                 continue
-            seconds = block.entry.collection_seconds_between(
-                block.entry.begin, block.entry.end
-            )
             tier = request.merit.tier
-            totals[tier] = totals.get(tier, 0.0) + request.merit.value * seconds
+            totals[tier] = totals.get(tier, 0.0) + self._contribution(request, block)
         return tuple(totals.get(tier, 0.0) for tier in self._tiers)
+
+    def _contribution(self, request: _Request, block: _Block) -> float:
+        """Return a snapshot's merit-weighted science, discounted for lateness."""
+        entry = block.entry
+        worth = request.merit.value * entry.collection_seconds_between(
+            entry.begin, entry.end
+        )
+        deadline = request.target.deadline
+        if deadline is None or self.earliness_weight == 0.0:
+            return worth
+        available = deadline - self.ctx.ustart
+        if available <= 0.0 or entry.collection_begin is None:
+            return worth
+        delay = max(0.0, float(entry.collection_begin) - self.ctx.ustart)
+        return worth * (1.0 - self.earliness_weight * min(1.0, delay / available))
 
     def _set_unplaced(self, remaining: dict[int, float]) -> None:
         self.unplaced = [
@@ -260,7 +284,7 @@ class LocalSearchPlanner(PriorityPlanner):
             )
             score = dict(state.score)
             tier = request.merit.tier
-            score[tier] = score.get(tier, 0.0) + request.merit.value * seconds
+            score[tier] = score.get(tier, 0.0) + self._contribution(request, block)
             left = dict(state.remaining)
             left[obsid] = remaining - seconds
             return _State.model_construct(

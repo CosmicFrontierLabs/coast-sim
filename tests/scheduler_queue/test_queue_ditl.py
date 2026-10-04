@@ -1,7 +1,7 @@
 """Unit tests for QueueDITL class."""
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import cast
 from unittest.mock import ANY, Mock, patch
 
@@ -263,6 +263,18 @@ class TestScheduleGroundstationPasses:
         queue_ditl._schedule_groundstation_passes()
         cast(Mock, queue_ditl.acs.passrequests.get).assert_called_once_with(
             2018, 331, 1
+        )
+
+    @pytest.mark.parametrize(("hours", "days"), [(6, 1), (36, 2)])
+    def test_schedule_passes_covers_partial_days(
+        self, queue_ditl: QueueDITL, hours: int, days: int
+    ) -> None:
+        """A run shorter than, or not a whole number of, days still gets its passes."""
+        queue_ditl.end = queue_ditl.begin + timedelta(hours=hours)
+        queue_ditl.acs.passrequests.passes = []
+        queue_ditl._schedule_groundstation_passes()
+        cast(Mock, queue_ditl.acs.passrequests.get).assert_called_once_with(
+            2018, 331, days
         )
 
     def test_schedule_passes_empty_prints_message(

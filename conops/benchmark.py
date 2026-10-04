@@ -1,0 +1,350 @@
+"""Compare scheduling modes on the same scenario.
+
+A :class:`BenchmarkScenario` describes a mission configuration, a pool of
+targets and the Targets of Opportunity that arrive during the run. Each
+:class:`Contender` simulates the scenario in one scheduling mode:
+
+* :func:`dispatch`: :class:`~conops.ditl.QueueDITL` picks each next target.
+* :func:`planned`: a planner builds one plan for the whole run up front, and
+  :class:`~conops.ditl.DITL` executes it. A plan built in advance cannot react
+  to ToOs, so they are never observed.
+* :func:`rolling`: :class:`~conops.ditl.RollingHorizonDITL` replans as the run
+  goes, including rapid replans for ToOs.
+
+:func:`run_benchmark` runs every contender on fresh copies of the scenario and
+returns a :class:`BenchmarkResult` for each, measured the same way from
+telemetry. :func:`format_results` renders them as a table.
+"""
+
+import time
+from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime, timedelta
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from .common import ACSMode
+from .config import MissionConfig
+from .ditl import DITL, QueueDITL, RollingHorizonDITL
+from .ditl.ditl_mixin import DITLMixin
+from .ditl.plan_validator import PLAN_SCIENCE_OBSTYPES, entry_obstype
+from .schedulers import PriorityPlanner
+from .targets import Pointing
+
+
+class TOOSpec(BaseModel):
+    """A Target of Opportunity that arrives during a benchmark run."""
+
+    model_config = ConfigDict(frozen=True)
+
+    obsid: int
+    ra: float
+    dec: float
+    merit: float
+    exptime: int
+    name: str
+    submit_time: float
+    """Unix time the ToO is submitted."""
+    deadline: float | None = None
+    """Latest Unix time its science may begin."""
+
+
+class BenchmarkScenario(BaseModel):
+    """A mission, a target pool and the ToOs that arrive while it runs.
+
+    ``make_config`` and ``make_targets`` are called afresh for every
+    contender, because simulations change their configuration and targets.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    name: str
+    begin: datetime
+    end: datetime
+    make_config: Callable[[], MissionConfig]
+    """Return a new configuration with its ephemeris set."""
+    make_targets: Callable[[MissionConfig], list[Pointing]]
+    """Return new targets bound to the given configuration."""
+    toos: list[TOOSpec] = Field(default_factory=list)
+
+
+class _Run(BaseModel):
+    """What a contender's simulation produced."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    simulation: DITLMixin
+    planning_seconds: float | None = None
+
+
+class Contender(BaseModel):
+    """A named way of scheduling a scenario."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    name: str
+    simulate: Callable[[BenchmarkScenario], _Run]
+
+
+class BenchmarkResult(BaseModel):
+    """How one contender did on one scenario, measured from telemetry."""
+
+    contender: str
+    scenario: str
+    science_hours: float = 0.0
+    """Science collected, to the second."""
+    weighted_science: float = 0.0
+    """Science seconds times the merit of the target observed."""
+    slewing_hours: float = 0.0
+    """Time in each ACS mode, sampled at simulation steps. A step in which a
+    slew ends and collection starts counts as slewing, so mode hours and
+    ``science_hours`` can overlap by up to a step per observation."""
+    idle_hours: float = 0.0
+    pass_hours: float = 0.0
+    observations: int = 0
+    """Science entries in the plan that was executed."""
+    too_response_seconds: dict[int, float | None] = Field(default_factory=dict)
+    """Seconds from each ToO's submission to its first science, by obsid."""
+    planning_seconds: float | None = None
+    """Wall-clock time spent building plans, for planning contenders."""
+    run_seconds: float = 0.0
+    """Wall-clock time for the whole contender, planning included."""
+    mismatches: int | None = None
+    """Plan/execution mismatches found by the plan validator."""
+    error: str | None = None
+    """Why the contender failed, if it did."""
+
+
+# ── Contenders ───────────────────────────────────────────────────────────
+
+
+def dispatch(name: str = "dispatch") -> Contender:
+    """Queue dispatch: QueueDITL selects each next target as the run goes."""
+
+    def simulate(scenario: BenchmarkScenario) -> _Run:
+        config = scenario.make_config()
+        ditl = QueueDITL(config=config, begin=scenario.begin, end=scenario.end)
+        for target in scenario.make_targets(config):
+            ditl.queue.add(
+                ra=target.ra,
+                dec=target.dec,
+                obsid=target.obsid,
+                name=target.name,
+                merit=float(target.fom),
+                exptime=int(target.exptime or target.ss_max),
+                ss_min=int(target.ss_min),
+                ss_max=int(target.ss_max),
+                instrument_name=target.instrument_name,
+                deadline=target.deadline,
+            )
+        for too in scenario.toos:
+            ditl.submit_too(**too.model_dump())
+        ditl.calc()
+        return _Run(simulation=ditl)
+
+    return Contender(name=name, simulate=simulate)
+
+
+def planned(
+    planner: type[PriorityPlanner] = PriorityPlanner,
+    name: str | None = None,
+    **options: object,
+) -> Contender:
+    """One plan for the whole run, built up front and executed by DITL.
+
+    Args:
+        planner: Planner class to build the plan with.
+        name: Contender name; defaults to the planner's.
+        **options: Extra keyword arguments for the planner.
+    """
+
+    def simulate(scenario: BenchmarkScenario) -> _Run:
+        config = scenario.make_config()
+        targets = scenario.make_targets(config)
+        began = time.perf_counter()
+        builder = planner(
+            config,
+            targets,
+            scenario.begin,
+            scenario.end,
+            **options,  # type: ignore[arg-type]
+        )
+        plan = builder.schedule()
+        planning_seconds = time.perf_counter() - began
+        ditl = DITL(config=config, plan=plan, begin=scenario.begin, end=scenario.end)
+        ditl.step_size = builder.ctx.step_size
+        ditl.calc()
+        return _Run(simulation=ditl, planning_seconds=planning_seconds)
+
+    return Contender(name=name or f"planned:{planner.planner_name}", simulate=simulate)
+
+
+def rolling(
+    planner: type[PriorityPlanner] = PriorityPlanner,
+    name: str | None = None,
+    *,
+    horizon: timedelta = timedelta(days=1),
+    replan_interval: timedelta = timedelta(hours=12),
+    commit_lead_time: timedelta = timedelta(0),
+    planner_options: Mapping[str, object] | None = None,
+) -> Contender:
+    """Rolling-horizon replanning with ``planner``, reacting to ToOs.
+
+    Args:
+        planner: Planner class to build each plan with.
+        name: Contender name; defaults to one naming the planner.
+        horizon: How far ahead each plan looks.
+        replan_interval: Time between scheduled replans.
+        commit_lead_time: Time between building a plan and it taking effect.
+        planner_options: Extra keyword arguments for the planner.
+    """
+
+    def simulate(scenario: BenchmarkScenario) -> _Run:
+        config = scenario.make_config()
+        ditl = RollingHorizonDITL(
+            config,
+            scenario.make_targets(config),
+            begin=scenario.begin,
+            end=scenario.end,
+            horizon=horizon,
+            replan_interval=replan_interval,
+            commit_lead_time=commit_lead_time,
+            planner=planner,
+            planner_options=planner_options,
+        )
+        ditl.step_size = int(ditl.ephem.step_size)
+        for too in scenario.toos:
+            ditl.submit_too(**too.model_dump())
+        ditl.calc()
+        return _Run(
+            simulation=ditl,
+            planning_seconds=sum(r.planning_seconds for r in ditl.replans),
+        )
+
+    return Contender(name=name or f"rolling:{planner.planner_name}", simulate=simulate)
+
+
+# ── Running and reporting ────────────────────────────────────────────────
+
+
+def run_benchmark(
+    scenario: BenchmarkScenario, contenders: Sequence[Contender]
+) -> list[BenchmarkResult]:
+    """Run every contender on the scenario and measure each the same way.
+
+    A contender that raises is reported with its error rather than stopping
+    the benchmark.
+    """
+    results = []
+    for contender in contenders:
+        began = time.perf_counter()
+        try:
+            run = contender.simulate(scenario)
+        except Exception as exc:  # report the failure and carry on
+            results.append(
+                BenchmarkResult(
+                    contender=contender.name,
+                    scenario=scenario.name,
+                    run_seconds=time.perf_counter() - began,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            )
+            continue
+        results.append(
+            _measure(contender.name, scenario, run, time.perf_counter() - began)
+        )
+    return results
+
+
+def _measure(
+    name: str, scenario: BenchmarkScenario, run: _Run, run_seconds: float
+) -> BenchmarkResult:
+    """Measure a finished simulation from its telemetry and plan."""
+    simulation = run.simulation
+    merit = {
+        int(t.obsid): float(t.fom) for t in scenario.make_targets(simulation.config)
+    }
+    merit.update({too.obsid: too.merit for too in scenario.toos})
+    step_hours = float(simulation.step_size) / 3600.0
+    modes = [ACSMode(int(m)) for m in simulation.mode]
+
+    first_science: dict[int, float] = {}
+    science = weighted = 0.0
+    for record in simulation.telemetry.housekeeping:
+        seconds = record.collection_seconds or 0.0
+        if seconds <= 0 or record.obsid is None:
+            continue
+        science += seconds
+        weighted += seconds * merit.get(int(record.obsid), 0.0)
+        first_science.setdefault(int(record.obsid), record.timestamp.timestamp())
+
+    responses: dict[int, float | None] = {}
+    for too in scenario.toos:
+        first = first_science.get(too.obsid)
+        submitted = max(too.submit_time, scenario.begin.timestamp())
+        responses[too.obsid] = None if first is None else first - submitted
+
+    validate = getattr(simulation, "validate_plan_matches_execution", None)
+    return BenchmarkResult(
+        contender=name,
+        scenario=scenario.name,
+        science_hours=science / 3600.0,
+        weighted_science=weighted,
+        slewing_hours=modes.count(ACSMode.SLEWING) * step_hours,
+        idle_hours=modes.count(ACSMode.IDLE) * step_hours,
+        pass_hours=modes.count(ACSMode.PASS) * step_hours,
+        observations=sum(
+            1
+            for entry in simulation.plan
+            if entry_obstype(entry) in PLAN_SCIENCE_OBSTYPES
+        ),
+        too_response_seconds=responses,
+        planning_seconds=run.planning_seconds,
+        run_seconds=run_seconds,
+        mismatches=len(validate()) if validate is not None else None,
+    )
+
+
+def format_results(results: Sequence[BenchmarkResult]) -> str:
+    """Render benchmark results as a plain-text table."""
+    headers = (
+        "contender",
+        "science h",
+        "weighted",
+        "slew h",
+        "idle h",
+        "obs",
+        "ToO response",
+        "plan s",
+        "run s",
+        "mismatches",
+    )
+    rows: list[tuple[str, ...]] = [headers]
+    for r in results:
+        if r.error is not None:
+            rows.append((r.contender, f"error: {r.error}", *[""] * 8))
+            continue
+        responses = [
+            "-" if seconds is None else f"{seconds / 60:.0f} min"
+            for seconds in r.too_response_seconds.values()
+        ]
+        rows.append(
+            (
+                r.contender,
+                f"{r.science_hours:.2f}",
+                f"{r.weighted_science:.3g}",
+                f"{r.slewing_hours:.2f}",
+                f"{r.idle_hours:.2f}",
+                str(r.observations),
+                ", ".join(responses) or "n/a",
+                "" if r.planning_seconds is None else f"{r.planning_seconds:.1f}",
+                f"{r.run_seconds:.1f}",
+                "" if r.mismatches is None else str(r.mismatches),
+            )
+        )
+    widths = [max(len(row[i]) for row in rows) for i in range(len(headers))]
+    lines = [
+        "  ".join(cell.ljust(width) for cell, width in zip(row, widths)).rstrip()
+        for row in rows
+    ]
+    lines.insert(1, "  ".join("-" * width for width in widths))
+    return "\n".join(lines)
