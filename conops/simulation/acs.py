@@ -691,7 +691,9 @@ class ACS:
         if self._is_in_charging_mode(utime):
             return self._continuous_optimum_roll(utime, ACSMode.CHARGING)
         self._reset_roll_optimization()
-        if self.current_pass is not None and self.current_pass.in_pass(utime):
+        # Pointing follows the commanded pass until END_PASS executes, including
+        # the step after its contact window closes, so roll must follow it too.
+        if self.current_pass is not None:
             return self.current_pass.roll_at(utime)
         if self.last_slew is not None and self.last_slew.slewstart > 0:
             return self.last_slew.endroll
