@@ -130,6 +130,9 @@ class PriorityPlanner:
             remaining exposure.
     """
 
+    planner_name = "priority"
+    """Recorded in the plan's metadata."""
+
     def __init__(
         self,
         config: MissionConfig,
@@ -166,6 +169,12 @@ class PriorityPlanner:
 
     def schedule(self) -> Plan:
         """Build and return the plan."""
+        self._reserve_fixed()
+        self._place_requests(self._requests())
+        return self._finish(self.timeline)
+
+    def _reserve_fixed(self) -> None:
+        """Start a timeline holding the locked entries and reachable passes."""
         self.ctx = SchedulingContext(
             self.config,
             self.begin,
@@ -194,7 +203,9 @@ class PriorityPlanner:
             for gspass in self.ctx.predict_passes():
                 self._place_pass(gspass)
 
-        for request in self._requests():
+    def _place_requests(self, requests: Sequence[_Request]) -> None:
+        """Place each request's snapshots in order at their earliest fit."""
+        for request in requests:
             placed = 0
             while request.remaining >= float(request.target.ss_min):
                 block = self._place_snapshot(request)
@@ -214,9 +225,11 @@ class PriorityPlanner:
                     request.target.obsid,
                 )
 
+    def _finish(self, timeline: Sequence[_Block]) -> Plan:
+        """Record and return the plan for a finished timeline."""
         self.plan = Plan(
-            entries=[block.entry for block in self.timeline],
-            metadata={"planner": "priority", "step_size": self.ctx.step_size},
+            entries=[block.entry for block in timeline],
+            metadata={"planner": self.planner_name, "step_size": self.ctx.step_size},
         )
         return self.plan
 
@@ -499,9 +512,16 @@ class PriorityPlanner:
         return None
 
     def _fit_in_gap(
-        self, request: _Request, pred: _Block | None, succ: _Block | None
+        self,
+        request: _Request,
+        pred: _Block | None,
+        succ: _Block | None,
+        not_before: float | None = None,
     ) -> tuple[_Block, Slew, Slew | None] | None:
-        """Find the earliest snapshot of ``request`` between ``pred`` and ``succ``."""
+        """Find the earliest snapshot of ``request`` between ``pred`` and ``succ``.
+
+        The slew starts no earlier than ``not_before``, if given.
+        """
         target = request.target
         ss_min = float(target.ss_min)
         earliest = self._earliest_start(pred)
@@ -512,6 +532,8 @@ class PriorityPlanner:
         snapshot = min(float(target.ss_max), request.remaining)
 
         start = earliest
+        if not_before is not None:
+            start = max(start, self.ctx.ceil_step(not_before))
         while start <= min(idle_limit, gap_end):
             window = next((w for w in request.windows if w[0] <= start < w[1]), None)
             if window is None:
