@@ -64,6 +64,27 @@ passed to the constructor or assigned before :meth:`~conops.ditl.ditl.DITL.calc`
   ditl = DITL(config=config, ephem=ephem, plan=plan)
   ditl.calc()
 
+:class:`~conops.ditl.ditl.DITL` commands every entry when its ``begin`` is reached:
+science entries (``PPT``, ``AT``, ``TOO``) slew to the target and collect until ``end``;
+ground-station entries (``GSP``) slew onto the pass tracking profile, start the contact at
+``contact_begin`` and end it at ``end``; charging entries (``CHARGE``) charge until ``end``.
+Passes are predicted from the configured ground stations and matched to ``GSP`` entries by
+station and contact window, and passes the plan does not schedule are not flown.  Entries
+of any other type are logged and skipped.
+
+Executing a plan saved by :class:`~conops.ditl.queue_ditl.QueueDITL` with the same
+configuration and ephemeris reproduces that run's timeline.  To check how a plan from any
+source actually executed, compare it with the flown telemetry:
+
+.. code-block:: python
+
+  for mismatch in ditl.validate_plan_matches_execution():
+      print(mismatch)
+
+Unlike :class:`~conops.ditl.queue_ditl.QueueDITL`, which raises when its own plan does not
+match its execution, ``DITL`` returns the mismatches so that a plan built elsewhere can be
+assessed without stopping the run.
+
 The compatibility ``PlanSchema`` class can still load a plan when preserving that type is
 important to existing callers:
 
