@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import rust_ephem
 import yaml
 from pydantic import Field, field_validator, model_validator
 from rust_ephem.constraints import ConstraintConfig
@@ -649,3 +650,28 @@ class MissionConfig(ConfigModel):
                 return self._resolve_annotation(args[0])
 
         return None
+
+
+def bind_ephemeris(config: MissionConfig, ephem: rust_ephem.Ephemeris) -> None:
+    """Attach an ephemeris to a configuration and sync derived constraints.
+
+    Sets the ephemeris on the mission constraint, star trackers and radiators,
+    and copies the star-tracker and radiator hard exclusions into the mission
+    constraint, so attitude constraints evaluate the same way wherever the
+    configuration is used.
+    """
+    config.constraint.ephem = ephem
+    config.spacecraft_bus.star_trackers.set_ephem(ephem)
+    config.spacecraft_bus.radiators.set_ephem(ephem)
+    # Keep mission-level planning/FOR constraints synchronized with star-tracker
+    # hard exclusions.
+    config.constraint.star_tracker_hard_constraint = (
+        config.spacecraft_bus.star_trackers.startracker_hard_constraint
+    )
+    config.constraint.star_tracker_soft_constraint = (
+        config.spacecraft_bus.star_trackers.startracker_constraint
+    )
+    config.constraint.radiator_hard_constraint = (
+        config.spacecraft_bus.radiators.radiator_hard_constraint
+    )
+    config.constraint.invalidate_combined_constraint_cache()

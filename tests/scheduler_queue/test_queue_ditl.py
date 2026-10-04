@@ -38,7 +38,9 @@ from conops.simulation.acs import IDLE_OBSID
 from conops.targets import Plan, PlanEntry, Pointing
 
 
-def test_enabled_momentum_is_written_to_queue_housekeeping(queue_ditl):
+def test_enabled_momentum_is_written_to_queue_housekeeping(
+    queue_ditl: QueueDITL,
+) -> None:
     bus = queue_ditl.config.spacecraft_bus
     bus.inertia_tensor_body_kg_m2 = ((10.0, 0.0, 0.0), (0.0, 8.0, 0.0), (0.0, 0.0, 6.0))
     bus.attitude_control = AttitudeControlSystem(

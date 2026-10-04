@@ -26,6 +26,7 @@ optimize observation schedules, and validate operational constraints before laun
    attitude_execution
    radiator_shadowing
    target_of_opportunity
+   planning
    plan_serialization
    api/modules
    contributing
