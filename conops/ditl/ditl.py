@@ -619,6 +619,17 @@ class DITL(DITLMixin, DITLStats):
                     obsid=entry.obsid,
                 )
                 continue
+            profile = self._planned_tracking_profile(entry, gspass)
+            if profile is None and entry.track_start_ra is not None:
+                self.log.log_event(
+                    utime=float(entry.begin),
+                    event_type="ERROR",
+                    description="No pass tracking profile matches the planned attitude",
+                    obsid=entry.obsid,
+                )
+                continue
+            if profile:
+                gspass.select_tracking_profile(profile)
             self._entry_passes[id(entry)] = gspass
             planned.append(gspass)
         passrequests.passes = planned
@@ -680,6 +691,7 @@ class DITL(DITLMixin, DITLStats):
         elif obstype == ObsType.CHARGE:
             self.acs.request_end_battery_charge(utime)
         else:
+            self.acs.cancel_pending_slews(entry.obsid)
             self.acs.end_science_observation()
         self._active_entry = None
 
@@ -764,9 +776,6 @@ class DITL(DITLMixin, DITLStats):
         gspass = self._entry_passes.get(id(entry))
         if gspass is None:
             return False
-        profile = self._planned_tracking_profile(entry, gspass)
-        if profile:
-            gspass.select_tracking_profile(profile)
         # Join an already-running contact on the profile, as QueueDITL does.
         end_ra, end_dec, end_roll = (
             gspass.gsstartra,
@@ -818,7 +827,7 @@ class DITL(DITLMixin, DITLStats):
                 and abs((roll - entry.track_start_roll + 180.0) % 360.0 - 180.0) <= 1e-6
             ):
                 return profile
-        return profiles[0] if profiles else None
+        return None
 
     def _compute_sun_angle(self, utime: float, ra: float, dec: float) -> float | None:
         """Compute angular distance from pointing to the Sun in degrees."""
