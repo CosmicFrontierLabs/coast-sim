@@ -135,8 +135,10 @@ gave it, so the starting point is exactly that plan. The search then tries:
 A change is kept when it is no worse than the current plan, or than the plan of
 ``history_length`` steps ago (late-acceptance hill climbing), which lets the search
 cross plateaus. The objective is merit-weighted science time, compared tier by tier
-from the highest. The best plan found is returned, and it is never worse than the
-priority-first plan.
+from the highest. A snapshot of a request with a deadline is worth less the later it
+starts, so ToOs and other time-critical requests are not pushed later than they need
+to be. The best plan found is returned, and it is never worse than the priority-first
+plan.
 
 .. code-block:: python
 
@@ -154,13 +156,15 @@ priority-first plan.
   machine speed; set ``max_iterations`` (and ``seed``) for reproducible plans;
 * ``seed``: random seed, defaulting to the configuration's;
 * ``neighborhood``: how many positions apart a swap or move can be;
-* ``history_length``: length of the late-acceptance history.
+* ``history_length``: length of the late-acceptance history;
+* ``earliness_weight``: fraction of a deadline request's value lost if it starts at
+  its deadline rather than at the start of the horizon (default 0.5). It must be at
+  most 1, so a late snapshot is always worth more than none.
 
 Ground passes and locked entries stay where the priority-first plan put them.
 
-**Limitations.** The objective rewards merit and science time, not earliness: within
-its deadline, a request with a deadline may be placed later than the priority-first
-plan put it. Each change is decoded from the point it touches, so a search of a few
+**Limitations.** Only requests with a deadline are rewarded for starting early. Each
+change is decoded from the point it touches, so a search of a few
 thousand changes takes tens of seconds for a day with a few hundred targets.
 
 The scheduling context
@@ -242,3 +246,44 @@ Pass ``planner=LocalSearchPlanner`` (and, for example,
 Comparing a run with :class:`~conops.ditl.queue_ditl.QueueDITL` dispatch on the same
 targets shows what planning ahead gains or costs in science time and ToO response.
 A ``RollingHorizonDITL`` instance runs once; create a new one for each simulation.
+
+Comparing scheduling modes
+--------------------------
+
+:mod:`conops.benchmark` runs the same scenario through each scheduling mode and
+measures them the same way, from telemetry. A
+:class:`~conops.benchmark.BenchmarkScenario` provides factories for a fresh
+configuration and target pool, since simulations change both, and lists the ToOs
+that arrive during the run. The contenders are:
+
+* :func:`~conops.benchmark.dispatch`: ``QueueDITL`` picks each next target;
+* :func:`~conops.benchmark.planned`: one plan built up front by a planner and executed
+  by ``DITL``. A plan built in advance cannot react to ToOs;
+* :func:`~conops.benchmark.rolling`: ``RollingHorizonDITL`` with a planner and
+  replanning settings.
+
+.. code-block:: python
+
+   from conops.benchmark import (
+       dispatch, format_results, planned, rolling, run_benchmark,
+   )
+   from conops.schedulers import LocalSearchPlanner, PriorityPlanner
+
+   results = run_benchmark(scenario, [
+       dispatch(),
+       planned(PriorityPlanner),
+       planned(LocalSearchPlanner, time_limit=10.0),
+       rolling(LocalSearchPlanner, planner_options={"time_limit": 10.0}),
+   ])
+   print(format_results(results))
+
+Each :class:`~conops.benchmark.BenchmarkResult` reports science time, merit-weighted
+science, time slewing, idle and in contact, the number of observations, each ToO's
+response time, planning and run time, and plan/execution mismatches. A contender that
+fails is reported with its error instead of stopping the benchmark.
+
+``scripts/benchmark_schedulers.py`` runs all five standard contenders on a realistic
+scenario: the example TLE, Sun and Earth-limb avoidance, the default ground stations,
+random targets and one ToO halfway through with a one-hour deadline::
+
+   uv run python scripts/benchmark_schedulers.py --hours 24 --targets 200 --time-limit 10

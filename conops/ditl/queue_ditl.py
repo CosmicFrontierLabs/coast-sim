@@ -1454,8 +1454,10 @@ class QueueDITL(DITLMixin, DITLStats):
             # Extract year and day-of-year from begin datetime
             year = self.begin.year
             day = self.begin.timetuple().tm_yday
-            # Calculate length in days from begin/end
-            length = int((self.end - self.begin).total_seconds() / 86400)
+            # Cover every day the simulation touches, as DITL does
+            length = max(
+                1, int(np.ceil((self.end - self.begin).total_seconds() / 86400))
+            )
             self.acs.passrequests.get(year, day, length)
             for p in self.acs.passrequests.passes:
                 self.log.log_event(
