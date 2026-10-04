@@ -10,6 +10,7 @@ from .plan_validator import (
     PlanExecutionValidator,
 )
 from .queue_ditl import QueueDITL, TOORequest
+from .rolling_ditl import ReplanReason, ReplanRecord, RollingHorizonDITL
 from .telemetry import Housekeeping, PayloadData, SolarArrayDriveAngle, Telemetry
 
 __all__ = [
@@ -22,6 +23,9 @@ __all__ = [
     "DITLMixin",
     "DITLStats",
     "QueueDITL",
+    "ReplanReason",
+    "ReplanRecord",
+    "RollingHorizonDITL",
     "PlanExecutionMismatch",
     "PlanExecutionMismatchError",
     "PlanExecutionValidator",

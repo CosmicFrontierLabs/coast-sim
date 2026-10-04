@@ -4,13 +4,18 @@ Offline Planning
 Overview
 --------
 
-COASTSim runs a scheduler in one of two ways:
+COASTSim runs a scheduler in one of three ways:
 
 * **Dispatch** (closed loop): :class:`~conops.ditl.queue_ditl.QueueDITL` asks a
-  target queue for the next target each time the spacecraft is free.
+  target queue for the next target each time the spacecraft is free. This is the
+  default way to simulate a queue-scheduled mission.
 * **Planning** (open loop): a planner builds a whole
   :class:`~conops.targets.Plan` up front, and :class:`~conops.ditl.ditl.DITL`
   executes it.
+* **Rolling-horizon replanning** (closed loop):
+  :class:`~conops.ditl.rolling_ditl.RollingHorizonDITL` follows a plan and rebuilds
+  it from the spacecraft's actual state as time passes, as a ground-planned mission
+  does. See `Rolling-horizon replanning`_.
 
 :class:`~conops.schedulers.PriorityPlanner` is the planning engine. It reserves
 ground contacts first, then takes requests in priority order and places each
@@ -116,3 +121,70 @@ using the models ``DITL`` executes with: slew durations and paths from the real
 records them, the attitude a fresh simulation idles at before its first command,
 and the ground passes in the horizon. Future planners are built on the same
 context so that their plans also execute as planned.
+
+Rolling-horizon replanning
+--------------------------
+
+:class:`~conops.ditl.rolling_ditl.RollingHorizonDITL` simulates a mission that is
+planned on the ground and replanned periodically. It runs like
+:class:`~conops.ditl.ditl.DITL`, but builds its own plan with ``PriorityPlanner`` and
+rebuilds it as the simulation runs:
+
+1. **Initial plan.** At the start, a plan is built for the next ``horizon``.
+2. **Scheduled replans.** Every ``replan_interval``, the plan is rebuilt. Everything
+   already commanded, or due to start within ``commit_lead_time`` (the time a new
+   plan takes to reach the spacecraft), is kept. The rest is planned again from
+   where the committed activities leave the spacecraft, using each target's
+   remaining exposure.
+3. **Targets of Opportunity.** A ToO submitted with
+   :meth:`~conops.ditl.rolling_ditl.RollingHorizonDITL.submit_too` joins the target
+   pool when it becomes active and goes into the next scheduled plan. If its
+   ``deadline`` falls before that plan could take effect, a **rapid replan** runs at
+   once. In a rapid replan the observation in progress is cut short at the commit
+   cutoff when ``allow_interrupts`` is set and the ToO's tier and value, evaluated
+   now, beat the tier and value frozen onto that observation.
+
+.. code-block:: python
+
+   from datetime import timedelta
+
+   from conops import RollingHorizonDITL
+
+   ditl = RollingHorizonDITL(
+       config,
+       targets,
+       begin=begin,
+       end=end,
+       horizon=timedelta(days=1),
+       replan_interval=timedelta(hours=12),
+       commit_lead_time=timedelta(hours=1),
+   )
+   ditl.submit_too(
+       obsid=1000001, ra=105.0, dec=10.0, merit=500, exptime=900, name="GRB",
+       submit_time=begin + timedelta(hours=5),
+       deadline=begin + timedelta(hours=6),
+   )
+   ditl.calc()
+
+   for replan in ditl.replans:
+       print(replan.reason.value, replan.kept, replan.dropped, replan.added)
+   print(ditl.too_response_times())       # seconds to first science, by obsid
+   assert ditl.validate_plan_matches_execution() == []
+
+**Results**
+
+* ``ditl.replans`` lists each replan as a
+  :class:`~conops.ditl.rolling_ditl.ReplanRecord`: when and why it ran, the commit
+  cutoff, how many entries were kept, dropped and added, how many targets did not
+  fit, the planning time, and any ToO that triggered it or observation it
+  interrupted.
+* ``ditl.too_response_times()`` gives the seconds from each ToO's submission to its
+  first science, or None if it was never observed.
+* ``ditl.plan`` is the plan that was actually followed: the committed parts of
+  every plan. ``validate_plan_matches_execution()`` checks the execution against it.
+* Collected science is credited to the targets, so their remaining exposure
+  (``exptime``) and ``collected_seconds`` reflect the run, as with a target queue.
+
+Comparing a run with :class:`~conops.ditl.queue_ditl.QueueDITL` dispatch on the same
+targets shows what planning ahead gains or costs in science time and ToO response.
+A ``RollingHorizonDITL`` instance runs once; create a new one for each simulation.
