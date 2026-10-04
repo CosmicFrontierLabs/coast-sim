@@ -10,7 +10,9 @@ runs on fresh copies of it:
 * planned:priority / planned:local_search: one plan built up front, executed
   by DITL (a plan built in advance cannot react to the ToO);
 * rolling:priority / rolling:local_search: rolling-horizon replanning with
-  rapid replans for the ToO.
+  rapid replans for the ToO;
+* planned:cp_sat / rolling:cp_sat: the same with the CP-SAT planner, when
+  OR-Tools is installed (``pip install coast-sim[cpsat]``).
 
 Example:
     uv run python scripts/benchmark_schedulers.py --hours 24 --targets 200
@@ -19,6 +21,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -50,7 +53,11 @@ from conops.config import (  # noqa: E402
     SpacecraftBus,
     StarTrackerConfiguration,
 )
-from conops.schedulers import LocalSearchPlanner, PriorityPlanner  # noqa: E402
+from conops.schedulers import (  # noqa: E402
+    CpSatPlanner,
+    LocalSearchPlanner,
+    PriorityPlanner,
+)
 from conops.targets import Pointing  # noqa: E402
 
 TLE = REPO_ROOT / "examples" / "example.tle"
@@ -142,13 +149,20 @@ def build_contenders(
         "commit_lead_time": timedelta(minutes=lead_minutes),
     }
     search = {"time_limit": time_limit}
-    return [
+    contenders = [
         dispatch(),
         planned(PriorityPlanner),
         planned(LocalSearchPlanner, **search),
         rolling(PriorityPlanner, **replanning),  # type: ignore[arg-type]
         rolling(LocalSearchPlanner, planner_options=search, **replanning),  # type: ignore[arg-type]
     ]
+    if importlib.util.find_spec("ortools") is not None:
+        solver = {"solver_time_limit": time_limit}
+        contenders += [
+            planned(CpSatPlanner, **solver),
+            rolling(CpSatPlanner, planner_options=solver, **replanning),  # type: ignore[arg-type]
+        ]
+    return contenders
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -160,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
         "--time-limit",
         type=float,
         default=10.0,
-        help="seconds of local search per plan",
+        help="seconds of local search or CP-SAT solving per plan",
     )
     parser.add_argument(
         "--replan-hours", type=float, default=6.0, help="hours between replans"

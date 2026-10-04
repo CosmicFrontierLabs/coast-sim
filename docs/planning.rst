@@ -167,6 +167,60 @@ Ground passes and locked entries stay where the priority-first plan put them.
 change is decoded from the point it touches, so a search of a few
 thousand changes takes tens of seconds for a day with a few hundred targets.
 
+Optimizing plans with CP-SAT
+----------------------------
+
+:class:`~conops.schedulers.CpSatPlanner` builds plans with the CP-SAT constraint solver
+from Google's OR-Tools (an optional dependency; install ``coast-sim[cpsat]``). It
+optimizes the same objective as local search, but chooses which snapshots to observe
+and in what order by solving a constraint model rather than by trying changes one at
+a time.
+
+The horizon is solved in consecutive ``chunk`` lengths (three hours by default). For
+each chunk, a candidate is one request in one of its visibility windows, with an
+optional arrival time and a collection length between its ``ss_min`` and ``ss_max``.
+CP-SAT chooses candidates and their order:
+
+* a circuit through the chosen candidates fixes the order, with the slew between them
+  (plus a step, because slews start on simulation steps) as the gap they need;
+* each slew starts after its target becomes visible, as ACS requires, and each
+  snapshot finishes within its window;
+* ground passes are fixed tasks that snapshots must leave room to slew to;
+* a request's snapshots never add up to more than its remaining exposure;
+* the objective is merit-weighted science, with the earliness discount for requests
+  with a deadline.
+
+The priority-first plan's snapshots in each chunk are the solver's starting hint.
+Because the model approximates slews (each target's roll is chosen before solving),
+each chunk's order is decoded with the planner's exact checks before the next chunk is
+solved from where it leaves the spacecraft. Every plan therefore executes as planned,
+and the result is never worse than the priority-first plan.
+
+.. code-block:: python
+
+   from conops import CpSatPlanner
+
+   planner = CpSatPlanner(config, targets, begin, end, solver_time_limit=20.0)
+   plan = planner.schedule()
+   print(planner.solver_statuses, planner.initial_score, "->", planner.score)
+
+``CpSatPlanner`` takes the arguments of ``LocalSearchPlanner``, plus:
+
+* ``solver_time_limit``: seconds CP-SAT may search, shared across the chunks
+  (default 20);
+* ``chunk``: length of each chunk (default three hours);
+* ``workers``: CP-SAT search workers (default 8). Use 1, with ``seed``, for runs that
+  repeat exactly;
+* ``max_candidates``: candidates per chunk at most (default 120), those of the
+  priority-first plan first, then in priority order.
+
+``time_limit`` defaults to 0 here; set it to spend that many seconds improving the
+solver's plan by local search afterwards.
+
+**Limitations.** Chunks are solved one after another, so a choice in one chunk does not
+account for the chunks after it. The model's slews are approximate; the exact decoding
+corrects them but can drop or shorten a snapshot the solver chose.
+
 The scheduling context
 ----------------------
 
@@ -194,10 +248,11 @@ rebuilds it as the simulation runs:
 3. **Targets of Opportunity.** A ToO submitted with
    :meth:`~conops.ditl.rolling_ditl.RollingHorizonDITL.submit_too` joins the target
    pool when it becomes active and goes into the next scheduled plan. If its
-   ``deadline`` falls before that plan could take effect, a **rapid replan** runs at
-   once. In a rapid replan the observation in progress is cut short at the commit
-   cutoff when ``allow_interrupts`` is set and the ToO's tier and value, evaluated
-   now, beat the tier and value frozen onto that observation.
+   ``deadline`` falls before that plan could start collecting it (its lead time plus a
+   worst-case slew and the setup time), a **rapid replan** runs at once. In a rapid
+   replan the observation running at the commit cutoff, started or not, is cut short
+   there when ``allow_interrupts`` is set and the ToO's tier and value, evaluated now,
+   beat the tier and value frozen onto that observation.
 
 .. code-block:: python
 
@@ -226,8 +281,9 @@ rebuilds it as the simulation runs:
    print(ditl.too_response_times())       # seconds to first science, by obsid
    assert ditl.validate_plan_matches_execution() == []
 
-Pass ``planner=LocalSearchPlanner`` (and, for example,
-``planner_options={"time_limit": 10.0}``) to build each plan by local search.
+Pass ``planner=LocalSearchPlanner`` or ``planner=CpSatPlanner`` (and, for example,
+``planner_options={"time_limit": 10.0}`` or ``{"solver_time_limit": 10.0}``) to build
+each plan by local search or with CP-SAT.
 
 **Results**
 
@@ -282,7 +338,8 @@ science, time slewing, idle and in contact, the number of observations, each ToO
 response time, planning and run time, and plan/execution mismatches. A contender that
 fails is reported with its error instead of stopping the benchmark.
 
-``scripts/benchmark_schedulers.py`` runs all five standard contenders on a realistic
+``scripts/benchmark_schedulers.py`` runs the standard contenders (adding the CP-SAT
+planner, planned and rolling, when OR-Tools is installed) on a realistic
 scenario: the example TLE, Sun and Earth-limb avoidance, the default ground stations,
 random targets and one ToO halfway through with a one-hour deadline::
 
