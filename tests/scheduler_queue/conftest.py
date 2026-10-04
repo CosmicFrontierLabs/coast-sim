@@ -19,7 +19,8 @@ from conops import (
     QueueDITL,
     SolarArrayDriveState,
 )
-from conops.config import ObservationTiming
+from conops.config import ObservationTiming, TargetConfig
+from conops.config.observation_categories import ObservationCategories
 from conops.targets.plan import Plan
 
 
@@ -198,11 +199,9 @@ def mock_config() -> Mock:
     # Mock ground stations
     config.ground_stations = Mock()
 
-    # Optional scheduling parameters (via TargetConfig)
-    config.targets = Mock()
-    config.targets.slew_distance_weight = 0.0
-    config.targets.slew_time_weight = 0.0
-    config.targets.collection_time_weight = 0.0
+    # Scheduling parameters and observation categories (merit model inputs)
+    config.targets = TargetConfig()
+    config.observation_categories = ObservationCategories()
 
     return config
 

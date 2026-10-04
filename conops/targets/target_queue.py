@@ -11,6 +11,7 @@ from ..config import AttitudeControlSystem, Constraint, MissionConfig
 from ..config.acs import scheduled_slew_time
 from ..ditl.ditl_log import DITLLog
 from . import Pointing
+from .merit import MeritBreakdown, MeritModel
 
 
 class TargetSlewEstimate(BaseModel):
@@ -64,6 +65,7 @@ class TargetQueue:
             config.targets.radiator_earth_exposure_weight
         )
         self.random_seed = config.random_seed if config.random_seed is not None else 0
+        self.merit_model = MeritModel(config)
 
     def __getitem__(self, number: int) -> Pointing:
         return self.targets[number]
@@ -85,7 +87,8 @@ class TargetQueue:
         ss_min: int = 300,
         ss_max: int = 86400,
         instrument_name: str | None = None,
-    ) -> None:
+        deadline: float | None = None,
+    ) -> Pointing:
         """Add a pointing target to the queue.
 
         Creates a new Pointing object with the specified parameters and adds it to the queue.
@@ -99,6 +102,11 @@ class TargetQueue:
             exptime: Exposure time in seconds
             ss_min: Minimum snapshot size in seconds
             ss_max: Maximum snapshot size in seconds
+            instrument_name: Science instrument to observe with
+            deadline: Latest time (Unix seconds) science collection may begin
+
+        Returns:
+            The added target.
         """
 
         assert self.config is not None
@@ -114,10 +122,12 @@ class TargetQueue:
             ss_min=ss_min,
             ss_max=ss_max,
             instrument_name=telescope.name if telescope is not None else None,
+            deadline=deadline,
         )
         pointing.exptime = exptime
         pointing.visibility()
         self.targets.append(pointing)
+        return pointing
 
     def meritsort(self) -> None:
         """Sort target queue by merit based on visibility, type, and trigger recency."""
@@ -141,7 +151,11 @@ class TargetQueue:
                 continue
 
         self.targets.sort(
-            key=lambda target: (target.merit, self._target_tie_breaker(target)),
+            key=lambda target: (
+                self.merit_model.tier(target),
+                target.merit,
+                self._target_tie_breaker(target),
+            ),
             reverse=True,
         )
 
@@ -254,7 +268,7 @@ class TargetQueue:
         if not visibility_window:
             return -np.inf
 
-        upper_bound = float(target.merit)
+        upper_bound = float(target.merit) + self.merit_model.max_dynamic_value
         if self.collection_time_weight > 0.0:
             collection_seconds = self._candidate_collection_seconds(
                 target=target,
@@ -325,15 +339,28 @@ class TargetQueue:
         )
         self.utime = utime
         self.meritsort()
+        merit_model = self.merit_model
 
         # Select targets from queue
-        targets = [t for t in self.targets if t.merit > 0 and not t.done]
+        targets = [
+            t
+            for t in self.targets
+            if t.merit > 0
+            and not t.done
+            and (t.deadline is None or utime <= t.deadline)
+        ]
         score_candidates = (
             self.slew_distance_weight != 0.0
             or self.slew_time_weight != 0.0
             or self.collection_time_weight != 0.0
             or self.radiator_sun_exposure_weight != 0.0
             or self.radiator_earth_exposure_weight != 0.0
+            or merit_model.is_dynamic
+        )
+        delivered_shares = (
+            merit_model.delivered_shares(self.targets)
+            if merit_model.completion_deficit_weight > 0.0
+            else None
         )
 
         msg = (
@@ -350,7 +377,8 @@ class TargetQueue:
         else:
             print(msg)
         best_target = None
-        best_score = -np.inf
+        best_breakdown: MeritBreakdown | None = None
+        best_rank: tuple[int, float] = (np.iinfo(np.int64).min, -np.inf)
         last_unix = self.ephem.timestamp[-1].timestamp()
         prune_by_score_bound = (
             score_candidates and self._score_upper_bound_pruning_is_safe()
@@ -370,7 +398,7 @@ class TargetQueue:
                     utime=utime,
                     last_unix=last_unix,
                 )
-                if upper_bound <= best_score:
+                if (merit_model.tier(target), upper_bound) <= best_rank:
                     continue
 
             if not self._can_fit_min_snapshot_with_zero_slew(
@@ -390,6 +418,16 @@ class TargetQueue:
                 if score_candidates or target.uses_mounted_attitude() is True
                 else None,
             )
+
+            # A target must start collecting by its deadline.
+            if (
+                target.deadline is not None
+                and utime
+                + float(target.slewtime)
+                + self.observation_timing.setup_seconds
+                > target.deadline
+            ):
+                continue
 
             # Calculate observation window
             endtime = (
@@ -420,17 +458,20 @@ class TargetQueue:
                     + self.observation_timing.total_seconds,
                 )
                 target.set_collection_window(self.observation_timing)
-                # If no slew weighting, return first visible target (fast path)
+                value = merit_model.value_terms(
+                    target,
+                    utime,
+                    visibility_window=visibility_window,
+                    delivered_shares=delivered_shares,
+                )
+                # If nothing beyond merit order matters, return the first
+                # visible target in tier and merit order (fast path)
                 if not score_candidates:
+                    self._select(target, value)
                     return target
                 # Otherwise, score all visible targets and pick best
                 slewdist = getattr(target, "slewdist", 0.0)
                 slew_minutes = float(target.slewtime) / 60.0
-                score = (
-                    target.merit
-                    - self.slew_distance_weight * slewdist
-                    - self.slew_time_weight * slew_minutes
-                )
                 slew_end = utime + float(target.slewtime)
                 deadline = (
                     collection_deadline(target, slew_end)
@@ -448,8 +489,8 @@ class TargetQueue:
                 ):
                     continue
                 collection_minutes = collection_seconds / 60.0
-                score += self.collection_time_weight * collection_minutes
 
+                radiator = 0.0
                 if (
                     self.radiator_sun_exposure_weight > 0.0
                     or self.radiator_earth_exposure_weight > 0.0
@@ -473,16 +514,41 @@ class TargetQueue:
                         )
                         sun_exposure = cast(float, metrics.get("sun_exposure", 0.0))
                         earth_exposure = cast(float, metrics.get("earth_exposure", 0.0))
-                        score -= (
+                        radiator = -(
                             self.radiator_sun_exposure_weight * sun_exposure
                             + self.radiator_earth_exposure_weight * earth_exposure
                         )
 
-                if score > best_score:
-                    best_score = score
+                breakdown = value.model_copy(
+                    update={
+                        "slew_distance": -(self.slew_distance_weight * slewdist),
+                        "slew_time": -(self.slew_time_weight * slew_minutes),
+                        "collection": self.collection_time_weight * collection_minutes,
+                        "radiator": radiator,
+                    }
+                )
+                if breakdown.rank > best_rank:
+                    best_rank = breakdown.rank
                     best_target = target
+                    best_breakdown = breakdown
 
+        if best_target is not None:
+            assert best_breakdown is not None
+            self._select(best_target, best_breakdown)
         return best_target
+
+    def _select(self, target: Pointing, breakdown: MeritBreakdown) -> None:
+        """Freeze the selected target's merit at its value and log its terms."""
+        target.merit = breakdown.value
+        target.merit_breakdown = breakdown
+        if self.log is not None:
+            self.log.log_event(
+                utime=self.utime,
+                event_type="QUEUE",
+                description=f"Selected {target.obsid}: {breakdown.describe()}",
+                obsid=target.obsid,
+                acs_mode=None,
+            )
 
     def reset(self) -> None:
         """Reset queue by resetting target status.

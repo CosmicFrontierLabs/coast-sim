@@ -20,6 +20,17 @@ class ObservationCategory(ConfigModel):
         Maximum obsid value (exclusive) for this category.
     color : str
         Matplotlib color specification for visualization.
+    tier : int
+        Scheduling tier. A target in a higher tier is always selected over a
+        target in a lower tier, whatever their merits.
+    program : str or None
+        Program whose share of science time the category's targets count
+        toward. Defaults to the category name.
+    cadence_seconds : float or None
+        Desired interval between visits to each target in the category.
+    time_share : float or None
+        Fraction of science time allocated to the program, used by the
+        completion-deficit merit term.
     """
 
     name: str = Field(description="Category name")
@@ -28,6 +39,33 @@ class ObservationCategory(ConfigModel):
     color: str = Field(
         default="tab:blue", description="Matplotlib color for visualization"
     )
+    tier: int = Field(
+        default=0,
+        description=(
+            "Scheduling tier; targets in a higher tier always outrank targets "
+            "in a lower tier"
+        ),
+    )
+    program: str | None = Field(
+        default=None,
+        description="Program the category's targets count toward (default: name)",
+    )
+    cadence_seconds: float | None = Field(
+        default=None,
+        gt=0,
+        description="Desired interval between visits to each target, in seconds",
+    )
+    time_share: float | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="Fraction of science time allocated to the program",
+    )
+
+    @property
+    def program_name(self) -> str:
+        """Program the category's targets count toward."""
+        return self.program if self.program is not None else self.name
 
     @model_validator(mode="after")
     def _validate_obsid_range(self) -> ObservationCategory:
