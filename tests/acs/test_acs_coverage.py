@@ -231,6 +231,29 @@ class TestEnqueueCommandQueueManagement:
         with pytest.raises(AssertionError, match="Invariant violated"):
             acs.cancel_pending_battery_charge(1514767200.0)
 
+    def test_cancel_pending_slews_drops_only_that_obsids_slews(self, acs) -> None:
+        expired = self._make_slew_command(1514767440.0, 10019)
+        other = self._make_slew_command(1514767500.0, 10053)
+        acs.command_queue = [expired, other]
+
+        acs.cancel_pending_slews(10019)
+
+        assert acs.command_queue == [other]
+
+    def test_canceled_deferred_science_slew_does_not_restart_science(self, acs) -> None:
+        """A slew deferred past its entry's end must not re-enable science."""
+        deferred = self._make_slew_command(1514767440.0, 10019)
+        assert deferred.slew is not None
+        deferred.slew.obstype = ObsType.PPT
+        acs.command_queue = [deferred]
+        acs.end_science_observation()
+
+        acs.cancel_pending_slews(10019)
+        acs._process_commands(1514767440.0)
+
+        assert acs.current_slew is None
+        assert acs.science_observation_active is False
+
 
 class TestStartSlewCoverage:
     """Test _start_slew behavior - ACS always drives spacecraft from current position."""
