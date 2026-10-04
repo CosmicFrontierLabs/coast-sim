@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import cast
 from unittest.mock import ANY, Mock, patch
 
+import numpy as np
 import pytest
 import rust_ephem
 
@@ -21,7 +22,12 @@ from conops import (
     Pass,
     PlanExecutionMismatchError,
     QueueDITL,
+    SingleAxisSolarArrayDrive,
     Slew,
+    SolarArrayDriveControl,
+    SolarPanel,
+    SolarPanelSet,
+    StoredMomentumConfig,
 )
 from conops.common.enums import ObsType
 from conops.config import Payload, Telescope
@@ -29,6 +35,26 @@ from conops.config.config import MissionConfig
 from conops.ditl.telemetry import Housekeeping
 from conops.simulation.acs import IDLE_OBSID
 from conops.targets import Plan, PlanEntry, Pointing
+
+
+def test_enabled_momentum_is_written_to_queue_housekeeping(queue_ditl):
+    bus = queue_ditl.config.spacecraft_bus
+    bus.inertia_tensor_body_kg_m2 = ((10.0, 0.0, 0.0), (0.0, 8.0, 0.0), (0.0, 0.0, 6.0))
+    bus.attitude_control = AttitudeControlSystem(
+        stored_momentum=StoredMomentumConfig(gravity_gradient_enabled=True)
+    )
+    queue_ditl.step_size = queue_ditl.ephem.step_size = 1
+    queue_ditl._reset_stored_momentum_tracker()
+    time = queue_ditl.begin.timestamp()
+    first = queue_ditl._create_housekeeping_record(time, 0.0, 45.0, 0.0, ACSMode.IDLE)
+    second = queue_ditl._create_housekeeping_record(
+        time + 1.0, 0.0, 45.0, 0.0, ACSMode.IDLE
+    )
+    assert first.stored_momentum_norm_n_m_s == 0.0
+    assert second.stored_momentum_norm_n_m_s > 0.0
+    assert second.stored_momentum_body_n_m_s == pytest.approx(
+        second.gravity_gradient_torque_body_n_m
+    )
 
 
 class TestQueueDITLInitialization:
@@ -854,7 +880,7 @@ class TestFetchNewPPT:
         target.dec = -10.0
 
         with (
-            patch("conops.ditl.queue_ditl.optimum_roll", return_value=70.0),
+            patch("conops.ditl.queue_ditl.optimum_body_roll", return_value=70.0),
             patch(
                 "conops.ditl.queue_ditl.quaternion_attitude_delta",
                 return_value=(12.5, (0.0, 0.0, 1.0)),
@@ -892,7 +918,7 @@ class TestFetchNewPPT:
         expected_body_attitude = target.target_body_attitude(0.0)
 
         with (
-            patch("conops.ditl.queue_ditl.optimum_roll", return_value=0.0),
+            patch("conops.ditl.queue_ditl.optimum_instrument_roll", return_value=0.0),
             patch(
                 "conops.ditl.queue_ditl.quaternion_attitude_delta",
                 return_value=(12.5, (0.0, 0.0, 1.0)),
@@ -921,7 +947,7 @@ class TestFetchNewPPT:
 
         with (
             patch(
-                "conops.ditl.queue_ditl.optimum_roll",
+                "conops.ditl.queue_ditl.optimum_body_roll",
                 return_value=70.0,
             ) as roll,
             patch(
@@ -939,6 +965,7 @@ class TestFetchNewPPT:
             queue_ditl.acs.ephem,
             queue_ditl.config.solar_panel,
             queue_ditl.config.constraint,
+            drive_state=queue_ditl.acs.solar_array_drive_state,
         )
 
     def test_fetch_ppt_enqueues_slew_command(
@@ -3703,6 +3730,45 @@ class TestCalcMethod:
         call_args = queue_ditl.acs.enqueue_command.call_args
         command = call_args[0][0]
         assert command.command_type == ACSCommandType.ENTER_SAFE_MODE
+
+    def test_calc_roll_offset_uses_executed_drive_angle(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        panel = SolarPanel(
+            normal=(0.0, 1.0, 0.0),
+            single_axis_drive=SingleAxisSolarArrayDrive(
+                rotation_axis=(1.0, 0.0, 0.0),
+                min_angle_deg=-90.0,
+                max_angle_deg=90.0,
+                max_rate_deg_per_s=1.0 / 60.0,
+            ),
+            drive_control=SolarArrayDriveControl(sun_tracking_modes=[ACSMode.IDLE]),
+        )
+        queue_ditl.config.solar_panel = SolarPanelSet(panels=[panel])
+        queue_ditl.ephem.sun_pv.position = np.asarray(
+            queue_ditl.ephem.gcrs_pv.position
+        ) + (0.0, 0.0, 1.0)
+        queue_ditl.end = queue_ditl.ephem.timestamp[4]
+        eclipse = Mock()
+        eclipse.in_constraint.return_value = False
+
+        with patch(
+            "conops.config.solar_panel._get_eclipse_constraint", return_value=eclipse
+        ):
+            assert queue_ditl.calc()
+
+        samples = queue_ditl.telemetry.housekeeping
+        assert [sample.roll_offset_deg for sample in samples] == pytest.approx(
+            [-90.0, -30.0, 0.0, 0.0]
+        )
+        assert [sample.solar_array_drive_angles_deg[0] for sample in samples] == (
+            pytest.approx([0.0, 60.0, 90.0, 90.0])
+        )
+        assert samples[-1].solar_array_drive_angles[0].panel_index == 0
+        assert samples[-1].solar_array_drive_angles[0].panel_name == "Panel"
+        assert (
+            queue_ditl.acs.solar_array_drive_state.updated_at_s == queue_ditl.utime[-1]
+        )
 
     def test_create_housekeeping_record_uses_current_state(self, queue_ditl) -> None:
         """Housekeeping helper should capture post-update recorder values."""

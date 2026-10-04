@@ -40,9 +40,34 @@ Discretionary science/TOO selection does not interrupt protective
 motion. Subsequent holds retain the commanded attitude and roll.
 
 Already-unsafe initialization, no feasible recovery in the finite search, or
-an unsafe executed IDLE hold raises an error. ACS no longer changes attitude
-instantaneously or dispatches an unvalidated solar-pointing safe-mode command
-to conceal that failure. Callers must supply a safe initial body attitude.
+an unsafe executed IDLE hold latches an `idle_safety` RED fault in
+`config.fault_management.states`. The first `operational_fault` event retains
+the timestamp, cause, and body attitude (RA/Dec/roll in degrees). Repeated
+reports do not restart recovery or flood the event log.
+
+With the default `safe_mode_on_red: true` policy, the fault requests SAFE
+through fault management and immediately executes the ordinary SAFE command
+path. SAFE entry clears pending commands and initiates a finite slew from the
+current attitude. It does not substitute a new reported attitude. Science and
+TOO selection stop, and any active observation is closed. The simulation
+continues recording telemetry through its end in safehold. Explicitly setting
+`safe_mode_on_red: false` keeps the fault visible but disables automatic SAFE
+entry, consistent with the other fault-management policies.
+
+`QueueDITL.calc()` returns `False` after an idle-safety fault, including in
+monitor-only mode: the retained plan and telemetry are diagnostic outputs,
+not a valid science plan. Both end-of-run audits still run. Any attitude-rate
+or plan-execution failure is recorded as a further operational fault instead
+of converting this diagnosed failed run into a Python exception. The public
+validation methods still expose the violations; nominal runs retain their
+strict exception behavior for execution-validation failures.
+
+SAFE is an operational response, not proof of a keepout-safe escape. The
+standard solar-pointing SAFE guidance does not gain a path-validity guarantee
+from this policy. An unsafe initial condition remains a failed study input,
+and any violations during recovery remain visible. Continuous rate and
+acceleration enforcement across all guidance modes is a separate execution
+layer; this predictive policy does not supply that model.
 
 This is a conservative planning policy, not a flight controller or proof of
 continuous-time collision avoidance. Tests and acceptance checks remain at

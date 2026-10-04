@@ -30,11 +30,11 @@ from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
 from ..simulation.idle_safety import IdleSafetyPlanner
 from ..simulation.passes import Pass
-from ..simulation.roll import optimum_roll
+from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing, Queue, TargetSlewEstimate
 from .ditl_log import DITLLog
-from .ditl_mixin import DITLMixin
+from .ditl_mixin import AttitudeRateContinuityError, DITLMixin
 from .ditl_stats import DITLStats
 from .telemetry import Housekeeping, PayloadData
 
@@ -173,7 +173,7 @@ class QueueDITL(DITLMixin, DITLStats):
         self._ephem_utime_cache: list[float] | None = None
         self._ephem_utime_cache_source: npt.NDArray[np.datetime64] | None = None
         self._ppt_optimum_roll_cache: dict[
-            tuple[float, float, float, int, int, int, int], float
+            tuple[float, float, float, int, int, int, int, int], float
         ] = {}
         self._idle_safety: IdleSafetyPlanner | None = None
         # Subsystem power tracking
@@ -455,10 +455,15 @@ class QueueDITL(DITLMixin, DITLStats):
         This simulation uses a queue-driven ACS (Attitude Control System) where
         spacecraft state transitions (slews, passes, etc.) are managed through
         a command queue, providing explicit, traceable control flow.
+
+        An idle-safety fault returns False while retaining diagnostic outputs.
+        With the default fault policy, the simulation completes in safehold.
         """
         # Reset per-run state so re-runs on the same instance start clean
         self._attitude_constraint_violations = []
         self._active_gsp_end_time = None
+        self.acs.solar_array_drive_state = self.config.solar_panel.initial_drive_state()
+        self._ppt_optimum_roll_cache.clear()
 
         # If begin/end datetimes are naive, assume UTC by making them timezone-aware
         if self.begin.tzinfo is None:
@@ -471,6 +476,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
         # Set step_size from ephem
         self.step_size = self.ephem.step_size
+        self._reset_stored_momentum_tracker()
 
         # Set ACS ephemeris if not already set
         if self.acs.ephem is None:
@@ -548,11 +554,38 @@ class QueueDITL(DITLMixin, DITLStats):
         if self.plan and self.ppt is not None:
             self._close_last_plan_entry(self.uend)
 
-        self._assert_attitude_rate_continuity()
-        self._assert_plan_matches_execution()
+        idle_fault = any(
+            event.name == "idle_safety" and event.event_type == "operational_fault"
+            for event in self.config.fault_management.events
+        )
+        for validate in (
+            self._assert_attitude_rate_continuity,
+            self._assert_plan_matches_execution,
+        ):
+            try:
+                validate()
+            except (AttitudeRateContinuityError, PlanExecutionMismatchError) as exc:
+                if not idle_fault:
+                    raise
+                # A diagnosed operational failure is not a valid science plan.
+                # Preserve both audits, without turning safehold into a crash.
+                self.config.fault_management.report_fault(
+                    utime=self.uend,
+                    name=type(exc).__name__,
+                    cause=str(exc),
+                    metadata={},
+                    acs=self.acs,
+                )
         self._attach_execution_timeseries_to_plan()
 
-        return True
+        if idle_fault:
+            self.log.log_event(
+                utime=self.uend,
+                event_type="ERROR",
+                description="Run completed with an idle-safety fault; not a valid science plan. See fault_management.events.",
+                acs_mode=self.acs.acsmode,
+            )
+        return not idle_fault
 
     def _handle_data_management(self, utime: float, mode: ACSMode) -> None:
         """Handle data generation during observations and downlink during passes."""
@@ -1326,10 +1359,41 @@ class QueueDITL(DITLMixin, DITLStats):
         _pos = np.asarray(self.ephem.gcrs_pv.position[ei], dtype=np.float64)
         earth_body_vector: list[float] = list(-_pos / np.linalg.norm(_pos))
 
-        nominal_roll = optimum_roll(ra, dec, utime, self.ephem, self.config.solar_panel)
-        roll_offset_deg = (roll - nominal_roll + 180.0) % 360.0 - 180.0
+        if mounted_science:
+            assert self.ppt is not None
+            telescope = self.ppt.science_telescope()
+            assert telescope is not None
+            instrument_roll = (
+                self.acs.last_slew.instrument_roll
+                if self.acs.last_slew is not None
+                and self.acs.last_slew.instrument_roll is not None
+                else self.ppt.roll
+            )
+            nominal_roll = optimum_instrument_roll(
+                self.ppt.ra,
+                self.ppt.dec,
+                utime,
+                self.ephem,
+                telescope,
+                self.config.solar_panel,
+                self.constraint,
+                drive_state=self.acs.solar_array_drive_state,
+            )
+            roll_offset_deg = (instrument_roll - nominal_roll + 180.0) % 360.0 - 180.0
+        else:
+            nominal_roll = optimum_body_roll(
+                ra,
+                dec,
+                utime,
+                self.ephem,
+                self.config.solar_panel,
+                drive_state=self.acs.solar_array_drive_state,
+            )
+            roll_offset_deg = (roll - nominal_roll + 180.0) % 360.0 - 180.0
 
         _q = attitude_to_quat(ra, dec, roll)
+        momentum_sample = self._update_stored_momentum(utime, _pos, _q)
+        drive_angles = self._solar_array_drive_telemetry()
         return Housekeeping(
             timestamp=datetime.fromtimestamp(utime, tz=timezone.utc),
             ra=ra,
@@ -1339,6 +1403,7 @@ class QueueDITL(DITLMixin, DITLStats):
             acs_mode=mode,
             collection_seconds=self._collection_seconds_for_step(utime, mode),
             panel_illumination=panel_illumination,
+            solar_array_drive_angles=drive_angles,
             power_usage=total_power,
             power_bus=bus_power,
             power_payload=payload_power,
@@ -1379,6 +1444,21 @@ class QueueDITL(DITLMixin, DITLStats):
             quat_x=float(_q[1]),
             quat_y=float(_q[2]),
             quat_z=float(_q[3]),
+            gravity_gradient_torque_body_n_m=(
+                list(momentum_sample.gravity_gradient_torque_body_n_m)
+                if momentum_sample is not None
+                else None
+            ),
+            stored_momentum_body_n_m_s=(
+                list(momentum_sample.stored_momentum_body_n_m_s)
+                if momentum_sample is not None
+                else None
+            ),
+            stored_momentum_norm_n_m_s=(
+                momentum_sample.stored_momentum_norm_n_m_s
+                if momentum_sample is not None
+                else None
+            ),
         )
 
     def _track_ppt_in_timeline(self) -> None:
@@ -1621,6 +1701,10 @@ class QueueDITL(DITLMixin, DITLStats):
         self, utime: float, ra: float, dec: float, mode: ACSMode
     ) -> None:
         """Handle science mode operations: charging, observations, and target acquisition."""
+        if mode == ACSMode.SAFE:
+            if self.ppt is not None:
+                self._terminate_ppt(utime, "Observation interrupted by safehold")
+            return
         # Finish protective motion before considering discretionary preemption.
         if (
             self.acs.current_slew is not None
@@ -1661,17 +1745,19 @@ class QueueDITL(DITLMixin, DITLStats):
         if utime + self.step_size < planner.departure_deadline(attitude, utime):
             return
         if planner.first_violation(attitude, utime) <= utime:
-            raise RuntimeError(
-                "Cannot plan an idle escape from an already unsafe attitude"
+            self.acs.report_idle_safety_fault(
+                utime, "Cannot plan an idle escape from an already unsafe attitude"
             )
+            return
         for ra, dec in self.acs._idle_safe_attitude_candidates(utime):
-            preferred_roll = optimum_roll(
+            preferred_roll = optimum_body_roll(
                 ra,
                 dec,
                 utime,
                 self.ephem,
                 self.config.solar_panel,
                 self.constraint,
+                drive_state=self.acs.solar_array_drive_state,
             )
             for roll in self.acs._idle_safe_roll_candidates(preferred_roll):
                 slew = Slew(
@@ -1722,8 +1808,8 @@ class QueueDITL(DITLMixin, DITLStats):
                     description="Scheduled rate-limited safe-IDLE recovery slew",
                 )
                 return
-        raise RuntimeError(
-            "No path-validated safe-IDLE recovery found before hold expiry"
+        self.acs.report_idle_safety_fault(
+            utime, "No path-validated safe-IDLE recovery found before hold expiry"
         )
 
     def _should_initiate_charging(self, utime: float) -> bool:
@@ -1738,7 +1824,11 @@ class QueueDITL(DITLMixin, DITLStats):
     def _initiate_charging(self, utime: float, ra: float, dec: float) -> None:
         """Initiate emergency charging by creating charging PPT and sending command to ACS."""
         charging_ppt = self.emergency_charging.create_charging_pointing(
-            utime, self.ephem, ra, dec
+            utime,
+            self.ephem,
+            ra,
+            dec,
+            drive_state=self.acs.solar_array_drive_state,
         )
         if charging_ppt is None:
             return
@@ -2401,7 +2491,7 @@ class QueueDITL(DITLMixin, DITLStats):
         self.acs.end_science_observation()
         # Do NOT clear last_slew here. The spacecraft is physically still pointing
         # at the science target; clearing last_slew would cause pointing() to call
-        # optimum_roll() and jump the roll on the next tick. Roll stays locked to
+        # roll optimization and jump the roll on the next tick. Roll stays locked to
         # last_slew.endroll until the next executed slew replaces last_slew.
 
     def _get_constraint_name(
@@ -2679,23 +2769,33 @@ class QueueDITL(DITLMixin, DITLStats):
             id(self.config.solar_panel),
             id(self.config.constraint),
             id(telescope),
+            self.acs.solar_array_drive_state.revision,
         )
         cached = self._ppt_optimum_roll_cache.get(key)
         if cached is not None:
             return cached
 
-        args = (
-            target.ra,
-            target.dec,
-            execution_time,
-            self.acs.ephem,
-            self.config.solar_panel,
-            self.config.constraint,
-        )
         roll = (
-            optimum_roll(*args, telescope=telescope)
+            optimum_instrument_roll(
+                target.ra,
+                target.dec,
+                execution_time,
+                self.acs.ephem,
+                telescope,
+                self.config.solar_panel,
+                self.config.constraint,
+                drive_state=self.acs.solar_array_drive_state,
+            )
             if telescope is not None
-            else optimum_roll(*args)
+            else optimum_body_roll(
+                target.ra,
+                target.dec,
+                execution_time,
+                self.acs.ephem,
+                self.config.solar_panel,
+                self.config.constraint,
+                drive_state=self.acs.solar_array_drive_state,
+            )
         )
         self._ppt_optimum_roll_cache[key] = roll
         return roll
@@ -2965,7 +3065,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 return
 
             # When ignore_roll=True, verify that a valid roll exists before slewing.
-            # optimum_roll() falls back to the unconstrained solar roll when
+            # Roll optimization falls back to the unconstrained solar roll when
             # roll_range() is empty (no roll satisfies all constraints), which
             # would put star trackers into a constraint zone.  Skip the target
             # instead so a better one can be selected.
@@ -3161,7 +3261,7 @@ class QueueDITL(DITLMixin, DITLStats):
         """Calculate and record power generation, consumption, and battery state."""
         # Calculate solar panel power
         panel_illumination, panel_power = self._calculate_panel_power(
-            i, utime, ra, dec, roll
+            i, utime, ra, dec, roll, mode
         )
         self.panel.append(panel_illumination)
         self.panel_power.append(panel_power)
@@ -3178,14 +3278,27 @@ class QueueDITL(DITLMixin, DITLStats):
         self._update_battery_state(total_power, panel_power)
 
     def _calculate_panel_power(
-        self, i: int, utime: float, ra: float, dec: float, roll: float
+        self,
+        i: int,
+        utime: float,
+        ra: float,
+        dec: float,
+        roll: float,
+        mode: ACSMode,
     ) -> tuple[float, float]:
         """Calculate solar panel illumination and power generation."""
-        panel_illumination, panel_power = (
-            self.config.solar_panel.illumination_and_power(
-                time=self.utime[i], ra=ra, dec=dec, ephem=self.ephem, roll=roll
+        panel_illumination, panel_power, drive_state = (
+            self.config.solar_panel.evaluate_executed_attitude(
+                time=self.utime[i],
+                ra=ra,
+                dec=dec,
+                ephem=self.ephem,
+                drive_state=self.acs.solar_array_drive_state,
+                roll=roll,
+                acs_mode=mode,
             )
         )
+        self.acs.solar_array_drive_state = drive_state
         assert isinstance(panel_illumination, float)
         assert isinstance(panel_power, float)
         return panel_illumination, panel_power

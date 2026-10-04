@@ -26,6 +26,7 @@ from .instrument import (
     TelescopeConfig,
     TelescopeType,
 )
+from .momentum import StoredMomentumConfig
 from .observation_categories import ObservationCategories, ObservationCategory
 from .observation_timing import ObservationTiming
 from .power import PowerDraw
@@ -36,7 +37,14 @@ from .radiator import (
     RadiatorOrientation,
 )
 from .recorder import OnboardRecorder
-from .solar_panel import SolarPanel, SolarPanelSet, create_solar_panel_vector
+from .solar_panel import (
+    SingleAxisSolarArrayDrive,
+    SolarArrayDriveControl,
+    SolarArrayDriveState,
+    SolarPanel,
+    SolarPanelSet,
+    create_solar_panel_vector,
+)
 from .spacecraft_bus import SpacecraftBus
 from .star_tracker import (
     DefaultStarTrackerConfiguration,
@@ -87,7 +95,11 @@ __all__ = [
     "RadiatorOrientation",
     "SolarPanel",
     "SolarPanelSet",
+    "SolarArrayDriveControl",
+    "SolarArrayDriveState",
+    "SingleAxisSolarArrayDrive",
     "SpacecraftBus",
+    "StoredMomentumConfig",
     "StarTracker",
     "DefaultStarTrackerConfiguration",
     "StarTrackerConfiguration",

@@ -10,6 +10,34 @@ from conops.config.fault_management import FaultEvent
 from conops.ditl.telemetry import Housekeeping
 
 
+@pytest.mark.parametrize("safe_mode_on_red", [True, False])
+@pytest.mark.parametrize("already_safe", [True, False])
+def test_discrete_fault_is_latched_and_uses_red_policy(
+    acs_stub, safe_mode_on_red, already_safe
+):
+    fm = FaultManagement(safe_mode_on_red=safe_mode_on_red)
+    acs_stub.in_safe_mode = already_safe
+    for time in (1000.0, 1001.0):
+        fm.report_fault(
+            utime=time,
+            name="idle_safety",
+            cause="No feasible recovery",
+            metadata={"ra": 10.0},
+            acs=acs_stub,
+        )
+    operational = [
+        event for event in fm.events if event.event_type == "operational_fault"
+    ]
+    triggers = [event for event in fm.events if event.event_type == "safe_mode_trigger"]
+    assert len(operational) == 1
+    assert operational[0].utime == 1000.0
+    assert operational[0].metadata == {"ra": 10.0}
+    assert fm.states["idle_safety"].current == "red"
+    assert fm.states["idle_safety"].in_violation
+    assert fm.safe_mode_requested == (safe_mode_on_red and not already_safe)
+    assert len(triggers) == int(safe_mode_on_red and not already_safe)
+
+
 class TestDefaultConfiguration:
     def test_adds_default_battery_threshold(self, base_config: MissionConfig) -> None:
         assert any(

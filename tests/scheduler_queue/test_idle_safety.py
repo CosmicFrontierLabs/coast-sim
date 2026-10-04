@@ -8,12 +8,30 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from conops import ACSMode, AttitudeControlSystem, Constraint, MissionConfig
+from conops import (
+    ACSMode,
+    AttitudeControlSystem,
+    Battery,
+    Constraint,
+    GroundStationRegistry,
+    MissionConfig,
+    QueueDITL,
+    SolarPanelSet,
+    SpacecraftBus,
+)
 from conops.common import ACSCommandType, ObsType, SlewAlgorithm
+from conops.config import RadiatorConfiguration, StarTrackerConfiguration
+from conops.ditl.ditl_mixin import AttitudeRateContinuityError
+from conops.ditl.queue_ditl import PlanExecutionMismatchError
 from conops.simulation.acs import ACS
 from conops.simulation.idle_safety import IdleSafetyPlanner
 from conops.simulation.passes import Pass
 from conops.simulation.slew import Slew
+from scripts.check_default_plan_output import (
+    SCENARIO_BEGIN,
+    DeterministicConstraint,
+    DeterministicEphemeris,
+)
 
 
 def make_planner(step=2, violation_offset=4000):
@@ -121,7 +139,7 @@ def recovery_queue(queue_ditl, monkeypatch):
     )
     ditl._slew_attitude_constraint_violation = Mock(return_value=None)
     monkeypatch.setattr(
-        "conops.ditl.queue_ditl.optimum_roll", lambda *args, **kwargs: 0.0
+        "conops.ditl.queue_ditl.optimum_body_roll", lambda *args, **kwargs: 0.0
     )
     # Real kinematics and quaternion trajectory, not a teleporting test double.
     ditl.config.spacecraft_bus.attitude_control = AttitudeControlSystem(
@@ -151,7 +169,7 @@ def test_recovery_commands_finite_validated_slew(recovery_queue):
 
 
 @pytest.mark.parametrize("failure", ["path", "hold", "already_unsafe"])
-def test_recovery_fails_closed(recovery_queue, failure):
+def test_recovery_failure_reports_fault_instead_of_raising(recovery_queue, failure):
     ditl, start = recovery_queue
     if failure == "path":
         ditl._slew_attitude_constraint_violation.return_value = (
@@ -163,8 +181,13 @@ def test_recovery_fails_closed(recovery_queue, failure):
         ditl._idle_safety.hold_is_safe.return_value = False
     else:
         ditl._idle_safety.first_violation = lambda *args: start
-    with pytest.raises(RuntimeError):
-        ditl._schedule_idle_recovery(start)
+    ditl._schedule_idle_recovery(start)
+    ditl.acs.report_idle_safety_fault.assert_called_once()
+    assert ditl.acs.report_idle_safety_fault.call_args.args[0] == start
+    cause = ditl.acs.report_idle_safety_fault.call_args.args[1]
+    assert (
+        "already unsafe" if failure == "already_unsafe" else "No path-validated"
+    ) in cause
     ditl.acs.enqueue_command.assert_not_called()
 
 
@@ -210,12 +233,13 @@ def test_recovery_reserves_all_pass_ingress_deadlines(
     # the two-tick ingress buffer. The alternative 20-degree roll needs another
     # 110 s: its deadline is +86, not the aligned profile's +196.
     if not accepted:
-        with pytest.raises(RuntimeError, match="No path-validated"):
-            ditl._schedule_idle_recovery(start)
+        ditl._schedule_idle_recovery(start)
+        ditl.acs.report_idle_safety_fault.assert_called_once()
         ditl.acs.enqueue_command.assert_not_called()
     else:
         ditl._schedule_idle_recovery(start)
         ditl.acs.enqueue_command.assert_called_once()
+        ditl.acs.report_idle_safety_fault.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -307,3 +331,148 @@ def test_active_recovery_is_not_replaced_by_target_selection(recovery_queue):
     ditl._handle_science_mode(start, 0.0, 0.0, ACSMode.SLEWING)
     ditl._fetch_new_ppt.assert_not_called()
     ditl._check_too_interrupt.assert_not_called()
+
+
+def test_safehold_closes_science_and_blocks_discretionary_scheduling(recovery_queue):
+    ditl, start = recovery_queue
+    ditl.ppt = Mock()
+    ditl._terminate_ppt = Mock()
+    ditl._should_initiate_charging = Mock()
+    ditl._check_too_interrupt = Mock()
+    ditl._fetch_new_ppt = Mock()
+    ditl._handle_science_mode(start, 0.0, 0.0, ACSMode.SAFE)
+    ditl._terminate_ppt.assert_called_once_with(
+        start, "Observation interrupted by safehold"
+    )
+    ditl._should_initiate_charging.assert_not_called()
+    ditl._check_too_interrupt.assert_not_called()
+    ditl._fetch_new_ppt.assert_not_called()
+
+
+@pytest.fixture
+def idle_run(monkeypatch):
+    # The synthetic ephemeris has no Rust eclipse backend.
+    monkeypatch.setattr(
+        "conops.config.solar_panel._get_eclipse_constraint",
+        lambda: SimpleNamespace(in_constraint=lambda *args, **kwargs: False),
+    )
+    end = SCENARIO_BEGIN + timedelta(seconds=60)
+    ephem = DeterministicEphemeris(SCENARIO_BEGIN, end, step_size_seconds=2)
+    config = MissionConfig(
+        constraint=DeterministicConstraint(),
+        ground_stations=GroundStationRegistry(stations=[]),
+        solar_panel=SolarPanelSet(panels=[]),
+        battery=Battery(watthour=100_000.0),
+        spacecraft_bus=SpacecraftBus(
+            attitude_control=AttitudeControlSystem(
+                max_slew_rate=2.0, slew_acceleration=0.5, settle_time=0.0
+            ),
+            star_trackers=StarTrackerConfiguration(
+                star_trackers=[], min_functional_trackers=0, modes_require_lock=[]
+            ),
+            radiators=RadiatorConfiguration(radiators=[]),
+        ),
+    )
+    ditl = QueueDITL(
+        config=config,
+        ephem=ephem,
+        begin=SCENARIO_BEGIN,
+        end=end,
+        calculate_field_of_regard=False,
+    )
+    ditl.acs._hold_idle_attitude(0.0, 0.0, 0.0, SCENARIO_BEGIN.timestamp())
+    return ditl
+
+
+@pytest.mark.parametrize("failure", ["unsafe", "no_recovery"])
+def test_faulted_run_finishes_in_safehold_and_retains_diagnostics(
+    idle_run, monkeypatch, failure
+):
+    ditl = idle_run
+    start = ditl.begin.timestamp()
+    if failure == "unsafe":
+        monkeypatch.setattr(
+            DeterministicConstraint,
+            "in_star_tracker_hard",
+            lambda *args, **kwargs: True,
+        )
+    else:
+        monkeypatch.setattr(
+            IdleSafetyPlanner, "departure_deadline", lambda *args: start
+        )
+        monkeypatch.setattr(
+            IdleSafetyPlanner, "first_violation", lambda *args: start + 40
+        )
+        monkeypatch.setattr(ditl.acs, "_idle_safe_attitude_candidates", lambda time: [])
+    initial_attitude = (ditl.acs.ra, ditl.acs.dec, ditl.acs.roll)
+    assert ditl.calc() is False
+    assert ditl.acs.in_safe_mode
+    samples = ditl.telemetry.housekeeping
+    assert len(samples) == 30
+    assert samples[-1].timestamp.timestamp() == start + 58
+    assert all(sample.acs_mode == ACSMode.SAFE for sample in samples)
+    assert all(sample.collection_seconds == 0 for sample in samples)
+    assert (samples[0].ra, samples[0].dec, samples[0].roll) == initial_attitude
+    assert len(ditl.plan) == 0
+    assert ditl.plan.attitude_timeseries.num_samples == 30
+    faults = ditl.config.fault_management
+    assert (
+        len(
+            [
+                event
+                for event in faults.events
+                if event.name == "idle_safety"
+                and event.event_type == "operational_fault"
+            ]
+        )
+        == 1
+    )
+    assert (
+        len(
+            [
+                event
+                for event in faults.events
+                if event.event_type == "safe_mode_trigger"
+            ]
+        )
+        == 1
+    )
+    assert not ditl._attitude_rate_violations()
+    if failure == "unsafe":
+        # The failure remains inspectable; SAFE is not a keepout waiver.
+        assert ditl.validate_attitude_constraints()
+        assert any(
+            event.name == "PlanExecutionMismatchError" for event in faults.events
+        )
+
+
+@pytest.mark.parametrize("faulted", [False, True])
+@pytest.mark.parametrize(
+    "error", [AttitudeRateContinuityError, PlanExecutionMismatchError]
+)
+def test_execution_audit_is_never_silently_discarded(
+    idle_run, monkeypatch, faulted, error
+):
+    ditl = idle_run
+    if faulted:
+        ditl.acs.report_idle_safety_fault(
+            ditl.begin.timestamp(), "Recovery unavailable"
+        )
+    checker = (
+        "_assert_attitude_rate_continuity"
+        if error is AttitudeRateContinuityError
+        else "_assert_plan_matches_execution"
+    )
+    monkeypatch.setattr(
+        ditl, checker, Mock(side_effect=error("Synthetic audit failure"))
+    )
+    if not faulted:
+        with pytest.raises(error, match="Synthetic audit failure"):
+            ditl.calc()
+    else:
+        assert ditl.calc() is False
+        events = ditl.config.fault_management.events
+        assert any(
+            event.name == error.__name__ and event.cause == "Synthetic audit failure"
+            for event in events
+        )
