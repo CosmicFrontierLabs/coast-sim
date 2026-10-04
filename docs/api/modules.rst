@@ -26,6 +26,7 @@ Core Modules
    conops.ditl.ditl_log_store
    conops.ditl.ditl_mixin
    conops.ditl.ditl_stats
+   conops.ditl.plan_validator
    conops.ditl.queue_ditl
    conops.ditl.telemetry
    conops.simulation
@@ -41,6 +42,7 @@ Scheduling and Planning
    :maxdepth: 2
 
    conops.schedulers
+   conops.schedulers.protocols
    conops.schedulers.scheduler
    conops.schedulers.queue_scheduler
    conops.targets

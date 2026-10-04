@@ -115,3 +115,46 @@ def test_replay_with_real_acs_does_not_collect_during_a_longer_than_planned_slew
     assert all(h.acs_mode == ACSMode.SLEWING for h in ditl.telemetry.housekeeping)
     assert all(h.collection_seconds == 0 for h in ditl.telemetry.housekeeping)
     assert ditl.data_generated_gb[-1] == 0
+
+
+def test_queue_plan_replays_identically_through_plan_driven_ditl(monkeypatch):
+    """A serialized QueueDITL plan, executed by DITL, must fly the same timeline."""
+    constructor = scenario.QueueDITL
+    simulations = []
+
+    def recorded_simulation(**kwargs):
+        ditl = constructor(**kwargs)
+        simulations.append(ditl)
+        return ditl
+
+    monkeypatch.setattr(scenario, "QueueDITL", recorded_simulation)
+    scenario.build_default_plan_payload()
+    queue = simulations[0]
+    plan = Plan.model_validate_json(queue.plan.model_dump_json())
+    assert len(plan) > 1
+
+    replay = DITL(
+        config=queue.config,
+        ephem=queue.ephem,
+        plan=plan,
+        begin=queue.begin,
+        end=queue.end,
+    )
+    replay.step_size = queue.step_size
+    monkeypatch.setattr(
+        scenario.rust_ephem,
+        "get_eop_provenance",
+        lambda: {"ut1": {"available": False}, "polar_motion": {"available": False}},
+    )
+    assert replay.calc()
+
+    assert replay.utime == queue.utime
+    assert [int(m) for m in replay.mode] == [int(m) for m in queue.mode]
+    assert [int(o) for o in replay.obsid] == [int(o) for o in queue.obsid]
+    assert replay.ra == pytest.approx(queue.ra)
+    assert replay.dec == pytest.approx(queue.dec)
+    assert replay.roll == pytest.approx(queue.roll)
+    assert [hk.collection_seconds for hk in replay.telemetry.housekeeping] == [
+        hk.collection_seconds for hk in queue.telemetry.housekeeping
+    ]
+    assert replay.validate_plan_matches_execution() == []
