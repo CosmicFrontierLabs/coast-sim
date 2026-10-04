@@ -158,6 +158,8 @@ class PlanEntry(BaseModel):
     ss_max: float = 1e6
     _exptime: float | None = PrivateAttr(default=None)
     _exporig: float | None = PrivateAttr(default=None)
+    _collected_seconds: float = PrivateAttr(default=0.0)
+    _last_collection_time: float | None = PrivateAttr(default=None)
     _serialized_target_attitude: TargetAttitudeSchema | None = PrivateAttr(default=None)
 
     @model_validator(mode="wrap")
@@ -290,6 +292,33 @@ class PlanEntry(BaseModel):
 
     def __str__(self) -> str:
         return f"{unixtime2date(self.begin)} Target: {self.name} ({self.obsid}) Exp: {self.exposure}s "
+
+    @property
+    def collected_seconds(self) -> float:
+        """Science collection credited to this target so far."""
+        return self._collected_seconds
+
+    @property
+    def last_collection_time(self) -> float | None:
+        """When this target last collected science, or None if never."""
+        return self._last_collection_time
+
+    def record_collection(self, utime: float, seconds: float) -> None:
+        """Credit executed science collection to this target.
+
+        Reduces the remaining exposure time and records when the target was
+        last observed.
+
+        Args:
+            utime: Time the collection was made.
+            seconds: Seconds of science collected.
+        """
+        if seconds <= 0:
+            return
+        if self.exptime is not None:
+            self.exptime = max(0, self.exptime - seconds)
+        self._collected_seconds += seconds
+        self._last_collection_time = utime
 
     @computed_field  # type: ignore[prop-decorator]
     @property

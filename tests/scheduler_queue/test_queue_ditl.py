@@ -28,6 +28,7 @@ from conops import (
     SolarPanel,
     SolarPanelSet,
     StoredMomentumConfig,
+    TOORequest,
 )
 from conops.common.enums import ObsType
 from conops.config import Payload, Telescope
@@ -5827,238 +5828,251 @@ class TestTOOFunctionality:
         result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
         assert result is False
 
-    def test_check_too_interrupt_merit_too_low(self, queue_ditl) -> None:
-        """Test _check_too_interrupt when TOO merit is lower than current observation."""
-        # Submit TOO with low merit
-        queue_ditl.submit_too(
+    @pytest.fixture
+    def queued_targets(self, queue_ditl) -> list[Pointing]:
+        """Make queue.add create real Pointings and record them."""
+        created: list[Pointing] = []
+
+        def add(
+            *,
+            ra: float,
+            dec: float,
+            obsid: int,
+            name: str,
+            merit: float,
+            exptime: int,
+            deadline: float | None = None,
+        ) -> Pointing:
+            target = Pointing(
+                config=queue_ditl.config,
+                ra=ra,
+                dec=dec,
+                obsid=obsid,
+                name=name,
+                fom=merit,
+                merit=merit,
+                deadline=deadline,
+            )
+            target.exptime = exptime
+            created.append(target)
+            return target
+
+        queue_ditl.queue.add = Mock(side_effect=add)
+        return created
+
+    def _submit(
+        self,
+        queue_ditl,
+        merit: float = 10000.0,
+        deadline: float | None = None,
+    ) -> TOORequest:
+        return queue_ditl.submit_too(
             obsid=1000001,
             ra=180.0,
             dec=45.0,
-            merit=100.0,  # Low merit
+            merit=merit,
             exptime=3600,
-            name="Low merit TOO",
+            name="Successful TOO",
+            deadline=deadline,
         )
 
-        # Set current PPT with higher merit
-        from conops import Pointing
+    def test_check_too_interrupt_queues_active_too_once(
+        self, mock_pointing_visibility, queue_ditl, queued_targets
+    ) -> None:
+        """An active TOO joins the queue as an ordinary request, with no boost."""
+        self._submit(queue_ditl, deadline=5000.0)
 
+        queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
+        queue_ditl._check_too_interrupt(utime=1060.0, ra=180.0, dec=45.0)
+
+        queue_ditl.queue.add.assert_called_once_with(
+            ra=180.0,
+            dec=45.0,
+            obsid=1000001,
+            name="Successful TOO",
+            merit=10000.0,
+            exptime=3600,
+            deadline=5000.0,
+        )
+
+    def test_check_too_interrupt_merit_too_low(
+        self, mock_too_interrupt_success, queue_ditl, queued_targets
+    ) -> None:
+        """Test _check_too_interrupt when TOO merit is lower than current observation."""
+        self._submit(queue_ditl, merit=100.0)
         queue_ditl.ppt = Pointing(
             config=queue_ditl.config,
             ra=0.0,
             dec=0.0,
             obsid=1,
             name="Current obs",
-            fom=1000.0,  # Higher merit
-            merit=1000.0,  # Higher merit
+            fom=1000.0,
+            merit=1000.0,
         )
-        queue_ditl.ppt.exptime = 1800
 
         result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
-        assert result is False
 
-    @patch("conops.targets.pointing.Pointing.visibility")
+        assert result is False
+        mock_too_interrupt_success["terminate"].assert_not_called()
+
     def test_check_too_interrupt_target_not_visible(
-        self, mock_pointing_visible, mock_pointing_visibility, queue_ditl, submitted_too
+        self,
+        mock_pointing_visibility,
+        mock_pointing_visible,
+        queue_ditl,
+        queued_targets,
+        low_merit_current_ppt,
     ):
         """Test _check_too_interrupt when TOO target is not visible."""
-        mock_pointing_visible.return_value = False  # Target not visible
+        mock_pointing_visible.return_value = False
+        self._submit(queue_ditl)
 
         result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
-        assert result is False  # No interrupt should occur
+
+        assert result is False
         mock_pointing_visible.assert_called_once()
 
-    def test_check_too_interrupt_successful_interrupt_result(
+    def test_check_too_interrupt_deadline_passed(
         self,
         mock_too_interrupt_success,
         queue_ditl,
-        submitted_too,
+        queued_targets,
         low_merit_current_ppt,
-    ):
-        """Test _check_too_interrupt when TOO successfully interrupts - check result."""
-        # Mock queue.add to avoid actual queue operations
-        with patch.object(queue_ditl.queue, "add"):
-            result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
+    ) -> None:
+        """A TOO past its deadline does not interrupt."""
+        self._submit(queue_ditl, deadline=900.0)
 
-            assert result is True  # Should return True for successful interrupt
+        result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
 
-    def test_check_too_interrupt_successful_interrupt_executed(
-        self, mock_too_interrupt_success, queue_ditl, low_merit_current_ppt
-    ):
-        """Test _check_too_interrupt when TOO successfully interrupts - check executed flag."""
-        # Submit TOO with high merit
-        too = queue_ditl.submit_too(
-            obsid=1000001,
-            ra=180.0,
-            dec=45.0,
-            merit=10000.0,
-            exptime=3600,
-            name="Successful TOO",
+        assert result is False
+        mock_too_interrupt_success["terminate"].assert_not_called()
+
+    def test_check_too_interrupt_successful_interrupt(
+        self,
+        mock_too_interrupt_success,
+        queue_ditl,
+        queued_targets,
+        low_merit_current_ppt,
+    ) -> None:
+        """A visible, higher-value TOO terminates the observation and refetches."""
+        self._submit(queue_ditl)
+
+        result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
+
+        assert result is True
+        mock_too_interrupt_success["terminate"].assert_called_once_with(
+            1000.0,
+            reason="Preempted by TOO Successful TOO (obsid=1000001)",
+            mark_done=False,
+        )
+        mock_too_interrupt_success["fetch"].assert_called_once_with(1000.0, 180.0, 45.0)
+
+    def test_check_too_interrupt_executed_when_too_is_selected(
+        self,
+        mock_too_interrupt_success,
+        queue_ditl,
+        queued_targets,
+        low_merit_current_ppt,
+    ) -> None:
+        too = self._submit(queue_ditl)
+        mock_too_interrupt_success["fetch"].side_effect = lambda *_: setattr(
+            queue_ditl, "ppt", queued_targets[0]
         )
 
-        # Mock queue.add to avoid actual queue operations
-        with patch.object(queue_ditl.queue, "add"):
-            queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
+        queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
 
-            assert too.executed is True
+        assert too.executed is True
 
-    def test_check_too_interrupt_successful_interrupt_terminate_called(
-        self, mock_too_interrupt_success, queue_ditl, low_merit_current_ppt
-    ):
-        """Test _check_too_interrupt when TOO successfully interrupts - check terminate called."""
-        # Submit TOO with high merit
-        queue_ditl.submit_too(
-            obsid=1000001,
-            ra=180.0,
-            dec=45.0,
-            merit=10000.0,
-            exptime=3600,
-            name="Successful TOO",
+    def test_check_too_interrupt_not_executed_when_other_target_selected(
+        self,
+        mock_too_interrupt_success,
+        queue_ditl,
+        queued_targets,
+        low_merit_current_ppt,
+    ) -> None:
+        too = self._submit(queue_ditl)
+
+        queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
+
+        assert too.executed is False
+
+    def test_check_too_interrupt_does_not_resume_interrupted_observation(
+        self,
+        mock_too_interrupt_success,
+        queue_ditl,
+        queued_targets,
+        low_merit_current_ppt,
+    ) -> None:
+        """The interrupted target is held out of the refetch, then restored."""
+        self._submit(queue_ditl)
+        done_during_fetch: list[bool] = []
+        mock_too_interrupt_success["fetch"].side_effect = lambda *_: (
+            done_during_fetch.append(low_merit_current_ppt.done)
         )
 
-        # Mock queue.add to avoid actual queue operations
-        with patch.object(queue_ditl.queue, "add"):
-            queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
+        queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
 
-            mock_too_interrupt_success["terminate"].assert_called_once_with(
-                1000.0,
-                reason="Preempted by TOO Successful TOO (obsid=1000001)",
-                mark_done=False,
-            )
+        assert done_during_fetch == [True]
+        assert low_merit_current_ppt.done is False
 
-    def test_check_too_interrupt_successful_interrupt_queue_add_called(
-        self, mock_too_interrupt_success, queue_ditl, low_merit_current_ppt
-    ):
-        """Test _check_too_interrupt when TOO successfully interrupts - check queue.add called."""
-        # Submit TOO with high merit
-        queue_ditl.submit_too(
-            obsid=1000001,
-            ra=180.0,
-            dec=45.0,
-            merit=10000.0,
-            exptime=3600,
-            name="Successful TOO",
+    def test_check_too_interrupt_no_current_observation(
+        self, mock_too_interrupt_no_current_obs, queue_ditl, queued_targets
+    ) -> None:
+        """With nothing to interrupt, the queued TOO waits for the next selection."""
+        too = self._submit(queue_ditl)
+
+        result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
+
+        assert result is False
+        assert too.executed is False
+        assert len(queued_targets) == 1
+        mock_too_interrupt_no_current_obs["fetch"].assert_not_called()
+
+    def test_check_too_marks_executed_once_dispatched(
+        self, mock_pointing_visibility, queue_ditl, queued_targets
+    ) -> None:
+        """A TOO selected through the normal queue is marked executed."""
+        too = self._submit(queue_ditl)
+        queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
+        queue_ditl.ppt = queued_targets[0]
+
+        queue_ditl._check_too_interrupt(utime=1060.0, ra=180.0, dec=45.0)
+
+        assert too.executed is True
+
+    @pytest.mark.parametrize(
+        ("too_tier", "too_merit", "interrupts"),
+        [(1, 10.0, True), (0, 10000.0, True), (-1, 10000.0, False)],
+    )
+    def test_check_too_interrupt_compares_tier_before_value(
+        self,
+        mock_too_interrupt_success,
+        queue_ditl,
+        queued_targets,
+        low_merit_current_ppt,
+        too_tier,
+        too_merit,
+        interrupts,
+    ) -> None:
+        from conops.config.observation_categories import (
+            ObservationCategories,
+            ObservationCategory,
         )
+        from conops.targets.merit import MeritModel
 
-        # Mock queue.add to avoid actual queue operations
-        with patch.object(queue_ditl.queue, "add") as mock_queue_add:
-            queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
-
-            mock_queue_add.assert_called_once_with(
-                ra=180.0,
-                dec=45.0,
-                obsid=1000001,
-                name="Successful TOO",
-                merit=110000.0,  # Original merit + 100000 boost
-                exptime=3600,
-            )
-
-    def test_check_too_interrupt_successful_interrupt_fetch_called(
-        self, mock_too_interrupt_success, queue_ditl, low_merit_current_ppt
-    ):
-        """Test _check_too_interrupt when TOO successfully interrupts - check fetch called."""
-        # Submit TOO with high merit
-        queue_ditl.submit_too(
-            obsid=1000001,
-            ra=180.0,
-            dec=45.0,
-            merit=10000.0,
-            exptime=3600,
-            name="Successful TOO",
+        queue_ditl.config.observation_categories = ObservationCategories(
+            categories=[
+                ObservationCategory(
+                    name="TOO", obsid_min=1000000, obsid_max=2000000, tier=too_tier
+                )
+            ]
         )
+        queue_ditl.merit_model = MeritModel(queue_ditl.config)
+        self._submit(queue_ditl, merit=too_merit)
 
-        # Mock queue.add to avoid actual queue operations
-        with patch.object(queue_ditl.queue, "add"):
-            queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
+        result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
 
-            mock_too_interrupt_success["fetch"].assert_called_once_with(
-                1000.0, 180.0, 45.0
-            )
-
-    def test_check_too_interrupt_no_current_observation_result(
-        self, mock_too_interrupt_no_current_obs, queue_ditl
-    ):
-        """Test _check_too_interrupt when there is no current observation - check result."""
-        # Submit TOO
-        queue_ditl.submit_too(
-            obsid=1000001,
-            ra=180.0,
-            dec=45.0,
-            merit=10000.0,
-            exptime=3600,
-            name="TOO without current obs",
-        )
-
-        # No current PPT (queue_ditl.ppt is None)
-
-        with patch.object(queue_ditl.queue, "add"):
-            result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
-
-            assert result is True  # Should return True for successful interrupt
-
-    def test_check_too_interrupt_no_current_observation_executed(
-        self, mock_too_interrupt_no_current_obs, queue_ditl
-    ):
-        """Test _check_too_interrupt when there is no current observation - check executed flag."""
-        # Submit TOO
-        too = queue_ditl.submit_too(
-            obsid=1000001,
-            ra=180.0,
-            dec=45.0,
-            merit=10000.0,
-            exptime=3600,
-            name="TOO without current obs",
-        )
-
-        # No current PPT (queue_ditl.ppt is None)
-
-        with patch.object(queue_ditl.queue, "add"):
-            queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
-
-            assert too.executed is True
-
-    def test_check_too_interrupt_no_current_observation_queue_add_called(
-        self, mock_too_interrupt_no_current_obs, queue_ditl
-    ):
-        """Test _check_too_interrupt when there is no current observation - check queue.add called."""
-        # Submit TOO
-        queue_ditl.submit_too(
-            obsid=1000001,
-            ra=180.0,
-            dec=45.0,
-            merit=10000.0,
-            exptime=3600,
-            name="TOO without current obs",
-        )
-
-        # No current PPT (queue_ditl.ppt is None)
-
-        with patch.object(queue_ditl.queue, "add") as mock_queue_add:
-            queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
-
-            mock_queue_add.assert_called_once()
-
-    def test_check_too_interrupt_no_current_observation_fetch_called(
-        self, mock_too_interrupt_no_current_obs, queue_ditl
-    ):
-        """Test _check_too_interrupt when there is no current observation - check fetch called."""
-        # Submit TOO
-        queue_ditl.submit_too(
-            obsid=1000001,
-            ra=180.0,
-            dec=45.0,
-            merit=10000.0,
-            exptime=3600,
-            name="TOO without current obs",
-        )
-
-        # No current PPT (queue_ditl.ppt is None)
-
-        with patch.object(queue_ditl.queue, "add"):
-            queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
-
-            mock_too_interrupt_no_current_obs["fetch"].assert_called_once_with(
-                1000.0, 180.0, 45.0
-            )
+        assert result is interrupts
 
     def test_too_request_pydantic_validation_valid(self) -> None:
         """Test TOORequest Pydantic validation - valid creation."""
@@ -6116,6 +6130,7 @@ class TestTOOFunctionality:
             "exptime": 3600,
             "name": "Test TOO",
             "submit_time": 1234567890.0,
+            "deadline": None,
             "executed": True,
         }
         assert data == expected

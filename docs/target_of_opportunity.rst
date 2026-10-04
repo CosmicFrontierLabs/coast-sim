@@ -6,16 +6,17 @@ Overview
 
 The Target of Opportunity (TOO) system allows simulating time-critical observations that interrupt normal queue-scheduled operations. This is essential for modeling responses to transient astronomical events such as gamma-ray bursts (GRBs), gravitational wave counterparts, supernovae, or other phenomena requiring immediate observation.
 
-When a TOO is submitted, it is held in a register and continuously checked during the simulation. If the TOO target becomes visible and its merit exceeds that of the current observation, the current observation is immediately preempted and the TOO is observed.
+A TOO is an ordinary queue request with a short window. When its ``submit_time`` is reached it joins the target queue with its own merit and optional deadline, and is selected like any other target. If it is visible and outranks the observation in progress, that observation is preempted and the queue selects again.
 
 Key Features
 ------------
 
-* **Merit-based preemption**: TOOs only interrupt when their merit exceeds the current observation
-* **Visibility checking**: TOOs are only triggered when the target is actually observable
+* **Ordinary requests**: An active TOO is a queue target; nothing boosts its merit
+* **Tier- and merit-based preemption**: A TOO interrupts only when its tier and value, evaluated now, beat the tier and value frozen onto the current observation when it was selected
+* **Deadlines**: An optional deadline drives the urgency merit term and stops the TOO being selected once it passes
+* **Visibility checking**: TOOs only interrupt when the target is actually observable
 * **Scheduled submission**: TOOs can be scheduled to become active at a future time
-* **Full event logging**: All TOO events (submission, interrupt, observation) are logged
-* **Queue integration**: TOOs are inserted into the queue with boosted merit for immediate selection
+* **Full event logging**: Queuing, interrupts and the merit breakdown of each selection are logged
 
 TOORequest Model
 ----------------
@@ -34,7 +35,8 @@ The ``TOORequest`` class is a Pydantic model that represents a pending TOO. It c
        exptime=3600,         # Exposure time (seconds)
        name="GRB 250101A",   # Human-readable name
        submit_time=0.0,      # When TOO becomes active (Unix timestamp)
-       executed=False,       # Whether TOO has been observed
+       deadline=None,        # Latest start of science (Unix timestamp), or None
+       executed=False,       # Whether TOO has been dispatched
    )
 
 Attributes
@@ -43,11 +45,12 @@ Attributes
 * ``obsid`` (int): Unique observation identifier for this TOO
 * ``ra`` (float): Right ascension in degrees
 * ``dec`` (float): Declination in degrees
-* ``merit`` (float): Priority merit value. Should be significantly higher than normal queue targets (e.g., 10000+) to ensure immediate observation
+* ``merit`` (float): Base merit. Within a tier, the TOO interrupts only if its value exceeds the current observation's
 * ``exptime`` (int): Requested exposure time in seconds
 * ``name`` (str): Human-readable name for the TOO target (e.g., "GRB 250101A")
 * ``submit_time`` (float): Unix timestamp when the TOO becomes active. Default is 0.0, meaning active from simulation start
-* ``executed`` (bool): Whether this TOO has been executed. Automatically set to True when the TOO triggers
+* ``deadline`` (float or None): Latest Unix time science collection may begin. Drives the urgency term (``config.targets.urgency_weight``); the TOO cannot be selected after it
+* ``executed`` (bool): Whether this TOO has been dispatched. Set to True once it becomes the current observation
 
 Submitting TOOs
 ---------------
@@ -114,34 +117,55 @@ TOOs can be scheduled to become active at a future time. This is useful for simu
 How TOO Interrupts Work
 -----------------------
 
-During each simulation step, the TOO system performs the following checks:
+During each simulation step in science or idle modes:
 
-1. **Submission time check**: Is ``submit_time <= current_time``? If not, the TOO is not yet active.
+1. Every TOO whose ``submit_time`` has passed is **added to the queue** once, with its own merit and deadline.
+2. A TOO that is already the current observation, or has collected science, is marked **executed**.
+3. If an observation is in progress, a pending TOO **interrupts** it when:
 
-2. **Execution check**: Has the TOO already been executed? If so, skip it.
+   * its deadline, if any, has not passed;
+   * its target is visible now; and
+   * its tier and value, evaluated now, beat the current observation's frozen tier and value.
 
-3. **Merit comparison**: Is the TOO's merit higher than the current observation's merit? If not, no interrupt occurs.
+When a TOO interrupts:
 
-4. **Visibility check**: Is the TOO target currently visible (not occulted, not in constraint violation)? If not, the interrupt is deferred until visibility is achieved.
+1. The current observation is **terminated** (preempted, not completed).
+2. The queue **selects again**, with the interrupted target held out of this one selection so it cannot simply resume. The highest-ranked target is chosen, normally the TOO.
+3. The TOO is marked **executed** if it was selected.
+4. The events and the TOO's merit breakdown are **logged**.
 
-If all conditions are met:
+With no observation in progress nothing is interrupted: the TOO is already in the queue and is considered at the next selection.
 
-1. The current observation is **terminated** (marked as preempted, not completed)
-2. The TOO is **added to the queue** with a boosted merit (+100,000) to guarantee immediate selection
-3. The TOO is **marked as executed** in the register
-4. The spacecraft begins **slewing** to the TOO target
-5. All events are **logged** for later analysis
+Making TOOs Win
+---------------
 
-Merit Guidelines
-----------------
+There is no automatic merit boost. A TOO outranks other work through:
 
-Normal queue targets typically have merit values in the range of 1-1000. To ensure TOOs take priority:
+* **Tier**: Put TOO obsids in an observation category with a higher ``tier`` than normal science. A higher tier always wins, whatever the merits.
+* **Merit**: Within a tier, give TOOs a base merit above normal targets (normal targets typically use 1-1000).
+* **Deadline and urgency**: Give the TOO a ``deadline`` and set ``config.targets.urgency_weight``; its value rises as the deadline approaches.
 
-* **Standard TOO**: Merit 10,000+
-* **High-priority TOO**: Merit 50,000+
-* **Emergency TOO**: Merit 100,000+
+.. code-block:: python
 
-The boosted merit added when inserting into the queue (+100,000) ensures the TOO is selected next, regardless of other queue contents.
+   from conops.config import ObservationCategories, ObservationCategory
+
+   cfg.observation_categories = ObservationCategories(
+       categories=[
+           ObservationCategory(name="TOO", obsid_min=1000000, obsid_max=2000000, tier=1),
+       ]
+   )
+   cfg.targets.urgency_weight = 50.0
+
+   ditl.submit_too(
+       obsid=1000001,
+       ra=180.0,
+       dec=45.0,
+       merit=1000.0,
+       exptime=3600,
+       name="GRB 250101A",
+       submit_time=ditl.ustart + 3600,
+       deadline=ditl.ustart + 3600 + 4 * 3600,  # photons on target within 4 hours
+   )
 
 Accessing TOO Status
 --------------------
@@ -161,7 +185,7 @@ The TOO register is accessible as ``ditl.too_register``:
    # Find executed TOOs
    executed_toos = [t for t in ditl.too_register if t.executed]
 
-   # Find TOOs that never triggered (target not visible, merit too low, etc.)
+   # Find TOOs that were never dispatched (not visible, outranked, deadline passed, etc.)
    missed_toos = [t for t in ditl.too_register if not t.executed]
 
 Event Logging
@@ -179,8 +203,8 @@ TOO events are logged to ``ditl.log`` with event type ``"TOO"``. You can filter 
 
 Example output::
 
-   2025-01-01T02:34:56Z: TOO interrupt: GRB 250101A (obsid=1000001, merit=10000.0) preempting current observation (merit=500.0)
-   2025-01-01T02:34:56Z: Added TOO GRB 250101A to queue with boosted merit 110000.0
+   2025-01-01T02:30:00Z: Queued TOO GRB 250101A (obsid=1000001, merit=10000.0)
+   2025-01-01T02:34:56Z: TOO interrupt: GRB 250101A (obsid=1000001, tier=0 base=10000 value=10000.000 score=10000.000) preempting current observation (tier=0, value=500)
 
 Complete Example
 ----------------
