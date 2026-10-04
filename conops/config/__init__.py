@@ -26,6 +26,7 @@ from .instrument import (
     TelescopeConfig,
     TelescopeType,
 )
+from .momentum import StoredMomentumConfig
 from .observation_categories import ObservationCategories, ObservationCategory
 from .observation_timing import ObservationTiming
 from .power import PowerDraw
@@ -98,6 +99,7 @@ __all__ = [
     "SolarArrayDriveState",
     "SingleAxisSolarArrayDrive",
     "SpacecraftBus",
+    "StoredMomentumConfig",
     "StarTracker",
     "DefaultStarTrackerConfiguration",
     "StarTrackerConfiguration",

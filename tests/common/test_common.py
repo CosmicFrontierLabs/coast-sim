@@ -22,6 +22,7 @@ from conops.common.vector import (
     _quat_to_rot,
     attitude_to_quat,
     quat_to_attitude,
+    quaternion_to_rotation_matrix,
 )
 
 
@@ -140,6 +141,41 @@ class TestUnixtimeToYearday:
         year, day = unixtime2yearday(utime)
         assert year == 2023
         assert day > 100  # Mid-year
+
+
+class TestQuaternionToRotationMatrix:
+    @pytest.mark.parametrize(
+        "quaternion",
+        [
+            [],
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0, 0.0],
+            [[1.0, 0.0, 0.0, 0.0]],
+            [np.nan, 0.0, 0.0, 0.0],
+            [1.0, np.inf, 0.0, 0.0],
+            [1.0, 0.0, -np.inf, 0.0],
+        ],
+    )
+    def test_rejects_wrong_shape_or_nonfinite_values(self, quaternion):
+        with pytest.raises(ValueError, match="four finite values"):
+            quaternion_to_rotation_matrix(quaternion)
+
+    def test_rejects_zero_magnitude(self):
+        with pytest.raises(ValueError, match="nonzero magnitude"):
+            quaternion_to_rotation_matrix([0.0, 0.0, 0.0, 0.0])
+
+    @pytest.mark.parametrize("scale", [1e-300, 1.0, -2.0, 1e300])
+    def test_normalizes_finite_inputs_and_preserves_rotation(self, scale):
+        rotation = quaternion_to_rotation_matrix(
+            scale * np.array([1.0, -1.0, 0.0, 0.0])
+        )
+        # Positive 90-degree roll maps ECI +Z to body +Y.
+        assert rotation == pytest.approx(
+            np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]]),
+            abs=1e-15,
+        )
+        assert rotation @ rotation.T == pytest.approx(np.eye(3), abs=1e-15)
+        assert np.linalg.det(rotation) == pytest.approx(1.0)
 
 
 class TestBodyVectorTrackingAttitude:
