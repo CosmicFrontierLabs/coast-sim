@@ -192,3 +192,56 @@ class TestTargetOfOpportunity:
 
         assert _science_order(ditl) == [10, 30001]
         assert not any("TOO interrupt" in e.description for e in ditl.log.events)
+
+    def test_unschedulable_too_does_not_interrupt(self) -> None:
+        resumable = {**FLEXIBLE, "ss_min": 300}
+        ditl = _run(
+            [resumable],
+            toos=[
+                {
+                    "obsid": 30001,
+                    "ra": 60.0,
+                    "dec": 10.0,
+                    "merit": 1000.0,
+                    "exptime": 120,  # below the 300 s minimum snapshot
+                    "name": "Short",
+                    "submit_time": BEGIN + HOUR // 4,
+                }
+            ],
+        )
+
+        assert _science_order(ditl) == [10]
+        assert not any("TOO interrupt" in e.description for e in ditl.log.events)
+
+    @pytest.mark.parametrize("higher_first", [True, False])
+    def test_simultaneous_toos_pick_the_higher_value(self, higher_first: bool) -> None:
+        submit = BEGIN + HOUR // 4
+        lower = {
+            "obsid": 30001,
+            "ra": 60.0,
+            "dec": 10.0,
+            "merit": 500.0,
+            "exptime": 600,
+            "name": "Lower",
+            "submit_time": submit,
+        }
+        higher = {
+            "obsid": 30002,
+            "ra": 80.0,
+            "dec": -10.0,
+            "merit": 1000.0,
+            "exptime": 600,
+            "name": "Higher",
+            "submit_time": submit,
+            "deadline": submit + 200,
+        }
+        resumable = {**FLEXIBLE, "ss_min": 300}
+
+        ditl = _run(
+            [resumable],
+            toos=[higher, lower] if higher_first else [lower, higher],
+        )
+
+        higher_entry = next(e for e in ditl.plan if e.obsid == 30002)
+        assert higher_entry.collection_begin <= submit + 200
+        assert _science_order(ditl)[:2] == [10, 30002]
