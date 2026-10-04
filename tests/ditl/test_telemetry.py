@@ -522,7 +522,7 @@ class TestStoredMomentumFields:
         ditl.ephem.timestamp = [ditl.begin + timedelta(seconds=i) for i in range(5)]
         ditl.end = ditl.ephem.timestamp[-1]
         ditl.acs.pointing.return_value = (0.0, 45.0, 0.0, 1)
-        ditl.plan.which_ppt.return_value = None
+        ditl.plan.entries = []
 
         ditl.calc()
 
