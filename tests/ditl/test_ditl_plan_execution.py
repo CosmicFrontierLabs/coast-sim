@@ -73,6 +73,16 @@ class TestScienceEntries:
 
         assert ditl.acs.end_science_observation.call_count == 1
 
+    def test_pending_slew_is_canceled_when_the_entry_ends(
+        self, ditl: DITL, t: list[float]
+    ) -> None:
+        """A slew deferred past the entry's end must not execute later."""
+        ditl.plan = Plan(entries=[_science(t[0], t[2], 1)])
+
+        ditl.calc()
+
+        ditl.acs.cancel_pending_slews.assert_called_once_with(1)
+
     def test_entries_are_commanded_in_begin_order(
         self, ditl: DITL, t: list[float]
     ) -> None:
@@ -315,6 +325,28 @@ class TestPassEntries:
         ditl.calc()
 
         assert (gspass.gsstartra, gspass.gsstartdec, gspass.gsstartroll) == planned[0]
+
+    def test_unmatched_planned_tracking_attitude_is_not_substituted(
+        self,
+        ditl: DITL,
+        gspass: Pass,
+        contact: PlanEntry,
+        passing_acs: Mock,
+    ) -> None:
+        """A planned tracking attitude no profile starts at must not be replaced."""
+        ditl.config.spacecraft_bus.attitude_control.slew_accuracy = 0.01
+        contact.track_start_roll = 95.0
+        ditl.acs.passrequests.passes = [gspass]
+        ditl.plan = Plan(entries=[contact])
+
+        ditl.calc()
+
+        assert ditl.acs.passrequests.passes == []
+        assert _commands(ditl, ACSCommandType.SLEW_TO_TARGET) == []
+        assert any(
+            "pass_profile_missing" in str(m)
+            for m in ditl.validate_plan_matches_execution()
+        )
 
     def test_unmatched_contact_is_logged_and_not_commanded(
         self,
