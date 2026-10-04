@@ -8,7 +8,7 @@ import pytest
 import rust_ephem
 from matplotlib import pyplot as plt
 
-from conops import DITL, ACSMode, Queue
+from conops import DITL, ACSMode, Plan, PlanEntry, Queue
 from conops.config import (
     AttitudeControlSystem,
     BandCapability,
@@ -350,6 +350,8 @@ def ditl(mock_config_detailed, mock_ephem) -> DITL:
         mock_acs.last_slew = None
         mock_acs.inpass = False
         mock_acs.saa = None
+        mock_acs.in_safe_mode = False
+        mock_acs.current_pass = None
         mock_acs.in_eclipse = False  # Set as attribute
         mock_acs.configure_mock(in_eclipse=False)  # Also configure mock to return False
         mock_acs.pointing = Mock(return_value=(0.0, 0.0, 0.0, 0))
@@ -375,19 +377,22 @@ def ditl(mock_config_detailed, mock_ephem) -> DITL:
         ditl = DITL(config=mock_config_detailed)
         ditl.ephem = mock_ephem
         ditl.acs = mock_acs
-        ditl.plan = Mock()
         # begin/end span the whole simulation so the DITL loop treats this as
-        # the current plan entry for every timestep.
-        ditl.plan.which_ppt = Mock(
-            return_value=Mock(
-                ra=0.0,
-                dec=0.0,
-                obsid=1,
-                obstype="science",
-                begin=0.0,
-                end=float("inf"),
-            )
+        # the current plan entry for every timestep. Its obstype is not one
+        # DITL commands, so tests drive the mocked ACS directly.
+        entry = Mock(
+            spec=PlanEntry,
+            ra=0.0,
+            dec=0.0,
+            obsid=1,
+            obstype="science",
+            begin=0.0,
+            end=float("inf"),
+            collection_begin=None,
+            collection_end=None,
         )
+        ditl.plan = Plan(entries=[])
+        ditl.plan.entries = [entry]
 
         return ditl
 
