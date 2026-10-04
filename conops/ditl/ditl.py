@@ -16,6 +16,7 @@ from ..common import (
 )
 from ..common.enums import ACSCommandType
 from ..common.ephemeris import position_vectors
+from ..common.enums import ACSCommandType
 from ..common.vector import attitude_to_quat
 from ..config import AttitudeConstraintScope, MissionConfig
 from ..config.constraint import (
