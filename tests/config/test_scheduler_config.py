@@ -56,6 +56,9 @@ class TestPlannerOptions:
         [
             (PlannerKind.PRIORITY, "time_limit"),
             (PlannerKind.PRIORITY, "solver_time_limit"),
+            # The priority planner has no search to seed; it breaks ties with
+            # random_seed. Passing seed to it used to fail when it was built.
+            (PlannerKind.PRIORITY, "seed"),
             (PlannerKind.LOCAL_SEARCH, "workers"),
         ],
     )
