@@ -88,9 +88,10 @@ class LongRangeAllocator:
     requests to later bins. Requests passed as ``unplanned`` to
     :meth:`allocate` are allocated first and use the reserve before the rest.
 
-    By default the allocation is solved as a mixed-integer program with OR-Tools
-    CP-SAT. It maximizes merit-weighted seconds, with unplanned requests first
-    and then tiers strictly ahead of lower tiers, subject to:
+    By default the allocation is solved as a mixed-integer program with HiGHS
+    (bundled with OR-Tools). It maximizes merit-weighted seconds, one level at
+    a time, unplanned requests first and then each tier, each with the levels
+    above held at their best, subject to:
 
     * each request gets, in each bin, either nothing or at least its ``ss_min``,
       and no more than its target is visible there before its deadline;
@@ -101,8 +102,11 @@ class LongRangeAllocator:
       visits are spread across the run.
 
     Requests with a deadline are worth slightly more in earlier bins. Keeping
-    seconds in the bin the previous allocation gave them is worth slightly more,
-    so that allocating again moves requests only for a real gain. The solver
+    seconds in the bin the previous allocation gave them is worth 1% more, so
+    that allocating again moves requests only for a real gain. As a tiebreak in
+    the last level, the planned load is spread evenly over the bins, as far as
+    visibility allows, worth a thousandth of the least merit per second, so the
+    slack is spread across the run rather than left in a few bins. The solver
     starts from a greedy allocation, which ``solver="greedy"`` uses on its own:
     requests in order of tier and merit, each in the bins least contended by
     the requests still to come.
@@ -117,8 +121,6 @@ class LongRangeAllocator:
             [0, 1).
         solver: "milp" (the default) or "greedy".
         time_limit: Seconds the MILP solver may search per allocation.
-        workers: CP-SAT search workers. Use 1 for allocations that repeat
-            exactly.
     """
 
     def __init__(
@@ -132,7 +134,6 @@ class LongRangeAllocator:
         reserve: float = 0.1,
         solver: Literal["milp", "greedy"] = "milp",
         time_limit: float = 10.0,
-        workers: int = 8,
     ) -> None:
         if bin_length <= timedelta(0):
             raise ValueError("bin_length must be positive")
@@ -142,8 +143,8 @@ class LongRangeAllocator:
             raise ValueError("reserve must be in [0, 1)")
         if solver not in ("milp", "greedy"):
             raise ValueError('solver must be "milp" or "greedy"')
-        if time_limit <= 0 or workers < 1:
-            raise ValueError("time_limit and workers must be positive")
+        if time_limit <= 0:
+            raise ValueError("time_limit must be positive")
         self.config = config
         self.begin = begin
         self.end = end
@@ -152,9 +153,9 @@ class LongRangeAllocator:
         self.reserve = reserve
         self.solver = solver
         self.time_limit = time_limit
-        self.workers = workers
         self.solver_status: str | None = None
-        """CP-SAT's status for the last allocation, such as OPTIMAL."""
+        """The MILP solver's status for each stage of the last allocation,
+        or "OPTIMAL" if every stage was solved to optimality."""
         self._previous: Allocation | None = None
         self.ctx = SchedulingContext(config, begin, end)
         self.merit_model = MeritModel(config)
@@ -264,94 +265,179 @@ class LongRangeAllocator:
         unplanned: Collection[int],
         greedy: dict[int, dict[int, float]],
     ) -> dict[int, dict[int, float]]:
-        """Solve the allocation as a MILP, level by level, from the greedy one.
+        """Solve the allocation as a MILP with HiGHS, level by level.
 
         Levels are unplanned requests, then each tier from the highest. Each
         level's value is maximized with the levels above held at their best, so
-        no level gives up anything for the levels below it.
+        no level gives up anything for the levels below it. The last level also
+        evens out the bins' planned loads, as a tiebreak. Every level starts
+        from the greedy allocation or the level before.
         """
-        from ortools.sat.python import cp_model
+        from ortools.math_opt.python import (
+            expressions,
+            model_parameters,
+            parameters,
+            solve,
+            variables,
+        )
+        from ortools.math_opt.python.model import Model
+        from ortools.math_opt.python.result import TerminationReason
 
-        model = cp_model.CpModel()
-        seconds: dict[tuple[int, int], cp_model.IntVar] = {}
-        bound: dict[tuple[int, int], int] = {}
+        model = Model(name="long-range allocation")
+        seconds: dict[tuple[int, int], variables.Variable] = {}
         previous = self._previous.seconds if self._previous is not None else {}
-        terms: dict[tuple[bool, int], list[cp_model.LinearExprT]] = {}
-        planned_in: dict[int, list[cp_model.IntVar]] = {}
-        unplanned_in: dict[int, list[cp_model.IntVar]] = {}
+        terms: dict[tuple[bool, int], list[variables.LinearTerm]] = {}
+        planned_in: dict[int, list[variables.Variable]] = {}
+        unplanned_in: dict[int, list[variables.Variable]] = {}
         last_bin = max(len(self.bins) - 1, 1)
         for demand in demands:
-            remaining = int(demand.remaining)
-            smallest = min(int(np.ceil(demand.ss_min)), remaining)
+            remaining = float(int(demand.remaining))
+            smallest = min(float(np.ceil(demand.ss_min)), remaining)
             even = None
             if demand.spread and demand.visible:
-                even = int(max(demand.remaining / len(demand.visible), demand.ss_min))
+                even = max(demand.remaining / len(demand.visible), demand.ss_min)
             level = (demand.obsid in unplanned, demand.tier)
-            own: list[cp_model.IntVar] = []
+            own: list[variables.Variable] = []
             for k, seen in demand.visible.items():
-                most = min(remaining, int(seen))
+                most = min(remaining, float(int(seen)))
                 if even is not None:
-                    most = min(most, even)
+                    most = min(most, float(int(even)))
                 if most < smallest:
                     continue
-                x = model.new_int_var(0, most, f"x{demand.obsid}_{k}")
-                used = model.new_bool_var(f"y{demand.obsid}_{k}")
+                x = model.add_variable(lb=0.0, ub=most, name=f"x{demand.obsid}_{k}")
+                used = model.add_binary_variable(name=f"y{demand.obsid}_{k}")
                 # Nothing, or at least a minimum snapshot.
-                model.add(x <= most * used)
-                model.add(x >= smallest * used)
+                model.add_linear_constraint(x <= most * used)
+                model.add_linear_constraint(x >= smallest * used)
                 seconds[(demand.obsid, k)] = x
-                bound[(demand.obsid, k)] = most
                 own.append(x)
                 (unplanned_in if level[0] else planned_in).setdefault(k, []).append(x)
-                # Merit per second, in thousandths so the objective is exact.
-                rate = 1000.0 * demand.value
+                rate = demand.value
                 if demand.deadline is not None:
                     # Earlier is slightly better for a request with a deadline.
                     rate *= 1.0 - 0.01 * k / last_bin
                 level_terms = terms.setdefault(level, [])
-                level_terms.append(int(round(rate)) * x)
-                kept = int(previous.get(demand.obsid, {}).get(k, 0.0))
+                level_terms.append(variables.LinearTerm(x, rate))
+                kept = float(previous.get(demand.obsid, {}).get(k, 0.0))
                 if kept >= smallest:
                     # Staying where the previous allocation put it is worth 1%,
                     # so allocating again moves only for a real gain.
-                    stays = model.new_int_var(0, kept, f"s{demand.obsid}_{k}")
-                    model.add(stays <= x)
-                    level_terms.append(int(round(10.0 * demand.value)) * stays)
+                    stays = model.add_variable(
+                        lb=0.0, ub=kept, name=f"s{demand.obsid}_{k}"
+                    )
+                    model.add_linear_constraint(stays <= x)
+                    level_terms.append(variables.LinearTerm(stays, 0.01 * demand.value))
             if own:
-                model.add(sum(own) <= remaining)
+                model.add_linear_constraint(expressions.fast_sum(own) <= remaining)
         for k in range(len(self.bins)):
             planned_x = planned_in.get(k, [])
             if planned_x:
-                model.add(sum(planned_x) <= int(capacity[k] - held[k]))
+                model.add_linear_constraint(
+                    expressions.fast_sum(planned_x) <= capacity[k] - held[k]
+                )
             every = planned_x + unplanned_in.get(k, [])
             if every:
-                model.add(sum(every) <= int(capacity[k]))
+                model.add_linear_constraint(expressions.fast_sum(every) <= capacity[k])
 
-        hint = {
-            key: min(max(int(greedy.get(key[0], {}).get(key[1], 0.0)), 0), bound[key])
-            for key in seconds
-        }
         levels = sorted(terms, reverse=True)
+        stages = len(levels)
         statuses: list[str] = []
-        solved: dict[tuple[int, int], int] | None = None
+        solved: dict[tuple[int, int], float] | None = None
+        # The greedy allocation, within each variable's bounds (its cadence
+        # spread can exceed the even share the model allows).
+        hint = {
+            x: min(max(greedy.get(key[0], {}).get(key[1], 0.0), 0.0), x.upper_bound)
+            for key, x in seconds.items()
+        }
+
+        last_values: dict[variables.Variable, float] = {}
+
+        def run(objective: variables.LinearSum, maximize: bool) -> float | None:
+            """Solve for ``objective`` from the last solution; return its value."""
+            nonlocal solved
+            if maximize:
+                model.maximize(objective)
+            else:
+                model.minimize(objective)
+            start = (
+                hint
+                if solved is None
+                else {seconds[key]: value for key, value in solved.items()}
+            )
+            settings = parameters.SolveParameters(
+                time_limit=timedelta(seconds=self.time_limit / stages)
+            )
+            try:
+                outcome = solve.solve(
+                    model,
+                    parameters.SolverType.HIGHS,
+                    params=settings,
+                    model_params=model_parameters.ModelSolveParameters(
+                        solution_hints=[
+                            model_parameters.SolutionHint(variable_values=start)
+                        ]
+                    ),
+                )
+            except RuntimeError:
+                # HiGHS can reject a starting solution; solve without one.
+                outcome = solve.solve(
+                    model, parameters.SolverType.HIGHS, params=settings
+                )
+            reason = outcome.termination.reason
+            optimal = reason == TerminationReason.OPTIMAL
+            statuses.append("OPTIMAL" if optimal else "FEASIBLE")
+            if not outcome.has_primal_feasible_solution():
+                statuses[-1] = reason.name
+                return None
+            values = outcome.variable_values()
+            last_values.clear()
+            last_values.update(values)
+            solved = {key: values[x] for key, x in seconds.items()}
+            return outcome.objective_value()
+
+        # Spread the planned load over the run: each bin's planned seconds as
+        # close as visibility allows to the fill the planned demand would give
+        # if spread evenly. It is a tiebreak in the last level's objective,
+        # worth a thousandth of the least merit per second, so it never costs a
+        # second of science for less than a thousand seconds of better balance,
+        # and below the stability bonus, so allocating again still stays put.
+        balance: list[variables.LinearTerm] = []
+        planned_levels = [level for level in levels if not level[0]]
+        if planned_levels and planned_in:
+            rooms = {k: capacity[k] - held[k] for k in planned_in}
+            planned_demand = sum(
+                min(d.remaining, sum(d.visible.values()))
+                for d in demands
+                if d.obsid not in unplanned
+            )
+            fill = min(1.0, planned_demand / max(sum(rooms.values()), 1.0))
+            least = min(
+                (term.coefficient for level in planned_levels for term in terms[level]),
+                default=1.0,
+            )
+            for k, planned_x in planned_in.items():
+                deviation = model.add_variable(lb=0.0, name=f"dev{k}")
+                load = expressions.fast_sum(planned_x)
+                model.add_linear_constraint(deviation >= load - fill * rooms[k])
+                model.add_linear_constraint(deviation >= fill * rooms[k] - load)
+                balance.append(variables.LinearTerm(deviation, -1e-3 * least))
         for level in levels:
-            objective = sum(terms[level])
-            model.clear_hints()  # type: ignore[no-untyped-call]
-            for key, x in seconds.items():
-                model.add_hint(x, hint[key])
-            model.maximize(objective)
-            solver = cp_model.CpSolver()
-            solver.parameters.max_time_in_seconds = self.time_limit / len(levels)
-            solver.parameters.num_workers = self.workers
-            solver.parameters.random_seed = self.config.random_seed or 0
-            status = solver.solve(model)
-            statuses.append(solver.status_name(status))
-            if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            level_value = expressions.fast_sum(terms[level])
+            objective = level_value
+            if balance and level == planned_levels[-1]:
+                objective = expressions.fast_sum([*terms[level], *balance])
+            achieved = run(objective, maximize=True)
+            if achieved is None:
                 break
-            solved = {key: int(solver.value(x)) for key, x in seconds.items()}
-            hint = solved
-            # Hold this level at what it achieved while the next is solved.
-            model.add(objective >= int(round(solver.objective_value)))
+            # Hold this level's merit at what it achieved while the next is
+            # solved; the tolerance is well inside the stability bonus, so later
+            # levels cannot move seconds for nothing.
+            held_value = sum(
+                term.coefficient * last_values[term.variable] for term in terms[level]
+            )
+            model.add_linear_constraint(
+                level_value >= held_value - 1e-9 * max(abs(held_value), 1.0)
+            )
         self.solver_status = (
             "OPTIMAL"
             if statuses and set(statuses) == {"OPTIMAL"}
@@ -361,8 +447,9 @@ class LongRangeAllocator:
             return greedy
         result: dict[int, dict[int, float]] = {d.obsid: {} for d in demands}
         for (obsid, k), value in solved.items():
-            if value > 0:
-                result[obsid][k] = float(value)
+            # Whole seconds, so the allocation is not cluttered by solver noise.
+            if round(value) > 0:
+                result[obsid][k] = float(round(value))
         return result
 
     def _demand(

@@ -134,7 +134,6 @@ class TestLongRangeAllocator:
             {"reserve": 1.0},
             {"solver": "lp"},
             {"time_limit": 0.0},
-            {"workers": 0},
         ],
     )
     def test_rejects_invalid_settings(self, options: dict[str, object]) -> None:

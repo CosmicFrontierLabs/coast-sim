@@ -4,6 +4,7 @@ from datetime import timedelta
 
 import pytest
 
+from conops.config.observation_categories import ObservationCategory
 from conops.ditl import ReplanReason, RollingHorizonDITL
 from conops.targets import Pointing
 
@@ -150,6 +151,44 @@ class TestTargetsOfOpportunity:
 
         science = [int(e.obsid) for e in ditl.plan if e.obstype.name == "AT"]
         assert science == [1, 1_000_001, 1]
+
+    def test_a_too_that_may_not_interrupt_starts_after_the_observation(
+        self,
+    ) -> None:
+        """A rapid plan, but the observation in progress runs to its end."""
+        ditl = _run(
+            3,
+            _long_observation(),
+            toos=({**GRB, "deadline": T0 + 90 * MIN, "interrupt": False},),
+            replan_interval=timedelta(hours=4),
+        )
+
+        rapid = [r for r in ditl.replans if r.reason is ReplanReason.RAPID]
+        assert len(rapid) == 1
+        assert rapid[0].interrupted_obsid is None
+        science = [int(e.obsid) for e in ditl.plan if e.obstype.name == "AT"]
+        assert science == [1, 1_000_001]
+        assert ditl.too_register[0].executed
+        assert ditl.validate_plan_matches_execution() == []
+
+    def test_a_non_interruptible_observation_is_not_cut(self) -> None:
+        locked = ObservationCategory(
+            name="Locked", obsid_min=1, obsid_max=2, interruptible=False
+        )
+        config = _config(3, categories=[locked])
+        target = _target(
+            config, 1, 105.0, 10.0, merit=10, minutes=60, snapshot=60, ss_min=10
+        )
+
+        ditl = _run(
+            3,
+            [target],
+            toos=({**GRB, "deadline": T0 + 30 * MIN},),
+            replan_interval=timedelta(hours=4),
+        )
+
+        assert all(r.interrupted_obsid is None for r in ditl.replans)
+        assert ditl.too_response_times()[1_000_001] is None
 
     def test_without_interrupts_the_too_misses_its_deadline(self) -> None:
         ditl = _run(

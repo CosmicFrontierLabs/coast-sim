@@ -399,12 +399,16 @@ each request's remaining exposure to collect in which bin:
   yet, such as ToOs. Planned requests are never allocated it. ToOs the simulation has
   received are allocated first and use the reserve before anything else, so a ToO
   that fits in the reserve doesn't push planned requests to later days;
-* the allocation is solved as a mixed-integer program (OR-Tools CP-SAT) that
-  maximizes merit-weighted time. ToOs come first, then each tier in turn, each solved
-  with the ones above it held at their best, so a tier never gives anything up for a
-  lower one. A request gets either nothing in a bin or at least its ``ss_min``, never
-  more than its remaining exposure, and a request with a cadence no more than an even
-  share per bin. Requests with a deadline are worth slightly more in earlier bins;
+* the allocation is solved as a mixed-integer program with HiGHS (bundled with
+  OR-Tools) that maximizes merit-weighted time. ToOs come first, then each tier in
+  turn, each solved with the ones above it held at their best, so a tier never gives
+  anything up for a lower one. A request gets either nothing in a bin or at least its
+  ``ss_min``, never more than its remaining exposure, and a request with a cadence no
+  more than an even share per bin. Requests with a deadline are worth slightly more
+  in earlier bins;
+* the planned load is spread evenly over the bins as far as visibility allows, so
+  every week keeps some slack. This is a tiebreak: it never costs a second of
+  science for less than a thousand seconds of better balance;
 * re-allocating keeps the previous allocation unless changing it gains something:
   keeping a request's seconds where they were is worth an extra 1%. A ToO that fits
   in the reserve leaves every planned request where it was;
