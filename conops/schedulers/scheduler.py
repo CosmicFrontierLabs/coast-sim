@@ -8,16 +8,22 @@ from ..config import AttitudeConstraintScope, MissionConfig
 from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
 from ..simulation.saa import SAA
 from ..targets import Plan, PlanEntry, TargetList
+from ._renamed import renamed_getattr
 
 if TYPE_CHECKING:
     from ..ditl.ditl_log import DITLLog
 
 
-class DumbScheduler:
-    """A simple (dumb) scheduler for spacecraft observations.
+class FirstFitPlanner:
+    """Plan by taking, at each time, the first target in list order that fits.
 
-    The scheduler iterates through times in the Ephemeris and finds targets that
-    satisfy sun/anti-sun constraints and exposure time windows.
+    The planner steps through the ephemeris and, at each step, takes the first
+    target in its target list that can be observed then, satisfying the
+    attitude constraints and its exposure time. If none can, it moves on a step.
+    It does not rank targets; reorder the list to change the priority.
+
+    Formerly ``DumbScheduler``, a name still importable with a deprecation
+    warning.
     """
 
     ephem: rust_ephem.Ephemeris
@@ -26,10 +32,10 @@ class DumbScheduler:
         self, config: MissionConfig, days: int = 1, log: "DITLLog | None" = None
     ) -> None:
         if config is None:
-            raise ValueError("Config must be provided to DumbScheduler")
+            raise ValueError("Config must be provided to FirstFitPlanner")
         if config.payload.observation_timing.total_seconds > 0:
             raise ValueError(
-                "Observation timing budgets require QueueDITL, not DumbScheduler"
+                "Observation timing budgets require QueueDITL, not FirstFitPlanner"
             )
 
         self.mintime = 5 * 60  # seconds (5 minutes)
@@ -72,7 +78,7 @@ class DumbScheduler:
             for panel in self.config.solar_panel.panels
         ):
             raise NotImplementedError(
-                "DumbScheduler cannot propagate evolving single-axis solar-array "
+                "FirstFitPlanner cannot propagate evolving single-axis solar-array "
                 "drive state; use the queue simulation for dynamic finite drives"
             )
 
@@ -295,3 +301,6 @@ class DumbScheduler:
         else:
             print(f"Scheduled {len(self.plan)} targets")
         return self.plan
+
+
+__getattr__ = renamed_getattr(__name__, globals(), {"DumbScheduler": "FirstFitPlanner"})

@@ -566,7 +566,7 @@ sample, so they reflect the resulting physical drive angle without advancing its
 state again. Existing fixed-panel radiator shadowing is preserved. Combining
 ``PanelGeometry`` with ``single_axis_drive`` is rejected until articulated shadow
 transforms are supported, rather than treating the zero-angle rectangle as the
-executed geometry. ``DumbScheduler`` also rejects a finite drive with active
+executed geometry. ``FirstFitPlanner`` also rejects a finite drive with active
 tracking modes because it cannot propagate runtime drive state; use the queue
 simulation for dynamic finite drives.
 
@@ -1091,7 +1091,7 @@ preserves serialized collection windows, deriving them from configuration only
 when absent. Collection cannot begin before the executed slew and setup finish,
 even if the slew takes longer than planned. A late start reduces collection;
 it does not move the planned cutoff or rewrite the delivered plan.
-``DumbScheduler`` does not
+``FirstFitPlanner`` does not
 support these budgets and rejects nonzero values; use ``QueueDITL`` to generate
 budgeted plans.
 

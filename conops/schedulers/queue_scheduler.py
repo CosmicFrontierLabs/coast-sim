@@ -1,11 +1,23 @@
 from datetime import datetime
 
 from ..targets import Plan
+from ._renamed import renamed_getattr
 from .protocols import DispatchPolicy
 
 
-class DumbQueueScheduler:
-    """A simple Plan generator based on merit-driven Queue Scheduling."""
+class GreedyDispatchPlanner:
+    """Plan by asking a dispatch policy for each next target, back to back.
+
+    From the start of the window, the planner asks the policy (normally a
+    :class:`~conops.targets.TargetQueue`, which picks by merit) for the next
+    target given the current attitude and time, appends it to the plan, and
+    continues from where it ends, until the window ends or the policy has
+    nothing left. It records greedy dispatch as a plan, without the slew and
+    constraint checks :class:`~conops.schedulers.PriorityPlanner` makes.
+
+    Formerly ``DumbQueueScheduler``, a name still importable with a deprecation
+    warning.
+    """
 
     def __init__(
         self,
@@ -67,3 +79,8 @@ class DumbQueueScheduler:
             self.plan.extend([item])
 
         return self.plan
+
+
+__getattr__ = renamed_getattr(
+    __name__, globals(), {"DumbQueueScheduler": "GreedyDispatchPlanner"}
+)

@@ -14,7 +14,7 @@ from conops import (
     DAY_SECONDS,
     AttitudeControlSystem,
     Constraint,
-    DumbQueueScheduler,
+    GreedyDispatchPlanner,
     MissionConfig,
     QueueDITL,
     SolarArrayDriveState,
@@ -380,11 +380,11 @@ def mock_queue(mock_ephemeris: Mock) -> Mock:
 
 
 @pytest.fixture
-def scheduler(mock_queue: Mock, mock_ephemeris: Mock) -> DumbQueueScheduler:
-    """Create a DumbQueueScheduler instance."""
+def scheduler(mock_queue: Mock, mock_ephemeris: Mock) -> GreedyDispatchPlanner:
+    """Create a GreedyDispatchPlanner instance."""
     begin = datetime(2021, 1, 4, tzinfo=timezone.utc)
     end = begin + timedelta(days=1)
-    scheduler = DumbQueueScheduler(queue=mock_queue, begin=begin, end=end)
+    scheduler = GreedyDispatchPlanner(queue=mock_queue, begin=begin, end=end)
     scheduler.queue.ephem = mock_ephemeris
     # Override get to return None for basic tests
     cast(Any, scheduler.queue).get = Mock(return_value=None)
@@ -488,11 +488,11 @@ def queue_get_from_list() -> Callable[..., list[tuple[float, float]]]:
 
 
 @pytest.fixture
-def scheduler_2022_100_len2(mock_queue: Mock) -> DumbQueueScheduler:
+def scheduler_2022_100_len2(mock_queue: Mock) -> GreedyDispatchPlanner:
     plan = Plan()
     begin = datetime(2022, 4, 10, tzinfo=timezone.utc)
     end = begin + timedelta(days=2)
-    return DumbQueueScheduler(queue=mock_queue, plan=plan, begin=begin, end=end)
+    return GreedyDispatchPlanner(queue=mock_queue, plan=plan, begin=begin, end=end)
 
 
 # TOO-related fixtures for reducing test code duplication

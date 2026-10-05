@@ -1,4 +1,4 @@
-"""Unit tests for the DumbQueueScheduler class."""
+"""Unit tests for the GreedyDispatchPlanner class."""
 
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock
@@ -6,26 +6,26 @@ from unittest.mock import Mock
 import pytest  # type: ignore[import-untyped]
 from astropy.time import Time  # type: ignore[import-untyped]
 
-from conops import DAY_SECONDS, DumbQueueScheduler, Plan
+from conops import DAY_SECONDS, GreedyDispatchPlanner, Plan
 
 
-class TestDumbQueueSchedulerInit:
-    """Test DumbQueueScheduler initialization."""
+class TestGreedyDispatchPlannerInit:
+    """Test GreedyDispatchPlanner initialization."""
 
     def test_init_default_queue_not_none(self, mock_queue):
-        scheduler = DumbQueueScheduler(queue=mock_queue)
+        scheduler = GreedyDispatchPlanner(queue=mock_queue)
         assert scheduler.queue is not None
 
     def test_init_default_plan_not_none(self, mock_queue):
-        scheduler = DumbQueueScheduler(queue=mock_queue)
+        scheduler = GreedyDispatchPlanner(queue=mock_queue)
         assert scheduler.plan is not None
 
     def test_init_default_begin_value(self, mock_queue):
-        scheduler = DumbQueueScheduler(queue=mock_queue)
+        scheduler = GreedyDispatchPlanner(queue=mock_queue)
         assert scheduler.begin is None
 
     def test_init_default_end_value(self, mock_queue):
-        scheduler = DumbQueueScheduler(queue=mock_queue)
+        scheduler = GreedyDispatchPlanner(queue=mock_queue)
         assert scheduler.end is None
 
     def test_init_with_custom_parameter_queue(
@@ -35,7 +35,7 @@ class TestDumbQueueSchedulerInit:
 
     def test_init_with_custom_parameter_plan(self, mock_queue):
         plan = Plan()
-        scheduler = DumbQueueScheduler(
+        scheduler = GreedyDispatchPlanner(
             queue=mock_queue,
             plan=plan,
             begin=datetime(2022, 4, 10),
@@ -47,7 +47,7 @@ class TestDumbQueueSchedulerInit:
         plan = Plan()
         begin = datetime(2022, 4, 10, tzinfo=timezone.utc)
         end = begin + timedelta(days=2)
-        scheduler = DumbQueueScheduler(
+        scheduler = GreedyDispatchPlanner(
             queue=mock_queue, plan=plan, begin=begin, end=end
         )
         assert scheduler.begin == begin
@@ -56,21 +56,21 @@ class TestDumbQueueSchedulerInit:
         plan = Plan()
         begin = datetime(2022, 4, 10, tzinfo=timezone.utc)
         end = begin + timedelta(days=2)
-        scheduler = DumbQueueScheduler(
+        scheduler = GreedyDispatchPlanner(
             queue=mock_queue, plan=plan, begin=begin, end=end
         )
         assert scheduler.end == end
 
     def test_init_creates_empty_plan(self):
-        scheduler = DumbQueueScheduler(queue=Mock())
+        scheduler = GreedyDispatchPlanner(queue=Mock())
         assert len(scheduler.plan) == 0
 
     def test_init_creates_empty_queue_not_none(self):
-        scheduler = DumbQueueScheduler(queue=Mock())
+        scheduler = GreedyDispatchPlanner(queue=Mock())
         assert scheduler.queue is not None
 
 
-class TestDumbQueueSchedulerSchedule:
+class TestGreedyDispatchPlannerSchedule:
     """Test the schedule method."""
 
     def test_schedule_returns_plan(self, scheduler):
@@ -135,7 +135,7 @@ class TestDumbQueueSchedulerSchedule:
         assert isinstance(result, Plan)
 
 
-class TestDumbQueueSchedulerStartTime:
+class TestGreedyDispatchPlannerStartTime:
     """Test start time calculation."""
 
     def test_ustart_calculation(self, scheduler):
@@ -152,7 +152,7 @@ class TestDumbQueueSchedulerStartTime:
     )
     def test_different_begin_dates_set_ustart(self, begin_date):
         end = begin_date + timedelta(days=1)
-        scheduler = DumbQueueScheduler(queue=Mock(), begin=begin_date, end=end)
+        scheduler = GreedyDispatchPlanner(queue=Mock(), begin=begin_date, end=end)
         scheduler.queue.get = Mock(return_value=None)
         scheduler.schedule()
         assert scheduler.ustart > 0
@@ -160,13 +160,13 @@ class TestDumbQueueSchedulerStartTime:
     def test_multi_day_scheduling_end_preserved(self):
         begin = datetime(2021, 1, 4, tzinfo=timezone.utc)
         end = begin + timedelta(days=3)
-        scheduler = DumbQueueScheduler(queue=Mock(), begin=begin, end=end)
+        scheduler = GreedyDispatchPlanner(queue=Mock(), begin=begin, end=end)
         scheduler.queue.get = Mock(return_value=None)
         scheduler.schedule()
         assert scheduler.end == end
 
 
-class TestDumbQueueSchedulerTargetProcessing:
+class TestGreedyDispatchPlannerTargetProcessing:
     """Test target processing during scheduling."""
 
     def test_target_marked_done_after_scheduling(
@@ -199,7 +199,7 @@ class TestDumbQueueSchedulerTargetProcessing:
         assert len(result) >= 1
 
 
-class TestDumbQueueSchedulerEdgeCases:
+class TestGreedyDispatchPlannerEdgeCases:
     """Test edge cases and error handling."""
 
     def test_zero_duration_target_returns_plan(
@@ -254,7 +254,7 @@ class TestDumbQueueSchedulerEdgeCases:
         assert isinstance(result, Plan)
 
 
-class TestDumbQueueSchedulerIntegration:
+class TestGreedyDispatchPlannerIntegration:
     """Integration tests."""
 
     def test_full_scheduling_workflow_returns_plan(
@@ -363,7 +363,7 @@ class TestDumbQueueSchedulerIntegration:
         )
 
 
-class TestDumbQueueSchedulerStateManagement:
+class TestGreedyDispatchPlannerStateManagement:
     """Test state management and plan reuse."""
 
     def test_plan_reset_between_runs_independent_plans(
@@ -397,19 +397,19 @@ class TestDumbQueueSchedulerStateManagement:
         assert scheduler.end == original_end
 
 
-class TestDumbQueueSchedulerConfiguration:
+class TestGreedyDispatchPlannerConfiguration:
     """Test configuration options."""
 
     @pytest.mark.parametrize("begin_year", [2000, 2021, 2050])
     def test_begin_parameter(self, begin_year):
         begin = datetime(begin_year, 1, 1, tzinfo=timezone.utc)
         end = begin + timedelta(days=1)
-        scheduler = DumbQueueScheduler(queue=Mock(), begin=begin, end=end)
+        scheduler = GreedyDispatchPlanner(queue=Mock(), begin=begin, end=end)
         assert scheduler.begin == begin
 
     @pytest.mark.parametrize("end_year", [2000, 2021, 2050])
     def test_end_parameter(self, end_year):
         begin = datetime(2021, 1, 1, tzinfo=timezone.utc)
         end = datetime(end_year, 1, 2, tzinfo=timezone.utc)
-        scheduler = DumbQueueScheduler(queue=Mock(), begin=begin, end=end)
+        scheduler = GreedyDispatchPlanner(queue=Mock(), begin=begin, end=end)
         assert scheduler.end == end

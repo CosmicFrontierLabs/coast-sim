@@ -244,7 +244,7 @@ COASTSim is organized into several key modules:
 * `conops.common`: Shared utilities, enums (ACSMode, ChargeState, ACSCommandType), and common functions
 * `conops.config`: Configuration classes for spacecraft components (battery, solar panels, instruments, etc.)
 * `conops.targets`: Target management classes (Pointing, Queue, Plan, PlanEntry)
-* `conops.schedulers`: Scheduling algorithms (DumbScheduler, DumbQueueScheduler)
+* `conops.schedulers`: Scheduling algorithms (FirstFitPlanner, GreedyDispatchPlanner)
 * `conops.simulation`: Core simulation components (ACS, DITL classes, constraints, etc.)
 * `conops.ditl`: Day-In-The-Life simulation classes (DITL, DITLMixin, QueueDITL)
 * `conops.visualization`: Visualization utilities for plotting results (sky pointing, timelines, etc.)
@@ -255,7 +255,7 @@ All classes are available directly from the ``conops`` package:
 
    from conops import (
        MissionConfig, ACS, DITL, QueueDITL, Pointing, Queue,
-       DumbScheduler, ACSMode, ACSCommandType
+       FirstFitPlanner, ACSMode, ACSCommandType
    )
 
 Next Steps
