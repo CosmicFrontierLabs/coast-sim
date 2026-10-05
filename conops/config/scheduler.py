@@ -33,6 +33,7 @@ class PlannerKind(str, Enum):
 
 
 _SEARCH_FIELDS = (
+    "seed",
     "time_limit",
     "max_iterations",
     "earliness_weight",
@@ -58,7 +59,10 @@ class PlannerSettings(ConfigModel):
     )
     seed: int | None = Field(
         default=None,
-        description="Random seed for search and solver; defaults to random_seed",
+        description=(
+            "Random seed for local search and CP-SAT; defaults to random_seed. "
+            "The priority planner breaks ties with random_seed"
+        ),
     )
     successor_retries: int | None = Field(
         default=None,
@@ -118,7 +122,6 @@ class PlannerSettings(ConfigModel):
         """Return the settings as keyword arguments for the planner class."""
         names = (
             "include_passes",
-            "seed",
             "successor_retries",
             *_SEARCH_FIELDS,
             *_SOLVER_FIELDS,

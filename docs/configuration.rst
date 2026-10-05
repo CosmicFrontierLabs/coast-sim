@@ -1536,9 +1536,10 @@ dispatch, so configurations without this section behave as before.
   ``rolling`` modes
 
   * ``kind``: ``priority``, ``local_search`` or ``cp_sat`` (needs ``coast-sim[cpsat]``)
-  * ``include_passes`` (default true), ``seed``, and ``successor_retries`` (unset by
-    default; see :doc:`planning`)
-  * local search, for ``local_search`` and ``cp_sat``: ``time_limit``,
+  * ``include_passes`` (default true) and ``successor_retries`` (unset by default;
+    see :doc:`planning`)
+  * local search, for ``local_search`` and ``cp_sat``: ``seed`` (defaults to
+    ``random_seed``, which the priority planner uses to break ties), ``time_limit``,
     ``max_iterations``, ``earliness_weight``, ``neighborhood``, ``history_length``
   * CP-SAT, for ``cp_sat`` only: ``solver_time_limit``, ``chunk_seconds``,
     ``workers``, ``max_candidates``
