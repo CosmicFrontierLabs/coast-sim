@@ -300,3 +300,38 @@ class TestSuccessorRetries:
             PriorityPlanner(
                 config, [], BEGIN, BEGIN + timedelta(hours=1), successor_retries=-1
             )
+
+
+class TestDelayingSuccessors:
+    """A snapshot that only the next one blocks is fitted by moving that one later."""
+
+    HOURS = 12
+
+    def _plan(self) -> tuple[MissionConfig, PriorityPlanner]:
+        config = _config(self.HOURS)
+        targets = [
+            _target(config, 100 + i, ra, dec, merit=90 - 7 * i, minutes=60, snapshot=20)
+            for i, (ra, dec) in enumerate(PATCH + CONSTRAINED)
+        ]
+        planner = PriorityPlanner(
+            config, targets, BEGIN, BEGIN + timedelta(hours=self.HOURS)
+        )
+        planner.schedule()
+        return config, planner
+
+    def test_moves_a_snapshot_later_and_still_executes_exactly(self) -> None:
+        config, planner = self._plan()
+
+        moves = [e for e in planner.log.events if e.description.startswith("Moved")]
+        assert moves
+        ditl = _execute(config, planner.plan, self.HOURS, 60)
+        assert ditl.validate_plan_matches_execution() == []
+
+    def test_plans_more_science_than_leaving_the_gap(self) -> None:
+        _, delaying = self._plan()
+        with patch.object(
+            PriorityPlanner, "_fit_delaying_successor", return_value=None
+        ):
+            _, fixed = self._plan()
+
+        assert _planned_collection(delaying.plan) > _planned_collection(fixed.plan)

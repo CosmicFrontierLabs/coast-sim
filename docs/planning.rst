@@ -100,6 +100,12 @@ How a plan is built
    * the next activity can still be reached on time, with its own slew and wait
      checked the same way.
 
+   If a snapshot would fit a gap but the science snapshot after it could then not be
+   reached in time (typically one placed at the start of its target's next visibility
+   window, which ACS cannot slew to earlier), that snapshot is moved later to make
+   room, keeping its length, as long as the activity after it can still be reached.
+   Ground passes, locked entries and snapshots of cadence targets are never moved.
+
 Requests left with at least ``ss_min`` of exposure unplanned are listed in
 ``planner.unplaced``. Every placement and rejection is logged to ``planner.log``.
 The input targets are not modified.
@@ -156,9 +162,10 @@ Limitations
   planned, though dispatch may take one when nothing else is worth more. Spreading
   many visits through the day also leaves the priority-first planner more, smaller
   gaps to search, which lengthens planning.
-* **Greedy.** Placements are never revisited. If a flexible, high-merit request is
-  placed first, it can take the only slot a lower-merit request with a short window
-  could use, and that request goes unplaced. Urgency avoids this when it raises the
+* **Greedy.** Apart from moving a snapshot later to make room before it, placements
+  are never revisited. If a flexible, high-merit request is placed first, it can take
+  the only slot a lower-merit request with a short window could use, and that request
+  goes unplaced. Urgency avoids this when it raises the
   short-window request above the flexible one, so it is placed first.
 
 Improving plans by local search
@@ -226,8 +233,9 @@ optimizes the same objective as local search, but chooses which snapshots to obs
 and in what order by solving a constraint model rather than by trying changes one at
 a time.
 
-The horizon is solved in consecutive ``chunk`` lengths (three hours by default). For
-each chunk, a candidate is one snapshot of a request in one of its visibility windows
+The horizon is solved in consecutive ``chunk`` lengths (three hours by default). A
+chunk holds the snapshots whose slews start in it; a snapshot may finish in the next.
+For each chunk, a candidate is one snapshot of a request in one of its visibility windows
 (as many per window as the exposure needs and the window holds), with an optional
 arrival time and a collection length between its ``ss_min`` and ``ss_max``. CP-SAT
 chooses candidates and their order:

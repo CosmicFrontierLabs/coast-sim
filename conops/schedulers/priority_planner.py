@@ -222,6 +222,12 @@ class PriorityPlanner:
             simulation_end=self.simulation_end,
         )
         self.timeline: list[_Block] = []
+        self._movable: dict[int, _Request] = {}
+        """Science blocks placed by this planner that may move later, by id,
+        with their requests; locked entries and passes never move."""
+        self._successor_blocked = False
+        """Whether the last gap searched held a fit that only the activity
+        after it prevented."""
         self.unplaced = []
         self._origin: _Block | None = None
         if self.start_state is not None:
@@ -619,10 +625,21 @@ class PriorityPlanner:
             pred = self._pred_at(index)
             succ = self.timeline[index] if index < len(self.timeline) else None
             candidate = self._fit_in_gap(request, pred, succ, not_before)
-            if candidate is None:
+            if candidate is not None:
+                block, slew, succ_slew = candidate
+                self._commit(index, block, slew, succ, succ_slew)
+            elif (
+                succ is not None
+                and self._successor_blocked
+                and id(succ) in self._movable
+            ):
+                delayed = self._fit_delaying_successor(request, index, not_before)
+                if delayed is None:
+                    continue
+                block = delayed
+            else:
                 continue
-            block, slew, succ_slew = candidate
-            self._commit(index, block, slew, succ, succ_slew)
+            self._movable[id(block)] = request
             self._log(
                 block.entry.begin,
                 f"Placed {request.target.obsid} at "
@@ -632,6 +649,58 @@ class PriorityPlanner:
             )
             return block
         return None
+
+    def _fit_delaying_successor(
+        self, request: _Request, index: int, not_before: float | None
+    ) -> _Block | None:
+        """Fit a snapshot before timeline block ``index`` by moving that block later.
+
+        Used when a snapshot fits the gap but the science snapshot after it
+        cannot then be reached in time, such as one placed at the start of its
+        target's next visibility window. That snapshot is placed again after the
+        new one, collecting as long as before, and must still reach the block
+        after it; otherwise nothing changes. Snapshots of requests whose visits
+        follow a cadence stay where they are, as later visits are spaced from
+        them.
+        """
+        succ = self.timeline[index]
+        succ_request = self._movable[id(succ)]
+        if succ_request.cadence is not None:
+            return None
+        pred = self._pred_at(index)
+        after = self.timeline[index + 1] if index + 1 < len(self.timeline) else None
+        candidate = self._fit_in_gap(request, pred, after, not_before)
+        if candidate is None:
+            return None
+        block, slew, _ = candidate
+        seconds = succ.entry.collection_seconds_between(
+            succ.entry.begin, succ.entry.end
+        )
+        again = succ_request.model_copy(update={"remaining": seconds})
+        moved = self._fit_in_gap(again, block, after)
+        if moved is None:
+            return None
+        moved_block, moved_slew, after_slew = moved
+        entry = moved_block.entry
+        if entry.collection_seconds_between(entry.begin, entry.end) < seconds - 1e-6:
+            return None
+
+        self._apply_slew(block, slew)
+        self._apply_slew(moved_block, moved_slew)
+        if after is not None and after_slew is not None:
+            self._apply_slew(after, after_slew)
+        self.timeline[index] = moved_block
+        self.timeline.insert(index, block)
+        del self._movable[id(succ)]
+        self._movable[id(moved_block)] = succ_request
+        self._log(
+            float(moved_block.entry.begin),
+            f"Moved {succ_request.target.obsid} to "
+            f"{unixtime2date(float(entry.collection_begin or 0))} to fit "
+            f"{request.target.obsid} before it",
+            succ_request.target.obsid,
+        )
+        return block
 
     def _fit_in_gap(
         self,
@@ -644,6 +713,7 @@ class PriorityPlanner:
 
         The slew starts no earlier than ``not_before``, if given.
         """
+        self._successor_blocked = False
         target = request.target
         ss_min = float(target.ss_min)
         earliest = self._earliest_start(pred)
@@ -725,6 +795,7 @@ class PriorityPlanner:
                 if succ is None or succ_slew is not None:
                     return fitted, slew, succ_slew
                 unreachable += 1
+                self._successor_blocked = True
                 if (
                     self.successor_retries is not None
                     and unreachable > self.successor_retries
