@@ -66,11 +66,11 @@ class PlannerSettings(ConfigModel):
         ),
     )
     successor_retries: int | None = Field(
-        default=None,
+        default=3,
         ge=0,
         description=(
             "Later starts to try in a gap once a snapshot fits but the activity "
-            "after it cannot be reached; unset tries every start"
+            "after it cannot be reached; null tries every start"
         ),
     )
     time_limit: float | None = Field(
@@ -132,6 +132,8 @@ class PlannerSettings(ConfigModel):
             for name in names
             if getattr(self, name) is not None and name != "chunk_seconds"
         }
+        # None is a setting here: try every start.
+        options["successor_retries"] = self.successor_retries
         if self.chunk_seconds is not None:
             options["chunk"] = timedelta(seconds=self.chunk_seconds)
         return options

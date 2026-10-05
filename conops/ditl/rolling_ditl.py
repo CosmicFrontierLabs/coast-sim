@@ -69,7 +69,8 @@ class RollingHorizonDITL(DITL):
     every ``replan_interval`` after that. Each replan keeps everything already
     commanded or due to start within ``commit_lead_time`` (the time a new plan
     takes to reach the spacecraft), and plans the rest again from the
-    spacecraft's attitude and each target's remaining exposure.
+    spacecraft's attitude and each target's remaining exposure. The first plan
+    is built before the run starts, so it takes effect at once.
 
     Targets of Opportunity (see :meth:`submit_too`) join the target pool when
     they are submitted and go into the next scheduled plan. A ToO whose
@@ -332,7 +333,12 @@ class RollingHorizonDITL(DITL):
         self, utime: float, reason: ReplanReason, trigger: TOORequest | None
     ) -> None:
         """Keep committed activities and plan the rest of the horizon again."""
-        cutoff = self._cutoff(utime)
+        # The first plan is built before the run, so nothing waits for it.
+        cutoff = (
+            self._ceil_step(utime)
+            if reason is ReplanReason.INITIAL
+            else self._cutoff(utime)
+        )
         interrupted = None
         if reason is ReplanReason.RAPID and trigger is not None:
             interrupted = self._interrupt_for(trigger, utime, cutoff)

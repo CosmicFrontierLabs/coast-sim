@@ -157,9 +157,9 @@ class PriorityPlanner:
             next visit waits for its cadence after them.
         successor_retries: When a snapshot fits a gap but the activity after
             it cannot then be reached, how many later starts to try in that gap
-            before giving up on it. None (the default) tries every start, which
-            finds every fit; a small number plans much faster when many
-            requests cannot be placed, but can miss a fit late in a gap.
+            before giving up on it (default 3). This plans much faster when many
+            requests cannot be placed, but can miss a fit late in a gap. None
+            tries every start, which finds every fit.
         preferred: Obsids to plan ahead of the other requests in their tier,
             such as those a :class:`~conops.schedulers.LongRangeAllocator`
             allocated to this plan's time; the others fill the time left. Tiers
@@ -185,7 +185,7 @@ class PriorityPlanner:
         start_state: StartState | None = None,
         reserved_seconds: Mapping[int, float] | None = None,
         reserved_visits: Mapping[int, float] | None = None,
-        successor_retries: int | None = None,
+        successor_retries: int | None = 3,
         preferred: Collection[int] | None = None,
     ) -> None:
         self.config = config

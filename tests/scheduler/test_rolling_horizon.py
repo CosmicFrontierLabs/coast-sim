@@ -89,7 +89,10 @@ class TestScheduledReplanning:
             commit_lead_time=timedelta(minutes=30),
         )
 
-        assert all(r.cutoff == r.utime + 30 * MIN for r in ditl.replans)
+        first, *later = ditl.replans
+        # The first plan is built before the run, so it takes effect at once.
+        assert first.cutoff == first.utime
+        assert all(r.cutoff == r.utime + 30 * MIN for r in later)
         assert ditl.validate_plan_matches_execution() == []
 
     def test_replanning_does_not_reobserve_finished_exposure(self) -> None:

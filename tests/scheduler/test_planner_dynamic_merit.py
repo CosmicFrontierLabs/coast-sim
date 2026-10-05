@@ -325,7 +325,8 @@ def _rolling_cadence(monkeypatch: pytest.MonkeyPatch | None) -> list[float]:
         end=BEGIN + timedelta(hours=HOURS),
         horizon=timedelta(hours=2),
         replan_interval=timedelta(minutes=30),
-        commit_lead_time=timedelta(minutes=20),
+        # Long enough that a replan finds a visit committed but not collected.
+        commit_lead_time=timedelta(minutes=30),
     )
     ditl.step_size = 60
     assert ditl.calc()

@@ -24,7 +24,16 @@ class TestDefaults:
         assert scheduler.planner.kind is PlannerKind.PRIORITY
 
     def test_unset_settings_use_planner_defaults(self) -> None:
-        assert PlannerSettings().options() == {"include_passes": True}
+        assert PlannerSettings().options() == {
+            "include_passes": True,
+            "successor_retries": 3,
+        }
+
+    def test_successor_retries_can_be_unlimited(self) -> None:
+        assert (
+            PlannerSettings(successor_retries=None).options()["successor_retries"]
+            is None
+        )
 
 
 class TestPlannerOptions:
@@ -35,6 +44,7 @@ class TestPlannerOptions:
 
         assert settings.options() == {
             "include_passes": True,
+            "successor_retries": 3,
             "seed": 3,
             "time_limit": 5.0,
             "earliness_weight": 0.2,

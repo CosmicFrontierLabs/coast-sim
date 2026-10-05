@@ -143,7 +143,11 @@ class TestRolling:
         assert not ditl.rapid_replans and not ditl.allow_interrupts
         assert not ditl.include_passes
         assert ditl.planner is LocalSearchPlanner
-        assert ditl.planner_options == {"time_limit": 600, "max_iterations": 20}
+        assert ditl.planner_options == {
+            "successor_retries": 3,
+            "time_limit": 600,
+            "max_iterations": 20,
+        }
         _run(ditl)
         assert len(ditl.replans) == 4
 

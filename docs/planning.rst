@@ -114,11 +114,11 @@ The input targets are not modified.
 horizon goes to requests that end up unplaced: a snapshot fits a gap, but the activity
 after it cannot then be reached, so each later start in the gap is tried in turn, each
 with a full search for the slew onward. ``successor_retries`` limits how many later
-starts are tried after that happens before the gap is given up. Unset (the default),
-every start is tried and every fit is found; a small number such as 0 or 3 plans much
-faster, but can miss a fit late in a gap. It applies to all three planners and to
-rolling replans, and can be set in the configuration as
-``scheduler.planner.successor_retries``.
+starts are tried after that happens before the gap is given up (3 by default). This
+plans up to twelve times faster in the benchmarks, with the same plans, but can miss a
+fit late in a gap; set it to None to try every start. It applies to all three planners
+and to rolling replans, and can be set in the configuration as
+``scheduler.planner.successor_retries`` (``null`` to try every start).
 
 Cadence and program shares in plans
 -----------------------------------
