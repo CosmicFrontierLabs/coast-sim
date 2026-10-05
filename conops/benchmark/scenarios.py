@@ -11,8 +11,9 @@ avoidance, a battery that never limits operations, and seeded random targets:
 * :func:`cadence_and_programs`: monitoring targets that want regular revisits
   and programs with allocated shares of time, with those merit terms on.
 * :func:`multi_day`: three days, for replanning cadence and planning time.
-* :func:`long_range`: a week with deadlines spread across it and targets the
-  Sun covers or uncovers as the week goes on, for long-range allocation.
+* :func:`long_range`: a week with deadlines spread across it, targets the Sun
+  covers or uncovers as the week goes on, and ToOs arriving through it, for
+  long-range allocation.
 
 :data:`SCENARIOS` names them for scripts.
 """
@@ -393,6 +394,7 @@ def long_range(
     days: int = 7,
     targets: int = 300,
     edge: int = 30,
+    toos: int = 10,
     seed: int = 1234,
 ) -> BenchmarkScenario:
     """A week in which when each request can be observed changes.
@@ -403,6 +405,9 @@ def long_range(
     "Late" targets just behind it, which it uncovers. A scheduler that only
     looks a few hours ahead spends the early days on targets that could have
     waited, and the Early targets miss their chance.
+
+    ToOs arrive evenly through the week: alternately urgent, due 2 to 6 hours
+    after they arrive, and routine, due 1 to 3 days after.
     """
     hours = days * 24
     end = BEGIN + timedelta(hours=hours)
@@ -448,14 +453,21 @@ def long_range(
                 pool.append(target)
         return pool
 
+    rng = np.random.default_rng(seed + 7)
+    specs = []
+    for k in range(toos):
+        submit = BEGIN.timestamp() + (k + 0.5) * hours * HOUR / toos
+        window = rng.uniform(2.0, 6.0) if k % 2 == 0 else rng.uniform(24.0, 72.0)
+        specs.append(_too(1_000_000 + k, submit, submit + window * HOUR, rng))
     return BenchmarkScenario(
-        name=f"long-range: {days} days, {targets} targets",
+        name=f"long-range: {days} days, {targets} targets, {toos} ToOs",
         begin=BEGIN,
         end=end,
         make_config=lambda: mission_config(
             tle, BEGIN, end, seed=seed, categories=categories
         ),
         make_targets=make_targets,
+        toos=specs,
     )
 
 

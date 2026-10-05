@@ -11,6 +11,7 @@ from conops.benchmark import (
     dispatch,
     format_results,
     planned,
+    rolling,
     run_benchmark,
 )
 from conops.benchmark.metrics import cadence_error, program_shares, visit_starts
@@ -18,6 +19,7 @@ from conops.benchmark.scenarios import SCENARIOS, random_targets
 from conops.config import MissionConfig
 from conops.config.observation_categories import ObservationCategory
 from conops.schedulers import PriorityPlanner
+from conops.targets import Pointing
 
 from .planning_scenario import BEGIN, HOUR, MIN, PATCH, T0
 from .planning_scenario import make_config as _config
@@ -191,3 +193,61 @@ class TestStandardScenarios:
             (t.ra, t.dec, t.deadline) for t in second
         ]
         assert all(t.deadline is not None for t in first)
+
+
+class TestDeadlines:
+    def test_counts_requests_whose_exposure_was_collected(self) -> None:
+        def make_config() -> MissionConfig:
+            return _config(2)
+
+        def make_targets(config: MissionConfig) -> list[Pointing]:
+            return [
+                _target(config, 1, *PATCH[0], minutes=10, deadline=T0 + HOUR),
+                # Due before it could ever be reached.
+                _target(config, 2, *PATCH[1], minutes=10, deadline=T0 - 1),
+                _target(config, 3, *PATCH[2], minutes=10),
+            ]
+
+        scenario = BenchmarkScenario(
+            name="deadlines",
+            begin=BEGIN,
+            end=BEGIN + timedelta(hours=2),
+            make_config=make_config,
+            make_targets=make_targets,
+        )
+
+        (result,) = run_benchmark(scenario, [dispatch()])
+
+        assert (result.deadlines_met, result.deadline_requests) == (1, 2)
+        assert "deadlines met" in format_results([result]).splitlines()[0]
+
+    def test_column_hidden_without_deadlines(self) -> None:
+        plain = BenchmarkResult(contender="plain", scenario="s")
+
+        assert "deadlines" not in format_results([plain]).splitlines()[0]
+
+
+class TestContenderNames:
+    def test_names_show_the_allocator_and_its_reserve(self) -> None:
+        day = timedelta(days=1)
+
+        assert dispatch().name == "dispatch"
+        assert dispatch(allocation=day).name == "dispatch+alloc"
+        assert (
+            dispatch(allocation=day, allocation_reserve=0.0).name
+            == "dispatch+alloc(reserve 0)"
+        )
+        assert (
+            rolling(PriorityPlanner, allocation=day, allocation_reserve=0.2).name
+            == "rolling:priority+alloc(reserve 0.2)"
+        )
+
+
+def test_long_range_toos_alternate_urgent_and_routine() -> None:
+    scenario = SCENARIOS["long-range"]("examples/example.tle")
+
+    windows = [(too.deadline or 0) - too.submit_time for too in scenario.toos]
+
+    assert len(windows) == 10
+    assert all(2 * HOUR <= w <= 6 * HOUR for w in windows[0::2])
+    assert all(24 * HOUR <= w <= 72 * HOUR for w in windows[1::2])

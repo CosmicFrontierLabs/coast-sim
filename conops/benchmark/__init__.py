@@ -110,6 +110,10 @@ class BenchmarkResult(BaseModel):
     """Seconds from each ToO's submission to its first science, by obsid."""
     too_on_time: int = 0
     """ToOs whose science began by their deadline (or at all, without one)."""
+    deadline_requests: int = 0
+    """Requests, other than ToOs, with a deadline."""
+    deadlines_met: int = 0
+    """Of those, the ones whose whole exposure was collected."""
     program_share: dict[str, float] = Field(default_factory=dict)
     """Each program's fraction of the science collected."""
     cadence_error: float | None = None
@@ -133,17 +137,33 @@ class BenchmarkResult(BaseModel):
 
 
 def _allocator(
-    config: MissionConfig, scenario: BenchmarkScenario, bin_length: timedelta | None
+    config: MissionConfig,
+    scenario: BenchmarkScenario,
+    bin_length: timedelta | None,
+    reserve: float | None,
 ) -> LongRangeAllocator | None:
     if bin_length is None:
         return None
+    if reserve is None:
+        return LongRangeAllocator(
+            config, scenario.begin, scenario.end, bin_length=bin_length
+        )
     return LongRangeAllocator(
-        config, scenario.begin, scenario.end, bin_length=bin_length
+        config, scenario.begin, scenario.end, bin_length=bin_length, reserve=reserve
     )
 
 
+def _allocation_suffix(allocation: timedelta | None, reserve: float | None) -> str:
+    if allocation is None:
+        return ""
+    return "+alloc" if reserve is None else f"+alloc(reserve {reserve:g})"
+
+
 def dispatch(
-    name: str | None = None, *, allocation: timedelta | None = None
+    name: str | None = None,
+    *,
+    allocation: timedelta | None = None,
+    allocation_reserve: float | None = None,
 ) -> Contender:
     """Queue dispatch: QueueDITL selects each next target as the run goes.
 
@@ -152,6 +172,7 @@ def dispatch(
             allocating.
         allocation: Bin length of a long-range allocator steering the queue
             (see :class:`~conops.schedulers.LongRangeAllocator`); None for none.
+        allocation_reserve: The allocator's reserve; its default if None.
     """
 
     def simulate(scenario: BenchmarkScenario) -> _Run:
@@ -160,7 +181,7 @@ def dispatch(
             config=config,
             begin=scenario.begin,
             end=scenario.end,
-            allocator=_allocator(config, scenario, allocation),
+            allocator=_allocator(config, scenario, allocation, allocation_reserve),
         )
         queue_targets(ditl, scenario.make_targets(config))
         for too in scenario.toos:
@@ -168,8 +189,8 @@ def dispatch(
         ditl.calc()
         return _Run(simulation=ditl)
 
-    default = "dispatch+alloc" if allocation is not None else "dispatch"
-    return Contender(name=name or default, simulate=simulate)
+    suffix = _allocation_suffix(allocation, allocation_reserve)
+    return Contender(name=name or f"dispatch{suffix}", simulate=simulate)
 
 
 def planned(
@@ -215,6 +236,7 @@ def rolling(
     commit_lead_time: timedelta = timedelta(0),
     planner_options: Mapping[str, object] | None = None,
     allocation: timedelta | None = None,
+    allocation_reserve: float | None = None,
 ) -> Contender:
     """Rolling-horizon replanning with ``planner``, reacting to ToOs.
 
@@ -227,6 +249,7 @@ def rolling(
         planner_options: Extra keyword arguments for the planner.
         allocation: Bin length of a long-range allocator steering each replan
             (see :class:`~conops.schedulers.LongRangeAllocator`); None for none.
+        allocation_reserve: The allocator's reserve; its default if None.
     """
 
     def simulate(scenario: BenchmarkScenario) -> _Run:
@@ -241,7 +264,7 @@ def rolling(
             commit_lead_time=commit_lead_time,
             planner=planner,
             planner_options=planner_options,
-            allocator=_allocator(config, scenario, allocation),
+            allocator=_allocator(config, scenario, allocation, allocation_reserve),
         )
         ditl.step_size = int(ditl.ephem.step_size)
         for too in scenario.toos:
@@ -252,7 +275,7 @@ def rolling(
             planning_seconds=sum(r.planning_seconds for r in ditl.replans),
         )
 
-    suffix = "+alloc" if allocation is not None else ""
+    suffix = _allocation_suffix(allocation, allocation_reserve)
     return Contender(
         name=name or f"rolling:{planner.planner_name}{suffix}", simulate=simulate
     )
@@ -318,9 +341,8 @@ def _measure(
 ) -> BenchmarkResult:
     """Measure a finished simulation from its telemetry and plan."""
     simulation = run.simulation
-    merit = {
-        int(t.obsid): float(t.fom) for t in scenario.make_targets(simulation.config)
-    }
+    targets = scenario.make_targets(simulation.config)
+    merit = {int(t.obsid): float(t.fom) for t in targets}
     merit.update({too.obsid: too.merit for too in scenario.toos})
     step_hours = float(simulation.step_size) / 3600.0
     modes = [ACSMode(int(m)) for m in simulation.mode]
@@ -348,6 +370,15 @@ def _measure(
         if first is not None and (too.deadline is None or first <= too.deadline):
             on_time += 1
 
+    # Snapshots only start by a deadline, so all the exposure collected was
+    # started in time.
+    due = [t for t in targets if t.deadline is not None]
+    met = sum(
+        1
+        for t in due
+        if collected.get(int(t.obsid), 0.0) >= float(t.exptime or t.ss_max) - 1.0
+    )
+
     categories = simulation.config.observation_categories
     program = {obsid: categories.get_category(obsid).program_name for obsid in merit}
     cadence: dict[int, float] = {}
@@ -373,6 +404,8 @@ def _measure(
         ),
         too_response_seconds=responses,
         too_on_time=on_time,
+        deadline_requests=len(due),
+        deadlines_met=met,
         program_share=program_shares(collected, program),
         cadence_error=error,
         cadence_revisited=revisited,
@@ -386,11 +419,13 @@ def _measure(
 def format_results(results: Sequence[BenchmarkResult]) -> str:
     """Render benchmark results as a plain-text table.
 
-    Program shares and cadence columns appear only when a result has them. A
+    Deadline, program share and cadence columns appear only when a result has
+    them. A
     contender that failed shows its error's type in the table, and the full
     message below it.
     """
     show_programs = any(len(r.program_share) > 1 for r in results)
+    show_deadlines = any(r.deadline_requests for r in results)
     show_cadence = any(r.cadence_targets for r in results)
     headers = [
         "contender",
@@ -402,6 +437,8 @@ def format_results(results: Sequence[BenchmarkResult]) -> str:
         "ToO on time",
         "ToO median",
     ]
+    if show_deadlines:
+        headers.append("deadlines met")
     if show_programs:
         headers.append("programs")
     if show_cadence:
@@ -431,6 +468,8 @@ def format_results(results: Sequence[BenchmarkResult]) -> str:
             else "n/a",
             f"{responses[len(responses) // 2] / 60:.0f} min" if responses else "-",
         ]
+        if show_deadlines:
+            row.append(f"{r.deadlines_met}/{r.deadline_requests}")
         if show_programs:
             row.append(
                 " ".join(
