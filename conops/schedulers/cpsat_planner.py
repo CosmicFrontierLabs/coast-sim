@@ -30,7 +30,7 @@ from ..config.acs import scheduled_slew_time
 from ..targets import Plan, Pointing
 from .context import Attitude
 from .local_search import LocalSearchPlanner, Score, _Decoded, _Snapshot, _State
-from .priority_planner import _Block
+from .priority_planner import _Block, _Request, program_shares
 
 WindowKey = tuple[int, float]
 """A request's obsid and the Unix start time of one of its visibility windows."""
@@ -46,6 +46,7 @@ class _Task:
         arrival: tuple[int, int],
         *,
         copy: int = 0,
+        spacing: int | None = None,
         duration: int = 0,
         overhead: int = 0,
         collection: tuple[int, int] = (0, 0),
@@ -58,6 +59,9 @@ class _Task:
         """Request and window of a candidate snapshot; None for the start and passes."""
         self.copy = copy
         """Which of the window's snapshots of the request this is, from 0."""
+        self.spacing = spacing
+        """For a request whose visits wait for its cadence, seconds from this
+        snapshot's arrival plus its collection to the next visit's slew."""
         self.attitude_in, self.attitude_out = attitude
         self.arrival = arrival
         """Earliest and latest arrival, in seconds from the chunk's origin."""
@@ -272,7 +276,9 @@ class CpSatPlanner(LocalSearchPlanner):
         tasks = [_Task(None, (origin_attitude, origin_attitude), (0, 0))]
         tasks.extend(self._pass_tasks(state, origin_time, chunk_end))
         hinted = self._hinted_windows(hints, origin_time, chunk_end)
-        tasks.extend(self._candidates(budget, origin_time, chunk_end, finish, hinted))
+        tasks.extend(
+            self._candidates(state, budget, origin_time, chunk_end, finish, hinted)
+        )
         if not any(task.optional for task in tasks):
             return []
 
@@ -314,6 +320,20 @@ class CpSatPlanner(LocalSearchPlanner):
                 model.add(
                     arrival[k] >= arrival[k - 1] + task.overhead + collection[k - 1]
                 ).only_enforce_if(present[k])
+        spaced: dict[int, list[int]] = {}
+        for k, task in enumerate(tasks):
+            if task.spacing is not None and task.obsid is not None:
+                spaced.setdefault(task.obsid, []).append(k)
+        for visits in spaced.values():
+            # Candidates are in time order, and each visit waits for its
+            # cadence after the collection before it ends.
+            for n, i in enumerate(visits):
+                spacing = tasks[i].spacing
+                assert spacing is not None
+                for j in visits[n + 1 :]:
+                    model.add(
+                        step * slew_step[j] >= arrival[i] + collection[i] + spacing
+                    ).only_enforce_if([present[i], present[j]])
 
         arcs: list[tuple[int, int, cp_model.LiteralT]] = []
         arc_literals: dict[tuple[int, int], cp_model.IntVar] = {}
@@ -473,17 +493,24 @@ class CpSatPlanner(LocalSearchPlanner):
 
     def _candidates(
         self,
+        state: _State,
         budget: dict[int, float],
         origin_time: float,
         chunk_end: float,
         finish: float,
         hinted: dict[WindowKey, list[tuple[float, float]]],
     ) -> list[_Task]:
-        """Candidate snapshots of each request in each window open during the chunk."""
+        """Candidate snapshots of each request in each window open during the chunk.
+
+        A snapshot's value counts the program shares delivered before the
+        chunk, and a request whose visits wait for its cadence has candidates
+        only after its last visit's cadence has passed.
+        """
         ctx = self.ctx
         setup = ctx.setup_seconds
         overhead = int(np.ceil(setup + ctx.post_collection_seconds))
         weights = self._tier_weights()
+        shares = program_shares(state.programs) if self._deficit_weight else {}
         ranked = sorted(
             self._by_obsid.values(), key=lambda r: r.merit.value_rank, reverse=True
         )
@@ -496,11 +523,18 @@ class CpSatPlanner(LocalSearchPlanner):
             longest = int(np.floor(min(float(target.ss_max), remaining)))
             if longest < shortest:
                 continue
+            opens = origin_time
+            spacing = None
+            if request.cadence is not None:
+                spacing = int(np.ceil(setup + request.cadence))
+                last = state.last_visit.get(obsid)
+                if last is not None:
+                    opens = max(opens, last + request.cadence)
             for w0, w1 in request.windows:
-                if w1 <= origin_time or w0 >= chunk_end:
+                if w1 <= opens or w0 >= chunk_end:
                     continue
                 window = (
-                    int(np.ceil(max(w0, origin_time) - origin_time)),
+                    int(np.ceil(max(w0, opens) - origin_time)),
                     int(np.floor(min(w1, ctx.uend, finish) - origin_time)),
                 )
                 latest = min(
@@ -515,7 +549,7 @@ class CpSatPlanner(LocalSearchPlanner):
                     ctx.instrument_roll(target, max(w0, origin_time))
                 )
                 scale = weights[request.merit.tier]
-                rate = scale * request.merit.value
+                rate = scale * self._value(request, shares)
                 earliness = offset = 0.0
                 if target.deadline is not None and self.earliness_weight > 0.0:
                     available = target.deadline - ctx.ustart
@@ -524,11 +558,20 @@ class CpSatPlanner(LocalSearchPlanner):
                         # start, valued at the candidate's longest collection.
                         earliness = rate * longest * self.earliness_weight / available
                         offset = -earliness * (origin_time + setup - ctx.ustart)
+                if request.cadence is not None and self.earliness_weight > 0.0:
+                    # A visit is worth taking soon after it is due, so the
+                    # visits keep to the cadence: a visit a whole cadence late
+                    # loses earliness_weight of its value.
+                    late = rate * longest * self.earliness_weight / request.cadence
+                    earliness += late
+                    offset -= late * (origin_time + setup - opens)
                 # As many snapshots as the exposure needs and the window holds.
                 copies = min(
                     int(np.ceil(remaining / longest)),
                     max(1, (window[1] - window[0]) // (overhead + shortest)),
                 )
+                if spacing is not None:
+                    copies = min(copies, 1 + (window[1] - window[0]) // spacing)
                 priority = 0 if (obsid, w0) in hinted else 1
                 for copy in range(copies):
                     task = _Task(
@@ -536,6 +579,7 @@ class CpSatPlanner(LocalSearchPlanner):
                         (attitude, attitude),
                         (window[0], latest),
                         copy=copy,
+                        spacing=spacing,
                         overhead=overhead,
                         collection=(shortest, longest),
                         window=window,
@@ -583,11 +627,16 @@ class CpSatPlanner(LocalSearchPlanner):
             for obsid in {task.obsid for task in tasks if task.obsid is not None}
         }
         hint: dict[int, tuple[int, int, int]] = {}
+        due: dict[int, int] = {}
+        """Earliest slew of each cadence request's next visit."""
         previous, free = 0, 0
         for position, k in enumerate(order):
             task = tasks[k]
             obsid = task.obsid
-            moved = _ceil(max(free, task.window[0] if obsid is not None else 0), step)
+            opens = 0
+            if obsid is not None:
+                opens = max(task.window[0], due.get(obsid, 0))
+            moved = _ceil(max(free, opens), step)
             if obsid is None:
                 hint[k] = (moved // step, task.arrival[0], 0)
                 previous, free = k, task.arrival[0] + task.duration
@@ -613,6 +662,8 @@ class CpSatPlanner(LocalSearchPlanner):
                 continue
             hint[k] = (moved // step, start, seconds)
             left[obsid] -= seconds
+            if task.spacing is not None:
+                due[obsid] = start + seconds + task.spacing
             previous, free = k, start + task.overhead + seconds
         return hint
 
@@ -623,7 +674,7 @@ class CpSatPlanner(LocalSearchPlanner):
         for tier in sorted(self._tiers):
             weights[tier] = below + 1.0
             tier_total = sum(
-                r.merit.value * self._initial_remaining[obsid]
+                self._value_bound(r) * self._initial_remaining[obsid]
                 for obsid, r in self._by_obsid.items()
                 if r.merit.tier == tier
             )
@@ -632,6 +683,12 @@ class CpSatPlanner(LocalSearchPlanner):
             return {}
         top = weights[max(self._tiers)]
         return {tier: weight / top for tier, weight in weights.items()}
+
+    def _value_bound(self, request: _Request) -> float:
+        """Most a second of the request's science can be worth."""
+        if request.category.time_share is None:
+            return request.steady_value
+        return request.steady_value + self._deficit_weight
 
     def _slews(self, tasks: Sequence[_Task]) -> np.ndarray:
         """Seconds of the scheduled slew from each task to each other task."""

@@ -181,7 +181,7 @@ class MeritModel:
         )
         completion_deficit = (
             self.completion_deficit_weight
-            * self._completion_deficit(category, delivered_shares or {})
+            * self.completion_deficit(category, delivered_shares or {})
             if self.completion_deficit_weight > 0.0
             else 0.0
         )
@@ -235,10 +235,14 @@ class MeritModel:
         return min(1.0, max(0.0, (utime - last) / interval))
 
     @staticmethod
-    def _completion_deficit(
+    def completion_deficit(
         category: ObservationCategory, delivered_shares: Mapping[str, float]
     ) -> float:
-        """Return allocated minus delivered share for the program, in [-1, 1]."""
+        """Return allocated minus delivered share for the program, in [-1, 1].
+
+        This is the completion-deficit factor before its weight; planners use
+        it with the shares their plan would deliver.
+        """
         if category.time_share is None:
             return 0.0
         delivered = delivered_shares.get(category.program_name, 0.0)
