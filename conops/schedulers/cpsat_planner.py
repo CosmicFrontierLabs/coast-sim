@@ -27,6 +27,7 @@ import numpy as np
 from ..common.vector import quaternion_attitude_delta
 from ..config import MissionConfig
 from ..config.acs import scheduled_slew_time
+from ..simulation.slew import Slew
 from ..targets import Plan, Pointing
 from .context import Attitude
 from .local_search import LocalSearchPlanner, Score, _Decoded, _Snapshot, _State
@@ -283,6 +284,7 @@ class CpSatPlanner(LocalSearchPlanner):
             return []
 
         slew = self._slews(tasks)
+        chunk_seconds = int(round(chunk_end - origin_time))
         step = self.ctx.step_size
         model = cp_model.CpModel()
         arrival = [
@@ -312,6 +314,10 @@ class CpSatPlanner(LocalSearchPlanner):
                 ).only_enforce_if(present[k])
                 # ACS starts a slew only once its target is visible.
                 model.add(step * slew_step[k] >= task.window[0]).only_enforce_if(
+                    present[k]
+                )
+                # The chunk holds the snapshots whose slews start in it.
+                model.add(step * slew_step[k] < chunk_seconds).only_enforce_if(
                     present[k]
                 )
             if task.copy > 0 and tasks[k - 1].key == task.key:
@@ -394,7 +400,7 @@ class CpSatPlanner(LocalSearchPlanner):
 
         # Hint every variable, so the solver starts from the priority-first
         # plan's snapshots even when its time runs out before it improves them.
-        hint = self._hint(tasks, hinted, origin_time, slew, budget)
+        hint = self._hint(tasks, hinted, origin_time, slew, budget, chunk_seconds)
         chain = [0, *hint, 0]
         on_chain = set(zip(chain, chain[1:]))
         model.add_hint(empty, len(chain) == 2)
@@ -445,8 +451,17 @@ class CpSatPlanner(LocalSearchPlanner):
         self, state: _State, origin_time: float, chunk_end: float
     ) -> list[_Task]:
         """Passes after the cursor that a chunk's snapshots must leave room for."""
-        reach = chunk_end + max(
-            (float(r.target.ss_max) for r in self._by_obsid.values()), default=0.0
+        # A snapshot's slew starts in the chunk, so it ends at most a slew,
+        # its setup and cleanup, and its longest collection after the chunk.
+        reach = (
+            chunk_end
+            + Slew.duration_upper_bound(self.config.spacecraft_bus.attitude_control)
+            + self.ctx.setup_seconds
+            + self.ctx.post_collection_seconds
+            + max(
+                (float(r.target.ss_max) for r in self._by_obsid.values()),
+                default=0.0,
+            )
         )
         tasks = []
         for block in state.timeline[state.cursor :]:
@@ -471,15 +486,17 @@ class CpSatPlanner(LocalSearchPlanner):
     ) -> dict[WindowKey, list[tuple[float, float]]]:
         """Arrival and collection seconds of the priority-first snapshots in the chunk.
 
-        A long exposure can take several snapshots in one window; they are
-        listed in time order.
+        A snapshot belongs to the chunk its slew starts in, as when the
+        priority-first plan's snapshots are compared chunk by chunk. A long
+        exposure can take several snapshots in one window; they are listed in
+        time order.
         """
         hinted: dict[WindowKey, list[tuple[float, float]]] = {}
         for block in hints:
             assert block.slew is not None
-            arrival = float(block.slew.slewend)
-            if not origin_time <= arrival < chunk_end:
+            if not origin_time <= float(block.slew.slewstart) < chunk_end:
                 continue
+            arrival = float(block.slew.slewend)
             obsid = int(block.entry.obsid)
             entry = block.entry
             seconds = float(entry.collection_end or 0.0) - float(
@@ -537,13 +554,12 @@ class CpSatPlanner(LocalSearchPlanner):
                     int(np.ceil(max(w0, opens) - origin_time)),
                     int(np.floor(min(w1, ctx.uend, finish) - origin_time)),
                 )
-                latest = min(
-                    window[1] - overhead - shortest,
-                    int(np.floor(chunk_end - origin_time)),
-                )
+                # The slew must start in the chunk (see _solve_chunk); the
+                # snapshot may arrive after it ends.
+                latest = window[1] - overhead - shortest
                 if target.deadline is not None:
                     latest = min(latest, int(target.deadline - origin_time - setup))
-                if latest < window[0]:
+                if latest < window[0] or window[0] >= chunk_end - origin_time:
                     continue
                 attitude = target.target_body_attitude(
                     ctx.instrument_roll(target, max(w0, origin_time))
@@ -599,6 +615,7 @@ class CpSatPlanner(LocalSearchPlanner):
         origin_time: float,
         slew: np.ndarray,
         budget: dict[int, float],
+        chunk_seconds: int,
     ) -> dict[int, tuple[int, int, int]]:
         """The priority-first plan's snapshots, and the passes, as a feasible hint.
 
@@ -658,7 +675,11 @@ class CpSatPlanner(LocalSearchPlanner):
                 left[obsid],
                 finish - start - task.overhead,
             )
-            if start > task.arrival[1] or seconds < task.collection[0]:
+            if (
+                start > task.arrival[1]
+                or seconds < task.collection[0]
+                or moved >= chunk_seconds
+            ):
                 continue
             hint[k] = (moved // step, start, seconds)
             left[obsid] -= seconds
