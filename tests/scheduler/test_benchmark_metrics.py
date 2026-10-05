@@ -173,6 +173,14 @@ class TestStandardScenarios:
         assert scenario.end > scenario.begin
         assert all(t.config is first for t in targets)
 
+    @pytest.mark.parametrize("name", list(SCENARIOS))
+    def test_battery_never_raises_an_alert(self, name: str) -> None:
+        """The scenarios have no solar panels; charging must never take over."""
+        config = SCENARIOS[name]("examples/example.tle").make_config()
+        config.battery.charge_level = 0.0
+
+        assert not config.battery.battery_alert
+
     def test_random_targets_are_reproducible(self) -> None:
         config = _config(2)
 

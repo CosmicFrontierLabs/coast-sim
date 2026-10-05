@@ -129,7 +129,22 @@ def test_failing_contender_is_reported_not_raised() -> None:
     (result,) = run_benchmark(_scenario(), [failing])
 
     assert result.error == "RuntimeError: boom"
-    assert "error: RuntimeError: boom" in format_results([result])
+    lines = format_results([result]).splitlines()
+    assert lines[2].split() == ["broken", "error:", "RuntimeError"]
+    assert lines[-1] == "broken: RuntimeError: boom"
+
+
+def test_a_long_error_does_not_widen_the_table() -> None:
+    def explode(scenario: BenchmarkScenario) -> object:
+        raise RuntimeError("x" * 500)
+
+    failing = Contender(name="broken", simulate=explode)  # type: ignore[arg-type]
+
+    (result,) = run_benchmark(_scenario(), [failing])
+    header, rule, row, *_ = format_results([result]).splitlines()
+
+    assert len(rule) < 200
+    assert "x" * 500 in format_results([result])
 
 
 def test_table_lists_each_contender(results: dict[str, object]) -> None:
