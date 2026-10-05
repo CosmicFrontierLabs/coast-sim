@@ -126,6 +126,12 @@ executed:
   candidates and discounts a visit by ``earliness_weight`` for each cadence it waits
   after falling due.
 
+When :class:`~conops.ditl.RollingHorizonDITL` replans, observations it has already
+committed but not finished collecting count too: their exposure towards their
+program's share (``reserved_seconds``) and their collection end as the target's last
+visit (``reserved_visits``), so a new plan does not revisit a target straight after a
+committed visit.
+
 Without these weights, plans are built exactly as before.
 
 Limitations

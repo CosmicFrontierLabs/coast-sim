@@ -349,6 +349,7 @@ class RollingHorizonDITL(DITL):
                 simulation_end=self.end,
                 start_state=start_state,
                 reserved_seconds=self._reserved_seconds(committed, utime),
+                reserved_visits=self._reserved_visits(committed, utime),
                 **self.planner_options,  # type: ignore[arg-type]
             )
             new_entries = list(planner.schedule().entries)
@@ -465,6 +466,23 @@ class RollingHorizonDITL(DITL):
                 obsid = int(entry.obsid)
                 reserved[obsid] = reserved.get(obsid, 0.0) + remaining
         return reserved
+
+    @staticmethod
+    def _reserved_visits(
+        committed: Sequence[PlanEntry], utime: float
+    ) -> dict[int, float]:
+        """When committed entries still collecting after ``utime`` finish, by obsid."""
+        visits: dict[int, float] = {}
+        for entry in committed:
+            if (
+                entry_obstype(entry) not in PLAN_SCIENCE_OBSTYPES
+                or entry.collection_end is None
+                or float(entry.collection_end) <= utime
+            ):
+                continue
+            obsid = int(entry.obsid)
+            visits[obsid] = max(visits.get(obsid, 0.0), float(entry.collection_end))
+        return visits
 
     def _splice(
         self,
