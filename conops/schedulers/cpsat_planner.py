@@ -2,11 +2,12 @@
 
 :class:`CpSatPlanner` splits the horizon into consecutive chunks and, for each,
 lets CP-SAT choose which snapshots to observe and in what order. A candidate is
-one request in one of its visibility windows, with an optional start and a
+one snapshot of a request in one of its visibility windows (as many per window
+as the exposure needs and the window holds), with an optional start and a
 collection length between the request's ``ss_min`` and ``ss_max``. A circuit
-through the chosen candidates sets their order, with the slew between them as
-the gap they need; a slew must also start once the target is visible, as ACS
-requires. Ground passes are fixed tasks. The objective is the merit-weighted,
+through the chosen candidates sets their order. Each slew starts on the first
+simulation step after the task before it ends, and once its target is visible,
+as ACS requires. Ground passes are fixed tasks. The objective is the merit-weighted,
 earliness-discounted science time that
 :class:`~conops.schedulers.LocalSearchPlanner` maximizes.
 
@@ -44,6 +45,7 @@ class _Task:
         attitude: tuple[Attitude, Attitude],
         arrival: tuple[int, int],
         *,
+        copy: int = 0,
         duration: int = 0,
         overhead: int = 0,
         collection: tuple[int, int] = (0, 0),
@@ -54,6 +56,8 @@ class _Task:
     ) -> None:
         self.key = key
         """Request and window of a candidate snapshot; None for the start and passes."""
+        self.copy = copy
+        """Which of the window's snapshots of the request this is, from 0."""
         self.attitude_in, self.attitude_out = attitude
         self.arrival = arrival
         """Earliest and latest arrival, in seconds from the chunk's origin."""
@@ -89,16 +93,20 @@ class _Task:
 class CpSatPlanner(LocalSearchPlanner):
     """Plan chunk by chunk with CP-SAT, decoding each chunk exactly.
 
-    1. The priority-first plan is built. It is the fallback, and its
-       snapshots in each chunk are the solver's starting hint.
+    1. The priority-first plan is built. Its snapshots in each chunk are
+       the solver's starting hint.
     2. The horizon is split into ``chunk`` lengths. For each, CP-SAT chooses
        snapshots and their order within its share of ``solver_time_limit``,
-       and the order is decoded with the planner's exact checks.
+       leaving room and exposure for the rest of the priority-first plan to
+       follow. The order is decoded with the planner's exact checks and kept
+       if it scores at least as well as the priority-first plan's snapshots
+       for the chunk; otherwise, or if the solver finds no solution in time,
+       those are kept instead.
     3. Any remaining ``time_limit`` is spent improving the result by local
        search (see :class:`~conops.schedulers.LocalSearchPlanner`).
 
-    The best plan found is returned, never one worse than the priority-first
-    plan. Takes the arguments of
+    The plan returned is never worse than the priority-first plan;
+    :attr:`solver_chunks_used` shows where the solver improved on it. Takes the arguments of
     :class:`~conops.schedulers.LocalSearchPlanner` (``time_limit`` defaults to
     0, so no local search), plus:
 
@@ -145,6 +153,9 @@ class CpSatPlanner(LocalSearchPlanner):
         self.max_candidates = max_candidates
         self.solver_statuses: list[str] = []
         """CP-SAT's final status for each chunk, such as OPTIMAL or FEASIBLE."""
+        self.solver_chunks_used: list[bool] = []
+        """For each chunk, whether the solver's snapshots were kept; if not,
+        the priority-first plan's were, as they scored better."""
         self.solver_score: Score | None = None
         """Objective of the solver's plan after exact decoding."""
         self.solver_seconds = 0.0
@@ -183,15 +194,51 @@ class CpSatPlanner(LocalSearchPlanner):
         per_chunk = self.solver_time_limit / chunks
         self.solver_statuses = []
 
+        self.solver_chunks_used = []
+
         states = [self._initial_state()]
         sequence: list[_Snapshot] = []
         chunk_end = self.ctx.ustart
         while chunk_end < self.ctx.uend:
-            chunk_end = min(chunk_end + chunk, self.ctx.uend)
-            for snapshot in self._solve_chunk(states[-1], chunk_end, hints, per_chunk):
+            chunk_begin, chunk_end = chunk_end, min(chunk_end + chunk, self.ctx.uend)
+            # The chunk leaves the rest of the priority-first plan room to
+            # follow it unchanged: it finishes before that plan's next slew and
+            # leaves the exposure collected later to it. Its snapshots are kept
+            # only if, followed by the rest of that plan, they score at least
+            # as well as that plan does from here, so the result is never worse
+            # than the priority-first plan.
+            later = self._released_between(start, chunk_end, self.ctx.uend)
+            planned = self._released_between(start, chunk_begin, chunk_end)
+            budget = dict(states[-1].remaining)
+            for snapshot in later:
+                budget[snapshot.obsid] -= snapshot.seconds
+            finish = later[0].release if later else None
+            solved = self._solve_chunk(
+                states[-1], chunk_end, hints, per_chunk, budget, finish or self.ctx.uend
+            )
+            used = solved is not None and self._final_score(
+                states[-1], solved + later
+            ) >= self._final_score(states[-1], planned + later)
+            self.solver_chunks_used.append(used)
+            for snapshot in solved if used and solved is not None else planned:
                 sequence.append(snapshot)
                 states.append(self._step(states[-1], snapshot))
         return _Decoded.model_construct(sequence=sequence, states=states)
+
+    @staticmethod
+    def _released_between(start: _Decoded, begin: float, end: float) -> list[_Snapshot]:
+        """The priority-first plan's snapshots whose slews start in ``[begin, end)``."""
+        return [
+            snapshot
+            for snapshot in start.sequence
+            if snapshot.release is not None and begin <= snapshot.release < end
+        ]
+
+    def _final_score(self, state: _State, sequence: Sequence[_Snapshot]) -> Score:
+        """Objective after decoding ``sequence`` from ``state``."""
+        for snapshot in sequence:
+            state = self._step(state, snapshot)
+        return self._objective(state)
 
     def _chunk_origin(self, state: _State) -> tuple[float, Attitude]:
         """Return when and from which attitude the next snapshot can start."""
@@ -208,8 +255,15 @@ class CpSatPlanner(LocalSearchPlanner):
         chunk_end: float,
         hints: Sequence[_Block],
         time_limit: float,
-    ) -> list[_Snapshot]:
-        """Choose and order the snapshots that start in one chunk."""
+        budget: dict[int, float],
+        finish: float,
+    ) -> list[_Snapshot] | None:
+        """Choose and order the snapshots that start in one chunk.
+
+        ``budget`` is the most exposure the chunk may collect for each request,
+        and every snapshot ends by ``finish``. Returns None if the solver found
+        no solution in time.
+        """
         from ortools.sat.python import cp_model
 
         origin_time, origin_attitude = self._chunk_origin(state)
@@ -218,11 +272,12 @@ class CpSatPlanner(LocalSearchPlanner):
         tasks = [_Task(None, (origin_attitude, origin_attitude), (0, 0))]
         tasks.extend(self._pass_tasks(state, origin_time, chunk_end))
         hinted = self._hinted_windows(hints, origin_time, chunk_end)
-        tasks.extend(self._candidates(state, origin_time, chunk_end, hinted))
+        tasks.extend(self._candidates(budget, origin_time, chunk_end, finish, hinted))
         if not any(task.optional for task in tasks):
             return []
 
-        transition = self._transitions(tasks)
+        slew = self._slews(tasks)
+        step = self.ctx.step_size
         model = cp_model.CpModel()
         arrival = [
             model.new_int_var(*task.arrival, f"arrival{k}")
@@ -238,11 +293,26 @@ class CpSatPlanner(LocalSearchPlanner):
             model.new_int_var(*task.collection, f"collection{k}")
             for k, task in enumerate(tasks)
         ]
+        # The step each task's slew starts on; chunks start on a step.
+        last_step = max(task.arrival[1] for task in tasks) // step
+        slew_step = [
+            model.new_int_var(0, last_step, f"slew{k}") for k in range(len(tasks))
+        ]
         for k, task in enumerate(tasks):
             if task.optional:
                 # Collection, cleanup and handoff finish inside the window.
                 model.add(
                     arrival[k] + task.overhead + collection[k] <= task.window[1]
+                ).only_enforce_if(present[k])
+                # ACS starts a slew only once its target is visible.
+                model.add(step * slew_step[k] >= task.window[0]).only_enforce_if(
+                    present[k]
+                )
+            if task.copy > 0 and tasks[k - 1].key == task.key:
+                # A window's snapshots of a request are used in order.
+                model.add_implication(present[k], present[k - 1])
+                model.add(
+                    arrival[k] >= arrival[k - 1] + task.overhead + collection[k - 1]
                 ).only_enforce_if(present[k])
 
         arcs: list[tuple[int, int, cp_model.LiteralT]] = []
@@ -250,32 +320,28 @@ class CpSatPlanner(LocalSearchPlanner):
         for k, task in enumerate(tasks):
             if task.optional:
                 arcs.append((k, k, ~present[k]))
-        arcs.append((0, 0, model.new_bool_var("empty")))
+        empty = model.new_bool_var("empty")
+        arcs.append((0, 0, empty))
         for i, before in enumerate(tasks):
             for j, after in enumerate(tasks):
                 if i == j or j == 0:
                     continue
-                gap = int(transition[i, j])
-                if before.arrival[0] + before.shortest + gap > after.arrival[1]:
-                    continue
-                if after.optional and after.window[0] + gap > after.arrival[1]:
+                earliest = _ceil(before.arrival[0] + before.shortest, step)
+                if after.optional:
+                    earliest = max(earliest, _ceil(after.window[0], step))
+                if earliest + int(slew[i, j]) > after.arrival[1]:
                     continue
                 literal = model.new_bool_var(f"arc{i}_{j}")
                 arcs.append((i, j, literal))
                 arc_literals[(i, j)] = literal
+                # The slew starts on the first step after the task before ends.
                 model.add(
-                    arrival[j]
-                    >= arrival[i]
-                    + before.duration
-                    + before.overhead
-                    + collection[i]
-                    + gap
+                    step * slew_step[j]
+                    >= arrival[i] + before.duration + before.overhead + collection[i]
                 ).only_enforce_if(literal)
-                if after.optional:
-                    # ACS starts a slew only once its target is visible.
-                    model.add(arrival[j] >= after.window[0] + gap).only_enforce_if(
-                        literal
-                    )
+                model.add(
+                    arrival[j] >= step * slew_step[j] + int(slew[i, j])
+                ).only_enforce_if(literal)
             if i != 0:
                 closing = model.new_bool_var(f"arc{i}_0")
                 arcs.append((i, 0, closing))
@@ -285,45 +351,60 @@ class CpSatPlanner(LocalSearchPlanner):
         model.add_circuit(arcs)
 
         totals: dict[int, list[cp_model.IntVar]] = {}
+        counted: dict[int, cp_model.IntVar] = {}
+        delayed: dict[int, cp_model.IntVar] = {}
         objective = []
         for k, task in enumerate(tasks):
             obsid = task.obsid
             if obsid is None:
                 continue
-            counted = model.new_int_var(0, task.collection[1], f"counted{k}")
-            model.add(counted == collection[k]).only_enforce_if(present[k])
-            model.add(counted == 0).only_enforce_if(~present[k])
-            totals.setdefault(obsid, []).append(counted)
-            objective.append(task.rate * counted + task.offset * present[k])
+            counted[k] = model.new_int_var(0, task.collection[1], f"counted{k}")
+            model.add(counted[k] == collection[k]).only_enforce_if(present[k])
+            model.add(counted[k] == 0).only_enforce_if(~present[k])
+            totals.setdefault(obsid, []).append(counted[k])
+            objective.append(task.rate * counted[k] + task.offset * present[k])
             if task.earliness > 0.0:
-                delayed = model.new_int_var(0, task.arrival[1], f"delay{k}")
-                model.add(delayed == arrival[k]).only_enforce_if(present[k])
-                model.add(delayed == 0).only_enforce_if(~present[k])
-                objective.append(-task.earliness * delayed)
+                delayed[k] = model.new_int_var(0, task.arrival[1], f"delay{k}")
+                model.add(delayed[k] == arrival[k]).only_enforce_if(present[k])
+                model.add(delayed[k] == 0).only_enforce_if(~present[k])
+                objective.append(-task.earliness * delayed[k])
         for obsid, counted_list in totals.items():
-            model.add(sum(counted_list) <= int(state.remaining[obsid]))
+            model.add(sum(counted_list) <= int(budget[obsid]))
         model.maximize(sum(objective))
 
-        hint = self._hint(tasks, hinted, origin_time)
+        # Hint every variable, so the solver starts from the priority-first
+        # plan's snapshots even when its time runs out before it improves them.
+        hint = self._hint(tasks, hinted, origin_time, slew, budget)
+        chain = [0, *hint, 0]
+        on_chain = set(zip(chain, chain[1:]))
+        model.add_hint(empty, len(chain) == 2)
+        for (i, j), literal in arc_literals.items():
+            model.add_hint(literal, (i, j) in on_chain)
         for k, task in enumerate(tasks):
+            first_step = _ceil(task.window[0], step) // step
+            moved, start, length = hint.get(
+                k, (first_step, task.arrival[0], task.collection[0])
+            )
+            model.add_hint(slew_step[k], moved)
+            model.add_hint(arrival[k], start)
+            model.add_hint(collection[k], length)
             if task.optional:
                 model.add_hint(present[k], k in hint)
-        for k, when in hint.items():
-            model.add_hint(arrival[k], when)
-        chain = [0, *sorted(hint, key=lambda k: hint[k]), 0]
-        for i, j in zip(chain, chain[1:]):
-            hinted_arc = arc_literals.get((i, j))
-            if hinted_arc is not None:
-                model.add_hint(hinted_arc, True)
+                model.add_hint(counted[k], length if k in hint else 0)
+                if k in delayed:
+                    model.add_hint(delayed[k], start if k in hint else 0)
 
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = time_limit
         solver.parameters.num_workers = self.workers
         solver.parameters.random_seed = self.seed
+        # Presolve can take longer than a short time limit leaves a chunk, and
+        # the search does better with the time.
+        solver.parameters.cp_model_presolve = False
         status = solver.solve(model)
         self.solver_statuses.append(solver.status_name(status))
         if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-            return []
+            return None
 
         chosen = sorted(
             (solver.value(arrival[k]), k)
@@ -367,29 +448,38 @@ class CpSatPlanner(LocalSearchPlanner):
 
     def _hinted_windows(
         self, hints: Sequence[_Block], origin_time: float, chunk_end: float
-    ) -> dict[WindowKey, float]:
-        """Arrival time of each priority-first snapshot arriving in the chunk."""
-        hinted: dict[WindowKey, float] = {}
+    ) -> dict[WindowKey, list[tuple[float, float]]]:
+        """Arrival and collection seconds of the priority-first snapshots in the chunk.
+
+        A long exposure can take several snapshots in one window; they are
+        listed in time order.
+        """
+        hinted: dict[WindowKey, list[tuple[float, float]]] = {}
         for block in hints:
             assert block.slew is not None
             arrival = float(block.slew.slewend)
             if not origin_time <= arrival < chunk_end:
                 continue
             obsid = int(block.entry.obsid)
+            entry = block.entry
+            seconds = float(entry.collection_end or 0.0) - float(
+                entry.collection_begin or 0.0
+            )
             for w0, w1 in self._by_obsid[obsid].windows:
                 if w0 <= arrival < w1:
-                    hinted.setdefault((obsid, w0), arrival)
+                    hinted.setdefault((obsid, w0), []).append((arrival, seconds))
                     break
         return hinted
 
     def _candidates(
         self,
-        state: _State,
+        budget: dict[int, float],
         origin_time: float,
         chunk_end: float,
-        hinted: dict[WindowKey, float],
+        finish: float,
+        hinted: dict[WindowKey, list[tuple[float, float]]],
     ) -> list[_Task]:
-        """Candidate snapshots: each request in each window open during the chunk."""
+        """Candidate snapshots of each request in each window open during the chunk."""
         ctx = self.ctx
         setup = ctx.setup_seconds
         overhead = int(np.ceil(setup + ctx.post_collection_seconds))
@@ -401,7 +491,7 @@ class CpSatPlanner(LocalSearchPlanner):
         for rank, request in enumerate(ranked):
             target = request.target
             obsid = int(target.obsid)
-            remaining = state.remaining[obsid]
+            remaining = budget[obsid]
             shortest = int(np.ceil(float(target.ss_min)))
             longest = int(np.floor(min(float(target.ss_max), remaining)))
             if longest < shortest:
@@ -411,7 +501,7 @@ class CpSatPlanner(LocalSearchPlanner):
                     continue
                 window = (
                     int(np.ceil(max(w0, origin_time) - origin_time)),
-                    int(np.floor(min(w1, ctx.uend) - origin_time)),
+                    int(np.floor(min(w1, ctx.uend, finish) - origin_time)),
                 )
                 latest = min(
                     window[1] - overhead - shortest,
@@ -434,33 +524,96 @@ class CpSatPlanner(LocalSearchPlanner):
                         # start, valued at the candidate's longest collection.
                         earliness = rate * longest * self.earliness_weight / available
                         offset = -earliness * (origin_time + setup - ctx.ustart)
-                task = _Task(
-                    (obsid, w0),
-                    (attitude, attitude),
-                    (window[0], latest),
-                    overhead=overhead,
-                    collection=(shortest, longest),
-                    window=window,
-                    rate=rate,
-                    earliness=earliness,
-                    offset=offset,
+                # As many snapshots as the exposure needs and the window holds.
+                copies = min(
+                    int(np.ceil(remaining / longest)),
+                    max(1, (window[1] - window[0]) // (overhead + shortest)),
                 )
                 priority = 0 if (obsid, w0) in hinted else 1
-                candidates.append((priority, rank, task))
+                for copy in range(copies):
+                    task = _Task(
+                        (obsid, w0),
+                        (attitude, attitude),
+                        (window[0], latest),
+                        copy=copy,
+                        overhead=overhead,
+                        collection=(shortest, longest),
+                        window=window,
+                        rate=rate,
+                        earliness=earliness,
+                        offset=offset,
+                    )
+                    candidates.append((priority, rank, task))
+        # Stable, so a window's snapshots stay together and in order.
         candidates.sort(key=lambda item: (item[0], item[1]))
         return [task for _, _, task in candidates[: self.max_candidates]]
 
-    @staticmethod
     def _hint(
-        tasks: Sequence[_Task], hinted: dict[WindowKey, float], origin_time: float
-    ) -> dict[int, int]:
-        """Hinted arrival, from the chunk's origin, of each hinted candidate."""
-        hint: dict[int, int] = {}
+        self,
+        tasks: Sequence[_Task],
+        hinted: dict[WindowKey, list[tuple[float, float]]],
+        origin_time: float,
+        slew: np.ndarray,
+        budget: dict[int, float],
+    ) -> dict[int, tuple[int, int, int]]:
+        """The priority-first plan's snapshots, and the passes, as a feasible hint.
+
+        Returns the slew's start step, the arrival from the chunk's origin and
+        the collection seconds of each hinted task, in time order. The
+        snapshots are repaired to satisfy the model: its slews are approximate
+        and can be a little longer than the exact ones, so a snapshot is moved
+        later where it needs to be, shortened to leave room for the next pass,
+        and left out if it no longer fits. The solver's first solution is then
+        at least as good as the hint.
+        """
+        step = self.ctx.step_size
+        wanted: dict[int, tuple[float, float]] = {}
         for k, task in enumerate(tasks):
-            if task.key is None or task.key not in hinted:
+            snapshots = hinted.get(task.key) if task.key is not None else None
+            if snapshots is not None and task.copy < len(snapshots):
+                arrival, seconds = snapshots[task.copy]
+                wanted[k] = (arrival - origin_time, seconds)
+        passes = [k for k, task in enumerate(tasks) if k and not task.optional]
+        order = sorted(
+            [*wanted, *passes],
+            key=lambda k: wanted[k][0] if k in wanted else tasks[k].arrival[0],
+        )
+        left = {
+            obsid: int(budget[obsid])
+            for obsid in {task.obsid for task in tasks if task.obsid is not None}
+        }
+        hint: dict[int, tuple[int, int, int]] = {}
+        previous, free = 0, 0
+        for position, k in enumerate(order):
+            task = tasks[k]
+            obsid = task.obsid
+            moved = _ceil(max(free, task.window[0] if obsid is not None else 0), step)
+            if obsid is None:
+                hint[k] = (moved // step, task.arrival[0], 0)
+                previous, free = k, task.arrival[0] + task.duration
                 continue
-            when = int(round(hinted[task.key] - origin_time))
-            hint[k] = min(max(when, task.arrival[0]), task.arrival[1])
+            start = max(
+                int(np.ceil(wanted[k][0])),
+                moved + int(slew[previous, k]),
+                task.arrival[0],
+            )
+            finish = task.window[1]
+            following = next((n for n in order[position + 1 :] if n in passes), None)
+            if following is not None:
+                # The pass's slew starts on a step after this snapshot ends.
+                latest_slew = tasks[following].arrival[0] - int(slew[k, following])
+                finish = min(finish, latest_slew - latest_slew % step)
+            seconds = min(
+                max(int(wanted[k][1]), task.collection[0]),
+                task.collection[1],
+                left[obsid],
+                finish - start - task.overhead,
+            )
+            if start > task.arrival[1] or seconds < task.collection[0]:
+                continue
+            hint[k] = (moved // step, start, seconds)
+            left[obsid] -= seconds
+            previous, free = k, start + task.overhead + seconds
         return hint
 
     def _tier_weights(self) -> dict[int, float]:
@@ -480,14 +633,9 @@ class CpSatPlanner(LocalSearchPlanner):
         top = weights[max(self._tiers)]
         return {tier: weight / top for tier, weight in weights.items()}
 
-    def _transitions(self, tasks: Sequence[_Task]) -> np.ndarray:
-        """Seconds from the end of each task to arrival at each other task.
-
-        The slew between the tasks' attitudes, plus a step because a slew
-        starts on the first simulation step after the task before it ends.
-        """
+    def _slews(self, tasks: Sequence[_Task]) -> np.ndarray:
+        """Seconds of the scheduled slew from each task to each other task."""
         acs = self.config.spacecraft_bus.attitude_control
-        step = self.ctx.step_size
         size = len(tasks)
         result = np.zeros((size, size), dtype=np.int64)
         cache: dict[tuple[Attitude, Attitude], int] = {}
@@ -501,5 +649,10 @@ class CpSatPlanner(LocalSearchPlanner):
                     distance, axis = quaternion_attitude_delta(*key[0], *key[1])
                     seconds = scheduled_slew_time(acs.slew_time(distance, axis))
                     cache[key] = seconds
-                result[i, j] = seconds + step
+                result[i, j] = seconds
         return result
+
+
+def _ceil(seconds: int, step: int) -> int:
+    """Round seconds up to a whole number of steps."""
+    return -(-seconds // step) * step

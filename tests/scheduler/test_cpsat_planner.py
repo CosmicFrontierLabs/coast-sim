@@ -7,6 +7,8 @@ import pytest
 
 pytest.importorskip("ortools")
 
+from ortools.sat.python import cp_model, cp_model_helper  # noqa: E402
+
 from conops import DITL  # noqa: E402
 from conops.common import ObsType  # noqa: E402
 from conops.ditl import RollingHorizonDITL  # noqa: E402
@@ -95,6 +97,9 @@ class TestPlans:
         plan = planner.schedule()
 
         assert len(planner.solver_statuses) == 3
+        assert len(planner.solver_chunks_used) == 3
+        assert planner.solver_score is not None
+        assert planner.solver_score >= planner.start_score
         assert _execute(targets, plan, 3).validate_plan_matches_execution() == []
 
     def test_plan_with_ground_passes_executes_exactly(self) -> None:
@@ -112,6 +117,67 @@ class TestPlans:
         _planner(targets, 3).schedule()
 
         assert all(t.exptime == 60 * MIN for t in targets)
+
+
+class TestHint:
+    def test_hint_is_feasible_and_reproduces_the_priority_first_plan(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Held to its hint, the solver must return the priority-first plan.
+
+        The hint covers each slew starting on a step, passes, and several
+        snapshots of one request in a window, so any mismatch between the
+        model and the decoder makes a chunk infeasible or lose value.
+        """
+        solve = cp_model.CpSolver.solve
+
+        def hinted_only(
+            solver: cp_model.CpSolver, model: cp_model.CpModel
+        ) -> cp_model_helper.CpSolverStatus:
+            solver.parameters.fix_variables_to_their_hinted_value = True
+            return solve(solver, model)
+
+        monkeypatch.setattr(cp_model.CpSolver, "solve", hinted_only)
+        targets = _targets(12, stations=True)
+        planner = _planner(targets, 12)
+
+        planner.schedule()
+
+        assert set(planner.solver_statuses) == {"OPTIMAL"}
+        assert all(planner.solver_chunks_used)
+        assert planner.solver_score == planner.start_score
+
+    def test_no_solution_in_time_keeps_the_priority_first_plan(self) -> None:
+        targets = _targets(6)
+        planner = _planner(targets, 6, solver_time_limit=1e-6)
+
+        plan = planner.schedule()
+
+        assert "UNKNOWN" in planner.solver_statuses
+        assert not any(planner.solver_chunks_used)
+        assert planner.solver_score == planner.start_score
+        assert _execute(targets, plan, 6).validate_plan_matches_execution() == []
+
+
+class TestSeveralSnapshotsInAWindow:
+    def test_solver_collects_an_exposure_longer_than_one_snapshot(self) -> None:
+        config = _config(2)
+        target = _target(config, 1, 105.0, 10.0, minutes=60, snapshot=20)
+        planner = CpSatPlanner(
+            config,
+            [target],
+            BEGIN,
+            BEGIN + timedelta(hours=2),
+            solver_time_limit=5.0,
+            workers=1,
+            seed=1,
+        )
+
+        plan = planner.schedule()
+
+        assert planner.solver_chunks_used == [True]
+        assert _science(plan) == [1, 1, 1]
+        assert _collected(plan) == pytest.approx(60 * MIN)
 
 
 class TestShortWindowRequest:
