@@ -37,6 +37,10 @@ class TargetQueue:
     acs_config: AttitudeControlSystem | None
     config: MissionConfig | None
     random_seed: int
+    prefer: Callable[[int], bool] | None
+    """Returns, for an obsid, whether to choose it ahead of the other targets
+    in its tier, such as those a long-range allocation assigns to now. None
+    (the default) treats all targets alike."""
 
     def __init__(
         self,
@@ -66,6 +70,15 @@ class TargetQueue:
         )
         self.random_seed = config.random_seed if config.random_seed is not None else 0
         self.merit_model = MeritModel(config)
+        self.prefer = None
+
+    def _level(self, target: Pointing) -> int:
+        """Rank that selection compares before merit: the tier, and within it,
+        preferred targets ahead of the others."""
+        tier = self.merit_model.tier(target)
+        if self.prefer is None:
+            return tier
+        return 2 * tier + int(self.prefer(int(target.obsid)))
 
     def __getitem__(self, number: int) -> Pointing:
         return self.targets[number]
@@ -152,7 +165,7 @@ class TargetQueue:
 
         self.targets.sort(
             key=lambda target: (
-                self.merit_model.tier(target),
+                self._level(target),
                 target.merit,
                 self._target_tie_breaker(target),
             ),
@@ -400,7 +413,7 @@ class TargetQueue:
                     utime=utime,
                     last_unix=last_unix,
                 )
-                if (merit_model.tier(target), upper_bound) <= best_rank:
+                if (self._level(target), upper_bound) <= best_rank:
                     continue
 
             self._estimate_slew(
@@ -521,8 +534,9 @@ class TargetQueue:
                         "radiator": radiator,
                     }
                 )
-                if breakdown.rank > best_rank:
-                    best_rank = breakdown.rank
+                rank = (self._level(target), breakdown.score)
+                if rank > best_rank:
+                    best_rank = rank
                     best_target = target
                     best_breakdown = breakdown
 

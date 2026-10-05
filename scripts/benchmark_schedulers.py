@@ -10,7 +10,9 @@ copies of it:
 * rolling:priority / rolling:local_search: rolling-horizon replanning with
   rapid replans for ToOs;
 * planned:cp_sat / rolling:cp_sat: the same with the CP-SAT planner, when
-  OR-Tools is installed (``pip install coast-sim[cpsat]``).
+  OR-Tools is installed (``pip install coast-sim[cpsat]``);
+* dispatch+alloc / rolling:*+alloc: for runs of two days or more, the same
+  steered by a long-range allocator with one-day bins.
 
 Example:
     uv run python scripts/benchmark_schedulers.py --scenario all
@@ -52,7 +54,9 @@ def build_contenders(
     """Return the scheduling modes to compare, with replanning scaled to the run.
 
     Rolling contenders replan every six hours, or at least four times in a
-    shorter run, and plan twice as far ahead as they replan.
+    shorter run, and plan twice as far ahead as they replan. Runs of two days
+    or more also compare dispatch and rolling steered by a long-range
+    allocator with one-day bins.
     """
     hours = (scenario.end - scenario.begin).total_seconds() / 3600
     interval = min(6.0, hours / 4)
@@ -69,12 +73,34 @@ def build_contenders(
         rolling(PriorityPlanner, **replanning),  # type: ignore[arg-type]
         rolling(LocalSearchPlanner, planner_options=search, **replanning),  # type: ignore[arg-type]
     ]
-    if importlib.util.find_spec("ortools") is not None:
-        solver = {"solver_time_limit": time_limit}
+    cp_sat = importlib.util.find_spec("ortools") is not None
+    solver = {"solver_time_limit": time_limit}
+    if cp_sat:
         contenders += [
             planned(CpSatPlanner, **solver),
             rolling(CpSatPlanner, planner_options=solver, **replanning),  # type: ignore[arg-type]
         ]
+    if hours >= 48:
+        day = timedelta(days=1)
+        contenders += [
+            dispatch(allocation=day),
+            rolling(PriorityPlanner, allocation=day, **replanning),  # type: ignore[arg-type]
+            rolling(
+                LocalSearchPlanner,
+                planner_options=search,
+                allocation=day,
+                **replanning,  # type: ignore[arg-type]
+            ),
+        ]
+        if cp_sat:
+            contenders.append(
+                rolling(
+                    CpSatPlanner,
+                    planner_options=solver,
+                    allocation=day,
+                    **replanning,  # type: ignore[arg-type]
+                )
+            )
     return contenders
 
 

@@ -14,8 +14,7 @@ earliness-discounted science time that
 The model approximates slews (each target's roll is chosen before solving), so
 each chunk's order is decoded with the planner's exact checks before the next
 chunk is solved from where it leaves the spacecraft. Every plan therefore
-executes as planned. Requires the optional ``ortools`` dependency
-(``pip install coast-sim[cpsat]``).
+executes as planned.
 """
 
 import time
@@ -185,8 +184,8 @@ class CpSatPlanner(LocalSearchPlanner):
             from ortools.sat.python import cp_model  # noqa: F401
         except ImportError as exc:
             raise ImportError(
-                "CpSatPlanner needs OR-Tools: install coast-sim[cpsat], or use "
-                "LocalSearchPlanner"
+                "CpSatPlanner needs OR-Tools (the ortools package), a dependency "
+                "of coast-sim; reinstall coast-sim, or use LocalSearchPlanner"
             ) from exc
 
         hints = [

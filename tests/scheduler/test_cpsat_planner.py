@@ -252,11 +252,11 @@ class TestArguments:
                 **options,  # type: ignore[arg-type]
             )
 
-    def test_missing_ortools_names_the_extra(
+    def test_missing_ortools_names_the_package(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         targets = _targets(1)
         monkeypatch.setitem(sys.modules, "ortools.sat.python", None)
 
-        with pytest.raises(ImportError, match=r"coast-sim\[cpsat\]"):
+        with pytest.raises(ImportError, match="ortools"):
             _planner(targets, 1).schedule()

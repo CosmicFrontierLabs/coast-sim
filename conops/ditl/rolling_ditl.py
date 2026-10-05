@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict
 
 from ..common import ObsType
 from ..config import MissionConfig
+from ..schedulers.allocator import Allocation, LongRangeAllocator
 from ..schedulers.priority_planner import PriorityPlanner, StartState
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing
@@ -106,6 +107,11 @@ class RollingHorizonDITL(DITL):
             :class:`~conops.schedulers.LocalSearchPlanner`.
         planner_options: Extra keyword arguments for the planner, such as
             ``{"time_limit": 5.0}`` for a local-search planner.
+        allocator: Long-range allocator over the whole run. If given, each
+            replan allocates the remaining exposure again from when the new
+            plan starts, and the planner plans the requests allocated to the
+            bins its horizon covers ahead of the others in their tier (see
+            :class:`~conops.schedulers.LongRangeAllocator`).
         calculate_field_of_regard: Whether to compute field-of-regard telemetry.
     """
 
@@ -125,6 +131,7 @@ class RollingHorizonDITL(DITL):
         include_passes: bool = True,
         planner: type[PriorityPlanner] = PriorityPlanner,
         planner_options: Mapping[str, object] | None = None,
+        allocator: LongRangeAllocator | None = None,
         calculate_field_of_regard: bool = False,
     ) -> None:
         if horizon <= timedelta(0) or replan_interval <= timedelta(0):
@@ -148,6 +155,9 @@ class RollingHorizonDITL(DITL):
         self.include_passes = include_passes
         self.planner = planner
         self.planner_options = dict(planner_options or {})
+        self.allocator = allocator
+        self.allocation: Allocation | None = None
+        """The allocation made at the last replan, if there is an allocator."""
         self.merit_model = MeritModel(config)
         self.too_register: list[TOORequest] = []
         self.replans: list[ReplanRecord] = []
@@ -337,9 +347,22 @@ class RollingHorizonDITL(DITL):
         unplaced = 0
         began = time.perf_counter()
         if horizon_end > start:
+            pool = [t for t in self.targets if not t.done]
+            reserved = self._reserved_seconds(committed, utime)
+            options = dict(self.planner_options)
+            if self.allocator is not None:
+                self.allocation = self.allocator.allocate(
+                    pool,
+                    start,
+                    reserved,
+                    unplanned={int(t.obsid) for t in self._too_targets.values()},
+                )
+                options["preferred"] = self.allocation.preferred(
+                    [int(t.obsid) for t in pool], start, horizon_end
+                )
             planner = self.planner(
                 self.config,
-                [t for t in self.targets if not t.done],
+                pool,
                 _as_datetime(start),
                 _as_datetime(horizon_end),
                 step_size=self.step_size,
@@ -348,9 +371,9 @@ class RollingHorizonDITL(DITL):
                 simulation_start=self.begin,
                 simulation_end=self.end,
                 start_state=start_state,
-                reserved_seconds=self._reserved_seconds(committed, utime),
+                reserved_seconds=reserved,
                 reserved_visits=self._reserved_visits(committed, utime),
-                **self.planner_options,  # type: ignore[arg-type]
+                **options,  # type: ignore[arg-type]
             )
             new_entries = list(planner.schedule().entries)
             unplaced = len(planner.unplaced)

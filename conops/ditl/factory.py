@@ -7,6 +7,7 @@ import rust_ephem
 
 from ..config import MissionConfig, bind_ephemeris
 from ..config.scheduler import SchedulerMode
+from ..schedulers.allocator import LongRangeAllocator
 from ..schedulers.registry import planner_class
 from ..targets import Pointing
 from .ditl import DITL
@@ -29,6 +30,9 @@ def create_ditl(
     * ``rolling``: a :class:`~conops.ditl.RollingHorizonDITL` that builds and
       rebuilds its plan with the configured planner while it runs.
 
+    With ``scheduler.allocation`` set, dispatch and rolling simulations get a
+    :class:`~conops.schedulers.LongRangeAllocator` over the run.
+
     The simulation is ready for :meth:`calc`. Targets of Opportunity can be
     submitted to the dispatch and rolling simulations before running them.
 
@@ -49,9 +53,21 @@ def create_ditl(
     end = end or _as_utc(ephemeris.timestamp[-1])
     scheduler = config.scheduler
     step_size = int(ephemeris.step_size)
+    allocator = None
+    if scheduler.allocation is not None:
+        allocator = LongRangeAllocator(
+            config,
+            begin,
+            end,
+            bin_length=timedelta(seconds=scheduler.allocation.bin_seconds),
+            efficiency=scheduler.allocation.efficiency,
+            reserve=scheduler.allocation.reserve,
+            solver=scheduler.allocation.solver,
+            time_limit=scheduler.allocation.time_limit_seconds,
+        )
 
     if scheduler.mode is SchedulerMode.DISPATCH:
-        queue_ditl = QueueDITL(config=config, begin=begin, end=end)
+        queue_ditl = QueueDITL(config=config, begin=begin, end=end, allocator=allocator)
         queue_targets(queue_ditl, targets)
         return queue_ditl
 
@@ -77,6 +93,7 @@ def create_ditl(
         include_passes=scheduler.planner.include_passes,
         planner=planner,
         planner_options={k: v for k, v in options.items() if k != "include_passes"},
+        allocator=allocator,
     )
     rolling.step_size = step_size
     return rolling
