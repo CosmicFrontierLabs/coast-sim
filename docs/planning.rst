@@ -84,7 +84,8 @@ How a plan is built
    :doc:`configuration`). Each request is split into snapshots of up to ``ss_max``
    seconds and never shorter than ``ss_min``, until its ``exptime`` is used or it no
    longer fits. A request whose deadline is close gains urgency and so is placed
-   ahead of flexible requests with higher base merit.
+   ahead of flexible requests with higher base merit. Cadence and completion deficit
+   follow the plan as it is built (see below).
 4. **Each snapshot** goes in the earliest slot where every check ``DITL`` and the plan
    validator will apply passes:
 
@@ -103,14 +104,42 @@ Requests left with at least ``ss_min`` of exposure unplanned are listed in
 ``planner.unplaced``. Every placement and rejection is logged to ``planner.log``.
 The input targets are not modified.
 
+Cadence and program shares in plans
+-----------------------------------
+
+The cadence and completion-deficit merit terms depend on what has already been
+observed, so the planners evaluate them against the plan as well as the science
+already collected, as :class:`~conops.ditl.QueueDITL` does against what it has
+executed:
+
+* **Completion deficit.** With ``completion_deficit_weight`` set and programs with a
+  ``time_share``, each program's share counts the science its targets have collected
+  (``collected_seconds``) plus what the plan has given them so far. The priority-first
+  planner re-ranks the requests after every snapshot, so a program falling behind its
+  share moves up; local search values each snapshot by the shares in the plan before
+  it; CP-SAT uses the shares at the start of each chunk.
+* **Cadence.** With ``cadence_weight`` set, a target in a category with
+  ``cadence_seconds`` is visited no sooner than that long after its last visit,
+  planned or collected (``last_collection_time``), so every visit has the full
+  cadence value. The priority-first planner and local search place each visit at the
+  earliest fit once it is due; CP-SAT keeps the same spacing between a target's
+  candidates and discounts a visit by ``earliness_weight`` for each cadence it waits
+  after falling due.
+
+Without these weights, plans are built exactly as before.
+
 Limitations
 -----------
 
 * **No battery model.** The planner does not schedule charging, and ``DITL`` does not
   charge on its own while executing a plan.
-* **Static ordering.** Merit is evaluated once, at the start of the horizon. Cadence
-  and completion deficit therefore set the order of requests but do not space or
-  balance their snapshots through the plan.
+* **Urgency at the start of the horizon.** Urgency is evaluated once, when the plan is
+  built; deadlines are kept as constraints and, in local search and CP-SAT, by the
+  earliness discount.
+* **Cadence as a minimum spacing.** A visit before its cadence is due is never
+  planned, though dispatch may take one when nothing else is worth more. Spreading
+  many visits through the day also leaves the priority-first planner more, smaller
+  gaps to search, which lengthens planning.
 * **Greedy.** Placements are never revisited. If a flexible, high-merit request is
   placed first, it can take the only slot a lower-merit request with a short window
   could use, and that request goes unplaced. Urgency avoids this when it raises the
@@ -139,8 +168,9 @@ gave it, so the starting point is exactly that plan. The search then tries:
 A change is kept when it is no worse than the current plan, or than the plan of
 ``history_length`` steps ago (late-acceptance hill climbing), which lets the search
 cross plateaus. The objective is merit-weighted science time, compared tier by tier
-from the highest. A snapshot of a request with a deadline is worth less the later it
-starts, so ToOs and other time-critical requests are not pushed later than they need
+from the highest, with each snapshot's completion deficit taken from the program
+shares in the plan before it. A snapshot of a request with a deadline is worth less
+the later it starts, so ToOs and other time-critical requests are not pushed later than they need
 to be. The best plan found is returned, and it is never worse than the priority-first
 plan.
 
@@ -192,8 +222,10 @@ chooses candidates and their order:
   window;
 * ground passes are fixed tasks that snapshots must leave room to slew to;
 * a request's snapshots never add up to more than its remaining exposure;
-* the objective is merit-weighted science, with the earliness discount for requests
-  with a deadline.
+* a cadence target's visits are at least its cadence apart, and after its last one;
+* the objective is merit-weighted science, with the completion deficit at the chunk's
+  start and the earliness discount for requests with a deadline and for cadence
+  visits.
 
 The priority-first plan's snapshots in each chunk are the solver's starting hint,
 adjusted where the model's approximate slews need it, so the solver starts from a

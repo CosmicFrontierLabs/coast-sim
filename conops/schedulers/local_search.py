@@ -5,7 +5,10 @@ decoder turns an order into a timeline by placing each snapshot at the earliest
 time it fits after the one before, with the checks
 :class:`~conops.schedulers.PriorityPlanner` applies, so every decoded timeline
 executes as planned. Decoding in time order also closes the gaps that placing
-requests in priority order leaves behind.
+requests in priority order leaves behind, and lets each snapshot's merit follow
+the plan before it: its completion deficit counts the program shares delivered
+so far, and a cadence target's visits wait for their cadence, as in
+:class:`~conops.schedulers.PriorityPlanner`.
 
 :class:`LocalSearchPlanner` starts from the priority-first plan and searches
 for a better order by inserting, removing, swapping and moving snapshots,
@@ -21,7 +24,7 @@ from pydantic import BaseModel, ConfigDict
 
 from ..config import MissionConfig
 from ..targets import Plan, Pointing
-from .priority_planner import PriorityPlanner, _Block, _Request
+from .priority_planner import PriorityPlanner, _Block, _Request, program_shares
 
 Score = tuple[float, ...]
 """Merit-weighted science seconds per tier, highest tier first."""
@@ -51,6 +54,10 @@ class _State(BaseModel):
     remaining: dict[int, float]
     score: dict[int, float]
     """Merit-weighted science seconds by tier."""
+    programs: dict[str, float]
+    """Science collected and planned so far, by program."""
+    last_visit: dict[int, float]
+    """When each cadence target was last observed, collected or planned."""
 
 
 class _Decoded(BaseModel):
@@ -163,6 +170,7 @@ class LocalSearchPlanner(PriorityPlanner):
             obsid: r.remaining for obsid, r in self._by_obsid.items()
         }
         self._tiers = sorted({r.merit.tier for r in requests}, reverse=True)
+        self._initial_last_visit = dict(self._last_visit)
         fixed_entries = {id(block.entry) for block in self.timeline}
 
         self._place_requests(requests)
@@ -204,20 +212,41 @@ class LocalSearchPlanner(PriorityPlanner):
         return tuple(state.score.get(tier, 0.0) for tier in self._tiers)
 
     def _timeline_score(self, science: Sequence[_Block]) -> Score:
-        """Score a priority-first timeline's science blocks."""
+        """Score a priority-first timeline's science blocks, in time order."""
         totals: dict[int, float] = {}
-        for block in science:
+        programs = dict(self._delivered)
+        for block in sorted(science, key=lambda b: float(b.entry.begin)):
             request = self._by_obsid.get(int(block.entry.obsid))
             if request is None:
                 continue
             tier = request.merit.tier
-            totals[tier] = totals.get(tier, 0.0) + self._contribution(request, block)
+            totals[tier] = totals.get(tier, 0.0) + self._contribution(
+                request, block, programs
+            )
+            self._add_program_seconds(programs, request, block)
         return tuple(totals.get(tier, 0.0) for tier in self._tiers)
 
-    def _contribution(self, request: _Request, block: _Block) -> float:
-        """Return a snapshot's merit-weighted science, discounted for lateness."""
+    @staticmethod
+    def _add_program_seconds(
+        programs: dict[str, float], request: _Request, block: _Block
+    ) -> None:
         entry = block.entry
-        worth = request.merit.value * entry.collection_seconds_between(
+        program = request.category.program_name
+        programs[program] = programs.get(
+            program, 0.0
+        ) + entry.collection_seconds_between(entry.begin, entry.end)
+
+    def _contribution(
+        self, request: _Request, block: _Block, programs: dict[str, float]
+    ) -> float:
+        """Return a snapshot's merit-weighted science, discounted for lateness.
+
+        ``programs`` is the science collected and planned before it, by
+        program, for its completion deficit.
+        """
+        entry = block.entry
+        shares = program_shares(programs) if self._deficit_weight else {}
+        worth = self._value(request, shares) * entry.collection_seconds_between(
             entry.begin, entry.end
         )
         deadline = request.target.deadline
@@ -249,6 +278,8 @@ class LocalSearchPlanner(PriorityPlanner):
             cursor=0,
             remaining=dict(self._initial_remaining),
             score={},
+            programs=dict(self._delivered),
+            last_visit=dict(self._initial_last_visit),
         )
 
     def _decode(self, sequence: list[_Snapshot]) -> _Decoded:
@@ -268,11 +299,16 @@ class LocalSearchPlanner(PriorityPlanner):
             return state
         # _fit_in_gap sizes the snapshot from the request's remaining exposure.
         request.remaining = min(remaining, snapshot.seconds)
+        not_before = snapshot.release
+        last = state.last_visit.get(obsid)
+        if request.cadence is not None and last is not None:
+            due = last + request.cadence
+            not_before = due if not_before is None else max(not_before, due)
         timeline = state.timeline
         for index in range(state.cursor, len(timeline) + 1):
             pred = timeline[index - 1] if index > 0 else self._origin
             succ = timeline[index] if index < len(timeline) else None
-            fit = self._fit_in_gap(request, pred, succ, snapshot.release)
+            fit = self._fit_in_gap(request, pred, succ, not_before)
             if fit is None:
                 continue
             block, slew, succ_slew = fit
@@ -289,11 +325,23 @@ class LocalSearchPlanner(PriorityPlanner):
             )
             score = dict(state.score)
             tier = request.merit.tier
-            score[tier] = score.get(tier, 0.0) + self._contribution(request, block)
+            score[tier] = score.get(tier, 0.0) + self._contribution(
+                request, block, state.programs
+            )
             left = dict(state.remaining)
             left[obsid] = remaining - seconds
+            programs = dict(state.programs)
+            self._add_program_seconds(programs, request, block)
+            last_visit = state.last_visit
+            if request.cadence is not None and block.entry.collection_end is not None:
+                last_visit = {**last_visit, obsid: float(block.entry.collection_end)}
             return _State.model_construct(
-                timeline=placed, cursor=index + 1, remaining=left, score=score
+                timeline=placed,
+                cursor=index + 1,
+                remaining=left,
+                score=score,
+                programs=programs,
+                last_visit=last_visit,
             )
         return state
 
@@ -302,6 +350,7 @@ class LocalSearchPlanner(PriorityPlanner):
         """Return whether decoding continues identically from two states."""
         if (
             a.remaining != b.remaining
+            or a.last_visit != b.last_visit
             or len(a.timeline) - a.cursor != len(b.timeline) - b.cursor
         ):
             return False
@@ -364,6 +413,8 @@ class LocalSearchPlanner(PriorityPlanner):
                     cursor=later.cursor + offset,
                     remaining=later.remaining,
                     score=delta,
+                    programs=later.programs,
+                    last_visit=later.last_visit,
                 )
             )
         return _Decoded.model_construct(sequence=sequence, states=states)
