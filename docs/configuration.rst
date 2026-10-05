@@ -1535,7 +1535,7 @@ dispatch, so configurations without this section behave as before.
 * ``planner`` (:class:`~conops.config.PlannerSettings`): the planner for ``planned`` and
   ``rolling`` modes
 
-  * ``kind``: ``priority``, ``local_search`` or ``cp_sat`` (needs ``coast-sim[cpsat]``)
+  * ``kind``: ``priority``, ``local_search`` or ``cp_sat``
   * ``include_passes`` (default true) and ``successor_retries`` (unset by default;
     see :doc:`planning`)
   * local search, for ``local_search`` and ``cp_sat``: ``seed`` (defaults to
@@ -1550,6 +1550,12 @@ dispatch, so configurations without this section behave as before.
   ``horizon_seconds`` (default one day), ``replan_interval_seconds`` (default 12
   hours), ``commit_lead_time_seconds`` (default 0), ``rapid_replans`` and
   ``allow_interrupts`` (both default true)
+* ``allocation`` (:class:`~conops.config.AllocationSettings`, unset by default): a
+  long-range allocator for ``dispatch`` and ``rolling`` modes, with ``bin_seconds``
+  (default one day), ``efficiency`` (default 0.75), ``reserve``, the fraction of
+  each day kept free for ToOs (default 0.1), ``solver`` (``milp``, the default, or
+  ``greedy``) and ``time_limit_seconds`` for the MILP (default 10); not allowed in
+  ``planned`` mode
 
 See :doc:`planning` for what each mode and planner does.
 

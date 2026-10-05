@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from enum import Enum
+from typing import Literal
 
 from pydantic import Field, model_validator
 
@@ -160,6 +161,38 @@ class ReplanSettings(ConfigModel):
     )
 
 
+class AllocationSettings(ConfigModel):
+    """A long-range allocator for dispatch and rolling simulations.
+
+    See :class:`~conops.schedulers.LongRangeAllocator`.
+    """
+
+    bin_seconds: float = Field(
+        default=86400.0, gt=0, description="Length of each allocation bin"
+    )
+    efficiency: float = Field(
+        default=0.75,
+        gt=0,
+        le=1,
+        description="Fraction of each bin expected to hold science",
+    )
+    reserve: float = Field(
+        default=0.1,
+        ge=0,
+        lt=1,
+        description="Fraction of that capacity held back for unplanned work, such as ToOs",
+    )
+    solver: Literal["milp", "greedy"] = Field(
+        default="milp",
+        description="milp solves the allocation optimally; greedy is a quick heuristic",
+    )
+    time_limit_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description="Seconds the MILP solver may search per allocation",
+    )
+
+
 class SchedulerConfig(ConfigModel):
     """How a simulation schedules its observations.
 
@@ -180,3 +213,18 @@ class SchedulerConfig(ConfigModel):
         default_factory=ReplanSettings,
         description="Replanning schedule for rolling mode",
     )
+    allocation: AllocationSettings | None = Field(
+        default=None,
+        description=(
+            "Long-range allocation for dispatch and rolling modes; unset for none"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _allocation_fits_the_mode(self) -> SchedulerConfig:
+        if self.allocation is not None and self.mode is SchedulerMode.PLANNED:
+            raise ValueError(
+                "allocation applies to dispatch and rolling modes; a planned "
+                "run already plans the whole run at once"
+            )
+        return self

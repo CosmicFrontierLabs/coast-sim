@@ -38,6 +38,7 @@ from .radiator import (
 )
 from .recorder import OnboardRecorder
 from .scheduler import (
+    AllocationSettings,
     PlannerKind,
     PlannerSettings,
     ReplanSettings,
@@ -73,6 +74,7 @@ __all__ = [
     "CommunicationsSystem",
     "MissionConfig",
     "PlannerKind",
+    "AllocationSettings",
     "PlannerSettings",
     "ReplanSettings",
     "SchedulerConfig",

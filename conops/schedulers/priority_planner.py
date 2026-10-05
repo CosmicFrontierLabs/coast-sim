@@ -8,7 +8,7 @@ block a better packing.
 """
 
 import hashlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime
 from enum import Enum, auto
 
@@ -160,6 +160,10 @@ class PriorityPlanner:
             before giving up on it. None (the default) tries every start, which
             finds every fit; a small number plans much faster when many
             requests cannot be placed, but can miss a fit late in a gap.
+        preferred: Obsids to plan ahead of the other requests in their tier,
+            such as those a :class:`~conops.schedulers.LongRangeAllocator`
+            allocated to this plan's time; the others fill the time left. Tiers
+            still come first. None (the default) treats all requests alike.
     """
 
     planner_name = "priority"
@@ -182,6 +186,7 @@ class PriorityPlanner:
         reserved_seconds: Mapping[int, float] | None = None,
         reserved_visits: Mapping[int, float] | None = None,
         successor_retries: int | None = None,
+        preferred: Collection[int] | None = None,
     ) -> None:
         self.config = config
         self.targets = list(targets)
@@ -199,6 +204,7 @@ class PriorityPlanner:
         if successor_retries is not None and successor_retries < 0:
             raise ValueError("successor_retries must not be negative")
         self.successor_retries = successor_retries
+        self.preferred = None if preferred is None else frozenset(preferred)
         self.unplaced: list[Pointing] = []
         """Targets left with at least ``ss_min`` of exposure unplanned."""
         self.plan = Plan()
@@ -359,6 +365,14 @@ class PriorityPlanner:
             merit = merit_model.value_terms(
                 target, self.ctx.ustart, base=float(target.fom), delivered_shares=shares
             )
+            if self.preferred is not None:
+                # Preferred requests rank above the others in their tier, and
+                # below every request in the tiers above: every ranking and
+                # tier-by-tier objective in the planners follows this tier.
+                preferred = int(target.obsid) in self.preferred
+                merit = merit.model_copy(
+                    update={"tier": 2 * merit.tier + int(preferred)}
+                )
             cadence = category.cadence_seconds if cadence_weight > 0.0 else None
             requests.append(
                 _Request(

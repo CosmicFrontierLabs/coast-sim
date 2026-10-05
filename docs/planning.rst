@@ -228,7 +228,7 @@ Optimizing plans with CP-SAT
 ----------------------------
 
 :class:`~conops.schedulers.CpSatPlanner` builds plans with the CP-SAT constraint solver
-from Google's OR-Tools (an optional dependency; install ``coast-sim[cpsat]``). It
+from Google's OR-Tools. It
 optimizes the same objective as local search, but chooses which snapshots to observe
 and in what order by solving a constraint model rather than by trying changes one at
 a time.
@@ -374,6 +374,65 @@ Comparing a run with :class:`~conops.ditl.queue_ditl.QueueDITL` dispatch on the 
 targets shows what planning ahead gains or costs in science time and ToO response.
 A ``RollingHorizonDITL`` instance runs once; create a new one for each simulation.
 
+Long-range allocation
+---------------------
+
+:class:`~conops.schedulers.LongRangeAllocator` is a long-range plan: it decides on
+which day (or other period) each request should be observed, over a run of days to
+months. The short-term scheduling, rolling replans or dispatch, then decides the order
+within each day. This is the split between long-range and short-term planning that
+observatories use.
+
+It matters because the short-term scheduling looks only hours ahead. On its own, it
+spends each day on the best targets available that day, so a target observable for
+only part of the run, such as one the Sun will soon cover, or a request due beyond the
+horizon, can miss its chance while time goes to targets that could have waited.
+
+The allocator splits the run into bins (a day by default) and decides how much of
+each request's remaining exposure to collect in which bin:
+
+* each request can be allocated only the seconds its target is visible in a bin, up
+  to its deadline, from the same visibility windows the planners use;
+* each bin is expected to hold ``efficiency`` (default 0.75) of its length in science,
+  the rest going to slews, setup and ground passes;
+* ``reserve`` (default 0.1) of that capacity is kept free for work that isn't known
+  yet, such as ToOs. Planned requests are never allocated it. ToOs the simulation has
+  received are allocated first and use the reserve before anything else, so a ToO
+  that fits in the reserve doesn't push planned requests to later days;
+* the allocation is solved as a mixed-integer program (OR-Tools CP-SAT) that
+  maximizes merit-weighted time. ToOs come first, then each tier in turn, each solved
+  with the ones above it held at their best, so a tier never gives anything up for a
+  lower one. A request gets either nothing in a bin or at least its ``ss_min``, never
+  more than its remaining exposure, and a request with a cadence no more than an even
+  share per bin. Requests with a deadline are worth slightly more in earlier bins;
+* re-allocating keeps the previous allocation unless changing it gains something:
+  keeping a request's seconds where they were is worth an extra 1%. A ToO that fits
+  in the reserve leaves every planned request where it was;
+* ``solver="greedy"`` instead takes requests in order of tier and merit, each into
+  the bins with the least competing demand. It is quicker but not optimal, and is
+  the MILP's starting point.
+
+Within each tier, requests allocated to the current bin are scheduled first, and the
+remaining time goes to the rest. A request the allocator hasn't seen, such as a ToO
+submitted after the last allocation, is treated as allocated. Rolling runs re-allocate
+at every replan and dispatch at the start of every bin, using the exposure still
+remaining.
+
+.. code-block:: python
+
+   from datetime import timedelta
+   from conops import LongRangeAllocator, RollingHorizonDITL
+
+   allocator = LongRangeAllocator(config, begin, end, bin_length=timedelta(days=1))
+   ditl = RollingHorizonDITL(config, targets, begin=begin, end=end, allocator=allocator)
+   ditl.calc()
+   print(ditl.allocation.seconds[10042])   # seconds allocated to each bin
+
+Pass the same ``allocator`` to :class:`~conops.ditl.QueueDITL` for dispatch, or set
+``scheduler.allocation`` in the configuration (see :doc:`configuration`). Planners
+take the steering as ``preferred``: a set of obsids to plan ahead of the others in
+their tier.
+
 Comparing scheduling modes
 --------------------------
 
@@ -436,10 +495,14 @@ than letting it drain into emergency charging), and seeded random targets:
   survey programs with equal time shares but different merit, with the cadence and
   completion-deficit merit terms switched on;
 * ``multi-day``: three days, 400 targets and a ToO a day, for replanning over a long
-  run.
+  run;
+* ``long-range``: a week of 300 targets, half with deadlines spread across it, and two
+  programs by the Sun's avoidance zone: "Early" targets that the Sun covers as the
+  week goes on and "Late" ones it uncovers, for long-range allocation. Runs of two
+  days or more also compare dispatch and rolling steered by an allocator
+  (``+alloc``).
 
-``scripts/benchmark_schedulers.py`` runs the standard contenders (adding the CP-SAT
-planner, planned and rolling, when OR-Tools is installed) on one scenario or all of
+``scripts/benchmark_schedulers.py`` runs the standard contenders on one scenario or all of
 them, with rolling replans every six hours (or four times in a shorter run) and a
 30-minute commit lead time::
 

@@ -11,6 +11,8 @@ avoidance, a battery that never limits operations, and seeded random targets:
 * :func:`cadence_and_programs`: monitoring targets that want regular revisits
   and programs with allocated shares of time, with those merit terms on.
 * :func:`multi_day`: three days, for replanning cadence and planning time.
+* :func:`long_range`: a week with deadlines spread across it and targets the
+  Sun covers or uncovers as the week goes on, for long-range allocation.
 
 :data:`SCENARIOS` names them for scripts.
 """
@@ -350,11 +352,119 @@ def multi_day(
     )
 
 
+def _along_sun_path(
+    config: MissionConfig, count: int, elongations: tuple[float, float], seed: int
+) -> list[tuple[float, float]]:
+    """Positions along the Sun's path over the run, at ``elongations`` from it.
+
+    Positive elongations lie ahead of the Sun, which closes in on them; negative
+    ones behind it, which it moves away from. Each position is offset a few
+    degrees across the path.
+    """
+    ephem = config.constraint.ephem
+    assert ephem is not None
+
+    def unit(ra: float, dec: float) -> np.ndarray:
+        r, d = np.radians(ra), np.radians(dec)
+        return np.array([np.cos(d) * np.cos(r), np.cos(d) * np.sin(r), np.sin(d)])
+
+    first = unit(float(ephem.sun_ra_deg[0]), float(ephem.sun_dec_deg[0]))
+    last = unit(float(ephem.sun_ra_deg[-1]), float(ephem.sun_dec_deg[-1]))
+    normal = np.cross(first, last)
+    normal /= np.linalg.norm(normal)
+    ahead = np.cross(normal, first)
+    rng = np.random.default_rng(seed)
+    positions = []
+    for _ in range(count):
+        angle = np.radians(rng.uniform(*elongations))
+        across = np.radians(rng.uniform(-4.0, 4.0))
+        vector = np.cos(angle) * first + np.sin(angle) * ahead
+        vector = np.cos(across) * vector + np.sin(across) * normal
+        vector /= np.linalg.norm(vector)
+        ra = float(np.degrees(np.arctan2(vector[1], vector[0])) % 360.0)
+        dec = float(np.degrees(np.arcsin(np.clip(vector[2], -1.0, 1.0))))
+        positions.append((ra, dec))
+    return positions
+
+
+def long_range(
+    tle: str | Path,
+    *,
+    days: int = 7,
+    targets: int = 300,
+    edge: int = 30,
+    seed: int = 1234,
+) -> BenchmarkScenario:
+    """A week in which when each request can be observed changes.
+
+    Besides random targets, half of them with deadlines spread across the
+    week, two programs sit by the Sun's 45-degree avoidance zone: "Early"
+    targets just ahead of the Sun, which it covers as the week goes on, and
+    "Late" targets just behind it, which it uncovers. A scheduler that only
+    looks a few hours ahead spends the early days on targets that could have
+    waited, and the Early targets miss their chance.
+    """
+    hours = days * 24
+    end = BEGIN + timedelta(hours=hours)
+    categories = [
+        ObservationCategory(
+            name="Early", obsid_min=40000, obsid_max=40000 + edge, program="Early"
+        ),
+        ObservationCategory(
+            name="Late", obsid_min=50000, obsid_max=50000 + edge, program="Late"
+        ),
+    ]
+
+    def make_targets(config: MissionConfig) -> list[Pointing]:
+        pool = random_targets(
+            config,
+            targets,
+            seed,
+            deadline_fraction=0.5,
+            deadline_hours=(12.0, hours - 6.0),
+        )
+        groups = [
+            (40000, (46.0, 52.0), seed + 5),
+            (50000, (-44.0, -38.0), seed + 6),
+        ]
+        for first_obsid, elongations, group_seed in groups:
+            rng = np.random.default_rng(group_seed)
+            for k, (ra, dec) in enumerate(
+                _along_sun_path(config, edge, elongations, group_seed)
+            ):
+                value = float(rng.integers(40, 70))
+                target = Pointing(
+                    config=config,
+                    ra=ra,
+                    dec=dec,
+                    obsid=first_obsid + k,
+                    name=f"t{first_obsid + k}",
+                    merit=value,
+                    fom=value,
+                    ss_min=300,
+                    ss_max=1200,
+                )
+                target.exptime = 2400
+                pool.append(target)
+        return pool
+
+    return BenchmarkScenario(
+        name=f"long-range: {days} days, {targets} targets",
+        begin=BEGIN,
+        end=end,
+        make_config=lambda: mission_config(
+            tle, BEGIN, end, seed=seed, categories=categories
+        ),
+        make_targets=make_targets,
+    )
+
+
 SCENARIOS: dict[str, Callable[..., BenchmarkScenario]] = {
     "baseline": baseline,
     "too-heavy": too_heavy,
     "oversubscribed": oversubscribed,
     "cadence": cadence_and_programs,
     "multi-day": multi_day,
+    "long-range": long_range,
 }
 """Standard scenarios by name; each takes the TLE path first."""

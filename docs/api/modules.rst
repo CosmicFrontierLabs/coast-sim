@@ -48,6 +48,7 @@ Scheduling and Planning
    conops.benchmark.metrics
    conops.benchmark.scenarios
    conops.schedulers
+   conops.schedulers.allocator
    conops.schedulers.context
    conops.schedulers.cpsat_planner
    conops.schedulers.local_search

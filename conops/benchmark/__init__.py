@@ -30,7 +30,7 @@ from ..ditl import DITL, QueueDITL, RollingHorizonDITL, create_ditl
 from ..ditl.ditl_mixin import DITLMixin
 from ..ditl.factory import queue_targets
 from ..ditl.plan_validator import PLAN_SCIENCE_OBSTYPES, entry_obstype
-from ..schedulers import PriorityPlanner
+from ..schedulers import LongRangeAllocator, PriorityPlanner
 from ..targets import Pointing
 from .metrics import Collection, cadence_error, program_shares, visit_starts
 
@@ -132,19 +132,44 @@ class BenchmarkResult(BaseModel):
 # ── Contenders ───────────────────────────────────────────────────────────
 
 
-def dispatch(name: str = "dispatch") -> Contender:
-    """Queue dispatch: QueueDITL selects each next target as the run goes."""
+def _allocator(
+    config: MissionConfig, scenario: BenchmarkScenario, bin_length: timedelta | None
+) -> LongRangeAllocator | None:
+    if bin_length is None:
+        return None
+    return LongRangeAllocator(
+        config, scenario.begin, scenario.end, bin_length=bin_length
+    )
+
+
+def dispatch(
+    name: str | None = None, *, allocation: timedelta | None = None
+) -> Contender:
+    """Queue dispatch: QueueDITL selects each next target as the run goes.
+
+    Args:
+        name: Contender name; defaults to "dispatch", with "+alloc" when
+            allocating.
+        allocation: Bin length of a long-range allocator steering the queue
+            (see :class:`~conops.schedulers.LongRangeAllocator`); None for none.
+    """
 
     def simulate(scenario: BenchmarkScenario) -> _Run:
         config = scenario.make_config()
-        ditl = QueueDITL(config=config, begin=scenario.begin, end=scenario.end)
+        ditl = QueueDITL(
+            config=config,
+            begin=scenario.begin,
+            end=scenario.end,
+            allocator=_allocator(config, scenario, allocation),
+        )
         queue_targets(ditl, scenario.make_targets(config))
         for too in scenario.toos:
             ditl.submit_too(**too.model_dump())
         ditl.calc()
         return _Run(simulation=ditl)
 
-    return Contender(name=name, simulate=simulate)
+    default = "dispatch+alloc" if allocation is not None else "dispatch"
+    return Contender(name=name or default, simulate=simulate)
 
 
 def planned(
@@ -189,6 +214,7 @@ def rolling(
     replan_interval: timedelta = timedelta(hours=12),
     commit_lead_time: timedelta = timedelta(0),
     planner_options: Mapping[str, object] | None = None,
+    allocation: timedelta | None = None,
 ) -> Contender:
     """Rolling-horizon replanning with ``planner``, reacting to ToOs.
 
@@ -199,6 +225,8 @@ def rolling(
         replan_interval: Time between scheduled replans.
         commit_lead_time: Time between building a plan and it taking effect.
         planner_options: Extra keyword arguments for the planner.
+        allocation: Bin length of a long-range allocator steering each replan
+            (see :class:`~conops.schedulers.LongRangeAllocator`); None for none.
     """
 
     def simulate(scenario: BenchmarkScenario) -> _Run:
@@ -213,6 +241,7 @@ def rolling(
             commit_lead_time=commit_lead_time,
             planner=planner,
             planner_options=planner_options,
+            allocator=_allocator(config, scenario, allocation),
         )
         ditl.step_size = int(ditl.ephem.step_size)
         for too in scenario.toos:
@@ -223,7 +252,10 @@ def rolling(
             planning_seconds=sum(r.planning_seconds for r in ditl.replans),
         )
 
-    return Contender(name=name or f"rolling:{planner.planner_name}", simulate=simulate)
+    suffix = "+alloc" if allocation is not None else ""
+    return Contender(
+        name=name or f"rolling:{planner.planner_name}{suffix}", simulate=simulate
+    )
 
 
 def configured(name: str = "configured") -> Contender:
