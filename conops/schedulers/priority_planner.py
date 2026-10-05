@@ -151,7 +151,10 @@ class PriorityPlanner:
             starts at ``begin`` from a freshly started spacecraft.
         reserved_seconds: Exposure, by obsid, already scheduled outside this
             plan and not yet collected; it is subtracted from each target's
-            remaining exposure.
+            remaining exposure and counts towards its program's share.
+        reserved_visits: When observations scheduled outside this plan and not
+            yet collected will finish collecting, by obsid; a cadence target's
+            next visit waits for its cadence after them.
     """
 
     planner_name = "priority"
@@ -172,6 +175,7 @@ class PriorityPlanner:
         simulation_end: datetime | None = None,
         start_state: StartState | None = None,
         reserved_seconds: Mapping[int, float] | None = None,
+        reserved_visits: Mapping[int, float] | None = None,
     ) -> None:
         self.config = config
         self.targets = list(targets)
@@ -185,6 +189,7 @@ class PriorityPlanner:
         self.simulation_end = simulation_end
         self.start_state = start_state
         self.reserved_seconds = dict(reserved_seconds or {})
+        self.reserved_visits = dict(reserved_visits or {})
         self.unplaced: list[Pointing] = []
         """Targets left with at least ``ss_min`` of exposure unplanned."""
         self.plan = Plan()
@@ -314,13 +319,19 @@ class PriorityPlanner:
         self._last_visit: dict[int, float] = {}
         """When each cadence target was last observed, collected or planned."""
         for target in self.targets:
-            if target.collected_seconds > 0.0:
+            obsid = int(target.obsid)
+            # Committed science will be collected before this plan's.
+            seconds = target.collected_seconds + self.reserved_seconds.get(obsid, 0.0)
+            if seconds > 0.0:
                 program = merit_model.category(target).program_name
-                self._delivered[program] = (
-                    self._delivered.get(program, 0.0) + target.collected_seconds
-                )
-            if target.last_collection_time is not None:
-                self._last_visit[int(target.obsid)] = target.last_collection_time
+                self._delivered[program] = self._delivered.get(program, 0.0) + seconds
+            visits = [
+                t
+                for t in (target.last_collection_time, self.reserved_visits.get(obsid))
+                if t is not None
+            ]
+            if visits:
+                self._last_visit[obsid] = max(visits)
         shares = program_shares(self._delivered)
         cadence_weight = merit_model.cadence_weight
         requests = []
