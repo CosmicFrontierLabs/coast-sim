@@ -177,24 +177,32 @@ and in what order by solving a constraint model rather than by trying changes on
 a time.
 
 The horizon is solved in consecutive ``chunk`` lengths (three hours by default). For
-each chunk, a candidate is one request in one of its visibility windows, with an
-optional arrival time and a collection length between its ``ss_min`` and ``ss_max``.
-CP-SAT chooses candidates and their order:
+each chunk, a candidate is one snapshot of a request in one of its visibility windows
+(as many per window as the exposure needs and the window holds), with an optional
+arrival time and a collection length between its ``ss_min`` and ``ss_max``. CP-SAT
+chooses candidates and their order:
 
-* a circuit through the chosen candidates fixes the order, with the slew between them
-  (plus a step, because slews start on simulation steps) as the gap they need;
-* each slew starts after its target becomes visible, as ACS requires, and each
-  snapshot finishes within its window;
+* a circuit through the chosen candidates fixes the order;
+* each slew starts on the first simulation step after the task before it ends, and
+  once its target is visible, as ACS requires; each snapshot finishes within its
+  window;
 * ground passes are fixed tasks that snapshots must leave room to slew to;
 * a request's snapshots never add up to more than its remaining exposure;
 * the objective is merit-weighted science, with the earliness discount for requests
   with a deadline.
 
-The priority-first plan's snapshots in each chunk are the solver's starting hint.
-Because the model approximates slews (each target's roll is chosen before solving),
-each chunk's order is decoded with the planner's exact checks before the next chunk is
-solved from where it leaves the spacecraft. Every plan therefore executes as planned,
-and the result is never worse than the priority-first plan.
+The priority-first plan's snapshots in each chunk are the solver's starting hint,
+adjusted where the model's approximate slews need it, so the solver starts from a
+feasible solution. Each chunk finishes before the priority-first plan's next slew and
+leaves the exposure that plan collects later to it, so the rest of that plan can
+always follow. Because the model approximates slews (each target's roll is chosen
+before solving), each chunk's order is decoded with the planner's exact checks. It is
+kept if, followed by the rest of the priority-first plan, it scores at least as well
+as that plan does from the same point; otherwise, or if the solver found no solution
+in its time, the priority-first plan's snapshots for the chunk are kept. The next
+chunk is solved from where the kept snapshots leave the spacecraft. Every plan
+therefore executes as planned and is never worse than the priority-first plan;
+``solver_chunks_used`` shows which chunks the solver improved.
 
 .. code-block:: python
 
@@ -217,9 +225,12 @@ and the result is never worse than the priority-first plan.
 ``time_limit`` defaults to 0 here; set it to spend that many seconds improving the
 solver's plan by local search afterwards.
 
-**Limitations.** Chunks are solved one after another, so a choice in one chunk does not
-account for the chunks after it. The model's slews are approximate; the exact decoding
-corrects them but can drop or shorten a snapshot the solver chose.
+**Limitations.** Chunks are solved one after another. A chunk cannot borrow time or
+exposure the priority-first plan uses later, so improvements that would need to
+rearrange several chunks at once are left to local search. The model's slews are
+approximate; the exact decoding corrects them but can drop or shorten a snapshot the
+solver chose. With very short limits (well under a second per chunk) the solver may
+find nothing, and the plan is the priority-first one.
 
 The scheduling context
 ----------------------
