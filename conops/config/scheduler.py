@@ -60,6 +60,14 @@ class PlannerSettings(ConfigModel):
         default=None,
         description="Random seed for search and solver; defaults to random_seed",
     )
+    successor_retries: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Later starts to try in a gap once a snapshot fits but the activity "
+            "after it cannot be reached; unset tries every start"
+        ),
+    )
     time_limit: float | None = Field(
         default=None,
         ge=0,
@@ -108,7 +116,13 @@ class PlannerSettings(ConfigModel):
 
     def options(self) -> dict[str, object]:
         """Return the settings as keyword arguments for the planner class."""
-        names = ("include_passes", "seed", *_SEARCH_FIELDS, *_SOLVER_FIELDS)
+        names = (
+            "include_passes",
+            "seed",
+            "successor_retries",
+            *_SEARCH_FIELDS,
+            *_SOLVER_FIELDS,
+        )
         options: dict[str, object] = {
             name: getattr(self, name)
             for name in names
