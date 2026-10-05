@@ -192,7 +192,7 @@ disabled by default for performance. To enable it, pass
 
 ### Scheduling (`conops.schedulers`)
 
-Target observation queue management and intelligent scheduling algorithms (DumbScheduler, DumbQueueScheduler).
+Target observation queue management and intelligent scheduling algorithms (FirstFitPlanner, GreedyDispatchPlanner).
 
 ### Targets (`conops.targets`)
 

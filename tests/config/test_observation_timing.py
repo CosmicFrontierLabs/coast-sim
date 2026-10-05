@@ -80,9 +80,9 @@ def test_invalid_serialized_collection_windows_are_rejected(bounds):
 
 
 def test_dumb_scheduler_rejects_unsupported_timing_budgets():
-    from conops import DumbScheduler
+    from conops import FirstFitPlanner
 
     config = MissionConfig()
     config.payload.observation_timing.setup_seconds = 10
     with pytest.raises(ValueError, match="require QueueDITL"):
-        DumbScheduler(config)
+        FirstFitPlanner(config)

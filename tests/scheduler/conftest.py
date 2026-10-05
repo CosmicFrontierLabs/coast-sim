@@ -9,7 +9,7 @@ import rust_ephem
 from astropy.time import Time  # type: ignore[import-untyped]
 from pydantic import ConfigDict
 
-from conops import SAA, DumbScheduler
+from conops import SAA, FirstFitPlanner
 from conops.config import (
     AttitudeControlSystem,
     Battery,
@@ -187,8 +187,8 @@ def mock_config(mock_ephemeris, mock_constraint):
 
 @pytest.fixture
 def scheduler(mock_config, mock_saa):
-    """Create a DumbScheduler instance with mocked dependencies."""
-    scheduler = DumbScheduler(config=mock_config, days=1)
+    """Create a FirstFitPlanner instance with mocked dependencies."""
+    scheduler = FirstFitPlanner(config=mock_config, days=1)
     scheduler.saa = mock_saa
     scheduler.config = mock_config  # Set the config for PlanEntry creation
     # Ensure the scheduler uses the mock_constraint that returns arrays
