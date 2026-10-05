@@ -99,6 +99,9 @@ class TOORequest(BaseModel):
     name: str
     submit_time: float = 0.0
     deadline: float | None = None
+    interrupt: bool = True
+    """Whether the TOO may cut short the observation in progress. If False it
+    starts when that observation ends."""
     executed: bool = False
 
 
@@ -276,6 +279,7 @@ class QueueDITL(DITLMixin, DITLStats):
         name: str,
         submit_time: float | datetime | None = None,
         deadline: float | datetime | None = None,
+        interrupt: bool = True,
     ) -> TOORequest:
         """Submit a Target of Opportunity (TOO) request.
 
@@ -298,6 +302,8 @@ class QueueDITL(DITLMixin, DITLStats):
                 datetime. None means active from the start of the simulation.
             deadline: Latest time science collection may begin, as a Unix
                 timestamp or a datetime. None means no deadline.
+            interrupt: Whether the TOO may interrupt the observation in
+                progress; if False it is chosen when that observation ends.
 
         Returns:
             The created TOORequest object
@@ -337,6 +343,7 @@ class QueueDITL(DITLMixin, DITLStats):
             if submit_time is not None
             else 0.0,
             deadline=self._unix_time(deadline) if deadline is not None else None,
+            interrupt=interrupt,
             executed=False,
         )
         self.too_register.append(too)
@@ -423,6 +430,10 @@ class QueueDITL(DITLMixin, DITLStats):
             active.append((too, target))
         if self.ppt is None or not active:
             return False
+        if not self.merit_model.category(self.ppt).interruptible:
+            # The observation's program does not allow it to be cut short; the
+            # TOO is already queued for the next selection.
+            return False
 
         current_rank = self._current_value_rank()
         delivered_shares = (
@@ -432,6 +443,8 @@ class QueueDITL(DITLMixin, DITLStats):
         )
         outranking: list[tuple[TOORequest, Pointing, MeritBreakdown]] = []
         for too, target in active:
+            if not too.interrupt:
+                continue
             if too.deadline is not None and utime > too.deadline:
                 continue
             visibility_window = target.visible(utime, utime)

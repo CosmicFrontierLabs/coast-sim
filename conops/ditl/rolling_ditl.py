@@ -77,8 +77,10 @@ class RollingHorizonDITL(DITL):
     deadline falls before that plan could start collecting it (its lead time
     plus a worst-case slew and the setup time) triggers a rapid replan at once.
     In a rapid replan the observation running at the commit cutoff is cut
-    there if ``allow_interrupts`` is set and the ToO's tier and value,
-    evaluated now, beat the tier and value frozen onto that observation.
+    there if ``allow_interrupts`` is set, the ToO allows it (its ``interrupt``
+    flag), the observation's category is ``interruptible``, and the ToO's tier
+    and value, evaluated now, beat the tier and value frozen onto that
+    observation.
 
     Each replan is recorded in :attr:`replans`, and
     :meth:`too_response_times` reports how long each ToO waited for its first
@@ -178,6 +180,7 @@ class RollingHorizonDITL(DITL):
         name: str,
         submit_time: float | datetime | None = None,
         deadline: float | datetime | None = None,
+        interrupt: bool = True,
     ) -> TOORequest:
         """Submit a Target of Opportunity that joins the target pool when active.
 
@@ -192,6 +195,9 @@ class RollingHorizonDITL(DITL):
                 None means from the start of the simulation.
             deadline: Latest time science collection may begin (Unix time or
                 datetime), or None for no deadline.
+            interrupt: Whether a rapid replan for it may cut short the
+                observation in progress. If False, the rapid plan starts it once
+                that observation ends.
         """
         too = TOORequest(
             obsid=obsid,
@@ -202,6 +208,7 @@ class RollingHorizonDITL(DITL):
             name=name,
             submit_time=_unix_time(submit_time) if submit_time is not None else 0.0,
             deadline=_unix_time(deadline) if deadline is not None else None,
+            interrupt=interrupt,
         )
         self.too_register.append(too)
         return too
@@ -429,7 +436,9 @@ class RollingHorizonDITL(DITL):
             ),
             None,
         )
-        if not self.allow_interrupts or entry is None:
+        if not self.allow_interrupts or not too.interrupt or entry is None:
+            return None
+        if not self.merit_model.categories.get_category(int(entry.obsid)).interruptible:
             return None
         target = self._too_targets[id(too)]
         too_rank = self.merit_model.value_terms(target, utime).value_rank

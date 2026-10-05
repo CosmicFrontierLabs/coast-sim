@@ -1554,7 +1554,7 @@ dispatch, so configurations without this section behave as before.
   long-range allocator for ``dispatch`` and ``rolling`` modes, with ``bin_seconds``
   (default one day), ``efficiency`` (default 0.75), ``reserve``, the fraction of
   each day kept free for ToOs (default 0.1), ``solver`` (``milp``, the default, or
-  ``greedy``) and ``time_limit_seconds`` for the MILP (default 10); not allowed in
+  ``greedy``) and ``time_limit_seconds`` for the MILP solver, HiGHS (default 10); not allowed in
   ``planned`` mode
 
 See :doc:`planning` for what each mode and planner does.

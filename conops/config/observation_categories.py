@@ -61,6 +61,12 @@ class ObservationCategory(ConfigModel):
         le=1,
         description="Fraction of science time allocated to the program",
     )
+    interruptible: bool = Field(
+        default=True,
+        description=(
+            "Whether a Target of Opportunity may cut short the category's observations"
+        ),
+    )
 
     @property
     def program_name(self) -> str:

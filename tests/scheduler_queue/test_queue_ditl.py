@@ -5953,6 +5953,7 @@ class TestTOOFunctionality:
         queue_ditl,
         merit: float = 10000.0,
         deadline: float | None = None,
+        interrupt: bool = True,
     ) -> TOORequest:
         return queue_ditl.submit_too(
             obsid=1000001,
@@ -5962,6 +5963,7 @@ class TestTOOFunctionality:
             exptime=3600,
             name="Successful TOO",
             deadline=deadline,
+            interrupt=interrupt,
         )
 
     def test_check_too_interrupt_queues_active_too_once(
@@ -6019,6 +6021,43 @@ class TestTOOFunctionality:
 
         assert result is False
         mock_pointing_visible.assert_called_once()
+
+    def test_check_too_interrupt_not_allowed_to_interrupt(
+        self,
+        mock_too_interrupt_success,
+        queue_ditl,
+        queued_targets,
+        low_merit_current_ppt,
+    ) -> None:
+        """A TOO that may not interrupt waits for the observation to end."""
+        self._submit(queue_ditl, interrupt=False)
+
+        result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
+
+        assert result is False
+        mock_too_interrupt_success["terminate"].assert_not_called()
+
+    def test_check_too_interrupt_observation_not_interruptible(
+        self,
+        mock_too_interrupt_success,
+        queue_ditl,
+        queued_targets,
+        low_merit_current_ppt,
+    ) -> None:
+        """An observation whose category is not interruptible is not cut short."""
+        from conops.config.observation_categories import ObservationCategory
+
+        queue_ditl.config.observation_categories.categories = [
+            ObservationCategory(
+                name="Locked", obsid_min=1, obsid_max=2, interruptible=False
+            )
+        ]
+        self._submit(queue_ditl)
+
+        result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
+
+        assert result is False
+        mock_too_interrupt_success["terminate"].assert_not_called()
 
     def test_check_too_interrupt_deadline_passed(
         self,
@@ -6282,6 +6321,7 @@ class TestTOOFunctionality:
             "name": "Test TOO",
             "submit_time": 1234567890.0,
             "deadline": None,
+            "interrupt": True,
             "executed": True,
         }
         assert data == expected
