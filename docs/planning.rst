@@ -469,6 +469,7 @@ contender:
 * science time and merit-weighted science;
 * time slewing, idle and in contact, and the number of observations;
 * each ToO's response time, and how many started by their deadline;
+* how many other requests with a deadline got their whole exposure;
 * each program's share of the science collected;
 * for targets with a cadence, how far the mean gap between visits missed the requested
   interval, and how many targets were revisited at all;
@@ -496,9 +497,10 @@ than letting it drain into emergency charging), and seeded random targets:
   completion-deficit merit terms switched on;
 * ``multi-day``: three days, 400 targets and a ToO a day, for replanning over a long
   run;
-* ``long-range``: a week of 300 targets, half with deadlines spread across it, and two
-  programs by the Sun's avoidance zone: "Early" targets that the Sun covers as the
-  week goes on and "Late" ones it uncovers, for long-range allocation. Runs of two
+* ``long-range``: a week of 300 targets, half with deadlines spread across it, two
+  programs by the Sun's avoidance zone ("Early" targets that the Sun covers as the
+  week goes on and "Late" ones it uncovers), and 10 ToOs arriving through the week,
+  alternately due within hours and within days, for long-range allocation. Runs of two
   days or more also compare dispatch and rolling steered by an allocator
   (``+alloc``).
 
