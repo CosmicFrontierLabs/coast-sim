@@ -407,15 +407,17 @@ contender:
   interval, and how many targets were revisited at all;
 * planning and run time, and plan/execution mismatches.
 
-A contender that fails is reported with its error instead of stopping the benchmark.
+A contender that fails is reported with its error instead of stopping the benchmark:
+the table shows the error's type, and the full message is listed below it.
 
 Standard scenarios
 ^^^^^^^^^^^^^^^^^^
 
 :mod:`conops.benchmark.scenarios` provides five scenarios, each stressing a different
 part of scheduling. All use one low-Earth orbit from a TLE, Sun and Earth-limb
-avoidance, the default ground stations, a battery that never limits operations, and
-seeded random targets:
+avoidance, the default ground stations, a battery that never limits operations (the
+spacecraft has no solar panels, so the battery's recharge alerts are turned off rather
+than letting it drain into emergency charging), and seeded random targets:
 
 * ``baseline``: a day of 200 targets and one ToO with a one-hour deadline;
 * ``too-heavy``: eight ToOs across the day, half urgent (tier 1, deadlines of 30

@@ -67,7 +67,12 @@ def mission_config(
         if stations
         else GroundStationRegistry(stations=[]),
         solar_panel=SolarPanelSet(panels=[]),
-        battery=Battery(watthour=100_000.0),
+        # No solar panels, so the battery cannot recharge: without these
+        # settings it drains to the recharge threshold within days, and
+        # emergency charging, which cannot help, takes over the schedule.
+        battery=Battery(
+            watthour=100_000.0, recharge_threshold=0.0, max_depth_of_discharge=1.0
+        ),
         spacecraft_bus=SpacecraftBus(
             attitude_control=AttitudeControlSystem(
                 max_slew_rate=1.0, slew_acceleration=0.5, settle_time=30.0

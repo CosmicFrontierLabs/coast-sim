@@ -354,7 +354,9 @@ def _measure(
 def format_results(results: Sequence[BenchmarkResult]) -> str:
     """Render benchmark results as a plain-text table.
 
-    Program shares and cadence columns appear only when a result has them.
+    Program shares and cadence columns appear only when a result has them. A
+    contender that failed shows its error's type in the table, and the full
+    message below it.
     """
     show_programs = any(len(r.program_share) > 1 for r in results)
     show_cadence = any(r.cadence_targets for r in results)
@@ -377,7 +379,8 @@ def format_results(results: Sequence[BenchmarkResult]) -> str:
     rows: list[list[str]] = [headers]
     for r in results:
         if r.error is not None:
-            rows.append([r.contender, f"error: {r.error}", *[""] * (len(headers) - 2)])
+            kind = r.error.split(":", 1)[0]
+            rows.append([r.contender, f"error: {kind}", *[""] * (len(headers) - 2)])
             continue
         responses = sorted(
             seconds
@@ -420,4 +423,7 @@ def format_results(results: Sequence[BenchmarkResult]) -> str:
         for row in rows
     ]
     lines.insert(1, "  ".join("-" * width for width in widths))
+    errors = [f"{r.contender}: {r.error}" for r in results if r.error is not None]
+    if errors:
+        lines += ["", "Errors:", *errors]
     return "\n".join(lines)
