@@ -104,6 +104,16 @@ Requests left with at least ``ss_min`` of exposure unplanned are listed in
 ``planner.unplaced``. Every placement and rejection is logged to ``planner.log``.
 The input targets are not modified.
 
+**Planning faster when many requests cannot fit.** Most planning time in a crowded
+horizon goes to requests that end up unplaced: a snapshot fits a gap, but the activity
+after it cannot then be reached, so each later start in the gap is tried in turn, each
+with a full search for the slew onward. ``successor_retries`` limits how many later
+starts are tried after that happens before the gap is given up. Unset (the default),
+every start is tried and every fit is found; a small number such as 0 or 3 plans much
+faster, but can miss a fit late in a gap. It applies to all three planners and to
+rolling replans, and can be set in the configuration as
+``scheduler.planner.successor_retries``.
+
 Cadence and program shares in plans
 -----------------------------------
 

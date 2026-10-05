@@ -103,6 +103,15 @@ class TestPlanned:
         assert ditl.plan.metadata["planner"] == "cp_sat"
         _run(ditl)
 
+    def test_passes_successor_retries_to_the_planner(self) -> None:
+        settings = PlannerSettings(successor_retries=2)
+
+        assert settings.options()["successor_retries"] == 2
+        config, targets = _setup(
+            SchedulerConfig(mode=SchedulerMode.PLANNED, planner=settings)
+        )
+        _run(create_ditl(config, targets, BEGIN, END))
+
 
 class TestRolling:
     def test_passes_the_replanning_settings_through(self) -> None:

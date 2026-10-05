@@ -155,6 +155,11 @@ class PriorityPlanner:
         reserved_visits: When observations scheduled outside this plan and not
             yet collected will finish collecting, by obsid; a cadence target's
             next visit waits for its cadence after them.
+        successor_retries: When a snapshot fits a gap but the activity after
+            it cannot then be reached, how many later starts to try in that gap
+            before giving up on it. None (the default) tries every start, which
+            finds every fit; a small number plans much faster when many
+            requests cannot be placed, but can miss a fit late in a gap.
     """
 
     planner_name = "priority"
@@ -176,6 +181,7 @@ class PriorityPlanner:
         start_state: StartState | None = None,
         reserved_seconds: Mapping[int, float] | None = None,
         reserved_visits: Mapping[int, float] | None = None,
+        successor_retries: int | None = None,
     ) -> None:
         self.config = config
         self.targets = list(targets)
@@ -190,6 +196,9 @@ class PriorityPlanner:
         self.start_state = start_state
         self.reserved_seconds = dict(reserved_seconds or {})
         self.reserved_visits = dict(reserved_visits or {})
+        if successor_retries is not None and successor_retries < 0:
+            raise ValueError("successor_retries must not be negative")
+        self.successor_retries = successor_retries
         self.unplaced: list[Pointing] = []
         """Targets left with at least ``ss_min`` of exposure unplanned."""
         self.plan = Plan()
@@ -646,6 +655,8 @@ class PriorityPlanner:
             return None
         idle_limit = self._idle_limit(pred, earliest, gap_end)
         snapshot = min(float(target.ss_max), request.remaining)
+        # Starts at which the snapshot fitted but its successor was unreachable.
+        unreachable = 0
 
         while start <= min(idle_limit, gap_end):
             window = next((w for w in request.windows if w[0] <= start < w[1]), None)
@@ -713,6 +724,12 @@ class PriorityPlanner:
                     )
                 if succ is None or succ_slew is not None:
                     return fitted, slew, succ_slew
+                unreachable += 1
+                if (
+                    self.successor_retries is not None
+                    and unreachable > self.successor_retries
+                ):
+                    return None
             start += self.ctx.step_size
         return None
 
