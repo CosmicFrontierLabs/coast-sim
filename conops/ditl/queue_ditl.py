@@ -1687,9 +1687,15 @@ class QueueDITL(DITLMixin, DITLStats):
             self._fetch_new_ppt(utime, ra, dec)
 
     def _should_initiate_charging(self, utime: float) -> bool:
-        """Check if emergency charging should be initiated."""
+        """Check if emergency charging should be initiated.
+
+        Not while a ground contact is under way, from its ingress slew to its
+        end: the contact takes precedence, and charging would slew away from the
+        tracking attitude the contact needs.
+        """
         return (
             self.charging_ppt is None
+            and not self._gsp_activity_in_progress(utime)
             and self.emergency_charging.should_initiate_charging(
                 utime, self.ephem, self.battery.battery_alert
             )
@@ -3255,7 +3261,17 @@ class QueueDITL(DITLMixin, DITLStats):
             if self.ppt is self.charging_ppt:
                 self.ppt = None
             self.charging_ppt = None
-            self.acs.last_slew = None
+            # Release the charging attitude, but only the charging slew itself.
+            # A slew that has replaced it, such as a pass's ingress slew already
+            # under way, still drives the pointing: clearing it would freeze
+            # RA/Dec while roll followed the slew.
+            last = self.acs.last_slew
+            if (
+                last is not None
+                and last.obstype == ObsType.CHARGE
+                and not last.is_slewing(utime)
+            ):
+                self.acs.last_slew = None
 
     def _terminate_emergency_charging(self, reason: str, utime: float) -> None:
         """Terminate emergency charging and log the reason."""
