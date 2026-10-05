@@ -24,14 +24,15 @@ from datetime import datetime, timedelta
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .common import ACSMode
-from .config import MissionConfig
-from .ditl import DITL, QueueDITL, RollingHorizonDITL, create_ditl
-from .ditl.ditl_mixin import DITLMixin
-from .ditl.factory import queue_targets
-from .ditl.plan_validator import PLAN_SCIENCE_OBSTYPES, entry_obstype
-from .schedulers import PriorityPlanner
-from .targets import Pointing
+from ..common import ACSMode
+from ..config import MissionConfig
+from ..ditl import DITL, QueueDITL, RollingHorizonDITL, create_ditl
+from ..ditl.ditl_mixin import DITLMixin
+from ..ditl.factory import queue_targets
+from ..ditl.plan_validator import PLAN_SCIENCE_OBSTYPES, entry_obstype
+from ..schedulers import PriorityPlanner
+from ..targets import Pointing
+from .metrics import Collection, cadence_error, program_shares, visit_starts
 
 
 class TOOSpec(BaseModel):
@@ -107,6 +108,17 @@ class BenchmarkResult(BaseModel):
     """Science entries in the plan that was executed."""
     too_response_seconds: dict[int, float | None] = Field(default_factory=dict)
     """Seconds from each ToO's submission to its first science, by obsid."""
+    too_on_time: int = 0
+    """ToOs whose science began by their deadline (or at all, without one)."""
+    program_share: dict[str, float] = Field(default_factory=dict)
+    """Each program's fraction of the science collected."""
+    cadence_error: float | None = None
+    """Mean relative miss of the requested revisit interval, over revisited
+    targets with a cadence; None if none was revisited."""
+    cadence_revisited: int = 0
+    """Targets with a cadence that were visited at least twice."""
+    cadence_targets: int = 0
+    """Targets with a cadence."""
     planning_seconds: float | None = None
     """Wall-clock time spent building plans, for planning contenders."""
     run_seconds: float = 0.0
@@ -281,21 +293,37 @@ def _measure(
     step_hours = float(simulation.step_size) / 3600.0
     modes = [ACSMode(int(m)) for m in simulation.mode]
 
-    first_science: dict[int, float] = {}
+    records: list[Collection] = []
+    collected: dict[int, float] = {}
     science = weighted = 0.0
     for record in simulation.telemetry.housekeeping:
         seconds = record.collection_seconds or 0.0
         if seconds <= 0 or record.obsid is None:
             continue
+        obsid = int(record.obsid)
         science += seconds
-        weighted += seconds * merit.get(int(record.obsid), 0.0)
-        first_science.setdefault(int(record.obsid), record.timestamp.timestamp())
+        weighted += seconds * merit.get(obsid, 0.0)
+        collected[obsid] = collected.get(obsid, 0.0) + seconds
+        records.append((obsid, record.timestamp.timestamp(), seconds))
+    starts = visit_starts(records, float(simulation.step_size))
 
     responses: dict[int, float | None] = {}
+    on_time = 0
     for too in scenario.toos:
-        first = first_science.get(too.obsid)
+        first = starts[too.obsid][0] if too.obsid in starts else None
         submitted = max(too.submit_time, scenario.begin.timestamp())
         responses[too.obsid] = None if first is None else first - submitted
+        if first is not None and (too.deadline is None or first <= too.deadline):
+            on_time += 1
+
+    categories = simulation.config.observation_categories
+    program = {obsid: categories.get_category(obsid).program_name for obsid in merit}
+    cadence: dict[int, float] = {}
+    for obsid in merit:
+        interval = categories.get_category(obsid).cadence_seconds
+        if interval is not None:
+            cadence[obsid] = interval
+    error, revisited = cadence_error(starts, cadence)
 
     validate = getattr(simulation, "validate_plan_matches_execution", None)
     return BenchmarkResult(
@@ -312,6 +340,11 @@ def _measure(
             if entry_obstype(entry) in PLAN_SCIENCE_OBSTYPES
         ),
         too_response_seconds=responses,
+        too_on_time=on_time,
+        program_share=program_shares(collected, program),
+        cadence_error=error,
+        cadence_revisited=revisited,
+        cadence_targets=len(cadence),
         planning_seconds=run.planning_seconds,
         run_seconds=run_seconds,
         mismatches=len(validate()) if validate is not None else None,
@@ -319,42 +352,68 @@ def _measure(
 
 
 def format_results(results: Sequence[BenchmarkResult]) -> str:
-    """Render benchmark results as a plain-text table."""
-    headers = (
+    """Render benchmark results as a plain-text table.
+
+    Program shares and cadence columns appear only when a result has them.
+    """
+    show_programs = any(len(r.program_share) > 1 for r in results)
+    show_cadence = any(r.cadence_targets for r in results)
+    headers = [
         "contender",
         "science h",
         "weighted",
         "slew h",
         "idle h",
         "obs",
-        "ToO response",
-        "plan s",
-        "run s",
-        "mismatches",
-    )
-    rows: list[tuple[str, ...]] = [headers]
+        "ToO on time",
+        "ToO median",
+    ]
+    if show_programs:
+        headers.append("programs")
+    if show_cadence:
+        headers.append("cadence")
+    headers += ["plan s", "run s", "mismatches"]
+
+    rows: list[list[str]] = [headers]
     for r in results:
         if r.error is not None:
-            rows.append((r.contender, f"error: {r.error}", *[""] * 8))
+            rows.append([r.contender, f"error: {r.error}", *[""] * (len(headers) - 2)])
             continue
-        responses = [
-            "-" if seconds is None else f"{seconds / 60:.0f} min"
+        responses = sorted(
+            seconds
             for seconds in r.too_response_seconds.values()
-        ]
-        rows.append(
-            (
-                r.contender,
-                f"{r.science_hours:.2f}",
-                f"{r.weighted_science:.3g}",
-                f"{r.slewing_hours:.2f}",
-                f"{r.idle_hours:.2f}",
-                str(r.observations),
-                ", ".join(responses) or "n/a",
-                "" if r.planning_seconds is None else f"{r.planning_seconds:.1f}",
-                f"{r.run_seconds:.1f}",
-                "" if r.mismatches is None else str(r.mismatches),
-            )
+            if seconds is not None
         )
+        row = [
+            r.contender,
+            f"{r.science_hours:.2f}",
+            f"{r.weighted_science:.3g}",
+            f"{r.slewing_hours:.2f}",
+            f"{r.idle_hours:.2f}",
+            str(r.observations),
+            f"{r.too_on_time}/{len(r.too_response_seconds)}"
+            if r.too_response_seconds
+            else "n/a",
+            f"{responses[len(responses) // 2] / 60:.0f} min" if responses else "-",
+        ]
+        if show_programs:
+            row.append(
+                " ".join(
+                    f"{name} {share:.0%}" for name, share in r.program_share.items()
+                )
+            )
+        if show_cadence:
+            row.append(
+                "-"
+                if r.cadence_error is None
+                else f"{r.cadence_error:.2f} ({r.cadence_revisited}/{r.cadence_targets})"
+            )
+        row += [
+            "" if r.planning_seconds is None else f"{r.planning_seconds:.1f}",
+            f"{r.run_seconds:.1f}",
+            "" if r.mismatches is None else str(r.mismatches),
+        ]
+        rows.append(row)
     widths = [max(len(row[i]) for row in rows) for i in range(len(headers))]
     lines = [
         "  ".join(cell.ljust(width) for cell, width in zip(row, widths)).rstrip()

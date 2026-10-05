@@ -348,14 +348,41 @@ that arrive during the run. The contenders are:
    ])
    print(format_results(results))
 
-Each :class:`~conops.benchmark.BenchmarkResult` reports science time, merit-weighted
-science, time slewing, idle and in contact, the number of observations, each ToO's
-response time, planning and run time, and plan/execution mismatches. A contender that
-fails is reported with its error instead of stopping the benchmark.
+Each :class:`~conops.benchmark.BenchmarkResult` reports, measured the same way for every
+contender:
+
+* science time and merit-weighted science;
+* time slewing, idle and in contact, and the number of observations;
+* each ToO's response time, and how many started by their deadline;
+* each program's share of the science collected;
+* for targets with a cadence, how far the mean gap between visits missed the requested
+  interval, and how many targets were revisited at all;
+* planning and run time, and plan/execution mismatches.
+
+A contender that fails is reported with its error instead of stopping the benchmark.
+
+Standard scenarios
+^^^^^^^^^^^^^^^^^^
+
+:mod:`conops.benchmark.scenarios` provides five scenarios, each stressing a different
+part of scheduling. All use one low-Earth orbit from a TLE, Sun and Earth-limb
+avoidance, the default ground stations, a battery that never limits operations, and
+seeded random targets:
+
+* ``baseline``: a day of 200 targets and one ToO with a one-hour deadline;
+* ``too-heavy``: eight ToOs across the day, half urgent (tier 1, deadlines of 30
+  minutes to 2 hours) and half routine (tier 0, 4 to 12 hours);
+* ``oversubscribed``: 600 targets requesting far more time than the day holds, a third
+  of them with deadlines;
+* ``cadence``: twelve monitoring targets wanting a visit every four hours, and two
+  survey programs with equal time shares but different merit, with the cadence and
+  completion-deficit merit terms switched on;
+* ``multi-day``: three days, 400 targets and a ToO a day, for replanning over a long
+  run.
 
 ``scripts/benchmark_schedulers.py`` runs the standard contenders (adding the CP-SAT
-planner, planned and rolling, when OR-Tools is installed) on a realistic
-scenario: the example TLE, Sun and Earth-limb avoidance, the default ground stations,
-random targets and one ToO halfway through with a one-hour deadline::
+planner, planned and rolling, when OR-Tools is installed) on one scenario or all of
+them, with rolling replans every six hours (or four times in a shorter run) and a
+30-minute commit lead time::
 
-   uv run python scripts/benchmark_schedulers.py --hours 24 --targets 200 --time-limit 10
+   uv run python scripts/benchmark_schedulers.py --scenario all --time-limit 10

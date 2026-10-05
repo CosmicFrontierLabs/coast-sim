@@ -45,6 +45,8 @@ Scheduling and Planning
    :maxdepth: 2
 
    conops.benchmark
+   conops.benchmark.metrics
+   conops.benchmark.scenarios
    conops.schedulers
    conops.schedulers.context
    conops.schedulers.cpsat_planner
