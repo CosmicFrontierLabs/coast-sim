@@ -184,7 +184,9 @@ Pydantic-based configuration management for spacecraft parameters, instruments, 
 
 ### DITL Simulation (`conops.ditl`)
 
-Day-In-The-Life simulation classes including DITL, DITLMixin, and QueueDITL for comprehensive timeline simulation.
+Day-In-The-Life simulations: `DITL` executes a plan, `QueueDITL` picks each next
+target from a queue as it runs, and `RollingHorizonDITL` re-plans as it runs.
+`create_ditl` builds whichever one the configuration's `scheduler` section selects.
 
 Instantaneous field-of-regard telemetry (`for_solid_angle_sr`) is optional and
 disabled by default for performance. To enable it, pass
@@ -192,7 +194,12 @@ disabled by default for performance. To enable it, pass
 
 ### Scheduling (`conops.schedulers`)
 
-Target observation queue management and intelligent scheduling algorithms (FirstFitPlanner, GreedyDispatchPlanner).
+Planners that build an observing plan ahead of time: `PriorityPlanner` places
+requests in priority order, `LocalSearchPlanner` improves that plan by local search,
+and `CpSatPlanner` optimizes it with OR-Tools CP-SAT. `LongRangeAllocator` decides on
+which day each request is observed over runs of days to months, and steers dispatch
+and rolling re-planning. `FirstFitPlanner` and `GreedyDispatchPlanner` are simple
+legacy planners. See the planning guide in the documentation.
 
 ### Targets (`conops.targets`)
 
