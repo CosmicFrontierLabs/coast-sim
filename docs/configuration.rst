@@ -1536,8 +1536,8 @@ dispatch, so configurations without this section behave as before.
   ``rolling`` modes
 
   * ``kind``: ``priority``, ``local_search`` or ``cp_sat``
-  * ``include_passes`` (default true) and ``successor_retries`` (unset by default;
-    see :doc:`planning`)
+  * ``include_passes`` (default true) and ``successor_retries`` (3 by default,
+    ``null`` for no limit; see :doc:`planning`)
   * local search, for ``local_search`` and ``cp_sat``: ``seed`` (defaults to
     ``random_seed``, which the priority planner uses to break ties), ``time_limit``,
     ``max_iterations``, ``earliness_weight``, ``neighborhood``, ``history_length``
