@@ -133,6 +133,14 @@ class TestUrgency:
 
         assert _science_order(ditl) == []
 
+    def test_target_is_not_selected_before_its_earliest_start(self) -> None:
+        later = {**FLEXIBLE, "earliest_start": BEGIN + HOUR}
+
+        ditl = _run([later])
+
+        (entry,) = (e for e in ditl.plan if e.obstype == ObsType.AT)
+        assert entry.collection_begin >= BEGIN + HOUR
+
 
 class TestTier:
     def test_higher_tier_wins_regardless_of_merit(self) -> None:

@@ -273,3 +273,24 @@ class TestDeadlineField:
 
     def test_absent_deadline_is_not_serialized(self) -> None:
         assert "deadline" not in _target().model_dump(mode="json")
+
+
+class TestEarliestStartField:
+    def test_accepts_datetime_and_serializes_iso(self) -> None:
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        target = _target(earliest_start=start)
+
+        assert target.earliest_start == start.timestamp()
+        assert target.model_dump(mode="json")["earliest_start"] == start.isoformat()
+
+    def test_absent_earliest_start_is_not_serialized(self) -> None:
+        assert "earliest_start" not in _target().model_dump(mode="json")
+
+    def test_may_equal_the_deadline(self) -> None:
+        target = _target(earliest_start=1000.0, deadline=1000.0)
+
+        assert target.earliest_start == target.deadline
+
+    def test_must_not_be_after_the_deadline(self) -> None:
+        with pytest.raises(ValidationError, match="earliest_start"):
+            _target(earliest_start=2000.0, deadline=1000.0)

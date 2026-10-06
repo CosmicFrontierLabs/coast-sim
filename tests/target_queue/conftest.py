@@ -25,6 +25,7 @@ def mock_target():
     target.dec = 0
     target.obsid = 1
     target.deadline = None
+    target.earliest_start = None
 
     def reset_func():
         target.done = False
@@ -51,6 +52,7 @@ def mock_targets(mock_target):
         t.dec = i * 10
         t.obsid = 100 + i
         t.deadline = None
+        t.earliest_start = None
 
         # Create a closure to capture the target instance
         def create_reset_func(target_instance):

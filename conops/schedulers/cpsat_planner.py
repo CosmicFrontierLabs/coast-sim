@@ -540,6 +540,9 @@ class CpSatPlanner(LocalSearchPlanner):
             if longest < shortest:
                 continue
             opens = origin_time
+            if target.earliest_start is not None:
+                # Collection begins setup after the snapshot arrives.
+                opens = max(opens, target.earliest_start - setup)
             spacing = None
             if request.cadence is not None:
                 spacing = int(np.ceil(setup + request.cadence))
@@ -567,12 +570,14 @@ class CpSatPlanner(LocalSearchPlanner):
                 rate = scale * self._value(request, shares)
                 earliness = offset = 0.0
                 if target.deadline is not None and self.earliness_weight > 0.0:
-                    available = target.deadline - ctx.ustart
+                    released = max(ctx.ustart, target.earliest_start or ctx.ustart)
+                    available = target.deadline - released
                     if available > 0:
-                        # Delay counts from the horizon start, at collection
-                        # start, valued at the candidate's longest collection.
+                        # Delay counts from the horizon start, or the earliest
+                        # start if later, at collection start, valued at the
+                        # candidate's longest collection.
                         earliness = rate * longest * self.earliness_weight / available
-                        offset = -earliness * (origin_time + setup - ctx.ustart)
+                        offset = -earliness * (origin_time + setup - released)
                 if request.cadence is not None and self.earliness_weight > 0.0:
                     # A visit is worth taking soon after it is due, so the
                     # visits keep to the cadence: a visit a whole cadence late

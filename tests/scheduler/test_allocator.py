@@ -125,6 +125,34 @@ class TestLongRangeAllocator:
         assert allocation.capacity[1] == pytest.approx(0.75 * 12 * HOUR)
         assert int(first.obsid) not in allocation.seconds
 
+    def test_allocates_nothing_before_the_earliest_start(self) -> None:
+        config = _config(4)
+        target = _target(
+            config,
+            1,
+            105.0,
+            10.0,
+            minutes=60,
+            snapshot=20,
+            earliest_start=T0 + 2 * HOUR,
+        )
+        allocator = LongRangeAllocator(
+            config, BEGIN, BEGIN + timedelta(hours=4), bin_length=timedelta(hours=1)
+        )
+
+        allocation = allocator.allocate([target], T0)
+
+        assert set(allocation.seconds[1]) <= {2, 3}
+        assert sum(allocation.seconds[1].values()) == pytest.approx(60 * MIN)
+
+    def test_dispatch_queue_keeps_the_earliest_start(self) -> None:
+        config = _config(2)
+        ditl = QueueDITL(config=config, begin=BEGIN, end=BEGIN + timedelta(hours=2))
+        queue_targets(ditl, [_target(config, 1, 105.0, 10.0, earliest_start=T0 + HOUR)])
+
+        assert ditl.queue.get(105.0, 10.0, T0 + 10 * MIN) is None
+        assert ditl.queue.targets[0].earliest_start == T0 + HOUR
+
     @pytest.mark.parametrize(
         "options",
         [

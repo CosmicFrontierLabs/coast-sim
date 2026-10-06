@@ -79,13 +79,13 @@ class _Demand(BaseModel):
 class LongRangeAllocator:
     """Allocate requests' remaining exposure to bins of a long run.
 
-    For each request, the seconds its target is visible in each bin, up to its
-    deadline, come from the same roll-independent visibility windows the
-    planners use. Each bin is expected to hold ``efficiency`` of its length in
-    science; the rest goes to slews, setup and ground passes. Of that capacity,
-    ``reserve`` is held back for work not yet known, such as Targets of
-    Opportunity, so that when it arrives it fits without pushing planned
-    requests to later bins. Requests passed as ``unplanned`` to
+    For each request, the seconds its target is visible in each bin, from its
+    earliest start to its deadline, come from the same roll-independent
+    visibility windows the planners use. Each bin is expected to hold
+    ``efficiency`` of its length in science; the rest goes to slews, setup and
+    ground passes. Of that capacity, ``reserve`` is held back for work not yet
+    known, such as Targets of Opportunity, so that when it arrives it fits
+    without pushing planned requests to later bins. Requests passed as ``unplanned`` to
     :meth:`allocate` are allocated first and use the reserve before the rest.
 
     By default the allocation is solved as a mixed-integer program with HiGHS
@@ -94,7 +94,8 @@ class LongRangeAllocator:
     above held at their best, subject to:
 
     * each request gets, in each bin, either nothing or at least its ``ss_min``,
-      and no more than its target is visible there before its deadline;
+      and no more than its target is visible there between its earliest
+      start and its deadline;
     * no request gets more than its remaining exposure;
     * each bin's planned requests fit its capacity less the reserve, and all its
       requests fit its capacity;
@@ -464,9 +465,12 @@ class LongRangeAllocator:
         if windows is None:
             windows = self._windows[obsid] = self.ctx.visibility_windows(target)
         stop = target.deadline if target.deadline is not None else float("inf")
+        opens = start
+        if target.earliest_start is not None:
+            opens = max(start, target.earliest_start)
         visible: dict[int, float] = {}
         for k, (b0, b1) in enumerate(self.bins):
-            lo, hi = max(b0, start), min(b1, stop)
+            lo, hi = max(b0, opens), min(b1, stop)
             if hi <= lo:
                 continue
             seen = sum(max(0.0, min(w1, hi) - max(w0, lo)) for w0, w1 in windows)

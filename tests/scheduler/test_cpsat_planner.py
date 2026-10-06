@@ -15,7 +15,7 @@ from conops.ditl import RollingHorizonDITL  # noqa: E402
 from conops.schedulers import CpSatPlanner  # noqa: E402
 from conops.targets import Plan, Pointing  # noqa: E402
 
-from .planning_scenario import BEGIN, CONSTRAINED, MIN, PATCH, T0  # noqa: E402
+from .planning_scenario import BEGIN, CONSTRAINED, HOUR, MIN, PATCH, T0  # noqa: E402
 from .planning_scenario import make_config as _config  # noqa: E402
 from .planning_scenario import make_target as _target  # noqa: E402
 
@@ -206,6 +206,37 @@ class TestShortWindowRequest:
         urgent_entry = next(e for e in plan if e.obsid == 2)
         assert urgent_entry.collection_begin is not None
         assert urgent_entry.collection_begin <= T0 + 30 * MIN
+
+
+class TestEarliestStart:
+    def test_solver_keeps_the_earliest_start(self) -> None:
+        config = _config(3)
+        flexible = _target(config, 1, 105.0, 10.0, merit=100, minutes=60)
+        later = _target(
+            config,
+            2,
+            110.0,
+            10.0,
+            merit=70,
+            minutes=30,
+            earliest_start=T0 + HOUR,
+            deadline=T0 + 90 * MIN,
+        )
+
+        planner = CpSatPlanner(
+            config,
+            [flexible, later],
+            BEGIN,
+            BEGIN + timedelta(hours=3),
+            solver_time_limit=5.0,
+            workers=1,
+            seed=1,
+        )
+        plan = planner.schedule()
+
+        entry = next(e for e in plan if e.obsid == 2)
+        assert entry.collection_begin is not None
+        assert T0 + HOUR <= entry.collection_begin <= T0 + 90 * MIN
 
 
 class TestRollingHorizon:

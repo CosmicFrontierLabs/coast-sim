@@ -115,6 +115,7 @@ def queue_targets(ditl: QueueDITL, targets: Sequence[Pointing]) -> None:
             ss_max=int(target.ss_max),
             instrument_name=target.instrument_name,
             deadline=target.deadline,
+            earliest_start=target.earliest_start,
         )
 
 

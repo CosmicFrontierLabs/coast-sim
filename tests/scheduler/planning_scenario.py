@@ -79,6 +79,7 @@ def make_target(
     snapshot: float | None = None,
     ss_min: float | None = None,
     deadline: float | None = None,
+    earliest_start: float | None = None,
 ) -> Pointing:
     snapshot = minutes if snapshot is None else snapshot
     target = Pointing(
@@ -92,6 +93,7 @@ def make_target(
         ss_min=(snapshot if ss_min is None else ss_min) * MIN,
         ss_max=snapshot * MIN,
         deadline=deadline,
+        earliest_start=earliest_start,
     )
     target.exptime = minutes * MIN
     return target

@@ -101,6 +101,7 @@ class TargetQueue:
         ss_max: int = 86400,
         instrument_name: str | None = None,
         deadline: float | None = None,
+        earliest_start: float | None = None,
     ) -> Pointing:
         """Add a pointing target to the queue.
 
@@ -117,6 +118,8 @@ class TargetQueue:
             ss_max: Maximum snapshot size in seconds
             instrument_name: Science instrument to observe with
             deadline: Latest time (Unix seconds) science collection may begin
+            earliest_start: Earliest time (Unix seconds) science collection
+                may begin
 
         Returns:
             The added target.
@@ -136,6 +139,7 @@ class TargetQueue:
             ss_max=ss_max,
             instrument_name=telescope.name if telescope is not None else None,
             deadline=deadline,
+            earliest_start=earliest_start,
         )
         pointing.exptime = exptime
         pointing.visibility()
@@ -357,6 +361,8 @@ class TargetQueue:
             if t.merit > 0
             and not t.done
             and (t.deadline is None or utime <= t.deadline)
+            # Selected now, it collects after now.
+            and (t.earliest_start is None or utime >= t.earliest_start)
         ]
         score_candidates = (
             self.slew_distance_weight != 0.0

@@ -93,9 +93,9 @@ class LocalSearchPlanner(PriorityPlanner):
     search can cross plateaus. The objective is merit-weighted science time,
     compared tier by tier from the highest. A snapshot of a request with a
     deadline is worth less the later it starts: starting at the deadline
-    rather than the start of the horizon costs ``earliness_weight`` of its
-    value. The best plan found is returned, and never one worse than the
-    priority-first plan.
+    rather than the start of the horizon, or its earliest start if later,
+    costs ``earliness_weight`` of its value. The best plan found is returned,
+    and never one worse than the priority-first plan.
 
     Ground passes and locked entries stay where the priority-first plan put
     them. Takes the same arguments as
@@ -249,13 +249,15 @@ class LocalSearchPlanner(PriorityPlanner):
         worth = self._value(request, shares) * entry.collection_seconds_between(
             entry.begin, entry.end
         )
-        deadline = request.target.deadline
+        target = request.target
+        deadline = target.deadline
         if deadline is None or self.earliness_weight == 0.0:
             return worth
-        available = deadline - self.ctx.ustart
+        opens = max(self.ctx.ustart, target.earliest_start or self.ctx.ustart)
+        available = deadline - opens
         if available <= 0.0 or entry.collection_begin is None:
             return worth
-        delay = max(0.0, float(entry.collection_begin) - self.ctx.ustart)
+        delay = max(0.0, float(entry.collection_begin) - opens)
         return worth * (1.0 - self.earliness_weight * min(1.0, delay / available))
 
     def _set_unplaced(self, remaining: dict[int, float]) -> None:
