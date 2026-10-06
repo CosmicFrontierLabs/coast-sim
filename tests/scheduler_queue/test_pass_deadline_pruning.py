@@ -187,3 +187,24 @@ def test_empty_profiles_still_have_no_deadline(deadline_ditl):
         ditl._next_pass_science_deadline(1000, target_roll=30, earlier_deadline=3000)
         is None
     )
+
+
+@pytest.mark.parametrize("field", ["max_slew_rate", "slew_acceleration"])
+def test_unavailable_bound_falls_back_to_original_calculation(deadline_ditl, field):
+    ditl, _ = deadline_ditl
+    # The scalar motion model supports a best-effort fallback for zero limits.
+    setattr(ditl.config.spacecraft_bus.attitude_control, field, 0.0)
+    exact = ditl._next_pass_science_deadline(1000, target_roll=30)
+    with patch.object(
+        Pass,
+        "_slew_time_to_target",
+        autospec=True,
+        side_effect=Pass._slew_time_to_target,
+    ) as slew:
+        assert (
+            ditl._next_pass_science_deadline(
+                1000, target_roll=30, earlier_deadline=1000
+            )
+            == exact
+        )
+    assert slew.call_count == 2

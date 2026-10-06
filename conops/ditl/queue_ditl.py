@@ -2464,15 +2464,20 @@ class QueueDITL(DITLMixin, DITLStats):
             assert next_pass.ephem is not None
             acs_config = next_pass.config.spacecraft_bus.attitude_control
             if acs_config.slew_algorithm == SlewAlgorithm.QUATERNION:
-                # Even the longest ingress cannot interrupt the earlier deadline.
-                # Keep equality on the full path to preserve deadline-reason ties.
-                earliest_ingress = (
-                    next_pass.begin
-                    - Slew.duration_upper_bound(acs_config)
-                    - pass_slew_trigger_buffer(next_pass.ephem.step_size)
-                )
-                if earliest_ingress > earlier_deadline:
-                    return None
+                try:
+                    duration_bound = Slew.duration_upper_bound(acs_config)
+                except ValueError:
+                    # An unavailable bound must not change the full path's behavior.
+                    pass
+                else:
+                    # Keep equality on the full path to preserve deadline-reason ties.
+                    earliest_ingress = (
+                        next_pass.begin
+                        - duration_bound
+                        - pass_slew_trigger_buffer(next_pass.ephem.step_size)
+                    )
+                    if earliest_ingress > earlier_deadline:
+                        return None
 
         ppt_is_plan_entry = issubclass(type(ppt), PlanEntry)
         spacecraft_attitude = (
