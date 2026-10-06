@@ -358,14 +358,8 @@ class TargetQueue:
             if target.exptime is not None and target.exptime < target.ss_min:
                 continue
 
-            if not self._can_fit_min_snapshot_with_zero_slew(
-                target=target,
-                utime=utime,
-                last_unix=last_unix,
-                collection_deadline=collection_deadline if score_candidates else None,
-            ):
-                continue
-
+            # Reject score-bound losers before the deadline callback can compute
+            # their roll and ground-pass ingress geometry.
             if prune_by_score_bound:
                 upper_bound = self._candidate_score_upper_bound(
                     target=target,
@@ -374,6 +368,14 @@ class TargetQueue:
                 )
                 if upper_bound <= best_score:
                     continue
+
+            if not self._can_fit_min_snapshot_with_zero_slew(
+                target=target,
+                utime=utime,
+                last_unix=last_unix,
+                collection_deadline=collection_deadline if score_candidates else None,
+            ):
+                continue
 
             self._estimate_slew(
                 target,

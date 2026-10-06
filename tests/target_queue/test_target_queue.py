@@ -1,6 +1,10 @@
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
+
+import numpy as np
+import pytest
 
 from conops import AttitudeControlSystem, Queue, TargetSlewEstimate
+from conops.config import ObservationTiming
 
 
 class TestQueueInitAndAppend:
@@ -489,8 +493,11 @@ class TestCollectionTimeWeight:
         assert selected == target
         target.calc_slewtime.assert_called_once_with(0, 0)
 
-    def test_score_bound_skips_candidate_that_cannot_beat_best(self, queue_instance):
-        """Candidates whose optimistic score cannot win should skip slew scoring."""
+    @pytest.mark.parametrize("beaten_merit", [90, 100])
+    def test_score_bound_skips_candidate_that_cannot_beat_best(
+        self, queue_instance, beaten_merit
+    ):
+        """Bound losers, including ties, skip deadline and slew calculations."""
         utime = 1762924800.0
         queue_instance.slew_distance_weight = 1.0
 
@@ -499,7 +506,7 @@ class TestCollectionTimeWeight:
         best_target.visible.return_value = [utime, utime + 1000]
 
         beaten_target = queue_instance.targets[1]
-        beaten_target.merit = 90
+        beaten_target.merit = beaten_merit
         beaten_target.visible.return_value = [utime, utime + 1000]
 
         for target in queue_instance.targets[2:]:
@@ -507,6 +514,7 @@ class TestCollectionTimeWeight:
             target.visible.return_value = [utime, utime + 1000]
 
         estimator = Mock(return_value=TargetSlewEstimate(slewtime=0.0, slewdist=0.0))
+        deadline = Mock(return_value=utime + 1000)
 
         with patch.object(queue_instance, "meritsort"):
             target = queue_instance.get(
@@ -514,10 +522,15 @@ class TestCollectionTimeWeight:
                 dec=0,
                 utime=utime,
                 slew_estimator=estimator,
+                collection_deadline=deadline,
             )
 
         assert target == best_target
         estimator.assert_called_once_with(best_target)
+        assert deadline.call_args_list == [
+            call(best_target, utime),
+            call(best_target, utime),
+        ]
         beaten_target.calc_slewtime.assert_not_called()
 
     def test_score_bound_still_scores_candidate_that_could_beat_best(
@@ -591,6 +604,104 @@ class TestCollectionTimeWeight:
         assert target == rewarded_target
         estimator.assert_any_call(nominal_target)
         estimator.assert_any_call(rewarded_target)
+
+    @pytest.mark.parametrize(
+        "weight",
+        [
+            "slew_distance_weight",
+            "slew_time_weight",
+            "collection_time_weight",
+            "radiator_sun_exposure_weight",
+            "radiator_earth_exposure_weight",
+        ],
+    )
+    def test_negative_weights_keep_deadline_checks(self, queue_instance, weight):
+        utime = 1762924800.0
+        setattr(queue_instance, weight, -1.0)
+        deadline = Mock(return_value=utime + 1000)
+        estimator = Mock(return_value=TargetSlewEstimate(slewtime=0.0, slewdist=0.0))
+        with (
+            patch.object(queue_instance, "meritsort"),
+            patch.object(
+                queue_instance,
+                "_candidate_score_upper_bound",
+                side_effect=AssertionError("negative weights must not use the bound"),
+            ),
+        ):
+            queue_instance.get(
+                ra=0,
+                dec=0,
+                utime=utime,
+                collection_deadline=deadline,
+                slew_estimator=estimator,
+            )
+        assert estimator.call_count == len(queue_instance.targets)
+        for target in queue_instance.targets:
+            deadline.assert_any_call(target, utime)
+
+    def test_early_score_bound_matches_exhaustive_selection(self, queue_instance):
+        """Pruning preserves the winner and its timing/attitude with real scores."""
+        utime = 1762924800.0
+        rng = np.random.default_rng(284)
+        queue_instance.observation_timing = ObservationTiming(
+            setup_seconds=43, cleanup_seconds=2, handoff_seconds=10
+        )
+
+        def estimate(target):
+            return TargetSlewEstimate(
+                slewtime=target.test_slew_seconds,
+                slewdist=target.test_slew_distance,
+                instrument_roll=17.0,
+                spacecraft_attitude=(target.ra, target.dec, 17.0),
+            )
+
+        for _ in range(100):
+            queue_instance.slew_distance_weight = float(rng.choice([0, 0.5, 2]))
+            queue_instance.slew_time_weight = float(rng.choice([0, 1, 10]))
+            queue_instance.collection_time_weight = float(rng.choice([1, 5, 10]))
+            for index, target in enumerate(queue_instance.targets):
+                target.obsid = index
+                target.merit = float(rng.integers(1, 101))
+                target.ss_min = int(rng.choice([60, 300]))
+                target.ss_max = int(rng.choice([300, 900]))
+                target.exptime = int(rng.choice([120, 600, 1500]))
+                target.test_slew_seconds = float(rng.uniform(0, 180))
+                target.test_slew_distance = float(rng.uniform(0, 180))
+                target.test_deadline = utime + float(rng.uniform(60, 1500))
+                window = [utime, utime + float(rng.uniform(60, 2000))]
+                target.visible.side_effect = lambda begin, end, w=window: (
+                    w if begin >= w[0] and end <= w[1] else False
+                )
+
+            results = []
+            for prune in (False, True):
+                queue = queue_instance
+                with (
+                    patch.object(queue, "meritsort"),
+                    patch.object(
+                        queue, "_score_upper_bound_pruning_is_safe", return_value=prune
+                    ),
+                ):
+                    selected = queue.get(
+                        ra=0,
+                        dec=0,
+                        utime=utime,
+                        collection_deadline=lambda target, _: target.test_deadline,
+                        slew_estimator=estimate,
+                    )
+                results.append(
+                    None
+                    if selected is None
+                    else (
+                        selected.obsid,
+                        selected.begin,
+                        selected.end,
+                        selected.slewtime,
+                        selected.roll,
+                        selected.spacecraft_attitude,
+                    )
+                )
+            assert results[0] == results[1]
 
     def test_slew_time_weight_penalizes_longer_slews(self, queue_instance):
         """Slew time can be scored directly as an opportunity cost."""
