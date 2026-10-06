@@ -86,6 +86,32 @@ def _power_score_order(
     return np.asarray(ordered, dtype=np.int64)
 
 
+def _best_power_roll(
+    scores: npt.NDArray[np.float64], reference_roll: float | None
+) -> float:
+    """Select the first power-ranked roll without ordering the losing candidates."""
+    finite = np.flatnonzero(np.isfinite(scores))
+    if not finite.size:
+        return float(reference_roll or 0.0)
+    finite_scores = scores[finite]
+    # Compare with the maximum, not adjacent scores: tolerance ties are not transitive.
+    tied = finite[
+        np.isclose(
+            finite_scores,
+            np.max(finite_scores),
+            rtol=_POWER_SCORE_RTOL,
+            atol=_POWER_SCORE_ATOL_W,
+        )
+    ]
+    if reference_roll is not None:
+        distance = np.abs(
+            (_ROLL_DEGREES[tied] - reference_roll + 180.0) % 360.0 - 180.0
+        )
+        # tied is in increasing roll order, preserving the secondary tie-break.
+        return float(_ROLL_DEGREES[tied[np.argmin(distance)]])
+    return float(_ROLL_DEGREES[tied[0]])
+
+
 def _validate_reachable_rolls(
     reference_roll: float | None,
     max_roll_delta: float | None,
@@ -180,8 +206,7 @@ def optimum_body_roll(
     )
     if candidate_mask is not None:
         scores = np.where(candidate_mask, scores, -np.inf)
-    order = _power_score_order(scores, reference)
-    return float(_ROLL_DEGREES[order[0]]) if order.size else float(reference or 0.0)
+    return _best_power_roll(scores, reference)
 
 
 def optimum_instrument_roll(
