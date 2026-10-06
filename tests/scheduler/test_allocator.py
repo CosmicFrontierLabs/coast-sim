@@ -1,6 +1,7 @@
 """Long-range allocation and how it steers planners and simulations."""
 
 from datetime import timedelta
+from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
@@ -196,6 +197,62 @@ def _fresh(
 
 
 class TestSolver:
+    def test_a_level_without_a_solution_is_allocated_greedily(self) -> None:
+        """If the solver finds nothing for a lower tier, it still gets time."""
+        from types import SimpleNamespace
+
+        from ortools.math_opt.python import solve
+        from ortools.math_opt.python.result import TerminationReason
+
+        categories = [
+            ObservationCategory(name="Low", obsid_min=100, obsid_max=200, tier=-1)
+        ]
+        config = _config(4, categories=categories)
+        science = _target(config, 1, 105.0, 10.0, minutes=60, snapshot=20)
+        filler = _target(config, 100, 110.0, 10.0, minutes=40, snapshot=20)
+        allocator = LongRangeAllocator(
+            config, BEGIN, BEGIN + timedelta(hours=4), bin_length=timedelta(hours=1)
+        )
+        real = solve.solve
+        calls = []
+
+        def second_finds_nothing(*args: object, **kwargs: object) -> object:
+            calls.append(1)
+            if len(calls) == 2:
+                return SimpleNamespace(
+                    termination=SimpleNamespace(
+                        reason=TerminationReason.NO_SOLUTION_FOUND
+                    ),
+                    has_primal_feasible_solution=lambda: False,
+                )
+            return real(*args, **kwargs)  # type: ignore[arg-type]
+
+        with patch.object(solve, "solve", second_finds_nothing):
+            allocation = allocator.allocate([science, filler], T0)
+
+        assert allocator.solver_status == "OPTIMAL,NO_SOLUTION_FOUND"
+        assert sum(allocation.seconds[1].values()) == pytest.approx(60 * MIN)
+        # Greedily, into the room the science left: at least a snapshot.
+        assert sum(allocation.seconds[100].values()) >= 20 * MIN
+
+    def test_every_level_is_solved_from_the_level_before(self) -> None:
+        categories = [
+            ObservationCategory(name="Low", obsid_min=100, obsid_max=200, tier=-1)
+        ]
+        config = _config(4, categories=categories)
+        targets = [
+            _target(config, 1, 105.0, 10.0, minutes=60, snapshot=20),
+            _target(config, 100, 110.0, 10.0, minutes=60, snapshot=20),
+        ]
+        allocator = LongRangeAllocator(
+            config, BEGIN, BEGIN + timedelta(hours=4), bin_length=timedelta(hours=1)
+        )
+
+        allocation = allocator.allocate(targets, T0)
+
+        assert allocator.solver_status == "OPTIMAL"
+        assert sum(allocation.seconds[100].values()) == pytest.approx(60 * MIN)
+
     def test_solves_the_week_to_optimality_by_default(
         self, week: tuple[MissionConfig, list[Pointing], LongRangeAllocator, object]
     ) -> None:
