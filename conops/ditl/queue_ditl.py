@@ -16,7 +16,7 @@ from ..common import (
     scbodyvector,
     unixtime2date,
 )
-from ..common.enums import ACSCommandType
+from ..common.enums import ACSCommandType, SlewAlgorithm
 from ..common.vector import attitude_to_quat, quaternion_attitude_delta
 from ..config import DAY_SECONDS, AttitudeConstraintScope, MissionConfig
 from ..config.acs import scheduled_slew_time
@@ -27,7 +27,7 @@ from ..config.constraint import (
 )
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
-from ..simulation.passes import Pass
+from ..simulation.passes import Pass, pass_slew_trigger_buffer
 from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing, Queue, TargetSlewEstimate
@@ -2450,13 +2450,29 @@ class QueueDITL(DITLMixin, DITLStats):
         *,
         target_roll: float,
         target: Pointing | None = None,
+        earlier_deadline: float | None = None,
     ) -> float | None:
-        """Finish science teardown before any tracking profile can trigger ingress."""
+        """Return the ingress deadline, unless another deadline provably wins."""
         ppt = target or self.ppt
         assert ppt is not None
         next_pass = self.acs.passrequests.next_pass(slew_end)
         if next_pass is None:
             return None
+
+        if earlier_deadline is not None:
+            assert next_pass.config is not None
+            assert next_pass.ephem is not None
+            acs_config = next_pass.config.spacecraft_bus.attitude_control
+            if acs_config.slew_algorithm == SlewAlgorithm.QUATERNION:
+                # Even the longest ingress cannot interrupt the earlier deadline.
+                # Keep equality on the full path to preserve deadline-reason ties.
+                earliest_ingress = (
+                    next_pass.begin
+                    - Slew.duration_upper_bound(acs_config)
+                    - pass_slew_trigger_buffer(next_pass.ephem.step_size)
+                )
+                if earliest_ingress > earlier_deadline:
+                    return None
 
         ppt_is_plan_entry = issubclass(type(ppt), PlanEntry)
         spacecraft_attitude = (
@@ -2547,10 +2563,15 @@ class QueueDITL(DITLMixin, DITLStats):
         if visibility_end is not None:
             deadlines.append((visibility_end, "visibility window"))
 
+        earlier_deadline = min(deadline for deadline, _ in deadlines)
+        if deadline_inputs.charge_deadline is not None:
+            earlier_deadline = min(earlier_deadline, deadline_inputs.charge_deadline)
+
         pass_deadline = self._next_pass_science_deadline(
             slew_end,
             target=target,
             target_roll=target_roll,
+            earlier_deadline=earlier_deadline,
         )
         if pass_deadline is not None:
             deadlines.append((pass_deadline, "pass"))
