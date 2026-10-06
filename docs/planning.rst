@@ -407,14 +407,18 @@ each request's remaining exposure to collect in which bin:
   that fits in the reserve doesn't push planned requests to later days;
 * the allocation is solved as a mixed-integer program with HiGHS (bundled with
   OR-Tools) that maximizes merit-weighted time. ToOs come first, then each tier in
-  turn, each solved with the ones above it held at their best, so a tier never gives
-  anything up for a lower one. A request gets either nothing in a bin or at least its
+  turn, each solved with the allocation of the ones above it fixed, so a tier never
+  gives anything up for a lower one. Each tier starts from a greedy allocation of its
+  requests into the room left, and if the solver finds no solution in time, that tier
+  and the ones below it keep the greedy allocation. A request gets either nothing in a bin or at least its
   ``ss_min``, never more than its remaining exposure, and a request with a cadence no
   more than an even share per bin. Requests with a deadline are worth slightly more
   in earlier bins;
 * the planned load is spread evenly over the bins as far as visibility allows, so
-  every week keeps some slack. This is a tiebreak: it never costs a second of
-  science for less than a thousand seconds of better balance;
+  every week keeps some slack. Each tier evens out the load it and the tiers above
+  it place, so a lower tier, such as filler, fills what the tiers above leave
+  light. This is a tiebreak: it never costs a second of science for less than a
+  thousand seconds of better balance;
 * re-allocating keeps the previous allocation unless changing it gains something:
   keeping a request's seconds where they were is worth an extra 1%. A ToO that fits
   in the reserve leaves every planned request where it was;
