@@ -10,7 +10,7 @@ import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
 from ..common import ObsType
-from ..config import MissionConfig
+from ..config import AllocationStrictness, MissionConfig
 from ..schedulers.allocator import Allocation, LongRangeAllocator
 from ..schedulers.priority_planner import PriorityPlanner, StartState
 from ..simulation.slew import Slew
@@ -112,9 +112,18 @@ class RollingHorizonDITL(DITL):
             ``{"time_limit": 5.0}`` for a local-search planner.
         allocator: Long-range allocator over the whole run. If given, each
             replan allocates the remaining exposure again from when the new
-            plan starts, and the planner plans the requests allocated to the
-            bins its horizon covers ahead of the others in their tier (see
+            plan starts, and the planner plans each request's allocated
+            seconds in their bin, ahead of the others in its tier (see
             :class:`~conops.schedulers.LongRangeAllocator`).
+        allocation: A long-range allocation to follow instead, made
+            elsewhere, such as a weekly long-range plan. Each replan plans each
+            request's allocated seconds in their bin, less what has been
+            collected or committed in the bin. Not with ``allocator``.
+        allocation_strictness: How closely plans follow the allocation:
+            ``strict``, ``tier`` or ``weighted`` (see
+            :data:`~conops.config.AllocationStrictness`).
+        allocation_bonus: Fraction of a request's value its allocated time
+            gains with ``weighted`` strictness.
         calculate_field_of_regard: Whether to compute field-of-regard telemetry.
     """
 
@@ -135,10 +144,15 @@ class RollingHorizonDITL(DITL):
         planner: type[PriorityPlanner] = PriorityPlanner,
         planner_options: Mapping[str, object] | None = None,
         allocator: LongRangeAllocator | None = None,
+        allocation: Allocation | None = None,
+        allocation_strictness: AllocationStrictness = "strict",
+        allocation_bonus: float = 0.5,
         calculate_field_of_regard: bool = False,
     ) -> None:
         if horizon <= timedelta(0) or replan_interval <= timedelta(0):
             raise ValueError("horizon and replan_interval must be positive")
+        if allocator is not None and allocation is not None:
+            raise ValueError("give allocator or allocation, not both")
         if commit_lead_time < timedelta(0):
             raise ValueError("commit_lead_time must not be negative")
         super().__init__(
@@ -159,8 +173,11 @@ class RollingHorizonDITL(DITL):
         self.planner = planner
         self.planner_options = dict(planner_options or {})
         self.allocator = allocator
-        self.allocation: Allocation | None = None
-        """The allocation made at the last replan, if there is an allocator."""
+        self.allocation_strictness = allocation_strictness
+        self.allocation_bonus = allocation_bonus
+        self.allocation: Allocation | None = allocation
+        """The allocation the plans follow: the one given, or the one made at
+        the last replan if there is an allocator."""
         self.merit_model = MeritModel(config)
         self.too_register: list[TOORequest] = []
         self.replans: list[ReplanRecord] = []
@@ -363,16 +380,23 @@ class RollingHorizonDITL(DITL):
             pool = [t for t in self.targets if not t.done]
             reserved = self._reserved_seconds(committed, utime)
             options = dict(self.planner_options)
+            used = None
             if self.allocator is not None:
+                # Allocated from the exposure that remains, so nothing is used.
                 self.allocation = self.allocator.allocate(
                     pool,
                     start,
                     reserved,
                     unplanned={int(t.obsid) for t in self._too_targets.values()},
                 )
-                options["preferred"] = self.allocation.preferred(
-                    [int(t.obsid) for t in pool], start, horizon_end
+            elif self.allocation is not None:
+                used = self._used_by_bin(self.allocation, committed)
+            if self.allocation is not None:
+                options["allocated"] = self.allocation.allocated(
+                    [int(t.obsid) for t in pool], start, horizon_end, used
                 )
+                options["allocation_strictness"] = self.allocation_strictness
+                options["allocation_bonus"] = self.allocation_bonus
             planner = self.planner(
                 self.config,
                 pool,
@@ -471,6 +495,23 @@ class RollingHorizonDITL(DITL):
             obsid=too.obsid,
         )
         return int(entry.obsid)
+
+    @staticmethod
+    def _used_by_bin(
+        allocation: Allocation, committed: Sequence[PlanEntry]
+    ) -> dict[int, dict[int, float]]:
+        """Science collected or committed, by obsid and the bin it starts in."""
+        used: dict[int, dict[int, float]] = {}
+        for entry in committed:
+            begin, end = entry.collection_begin, entry.collection_end
+            if begin is None or end is None:
+                continue
+            for k, (b0, b1) in enumerate(allocation.bins):
+                if b0 <= begin < b1:
+                    per_bin = used.setdefault(int(entry.obsid), {})
+                    per_bin[k] = per_bin.get(k, 0.0) + float(end) - float(begin)
+                    break
+        return used
 
     def _start_state(
         self, committed: Sequence[PlanEntry], utime: float, cutoff: float

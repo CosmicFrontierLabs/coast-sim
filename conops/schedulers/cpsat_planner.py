@@ -35,6 +35,20 @@ from .priority_planner import _Block, _Request, program_shares
 WindowKey = tuple[int, float]
 """A request's obsid and the Unix start time of one of its visibility windows."""
 
+SpanKey = tuple[int, int]
+"""A request's obsid and the index of one of its spans of allocated time."""
+
+
+class _Span:
+    """Allocated time a candidate snapshot can use, if it arrives in time."""
+
+    def __init__(self, key: SpanKey, arrival: tuple[int, int], rate: float) -> None:
+        self.key = key
+        self.arrival = arrival
+        """Arrivals, from the chunk's origin, whose collection starts in the span."""
+        self.rate = rate
+        """Objective value per allocated second, beyond the candidate's rate."""
+
 
 class _Task:
     """One node of a chunk's circuit: the start, a pass, or a candidate snapshot."""
@@ -54,6 +68,7 @@ class _Task:
         rate: float = 0.0,
         earliness: float = 0.0,
         offset: float = 0.0,
+        spans: Sequence[_Span] = (),
     ) -> None:
         self.key = key
         """Request and window of a candidate snapshot; None for the start and passes."""
@@ -79,6 +94,8 @@ class _Task:
         """Objective value lost per second the arrival is delayed."""
         self.offset = offset
         """Objective value of observing the candidate at all, beyond the rate."""
+        self.spans = list(spans)
+        """Allocated time the candidate's collection can count against."""
 
     @property
     def obsid(self) -> int | None:
@@ -395,6 +412,27 @@ class CpSatPlanner(LocalSearchPlanner):
                 objective.append(-task.earliness * delayed[k])
         for obsid, counted_list in totals.items():
             model.add(sum(counted_list) <= int(budget[obsid]))
+        # Allocated seconds: collection that starts in a span of the request's
+        # allocated time, up to what is left of it, is worth its allocated tier.
+        allocated: dict[SpanKey, list[cp_model.IntVar]] = {}
+        inside: dict[tuple[int, int], cp_model.IntVar] = {}
+        in_span: dict[tuple[int, int], cp_model.IntVar] = {}
+        for k, task in enumerate(tasks):
+            for n, span in enumerate(task.spans):
+                within = model.new_bool_var(f"inside{k}_{n}")
+                used = model.new_int_var(0, task.collection[1], f"allocated{k}_{n}")
+                model.add_implication(within, present[k])
+                model.add(arrival[k] >= span.arrival[0]).only_enforce_if(within)
+                model.add(arrival[k] <= span.arrival[1]).only_enforce_if(within)
+                model.add(used <= counted[k])
+                model.add(used == 0).only_enforce_if(~within)
+                allocated.setdefault(span.key, []).append(used)
+                inside[(k, n)], in_span[(k, n)] = within, used
+                objective.append(span.rate * used)
+        left = state.allocated_left
+        for key, used_list in allocated.items():
+            if np.isfinite(left.get(key, 0.0)):
+                model.add(sum(used_list) <= int(left.get(key, 0.0)))
         model.maximize(sum(objective))
 
         # Hint every variable, so the solver starts from the priority-first
@@ -418,6 +456,21 @@ class CpSatPlanner(LocalSearchPlanner):
                 model.add_hint(counted[k], length if k in hint else 0)
                 if k in delayed:
                     model.add_hint(delayed[k], start if k in hint else 0)
+        # The hinted snapshots use allocated time in order, as decoding does.
+        hint_left = dict(left)
+        for k in sorted(hint, key=lambda k: hint[k][1]):
+            _, start, length = hint[k]
+            for n, span in enumerate(tasks[k].spans):
+                taken = 0
+                if span.arrival[0] <= start <= span.arrival[1]:
+                    taken = int(min(length, hint_left.get(span.key, 0.0)))
+                    hint_left[span.key] = hint_left.get(span.key, 0.0) - taken
+                model.add_hint(inside[(k, n)], taken > 0)
+                model.add_hint(in_span[(k, n)], taken)
+        for (k, n), within in inside.items():
+            if k not in hint:
+                model.add_hint(within, False)
+                model.add_hint(in_span[(k, n)], 0)
 
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = time_limit
@@ -566,8 +619,22 @@ class CpSatPlanner(LocalSearchPlanner):
                 attitude = target.target_body_attitude(
                     ctx.instrument_roll(target, max(w0, origin_time))
                 )
-                scale = weights[request.merit.tier]
-                rate = scale * self._value(request, shares)
+                tier = request.merit.tier
+                value = self._value(request, shares)
+                rate = weights[tier] * value
+                spans = self._spans(
+                    state,
+                    obsid,
+                    origin_time,
+                    (window[0], latest),
+                    (
+                        weights[tier + self._allocated_offset] * self._allocated_factor
+                        - weights[tier]
+                    )
+                    * value
+                    if tier + self._allocated_offset in weights
+                    else 0.0,
+                )
                 earliness = offset = 0.0
                 if target.deadline is not None and self.earliness_weight > 0.0:
                     released = max(ctx.ustart, target.earliest_start or ctx.ustart)
@@ -606,6 +673,7 @@ class CpSatPlanner(LocalSearchPlanner):
                         rate=rate,
                         earliness=earliness,
                         offset=offset,
+                        spans=spans,
                     )
                     candidates.append((priority, rank, task))
         # Stable, so a window's snapshots stay together and in order.
@@ -692,6 +760,29 @@ class CpSatPlanner(LocalSearchPlanner):
             previous, free = k, start + task.overhead + seconds
         return hint
 
+    def _spans(
+        self,
+        state: _State,
+        obsid: int,
+        origin_time: float,
+        arrival: tuple[int, int],
+        rate: float,
+    ) -> list[_Span]:
+        """Spans of allocated time a candidate arriving in ``arrival`` can use."""
+        if self.allocated is None or rate <= 0.0:
+            return []
+        setup = self.ctx.setup_seconds
+        spans = []
+        for n, span in enumerate(self.allocated.get(obsid, [])):
+            if state.allocated_left.get((obsid, n), 0.0) <= 0.0:
+                continue
+            # Collection begins setup after the snapshot arrives.
+            lo = max(arrival[0], int(np.ceil(span.begin - setup - origin_time)))
+            hi = min(arrival[1], int(np.ceil(span.end - setup - origin_time)) - 1)
+            if lo <= hi:
+                spans.append(_Span((obsid, n), (lo, hi), rate))
+        return spans
+
     def _tier_weights(self) -> dict[int, float]:
         """Weights that keep every tier above all the tiers below it."""
         weights: dict[int, float] = {}
@@ -699,15 +790,32 @@ class CpSatPlanner(LocalSearchPlanner):
         for tier in sorted(self._tiers):
             weights[tier] = below + 1.0
             tier_total = sum(
-                self._value_bound(r) * self._initial_remaining[obsid]
-                for obsid, r in self._by_obsid.items()
-                if r.merit.tier == tier
+                self._tier_value(obsid, r, tier) for obsid, r in self._by_obsid.items()
             )
             below += weights[tier] * tier_total
         if not weights:
             return {}
         top = weights[max(self._tiers)]
         return {tier: weight / top for tier, weight in weights.items()}
+
+    def _tier_value(self, obsid: int, request: _Request, tier: int) -> float:
+        """Most the request's science can be worth in ``tier``.
+
+        All its exposure in its own tier, and its allocated time, at its
+        greater worth, in its allocated tier (see ``allocation_strictness``).
+        """
+        bound = self._value_bound(request)
+        worth = 0.0
+        if tier == request.merit.tier:
+            worth += bound * self._initial_remaining[obsid]
+        if (
+            tier == request.merit.tier + self._allocated_offset
+            and self.allocated is not None
+        ):
+            allocated = sum(span.seconds for span in self.allocated.get(obsid, []))
+            seconds = min(self._initial_remaining[obsid], allocated)
+            worth += bound * self._allocated_factor * seconds
+        return worth
 
     def _value_bound(self, request: _Request) -> float:
         """Most a second of the request's science can be worth."""

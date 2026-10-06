@@ -9,10 +9,11 @@ day on the best targets available that day, so targets observable for only part
 of the run, or due beyond its horizon, can miss their chance.
 """
 
+import math
 import time
 from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime, timedelta
-from typing import Literal
+from typing import Literal, NamedTuple
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict
@@ -21,6 +22,17 @@ from ..config import MissionConfig
 from ..targets import Pointing
 from ..targets.merit import MeritModel
 from .context import SchedulingContext
+
+
+class AllocatedTime(NamedTuple):
+    """Seconds of a request's exposure allocated to a span of time."""
+
+    begin: float
+    """Start of the span, in Unix seconds."""
+    end: float
+    """End of the span, in Unix seconds."""
+    seconds: float
+    """Exposure to collect in the span; collection starting in the span counts."""
 
 
 class Allocation(BaseModel):
@@ -60,6 +72,43 @@ class Allocation(BaseModel):
     def preferred(self, obsids: Sequence[int], begin: float, end: float) -> set[int]:
         """The obsids among ``obsids`` that :meth:`prefers` during ``[begin, end)``."""
         return {obsid for obsid in obsids if self.prefers(obsid, begin, end)}
+
+    def allocated(
+        self,
+        obsids: Sequence[int],
+        begin: float,
+        end: float,
+        used: Mapping[int, Mapping[int, float]] | None = None,
+    ) -> dict[int, list[AllocatedTime]]:
+        """The time allocated to each of ``obsids`` during ``[begin, end)``, bin by bin.
+
+        Each bin overlapping the span gives the request its seconds there, less
+        any ``used`` already (by obsid, then bin index), such as science
+        collected or committed in the bin since the allocation was made. A bin
+        that ``end`` cuts short gives the share of those seconds that falls
+        before ``end``, pro rata from ``begin`` or the bin's start. A request
+        the allocator never considered, such as a Target of Opportunity
+        submitted after the allocation was made, is allocated the whole span
+        without limit.
+        """
+        spans: dict[int, list[AllocatedTime]] = {}
+        for obsid in obsids:
+            per_bin = self.seconds.get(obsid)
+            if per_bin is None:
+                spans[obsid] = [AllocatedTime(begin, end, math.inf)]
+                continue
+            spans[obsid] = []
+            spent = used.get(obsid, {}) if used is not None else {}
+            for k in self.bins_overlapping(begin, end):
+                seconds = per_bin.get(k, 0.0) - spent.get(k, 0.0)
+                if seconds <= 0.0:
+                    continue
+                b0, b1 = self.bins[k]
+                lo, hi = max(b0, begin), min(b1, end)
+                spans[obsid].append(
+                    AllocatedTime(lo, hi, seconds * (hi - lo) / (b1 - lo))
+                )
+        return spans
 
 
 class _Demand(BaseModel):

@@ -18,7 +18,12 @@ from ..common import (
 )
 from ..common.enums import ACSCommandType, SlewAlgorithm
 from ..common.vector import attitude_to_quat, quaternion_attitude_delta
-from ..config import DAY_SECONDS, AttitudeConstraintScope, MissionConfig
+from ..config import (
+    DAY_SECONDS,
+    AllocationStrictness,
+    AttitudeConstraintScope,
+    MissionConfig,
+)
 from ..config.acs import scheduled_slew_time
 from ..config.constraint import (
     all_attitude_constraint_name,
@@ -142,6 +147,8 @@ class QueueDITL(DITLMixin, DITLStats):
         queue: DispatchPolicy | None = None,
         calculate_field_of_regard: bool = False,
         allocator: LongRangeAllocator | None = None,
+        allocation_strictness: AllocationStrictness = "strict",
+        allocation_bonus: float = 0.5,
     ) -> None:
         """Initialize a queue-driven DITL simulation.
 
@@ -151,9 +158,15 @@ class QueueDITL(DITLMixin, DITLStats):
             allocator: Long-range allocator over the whole run. If given, the
                 queue's remaining exposure is allocated again at the start of
                 each of its bins, and the queue chooses targets allocated to
-                the current bin ahead of the others in their tier (see
+                the current bin ahead of the others, as
+                ``allocation_strictness`` says (see
                 :class:`~conops.schedulers.LongRangeAllocator`). Needs a queue
                 with a ``prefer`` attribute, such as a TargetQueue.
+            allocation_strictness: How allocated targets rank against the
+                others: ``strict``, ``tier`` or ``weighted`` (see
+                :data:`~conops.config.AllocationStrictness`).
+            allocation_bonus: Fraction of an allocated target's value it gains
+                with ``weighted`` strictness.
         """
         # Initialize mixin
         DITLMixin.__init__(
@@ -217,6 +230,9 @@ class QueueDITL(DITLMixin, DITLStats):
 
         if allocator is not None and not hasattr(self.queue, "prefer"):
             raise TypeError("an allocator needs a queue with a prefer attribute")
+        if allocator is not None:
+            self.queue.allocation_strictness = allocation_strictness  # type: ignore[attr-defined]
+            self.queue.allocation_bonus = allocation_bonus  # type: ignore[attr-defined]
         self.allocator = allocator
         self.allocation: Allocation | None = None
         """The allocation in force, if there is an allocator."""

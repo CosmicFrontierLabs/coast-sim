@@ -426,11 +426,32 @@ each request's remaining exposure to collect in which bin:
   the bins with the least competing demand. It is quicker but not optimal, and is
   the MILP's starting point.
 
-Within each tier, requests allocated to the current bin are scheduled first, and the
-remaining time goes to the rest. A request the allocator hasn't seen, such as a ToO
-submitted after the last allocation, is treated as allocated. Rolling runs re-allocate
-at every replan and dispatch at the start of every bin, using the exposure still
-remaining.
+The allocation says when each request should be observed, and short-term
+scheduling follows it:
+
+* a plan covering several bins plans each request's allocated seconds in the bin
+  they are allocated to. Collection starting in the bin counts, up to the seconds
+  allocated there; a bin the plan's end cuts short counts pro rata;
+* how far ahead allocated time comes is the strictness (``allocation_strictness``,
+  or ``strictness`` in the configuration). ``strict``, the default, puts it ahead of
+  every unallocated request, with tiers in order among allocated time: the
+  allocation has already weighed the tiers, so even a filler tier's allocated time
+  is kept. ``tier`` puts it ahead of the unallocated requests in its own tier only.
+  ``weighted`` keeps it in its tier, worth ``allocation_bonus`` more, so scheduling
+  trades keeping to the allocation against merit;
+* the rest of a request's exposure, and allocated seconds that don't fit their bin,
+  are planned like unallocated requests, by tier, in the time the allocated ones
+  leave. So with ``strict`` strictness a plan can work ahead, but not at the expense
+  of what the allocation put in a bin;
+* dispatch takes the requests allocated to the current bin first, with the same
+  strictness.
+
+A request the allocator hasn't seen, such as a ToO submitted after the last
+allocation, is treated as allocated throughout. Rolling runs re-allocate at every
+replan and dispatch at the start of every bin, using the exposure still remaining.
+A rolling run can instead follow a fixed allocation made elsewhere, such as a weekly
+long-range plan (``allocation=``); each replan then counts what has been collected or
+committed in each bin against its seconds.
 
 .. code-block:: python
 
@@ -444,8 +465,21 @@ remaining.
 
 Pass the same ``allocator`` to :class:`~conops.ditl.QueueDITL` for dispatch, or set
 ``scheduler.allocation`` in the configuration (see :doc:`configuration`). Planners
-take the steering as ``preferred``: a set of obsids to plan ahead of the others in
-their tier.
+take the steering as ``allocated``, the seconds each request has in each span of
+time, from :meth:`~conops.schedulers.Allocation.allocated`:
+
+.. code-block:: python
+
+   allocation = allocator.allocate(targets, begin.timestamp())
+   planner = PriorityPlanner(
+       config, targets, begin, end,
+       allocated=allocation.allocated(
+           [t.obsid for t in targets], begin.timestamp(), end.timestamp()
+       ),
+   )
+
+``preferred``, a set of obsids to plan ahead of the others in their tier anywhere in
+the plan, is still accepted but ignores when the requests were allocated.
 
 Comparing scheduling modes
 --------------------------

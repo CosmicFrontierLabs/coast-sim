@@ -51,16 +51,18 @@ class TestMeritBreakdown:
             urgency=2.0,
             cadence=1.0,
             completion_deficit=-0.5,
+            allocation=1.5,
             slew_distance=-3.0,
             slew_time=-1.0,
             collection=4.0,
             radiator=-0.25,
         )
 
-        assert breakdown.value == pytest.approx(12.5)
-        assert breakdown.score == pytest.approx(12.25)
-        assert breakdown.rank == (1, pytest.approx(12.25))
-        assert breakdown.value_rank == (1, pytest.approx(12.5))
+        assert breakdown.value == pytest.approx(14.0)
+        assert breakdown.score == pytest.approx(13.75)
+        assert breakdown.rank == (1, pytest.approx(13.75))
+        assert breakdown.value_rank == (1, pytest.approx(14.0))
+        assert "allocation=+1.500" in breakdown.describe()
 
     def test_tier_outranks_any_score(self) -> None:
         low_tier = MeritBreakdown(tier=0, base=1e9)

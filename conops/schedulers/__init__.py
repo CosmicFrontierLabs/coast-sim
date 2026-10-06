@@ -1,5 +1,5 @@
 from ._renamed import renamed_getattr
-from .allocator import Allocation, LongRangeAllocator
+from .allocator import AllocatedTime, Allocation, LongRangeAllocator
 from .context import SchedulingContext
 from .cpsat_planner import CpSatPlanner
 from .first_fit_planner import FirstFitPlanner
@@ -11,6 +11,7 @@ from .registry import PLANNERS, planner_class
 
 __all__ = [
     "PLANNERS",
+    "AllocatedTime",
     "Allocation",
     "CpSatPlanner",
     "DispatchPolicy",
