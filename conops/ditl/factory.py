@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import rust_ephem
 
 from ..config import MissionConfig, bind_ephemeris
-from ..config.scheduler import SchedulerMode
+from ..config.scheduler import AllocationSettings, SchedulerMode
 from ..schedulers.allocator import LongRangeAllocator
 from ..schedulers.registry import planner_class
 from ..targets import Pointing
@@ -53,6 +53,8 @@ def create_ditl(
     end = end or _as_utc(ephemeris.timestamp[-1])
     scheduler = config.scheduler
     step_size = int(ephemeris.step_size)
+    # How closely scheduling follows the allocation, if there is one.
+    steering = scheduler.allocation or AllocationSettings()
     allocator = None
     if scheduler.allocation is not None:
         allocator = LongRangeAllocator(
@@ -67,7 +69,14 @@ def create_ditl(
         )
 
     if scheduler.mode is SchedulerMode.DISPATCH:
-        queue_ditl = QueueDITL(config=config, begin=begin, end=end, allocator=allocator)
+        queue_ditl = QueueDITL(
+            config=config,
+            begin=begin,
+            end=end,
+            allocator=allocator,
+            allocation_strictness=steering.strictness,
+            allocation_bonus=steering.bonus,
+        )
         queue_targets(queue_ditl, targets)
         return queue_ditl
 
@@ -94,6 +103,8 @@ def create_ditl(
         planner=planner,
         planner_options={k: v for k, v in options.items() if k != "include_passes"},
         allocator=allocator,
+        allocation_strictness=steering.strictness,
+        allocation_bonus=steering.bonus,
     )
     rolling.step_size = step_size
     return rolling

@@ -22,6 +22,19 @@ class SchedulerMode(str, Enum):
     """RollingHorizonDITL rebuilds the plan as the simulation runs."""
 
 
+AllocationStrictness = Literal["strict", "tier", "weighted"]
+"""How closely short-term scheduling follows a long-range allocation.
+
+* ``strict``: a request's allocated time, in the bin it is allocated to, comes
+  ahead of all unallocated work, whatever its tier; working ahead uses only the
+  time left.
+* ``tier``: allocated time comes ahead of the unallocated work in its own tier
+  only, so a higher tier's work can take a lower tier's allocated time.
+* ``weighted``: allocated time stays in its tier and gains ``bonus`` of its
+  value, so scheduling trades keeping to the allocation against merit.
+"""
+
+
 class PlannerKind(str, Enum):
     """Which planner builds plans in planned and rolling modes."""
 
@@ -192,6 +205,21 @@ class AllocationSettings(ConfigModel):
         default=10.0,
         gt=0,
         description="Seconds the MILP solver may search per allocation",
+    )
+    strictness: AllocationStrictness = Field(
+        default="strict",
+        description=(
+            "How closely scheduling follows the allocation: strict, tier or "
+            "weighted (see AllocationStrictness)"
+        ),
+    )
+    bonus: float = Field(
+        default=0.5,
+        ge=0,
+        description=(
+            "With weighted strictness, the fraction of a request's value its "
+            "allocated time gains"
+        ),
     )
 
 

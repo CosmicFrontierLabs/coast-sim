@@ -1556,8 +1556,21 @@ dispatch, so configurations without this section behave as before.
   long-range allocator for ``dispatch`` and ``rolling`` modes, with ``bin_seconds``
   (default one day), ``efficiency`` (default 0.75), ``reserve``, the fraction of
   each day kept free for ToOs (default 0.1), ``solver`` (``milp``, the default, or
-  ``greedy``) and ``time_limit_seconds`` for the MILP solver, HiGHS (default 10); not allowed in
-  ``planned`` mode
+  ``greedy``), ``time_limit_seconds`` for the MILP solver, HiGHS (default 10),
+  ``strictness``, how closely scheduling follows the allocation, and ``bonus`` (see
+  below); not allowed in ``planned`` mode.
+
+  ``strictness`` is one of:
+
+  * ``strict`` (the default): a request's allocated time, in the bin it is allocated
+    to, comes ahead of all unallocated work, whatever its tier. Work ahead of the
+    allocation only uses the time left;
+  * ``tier``: allocated time comes ahead of the unallocated work in its own tier only,
+    so a higher tier's work can take a lower tier's allocated time;
+  * ``weighted``: allocated time stays in its tier and gains ``bonus`` (default 0.5)
+    of its value, shown as the ``allocation`` merit term. Scheduling then trades
+    keeping to the allocation against merit; ``bonus: 0`` ignores when a request was
+    allocated.
 
 See :doc:`planning` for what each mode and planner does.
 

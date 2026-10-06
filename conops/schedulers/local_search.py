@@ -58,6 +58,8 @@ class _State(BaseModel):
     """Science collected and planned so far, by program."""
     last_visit: dict[int, float]
     """When each cadence target was last observed, collected or planned."""
+    allocated_left: dict[tuple[int, int], float]
+    """Allocated seconds not yet used, by obsid and span (see ``allocated``)."""
 
 
 class _Decoded(BaseModel):
@@ -169,11 +171,26 @@ class LocalSearchPlanner(PriorityPlanner):
         self._initial_remaining = {
             obsid: r.remaining for obsid, r in self._by_obsid.items()
         }
-        self._tiers = sorted({r.merit.tier for r in requests}, reverse=True)
+        allocated = self.allocated or {}
+        self._initial_allocated = {
+            (obsid, n): span.seconds
+            for obsid, spans in allocated.items()
+            for n, span in enumerate(spans)
+        }
+        # Allocated time scores in its own tier (see _allocated_offset).
+        self._tiers = sorted(
+            {r.merit.tier for r in requests}
+            | {
+                r.merit.tier + self._allocated_offset
+                for r in requests
+                if allocated.get(int(r.target.obsid))
+            },
+            reverse=True,
+        )
         self._initial_last_visit = dict(self._last_visit)
         fixed_entries = {id(block.entry) for block in self.timeline}
 
-        self._place_requests(requests)
+        self._place_requests(self._with_allocated_time(requests))
         self._greedy_timeline = list(self.timeline)
         science = [b for b in self._greedy_timeline if id(b.entry) not in fixed_entries]
         self.initial_score = self._timeline_score(science)
@@ -215,16 +232,56 @@ class LocalSearchPlanner(PriorityPlanner):
         """Score a priority-first timeline's science blocks, in time order."""
         totals: dict[int, float] = {}
         programs = dict(self._delivered)
+        left = dict(self._initial_allocated)
         for block in sorted(science, key=lambda b: float(b.entry.begin)):
             request = self._by_obsid.get(int(block.entry.obsid))
             if request is None:
                 continue
-            tier = request.merit.tier
-            totals[tier] = totals.get(tier, 0.0) + self._contribution(
-                request, block, programs
-            )
+            self._add_score(totals, left, request, block, programs)
             self._add_program_seconds(programs, request, block)
         return tuple(totals.get(tier, 0.0) for tier in self._tiers)
+
+    def _add_score(
+        self,
+        score: dict[int, float],
+        left: dict[tuple[int, int], float],
+        request: _Request,
+        block: _Block,
+        programs: dict[str, float],
+    ) -> None:
+        """Add a snapshot's contribution to ``score``, by tier.
+
+        Its seconds up to what is left of the allocated time of the span its
+        collection starts in score in its allocated tier, worth
+        ``_allocated_factor`` more (see ``allocation_strictness``), and use
+        up that time in ``left``; the rest score in its request's tier.
+        """
+        worth = self._contribution(request, block, programs)
+        tier = request.merit.tier
+        entry = block.entry
+        seconds = entry.collection_seconds_between(entry.begin, entry.end)
+        span = self._span_of(int(entry.obsid), entry.collection_begin)
+        counted = min(seconds, left.get(span, 0.0)) if span is not None else 0.0
+        if counted > 0.0 and span is not None:
+            share = counted / seconds
+            raised = tier + self._allocated_offset
+            score[raised] = (
+                score.get(raised, 0.0) + worth * share * self._allocated_factor
+            )
+            left[span] -= counted
+            worth *= 1.0 - share
+        score[tier] = score.get(tier, 0.0) + worth
+
+    def _span_of(
+        self, obsid: int, collection_begin: float | None
+    ) -> tuple[int, int] | None:
+        """The span of allocated time a collection starting then falls in."""
+        if self.allocated is None or collection_begin is None:
+            return None
+        for n, span in enumerate(self.allocated.get(obsid, [])):
+            if span.begin <= collection_begin < span.end:
+                return obsid, n
+        return None
 
     @staticmethod
     def _add_program_seconds(
@@ -282,6 +339,7 @@ class LocalSearchPlanner(PriorityPlanner):
             score={},
             programs=dict(self._delivered),
             last_visit=dict(self._initial_last_visit),
+            allocated_left=dict(self._initial_allocated),
         )
 
     def _decode(self, sequence: list[_Snapshot]) -> _Decoded:
@@ -326,10 +384,8 @@ class LocalSearchPlanner(PriorityPlanner):
                 block.entry.begin, block.entry.end
             )
             score = dict(state.score)
-            tier = request.merit.tier
-            score[tier] = score.get(tier, 0.0) + self._contribution(
-                request, block, state.programs
-            )
+            allocated_left = dict(state.allocated_left)
+            self._add_score(score, allocated_left, request, block, state.programs)
             left = dict(state.remaining)
             left[obsid] = remaining - seconds
             programs = dict(state.programs)
@@ -344,6 +400,7 @@ class LocalSearchPlanner(PriorityPlanner):
                 score=score,
                 programs=programs,
                 last_visit=last_visit,
+                allocated_left=allocated_left,
             )
         return state
 
@@ -353,6 +410,7 @@ class LocalSearchPlanner(PriorityPlanner):
         if (
             a.remaining != b.remaining
             or a.last_visit != b.last_visit
+            or a.allocated_left != b.allocated_left
             or len(a.timeline) - a.cursor != len(b.timeline) - b.cursor
         ):
             return False
@@ -417,6 +475,7 @@ class LocalSearchPlanner(PriorityPlanner):
                     score=delta,
                     programs=later.programs,
                     last_visit=later.last_visit,
+                    allocated_left=later.allocated_left,
                 )
             )
         return _Decoded.model_construct(sequence=sequence, states=states)
