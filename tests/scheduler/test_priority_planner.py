@@ -174,6 +174,39 @@ class TestDeadlinesAndConstraints:
         assert entry.collection_begin is not None
         assert entry.collection_begin <= T0 + 30 * MIN
 
+    def test_collection_starts_no_earlier_than_the_earliest_start(self) -> None:
+        config = _config(2)
+        target = _target(config, 1, 105.0, 10.0, earliest_start=T0 + 30 * MIN)
+
+        plan = PriorityPlanner(
+            config, [target], BEGIN, BEGIN + timedelta(hours=2)
+        ).schedule()
+
+        (entry,) = _science(plan)
+        assert entry.collection_begin is not None
+        assert T0 + 30 * MIN <= entry.collection_begin < T0 + 35 * MIN
+
+    def test_other_requests_use_the_time_before_the_earliest_start(self) -> None:
+        config = _config(2)
+        later = _target(config, 1, 105.0, 10.0, merit=90, earliest_start=T0 + 40 * MIN)
+        now = _target(config, 2, 110.0, 10.0, merit=10)
+
+        plan = PriorityPlanner(
+            config, [later, now], BEGIN, BEGIN + timedelta(hours=2)
+        ).schedule()
+
+        assert [int(e.obsid) for e in _science(plan)] == [2, 1]
+
+    def test_executes_as_planned_with_an_earliest_start(self) -> None:
+        config = _config(2)
+        target = _target(config, 1, 105.0, 10.0, earliest_start=T0 + 30 * MIN)
+        planner = PriorityPlanner(config, [target], BEGIN, BEGIN + timedelta(hours=2))
+        plan = planner.schedule()
+
+        ditl = _execute(config, plan, 2, planner.ctx.step_size)
+
+        assert ditl.validate_plan_matches_execution() == []
+
     def test_priority_order_can_cost_a_short_window_request(self) -> None:
         """Placed first, a flexible high-merit request takes the slot B needed."""
         config = _config(3)

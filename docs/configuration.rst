@@ -941,6 +941,8 @@ merits. Within a tier the dynamic terms decide.
   ``timescale / time_to_close`` before that. The closing time is the deadline,
   or the end of the current visibility window when no later window opens
   before the deadline. A target cannot be selected once its deadline has passed.
+  A target with an ``earliest_start`` (``queue.add(..., earliest_start=...)``),
+  the earliest time science collection may begin, cannot be selected before it.
 * ``config.targets.cadence_weight`` - Merit added once a target's category
   ``cadence_seconds`` has elapsed since it last collected science, rising
   linearly from ``0`` just after a visit. A target never yet observed gets the

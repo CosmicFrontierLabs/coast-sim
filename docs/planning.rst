@@ -65,6 +65,9 @@ Building and executing a plan
    ditl.calc()
    assert ditl.validate_plan_matches_execution() == []
 
+A target's ``earliest_start`` and ``deadline`` (Unix seconds, a datetime or an
+ISO-8601 string) limit when its science collection may begin.
+
 Execute the plan with the same configuration, ephemeris, horizon and step size it
 was built with. The plan can also be saved and loaded (see :doc:`plan_serialization`)
 before execution.
@@ -96,7 +99,8 @@ How a plan is built
      including setup, cleanup and handoff time; an observation that would run into
      a constraint is shortened, but never below ``ss_min``;
    * any wait at the previous attitude clears the ``IDLE`` scopes;
-   * collection starts by the target's ``deadline``;
+   * collection starts no earlier than the target's ``earliest_start`` and by its
+     ``deadline``;
    * the next activity can still be reached on time, with its own slew and wait
      checked the same way.
 
@@ -215,8 +219,9 @@ plan.
 * ``neighborhood``: how many positions apart a swap or move can be;
 * ``history_length``: length of the late-acceptance history;
 * ``earliness_weight``: fraction of a deadline request's value lost if it starts at
-  its deadline rather than at the start of the horizon (default 0.5). It must be at
-  most 1, so a late snapshot is always worth more than none.
+  its deadline rather than at the start of the horizon, or at its earliest start if
+  that is later (default 0.5). It must be at most 1, so a late snapshot is always
+  worth more than none.
 
 Ground passes and locked entries stay where the priority-first plan put them.
 
@@ -391,8 +396,9 @@ horizon, can miss its chance while time goes to targets that could have waited.
 The allocator splits the run into bins (a day by default) and decides how much of
 each request's remaining exposure to collect in which bin:
 
-* each request can be allocated only the seconds its target is visible in a bin, up
-  to its deadline, from the same visibility windows the planners use;
+* each request can be allocated only the seconds its target is visible in a bin,
+  between its earliest start and its deadline, from the same visibility windows the
+  planners use;
 * each bin is expected to hold ``efficiency`` (default 0.75) of its length in science,
   the rest going to slews, setup and ground passes;
 * ``reserve`` (default 0.1) of that capacity is kept free for work that isn't known

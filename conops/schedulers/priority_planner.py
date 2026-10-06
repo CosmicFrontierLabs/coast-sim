@@ -126,8 +126,9 @@ class PriorityPlanner:
     4. Each snapshot goes in the earliest slot where every check
        :class:`~conops.ditl.DITL` will apply passes: the slew starts on a step,
        its path and the held attitude clear their mode's constraints, the
-       target is visible when the slew starts, collection starts by the
-       target's deadline, and the following activity can still be reached.
+       target is visible when the slew starts, collection starts no earlier
+       than the target's earliest start and by its deadline, and the following
+       activity can still be reached.
 
     The plan is built for execution by :class:`~conops.ditl.DITL` with the same
     configuration, ephemeris, horizon and step size. The planner does not model
@@ -760,6 +761,19 @@ class PriorityPlanner:
                 obsid=target.obsid,
             )
             collection_begin = float(slew.slewend) + self.ctx.setup_seconds
+            if (
+                target.earliest_start is not None
+                and collection_begin < target.earliest_start
+            ):
+                # Start later by the shortfall, so collection begins at the
+                # earliest start if the slew takes as long.
+                start = max(
+                    start + self.ctx.step_size,
+                    self.ctx.ceil_step(
+                        start + target.earliest_start - collection_begin
+                    ),
+                )
+                continue
             if target.deadline is not None and collection_begin > target.deadline:
                 return None
 

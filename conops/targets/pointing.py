@@ -6,6 +6,7 @@ from pydantic import (
     computed_field,
     field_serializer,
     field_validator,
+    model_validator,
 )
 
 from ..common import unixtime2date
@@ -37,12 +38,23 @@ class Pointing(PlanEntry):
             "target cannot be selected after it"
         ),
     )
+    earliest_start: float | None = Field(
+        default=None,
+        allow_inf_nan=False,
+        exclude_if=lambda v: v is None,
+        description=(
+            "Earliest time (Unix seconds) science collection may begin; the "
+            "target cannot be selected before it"
+        ),
+    )
     _done: bool = PrivateAttr(default=False)
     _merit_breakdown: MeritBreakdown | None = PrivateAttr(default=None)
 
-    @field_validator("deadline", mode="before")
+    @field_validator("deadline", "earliest_start", mode="before")
     @classmethod
-    def _coerce_deadline(cls, v: float | int | str | datetime | None) -> float | None:
+    def _coerce_request_time(
+        cls, v: float | int | str | datetime | None
+    ) -> float | None:
         """Accept Unix timestamps, datetimes or ISO-8601 strings."""
         if v is None:
             return None
@@ -54,11 +66,21 @@ class Pointing(PlanEntry):
             return v.timestamp()
         return float(v)
 
-    @field_serializer("deadline")
-    def _serialize_deadline(self, v: float | None) -> str | None:
+    @field_serializer("deadline", "earliest_start")
+    def _serialize_request_time(self, v: float | None) -> str | None:
         if v is None:
             return None
         return datetime.fromtimestamp(v, tz=timezone.utc).isoformat()
+
+    @model_validator(mode="after")
+    def _check_start_before_deadline(self) -> "Pointing":
+        if (
+            self.earliest_start is not None
+            and self.deadline is not None
+            and self.earliest_start > self.deadline
+        ):
+            raise ValueError("earliest_start must not be after deadline")
+        return self
 
     @property
     def merit_breakdown(self) -> MeritBreakdown | None:
