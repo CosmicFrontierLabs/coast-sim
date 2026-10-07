@@ -531,6 +531,70 @@ class TestHandlePassMode:
         queue_ditl.charging_ppt = None
         queue_ditl._handle_pass_mode(1000.0)
 
+    @staticmethod
+    def _slew(obstype: ObsType, *, slewing: bool) -> Mock:
+        slew = Mock()
+        slew.obstype = obstype
+        slew.is_slewing.return_value = slewing
+        return slew
+
+    def test_pass_ingress_slew_survives_terminating_charging(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Regression: ending a suppressed charging PPT as a pass begins must not
+        clear the pass's ingress slew, already under way. With it cleared, ACS
+        froze RA/Dec at the old target while roll followed the slew, which
+        exceeded the attitude rate limit."""
+        ingress = self._slew(ObsType.GSP, slewing=True)
+        queue_ditl.acs.last_slew = ingress
+        queue_ditl.charging_ppt = Mock(end=0, done=False)
+
+        queue_ditl._handle_pass_mode(1000.0)
+
+        assert queue_ditl.charging_ppt is None
+        assert queue_ditl.acs.last_slew is ingress
+
+    def test_terminating_charging_releases_the_charging_hold(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        queue_ditl.acs.last_slew = self._slew(ObsType.CHARGE, slewing=False)
+        queue_ditl.charging_ppt = Mock(end=0, done=False)
+
+        queue_ditl._handle_pass_mode(1000.0)
+
+        assert queue_ditl.acs.last_slew is None
+
+    def test_terminating_charging_keeps_a_charging_slew_in_flight(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        flying = self._slew(ObsType.CHARGE, slewing=True)
+        queue_ditl.acs.last_slew = flying
+        queue_ditl.charging_ppt = Mock(end=0, done=False)
+
+        queue_ditl._handle_pass_mode(1000.0)
+
+        assert queue_ditl.acs.last_slew is flying
+
+
+class TestChargingDuringContact:
+    def test_no_charging_from_ingress_until_the_contact_ends(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """Regression: with the battery alert still raised, charging restarted in
+        the gap between a pass's ingress slew and its contact, slewing away from
+        the tracking attitude, so the contact was skipped while the plan kept it.
+        """
+        queue_ditl.charging_ppt = None
+        queue_ditl._active_gsp_end_time = 2000.0
+
+        with patch.object(
+            queue_ditl.emergency_charging,
+            "should_initiate_charging",
+            return_value=True,
+        ):
+            assert not queue_ditl._should_initiate_charging(1000.0)
+            assert queue_ditl._should_initiate_charging(2000.0)
+
 
 class TestHandleChargingMode:
     """Test _handle_charging_mode helper method."""
@@ -3714,7 +3778,9 @@ class TestCalcMethod:
     def test_calc_handles_safe_mode_request(self, queue_ditl) -> None:
         """Test calc method handles safe mode requests."""
         # Set up safe mode request
-        queue_ditl.config.fault_management.safe_mode_requested = True
+        queue_ditl.config.fault_management.new_run.side_effect = lambda: Mock(
+            check=Mock(), safe_mode_requested=True, events=[]
+        )
         queue_ditl.acs.in_safe_mode = False
 
         queue_ditl.year = 2018

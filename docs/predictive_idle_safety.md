@@ -41,7 +41,7 @@ motion. Subsequent holds retain the commanded attitude and roll.
 
 Already-unsafe initialization, no feasible recovery in the finite search, or
 an unsafe executed IDLE hold latches an `idle_safety` RED fault in
-`config.fault_management.states`. The first `operational_fault` event retains
+`ditl.fault_management.states`. The first `operational_fault` event retains
 the timestamp, cause, and body attitude (RA/Dec/roll in degrees). Repeated
 reports do not restart recovery or flood the event log.
 
@@ -61,6 +61,12 @@ or plan-execution failure is recorded as a further operational fault instead
 of converting this diagnosed failed run into a Python exception. The public
 validation methods still expose the violations; nominal runs retain their
 strict exception behavior for execution-validation failures.
+
+These decisions use only `ditl.fault_management`, the current run's report.
+Earlier reports remain available in `ditl.fault_runs`, but their events cannot
+fail another run or suppress its validation exceptions—even when both runs
+cover identical timestamps. Run-scoped fault state and policy snapshots are
+provided by the separate fault-management lifecycle prerequisite (#286).
 
 SAFE is an operational response, not proof of a keepout-safe escape. The
 standard solar-pointing SAFE guidance does not gain a path-validity guarantee

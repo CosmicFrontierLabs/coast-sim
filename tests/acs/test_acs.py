@@ -293,6 +293,7 @@ class TestACSStateManagement:
         )
         acs.config.fault_management = MissionConfig().fault_management
         acs.config.fault_management.safe_mode_on_red = auto_safe
+        acs.fault_management = acs.config.fault_management.new_run()
         monkeypatch.setattr(
             "conops.simulation.acs.optimum_body_roll", lambda *args, **kwargs: 5.0
         )
@@ -302,7 +303,7 @@ class TestACSStateManagement:
         acs._enforce_idle_constraint_safe_attitude(1000.0)
         assert acs.in_safe_mode is auto_safe
         assert (acs.ra, acs.dec, acs.roll) == original_attitude
-        faults = acs.config.fault_management
+        faults = acs.fault_management
         assert faults.states["idle_safety"].current == "red"
         assert faults.events[0].event_type == "operational_fault"
         assert "Unsafe IDLE" in faults.events[0].cause

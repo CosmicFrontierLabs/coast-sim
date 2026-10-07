@@ -415,7 +415,7 @@ def test_faulted_run_finishes_in_safehold_and_retains_diagnostics(
     assert (samples[0].ra, samples[0].dec, samples[0].roll) == initial_attitude
     assert len(ditl.plan) == 0
     assert ditl.plan.attitude_timeseries.num_samples == 30
-    faults = ditl.config.fault_management
+    faults = ditl.fault_management
     assert (
         len(
             [
@@ -455,9 +455,15 @@ def test_execution_audit_is_never_silently_discarded(
 ):
     ditl = idle_run
     if faulted:
-        ditl.acs.report_idle_safety_fault(
-            ditl.begin.timestamp(), "Recovery unavailable"
-        )
+        original = ditl._begin_fault_run
+
+        def begin_faulted_run():
+            original()
+            ditl.acs.report_idle_safety_fault(
+                ditl.begin.timestamp(), "Recovery unavailable"
+            )
+
+        monkeypatch.setattr(ditl, "_begin_fault_run", begin_faulted_run)
     checker = (
         "_assert_attitude_rate_continuity"
         if error is AttitudeRateContinuityError
@@ -471,8 +477,68 @@ def test_execution_audit_is_never_silently_discarded(
             ditl.calc()
     else:
         assert ditl.calc() is False
-        events = ditl.config.fault_management.events
+        events = ditl.fault_management.events
         assert any(
             event.name == error.__name__ and event.cause == "Synthetic audit failure"
             for event in events
         )
+
+
+@pytest.mark.parametrize("reuse_instance", [False, True])
+@pytest.mark.parametrize("auto_safe", [False, True])
+def test_previous_idle_fault_does_not_fail_new_run(
+    idle_run, monkeypatch, reuse_instance, auto_safe
+):
+    first = idle_run
+    first.config.fault_management.safe_mode_on_red = auto_safe
+    with monkeypatch.context() as failing:
+        failing.setattr(
+            DeterministicConstraint,
+            "in_star_tracker_hard",
+            lambda *args, **kwargs: True,
+        )
+        assert first.calc() is False
+    report = first.fault_management
+    recorded = report.model_dump()
+    assert report.states["idle_safety"].current == "red"
+    second = (
+        first
+        if reuse_instance
+        else QueueDITL(
+            config=first.config, ephem=first.ephem, begin=first.begin, end=first.end
+        )
+    )
+    assert second.calc() is True
+    assert not second.acs.in_safe_mode
+    assert "idle_safety" not in second.fault_management.states
+    assert not second.fault_management.safe_mode_requested
+    assert second.fault_management.run_id != report.run_id
+    assert report.model_dump() == recorded
+
+
+@pytest.mark.parametrize(
+    "error", [AttitudeRateContinuityError, PlanExecutionMismatchError]
+)
+def test_historical_idle_fault_does_not_suppress_current_audit(
+    idle_run, monkeypatch, error
+):
+    ditl = idle_run
+    historical = ditl.config.fault_management.new_run()
+    historical.report_fault(
+        utime=ditl.begin.timestamp(),
+        name="idle_safety",
+        cause="Previous run over the same dates",
+        metadata={},
+        acs=ditl.acs,
+    )
+    ditl.fault_runs.append(historical)
+    checker = (
+        "_assert_attitude_rate_continuity"
+        if error is AttitudeRateContinuityError
+        else "_assert_plan_matches_execution"
+    )
+    monkeypatch.setattr(ditl, checker, Mock(side_effect=error("New audit failure")))
+    with pytest.raises(error, match="New audit failure"):
+        ditl.calc()
+    assert ditl.fault_management is not historical
+    assert "idle_safety" not in ditl.fault_management.states

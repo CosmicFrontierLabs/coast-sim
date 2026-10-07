@@ -170,9 +170,9 @@ def mock_config() -> Mock:
 
     # Mock fault management
     config.fault_management = Mock()
-    config.fault_management.check = Mock()
-    config.fault_management.safe_mode_requested = False
-    config.fault_management.events = []
+    config.fault_management.new_run.side_effect = lambda: Mock(
+        check=Mock(), safe_mode_requested=False, events=[]
+    )
     # MissionConfig's init_fault_management_defaults model_validator re-runs
     # whenever this config is embedded as a nested pydantic field elsewhere
     # (e.g. on PlanEntry.config) and iterates fault_management.thresholds.

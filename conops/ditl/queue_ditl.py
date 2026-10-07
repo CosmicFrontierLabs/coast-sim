@@ -462,7 +462,14 @@ class QueueDITL(DITLMixin, DITLStats):
         # Reset per-run state so re-runs on the same instance start clean
         self._attitude_constraint_violations = []
         self._active_gsp_end_time = None
-        self.acs.solar_array_drive_state = self.config.solar_panel.initial_drive_state()
+        if self._run_started:
+            self.plan = Plan()
+            self.charging_ppt = None
+            self.emergency_charging.current_charging_ppt = None
+            self._planned_gsp_keys.clear()
+            self._gsp_slew_plan_entries.clear()
+            self._synced_executed_slew_count = 0
+            self._ppt_unavailable = None
         self._ppt_optimum_roll_cache.clear()
 
         # If begin/end datetimes are naive, assume UTC by making them timezone-aware
@@ -470,6 +477,9 @@ class QueueDITL(DITLMixin, DITLStats):
             self.begin = self.begin.replace(tzinfo=timezone.utc)
         if self.end.tzinfo is None:
             self.end = self.end.replace(tzinfo=timezone.utc)
+
+        self._begin_fault_run()
+        self.acs.solar_array_drive_state = self.config.solar_panel.initial_drive_state()
 
         # Check that ephemeris is set
         assert self.ephem is not None, "Ephemeris must be set before running DITL"
@@ -556,7 +566,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
         idle_fault = any(
             event.name == "idle_safety" and event.event_type == "operational_fault"
-            for event in self.config.fault_management.events
+            for event in self.fault_management.events
         )
         for validate in (
             self._assert_attitude_rate_continuity,
@@ -569,7 +579,7 @@ class QueueDITL(DITLMixin, DITLStats):
                     raise
                 # A diagnosed operational failure is not a valid science plan.
                 # Preserve both audits, without turning safehold into a crash.
-                self.config.fault_management.report_fault(
+                self.fault_management.report_fault(
                     utime=self.uend,
                     name=type(exc).__name__,
                     cause=str(exc),
@@ -656,20 +666,17 @@ class QueueDITL(DITLMixin, DITLStats):
                 return
             hk = self.telemetry.housekeeping[-1]
 
-        self.config.fault_management.check(
+        self.fault_management.check(
             housekeeping=hk,
             acs=self.acs,
         )
         # Check if safe mode has been requested by fault management
-        if (
-            self.config.fault_management.safe_mode_requested
-            and not self.acs.in_safe_mode
-        ):
+        if self.fault_management.safe_mode_requested and not self.acs.in_safe_mode:
             reason = None
             trigger_event = next(
                 (
                     e
-                    for e in reversed(self.config.fault_management.events)
+                    for e in reversed(self.fault_management.events)
                     if e.event_type == "safe_mode_trigger"
                 ),
                 None,
@@ -1813,9 +1820,15 @@ class QueueDITL(DITLMixin, DITLStats):
         )
 
     def _should_initiate_charging(self, utime: float) -> bool:
-        """Check if emergency charging should be initiated."""
+        """Check if emergency charging should be initiated.
+
+        Not while a ground contact is under way, from its ingress slew to its
+        end: the contact takes precedence, and charging would slew away from the
+        tracking attitude the contact needs.
+        """
         return (
             self.charging_ppt is None
+            and not self._gsp_activity_in_progress(utime)
             and self.emergency_charging.should_initiate_charging(
                 utime, self.ephem, self.battery.battery_alert
             )
@@ -3416,7 +3429,17 @@ class QueueDITL(DITLMixin, DITLStats):
             if self.ppt is self.charging_ppt:
                 self.ppt = None
             self.charging_ppt = None
-            self.acs.last_slew = None
+            # Release the charging attitude, but only the charging slew itself.
+            # A slew that has replaced it, such as a pass's ingress slew already
+            # under way, still drives the pointing: clearing it would freeze
+            # RA/Dec while roll followed the slew.
+            last = self.acs.last_slew
+            if (
+                last is not None
+                and last.obstype == ObsType.CHARGE
+                and not last.is_slewing(utime)
+            ):
+                self.acs.last_slew = None
 
     def _terminate_emergency_charging(self, reason: str, utime: float) -> None:
         """Terminate emergency charging and log the reason."""

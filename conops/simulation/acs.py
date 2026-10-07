@@ -86,6 +86,7 @@ class ACS:
         assert config.constraint is not None, "Constraint must be provided to ACS"
         self.constraint = config.constraint
         self.config = config
+        self.fault_management = config.fault_management.new_run()
         self.log = log
 
         # Configuration
@@ -754,7 +755,7 @@ class ACS:
 
     def report_idle_safety_fault(self, utime: float, cause: str) -> None:
         """Latch the failure and enter the existing SAFE command path, once."""
-        faults = self.config.fault_management
+        faults = self.fault_management
         faults.report_fault(
             utime=utime,
             name="idle_safety",
