@@ -87,6 +87,7 @@ class ACS:
         assert config.constraint is not None, "Constraint must be provided to ACS"
         self.constraint = config.constraint
         self.config = config
+        self.fault_management = config.fault_management.new_run()
         self.log = log
 
         # Configuration
@@ -757,7 +758,7 @@ class ACS:
                 "requesting safe mode"
             )
             self._log_or_print(utime, "ERROR", f"{unixtime2date(utime)}: {cause}")
-            self.config.fault_management.events.append(
+            self.fault_management.events.append(
                 FaultEvent(
                     utime=utime,
                     event_type="safe_mode_trigger",

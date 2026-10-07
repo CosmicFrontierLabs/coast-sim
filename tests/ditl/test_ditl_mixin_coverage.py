@@ -19,7 +19,7 @@ def mock_config(mock_spacecraft_bus):
     # whenever this config is embedded as a nested pydantic field elsewhere
     # (e.g. on Slew.config); None short-circuits it via the validator's own
     # early-return guard.
-    cfg.fault_management = None
+    cfg.fault_management = MissionConfig().fault_management
     # constraint with ephem required for ACS init
     # Build a minimal ephem with earth[0].ra.deg and dec.deg (legacy SkyCoord style)
     ra = Mock()

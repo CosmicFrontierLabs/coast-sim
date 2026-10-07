@@ -291,7 +291,7 @@ class TestACSStateManagement:
         acs.config.attitude_constraint_scopes_for_mode = Mock(
             return_value=[AttitudeConstraintScope.HARDWARE_SAFETY]
         )
-        acs.config.fault_management = Mock(events=[])
+        acs.fault_management = Mock(events=[])
         monkeypatch.setattr(
             "conops.simulation.acs.optimum_body_roll", lambda *args, **kwargs: 5.0
         )
@@ -302,8 +302,8 @@ class TestACSStateManagement:
         assert (ra, dec, roll, obsid) == (acs.ra, acs.dec, acs.roll, IDLE_OBSID)
         assert acs.command_queue[-1].command_type == ACSCommandType.ENTER_SAFE_MODE
         assert acs.command_queue[-1].execution_time == 1000.0
-        assert acs.config.fault_management.events[-1].event_type == "safe_mode_trigger"
-        assert acs.config.fault_management.events[-1].name == "idle_attitude_constraint"
+        assert acs.fault_management.events[-1].event_type == "safe_mode_trigger"
+        assert acs.fault_management.events[-1].name == "idle_attitude_constraint"
 
     def test_constraint_logging_uses_idle_scopes(self, acs) -> None:
         """Legacy CONSTRAINT telemetry should respect the current ACS mode scopes."""
