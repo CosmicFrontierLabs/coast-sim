@@ -109,6 +109,17 @@ def test_repeated_calc_preserves_reports_without_reusing_faults(simulation):
     assert sim.fault_management is sim.acs.fault_management
 
 
+def test_archiving_report_elsewhere_does_not_disable_run_boundary(simulation):
+    sim = simulation
+    assert sim.calc()
+    archived = sim.fault_runs.pop()
+    sim.acs.in_safe_mode = True
+    assert sim.calc()
+    assert not sim.acs.in_safe_mode
+    assert sim.fault_management.run_id != archived.run_id
+    assert len(sim.telemetry.housekeeping) == 30
+
+
 def test_exception_keeps_report_and_next_calc_gets_fresh_state(simulation, monkeypatch):
     sim = simulation
 

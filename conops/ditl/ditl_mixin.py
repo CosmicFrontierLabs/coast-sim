@@ -186,6 +186,7 @@ class DITLMixin:
         # For now, create ACS without log (will be set later)
         self.acs = ACS(config=self.config, log=None)
         self.fault_runs: list[FaultManagementRun] = []
+        self._run_started = False
 
         # Current target
         self.ppt = None
@@ -205,7 +206,7 @@ class DITLMixin:
         This is not a replay/reset of battery, recorder or target consumption.
         A fresh simulation instance is needed to replay the entire scenario.
         """
-        if self.fault_runs:
+        if self._run_started:
             # Commands, SAFE slews and mode/roll latches belong to the old run.
             # Retain the actual attitude as this interval's boundary condition.
             ra, dec, roll = self.acs.ra, self.acs.dec, self.acs.roll
@@ -239,6 +240,7 @@ class DITLMixin:
                 setattr(self, name, [])
         self.acs.fault_management = self.config.fault_management.new_run()
         self.fault_runs.append(self.fault_management)
+        self._run_started = True
 
     def _init_subsystems(self) -> None:
         """Initialize subsystems from config. Can be overridden by subclasses."""

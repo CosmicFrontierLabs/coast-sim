@@ -456,7 +456,7 @@ class QueueDITL(DITLMixin, DITLStats):
         # Reset per-run state so re-runs on the same instance start clean
         self._attitude_constraint_violations = []
         self._active_gsp_end_time = None
-        if self.fault_runs:
+        if self._run_started:
             self.plan = Plan()
             self.charging_ppt = None
             self.emergency_charging.current_charging_ppt = None
