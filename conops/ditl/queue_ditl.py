@@ -450,7 +450,7 @@ class QueueDITL(DITLMixin, DITLStats):
         spacecraft state transitions (slews, passes, etc.) are managed through
         a command queue, providing explicit, traceable control flow.
 
-        An idle-safety fault returns False while retaining diagnostic outputs.
+        An attitude fault returns False while retaining diagnostic outputs.
         With the default fault policy, the simulation completes in safehold.
         """
         # Reset per-run state so re-runs on the same instance start clean
@@ -558,8 +558,15 @@ class QueueDITL(DITLMixin, DITLStats):
         if self.plan and self.ppt is not None:
             self._close_last_plan_entry(self.uend)
 
-        idle_fault = any(
-            event.name == "idle_safety" and event.event_type == "operational_fault"
+        attitude_fault = any(
+            event.name
+            in (
+                "idle_safety",
+                "attitude_execution",
+                "attitude_braking",
+                "attitude_recovery",
+            )
+            and event.event_type == "operational_fault"
             for event in self.fault_management.events
         )
         for validate in (
@@ -569,7 +576,7 @@ class QueueDITL(DITLMixin, DITLStats):
             try:
                 validate()
             except (AttitudeRateContinuityError, PlanExecutionMismatchError) as exc:
-                if not idle_fault:
+                if not attitude_fault:
                     raise
                 # A diagnosed operational failure is not a valid science plan.
                 # Preserve both audits, without turning safehold into a crash.
@@ -582,14 +589,14 @@ class QueueDITL(DITLMixin, DITLStats):
                 )
         self._attach_execution_timeseries_to_plan()
 
-        if idle_fault:
+        if attitude_fault:
             self.log.log_event(
                 utime=self.uend,
                 event_type="ERROR",
-                description="Run completed with an idle-safety fault; not a valid science plan. See fault_management.events.",
+                description="Run completed with an attitude fault; not a valid science plan. See fault_management.events.",
                 acs_mode=self.acs.acsmode,
             )
-        return not idle_fault
+        return not attitude_fault
 
     def _handle_data_management(self, utime: float, mode: ACSMode) -> None:
         """Handle data generation during observations and downlink during passes."""
@@ -1264,13 +1271,8 @@ class QueueDITL(DITLMixin, DITLStats):
     def _expected_slew_start_attitude(
         self, utime: float, execution_time: float
     ) -> tuple[float, float, float]:
-        """Return the attitude a new slew should start from, accounting for an in-progress slew."""
-        active_slew = self.acs.last_slew
-        if active_slew is not None and active_slew.is_slewing(utime):
-            slewend = active_slew.slewstart + active_slew.slewtime
-            if execution_time >= slewend:
-                return active_slew.endra, active_slew.enddec, active_slew.endroll
-        return self.acs.ra, self.acs.dec, self.acs.roll
+        """Predict the physical start, including tracking as well as target slews."""
+        return self.acs.predicted_attitude(execution_time)
 
     def _handle_mode_operations(
         self, mode: ACSMode, utime: float, ra: float, dec: float
@@ -2344,7 +2346,7 @@ class QueueDITL(DITLMixin, DITLStats):
         """Return when a new slew can execute, waiting for an in-progress slew to finish."""
         if self.acs.last_slew is not None and self.acs.last_slew.is_slewing(utime):
             return self.acs.last_slew.slewstart + self.acs.last_slew.slewtime
-        return utime
+        return self.acs.motion_ready_time(utime)
 
     @staticmethod
     def _target_body_attitude(
@@ -2555,6 +2557,11 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _fetch_new_ppt(self, utime: float, ra: float, dec: float) -> None:
         """Fetch a new pointing target from the queue and enqueue slew command."""
+        # A just-issued charge/pass termination can replace tracking with a
+        # braking arc. Commit that command before predicting a new slew's start.
+        pointing = self._process_due_acs_commands(utime)
+        if pointing is not None:
+            ra, dec = pointing[:2]
         self._temporary_rejected_ppts = []
         self._retry_ppt_fetch_requested = False
         try:

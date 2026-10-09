@@ -2,6 +2,8 @@
 
 from unittest.mock import Mock
 
+import pytest
+
 from conops import ACSCommand, ACSCommandType, ACSMode
 from conops.common.enums import ObsType
 
@@ -144,14 +146,14 @@ class TestSafeModePointing:
         acs.pointing(utime)
 
         # After slew completes, pointing should be at Sun's RA/Dec
-        # The mock slew_time returns 100.0 seconds, so advance beyond that
-        acs.pointing(utime + 200)
+        finish = acs.current_slew.slewend
+        acs.pointing(finish)
 
         expected_ra, expected_dec = acs.solar_panel.optimal_charging_pointing(
-            utime + 200, mock_ephem
+            finish, mock_ephem
         )
-        assert acs.ra == expected_ra
-        assert acs.dec == expected_dec
+        assert acs.ra == pytest.approx(expected_ra)
+        assert acs.dec == pytest.approx(expected_dec)
 
     def test_safe_mode_pointing_updates_with_sun(self, acs, mock_ephem):
         """Test that safe mode pointing tracks the Sun over time."""
@@ -161,22 +163,29 @@ class TestSafeModePointing:
         acs.request_safe_mode(utime)
         acs.pointing(utime)
 
+        acs.pointing(acs.current_slew.slewend)
+
         initial_ra = acs.ra
         initial_dec = acs.dec
 
         # Update sun position
-        mock_ephem.sun[0].ra.deg = 90.0
-        mock_ephem.sun[0].dec.deg = 45.0
+        mock_ephem.sun_ra_deg[0] = 90.0
+        mock_ephem.sun_dec_deg[0] = 45.0
 
         # Update pointing
         acs.pointing(utime + 1000)
 
-        # Pointing should update to new Sun position
+        # Guidance changes immediately; physical pointing cannot.
+        assert acs.ra == pytest.approx(initial_ra)
+        assert acs.dec == pytest.approx(initial_dec)
+        acs.pointing(utime + 3000)
+
+        # After the bounded correction completes, it reaches the new target.
         expected_ra, expected_dec = acs.solar_panel.optimal_charging_pointing(
             utime + 1000, mock_ephem
         )
-        assert acs.ra == expected_ra
-        assert acs.dec == expected_dec
+        assert acs.ra == pytest.approx(expected_ra)
+        assert acs.dec == pytest.approx(expected_dec)
         assert acs.ra != initial_ra
         assert acs.dec != initial_dec
 

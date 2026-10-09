@@ -544,7 +544,12 @@ class DITL(DITLMixin, DITLStats):
 
         self._assert_attitude_rate_continuity()
         self._attach_execution_timeseries_to_plan()
-        return True
+        return not any(
+            event.name
+            in ("attitude_execution", "attitude_braking", "attitude_recovery")
+            and event.event_type == "operational_fault"
+            for event in self.fault_management.events
+        )
 
     def validate_plan_matches_execution(self) -> list[PlanExecutionMismatch]:
         """Compare the executed telemetry from :meth:`calc` with the plan.

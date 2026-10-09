@@ -211,6 +211,7 @@ class DITLMixin:
             # Retain the actual attitude as this interval's boundary condition.
             ra, dec, roll = self.acs.ra, self.acs.dec, self.acs.roll
             self.acs = ACS(config=self.config, log=self.acs.log)
+            self.acs.ra, self.acs.dec, self.acs.roll = ra, dec, roll
             self.acs._hold_idle_attitude(ra, dec, roll, self.begin.timestamp())
             self.ppt = None
             self.telemetry = Telemetry()

@@ -186,15 +186,14 @@ class TestACSStateManagement:
     def test_continuous_roll_scores_the_current_drive_state(self, acs) -> None:
         acs.in_eclipse = True
         acs.roll = 10.0
-        acs._last_roll_optimization_mode = ACSMode.CHARGING
-        acs._last_roll_optimization_utime = 970.0
 
-        with patch(
-            "conops.simulation.acs.optimum_body_roll", return_value=20.0
-        ) as roll:
-            result = acs._continuous_optimum_roll(1000.0, ACSMode.CHARGING)
+        with (
+            patch("conops.simulation.acs.optimum_body_roll", return_value=20.0) as roll,
+            patch.object(acs, "_is_in_charging_mode", return_value=True),
+        ):
+            acs._update_dwell_guidance(1000.0)
 
-        assert result == 20.0
+        assert acs.predicted_attitude(1100.0)[2] == pytest.approx(20.0)
         assert roll.call_args.kwargs["drive_state"] is acs.solar_array_drive_state
         assert "drive_preview_seconds" not in roll.call_args.kwargs
 
@@ -233,6 +232,7 @@ class TestACSStateManagement:
         science_slew.endra = 10.0
         science_slew.enddec = 20.0
         science_slew.endroll = 30.0
+        acs.ra, acs.dec, acs.roll = 10.0, 20.0, 30.0
         acs.last_slew = science_slew
         acs.science_observation_active = False
         acs.config.attitude_constraint_scopes_for_mode = Mock(
@@ -246,7 +246,7 @@ class TestACSStateManagement:
 
         acs.config.fault_management = MissionConfig().fault_management
         acs.pointing(1000.0)
-        assert (acs.ra, acs.dec, acs.roll) == (10.0, 20.0, 30.0)
+        assert (acs.ra, acs.dec, acs.roll) == pytest.approx((10.0, 20.0, 30.0))
         assert acs.in_safe_mode
         assert acs.last_slew.obstype == ObsType.SAFE
 
@@ -265,6 +265,7 @@ class TestACSStateManagement:
         science_slew.endra = 10.0
         science_slew.enddec = 20.0
         science_slew.endroll = 30.0
+        acs.ra, acs.dec, acs.roll = 10.0, 20.0, 30.0
         acs.last_slew = science_slew
         acs.science_observation_active = False
         acs.config.attitude_constraint_scopes_for_mode = Mock(
@@ -279,7 +280,7 @@ class TestACSStateManagement:
 
         acs.config.fault_management = MissionConfig().fault_management
         acs.pointing(1000.0)
-        assert (acs.ra, acs.dec, acs.roll) == (10.0, 20.0, 30.0)
+        assert (acs.ra, acs.dec, acs.roll) == pytest.approx((10.0, 20.0, 30.0))
         assert acs.in_safe_mode
         acs.constraint.in_constraint.assert_not_called()
 
@@ -299,10 +300,11 @@ class TestACSStateManagement:
         )
         acs.constraint.in_star_tracker_hard = Mock(return_value=True)
 
+        acs.roll = acs.roll  # Explicit initial boundary, not solar-optimized.
         original_attitude = (acs.ra, acs.dec, acs.roll)
         acs._enforce_idle_constraint_safe_attitude(1000.0)
         assert acs.in_safe_mode is auto_safe
-        assert (acs.ra, acs.dec, acs.roll) == original_attitude
+        assert (acs.ra, acs.dec, acs.roll) == pytest.approx(original_attitude)
         faults = acs.fault_management
         assert faults.states["idle_safety"].current == "red"
         assert faults.events[0].event_type == "operational_fault"
