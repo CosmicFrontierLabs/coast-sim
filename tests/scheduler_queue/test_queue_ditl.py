@@ -28,6 +28,7 @@ from conops import (
     SolarPanel,
     SolarPanelSet,
     StoredMomentumConfig,
+    TOORequest,
 )
 from conops.common.enums import ObsType
 from conops.config import Payload, Telescope
@@ -822,6 +823,7 @@ class TestFetchNewPPT:
         mock_ppt.obsid = 1001
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.deadline = None
         mock_ppt.ss_min = 300.0
         mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
@@ -1043,6 +1045,7 @@ class TestFetchNewPPT:
         mock_ppt.obsid = 1001
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.deadline = None
         mock_ppt.ss_min = 300.0
         mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
@@ -1066,6 +1069,7 @@ class TestFetchNewPPT:
         mock_ppt.obsid = 1001
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.deadline = None
         mock_ppt.ss_min = 300.0
         mock_ppt.windows = [[0.0, 1e12]]
         mock_ppt.slewtime = 12
@@ -1094,6 +1098,7 @@ class TestFetchNewPPT:
         mock_ppt.obsid = 1001
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.deadline = None
         mock_ppt.ss_min = 300.0
         mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
@@ -1400,6 +1405,7 @@ class TestFetchNewPPT:
         mock_ppt.obsid = 1001
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.deadline = None
         mock_ppt.ss_min = 300.0
         mock_ppt.windows = [[0.0, 1e12]]
         mock_ppt.begin = 10.0
@@ -1433,6 +1439,7 @@ class TestFetchNewPPT:
         mock_ppt.obsid = 1001
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.deadline = None
         mock_ppt.ss_min = 300.0
         mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
@@ -1604,6 +1611,7 @@ class TestFetchNewPPT:
         mock_ppt.obsid = 1001
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.deadline = None
         mock_ppt.ss_min = 100.0
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
 
@@ -1634,6 +1642,7 @@ class TestFetchNewPPT:
         mock_ppt.obsid = 1001
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.deadline = None
         mock_ppt.ss_min = 100.0
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
 
@@ -1671,6 +1680,7 @@ class TestFetchNewPPT:
         mock_ppt.obsid = 1001
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.deadline = None
         mock_ppt.ss_min = 500.0  # Requires 500 seconds
         mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
@@ -1715,6 +1725,7 @@ class TestFetchNewPPT:
         mock_ppt.obsid = 1001
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.deadline = None
         mock_ppt.ss_min = 200.0
         mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
@@ -1754,6 +1765,7 @@ class TestFetchNewPPT:
         mock_ppt.obsid = 1001
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.deadline = None
         mock_ppt.ss_min = 100.0  # Requires 100 seconds
         mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
@@ -1800,6 +1812,7 @@ class TestFetchNewPPT:
         mock_ppt.obsid = 1001
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.deadline = None
         mock_ppt.ss_min = 300.0
         mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
@@ -1902,6 +1915,7 @@ class TestFetchNewPPT:
         mock_ppt.obsid = 1001
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.deadline = None
         mock_ppt.ss_min = 60.0
         mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
@@ -1928,6 +1942,7 @@ class TestFetchNewPPT:
         bad_ppt.visible = Mock(return_value=[1000.0, 5000.0])
         bad_ppt.next_vis = Mock(return_value=1000.0)
         bad_ppt.ss_max = 3600.0
+        bad_ppt.deadline = None
         bad_ppt.ss_min = 300.0
 
         good_ppt = Mock(exptime=None, exposure=3600.0, collection_end=None)
@@ -1940,6 +1955,7 @@ class TestFetchNewPPT:
         good_ppt.visible = Mock(return_value=[1000.0, 5000.0])
         good_ppt.next_vis = Mock(return_value=1000.0)
         good_ppt.ss_max = 3600.0
+        good_ppt.deadline = None
         good_ppt.ss_min = 30.0
 
         targets = [bad_ppt, good_ppt]
@@ -1975,6 +1991,53 @@ class TestFetchNewPPT:
         assert "Target 1001 rejected" in log_text
         assert "available before pass" in log_text
 
+    def test_fetch_ppt_rechecks_deadline_against_actual_slew(
+        self, queue_ditl: QueueDITL
+    ) -> None:
+        """A target whose slew estimate fit its deadline but whose actual slew
+        does not is rejected, and the next target is committed."""
+        queue_ditl.ephem.step_size = 60
+
+        def target(obsid: int, deadline: float | None) -> Mock:
+            ppt = Mock(exptime=None, exposure=3600.0, collection_end=None)
+            ppt.ra = 45.0
+            ppt.dec = 30.0
+            ppt.roll = 0.0
+            ppt.obsid = obsid
+            ppt.done = False
+            ppt.windows = []
+            ppt.visible = Mock(return_value=[1000.0, 1e9])
+            ppt.next_vis = Mock(return_value=1000.0)
+            ppt.ss_max = 3600.0
+            ppt.deadline = deadline
+            ppt.ss_min = 30.0
+            return ppt
+
+        # The queue accepted this target on its estimate, but collection can
+        # only start after the full slew from (10, 20) to (45, 30).
+        late_ppt = target(1001, deadline=1001.0)
+        good_ppt = target(1002, deadline=None)
+        targets = [late_ppt, good_ppt]
+        queue_ditl.queue.targets = targets
+
+        def get_next_not_done(
+            ra: float, dec: float, utime: float, **_: object
+        ) -> Mock | None:
+            return next((t for t in targets if not t.done), None)
+
+        cast(Mock, queue_ditl.queue).get = Mock(side_effect=get_next_not_done)
+        cast(Mock, queue_ditl.acs.passrequests).current_pass = Mock(return_value=None)
+        cast(Mock, queue_ditl.acs.passrequests).next_pass = Mock(return_value=None)
+
+        queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
+
+        assert queue_ditl.ppt is good_ppt
+        assert late_ppt.done is False
+        command = cast(Mock, queue_ditl.acs.enqueue_command).call_args[0][0]
+        assert command.slew.obsid == good_ppt.obsid
+        log_text = "\n".join(event.description for event in queue_ditl.log.events)
+        assert "Target 1001 skipped - collection would start" in log_text
+
     def test_fetch_ppt_retries_many_rejected_targets_without_recursion(
         self, queue_ditl: QueueDITL
     ) -> None:
@@ -1990,6 +2053,7 @@ class TestFetchNewPPT:
             target.done = False
             target.next_vis = Mock(return_value=1000.0)
             target.ss_max = 3600.0
+            target.deadline = None
             target.ss_min = 300.0
             target.windows = [[0.0, 1100.0]]
             targets.append(target)
@@ -2001,6 +2065,7 @@ class TestFetchNewPPT:
         good_ppt.done = False
         good_ppt.next_vis = Mock(return_value=1000.0)
         good_ppt.ss_max = 3600.0
+        good_ppt.deadline = None
         good_ppt.ss_min = 30.0
         good_ppt.windows = [[0.0, 5000.0]]
         targets.append(good_ppt)
@@ -2040,6 +2105,7 @@ class TestFetchNewPPT:
         mock_ppt.obsid = 1001
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.deadline = None
         mock_ppt.ss_min = 300.0
         mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
@@ -2077,6 +2143,7 @@ class TestFetchNewPPT:
         bad_ppt.done = False
         bad_ppt.next_vis = Mock(return_value=1000.0)
         bad_ppt.ss_max = 3600.0
+        bad_ppt.deadline = None
         bad_ppt.ss_min = 300.0
         bad_ppt.windows = [[0.0, 1e12]]
 
@@ -2087,6 +2154,7 @@ class TestFetchNewPPT:
         good_ppt.done = False
         good_ppt.next_vis = Mock(return_value=1000.0)
         good_ppt.ss_max = 3600.0
+        good_ppt.deadline = None
         good_ppt.ss_min = 300.0
         good_ppt.windows = [[0.0, 1e12]]
 
@@ -2129,6 +2197,7 @@ class TestFetchNewPPT:
         mock_ppt.obsid = 1002
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.deadline = None
         mock_ppt.ss_min = 300.0
         mock_ppt.windows = [[0.0, 1e12]]
         cast(Mock, queue_ditl.queue).get = Mock(return_value=mock_ppt)
@@ -2162,6 +2231,7 @@ class TestFetchNewPPT:
         mock_ppt.obsid = 1003
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.deadline = None
         mock_ppt.ss_min = 300.0
         mock_ppt.windows = [[0.0, 1e12]]
         queue_ditl.queue.targets = [mock_ppt]
@@ -3460,6 +3530,7 @@ class TestCalcMethod:
         mock_ppt.done = False
         mock_ppt.next_vis = Mock(return_value=1543276800.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.deadline = None
         mock_ppt.ss_min = 300.0
         mock_ppt.windows = [[0.0, 1e12]]
         mock_ppt.model_copy = Mock(return_value=Mock(collection_end=None))
@@ -3785,6 +3856,7 @@ class TestCalcMethod:
         mock_ppt.done = False
         mock_ppt.next_vis = Mock(return_value=1543276800.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.deadline = None
         mock_ppt.ss_min = 300.0
         mock_ppt.windows = [[0.0, 1e12]]
         mock_ppt.model_copy = Mock(return_value=Mock(collection_end=None))
@@ -4117,6 +4189,7 @@ class TestCalcMethod:
         mock_ppt.obsid = 1001
         mock_ppt.next_vis = Mock(return_value=1000.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.deadline = None
         mock_ppt.ss_min = 300.0
         mock_ppt.windows = [[0.0, 1e12]]
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
@@ -4155,6 +4228,7 @@ class TestCalcMethod:
         # Set next_vis to a time after the current time (1000.0)
         mock_ppt.next_vis = Mock(return_value=1200.0)
         mock_ppt.ss_max = 3600.0
+        mock_ppt.deadline = None
         mock_ppt.ss_min = 300.0
         mock_ppt.windows = [[0.0, 1e12]]
         queue_ditl.queue.get = Mock(return_value=mock_ppt)
@@ -5869,238 +5943,315 @@ class TestTOOFunctionality:
         result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
         assert result is False
 
-    def test_check_too_interrupt_merit_too_low(self, queue_ditl) -> None:
-        """Test _check_too_interrupt when TOO merit is lower than current observation."""
-        # Submit TOO with low merit
-        queue_ditl.submit_too(
+    @pytest.fixture
+    def queued_targets(self, queue_ditl) -> list[Pointing]:
+        """Make queue.add create real Pointings and record them."""
+        created: list[Pointing] = []
+
+        def add(
+            *,
+            ra: float,
+            dec: float,
+            obsid: int,
+            name: str,
+            merit: float,
+            exptime: int,
+            deadline: float | None = None,
+        ) -> Pointing:
+            target = Pointing(
+                config=queue_ditl.config,
+                ra=ra,
+                dec=dec,
+                obsid=obsid,
+                name=name,
+                fom=merit,
+                merit=merit,
+                deadline=deadline,
+            )
+            target.exptime = exptime
+            created.append(target)
+            return target
+
+        queue_ditl.queue.add = Mock(side_effect=add)
+        queue_ditl.queue.targets = created
+        return created
+
+    def _submit(
+        self,
+        queue_ditl,
+        merit: float = 10000.0,
+        deadline: float | None = None,
+    ) -> TOORequest:
+        return queue_ditl.submit_too(
             obsid=1000001,
             ra=180.0,
             dec=45.0,
-            merit=100.0,  # Low merit
+            merit=merit,
             exptime=3600,
-            name="Low merit TOO",
+            name="Successful TOO",
+            deadline=deadline,
         )
 
-        # Set current PPT with higher merit
-        from conops import Pointing
+    def test_check_too_interrupt_queues_active_too_once(
+        self, mock_pointing_visibility, queue_ditl, queued_targets
+    ) -> None:
+        """An active TOO joins the queue as an ordinary request, with no boost."""
+        self._submit(queue_ditl, deadline=5000.0)
 
+        queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
+        queue_ditl._check_too_interrupt(utime=1060.0, ra=180.0, dec=45.0)
+
+        queue_ditl.queue.add.assert_called_once_with(
+            ra=180.0,
+            dec=45.0,
+            obsid=1000001,
+            name="Successful TOO",
+            merit=10000.0,
+            exptime=3600,
+            deadline=5000.0,
+        )
+
+    def test_check_too_interrupt_merit_too_low(
+        self, mock_too_interrupt_success, queue_ditl, queued_targets
+    ) -> None:
+        """Test _check_too_interrupt when TOO merit is lower than current observation."""
+        self._submit(queue_ditl, merit=100.0)
         queue_ditl.ppt = Pointing(
             config=queue_ditl.config,
             ra=0.0,
             dec=0.0,
             obsid=1,
             name="Current obs",
-            fom=1000.0,  # Higher merit
-            merit=1000.0,  # Higher merit
+            fom=1000.0,
+            merit=1000.0,
         )
-        queue_ditl.ppt.exptime = 1800
 
         result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
-        assert result is False
 
-    @patch("conops.targets.pointing.Pointing.visibility")
+        assert result is False
+        mock_too_interrupt_success["terminate"].assert_not_called()
+
     def test_check_too_interrupt_target_not_visible(
-        self, mock_pointing_visible, mock_pointing_visibility, queue_ditl, submitted_too
+        self,
+        mock_pointing_visibility,
+        mock_pointing_visible,
+        queue_ditl,
+        queued_targets,
+        low_merit_current_ppt,
     ):
         """Test _check_too_interrupt when TOO target is not visible."""
-        mock_pointing_visible.return_value = False  # Target not visible
+        mock_pointing_visible.return_value = False
+        self._submit(queue_ditl)
 
         result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
-        assert result is False  # No interrupt should occur
+
+        assert result is False
         mock_pointing_visible.assert_called_once()
 
-    def test_check_too_interrupt_successful_interrupt_result(
+    def test_check_too_interrupt_deadline_passed(
         self,
         mock_too_interrupt_success,
         queue_ditl,
-        submitted_too,
+        queued_targets,
         low_merit_current_ppt,
-    ):
-        """Test _check_too_interrupt when TOO successfully interrupts - check result."""
-        # Mock queue.add to avoid actual queue operations
-        with patch.object(queue_ditl.queue, "add"):
-            result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
+    ) -> None:
+        """A TOO past its deadline does not interrupt."""
+        self._submit(queue_ditl, deadline=900.0)
 
-            assert result is True  # Should return True for successful interrupt
+        result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
 
-    def test_check_too_interrupt_successful_interrupt_executed(
-        self, mock_too_interrupt_success, queue_ditl, low_merit_current_ppt
-    ):
-        """Test _check_too_interrupt when TOO successfully interrupts - check executed flag."""
-        # Submit TOO with high merit
-        too = queue_ditl.submit_too(
-            obsid=1000001,
-            ra=180.0,
-            dec=45.0,
-            merit=10000.0,
-            exptime=3600,
-            name="Successful TOO",
+        assert result is False
+        mock_too_interrupt_success["terminate"].assert_not_called()
+
+    def test_check_too_interrupt_successful_interrupt(
+        self,
+        mock_too_interrupt_success,
+        queue_ditl,
+        queued_targets,
+        low_merit_current_ppt,
+    ) -> None:
+        """A visible, higher-value TOO terminates the observation and refetches."""
+        self._submit(queue_ditl)
+
+        result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
+
+        assert result is True
+        mock_too_interrupt_success["terminate"].assert_called_once_with(
+            1000.0,
+            reason="Preempted by TOO Successful TOO (obsid=1000001)",
+            mark_done=False,
         )
+        mock_too_interrupt_success["fetch"].assert_called_once_with(1000.0, 180.0, 45.0)
+        assert queue_ditl.ppt is queued_targets[0]
 
-        # Mock queue.add to avoid actual queue operations
-        with patch.object(queue_ditl.queue, "add"):
-            queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
+    def test_check_too_interrupt_executed_when_too_is_selected(
+        self,
+        mock_too_interrupt_success,
+        queue_ditl,
+        queued_targets,
+        low_merit_current_ppt,
+    ) -> None:
+        too = self._submit(queue_ditl)
 
-            assert too.executed is True
+        queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
 
-    def test_check_too_interrupt_successful_interrupt_terminate_called(
-        self, mock_too_interrupt_success, queue_ditl, low_merit_current_ppt
-    ):
-        """Test _check_too_interrupt when TOO successfully interrupts - check terminate called."""
-        # Submit TOO with high merit
+        assert too.executed is True
+
+    def test_check_too_interrupt_keeps_observation_when_too_not_admitted(
+        self,
+        mock_too_interrupt_success,
+        queue_ditl,
+        queued_targets,
+        low_merit_current_ppt,
+    ) -> None:
+        """An outranking TOO that fails dispatch admission does not stop science."""
+        too = self._submit(queue_ditl)
+        queue_ditl._ppt_unavailable = False
+        mock_too_interrupt_success["fetch"].side_effect = None
+
+        result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
+
+        assert result is False
+        assert too.executed is False
+        assert queue_ditl.ppt is low_merit_current_ppt
+        assert low_merit_current_ppt.done is False
+        assert queue_ditl._ppt_unavailable is False
+        mock_too_interrupt_success["terminate"].assert_not_called()
+
+    def test_check_too_interrupt_offers_all_simultaneous_toos(
+        self,
+        mock_too_interrupt_success,
+        queue_ditl,
+        queued_targets,
+        low_merit_current_ppt,
+    ) -> None:
+        """TOOs arriving together are all offered, whatever their order."""
         queue_ditl.submit_too(
             obsid=1000001,
             ra=180.0,
             dec=45.0,
-            merit=10000.0,
+            merit=500.0,
             exptime=3600,
-            name="Successful TOO",
+            name="Lower TOO",
+            submit_time=900.0,
         )
-
-        # Mock queue.add to avoid actual queue operations
-        with patch.object(queue_ditl.queue, "add"):
-            queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
-
-            mock_too_interrupt_success["terminate"].assert_called_once_with(
-                1000.0,
-                reason="Preempted by TOO Successful TOO (obsid=1000001)",
-                mark_done=False,
-            )
-
-    def test_check_too_interrupt_successful_interrupt_queue_add_called(
-        self, mock_too_interrupt_success, queue_ditl, low_merit_current_ppt
-    ):
-        """Test _check_too_interrupt when TOO successfully interrupts - check queue.add called."""
-        # Submit TOO with high merit
         queue_ditl.submit_too(
-            obsid=1000001,
-            ra=180.0,
-            dec=45.0,
-            merit=10000.0,
+            obsid=1000002,
+            ra=90.0,
+            dec=-30.0,
+            merit=5000.0,
             exptime=3600,
-            name="Successful TOO",
+            name="Higher TOO",
+            submit_time=900.0,
         )
 
-        # Mock queue.add to avoid actual queue operations
-        with patch.object(queue_ditl.queue, "add") as mock_queue_add:
-            queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
-
-            mock_queue_add.assert_called_once_with(
-                ra=180.0,
-                dec=45.0,
-                obsid=1000001,
-                name="Successful TOO",
-                merit=110000.0,  # Original merit + 100000 boost
-                exptime=3600,
-            )
-
-    def test_check_too_interrupt_successful_interrupt_fetch_called(
-        self, mock_too_interrupt_success, queue_ditl, low_merit_current_ppt
-    ):
-        """Test _check_too_interrupt when TOO successfully interrupts - check fetch called."""
-        # Submit TOO with high merit
-        queue_ditl.submit_too(
-            obsid=1000001,
-            ra=180.0,
-            dec=45.0,
-            merit=10000.0,
-            exptime=3600,
-            name="Successful TOO",
+        offered: list[list[bool]] = []
+        mock_too_interrupt_success["fetch"].side_effect = lambda *_: offered.append(
+            [target.done for target in queued_targets]
         )
 
-        # Mock queue.add to avoid actual queue operations
-        with patch.object(queue_ditl.queue, "add"):
-            queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
+        queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
 
-            mock_too_interrupt_success["fetch"].assert_called_once_with(
-                1000.0, 180.0, 45.0
-            )
+        assert offered == [[False, False]]
 
-    def test_check_too_interrupt_no_current_observation_result(
-        self, mock_too_interrupt_no_current_obs, queue_ditl
-    ):
-        """Test _check_too_interrupt when there is no current observation - check result."""
-        # Submit TOO
-        queue_ditl.submit_too(
-            obsid=1000001,
-            ra=180.0,
-            dec=45.0,
-            merit=10000.0,
-            exptime=3600,
-            name="TOO without current obs",
+    def test_check_too_interrupt_uses_visibility_window_urgency(
+        self,
+        mock_too_interrupt_success,
+        queue_ditl,
+        queued_targets,
+        low_merit_current_ppt,
+    ) -> None:
+        """Last-window urgency counts toward the interrupt decision."""
+        from conops.targets.merit import MeritModel
+
+        queue_ditl.merit_model = MeritModel(queue_ditl.config)
+        queue_ditl.merit_model.urgency_weight = 50.0
+        queue_ditl.merit_model.urgency_timescale_seconds = 1800.0
+        mock_too_interrupt_success["visible"].return_value = [0.0, 1000.0 + 1800.0]
+        too = self._submit(queue_ditl, merit=70.0, deadline=1000.0 + 86400.0)
+
+        result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
+
+        assert result is True
+        assert too.executed is True
+
+    def test_check_too_interrupt_does_not_resume_interrupted_observation(
+        self,
+        mock_too_interrupt_success,
+        queue_ditl,
+        queued_targets,
+        low_merit_current_ppt,
+    ) -> None:
+        """The interrupted target is held out of the refetch, then restored."""
+        self._submit(queue_ditl)
+        done_during_fetch: list[bool] = []
+        mock_too_interrupt_success["fetch"].side_effect = lambda *_: (
+            done_during_fetch.append(low_merit_current_ppt.done)
         )
 
-        # No current PPT (queue_ditl.ppt is None)
+        queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
 
-        with patch.object(queue_ditl.queue, "add"):
-            result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
+        assert done_during_fetch == [True]
+        assert low_merit_current_ppt.done is False
 
-            assert result is True  # Should return True for successful interrupt
+    def test_check_too_interrupt_no_current_observation(
+        self, mock_too_interrupt_no_current_obs, queue_ditl, queued_targets
+    ) -> None:
+        """With nothing to interrupt, the queued TOO waits for the next selection."""
+        too = self._submit(queue_ditl)
 
-    def test_check_too_interrupt_no_current_observation_executed(
-        self, mock_too_interrupt_no_current_obs, queue_ditl
-    ):
-        """Test _check_too_interrupt when there is no current observation - check executed flag."""
-        # Submit TOO
-        too = queue_ditl.submit_too(
-            obsid=1000001,
-            ra=180.0,
-            dec=45.0,
-            merit=10000.0,
-            exptime=3600,
-            name="TOO without current obs",
+        result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
+
+        assert result is False
+        assert too.executed is False
+        assert len(queued_targets) == 1
+        mock_too_interrupt_no_current_obs["fetch"].assert_not_called()
+
+    def test_check_too_marks_executed_once_dispatched(
+        self, mock_pointing_visibility, queue_ditl, queued_targets
+    ) -> None:
+        """A TOO selected through the normal queue is marked executed."""
+        too = self._submit(queue_ditl)
+        queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
+        queue_ditl.ppt = queued_targets[0]
+
+        queue_ditl._check_too_interrupt(utime=1060.0, ra=180.0, dec=45.0)
+
+        assert too.executed is True
+
+    @pytest.mark.parametrize(
+        ("too_tier", "too_merit", "interrupts"),
+        [(1, 10.0, True), (0, 10000.0, True), (-1, 10000.0, False)],
+    )
+    def test_check_too_interrupt_compares_tier_before_value(
+        self,
+        mock_too_interrupt_success,
+        queue_ditl,
+        queued_targets,
+        low_merit_current_ppt,
+        too_tier,
+        too_merit,
+        interrupts,
+    ) -> None:
+        from conops.config.observation_categories import (
+            ObservationCategories,
+            ObservationCategory,
         )
+        from conops.targets.merit import MeritModel
 
-        # No current PPT (queue_ditl.ppt is None)
-
-        with patch.object(queue_ditl.queue, "add"):
-            queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
-
-            assert too.executed is True
-
-    def test_check_too_interrupt_no_current_observation_queue_add_called(
-        self, mock_too_interrupt_no_current_obs, queue_ditl
-    ):
-        """Test _check_too_interrupt when there is no current observation - check queue.add called."""
-        # Submit TOO
-        queue_ditl.submit_too(
-            obsid=1000001,
-            ra=180.0,
-            dec=45.0,
-            merit=10000.0,
-            exptime=3600,
-            name="TOO without current obs",
+        queue_ditl.config.observation_categories = ObservationCategories(
+            categories=[
+                ObservationCategory(
+                    name="TOO", obsid_min=1000000, obsid_max=2000000, tier=too_tier
+                )
+            ]
         )
+        queue_ditl.merit_model = MeritModel(queue_ditl.config)
+        self._submit(queue_ditl, merit=too_merit)
 
-        # No current PPT (queue_ditl.ppt is None)
+        result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
 
-        with patch.object(queue_ditl.queue, "add") as mock_queue_add:
-            queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
-
-            mock_queue_add.assert_called_once()
-
-    def test_check_too_interrupt_no_current_observation_fetch_called(
-        self, mock_too_interrupt_no_current_obs, queue_ditl
-    ):
-        """Test _check_too_interrupt when there is no current observation - check fetch called."""
-        # Submit TOO
-        queue_ditl.submit_too(
-            obsid=1000001,
-            ra=180.0,
-            dec=45.0,
-            merit=10000.0,
-            exptime=3600,
-            name="TOO without current obs",
-        )
-
-        # No current PPT (queue_ditl.ppt is None)
-
-        with patch.object(queue_ditl.queue, "add"):
-            queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
-
-            mock_too_interrupt_no_current_obs["fetch"].assert_called_once_with(
-                1000.0, 180.0, 45.0
-            )
+        assert result is interrupts
 
     def test_too_request_pydantic_validation_valid(self) -> None:
         """Test TOORequest Pydantic validation - valid creation."""
@@ -6158,6 +6309,7 @@ class TestTOOFunctionality:
             "exptime": 3600,
             "name": "Test TOO",
             "submit_time": 1234567890.0,
+            "deadline": None,
             "executed": True,
         }
         assert data == expected

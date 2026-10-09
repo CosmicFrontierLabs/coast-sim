@@ -7,7 +7,8 @@ import numpy as np
 import pytest
 
 from conops import AttitudeControlSystem, Pointing, Queue
-from conops.config import ObservationTiming
+from conops.config import ObservationTiming, TargetConfig
+from conops.config.observation_categories import ObservationCategories
 
 
 @pytest.fixture
@@ -22,6 +23,8 @@ def mock_target():
     target.slewtime = 10
     target.ra = 0
     target.dec = 0
+    target.obsid = 1
+    target.deadline = None
 
     def reset_func():
         target.done = False
@@ -46,6 +49,8 @@ def mock_targets(mock_target):
         t.slewtime = 10
         t.ra = i * 10
         t.dec = i * 10
+        t.obsid = 100 + i
+        t.deadline = None
 
         # Create a closure to capture the target instance
         def create_reset_func(target_instance):
@@ -70,12 +75,8 @@ def mock_config():
     config.spacecraft_bus = Mock()
     config.spacecraft_bus.attitude_control = AttitudeControlSystem()
     config.attitude_control = Mock()
-    config.targets = Mock()
-    config.targets.slew_distance_weight = 0.0
-    config.targets.slew_time_weight = 0.0
-    config.targets.collection_time_weight = 0.0
-    config.targets.radiator_sun_exposure_weight = 0.0
-    config.targets.radiator_earth_exposure_weight = 0.0
+    config.targets = TargetConfig()
+    config.observation_categories = ObservationCategories()
     return config
 
 

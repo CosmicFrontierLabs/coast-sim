@@ -916,6 +916,50 @@ scale. For example, if normal target merits are around ``100``, then
 reward, while ``slew_time_weight = 1.0`` gives a ten-minute slew a ``10`` point
 penalty.
 
+Dynamic Merit: Tiers, Urgency, Cadence and Program Balance
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Beyond the cost weights above, a target's merit can change with time and with
+what has already been observed. :class:`~conops.targets.merit.MeritModel`
+evaluates these terms at every selection:
+
+.. code-block:: text
+
+   value = target.merit + urgency + cadence + completion_deficit
+   score = value - slew and radiator costs + collection reward   (as above)
+
+Candidates are ranked by **tier first**, then by score. A target's tier comes
+from its observation category (see `observation_categories`_) and is absolute:
+a higher-tier target is always selected over a lower-tier one, whatever their
+merits. Within a tier the dynamic terms decide.
+
+* ``config.targets.urgency_weight`` - Merit added at full urgency. Urgency
+  applies only to targets with a ``deadline`` (``queue.add(..., deadline=...)``
+  or ``submit_too(..., deadline=...)``), the latest time science collection may
+  begin. It is ``1`` once the closing time is within
+  ``config.targets.urgency_timescale_seconds`` (default one hour) and
+  ``timescale / time_to_close`` before that. The closing time is the deadline,
+  or the end of the current visibility window when no later window opens
+  before the deadline. A target cannot be selected once its deadline has passed.
+* ``config.targets.cadence_weight`` - Merit added once a target's category
+  ``cadence_seconds`` has elapsed since it last collected science, rising
+  linearly from ``0`` just after a visit. A target never yet observed gets the
+  full weight.
+* ``config.targets.completion_deficit_weight`` - Merit per unit of program
+  deficit: the category's ``time_share`` minus the program's delivered share of
+  the science collected so far in the run, bounded to ``[-1, 1]``. Programs
+  behind their allocation rise; programs ahead fall.
+
+Each dynamic term is its weight times a factor bounded to ``[0, 1]`` (``[-1, 1]``
+for the deficit), so no term can exceed its weight. With every weight at
+``0.0`` and every category in tier ``0`` (the defaults), selection is unchanged.
+
+When a target is selected, ``QueueDITL`` logs a ``QUEUE`` event with the full
+term breakdown (``Selected <obsid>: tier=... base=... urgency=... score=...``),
+and the target's ``merit`` is frozen at its value. That frozen value is
+exported on the plan entry and is what a Target of Opportunity must beat to
+interrupt the observation (see :doc:`target_of_opportunity`).
+
 Radiator Net Heat Model
 ^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -1418,13 +1462,23 @@ observation_categories
 ~~~~~~~~~~~~~~~~~~~~~~
 
 The :class:`~conops.config.ObservationCategories` defines how observations are categorized
-based on their target ID (obsid) for visualization purposes.
+based on their target ID (obsid), for visualization and for the scheduling settings
+the dynamic merit model reads (see `Dynamic Merit: Tiers, Urgency, Cadence and Program
+Balance`_).
 
 **Attributes:**
 
 * ``categories`` (list[ObservationCategory]): Category definitions
 * ``default_name`` (str): Default category name
 * ``default_color`` (str): Default visualization color
+
+Each :class:`~conops.config.ObservationCategory` also carries:
+
+* ``tier`` (int, default ``0``): Scheduling tier; higher tiers always win
+* ``program`` (str, optional): Program the targets count toward; defaults to the
+  category name
+* ``cadence_seconds`` (float, optional): Desired interval between visits
+* ``time_share`` (float in ``[0, 1]``, optional): Allocated fraction of science time
 
 .. code-block:: python
 
@@ -1443,6 +1497,19 @@ based on their target ID (obsid) for visualization purposes.
                obsid_min=90000,
                obsid_max=91000,
                color="gray",
+           ),
+           ObservationCategory(
+               name="Monitoring",
+               obsid_min=40000,
+               obsid_max=50000,
+               cadence_seconds=86400,  # daily visits
+               time_share=0.2,
+           ),
+           ObservationCategory(
+               name="TOO",
+               obsid_min=30000,
+               obsid_max=40000,
+               tier=1,  # always outranks tier-0 science
            ),
        ],
        default_name="Other",

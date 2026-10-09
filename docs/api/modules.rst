@@ -46,6 +46,7 @@ Scheduling and Planning
    conops.schedulers.scheduler
    conops.schedulers.queue_scheduler
    conops.targets
+   conops.targets.merit
    conops.targets.pointing
    conops.targets.plan
    conops.targets.plan_entry
