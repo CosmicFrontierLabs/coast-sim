@@ -293,52 +293,23 @@ class TestSolarPanelSetBasics:
 class TestSolarPanelSetIllumination:
     """Test panel set illumination calculations."""
 
-    def test_panel_illumination_single_panel(
+    def test_panel_illumination_returns_combined_result(
         self, mock_ephemeris: Mock, single_panel_set: SolarPanelSet
     ) -> None:
-        """Test illumination with single panel."""
+        """The illumination-only API delegates to the shared calculation."""
         panel_set = single_panel_set
-        mock_ephem = mock_ephemeris
-        mock_time = datetime(2018, 1, 1, tzinfo=timezone.utc)
-
         with patch.object(
-            SolarPanel,
-            "panel_illumination_fraction",
-            return_value=0.8,
-        ):
+            SolarPanelSet, "illumination_and_power", return_value=(0.8, 123.0)
+        ) as combined:
             result = panel_set.panel_illumination_fraction(
-                time=mock_time,
-                ephem=mock_ephem,
+                time=datetime(2018, 1, 1, tzinfo=timezone.utc),
+                ephem=mock_ephemeris,
                 ra=0.0,
                 dec=0.0,
             )
-            assert result == 0.8
 
-    def test_panel_illumination_multiple_panels_weighted(
-        self, mock_ephemeris: Mock
-    ) -> None:
-        """Test illumination with multiple panels (weighted average)."""
-        panels = [
-            SolarPanel(max_power=500.0),
-            SolarPanel(max_power=500.0),
-        ]
-        panel_set = SolarPanelSet(panels=panels)
-        mock_ephem = mock_ephemeris
-        mock_time = datetime(2018, 1, 1, tzinfo=timezone.utc)
-
-        with patch.object(
-            SolarPanel,
-            "panel_illumination_fraction",
-            side_effect=[0.8, 0.6],
-        ):
-            result = panel_set.panel_illumination_fraction(
-                time=mock_time,
-                ephem=mock_ephem,
-                ra=0.0,
-                dec=0.0,
-            )
-            # Weighted average: 0.5 * 0.8 + 0.5 * 0.6 = 0.7
-            assert result == pytest.approx(0.7)
+        assert result == 0.8
+        combined.assert_called_once()
 
     def test_panel_illumination_zero_max_power(
         self, mock_ephemeris: Mock, zero_power_panel_set: SolarPanelSet
@@ -348,95 +319,33 @@ class TestSolarPanelSetIllumination:
         mock_ephem = mock_ephemeris
         mock_time = datetime(2018, 1, 1, tzinfo=timezone.utc)
 
-        with patch.object(
-            SolarPanel,
-            "panel_illumination_fraction",
-            return_value=0.5,
-        ):
-            result = panel_set.panel_illumination_fraction(
-                time=mock_time,
-                ephem=mock_ephem,
-                ra=0.0,
-                dec=0.0,
-            )
-            assert result == 0.0
+        result = panel_set.panel_illumination_fraction(
+            time=mock_time,
+            ephem=mock_ephem,
+            ra=0.0,
+            dec=0.0,
+        )
+        assert result == 0.0
 
 
 class TestSolarPanelSetPower:
     """Test power calculation."""
 
-    def test_power_single_panel(self, mock_ephemeris: Mock) -> None:
-        """Test power calculation with single panel."""
-        panel_set = SolarPanelSet(
-            panels=[SolarPanel(max_power=1000.0)],
-            conversion_efficiency=1.0,
-        )
-        mock_ephem = mock_ephemeris
-        mock_time = datetime(2018, 1, 1, tzinfo=timezone.utc)
-
+    def test_power_returns_combined_result(self, mock_ephemeris: Mock) -> None:
+        """The power-only API delegates to the shared calculation."""
+        panel_set = SolarPanelSet()
         with patch.object(
-            SolarPanel,
-            "panel_illumination_fraction",
-            return_value=0.8,
-        ):
+            SolarPanelSet, "illumination_and_power", return_value=(0.8, 800.0)
+        ) as combined:
             result = panel_set.power(
-                time=mock_time,
+                time=datetime(2018, 1, 1, tzinfo=timezone.utc),
                 ra=0.0,
                 dec=0.0,
-                ephem=mock_ephem,
+                ephem=mock_ephemeris,
             )
-            # Power = 0.8 * 1000 * 1.0 = 800
-            assert result == pytest.approx(800.0)
 
-    def test_power_multiple_panels(self, mock_ephemeris: Mock) -> None:
-        """Test power calculation with multiple panels."""
-        panels = [
-            SolarPanel(max_power=500.0, conversion_efficiency=0.95),
-            SolarPanel(max_power=500.0, conversion_efficiency=0.90),
-        ]
-        panel_set = SolarPanelSet(panels=panels)
-        mock_ephem = mock_ephemeris
-        mock_time = datetime(2018, 1, 1, tzinfo=timezone.utc)
-
-        with patch.object(
-            SolarPanel,
-            "panel_illumination_fraction",
-            side_effect=[1.0, 1.0],
-        ):
-            result = panel_set.power(
-                time=mock_time,
-                ra=0.0,
-                dec=0.0,
-                ephem=mock_ephem,
-            )
-            # Power = (1.0 * 500 * 0.95) + (1.0 * 500 * 0.90) = 475 + 450 = 925
-            assert result == pytest.approx(925.0)
-
-    def test_power_efficiency_fallback(self, mock_ephemeris: Mock) -> None:
-        """Test power calculation with array-level efficiency fallback."""
-        panels = [
-            SolarPanel(max_power=500.0, conversion_efficiency=None),
-        ]
-        panel_set = SolarPanelSet(
-            panels=panels,
-            conversion_efficiency=0.88,
-        )
-        mock_ephem = mock_ephemeris
-        mock_time = datetime(2018, 1, 1, tzinfo=timezone.utc)
-
-        with patch.object(
-            SolarPanel,
-            "panel_illumination_fraction",
-            return_value=1.0,
-        ):
-            result = panel_set.power(
-                time=mock_time,
-                ra=0.0,
-                dec=0.0,
-                ephem=mock_ephem,
-            )
-            # Power = 1.0 * 500 * 0.88 = 440
-            assert result == pytest.approx(440.0)
+        assert result == 800.0
+        combined.assert_called_once()
 
     def test_power_zero_panels(
         self, mock_ephemeris: Mock, empty_solar_panel_set: SolarPanelSet
@@ -817,12 +726,12 @@ class TestIlluminationAndPower:
         assert power == pytest.approx(450.0, rel=1e-4)  # 1.0 * 500 * 0.9
 
     def test_illumination_and_power_multiple_panels(self) -> None:
-        """Test illumination_and_power with multiple panels - physically correct scenario.
+        """Each co-aligned panel retains its own unit normal.
 
         Setup: Two identical panels both pointing along body +X (boresight).
         Sun is at inertial +X, spacecraft at RA=0, Dec=0.
-        The coordinate transformation results in ~45° angle between panel normal
-        and sun direction (cos(45°) ≈ 0.707), which is physically valid.
+        Both panels therefore receive full illumination; adding another panel
+        must not shorten either panel's normal.
         """
         # Create two panels both pointing toward +X (boresight direction)
         panels = [
@@ -860,12 +769,9 @@ class TestIlluminationAndPower:
                 dec=0.0,  # Boresight points at Dec=0°
             )
 
-        # Coordinate transformation gives ~45° angle (cos(45°) ≈ 0.707)
-        expected_illumination = 1.0 / math.sqrt(2)  # cos(45°)
+        expected_illumination = 1.0
         # Power = sum(illumination * max_power * efficiency) for each panel
-        expected_power = (1.0 / math.sqrt(2)) * 300.0 * 0.95 + (
-            1.0 / math.sqrt(2)
-        ) * 400.0 * 0.90
+        expected_power = 300.0 * 0.95 + 400.0 * 0.90
 
         assert illumination == pytest.approx(expected_illumination, rel=1e-10)
         assert power == pytest.approx(expected_power, rel=1e-10)
@@ -1123,6 +1029,18 @@ class TestCoverageCompletion:
         # Should be the same object (cached)
         assert geom1 is geom2
 
+    def test_geometry_normalizes_each_panel_independently(self) -> None:
+        panel_set = SolarPanelSet(
+            panels=[
+                SolarPanel(normal=(0.0, 2.0, 0.0)),
+                SolarPanel(normal=(0.0, 0.0, -3.0)),
+            ]
+        )
+
+        assert panel_set._get_geometry().normal == pytest.approx(
+            np.asarray([[0.0, 1.0, 0.0], [0.0, 0.0, -1.0]])
+        )
+
     def test_illumination_method_empty_panels_different_time_types(
         self, zero_power_panel_set: SolarPanelSet
     ) -> None:
@@ -1162,17 +1080,6 @@ class TestCoverageCompletion:
             ephem=ephem,  # type: ignore[arg-type]  # tests list[float] early-exit
         )
         assert np.array_equal(result2, np.array([0.0]))
-
-        # Test custom sequence that fails on len() to hit the except block
-        class BadLenSequence:
-            def __len__(self) -> None:
-                raise Exception("Bad len")
-
-        bad_time = BadLenSequence()
-        result3 = panel_set.panel_illumination_fraction(
-            time=bad_time, ra=0.0, dec=0.0, ephem=ephem
-        )
-        assert result3 == 0.0
 
     def test_illumination_and_power_array_time_fallback(self) -> None:
         """Test illumination_and_power with array time falls back to loop (lines 415-421, 474-495)."""

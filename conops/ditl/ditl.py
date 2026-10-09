@@ -20,7 +20,7 @@ from ..config.constraint import (
     attitude_constraint_name_for_scopes,
     attitude_constraint_scope_label,
 )
-from ..simulation.roll import optimum_roll
+from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
 from ..targets import PlanEntry
 from .ditl_log import DITLLog
 from .ditl_mixin import DITLMixin
@@ -162,11 +162,15 @@ class DITL(DITLMixin, DITLStats):
         if self.plan is None:
             raise ValueError("ERROR: No plan loaded")
 
+        self._begin_fault_run()
+        self.acs.solar_array_drive_state = self.solar_panel.initial_drive_state()
         # Plans intentionally exclude runtime objects from their serialized form.
         # Rebind here as well as during construction so assigning Plan.load(...)
         # after DITL initialization remains safe.
         if isinstance(self.plan, Plan):
             self.plan.bind_runtime(self.config, self.ephem)
+
+        self._reset_stored_momentum_tracker()
 
         # Set up ACS ephemeris if not already set
         if self.acs.ephem is None:
@@ -209,14 +213,28 @@ class DITL(DITLMixin, DITLStats):
                 instrument_roll = self.ppt.roll
                 mounted = self.ppt.uses_mounted_attitude()
                 if instrument_roll == -1.0:
-                    instrument_roll = optimum_roll(
-                        self.ppt.ra,
-                        self.ppt.dec,
-                        self.utime[0],
-                        self.ephem,
-                        self.solar_panel,
-                        self.constraint,
-                        telescope=self.ppt.science_telescope(),
+                    telescope = self.ppt.science_telescope()
+                    instrument_roll = (
+                        optimum_instrument_roll(
+                            self.ppt.ra,
+                            self.ppt.dec,
+                            self.utime[0],
+                            self.ephem,
+                            telescope,
+                            self.solar_panel,
+                            self.constraint,
+                            drive_state=self.acs.solar_array_drive_state,
+                        )
+                        if telescope is not None
+                        else optimum_body_roll(
+                            self.ppt.ra,
+                            self.ppt.dec,
+                            self.utime[0],
+                            self.ephem,
+                            self.solar_panel,
+                            self.constraint,
+                            drive_state=self.acs.solar_array_drive_state,
+                        )
                     )
                     self.ppt.roll = instrument_roll
                 body_ra, body_dec, body_roll = self.ppt.target_body_attitude(
@@ -276,9 +294,18 @@ class DITL(DITLMixin, DITLStats):
             power_usage = bus_power + payload_power
 
             # Calculate solar panel illumination and power (more efficient than separate calls)
-            panel_illumination, panel_power = self.solar_panel.illumination_and_power(
-                time=self.utime[i], ra=ra, dec=dec, ephem=self.ephem, roll=roll
+            panel_illumination, panel_power, drive_state = (
+                self.solar_panel.evaluate_executed_attitude(
+                    time=self.utime[i],
+                    ra=ra,
+                    dec=dec,
+                    ephem=self.ephem,
+                    drive_state=self.acs.solar_array_drive_state,
+                    roll=roll,
+                    acs_mode=mode,
+                )
             )
+            self.acs.solar_array_drive_state = drive_state
             assert isinstance(panel_illumination, float)
             assert isinstance(panel_power, float)
 
@@ -324,19 +351,28 @@ class DITL(DITLMixin, DITLStats):
                 instrument_roll = self.acs.last_slew.instrument_roll
             if instrument_roll == -1.0:
                 instrument_roll = 0.0
-            nominal_roll = (
-                optimum_roll(
+            if mounted_target is not None:
+                telescope = mounted_target.science_telescope()
+                assert telescope is not None
+                nominal_roll = optimum_instrument_roll(
                     mounted_target.ra,
                     mounted_target.dec,
                     self.utime[i],
                     self.ephem,
+                    telescope,
                     self.solar_panel,
                     self.constraint,
-                    telescope=mounted_target.science_telescope(),
+                    drive_state=self.acs.solar_array_drive_state,
                 )
-                if mounted_target is not None
-                else optimum_roll(ra, dec, self.utime[i], self.ephem, self.solar_panel)
-            )
+            else:
+                nominal_roll = optimum_body_roll(
+                    ra,
+                    dec,
+                    self.utime[i],
+                    self.ephem,
+                    self.solar_panel,
+                    drive_state=self.acs.solar_array_drive_state,
+                )
             roll_offset_deg = (instrument_roll - nominal_roll + 180.0) % 360.0 - 180.0
             sun_angle_deg = self._compute_sun_angle(self.utime[i], ra, dec)
             _sun_bv = scbodyvector(
@@ -410,6 +446,8 @@ class DITL(DITLMixin, DITLStats):
                 )
             scope_label = attitude_constraint_scope_label(scopes)
             _q = attitude_to_quat(ra, dec, roll)
+            momentum_sample = self._update_stored_momentum(self.utime[i], _pos, _q)
+            drive_angles = self._solar_array_drive_telemetry()
             hk = Housekeeping(
                 timestamp=datetime.fromtimestamp(self.utime[i], tz=timezone.utc),
                 ra=ra,
@@ -419,6 +457,7 @@ class DITL(DITLMixin, DITLStats):
                 acs_mode=mode,
                 collection_seconds=collection_seconds,
                 panel_illumination=panel_illumination,
+                solar_array_drive_angles=drive_angles,
                 power_usage=power_usage,
                 power_bus=bus_power,
                 power_payload=payload_power,
@@ -452,21 +491,33 @@ class DITL(DITLMixin, DITLStats):
                 quat_x=float(_q[1]),
                 quat_y=float(_q[2]),
                 quat_z=float(_q[3]),
+                gravity_gradient_torque_body_n_m=(
+                    list(momentum_sample.gravity_gradient_torque_body_n_m)
+                    if momentum_sample is not None
+                    else None
+                ),
+                stored_momentum_body_n_m_s=(
+                    list(momentum_sample.stored_momentum_body_n_m_s)
+                    if momentum_sample is not None
+                    else None
+                ),
+                stored_momentum_norm_n_m_s=(
+                    momentum_sample.stored_momentum_norm_n_m_s
+                    if momentum_sample is not None
+                    else None
+                ),
             )
 
             # Check fault management thresholds and red limit constraints
-            self.config.fault_management.check(
+            self.fault_management.check(
                 housekeeping=hk,
                 acs=self.acs,
             )
 
             # Check if safe mode was requested by fault management
-            if (
-                self.config.fault_management.safe_mode_requested
-                and not self.acs.in_safe_mode
-            ):
+            if self.fault_management.safe_mode_requested and not self.acs.in_safe_mode:
                 self.acs.request_safe_mode(self.utime[i])
-                self.config.fault_management.safe_mode_requested = False  # Reset flag
+                self.fault_management.safe_mode_requested = False  # Reset flag
 
             # Store housekeeping telemetry
             self.telemetry.housekeeping.append(hk)
@@ -499,7 +550,12 @@ class DITL(DITLMixin, DITLStats):
 
         self._assert_attitude_rate_continuity()
         self._attach_execution_timeseries_to_plan()
-        return True
+        return not any(
+            event.name
+            in ("attitude_execution", "attitude_braking", "attitude_recovery")
+            and event.event_type == "operational_fault"
+            for event in self.fault_management.events
+        )
 
     def _compute_sun_angle(self, utime: float, ra: float, dec: float) -> float | None:
         """Compute angular distance from pointing to the Sun in degrees."""

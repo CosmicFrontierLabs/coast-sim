@@ -362,8 +362,8 @@ class TargetQueue:
             if target.exptime is not None and target.exptime < target.ss_min:
                 continue
 
-            # This optimistic bound needs no roll/deadline calculation. Reject
-            # non-winners before the potentially expensive visibility prefilter.
+            # Reject score-bound losers before the deadline callback can compute
+            # their roll and ground-pass ingress geometry.
             if prune_by_score_bound:
                 upper_bound = self._candidate_score_upper_bound(
                     target=target,

@@ -17,7 +17,7 @@ from ..common import (
     scbodyvector,
     unixtime2date,
 )
-from ..common.enums import ACSCommandType
+from ..common.enums import ACSCommandType, SlewAlgorithm
 from ..common.ephemeris import position_vectors
 from ..common.vector import attitude_to_quat, quaternion_attitude_delta
 from ..config import DAY_SECONDS, AttitudeConstraintScope, MissionConfig
@@ -30,12 +30,12 @@ from ..config.constraint import (
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
 from ..simulation.idle_safety import IdleSafetyPlanner
-from ..simulation.passes import Pass
-from ..simulation.roll import optimum_roll
+from ..simulation.passes import Pass, pass_slew_trigger_buffer
+from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing, Queue, TargetSlewEstimate
 from .ditl_log import DITLLog
-from .ditl_mixin import DITLMixin
+from .ditl_mixin import AttitudeRateContinuityError, DITLMixin
 from .ditl_stats import DITLStats
 from .telemetry import Housekeeping, PayloadData
 
@@ -174,7 +174,7 @@ class QueueDITL(DITLMixin, DITLStats):
         self._ephem_utime_cache: list[float] | None = None
         self._ephem_utime_cache_source: npt.NDArray[np.datetime64] | None = None
         self._ppt_optimum_roll_cache: dict[
-            tuple[float, float, float, int, int, int, int], float
+            tuple[float, float, float, int, int, int, int, int], float
         ] = {}
         self._idle_safety: IdleSafetyPlanner | None = None
         # Subsystem power tracking
@@ -456,10 +456,22 @@ class QueueDITL(DITLMixin, DITLStats):
         This simulation uses a queue-driven ACS (Attitude Control System) where
         spacecraft state transitions (slews, passes, etc.) are managed through
         a command queue, providing explicit, traceable control flow.
+
+        An attitude fault returns False while retaining diagnostic outputs.
+        With the default fault policy, the simulation completes in safehold.
         """
         # Reset per-run state so re-runs on the same instance start clean
         self._attitude_constraint_violations = []
         self._active_gsp_end_time = None
+        if self._run_started:
+            self.plan = Plan()
+            self.charging_ppt = None
+            self.emergency_charging.current_charging_ppt = None
+            self._planned_gsp_keys.clear()
+            self._gsp_slew_plan_entries.clear()
+            self._synced_executed_slew_count = 0
+            self._ppt_unavailable = None
+        self._ppt_optimum_roll_cache.clear()
 
         # If begin/end datetimes are naive, assume UTC by making them timezone-aware
         if self.begin.tzinfo is None:
@@ -467,11 +479,15 @@ class QueueDITL(DITLMixin, DITLStats):
         if self.end.tzinfo is None:
             self.end = self.end.replace(tzinfo=timezone.utc)
 
+        self._begin_fault_run()
+        self.acs.solar_array_drive_state = self.config.solar_panel.initial_drive_state()
+
         # Check that ephemeris is set
         assert self.ephem is not None, "Ephemeris must be set before running DITL"
 
         # Set step_size from ephem
         self.step_size = self.ephem.step_size
+        self._reset_stored_momentum_tracker()
 
         # Set ACS ephemeris if not already set
         if self.acs.ephem is None:
@@ -549,11 +565,45 @@ class QueueDITL(DITLMixin, DITLStats):
         if self.plan and self.ppt is not None:
             self._close_last_plan_entry(self.uend)
 
-        self._assert_attitude_rate_continuity()
-        self._assert_plan_matches_execution()
+        attitude_fault = any(
+            event.name
+            in (
+                "idle_safety",
+                "attitude_execution",
+                "attitude_braking",
+                "attitude_recovery",
+            )
+            and event.event_type == "operational_fault"
+            for event in self.fault_management.events
+        )
+        for validate in (
+            self._assert_attitude_rate_continuity,
+            self._assert_plan_matches_execution,
+        ):
+            try:
+                validate()
+            except (AttitudeRateContinuityError, PlanExecutionMismatchError) as exc:
+                if not attitude_fault:
+                    raise
+                # A diagnosed operational failure is not a valid science plan.
+                # Preserve both audits, without turning safehold into a crash.
+                self.fault_management.report_fault(
+                    utime=self.uend,
+                    name=type(exc).__name__,
+                    cause=str(exc),
+                    metadata={},
+                    acs=self.acs,
+                )
         self._attach_execution_timeseries_to_plan()
 
-        return True
+        if attitude_fault:
+            self.log.log_event(
+                utime=self.uend,
+                event_type="ERROR",
+                description="Run completed with an attitude fault; not a valid science plan. See fault_management.events.",
+                acs_mode=self.acs.acsmode,
+            )
+        return not attitude_fault
 
     def _handle_data_management(self, utime: float, mode: ACSMode) -> None:
         """Handle data generation during observations and downlink during passes."""
@@ -624,20 +674,17 @@ class QueueDITL(DITLMixin, DITLStats):
                 return
             hk = self.telemetry.housekeeping[-1]
 
-        self.config.fault_management.check(
+        self.fault_management.check(
             housekeeping=hk,
             acs=self.acs,
         )
         # Check if safe mode has been requested by fault management
-        if (
-            self.config.fault_management.safe_mode_requested
-            and not self.acs.in_safe_mode
-        ):
+        if self.fault_management.safe_mode_requested and not self.acs.in_safe_mode:
             reason = None
             trigger_event = next(
                 (
                     e
-                    for e in reversed(self.config.fault_management.events)
+                    for e in reversed(self.fault_management.events)
                     if e.event_type == "safe_mode_trigger"
                 ),
                 None,
@@ -1327,10 +1374,41 @@ class QueueDITL(DITLMixin, DITLStats):
         _pos = np.asarray(position_vectors(self.ephem, "gcrs")[ei], dtype=np.float64)
         earth_body_vector: list[float] = list(-_pos / np.linalg.norm(_pos))
 
-        nominal_roll = optimum_roll(ra, dec, utime, self.ephem, self.config.solar_panel)
-        roll_offset_deg = (roll - nominal_roll + 180.0) % 360.0 - 180.0
+        if mounted_science:
+            assert self.ppt is not None
+            telescope = self.ppt.science_telescope()
+            assert telescope is not None
+            instrument_roll = (
+                self.acs.last_slew.instrument_roll
+                if self.acs.last_slew is not None
+                and self.acs.last_slew.instrument_roll is not None
+                else self.ppt.roll
+            )
+            nominal_roll = optimum_instrument_roll(
+                self.ppt.ra,
+                self.ppt.dec,
+                utime,
+                self.ephem,
+                telescope,
+                self.config.solar_panel,
+                self.constraint,
+                drive_state=self.acs.solar_array_drive_state,
+            )
+            roll_offset_deg = (instrument_roll - nominal_roll + 180.0) % 360.0 - 180.0
+        else:
+            nominal_roll = optimum_body_roll(
+                ra,
+                dec,
+                utime,
+                self.ephem,
+                self.config.solar_panel,
+                drive_state=self.acs.solar_array_drive_state,
+            )
+            roll_offset_deg = (roll - nominal_roll + 180.0) % 360.0 - 180.0
 
         _q = attitude_to_quat(ra, dec, roll)
+        momentum_sample = self._update_stored_momentum(utime, _pos, _q)
+        drive_angles = self._solar_array_drive_telemetry()
         return Housekeeping(
             timestamp=datetime.fromtimestamp(utime, tz=timezone.utc),
             ra=ra,
@@ -1340,6 +1418,7 @@ class QueueDITL(DITLMixin, DITLStats):
             acs_mode=mode,
             collection_seconds=self._collection_seconds_for_step(utime, mode),
             panel_illumination=panel_illumination,
+            solar_array_drive_angles=drive_angles,
             power_usage=total_power,
             power_bus=bus_power,
             power_payload=payload_power,
@@ -1380,6 +1459,21 @@ class QueueDITL(DITLMixin, DITLStats):
             quat_x=float(_q[1]),
             quat_y=float(_q[2]),
             quat_z=float(_q[3]),
+            gravity_gradient_torque_body_n_m=(
+                list(momentum_sample.gravity_gradient_torque_body_n_m)
+                if momentum_sample is not None
+                else None
+            ),
+            stored_momentum_body_n_m_s=(
+                list(momentum_sample.stored_momentum_body_n_m_s)
+                if momentum_sample is not None
+                else None
+            ),
+            stored_momentum_norm_n_m_s=(
+                momentum_sample.stored_momentum_norm_n_m_s
+                if momentum_sample is not None
+                else None
+            ),
         )
 
     def _track_ppt_in_timeline(self) -> None:
@@ -1573,13 +1667,8 @@ class QueueDITL(DITLMixin, DITLStats):
     def _expected_slew_start_attitude(
         self, utime: float, execution_time: float
     ) -> tuple[float, float, float]:
-        """Return the attitude a new slew should start from, accounting for an in-progress slew."""
-        active_slew = self.acs.last_slew
-        if active_slew is not None and active_slew.is_slewing(utime):
-            slewend = active_slew.slewstart + active_slew.slewtime
-            if execution_time >= slewend:
-                return active_slew.endra, active_slew.enddec, active_slew.endroll
-        return self.acs.ra, self.acs.dec, self.acs.roll
+        """Predict the physical start, including tracking as well as target slews."""
+        return self.acs.predicted_attitude(execution_time)
 
     def _handle_mode_operations(
         self, mode: ACSMode, utime: float, ra: float, dec: float
@@ -1622,6 +1711,10 @@ class QueueDITL(DITLMixin, DITLStats):
         self, utime: float, ra: float, dec: float, mode: ACSMode
     ) -> None:
         """Handle science mode operations: charging, observations, and target acquisition."""
+        if mode == ACSMode.SAFE:
+            if self.ppt is not None:
+                self._terminate_ppt(utime, "Observation interrupted by safehold")
+            return
         # Finish protective motion before considering discretionary preemption.
         if (
             self.acs.current_slew is not None
@@ -1662,17 +1755,19 @@ class QueueDITL(DITLMixin, DITLStats):
         if utime + self.step_size < planner.departure_deadline(attitude, utime):
             return
         if planner.first_violation(attitude, utime) <= utime:
-            raise RuntimeError(
-                "Cannot plan an idle escape from an already unsafe attitude"
+            self.acs.report_idle_safety_fault(
+                utime, "Cannot plan an idle escape from an already unsafe attitude"
             )
+            return
         for ra, dec in self.acs._idle_safe_attitude_candidates(utime):
-            preferred_roll = optimum_roll(
+            preferred_roll = optimum_body_roll(
                 ra,
                 dec,
                 utime,
                 self.ephem,
                 self.config.solar_panel,
                 self.constraint,
+                drive_state=self.acs.solar_array_drive_state,
             )
             for roll in self.acs._idle_safe_roll_candidates(preferred_roll):
                 slew = Slew(
@@ -1723,14 +1818,20 @@ class QueueDITL(DITLMixin, DITLStats):
                     description="Scheduled rate-limited safe-IDLE recovery slew",
                 )
                 return
-        raise RuntimeError(
-            "No path-validated safe-IDLE recovery found before hold expiry"
+        self.acs.report_idle_safety_fault(
+            utime, "No path-validated safe-IDLE recovery found before hold expiry"
         )
 
     def _should_initiate_charging(self, utime: float) -> bool:
-        """Check if emergency charging should be initiated."""
+        """Check if emergency charging should be initiated.
+
+        Not while a ground contact is under way, from its ingress slew to its
+        end: the contact takes precedence, and charging would slew away from the
+        tracking attitude the contact needs.
+        """
         return (
             self.charging_ppt is None
+            and not self._gsp_activity_in_progress(utime)
             and self.emergency_charging.should_initiate_charging(
                 utime, self.ephem, self.battery.battery_alert
             )
@@ -1739,7 +1840,11 @@ class QueueDITL(DITLMixin, DITLStats):
     def _initiate_charging(self, utime: float, ra: float, dec: float) -> None:
         """Initiate emergency charging by creating charging PPT and sending command to ACS."""
         charging_ppt = self.emergency_charging.create_charging_pointing(
-            utime, self.ephem, ra, dec
+            utime,
+            self.ephem,
+            ra,
+            dec,
+            drive_state=self.acs.solar_array_drive_state,
         )
         if charging_ppt is None:
             return
@@ -2402,7 +2507,7 @@ class QueueDITL(DITLMixin, DITLStats):
         self.acs.end_science_observation()
         # Do NOT clear last_slew here. The spacecraft is physically still pointing
         # at the science target; clearing last_slew would cause pointing() to call
-        # optimum_roll() and jump the roll on the next tick. Roll stays locked to
+        # roll optimization and jump the roll on the next tick. Roll stays locked to
         # last_slew.endroll until the next executed slew replaces last_slew.
 
     def _get_constraint_name(
@@ -2481,13 +2586,34 @@ class QueueDITL(DITLMixin, DITLStats):
         *,
         target_roll: float,
         target: Pointing | None = None,
+        earlier_deadline: float | None = None,
     ) -> float | None:
-        """Finish science teardown before any tracking profile can trigger ingress."""
+        """Return the ingress deadline, unless another deadline provably wins."""
         ppt = target or self.ppt
         assert ppt is not None
         next_pass = self.acs.passrequests.next_pass(slew_end)
         if next_pass is None:
             return None
+
+        if earlier_deadline is not None:
+            assert next_pass.config is not None
+            assert next_pass.ephem is not None
+            acs_config = next_pass.config.spacecraft_bus.attitude_control
+            if acs_config.slew_algorithm == SlewAlgorithm.QUATERNION:
+                try:
+                    duration_bound = Slew.duration_upper_bound(acs_config)
+                except ValueError:
+                    # An unavailable bound must not change the full path's behavior.
+                    pass
+                else:
+                    # Keep equality on the full path to preserve deadline-reason ties.
+                    earliest_ingress = (
+                        next_pass.begin
+                        - duration_bound
+                        - pass_slew_trigger_buffer(next_pass.ephem.step_size)
+                    )
+                    if earliest_ingress > earlier_deadline:
+                        return None
 
         ppt_is_plan_entry = issubclass(type(ppt), PlanEntry)
         spacecraft_attitude = (
@@ -2578,10 +2704,15 @@ class QueueDITL(DITLMixin, DITLStats):
         if visibility_end is not None:
             deadlines.append((visibility_end, "visibility window"))
 
+        earlier_deadline = min(deadline for deadline, _ in deadlines)
+        if deadline_inputs.charge_deadline is not None:
+            earlier_deadline = min(earlier_deadline, deadline_inputs.charge_deadline)
+
         pass_deadline = self._next_pass_science_deadline(
             slew_end,
             target=target,
             target_roll=target_roll,
+            earlier_deadline=earlier_deadline,
         )
         if pass_deadline is not None:
             deadlines.append((pass_deadline, "pass"))
@@ -2611,7 +2742,7 @@ class QueueDITL(DITLMixin, DITLStats):
         """Return when a new slew can execute, waiting for an in-progress slew to finish."""
         if self.acs.last_slew is not None and self.acs.last_slew.is_slewing(utime):
             return self.acs.last_slew.slewstart + self.acs.last_slew.slewtime
-        return utime
+        return self.acs.motion_ready_time(utime)
 
     @staticmethod
     def _target_body_attitude(
@@ -2680,23 +2811,33 @@ class QueueDITL(DITLMixin, DITLStats):
             id(self.config.solar_panel),
             id(self.config.constraint),
             id(telescope),
+            self.acs.solar_array_drive_state.revision,
         )
         cached = self._ppt_optimum_roll_cache.get(key)
         if cached is not None:
             return cached
 
-        args = (
-            target.ra,
-            target.dec,
-            execution_time,
-            self.acs.ephem,
-            self.config.solar_panel,
-            self.config.constraint,
-        )
         roll = (
-            optimum_roll(*args, telescope=telescope)
+            optimum_instrument_roll(
+                target.ra,
+                target.dec,
+                execution_time,
+                self.acs.ephem,
+                telescope,
+                self.config.solar_panel,
+                self.config.constraint,
+                drive_state=self.acs.solar_array_drive_state,
+            )
             if telescope is not None
-            else optimum_roll(*args)
+            else optimum_body_roll(
+                target.ra,
+                target.dec,
+                execution_time,
+                self.acs.ephem,
+                self.config.solar_panel,
+                self.config.constraint,
+                drive_state=self.acs.solar_array_drive_state,
+            )
         )
         self._ppt_optimum_roll_cache[key] = roll
         return roll
@@ -2812,6 +2953,11 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _fetch_new_ppt(self, utime: float, ra: float, dec: float) -> None:
         """Fetch a new pointing target from the queue and enqueue slew command."""
+        # A just-issued charge/pass termination can replace tracking with a
+        # braking arc. Commit that command before predicting a new slew's start.
+        pointing = self._process_due_acs_commands(utime)
+        if pointing is not None:
+            ra, dec = pointing[:2]
         self._temporary_rejected_ppts = []
         self._retry_ppt_fetch_requested = False
         try:
@@ -2966,7 +3112,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 return
 
             # When ignore_roll=True, verify that a valid roll exists before slewing.
-            # optimum_roll() falls back to the unconstrained solar roll when
+            # Roll optimization falls back to the unconstrained solar roll when
             # roll_range() is empty (no roll satisfies all constraints), which
             # would put star trackers into a constraint zone.  Skip the target
             # instead so a better one can be selected.
@@ -3162,7 +3308,7 @@ class QueueDITL(DITLMixin, DITLStats):
         """Calculate and record power generation, consumption, and battery state."""
         # Calculate solar panel power
         panel_illumination, panel_power = self._calculate_panel_power(
-            i, utime, ra, dec, roll
+            i, utime, ra, dec, roll, mode
         )
         self.panel.append(panel_illumination)
         self.panel_power.append(panel_power)
@@ -3179,14 +3325,27 @@ class QueueDITL(DITLMixin, DITLStats):
         self._update_battery_state(total_power, panel_power)
 
     def _calculate_panel_power(
-        self, i: int, utime: float, ra: float, dec: float, roll: float
+        self,
+        i: int,
+        utime: float,
+        ra: float,
+        dec: float,
+        roll: float,
+        mode: ACSMode,
     ) -> tuple[float, float]:
         """Calculate solar panel illumination and power generation."""
-        panel_illumination, panel_power = (
-            self.config.solar_panel.illumination_and_power(
-                time=self.utime[i], ra=ra, dec=dec, ephem=self.ephem, roll=roll
+        panel_illumination, panel_power, drive_state = (
+            self.config.solar_panel.evaluate_executed_attitude(
+                time=self.utime[i],
+                ra=ra,
+                dec=dec,
+                ephem=self.ephem,
+                drive_state=self.acs.solar_array_drive_state,
+                roll=roll,
+                acs_mode=mode,
             )
         )
+        self.acs.solar_array_drive_state = drive_state
         assert isinstance(panel_illumination, float)
         assert isinstance(panel_power, float)
         return panel_illumination, panel_power
@@ -3304,7 +3463,17 @@ class QueueDITL(DITLMixin, DITLStats):
             if self.ppt is self.charging_ppt:
                 self.ppt = None
             self.charging_ppt = None
-            self.acs.last_slew = None
+            # Release the charging attitude, but only the charging slew itself.
+            # A slew that has replaced it, such as a pass's ingress slew already
+            # under way, still drives the pointing: clearing it would freeze
+            # RA/Dec while roll followed the slew.
+            last = self.acs.last_slew
+            if (
+                last is not None
+                and last.obstype == ObsType.CHARGE
+                and not last.is_slewing(utime)
+            ):
+                self.acs.last_slew = None
 
     def _terminate_emergency_charging(self, reason: str, utime: float) -> None:
         """Terminate emergency charging and log the reason."""

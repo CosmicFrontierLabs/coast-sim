@@ -7,13 +7,7 @@ from conops.simulation.roll import _power_score_order
 
 
 def candidate_order(scores, reference_roll):
-    angles = np.arange(360.0)
-    distance = (
-        angles
-        if reference_roll is None
-        else np.abs((angles - reference_roll + 180.0) % 360.0 - 180.0)
-    )
-    return _power_score_order(scores, distance, angles)
+    return _power_score_order(scores, reference_roll)
 
 
 def numpy_reference(scores, reference_roll):
@@ -70,3 +64,54 @@ def test_only_requested_tie_groups_are_sorted(monkeypatch):
     lexsort.assert_not_called()
     assert list(order) == [i for i in range(360) if i != 123]
     lexsort.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "allowed,expected,checked", [(5, 5, [5]), (7, 7, [5, 7]), (None, 5, [5, 7])]
+)
+def test_mounted_roll_preserves_lazy_selection_and_rejected_fallback(
+    monkeypatch, mock_ephem, allowed, expected, checked
+):
+    from unittest.mock import Mock
+
+    from conops.config import Telescope
+    from conops.simulation import roll
+
+    scores = np.full(360, -np.inf)
+    scores[5], scores[7] = 100.0, 90.0
+    monkeypatch.setattr(roll, "_power_scores", lambda *args: scores)
+    evaluated = []
+
+    def constraints(constraint, scopes, instrument, *args):
+        candidate = instrument[2]
+        evaluated.append(candidate)
+        return [] if candidate == allowed else ["Sun"]
+
+    monkeypatch.setattr(roll, "mounted_science_attitude_constraint_names", constraints)
+    assert (
+        roll.optimum_instrument_roll(
+            0, 0, 0, mock_ephem, Telescope(boresight=(0, 1, 0)), constraint=Mock()
+        )
+        == expected
+    )
+    assert evaluated == checked
+
+
+@pytest.mark.parametrize("reference", [None, 42.5])
+def test_mounted_roll_preserves_empty_ranking_fallback(
+    monkeypatch, mock_ephem, reference
+):
+    from conops.config import Telescope
+    from conops.simulation import roll
+
+    scores = np.resize([np.nan, np.inf, -np.inf], 360)
+    monkeypatch.setattr(roll, "_power_scores", lambda *args: scores)
+    assert roll.optimum_instrument_roll(
+        0,
+        0,
+        0,
+        mock_ephem,
+        Telescope(boresight=(0, 1, 0)),
+        reference_roll=reference,
+        max_roll_delta=None if reference is None else 180,
+    ) == float(reference or 0.0)

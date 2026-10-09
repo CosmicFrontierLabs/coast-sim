@@ -3,7 +3,14 @@
 import pytest
 from astropy.time import Time  # type: ignore[import-untyped]
 
-from conops import DumbScheduler, PlanEntry
+from conops import (
+    ACSMode,
+    DumbScheduler,
+    PlanEntry,
+    SingleAxisSolarArrayDrive,
+    SolarArrayDriveControl,
+    SolarPanel,
+)
 
 
 class TestDumbSchedulerInit:
@@ -120,6 +127,41 @@ class TestDumbSchedulerScheduling:
     ):
         scheduler.schedule()
         assert len(scheduler.scheduled) == 0
+
+    def test_dynamic_finite_drive_is_rejected(self, scheduler) -> None:
+        assert scheduler.config is not None
+        scheduler.config.solar_panel.panels = [
+            SolarPanel(
+                single_axis_drive=SingleAxisSolarArrayDrive(
+                    rotation_axis=(0.0, 0.0, 1.0),
+                    min_angle_deg=-90.0,
+                    max_angle_deg=90.0,
+                    max_rate_deg_per_s=1.0,
+                ),
+                drive_control=SolarArrayDriveControl(
+                    sun_tracking_modes=[ACSMode.SCIENCE]
+                ),
+            )
+        ]
+
+        with pytest.raises(NotImplementedError, match="cannot propagate evolving"):
+            scheduler.schedule()
+
+    def test_held_finite_drive_is_supported(self, scheduler) -> None:
+        assert scheduler.config is not None
+        scheduler.config.solar_panel.panels = [
+            SolarPanel(
+                single_axis_drive=SingleAxisSolarArrayDrive(
+                    rotation_axis=(0.0, 0.0, 1.0),
+                    min_angle_deg=-90.0,
+                    max_angle_deg=90.0,
+                    max_rate_deg_per_s=1.0,
+                )
+            )
+        ]
+
+        scheduler.schedule()
+        assert len(scheduler.plan) == 0
 
     def test_scheduled_targets_are_ints(self, scheduler, sample_targets):
         for target in sample_targets:

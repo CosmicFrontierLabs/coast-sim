@@ -15,7 +15,7 @@ from ...common import ACSMode
 from ...config.visualization import VisualizationConfig
 
 if TYPE_CHECKING:
-    from ...config.fault_management import FaultEvent, FaultManagement
+    from ...config.fault_management import FaultEvent, FaultManagementRun
     from ...ditl import DITL, QueueDITL
 
 # ── Colors ────────────────────────────────────────────────────────────────────
@@ -55,7 +55,7 @@ _PLOTLY_CAT_YOFFSET: dict[str, float] = {
 
 
 def plot_fault_management_timeline_plotly(
-    fault_management: FaultManagement,
+    fault_management: FaultManagementRun,
     t0: float | None = None,
     t_end: float | None = None,
     x_axis: str = "hours",
@@ -71,7 +71,7 @@ def plot_fault_management_timeline_plotly(
     - Colour-coded markers and background bars for each fault state
 
     Args:
-        fault_management: :class:`~conops.config.fault_management.FaultManagement`
+        fault_management: :class:`~conops.config.fault_management.FaultManagementRun`
             instance after a simulation run.
         t0: Reference epoch (Unix seconds) for X=0.  Defaults to first event.
         t_end: End of the simulation in Unix seconds.  When provided the X-axis
@@ -87,7 +87,7 @@ def plot_fault_management_timeline_plotly(
     Example::
 
         from conops.visualization import plot_fault_management_timeline_plotly
-        fig = plot_fault_management_timeline_plotly(config.fault_management)
+        fig = plot_fault_management_timeline_plotly(ditl.fault_management)
         fig.show()
     """
     if config is None:

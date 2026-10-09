@@ -483,15 +483,8 @@ fault_management:
       time_threshold_seconds: 120.0
       # description: Human-readable description of constraint purpose
       description: Spacecraft must avoid pointing too close to the Sun for extended periods.
-  # states: Current fault states for monitored parameters
-  states: {}
   # safe_mode_on_red: Whether to trigger safe mode on any RED condition
   safe_mode_on_red: true
-  # safe_mode_requested: Flag indicating safe mode has been requested
-  safe_mode_requested: false
-  # events: Event log with timestamps and causes
-  events:
-    []
 
 # Observation Categories. Defines categories for different observation types with ID ranges
 observation_categories:

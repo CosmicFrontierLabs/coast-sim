@@ -10,16 +10,32 @@ from ..common import (
     dtutcfromtimestamp,
     unixtime2date,
 )
-from ..common.vector import sort_by_angular_separation
-from ..config import AttitudeConstraintScope, MissionConfig
+from ..common.vector import (
+    _quaternion_delta,
+    attitude_to_quat,
+    quaternion_attitude_delta,
+    sort_by_angular_separation,
+)
+from ..config import (
+    AttitudeConstraintScope,
+    MissionConfig,
+    SolarArrayDriveState,
+    SolarPanelSet,
+)
 from ..config.constraint import (
     attitude_constraint_names_for_scopes,
     attitude_constraint_scope_label,
     in_attitude_constraint_scopes,
 )
 from ..simulation.passes import PassTimes
-from ..simulation.roll import optimum_roll
+from ..simulation.roll import optimum_body_roll
 from .acs_command import ACSCommand
+from .attitude import (
+    Attitude,
+    AttitudeExecutionError,
+    AttitudeExecutor,
+    AttitudeTrajectory,
+)
 from .emergency_charging import EmergencyCharging
 from .passes import Pass
 from .slew import Slew
@@ -45,9 +61,6 @@ class ACS:
 
     ephem: rust_ephem.Ephemeris
     slew_dists: list[float]
-    ra: float
-    dec: float
-    roll: float
     obstype: ObsType
     acsmode: ACSMode
     command_queue: list[ACSCommand]
@@ -66,8 +79,7 @@ class ACS:
     radiator_earth_exposure: float
     radiator_heat_dissipation_w: float
     science_observation_active: bool
-    _last_roll_optimization_utime: float | None
-    _last_roll_optimization_mode: ACSMode | None
+    solar_array_drive_state: SolarArrayDriveState
 
     def __init__(self, config: MissionConfig, log: "DITLLog | None" = None) -> None:
         """Initialize the Attitude Control System.
@@ -80,7 +92,11 @@ class ACS:
         assert config.constraint is not None, "Constraint must be provided to ACS"
         self.constraint = config.constraint
         self.config = config
+        self.fault_management = config.fault_management.new_run()
         self.log = log
+        self._executor: AttitudeExecutor | None = None
+        self._initial_attitude: Attitude = (0.0, 0.0, 0.0)
+        self._attitude_guidance_disabled = False
 
         # Configuration
         assert self.constraint.ephem is not None, "Ephemeris must be set in Constraint"
@@ -99,6 +115,7 @@ class ACS:
 
         # Current state
         self.roll = 0.0
+        self._initial_roll_explicit = False
         self.obstype = ObsType.PPT
         self.acsmode = ACSMode.IDLE
         self.science_observation_active = False
@@ -115,8 +132,6 @@ class ACS:
         self.radiator_sun_exposure = 0.0
         self.radiator_earth_exposure = 0.0
         self.radiator_heat_dissipation_w = 0.0
-        self._last_roll_optimization_utime = None
-        self._last_roll_optimization_mode = None
 
         # Command queue (sorted by execution_time)
         self.command_queue = []
@@ -128,9 +143,87 @@ class ACS:
 
         self.passrequests = PassTimes(config=config)
         self.current_pass: Pass | None = None
-        self.solar_panel = config.solar_panel
+        self.solar_panel = config.solar_panel or SolarPanelSet()
+        self.solar_array_drive_state = self.solar_panel.initial_drive_state()
         self.slew_dists: list[float] = []
         self.saa = None
+
+    def _attitude_component(self, index: int) -> float:
+        attitude = (
+            self._executor.state.attitude if self._executor else self._initial_attitude
+        )
+        return attitude[index]
+
+    def _set_initial_component(self, index: int, value: float) -> None:
+        if self._executor is not None:
+            raise AttitudeExecutionError(
+                "Executed attitude is read-only; request a trajectory"
+            )
+        values = list(self._initial_attitude)
+        values[index] = float(value)
+        self._initial_attitude = (values[0], values[1], values[2])
+
+    @property
+    def ra(self) -> float:
+        return self._attitude_component(0)
+
+    @ra.setter
+    def ra(self, value: float) -> None:
+        self._set_initial_component(0, value)
+
+    @property
+    def dec(self) -> float:
+        return self._attitude_component(1)
+
+    @dec.setter
+    def dec(self, value: float) -> None:
+        self._set_initial_component(1, value)
+
+    @property
+    def roll(self) -> float:
+        return self._attitude_component(2)
+
+    @roll.setter
+    def roll(self, value: float) -> None:
+        self._set_initial_component(2, value)
+        self._initial_roll_explicit = True
+
+    @property
+    def angular_velocity_body(self) -> Attitude:
+        """Executed angular velocity in body axes, in degrees per second."""
+        return (
+            self._executor.state.angular_velocity_body
+            if self._executor
+            else (0.0, 0.0, 0.0)
+        )
+
+    def _advance_attitude(self, utime: float) -> AttitudeExecutor:
+        if self._executor is None:
+            if not self._initial_roll_explicit:
+                self.roll = optimum_body_roll(
+                    self.ra,
+                    self.dec,
+                    utime,
+                    self.ephem,
+                    self.solar_panel,
+                    self.constraint,
+                    drive_state=self.solar_array_drive_state,
+                )
+            self._executor = AttitudeExecutor(utime, self._initial_attitude)
+        self._executor.advance(utime)
+        return self._executor
+
+    def motion_ready_time(self, utime: float) -> float:
+        """Next feasible rest-to-rest handoff, without changing executed state."""
+        return self._executor.next_rest_time(utime) if self._executor else utime
+
+    def predicted_attitude(self, utime: float) -> Attitude:
+        """Evaluate installed physical motion without advancing execution."""
+        return (
+            self._executor.predict(utime).attitude
+            if self._executor
+            else self._initial_attitude
+        )
 
     def _log_or_print(
         self, utime: float, event_type: DITLEventType, description: str
@@ -235,8 +328,30 @@ class ACS:
 
     def _process_commands(self, utime: float) -> None:
         """Process all commands scheduled for execution at or before current time."""
+        executor = self._advance_attitude(utime)
         while self.command_queue and self.command_queue[0].execution_time <= utime:
             command = self.command_queue.pop(0)
+            if (
+                command.command_type
+                in (
+                    ACSCommandType.SLEW_TO_TARGET,
+                    ACSCommandType.END_PASS,
+                    ACSCommandType.END_BATTERY_CHARGE,
+                )
+                and self.motion_ready_time(utime) > utime
+            ):
+                command.execution_time = executor.request_stop(
+                    utime, self.config.spacecraft_bus.attitude_control
+                )
+                self.command_queue.append(command)
+                self.command_queue.sort(key=lambda item: item.execution_time)
+                self._log_or_print(
+                    utime,
+                    "ACS",
+                    f"Deferring {command.command_type.name} until physical motion stops "
+                    f"at {unixtime2date(command.execution_time)}",
+                )
+                continue
             self._log_or_print(
                 utime,
                 "ACS",
@@ -269,12 +384,42 @@ class ACS:
     def _start_pass(self, command: ACSCommand, utime: float) -> None:
         """Handle START_PASS command to command the start of a groundstation pass."""
         # Fetch the current pass from pass requests
-        self.current_pass = self.passrequests.current_pass(utime)
-        if self.current_pass is None:
+        gspass = self.passrequests.current_pass(utime)
+        if gspass is None:
             self._log_or_print(
                 utime, "PASS", f"{unixtime2date(utime)}: No active pass found to start."
             )
             return
+        executor = self._advance_attitude(utime)
+        if not gspass.at_selected_tracking_attitude(
+            utime, self.ra, self.dec, self.roll
+        ):
+            raise AttitudeExecutionError(
+                "Pass acquisition has not reached its tracking attitude"
+            )
+        samples = [(utime, executor.state.attitude)]
+        samples.extend(
+            (time, (ra, dec, roll))
+            for time, ra, dec, roll in zip(
+                gspass.utime,
+                gspass.ra,
+                gspass.dec,
+                gspass.roll or [gspass.gsstartroll] * len(gspass.utime),
+                strict=True,
+            )
+            if time > utime
+        )
+        if len(samples) > 1:
+            executor.install(
+                AttitudeTrajectory.tracking(
+                    samples,
+                    self.config.spacecraft_bus.attitude_control,
+                    initial_state=executor.state,
+                )
+            )
+        else:
+            executor.hold(utime)
+        self.current_pass = gspass
         self.acsmode = ACSMode.PASS
         self._log_or_print(
             utime,
@@ -284,12 +429,12 @@ class ACS:
 
     def _end_pass(self, utime: float) -> None:
         """Handle the END_PASS command to command the end of a groundstation pass."""
-        self.current_pass = None
-        self.acsmode = ACSMode.IDLE
-
+        self._advance_attitude(utime)
         # Preserve the final tracked attitude until another command starts motion.
         # Future slew commands recalculate their start attitude when they execute.
         self._hold_idle_attitude(self.ra, self.dec, self.roll, utime)
+        self.current_pass = None
+        self.acsmode = ACSMode.IDLE
 
         last_ppt_obsid = self.last_ppt.obsid if self.last_ppt is not None else "unknown"
         self._log_or_print(
@@ -313,6 +458,7 @@ class ACS:
             f"{unixtime2date(utime)}: Entering SAFE MODE - irreversible{reason_str}",
         )
         self.in_safe_mode = True
+        self.current_pass = None  # Physical motion remains owned by the executor.
         # Clear command queue to prevent any future commands from executing
         self.command_queue.clear()
         self._log_or_print(
@@ -351,12 +497,22 @@ class ACS:
         and recalculate the slew profile. This ensures continuous motion without
         teleportation, regardless of when commands were originally scheduled.
         """
-        # Always start slew from current spacecraft position - ACS drives the spacecraft
+        executor = self._advance_attitude(utime)
+        if executor.next_rest_time(utime) > utime:
+            raise AttitudeExecutionError(
+                "A slew must wait for the current motion to stop"
+            )
+        # Advance the OLD trajectory before replacing it, even between samples.
         slew.startra = self.ra
         slew.startdec = self.dec
         slew.startroll = self.roll  # Start roll from current ACS roll
         slew.slewstart = utime
         slew.calc_slewtime()
+        executor.install(
+            AttitudeTrajectory.from_slew(
+                slew, self.config.spacecraft_bus.attitude_control, executor.state
+            )
+        )
 
         slewdist = slew.slewdist
         self._log_or_print(
@@ -409,8 +565,14 @@ class ACS:
         slew.enddec = dec
         # If roll not provided, calculate optimal roll at target position
         if roll is None:
-            slew.endroll = optimum_roll(
-                ra, dec, utime, self.ephem, self.solar_panel, self.constraint
+            slew.endroll = optimum_body_roll(
+                ra,
+                dec,
+                utime,
+                self.ephem,
+                self.solar_panel,
+                self.constraint,
+                drive_state=self.solar_array_drive_state,
             )
         else:
             slew.endroll = roll
@@ -546,40 +708,23 @@ class ACS:
         """
         Calculate ACS pointing for the given time.
 
-        This is the main state machine update method. It:
-        1. Checks for upcoming passes and enqueues commands
-        2. Processes any commands due for execution
-        3. Updates the current ACS mode based on slew/pass state
-        4. Calculates current RA/Dec pointing
-        5. Calculates current roll angle to optimize solar panel illumination
-        6. Checks current constraints using up-to-date pointing and roll
+        Advance the installed physical trajectory, process due commands, update
+        mode and guidance, and check constraints on the executed attitude.
         """
+        # Physical time advances before commands can replace a trajectory.
+        self._advance_attitude(utime)
         # Determine if the spacecraft is currently in eclipse
         self.in_eclipse = self.constraint.in_eclipse(ra=0, dec=0, time=utime)
 
         # Process any commands scheduled for execution at or before current time
-        self._process_commands(utime)
-
-        # Update ACS mode based on current state
-        self._update_mode(utime)
-
-        # Evaluate an active slew once, then pass that immutable result through
-        # the existing pointing and roll precedence rules.
-        slew_attitude = (
-            self.current_slew.attitude(utime)
-            if self._is_actively_slewing(utime) and self.current_slew is not None
-            else None
-        )
-        self._calculate_pointing(utime, slew_attitude)
-
-        # Calculate roll after pointing so non-slew roll optimization uses the
-        # current RA/Dec.
-        self.roll = self._compute_roll(utime, slew_attitude)
-
-        # Idle is an executed attitude, not a constraint-free gap. If a completed
-        # observation is being held after science ends, move the hold to an
-        # attitude that satisfies the configured IDLE scopes before recording.
-        self._enforce_idle_constraint_safe_attitude(utime)
+        try:
+            self._process_commands(utime)
+            self._update_mode(utime)
+            self._update_dwell_guidance(utime)
+            self._enforce_idle_constraint_safe_attitude(utime)
+        except AttitudeExecutionError as exc:
+            self._handle_execution_fault(utime, exc)
+            self._update_mode(utime)
 
         # Check current constraints (must run after roll is updated)
         self._check_constraints(utime)
@@ -598,6 +743,66 @@ class ACS:
             return self.ra, self.dec, self.roll, self.last_slew.obsid
         else:
             return self.ra, self.dec, self.roll, IDLE_OBSID
+
+    def _handle_execution_fault(
+        self, utime: float, error: AttitudeExecutionError
+    ) -> None:
+        """Reject the task, retain physical state, and recover through FM."""
+        fm = self.fault_management
+        fm.report_fault(
+            utime=utime,
+            name="attitude_recovery" if self.in_safe_mode else "attitude_execution",
+            cause=str(error),
+            metadata={"acs_mode": self.acsmode.name},
+            acs=self,
+        )
+        self._log_or_print(utime, "ERROR", f"Attitude execution rejected: {error}")
+        self.command_queue.clear()
+        self.current_pass = None
+        self.science_observation_active = False
+        self.current_slew = None
+        executor = self._advance_attitude(utime)
+        self.last_slew = Slew.idle_hold(self.config, *executor.state.attitude, utime)
+        try:
+            executor.request_stop(utime, self.config.spacecraft_bus.attitude_control)
+        except AttitudeExecutionError as recovery_error:
+            # Installing a brake is transactional: an invalid recovery leaves
+            # the previously certified trajectory intact, never an instant stop.
+            fm.report_fault(
+                utime=utime,
+                name="attitude_braking",
+                cause=f"Braking failed: {recovery_error}",
+                metadata={},
+                acs=self,
+            )
+            self._attitude_guidance_disabled = True
+
+        if self.in_safe_mode:
+            # Do not retry a failing SAFE trajectory on every subsequent tick.
+            self._attitude_guidance_disabled = True
+        elif fm.safe_mode_requested:
+            if self._attitude_guidance_disabled:
+                self.in_safe_mode = True
+            else:
+                try:
+                    self._handle_safe_mode_command(
+                        ACSCommand(
+                            command_type=ACSCommandType.ENTER_SAFE_MODE,
+                            execution_time=utime,
+                            reason=str(error),
+                        ),
+                        utime,
+                    )
+                except AttitudeExecutionError as recovery_error:
+                    fm.report_fault(
+                        utime=utime,
+                        name="attitude_recovery",
+                        cause=f"SAFE guidance failed: {recovery_error}",
+                        metadata={},
+                        acs=self,
+                    )
+                    self.command_queue.clear()
+                    self._attitude_guidance_disabled = True
 
     def get_mode(self, utime: float) -> ACSMode:
         """Determine current spacecraft mode based on ACS state and external factors.
@@ -628,6 +833,11 @@ class ACS:
         if self._is_in_pass_dwell(utime):
             return ACSMode.PASS
 
+        # Tracking can be braking after contact ends, independently of the
+        # stale ingress-slew metadata. Do not report that moving tail as IDLE.
+        if any(abs(rate) > 1e-10 for rate in self.angular_velocity_body):
+            return ACSMode.SLEWING
+
         # Check if in SAA region
         if self.saa is not None and self.saa.insaa(utime):
             return ACSMode.SAA
@@ -645,76 +855,58 @@ class ACS:
         """Check if spacecraft is currently executing a slew."""
         return self.current_slew is not None and self.current_slew.is_slewing(utime)
 
-    def _compute_roll(
-        self,
-        utime: float,
-        slew_attitude: tuple[float, float, float] | None = None,
-    ) -> float:
-        """Return the roll angle for the current timestep.
+    def _update_dwell_guidance(self, utime: float) -> None:
+        """Request solar tracking corrections; never assign an executed attitude.
 
-        - During a slew: interpolate along the SLERP path.
-        - Charging / safe mode: track solar-optimal roll continuously.
-        - Settled at a science pointing: lock to the roll computed at scheduling
-          time (slew.endroll) so constraints validated by the scheduler hold.
-        - Initial boundary condition (no real slew yet): use optimal roll.
+        Guidance corrections finish at rest before a new correction is accepted.
+        Tracking can consequently lag its target, but cannot exceed motion limits.
+        Explicit slews retain their settling dwell and queued commands take priority.
         """
-        if self._is_actively_slewing(utime) and self.current_slew is not None:
-            self._reset_roll_optimization()
-            if slew_attitude is None:
-                slew_attitude = self.current_slew.attitude(utime)
-            return slew_attitude[2]
-        if self.in_safe_mode:
-            return self._continuous_optimum_roll(utime, ACSMode.SAFE)
-        if self._is_in_charging_mode(utime):
-            return self._continuous_optimum_roll(utime, ACSMode.CHARGING)
-        self._reset_roll_optimization()
-        if self.current_pass is not None and self.current_pass.in_pass(utime):
-            return self.current_pass.roll_at(utime)
-        if self.last_slew is not None and self.last_slew.slewstart > 0:
-            return self.last_slew.endroll
-        return optimum_roll(
-            self.ra, self.dec, utime, self.ephem, self.solar_panel, self.constraint
-        )
-
-    def _continuous_optimum_roll(self, utime: float, mode: ACSMode) -> float:
-        """Choose the best constrained roll reachable since the last dwell update."""
-        elapsed = 0.0
-        if (
-            self._last_roll_optimization_mode == mode
-            and self._last_roll_optimization_utime is not None
+        if not (self.in_safe_mode or self._is_in_charging_mode(utime)):
+            return
+        if self._attitude_guidance_disabled:
+            return
+        if self._is_actively_slewing(utime) or any(
+            command.command_type != ACSCommandType.END_BATTERY_CHARGE
+            for command in self.command_queue
         ):
-            elapsed = max(0.0, utime - self._last_roll_optimization_utime)
-        max_roll_delta = (
-            min(
-                180.0,
-                self.config.spacecraft_bus.attitude_control.max_motion_angle(
-                    elapsed, (1.0, 0.0, 0.0)
-                ),
-            )
-            if elapsed > 0.0
-            else 0.0
-        )
-        roll = optimum_roll(
-            self.ra,
-            self.dec,
+            return
+        executor = self._advance_attitude(utime)
+        if executor.next_rest_time(utime) > utime:
+            return
+        ra, dec = self.ra, self.dec
+        if self.in_safe_mode:
+            if self.solar_panel is not None:
+                ra, dec = self.solar_panel.optimal_charging_pointing(utime, self.ephem)
+            else:
+                index = self.ephem.index(dtutcfromtimestamp(utime))
+                ra, dec = self.ephem.sun_ra_deg[index], self.ephem.sun_dec_deg[index]
+        roll = optimum_body_roll(
+            ra,
+            dec,
             utime,
             self.ephem,
             self.solar_panel,
             self.constraint,
             reference_roll=self.roll,
-            max_roll_delta=max_roll_delta,
+            max_roll_delta=180.0,
+            drive_state=self.solar_array_drive_state,
         )
-        self._last_roll_optimization_utime = utime
-        self._last_roll_optimization_mode = mode
-        return roll
-
-    def _reset_roll_optimization(self) -> None:
-        """Reset dwell-roll timing when another attitude controller is active."""
-        self._last_roll_optimization_utime = None
-        self._last_roll_optimization_mode = None
+        target = (ra, dec, roll)
+        distance, _ = _quaternion_delta(
+            executor.state.quaternion, attitude_to_quat(*target)
+        )
+        if distance > 1e-8:
+            executor.install(
+                AttitudeTrajectory.turn_from_state(
+                    executor.state,
+                    target,
+                    self.config.spacecraft_bus.attitude_control,
+                )
+            )
 
     def _enforce_idle_constraint_safe_attitude(self, utime: float) -> None:
-        """Reject unsafe execution; a scheduler must command recovery in advance."""
+        """Fault unsafe execution; a scheduler should command recovery in advance."""
         if self.acsmode != ACSMode.IDLE:
             return
         if self.current_pass is not None or self.in_safe_mode:
@@ -727,10 +919,26 @@ class ACS:
         if not self._idle_attitude_unsafe(self.ra, self.dec, self.roll, utime, scopes):
             return
 
-        raise RuntimeError(
+        self.report_idle_safety_fault(
+            utime,
             f"Unsafe IDLE attitude at {unixtime2date(utime)}; "
-            "a validated recovery slew must start before the keepout is entered"
+            "a validated recovery slew did not start before the keepout was entered",
         )
+
+    def report_idle_safety_fault(self, utime: float, cause: str) -> None:
+        """Latch the failure and enter the existing SAFE command path, once."""
+        faults = self.fault_management
+        faults.report_fault(
+            utime=utime,
+            name="idle_safety",
+            cause=cause,
+            metadata={"ra": self.ra, "dec": self.dec, "roll": self.roll},
+            acs=self,
+        )
+        if faults.safe_mode_requested and not self.in_safe_mode:
+            self.request_safe_mode(utime, reason=cause)
+            self._process_commands(utime)
+            self._update_mode(utime)
 
     def _idle_attitude_scopes(self) -> list[AttitudeConstraintScope]:
         return self.config.attitude_constraint_scopes_for_mode(ACSMode.IDLE)
@@ -832,14 +1040,16 @@ class ACS:
         self, ra: float, dec: float, roll: float, utime: float
     ) -> None:
         """Install a zero-duration IDLE hold so future ticks keep the safe attitude."""
-        hold = Slew.idle_hold(self.config, ra, dec, roll, utime)
+        executor = self._advance_attitude(utime)
+        distance, _ = quaternion_attitude_delta(*executor.state.attitude, ra, dec, roll)
+        if distance > 1e-8:
+            raise AttitudeExecutionError("A hold cannot change the physical attitude")
+        executor.hold(utime)
+        hold = Slew.idle_hold(self.config, *executor.state.attitude, utime)
 
         self.current_slew = None
         self.last_slew = hold
         self.science_observation_active = False
-        self.ra = ra
-        self.dec = dec
-        self.roll = roll
 
     def _is_in_charging_mode(self, utime: float) -> bool:
         """Check if spacecraft is in charging mode (dwelling at charge pointing).
@@ -864,7 +1074,7 @@ class ACS:
         return not self.in_eclipse
 
     def _is_in_pass_dwell(self, utime: float) -> bool:
-        """Check if spacecraft is in pass dwell phase (stationary during groundstation contact)."""
+        """Check if spacecraft is tracking during an active ground contact."""
         if self.current_pass is None:
             return False
         if self.current_pass.in_pass(utime):
@@ -1015,24 +1225,24 @@ class ACS:
         current_dec = self.dec
         current_roll = self.roll
 
-        # Build solar panel geometry lookup so radiators can compute shadow fractions.
-        solar_panel_geometries = None
-        if self.config.solar_panel is not None:
-            geom_map = {
-                p.name: p.geometry
-                for p in self.config.solar_panel.panels
-                if p.geometry is not None
+        # Driven panels cannot currently be configured with static geometry, so
+        # every geometry here represents an executed fixed-panel occluder.
+        solar_panel_geometries = (
+            {
+                panel.name: panel.geometry
+                for panel in self.config.solar_panel.panels
+                if panel.geometry is not None
             }
-            if geom_map:
-                solar_panel_geometries = geom_map
-
+            if self.config.solar_panel is not None
+            else {}
+        )
         metrics = radiators.exposure_metrics(
             ra_deg=current_ra,
             dec_deg=current_dec,
             utime=utime,
             ephem=self.ephem,
             roll_deg=current_roll,
-            solar_panel_geometries=solar_panel_geometries,
+            solar_panel_geometries=solar_panel_geometries or None,
         )
 
         per_radiator = cast(
@@ -1072,67 +1282,6 @@ class ACS:
                 f"TELESCOPE: HARD_CONSTRAINT: RA={self.ra:.3f}° Dec={self.dec:.3f}° "
                 f"roll={self.roll:.3f}°",
             )
-
-    def _calculate_pointing(
-        self,
-        utime: float,
-        slew_attitude: tuple[float, float, float] | None = None,
-    ) -> None:
-        """Calculate current RA/Dec based on slew state or safe mode."""
-        # Safe mode overrides all other pointing
-        if self.in_safe_mode:
-            self._calculate_safe_mode_pointing(utime, slew_attitude)
-        # If we are in a groundstations pass
-        elif self.current_pass is not None:
-            pass_ra, pass_dec = self.current_pass.ra_dec(utime)
-            if pass_ra is not None and pass_dec is not None:
-                self.ra, self.dec = pass_ra, pass_dec
-        # If we are actively slewing
-        elif self.last_slew is not None:
-            if slew_attitude is not None and self.last_slew is self.current_slew:
-                self.ra, self.dec = slew_attitude[:2]
-            else:
-                self.ra, self.dec = self.last_slew.ra_dec(utime)
-        else:
-            # If there's no slew or pass, maintain current pointing
-            pass
-
-    def _calculate_safe_mode_pointing(
-        self,
-        utime: float,
-        slew_attitude: tuple[float, float, float] | None = None,
-    ) -> None:
-        """Calculate safe mode pointing - point solar panels at the Sun.
-
-        In safe mode, the spacecraft points to maximize solar panel illumination.
-        This may be perpendicular to the Sun for side-mounted panels or directly
-        at the Sun for body-mounted panels, following the optimal charging pointing.
-        """
-        # Use solar panel optimal pointing if available
-        if self.solar_panel is not None:
-            target_ra, target_dec = self.solar_panel.optimal_charging_pointing(
-                utime, self.ephem
-            )
-        else:
-            # Fallback: point directly at Sun if no solar panel config and that
-            # serves you right for not having solar panels!
-            index = self.ephem.index(dtutcfromtimestamp(utime))
-            target_ra = self.ephem.sun_ra_deg[index]
-            target_dec = self.ephem.sun_dec_deg[index]
-
-        # If actively slewing to safe mode position, use slew interpolation
-        if (
-            self.current_slew is not None
-            and self.current_slew.obstype == ObsType.SAFE
-            and self.current_slew.is_slewing(utime)
-        ):
-            if slew_attitude is None:
-                slew_attitude = self.current_slew.attitude(utime)
-            self.ra, self.dec, self.roll = slew_attitude
-        else:
-            # After slew completes or for continuous tracking, maintain optimal pointing
-            self.ra = target_ra
-            self.dec = target_dec
 
     def request_pass(self, gspass: Pass) -> None:
         """Request a groundstation pass."""
@@ -1187,7 +1336,7 @@ class ACS:
         self.enqueue_command(command)
         self._log_or_print(utime, "CHARGING", "End battery charge requested")
 
-    def request_safe_mode(self, utime: float) -> None:
+    def request_safe_mode(self, utime: float, reason: str | None = None) -> None:
         """Request entry into safe mode.
 
         Enqueues an ENTER_SAFE_MODE command to be executed at the specified time.
@@ -1199,6 +1348,7 @@ class ACS:
         command = ACSCommand(
             command_type=ACSCommandType.ENTER_SAFE_MODE,
             execution_time=utime,
+            reason=reason,
         )
         self.enqueue_command(command)
         self._log_or_print(
@@ -1226,7 +1376,12 @@ class ACS:
             created charging pointing or None if charging could not be initiated.
         """
         charging_ppt = emergency_charging.initiate_emergency_charging(
-            utime, ephem, lastra, lastdec, current_ppt
+            utime,
+            ephem,
+            lastra,
+            lastdec,
+            current_ppt,
+            drive_state=self.solar_array_drive_state,
         )
         if charging_ppt is not None:
             self.request_battery_charge(
@@ -1304,6 +1459,7 @@ class ACS:
 
     def _end_battery_charge(self, utime: float) -> None:
         """Handle END_BATTERY_CHARGE command execution."""
+        self._advance_attitude(utime).hold(utime)
         self._log_or_print(utime, "CHARGING", "Ending battery charge")
 
         # Clear the charging slew state immediately so _is_in_charging_mode returns False
