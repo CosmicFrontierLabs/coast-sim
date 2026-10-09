@@ -4,6 +4,7 @@ from rust_ephem.constraints import ConstraintConfig
 
 from ..common import separation
 from ..common.enums import SlewAlgorithm
+from ..common.motion import RestToRestMotion
 from ._base import ConfigModel
 from .constants import DTOR
 from .momentum import StoredMomentumConfig
@@ -51,6 +52,12 @@ class AttitudeControlSystem(ConfigModel):
     )
     settle_time: float = Field(
         default=120.0, description="Time to settle after slew completion in seconds"
+    )
+    idle_min_hold_s: float = Field(
+        default=300.0,
+        ge=0.0,
+        allow_inf_nan=False,
+        description="Minimum safe idle dwell after arrival, in addition to a conservative escape-slew reserve.",
     )
     stored_momentum: StoredMomentumConfig = Field(
         default_factory=StoredMomentumConfig,
@@ -164,16 +171,7 @@ class AttitudeControlSystem(ConfigModel):
         vmax = self.effective_max_slew_rate(rotation_axis_body)
         if a <= 0 or vmax <= 0:
             return 0.0
-        t_accel = vmax / a
-        d_accel = 0.5 * a * t_accel**2
-        if 2 * d_accel >= angle_deg:
-            # Triangular profile
-            t_peak = (angle_deg / a) ** 0.5
-            return float(2 * t_peak)
-        # Trapezoidal profile
-        d_cruise = angle_deg - 2 * d_accel
-        t_cruise = d_cruise / vmax
-        return float(2 * t_accel + t_cruise)
+        return RestToRestMotion(angle_deg, a, vmax).duration
 
     def max_motion_angle(
         self,
@@ -210,33 +208,7 @@ class AttitudeControlSystem(ConfigModel):
         if a <= 0 or vmax <= 0:
             return min(max(0.0, t * vmax), angle_deg)  # best-effort fallback
 
-        # Determine profile
-        t_accel = vmax / a
-        d_accel = 0.5 * a * t_accel**2
-        if 2 * d_accel >= angle_deg:
-            # Triangular
-            t_peak = (angle_deg / a) ** 0.5
-            motion_time = 2 * t_peak
-            tau = max(0.0, min(float(t), motion_time))
-            if tau <= t_peak:
-                s = 0.5 * a * tau**2
-            else:
-                s = angle_deg - 0.5 * a * (motion_time - tau) ** 2
-            return float(max(0.0, min(angle_deg, s)))
-
-        # Trapezoidal
-        d_cruise = angle_deg - 2 * d_accel
-        t_cruise = d_cruise / vmax
-        motion_time = 2 * t_accel + t_cruise
-        tau = max(0.0, min(float(t), motion_time))
-        if tau <= t_accel:
-            s = 0.5 * a * tau**2
-        elif tau <= t_accel + t_cruise:
-            s = d_accel + vmax * (tau - t_accel)
-        else:
-            t_dec = tau - (t_accel + t_cruise)
-            s = d_accel + d_cruise + vmax * t_dec - 0.5 * a * t_dec**2
-        return float(max(0.0, min(angle_deg, s)))
+        return RestToRestMotion(angle_deg, a, vmax).at(t)[0]
 
     def slew_time(
         self,

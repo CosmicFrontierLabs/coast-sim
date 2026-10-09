@@ -1177,6 +1177,9 @@ class TestFetchNewPPT:
     def test_exported_slew_metadata_matches_acs_slew_event(
         self, queue_ditl: QueueDITL
     ) -> None:
+        from conops import AttitudeControlSystem
+
+        queue_ditl.config.spacecraft_bus.attitude_control = AttitudeControlSystem()
         acs = ACS(config=queue_ditl.config, log=queue_ditl.log)
         acs.ra = 10.0
         acs.dec = 20.0
@@ -1215,6 +1218,43 @@ class TestFetchNewPPT:
         assert entry.slewdist == pytest.approx(slew.slewdist)
         assert f"duration: {float(entry.slewtime):.1f}s" in slew_event.description
         assert f"distance: {entry.slewdist:.1f} deg" in slew_event.description
+
+    def test_new_target_is_planned_from_braking_endpoint(self, queue_ditl):
+        queue_ditl.config.spacecraft_bus.attitude_control = AttitudeControlSystem(
+            max_slew_rate=0.2,
+            slew_acceleration=0.05,
+            settle_time=0,
+        )
+        acs = ACS(config=queue_ditl.config, log=queue_ditl.log)
+        acs.ra, acs.dec, acs.roll = 0, 0, 0
+        slew = Slew(
+            config=queue_ditl.config,
+            endra=100,
+            enddec=0,
+            endroll=0,
+            obstype=ObsType.CHARGE,
+        )
+        acs._start_slew(slew, 1000)
+        acs.pointing(1100)
+        acs.enqueue_command(
+            ACSCommand(
+                command_type=ACSCommandType.END_BATTERY_CHARGE, execution_time=1100
+            )
+        )
+        # Charging lifecycle bookkeeping has closed its old plan entry.
+        acs.last_slew = None
+        queue_ditl.acs = acs
+
+        def inspect_prediction(time, ra, dec):
+            assert queue_ditl._ppt_slew_execution_time(time) == pytest.approx(1104)
+            assert queue_ditl._expected_slew_start_attitude(
+                time, 1104
+            ) == pytest.approx((20, 0, 0), abs=1e-8)
+
+        with patch.object(
+            queue_ditl, "_fetch_new_ppt_inner", side_effect=inspect_prediction
+        ):
+            queue_ditl._fetch_new_ppt(1100, acs.ra, acs.dec)
 
     def test_syncs_each_executed_science_slew_command(
         self, queue_ditl: QueueDITL
@@ -3864,7 +3904,9 @@ class TestCalcMethod:
     def test_calc_handles_safe_mode_request(self, queue_ditl) -> None:
         """Test calc method handles safe mode requests."""
         # Set up safe mode request
-        queue_ditl.config.fault_management.safe_mode_requested = True
+        queue_ditl.config.fault_management.new_run.side_effect = lambda: Mock(
+            check=Mock(), safe_mode_requested=True, events=[]
+        )
         queue_ditl.acs.in_safe_mode = False
 
         queue_ditl.year = 2018
@@ -4181,8 +4223,8 @@ class TestCalcMethod:
         queue_ditl.acs.enqueue_command.assert_called_once()
         call_args = queue_ditl.acs.enqueue_command.call_args
         command = call_args[0][0]
-        # Execution time should be delayed to current_slew.slewstart + slewtime = 1100.0
-        assert command.execution_time == 1100.0
+        # The preceding slew ends at 1100; execute on the next 60-second tick.
+        assert command.execution_time == 1120.0
 
         # Check that the delay message was logged
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
@@ -4210,8 +4252,8 @@ class TestCalcMethod:
         queue_ditl.acs.enqueue_command.assert_called_once()
         call_args = queue_ditl.acs.enqueue_command.call_args
         command = call_args[0][0]
-        # Execution time should be delayed to visibility time (1200.0)
-        assert command.execution_time == 1200.0
+        # Visibility begins at 1200; execute on the next 60-second tick.
+        assert command.execution_time == 1240.0
 
         # Check that the visibility delay message was logged
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
@@ -6677,6 +6719,7 @@ class TestQueueDITLCoverage:
             mock_acs.passrequests = mock_pt
             mock_acs.slew_dists = []
             mock_acs.last_slew = None
+            mock_acs.command_queue = []
             mock_acs.ra = 0.0
             mock_acs.dec = 0.0
             from conops import ACSMode

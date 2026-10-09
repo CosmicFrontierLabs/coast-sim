@@ -81,6 +81,7 @@ def mock_config() -> Mock:
     config.constraint.ephem = DummyEphemeris()
     config.constraint.constraint = None  # no combined rust-ephem constraint in tests
     config.constraint.roll_dependent_constraint = None
+    config.constraint.hardware_safety_constraint_config = None
     config.constraint.panel_constraint = Mock()
     config.constraint.panel_constraint.solar_panel = Mock()
     config.constraint.orbit_constraint = None
@@ -140,6 +141,11 @@ def mock_config() -> Mock:
     )  # Return slew time in seconds
     config.spacecraft_bus.attitude_control.slew_accuracy = 0.01
     config.spacecraft_bus.attitude_control.max_slew_rate = 10.0
+    config.spacecraft_bus.attitude_control.max_slew_rate_body = None
+    config.spacecraft_bus.attitude_control.slew_acceleration_body = None
+    config.spacecraft_bus.attitude_control.slew_acceleration = 0.5
+    config.spacecraft_bus.attitude_control.settle_time = 0.0
+    config.spacecraft_bus.attitude_control.idle_min_hold_s = 300.0
     config.spacecraft_bus.attitude_control.effective_max_slew_rate = Mock(
         side_effect=lambda _axis=None: float(
             config.spacecraft_bus.attitude_control.max_slew_rate
@@ -165,9 +171,9 @@ def mock_config() -> Mock:
 
     # Mock fault management
     config.fault_management = Mock()
-    config.fault_management.check = Mock()
-    config.fault_management.safe_mode_requested = False
-    config.fault_management.events = []
+    config.fault_management.new_run.side_effect = lambda: Mock(
+        check=Mock(), safe_mode_requested=False, events=[]
+    )
     # MissionConfig's init_fault_management_defaults model_validator re-runs
     # whenever this config is embedded as a nested pydantic field elsewhere
     # (e.g. on PlanEntry.config) and iterates fault_management.thresholds.
@@ -237,7 +243,20 @@ def queue_ditl(mock_config: Mock, mock_ephem: DummyEphemeris) -> QueueDITL:
         mock_acs.current_slew = None  # No active slew by default
         mock_acs.ra = 0.0  # Current pointing RA
         mock_acs.dec = 0.0  # Current pointing Dec
-        mock_acs.roll = 0.0  # Current roll angle
+        mock_acs.roll = 0.0
+        mock_acs.motion_ready_time = Mock(side_effect=lambda time: time)
+        mock_acs.predicted_attitude = Mock(
+            side_effect=lambda time: (
+                (
+                    mock_acs.last_slew.endra,
+                    mock_acs.last_slew.enddec,
+                    mock_acs.last_slew.endroll,
+                )
+                if mock_acs.last_slew is not None
+                and time >= mock_acs.last_slew.slewstart + mock_acs.last_slew.slewtime
+                else (mock_acs.ra, mock_acs.dec, mock_acs.roll)
+            )
+        )
         # Set acsmode to a real ACSMode enum value for logging
         from conops import ACSMode
 
@@ -699,6 +718,20 @@ def queue_ditl_no_queue_log(
         mock_acs.current_slew = None  # No active slew by default
         mock_acs.ra = 0.0  # Current pointing RA
         mock_acs.dec = 0.0  # Current pointing Dec
+        mock_acs.roll = 0.0
+        mock_acs.motion_ready_time = Mock(side_effect=lambda time: time)
+        mock_acs.predicted_attitude = Mock(
+            side_effect=lambda time: (
+                (
+                    mock_acs.last_slew.endra,
+                    mock_acs.last_slew.enddec,
+                    mock_acs.last_slew.endroll,
+                )
+                if mock_acs.last_slew is not None
+                and time >= mock_acs.last_slew.slewstart + mock_acs.last_slew.slewtime
+                else (mock_acs.ra, mock_acs.dec, mock_acs.roll)
+            )
+        )
         # Set acsmode to a real ACSMode enum value for logging
         from conops import ACSMode
 
@@ -777,6 +810,20 @@ def queue_ditl_acs_no_ephem(
         mock_acs.current_slew = None  # No active slew by default
         mock_acs.ra = 0.0  # Current pointing RA
         mock_acs.dec = 0.0  # Current pointing Dec
+        mock_acs.roll = 0.0
+        mock_acs.motion_ready_time = Mock(side_effect=lambda time: time)
+        mock_acs.predicted_attitude = Mock(
+            side_effect=lambda time: (
+                (
+                    mock_acs.last_slew.endra,
+                    mock_acs.last_slew.enddec,
+                    mock_acs.last_slew.endroll,
+                )
+                if mock_acs.last_slew is not None
+                and time >= mock_acs.last_slew.slewstart + mock_acs.last_slew.slewtime
+                else (mock_acs.ra, mock_acs.dec, mock_acs.roll)
+            )
+        )
         # Set acsmode to a real ACSMode enum value for logging
         from conops import ACSMode
 

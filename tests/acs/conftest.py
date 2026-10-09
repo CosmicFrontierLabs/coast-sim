@@ -64,6 +64,19 @@ def mock_constraint(mock_ephem: DummyEphemeris) -> Mock:
     constraint.panel_constraint = Mock()
     constraint.panel_constraint.solar_panel = None
     constraint.in_constraint = Mock(return_value=False)
+    constraint.in_explicit_safety = Mock(return_value=False)
+    for method in (
+        "in_sun",
+        "in_earth",
+        "in_moon",
+        "in_anti_sun",
+        "in_orbit",
+        "in_explicit_science",
+        "in_star_tracker_soft",
+        "in_panel",
+        "in_ground_contact",
+    ):
+        setattr(constraint, method, Mock(return_value=False))
     constraint.in_star_tracker_hard = Mock(return_value=False)
     constraint.in_radiator_hard = Mock(return_value=False)
     constraint.telescope_hard_constraint = None
@@ -79,12 +92,8 @@ def mock_config(
     """Create a mock config."""
     config = Mock()
     config.__class__ = MissionConfig
-    # MissionConfig's init_fault_management_defaults model_validator re-runs
-    # whenever this config is embedded as a nested field elsewhere (e.g. on
-    # PlanEntry.config) and needs battery/recorder threshold fields this
-    # fixture doesn't populate; None short-circuits it via the validator's
-    # own early-return guard.
-    config.fault_management = None
+    # Prepopulated policies also satisfy nested MissionConfig validation.
+    config.fault_management = MissionConfig().fault_management
     config.constraint = mock_constraint
     config.ground_stations = Mock()
 
@@ -114,6 +123,7 @@ def acs(mock_constraint: Mock, mock_config: Mock) -> Generator[ACS, None, None]:
         mock_pt = Mock()
         mock_pt.passes = []
         mock_pt.next_pass = Mock(return_value=None)
+        mock_pt.current_pass = Mock(return_value=None)
         mock_pt.__iter__ = Mock(return_value=iter([]))
         mock_passtimes.return_value = mock_pt
         acs_instance = ACS(config=mock_config)

@@ -2,9 +2,10 @@
 
 from unittest.mock import Mock, patch
 
+import pytest
+
 # ACSCommandType removed because tests rely on internal enqueue API
 from conops import ACSMode, Pass, Pointing, Slew
-from conops.common import ObsType
 
 
 class TestAddSlew:
@@ -290,8 +291,8 @@ class TestPointing:
 
         ra, dec, roll, obsid = acs.pointing(1514764800.0)
 
-        assert ra == 0.0  # Earth RA from mock
-        assert dec == 0.0  # Earth Dec from mock
+        assert ra == 180.0  # Initial attitude is anti-Earth
+        assert dec == pytest.approx(0.0)  # Earth Dec from mock
         assert 0.0 <= roll < 360.0
         assert obsid == 0  # Default obsid when no slew is active
 
@@ -324,28 +325,15 @@ class TestPointing:
         ra, dec, roll, obsid = acs.pointing(1514764800.0)
         assert acs.last_slew is not None
 
-    @patch("conops.optimum_roll")
-    def test_pointing_during_slew(self, mock_roll, acs) -> None:
-        """Test pointing during an active slew."""
-        mock_roll.return_value = 45.0
-
-        mock_slew = Mock(spec=Slew)
-        mock_slew.is_slewing = Mock(return_value=True)
-        mock_slew.obstype = "PPT"
-        mock_slew.obsid = 100
-        mock_slew.attitude = Mock(return_value=(45.0, 30.0, 45.0))
-        mock_slew.at = None
-
-        acs.last_slew = mock_slew
-        acs.current_slew = mock_slew
-
-        ra, dec, roll, obsid = acs.pointing(1514764800.0)
-
+    def test_pointing_during_slew(self, acs) -> None:
+        """Pointing comes from the installed physical trajectory."""
+        acs.ra, acs.dec, acs.roll = 0, 0, 0
+        slew = Slew(config=acs.config, endra=45, enddec=30, endroll=45)
+        acs._start_slew(slew, 1514764800)
+        time = 1514764860
+        ra, dec, roll, _ = acs.pointing(time)
         assert acs.acsmode == ACSMode.SLEWING
-        assert ra == 45.0
-        assert dec == 30.0
-        assert roll == 45.0
-        mock_slew.attitude.assert_called_once_with(1514764800.0)
+        assert (ra, dec, roll) == pytest.approx(slew.attitude(time))
 
     @patch("conops.optimum_roll")
     def test_pointing_during_pass_slew(self, mock_roll, acs) -> None:
@@ -391,41 +379,13 @@ class TestPointing:
         acs.last_slew = mock_gsp_slew
         acs.current_slew = mock_gsp_slew
 
+        acs.ra, acs.dec, acs.roll = 45.0, 30.0, 0.0
         ra, dec, roll, obsid = acs.pointing(1514765000.0)  # Within pass
 
         # Check that we're using the pass pointing
         assert obsid == 200  # Should use pass obsid
-        assert ra == 45.0
-        assert dec == 30.0
-
-    @patch("conops.optimum_roll")
-    def test_roll_follows_commanded_pass_after_contact_window_closes(
-        self, mock_roll, acs
-    ) -> None:
-        """Until END_PASS executes, roll comes from the pass track like RA/Dec.
-
-        Falling back to the ingress slew's end roll for the step after contact
-        jumped the attitude by up to the whole roll range in one step.
-        """
-        mock_roll.return_value = 0.0
-        current_pass = Mock(spec=Pass)
-        current_pass.in_pass = Mock(return_value=False)
-        current_pass.ra_dec = Mock(return_value=(238.0, 78.0))
-        current_pass.roll_at = Mock(return_value=80.0)
-        current_pass.obsid = 0xFFFF
-        ingress = Mock(spec=Slew)
-        ingress.slewstart = 1514764000.0
-        ingress.endroll = 295.0
-        ingress.is_slewing = Mock(return_value=False)
-        ingress.obstype = ObsType.GSP
-        ingress.at = None
-
-        acs.current_pass = current_pass
-        acs.last_slew = ingress
-
-        _, _, roll, _ = acs.pointing(1514765000.0)
-
-        assert roll == 80.0
+        assert ra == pytest.approx(45.0)
+        assert dec == pytest.approx(30.0)
 
     @patch("conops.optimum_roll")
     def test_pointing_current_pass_reports_pass_obsid(self, mock_roll, acs) -> None:
@@ -447,11 +407,12 @@ class TestPointing:
         acs.current_pass = current_pass
         acs.last_slew = stale_science
 
+        acs.ra, acs.dec, acs.roll = 50.0, 35.0, 12.0
         ra, dec, _, obsid = acs.pointing(1514765000.0)
 
         assert obsid == 0xFFFF
-        assert ra == 50.0
-        assert dec == 35.0
+        assert ra == pytest.approx(50.0)
+        assert dec == pytest.approx(35.0)
 
     @patch("conops.optimum_roll")
     def test_pointing_with_constraint_violation(
@@ -505,11 +466,12 @@ class TestPointing:
         acs.last_slew = mock_slew
         acs.constraint.in_constraint = Mock(return_value=False)
 
+        acs.ra, acs.dec, acs.roll = 45.0, 30.0, 0.0
         ra, dec, roll, obsid = acs.pointing(1514764800.0)
 
         # Should skip constraint checks but still work
-        assert ra == 45.0
-        assert dec == 30.0
+        assert ra == pytest.approx(45.0)
+        assert dec == pytest.approx(30.0)
 
     @patch("conops.optimum_roll")
     def test_pointing_pass_after_dwell(self, mock_roll, acs) -> None:

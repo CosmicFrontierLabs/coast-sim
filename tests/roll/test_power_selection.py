@@ -15,7 +15,7 @@ def test_best_roll_matches_full_ranking(reference, scale):
         scores[rng.random(360) < 0.2] = -np.inf
         scores[rng.choice(360, 3, replace=False)] = [np.nan, np.inf, -np.inf]
         original = scores.copy()
-        order = _power_score_order(scores, reference)
+        order = list(_power_score_order(scores, reference))
 
         assert _best_power_roll(scores, reference) == float(order[0])
         np.testing.assert_array_equal(scores, original)
@@ -41,14 +41,14 @@ def test_best_roll_preserves_power_and_tie_breaks(candidates, reference, expecte
         scores[index] = score
 
     assert _best_power_roll(scores, reference) == expected
-    assert _power_score_order(scores, reference)[0] == expected
+    assert next(_power_score_order(scores, reference)) == expected
 
 
 @pytest.mark.parametrize("reference", [None, 0.0, 17.5, 359.5])
 def test_best_roll_preserves_empty_fallback(reference):
     scores = np.resize(np.array([np.nan, np.inf, -np.inf]), 360)
 
-    assert not _power_score_order(scores, reference).size
+    assert not list(_power_score_order(scores, reference))
     assert _best_power_roll(scores, reference) == float(reference or 0.0)
 
 

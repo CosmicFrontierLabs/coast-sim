@@ -269,11 +269,15 @@ class TargetQueue:
         if not visibility_window:
             return False
 
-        deadline = (
-            collection_deadline(target, utime)
-            if collection_deadline is not None
-            else None
-        )
+        # A deadline can only shorten collection. Reject insufficient exposure
+        # or visibility before asking the caller to optimize the attitude.
+        if self._candidate_collection_seconds(
+            target, visibility_window, utime, slewtime=0.0
+        ) < float(target.ss_min):
+            return False
+        if collection_deadline is None:
+            return True
+        deadline = collection_deadline(target, utime)
         collection_seconds = self._candidate_collection_seconds(
             target=target,
             visibility_window=visibility_window,

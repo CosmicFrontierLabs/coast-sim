@@ -92,6 +92,19 @@ def test_config_with_panels(
     constraint.roll_dependent_constraint = None
     constraint.panel_constraint = Mock()
     constraint.in_constraint = Mock(return_value=False)
+    for method in (
+        "in_explicit_safety",
+        "in_sun",
+        "in_earth",
+        "in_moon",
+        "in_anti_sun",
+        "in_orbit",
+        "in_explicit_science",
+        "in_star_tracker_soft",
+        "in_panel",
+        "in_ground_contact",
+    ):
+        setattr(constraint, method, Mock(return_value=False))
     constraint.in_star_tracker_hard = Mock(return_value=False)
     constraint.in_radiator_hard = Mock(return_value=False)
     constraint.in_telescope_hard = Mock(return_value=False)
@@ -118,9 +131,9 @@ def test_config_with_panels(
     # ACS calls fault_management.events.append(...) directly — so
     # fault_management must be a populated mock, not None.
     config.fault_management = Mock()
-    config.fault_management.check = Mock()
-    config.fault_management.safe_mode_requested = False
-    config.fault_management.events = []
+    config.fault_management.new_run.side_effect = lambda: Mock(
+        check=Mock(), safe_mode_requested=False, events=[]
+    )
     config.fault_management.thresholds = []
     config.constraint = constraint
     config.ground_stations = Mock()

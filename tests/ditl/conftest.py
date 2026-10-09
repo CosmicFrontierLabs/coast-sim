@@ -225,9 +225,9 @@ def mock_config():
     # DITL/DITLMixin call fault_management.check()/.safe_mode_requested/.events
     # directly — so fault_management must be a populated mock, not None.
     cfg.fault_management = Mock()
-    cfg.fault_management.check = Mock()
-    cfg.fault_management.safe_mode_requested = False
-    cfg.fault_management.events = []
+    cfg.fault_management.new_run.side_effect = lambda: Mock(
+        check=Mock(), safe_mode_requested=False, events=[]
+    )
     cfg.fault_management.thresholds = []
     return cfg
 
@@ -321,9 +321,9 @@ def mock_config_detailed():
     # DITL/DITLMixin call fault_management.check()/.safe_mode_requested/.events
     # directly — so fault_management must be a populated mock, not None.
     config.fault_management = Mock()
-    config.fault_management.check = Mock()
-    config.fault_management.safe_mode_requested = False
-    config.fault_management.events = []
+    config.fault_management.new_run.side_effect = lambda: Mock(
+        check=Mock(), safe_mode_requested=False, events=[]
+    )
     config.fault_management.thresholds = []
 
     return config

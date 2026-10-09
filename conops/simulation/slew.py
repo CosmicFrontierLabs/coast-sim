@@ -144,6 +144,24 @@ class Slew(BaseModel):
         """For a given utime, are we slewing?"""
         return self.slewstart <= utime < self.slewend
 
+    def quaternion_waypoints(self) -> list[tuple[float, float, float, float]]:
+        """Snapshot the analytic route without a singular coordinate round trip."""
+        start = (self.startra, self.startdec, self.startroll)
+        end = (self.endra, self.enddec, self.endroll)
+        if self._slew_segments:
+            points = [
+                self._slew_segments[0].start_quat,
+                *(segment.end_quat for segment in self._slew_segments),
+            ]
+        else:
+            distance, _ = quaternion_attitude_delta(*start, *end)
+            if distance > 1e-8:
+                raise ValueError(
+                    "Physical execution requires an analytic slew trajectory"
+                )
+            points = [attitude_to_quat(*start), attitude_to_quat(*end)]
+        return [(float(q[0]), float(q[1]), float(q[2]), float(q[3])) for q in points]
+
     def ra_dec(self, utime: float) -> tuple[float, float]:
         return self.slew_ra_dec(utime)
 

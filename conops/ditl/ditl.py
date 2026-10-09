@@ -15,6 +15,7 @@ from ..common import (
     unixtime2date,
 )
 from ..common.enums import ACSCommandType
+from ..common.ephemeris import position_vectors
 from ..common.vector import attitude_to_quat
 from ..config import AttitudeConstraintScope, MissionConfig
 from ..config.constraint import (
@@ -192,6 +193,7 @@ class DITL(DITLMixin, DITLStats):
         if self.plan is None:
             raise ValueError("ERROR: No plan loaded")
 
+        self._begin_fault_run()
         self.acs.solar_array_drive_state = self.solar_panel.initial_drive_state()
         # Plans intentionally exclude runtime objects from their serialized form.
         # Rebind here as well as during construction so assigning Plan.load(...)
@@ -379,7 +381,7 @@ class DITL(DITLMixin, DITLStats):
                 float(_sun_bv[1]),
                 float(_sun_bv[2]),
             ]
-            _pos = np.asarray(self.ephem.gcrs_pv.position[i], dtype=np.float64)
+            _pos = np.asarray(position_vectors(self.ephem, "gcrs")[i], dtype=np.float64)
             earth_body_vector: list[float] = list(-_pos / np.linalg.norm(_pos))
             for_solid_angle_sr = (
                 self.constraint.instantaneous_field_of_regard(utime=self.utime[i])
@@ -504,18 +506,15 @@ class DITL(DITLMixin, DITLStats):
             )
 
             # Check fault management thresholds and red limit constraints
-            self.config.fault_management.check(
+            self.fault_management.check(
                 housekeeping=hk,
                 acs=self.acs,
             )
 
             # Check if safe mode was requested by fault management
-            if (
-                self.config.fault_management.safe_mode_requested
-                and not self.acs.in_safe_mode
-            ):
+            if self.fault_management.safe_mode_requested and not self.acs.in_safe_mode:
                 self.acs.request_safe_mode(self.utime[i])
-                self.config.fault_management.safe_mode_requested = False  # Reset flag
+                self.fault_management.safe_mode_requested = False  # Reset flag
 
             # Store housekeeping telemetry
             self.telemetry.housekeeping.append(hk)
@@ -548,7 +547,12 @@ class DITL(DITLMixin, DITLStats):
 
         self._assert_attitude_rate_continuity()
         self._attach_execution_timeseries_to_plan()
-        return True
+        return not any(
+            event.name
+            in ("attitude_execution", "attitude_braking", "attitude_recovery")
+            and event.event_type == "operational_fault"
+            for event in self.fault_management.events
+        )
 
     def validate_plan_matches_execution(self) -> list[PlanExecutionMismatch]:
         """Compare the executed telemetry from :meth:`calc` with the plan.

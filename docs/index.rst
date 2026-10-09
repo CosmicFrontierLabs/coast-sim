@@ -23,6 +23,7 @@ optimize observation schedules, and validate operational constraints before laun
    communications
    data_management
    fault_management
+   attitude_execution
    radiator_shadowing
    target_of_opportunity
    planning

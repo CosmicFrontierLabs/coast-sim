@@ -77,7 +77,7 @@ def mock_config_roll(mock_ephem_roll, mock_constraint_roll, mock_spacecraft_bus)
     # whenever this config is embedded as a nested pydantic field elsewhere
     # (e.g. on Slew.config); None short-circuits it via the validator's own
     # early-return guard.
-    config.fault_management = None
+    config.fault_management = MissionConfig().fault_management
     config.constraint = mock_constraint_roll
     config.ground_stations = Mock()
 
@@ -169,7 +169,7 @@ class TestACSRollCalculation:
 
         config1 = Mock()
         config1.__class__ = MissionConfig
-        config1.fault_management = None
+        config1.fault_management = MissionConfig().fault_management
         config1.constraint = constraint1
         config1.ground_stations = Mock()
         panel1 = SolarPanel(
@@ -202,7 +202,7 @@ class TestACSRollCalculation:
 
         config2 = Mock()
         config2.__class__ = MissionConfig
-        config2.fault_management = None
+        config2.fault_management = MissionConfig().fault_management
         config2.constraint = constraint2
         config2.ground_stations = Mock()
         panel2 = SolarPanel(
@@ -329,7 +329,7 @@ class TestACSRollMode:
 
         assert 0.0 <= roll < 360.0
 
-    def test_charging_roll_search_is_limited_to_reachable_motion(
+    def test_charging_roll_is_guidance_not_an_instantaneous_assignment(
         self, acs_roll
     ) -> None:
         acs_roll.config.spacecraft_bus.attitude_control = AttitudeControlSystem(
@@ -343,16 +343,18 @@ class TestACSRollMode:
             patch.object(acs_roll, "_is_in_charging_mode", return_value=True),
             patch(
                 "conops.simulation.acs.optimum_body_roll",
-                side_effect=lambda *args, **kwargs: kwargs["reference_roll"],
+                return_value=0.0,
             ) as mock_optimum_roll,
         ):
-            acs_roll._compute_roll(1000.0)
-            acs_roll._compute_roll(1060.0)
+            acs_roll.pointing(1000.0)
+            assert acs_roll.roll == pytest.approx(215.0)
+            acs_roll.pointing(1060.0)
 
         first_call = mock_optimum_roll.call_args_list[0].kwargs
-        second_call = mock_optimum_roll.call_args_list[1].kwargs
-        assert first_call["max_roll_delta"] == 0.0
-        assert second_call["max_roll_delta"] == pytest.approx(88.0)
+        assert first_call["reference_roll"] == pytest.approx(215.0)
+        assert mock_optimum_roll.call_count == 1
+        # The old correction finishes before guidance can replace it.
+        assert 215 < acs_roll.roll < 360
 
 
 class TestACSRollEdgeCases:
@@ -385,7 +387,7 @@ class TestACSRollEdgeCases:
 
         config = Mock()
         config.__class__ = MissionConfig
-        config.fault_management = None
+        config.fault_management = MissionConfig().fault_management
         config.constraint = constraint
         config.ground_stations = Mock()
         panel = SolarPanel(
