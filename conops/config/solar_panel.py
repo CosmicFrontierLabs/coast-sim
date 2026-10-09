@@ -9,6 +9,7 @@ from pydantic import Field, PrivateAttr, field_validator, model_validator
 
 from ..common import dtutcfromtimestamp
 from ..common.enums import ACSMode
+from ..common.ephemeris import position_vectors
 from ._base import ConfigModel
 from .geometry import PanelGeometry
 
@@ -451,7 +452,10 @@ class SolarPanel(ConfigModel):
         illum = np.zeros(len(indices))
         for idx, time_idx in enumerate(indices):
             # Get sun position vector from ephemeris
-            sunvec = ephem.sun_pv.position[time_idx] - ephem.gcrs_pv.position[time_idx]
+            sunvec = (
+                position_vectors(ephem, "sun")[time_idx]
+                - position_vectors(ephem, "gcrs")[time_idx]
+            )
 
             # Convert sun vector to body frame
             sun_body = scbodyvector(
@@ -966,7 +970,9 @@ class SolarPanelSet(ConfigModel):
             panel.single_axis_drive is not None for panel in self.panels
         ):
             return dt.timestamp(), None, True
-        sunvec = ephem.sun_pv.position[idx] - ephem.gcrs_pv.position[idx]
+        sunvec = (
+            position_vectors(ephem, "sun")[idx] - position_vectors(ephem, "gcrs")[idx]
+        )
         sun_body = np.asarray(
             scbodyvector(np.deg2rad(ra), np.deg2rad(dec), np.deg2rad(roll), sunvec),
             dtype=np.float64,

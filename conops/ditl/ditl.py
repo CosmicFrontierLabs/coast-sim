@@ -15,6 +15,7 @@ from ..common import (
     unixtime2date,
 )
 from ..common.enums import ACSCommandType
+from ..common.ephemeris import position_vectors
 from ..common.vector import attitude_to_quat
 from ..config import AttitudeConstraintScope, MissionConfig
 from ..config.constraint import (
@@ -378,7 +379,7 @@ class DITL(DITLMixin, DITLStats):
                 float(_sun_bv[1]),
                 float(_sun_bv[2]),
             ]
-            _pos = np.asarray(self.ephem.gcrs_pv.position[i], dtype=np.float64)
+            _pos = np.asarray(position_vectors(self.ephem, "gcrs")[i], dtype=np.float64)
             earth_body_vector: list[float] = list(-_pos / np.linalg.norm(_pos))
             for_solid_angle_sr = (
                 self.constraint.instantaneous_field_of_regard(utime=self.utime[i])

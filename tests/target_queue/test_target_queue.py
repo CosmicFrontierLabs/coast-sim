@@ -469,6 +469,19 @@ class TestCollectionTimeWeight:
         estimator.assert_called_once_with(feasible_target)
         impossible_target.calc_slewtime.assert_not_called()
 
+    def test_short_visibility_skips_expensive_deadline(self, queue_instance):
+        """A clamped end-of-run window cannot fit a minimum snapshot."""
+        last = queue_instance.ephem.timestamp[-1].timestamp()
+        target = queue_instance.targets[0]
+        target.ss_min = 300
+        target.ss_max = 1500
+        target.visible.return_value = [last - 1000, last]
+        deadline = Mock(return_value=last)
+        assert not queue_instance._can_fit_min_snapshot_with_zero_slew(
+            target, last - 100, last, deadline
+        )
+        deadline.assert_not_called()
+
     def test_deadline_prefilter_is_skipped_when_scoring_disabled(self, queue_instance):
         """Preserve the unscored fast path, which ignores collection deadlines."""
         utime = 1762924800.0
