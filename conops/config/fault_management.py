@@ -351,6 +351,24 @@ class FaultManagement(ConfigModel):
             self.states[name] = FaultState()
         return self.states[name]
 
+    def report_execution_fault(self, utime: float, cause: str, acs: ACS) -> None:
+        """Record rejected physical motion and apply the configured SAFE policy."""
+        name = "attitude_execution"
+        self.ensure_state(name).current = "red"
+        metadata: dict[str, FaultEventMetadataValue] = {"acs_mode": acs.acsmode.name}
+        self.events.append(
+            FaultEvent(
+                utime=utime,
+                event_type="execution_fault",
+                name=name,
+                cause=cause,
+                metadata=metadata,
+            )
+        )
+        self._trigger_safe_mode(
+            utime=utime, name=name, cause=cause, metadata=metadata, acs=acs
+        )
+
     def _trigger_safe_mode(
         self,
         *,

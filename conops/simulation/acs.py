@@ -10,7 +10,12 @@ from ..common import (
     dtutcfromtimestamp,
     unixtime2date,
 )
-from ..common.vector import quaternion_attitude_delta, sort_by_angular_separation
+from ..common.vector import (
+    _quaternion_delta,
+    attitude_to_quat,
+    quaternion_attitude_delta,
+    sort_by_angular_separation,
+)
 from ..config import AttitudeConstraintScope, MissionConfig
 from ..config.constraint import (
     attitude_constraint_names_for_scopes,
@@ -84,6 +89,7 @@ class ACS:
         self.log = log
         self._executor: AttitudeExecutor | None = None
         self._initial_attitude: Attitude = (0.0, 0.0, 0.0)
+        self._attitude_guidance_disabled = False
 
         # Configuration
         assert self.constraint.ephem is not None, "Ephemeris must be set in Constraint"
@@ -399,7 +405,7 @@ class ACS:
                 AttitudeTrajectory.tracking(
                     samples,
                     self.config.spacecraft_bus.attitude_control,
-                    initial_rate=executor.state.angular_velocity_body,
+                    initial_state=executor.state,
                 )
             )
         else:
@@ -495,7 +501,7 @@ class ACS:
         slew.calc_slewtime()
         executor.install(
             AttitudeTrajectory.from_slew(
-                slew, self.config.spacecraft_bus.attitude_control
+                slew, self.config.spacecraft_bus.attitude_control, executor.state
             )
         )
 
@@ -696,12 +702,13 @@ class ACS:
         self.in_eclipse = self.constraint.in_eclipse(ra=0, dec=0, time=utime)
 
         # Process any commands scheduled for execution at or before current time
-        self._process_commands(utime)
-
-        # Update ACS mode based on current state
-        self._update_mode(utime)
-
-        self._update_dwell_guidance(utime)
+        try:
+            self._process_commands(utime)
+            self._update_mode(utime)
+            self._update_dwell_guidance(utime)
+        except AttitudeExecutionError as exc:
+            self._handle_execution_fault(utime, exc)
+            self._update_mode(utime)
 
         # Reject an unsafe hold; only a preplanned trajectory can recover it.
         self._enforce_idle_constraint_safe_attitude(utime)
@@ -723,6 +730,50 @@ class ACS:
             return self.ra, self.dec, self.roll, self.last_slew.obsid
         else:
             return self.ra, self.dec, self.roll, IDLE_OBSID
+
+    def _handle_execution_fault(
+        self, utime: float, error: AttitudeExecutionError
+    ) -> None:
+        """Reject the task, retain physical state, and recover through FM."""
+        fm = self.config.fault_management
+        fm.report_execution_fault(utime, str(error), self)
+        self._log_or_print(utime, "ERROR", f"Attitude execution rejected: {error}")
+        self.command_queue.clear()
+        self.current_pass = None
+        self.science_observation_active = False
+        self.current_slew = None
+        executor = self._advance_attitude(utime)
+        self.last_slew = Slew.idle_hold(self.config, *executor.state.attitude, utime)
+        try:
+            executor.request_stop(utime, self.config.spacecraft_bus.attitude_control)
+        except AttitudeExecutionError as recovery_error:
+            # Installing a brake is transactional: an invalid recovery leaves
+            # the previously certified trajectory intact, never an instant stop.
+            fm.report_execution_fault(utime, f"Braking failed: {recovery_error}", self)
+            self._attitude_guidance_disabled = True
+
+        if self.in_safe_mode:
+            # Do not retry a failing SAFE trajectory on every subsequent tick.
+            self._attitude_guidance_disabled = True
+        elif fm.safe_mode_requested:
+            if self._attitude_guidance_disabled:
+                self.in_safe_mode = True
+            else:
+                try:
+                    self._handle_safe_mode_command(
+                        ACSCommand(
+                            command_type=ACSCommandType.ENTER_SAFE_MODE,
+                            execution_time=utime,
+                            reason=str(error),
+                        ),
+                        utime,
+                    )
+                except AttitudeExecutionError as recovery_error:
+                    fm.report_execution_fault(
+                        utime, f"SAFE guidance failed: {recovery_error}", self
+                    )
+                    self.command_queue.clear()
+                    self._attitude_guidance_disabled = True
 
     def get_mode(self, utime: float) -> ACSMode:
         """Determine current spacecraft mode based on ACS state and external factors.
@@ -784,6 +835,8 @@ class ACS:
         """
         if not (self.in_safe_mode or self._is_in_charging_mode(utime)):
             return
+        if self._attitude_guidance_disabled:
+            return
         if self._is_actively_slewing(utime) or any(
             command.command_type != ACSCommandType.END_BATTERY_CHARGE
             for command in self.command_queue
@@ -810,12 +863,13 @@ class ACS:
             max_roll_delta=180.0,
         )
         target = (ra, dec, roll)
-        distance, _ = quaternion_attitude_delta(*executor.state.attitude, *target)
+        distance, _ = _quaternion_delta(
+            executor.state.quaternion, attitude_to_quat(*target)
+        )
         if distance > 1e-8:
             executor.install(
-                AttitudeTrajectory.turn(
-                    utime,
-                    executor.state.attitude,
+                AttitudeTrajectory.turn_from_state(
+                    executor.state,
                     target,
                     self.config.spacecraft_bus.attitude_control,
                 )

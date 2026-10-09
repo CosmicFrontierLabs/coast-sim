@@ -20,7 +20,6 @@ from ..common.vector import (
     attitude_to_quat,
     quat_slerp,
     quat_to_attitude,
-    quaternion_attitude_delta,
 )
 from ..config import AttitudeControlSystem
 
@@ -30,7 +29,10 @@ if TYPE_CHECKING:
 Attitude = tuple[float, float, float]
 Quaternion = tuple[float, float, float, float]
 _ZERO: Attitude = (0.0, 0.0, 0.0)
-_ANGLE_TOL = 1e-8
+# Numerical handoff tolerances, not allowances for physical steps. Compare in
+# quaternion space so coordinate singularities cannot consume this budget.
+_HANDOFF_ANGLE_TOL_DEG = 1e-8
+_HANDOFF_RATE_TOL_DEG_S = 1e-9
 
 
 class AttitudeExecutionError(RuntimeError):
@@ -165,13 +167,12 @@ class _MotionLeg:
     def between(
         cls,
         start: float,
-        first: Attitude,
-        last: Attitude,
+        q0: Quaternion,
+        q1: Quaternion,
         limits: AttitudeControlSystem,
         end: float | None = None,
     ) -> "_MotionLeg":
-        q0, q1 = _quaternion(first), _quaternion(last)
-        angle, axis = quaternion_attitude_delta(*first, *last)
+        angle, axis = _quaternion_delta(q0, q1)
         acceleration = limits.effective_slew_acceleration(
             axis if angle else (1.0, 0.0, 0.0)
         )
@@ -232,11 +233,21 @@ class AttitudeTrajectory:
 
     @classmethod
     def from_slew(
-        cls, slew: "Slew", limits: AttitudeControlSystem
+        cls,
+        slew: "Slew",
+        limits: AttitudeControlSystem,
+        initial_state: AttitudeState | None = None,
     ) -> "AttitudeTrajectory":
-        points = slew.attitude_waypoints()
+        try:
+            points = slew.quaternion_waypoints()
+        except ValueError as exc:
+            raise AttitudeExecutionError(str(exc)) from exc
         legs = []
         start = float(slew.slewstart)
+        if initial_state is not None:
+            if initial_state.utime != start:
+                raise AttitudeExecutionError("Initial state must be at slew start")
+            points[0] = initial_state.quaternion
         for first, last in zip(points, points[1:]):
             leg = _MotionLeg.between(start, first, last, limits)
             legs.append(leg)
@@ -261,7 +272,17 @@ class AttitudeTrajectory:
         limits: AttitudeControlSystem,
     ) -> "AttitudeTrajectory":
         """A bounded guidance correction, with no observation settling dwell."""
-        leg = _MotionLeg.between(start, first, last, limits)
+        leg = _MotionLeg.between(start, _quaternion(first), _quaternion(last), limits)
+        return cls((leg,), leg.end)
+
+    @classmethod
+    def turn_from_state(
+        cls, state: AttitudeState, target: Attitude, limits: AttitudeControlSystem
+    ) -> "AttitudeTrajectory":
+        """Start a rest-to-rest guidance turn at the exact executed quaternion."""
+        leg = _MotionLeg.between(
+            state.utime, state.quaternion, _quaternion(target), limits
+        )
         return cls((leg,), leg.end)
 
     @classmethod
@@ -270,12 +291,21 @@ class AttitudeTrajectory:
         samples: list[tuple[float, Attitude]],
         limits: AttitudeControlSystem,
         initial_rate: Attitude | None = None,
+        *,
+        initial_state: AttitudeState | None = None,
     ) -> "AttitudeTrajectory":
         if len(samples) < 2:
             raise AttitudeExecutionError(
                 "Tracking requires at least two timed attitudes"
             )
         quaternions = [_quaternion(attitude) for _, attitude in samples]
+        if initial_state is not None:
+            if initial_state.utime != samples[0][0] or initial_rate is not None:
+                raise AttitudeExecutionError(
+                    "Initial state must be at tracking start and supplies its rate"
+                )
+            quaternions[0] = initial_state.quaternion
+            initial_rate = initial_state.angular_velocity_body
         intervals, rates = [], []
         for index, ((start, _), (end, _)) in enumerate(zip(samples, samples[1:])):
             if (
@@ -429,14 +459,17 @@ class AttitudeExecutor:
 
     def install(self, trajectory: AttitudeTrajectory) -> None:
         state = self.predict(trajectory.start)
-        angle, _ = quaternion_attitude_delta(
-            *state.attitude, *trajectory.state(trajectory.start).attitude
-        )
+        incoming = trajectory.state(trajectory.start)
+        angle, _ = _quaternion_delta(state.quaternion, incoming.quaternion)
         rate_difference = (
-            np.asarray(state.angular_velocity_body)
-            - trajectory.state(trajectory.start).angular_velocity_body
+            np.asarray(state.angular_velocity_body) - incoming.angular_velocity_body
         )
-        if angle > _ANGLE_TOL or np.linalg.norm(rate_difference) > 1e-9:
+        if (
+            not isfinite(angle)
+            or not np.all(np.isfinite(rate_difference))
+            or angle > _HANDOFF_ANGLE_TOL_DEG
+            or np.linalg.norm(rate_difference) > _HANDOFF_RATE_TOL_DEG_S
+        ):
             raise AttitudeExecutionError(
                 "A new trajectory must join the current attitude and angular velocity"
             )
