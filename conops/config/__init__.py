@@ -13,6 +13,7 @@ from .fault_management import (
     FaultConstraint,
     FaultEvent,
     FaultManagement,
+    FaultManagementRun,
     FaultState,
     FaultThreshold,
 )
@@ -71,6 +72,7 @@ __all__ = [
     "FaultConstraint",
     "FaultEvent",
     "FaultManagement",
+    "FaultManagementRun",
     "FaultThreshold",
     "FaultState",
     "GroundStation",

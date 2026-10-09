@@ -263,8 +263,10 @@ Call ``check()`` each simulation cycle to evaluate monitored parameters and red 
        acs_mode=spacecraft_acs.acsmode
    )
 
-   # Check parameters and constraints
-   classifications = fm.check(housekeeping=hk, acs=spacecraft_acs)
+   # Once per run, snapshot policies into a fresh evaluator/report.
+   run = fm.new_run()
+   # Check parameters and constraints on every timestep.
+   classifications = run.check(housekeeping=hk, acs=spacecraft_acs)
 
    # classifications = {"battery_level": "yellow", "power_usage": "nominal", ...}
    # Red limit constraints are checked automatically using housekeeping data
@@ -276,7 +278,7 @@ Get accumulated time in each fault state and constraint violation statistics:
 
 .. code-block:: python
 
-   stats = fm.statistics()
+   stats = run.statistics()
 
    # For threshold-based parameters:
    # {
@@ -308,7 +310,7 @@ To separate threshold-based and constraint-based statistics:
 
 .. code-block:: python
 
-   stats = fm.statistics()
+   stats = run.statistics()
 
    # Get red limit constraint stats
    constraint_stats = {
@@ -329,7 +331,7 @@ The fault management system is automatically integrated into the ``QueueDITL`` s
 .. code-block:: python
 
    from conops.config import MissionConfig
-   from conops.queue_ditl import QueueDITL
+   from conops.ditl import QueueDITL
 
    # Load config with fault_management section
    config = MissionConfig.from_json("config_with_fault_management.json")
@@ -341,13 +343,12 @@ The fault management system is automatically integrated into the ``QueueDITL`` s
    config.init_fault_management_defaults()
 
    # Run simulation
-   ditl = QueueDITL(config, target_queue, begin, end, tle_file)
-   ditl.run()
+   ditl = QueueDITL(config=config, queue=target_queue, ephem=ephem, begin=begin, end=end)
+   ditl.calc()
 
    # Check fault statistics after simulation
-   if config.fault_management:
-       stats = config.fault_management.statistics()
-       print(f"Fault statistics: {stats}")
+   stats = ditl.fault_management.statistics()
+   print(f"Fault statistics: {stats}")
 
 Safe Mode Behavior
 ------------------
@@ -477,7 +478,7 @@ The red limit example demonstrates spacecraft health and safety constraints:
 Event Log
 ---------
 
-All significant fault management transitions are recorded in an in-memory ``events`` list on ``FaultManagement``.
+All significant fault management transitions are recorded in an in-memory ``events`` list on ``FaultManagementRun``.
 
 ``FaultEvent`` fields:
 
@@ -491,18 +492,55 @@ Example:
 
 .. code-block:: python
 
-    # After running fm.check(...)
-    for evt in fm.events:
+    # After running run.check(...)
+    for evt in run.events:
          print(evt)  # Uses concise __str__ representation
 
 Filtering events:
 
 .. code-block:: python
 
-    safe_mode_events = [e for e in fm.events if e.event_type == "safe_mode_trigger"]
-    sun_constraint_events = [e for e in fm.events if e.name == "spacecraft_sun_limit"]
+    safe_mode_events = [e for e in run.events if e.event_type == "safe_mode_trigger"]
+    sun_constraint_events = [e for e in run.events if e.name == "spacecraft_sun_limit"]
 
-The event log is append-only for the duration of a simulation; clear with ``fm.events.clear()`` if needed between runs.
+Run ownership and migration
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``config.fault_management`` contains only thresholds, red-limit constraints, and
+the global response policy. Runtime fields (``states``, ``events``, and
+``safe_mode_requested``) belong to ``FaultManagementRun``, not mission YAML/JSON.
+Remove those fields from older configuration files; save fault reports separately.
+
+Both DITL implementations allocate a fresh report at each ``calc()`` call.
+The ACS and simulation share that report as ``ditl.fault_management``; prior
+reports remain in ``ditl.fault_runs``, including reports from failed executions.
+Each has a unique ``run_id``, so reruns covering identical dates are distinct.
+Policies are copied at run start: later config edits cannot rewrite old reports.
+Do not clear historical events to start another run.
+
+.. code-block:: python
+
+    ditl.calc()
+    first = ditl.fault_management
+    ditl.calc()
+    second = ditl.fault_management
+    assert first.run_id != second.run_id
+    reports = {run.run_id: run.model_dump(mode="json") for run in ditl.fault_runs}
+
+For separate simulation objects sharing a config, each owns its own report list;
+collect their reports explicitly when comparing runs. Fault plots accept a
+``FaultManagementRun``, e.g. ``plot_fault_management_timeline(first)``.
+
+A subsequent ``calc()`` resets ACS execution state (including the SAFE latch,
+pending commands and maneuvers) and execution telemetry. Its initial attitude is
+the previously executed attitude. This is not a full scenario replay: battery,
+recorder and target-consumption state are not reset. Construct a new simulation
+with fresh scenario inputs when an identical initial physical state is required.
+Within a run, SAFE remains irreversible.
+
+API migration: replace reads/evaluation on ``config.fault_management`` with
+``ditl.fault_management``. Standalone callers use ``policy.new_run()`` once
+per execution and retain the returned report; do not call it on every timestep.
 
 Housekeeping Schema and New Metrics
 -----------------------------------

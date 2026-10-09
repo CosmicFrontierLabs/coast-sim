@@ -118,9 +118,9 @@ def test_config_with_panels(
     # ACS calls fault_management.events.append(...) directly — so
     # fault_management must be a populated mock, not None.
     config.fault_management = Mock()
-    config.fault_management.check = Mock()
-    config.fault_management.safe_mode_requested = False
-    config.fault_management.events = []
+    config.fault_management.new_run.side_effect = lambda: Mock(
+        check=Mock(), safe_mode_requested=False, events=[]
+    )
     config.fault_management.thresholds = []
     config.constraint = constraint
     config.ground_stations = Mock()
