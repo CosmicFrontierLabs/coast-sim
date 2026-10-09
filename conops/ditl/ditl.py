@@ -192,6 +192,7 @@ class DITL(DITLMixin, DITLStats):
         if self.plan is None:
             raise ValueError("ERROR: No plan loaded")
 
+        self._begin_fault_run()
         self.acs.solar_array_drive_state = self.solar_panel.initial_drive_state()
         # Plans intentionally exclude runtime objects from their serialized form.
         # Rebind here as well as during construction so assigning Plan.load(...)
@@ -502,18 +503,15 @@ class DITL(DITLMixin, DITLStats):
             )
 
             # Check fault management thresholds and red limit constraints
-            self.config.fault_management.check(
+            self.fault_management.check(
                 housekeeping=hk,
                 acs=self.acs,
             )
 
             # Check if safe mode was requested by fault management
-            if (
-                self.config.fault_management.safe_mode_requested
-                and not self.acs.in_safe_mode
-            ):
+            if self.fault_management.safe_mode_requested and not self.acs.in_safe_mode:
                 self.acs.request_safe_mode(self.utime[i])
-                self.config.fault_management.safe_mode_requested = False  # Reset flag
+                self.fault_management.safe_mode_requested = False  # Reset flag
 
             # Store housekeeping telemetry
             self.telemetry.housekeeping.append(hk)

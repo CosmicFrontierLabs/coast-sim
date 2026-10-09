@@ -450,7 +450,14 @@ class QueueDITL(DITLMixin, DITLStats):
         # Reset per-run state so re-runs on the same instance start clean
         self._attitude_constraint_violations = []
         self._active_gsp_end_time = None
-        self.acs.solar_array_drive_state = self.config.solar_panel.initial_drive_state()
+        if self._run_started:
+            self.plan = Plan()
+            self.charging_ppt = None
+            self.emergency_charging.current_charging_ppt = None
+            self._planned_gsp_keys.clear()
+            self._gsp_slew_plan_entries.clear()
+            self._synced_executed_slew_count = 0
+            self._ppt_unavailable = None
         self._ppt_optimum_roll_cache.clear()
 
         # If begin/end datetimes are naive, assume UTC by making them timezone-aware
@@ -458,6 +465,9 @@ class QueueDITL(DITLMixin, DITLStats):
             self.begin = self.begin.replace(tzinfo=timezone.utc)
         if self.end.tzinfo is None:
             self.end = self.end.replace(tzinfo=timezone.utc)
+
+        self._begin_fault_run()
+        self.acs.solar_array_drive_state = self.config.solar_panel.initial_drive_state()
 
         # Check that ephemeris is set
         assert self.ephem is not None, "Ephemeris must be set before running DITL"
@@ -616,20 +626,17 @@ class QueueDITL(DITLMixin, DITLStats):
                 return
             hk = self.telemetry.housekeeping[-1]
 
-        self.config.fault_management.check(
+        self.fault_management.check(
             housekeeping=hk,
             acs=self.acs,
         )
         # Check if safe mode has been requested by fault management
-        if (
-            self.config.fault_management.safe_mode_requested
-            and not self.acs.in_safe_mode
-        ):
+        if self.fault_management.safe_mode_requested and not self.acs.in_safe_mode:
             reason = None
             trigger_event = next(
                 (
                     e
-                    for e in reversed(self.config.fault_management.events)
+                    for e in reversed(self.fault_management.events)
                     if e.event_type == "safe_mode_trigger"
                 ),
                 None,

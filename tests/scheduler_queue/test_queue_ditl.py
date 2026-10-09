@@ -3778,7 +3778,9 @@ class TestCalcMethod:
     def test_calc_handles_safe_mode_request(self, queue_ditl) -> None:
         """Test calc method handles safe mode requests."""
         # Set up safe mode request
-        queue_ditl.config.fault_management.safe_mode_requested = True
+        queue_ditl.config.fault_management.new_run.side_effect = lambda: Mock(
+            check=Mock(), safe_mode_requested=True, events=[]
+        )
         queue_ditl.acs.in_safe_mode = False
 
         queue_ditl.year = 2018

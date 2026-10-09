@@ -12,7 +12,7 @@ from conops.common.enums import ACSMode
 from conops.common.vector import quaternion_attitude_delta
 from conops.config.groundstation import GroundStation
 
-from ..config import MissionConfig, SolarArrayDriveState
+from ..config import FaultManagementRun, MissionConfig, SolarArrayDriveState
 from ..simulation.acs import ACS
 from ..simulation.momentum import MomentumSample, StoredMomentumTracker
 from ..simulation.passes import Pass, PassTimes
@@ -185,6 +185,8 @@ class DITLMixin:
         # Note: log will be set by subclass (DITL/QueueDITL) before use
         # For now, create ACS without log (will be set later)
         self.acs = ACS(config=self.config, log=None)
+        self.fault_runs: list[FaultManagementRun] = []
+        self._run_started = False
 
         # Current target
         self.ppt = None
@@ -192,6 +194,53 @@ class DITLMixin:
         # Initialize common subsystems (can be overridden by subclasses)
         self._init_subsystems()
         self._stored_momentum_tracker = self._build_stored_momentum_tracker()
+
+    @property
+    def fault_management(self) -> FaultManagementRun:
+        """Current run's fault evaluator/report, shared with the ACS."""
+        return self.acs.fault_management
+
+    def _begin_fault_run(self) -> None:
+        """Start an independent fault interval, retaining all earlier reports.
+
+        This is not a replay/reset of battery, recorder or target consumption.
+        A fresh simulation instance is needed to replay the entire scenario.
+        """
+        if self._run_started:
+            # Commands, SAFE slews and mode/roll latches belong to the old run.
+            # Retain the actual attitude as this interval's boundary condition.
+            ra, dec, roll = self.acs.ra, self.acs.dec, self.acs.roll
+            self.acs = ACS(config=self.config, log=self.acs.log)
+            self.acs._hold_idle_attitude(ra, dec, roll, self.begin.timestamp())
+            self.ppt = None
+            self.telemetry = Telemetry()
+            self.executed_passes = PassTimes(config=self.config)
+            # Do not concatenate samples from separate runs (possibly covering
+            # identical dates) into a single attitude audit or plotting timeline.
+            for name in (
+                "ra",
+                "dec",
+                "roll",
+                "mode",
+                "obsid",
+                "panel",
+                "panel_power",
+                "batterylevel",
+                "charge_state",
+                "power",
+                "power_bus",
+                "power_payload",
+                "recorder_volume_gb",
+                "recorder_fill_fraction",
+                "recorder_alert",
+                "data_generated_gb",
+                "data_downlinked_gb",
+                "in_eclipse",
+            ):
+                setattr(self, name, [])
+        self.acs.fault_management = self.config.fault_management.new_run()
+        self.fault_runs.append(self.fault_management)
+        self._run_started = True
 
     def _init_subsystems(self) -> None:
         """Initialize subsystems from config. Can be overridden by subclasses."""

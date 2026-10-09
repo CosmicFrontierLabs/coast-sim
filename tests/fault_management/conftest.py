@@ -13,6 +13,7 @@ from conops import (
     Battery,
     Constraint,
     FaultManagement,
+    FaultManagementRun,
     GroundStationRegistry,
     MissionConfig,
     Payload,
@@ -43,9 +44,9 @@ def acs_stub_60s() -> Mock:
 
 
 @pytest.fixture
-def fm_with_yellow_state(base_config: MissionConfig) -> tuple[FaultManagement, ACS]:
+def fm_with_yellow_state(base_config: MissionConfig) -> tuple[FaultManagementRun, ACS]:
     """Fixture providing fault management after checking yellow state."""
-    fm = base_config.fault_management
+    fm = base_config.fault_management.new_run()
     acs = ACS(config=base_config)
     battery_threshold = next(t for t in fm.thresholds if t.name == "battery_level")
     base_config.battery.charge_level = base_config.battery.watthour * (
@@ -61,9 +62,9 @@ def fm_with_yellow_state(base_config: MissionConfig) -> tuple[FaultManagement, A
 
 
 @pytest.fixture
-def fm_with_red_state(base_config: MissionConfig) -> tuple[FaultManagement, ACS]:
+def fm_with_red_state(base_config: MissionConfig) -> tuple[FaultManagementRun, ACS]:
     """Fixture providing fault management after checking red state."""
-    fm = base_config.fault_management
+    fm = base_config.fault_management.new_run()
     acs = ACS(config=base_config)
     battery_threshold = next(t for t in fm.thresholds if t.name == "battery_level")
     base_config.battery.charge_level = base_config.battery.watthour * (
@@ -79,9 +80,11 @@ def fm_with_red_state(base_config: MissionConfig) -> tuple[FaultManagement, ACS]
 
 
 @pytest.fixture
-def fm_with_multiple_cycles(base_config: MissionConfig) -> tuple[FaultManagement, ACS]:
+def fm_with_multiple_cycles(
+    base_config: MissionConfig,
+) -> tuple[FaultManagementRun, ACS]:
     """Fixture providing fault management after multiple yellow cycles."""
-    fm = base_config.fault_management
+    fm = base_config.fault_management.new_run()
     acs = ACS(config=base_config)
     battery_threshold = next(t for t in fm.thresholds if t.name == "battery_level")
     yellow_limit = battery_threshold.yellow
@@ -119,9 +122,9 @@ def fm_with_multiple_cycles(base_config: MissionConfig) -> tuple[FaultManagement
 
 
 @pytest.fixture
-def fm_with_above_threshold(acs_stub: Mock) -> FaultManagement:
+def fm_with_above_threshold(acs_stub: Mock) -> FaultManagementRun:
     """Fixture providing fault management with 'above' direction threshold after multiple checks."""
-    fm = FaultManagement()
+    fm = FaultManagementRun()
     fm.add_threshold("battery_level", yellow=50.0, red=60.0, direction="above")
 
     # Test nominal
@@ -235,13 +238,13 @@ def ephem() -> rust_ephem.TLEEphemeris:
 
 
 @pytest.fixture
-def fm() -> FaultManagement:
-    return FaultManagement()
+def fm() -> FaultManagementRun:
+    return FaultManagementRun()
 
 
 @pytest.fixture
-def fm_safe() -> FaultManagement:
-    return FaultManagement(safe_mode_on_red=True)
+def fm_safe() -> FaultManagementRun:
+    return FaultManagementRun(safe_mode_on_red=True)
 
 
 @pytest.fixture
