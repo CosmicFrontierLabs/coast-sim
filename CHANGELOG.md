@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.10.0](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.9.0...v0.10.0) (2026-10-09)
+
+
+### Features
+
+* model finite single-axis array drives ([#248](https://github.com/CosmicFrontierLabs/coast-sim/issues/248)) ([a5388a8](https://github.com/CosmicFrontierLabs/coast-sim/commit/a5388a8d6e2317580236a23bb19584f48140facc))
+* model mounted science-instrument attitudes ([#129](https://github.com/CosmicFrontierLabs/coast-sim/issues/129)) ([26758a5](https://github.com/CosmicFrontierLabs/coast-sim/commit/26758a5320ddf97dec78cdc9f2dfe64c742c9bb8))
+* track gravity-gradient momentum ([#250](https://github.com/CosmicFrontierLabs/coast-sim/issues/250)) ([414ef08](https://github.com/CosmicFrontierLabs/coast-sim/commit/414ef08d5b8af867a10fad7420299134ab7665f7))
+
+
+### Bug Fixes
+
+* emergency charging interfering with ground contacts ([#281](https://github.com/CosmicFrontierLabs/coast-sim/issues/281)) ([d441716](https://github.com/CosmicFrontierLabs/coast-sim/commit/d4417169a4de4ded3db06f5a01e2db35dad145c8))
+* enforce continuous attitude execution across ACS modes ([#259](https://github.com/CosmicFrontierLabs/coast-sim/issues/259)) ([4b66c9b](https://github.com/CosmicFrontierLabs/coast-sim/commit/4b66c9bef17d2d9a53853e93c67bc14ff39e0ed6))
+* isolate fault state and preserve per-run reports ([#286](https://github.com/CosmicFrontierLabs/coast-sim/issues/286)) ([78f4d73](https://github.com/CosmicFrontierLabs/coast-sim/commit/78f4d735310532a85ccaba903b31de777e33d9ae))
+* plan predictive idle recovery and handle final-interval crossings ([#257](https://github.com/CosmicFrontierLabs/coast-sim/issues/257)) ([0982190](https://github.com/CosmicFrontierLabs/coast-sim/commit/09821905864182faef0806310b3f8050f15107f8))
+* skip ground-pass slew calculations when another deadline already wins ([#284](https://github.com/CosmicFrontierLabs/coast-sim/issues/284)) ([33b6355](https://github.com/CosmicFrontierLabs/coast-sim/commit/33b6355ec320a8dac4d103ecf53de9090947bd5d))
+
+
+### Performance Improvements
+
+* reduce sampled-runtime overhead without changing scheduling results ([#258](https://github.com/CosmicFrontierLabs/coast-sim/issues/258)) ([aac2140](https://github.com/CosmicFrontierLabs/coast-sim/commit/aac214069ad15d3a403b07112c49290a767dadb0))
+* reject score-bound losers before computing deadlines ([#285](https://github.com/CosmicFrontierLabs/coast-sim/issues/285)) ([7e11187](https://github.com/CosmicFrontierLabs/coast-sim/commit/7e11187a802ebcd950e0a564d510a5209ecc2998))
+* select the best body roll without ranking all candidates ([#283](https://github.com/CosmicFrontierLabs/coast-sim/issues/283)) ([7d80e07](https://github.com/CosmicFrontierLabs/coast-sim/commit/7d80e07897b29e7f4fbbecc698ce041a1fd0a457))
+
 ## [0.9.0](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.8.0...v0.9.0) (2026-08-28)
 
 
