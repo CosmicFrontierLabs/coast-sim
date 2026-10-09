@@ -486,10 +486,7 @@
                 "description": "Spacecraft must avoid pointing too close to the Sun for extended periods."
             }
         ],
-        "states": {},
-        "safe_mode_on_red": true,
-        "safe_mode_requested": false,
-        "events": []
+        "safe_mode_on_red": true
     },
     "observation_categories": {
         "categories": [

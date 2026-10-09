@@ -19,7 +19,7 @@ from ...common import ACSMode
 from ...config.visualization import VisualizationConfig
 
 if TYPE_CHECKING:
-    from ...config.fault_management import FaultEvent, FaultManagement
+    from ...config.fault_management import FaultEvent, FaultManagementRun
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 _COLOR_YELLOW = "#FFD700"
@@ -100,7 +100,7 @@ def _marker_yoffset(event: FaultEvent) -> float:
 
 
 def plot_fault_management_timeline(
-    fault_management: FaultManagement,
+    fault_management: FaultManagementRun,
     t0: float | None = None,
     t_end: float | None = None,
     x_axis: str = "hours",
@@ -119,7 +119,7 @@ def plot_fault_management_timeline(
     parameter entered or exited a degraded state.
 
     Args:
-        fault_management: :class:`~conops.config.fault_management.FaultManagement`
+        fault_management: :class:`~conops.config.fault_management.FaultManagementRun`
             instance after a simulation run (contains a populated ``events`` list).
         t0: Reference epoch in Unix seconds for X=0.  Defaults to the timestamp
             of the first event.
@@ -138,7 +138,7 @@ def plot_fault_management_timeline(
     Example::
 
         from conops.visualization import plot_fault_management_timeline
-        fig, ax = plot_fault_management_timeline(config.fault_management)
+        fig, ax = plot_fault_management_timeline(ditl.fault_management)
         fig.savefig("faults.png", dpi=150, bbox_inches="tight")
     """
     if config is None:

@@ -72,8 +72,9 @@ Execution faults
 
 Trajectory builders and the executor raise ``AttitudeExecutionError`` when
 their physical contract cannot be satisfied. ACS catches these failures during
-command execution and dwell guidance, records an ``execution_fault`` in fault
-management and an ERROR in the DITL log, and cancels pending commands and science
+command execution and dwell guidance, records an ``operational_fault`` in the
+current run's fault report and an ERROR in the DITL log, and cancels pending
+commands and science
 or contact activity. The rejected command is not recorded as executed.
 
 The recovery requests a bounded brake from the current quaternion and body
@@ -86,8 +87,11 @@ If a brake cannot be constructed, the last installed trajectory is retained.
 If SAFE motion itself is rejected, discretionary guidance is disabled for the
 remainder of the run rather than retried every tick. Both failures are recorded;
 SAFE operating mode is not a claim that solar pointing was achieved. Existing
-constraint checks still run. Initialization errors, nonmonotonic time, unrelated
-programming errors, and final plan-validation failures remain explicit errors;
+constraint checks still run. A run with an execution fault returns ``False``
+while retaining telemetry and fault diagnostics. Queue planning still runs its
+final audits and records any resulting validation failures in the fault report.
+Initialization errors, nonmonotonic time, unrelated programming errors, and
+validation failures without an operational attitude fault remain explicit errors;
 fault recovery does not certify an invalid plan for export.
 
 Model limits

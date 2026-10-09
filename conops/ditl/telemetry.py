@@ -6,10 +6,30 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..common import ACSMode
 
+
+class SolarArrayDriveAngle(BaseModel):
+    """Executed finite-drive angle identified independently of list ordering."""
+
+    model_config = ConfigDict(frozen=True)
+
+    panel_index: int = Field(ge=0, description="Index in the configured panel list")
+    panel_name: str = Field(description="Configured panel name")
+    angle_deg: float = Field(description="Executed physical drive angle in degrees")
+
+
 # Union of every possible Housekeeping field's value type, for dynamic
 # by-name field extraction (extract_field/extract_fields below).
 HousekeepingFieldValue = (
-    datetime | float | int | bool | str | ACSMode | list[bool] | list[float] | None
+    datetime
+    | float
+    | int
+    | bool
+    | str
+    | ACSMode
+    | list[bool]
+    | list[float]
+    | list[SolarArrayDriveAngle]
+    | None
 )
 
 
@@ -44,6 +64,9 @@ class Housekeeping(BaseModel):
         quat_x: Attitude quaternion vector component (x)
         quat_y: Attitude quaternion vector component (y)
         quat_z: Attitude quaternion vector component (z)
+        gravity_gradient_torque_body_n_m: Gravity-gradient torque in body coordinates (N m)
+        stored_momentum_body_n_m_s: Accumulated stored momentum in body coordinates (N m s)
+        stored_momentum_norm_n_m_s: Norm of accumulated stored momentum (N m s)
     """
 
     timestamp: datetime = Field(description="UTC timestamp")
@@ -70,6 +93,21 @@ class Housekeeping(BaseModel):
     panel_illumination: float | None = Field(
         default=None, description="Solar panel illumination fraction (0-1)"
     )
+    solar_array_drive_angles: list[SolarArrayDriveAngle] | None = Field(
+        default=None,
+        description=(
+            "Executed finite single-axis solar-array drive angles with stable "
+            "configured panel identity"
+        ),
+    )
+
+    @property
+    def solar_array_drive_angles_deg(self) -> list[float] | None:
+        """Compatibility view of drive angles in configured driven-panel order."""
+        if self.solar_array_drive_angles is None:
+            return None
+        return [entry.angle_deg for entry in self.solar_array_drive_angles]
+
     power_usage: float | None = Field(
         default=None, description="Total power usage in W"
     )
@@ -186,6 +224,18 @@ class Housekeeping(BaseModel):
     )
     quat_z: float | None = Field(
         default=None, description="Attitude quaternion vector component z"
+    )
+    gravity_gradient_torque_body_n_m: list[float] | None = Field(
+        default=None,
+        description="Gravity-gradient torque in body coordinates [x, y, z], in N m",
+    )
+    stored_momentum_body_n_m_s: list[float] | None = Field(
+        default=None,
+        description="Accumulated stored momentum in body coordinates [x, y, z], in N m s",
+    )
+    stored_momentum_norm_n_m_s: float | None = Field(
+        default=None,
+        description="Norm of accumulated stored momentum, in N m s",
     )
 
     @classmethod
@@ -462,6 +512,21 @@ class HousekeepingList(list[Housekeeping]):
     def quat_z(self) -> list[float | None]:
         """Get attitude quaternion z components from all housekeeping records."""
         return [hk.quat_z for hk in self]
+
+    @property
+    def gravity_gradient_torque_body_n_m(self) -> list[list[float] | None]:
+        """Get body-frame gravity-gradient torque vectors from all records."""
+        return [hk.gravity_gradient_torque_body_n_m for hk in self]
+
+    @property
+    def stored_momentum_body_n_m_s(self) -> list[list[float] | None]:
+        """Get body-frame stored-momentum vectors from all records."""
+        return [hk.stored_momentum_body_n_m_s for hk in self]
+
+    @property
+    def stored_momentum_norm_n_m_s(self) -> list[float | None]:
+        """Get stored-momentum norms from all records."""
+        return [hk.stored_momentum_norm_n_m_s for hk in self]
 
 
 class Telemetry(BaseModel):

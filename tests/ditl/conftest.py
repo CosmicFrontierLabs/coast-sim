@@ -22,6 +22,7 @@ from conops.config import (
     ObservationTiming,
     OnboardRecorder,
     Payload,
+    SolarArrayDriveState,
     SolarPanelSet,
     SpacecraftBus,
 )
@@ -224,9 +225,9 @@ def mock_config():
     # DITL/DITLMixin call fault_management.check()/.safe_mode_requested/.events
     # directly — so fault_management must be a populated mock, not None.
     cfg.fault_management = Mock()
-    cfg.fault_management.check = Mock()
-    cfg.fault_management.safe_mode_requested = False
-    cfg.fault_management.events = []
+    cfg.fault_management.new_run.side_effect = lambda: Mock(
+        check=Mock(), safe_mode_requested=False, events=[]
+    )
     cfg.fault_management.thresholds = []
     return cfg
 
@@ -303,6 +304,11 @@ def mock_config_detailed():
     config.solar_panel.power = Mock(return_value=100.0)
     config.solar_panel.panel_illumination_fraction = Mock(return_value=0.5)
     config.solar_panel.illumination_and_power = Mock(return_value=(0.5, 100.0))
+    drive_state = SolarArrayDriveState(angles_deg=())
+    config.solar_panel.initial_drive_state = Mock(return_value=drive_state)
+    config.solar_panel.evaluate_executed_attitude = Mock(
+        return_value=(0.5, 100.0, drive_state)
+    )
     config.solar_panel.optimal_charging_pointing = Mock(return_value=(45.0, 23.5))
     config.solar_panel.panels = []  # empty → optimum_roll uses analytic path
 
@@ -315,9 +321,9 @@ def mock_config_detailed():
     # DITL/DITLMixin call fault_management.check()/.safe_mode_requested/.events
     # directly — so fault_management must be a populated mock, not None.
     config.fault_management = Mock()
-    config.fault_management.check = Mock()
-    config.fault_management.safe_mode_requested = False
-    config.fault_management.events = []
+    config.fault_management.new_run.side_effect = lambda: Mock(
+        check=Mock(), safe_mode_requested=False, events=[]
+    )
     config.fault_management.thresholds = []
 
     return config
@@ -363,6 +369,7 @@ def ditl(mock_config_detailed, mock_ephem) -> DITL:
         mock_acs.radiator_sun_exposure = 0.0
         mock_acs.radiator_earth_exposure = 0.0
         mock_acs.radiator_heat_dissipation_w = 0.0
+        mock_acs.solar_array_drive_state = SolarArrayDriveState(angles_deg=())
         mock_acs_class.return_value = mock_acs
 
         ditl = DITL(config=mock_config_detailed)

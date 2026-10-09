@@ -16,14 +16,19 @@ from ..common.vector import (
     quaternion_attitude_delta,
     sort_by_angular_separation,
 )
-from ..config import AttitudeConstraintScope, MissionConfig
+from ..config import (
+    AttitudeConstraintScope,
+    MissionConfig,
+    SolarArrayDriveState,
+    SolarPanelSet,
+)
 from ..config.constraint import (
     attitude_constraint_names_for_scopes,
     attitude_constraint_scope_label,
     in_attitude_constraint_scopes,
 )
 from ..simulation.passes import PassTimes
-from ..simulation.roll import optimum_roll
+from ..simulation.roll import optimum_body_roll
 from .acs_command import ACSCommand
 from .attitude import (
     Attitude,
@@ -74,6 +79,7 @@ class ACS:
     radiator_earth_exposure: float
     radiator_heat_dissipation_w: float
     science_observation_active: bool
+    solar_array_drive_state: SolarArrayDriveState
 
     def __init__(self, config: MissionConfig, log: "DITLLog | None" = None) -> None:
         """Initialize the Attitude Control System.
@@ -86,6 +92,7 @@ class ACS:
         assert config.constraint is not None, "Constraint must be provided to ACS"
         self.constraint = config.constraint
         self.config = config
+        self.fault_management = config.fault_management.new_run()
         self.log = log
         self._executor: AttitudeExecutor | None = None
         self._initial_attitude: Attitude = (0.0, 0.0, 0.0)
@@ -136,7 +143,8 @@ class ACS:
 
         self.passrequests = PassTimes(config=config)
         self.current_pass: Pass | None = None
-        self.solar_panel = config.solar_panel
+        self.solar_panel = config.solar_panel or SolarPanelSet()
+        self.solar_array_drive_state = self.solar_panel.initial_drive_state()
         self.slew_dists: list[float] = []
         self.saa = None
 
@@ -192,13 +200,14 @@ class ACS:
     def _advance_attitude(self, utime: float) -> AttitudeExecutor:
         if self._executor is None:
             if not self._initial_roll_explicit:
-                self.roll = optimum_roll(
+                self.roll = optimum_body_roll(
                     self.ra,
                     self.dec,
                     utime,
                     self.ephem,
                     self.solar_panel,
                     self.constraint,
+                    drive_state=self.solar_array_drive_state,
                 )
             self._executor = AttitudeExecutor(utime, self._initial_attitude)
         self._executor.advance(utime)
@@ -556,8 +565,14 @@ class ACS:
         slew.enddec = dec
         # If roll not provided, calculate optimal roll at target position
         if roll is None:
-            slew.endroll = optimum_roll(
-                ra, dec, utime, self.ephem, self.solar_panel, self.constraint
+            slew.endroll = optimum_body_roll(
+                ra,
+                dec,
+                utime,
+                self.ephem,
+                self.solar_panel,
+                self.constraint,
+                drive_state=self.solar_array_drive_state,
             )
         else:
             slew.endroll = roll
@@ -706,12 +721,10 @@ class ACS:
             self._process_commands(utime)
             self._update_mode(utime)
             self._update_dwell_guidance(utime)
+            self._enforce_idle_constraint_safe_attitude(utime)
         except AttitudeExecutionError as exc:
             self._handle_execution_fault(utime, exc)
             self._update_mode(utime)
-
-        # Reject an unsafe hold; only a preplanned trajectory can recover it.
-        self._enforce_idle_constraint_safe_attitude(utime)
 
         # Check current constraints (must run after roll is updated)
         self._check_constraints(utime)
@@ -735,8 +748,14 @@ class ACS:
         self, utime: float, error: AttitudeExecutionError
     ) -> None:
         """Reject the task, retain physical state, and recover through FM."""
-        fm = self.config.fault_management
-        fm.report_execution_fault(utime, str(error), self)
+        fm = self.fault_management
+        fm.report_fault(
+            utime=utime,
+            name="attitude_recovery" if self.in_safe_mode else "attitude_execution",
+            cause=str(error),
+            metadata={"acs_mode": self.acsmode.name},
+            acs=self,
+        )
         self._log_or_print(utime, "ERROR", f"Attitude execution rejected: {error}")
         self.command_queue.clear()
         self.current_pass = None
@@ -749,7 +768,13 @@ class ACS:
         except AttitudeExecutionError as recovery_error:
             # Installing a brake is transactional: an invalid recovery leaves
             # the previously certified trajectory intact, never an instant stop.
-            fm.report_execution_fault(utime, f"Braking failed: {recovery_error}", self)
+            fm.report_fault(
+                utime=utime,
+                name="attitude_braking",
+                cause=f"Braking failed: {recovery_error}",
+                metadata={},
+                acs=self,
+            )
             self._attitude_guidance_disabled = True
 
         if self.in_safe_mode:
@@ -769,8 +794,12 @@ class ACS:
                         utime,
                     )
                 except AttitudeExecutionError as recovery_error:
-                    fm.report_execution_fault(
-                        utime, f"SAFE guidance failed: {recovery_error}", self
+                    fm.report_fault(
+                        utime=utime,
+                        name="attitude_recovery",
+                        cause=f"SAFE guidance failed: {recovery_error}",
+                        metadata={},
+                        acs=self,
                     )
                     self.command_queue.clear()
                     self._attitude_guidance_disabled = True
@@ -852,7 +881,7 @@ class ACS:
             else:
                 index = self.ephem.index(dtutcfromtimestamp(utime))
                 ra, dec = self.ephem.sun_ra_deg[index], self.ephem.sun_dec_deg[index]
-        roll = optimum_roll(
+        roll = optimum_body_roll(
             ra,
             dec,
             utime,
@@ -861,6 +890,7 @@ class ACS:
             self.constraint,
             reference_roll=self.roll,
             max_roll_delta=180.0,
+            drive_state=self.solar_array_drive_state,
         )
         target = (ra, dec, roll)
         distance, _ = _quaternion_delta(
@@ -876,7 +906,7 @@ class ACS:
             )
 
     def _enforce_idle_constraint_safe_attitude(self, utime: float) -> None:
-        """Reject unsafe execution; a scheduler must command recovery in advance."""
+        """Fault unsafe execution; a scheduler should command recovery in advance."""
         if self.acsmode != ACSMode.IDLE:
             return
         if self.current_pass is not None or self.in_safe_mode:
@@ -889,10 +919,26 @@ class ACS:
         if not self._idle_attitude_unsafe(self.ra, self.dec, self.roll, utime, scopes):
             return
 
-        raise RuntimeError(
+        self.report_idle_safety_fault(
+            utime,
             f"Unsafe IDLE attitude at {unixtime2date(utime)}; "
-            "a validated recovery slew must start before the keepout is entered"
+            "a validated recovery slew did not start before the keepout was entered",
         )
+
+    def report_idle_safety_fault(self, utime: float, cause: str) -> None:
+        """Latch the failure and enter the existing SAFE command path, once."""
+        faults = self.fault_management
+        faults.report_fault(
+            utime=utime,
+            name="idle_safety",
+            cause=cause,
+            metadata={"ra": self.ra, "dec": self.dec, "roll": self.roll},
+            acs=self,
+        )
+        if faults.safe_mode_requested and not self.in_safe_mode:
+            self.request_safe_mode(utime, reason=cause)
+            self._process_commands(utime)
+            self._update_mode(utime)
 
     def _idle_attitude_scopes(self) -> list[AttitudeConstraintScope]:
         return self.config.attitude_constraint_scopes_for_mode(ACSMode.IDLE)
@@ -1179,24 +1225,24 @@ class ACS:
         current_dec = self.dec
         current_roll = self.roll
 
-        # Build solar panel geometry lookup so radiators can compute shadow fractions.
-        solar_panel_geometries = None
-        if self.config.solar_panel is not None:
-            geom_map = {
-                p.name: p.geometry
-                for p in self.config.solar_panel.panels
-                if p.geometry is not None
+        # Driven panels cannot currently be configured with static geometry, so
+        # every geometry here represents an executed fixed-panel occluder.
+        solar_panel_geometries = (
+            {
+                panel.name: panel.geometry
+                for panel in self.config.solar_panel.panels
+                if panel.geometry is not None
             }
-            if geom_map:
-                solar_panel_geometries = geom_map
-
+            if self.config.solar_panel is not None
+            else {}
+        )
         metrics = radiators.exposure_metrics(
             ra_deg=current_ra,
             dec_deg=current_dec,
             utime=utime,
             ephem=self.ephem,
             roll_deg=current_roll,
-            solar_panel_geometries=solar_panel_geometries,
+            solar_panel_geometries=solar_panel_geometries or None,
         )
 
         per_radiator = cast(
@@ -1290,7 +1336,7 @@ class ACS:
         self.enqueue_command(command)
         self._log_or_print(utime, "CHARGING", "End battery charge requested")
 
-    def request_safe_mode(self, utime: float) -> None:
+    def request_safe_mode(self, utime: float, reason: str | None = None) -> None:
         """Request entry into safe mode.
 
         Enqueues an ENTER_SAFE_MODE command to be executed at the specified time.
@@ -1302,6 +1348,7 @@ class ACS:
         command = ACSCommand(
             command_type=ACSCommandType.ENTER_SAFE_MODE,
             execution_time=utime,
+            reason=reason,
         )
         self.enqueue_command(command)
         self._log_or_print(
@@ -1329,7 +1376,12 @@ class ACS:
             created charging pointing or None if charging could not be initiated.
         """
         charging_ppt = emergency_charging.initiate_emergency_charging(
-            utime, ephem, lastra, lastdec, current_ppt
+            utime,
+            ephem,
+            lastra,
+            lastdec,
+            current_ppt,
+            drive_state=self.solar_array_drive_state,
         )
         if charging_ppt is not None:
             self.request_battery_charge(

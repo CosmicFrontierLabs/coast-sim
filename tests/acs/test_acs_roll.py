@@ -77,7 +77,7 @@ def mock_config_roll(mock_ephem_roll, mock_constraint_roll, mock_spacecraft_bus)
     # whenever this config is embedded as a nested pydantic field elsewhere
     # (e.g. on Slew.config); None short-circuits it via the validator's own
     # early-return guard.
-    config.fault_management = None
+    config.fault_management = MissionConfig().fault_management
     config.constraint = mock_constraint_roll
     config.ground_stations = Mock()
 
@@ -169,7 +169,7 @@ class TestACSRollCalculation:
 
         config1 = Mock()
         config1.__class__ = MissionConfig
-        config1.fault_management = None
+        config1.fault_management = MissionConfig().fault_management
         config1.constraint = constraint1
         config1.ground_stations = Mock()
         panel1 = SolarPanel(
@@ -202,7 +202,7 @@ class TestACSRollCalculation:
 
         config2 = Mock()
         config2.__class__ = MissionConfig
-        config2.fault_management = None
+        config2.fault_management = MissionConfig().fault_management
         config2.constraint = constraint2
         config2.ground_stations = Mock()
         panel2 = SolarPanel(
@@ -342,7 +342,7 @@ class TestACSRollMode:
         with (
             patch.object(acs_roll, "_is_in_charging_mode", return_value=True),
             patch(
-                "conops.simulation.acs.optimum_roll",
+                "conops.simulation.acs.optimum_body_roll",
                 return_value=0.0,
             ) as mock_optimum_roll,
         ):
@@ -387,7 +387,7 @@ class TestACSRollEdgeCases:
 
         config = Mock()
         config.__class__ = MissionConfig
-        config.fault_management = None
+        config.fault_management = MissionConfig().fault_management
         config.constraint = constraint
         config.ground_stations = Mock()
         panel = SolarPanel(

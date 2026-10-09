@@ -1,4 +1,5 @@
-from pydantic import Field
+import numpy as np
+from pydantic import Field, field_validator, model_validator
 
 from ._base import ConfigModel
 from .acs import AttitudeControlSystem
@@ -9,9 +10,24 @@ from .radiator import DefaultRadiatorConfiguration, RadiatorConfiguration
 from .star_tracker import DefaultStarTrackerConfiguration, StarTrackerConfiguration
 from .thermal import Heater
 
+# Allow roughly eight significant digits of input precision. This is a
+# numerical-consistency tolerance, not a mass-properties uncertainty budget.
+INERTIA_RELATIVE_TOLERANCE = float(np.sqrt(np.finfo(np.float64).eps))
+
 
 class SpacecraftBus(ConfigModel):
     name: str = Field(default="Default Bus", description="Name of the spacecraft bus")
+    inertia_tensor_body_kg_m2: (
+        tuple[
+            tuple[float, float, float],
+            tuple[float, float, float],
+            tuple[float, float, float],
+        ]
+        | None
+    ) = Field(
+        default=None,
+        description="Spacecraft inertia tensor about its center of mass in body coordinates, in kg m².",
+    )
     power_draw: PowerDraw = Field(
         default_factory=PowerDraw,
         description="Power draw specifications for bus systems",
@@ -38,6 +54,61 @@ class SpacecraftBus(ConfigModel):
         default_factory=DefaultRadiatorConfiguration,
         description="Body-mounted radiator configuration",
     )
+
+    @field_validator("inertia_tensor_body_kg_m2", mode="before")
+    @classmethod
+    def _validate_inertia_tensor(
+        cls, value: object
+    ) -> (
+        tuple[
+            tuple[float, float, float],
+            tuple[float, float, float],
+            tuple[float, float, float],
+        ]
+        | None
+    ):
+        if value is None:
+            return None
+        try:
+            inertia = np.asarray(value, dtype=np.float64)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("inertia tensor must be a finite 3x3 matrix") from exc
+        if inertia.shape != (3, 3) or not np.all(np.isfinite(inertia)):
+            raise ValueError("inertia tensor must be a finite 3x3 matrix")
+        scale = float(np.max(np.abs(inertia)))
+        if scale == 0.0:
+            raise ValueError("inertia tensor must be positive definite")
+        scaled = inertia / scale
+        if not np.allclose(scaled, scaled.T, rtol=0.0, atol=INERTIA_RELATIVE_TOLERANCE):
+            raise ValueError("inertia tensor must be symmetric")
+        # Canonicalize accepted rounding asymmetry before using either triangle.
+        scaled = (scaled + scaled.T) / 2.0
+        principal_moments = np.linalg.eigvalsh(scaled)
+        if np.any(principal_moments <= 0.0):
+            raise ValueError("inertia tensor must be positive definite")
+        tolerance = INERTIA_RELATIVE_TOLERANCE * principal_moments[-1]
+        if principal_moments[-1] > principal_moments[:2].sum() + tolerance:
+            raise ValueError(
+                "principal inertia moments must satisfy the triangle inequality"
+            )
+        return tuple(tuple(float(x) for x in row) for row in scaled * scale)  # type: ignore[return-value]
+
+    @model_validator(mode="after")
+    def _require_inertia_for_gravity_gradient(self) -> "SpacecraftBus":
+        attitude_control = getattr(self, "attitude_control", None)
+        stored_momentum = getattr(attitude_control, "stored_momentum", None)
+        gravity_gradient_enabled = getattr(
+            stored_momentum, "gravity_gradient_enabled", False
+        )
+        if (
+            gravity_gradient_enabled is True
+            and getattr(self, "inertia_tensor_body_kg_m2", None) is None
+        ):
+            raise ValueError(
+                "inertia_tensor_body_kg_m2 is required when gravity-gradient "
+                "momentum tracking is enabled"
+            )
+        return self
 
     def power(self, mode: int | None = None, in_eclipse: bool = False) -> float:
         """Get the power draw for the spacecraft bus in the given mode.

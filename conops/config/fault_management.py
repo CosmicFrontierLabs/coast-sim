@@ -23,7 +23,6 @@ Configuration Example (JSON):
                     "direction": "above"
                 }
             },
-            "states": {},
             "safe_mode_on_red": true
         }
     }
@@ -55,10 +54,11 @@ Usage Example (Python):
         temperature=55.0,
         acs_mode=ACSMode.SCIENCE,
     )
-    classifications = fm.check(housekeeping=hk, acs=spacecraft_acs)
+    run = fm.new_run()
+    classifications = run.check(housekeeping=hk, acs=spacecraft_acs)
 
     # Get accumulated statistics
-    stats = fm.statistics()
+    stats = run.statistics()
     # Returns: {"battery_level": {"yellow_seconds": 120.0, "red_seconds": 0.0, "current": "yellow"}, ...}
 
 Threshold Directions:
@@ -120,6 +120,7 @@ ACS Mode Filtering:
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal, cast
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 from rust_ephem.constraints import ConstraintConfig
@@ -142,7 +143,8 @@ class FaultEvent(BaseModel):
 
     Attributes:
         utime: Unix timestamp when the event occurred
-        event_type: Type of event (threshold_transition, constraint_violation, safe_mode_trigger)
+        event_type: Type of event (threshold_transition, constraint_violation,
+            operational_fault, safe_mode_trigger)
         name: Name of the parameter or constraint that triggered the event
         cause: Human-readable description of what happened
         metadata: Optional additional data (e.g., current values, thresholds, durations)
@@ -315,29 +317,124 @@ class FaultThreshold(ConfigModel):
 
 
 class FaultManagement(ConfigModel):
-    """Extensible Fault Management system.
-
-    Monitors configured parameters each simulation cycle, classifies them
-    into nominal / yellow / red states, records time spent in each state,
-    and triggers ACS safe mode entry on RED conditions (once) where configured.
-
-    Also supports spacecraft-level red limit constraints for health and safety that
-    can trigger safe mode after sustained violations beyond a time threshold.
-    """
+    """Reusable fault policies. Execution state belongs to a FaultManagementRun."""
 
     thresholds: list[FaultThreshold] = Field(
         default_factory=list, description="List of parameter thresholds to monitor"
     )
     red_limit_constraints: list[FaultConstraint] = Field(
-        default_factory=list,
-        description="List of spacecraft-level red limit constraints",
-    )
-    states: dict[str, FaultState] = Field(
-        default_factory=dict,
-        description="Current fault states for monitored parameters",
+        default_factory=list, description="Spacecraft-level red limit constraints"
     )
     safe_mode_on_red: bool = Field(
         default=True, description="Whether to trigger safe mode on any RED condition"
+    )
+
+    def new_run(self) -> FaultManagementRun:
+        """Snapshot policies into a fresh, independently identifiable fault report."""
+        return FaultManagementRun(
+            thresholds=[
+                threshold.model_copy(deep=True) for threshold in self.thresholds
+            ],
+            red_limit_constraints=[
+                constraint.model_copy(deep=True)
+                for constraint in self.red_limit_constraints
+            ],
+            safe_mode_on_red=self.safe_mode_on_red,
+        )
+
+    def add_threshold(
+        self,
+        name: str,
+        yellow: float,
+        red: float,
+        direction: Literal["below", "above"] = "below",
+        acs_modes: list[ACSMode] | None = None,
+        triggers_safe_mode: bool = True,
+        safe_mode_delay_seconds: float = 0.0,
+    ) -> None:
+        """Add a parameter threshold for fault monitoring.
+
+        Args:
+            name: Parameter name to monitor (must match Housekeeping attribute name)
+            yellow: Value at or beyond which a YELLOW fault is flagged
+            red: Value at or beyond which a RED fault is flagged
+            direction: 'below' or 'above' indicating fault direction
+            acs_modes: ACS modes where this threshold should be checked.
+                      None (default) means check in all modes.
+            triggers_safe_mode: If True (default), a RED classification triggers safe mode.
+                                Set False for monitor-only thresholds that should alert but
+                                not cause a safehold.
+            safe_mode_delay_seconds: Continuous RED duration required before safe mode.
+                                     0.0 (default) triggers immediately on RED.
+
+        Examples:
+            >>> fm = FaultManagement()
+            >>> # Check battery in all modes
+            >>> fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
+            >>> # Only check star trackers during science operations
+            >>> fm.add_threshold("star_tracker_count", yellow=2.0, red=1.0,
+            ...                  direction="below", acs_modes=[ACSMode.SCIENCE])
+        """
+        # Import here to avoid circular imports
+        from ..ditl.telemetry import Housekeeping
+
+        # Check if name is a valid Housekeeping attribute
+        valid_housekeeping_fields = set(Housekeeping.model_fields.keys())
+        if name not in valid_housekeeping_fields:
+            raise ValueError(
+                f"Threshold name '{name}' is not a valid Housekeeping attribute. "
+                f"Valid predefined fields are: {sorted(valid_housekeeping_fields)}. "
+            )
+
+        self.thresholds.append(
+            FaultThreshold(
+                name=name,
+                yellow=yellow,
+                red=red,
+                direction=direction,
+                acs_modes=acs_modes,
+                triggers_safe_mode=triggers_safe_mode,
+                safe_mode_delay_seconds=safe_mode_delay_seconds,
+            )
+        )
+
+    def add_red_limit_constraint(
+        self,
+        name: str,
+        constraint: ConstraintConfig,
+        time_threshold_seconds: float | None = None,
+        description: str = "",
+    ) -> None:
+        """Add a spacecraft-level red limit constraint.
+
+        Args:
+            name: Unique identifier for the constraint
+            constraint: rust_ephem ConstraintConfig defining the constraint
+            time_threshold_seconds: Max continuous violation time before safe mode (None = no trigger)
+            description: Human-readable description
+        """
+        self.red_limit_constraints.append(
+            FaultConstraint(
+                name=name,
+                constraint=constraint,
+                time_threshold_seconds=time_threshold_seconds,
+                description=description,
+            )
+        )
+
+
+class FaultManagementRun(FaultManagement):
+    """Fault evaluator and report for one run, never stored in MissionConfig.
+
+    A new instance has fresh timers, events and pending responses. Retaining this
+    object preserves the previous run; later runs never reset or reuse it.
+    Policies are snapshotted by FaultManagement.new_run.
+    """
+
+    run_id: str = Field(default_factory=lambda: str(uuid4()))
+    states: dict[str, FaultState] = Field(
+        default_factory=dict,
+        description="Current fault states for monitored parameters",
     )
     safe_mode_requested: bool = Field(
         default=False, description="Flag indicating safe mode has been requested"
@@ -351,20 +448,33 @@ class FaultManagement(ConfigModel):
             self.states[name] = FaultState()
         return self.states[name]
 
-    def report_execution_fault(self, utime: float, cause: str, acs: ACS) -> None:
-        """Record rejected physical motion and apply the configured SAFE policy."""
-        name = "attitude_execution"
-        self.ensure_state(name).current = "red"
-        metadata: dict[str, FaultEventMetadataValue] = {"acs_mode": acs.acsmode.name}
-        self.events.append(
-            FaultEvent(
-                utime=utime,
-                event_type="execution_fault",
-                name=name,
-                cause=cause,
-                metadata=metadata,
+    def report_fault(
+        self,
+        *,
+        utime: float,
+        name: str,
+        cause: str,
+        metadata: dict[str, FaultEventMetadataValue],
+        acs: ACS,
+    ) -> None:
+        """Latch a discrete operational failure and apply the configured RED policy.
+
+        Unlike sampled thresholds, these events have no measured duration or
+        automatic recovery. Repeated reports retain the original diagnosis.
+        """
+        state = self.ensure_state(name)
+        if state.current != "red":
+            state.current = "red"
+            state.in_violation = True
+            self.events.append(
+                FaultEvent(
+                    utime=utime,
+                    event_type="operational_fault",
+                    name=name,
+                    cause=cause,
+                    metadata=metadata,
+                )
             )
-        )
         self._trigger_safe_mode(
             utime=utime, name=name, cause=cause, metadata=metadata, acs=acs
         )
@@ -626,83 +736,3 @@ class FaultManagement(ConfigModel):
                 }
 
         return stats
-
-    def add_threshold(
-        self,
-        name: str,
-        yellow: float,
-        red: float,
-        direction: Literal["below", "above"] = "below",
-        acs_modes: list[ACSMode] | None = None,
-        triggers_safe_mode: bool = True,
-        safe_mode_delay_seconds: float = 0.0,
-    ) -> None:
-        """Add a parameter threshold for fault monitoring.
-
-        Args:
-            name: Parameter name to monitor (must match Housekeeping attribute name)
-            yellow: Value at or beyond which a YELLOW fault is flagged
-            red: Value at or beyond which a RED fault is flagged
-            direction: 'below' or 'above' indicating fault direction
-            acs_modes: ACS modes where this threshold should be checked.
-                      None (default) means check in all modes.
-            triggers_safe_mode: If True (default), a RED classification triggers safe mode.
-                                Set False for monitor-only thresholds that should alert but
-                                not cause a safehold.
-            safe_mode_delay_seconds: Continuous RED duration required before safe mode.
-                                     0.0 (default) triggers immediately on RED.
-
-        Examples:
-            >>> fm = FaultManagement()
-            >>> # Check battery in all modes
-            >>> fm.add_threshold("battery_level", yellow=0.5, red=0.4, direction="below")
-            >>> # Only check star trackers during science operations
-            >>> fm.add_threshold("star_tracker_count", yellow=2.0, red=1.0,
-            ...                  direction="below", acs_modes=[ACSMode.SCIENCE])
-        """
-        # Import here to avoid circular imports
-        from ..ditl.telemetry import Housekeeping
-
-        # Check if name is a valid Housekeeping attribute
-        valid_housekeeping_fields = set(Housekeeping.model_fields.keys())
-        if name not in valid_housekeeping_fields:
-            raise ValueError(
-                f"Threshold name '{name}' is not a valid Housekeeping attribute. "
-                f"Valid predefined fields are: {sorted(valid_housekeeping_fields)}. "
-            )
-
-        self.thresholds.append(
-            FaultThreshold(
-                name=name,
-                yellow=yellow,
-                red=red,
-                direction=direction,
-                acs_modes=acs_modes,
-                triggers_safe_mode=triggers_safe_mode,
-                safe_mode_delay_seconds=safe_mode_delay_seconds,
-            )
-        )
-
-    def add_red_limit_constraint(
-        self,
-        name: str,
-        constraint: ConstraintConfig,
-        time_threshold_seconds: float | None = None,
-        description: str = "",
-    ) -> None:
-        """Add a spacecraft-level red limit constraint.
-
-        Args:
-            name: Unique identifier for the constraint
-            constraint: rust_ephem ConstraintConfig defining the constraint
-            time_threshold_seconds: Max continuous violation time before safe mode (None = no trigger)
-            description: Human-readable description
-        """
-        self.red_limit_constraints.append(
-            FaultConstraint(
-                name=name,
-                constraint=constraint,
-                time_threshold_seconds=time_threshold_seconds,
-                description=description,
-            )
-        )

@@ -234,7 +234,7 @@ def test_dwell_guidance_cannot_teleport(physical_acs, safe):
     with (
         patch.object(acs, "_is_in_charging_mode", return_value=not safe),
         patch(
-            "conops.simulation.acs.optimum_roll",
+            "conops.simulation.acs.optimum_body_roll",
             return_value=90,
         ),
     ):
@@ -264,7 +264,7 @@ def test_future_charge_end_does_not_freeze_solar_guidance(physical_acs):
     )
     with (
         patch.object(acs, "_is_in_charging_mode", return_value=True),
-        patch("conops.simulation.acs.optimum_roll", return_value=90),
+        patch("conops.simulation.acs.optimum_body_roll", return_value=90),
     ):
         acs.pointing(1000)
         acs.pointing(1001)
@@ -432,7 +432,7 @@ def test_acs_pole_handoffs_preserve_executed_quaternion(physical_acs, dec, hando
     else:
         with (
             patch.object(acs, "_is_in_charging_mode", return_value=True),
-            patch("conops.simulation.acs.optimum_roll", return_value=50),
+            patch("conops.simulation.acs.optimum_body_roll", return_value=50),
         ):
             acs._update_dwell_guidance(state.utime)
     assert acs._executor.state == state
@@ -469,6 +469,7 @@ def fault_acs(physical_acs):
         ),
         solar_panel=acs.solar_panel,
     )
+    acs.fault_management = acs.config.fault_management.new_run()
     return acs
 
 
@@ -497,7 +498,7 @@ def test_execution_fault_uses_fm_without_resetting_motion(
     fault_acs, moving, automatic_safe
 ):
     acs = fault_acs
-    fm = acs.config.fault_management
+    fm = acs.fault_management
     fm.safe_mode_on_red = automatic_safe
     if moving:
         acs._start_slew(new_slew(acs, (10, 0, 0)), 1000)
@@ -514,7 +515,7 @@ def test_execution_fault_uses_fm_without_resetting_motion(
     assert acs.current_pass is None
     assert not acs.science_observation_active
     assert fm.states["attitude_execution"].current == "red"
-    assert fm.events[0].event_type == "execution_fault"
+    assert fm.events[0].event_type == "operational_fault"
     assert "acquisition" in fm.events[0].cause
     assert fm.safe_mode_requested == acs.in_safe_mode == automatic_safe
     assert all(
@@ -556,8 +557,8 @@ def test_failed_safe_recovery_is_reported_once_without_retry_loop(fault_acs):
     assert acs._executor.state.quaternion == state.quaternion
     assert [
         event.cause
-        for event in acs.config.fault_management.events
-        if event.event_type == "execution_fault"
+        for event in acs.fault_management.events
+        if event.event_type == "operational_fault"
     ] == [
         "Pass acquisition has not reached its tracking attitude",
         "infeasible SAFE turn",
@@ -580,9 +581,7 @@ def test_braking_failure_preserves_previously_installed_motion(fault_acs):
     assert not acs.command_queue
     acs.pointing(1060)
     assert acs._executor.state == trajectory.state(1060)
-    assert any(
-        "Braking failed" in event.cause for event in acs.config.fault_management.events
-    )
+    assert any("Braking failed" in event.cause for event in acs.fault_management.events)
 
 
 def test_unrelated_programming_error_is_not_swallowed(fault_acs):

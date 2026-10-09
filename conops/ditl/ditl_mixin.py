@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 from typing import Any, cast
 
 import matplotlib.pyplot as plt
+import numpy as np
+import numpy.typing as npt
 import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
@@ -10,11 +12,12 @@ from conops.common.enums import ACSMode
 from conops.common.vector import quaternion_attitude_delta
 from conops.config.groundstation import GroundStation
 
-from ..config import MissionConfig
+from ..config import FaultManagementRun, MissionConfig, SolarArrayDriveState
 from ..simulation.acs import ACS
+from ..simulation.momentum import MomentumSample, StoredMomentumTracker
 from ..simulation.passes import Pass, PassTimes
 from ..targets import Plan, PlanEntry
-from .telemetry import Telemetry
+from .telemetry import SolarArrayDriveAngle, Telemetry
 
 ATTITUDE_RATE_NUMERICAL_TOLERANCE_DEG = 1e-9
 
@@ -101,6 +104,7 @@ class DITLMixin:
     # Telemetry container
     telemetry: Telemetry
     calculate_field_of_regard: bool
+    _stored_momentum_tracker: StoredMomentumTracker | None
 
     def __init__(
         self,
@@ -181,12 +185,63 @@ class DITLMixin:
         # Note: log will be set by subclass (DITL/QueueDITL) before use
         # For now, create ACS without log (will be set later)
         self.acs = ACS(config=self.config, log=None)
+        self.fault_runs: list[FaultManagementRun] = []
+        self._run_started = False
 
         # Current target
         self.ppt = None
 
         # Initialize common subsystems (can be overridden by subclasses)
         self._init_subsystems()
+        self._stored_momentum_tracker = self._build_stored_momentum_tracker()
+
+    @property
+    def fault_management(self) -> FaultManagementRun:
+        """Current run's fault evaluator/report, shared with the ACS."""
+        return self.acs.fault_management
+
+    def _begin_fault_run(self) -> None:
+        """Start an independent fault interval, retaining all earlier reports.
+
+        This is not a replay/reset of battery, recorder or target consumption.
+        A fresh simulation instance is needed to replay the entire scenario.
+        """
+        if self._run_started:
+            # Commands, SAFE slews and mode/roll latches belong to the old run.
+            # Retain the actual attitude as this interval's boundary condition.
+            ra, dec, roll = self.acs.ra, self.acs.dec, self.acs.roll
+            self.acs = ACS(config=self.config, log=self.acs.log)
+            self.acs.ra, self.acs.dec, self.acs.roll = ra, dec, roll
+            self.acs._hold_idle_attitude(ra, dec, roll, self.begin.timestamp())
+            self.ppt = None
+            self.telemetry = Telemetry()
+            self.executed_passes = PassTimes(config=self.config)
+            # Do not concatenate samples from separate runs (possibly covering
+            # identical dates) into a single attitude audit or plotting timeline.
+            for name in (
+                "ra",
+                "dec",
+                "roll",
+                "mode",
+                "obsid",
+                "panel",
+                "panel_power",
+                "batterylevel",
+                "charge_state",
+                "power",
+                "power_bus",
+                "power_payload",
+                "recorder_volume_gb",
+                "recorder_fill_fraction",
+                "recorder_alert",
+                "data_generated_gb",
+                "data_downlinked_gb",
+                "in_eclipse",
+            ):
+                setattr(self, name, [])
+        self.acs.fault_management = self.config.fault_management.new_run()
+        self.fault_runs.append(self.fault_management)
+        self._run_started = True
 
     def _init_subsystems(self) -> None:
         """Initialize subsystems from config. Can be overridden by subclasses."""
@@ -195,6 +250,79 @@ class DITLMixin:
         self.spacecraft_bus = self.config.spacecraft_bus
         self.payload = self.config.payload
         self.recorder = self.config.recorder
+
+    def _build_stored_momentum_tracker(self) -> StoredMomentumTracker | None:
+        attitude_control = self.config.spacecraft_bus.attitude_control
+        momentum_config = getattr(attitude_control, "stored_momentum", None)
+        if getattr(momentum_config, "gravity_gradient_enabled", False) is not True:
+            return None
+        assert momentum_config is not None
+        inertia = getattr(self.config.spacecraft_bus, "inertia_tensor_body_kg_m2", None)
+        if inertia is None:
+            raise ValueError(
+                "inertia_tensor_body_kg_m2 is required when gravity-gradient "
+                "momentum tracking is enabled"
+            )
+        # A coupled-axis ellipsoid cannot exceed its fastest principal rate.
+        # Bound possible motion, not just endpoint separation: a complete slew
+        # can occur between samples even when both endpoint torques are zero.
+        fastest_rate = (
+            max(attitude_control.max_slew_rate_body)
+            if attitude_control.max_slew_rate_body is not None
+            else attitude_control.max_slew_rate
+        )
+        if not math.isfinite(fastest_rate) or fastest_rate <= 0.0:
+            raise ValueError(
+                "momentum tracking requires a finite positive maximum slew rate"
+            )
+        return StoredMomentumTracker(
+            inertia_tensor_body_kg_m2=inertia,
+            initial_momentum_body_n_m_s=(momentum_config.initial_momentum_body_n_m_s),
+            max_sample_interval_s=min(
+                momentum_config.max_sample_interval_s,
+                momentum_config.max_attitude_step_deg / fastest_rate,
+            ),
+        )
+
+    def _reset_stored_momentum_tracker(self) -> None:
+        """Reload run inputs and fail before execution if sampling is too coarse."""
+        self._stored_momentum_tracker = self._build_stored_momentum_tracker()
+        if self._stored_momentum_tracker is not None:
+            self._stored_momentum_tracker.validate_sample_interval(self.step_size)
+            self._stored_momentum_tracker.validate_sample_interval(self.ephem.step_size)
+
+    def _update_stored_momentum(
+        self,
+        utime: float,
+        position_eci_km: npt.NDArray[np.float64],
+        attitude_quaternion_eci_to_body: npt.NDArray[np.float64],
+    ) -> MomentumSample | None:
+        """Advance the tracker using values already computed for housekeeping."""
+        if self._stored_momentum_tracker is None:
+            return None
+        return self._stored_momentum_tracker.update(
+            utime=utime,
+            position_eci_km=position_eci_km,
+            attitude_quaternion_eci_to_body=attitude_quaternion_eci_to_body,
+        )
+
+    def _solar_array_drive_telemetry(self) -> list[SolarArrayDriveAngle] | None:
+        """Return executed drive angles with stable configured panel identity."""
+        state = self.acs.solar_array_drive_state
+        if not isinstance(state, SolarArrayDriveState):
+            return None
+        entries = [
+            SolarArrayDriveAngle(
+                panel_index=index,
+                panel_name=panel.name,
+                angle_deg=angle,
+            )
+            for index, (panel, angle) in enumerate(
+                zip(self.config.solar_panel.panels, state.angles_deg)
+            )
+            if angle is not None
+        ]
+        return entries or None
 
     @staticmethod
     def _attitude_mode_name(mode: ACSMode | int | None) -> str | None:

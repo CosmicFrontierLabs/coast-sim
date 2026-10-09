@@ -308,6 +308,7 @@ The :class:`~conops.config.SpacecraftBus` defines the spacecraft bus subsystems.
 **Attributes:**
 
 * ``name`` (str): Bus identifier
+* ``inertia_tensor_body_kg_m2`` (3x3 matrix | None): Spacecraft body-frame inertia tensor in kg m²
 * ``power_draw`` (:class:`~conops.config.PowerDraw`): Power consumption characteristics
 * ``attitude_control`` (:class:`~conops.config.AttitudeControlSystem`): ACS configuration
 * ``communications`` (:class:`~conops.config.CommunicationsSystem`): Optional comms system
@@ -326,6 +327,7 @@ The :class:`~conops.config.AttitudeControlSystem` defines slew performance and p
 * ``max_slew_rate_body`` (tuple[float, float, float] | None): Optional body +X/+Y/+Z slew-rate limits in deg/s
 * ``slew_accuracy`` (float): Pointing accuracy after slew completion in degrees
 * ``settle_time`` (float): Time to settle after slew completion in seconds
+* ``stored_momentum`` (:class:`~conops.config.momentum.StoredMomentumConfig`): Optional planning-level momentum tracking
 * ``slew_algorithm`` (:class:`~conops.common.enums.SlewAlgorithm`): Algorithm for computing slew paths:
 
   - ``QUATERNION`` (default): Full 3-DOF SLERP coupling pointing and roll changes
@@ -345,6 +347,62 @@ configured, slew estimates require complete starting and target attitudes
 Constraint-avoiding paths are evaluated as rest-to-rest segments using each
 segment's own body-frame rotation axis. If both tuples are omitted, the scalar
 fields retain their existing behavior, including legacy RA/Dec-only estimates.
+
+Gravity-gradient momentum tracking is disabled by default. Enable it by supplying
+a physical body-frame inertia tensor about the spacecraft center of mass and
+setting ``gravity_gradient_enabled``. Its principal moments must be positive and
+satisfy the triangle inequalities; a planar-body equality is allowed, including
+relative rounding of approximately 1.5e-8 (the square root of float64 machine
+epsilon). The named ``INERTIA_RELATIVE_TOLERANCE`` allows roughly eight significant
+digits of input precision, not physical mass-properties uncertainty. Symmetry
+uses the same tolerance relative to the largest tensor entry; accepted rounding
+asymmetry is averaged before validation and storage.
+COAST integrates the angular impulse in inertial coordinates, then reports the
+stored-momentum vector in the current body frame. This prevents attitude changes
+alone from appearing to generate momentum. Capacity enforcement and desaturation
+scheduling are not part of this tracking model.
+
+The tracker reloads the inertia, initial momentum, sampling limits, and enable
+flag at the start of every run. Configuration changes between runs therefore
+take effect without reconstructing the simulation.
+
+This is a sampled torque integrator, not an attitude-trajectory interpolator.
+To guard against missing torque between samples, enabled runs require both the
+executed-attitude and ephemeris intervals to be no greater than the smaller of:
+
+* ``stored_momentum.max_sample_interval_s`` (default 10 seconds, configurable downward);
+* ``stored_momentum.max_attitude_step_deg`` (default 5 degrees, configurable
+  downward) divided by the fastest configured body-axis slew rate (or scalar
+  ``max_slew_rate`` when body-axis limits are absent).
+
+For example, with the default angular limit, a fastest rate of 2 degrees/second
+requires intervals of at most 2.5 seconds; lowering ``max_attitude_step_deg`` to
+2 degrees requires intervals of at most 1 second. Both settings can tighten,
+but not relax, the default sampling guards. Set ``DITL.step_size`` and generate
+an ephemeris at an appropriate resolution; ``QueueDITL`` uses the ephemeris step
+as its execution step. Coarse
+runs fail before ACS execution or power updates; a fine execution step cannot
+compensate for a coarse ephemeris. Disabled tracking leaves existing runs unchanged.
+
+These are conservative sampling guards, not a guaranteed integration-error
+tolerance. Verify convergence at finer cadence for final studies. The guard
+does not change scheduling cadence automatically or call the ACS state machine
+at synthetic intermediate times. Use fixed-plan replay when comparing numerical
+cadences without replanning the science schedule.
+
+.. code-block:: yaml
+
+   spacecraft_bus:
+     inertia_tensor_body_kg_m2:
+       - [1000.0, 0.0, 0.0]
+       - [0.0, 1200.0, 0.0]
+       - [0.0, 0.0, 800.0]
+     attitude_control:
+       stored_momentum:
+         gravity_gradient_enabled: true
+         max_sample_interval_s: 10.0
+         max_attitude_step_deg: 5.0
+         initial_momentum_body_n_m_s: [0.0, 0.0, 0.0]
 
 .. code-block:: python
 
@@ -397,7 +455,8 @@ The :class:`~conops.config.SolarPanelSet` defines the solar array configuration.
 **SolarPanel Attributes:**
 
 * ``name`` (str): Panel identifier
-* ``gimbled`` (bool): Whether the panel can track the Sun
+* ``gimbled`` (bool): Whether the panel uses the legacy ideal Sun-tracking
+  model, with no travel or rate limits
 * ``normal`` (tuple[float, float, float]): Panel normal vector in spacecraft body frame
 
   - +x is the spacecraft pointing direction (boresight)
@@ -407,6 +466,10 @@ The :class:`~conops.config.SolarPanelSet` defines the solar array configuration.
 
 * ``max_power`` (float): Maximum power output at full illumination (Watts)
 * ``conversion_efficiency`` (float | None): Per-panel efficiency override
+* ``single_axis_drive`` (SingleAxisSolarArrayDrive | None): Optional finite,
+  rate-limited rotation about one spacecraft-body axis
+* ``drive_control`` (SolarArrayDriveControl): Mode-aware operational policy for
+  a finite drive; the default holds the initial/current angle in every mode
 
 .. code-block:: python
 
@@ -432,6 +495,80 @@ The :class:`~conops.config.SolarPanelSet` defines the solar array configuration.
        ],
        conversion_efficiency=0.95,
    )
+
+Finite Single-Axis Array Drives
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Use :class:`~conops.config.SingleAxisSolarArrayDrive` when a panel rotates about
+one physical axis. The panel's configured ``normal`` is its zero-angle reference
+normal. Positive drive angles follow the right-hand rule about
+``rotation_axis``. The drive begins each simulation at ``initial_angle_deg`` and
+holds there unless an explicit :class:`~conops.config.SolarArrayDriveControl`
+lists the current ACS mode for Sun tracking. In a listed mode, it moves toward
+the best available Sun-facing angle without exceeding its travel or rate limits.
+Tracking in eclipse is disabled unless ``track_in_eclipse=True`` is explicitly
+configured.
+
+The drive kinematics and control policy are separate so hardware capability does
+not silently impose an operations concept.
+
+.. code-block:: python
+
+   from conops.config import (
+       SingleAxisSolarArrayDrive,
+       SolarArrayDriveControl,
+       SolarPanel,
+       SolarPanelSet,
+   )
+   from conops import ACSMode
+
+   solar_panel = SolarPanelSet(
+       panels=[
+           SolarPanel(
+               name="Articulated wing",
+               normal=(1.0, 0.0, 0.0),
+               max_power=3000.0,
+               single_axis_drive=SingleAxisSolarArrayDrive(
+                   rotation_axis=(0.0, 0.0, 1.0),
+                   min_angle_deg=-165.0,
+                   max_angle_deg=165.0,
+                   max_rate_deg_per_s=0.25,
+                   initial_angle_deg=0.0,
+               ),
+               drive_control=SolarArrayDriveControl(
+                   sun_tracking_modes=[
+                       ACSMode.SCIENCE,
+                       ACSMode.CHARGING,
+                       ACSMode.SAFE,
+                   ],
+                   track_in_eclipse=False,
+               ),
+           )
+       ],
+       conversion_efficiency=0.95,
+   )
+
+Drive configuration is immutable. Each simulation owns a separate
+:class:`~conops.config.SolarArrayDriveState` containing the executed angles,
+last update time, and state revision. Candidate pointing and roll calculations
+score one state snapshot without modifying it or granting motion under an
+attitude that has not executed. After attitude selection, each DITL sample
+advances the array exactly once under the executed attitude and reports endpoint
+power.
+
+``solar_array_drive_angles`` housekeeping telemetry records each resulting
+angle with its configured panel index and name. The
+``solar_array_drive_angles_deg`` property remains as an order-based compatibility
+view.
+
+Housekeeping roll offsets use a read-only roll search after the executed power
+sample, so they reflect the resulting physical drive angle without advancing its
+state again. Existing fixed-panel radiator shadowing is preserved. Combining
+``PanelGeometry`` with ``single_axis_drive`` is rejected until articulated shadow
+transforms are supported, rather than treating the zero-angle rectangle as the
+executed geometry. ``DumbScheduler`` also rejects a finite drive with active
+tracking modes because it cannot propagate runtime drive state; use the queue
+simulation for dynamic finite drives.
 
 Solar Panel Vector Helper Function
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
