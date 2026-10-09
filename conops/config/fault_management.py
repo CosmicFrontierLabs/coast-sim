@@ -119,10 +119,11 @@ ACS Mode Filtering:
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING, Literal, cast
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from rust_ephem.constraints import ConstraintConfig
 
 from ..common import ACSMode, normalize_acs_mode
@@ -132,6 +133,9 @@ from ._base import ConfigModel
 if TYPE_CHECKING:
     from ..ditl.telemetry import Housekeeping
     from ..simulation import ACS
+
+# Run-state fields that older configs serialized under fault_management.
+_LEGACY_RUN_STATE_KEYS = ("states", "safe_mode_requested", "events")
 
 # Event metadata is a free-form bag of diagnostic context (previous/new state
 # labels, measured values, thresholds, durations, constraint type names, etc.)
@@ -327,6 +331,32 @@ class FaultManagement(ConfigModel):
     safe_mode_on_red: bool = Field(
         default=True, description="Whether to trigger safe mode on any RED condition"
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_legacy_run_state(cls, data: object) -> object:
+        """Ignore run state saved by configs written before FaultManagementRun.
+
+        FaultManagementRun declares these fields itself, so they are only
+        dropped for classes that do not.
+        """
+        if not isinstance(data, dict):
+            return data
+        legacy = [
+            key
+            for key in _LEGACY_RUN_STATE_KEYS
+            if key in data and key not in cls.model_fields
+        ]
+        if not legacy:
+            return data
+        warnings.warn(
+            f"Ignoring fault_management run-state fields {legacy}: run state is "
+            "no longer stored in the config. Read it from ditl.fault_management "
+            "after a run, and remove these fields from the config file.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return {key: value for key, value in data.items() if key not in legacy}
 
     def new_run(self) -> FaultManagementRun:
         """Snapshot policies into a fresh, independently identifiable fault report."""
