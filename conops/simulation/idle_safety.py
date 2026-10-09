@@ -46,7 +46,9 @@ class IdleSafetyPlanner:
         )
         self.reserve = float(np.ceil(slowest.slew_time(180.0))) + 2 * self.step
 
-    @lru_cache(maxsize=256)
+    # Retain a moderate target queue plus roll alternatives across fetches.
+    # A smaller cache can thrash when each retry scans hundreds of candidates.
+    @lru_cache(maxsize=1024)
     def _violations(
         self, attitude: tuple[float, float, float]
     ) -> npt.NDArray[np.float64]:
