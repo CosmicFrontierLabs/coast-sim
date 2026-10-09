@@ -865,6 +865,19 @@ class TestPassTimes:
         assert fallback is not None
         assert safe_profiles == []
 
+    def test_profile_admission_does_not_require_rest_at_internal_knots(
+        self, mock_config
+    ):
+        limits = AttitudeControlSystem(max_slew_rate=0.2, slew_acceleration=0.05)
+        mock_config.spacecraft_bus.attitude_control = limits
+        pt = PassTimes(config=mock_config)
+        times = [0, 60, 62, 64]
+        profile = [(0.1 * time, 0.0, 0.0) for time in times]
+        # These short intervals cannot stop/start, but can sustain the acquired rate.
+        assert limits.motion_time(0.2, (0, 0, 1)) > 2
+        assert pt._profile_motion_feasible(profile, times)
+        assert not pt._profile_motion_feasible(profile[1:], [0, 2, 4])
+
     def test_dynamic_tracking_profiles_preserve_reachable_initial_phases(
         self, mock_constraint, mock_config
     ):

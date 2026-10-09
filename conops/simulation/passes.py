@@ -28,6 +28,7 @@ from ..config import (
 from ..config.acs import scheduled_slew_time
 from ..config.constants import DTOR
 from ..config.constraint import in_attitude_constraint_scopes
+from .attitude import AttitudeExecutionError, AttitudeTrajectory
 from .slew import Slew
 
 # Legacy ground-pass roll for profiles without explicit roll samples.
@@ -712,17 +713,9 @@ class PassTimes:
             track_ra = [attitude[0] for attitude in attitude_profile]
             track_dec = [attitude[1] for attitude in attitude_profile]
             track_roll = [attitude[2] for attitude in attitude_profile]
-            motion_feasible = all(
-                self._step_motion_feasible(
-                    attitude_profile[index - 1],
-                    attitude_profile[index],
-                    float(track_utime[index] - track_utime[index - 1]),
-                )
-                for index in range(1, len(attitude_profile))
-            )
-            if motion_feasible and not self._pass_profile_violates_scopes(
+            if not self._pass_profile_violates_scopes(
                 track_utime, track_ra, track_dec, track_roll
-            ):
+            ) and self._profile_motion_feasible(attitude_profile, track_utime):
                 safe_profiles.append(attitude_profile)
 
         return fallback_profile, safe_profiles
@@ -758,14 +751,42 @@ class PassTimes:
         attitude: tuple[float, float, float],
         dt: float,
     ) -> bool:
-        if dt <= 0.0:
+        # Cheap necessary rate check for the phase-search graph. Acceleration
+        # depends on neighboring intervals and is checked on the complete curve.
+        if not np.isfinite(dt) or dt <= 0.0:
             return False
         attitude_distance, rotation_axis_body = quaternion_attitude_delta(
             *previous_attitude,
             *attitude,
         )
         acs = self.config.spacecraft_bus.attitude_control
-        return bool(acs.motion_time(attitude_distance, rotation_axis_body) <= dt)
+        if attitude_distance == 0:
+            return True
+        return bool(
+            attitude_distance / dt <= acs.effective_max_slew_rate(rotation_axis_body)
+        )
+
+    def _profile_motion_feasible(
+        self,
+        profile: list[tuple[float, float, float]],
+        times: list[float],
+    ) -> bool:
+        """Admission uses the same continuous curve as execution, including acquisition.
+
+        Current pass-ingress slews arrive at rest. Only the first knot inherits
+        that boundary rate; internal tracking knots do not stop.
+        """
+        if len(profile) < 2:
+            return True
+        try:
+            AttitudeTrajectory.tracking(
+                list(zip(times, profile, strict=True)),
+                self.config.spacecraft_bus.attitude_control,
+                initial_rate=(0.0, 0.0, 0.0),
+            )
+        except AttitudeExecutionError:
+            return False
+        return True
 
     def _dynamic_phase_tracking_attitude_profile(
         self,
@@ -924,6 +945,11 @@ class PassTimes:
             dynamic_profiles = self._dynamic_phase_tracking_attitude_profiles(
                 safe_attitudes, track_utime
             )
+            dynamic_profiles = [
+                profile
+                for profile in dynamic_profiles
+                if self._profile_motion_feasible(profile, track_utime)
+            ]
             if dynamic_profiles:
                 return dynamic_profiles, True
 

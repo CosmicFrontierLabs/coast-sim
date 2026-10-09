@@ -16,6 +16,7 @@ from conops.config import (
     StarTrackerConfiguration,
 )
 from conops.ditl.telemetry import Housekeeping
+from conops.simulation.attitude import AttitudeExecutionError
 from scripts.check_default_plan_output import (
     SCENARIO_BEGIN,
     DeterministicConstraint,
@@ -70,6 +71,7 @@ def simulation(request, monkeypatch):
     )
     sim = request.param(config=config, ephem=ephem, begin=SCENARIO_BEGIN, end=end)
     sim.step_size = 2
+    sim.acs.ra, sim.acs.dec, sim.acs.roll = 0, 0, 0
     sim.acs._hold_idle_attitude(0, 0, 0, SCENARIO_BEGIN.timestamp())
     return sim
 
@@ -158,6 +160,35 @@ def test_new_run_restarts_delayed_threshold_timer(acs_stub):
     second.check(hk, acs_stub)
     assert not second.safe_mode_requested
     assert second.states["battery_level"].continuous_red_seconds == 0
+
+
+def test_execution_fault_finishes_run_and_does_not_leak(simulation, monkeypatch):
+    sim = simulation
+    original = sim.acs._update_dwell_guidance
+    failed = False
+
+    def fail_once(utime):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise AttitudeExecutionError("Rejected discontinuous guidance")
+        return original(utime)
+
+    monkeypatch.setattr(sim.acs, "_update_dwell_guidance", fail_once)
+    assert sim.calc() is False
+    assert sim.acs.in_safe_mode
+    assert len(sim.telemetry.housekeeping) == 30
+    assert sim.plan.attitude_timeseries.num_samples == 30
+    assert not sim._attitude_rate_violations()
+    assert all(hk.collection_seconds == 0 for hk in sim.telemetry.housekeeping)
+    first = sim.fault_management
+    recorded = first.model_dump()
+    assert first.states["attitude_execution"].current == "red"
+    assert sim.calc() is True
+    assert sim.fault_management is not first
+    assert first.model_dump() == recorded
+    assert "attitude_execution" not in sim.fault_management.states
+    assert not sim.acs.in_safe_mode
 
 
 def test_real_safehold_does_not_latch_the_next_run(simulation, monkeypatch):

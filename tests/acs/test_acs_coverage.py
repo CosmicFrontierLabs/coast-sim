@@ -233,223 +233,22 @@ class TestEnqueueCommandQueueManagement:
 
 
 class TestStartSlewCoverage:
-    """Test _start_slew behavior - ACS always drives spacecraft from current position."""
+    """Slew execution uses current physical state, not precomputed start metadata."""
 
-    def test_start_slew_sets_startra_from_acs(self, acs) -> None:
-        """Slew always starts from current ACS pointing."""
-        acs.ra = 10.0
-        acs.dec = 20.0
-
-        mock_slew = Mock(spec=Slew)
-        mock_slew.startra = 0.0
-        mock_slew.startdec = 0.0
-        mock_slew.endra = 45.0
-        mock_slew.enddec = 30.0
-        mock_slew.obstype = "PPT"
-        mock_slew.slewstart = 1514764800.0
-        mock_slew.slewtime = 60.0
-        mock_slew.slewdist = 45.0
-        mock_slew.calc_slewtime = Mock()
-
-        acs._start_slew(mock_slew, 1514764800.0)
-        assert mock_slew.startra == 10.0
-
-    def test_start_slew_sets_startdec_from_acs(self, acs) -> None:
-        """Slew always starts from current ACS pointing."""
-        acs.ra = 10.0
-        acs.dec = 20.0
-
-        mock_slew = Mock(spec=Slew)
-        mock_slew.startra = 0.0
-        mock_slew.startdec = 0.0
-        mock_slew.endra = 45.0
-        mock_slew.enddec = 30.0
-        mock_slew.obstype = "PPT"
-        mock_slew.slewstart = 1514764800.0
-        mock_slew.slewtime = 60.0
-        mock_slew.slewdist = 45.0
-        mock_slew.calc_slewtime = Mock()
-
-        acs._start_slew(mock_slew, 1514764800.0)
-        assert mock_slew.startdec == 20.0
-
-    def test_start_slew_always_calls_calc_slewtime(self, acs) -> None:
-        """calc_slewtime is always called to compute the new slew profile."""
-        acs.ra = 10.0
-        acs.dec = 20.0
-
-        mock_slew = Mock(spec=Slew)
-        mock_slew.startra = 0.0
-        mock_slew.startdec = 0.0
-        mock_slew.endra = 45.0
-        mock_slew.enddec = 30.0
-        mock_slew.obstype = "PPT"
-        mock_slew.slewstart = 1514764800.0
-        mock_slew.slewtime = 60.0
-        mock_slew.slewdist = 45.0
-        mock_slew.calc_slewtime = Mock()
-
-        acs._start_slew(mock_slew, 1514764800.0)
-        mock_slew.calc_slewtime.assert_called_once()
-
-    def test_start_slew_sets_pass_startra_from_acs(self, acs) -> None:
-        """Pass slews also start from current ACS pointing."""
-        acs.ra = 10.0
-        acs.dec = 20.0
-
-        mock_pass = Mock(spec=Pass)
-        mock_pass.startra = 0.0
-        mock_pass.startdec = 0.0
-        mock_pass.endra = 45.0
-        mock_pass.enddec = 30.0
-        mock_pass.obstype = "GSP"
-        mock_pass.slewstart = 1514764800.0
-        mock_pass.slewtime = 60.0
-        mock_pass.slewdist = 45.0
-        mock_pass.calc_slewtime = Mock()
-
-        acs._start_slew(mock_pass, 1514764800.0)
-        assert mock_pass.startra == 10.0
-
-    def test_start_slew_sets_pass_startdec_from_acs(self, acs) -> None:
-        """Pass slews also start from current ACS pointing."""
-        acs.ra = 10.0
-        acs.dec = 20.0
-
-        mock_pass = Mock(spec=Pass)
-        mock_pass.startra = 0.0
-        mock_pass.startdec = 0.0
-        mock_pass.endra = 45.0
-        mock_pass.enddec = 30.0
-        mock_pass.obstype = "GSP"
-        mock_pass.slewstart = 1514764800.0
-        mock_pass.slewtime = 60.0
-        mock_pass.slewdist = 45.0
-        mock_pass.calc_slewtime = Mock()
-
-        acs._start_slew(mock_pass, 1514764800.0)
-        assert mock_pass.startdec == 20.0
-
-    def test_start_slew_calls_calc_for_pass(self, acs) -> None:
-        """Pass slews also recalculate slew time."""
-        acs.ra = 10.0
-        acs.dec = 20.0
-
-        mock_pass = Mock(spec=Pass)
-        mock_pass.startra = 0.0
-        mock_pass.startdec = 0.0
-        mock_pass.endra = 45.0
-        mock_pass.enddec = 30.0
-        mock_pass.obstype = "GSP"
-        mock_pass.slewstart = 1514764800.0
-        mock_pass.slewtime = 60.0
-        mock_pass.slewdist = 45.0
-        mock_pass.calc_slewtime = Mock()
-
-        acs._start_slew(mock_pass, 1514764800.0)
-        mock_pass.calc_slewtime.assert_called_once()
-
-    def test_start_slew_sets_start_from_zero_position(self, acs) -> None:
-        """Even when ACS is at origin, slew starts from there."""
-        acs.ra = 0.0
-        acs.dec = 0.0
-
-        mock_slew = Mock(spec=Slew)
-        mock_slew.startra = 5.0
-        mock_slew.startdec = 10.0
-        mock_slew.endra = 45.0
-        mock_slew.enddec = 30.0
-        mock_slew.obstype = "PPT"
-        mock_slew.slewstart = 1514764800.0
-        mock_slew.slewtime = 60.0
-        mock_slew.slewdist = 45.0
-        mock_slew.calc_slewtime = Mock()
-
-        acs._start_slew(mock_slew, 1514764800.0)
-        assert mock_slew.startra == 0.0
-        assert mock_slew.startdec == 0.0
-
-    def test_start_slew_sets_slewstart_to_current_time(self, acs) -> None:
-        """Slew start time is set to execution time."""
-        acs.ra = 10.0
-        acs.dec = 20.0
-
-        mock_slew = Mock(spec=Slew)
-        mock_slew.startra = 10.0
-        mock_slew.startdec = 20.0
-        mock_slew.endra = 45.0
-        mock_slew.enddec = 30.0
-        mock_slew.obstype = "PPT"
-        mock_slew.slewstart = 9999999.0  # Different from execution time
-        mock_slew.slewtime = 60.0
-        mock_slew.slewdist = 45.0
-        mock_slew.calc_slewtime = Mock()
-
-        acs._start_slew(mock_slew, 1514764800.0)
-        assert mock_slew.slewstart == 1514764800.0
-
-    def test_start_slew_overwrites_matching_startra(self, acs) -> None:
-        """Even if startra already matches, it gets set (no special case)."""
-        acs.ra = 10.0
-        acs.dec = 20.0
-
-        mock_slew = Mock(spec=Slew)
-        mock_slew.startra = 10.0  # Already matches
-        mock_slew.startdec = 20.0
-        mock_slew.endra = 45.0
-        mock_slew.enddec = 30.0
-        mock_slew.obstype = "PPT"
-        mock_slew.slewstart = 1514764800.0
-        mock_slew.slewtime = 60.0
-        mock_slew.slewdist = 45.0
-        mock_slew.calc_slewtime = Mock()
-
-        acs._start_slew(mock_slew, 1514764800.0)
-        # startra is set to acs.ra (same value)
-        assert mock_slew.startra == 10.0
-        # calc_slewtime is still called
-        mock_slew.calc_slewtime.assert_called_once()
-
-    def test_start_slew_updates_last_ppt(self, acs) -> None:
-        acs.ra = 10.0
-        acs.dec = 20.0
-
-        mock_slew = Mock(spec=Slew)
-        mock_slew.startra = 10.0
-        mock_slew.startdec = 20.0
-        mock_slew.endra = 45.0
-        mock_slew.enddec = 30.0
-        mock_slew.obstype = "PPT"
-        mock_slew.slewstart = 1514764800.0
-        mock_slew.slewtime = 60.0
-        mock_slew.slewdist = 45.0
-        mock_slew.calc_slewtime = Mock()
-
-        acs._start_slew(mock_slew, 1514764800.0)
-        assert acs.last_ppt == mock_slew
-
-    def test_start_slew_no_last_ppt_for_non_ppt(self, acs) -> None:
-        acs.ra = 10.0
-        acs.dec = 20.0
-
-        mock_slew = Mock(spec=Slew)
-        mock_slew.startra = 10.0
-        mock_slew.startdec = 20.0
-        mock_slew.endra = 45.0
-        mock_slew.enddec = 30.0
-        mock_slew.obstype = "GSP"
-        mock_slew.slewstart = 1514764800.0
-        mock_slew.slewtime = 60.0
-        mock_slew.slewdist = 45.0
-        mock_slew.calc_slewtime = Mock()
-
-        acs.last_ppt = None
-
-        acs._start_slew(mock_slew, 1514764800.0)
-        assert acs.last_ppt is None
-
-        acs._start_slew(mock_slew, 1514764800.0)
-        assert acs.last_ppt is None
+    @pytest.mark.parametrize("obstype", [ObsType.PPT, ObsType.GSP])
+    @pytest.mark.parametrize("initial", [(0, 0, 0), (10, 20, 30)])
+    def test_start_slew_replans_from_executed_state(self, acs, obstype, initial):
+        acs.ra, acs.dec, acs.roll = initial
+        slew = Slew(config=acs.config, endra=45, enddec=30, obstype=obstype)
+        slew.startra, slew.startdec, slew.startroll = 90, -40, 50
+        slew.slewstart = 999
+        acs._start_slew(slew, 1514764800)
+        assert (slew.startra, slew.startdec, slew.startroll) == pytest.approx(initial)
+        assert slew.slewstart == 1514764800
+        assert slew.slewtime > 0
+        assert slew.slewend == slew.slewstart + slew.slewtime
+        assert acs.current_slew is slew
+        assert acs.last_ppt is (slew if obstype == ObsType.PPT else None)
 
 
 class TestEndPassCoverage:
@@ -544,10 +343,16 @@ class TestEndPassCoverage:
 
         assert acs.last_slew is not None
         assert acs.last_slew.obstype == ObsType.IDLE
-        assert (acs.last_slew.endra, acs.last_slew.enddec, acs.last_slew.endroll) == (
-            45.0,
-            -30.0,
-            210.0,
+        assert (
+            acs.last_slew.endra,
+            acs.last_slew.enddec,
+            acs.last_slew.endroll,
+        ) == pytest.approx(
+            (
+                45.0,
+                -30.0,
+                210.0,
+            )
         )
         # Pass should be cleared
         assert acs.current_pass is None
@@ -576,7 +381,7 @@ class TestEndPassCoverage:
         assert acs.last_slew is not mock_slew
         assert acs.last_slew is not None
         assert acs.last_slew.obstype == ObsType.IDLE
-        assert acs._compute_roll(1514764800.0) == 210.0
+        assert acs.pointing(1514764800.0)[2] == pytest.approx(210.0)
         # Pass should still be cleared
         assert acs.current_pass is None
         # Mode should be IDLE
@@ -622,182 +427,29 @@ class TestEndPassCoverage:
 
 
 class TestProcessCommandsCoverage:
-    """Test _process_commands to ensure queue processing is covered."""
+    """Command dispatch preserves queue order and leaves future work pending."""
 
-    def _make_mock_slew(
-        self,
-        startra: float = 0.0,
-        startdec: float = 0.0,
-        endra: float = 45.0,
-        enddec: float = 30.0,
-        obstype: str = "PPT",
-    ) -> Mock:
-        """Helper to create a mock slew with all required attributes."""
-        mock_slew = Mock(spec=Slew)
-        mock_slew.startra = startra
-        mock_slew.startdec = startdec
-        mock_slew.endra = endra
-        mock_slew.enddec = enddec
-        mock_slew.obstype = obstype
-        mock_slew.slewstart = 1514764800.0
-        mock_slew.slewtime = 60.0
-        mock_slew.slewdist = 45.0
-        mock_slew.calc_slewtime = Mock()
-        return mock_slew
-
-    def test_process_commands_executes_first_due_command(self, acs) -> None:
-        mock_slew1 = self._make_mock_slew(0.0, 0.0, 45.0, 30.0)
-        mock_slew2 = self._make_mock_slew(45.0, 30.0, 90.0, 60.0)
-
-        command1 = ACSCommand(
-            command_type=ACSCommandType.SLEW_TO_TARGET,
-            execution_time=1514764800.0,
-            slew=mock_slew1,
-        )
-        command2 = ACSCommand(
-            command_type=ACSCommandType.SLEW_TO_TARGET,
-            execution_time=1514764810.0,
-            slew=mock_slew2,
-        )
-        command3 = ACSCommand(
-            command_type=ACSCommandType.SLEW_TO_TARGET,
-            execution_time=1514764900.0,
-            slew=mock_slew1,
-        )
-        acs.command_queue = [command1, command2, command3]
-
-        acs._process_commands(1514764815.0)
-        assert len(acs.executed_commands) >= 1
-
-    def test_process_commands_executes_second_due_command(self, acs) -> None:
-        mock_slew1 = self._make_mock_slew(0.0, 0.0, 45.0, 30.0)
-        mock_slew2 = self._make_mock_slew(45.0, 30.0, 90.0, 60.0)
-
-        command1 = ACSCommand(
-            command_type=ACSCommandType.SLEW_TO_TARGET,
-            execution_time=1514764800.0,
-            slew=mock_slew1,
-        )
-        command2 = ACSCommand(
-            command_type=ACSCommandType.SLEW_TO_TARGET,
-            execution_time=1514764810.0,
-            slew=mock_slew2,
-        )
-        command3 = ACSCommand(
-            command_type=ACSCommandType.SLEW_TO_TARGET,
-            execution_time=1514764900.0,
-            slew=mock_slew1,
-        )
-        acs.command_queue = [command1, command2, command3]
-
-        acs._process_commands(1514764815.0)
-        assert len(acs.executed_commands) >= 2
-
-    def test_process_commands_first_executed_command_matches_command1(
-        self, acs
-    ) -> None:
-        mock_slew1 = self._make_mock_slew(0.0, 0.0, 45.0, 30.0)
-        mock_slew2 = self._make_mock_slew(45.0, 30.0, 90.0, 60.0)
-
-        command1 = ACSCommand(
-            command_type=ACSCommandType.SLEW_TO_TARGET,
-            execution_time=1514764800.0,
-            slew=mock_slew1,
-        )
-        command2 = ACSCommand(
-            command_type=ACSCommandType.SLEW_TO_TARGET,
-            execution_time=1514764810.0,
-            slew=mock_slew2,
-        )
-        command3 = ACSCommand(
-            command_type=ACSCommandType.SLEW_TO_TARGET,
-            execution_time=1514764900.0,
-            slew=mock_slew1,
-        )
-        acs.command_queue = [command1, command2, command3]
-
-        acs._process_commands(1514764815.0)
-        assert acs.executed_commands[0] == command1
-
-    def test_process_commands_second_executed_command_matches_command2(
-        self, acs
-    ) -> None:
-        mock_slew1 = self._make_mock_slew(0.0, 0.0, 45.0, 30.0)
-        mock_slew2 = self._make_mock_slew(45.0, 30.0, 90.0, 60.0)
-
-        command1 = ACSCommand(
-            command_type=ACSCommandType.SLEW_TO_TARGET,
-            execution_time=1514764800.0,
-            slew=mock_slew1,
-        )
-        command2 = ACSCommand(
-            command_type=ACSCommandType.SLEW_TO_TARGET,
-            execution_time=1514764810.0,
-            slew=mock_slew2,
-        )
-        command3 = ACSCommand(
-            command_type=ACSCommandType.SLEW_TO_TARGET,
-            execution_time=1514764900.0,
-            slew=mock_slew1,
-        )
-        acs.command_queue = [command1, command2, command3]
-
-        acs._process_commands(1514764815.0)
-        assert acs.executed_commands[1] == command2
-
-    def test_process_commands_leaves_later_command_in_queue(self, acs) -> None:
-        mock_slew1 = self._make_mock_slew(0.0, 0.0, 45.0, 30.0)
-        mock_slew2 = self._make_mock_slew(45.0, 30.0, 90.0, 60.0)
-
-        command1 = ACSCommand(
-            command_type=ACSCommandType.SLEW_TO_TARGET,
-            execution_time=1514764800.0,
-            slew=mock_slew1,
-        )
-        command2 = ACSCommand(
-            command_type=ACSCommandType.SLEW_TO_TARGET,
-            execution_time=1514764810.0,
-            slew=mock_slew2,
-        )
-        command3 = ACSCommand(
-            command_type=ACSCommandType.SLEW_TO_TARGET,
-            execution_time=1514764900.0,
-            slew=mock_slew1,
-        )
-        acs.command_queue = [command1, command2, command3]
-
-        acs._process_commands(1514764815.0)
-        assert len(acs.command_queue) == 1
-
-    def test_process_commands_remaining_queue_item_is_third(self, acs) -> None:
-        mock_slew1 = self._make_mock_slew(0.0, 0.0, 45.0, 30.0)
-
-        command1 = ACSCommand(
-            command_type=ACSCommandType.SLEW_TO_TARGET,
-            execution_time=1514764800.0,
-            slew=mock_slew1,
-        )
-        command2 = ACSCommand(
-            command_type=ACSCommandType.SLEW_TO_TARGET,
-            execution_time=1514764810.0,
-            slew=mock_slew1,
-        )
-        command3 = ACSCommand(
-            command_type=ACSCommandType.SLEW_TO_TARGET,
-            execution_time=1514764900.0,
-            slew=mock_slew1,
-        )
-        acs.command_queue = [command1, command2, command3]
-
-        acs._process_commands(1514764815.0)
-        assert acs.command_queue[0] == command3
+    def test_process_due_commands(self, acs):
+        commands = [
+            ACSCommand(
+                command_type=ACSCommandType.SLEW_TO_TARGET,
+                execution_time=time,
+                slew=Slew(config=acs.config, endra=ra, enddec=30),
+            )
+            for time, ra in [(1514764800, 45), (1514764810, 90), (1514764900, 120)]
+        ]
+        acs.command_queue = list(commands)
+        acs._process_commands(1514764815)
+        assert acs.executed_commands == commands[:2]
+        assert acs.command_queue == commands[2:]
+        assert acs.current_slew is commands[1].slew
 
 
 class TestExecuteCommandLogging:
     """Test command handler logging."""
 
     def test_handle_slew_command_executes(self, acs) -> None:
-        mock_slew = Mock(spec=Slew)
+        mock_slew = Slew(config=acs.config)
         mock_slew.startra = 0.0
         mock_slew.startdec = 0.0
         mock_slew.endra = 45.0
@@ -806,7 +458,6 @@ class TestExecuteCommandLogging:
         mock_slew.slewstart = 1514764800.0
         mock_slew.slewtime = 60.0
         mock_slew.slewdist = 45.0
-        mock_slew.calc_slewtime = Mock()
         command1 = ACSCommand(
             command_type=ACSCommandType.SLEW_TO_TARGET,
             execution_time=1514764800.0,
@@ -818,7 +469,7 @@ class TestExecuteCommandLogging:
         assert acs.current_slew == mock_slew
 
     def test_start_pass_executes(self, acs) -> None:
-        mock_slew = Mock(spec=Slew)
+        mock_slew = Slew(config=acs.config)
         mock_slew.startra = 0.0
         mock_slew.startdec = 0.0
         mock_slew.endra = 45.0
@@ -827,14 +478,19 @@ class TestExecuteCommandLogging:
         mock_slew.slewstart = 1514764800.0
         mock_slew.slewtime = 60.0
         mock_slew.slewdist = 45.0
-        mock_slew.calc_slewtime = Mock()
         command2 = ACSCommand(
             command_type=ACSCommandType.START_PASS,
             execution_time=1514764800.0,
             slew=mock_slew,
         )
 
-        # Test that command executes without error
+        gspass = Mock()
+        gspass.utime = [1514764800.0, 1514764860.0]
+        gspass.ra = [acs.ra, acs.ra]
+        gspass.dec = [acs.dec, acs.dec]
+        gspass.roll = [0.0, 0.0]
+        acs.roll = 0.0
+        acs.passrequests.current_pass.return_value = gspass
         acs._start_pass(command2, 1514764800.0)
         # _start_pass sets current_pass, not current_slew
         assert acs.acsmode == ACSMode.PASS
@@ -1177,11 +833,6 @@ class TestBatteryChargingMethods:
             ),
             patch("conops.Pointing.next_vis", return_value=1514764800.0),
         ):
-            acs.config.spacecraft_bus.attitude_control.predict_slew.return_value = (
-                0.0,
-                (Mock(), Mock()),
-            )
-            acs.config.spacecraft_bus.attitude_control.slew_time.return_value = 10.0
             acs._start_battery_charge(command, 1514764800.0)
             # Check that enqueue_command was called (which will enqueue a SLEW_TO_TARGET command)
             assert mock_enqueue_command.call_count == 1
@@ -1212,11 +863,6 @@ class TestBatteryChargingMethods:
             ),
             patch("conops.Pointing.next_vis", return_value=1514764800.0),
         ):
-            acs.config.spacecraft_bus.attitude_control.predict_slew.return_value = (
-                0.0,
-                (Mock(), Mock()),
-            )
-            acs.config.spacecraft_bus.attitude_control.slew_time.return_value = 10.0
             acs._start_battery_charge(command, 1514764800.0)
             # Test passes if no exception is raised - logging is tested via print statements
 

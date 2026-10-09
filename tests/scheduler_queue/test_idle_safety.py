@@ -380,6 +380,7 @@ def idle_run(monkeypatch):
         end=end,
         calculate_field_of_regard=False,
     )
+    ditl.acs.ra, ditl.acs.dec, ditl.acs.roll = 0, 0, 0
     ditl.acs._hold_idle_attitude(0.0, 0.0, 0.0, SCENARIO_BEGIN.timestamp())
     return ditl
 

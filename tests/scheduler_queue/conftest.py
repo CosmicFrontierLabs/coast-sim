@@ -244,7 +244,20 @@ def queue_ditl(mock_config: Mock, mock_ephem: DummyEphemeris) -> QueueDITL:
         mock_acs.current_slew = None  # No active slew by default
         mock_acs.ra = 0.0  # Current pointing RA
         mock_acs.dec = 0.0  # Current pointing Dec
-        mock_acs.roll = 0.0  # Current roll angle
+        mock_acs.roll = 0.0
+        mock_acs.motion_ready_time = Mock(side_effect=lambda time: time)
+        mock_acs.predicted_attitude = Mock(
+            side_effect=lambda time: (
+                (
+                    mock_acs.last_slew.endra,
+                    mock_acs.last_slew.enddec,
+                    mock_acs.last_slew.endroll,
+                )
+                if mock_acs.last_slew is not None
+                and time >= mock_acs.last_slew.slewstart + mock_acs.last_slew.slewtime
+                else (mock_acs.ra, mock_acs.dec, mock_acs.roll)
+            )
+        )
         # Set acsmode to a real ACSMode enum value for logging
         from conops import ACSMode
 
@@ -695,6 +708,20 @@ def queue_ditl_no_queue_log(
         mock_acs.current_slew = None  # No active slew by default
         mock_acs.ra = 0.0  # Current pointing RA
         mock_acs.dec = 0.0  # Current pointing Dec
+        mock_acs.roll = 0.0
+        mock_acs.motion_ready_time = Mock(side_effect=lambda time: time)
+        mock_acs.predicted_attitude = Mock(
+            side_effect=lambda time: (
+                (
+                    mock_acs.last_slew.endra,
+                    mock_acs.last_slew.enddec,
+                    mock_acs.last_slew.endroll,
+                )
+                if mock_acs.last_slew is not None
+                and time >= mock_acs.last_slew.slewstart + mock_acs.last_slew.slewtime
+                else (mock_acs.ra, mock_acs.dec, mock_acs.roll)
+            )
+        )
         # Set acsmode to a real ACSMode enum value for logging
         from conops import ACSMode
 
@@ -773,6 +800,20 @@ def queue_ditl_acs_no_ephem(
         mock_acs.current_slew = None  # No active slew by default
         mock_acs.ra = 0.0  # Current pointing RA
         mock_acs.dec = 0.0  # Current pointing Dec
+        mock_acs.roll = 0.0
+        mock_acs.motion_ready_time = Mock(side_effect=lambda time: time)
+        mock_acs.predicted_attitude = Mock(
+            side_effect=lambda time: (
+                (
+                    mock_acs.last_slew.endra,
+                    mock_acs.last_slew.enddec,
+                    mock_acs.last_slew.endroll,
+                )
+                if mock_acs.last_slew is not None
+                and time >= mock_acs.last_slew.slewstart + mock_acs.last_slew.slewtime
+                else (mock_acs.ra, mock_acs.dec, mock_acs.roll)
+            )
+        )
         # Set acsmode to a real ACSMode enum value for logging
         from conops import ACSMode
 
