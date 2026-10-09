@@ -1,5 +1,6 @@
 from bisect import bisect_left
 from datetime import datetime, timezone
+from math import ceil
 from typing import Protocol, TypedDict
 
 import numpy as np
@@ -28,12 +29,13 @@ from ..config.constraint import (
 from ..schedulers import DispatchPolicy
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
+from ..simulation.idle_safety import IdleSafetyPlanner
 from ..simulation.passes import Pass, pass_slew_trigger_buffer
 from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing, Queue, TargetSlewEstimate
 from .ditl_log import DITLLog
-from .ditl_mixin import DITLMixin
+from .ditl_mixin import AttitudeRateContinuityError, DITLMixin
 from .ditl_stats import DITLStats
 from .plan_validator import (
     PlanExecutionMismatch,
@@ -167,6 +169,7 @@ class QueueDITL(DITLMixin, DITLStats):
         self._ppt_optimum_roll_cache: dict[
             tuple[float, float, float, int, int, int, int, int], float
         ] = {}
+        self._idle_safety: IdleSafetyPlanner | None = None
         # Subsystem power tracking
         self.power_bus = list()
         self.power_payload = list()
@@ -446,6 +449,9 @@ class QueueDITL(DITLMixin, DITLStats):
         This simulation uses a queue-driven ACS (Attitude Control System) where
         spacecraft state transitions (slews, passes, etc.) are managed through
         a command queue, providing explicit, traceable control flow.
+
+        An idle-safety fault returns False while retaining diagnostic outputs.
+        With the default fault policy, the simulation completes in safehold.
         """
         # Reset per-run state so re-runs on the same instance start clean
         self._attitude_constraint_violations = []
@@ -483,6 +489,7 @@ class QueueDITL(DITLMixin, DITLStats):
         # Set up timing and schedule passes
         if not self._setup_simulation_timing():
             return False
+        self._idle_safety = IdleSafetyPlanner(self.config, self.uend)
 
         # Schedule groundstation passes (these will be queued in ACS)
         self._schedule_groundstation_passes()
@@ -551,11 +558,38 @@ class QueueDITL(DITLMixin, DITLStats):
         if self.plan and self.ppt is not None:
             self._close_last_plan_entry(self.uend)
 
-        self._assert_attitude_rate_continuity()
-        self._assert_plan_matches_execution()
+        idle_fault = any(
+            event.name == "idle_safety" and event.event_type == "operational_fault"
+            for event in self.fault_management.events
+        )
+        for validate in (
+            self._assert_attitude_rate_continuity,
+            self._assert_plan_matches_execution,
+        ):
+            try:
+                validate()
+            except (AttitudeRateContinuityError, PlanExecutionMismatchError) as exc:
+                if not idle_fault:
+                    raise
+                # A diagnosed operational failure is not a valid science plan.
+                # Preserve both audits, without turning safehold into a crash.
+                self.fault_management.report_fault(
+                    utime=self.uend,
+                    name=type(exc).__name__,
+                    cause=str(exc),
+                    metadata={},
+                    acs=self.acs,
+                )
         self._attach_execution_timeseries_to_plan()
 
-        return True
+        if idle_fault:
+            self.log.log_event(
+                utime=self.uend,
+                event_type="ERROR",
+                description="Run completed with an idle-safety fault; not a valid science plan. See fault_management.events.",
+                acs_mode=self.acs.acsmode,
+            )
+        return not idle_fault
 
     def _handle_data_management(self, utime: float, mode: ACSMode) -> None:
         """Handle data generation during observations and downlink during passes."""
@@ -1279,6 +1313,17 @@ class QueueDITL(DITLMixin, DITLStats):
         self, utime: float, ra: float, dec: float, mode: ACSMode
     ) -> None:
         """Handle science mode operations: charging, observations, and target acquisition."""
+        if mode == ACSMode.SAFE:
+            if self.ppt is not None:
+                self._terminate_ppt(utime, "Observation interrupted by safehold")
+            return
+        # Finish protective motion before considering discretionary preemption.
+        if (
+            self.acs.current_slew is not None
+            and self.acs.current_slew.obstype == ObsType.IDLE
+            and self.acs.current_slew.is_slewing(utime)
+        ):
+            return
         # Check for battery alert and initiate emergency charging if needed
         if self._should_initiate_charging(utime):
             self._initiate_charging(utime, ra, dec)
@@ -1297,6 +1342,87 @@ class QueueDITL(DITLMixin, DITLStats):
                 self._ppt_unavailable = None
                 return
             self._fetch_new_ppt(utime, ra, dec)
+            if self.ppt is None:
+                self._schedule_idle_recovery(utime)
+
+    def _schedule_idle_recovery(self, utime: float) -> None:
+        """Reserve and command a safe inertial hold before the current one expires."""
+        planner = self._idle_safety
+        if planner is None or self.acs.get_mode(utime) not in (
+            ACSMode.IDLE,
+            ACSMode.SAA,
+        ):
+            return
+        attitude = (self.acs.ra, self.acs.dec, self.acs.roll)
+        if utime + self.step_size < planner.departure_deadline(attitude, utime):
+            return
+        if planner.first_violation(attitude, utime) <= utime:
+            self.acs.report_idle_safety_fault(
+                utime, "Cannot plan an idle escape from an already unsafe attitude"
+            )
+            return
+        for ra, dec in self.acs._idle_safe_attitude_candidates(utime):
+            preferred_roll = optimum_body_roll(
+                ra,
+                dec,
+                utime,
+                self.ephem,
+                self.config.solar_panel,
+                self.constraint,
+                drive_state=self.acs.solar_array_drive_state,
+            )
+            for roll in self.acs._idle_safe_roll_candidates(preferred_roll):
+                slew = Slew(
+                    config=self.config,
+                    slewrequest=utime,
+                    slewstart=utime,
+                    startra=attitude[0],
+                    startdec=attitude[1],
+                    startroll=attitude[2],
+                    endra=ra,
+                    enddec=dec,
+                    endroll=roll,
+                    obstype=ObsType.IDLE,
+                    obsid=0,
+                )
+                slew.calc_slewtime()
+                if (
+                    slew.slewtime <= 0
+                    or slew.slewend >= self._simulation_end_deadline()
+                ):
+                    continue
+                next_pass = self.acs.passrequests.next_pass(utime)
+                if next_pass is not None and any(
+                    slew.slewend >= deadline
+                    for _, deadline in next_pass.tracking_profile_slew_deadlines(
+                        utime, ra, dec, roll, for_admission=True
+                    )
+                ):
+                    continue
+                if not planner.hold_is_safe((ra, dec, roll), slew.slewend):
+                    continue
+                if (
+                    self._slew_attitude_constraint_violation(slew, ACSMode.SLEWING)
+                    is not None
+                ):
+                    continue
+                self.acs.enqueue_command(
+                    ACSCommand(
+                        command_type=ACSCommandType.SLEW_TO_TARGET,
+                        execution_time=utime,
+                        slew=slew,
+                    )
+                )
+                self.log.log_event(
+                    utime=utime,
+                    event_type="ACS",
+                    acs_mode=ACSMode.IDLE,
+                    description="Scheduled rate-limited safe-IDLE recovery slew",
+                )
+                return
+        self.acs.report_idle_safety_fault(
+            utime, "No path-validated safe-IDLE recovery found before hold expiry"
+        )
 
     def _should_initiate_charging(self, utime: float) -> bool:
         """Check if emergency charging should be initiated.
@@ -2196,6 +2322,22 @@ class QueueDITL(DITLMixin, DITLStats):
         if deadline_inputs.charge_deadline is not None:
             deadlines.append((deadline_inputs.charge_deadline, "charge opportunity"))
 
+        if self._idle_safety is not None:
+            ppt = target or self.ppt
+            assert ppt is not None
+            attitude = (
+                ppt.spacecraft_attitude
+                if issubclass(type(ppt), PlanEntry)
+                and ppt.spacecraft_attitude is not None
+                else (ppt.ra, ppt.dec, target_roll)
+            )
+            deadlines.append(
+                (
+                    self._idle_safety.departure_deadline(attitude, slew_end),
+                    "safe-IDLE escape reserve",
+                )
+            )
+
         return min(deadlines, key=lambda item: item[0])
 
     def _ppt_slew_execution_time(self, utime: float) -> float:
@@ -2524,7 +2666,8 @@ class QueueDITL(DITLMixin, DITLStats):
                 return
 
             # Calculate slew timing
-            execution_time = self._ppt_slew_execution_time(utime)
+            hold_start = self._ppt_slew_execution_time(utime)
+            execution_time = hold_start
 
             # Wait for current slew to finish if in progress
             if execution_time > utime:
@@ -2546,6 +2689,24 @@ class QueueDITL(DITLMixin, DITLStats):
                     acs_mode=self.acs.acsmode,
                 )
                 execution_time = visstart
+
+            # Commands execute only on scheduler ticks. Validate the same epoch
+            # that ACS will execute, including any hold after an active slew.
+            execution_time = (
+                utime + ceil((execution_time - utime) / self.step_size) * self.step_size
+            )
+            if (
+                self._idle_safety is not None
+                and self._idle_safety.first_violation(
+                    self._expected_slew_start_attitude(utime, execution_time),
+                    hold_start,
+                )
+                - self._idle_safety.step
+                < execution_time
+            ):
+                # Leave no later than the last safe sample, not the first bad one.
+                self._retry_fetch_without_current_ppt(utime, ra, dec)
+                return
 
             # When ignore_roll=True, verify that a valid roll exists before slewing.
             # Roll optimization falls back to the unconstrained solar roll when

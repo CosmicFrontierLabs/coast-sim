@@ -147,7 +147,8 @@ class FaultEvent(BaseModel):
 
     Attributes:
         utime: Unix timestamp when the event occurred
-        event_type: Type of event (threshold_transition, constraint_violation, safe_mode_trigger)
+        event_type: Type of event (threshold_transition, constraint_violation,
+            operational_fault, safe_mode_trigger)
         name: Name of the parameter or constraint that triggered the event
         cause: Human-readable description of what happened
         metadata: Optional additional data (e.g., current values, thresholds, durations)
@@ -476,6 +477,37 @@ class FaultManagementRun(FaultManagement):
         if name not in self.states:
             self.states[name] = FaultState()
         return self.states[name]
+
+    def report_fault(
+        self,
+        *,
+        utime: float,
+        name: str,
+        cause: str,
+        metadata: dict[str, FaultEventMetadataValue],
+        acs: ACS,
+    ) -> None:
+        """Latch a discrete operational failure and apply the configured RED policy.
+
+        Unlike sampled thresholds, these events have no measured duration or
+        automatic recovery. Repeated reports retain the original diagnosis.
+        """
+        state = self.ensure_state(name)
+        if state.current != "red":
+            state.current = "red"
+            state.in_violation = True
+            self.events.append(
+                FaultEvent(
+                    utime=utime,
+                    event_type="operational_fault",
+                    name=name,
+                    cause=cause,
+                    metadata=metadata,
+                )
+            )
+        self._trigger_safe_mode(
+            utime=utime, name=name, cause=cause, metadata=metadata, acs=acs
+        )
 
     def _trigger_safe_mode(
         self,

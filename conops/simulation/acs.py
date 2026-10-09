@@ -13,7 +13,6 @@ from ..common import (
 from ..common.vector import sort_by_angular_separation
 from ..config import (
     AttitudeConstraintScope,
-    FaultEvent,
     MissionConfig,
     SolarArrayDriveState,
     SolarPanelSet,
@@ -600,9 +599,8 @@ class ACS:
         # current RA/Dec.
         self.roll = self._compute_roll(utime, slew_attitude)
 
-        # Idle is an executed attitude, not a constraint-free gap. If a completed
-        # observation is being held after science ends, move the hold to an
-        # attitude that satisfies the configured IDLE scopes before recording.
+        # Idle is an executed attitude, not a constraint-free gap. Fault an
+        # unsafe hold without replacing the reported pointing instantaneously.
         self._enforce_idle_constraint_safe_attitude(utime)
 
         # Check current constraints (must run after roll is updated)
@@ -745,7 +743,7 @@ class ACS:
         self._last_roll_optimization_mode = None
 
     def _enforce_idle_constraint_safe_attitude(self, utime: float) -> None:
-        """Replace unsafe idle holds with an attitude that satisfies IDLE scopes."""
+        """Fault unsafe execution; a scheduler should command recovery in advance."""
         if self.acsmode != ACSMode.IDLE:
             return
         if self.current_pass is not None or self.in_safe_mode:
@@ -758,65 +756,26 @@ class ACS:
         if not self._idle_attitude_unsafe(self.ra, self.dec, self.roll, utime, scopes):
             return
 
-        safe_attitude = self._find_constraint_safe_idle_attitude(utime, scopes)
-        if safe_attitude is None:
-            scope_label = attitude_constraint_scope_label(scopes)
-            cause = (
-                "No constraint-safe IDLE attitude found "
-                f"(RA={self.ra:.2f} Dec={self.dec:.2f} scopes={scope_label}); "
-                "requesting safe mode"
-            )
-            self._log_or_print(utime, "ERROR", f"{unixtime2date(utime)}: {cause}")
-            self.fault_management.events.append(
-                FaultEvent(
-                    utime=utime,
-                    event_type="safe_mode_trigger",
-                    name="idle_attitude_constraint",
-                    cause=cause,
-                    metadata={
-                        "ra": self.ra,
-                        "dec": self.dec,
-                        "scopes": scope_label,
-                    },
-                )
-            )
-            self.request_safe_mode(utime)
-            return
-
-        ra, dec, roll = safe_attitude
-        self._hold_idle_attitude(ra, dec, roll, utime)
-        self._log_or_print(
+        self.report_idle_safety_fault(
             utime,
-            "ACS",
-            f"{unixtime2date(utime)}: IDLE attitude constrained; holding safe attitude "
-            f"RA={ra:.2f} Dec={dec:.2f} Roll={roll:.2f}",
+            f"Unsafe IDLE attitude at {unixtime2date(utime)}; "
+            "a validated recovery slew did not start before the keepout was entered",
         )
 
-    def _find_constraint_safe_idle_attitude(
-        self, utime: float, scopes: list[AttitudeConstraintScope]
-    ) -> tuple[float, float, float] | None:
-        """Find a deterministic nearby attitude that satisfies IDLE scopes."""
-        candidates = self._idle_safe_attitude_candidates(utime)
-        for candidate_ra, candidate_dec in candidates:
-            optimal_roll = optimum_body_roll(
-                candidate_ra,
-                candidate_dec,
-                utime,
-                self.ephem,
-                self.solar_panel,
-                self.constraint,
-                drive_state=self.solar_array_drive_state,
-            )
-            for candidate_roll in self._idle_safe_roll_candidates(optimal_roll):
-                if not self._idle_attitude_unsafe(
-                    candidate_ra,
-                    candidate_dec,
-                    candidate_roll,
-                    utime,
-                    scopes,
-                ):
-                    return candidate_ra, candidate_dec, candidate_roll
-        return None
+    def report_idle_safety_fault(self, utime: float, cause: str) -> None:
+        """Latch the failure and enter the existing SAFE command path, once."""
+        faults = self.fault_management
+        faults.report_fault(
+            utime=utime,
+            name="idle_safety",
+            cause=cause,
+            metadata={"ra": self.ra, "dec": self.dec, "roll": self.roll},
+            acs=self,
+        )
+        if faults.safe_mode_requested and not self.in_safe_mode:
+            self.request_safe_mode(utime, reason=cause)
+            self._process_commands(utime)
+            self._update_mode(utime)
 
     def _idle_attitude_scopes(self) -> list[AttitudeConstraintScope]:
         return self.config.attitude_constraint_scopes_for_mode(ACSMode.IDLE)
@@ -1273,7 +1232,7 @@ class ACS:
         self.enqueue_command(command)
         self._log_or_print(utime, "CHARGING", "End battery charge requested")
 
-    def request_safe_mode(self, utime: float) -> None:
+    def request_safe_mode(self, utime: float, reason: str | None = None) -> None:
         """Request entry into safe mode.
 
         Enqueues an ENTER_SAFE_MODE command to be executed at the specified time.
@@ -1285,6 +1244,7 @@ class ACS:
         command = ACSCommand(
             command_type=ACSCommandType.ENTER_SAFE_MODE,
             execution_time=utime,
+            reason=reason,
         )
         self.enqueue_command(command)
         self._log_or_print(
