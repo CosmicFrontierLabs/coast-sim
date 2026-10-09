@@ -180,9 +180,9 @@ by design — flagging that as an error would produce false positives.  The
 of attitude constraints the planner is expected to enforce.
 
 If any sample fails its configured scope check, a
-:class:`~conops.ditl.queue_ditl.PlanExecutionMismatch` is recorded and
+:class:`~conops.ditl.plan_validator.PlanExecutionMismatch` is recorded and
 :meth:`~conops.ditl.queue_ditl.QueueDITL.run` raises
-:exc:`~conops.ditl.queue_ditl.PlanExecutionMismatchError` before returning.  The error
+:exc:`~conops.ditl.plan_validator.PlanExecutionMismatchError` before returning.  The error
 message includes the first few violations — mode, obsid, RA/Dec/roll, and the constraint
 name — to aid debugging.
 
@@ -196,7 +196,7 @@ monitors configured telemetry thresholds at runtime.
 * **Planner admission guarantee** — a constraint the scheduler evaluates via
   ``in_constraint()`` before accepting an attitude into the plan.  If telemetry shows
   a violation in one of these modes, the planner broke its contract and the simulation
-  records a :class:`~conops.ditl.queue_ditl.PlanExecutionMismatch`.  This covers the
+  records a :class:`~conops.ditl.plan_validator.PlanExecutionMismatch`.  This covers the
   configured scopes for that mode.
 
 * **FM-monitored runtime condition** — a violation outside the selected validation
