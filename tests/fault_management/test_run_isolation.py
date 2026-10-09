@@ -180,3 +180,27 @@ def test_real_safehold_does_not_latch_the_next_run(simulation, monkeypatch):
     assert all(hk.acs_mode != ACSMode.SAFE for hk in sim.telemetry.housekeeping)
     assert first.model_dump() == recorded
     assert first.thresholds[0].red != sim.fault_management.thresholds[0].red
+
+
+def test_legacy_run_state_in_config_is_ignored_with_warning():
+    legacy = {
+        "thresholds": [{"name": "battery_level", "yellow": 0.5, "red": 0.4}],
+        "states": {},
+        "safe_mode_requested": False,
+        "events": [],
+    }
+    with pytest.warns(DeprecationWarning, match="run-state fields"):
+        policy = FaultManagement.model_validate(legacy)
+    assert [t.name for t in policy.thresholds] == ["battery_level"]
+    assert "events" not in policy.model_dump()
+
+
+def test_run_keeps_its_own_state_fields(recwarn):
+    run = FaultManagement().new_run()
+    restored = type(run).model_validate(run.model_dump())
+    assert restored.events == [] and restored.states == {}
+    assert not any(issubclass(w.category, DeprecationWarning) for w in recwarn)
+
+
+def test_example_yaml_config_loads():
+    MissionConfig.from_yaml_file("examples/example_config.yaml")
