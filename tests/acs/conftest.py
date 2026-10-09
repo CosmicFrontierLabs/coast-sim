@@ -64,6 +64,19 @@ def mock_constraint(mock_ephem: DummyEphemeris) -> Mock:
     constraint.panel_constraint = Mock()
     constraint.panel_constraint.solar_panel = None
     constraint.in_constraint = Mock(return_value=False)
+    constraint.in_explicit_safety = Mock(return_value=False)
+    for method in (
+        "in_sun",
+        "in_earth",
+        "in_moon",
+        "in_anti_sun",
+        "in_orbit",
+        "in_explicit_science",
+        "in_star_tracker_soft",
+        "in_panel",
+        "in_ground_contact",
+    ):
+        setattr(constraint, method, Mock(return_value=False))
     constraint.in_star_tracker_hard = Mock(return_value=False)
     constraint.in_radiator_hard = Mock(return_value=False)
     constraint.telescope_hard_constraint = None

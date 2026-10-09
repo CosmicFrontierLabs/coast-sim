@@ -80,6 +80,7 @@ def mock_config() -> Mock:
     config.constraint.ephem = DummyEphemeris()
     config.constraint.constraint = None  # no combined rust-ephem constraint in tests
     config.constraint.roll_dependent_constraint = None
+    config.constraint.hardware_safety_constraint_config = None
     config.constraint.panel_constraint = Mock()
     config.constraint.panel_constraint.solar_panel = Mock()
     config.constraint.orbit_constraint = None
@@ -139,6 +140,11 @@ def mock_config() -> Mock:
     )  # Return slew time in seconds
     config.spacecraft_bus.attitude_control.slew_accuracy = 0.01
     config.spacecraft_bus.attitude_control.max_slew_rate = 10.0
+    config.spacecraft_bus.attitude_control.max_slew_rate_body = None
+    config.spacecraft_bus.attitude_control.slew_acceleration_body = None
+    config.spacecraft_bus.attitude_control.slew_acceleration = 0.5
+    config.spacecraft_bus.attitude_control.settle_time = 0.0
+    config.spacecraft_bus.attitude_control.idle_min_hold_s = 300.0
     config.spacecraft_bus.attitude_control.effective_max_slew_rate = Mock(
         side_effect=lambda _axis=None: float(
             config.spacecraft_bus.attitude_control.max_slew_rate
