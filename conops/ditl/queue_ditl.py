@@ -1893,8 +1893,8 @@ class QueueDITL(DITLMixin, DITLStats):
                 obsid=interrupted_ppt.obsid,
                 acs_mode=self.acs.acsmode,
             )
+            # End this visit, not the target's remaining integration budget.
             interrupted_ppt.end = utime
-            interrupted_ppt.done = True
 
         if interrupted_ppt is not None:
             if (
@@ -1903,8 +1903,6 @@ class QueueDITL(DITLMixin, DITLStats):
                 and int(self.plan[-1].obsid) == int(interrupted_ppt.obsid)
             ):
                 self._close_last_plan_entry(utime)
-            if self._is_short_science_entry(interrupted_ppt):
-                interrupted_ppt.done = False
 
         command = ACSCommand(
             command_type=ACSCommandType.START_BATTERY_CHARGE,
@@ -2453,12 +2451,14 @@ class QueueDITL(DITLMixin, DITLStats):
         obs_val_end: float,
         spacecraft_attitude: tuple[float, float, float],
     ) -> tuple[float, str, str] | None:
-        """Check whether a locked roll stays constraint-free for the minimum observation window."""
+        """Check grid samples bracketing the entire locked-attitude window."""
         assert self.ppt is not None
         ephem = self.acs.ephem
         begin_idx = max(0, ephem.index(dtutcfromtimestamp(obs_start_time)))
+        # Include the upper bracket of a fractional end. Otherwise the last
+        # partial cell can cross a constraint before the next scheduler tick.
         end_idx = min(
-            len(ephem.timestamp), ephem.index(dtutcfromtimestamp(obs_val_end)) + 1
+            len(ephem.timestamp), bisect_left(self._ephem_utimes(), obs_val_end) + 1
         )
         for t in ephem.timestamp[begin_idx:end_idx]:
             t_unix = self._ephem_timestamp_to_utime(t)
@@ -3433,13 +3433,12 @@ class QueueDITL(DITLMixin, DITLStats):
         self.charge_state.append(self.battery.charge_state)
 
     def _terminate_science_ppt_for_pass(self, utime: float) -> None:
-        """Terminate the current science PPT during ground station pass."""
+        """End this science visit for a pass, preserving unfinished integration."""
         if self.ppt is not None and self.ppt != self.charging_ppt:
             # Update plan timeline with actual end time
             if len(self.plan) > 0:
                 self._close_last_plan_entry(utime)
             self.ppt.end = utime
-            self.ppt.done = True
             self.ppt = None
 
     def _terminate_charging_ppt(self, utime: float) -> None:
