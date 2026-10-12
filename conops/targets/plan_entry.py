@@ -140,6 +140,14 @@ class PlanEntry(BaseModel):
     spacecraft_attitude: tuple[float, float, float] | None = None
     begin: float = 0  # start of window, not observation
     slewtime: int = 0
+    slew_rate_fraction: float = Field(
+        default=1.0,
+        gt=0.0,
+        le=1.0,
+        allow_inf_nan=False,
+        exclude_if=lambda value: value == 1.0,
+        description="Commanded fraction of configured slew-rate limits; acceleration and settling are unchanged.",
+    )
     insaa: int = 0
     end: float = 0
     collection_begin: float | None = Field(

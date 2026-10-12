@@ -98,8 +98,10 @@ Model limits
 ------------
 
 This is a kinematic execution boundary, not a full spacecraft dynamics engine.
-It enforces angular rate and acceleration, but does not model actuator torque,
-wheel momentum, flexible modes, jerk limits or pointing-control error. Acceleration
+It enforces angular rate and acceleration. Optional ``stored_momentum.capacity_n_m_s``
+also enables sampled rigid-body actuator-momentum checks on all installed and
+executed trajectories. It does not model actuator torque, individual wheel/CMG
+states, flexible modes, jerk limits or pointing-control error. Acceleration
 can change discontinuously within the specified bound; angular velocity cannot.
 
 The contact model preserves sampled attitudes and continuous angular velocity,

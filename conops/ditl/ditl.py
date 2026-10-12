@@ -505,6 +505,17 @@ class DITL(DITLMixin, DITLStats):
                     if momentum_sample is not None
                     else None
                 ),
+                actuator_momentum_body_n_m_s=(
+                    list(momentum_sample.actuator_momentum_body_n_m_s)
+                    if momentum_sample is not None
+                    and momentum_sample.actuator_momentum_body_n_m_s is not None
+                    else None
+                ),
+                actuator_momentum_norm_n_m_s=(
+                    momentum_sample.actuator_momentum_norm_n_m_s
+                    if momentum_sample is not None
+                    else None
+                ),
             )
 
             # Check fault management thresholds and red limit constraints
@@ -547,6 +558,11 @@ class DITL(DITLMixin, DITLStats):
                 )
                 self.telemetry.data.append(pd)
 
+        if (
+            self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_enabled
+            is True
+        ):
+            self.acs._advance_attitude(self.end.timestamp())
         self._assert_attitude_rate_continuity()
         self._attach_execution_timeseries_to_plan()
         return not any(

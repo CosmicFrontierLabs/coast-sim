@@ -261,6 +261,10 @@ class DITLMixin:
     def _build_stored_momentum_tracker(self) -> StoredMomentumTracker | None:
         attitude_control = self.config.spacecraft_bus.attitude_control
         momentum_config = getattr(attitude_control, "stored_momentum", None)
+        if getattr(momentum_config, "capacity_enabled", False) is True:
+            # Enforcement owns integration at actual trajectory boundaries,
+            # independently of housekeeping cadence. Do not integrate twice.
+            return None
         if getattr(momentum_config, "gravity_gradient_enabled", False) is not True:
             return None
         assert momentum_config is not None
@@ -305,6 +309,14 @@ class DITLMixin:
         attitude_quaternion_eci_to_body: npt.NDArray[np.float64],
     ) -> MomentumSample | None:
         """Advance the tracker using values already computed for housekeeping."""
+        if (
+            self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_enabled
+            is True
+        ):
+            budget = self.acs.momentum_budget
+            if budget is None:
+                raise ValueError("Momentum enforcement has not been initialized")
+            return budget.current.sample
         if self._stored_momentum_tracker is None:
             return None
         return self._stored_momentum_tracker.update(
