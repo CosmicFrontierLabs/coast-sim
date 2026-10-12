@@ -120,7 +120,7 @@ class MomentumObservationPlanner:
                 trajectory.state,
                 hold_end,
                 initial=momentum,
-                boundaries=trajectory.boundaries,
+                trajectory=trajectory,
             )
             if forecast.first_violation is not None:
                 continue
@@ -188,7 +188,7 @@ class MomentumObservationPlanner:
                     trajectory.state,
                     slew.slewend,
                     initial=before,
-                    boundaries=trajectory.boundaries,
+                    trajectory=trajectory,
                 )
                 if arrival.first_violation is not None:
                     continue  # Only a momentum violation permits a slower cap.
@@ -218,7 +218,9 @@ class MomentumObservationPlanner:
                 )
                 minimum = slew.slewend + timing.total_seconds + target.ss_min
                 while end >= minimum:
-                    held = self.budget.forecast(trajectory.state, end, initial=arrival)
+                    held = self.budget.forecast(
+                        trajectory.state, end, trajectory=trajectory, initial=arrival
+                    )
                     if held.first_violation is not None:
                         end = min(
                             end - self.sim.step_size,

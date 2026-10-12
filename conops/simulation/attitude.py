@@ -397,6 +397,18 @@ class AttitudeTrajectory:
         index = max(0, bisect_right(self._starts, utime) - 1)
         return self.legs[index]
 
+    def tracking_curve_interval(
+        self, start: float, end: float
+    ) -> tuple[QuaternionHermite, float, float] | None:
+        """Resolve an integration interval partitioned at trajectory boundaries."""
+        leg = self._leg_at(start)
+        if not isinstance(leg, _TrackingLeg) or start >= leg.end:
+            return None
+        if not leg.start <= start < end <= leg.end:
+            raise ValueError("Tracking integration interval crosses a leg boundary")
+        duration = leg.end - leg.start
+        return leg.curve, (start - leg.start) / duration, (end - leg.start) / duration
+
     def state(self, utime: float) -> AttitudeState:
         if utime < self.start:
             raise AttitudeExecutionError("Cannot evaluate motion before its start")
@@ -463,7 +475,7 @@ class AttitudeExecutor:
         return self.momentum.forecast(
             self.predict,
             end,
-            boundaries=self._trajectory.boundaries if self._trajectory else (),
+            trajectory=self._trajectory,
         )
 
     def check_momentum(
@@ -477,7 +489,7 @@ class AttitudeExecutor:
             trajectory.state,
             trajectory.end if end is None else end,
             initial=before,
-            boundaries=trajectory.boundaries,
+            trajectory=trajectory,
         )
         self.momentum.require(forecast)
         return forecast
