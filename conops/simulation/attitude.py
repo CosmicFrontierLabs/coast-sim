@@ -24,6 +24,7 @@ from ..common.vector import (
 from ..config import AttitudeControlSystem
 
 if TYPE_CHECKING:
+    from .momentum_budget import MomentumBudget, MomentumForecast
     from .slew import Slew
 
 Attitude = tuple[float, float, float]
@@ -231,6 +232,21 @@ class AttitudeTrajectory:
     def start(self) -> float:
         return self.legs[0].start
 
+    @cached_property
+    def boundaries(self) -> tuple[float, ...]:
+        """Integration knots include peak-rate corners, not just endpoints."""
+        times = [self.start, self.end]
+        for leg in self.legs:
+            times.extend((leg.start, leg.end))
+            if isinstance(leg, _MotionLeg) and leg.scale > 0:
+                times.extend(
+                    (
+                        leg.start + leg.motion.ramp / leg.scale,
+                        leg.start + (leg.motion.duration - leg.motion.ramp) / leg.scale,
+                    )
+                )
+        return tuple(sorted(set(times)))
+
     @classmethod
     def from_slew(
         cls,
@@ -410,6 +426,7 @@ class AttitudeExecutor:
             raise AttitudeExecutionError("Initial angular velocity must be finite")
         self._state = AttitudeState(utime, _quaternion(attitude), angular_velocity_body)
         self._trajectory: AttitudeTrajectory | None = None
+        self.momentum: MomentumBudget | None = None
 
     @property
     def state(self) -> AttitudeState:
@@ -436,7 +453,34 @@ class AttitudeExecutor:
         )
 
     def advance(self, utime: float) -> None:
-        self._state = self.predict(utime)
+        state = self.predict(utime)
+        if self.momentum is not None:
+            self.momentum.commit(self.forecast_momentum(utime))
+        self._state = state
+
+    def forecast_momentum(self, end: float) -> "MomentumForecast":
+        assert self.momentum is not None
+        return self.momentum.forecast(
+            self.predict,
+            end,
+            boundaries=self._trajectory.boundaries if self._trajectory else (),
+        )
+
+    def check_momentum(
+        self, trajectory: AttitudeTrajectory, end: float | None = None
+    ) -> "MomentumForecast":
+        """Predict pending motion and a proposed trajectory without committing."""
+        assert self.momentum is not None
+        before = self.forecast_momentum(trajectory.start)
+        self.momentum.require(before)
+        forecast = self.momentum.forecast(
+            trajectory.state,
+            trajectory.end if end is None else end,
+            initial=before,
+            boundaries=trajectory.boundaries,
+        )
+        self.momentum.require(forecast)
+        return forecast
 
     def next_rest_time(self, utime: float) -> float:
         self._check_time(utime)
@@ -473,6 +517,9 @@ class AttitudeExecutor:
             raise AttitudeExecutionError(
                 "A new trajectory must join the current attitude and angular velocity"
             )
+        if self.momentum is not None:
+            self.check_momentum(trajectory)
+            self.momentum.commit(self.forecast_momentum(trajectory.start))
         self._state = state
         self._trajectory = trajectory
 
@@ -480,5 +527,5 @@ class AttitudeExecutor:
         state = self.predict(utime)
         if any(abs(rate) > 1e-10 for rate in state.angular_velocity_body):
             raise AttitudeExecutionError("Cannot stop moving attitude instantaneously")
-        self._state = state
+        self.advance(utime)
         self._trajectory = None

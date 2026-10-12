@@ -76,6 +76,14 @@ The quaternion remains an inertial-to-body coordinate transform. Consequently, a
    - ``gravity_gradient_torque_body_n_m``: Gravity-gradient torque vector in spacecraft body coordinates (N m), or ``None`` when tracking is disabled
    - ``stored_momentum_body_n_m_s``: Accumulated stored-momentum vector in spacecraft body coordinates (N m s), or ``None`` when tracking is disabled
    - ``stored_momentum_norm_n_m_s``: Coordinate-invariant norm of accumulated stored momentum (N m s), or ``None`` when tracking is disabled
+   - ``actuator_momentum_body_n_m_s``: Required actuator momentum including maneuver demand, ``R H_total - I omega`` (N m s), or ``None`` when capacity enforcement is disabled
+   - ``actuator_momentum_norm_n_m_s``: Norm compared against the configured spherical capacity (N m s), or ``None`` when enforcement is disabled
+
+With capacity enforcement, the historical ``stored_momentum_*`` fields describe
+total angular momentum, including the initially moving body's momentum. Use the
+``actuator_momentum_*`` fields for actuator demand. Housekeeping is sampled at the
+simulation cadence; enforcement also checks intermediate motion samples that are
+not necessarily present in housekeeping.
 
 **Power System**
    - ``panel_illumination``: Solar panel illumination fraction (0-1)

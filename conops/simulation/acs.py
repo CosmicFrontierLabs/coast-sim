@@ -37,6 +37,7 @@ from .attitude import (
     AttitudeTrajectory,
 )
 from .emergency_charging import EmergencyCharging
+from .momentum_budget import MomentumBudget, MomentumLimitError
 from .passes import Pass
 from .slew import Slew
 
@@ -209,9 +210,22 @@ class ACS:
                     self.constraint,
                     drive_state=self.solar_array_drive_state,
                 )
-            self._executor = AttitudeExecutor(utime, self._initial_attitude)
+            executor = AttitudeExecutor(utime, self._initial_attitude)
+            if (
+                self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_enabled
+                is True
+            ):
+                executor.momentum = MomentumBudget(
+                    self.config, self.ephem, executor.state
+                )
+            # Failed initialization must not leave an unguarded executor behind.
+            self._executor = executor
         self._executor.advance(utime)
         return self._executor
+
+    @property
+    def momentum_budget(self) -> MomentumBudget | None:
+        return self._executor.momentum if self._executor is not None else None
 
     def motion_ready_time(self, utime: float) -> float:
         """Next feasible rest-to-rest handoff, without changing executed state."""
@@ -503,16 +517,23 @@ class ACS:
                 "A slew must wait for the current motion to stop"
             )
         # Advance the OLD trajectory before replacing it, even between samples.
-        slew.startra = self.ra
-        slew.startdec = self.dec
-        slew.startroll = self.roll  # Start roll from current ACS roll
-        slew.slewstart = utime
-        slew.calc_slewtime()
-        executor.install(
-            AttitudeTrajectory.from_slew(
-                slew, self.config.spacecraft_bus.attitude_control, executor.state
+        prepared = slew._momentum_trajectory if executor.momentum is not None else None
+        if prepared is not None:
+            if prepared.start != utime:
+                raise MomentumLimitError(
+                    "Momentum-admitted slew is stale; replan at the actual execution time"
+                )
+            executor.check_momentum(prepared, slew._momentum_hold_end)
+            executor.install(prepared)
+        else:
+            slew.startra = self.ra
+            slew.startdec = self.dec
+            slew.startroll = self.roll
+            slew.slewstart = utime
+            slew.calc_slewtime()
+            executor.install(
+                AttitudeTrajectory.from_slew(slew, slew.motion_limits, executor.state)
             )
-        )
 
         slewdist = slew.slewdist
         self._log_or_print(
@@ -588,6 +609,8 @@ class ACS:
         slew.obstype = obstype
         slew.obsid = obsid
         slew.instrument_roll = instrument_roll
+        if target_request is not None:
+            slew.rate_fraction = target_request.slew_rate_fraction
 
         # A plan entry commanded by DITL, which ends at a set time.
         planned_entry = target_request

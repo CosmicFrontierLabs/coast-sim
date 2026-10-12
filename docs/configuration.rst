@@ -360,8 +360,8 @@ uses the same tolerance relative to the largest tensor entry; accepted rounding
 asymmetry is averaged before validation and storage.
 COAST integrates the angular impulse in inertial coordinates, then reports the
 stored-momentum vector in the current body frame. This prevents attitude changes
-alone from appearing to generate momentum. Capacity enforcement and desaturation
-scheduling are not part of this tracking model.
+alone from appearing to generate momentum. The optional capacity constraint below
+adds maneuver momentum to this model; desaturation scheduling is not implemented.
 
 The tracker reloads the inertia, initial momentum, sampling limits, and enable
 flag at the start of every run. Configuration changes between runs therefore
@@ -404,6 +404,76 @@ cadences without replanning the science schedule.
          max_sample_interval_s: 10.0
          max_attitude_step_deg: 5.0
          initial_momentum_body_n_m_s: [0.0, 0.0, 0.0]
+
+Momentum-constrained queue scheduling
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Set ``stored_momentum.capacity_n_m_s`` to a finite positive spherical actuator
+momentum limit to enable admission and execution checks. The default ``None``
+leaves existing scheduling unchanged. A physical inertia tensor is required,
+even when gravity-gradient torque is disabled.
+
+The executor carries total angular momentum in inertial coordinates. At each
+sample the required actuator momentum in body coordinates is
+``R_eci_to_body @ H_total_eci - I_body @ omega_body``. The capacity bounds the norm
+of this vector, not the sum of the disturbance and maneuver momentum norms.
+The initial configured vector is actuator momentum; an initially moving body's
+``I @ omega`` is included separately. Candidate forecasts copy the current state
+and cannot consume or reset the live momentum budget.
+
+``QueueDITL`` retains its ordinary queue ranking, then checks each selected
+target's acquisition, settling, entire observation, and a finite return to the
+departure attitude followed by an idle reserve. It tries the preferred roll and
+a bounded alternative-roll grid, reducing speed only after a momentum violation.
+It may shorten an exposure, but never below ``ss_min`` or into the configured
+setup/cleanup/handoff budget. Before accepting a shortened exposure it searches
+the other rolls for a longer hold; a full snapshot ends the search. Collection
+ends at the exact requested exposure, while the physical hold (including the
+cleanup/handoff budget) extends to the next scheduler tick and is checked in full.
+Hard visibility, recovery and mission deadlines are never rounded upward.
+Mounted-telescope candidates use their trial instrument roll for science checks
+and their corresponding body attitude for hardware checks, without changing the
+live target. Acceleration limits, settling time, hardware
+keepouts and science availability constraints are retained. The return is a
+fallback: another admitted target can follow directly without returning first.
+
+.. code-block:: yaml
+
+   # Within spacecraft_bus.attitude_control:
+   stored_momentum:
+     gravity_gradient_enabled: true
+     capacity_n_m_s: 20.0
+     slew_rate_fractions: [1.0, 0.75, 0.5, 0.25, 0.125]
+     roll_step_deg: 30
+
+With capacity enforcement, integration samples the immutable executed trajectory
+internally, including acceleration corners. A complete short slew cannot hide
+between scheduler ticks. Gravity-gradient enforcement requires orbit samples no
+farther apart than ``max_sample_interval_s``; internal attitude sampling also
+obeys ``max_attitude_step_deg``. It does not require housekeeping at the internal
+motion cadence. ``QueueDITL`` still takes its scheduling cadence from the supplied
+ephemeris's ``step_size``. This change does not add a separate scheduler-cadence
+configuration.
+
+All installed maneuvers and executed intervals share the same guard, including
+contacts, charging, safe mode, braking, idle and the final simulation interval.
+A capacity violation or absence of a validated idle continuation raises
+``MomentumLimitError``; it must not be treated as a successful science plan.
+Non-science guidance is guarded but is not automatically optimized for momentum.
+During idle, waiting another tick requires a validated escape from the predicted
+next-tick state, or a current hold that remains safe to run-end. This uses the
+actual momentum-limited recovery trajectory, not a nominal full-speed time reserve.
+Reduced science-slew caps are saved as ``PlanEntry.slew_rate_fraction`` and used
+when dispatching that entry. This does not add a complete activity replay format
+for all idle recovery maneuvers; retain the executed attitude history for auditing.
+
+This is a sampled rigid-body feasibility model, not a continuous-time certificate
+or a full actuator simulation. It does not include CMG steering singularities,
+individual actuator limits, magnetorquer unloading, moving-array inertia, or
+disturbances other than the enabled gravity-gradient torque. Check convergence
+and allow appropriate engineering margin. The bounded roll/speed search and
+return-to-departure fallback are conservative: rejecting a candidate does not
+prove it physically impossible, and the resulting yield is not maximum capacity.
 
 .. code-block:: python
 
