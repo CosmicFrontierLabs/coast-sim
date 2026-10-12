@@ -338,7 +338,8 @@ class TestEmergencyCharging:
         )
 
         assert result is charging_ppt
-        assert current_ppt.done is True
+        assert current_ppt.done is False
+        assert current_ppt.end == utime
         assert log.events[-1].event_type == "CHARGING"
         assert (
             log.events[-1].description

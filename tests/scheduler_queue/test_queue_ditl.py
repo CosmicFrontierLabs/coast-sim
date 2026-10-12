@@ -478,7 +478,7 @@ class TestHandlePassMode:
         queue_ditl._handle_pass_mode(1000.0)
         assert mock_ppt.end == 1000.0
 
-    def test_handle_pass_terminates_ppt_done_flag_set(
+    def test_handle_pass_terminates_ppt_preserves_done_flag(
         self, queue_ditl: QueueDITL
     ) -> None:
         mock_ppt = Mock()
@@ -486,7 +486,7 @@ class TestHandlePassMode:
         mock_ppt.done = False
         queue_ditl.ppt = mock_ppt
         queue_ditl._handle_pass_mode(1000.0)
-        assert mock_ppt.done is True
+        assert mock_ppt.done is False
 
     def test_handle_pass_terminates_ppt_cleared(self, queue_ditl: QueueDITL) -> None:
         mock_ppt = Mock()
@@ -4171,8 +4171,10 @@ class TestCalcMethod:
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
         assert "Slew delayed by" in log_text
 
-    def test_terminate_science_ppt_for_pass_sets_done_flag(self, queue_ditl) -> None:
-        """Test _terminate_science_ppt_for_pass sets done flag."""
+    def test_terminate_science_ppt_for_pass_preserves_done_flag(
+        self, queue_ditl
+    ) -> None:
+        """Ending a visit for a pass does not complete the target."""
         from conops.targets import PlanEntry
 
         # Create a mock PPT
@@ -4180,6 +4182,7 @@ class TestCalcMethod:
         mock_ppt.begin = 1000.0
         mock_ppt.end = 2000.0
         mock_ppt.obstype = "PPT"
+        mock_ppt.done = False
 
         # Set up the PPT
         queue_ditl.plan = [mock_ppt]
@@ -4188,8 +4191,7 @@ class TestCalcMethod:
         # Call the method
         queue_ditl._terminate_science_ppt_for_pass(1500.0)
 
-        # Check that done was set to True and other updates happened
-        assert mock_ppt.done is True
+        assert mock_ppt.done is False
         assert mock_ppt.end == 1500.0
         assert queue_ditl.ppt is None
 
