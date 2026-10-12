@@ -10,7 +10,8 @@ from conops import (
     SpacecraftBus,
     StoredMomentumConfig,
 )
-from conops.common.vector import attitude_to_quat
+from conops.common.quaternion_curve import QuaternionHermite
+from conops.common.vector import attitude_to_quat, quaternion_to_rotation_matrix
 from conops.simulation.attitude import AttitudeExecutor, AttitudeTrajectory
 from conops.simulation.momentum import StoredMomentumTracker
 from conops.simulation.momentum_budget import MomentumBudget, MomentumLimitError
@@ -166,6 +167,137 @@ def test_contact_tracking_uses_the_same_momentum_guard():
     with pytest.raises(MomentumLimitError):
         executor.install(tracking)
     assert executor._trajectory is None
+
+
+def short_tracking_curve(config, executor, tail=100.0):
+    start = executor.state.utime
+    return AttitudeTrajectory.tracking(
+        [
+            (start, (0, 0, 0)),
+            (start + 0.2, (0.005, 0, 0)),
+            (start + 0.4, (0, 0, 0)),
+            (start + tail, (0, 0, 0)),
+        ],
+        config.spacecraft_bus.attitude_control,
+        initial_rate=(0, 0, 0),
+    )
+
+
+@pytest.mark.parametrize("tail", [60.0, 100.0, 101.0])
+def test_tracking_interior_peak_cannot_hide_between_integration_samples(tail):
+    config, _, executor = setup_budget(capacity=0.5)
+    trajectory = short_tracking_curve(config, executor, tail)
+    start = trajectory.start
+    peak_rate = trajectory.state(start + 0.1).angular_velocity_body
+    assert np.linalg.norm(np.deg2rad(peak_rate)) * 1000 == pytest.approx(
+        0.654498, rel=1e-5
+    )
+    before = executor.momentum.current
+    with pytest.raises(MomentumLimitError, match="Tracking actuator momentum"):
+        executor.check_momentum(trajectory)
+    with pytest.raises(MomentumLimitError, match="Tracking actuator momentum"):
+        executor.install(trajectory)
+    assert executor.momentum.current is before
+    assert executor.state.utime == start
+    assert executor._trajectory is None
+
+
+def test_execution_checks_tracking_interior_peak_without_committing_failure():
+    config, _, executor = setup_budget(capacity=0.7)
+    trajectory = short_tracking_curve(config, executor)
+    executor.install(trajectory)
+    # Tighten the guard after installation to exercise the execution check,
+    # independently of the admission check that normally catches this curve.
+    executor.momentum.capacity = 0.5
+    state, before = executor.state, executor.momentum.current
+    with pytest.raises(MomentumLimitError, match="Tracking actuator momentum"):
+        executor.advance(trajectory.start + 60)
+    assert executor.state is state
+    assert executor.momentum.current is before
+
+
+def test_feasible_short_tracking_curve_is_not_rejected_by_the_bound():
+    config, _, executor = setup_budget(capacity=0.7)
+    trajectory = short_tracking_curve(config, executor)
+    executor.install(trajectory)
+    executor.advance(trajectory.start + 0.05)
+    executor.advance(trajectory.start + 0.15)
+    executor.advance(trajectory.start + 60)
+    executor.advance(trajectory.end)
+    assert executor.momentum.current.utime == trajectory.end
+
+
+@pytest.mark.parametrize("first,last", [(0.0, 1.0), (0.2, 0.7), (0.47, 0.52)])
+def test_tracking_momentum_bound_matches_dense_vector_demand(first, last):
+    curve = QuaternionHermite(
+        tuple(attitude_to_quat(20, -10, 35)),
+        tuple(attitude_to_quat(23, -8, 40)),
+        (0.1, -0.2, 0.15),
+        (-0.15, 0.1, 0.2),
+        30.0,
+    )
+    inertia = np.array(
+        [[1000.0, 120.0, 90.0], [120.0, 850.0, -70.0], [90.0, -70.0, 600.0]]
+    )
+    # Nonzero initial momentum plus a changing torque, in local interval time.
+    momentum = np.array([[-0.4, 0.7, -0.2], [0.03, -0.08, 0.1], [0.06, 0.03, -0.07]])
+    demands = []
+    for u in np.linspace(0, 1, 2001):
+        q, rate, _ = curve.evaluate(first + (last - first) * u)
+        total = momentum[0] + u * momentum[1] + u**2 * momentum[2]
+        demands.append(
+            np.linalg.norm(
+                quaternion_to_rotation_matrix(q) @ total - inertia @ np.deg2rad(rate)
+            )
+        )
+    peak = max(demands)
+    assert curve.within_momentum_limit(first, last, inertia, momentum, peak * 1.01)
+    assert not curve.within_momentum_limit(first, last, inertia, momentum, peak * 0.99)
+
+
+def test_tracking_momentum_bound_retains_vector_cancellation():
+    curve = QuaternionHermite(
+        tuple(attitude_to_quat(0, 0, 0)),
+        tuple(attitude_to_quat(0.005, 0, 0)),
+        (0, 0, 0),
+        (0, 0, 0),
+        0.2,
+    )
+    inertia = np.eye(3) * 1000
+    momentum = np.array([[0.0, 0.0, 0.35], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+    # I omega alone reaches 0.6545, but H - I omega stays within +/-0.35.
+    assert curve.within_momentum_limit(0, 1, inertia, momentum, 0.4)
+    assert not curve.within_momentum_limit(0, 1, inertia, -momentum, 0.4)
+
+
+def test_tracking_with_gravity_gradient_carries_the_integrated_momentum():
+    config, _, executor = setup_budget(
+        capacity=1.0, gravity=True, inertia=(1000, 800, 600)
+    )
+    trajectory = short_tracking_curve(config, executor)
+    before = executor.momentum.current
+    forecast = executor.check_momentum(trajectory)
+    assert forecast.uncertified_interval is None
+    assert forecast.sample.stored_momentum_norm_n_m_s > 0
+    assert executor.momentum.current is before
+    executor.install(trajectory)
+    executor.advance(trajectory.end)
+    assert executor.momentum.current.sample == forecast.sample
+
+
+def test_uncertified_tracking_interval_remains_rejected_when_forecast_is_extended():
+    config, _, executor = setup_budget(capacity=0.5)
+    trajectory = short_tracking_curve(config, executor)
+    forecast = executor.momentum.forecast(
+        trajectory.state, trajectory.start + 0.2, trajectory=trajectory
+    )
+    assert forecast.uncertified_interval is not None
+    extended = executor.momentum.forecast(
+        trajectory.state, trajectory.end, initial=forecast, trajectory=trajectory
+    )
+    assert extended.uncertified_interval == forecast.uncertified_interval
+    with pytest.raises(MomentumLimitError, match="Tracking actuator momentum"):
+        executor.momentum.commit(extended)
 
 
 def test_braking_cannot_hide_momentum_transfer_from_the_body():

@@ -2,11 +2,12 @@
 
 Tracks inertial total angular momentum; actuator demand is R H - I omega.
 Candidate forecasts are independent copies, never updates to the live state.
-The spherical bound is a planning model, not CMG steering or a continuous-time
-certification. No unloading or unknown disturbance torques are invented here.
+Hermite intervals bound the interior actuator demand using the sampled torque
+model. This is not CMG steering or certification of the true continuous external
+torque. No unloading or unknown disturbance torques are invented here.
 """
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass
 from math import ceil
 
@@ -14,8 +15,9 @@ import numpy as np
 import rust_ephem
 
 from ..common.ephemeris import position_vectors
+from ..common.vector import quaternion_to_rotation_matrix
 from ..config import MissionConfig
-from .attitude import AttitudeState
+from .attitude import AttitudeState, AttitudeTrajectory
 from .momentum import MomentumSample, StoredMomentumTracker
 
 
@@ -30,6 +32,7 @@ class MomentumForecast:
     utime: float
     peak_n_m_s: float
     first_violation: float | None = None
+    uncertified_interval: tuple[float, float] | None = None
 
 
 class MomentumBudget:
@@ -42,6 +45,7 @@ class MomentumBudget:
         inertia = config.spacecraft_bus.inertia_tensor_body_kg_m2
         if inertia is None:
             raise ValueError("Momentum capacity enforcement requires an inertia tensor")
+        self.inertia = np.asarray(inertia, dtype=float).copy()
         self.capacity = settings.capacity_n_m_s
         if not np.isfinite(self.capacity) or self.capacity <= 0:
             raise ValueError("Momentum capacity must be finite and positive")
@@ -72,7 +76,7 @@ class MomentumBudget:
                 "Gravity-gradient enforcement requires finer ephemeris samples"
             )
         tracker = StoredMomentumTracker(
-            inertia,
+            self.inertia,
             settings.initial_momentum_body_n_m_s,
             max_sample_interval_s=self.step,
             gravity_gradient_enabled=settings.gravity_gradient_enabled,
@@ -109,14 +113,16 @@ class MomentumBudget:
         state_at: Callable[[float], AttitudeState],
         end: float,
         *,
+        trajectory: AttitudeTrajectory | None,
         initial: MomentumForecast | None = None,
-        boundaries: Iterable[float] = (),
     ) -> MomentumForecast:
+        """Forecast with explicit motion metadata (None only for free coasting)."""
         base = self.current if initial is None else initial
         start = base.utime
         if not np.isfinite(end) or end < start:
             raise ValueError("Momentum forecast time must be finite and monotonic")
         tracker = base.tracker.copy()
+        boundaries = trajectory.boundaries if trajectory is not None else ()
         # Include exact motion/acceleration boundaries, including a complete
         # short slew hidden between scheduler ticks. Check start and end too.
         times = np.unique(
@@ -131,16 +137,57 @@ class MomentumBudget:
             else (0.0, None)
         )
         sample = base.sample
+        uncertified = base.uncertified_interval if initial is not None else None
+        previous: AttitudeState | None = None
         for t in times:
-            sample = self._sample(tracker, state_at(float(t)))
+            state = state_at(float(t))
+            prior_sample = sample
+            sample = self._sample(tracker, state)
             assert sample.actuator_momentum_norm_n_m_s is not None
             norm = sample.actuator_momentum_norm_n_m_s
             peak = max(peak, norm)
             if norm > self.capacity and violation is None:
                 violation = float(t)
-        return MomentumForecast(tracker, sample, end, peak, violation)
+            if trajectory is not None and previous is not None and violation is None:
+                interval = trajectory.tracking_curve_interval(
+                    previous.utime, state.utime
+                )
+                if interval is not None:
+                    curve, first, last = interval
+                    before_rotation = quaternion_to_rotation_matrix(
+                        previous.quaternion
+                    ).T
+                    after_rotation = quaternion_to_rotation_matrix(state.quaternion).T
+                    elapsed = state.utime - previous.utime
+                    first_torque = before_rotation @ np.asarray(
+                        prior_sample.gravity_gradient_torque_body_n_m
+                    )
+                    last_torque = after_rotation @ np.asarray(
+                        sample.gravity_gradient_torque_body_n_m
+                    )
+                    momentum = np.asarray(
+                        [
+                            before_rotation
+                            @ np.asarray(prior_sample.stored_momentum_body_n_m_s),
+                            elapsed * first_torque,
+                            0.5 * elapsed * (last_torque - first_torque),
+                        ]
+                    )
+                    if not curve.within_momentum_limit(
+                        first, last, self.inertia, momentum, self.capacity
+                    ):
+                        violation = previous.utime
+                        uncertified = (previous.utime, state.utime)
+            previous = state
+        return MomentumForecast(tracker, sample, end, peak, violation, uncertified)
 
     def require(self, forecast: MomentumForecast) -> None:
+        if forecast.uncertified_interval is not None:
+            start, end = forecast.uncertified_interval
+            raise MomentumLimitError(
+                f"Tracking actuator momentum could not be certified within {self.capacity:g} N m s "
+                f"on [{start:.6f}, {end:.6f}]; sampled peak {forecast.peak_n_m_s:.6f} N m s"
+            )
         if forecast.first_violation is not None:
             raise MomentumLimitError(
                 f"Actuator momentum exceeds {self.capacity:g} N m s at "

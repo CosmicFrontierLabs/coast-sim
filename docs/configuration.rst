@@ -448,7 +448,16 @@ fallback: another admitted target can follow directly without returning first.
 
 With capacity enforcement, integration samples the immutable executed trajectory
 internally, including acceleration corners. A complete short slew cannot hide
-between scheduler ticks. Gravity-gradient enforcement requires orbit samples no
+between scheduler ticks. Hermite tracking segments also use polynomial interval
+bounds on actuator momentum, so an interior tracking-rate peak cannot hide
+between integration samples. These bounds retain the full inertia tensor and
+the vector combination of inertial and maneuver momentum. For enabled external
+torque, the interval model integrates the linearly interpolated endpoint torques,
+consistent with the sampled trapezoidal integrator; orbit/torque convergence
+checks are still required. A tracking interval that cannot be certified is
+rejected even if its endpoint samples fit, with a distinct diagnostic rather
+than a claim that the sampled peak exceeded the limit.
+Gravity-gradient enforcement requires orbit samples no
 farther apart than ``max_sample_interval_s``; internal attitude sampling also
 obeys ``max_attitude_step_deg``. It does not require housekeeping at the internal
 motion cadence. ``QueueDITL`` still takes its scheduling cadence from the supplied
