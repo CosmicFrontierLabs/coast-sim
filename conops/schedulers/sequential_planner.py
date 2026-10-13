@@ -123,7 +123,7 @@ class SequentialPlanner:
         i = bisect.bisect_left(ephem_utime, ustart)
         while i < len(ephem_utime) and ephem_utime[i] < uend:
             utime = ephem_utime[i]
-            selection = self._select(utime)
+            selection = self._select(utime, latest_end)
             if selection is None:
                 self._log(
                     utime,
@@ -134,7 +134,8 @@ class SequentialPlanner:
             entry = self._entry(selection, utime, latest_end)
             self.scheduled.append(selection.target.obsid)
             self.plan.extend([entry])
-            i = self.ephem.index(dtutcfromtimestamp(entry.end))
+            # First step at or after the entry ends, so entries never overlap.
+            i = bisect.bisect_left(ephem_utime, entry.end)
 
         # Observed targets are not revisited, so any left with exposure,
         # including partially observed ones, stay unplaced.
@@ -194,8 +195,12 @@ class SequentialPlanner:
         """Return the targets with exposure left, in priority order."""
         return [t for t in self.targets if t.exptime is not None and t.exptime > 0]
 
-    def _select(self, utime: float) -> _Selection | None:
-        """Return the first candidate that fits at ``utime``, or None."""
+    def _select(self, utime: float, latest_end: float) -> _Selection | None:
+        """Return the first candidate that fits at ``utime``, or None.
+
+        Constraint-free time past ``latest_end`` doesn't count, since the
+        observation is cut off there.
+        """
         min_window = self.min_window
         for target in self._candidates():
             if target.obsid in self.scheduled:
@@ -203,8 +208,11 @@ class SequentialPlanner:
             roll, attitude = self._point(target, utime)
             slewtime = self._slewtime(target)
             assert target.exptime is not None
-            clear_seconds = self._clear_seconds(
-                target, attitude, utime, utime + target.exptime + slewtime
+            clear_seconds = min(
+                self._clear_seconds(
+                    target, attitude, utime, utime + target.exptime + slewtime
+                ),
+                latest_end - utime,
             )
             if clear_seconds >= min_window + slewtime:
                 return _Selection(target, roll, attitude, slewtime, clear_seconds)
@@ -307,12 +315,13 @@ class SequentialPlanner:
         entry.spacecraft_attitude = target.spacecraft_attitude
         entry.begin = begin
         entry.slewtime = int(selection.slewtime)
-        entry.end = min(begin + selection.clear_seconds, latest_end)
         # Exposure is the time after the slew, capped at what the target still needs.
-        exposure: float = int(max(0, entry.end - entry.begin - entry.slewtime))
-        exposure = min(exposure, target.exptime)
-        entry.exposure = exposure
-        target.exptime -= exposure
+        entry.end = min(
+            begin + selection.clear_seconds,
+            latest_end,
+            begin + entry.slewtime + target.exptime,
+        )
+        target.exptime -= entry.exposure
         entry.obsid = target.obsid
         assert self.saa is not None
         entry.saa = self.saa

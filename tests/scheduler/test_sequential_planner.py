@@ -120,3 +120,37 @@ class TestDumbSchedulerShim:
         legacy.days = 2
         ustart, uend = legacy._horizon()
         assert uend - ustart == 48 * HOUR
+
+
+def test_exposure_is_capped_at_the_request() -> None:
+    config = _config(6)
+    target = _target(config, 3, 111.0, -1.0, minutes=20)
+    planner = SequentialPlanner(config, [target], BEGIN, BEGIN + timedelta(hours=2))
+
+    plan = planner.schedule()
+
+    assert [e.exposure for e in plan] == [20 * 60]
+    assert target.exptime == 0
+
+
+def test_horizon_too_short_for_min_window_plans_nothing() -> None:
+    config = _config(6)
+    target = _target(config, 3, 111.0, -1.0, minutes=20)
+    planner = SequentialPlanner(
+        config, [target], BEGIN, BEGIN + timedelta(minutes=4), min_window=300
+    )
+
+    assert len(planner.schedule()) == 0
+    assert planner.unplaced == [target]
+
+
+def test_off_grid_horizon_end_does_not_overlap_entries() -> None:
+    config = _config(6)
+    end = BEGIN + timedelta(minutes=10, seconds=29)
+    planner = SequentialPlanner(config, _targets(config), BEGIN, end, min_window=0)
+
+    plan = planner.schedule()
+
+    assert all(e.exposure > 0 for e in plan)
+    assert all(a.end <= b.begin for a, b in zip(plan, plan[1:]))
+    assert all(e.end <= end.timestamp() for e in plan)
