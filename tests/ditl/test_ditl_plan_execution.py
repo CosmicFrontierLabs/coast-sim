@@ -1,5 +1,6 @@
 """Tests for DITL executing every entry of a supplied plan."""
 
+import datetime
 from unittest.mock import Mock
 
 import pytest
@@ -267,6 +268,22 @@ class TestPassEntries:
 
         ditl.acs.passrequests.get.assert_called_once_with(2018, 331, 1)
         assert ditl.acs.passrequests.passes == [gspass]
+
+    def test_pass_prediction_covers_the_final_calendar_day(
+        self, ditl: DITL, contact: PlanEntry
+    ) -> None:
+        """Pass days count from midnight, so a noon-to-noon run needs two days."""
+        begin = datetime.datetime(2018, 11, 27, 12, tzinfo=datetime.timezone.utc)
+        ditl.begin = begin
+        ditl.ustart = begin.timestamp()
+        ditl.uend = ditl.ustart + 86400
+        ditl.acs.passrequests.passes = []
+        ditl._entries_to_command = [contact]
+        ditl._entry_passes = {}
+
+        ditl._resolve_planned_passes()
+
+        ditl.acs.passrequests.get.assert_called_once_with(2018, 331, 2)
 
     def test_contact_slews_starts_and_ends_on_plan(
         self,

@@ -608,7 +608,9 @@ class DITL(DITLMixin, DITLStats):
         """
         passrequests = self.acs.passrequests
         if not passrequests.passes:
-            length = max(1, int(np.ceil((self.uend - self.ustart) / 86400)))
+            # PassTimes.get counts days from midnight UTC of the begin date.
+            day_start = self.ustart - self.ustart % 86400
+            length = max(1, int(np.ceil((self.uend - day_start) / 86400)))
             passrequests.get(self.begin.year, self.begin.timetuple().tm_yday, length)
         planned: list[Pass] = []
         for entry in self._entries_to_command:
