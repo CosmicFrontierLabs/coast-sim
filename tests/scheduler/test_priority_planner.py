@@ -234,6 +234,16 @@ class TestSnapshots:
         assert [entry.exposure for entry in _science(plan)] == [20 * MIN]
         assert planner.unplaced == []
 
+    def test_zero_minimum_snapshot_stops_when_the_request_is_met(self) -> None:
+        config = _config(2)
+        target = _target(config, 1, 105.0, 10.0, minutes=1, ss_min=0)
+
+        planner = PriorityPlanner(config, [target], BEGIN, BEGIN + timedelta(hours=2))
+        plan = planner.schedule()
+
+        assert [entry.exposure for entry in _science(plan)] == [MIN]
+        assert planner.unplaced == []
+
     def test_inputs_are_not_modified(self) -> None:
         config = _config(2)
         target = _target(config, 1, 105.0, 10.0, minutes=40, snapshot=20)

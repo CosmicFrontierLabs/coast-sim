@@ -72,6 +72,16 @@ class _Request:
     remaining: float
     windows: list[tuple[float, float]] = field(default_factory=list)
 
+    @property
+    def wants_more(self) -> bool:
+        """Whether enough exposure is left for another snapshot."""
+        return self.remaining > 0 and self.remaining >= float(self.target.ss_min)
+
+
+def _long_enough(collection_seconds: float, ss_min: float) -> bool:
+    """Whether a snapshot collects something, and at least ``ss_min``."""
+    return collection_seconds > 0 and collection_seconds >= ss_min
+
 
 class PriorityPlanner:
     """Build a plan by placing requests in priority order at their earliest fit.
@@ -148,7 +158,7 @@ class PriorityPlanner:
 
         for request in self._requests():
             placed = 0
-            while request.remaining >= float(request.target.ss_min):
+            while request.wants_more:
                 block = self._place_snapshot(request)
                 if block is None:
                     break
@@ -157,7 +167,7 @@ class PriorityPlanner:
                 )
                 request.remaining -= collected
                 placed += 1
-            if request.remaining >= float(request.target.ss_min):
+            if request.wants_more:
                 self.unplaced.append(request.target)
                 self._log(
                     self.ctx.ustart,
@@ -502,7 +512,7 @@ class PriorityPlanner:
                 collection_begin + snapshot,
                 latest_end - self.ctx.post_collection_seconds,
             )
-            if collection_end - collection_begin < ss_min:
+            if not _long_enough(collection_end - collection_begin, ss_min):
                 if succ is not None and latest_end < window[1]:
                     # Starting later only leaves less room before the successor.
                     return None
@@ -554,7 +564,7 @@ class PriorityPlanner:
         # End the observation at the step the attitude stops being allowed.
         assert entry.collection_begin is not None
         collection_end = violation - self.ctx.post_collection_seconds
-        if collection_end - entry.collection_begin < ss_min:
+        if not _long_enough(collection_end - entry.collection_begin, ss_min):
             return None
         entry.collection_end = collection_end
         entry.end = violation
