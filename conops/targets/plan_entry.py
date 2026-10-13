@@ -158,6 +158,8 @@ class PlanEntry(BaseModel):
     ss_max: float = 1e6
     _exptime: float | None = PrivateAttr(default=None)
     _exporig: float | None = PrivateAttr(default=None)
+    _collected_seconds: float = PrivateAttr(default=0.0)
+    _last_collection_time: float | None = PrivateAttr(default=None)
     _serialized_target_attitude: TargetAttitudeSchema | None = PrivateAttr(default=None)
 
     @model_validator(mode="wrap")
@@ -291,6 +293,33 @@ class PlanEntry(BaseModel):
     def __str__(self) -> str:
         return f"{unixtime2date(self.begin)} Target: {self.name} ({self.obsid}) Exp: {self.exposure}s "
 
+    @property
+    def collected_seconds(self) -> float:
+        """Science collection credited to this target so far."""
+        return self._collected_seconds
+
+    @property
+    def last_collection_time(self) -> float | None:
+        """When this target last collected science, or None if never."""
+        return self._last_collection_time
+
+    def record_collection(self, utime: float, seconds: float) -> None:
+        """Credit executed science collection to this target.
+
+        Reduces the remaining exposure time and records when the target was
+        last observed.
+
+        Args:
+            utime: Time the collection ended.
+            seconds: Seconds of science collected.
+        """
+        if seconds <= 0:
+            return
+        if self.exptime is not None:
+            self.exptime = max(0, self.exptime - seconds)
+        self._collected_seconds += seconds
+        self._last_collection_time = utime
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def exposure(self) -> int:
@@ -324,15 +353,26 @@ class PlanEntry(BaseModel):
             self.begin, self.slewtime, self.end
         )
 
-    def collection_seconds_between(self, begin: float, end: float) -> float:
-        """Intersect one time interval with this observation's collection window."""
+    def collection_interval_between(
+        self, begin: float, end: float
+    ) -> tuple[float, float]:
+        """Intersect one time interval with this observation's collection window.
+
+        Returns the (start, stop) of the overlap; stop == start when empty.
+        """
         start = (
             self.collection_begin
             if self.collection_begin is not None
             else self.begin + max(0.0, float(self.slewtime))
         )
         stop = self.collection_end if self.collection_end is not None else self.end
-        return max(0.0, min(end, stop, self.end) - max(begin, start, self.begin))
+        overlap_start = max(begin, start, self.begin)
+        return overlap_start, max(overlap_start, min(end, stop, self.end))
+
+    def collection_seconds_between(self, begin: float, end: float) -> float:
+        """Seconds of overlap between one interval and the collection window."""
+        start, stop = self.collection_interval_between(begin, end)
+        return stop - start
 
     @computed_field  # type: ignore[prop-decorator]
     @property

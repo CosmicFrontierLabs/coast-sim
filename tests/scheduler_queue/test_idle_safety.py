@@ -311,6 +311,7 @@ def test_delayed_science_slew_checks_wait_through_execution_tick(
         ss_max=3600.0,
         ss_min=300.0,
         windows=[[start, start + 6000]],
+        deadline=None,
     )
     target.next_vis.return_value = start + delay
     ditl.queue.get.return_value = target
