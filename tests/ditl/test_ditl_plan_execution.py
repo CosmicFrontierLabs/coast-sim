@@ -155,6 +155,25 @@ class TestChargeEntries:
         ditl.acs.request_end_battery_charge.assert_called_once_with(t[3])
         ditl.acs._enqueue_slew.assert_not_called()
 
+    def test_pending_charge_slew_is_canceled_when_the_entry_ends(
+        self, ditl: DITL, t: list[float]
+    ) -> None:
+        """A charge slew deferred past the entry's end must not execute later."""
+        entry = PlanEntry(
+            ra=45.0,
+            dec=23.5,
+            roll=12.0,
+            obsid=999001,
+            begin=t[1],
+            end=t[3],
+            obstype=ObsType.CHARGE,
+        )
+        ditl.plan = Plan(entries=[entry])
+
+        ditl.calc()
+
+        ditl.acs.cancel_pending_slews.assert_called_once_with(999001)
+
 
 class TestUnexecutableEntries:
     def test_unsupported_obstype_is_logged_and_skipped(
@@ -293,6 +312,23 @@ class TestPassEntries:
 
         ends = _commands(ditl, ACSCommandType.END_PASS)
         assert [c.execution_time for c in ends] == [t[3]]
+
+    def test_pending_contact_slew_is_canceled_when_the_entry_ends(
+        self,
+        ditl: DITL,
+        gspass: Pass,
+        contact: PlanEntry,
+        passing_acs: Mock,
+        t: list[float],
+    ) -> None:
+        """A contact slew deferred past the entry's end must not execute later."""
+        contact.end = t[2]
+        ditl.acs.passrequests.passes = [gspass]
+        ditl.plan = Plan(entries=[contact])
+
+        ditl.calc()
+
+        ditl.acs.cancel_pending_slews.assert_called_once_with(gspass.obsid)
 
     def test_contact_waits_for_the_tracking_attitude(
         self,

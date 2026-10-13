@@ -692,6 +692,8 @@ class DITL(DITLMixin, DITLStats):
         assert entry is not None
         obstype = entry_obstype(entry)
         if obstype == ObsType.GSP:
+            if self._active_pass is not None:
+                self.acs.cancel_pending_slews(self._active_pass.obsid)
             if self.acs.current_pass is not None:
                 self.acs.enqueue_command(
                     ACSCommand(
@@ -701,6 +703,7 @@ class DITL(DITLMixin, DITLStats):
                 )
             self._active_pass = None
         elif obstype == ObsType.CHARGE:
+            self.acs.cancel_pending_slews(entry.obsid)
             self.acs.request_end_battery_charge(utime)
         else:
             self.acs.cancel_pending_slews(entry.obsid)
