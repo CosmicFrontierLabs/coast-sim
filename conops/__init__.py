@@ -67,7 +67,9 @@ from .schedulers import (
     DumbScheduler,
     Planner,
     PriorityPlanner,
+    QueuePlanner,
     SchedulingContext,
+    SequentialPlanner,
 )
 from .simulation import (
     ACS,
@@ -135,7 +137,9 @@ __all__ = [
     "DumbScheduler",
     "Planner",
     "PriorityPlanner",
+    "QueuePlanner",
     "SchedulingContext",
+    "SequentialPlanner",
     "EmergencyCharging",
     "optimum_body_roll",
     "optimum_instrument_roll",
