@@ -591,18 +591,25 @@ class DITLMixin:
         self, utime: float, mode: ACSMode, obsid: int | None = None
     ) -> float:
         """Intersect the planned collection window with executed slew/setup readiness."""
+        start, stop = self._collection_interval_for_step(utime, mode, obsid)
+        return stop - start
+
+    def _collection_interval_for_step(
+        self, utime: float, mode: ACSMode, obsid: int | None = None
+    ) -> tuple[float, float]:
+        """Return the (start, stop) of science collected this step; empty when equal."""
         if (
             self.ppt is None
             or self.ppt.collection_end is None
             or mode not in (ACSMode.SCIENCE, ACSMode.SLEWING)
             or (obsid is not None and obsid != self.ppt.obsid)
         ):
-            return 0.0
+            return utime, utime
         start = utime
         slew = self.acs.current_slew if mode == ACSMode.SLEWING else self.acs.last_slew
         if slew is not None:
             if slew.obsid != self.ppt.obsid:
-                return 0.0
+                return utime, utime
             assert self.ppt.collection_begin is not None
             # Infer setup from the saved window, not a possibly changed replay config.
             setup = max(
@@ -610,8 +617,8 @@ class DITLMixin:
             )
             start = max(start, slew.slewend + setup)
         elif mode == ACSMode.SLEWING:
-            return 0.0
-        return self.ppt.collection_seconds_between(
+            return utime, utime
+        return self.ppt.collection_interval_between(
             start, min(utime + self.step_size, self.uend)
         )
 

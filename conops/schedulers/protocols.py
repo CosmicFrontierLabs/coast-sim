@@ -66,8 +66,13 @@ class DispatchPolicy(Protocol):
         ss_min: int = 300,
         ss_max: int = 86400,
         instrument_name: str | None = None,
-    ) -> None:
-        """Add a target, as QueueDITL does when a Target of Opportunity fires."""
+        deadline: float | None = None,
+    ) -> Pointing:
+        """Add a target and return it, as QueueDITL does for a Target of Opportunity.
+
+        Args:
+            deadline: Latest time (Unix seconds) science collection may begin.
+        """
         ...
 
 
