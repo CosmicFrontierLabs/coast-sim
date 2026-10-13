@@ -2532,11 +2532,13 @@ class QueueDITL(DITLMixin, DITLStats):
             else None,
         )
 
-    def _earliest_science_start(self, ready_time: float) -> float:
+    def _earliest_science_start(self, slew_end: float, ready_time: float) -> float:
         """Return when science collection can begin once the payload is ready.
 
-        Mode is sampled on scheduler ticks, and a tick spent in the SAA credits
-        no collection for that step, so advance past every SAA tick.
+        Mode is sampled on scheduler ticks. A tick taken while still slewing
+        reports SLEWING (which outranks SAA) and credits collection from
+        ``ready_time`` within that step. A tick at rest inside the SAA credits
+        nothing for its step, so advance past every such tick.
         """
         saa = self.acs.saa
         if saa is None:
@@ -2545,6 +2547,8 @@ class QueueDITL(DITLMixin, DITLStats):
             self.ustart
             + floor((ready_time - self.ustart) / self.step_size) * self.step_size
         )
+        if tick < slew_end:
+            return ready_time
         while tick < self.uend and saa.insaa(tick):
             tick += self.step_size
         return max(ready_time, tick)
@@ -2825,10 +2829,10 @@ class QueueDITL(DITLMixin, DITLStats):
             # Queue selection checks the deadline against an estimated slew;
             # enforce it again against the slew that will actually execute,
             # and the time science is actually available (e.g. after SAA exit).
+            slew_end = execution_time + slew.slewtime
             collection_start = self._earliest_science_start(
-                execution_time
-                + slew.slewtime
-                + self.config.payload.observation_timing.setup_seconds
+                slew_end,
+                slew_end + self.config.payload.observation_timing.setup_seconds,
             )
             if self.ppt.deadline is not None and collection_start > self.ppt.deadline:
                 self.log.log_event(

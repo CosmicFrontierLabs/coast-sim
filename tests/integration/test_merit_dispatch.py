@@ -45,6 +45,7 @@ def _run(
     hours: int = 4,
     prepare: Callable[[QueueDITL], None] | None = None,
     step_size: int = 300,
+    settle_time: float = 10.0,
 ) -> QueueDITL:
     """Run QueueDITL over an unconstrained sky with the given requests."""
     end = SCENARIO_BEGIN + timedelta(hours=hours)
@@ -56,7 +57,7 @@ def _run(
         battery=Battery(watthour=100_000.0),
         spacecraft_bus=SpacecraftBus(
             attitude_control=AttitudeControlSystem(
-                max_slew_rate=1.0, slew_acceleration=0.5, settle_time=10.0
+                max_slew_rate=1.0, slew_acceleration=0.5, settle_time=settle_time
             ),
             star_trackers=StarTrackerConfiguration(
                 star_trackers=[], min_functional_trackers=0, modes_require_lock=[]
@@ -281,39 +282,72 @@ class TestCadenceDispatch:
         assert _science_order(ditl)[:6] == [10, 11, 10, 11, 10, 11]
 
 
+def _saa_from_start(saa_end: float) -> Callable[[QueueDITL], None]:
+    """Attach an SAA interval that runs from the start of the run to ``saa_end``."""
+
+    def attach(ditl: QueueDITL) -> None:
+        saa = SAA()
+        saa.ephem = ditl.ephem
+        saa.saatimes = np.array([[BEGIN, BEGIN + saa_end]])
+        saa.calculated = True
+        ditl.acs.saa = saa
+
+    return attach
+
+
+DEADLINE_TARGET = {
+    "obsid": 10,
+    "name": "A",
+    "ra": 20.0,
+    "dec": 0.0,
+    "merit": 100.0,
+    "exptime": 600,
+    "ss_min": 100,
+    "ss_max": 600,
+}
+
+
 class TestDeadlineScienceAvailability:
     def test_target_is_skipped_when_saa_delays_science_past_its_deadline(
         self,
     ) -> None:
-        """The slew fits the deadline, but science only resumes after SAA exit."""
+        """The slew fits the deadline, but science only resumes after SAA exit.
 
-        def in_saa_at_start(ditl: QueueDITL) -> None:
-            saa = SAA()
-            saa.ephem = ditl.ephem
-            saa.saatimes = np.array([[BEGIN, BEGIN + 599]])
-            saa.calculated = True
-            ditl.acs.saa = saa
-
+        A 25 s settle ends the slew exactly on the +120 s tick, where the
+        spacecraft is at rest inside the SAA and collects nothing until +600 s.
+        """
         ditl = _run(
-            [
-                {
-                    "obsid": 10,
-                    "name": "A",
-                    "ra": 20.0,
-                    "dec": 0.0,
-                    "merit": 100.0,
-                    "exptime": 600,
-                    "ss_min": 100,
-                    "ss_max": 600,
-                    "deadline": BEGIN + 180,
-                }
-            ],
+            [{**DEADLINE_TARGET, "deadline": BEGIN + 180}],
             hours=1,
-            prepare=in_saa_at_start,
+            prepare=_saa_from_start(599),
             step_size=60,
+            settle_time=25.0,
         )
 
         assert _science_order(ditl) == []
         assert any(
             "collection would start" in event.description for event in ditl.log.events
         )
+
+    @pytest.mark.parametrize("saa_end", [60, 90])
+    def test_saa_exit_before_mid_step_slew_completion_keeps_the_target(
+        self, saa_end: int
+    ) -> None:
+        """The tick before slew completion is SLEWING, not SAA, so science
+        starts mid-step when the slew ends (+105 s), inside the +110 s deadline."""
+        ditl = _run(
+            [{**DEADLINE_TARGET, "deadline": BEGIN + 110}],
+            hours=1,
+            prepare=_saa_from_start(saa_end),
+            step_size=60,
+        )
+
+        assert _science_order(ditl) == [10]
+        entry = ditl.plan[0]
+        assert entry.collection_begin == pytest.approx(BEGIN + 105)
+        first = next(
+            hk for hk in ditl.telemetry.housekeeping if hk.collection_seconds > 0
+        )
+        assert first.timestamp.timestamp() == BEGIN + 60
+        assert first.collection_seconds == pytest.approx(15)
+        assert ditl.validate_plan_matches_execution() == []
