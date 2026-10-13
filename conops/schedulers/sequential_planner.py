@@ -9,6 +9,7 @@ ground passes or model slews and observation timing the way
 :class:`~conops.ditl.DITL` executes them.
 """
 
+import bisect
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -117,8 +118,10 @@ class SequentialPlanner:
         ustart, uend = self._horizon()
         ephem_utime = [dt.timestamp() for dt in self.ephem.timestamp]
         latest_end = self._latest_end(uend, ephem_utime[-1])
-        i = self.ephem.index(dtutcfromtimestamp(ustart))
-        while ephem_utime[i] < uend:
+        # First ephemeris step at or after the horizon start, so no entry
+        # begins before ``begin``.
+        i = bisect.bisect_left(ephem_utime, ustart)
+        while i < len(ephem_utime) and ephem_utime[i] < uend:
             utime = ephem_utime[i]
             selection = self._select(utime)
             if selection is None:
@@ -133,11 +136,9 @@ class SequentialPlanner:
             self.plan.extend([entry])
             i = self.ephem.index(dtutcfromtimestamp(entry.end))
 
-        self.unplaced = [
-            target
-            for target in self._candidates()
-            if target.obsid not in self.scheduled
-        ]
+        # Observed targets are not revisited, so any left with exposure,
+        # including partially observed ones, stay unplaced.
+        self.unplaced = self._candidates()
         self._log(ephem_utime[0], f"Scheduled {len(self.plan)} targets")
         return self.plan
 

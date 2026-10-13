@@ -354,6 +354,17 @@ class PriorityPlanner:
             raise ValueError(
                 f"Locked entry {entry.obsid} needs a collection window to keep"
             )
+        if (
+            float(entry.collection_begin) < self.ctx.ustart
+            or float(entry.end) > self.ctx.uend
+        ):
+            self._log(
+                float(entry.begin),
+                f"Locked entry {entry.obsid} is outside the planning horizon; "
+                "leaving it out",
+                entry.obsid,
+            )
+            return
         Plan(entries=[entry]).bind_runtime(self.config, self.ctx.ephem)
         attitude = entry.target_body_attitude()
         block = _Block(

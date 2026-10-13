@@ -247,7 +247,9 @@ class SchedulingContext:
         when the plan is executed.
         """
         passtimes = PassTimes(config=self.config)
-        length = max(1, int(np.ceil((self.uend - self.ustart) / 86400)))
+        # PassTimes.get counts days from midnight UTC of the begin date.
+        day_start = self.ustart - self.ustart % 86400
+        length = max(1, int(np.ceil((self.uend - day_start) / 86400)))
         passtimes.get(self.begin.year, self.begin.timetuple().tm_yday, length)
         return [
             gspass

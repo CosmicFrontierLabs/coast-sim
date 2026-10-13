@@ -51,8 +51,31 @@ def test_reports_unplaced_targets() -> None:
     planner.schedule()
 
     assert planner.unplaced
-    assert {t.obsid for t in planner.unplaced}.isdisjoint(planner.scheduled)
-    assert len(planner.unplaced) + len(planner.scheduled) == len(targets)
+    assert planner.unplaced == [t for t in targets if t.exptime]
+
+
+def test_starts_on_the_first_step_at_or_after_begin() -> None:
+    config = _config(6)
+    begin = BEGIN + timedelta(seconds=1)
+    planner = SequentialPlanner(
+        config, _targets(config), begin, BEGIN + timedelta(hours=2)
+    )
+
+    plan = planner.schedule()
+
+    assert plan[0].begin == (BEGIN + timedelta(minutes=1)).timestamp()
+
+
+def test_partially_observed_target_is_unplaced() -> None:
+    config = _config(6)
+    target = _target(config, 3, 111.0, -1.0, minutes=600)
+    planner = SequentialPlanner(config, [target], BEGIN, BEGIN + timedelta(hours=2))
+
+    planner.schedule()
+
+    assert planner.scheduled == [3]
+    assert 0 < target.exptime < 600 * 60
+    assert planner.unplaced == [target]
 
 
 def test_logs_instead_of_printing(capsys: pytest.CaptureFixture[str]) -> None:

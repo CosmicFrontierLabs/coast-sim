@@ -335,6 +335,30 @@ class TestLockedEntries:
         ditl = _execute(config, plan, hours, planner.ctx.step_size)
         assert ditl.validate_plan_matches_execution() == []
 
+    def test_locked_entry_outside_the_horizon_is_left_out(self) -> None:
+        config = _config(6)
+        start = T0 + 4 * HOUR
+        locked = PlanEntry(
+            config=config,
+            name="Locked",
+            ra=115.0,
+            dec=10.0,
+            roll=0.0,
+            obsid=900,
+            obstype=ObsType.AT,
+            begin=start,
+            end=start + 20 * MIN,
+            collection_begin=start,
+            collection_end=start + 20 * MIN,
+            ss_min=60,
+        )
+
+        plan = PriorityPlanner(
+            config, [], BEGIN, BEGIN + timedelta(hours=2), locked=[locked]
+        ).schedule()
+
+        assert all(entry.obsid != 900 for entry in plan)
+
     def test_locked_entry_needs_a_collection_window(self) -> None:
         config = _config(1)
         locked = PlanEntry(config=config, obsid=900, begin=T0, end=T0 + 600)
