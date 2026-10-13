@@ -6,7 +6,7 @@ from unittest.mock import Mock
 import pytest
 import rust_ephem
 
-from conops import DITL, QueueDITL
+from conops import DITL
 from conops.common import ObsType
 from conops.config import (
     AttitudeControlSystem,
@@ -25,8 +25,11 @@ from scripts.check_default_plan_output import (
 )
 
 
+@pytest.mark.parametrize("obstype", [ObsType.PPT, ObsType.AT, ObsType.TOO])
 @pytest.mark.parametrize("slew_rate,valid", [(1, False), (10, True)])
-def test_short_replay_requires_actual_collection(monkeypatch, slew_rate, valid):
+def test_short_replay_requires_actual_collection(
+    monkeypatch, slew_rate, valid, obstype
+):
     begin = SCENARIO_BEGIN
     end = begin + timedelta(seconds=240)
     ephem = DeterministicEphemeris(begin, end, step_size_seconds=60)
@@ -62,7 +65,7 @@ def test_short_replay_requires_actual_collection(monkeypatch, slew_rate, valid):
         begin=begin.timestamp(),
         end=begin.timestamp() + 59,
         slewtime=20,
-        obstype=ObsType.AT,
+        obstype=obstype,
     )
     replay = DITL(
         config=config, ephem=ephem, plan=Plan(entries=[entry]), begin=begin, end=end
@@ -71,22 +74,7 @@ def test_short_replay_requires_actual_collection(monkeypatch, slew_rate, valid):
     collected = sum(hk.collection_seconds for hk in replay.telemetry.housekeeping)
     assert (collected > 0) == valid
 
-    # On main the audit lives on QueueDITL; audit the replay's actual telemetry.
-    auditor = QueueDITL(config=config, ephem=ephem, begin=begin, end=end)
-    for name in (
-        "plan",
-        "utime",
-        "ra",
-        "dec",
-        "roll",
-        "obsid",
-        "mode",
-        "telemetry",
-        "step_size",
-    ):
-        setattr(auditor, name, getattr(replay, name))
-    auditor.roll = [float(hk.roll) for hk in replay.telemetry.housekeeping]
-    mismatches = auditor.validate_plan_matches_execution()
+    mismatches = replay.validate_plan_matches_execution()
     if valid:
         assert mismatches == []
     else:

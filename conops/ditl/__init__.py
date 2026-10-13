@@ -4,7 +4,12 @@ from .ditl_log import DITLLog
 from .ditl_log_store import DITLLogStore
 from .ditl_mixin import AttitudeRateContinuityError, DITLMixin
 from .ditl_stats import DITLStats
-from .queue_ditl import PlanExecutionMismatchError, QueueDITL, TOORequest
+from .plan_validator import (
+    PlanExecutionMismatch,
+    PlanExecutionMismatchError,
+    PlanExecutionValidator,
+)
+from .queue_ditl import QueueDITL, TOORequest
 from .telemetry import Housekeeping, PayloadData, SolarArrayDriveAngle, Telemetry
 
 __all__ = [
@@ -17,7 +22,9 @@ __all__ = [
     "DITLMixin",
     "DITLStats",
     "QueueDITL",
+    "PlanExecutionMismatch",
     "PlanExecutionMismatchError",
+    "PlanExecutionValidator",
     "TOORequest",
     "Housekeeping",
     "SolarArrayDriveAngle",
