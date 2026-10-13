@@ -401,6 +401,11 @@ class QueueDITL(DITLMixin, DITLStats):
             if not too_pointing.visible(utime, utime):
                 continue
 
+            if self._reserve_too_cleanup(utime):
+                # Keep the request pending and the current attitude held until
+                # cleanup/handoff finishes. Recheck visibility on the next tick.
+                return False
+
             # TOO should interrupt! Log the event
             self.log.log_event(
                 utime=utime,
@@ -448,6 +453,43 @@ class QueueDITL(DITLMixin, DITLStats):
             return True
 
         return False
+
+    def _reserve_too_cleanup(self, utime: float) -> bool:
+        """Stop further collection and wait for teardown before a TOO slew."""
+        ppt = self.ppt
+        post_collection = self.config.payload.observation_timing.post_collection_seconds
+        if (
+            ppt is None
+            or ppt.collection_begin is None
+            or ppt.collection_end is None
+            or post_collection <= 0
+            or utime <= ppt.collection_begin
+            or utime >= ppt.end
+        ):
+            return False
+
+        if utime < ppt.collection_end:
+            # Collection from earlier steps is already accounted for. Shorten
+            # only the future window, then keep its full teardown budget.
+            ppt.collection_end = utime
+            ppt.end = utime + post_collection
+            if self.plan and self.plan[-1].begin == ppt.begin:
+                self.plan[-1].collection_end = ppt.collection_end
+                self.plan[-1].end = ppt.end
+            self.log.log_event(
+                utime=utime,
+                event_type="TOO",
+                description=(
+                    f"Stopping collection for obsid {ppt.obsid}; TOO preemption "
+                    f"waits for cleanup/handoff until {unixtime2date(ppt.end)}"
+                ),
+                obsid=ppt.obsid,
+                acs_mode=self.acs.acsmode,
+            )
+
+        # If teardown was already underway, retain its original end rather than
+        # restarting the budget each time a pending TOO is checked.
+        return True
 
     def calc(self) -> bool:
         """
