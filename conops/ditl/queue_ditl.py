@@ -923,11 +923,9 @@ class QueueDITL(DITLMixin, DITLStats):
         if end <= start:
             return mismatches
 
-        samples = 0
         science_samples = 0
         for i in self._window_indices(start, end):
             utime = self.utime[i]
-            samples += 1
             mode = self._mode_at_index(i)
             if mode == ACSMode.SAA:
                 continue
@@ -959,7 +957,10 @@ class QueueDITL(DITLMixin, DITLStats):
                     self._pointing_mismatch(entry, utime, error_deg, "science")
                 )
 
-        if samples > 0 and science_samples == 0:
+        recorded_collection = self._has_recorded_science_collection(entry, start, end)
+        if recorded_collection is False or (
+            recorded_collection is None and science_samples == 0
+        ):
             mismatches.append(
                 self._execution_mismatch(
                     start,
@@ -970,6 +971,35 @@ class QueueDITL(DITLMixin, DITLStats):
                 )
             )
         return mismatches
+
+    def _has_recorded_science_collection(
+        self, entry: PlanEntry, start: float, end: float
+    ) -> bool | None:
+        """Check collection telemetry, including the step containing science start.
+
+        A slew may finish and collect within one step without a SCIENCE-mode
+        sample in the collection window. Legacy telemetry without collection
+        accounting returns None so the caller can still use mode samples.
+        """
+        lo = max(0, bisect_left(self.utime, start) - 1)
+        hi = min(len(self.telemetry.housekeeping), bisect_left(self.utime, end))
+        recorded = False
+        for i in range(lo, hi):
+            utime = self.utime[i]
+            if utime < entry.begin or utime + self.step_size <= start:
+                continue
+            hk = self.telemetry.housekeeping[i]
+            if hk.timestamp.timestamp() != utime or hk.collection_seconds is None:
+                continue
+            recorded = True
+            if (
+                hk.obsid == int(entry.obsid)
+                and int(self.obsid[i]) == int(entry.obsid)
+                and self._mode_at_index(i) in (ACSMode.SCIENCE, ACSMode.SLEWING)
+                and hk.collection_seconds > 0
+            ):
+                return True
+        return False if recorded else None
 
     def _validate_execution_is_planned(self) -> list[PlanExecutionMismatch]:
         """Check that every executed science/pass telemetry sample is covered by an exported plan entry."""
