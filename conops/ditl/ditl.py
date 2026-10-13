@@ -611,7 +611,14 @@ class DITL(DITLMixin, DITLStats):
             # PassTimes.get counts days from midnight UTC of the begin date.
             day_start = self.ustart - self.ustart % 86400
             length = max(1, int(np.ceil((self.uend - day_start) / 86400)))
-            passrequests.get(self.begin.year, self.begin.timetuple().tm_yday, length)
+            # The plan already chose its contacts; only reconstruct their
+            # physical passes, without redrawing which ones get scheduled.
+            passrequests.get(
+                self.begin.year,
+                self.begin.timetuple().tm_yday,
+                length,
+                apply_scheduling=False,
+            )
         planned: list[Pass] = []
         for entry in self._entries_to_command:
             if entry_obstype(entry) != ObsType.GSP:
