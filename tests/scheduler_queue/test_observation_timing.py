@@ -7,14 +7,14 @@ from conops.common import ACSMode, ObsType
 from conops.common.enums import SlewAlgorithm
 from conops.config import AttitudeControlSystem, ObservationTiming
 from conops.simulation.passes import Pass
-from conops.targets import PlanEntry
+from conops.targets import PlanEntry, Pointing
 
 
 @pytest.fixture
 def timed_ditl(queue_ditl):
     timing = ObservationTiming(setup_seconds=43, cleanup_seconds=2, handoff_seconds=10)
     queue_ditl.config.payload.observation_timing = timing
-    entry = PlanEntry(begin=100, end=400, slewtime=50, obstype=ObsType.AT)
+    entry = Pointing(begin=100, end=400, slewtime=50, obstype=ObsType.AT)
     entry.set_collection_window(timing)
     entry.exptime = 195
     queue_ditl.ppt = entry
@@ -47,6 +47,33 @@ def test_data_generation_and_remaining_exposure_use_collection_seconds(timed_dit
     timed_ditl._handle_data_management(388, ACSMode.SCIENCE)
     timed_ditl.payload.data_generated.assert_not_called()
     assert timed_ditl.ppt.exptime == 168
+
+
+def test_collection_is_credited_at_the_end_of_the_collected_interval(timed_ditl):
+    """Cadence must see when a visit actually ended, not the step's start."""
+    timed_ditl._handle_data_management(160, ACSMode.SCIENCE)
+    assert timed_ditl.ppt.last_collection_time == 220
+    timed_ditl._handle_data_management(340, ACSMode.SCIENCE)
+    assert timed_ditl.ppt.last_collection_time == 388  # collection_end, mid-step
+
+
+def test_observation_ends_if_collection_has_not_started_by_deadline(timed_ditl):
+    timed_ditl.ppt.deadline = 200
+    timed_ditl._attitude_constraint_name_for_attitude = Mock(return_value=None)
+    timed_ditl._terminate_ppt = Mock()
+    timed_ditl._check_ppt_termination(200)
+    timed_ditl._terminate_ppt.assert_not_called()
+    timed_ditl._check_ppt_termination(260)
+    timed_ditl._terminate_ppt.assert_called_once()
+
+
+def test_started_observation_continues_past_its_deadline(timed_ditl):
+    timed_ditl.ppt.deadline = 200
+    timed_ditl._handle_data_management(160, ACSMode.SCIENCE)
+    timed_ditl._attitude_constraint_name_for_attitude = Mock(return_value=None)
+    timed_ditl._terminate_ppt = Mock()
+    timed_ditl._check_ppt_termination(260)
+    timed_ditl._terminate_ppt.assert_not_called()
 
 
 def test_observation_holds_attitude_until_cleanup_and_handoff_finish(timed_ditl):

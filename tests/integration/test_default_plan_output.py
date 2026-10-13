@@ -115,3 +115,85 @@ def test_replay_with_real_acs_does_not_collect_during_a_longer_than_planned_slew
     assert all(h.acs_mode == ACSMode.SLEWING for h in ditl.telemetry.housekeeping)
     assert all(h.collection_seconds == 0 for h in ditl.telemetry.housekeeping)
     assert ditl.data_generated_gb[-1] == 0
+
+
+def test_replay_with_real_acs_cancels_a_slew_deferred_to_the_entry_end(monkeypatch):
+    """A slew deferred to exactly its entry's end must not start."""
+    config = MissionConfig(
+        constraint=scenario.DeterministicConstraint(),
+        ground_stations=GroundStationRegistry(stations=[]),
+        solar_panel=SolarPanelSet(panels=[]),
+        spacecraft_bus=SpacecraftBus(
+            star_trackers=StarTrackerConfiguration(
+                star_trackers=[], min_functional_trackers=0, modes_require_lock=[]
+            ),
+            radiators=RadiatorConfiguration(radiators=[]),
+        ),
+    )
+    begin = scenario.SCENARIO_BEGIN
+    entry_end = begin + timedelta(seconds=60)
+    end = begin + timedelta(seconds=180)
+    ephem = scenario.DeterministicEphemeris(begin, end, step_size_seconds=60)
+    config.constraint.ephem = ephem
+    entry = PlanEntry(
+        begin=begin.timestamp(),
+        end=entry_end.timestamp(),
+        ra=180,
+        dec=0,
+        roll=0,
+        obsid=7,
+    )
+    # The target first becomes visible as the entry ends, so ACS defers the
+    # entry's slew to the step at which the entry expires.
+    monkeypatch.setattr(PlanEntry, "next_vis", lambda self, utime: entry.end)
+    ditl = DITL(
+        config=config, ephem=ephem, plan=Plan(entries=[entry]), begin=begin, end=end
+    )
+
+    assert ditl.calc()
+    assert ditl.acs.command_queue == []
+    assert all(c.slew is None or c.slew.obsid != 7 for c in ditl.acs.executed_commands)
+    assert all(h.acs_mode != ACSMode.SLEWING for h in ditl.telemetry.housekeeping)
+
+
+def test_queue_plan_replays_identically_through_plan_driven_ditl(monkeypatch):
+    """A serialized QueueDITL plan, executed by DITL, must fly the same timeline."""
+    constructor = scenario.QueueDITL
+    simulations = []
+
+    def recorded_simulation(**kwargs):
+        ditl = constructor(**kwargs)
+        simulations.append(ditl)
+        return ditl
+
+    monkeypatch.setattr(scenario, "QueueDITL", recorded_simulation)
+    scenario.build_default_plan_payload()
+    queue = simulations[0]
+    plan = Plan.model_validate_json(queue.plan.model_dump_json())
+    assert len(plan) > 1
+
+    replay = DITL(
+        config=queue.config,
+        ephem=queue.ephem,
+        plan=plan,
+        begin=queue.begin,
+        end=queue.end,
+    )
+    replay.step_size = queue.step_size
+    monkeypatch.setattr(
+        scenario.rust_ephem,
+        "get_eop_provenance",
+        lambda: {"ut1": {"available": False}, "polar_motion": {"available": False}},
+    )
+    assert replay.calc()
+
+    assert replay.utime == queue.utime
+    assert [int(m) for m in replay.mode] == [int(m) for m in queue.mode]
+    assert [int(o) for o in replay.obsid] == [int(o) for o in queue.obsid]
+    assert replay.ra == pytest.approx(queue.ra)
+    assert replay.dec == pytest.approx(queue.dec)
+    assert replay.roll == pytest.approx(queue.roll)
+    assert [hk.collection_seconds for hk in replay.telemetry.housekeeping] == [
+        hk.collection_seconds for hk in queue.telemetry.housekeeping
+    ]
+    assert replay.validate_plan_matches_execution() == []

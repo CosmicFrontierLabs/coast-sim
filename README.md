@@ -120,6 +120,7 @@ Comprehensive examples are provided in the `examples/` directory as Jupyter note
 
 - **`Example_Spacecraft_DITL.ipynb`**: Complete spacecraft DITL simulation with custom spacecraft configuration, including power modeling, attitude control, and observation scheduling
 - **`Example_DITL_from_JSON.ipynb`**: Simplified workflow using JSON configuration files for quick simulations
+- **`Dynamic_Merit_Example.ipynb`**: How the queue scheduler ranks targets with tiers, urgency, cadence and program-balance merit terms, and how Targets of Opportunity interrupt
 
 To run the examples:
 

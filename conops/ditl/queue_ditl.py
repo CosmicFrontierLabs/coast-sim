@@ -1,6 +1,6 @@
 from bisect import bisect_left
 from datetime import datetime, timezone
-from math import ceil
+from math import ceil, floor
 from typing import Protocol, TypedDict
 
 import numpy as np
@@ -27,6 +27,7 @@ from ..config.constraint import (
     attitude_constraint_name_for_scopes,
     attitude_constraint_scope_label,
 )
+from ..schedulers import DispatchPolicy
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
 from ..simulation.idle_safety import IdleSafetyPlanner
@@ -34,9 +35,16 @@ from ..simulation.passes import Pass, pass_slew_trigger_buffer
 from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing, Queue, TargetSlewEstimate
+from ..targets.merit import MeritBreakdown, MeritModel
 from .ditl_log import DITLLog
 from .ditl_mixin import AttitudeRateContinuityError, DITLMixin
 from .ditl_stats import DITLStats
+from .plan_validator import (
+    PlanExecutionMismatch,
+    PlanExecutionMismatchError,
+    PlanExecutionValidator,
+    entry_obstype,
+)
 from .telemetry import Housekeeping, PayloadData
 
 
@@ -78,7 +86,11 @@ class TOORequest(BaseModel):
         name: Human-readable name for the TOO target
         submit_time: Unix timestamp when the TOO becomes active. If 0.0,
             the TOO is active immediately from simulation start.
-        executed: Whether this TOO has been executed
+        deadline: Latest Unix time science collection may begin, or None for
+            no deadline. Urgency rises as it approaches, and the TOO cannot be
+            selected after it.
+        executed: Whether this TOO has been dispatched as the current
+            observation
     """
 
     obsid: int
@@ -88,25 +100,8 @@ class TOORequest(BaseModel):
     exptime: int
     name: str
     submit_time: float = 0.0
+    deadline: float | None = None
     executed: bool = False
-
-
-class PlanExecutionMismatchError(RuntimeError):
-    """Raised when an exported plan entry does not match executed ACS telemetry."""
-
-
-class PlanExecutionMismatch(BaseModel):
-    """A single mismatch between an exported plan entry and ACS telemetry."""
-
-    model_config = ConfigDict(frozen=True)
-
-    utime: float
-    message: str
-    obsid: int | None = None
-
-    def __str__(self) -> str:
-        """Return the mismatch message as the string representation."""
-        return self.message
 
 
 class _ScienceDeadlineInputs(BaseModel):
@@ -134,7 +129,7 @@ class QueueDITL(DITLMixin, DITLStats):
     emergency_charging: EmergencyCharging
     utime: list[float]  # Override to specify float instead of generic list
     ephem: rust_ephem.Ephemeris  # Override to make non-optional
-    queue: Queue
+    queue: DispatchPolicy
     too_register: list[TOORequest]  # Register of pending TOO requests
 
     def __init__(
@@ -143,10 +138,15 @@ class QueueDITL(DITLMixin, DITLStats):
         ephem: rust_ephem.Ephemeris | None = None,
         begin: datetime | None = None,
         end: datetime | None = None,
-        queue: Queue | None = None,
+        queue: DispatchPolicy | None = None,
         calculate_field_of_regard: bool = False,
     ) -> None:
-        """Initialize a queue-driven DITL simulation."""
+        """Initialize a queue-driven DITL simulation.
+
+        Args:
+            queue: Policy that selects each next target. Defaults to an empty
+                :class:`~conops.targets.TargetQueue`.
+        """
         # Initialize mixin
         DITLMixin.__init__(
             self,
@@ -192,6 +192,9 @@ class QueueDITL(DITLMixin, DITLStats):
 
         # TOO (Target of Opportunity) register - holds pending TOOs
         self.too_register: list[TOORequest] = []
+        # Queue target created for each activated TOO, keyed by id(TOORequest)
+        self._too_targets: dict[int, Pointing] = {}
+        self.merit_model = MeritModel(self.config)
 
         # Target Queue (use provided queue or create default)
         if queue is not None:
@@ -261,36 +264,35 @@ class QueueDITL(DITLMixin, DITLStats):
         exptime: int,
         name: str,
         submit_time: float | datetime | None = None,
+        deadline: float | datetime | None = None,
     ) -> TOORequest:
         """Submit a Target of Opportunity (TOO) request.
 
-        The TOO is added to a special register and will be checked during
-        the simulation. When the TOO's merit is higher than the current
-        observation's merit and the TOO target is visible, the current
-        observation will be abandoned and the TOO will be observed immediately.
-
-        The TOO can be scheduled before the DITL starts running by setting
-        `submit_time` to a future time. The TOO will not become active until
-        that time is reached during the simulation.
+        A TOO is an ordinary queue request with a short window. Once its
+        ``submit_time`` is reached it joins the target queue with its own merit
+        and deadline, and is selected whenever it ranks highest. It interrupts
+        the observation in progress only when it is visible and its tier and
+        value, evaluated now, beat the tier and value frozen onto the current
+        observation when it was selected.
 
         Args:
             obsid: Unique observation identifier for this TOO
             ra: Right ascension in degrees
             dec: Declination in degrees
-            merit: Priority merit value (higher = more urgent). Should be higher
-                   than normal queue targets to ensure immediate observation.
+            merit: Base merit. Within a tier, a TOO interrupts only if its value
+                exceeds the current observation's.
             exptime: Requested exposure time in seconds
             name: Human-readable name for the TOO target
-            submit_time: When the TOO becomes active. Can be:
-                - None: TOO is active immediately from simulation start
-                - float: Unix timestamp when TOO becomes active
-                - datetime: Datetime when TOO becomes active (will be converted to Unix timestamp)
+            submit_time: When the TOO becomes active, as a Unix timestamp or a
+                datetime. None means active from the start of the simulation.
+            deadline: Latest time science collection may begin, as a Unix
+                timestamp or a datetime. None means no deadline.
 
         Returns:
             The created TOORequest object
 
         Example:
-            >>> # TOO active immediately
+            >>> # TOO active immediately, to be observed within 4 hours
             >>> ditl.submit_too(
             ...     obsid=1000001,
             ...     ra=180.0,
@@ -298,9 +300,10 @@ class QueueDITL(DITLMixin, DITLStats):
             ...     merit=10000.0,
             ...     exptime=3600,
             ...     name="GRB 250101A",
+            ...     deadline=ditl.ustart + 4 * 3600,
             ... )
 
-            >>> # TOO scheduled for 1 hour into the simulation (using Unix timestamp)
+            >>> # TOO arriving 1 hour into the simulation
             >>> ditl.submit_too(
             ...     obsid=1000002,
             ...     ra=90.0,
@@ -310,31 +313,7 @@ class QueueDITL(DITLMixin, DITLStats):
             ...     name="GRB 250101B",
             ...     submit_time=ditl.ustart + 3600,
             ... )
-
-            >>> # TOO scheduled for a specific datetime
-            >>> from datetime import datetime
-            >>> ditl.submit_too(
-            ...     obsid=1000003,
-            ...     ra=270.0,
-            ...     dec=60.0,
-            ...     merit=10000.0,
-            ...     exptime=2400,
-            ...     name="GRB 250101C",
-            ...     submit_time=datetime(2025, 11, 1, 12, 0, 0),
-            ... )
         """
-        # Convert datetime to Unix timestamp if needed
-        if isinstance(submit_time, datetime):
-            # Ensure timezone-aware datetime
-            if submit_time.tzinfo is None:
-                submit_time = submit_time.replace(tzinfo=timezone.utc)
-            effective_submit_time = submit_time.timestamp()
-        elif submit_time is not None:
-            effective_submit_time = submit_time
-        else:
-            # None means active immediately (use 0.0 which is always <= any simulation time)
-            effective_submit_time = 0.0
-
         too = TOORequest(
             obsid=obsid,
             ra=ra,
@@ -342,20 +321,77 @@ class QueueDITL(DITLMixin, DITLStats):
             merit=merit,
             exptime=exptime,
             name=name,
-            submit_time=effective_submit_time,
+            # None means active immediately (0.0 is always <= any simulation time)
+            submit_time=self._unix_time(submit_time)
+            if submit_time is not None
+            else 0.0,
+            deadline=self._unix_time(deadline) if deadline is not None else None,
             executed=False,
         )
         self.too_register.append(too)
         return too
 
-    def _check_too_interrupt(self, utime: float, ra: float, dec: float) -> bool:
-        """Check if a pending TOO should interrupt the current observation.
+    @staticmethod
+    def _unix_time(value: float | datetime) -> float:
+        """Convert a Unix timestamp or datetime (naive means UTC) to Unix seconds."""
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return value.timestamp()
+        return float(value)
 
-        A TOO will interrupt the current observation if:
-        1. The TOO has been submitted (submit_time <= utime)
-        2. The TOO has not yet been executed
-        3. The TOO target is currently visible
-        4. The TOO's merit is higher than the current PPT's merit
+    def _too_target(self, too: TOORequest) -> Pointing:
+        """Return the queue target for an active TOO, adding it on first use."""
+        target = self._too_targets.get(id(too))
+        if target is None:
+            target = self.queue.add(
+                ra=too.ra,
+                dec=too.dec,
+                obsid=too.obsid,
+                name=too.name,
+                merit=too.merit,
+                exptime=too.exptime,
+                deadline=too.deadline,
+            )
+            self._too_targets[id(too)] = target
+            self.log.log_event(
+                utime=max(too.submit_time, self.ustart),
+                event_type="TOO",
+                description=f"Queued TOO {too.name} (obsid={too.obsid}, merit={too.merit})",
+                obsid=too.obsid,
+                acs_mode=self.acs.acsmode,
+            )
+        return target
+
+    def _current_value_rank(self) -> tuple[int, float]:
+        """Return the tier and frozen value of the observation in progress."""
+        if self.ppt is None:
+            return np.iinfo(np.int64).min, -np.inf
+        breakdown = self.ppt.merit_breakdown
+        if breakdown is not None:
+            return breakdown.value_rank
+        return self.merit_model.tier(self.ppt), float(self.ppt.merit)
+
+    def _check_too_interrupt(self, utime: float, ra: float, dec: float) -> bool:
+        """Queue newly active TOOs and interrupt the current observation for one.
+
+        Every active TOO is queued before any interruption decision, so the
+        choice does not depend on registration order. A TOO is a candidate to
+        interrupt the observation in progress when:
+
+        1. It is active (``submit_time <= utime``) and not yet dispatched.
+        2. Its deadline, if any, has not passed.
+        3. Its target is visible now.
+        4. Its tier and value now beat the current observation's frozen tier
+           and value.
+
+        The best candidate must then pass normal dispatch admission (minimum
+        exposure, slew timing, deadline and constraints) before the current
+        observation is terminated. If none is admissible, the current
+        observation keeps running.
+
+        With no observation in progress nothing is interrupted; the TOO is
+        already in the queue for the next selection.
 
         Args:
             utime: Current simulation time
@@ -365,97 +401,113 @@ class QueueDITL(DITLMixin, DITLStats):
         Returns:
             True if a TOO interrupt occurred, False otherwise
         """
-        # Get pending TOOs that are ready and not executed
-        pending_toos = [
-            too
-            for too in self.too_register
-            if too.submit_time <= utime and not too.executed
-        ]
-
-        if not pending_toos:
+        active: list[tuple[TOORequest, Pointing]] = []
+        for too in self.too_register:
+            if too.submit_time > utime or too.executed:
+                continue
+            target = self._too_target(too)
+            if self.ppt is target or target.collected_seconds > 0:
+                too.executed = True
+                continue
+            active.append((too, target))
+        if self.ppt is None or not active:
             return False
 
-        # Get current PPT merit (if any)
-        current_merit = self.ppt.merit if self.ppt is not None else -float("inf")
-
-        # Check each pending TOO
-        for too in pending_toos:
-            # Skip if TOO merit is not higher than current
-            if too.merit <= current_merit:
+        current_rank = self._current_value_rank()
+        delivered_shares = (
+            self.merit_model.delivered_shares(self.queue.targets)
+            if self.merit_model.completion_deficit_weight > 0.0
+            else None
+        )
+        outranking: list[tuple[TOORequest, Pointing, MeritBreakdown]] = []
+        for too, target in active:
+            if too.deadline is not None and utime > too.deadline:
                 continue
-
-            # Create a temporary Pointing to check visibility
-            too_pointing = Pointing(
-                config=self.config,
-                ra=too.ra,
-                dec=too.dec,
-                obsid=too.obsid,
-                name=too.name,
-                fom=too.merit,
-                merit=too.merit,
-            )
-            too_pointing.exptime = too.exptime
-            too_pointing.visibility()
-
-            # Check if TOO is currently visible
-            if not too_pointing.visible(utime, utime):
+            visibility_window = target.visible(utime, utime)
+            if not visibility_window:
                 continue
-
-            if self._reserve_too_cleanup(utime):
-                # Keep the request pending and the current attitude held until
-                # cleanup/handoff finishes. Recheck visibility on the next tick.
-                return False
-
-            # TOO should interrupt! Log the event
-            self.log.log_event(
-                utime=utime,
-                event_type="TOO",
-                description=f"TOO interrupt: {too.name} (obsid={too.obsid}, merit={too.merit}) "
-                f"preempting current observation (merit={current_merit})",
-                obsid=too.obsid,
-                acs_mode=self.acs.acsmode,
+            value = self.merit_model.value_terms(
+                target,
+                utime,
+                base=too.merit,
+                visibility_window=visibility_window,
+                delivered_shares=delivered_shares,
             )
+            if value.value_rank > current_rank:
+                outranking.append((too, target, value))
+        if not outranking:
+            return False
 
-            # Terminate current observation if any
-            if self.ppt is not None:
-                self._terminate_ppt(
-                    utime,
-                    reason=f"Preempted by TOO {too.name} (obsid={too.obsid})",
-                    mark_done=False,  # Don't mark as done, it was interrupted
+        cleanup_end = self._too_cleanup_end(utime)
+        dispatch_time = (
+            utime + ceil((cleanup_end - utime) / self.step_size) * self.step_size
+        )
+        if dispatch_time >= self._simulation_end_deadline():
+            return False
+
+        # Admit a replacement before touching the current observation. Only
+        # the outranking TOOs are offered: every other target, including the
+        # interrupted observation, is held out of this selection.
+        interrupted = self.ppt
+        ppt_unavailable = self._ppt_unavailable
+        offered = {id(target) for _, target, _ in outranking}
+        held_out = [
+            target
+            for target in [*self.queue.targets, interrupted]
+            if not target.done and id(target) not in offered
+        ]
+        for target in held_out:
+            target.done = True
+        self.ppt = None
+        try:
+            if dispatch_time > utime:
+                # Check the actual post-cleanup dispatch tick without advancing
+                # ACS or queuing a command while the current task still owns it.
+                future_ra, future_dec, _ = self.acs.predicted_attitude(dispatch_time)
+                self._fetch_new_ppt(
+                    dispatch_time, future_ra, future_dec, enqueue_slew=False
                 )
+            else:
+                self._fetch_new_ppt(utime, ra, dec)
+            replacement = self.ppt
+        finally:
+            self.ppt = interrupted
+            for target in held_out:
+                target.done = False
+        if replacement is None:
+            self._ppt_unavailable = ppt_unavailable
+            return False
 
-            # Add TOO to queue with boosted merit to ensure immediate observation
-            # Use merit + 100000 to guarantee it's selected next
-            boosted_merit = too.merit + 100000.0
-            self.queue.add(
-                ra=too.ra,
-                dec=too.dec,
-                obsid=too.obsid,
-                name=too.name,
-                merit=boosted_merit,
-                exptime=too.exptime,
-            )
+        if dispatch_time > utime:
+            # Only a feasible replacement can stop collection. Keep the TOO
+            # pending and recheck admission at the real dispatch tick.
+            self._reserve_too_cleanup(utime)
+            self._ppt_unavailable = ppt_unavailable
+            return False
 
-            self.log.log_event(
-                utime=utime,
-                event_type="TOO",
-                description=f"Added TOO {too.name} to queue with boosted merit {boosted_merit}",
-                obsid=too.obsid,
-                acs_mode=self.acs.acsmode,
-            )
+        too, _, value = next(item for item in outranking if item[1] is replacement)
+        self.log.log_event(
+            utime=utime,
+            event_type="TOO",
+            description=(
+                f"TOO interrupt: {too.name} (obsid={too.obsid}, "
+                f"{value.describe()}) preempting current observation "
+                f"(tier={current_rank[0]}, value={current_rank[1]:g})"
+            ),
+            obsid=too.obsid,
+            acs_mode=self.acs.acsmode,
+        )
+        self._terminate_ppt(
+            utime,
+            reason=f"Preempted by TOO {too.name} (obsid={too.obsid})",
+            mark_done=False,  # Don't mark as done, it was interrupted
+        )
+        self.ppt = replacement
+        too.executed = True
+        return True
 
-            # Mark TOO as executed
-            too.executed = True
-
-            # Fetch the TOO as the new PPT
-            self._fetch_new_ppt(utime, ra, dec)
-
-            return True
-
-        return False
-
-    def _reserve_too_cleanup(self, utime: float) -> bool:
-        """Stop further collection and wait for teardown before a TOO slew."""
+    def _too_cleanup_end(self, utime: float) -> float:
+        """Return the earliest task end if collection stops for a TOO now."""
         ppt = self.ppt
         post_collection = self.config.payload.observation_timing.post_collection_seconds
         if (
@@ -466,13 +518,19 @@ class QueueDITL(DITLMixin, DITLStats):
             or utime <= ppt.collection_begin
             or utime >= ppt.end
         ):
-            return False
+            return utime
+        return min(ppt.end, utime + post_collection)
 
+    def _reserve_too_cleanup(self, utime: float) -> None:
+        """Stop future collection after a replacement passed delayed admission."""
+        cleanup_end = self._too_cleanup_end(utime)
+        ppt = self.ppt
+        assert ppt is not None and ppt.collection_end is not None
         if utime < ppt.collection_end:
             # Collection from earlier steps is already accounted for. Shorten
             # only the future window, then keep its full teardown budget.
             ppt.collection_end = utime
-            ppt.end = utime + post_collection
+            ppt.end = cleanup_end
             if self.plan and self.plan[-1].begin == ppt.begin:
                 self.plan[-1].collection_end = ppt.collection_end
                 self.plan[-1].end = ppt.end
@@ -486,10 +544,6 @@ class QueueDITL(DITLMixin, DITLStats):
                 obsid=ppt.obsid,
                 acs_mode=self.acs.acsmode,
             )
-
-        # If teardown was already underway, retain its original end rather than
-        # restarting the budget each time a pending TOO is checked.
-        return True
 
     def calc(self) -> bool:
         """
@@ -649,13 +703,14 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _handle_data_management(self, utime: float, mode: ACSMode) -> None:
         """Handle data generation during observations and downlink during passes."""
-        collection_seconds = self._collection_seconds_for_step(utime, mode)
-        if (
-            collection_seconds > 0
-            and self.ppt is not None
-            and self.ppt.exptime is not None
-        ):
-            self.ppt.exptime = max(0, self.ppt.exptime - collection_seconds)
+        collection_start, collection_stop = self._collection_interval_for_step(
+            utime, mode
+        )
+        collection_seconds = collection_stop - collection_start
+        if collection_seconds > 0 and self.ppt is not None:
+            # Credit the visit at the end of what was collected, not the tick
+            # start, so cadence scoring sees how recently the target was observed.
+            self.ppt.record_collection(collection_stop, collection_seconds)
         # Use the mixin method to process data generation and downlink
         data_generated, data_downlinked = self._process_data_management(
             utime, mode, self.step_size, collection_seconds=collection_seconds
@@ -769,300 +824,44 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _entry_obstype(self, entry: PlanEntry) -> ObsType | None:
         """Return the entry's obstype as an ObsType, or None if it cannot be coerced."""
-        obstype = getattr(entry, "obstype", None)
-        if isinstance(obstype, ObsType):
-            return obstype
-        try:
-            return ObsType(obstype)
-        except (TypeError, ValueError):
-            return None
+        return entry_obstype(entry)
 
-    def _mode_at_index(self, index: int) -> ACSMode | None:
-        """Return the telemetry mode at index as an ACSMode, or None if it cannot be coerced."""
-        mode = self.mode[index]
-        if isinstance(mode, ACSMode):
-            return mode
-        try:
-            return ACSMode(mode)
-        except (TypeError, ValueError):
-            return None
-
-    def _plan_execution_tolerance_deg(self) -> float:
-        """Return the pointing error tolerance, in degrees, used for plan/execution checks."""
-        tolerance = float(self.config.spacecraft_bus.attitude_control.slew_accuracy)
-        return tolerance if tolerance > 0 else 0.01
-
-    def _telemetry_length_mismatch(self) -> PlanExecutionMismatch | None:
-        """Return a mismatch if the per-step telemetry lists are not all the same length."""
-        lengths = {
-            "utime": len(self.utime),
-            "ra": len(self.ra),
-            "dec": len(self.dec),
-            "roll": len(self.roll),
-            "obsid": len(self.obsid),
-            "mode": len(self.mode),
-        }
-        if len(set(lengths.values())) == 1:
-            return None
-        return PlanExecutionMismatch(
-            utime=self.uend or self.ustart,
-            message=f"telemetry_length_mismatch: {lengths}",
-        )
-
-    def _science_start_time(self, entry: PlanEntry) -> float:
-        """Return the time science collection begins for an entry, after its slew."""
-        if entry.collection_begin is not None:
-            return entry.collection_begin
-        return float(entry.begin) + max(0.0, float(entry.slewtime))
-
-    def _window_indices(self, start: float, end: float) -> range:
-        """Return the range of telemetry indices whose utime falls within [start, end)."""
-        lo = max(0, bisect_left(self.utime, start))
-        hi = min(len(self.utime), bisect_left(self.utime, end))
-        return range(lo, hi)
-
-    def _execution_mismatch(
-        self,
-        utime: float,
-        interval: str,
-        mismatch_type: str,
-        detail: str,
-        obsid: int | None = None,
-    ) -> PlanExecutionMismatch:
-        """Build a PlanExecutionMismatch with a formatted, timestamped message."""
-        return PlanExecutionMismatch(
-            utime=utime,
-            message=f"{unixtime2date(utime)} {interval} {mismatch_type}: {detail}",
-            obsid=obsid,
-        )
-
-    def _mode_mismatch(
-        self,
-        entry: PlanEntry,
-        utime: float,
-        actual_mode: ACSMode | None,
-        expected_mode: ACSMode,
-        interval: str,
-    ) -> PlanExecutionMismatch:
-        """Build a mismatch for telemetry executing in an unexpected ACS mode."""
-        return self._execution_mismatch(
-            utime,
-            interval,
-            "mode_mismatch",
-            f"obsid {entry.obsid} expected {expected_mode} got {actual_mode}",
-            obsid=int(entry.obsid),
-        )
-
-    def _obsid_mismatch(
-        self, entry: PlanEntry, utime: float, actual_obsid: int, interval: str
-    ) -> PlanExecutionMismatch:
-        """Build a mismatch for telemetry reporting an unexpected obsid."""
-        return self._execution_mismatch(
-            utime,
-            interval,
-            "obsid_mismatch",
-            f"expected {int(entry.obsid)} got {int(actual_obsid)}",
-            obsid=int(entry.obsid),
-        )
-
-    def _pointing_mismatch(
-        self,
-        entry: PlanEntry,
-        utime: float,
-        error_deg: float,
-        interval: str,
-    ) -> PlanExecutionMismatch:
-        """Build a mismatch for pointing error exceeding tolerance."""
-        return self._execution_mismatch(
-            utime,
-            interval,
-            "pointing_mismatch",
-            f"obsid {int(entry.obsid)} error {error_deg:.3f} deg",
-            obsid=int(entry.obsid),
-        )
-
-    def _attitude_constraint_mismatch(
-        self, index: int, constraint_name: str, scope_label: str
-    ) -> PlanExecutionMismatch:
-        """Build a mismatch for an attitude constraint violation at a telemetry sample."""
-        mode = self._mode_at_index(index)
-        obsid = int(self.obsid[index])
-        return self._execution_mismatch(
-            self.utime[index],
-            "attitude",
-            "constraint_violation",
-            (
-                f"mode {mode.name if mode is not None else self.mode[index]} "
-                f"obsid {obsid} violates {constraint_name} ({scope_label}); "
-                f"ra={float(self.ra[index]):.3f} "
-                f"dec={float(self.dec[index]):.3f} "
-                f"roll={float(self.roll[index]):.3f}"
-            ),
-            obsid=obsid,
-        )
-
-    def _unknown_mode_mismatch(self, index: int) -> PlanExecutionMismatch:
-        """Build a mismatch for a telemetry sample whose mode could not be resolved."""
-        return self._execution_mismatch(
-            self.utime[index],
-            "attitude",
-            "unknown_mode",
-            f"cannot apply constraint scopes for mode {self.mode[index]}",
-            obsid=int(self.obsid[index]),
-        )
-
-    def _validate_plan_entry_structure(self) -> list[PlanExecutionMismatch]:
-        """Check exported plan entries for invalid intervals and non-monotonic ordering."""
-        mismatches: list[PlanExecutionMismatch] = []
-        previous_begin: float | None = None
-        for index, entry in enumerate(self.plan):
-            obstype = self._entry_obstype(entry)
-            if obstype is None or obstype == ObsType.PPT:
-                continue
-            begin = float(entry.begin)
-            end = float(entry.end)
-            obsid = int(entry.obsid) if entry.obsid is not None else None
-            if end <= begin:
-                mismatches.append(
-                    self._execution_mismatch(
-                        begin,
-                        "plan",
-                        "invalid_interval",
-                        (
-                            f"entry {index} obsid {obsid} ends at or before it begins "
-                            f"({end:.0f} <= {begin:.0f})"
-                        ),
-                        obsid=obsid,
-                    )
+    def _plan_validator(self) -> PlanExecutionValidator:
+        """Build a validator over this run's plan and executed telemetry."""
+        return PlanExecutionValidator(
+            config=self.config,
+            plan=self.plan,
+            utime=self.utime,
+            ra=self.ra,
+            dec=self.dec,
+            roll=self.roll,
+            obsid=self.obsid,
+            mode=self.mode,
+            end_time=self.uend or self.ustart,
+            passes=self.acs.passrequests.passes,
+            attitude_violation_at=self._attitude_violation_at,
+            rate_mismatches=[
+                PlanExecutionMismatch(
+                    utime=violation.utime,
+                    message=str(violation),
+                    obsid=violation.obsid,
                 )
-            if previous_begin is not None and begin < previous_begin:
-                mismatches.append(
-                    self._execution_mismatch(
-                        begin,
-                        "plan",
-                        "non_monotonic_begin",
-                        (
-                            f"entry {index} obsid {obsid} begins before previous "
-                            f"entry ({begin:.0f} < {previous_begin:.0f})"
-                        ),
-                        obsid=obsid,
-                    )
-                )
-            previous_begin = begin
-        return mismatches
-
-    def _validate_science_entry_execution(
-        self, entry: PlanEntry, tolerance_deg: float
-    ) -> list[PlanExecutionMismatch]:
-        """Check telemetry over a science entry's window against expected mode, obsid, and pointing."""
-        start = self._science_start_time(entry)
-        end = (
-            min(entry.end, entry.collection_end)
-            if entry.collection_end is not None
-            else float(entry.end)
+                for violation in self._attitude_rate_violations()
+            ],
+            dropped_science_windows=self._dropped_science_windows,
         )
-        mismatches: list[PlanExecutionMismatch] = []
-        if end <= start:
-            return mismatches
 
-        samples = 0
-        science_samples = 0
-        for i in self._window_indices(start, end):
-            utime = self.utime[i]
-            samples += 1
-            mode = self._mode_at_index(i)
-            if mode == ACSMode.SAA:
-                continue
-            if mode != ACSMode.SCIENCE:
-                mismatches.append(
-                    self._mode_mismatch(entry, utime, mode, ACSMode.SCIENCE, "science")
-                )
-                continue
+    def _attitude_violation_at(
+        self, index: int, mode: ACSMode
+    ) -> tuple[str, str] | None:
+        """Return the attitude constraint violated by telemetry sample ``index``.
 
-            science_samples += 1
-            if int(self.obsid[i]) != int(entry.obsid):
-                mismatches.append(
-                    self._obsid_mismatch(entry, utime, self.obsid[i], "science")
-                )
-
-            expected_attitude = entry.spacecraft_attitude or (
-                entry.ra,
-                entry.dec,
-                entry.roll,
-            )
-            error_deg = angular_separation(
-                float(self.ra[i]),
-                float(self.dec[i]),
-                float(expected_attitude[0]),
-                float(expected_attitude[1]),
-            )
-            if error_deg > tolerance_deg:
-                mismatches.append(
-                    self._pointing_mismatch(entry, utime, error_deg, "science")
-                )
-
-        if samples > 0 and science_samples == 0:
-            mismatches.append(
-                self._execution_mismatch(
-                    start,
-                    "science",
-                    "no_science_execution",
-                    f"obsid {int(entry.obsid)}",
-                    obsid=int(entry.obsid),
-                )
-            )
-        return mismatches
-
-    def _validate_execution_is_planned(self) -> list[PlanExecutionMismatch]:
-        """Check that every executed science/pass telemetry sample is covered by an exported plan entry."""
-        mismatches: list[PlanExecutionMismatch] = []
-
-        # Build obsid → entries lookups once to avoid O(N×M) linear plan scans.
-        science_by_obsid: dict[int, list[PlanEntry]] = {}
-        gsp_by_obsid: dict[int, list[PlanEntry]] = {}
-        for entry in self.plan:
-            obstype = self._entry_obstype(entry)
-            if obstype in (ObsType.AT, ObsType.TOO):
-                science_by_obsid.setdefault(int(entry.obsid), []).append(entry)
-            elif obstype == ObsType.GSP:
-                gsp_by_obsid.setdefault(int(entry.obsid), []).append(entry)
-
-        dropped_by_obsid: dict[int, list[tuple[float, float]]] = {}
-        for start, end, dropped_obsid in self._dropped_science_windows:
-            dropped_by_obsid.setdefault(dropped_obsid, []).append((start, end))
-
-        for i, utime in enumerate(self.utime):
-            mode = self._mode_at_index(i)
-            if mode == ACSMode.SCIENCE:
-                obsid = int(self.obsid[i])
-                entries = science_by_obsid.get(obsid, [])
-                covered = any(float(e.begin) <= utime < float(e.end) for e in entries)
-                if not covered:
-                    if any(s <= utime < e for s, e in dropped_by_obsid.get(obsid, [])):
-                        continue
-                    mismatches.append(
-                        self._execution_mismatch(
-                            utime,
-                            "execution",
-                            "unplanned_science",
-                            f"obsid {obsid} has no matching exported science entry",
-                            obsid=obsid,
-                        )
-                    )
-            elif mode == ACSMode.PASS:
-                obsid = int(self.obsid[i])
-                entries = gsp_by_obsid.get(obsid, [])
-                if not any(float(e.begin) <= utime <= float(e.end) for e in entries):
-                    mismatches.append(
-                        self._execution_mismatch(
-                            utime,
-                            "execution",
-                            "unplanned_contact",
-                            f"obsid {obsid} has no matching exported GSP entry",
-                            obsid=obsid,
-                        )
-                    )
-        return mismatches
+        Uses the per-step result recorded during the run when it covers every
+        sample, and re-evaluates the constraint otherwise.
+        """
+        if len(self._attitude_constraint_violations) == len(self.utime):
+            return self._attitude_constraint_violations[index]
+        return self._attitude_constraint_name_for_sample(index, mode)
 
     def _attitude_constraint_name_for_attitude(
         self,
@@ -1122,148 +921,15 @@ class QueueDITL(DITLMixin, DITLStats):
         configured attitude constraint scopes. An empty scope list disables
         validation for that mode.
         """
-        mismatches: list[PlanExecutionMismatch] = []
-        use_cached = len(self._attitude_constraint_violations) == len(self.utime)
-        for i in range(len(self.utime)):
-            mode = self._mode_at_index(i)
-            if mode is None:
-                mismatches.append(self._unknown_mode_mismatch(i))
-                continue
+        return self._plan_validator().attitude_constraint_mismatches()
 
-            violation = (
-                self._attitude_constraint_violations[i]
-                if use_cached
-                else self._attitude_constraint_name_for_sample(i, mode)
-            )
-            if violation is None:
-                continue
-
-            constraint_name, scope_label = violation
-            mismatches.append(
-                self._attitude_constraint_mismatch(i, constraint_name, scope_label)
-            )
-        return mismatches
-
-    def _matching_pass_for_entry(self, entry: PlanEntry) -> Pass | None:
-        """Find the ACS-scheduled pass matching a GSP plan entry's station and contact window."""
-        station = entry.station
-        contact_begin = entry.contact_begin
-        contact_end = entry.contact_end
-        for gspass in self.acs.passrequests.passes:
-            if station is not None and gspass.station != station:
-                continue
-            begin_matches = (
-                contact_begin is None
-                or abs(float(gspass.begin) - float(contact_begin)) <= 1e-6
-            )
-            end_matches = (
-                contact_end is None
-                or abs(float(gspass.end) - float(contact_end)) <= 1e-6
-            )
-            if begin_matches and end_matches:
-                return gspass
-        return None
-
-    def _validate_gsp_entry_execution(
-        self, entry: PlanEntry, tolerance_deg: float
-    ) -> list[PlanExecutionMismatch]:
-        """Check telemetry over a GSP entry's contact window against expected mode, obsid, and antenna pointing."""
-        contact_begin = entry.contact_begin
-        contact_end = entry.contact_end
-        start = (
-            float(contact_begin)
-            if contact_begin is not None
-            else self._science_start_time(entry)
-        )
-        end = float(contact_end) if contact_end is not None else float(entry.end)
-        mismatches: list[PlanExecutionMismatch] = []
-        if end <= start:
-            return mismatches
-
-        gspass = self._matching_pass_for_entry(entry)
-        missing_profile = gspass is None or not gspass.ra or not gspass.dec
-        if missing_profile:
-            mismatches.append(
-                self._execution_mismatch(
-                    start,
-                    "contact",
-                    "pass_profile_missing",
-                    f"obsid {int(entry.obsid)} station {entry.station}",
-                    obsid=int(entry.obsid),
-                )
-            )
-
-        for i in self._window_indices(start, end):
-            utime = self.utime[i]
-            mode = self._mode_at_index(i)
-            if mode != ACSMode.PASS:
-                mismatches.append(
-                    self._mode_mismatch(entry, utime, mode, ACSMode.PASS, "contact")
-                )
-
-            if int(self.obsid[i]) != int(entry.obsid):
-                mismatches.append(
-                    self._obsid_mismatch(entry, utime, self.obsid[i], "contact")
-                )
-
-            if missing_profile:
-                continue
-            assert gspass is not None
-            expected_ra, expected_dec, expected_roll = gspass.attitude_at(utime)
-            if expected_ra is None or expected_dec is None:
-                continue
-
-            actual_quat = attitude_to_quat(
-                float(self.ra[i]), float(self.dec[i]), float(self.roll[i])
-            )
-            expected_quat = attitude_to_quat(
-                float(expected_ra), float(expected_dec), float(expected_roll)
-            )
-            dot = min(1.0, abs(float(np.dot(actual_quat, expected_quat))))
-            error_deg = float(np.rad2deg(2.0 * np.arccos(dot)))
-            antenna_error = gspass.antenna_pointing_error(
-                float(self.ra[i]), float(self.dec[i]), float(self.roll[i]), utime
-            )
-            if antenna_error is not None:
-                error_deg = max(error_deg, antenna_error)
-            if error_deg > tolerance_deg:
-                mismatches.append(
-                    self._pointing_mismatch(entry, utime, error_deg, "contact")
-                )
-        return mismatches
+    def _validate_execution_is_planned(self) -> list[PlanExecutionMismatch]:
+        """Check that every executed science/pass telemetry sample is covered by an exported plan entry."""
+        return self._plan_validator().unplanned_execution_mismatches()
 
     def validate_plan_matches_execution(self) -> list[PlanExecutionMismatch]:
         """Return plan/ACS mismatches over exported science and contact intervals."""
-        mismatch = self._telemetry_length_mismatch()
-        if mismatch is not None:
-            return [mismatch]
-
-        mismatches = [
-            PlanExecutionMismatch(
-                utime=violation.utime,
-                message=str(violation),
-                obsid=violation.obsid,
-            )
-            for violation in self._attitude_rate_violations()
-        ]
-        tolerance_deg = self._plan_execution_tolerance_deg()
-        structure_mismatches = self._validate_plan_entry_structure()
-        if structure_mismatches:
-            return mismatches + structure_mismatches
-
-        for entry in self.plan:
-            obstype = self._entry_obstype(entry)
-            if obstype in (ObsType.AT, ObsType.TOO):
-                mismatches.extend(
-                    self._validate_science_entry_execution(entry, tolerance_deg)
-                )
-            elif obstype == ObsType.GSP:
-                mismatches.extend(
-                    self._validate_gsp_entry_execution(entry, tolerance_deg)
-                )
-        mismatches.extend(self.validate_attitude_constraints())
-        mismatches.extend(self._validate_execution_is_planned())
-        return mismatches
+        return self._plan_validator().validate()
 
     def _assert_plan_matches_execution(self) -> None:
         """Raise if the exported plan doesn't match executed telemetry, logging the first mismatch."""
@@ -2474,6 +2140,17 @@ class QueueDITL(DITLMixin, DITLStats):
             )
         elif utime >= self.ppt.end:
             self._terminate_ppt(utime, reason="Time window elapsed, ending observation")
+        elif (
+            self.ppt.deadline is not None
+            and self.ppt.collected_seconds == 0
+            and utime > self.ppt.deadline
+        ):
+            # A start deadline is missed if no science has begun by then,
+            # whatever delayed it (e.g. an unforeseen SAA entry).
+            self._terminate_ppt(
+                utime,
+                reason="Collection did not start before deadline, ending observation",
+            )
 
     def _constraint_name_for_science_attitude(
         self,
@@ -2916,6 +2593,27 @@ class QueueDITL(DITLMixin, DITLStats):
             else None,
         )
 
+    def _earliest_science_start(self, slew_end: float, ready_time: float) -> float:
+        """Return when science collection can begin once the payload is ready.
+
+        Mode is sampled on scheduler ticks. A tick taken while still slewing
+        reports SLEWING (which outranks SAA) and credits collection from
+        ``ready_time`` within that step. A tick at rest inside the SAA credits
+        nothing for its step, so advance past every such tick.
+        """
+        saa = self.acs.saa
+        if saa is None:
+            return ready_time
+        tick = (
+            self.ustart
+            + floor((ready_time - self.ustart) / self.step_size) * self.step_size
+        )
+        if tick < slew_end:
+            return ready_time
+        while tick < self.uend and saa.insaa(tick):
+            tick += self.step_size
+        return max(ready_time, tick)
+
     def _can_retry_without_current_ppt(self) -> bool:
         """Sanity check to see if we can retry fetching a new PPT without just
         returning the same one"""
@@ -2993,19 +2691,22 @@ class QueueDITL(DITLMixin, DITLStats):
         self._retry_fetch_without_current_ppt(utime, ra, dec)
         return True
 
-    def _fetch_new_ppt(self, utime: float, ra: float, dec: float) -> None:
-        """Fetch a new pointing target from the queue and enqueue slew command."""
+    def _fetch_new_ppt(
+        self, utime: float, ra: float, dec: float, *, enqueue_slew: bool = True
+    ) -> None:
+        """Admit a target, optionally without advancing ACS or commanding its slew."""
         # A just-issued charge/pass termination can replace tracking with a
         # braking arc. Commit that command before predicting a new slew's start.
-        pointing = self._process_due_acs_commands(utime)
-        if pointing is not None:
-            ra, dec = pointing[:2]
+        if enqueue_slew:
+            pointing = self._process_due_acs_commands(utime)
+            if pointing is not None:
+                ra, dec = pointing[:2]
         self._temporary_rejected_ppts = []
         self._retry_ppt_fetch_requested = False
         try:
             while True:
                 self._retry_ppt_fetch_requested = False
-                self._fetch_new_ppt_inner(utime, ra, dec)
+                self._fetch_new_ppt_inner(utime, ra, dec, enqueue_slew=enqueue_slew)
                 if self._retry_ppt_fetch_requested:
                     continue
                 return
@@ -3016,7 +2717,9 @@ class QueueDITL(DITLMixin, DITLStats):
             self._temporary_rejected_ppts = None
             self._retry_ppt_fetch_requested = False
 
-    def _fetch_new_ppt_inner(self, utime: float, ra: float, dec: float) -> None:
+    def _fetch_new_ppt_inner(
+        self, utime: float, ra: float, dec: float, *, enqueue_slew: bool = True
+    ) -> None:
         """Fetch one candidate PPT from the queue, validate it, and enqueue its slew.
 
         May request a retry (via `_retry_fetch_without_current_ppt`) if the
@@ -3188,6 +2891,29 @@ class QueueDITL(DITLMixin, DITLStats):
                         return
 
             self._complete_ppt_slew(slew, self.ppt, utime, execution_time)
+
+            # Queue selection checks the deadline against an estimated slew;
+            # enforce it again against the slew that will actually execute,
+            # and the time science is actually available (e.g. after SAA exit).
+            slew_end = execution_time + slew.slewtime
+            collection_start = self._earliest_science_start(
+                slew_end,
+                slew_end + self.config.payload.observation_timing.setup_seconds,
+            )
+            if self.ppt.deadline is not None and collection_start > self.ppt.deadline:
+                self.log.log_event(
+                    utime=utime,
+                    event_type="QUEUE",
+                    description=(
+                        f"Target {self.ppt.obsid} skipped - collection would start "
+                        f"{collection_start - self.ppt.deadline:.0f}s after its deadline"
+                    ),
+                    obsid=self.ppt.obsid,
+                    acs_mode=self.acs.acsmode,
+                )
+                self._retry_fetch_without_current_ppt(utime, ra, dec)
+                return
+
             violation = self._slew_attitude_constraint_violation(slew, ACSMode.SLEWING)
             if violation is not None:
                 violation_time, constraint_name, scope_label = violation
@@ -3294,6 +3020,8 @@ class QueueDITL(DITLMixin, DITLStats):
             self.ppt.set_collection_window(timing)
             if self.ppt.exposure < self.ppt.ss_min:
                 self._retry_fetch_without_current_ppt(utime, ra, dec)
+                return
+            if not enqueue_slew:
                 return
             self.acs.slew_dists.append(slew.slewdist)
 
