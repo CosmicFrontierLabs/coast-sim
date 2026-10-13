@@ -257,7 +257,7 @@ class TestPassEntries:
     def test_passes_are_predicted_when_none_exist(
         self, ditl: DITL, gspass: Pass, contact: PlanEntry, passing_acs: Mock
     ) -> None:
-        def predict(year: int, day: int, length: int) -> None:
+        def predict(year: int, day: int, length: int, **_: object) -> None:
             ditl.acs.passrequests.passes = [gspass]
 
         ditl.acs.passrequests.passes = []
@@ -266,7 +266,9 @@ class TestPassEntries:
 
         ditl.calc()
 
-        ditl.acs.passrequests.get.assert_called_once_with(2018, 331, 1)
+        ditl.acs.passrequests.get.assert_called_once_with(
+            2018, 331, 1, apply_scheduling=False
+        )
         assert ditl.acs.passrequests.passes == [gspass]
 
     def test_pass_prediction_covers_the_final_calendar_day(
@@ -283,7 +285,9 @@ class TestPassEntries:
 
         ditl._resolve_planned_passes()
 
-        ditl.acs.passrequests.get.assert_called_once_with(2018, 331, 2)
+        ditl.acs.passrequests.get.assert_called_once_with(
+            2018, 331, 2, apply_scheduling=False
+        )
 
     def test_contact_slews_starts_and_ends_on_plan(
         self,

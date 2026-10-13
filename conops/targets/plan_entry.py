@@ -310,7 +310,7 @@ class PlanEntry(BaseModel):
         last observed.
 
         Args:
-            utime: Time the collection was made.
+            utime: Time the collection ended.
             seconds: Seconds of science collected.
         """
         if seconds <= 0:
@@ -353,15 +353,26 @@ class PlanEntry(BaseModel):
             self.begin, self.slewtime, self.end
         )
 
-    def collection_seconds_between(self, begin: float, end: float) -> float:
-        """Intersect one time interval with this observation's collection window."""
+    def collection_interval_between(
+        self, begin: float, end: float
+    ) -> tuple[float, float]:
+        """Intersect one time interval with this observation's collection window.
+
+        Returns the (start, stop) of the overlap; stop == start when empty.
+        """
         start = (
             self.collection_begin
             if self.collection_begin is not None
             else self.begin + max(0.0, float(self.slewtime))
         )
         stop = self.collection_end if self.collection_end is not None else self.end
-        return max(0.0, min(end, stop, self.end) - max(begin, start, self.begin))
+        overlap_start = max(begin, start, self.begin)
+        return overlap_start, max(overlap_start, min(end, stop, self.end))
+
+    def collection_seconds_between(self, begin: float, end: float) -> float:
+        """Seconds of overlap between one interval and the collection window."""
+        start, stop = self.collection_interval_between(begin, end)
+        return stop - start
 
     @computed_field  # type: ignore[prop-decorator]
     @property

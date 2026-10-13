@@ -1049,12 +1049,14 @@ class PassTimes:
         end_idx: int,
         timestamp_unix: np.ndarray,
         gs_to_sat_unit: np.ndarray,
+        apply_scheduling: bool = True,
     ) -> tuple[Pass, bool] | None:
         """Build a Pass for one visibility window.
 
         Returns None if the window is too short, loses the scheduling-probability
-        dice roll, or no constraint-safe tracking attitude profile can be built.
-        Otherwise returns (gspass, profile_safe).
+        dice roll (only when ``apply_scheduling``), or no constraint-safe
+        tracking attitude profile can be built. Otherwise returns
+        (gspass, profile_safe).
         """
         global_start_idx = startindex + start_idx
         global_end_idx = (
@@ -1072,12 +1074,13 @@ class PassTimes:
             return None
 
         # Combine global and station-specific schedule probabilities
-        combined_prob = self.schedule_chance * station.schedule_probability
-        should_schedule = combined_prob >= 1.0 or (
-            combined_prob > 0.0 and self._random() <= combined_prob
-        )
-        if not should_schedule:
-            return None
+        if apply_scheduling:
+            combined_prob = self.schedule_chance * station.schedule_probability
+            should_schedule = combined_prob >= 1.0 or (
+                combined_prob > 0.0 and self._random() <= combined_prob
+            )
+            if not should_schedule:
+                return None
 
         target_vectors = -gs_to_sat_unit[start_idx:end_idx]
         target_ra, target_dec = np.degrees(vec2radec(target_vectors.T))
@@ -1124,8 +1127,20 @@ class PassTimes:
 
         return gspass, profile_safe
 
-    def get(self, year: int, day: int, length: int = 1) -> None:
-        """Calculate the passes using rust_ephem GroundEphemeris for vectorized operations."""
+    def get(
+        self, year: int, day: int, length: int = 1, *, apply_scheduling: bool = True
+    ) -> None:
+        """Calculate the passes using rust_ephem GroundEphemeris for vectorized operations.
+
+        Args:
+            year: Year of the first day.
+            day: Day of year of the first day.
+            length: Number of days to predict.
+            apply_scheduling: Apply the scheduling-probability draw and overlap
+                deconfliction that select new contact opportunities. Pass False
+                to reconstruct the physical passes for contacts that are
+                already scheduled, so a replay cannot drop them.
+        """
         ustart = ics_date_conv(f"{year}-{day:03d}-00:00:00")
         self.dropped_constraint_passes = []
 
@@ -1158,6 +1173,7 @@ class PassTimes:
                     end_idx,
                     timestamp_unix,
                     gs_to_sat_unit,
+                    apply_scheduling,
                 )
                 if result is None:
                     continue
@@ -1169,4 +1185,5 @@ class PassTimes:
 
         # Order the passes by time
         self.passes.sort(key=lambda x: x.begin, reverse=False)
-        self._deconflict_overlapping_passes()
+        if apply_scheduling:
+            self._deconflict_overlapping_passes()
