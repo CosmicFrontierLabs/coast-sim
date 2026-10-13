@@ -541,6 +541,15 @@ class ACS:
         """Mark the current held attitude as no longer collecting science."""
         self.science_observation_active = False
 
+    def cancel_pending_slews(self, obsid: int) -> None:
+        """Drop queued target slews for ``obsid`` that have not started yet."""
+        self.command_queue = [
+            command
+            for command in self.command_queue
+            if command.command_type != ACSCommandType.SLEW_TO_TARGET
+            or self._command_obsid(command) != obsid
+        ]
+
     def _enqueue_slew(
         self,
         ra: float,

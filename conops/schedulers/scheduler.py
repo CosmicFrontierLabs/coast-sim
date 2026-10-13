@@ -60,8 +60,12 @@ class DumbScheduler:
         # Default slew time for the first observation in a plan (seconds)
         return 180
 
-    def schedule(self) -> None:
-        """Main scheduling loop."""
+    def schedule(self) -> Plan:
+        """Main scheduling loop.
+
+        Returns:
+            Plan: The scheduled plan, also kept as ``self.plan``.
+        """
         if self.config is not None and any(
             panel.single_axis_drive is not None
             and bool(panel.drive_control.sun_tracking_modes)
@@ -290,3 +294,4 @@ class DumbScheduler:
             )
         else:
             print(f"Scheduled {len(self.plan)} targets")
+        return self.plan

@@ -1,6 +1,7 @@
 from datetime import datetime
 
-from ..targets import Plan, Queue
+from ..targets import Plan
+from .protocols import DispatchPolicy
 
 
 class DumbQueueScheduler:
@@ -8,7 +9,7 @@ class DumbQueueScheduler:
 
     def __init__(
         self,
-        queue: Queue,
+        queue: DispatchPolicy,
         begin: datetime | None = None,
         end: datetime | None = None,
         plan: Plan | None = None,
