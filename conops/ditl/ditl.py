@@ -14,8 +14,8 @@ from ..common import (
     scbodyvector,
     unixtime2date,
 )
-from ..common.ephemeris import position_vectors
 from ..common.enums import ACSCommandType
+from ..common.ephemeris import position_vectors
 from ..common.vector import attitude_to_quat
 from ..config import AttitudeConstraintScope, MissionConfig
 from ..config.constraint import (
@@ -59,8 +59,8 @@ class DITL(DITLMixin, DITLStats):
     - Charging entries (CHARGE) slew to the charging attitude and charge
       until ``end``.
 
-    The plan is authoritative: no science, contact or charging activity
-    outside it is started. Use
+    Science, contact and charging activities not in the plan are never
+    started. Use
     :meth:`validate_plan_matches_execution` after :meth:`calc` to compare the
     executed telemetry with the plan.
 

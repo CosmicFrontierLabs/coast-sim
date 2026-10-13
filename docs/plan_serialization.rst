@@ -69,12 +69,12 @@ science entries (``PPT``, ``AT``, ``TOO``) slew to the target and collect until 
 ground-station entries (``GSP``) slew onto the pass tracking profile, start the contact at
 ``contact_begin`` and end it at ``end``; charging entries (``CHARGE``) charge until ``end``.
 Passes are predicted from the configured ground stations and matched to ``GSP`` entries by
-station and contact window, and passes the plan does not schedule are not flown.  Entries
+station and contact window; passes not in the plan are skipped.  Entries
 of any other type are logged and skipped.
 
 Executing a plan saved by :class:`~conops.ditl.queue_ditl.QueueDITL` with the same
-configuration and ephemeris reproduces that run's timeline.  To check how a plan from any
-source actually executed, compare it with the flown telemetry:
+configuration and ephemeris reproduces that run's timeline.  To list where execution differed
+from the plan:
 
 .. code-block:: python
 
@@ -82,8 +82,7 @@ source actually executed, compare it with the flown telemetry:
       print(mismatch)
 
 Unlike :class:`~conops.ditl.queue_ditl.QueueDITL`, which raises when its own plan does not
-match its execution, ``DITL`` returns the mismatches so that a plan built elsewhere can be
-assessed without stopping the run.
+match its execution, ``DITL`` returns the mismatches without raising.
 
 The compatibility ``PlanSchema`` class can still load a plan when preserving that type is
 important to existing callers:

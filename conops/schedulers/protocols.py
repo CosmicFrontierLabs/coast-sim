@@ -1,4 +1,4 @@
-"""Contracts that scheduler implementations satisfy.
+"""Protocols for scheduler implementations.
 
 COASTSim runs a scheduler in one of two ways:
 
@@ -7,8 +7,8 @@ COASTSim runs a scheduler in one of two ways:
   free, so every decision sees the simulated state at that moment.
 - **Planning** (open loop): a :class:`Planner` builds a whole
   :class:`~conops.targets.Plan` up front, and :class:`~conops.ditl.DITL`
-  executes it. ``DITL.validate_plan_matches_execution`` then reports where
-  the flown timeline departed from the plan.
+  executes it. ``DITL.validate_plan_matches_execution`` then lists where
+  execution differed from the plan.
 """
 
 from collections.abc import Callable
