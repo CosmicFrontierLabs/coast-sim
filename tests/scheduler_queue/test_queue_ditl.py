@@ -3486,7 +3486,7 @@ class TestCalcMethod:
         queue_ditl.acs.pointing = Mock(return_value=(10.0, 20.0, 0.0, 1001))
         queue_ditl._assert_plan_matches_execution = Mock()
 
-        ppt = PlanEntry(config=queue_ditl.config)
+        ppt = Pointing(config=queue_ditl.config)
         ppt.obstype = ObsType.AT
         ppt.begin = begin.timestamp()
         ppt.end = begin.timestamp() + 86400.0
