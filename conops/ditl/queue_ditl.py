@@ -1,6 +1,6 @@
 from bisect import bisect_left
 from datetime import datetime, timezone
-from math import ceil
+from math import ceil, floor
 from typing import Protocol, TypedDict
 
 import numpy as np
@@ -642,9 +642,14 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _handle_data_management(self, utime: float, mode: ACSMode) -> None:
         """Handle data generation during observations and downlink during passes."""
-        collection_seconds = self._collection_seconds_for_step(utime, mode)
+        collection_start, collection_stop = self._collection_interval_for_step(
+            utime, mode
+        )
+        collection_seconds = collection_stop - collection_start
         if collection_seconds > 0 and self.ppt is not None:
-            self.ppt.record_collection(utime, collection_seconds)
+            # Credit the visit at the end of what was collected, not the tick
+            # start, so cadence scoring sees how recently the target was observed.
+            self.ppt.record_collection(collection_stop, collection_seconds)
         # Use the mixin method to process data generation and downlink
         data_generated, data_downlinked = self._process_data_management(
             utime, mode, self.step_size, collection_seconds=collection_seconds
@@ -2074,6 +2079,17 @@ class QueueDITL(DITLMixin, DITLStats):
             )
         elif utime >= self.ppt.end:
             self._terminate_ppt(utime, reason="Time window elapsed, ending observation")
+        elif (
+            self.ppt.deadline is not None
+            and self.ppt.collected_seconds == 0
+            and utime > self.ppt.deadline
+        ):
+            # A start deadline is missed if no science has begun by then,
+            # whatever delayed it (e.g. an unforeseen SAA entry).
+            self._terminate_ppt(
+                utime,
+                reason="Collection did not start before deadline, ending observation",
+            )
 
     def _constraint_name_for_science_attitude(
         self,
@@ -2516,6 +2532,23 @@ class QueueDITL(DITLMixin, DITLStats):
             else None,
         )
 
+    def _earliest_science_start(self, ready_time: float) -> float:
+        """Return when science collection can begin once the payload is ready.
+
+        Mode is sampled on scheduler ticks, and a tick spent in the SAA credits
+        no collection for that step, so advance past every SAA tick.
+        """
+        saa = self.acs.saa
+        if saa is None:
+            return ready_time
+        tick = (
+            self.ustart
+            + floor((ready_time - self.ustart) / self.step_size) * self.step_size
+        )
+        while tick < self.uend and saa.insaa(tick):
+            tick += self.step_size
+        return max(ready_time, tick)
+
     def _can_retry_without_current_ppt(self) -> bool:
         """Sanity check to see if we can retry fetching a new PPT without just
         returning the same one"""
@@ -2790,8 +2823,9 @@ class QueueDITL(DITLMixin, DITLStats):
             self._complete_ppt_slew(slew, self.ppt, utime, execution_time)
 
             # Queue selection checks the deadline against an estimated slew;
-            # enforce it again against the slew that will actually execute.
-            collection_start = (
+            # enforce it again against the slew that will actually execute,
+            # and the time science is actually available (e.g. after SAA exit).
+            collection_start = self._earliest_science_start(
                 execution_time
                 + slew.slewtime
                 + self.config.payload.observation_timing.setup_seconds

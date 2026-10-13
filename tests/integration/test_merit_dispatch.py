@@ -1,9 +1,10 @@
 """End-to-end dispatch behaviour of the dynamic merit model in QueueDITL."""
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import timedelta
 from unittest.mock import patch
 
+import numpy as np
 import pytest
 import rust_ephem
 
@@ -24,6 +25,7 @@ from conops.config.observation_categories import (
     ObservationCategories,
     ObservationCategory,
 )
+from conops.simulation import SAA
 from scripts.check_default_plan_output import (
     SCENARIO_BEGIN,
     DeterministicConstraint,
@@ -41,10 +43,12 @@ def _run(
     categories: Sequence[ObservationCategory] = (),
     toos: Sequence[dict[str, float | int | str | None]] = (),
     hours: int = 4,
+    prepare: Callable[[QueueDITL], None] | None = None,
+    step_size: int = 300,
 ) -> QueueDITL:
     """Run QueueDITL over an unconstrained sky with the given requests."""
     end = SCENARIO_BEGIN + timedelta(hours=hours)
-    ephem = DeterministicEphemeris(SCENARIO_BEGIN, end)
+    ephem = DeterministicEphemeris(SCENARIO_BEGIN, end, step_size_seconds=step_size)
     config = MissionConfig(
         constraint=DeterministicConstraint(),
         ground_stations=GroundStationRegistry(stations=[]),
@@ -68,6 +72,8 @@ def _run(
         ditl.queue.add(**target)  # type: ignore[arg-type]
     for too in toos:
         ditl.submit_too(**too)  # type: ignore[arg-type]
+    if prepare is not None:
+        prepare(ditl)
     provenance = {"ut1": {"available": False}, "polar_motion": {"available": False}}
     with patch.object(rust_ephem, "get_eop_provenance", lambda: provenance):
         assert ditl.calc()
@@ -245,3 +251,69 @@ class TestTargetOfOpportunity:
         higher_entry = next(e for e in ditl.plan if e.obsid == 30002)
         assert higher_entry.collection_begin <= submit + 200
         assert _science_order(ditl)[:2] == [10, 30002]
+
+
+class TestCadenceDispatch:
+    def test_cadence_credits_the_end_of_the_collected_interval(self) -> None:
+        """A visit ending mid-step must not look a full step older than it is."""
+        visit = {
+            "ra": 20.0,
+            "dec": 0.0,
+            "exptime": 900,
+            "ss_min": 300,
+            "ss_max": 300,
+        }
+        ditl = _run(
+            [
+                {**visit, "obsid": 10, "name": "A", "merit": 100.0},
+                {**visit, "obsid": 11, "name": "B", "merit": 99.0},
+            ],
+            weights=TargetConfig(cadence_weight=50.0),
+            categories=[
+                ObservationCategory(
+                    name="Monitor", obsid_min=10, obsid_max=12, cadence_seconds=60
+                )
+            ],
+            hours=1,
+            step_size=60,
+        )
+
+        assert _science_order(ditl)[:6] == [10, 11, 10, 11, 10, 11]
+
+
+class TestDeadlineScienceAvailability:
+    def test_target_is_skipped_when_saa_delays_science_past_its_deadline(
+        self,
+    ) -> None:
+        """The slew fits the deadline, but science only resumes after SAA exit."""
+
+        def in_saa_at_start(ditl: QueueDITL) -> None:
+            saa = SAA()
+            saa.ephem = ditl.ephem
+            saa.saatimes = np.array([[BEGIN, BEGIN + 599]])
+            saa.calculated = True
+            ditl.acs.saa = saa
+
+        ditl = _run(
+            [
+                {
+                    "obsid": 10,
+                    "name": "A",
+                    "ra": 20.0,
+                    "dec": 0.0,
+                    "merit": 100.0,
+                    "exptime": 600,
+                    "ss_min": 100,
+                    "ss_max": 600,
+                    "deadline": BEGIN + 180,
+                }
+            ],
+            hours=1,
+            prepare=in_saa_at_start,
+            step_size=60,
+        )
+
+        assert _science_order(ditl) == []
+        assert any(
+            "collection would start" in event.description for event in ditl.log.events
+        )
