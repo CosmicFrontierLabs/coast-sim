@@ -77,7 +77,10 @@ class RollingHorizonDITL(DITL):
     plus a worst-case slew and the setup time) triggers a rapid replan at once.
     In a rapid replan the observation running at the commit cutoff is cut
     there if ``allow_interrupts`` is set and the ToO's tier and value,
-    evaluated now, beat the tier and value frozen onto that observation.
+    evaluated now, beat the tier and value frozen onto that observation. When
+    several ToOs need a rapid replan at once, the highest-ranked one decides.
+    Science already collected is kept, and the cut observation's cleanup
+    follows it.
 
     Each replan is recorded in :attr:`replans`, and
     :meth:`too_response_times` reports how long each ToO waited for its first
@@ -233,15 +236,13 @@ class RollingHorizonDITL(DITL):
                 changed = had_active and self._active_entry is None
         return super()._execute_plan(utime) or changed
 
-    def _credit_collection(
-        self, entry: PlanEntry, utime: float, seconds: float
-    ) -> None:
+    def _credit_collection(self, entry: PlanEntry, start: float, stop: float) -> None:
         """Credit collected science to the target that requested it."""
         target = self._target_for(int(entry.obsid))
         if target is None:
             return
-        target.record_collection(utime, seconds)
-        self._first_collection.setdefault(int(entry.obsid), utime)
+        target.record_collection(stop, stop - start)
+        self._first_collection.setdefault(int(entry.obsid), start)
         for too in self.too_register:
             if too.obsid == entry.obsid:
                 too.executed = True
@@ -303,9 +304,23 @@ class RollingHorizonDITL(DITL):
                 + self.config.payload.observation_timing.setup_seconds
                 + self.step_size
             )
-            for too in activated:
-                if too.deadline is not None and too.deadline < next_effect:
-                    return ReplanReason.RAPID, too
+            urgent = [
+                too
+                for too in activated
+                if too.deadline is not None and too.deadline < next_effect
+            ]
+            if urgent:
+                # One replan serves them all; the highest-ranked one decides
+                # whether it interrupts the observation in progress.
+                trigger = max(
+                    urgent,
+                    key=lambda too: (
+                        self.merit_model.value_terms(
+                            self._too_targets[id(too)], utime
+                        ).value_rank
+                    ),
+                )
+                return ReplanReason.RAPID, trigger
         return None, None
 
     def _ceil_step(self, utime: float) -> float:
@@ -393,7 +408,9 @@ class RollingHorizonDITL(DITL):
         """Cut the observation running at ``cutoff`` if the ToO outranks it.
 
         That observation is committed but may not have started yet, when the
-        commit lead time reaches into it.
+        commit lead time reaches into it. Collection stops no earlier than
+        ``utime``, as science before then is already collected, and the
+        observation ends after its cleanup.
         """
         entry = next(
             (
@@ -418,15 +435,23 @@ class RollingHorizonDITL(DITL):
         # observation's slew ends, if that is after the cutoff.
         arrival = float(entry.begin) + float(entry.slewtime)
         cut = max(cutoff, self._ceil_step(arrival))
-        if cut >= float(entry.end):
-            return None
-        entry.end = cut
+        end = cut
+        collection = None
         if entry.collection_begin is not None and entry.collection_end is not None:
             post = self.config.payload.observation_timing.post_collection_seconds
-            entry.collection_begin = min(entry.collection_begin, cut)
-            entry.collection_end = max(
-                entry.collection_begin, min(entry.collection_end, cut - post)
-            )
+            begin = min(float(entry.collection_begin), cut)
+            # Science before ``utime`` is already collected, so collection
+            # cannot stop before then; cleanup follows wherever it stops.
+            collected = min(float(entry.collection_end), max(begin, utime))
+            stop = max(collected, min(float(entry.collection_end), cut - post))
+            if stop > begin:
+                end = max(cut, self._ceil_step(stop + post))
+            collection = (begin, stop)
+        if end >= float(entry.end):
+            return None
+        entry.end = end
+        if collection is not None:
+            entry.collection_begin, entry.collection_end = collection
         self.log.log_event(
             utime=utime,
             event_type="TOO",

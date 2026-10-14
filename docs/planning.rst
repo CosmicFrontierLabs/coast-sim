@@ -143,7 +143,9 @@ rebuilds it as the simulation runs:
    worst-case slew and the setup time), a **rapid replan** runs at once. In a rapid
    replan the observation running at the commit cutoff, started or not, is cut short
    there when ``allow_interrupts`` is set and the ToO's tier and value, evaluated now,
-   beat the tier and value frozen onto that observation.
+   beat the tier and value frozen onto that observation. Science it has already
+   collected is kept, and its cleanup follows the cut. If several ToOs need a rapid
+   replan at the same time, the highest-ranked one decides whether to interrupt.
 
 .. code-block:: python
 

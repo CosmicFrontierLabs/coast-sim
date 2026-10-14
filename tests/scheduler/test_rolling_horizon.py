@@ -202,6 +202,67 @@ class TestTargetsOfOpportunity:
 
         assert ReplanReason.RAPID not in [r.reason for r in ditl.replans]
 
+    def test_interrupt_keeps_science_already_collected(self) -> None:
+        """With no lead time, cleanup follows the cut instead of preceding it."""
+        targets = _long_observation()
+        assert targets[0].config is not None
+        targets[0].config.payload.observation_timing.cleanup_seconds = 120
+
+        ditl = _run(
+            3,
+            targets,
+            toos=({**GRB, "deadline": T0 + 30 * MIN},),
+            replan_interval=timedelta(hours=4),
+        )
+
+        assert ditl.replans[-1].interrupted_obsid == 1
+        planned = sum(
+            e.collection_seconds_between(e.begin, e.end)
+            for e in ditl.plan
+            if e.obstype.name == "AT"
+        )
+        assert planned == pytest.approx(_executed_seconds(ditl))
+        assert ditl.validate_plan_matches_execution() == []
+
+    def test_simultaneous_urgent_toos_interrupt_for_the_highest_ranked(
+        self,
+    ) -> None:
+        """A low-merit ToO submitted alongside must not block the interrupt."""
+        low = {
+            **GRB,
+            "obsid": 1_000_002,
+            "name": "Low",
+            "merit": 1.0,
+            "deadline": T0 + 30 * MIN,
+        }
+        ditl = _run(
+            3,
+            _long_observation(),
+            toos=(low, {**GRB, "deadline": T0 + 30 * MIN}),
+            replan_interval=timedelta(hours=4),
+        )
+
+        rapid = [r for r in ditl.replans if r.reason is ReplanReason.RAPID]
+        assert [r.trigger_obsid for r in rapid] == [GRB["obsid"]]
+        assert rapid[0].interrupted_obsid == 1
+        assert ditl.too_response_times()[1_000_001] is not None
+
+    def test_response_time_runs_to_the_start_of_collection(self) -> None:
+        """Collection starting partway through a step counts from that point."""
+        ditl = _run(
+            3,
+            _long_observation(),
+            toos=({**GRB, "deadline": T0 + 30 * MIN},),
+            replan_interval=timedelta(hours=4),
+        )
+
+        entry = next(e for e in ditl.plan if e.obsid == GRB["obsid"])
+        assert entry.collection_begin is not None
+        assert (float(entry.collection_begin) - T0) % 60
+        assert ditl.too_response_times()[1_000_001] == pytest.approx(
+            float(entry.collection_begin) - float(GRB["submit_time"])  # type: ignore[arg-type]
+        )
+
 
 class TestArguments:
     @pytest.mark.parametrize(
