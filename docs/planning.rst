@@ -139,10 +139,11 @@ rebuilds it as the simulation runs:
 3. **Targets of Opportunity.** A ToO submitted with
    :meth:`~conops.ditl.rolling_ditl.RollingHorizonDITL.submit_too` joins the target
    pool when it becomes active and goes into the next scheduled plan. If its
-   ``deadline`` falls before that plan could take effect, a **rapid replan** runs at
-   once. In a rapid replan the observation in progress is cut short at the commit
-   cutoff when ``allow_interrupts`` is set and the ToO's tier and value, evaluated
-   now, beat the tier and value frozen onto that observation.
+   ``deadline`` falls before that plan could start collecting it (its lead time plus a
+   worst-case slew and the setup time), a **rapid replan** runs at once. In a rapid
+   replan the observation running at the commit cutoff, started or not, is cut short
+   there when ``allow_interrupts`` is set and the ToO's tier and value, evaluated now,
+   beat the tier and value frozen onto that observation.
 
 .. code-block:: python
 
@@ -170,6 +171,9 @@ rebuilds it as the simulation runs:
        print(replan.reason.value, replan.kept, replan.dropped, replan.added)
    print(ditl.too_response_times())       # seconds to first science, by obsid
    assert ditl.validate_plan_matches_execution() == []
+
+Pass ``planner`` to build each plan with a subclass of ``PriorityPlanner``, and
+``planner_options`` for its extra keyword arguments.
 
 **Results**
 
