@@ -12,12 +12,7 @@ from conops.common.enums import ACSMode
 from conops.common.vector import quaternion_attitude_delta
 from conops.config.groundstation import GroundStation
 
-from ..config import (
-    FaultManagementRun,
-    MissionConfig,
-    SolarArrayDriveState,
-    bind_ephemeris,
-)
+from ..config import FaultManagementRun, MissionConfig, SolarArrayDriveState
 from ..simulation.acs import ACS
 from ..simulation.momentum import MomentumSample, StoredMomentumTracker
 from ..simulation.passes import Pass, PassTimes
@@ -128,14 +123,34 @@ class DITLMixin:
         # Initialize telemetry container
         self.telemetry = Telemetry()
 
-        # Bind the ephemeris (given, or already on the constraint) to the config
-        if ephem is None:
+        # Set ephemeris if provided
+        if ephem is not None:
+            self.ephem = ephem
+            self.config.constraint.ephem = ephem
+            # Also set ephemeris on star tracker constraints
+            self.config.spacecraft_bus.star_trackers.set_ephem(ephem)
+            self.config.spacecraft_bus.radiators.set_ephem(ephem)
+        else:
             assert config.constraint.ephem is not None, (
                 "Ephemeris must be set in Config Constraint"
             )
-            ephem = config.constraint.ephem
-        self.ephem = ephem
-        bind_ephemeris(self.config, ephem)
+            self.ephem = config.constraint.ephem
+            # Also set ephemeris on star tracker constraints
+            self.config.spacecraft_bus.star_trackers.set_ephem(config.constraint.ephem)
+            self.config.spacecraft_bus.radiators.set_ephem(config.constraint.ephem)
+
+        # Keep mission-level planning/FOR constraints synchronized with star-tracker
+        # hard exclusions.
+        self.config.constraint.star_tracker_hard_constraint = (
+            self.config.spacecraft_bus.star_trackers.startracker_hard_constraint
+        )
+        self.config.constraint.star_tracker_soft_constraint = (
+            self.config.spacecraft_bus.star_trackers.startracker_constraint
+        )
+        self.config.constraint.radiator_hard_constraint = (
+            self.config.spacecraft_bus.radiators.radiator_hard_constraint
+        )
+        self.config.constraint.invalidate_combined_constraint_cache()
 
         # Override begin/end if provided, else use limits of ephemeris
         if begin is not None:

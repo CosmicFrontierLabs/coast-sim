@@ -15,7 +15,7 @@ import rust_ephem
 
 from ..common import ACSMode, ObsType
 from ..common.enums import SlewAlgorithm
-from ..config import MissionConfig, bind_ephemeris
+from ..config import MissionConfig
 from ..config.constraint import attitude_constraint_name_for_scopes
 from ..simulation.acs import ACS
 from ..simulation.passes import Pass, PassTimes
@@ -62,7 +62,6 @@ class SchedulingContext:
             raise ValueError("config.constraint.ephem must be set to plan")
         self.config = config
         self.ephem: rust_ephem.Ephemeris = ephem
-        bind_ephemeris(config, ephem)
         self.begin = begin
         self.end = end
         self.ustart = begin.timestamp()

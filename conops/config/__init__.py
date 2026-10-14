@@ -5,7 +5,7 @@ from .communications import (
     BandCapability,
     CommunicationsSystem,
 )
-from .config import MissionConfig, bind_ephemeris
+from .config import MissionConfig
 from .constants import DAY_SECONDS, DTOR
 from .constraint import AttitudeConstraintScope, Constraint, DefaultConstraint
 from .data_generator import DataGeneration
@@ -82,7 +82,6 @@ __all__ = [
     "ReplanSettings",
     "SchedulerConfig",
     "SchedulerMode",
-    "bind_ephemeris",
     "Constraint",
     "DefaultConstraint",
     "DataGeneration",

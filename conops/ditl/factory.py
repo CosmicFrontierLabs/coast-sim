@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import rust_ephem
 
-from ..config import MissionConfig, bind_ephemeris
+from ..config import MissionConfig
 from ..config.scheduler import AllocationSettings, SchedulerMode
 from ..schedulers.allocator import LongRangeAllocator
 from ..schedulers.registry import planner_class
@@ -45,7 +45,7 @@ def create_ditl(
         ephem: Ephemeris; defaults to the one on the config's constraint.
     """
     if ephem is not None:
-        bind_ephemeris(config, ephem)
+        config.constraint.ephem = ephem
     ephemeris = config.constraint.ephem
     if ephemeris is None:
         raise ValueError("an ephemeris is required: pass ephem or set it on the config")
