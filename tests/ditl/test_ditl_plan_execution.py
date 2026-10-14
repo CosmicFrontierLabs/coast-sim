@@ -1,5 +1,6 @@
 """Tests for DITL executing every entry of a supplied plan."""
 
+import datetime
 from unittest.mock import Mock
 
 import pytest
@@ -155,6 +156,25 @@ class TestChargeEntries:
         ditl.acs.request_end_battery_charge.assert_called_once_with(t[3])
         ditl.acs._enqueue_slew.assert_not_called()
 
+    def test_pending_charge_slew_is_canceled_when_the_entry_ends(
+        self, ditl: DITL, t: list[float]
+    ) -> None:
+        """A charge slew deferred past the entry's end must not execute later."""
+        entry = PlanEntry(
+            ra=45.0,
+            dec=23.5,
+            roll=12.0,
+            obsid=999001,
+            begin=t[1],
+            end=t[3],
+            obstype=ObsType.CHARGE,
+        )
+        ditl.plan = Plan(entries=[entry])
+
+        ditl.calc()
+
+        ditl.acs.cancel_pending_slews.assert_called_once_with(999001)
+
 
 class TestUnexecutableEntries:
     def test_unsupported_obstype_is_logged_and_skipped(
@@ -237,7 +257,7 @@ class TestPassEntries:
     def test_passes_are_predicted_when_none_exist(
         self, ditl: DITL, gspass: Pass, contact: PlanEntry, passing_acs: Mock
     ) -> None:
-        def predict(year: int, day: int, length: int) -> None:
+        def predict(year: int, day: int, length: int, **_: object) -> None:
             ditl.acs.passrequests.passes = [gspass]
 
         ditl.acs.passrequests.passes = []
@@ -246,8 +266,29 @@ class TestPassEntries:
 
         ditl.calc()
 
-        ditl.acs.passrequests.get.assert_called_once_with(2018, 331, 1)
+        ditl.acs.passrequests.get.assert_called_once_with(
+            2018, 331, 1, apply_scheduling=False
+        )
         assert ditl.acs.passrequests.passes == [gspass]
+
+    def test_pass_prediction_covers_the_final_calendar_day(
+        self, ditl: DITL, contact: PlanEntry
+    ) -> None:
+        """Pass days count from midnight, so a noon-to-noon run needs two days."""
+        begin = datetime.datetime(2018, 11, 27, 12, tzinfo=datetime.timezone.utc)
+        ditl.begin = begin
+        ditl.ustart = begin.timestamp()
+        ditl.uend = ditl.ustart + 86400
+        ditl.acs.passrequests.passes = []
+        ditl._entries_to_command = [contact]
+        ditl._entry_passes = {}
+        ditl._predicted_passes = None
+
+        ditl._sync_planned_passes()
+
+        ditl.acs.passrequests.get.assert_called_once_with(
+            2018, 331, 2, apply_scheduling=False
+        )
 
     def test_contact_slews_starts_and_ends_on_plan(
         self,
@@ -293,6 +334,23 @@ class TestPassEntries:
 
         ends = _commands(ditl, ACSCommandType.END_PASS)
         assert [c.execution_time for c in ends] == [t[3]]
+
+    def test_pending_contact_slew_is_canceled_when_the_entry_ends(
+        self,
+        ditl: DITL,
+        gspass: Pass,
+        contact: PlanEntry,
+        passing_acs: Mock,
+        t: list[float],
+    ) -> None:
+        """A contact slew deferred past the entry's end must not execute later."""
+        contact.end = t[2]
+        ditl.acs.passrequests.passes = [gspass]
+        ditl.plan = Plan(entries=[contact])
+
+        ditl.calc()
+
+        ditl.acs.cancel_pending_slews.assert_called_once_with(gspass.obsid)
 
     def test_contact_waits_for_the_tracking_attitude(
         self,

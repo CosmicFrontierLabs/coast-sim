@@ -1,6 +1,6 @@
 from bisect import bisect_left
 from datetime import datetime, timezone
-from math import ceil
+from math import ceil, floor
 from typing import Protocol, TypedDict
 
 import numpy as np
@@ -689,9 +689,14 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _handle_data_management(self, utime: float, mode: ACSMode) -> None:
         """Handle data generation during observations and downlink during passes."""
-        collection_seconds = self._collection_seconds_for_step(utime, mode)
+        collection_start, collection_stop = self._collection_interval_for_step(
+            utime, mode
+        )
+        collection_seconds = collection_stop - collection_start
         if collection_seconds > 0 and self.ppt is not None:
-            self.ppt.record_collection(utime, collection_seconds)
+            # Credit the visit at the end of what was collected, not the tick
+            # start, so cadence scoring sees how recently the target was observed.
+            self.ppt.record_collection(collection_stop, collection_seconds)
         # Use the mixin method to process data generation and downlink
         data_generated, data_downlinked = self._process_data_management(
             utime, mode, self.step_size, collection_seconds=collection_seconds
@@ -1582,8 +1587,8 @@ class QueueDITL(DITLMixin, DITLStats):
                 obsid=interrupted_ppt.obsid,
                 acs_mode=self.acs.acsmode,
             )
+            # End this visit, not the target's remaining integration budget.
             interrupted_ppt.end = utime
-            interrupted_ppt.done = True
 
         if interrupted_ppt is not None:
             if (
@@ -1592,8 +1597,6 @@ class QueueDITL(DITLMixin, DITLStats):
                 and int(self.plan[-1].obsid) == int(interrupted_ppt.obsid)
             ):
                 self._close_last_plan_entry(utime)
-            if self._is_short_science_entry(interrupted_ppt):
-                interrupted_ppt.done = False
 
         command = ACSCommand(
             command_type=ACSCommandType.START_BATTERY_CHARGE,
@@ -2145,6 +2148,17 @@ class QueueDITL(DITLMixin, DITLStats):
             )
         elif utime >= self.ppt.end:
             self._terminate_ppt(utime, reason="Time window elapsed, ending observation")
+        elif (
+            self.ppt.deadline is not None
+            and self.ppt.collected_seconds == 0
+            and utime > self.ppt.deadline
+        ):
+            # A start deadline is missed if no science has begun by then,
+            # whatever delayed it (e.g. an unforeseen SAA entry).
+            self._terminate_ppt(
+                utime,
+                reason="Collection did not start before deadline, ending observation",
+            )
 
     def _constraint_name_for_science_attitude(
         self,
@@ -2164,12 +2178,14 @@ class QueueDITL(DITLMixin, DITLStats):
         obs_val_end: float,
         spacecraft_attitude: tuple[float, float, float],
     ) -> tuple[float, str, str] | None:
-        """Check whether a locked roll stays constraint-free for the minimum observation window."""
+        """Check grid samples bracketing the entire locked-attitude window."""
         assert self.ppt is not None
         ephem = self.acs.ephem
         begin_idx = max(0, ephem.index(dtutcfromtimestamp(obs_start_time)))
+        # Include the upper bracket of a fractional end. Otherwise the last
+        # partial cell can cross a constraint before the next scheduler tick.
         end_idx = min(
-            len(ephem.timestamp), ephem.index(dtutcfromtimestamp(obs_val_end)) + 1
+            len(ephem.timestamp), bisect_left(self._ephem_utimes(), obs_val_end) + 1
         )
         for t in ephem.timestamp[begin_idx:end_idx]:
             t_unix = self._ephem_timestamp_to_utime(t)
@@ -2585,6 +2601,27 @@ class QueueDITL(DITLMixin, DITLStats):
             else None,
         )
 
+    def _earliest_science_start(self, slew_end: float, ready_time: float) -> float:
+        """Return when science collection can begin once the payload is ready.
+
+        Mode is sampled on scheduler ticks. A tick taken while still slewing
+        reports SLEWING (which outranks SAA) and credits collection from
+        ``ready_time`` within that step. A tick at rest inside the SAA credits
+        nothing for its step, so advance past every such tick.
+        """
+        saa = self.acs.saa
+        if saa is None:
+            return ready_time
+        tick = (
+            self.ustart
+            + floor((ready_time - self.ustart) / self.step_size) * self.step_size
+        )
+        if tick < slew_end:
+            return ready_time
+        while tick < self.uend and saa.insaa(tick):
+            tick += self.step_size
+        return max(ready_time, tick)
+
     def _can_retry_without_current_ppt(self) -> bool:
         """Sanity check to see if we can retry fetching a new PPT without just
         returning the same one"""
@@ -2859,11 +2896,12 @@ class QueueDITL(DITLMixin, DITLStats):
             self._complete_ppt_slew(slew, self.ppt, utime, execution_time)
 
             # Queue selection checks the deadline against an estimated slew;
-            # enforce it again against the slew that will actually execute.
-            collection_start = (
-                execution_time
-                + slew.slewtime
-                + self.config.payload.observation_timing.setup_seconds
+            # enforce it again against the slew that will actually execute,
+            # and the time science is actually available (e.g. after SAA exit).
+            slew_end = execution_time + slew.slewtime
+            collection_start = self._earliest_science_start(
+                slew_end,
+                slew_end + self.config.payload.observation_timing.setup_seconds,
             )
             if self.ppt.deadline is not None and collection_start > self.ppt.deadline:
                 self.log.log_event(
@@ -3166,13 +3204,12 @@ class QueueDITL(DITLMixin, DITLStats):
         self.charge_state.append(self.battery.charge_state)
 
     def _terminate_science_ppt_for_pass(self, utime: float) -> None:
-        """Terminate the current science PPT during ground station pass."""
+        """End this science visit for a pass, preserving unfinished integration."""
         if self.ppt is not None and self.ppt != self.charging_ppt:
             # Update plan timeline with actual end time
             if len(self.plan) > 0:
                 self._close_last_plan_entry(utime)
             self.ppt.end = utime
-            self.ppt.done = True
             self.ppt = None
 
     def _terminate_charging_ppt(self, utime: float) -> None:

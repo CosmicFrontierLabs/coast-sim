@@ -59,8 +59,8 @@ class DITL(DITLMixin, DITLStats):
     - Charging entries (CHARGE) slew to the charging attitude and charge
       until ``end``.
 
-    The plan is authoritative: no science, contact or charging activity
-    outside it is started. Use
+    Science, contact and charging activities not in the plan are never
+    started. Use
     :meth:`validate_plan_matches_execution` after :meth:`calc` to compare the
     executed telemetry with the plan.
 
@@ -626,9 +626,16 @@ class DITL(DITLMixin, DITLStats):
         passrequests = self.acs.passrequests
         if self._predicted_passes is None:
             if not passrequests.passes:
-                length = max(1, int(np.ceil((self.uend - self.ustart) / 86400)))
+                # PassTimes.get counts days from midnight UTC of the begin date.
+                day_start = self.ustart - self.ustart % 86400
+                length = max(1, int(np.ceil((self.uend - day_start) / 86400)))
+                # The plan already chose its contacts; only reconstruct their
+                # physical passes, without redrawing which ones get scheduled.
                 passrequests.get(
-                    self.begin.year, self.begin.timetuple().tm_yday, length
+                    self.begin.year,
+                    self.begin.timetuple().tm_yday,
+                    length,
+                    apply_scheduling=False,
                 )
             self._predicted_passes = list(passrequests.passes)
         planned: list[Pass] = []
@@ -715,6 +722,8 @@ class DITL(DITLMixin, DITLStats):
         assert entry is not None
         obstype = entry_obstype(entry)
         if obstype == ObsType.GSP:
+            if self._active_pass is not None:
+                self.acs.cancel_pending_slews(self._active_pass.obsid)
             if self.acs.current_pass is not None:
                 self.acs.enqueue_command(
                     ACSCommand(
@@ -724,6 +733,7 @@ class DITL(DITLMixin, DITLStats):
                 )
             self._active_pass = None
         elif obstype == ObsType.CHARGE:
+            self.acs.cancel_pending_slews(entry.obsid)
             self.acs.request_end_battery_charge(utime)
         else:
             self.acs.cancel_pending_slews(entry.obsid)

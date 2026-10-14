@@ -224,11 +224,12 @@ class EmergencyCharging:
         *,
         drive_state: SolarArrayDriveState | None = None,
     ) -> Pointing | None:
-        """Terminate current science PPT (if any) and create a charging PPT.
+        """End the current science visit (if any) and create a charging PPT.
 
         This encapsulates the initiation path so callers can delegate the
         battery-alert transition. Callers are still responsible for updating
         their own "active PPT" reference and enqueuing any ACS slews.
+        Remaining target integration is preserved for a subsequent visit.
 
         Returns the created charging Pointing or None if not possible.
         """
@@ -247,7 +248,6 @@ class EmergencyCharging:
                 obsid=current_ppt.obsid,
             )
             current_ppt.end = utime
-            current_ppt.done = True
 
         return charging_ppt
 

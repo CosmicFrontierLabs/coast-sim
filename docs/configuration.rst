@@ -1079,6 +1079,21 @@ reserved cleanup/handoff time, generation fails instead of exporting a normal
 observation with impossible timing. This can occur with unanticipated interrupts
 or a cleanup/handoff budget longer than the available recharge warning time.
 
+Charging and ground-contact interruptions end the current visit, not the target's
+remaining integration allocation. A target with positive remaining ``exptime``
+stays eligible for later visits, subject to visibility and ``ss_min``. Exhausted
+or explicitly completed targets are not reopened. This does not automatically
+relax ``ss_min`` for a short final remainder, nor reset integration budgets at
+day boundaries.
+
+Locked-attitude validation includes the ephemeris samples bracketing the whole
+planned interval, including the first sample at or after a fractional end time.
+If that upper sample violates a constraint, the task is shortened to the previous
+sample, with cleanup and handoff reserved before it; a visit too short for
+``ss_min`` is rejected. This prevents an unchecked final partial cell from
+crossing into a sampled keepout. It remains a sampled check, not proof against
+an excursion that enters and leaves a keepout entirely between adjacent samples.
+
 Housekeeping ``collection_seconds`` integrates the useful part of each timestep,
 including partial steps. Data generation and remaining requested exposure use
 this duration for both zero and nonzero budgets. Detailed phase reporting is

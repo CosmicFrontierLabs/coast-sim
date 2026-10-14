@@ -1,4 +1,4 @@
-"""Check an executed DITL timeline against the plan it claims to have flown."""
+"""Compare a plan with the DITL telemetry recorded while executing it."""
 
 from bisect import bisect_left
 from collections.abc import Callable, Sequence
@@ -55,8 +55,7 @@ class PlanExecutionValidator:
     """Compare a plan with the per-step telemetry recorded while executing it.
 
     The validator reads only the plan, the telemetry arrays and the scheduled
-    ground-station passes, so it applies equally to a plan a scheduler built
-    while simulating (QueueDITL) and to a plan supplied for execution (DITL).
+    ground-station passes, so both QueueDITL and DITL use it.
 
     Args:
         config: Mission configuration (slew accuracy sets the pointing tolerance).
@@ -195,7 +194,7 @@ class PlanExecutionValidator:
         """Check every executed science/pass sample is covered by a plan entry."""
         mismatches: list[PlanExecutionMismatch] = []
 
-        # Build obsid → entries lookups once to avoid O(N×M) linear plan scans.
+        # Index entries by obsid so each sample doesn't scan the whole plan.
         science_by_obsid: dict[int, list[PlanEntry]] = {}
         gsp_by_obsid: dict[int, list[PlanEntry]] = {}
         for entry in self.plan:
