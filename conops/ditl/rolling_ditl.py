@@ -1,7 +1,7 @@
 """Simulate a spacecraft that follows a plan rebuilt on a rolling horizon."""
 
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 
@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict
 from ..common import ObsType
 from ..config import MissionConfig
 from ..schedulers.priority_planner import PriorityPlanner, StartState
+from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing
 from ..targets.merit import MeritModel
 from .ditl import DITL
@@ -62,18 +63,21 @@ class RollingHorizonDITL(DITL):
     """Follow a plan rebuilt from the spacecraft's actual state as time passes.
 
     This models a ground-planned mission. A plan for the next ``horizon`` is
-    built with :class:`~conops.schedulers.PriorityPlanner` at the start and
+    built with ``planner`` (by default
+    :class:`~conops.schedulers.PriorityPlanner`) at the start and
     every ``replan_interval`` after that. Each replan keeps everything already
     commanded or due to start within ``commit_lead_time`` (the time a new plan
     takes to reach the spacecraft), and plans the rest again from the
-    spacecraft's attitude and each target's remaining exposure.
+    spacecraft's attitude and each target's remaining exposure. The first plan
+    is built before the run starts, so it takes effect at once.
 
     Targets of Opportunity (see :meth:`submit_too`) join the target pool when
     they are submitted and go into the next scheduled plan. A ToO whose
-    deadline falls before that plan could act triggers a rapid replan at once.
-    In a rapid replan the observation in progress is cut at the commit cutoff
-    if ``allow_interrupts`` is set and the ToO's tier and value, evaluated now,
-    beat the tier and value frozen onto that observation.
+    deadline falls before that plan could start collecting it (its lead time
+    plus a worst-case slew and the setup time) triggers a rapid replan at once.
+    In a rapid replan the observation running at the commit cutoff is cut
+    there if ``allow_interrupts`` is set and the ToO's tier and value,
+    evaluated now, beat the tier and value frozen onto that observation.
 
     Each replan is recorded in :attr:`replans`, and
     :meth:`too_response_times` reports how long each ToO waited for its first
@@ -98,6 +102,9 @@ class RollingHorizonDITL(DITL):
         allow_interrupts: Whether a rapid replan may cut short the
             observation in progress.
         include_passes: Whether plans reserve ground-station passes.
+        planner: Planner class that builds each plan:
+            :class:`~conops.schedulers.PriorityPlanner` or a subclass of it.
+        planner_options: Extra keyword arguments for the planner.
         calculate_field_of_regard: Whether to compute field-of-regard telemetry.
     """
 
@@ -115,6 +122,8 @@ class RollingHorizonDITL(DITL):
         rapid_replans: bool = True,
         allow_interrupts: bool = True,
         include_passes: bool = True,
+        planner: type[PriorityPlanner] = PriorityPlanner,
+        planner_options: Mapping[str, object] | None = None,
         calculate_field_of_regard: bool = False,
     ) -> None:
         if horizon <= timedelta(0) or replan_interval <= timedelta(0):
@@ -136,6 +145,8 @@ class RollingHorizonDITL(DITL):
         self.rapid_replans = rapid_replans
         self.allow_interrupts = allow_interrupts
         self.include_passes = include_passes
+        self.planner = planner
+        self.planner_options = dict(planner_options or {})
         self.merit_model = MeritModel(config)
         self.too_register: list[TOORequest] = []
         self.replans: list[ReplanRecord] = []
@@ -283,23 +294,39 @@ class RollingHorizonDITL(DITL):
         if utime >= self._next_replan:
             return ReplanReason.SCHEDULED, None
         if self.rapid_replans:
-            next_effect = self._next_replan + self.commit_lead_time.total_seconds()
+            # The next scheduled plan could start collecting no sooner than
+            # its lead time, plus a slew and setup, after it is built.
+            next_effect = (
+                self._next_replan
+                + self.commit_lead_time.total_seconds()
+                + Slew.duration_upper_bound(self.config.spacecraft_bus.attitude_control)
+                + self.config.payload.observation_timing.setup_seconds
+                + self.step_size
+            )
             for too in activated:
                 if too.deadline is not None and too.deadline < next_effect:
                     return ReplanReason.RAPID, too
         return None, None
 
+    def _ceil_step(self, utime: float) -> float:
+        """Return the first simulation step at or after ``utime``."""
+        steps = np.ceil((utime - self.ustart) / self.step_size - 1e-9)
+        return self.ustart + float(steps) * self.step_size
+
     def _cutoff(self, utime: float) -> float:
         """Return the first step a new plan can change."""
-        lead = utime + self.commit_lead_time.total_seconds()
-        steps = np.ceil((lead - self.ustart) / self.step_size - 1e-9)
-        return self.ustart + float(steps) * self.step_size
+        return self._ceil_step(utime + self.commit_lead_time.total_seconds())
 
     def _replan(
         self, utime: float, reason: ReplanReason, trigger: TOORequest | None
     ) -> None:
         """Keep committed activities and plan the rest of the horizon again."""
-        cutoff = self._cutoff(utime)
+        # The first plan is built before the run, so nothing waits for it.
+        cutoff = (
+            self._ceil_step(utime)
+            if reason is ReplanReason.INITIAL
+            else self._cutoff(utime)
+        )
         interrupted = None
         if reason is ReplanReason.RAPID and trigger is not None:
             interrupted = self._interrupt_for(trigger, utime, cutoff)
@@ -314,9 +341,10 @@ class RollingHorizonDITL(DITL):
         unplaced = 0
         began = time.perf_counter()
         if horizon_end > start:
-            planner = PriorityPlanner(
+            pool = [t for t in self.targets if not t.done]
+            planner = self.planner(
                 self.config,
-                [t for t in self.targets if not t.done],
+                pool,
                 _as_datetime(start),
                 _as_datetime(horizon_end),
                 step_size=self.step_size,
@@ -326,6 +354,7 @@ class RollingHorizonDITL(DITL):
                 simulation_end=self.end,
                 start_state=start_state,
                 reserved_seconds=self._reserved_seconds(committed, utime),
+                **self.planner_options,  # type: ignore[arg-type]
             )
             new_entries = list(planner.schedule().entries)
             unplaced = len(planner.unplaced)
@@ -361,14 +390,21 @@ class RollingHorizonDITL(DITL):
     def _interrupt_for(
         self, too: TOORequest, utime: float, cutoff: float
     ) -> int | None:
-        """Cut the observation in progress at ``cutoff`` if the ToO outranks it."""
-        entry = self._active_entry
-        if (
-            not self.allow_interrupts
-            or entry is None
-            or entry_obstype(entry) not in PLAN_SCIENCE_OBSTYPES
-            or float(entry.end) <= cutoff
-        ):
+        """Cut the observation running at ``cutoff`` if the ToO outranks it.
+
+        That observation is committed but may not have started yet, when the
+        commit lead time reaches into it.
+        """
+        entry = next(
+            (
+                e
+                for e in self.plan.entries
+                if entry_obstype(e) in PLAN_SCIENCE_OBSTYPES
+                and float(e.begin) < cutoff < float(e.end)
+            ),
+            None,
+        )
+        if not self.allow_interrupts or entry is None:
             return None
         target = self._too_targets[id(too)]
         too_rank = self.merit_model.value_terms(target, utime).value_rank
@@ -378,11 +414,18 @@ class RollingHorizonDITL(DITL):
         )
         if too_rank <= current_rank:
             return None
-        entry.end = cutoff
+        # A slew under way finishes first, so the cut is at the step after the
+        # observation's slew ends, if that is after the cutoff.
+        arrival = float(entry.begin) + float(entry.slewtime)
+        cut = max(cutoff, self._ceil_step(arrival))
+        if cut >= float(entry.end):
+            return None
+        entry.end = cut
         if entry.collection_begin is not None and entry.collection_end is not None:
             post = self.config.payload.observation_timing.post_collection_seconds
+            entry.collection_begin = min(entry.collection_begin, cut)
             entry.collection_end = max(
-                entry.collection_begin, min(entry.collection_end, cutoff - post)
+                entry.collection_begin, min(entry.collection_end, cut - post)
             )
         self.log.log_event(
             utime=utime,

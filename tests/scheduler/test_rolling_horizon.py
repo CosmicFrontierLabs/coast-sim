@@ -89,7 +89,10 @@ class TestScheduledReplanning:
             commit_lead_time=timedelta(minutes=30),
         )
 
-        assert all(r.cutoff == r.utime + 30 * MIN for r in ditl.replans)
+        first, *later = ditl.replans
+        # The first plan is built before the run, so it takes effect at once.
+        assert first.cutoff == first.utime
+        assert all(r.cutoff == r.utime + 30 * MIN for r in later)
         assert ditl.validate_plan_matches_execution() == []
 
     def test_replanning_does_not_reobserve_finished_exposure(self) -> None:
@@ -172,6 +175,21 @@ class TestTargetsOfOpportunity:
         assert ReplanReason.RAPID not in [r.reason for r in ditl.replans]
         response = ditl.too_response_times()[1_000_001]
         assert response is not None and response >= 40 * MIN - MIN
+
+    def test_deadline_when_next_plan_takes_effect_needs_a_rapid_replan(
+        self,
+    ) -> None:
+        """The next plan takes effect at its cutoff but still has to slew."""
+        ditl = _run(
+            3,
+            _long_observation(),
+            toos=({**GRB, "deadline": T0 + HOUR + 30 * MIN},),
+            replan_interval=timedelta(hours=1),
+            commit_lead_time=timedelta(minutes=30),
+        )
+
+        assert ReplanReason.RAPID in [r.reason for r in ditl.replans]
+        assert ditl.too_response_times()[1_000_001] is not None
 
     def test_rapid_replans_can_be_disabled(self) -> None:
         ditl = _run(
