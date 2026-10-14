@@ -203,7 +203,6 @@ class PriorityPlanner:
                     merit=merit_model.value_terms(
                         target,
                         self.ctx.ustart,
-                        base=float(target.fom),
                         delivered_shares=delivered_shares,
                     ),
                     remaining=remaining,
@@ -438,7 +437,7 @@ class PriorityPlanner:
         """Reserve a ground pass on the first tracking profile that can be reached."""
         for profile in gspass.available_tracking_profiles():
             block = self._pass_block(gspass, profile)
-            if self._insert_fixed(block):
+            if block is not None and self._insert_fixed(block):
                 gspass.select_tracking_profile(profile)
                 return
         self._log(
@@ -448,8 +447,15 @@ class PriorityPlanner:
             gspass.obsid,
         )
 
-    def _pass_block(self, gspass: Pass, profile: TrackingProfile) -> _Block:
-        """Build the plan entry and timeline block for a ground contact."""
+    def _pass_block(self, gspass: Pass, profile: TrackingProfile) -> _Block | None:
+        """Build the plan entry and timeline block for a ground contact.
+
+        Returns None if the profile cannot be tracked within the motion limits.
+        """
+        rest = self.ctx.tracking_rest(gspass, profile)
+        if rest is None:
+            return None
+        rest_time, rest_attitude = rest
         start, finish = profile[0], profile[-1]
         entry = PlanEntry(config=self.config)
         entry.name = f"{gspass.station}_PASS"
@@ -477,9 +483,11 @@ class PriorityPlanner:
         return _Block(
             entry=entry,
             attitude_in=start,
-            attitude_out=finish,
+            # Tracking brakes past the last sample, so the contact leaves the
+            # spacecraft at rest later, and elsewhere, than the profile ends.
+            attitude_out=rest_attitude,
             ready=gspass.begin,
-            end=gspass.end,
+            end=max(float(gspass.end), rest_time),
             gspass=gspass,
         )
 

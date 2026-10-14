@@ -18,6 +18,7 @@ from ..common.enums import SlewAlgorithm
 from ..config import MissionConfig
 from ..config.constraint import attitude_constraint_name_for_scopes
 from ..simulation.acs import ACS
+from ..simulation.attitude import AttitudeExecutionError, AttitudeTrajectory
 from ..simulation.passes import Pass, PassTimes
 from ..simulation.roll import optimum_roll
 from ..simulation.slew import Slew
@@ -261,3 +262,30 @@ class SchedulingContext:
             for gspass in passtimes.passes
             if self.ustart <= gspass.begin and gspass.end <= self.uend
         ]
+
+    def tracking_rest(
+        self, gspass: Pass, profile: Sequence[Attitude]
+    ) -> tuple[float, Attitude] | None:
+        """Return when a tracked contact comes to rest, and the attitude it rests at.
+
+        ACS cannot stop a tracking rate instantly: it brakes past the profile's
+        last sample, so a contact neither ends at that sample's attitude nor at
+        the contact's end time. Returns None when the profile cannot be flown
+        within the spacecraft's motion limits.
+        """
+        samples = [
+            (float(utime), (float(ra), float(dec), float(roll)))
+            for utime, (ra, dec, roll) in zip(gspass.utime, profile, strict=True)
+        ]
+        if not samples:
+            return None
+        if len(samples) < 2:
+            # A single sample is held, not tracked, so there is nothing to brake.
+            return float(gspass.end), samples[-1][1]
+        try:
+            trajectory = AttitudeTrajectory.tracking(
+                samples, self.config.spacecraft_bus.attitude_control
+            )
+        except AttitudeExecutionError:
+            return None
+        return float(trajectory.end), trajectory.state(trajectory.end).attitude

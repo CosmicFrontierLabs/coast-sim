@@ -212,6 +212,34 @@ class TestOrdering:
 
         assert [e.obsid for e in _science(plan)] == [1, 2]
 
+    def test_merit_orders_requests_without_the_legacy_alias(self) -> None:
+        """Ordering follows the canonical merit field, not the legacy ``fom``."""
+        config = _config(2)
+        targets = []
+        # Obsids whose tie-break alone would order the low-merit request first.
+        for obsid, (ra, dec), merit in (
+            (2, (105.0, 10.0), 10.0),
+            (3, (110.0, 10.0), 90.0),
+        ):
+            target = Pointing(
+                config=config,
+                obsid=obsid,
+                name=f"T{obsid}",
+                ra=ra,
+                dec=dec,
+                merit=merit,
+                ss_min=20 * MIN,
+                ss_max=20 * MIN,
+            )
+            target.exptime = 20 * MIN
+            targets.append(target)
+
+        plan = PriorityPlanner(
+            config, targets, BEGIN, BEGIN + timedelta(hours=2)
+        ).schedule()
+
+        assert [e.obsid for e in _science(plan)] == [3, 2]
+
     def test_delivered_program_shares_order_the_first_pass(self) -> None:
         """An over-served program loses its completion-deficit credit."""
         categories = [
@@ -480,3 +508,40 @@ class TestMountedTelescope:
         assert len(_science(plan)) == 1
         ditl = _execute(config, plan, hours, planner.ctx.step_size)
         assert ditl.validate_plan_matches_execution() == []
+
+
+class TestGroundPassExit:
+    def test_activity_after_a_contact_starts_from_the_braking_rest_attitude(
+        self,
+    ) -> None:
+        """Tracking brakes past the profile, so a contact does not end on it."""
+        hours = 12
+        config = _config(hours, stations=True)
+        contacts = PriorityPlanner(
+            config, [], BEGIN, BEGIN + timedelta(hours=hours)
+        ).schedule()
+        contact = next(entry for entry in contacts if entry.obstype == ObsType.GSP)
+        locked = PlanEntry(
+            config=config,
+            name="Locked",
+            ra=contact.track_end_ra,
+            dec=contact.track_end_dec,
+            roll=contact.track_end_roll,
+            obsid=900,
+            obstype=ObsType.AT,
+            begin=contact.end,
+            end=contact.end + 600,
+            collection_begin=contact.end,
+            collection_end=contact.end + 600,
+            ss_min=60,
+        )
+
+        planner = PriorityPlanner(
+            config, [], BEGIN, BEGIN + timedelta(hours=hours), locked=[locked]
+        )
+        plan = planner.schedule()
+
+        ditl = _execute(config, plan, hours, planner.ctx.step_size)
+        assert ditl.validate_plan_matches_execution() == []
+        executed = sum(hk.collection_seconds for hk in ditl.telemetry.housekeeping)
+        assert executed == pytest.approx(_planned_collection(plan))
