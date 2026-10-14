@@ -650,20 +650,29 @@ class DITLMixin:
             data_generated = self.payload.data_generated(collection_seconds)
             self.recorder.add_data(data_generated)
 
-        # Downlink data during PASS mode
-        if mode == ACSMode.PASS:
-            current_pass = self._find_current_pass(utime)
-            if current_pass is not None:
-                station = self.config.ground_stations.get(current_pass.station)
+        # Downlink data during PASS mode, once ACS has acquired the contact:
+        # the ingress slew also reports PASS, but carries no link.
+        current_pass = self.acs.current_pass
+        if mode == ACSMode.PASS and current_pass is not None:
+            # A contact can end partway through a step, and the run can end
+            # before the step does; only the time in contact is credited.
+            contact_start = max(utime, float(current_pass.begin))
+            contact_stop = min(utime + step_size, float(current_pass.end), self.uend)
+            contact_seconds = max(0.0, contact_stop - contact_start)
+            station = self.config.ground_stations.get(current_pass.station)
 
-                # Determine actual data rate based on both ground station and spacecraft capabilities
-                effective_rate_mbps = self._get_effective_data_rate(station)
+            # Determine actual data rate based on both ground station and spacecraft capabilities
+            effective_rate_mbps = self._get_effective_data_rate(station)
 
-                if effective_rate_mbps is not None and effective_rate_mbps > 0:
-                    # Convert Mbps to Gb per step: Mbps * seconds / 1000 / 8 = Gb
-                    megabits_per_step = effective_rate_mbps * step_size
-                    data_to_downlink = megabits_per_step / 1000.0 / 8.0  # Convert to Gb
-                    data_downlinked = self.recorder.remove_data(data_to_downlink)
+            if (
+                contact_seconds > 0
+                and effective_rate_mbps is not None
+                and effective_rate_mbps > 0
+            ):
+                # Convert Mbps to Gb: Mbps * seconds / 1000 / 8 = Gb
+                megabits = effective_rate_mbps * contact_seconds
+                data_to_downlink = megabits / 1000.0 / 8.0  # Convert to Gb
+                data_downlinked = self.recorder.remove_data(data_to_downlink)
 
         return data_generated, data_downlinked
 

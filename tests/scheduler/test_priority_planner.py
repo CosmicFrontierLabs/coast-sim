@@ -13,6 +13,7 @@ from conops.config import (
     Constraint,
     GroundStationRegistry,
     MissionConfig,
+    OnboardRecorder,
     Payload,
     RadiatorConfiguration,
     SolarPanelSet,
@@ -25,7 +26,7 @@ from conops.config.observation_categories import (
     ObservationCategories,
     ObservationCategory,
 )
-from conops.schedulers import PriorityPlanner
+from conops.schedulers import PriorityPlanner, SchedulingContext
 from conops.targets import Plan, PlanEntry, Pointing
 
 BEGIN = datetime(2025, 11, 1, tzinfo=timezone.utc)
@@ -580,6 +581,81 @@ class TestGroundContacts:
         assert ditl.validate_plan_matches_execution() == []
         executed = sum(hk.collection_seconds for hk in ditl.telemetry.housekeeping)
         assert executed == pytest.approx(_planned_collection(plan))
+
+    def test_contact_blocked_at_its_first_step_is_acquired_at_a_later_one(
+        self,
+    ) -> None:
+        """A lock leaves no time to reach the first step, but the next one fits."""
+        hours = 12
+        step = 180
+        config = _config(hours, stations=True)
+        ctx = SchedulingContext(
+            config, BEGIN, BEGIN + timedelta(hours=hours), step_size=step
+        )
+        mal = next(p for p in ctx.predict_passes() if p.station == "MAL")
+        first, second = ctx.steps(mal.begin, mal.end)[:2]
+        locked = PlanEntry(
+            config=config,
+            name="Locked",
+            ra=105.0,
+            dec=10.0,
+            roll=0.0,
+            obsid=900,
+            obstype=ObsType.AT,
+            begin=mal.begin - 600,
+            end=mal.begin + 60,
+            collection_begin=mal.begin - 600,
+            collection_end=mal.begin + 60,
+            ss_min=60,
+        )
+        assert first <= locked.end < second
+
+        planner = PriorityPlanner(
+            config,
+            [],
+            BEGIN,
+            BEGIN + timedelta(hours=hours),
+            step_size=step,
+            locked=[locked],
+        )
+        plan = planner.schedule()
+
+        contact = next(e for e in plan if e.station == "MAL")
+        assert contact.contact_begin == second
+        assert contact.contact_end == mal.end
+        assert contact.exptime == round(mal.end - second)
+        ditl = _execute(config, plan, hours, step)
+        assert ditl.validate_plan_matches_execution() == []
+        executed = sum(hk.collection_seconds for hk in ditl.telemetry.housekeeping)
+        assert executed == pytest.approx(660)
+
+    def test_downlink_is_credited_only_for_the_usable_contact(self) -> None:
+        """Contacts acquired late and ending mid-step downlink only while in contact."""
+        hours = 12
+        step = 180
+        config = _config(hours, stations=True)
+        config.recorder = OnboardRecorder(capacity_gb=1000, current_volume_gb=100)
+        planner = PriorityPlanner(
+            config, [], BEGIN, BEGIN + timedelta(hours=hours), step_size=step
+        )
+        plan = planner.schedule()
+        contacts = [entry for entry in plan if entry.obstype == ObsType.GSP]
+        assert contacts
+        # Some contact ends partway through a step.
+        assert any((float(e.contact_end) - T0) % step for e in contacts)  # type: ignore[arg-type]
+
+        ditl = _execute(config, plan, hours, step)
+
+        assert ditl.validate_plan_matches_execution() == []
+        expected = 0.0
+        for entry in contacts:
+            assert entry.contact_begin is not None and entry.contact_end is not None
+            station = config.ground_stations.get(entry.station)  # type: ignore[arg-type]
+            rate_mbps = ditl._get_effective_data_rate(station)
+            assert rate_mbps
+            seconds = float(entry.contact_end) - float(entry.contact_begin)
+            expected += rate_mbps * seconds / 1000.0 / 8.0
+        assert ditl.data_downlinked_gb[-1] == pytest.approx(expected)
 
     def test_contact_with_no_step_inside_it_is_not_reserved(self) -> None:
         """Steps too coarse to land inside a pass leave it unreserved."""

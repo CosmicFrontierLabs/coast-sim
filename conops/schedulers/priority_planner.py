@@ -434,9 +434,13 @@ class PriorityPlanner:
             )
 
     def _place_pass(self, gspass: Pass) -> None:
-        """Reserve a ground pass on the first tracking profile that can be reached."""
-        acquire = self._acquisition_step(gspass)
-        if acquire is None:
+        """Reserve a ground pass at its earliest reachable acquisition step.
+
+        Each step inside the pass is tried in turn, on every tracking profile,
+        so a pass whose first step is blocked can still be acquired later.
+        """
+        acquisitions = self._acquisition_steps(gspass)
+        if not acquisitions:
             self._log(
                 gspass.begin,
                 f"Pass at {gspass.station} has no simulation step left to acquire "
@@ -444,30 +448,30 @@ class PriorityPlanner:
                 gspass.obsid,
             )
             return
-        for profile in gspass.available_tracking_profiles():
-            block = self._pass_block(gspass, profile, acquire)
-            if block is not None and self._insert_fixed(block):
-                gspass.select_tracking_profile(profile)
-                return
+        profiles = gspass.available_tracking_profiles()
+        for acquire in acquisitions:
+            for profile in profiles:
+                block = self._pass_block(gspass, profile, acquire)
+                if block is not None and self._insert_fixed(block):
+                    gspass.select_tracking_profile(profile)
+                    return
         self._log(
             gspass.begin,
-            f"Pass at {gspass.station} cannot be reached on any safe tracking "
-            "profile; not reserved",
+            f"Pass at {gspass.station} cannot be reached at any acquisition step "
+            "on any safe tracking profile; not reserved",
             gspass.obsid,
         )
 
-    def _acquisition_step(self, gspass: Pass) -> float | None:
-        """Return the step a contact is acquired on, or None if it cannot be.
+    def _acquisition_steps(self, gspass: Pass) -> list[float]:
+        """Return the steps a contact could be acquired on, earliest first.
 
         Contact can only start on a step, where the spacecraft must already
         hold the tracking attitude of that moment. A pass beginning between
         steps is therefore acquired late, and the time before that is lost.
         """
-        acquire = self.ctx.ceil_step(gspass.begin)
         last_sample = float(gspass.utime[-1]) if gspass.utime else float(gspass.end)
-        if acquire >= min(float(gspass.end), last_sample):
-            return None
-        return acquire
+        end = min(float(gspass.end), last_sample)
+        return [float(step) for step in self.ctx.steps(gspass.begin, end)]
 
     def _pass_block(
         self, gspass: Pass, profile: TrackingProfile, acquire: float
