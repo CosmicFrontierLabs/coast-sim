@@ -439,8 +439,8 @@ class PriorityPlanner:
         if acquire is None:
             self._log(
                 gspass.begin,
-                f"Pass at {gspass.station} does not start on a simulation step; "
-                "not reserved",
+                f"Pass at {gspass.station} has no simulation step left to acquire "
+                "it on; not reserved",
                 gspass.obsid,
             )
             return
@@ -459,13 +459,13 @@ class PriorityPlanner:
     def _acquisition_step(self, gspass: Pass) -> float | None:
         """Return the step a contact is acquired on, or None if it cannot be.
 
-        Contact starts on the first step inside the pass, where the spacecraft
-        must already hold the tracking attitude of that moment. A pass that
-        begins between steps has moved on to a later sample by then, which the
-        ingress slew cannot have targeted.
+        Contact can only start on a step, where the spacecraft must already
+        hold the tracking attitude of that moment. A pass beginning between
+        steps is therefore acquired late, and the time before that is lost.
         """
         acquire = self.ctx.ceil_step(gspass.begin)
-        if gspass.utime and acquire > float(gspass.utime[0]):
+        last_sample = float(gspass.utime[-1]) if gspass.utime else float(gspass.end)
+        if acquire >= min(float(gspass.end), last_sample):
             return None
         return acquire
 
@@ -476,20 +476,23 @@ class PriorityPlanner:
 
         Returns None if the profile cannot be tracked within the motion limits.
         """
-        rest = self.ctx.tracking_rest(gspass, profile)
+        rest = self.ctx.tracking_rest(gspass, profile, acquire)
         if rest is None:
             return None
         rest_time, rest_attitude = rest
-        start, finish = profile[0], profile[-1]
+        start = gspass.attitude_for_profile_at(profile, acquire)
+        if start is None:
+            return None
+        finish = profile[-1]
         entry = PlanEntry(config=self.config)
         entry.name = f"{gspass.station}_PASS"
         entry.ra, entry.dec, entry.roll = start
-        entry.begin = gspass.begin
+        entry.begin = acquire
         entry.end = gspass.end
         entry.obsid = gspass.obsid
         entry.obstype = ObsType.GSP
         entry.ss_min = 0
-        duration = max(0, int(round(gspass.end - gspass.begin)))
+        duration = max(0, int(round(gspass.end - acquire)))
         entry.ss_max = duration
         entry.exptime = duration
         entry.station = gspass.station
@@ -500,7 +503,9 @@ class PriorityPlanner:
             entry.station_alt_m = float(station.elevation_m)
         except KeyError:
             pass
-        entry.contact_begin = gspass.begin
+        # A contact only earns the time from acquisition, but it is still the
+        # whole predicted pass: its end identifies which one.
+        entry.contact_begin = acquire
         entry.contact_end = gspass.end
         entry.track_start_ra, entry.track_start_dec, entry.track_start_roll = start
         entry.track_end_ra, entry.track_end_dec, entry.track_end_roll = finish

@@ -263,20 +263,38 @@ class SchedulingContext:
             if self.ustart <= gspass.begin and gspass.end <= self.uend
         ]
 
+    def tracking_samples(
+        self, gspass: Pass, profile: Sequence[Attitude], acquire: float
+    ) -> list[tuple[float, Attitude]]:
+        """Return the timed attitudes ACS tracks after acquiring at ``acquire``.
+
+        Acquisition holds the attitude the profile calls for at that moment,
+        and the profile is picked up from the first sample after it, exactly as
+        :meth:`~conops.simulation.acs.ACS._start_pass` builds its trajectory.
+        """
+        held = gspass.attitude_for_profile_at(list(profile), acquire)
+        if held is None:
+            return []
+        samples: list[tuple[float, Attitude]] = [(float(acquire), held)]
+        samples.extend(
+            (float(utime), (float(ra), float(dec), float(roll)))
+            for utime, (ra, dec, roll) in zip(gspass.utime, profile, strict=True)
+            if float(utime) > acquire
+        )
+        return samples
+
     def tracking_rest(
-        self, gspass: Pass, profile: Sequence[Attitude]
+        self, gspass: Pass, profile: Sequence[Attitude], acquire: float
     ) -> tuple[float, Attitude] | None:
         """Return when a tracked contact comes to rest, and the attitude it rests at.
 
         ACS cannot stop a tracking rate instantly: it brakes past the profile's
         last sample, so a contact neither ends at that sample's attitude nor at
-        the contact's end time. Returns None when the profile cannot be flown
-        within the spacecraft's motion limits.
+        the contact's end time. Tracking starts from rest at ``acquire``, so a
+        late acquisition has to turn harder to catch the profile up. Returns
+        None when the profile cannot be flown within the motion limits.
         """
-        samples = [
-            (float(utime), (float(ra), float(dec), float(roll)))
-            for utime, (ra, dec, roll) in zip(gspass.utime, profile, strict=True)
-        ]
+        samples = self.tracking_samples(gspass, profile, acquire)
         if not samples:
             return None
         if len(samples) < 2:
@@ -284,7 +302,9 @@ class SchedulingContext:
             return float(gspass.end), samples[-1][1]
         try:
             trajectory = AttitudeTrajectory.tracking(
-                samples, self.config.spacecraft_bus.attitude_control
+                samples,
+                self.config.spacecraft_bus.attitude_control,
+                initial_rate=(0.0, 0.0, 0.0),
             )
         except AttitudeExecutionError:
             return None

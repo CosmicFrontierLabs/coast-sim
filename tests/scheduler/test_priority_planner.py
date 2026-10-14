@@ -546,23 +546,58 @@ class TestGroundContacts:
         executed = sum(hk.collection_seconds for hk in ditl.telemetry.housekeeping)
         assert executed == pytest.approx(_planned_collection(plan))
 
-    def test_contact_starting_between_steps_is_not_reserved(self) -> None:
-        """Acquisition only works on a step, so an off-grid contact is left out."""
+    def test_contact_starting_between_steps_is_acquired_late(self) -> None:
+        """A pass beginning off the step grid is picked up on the next step."""
         hours = 12
-        step = 120
+        step = 180
+        config = _config(hours, stations=True)
+        targets = [
+            _target(config, 100 + i, ra, dec, merit=90 - i, minutes=60, snapshot=20)
+            for i, (ra, dec) in enumerate(PATCH)
+        ]
+        planner = PriorityPlanner(
+            config, targets, BEGIN, BEGIN + timedelta(hours=hours), step_size=step
+        )
+        plan = planner.schedule()
+
+        predicted = {gspass.station: gspass for gspass in planner.ctx.predict_passes()}
+        contacts = [entry for entry in plan if entry.obstype == ObsType.GSP]
+        assert {entry.station for entry in contacts} == set(predicted)
+        off_grid = [
+            entry
+            for entry in contacts
+            if (predicted[entry.station].begin - T0) % step  # type: ignore[index]
+        ]
+        assert off_grid
+        for entry in contacts:
+            gspass = predicted[entry.station]  # type: ignore[index]
+            acquire = planner.ctx.ceil_step(gspass.begin)
+            assert entry.contact_begin == acquire
+            assert entry.contact_end == gspass.end
+            assert entry.exptime == round(gspass.end - acquire)
+
+        ditl = _execute(config, plan, hours, step)
+        assert ditl.validate_plan_matches_execution() == []
+        executed = sum(hk.collection_seconds for hk in ditl.telemetry.housekeeping)
+        assert executed == pytest.approx(_planned_collection(plan))
+
+    def test_contact_with_no_step_inside_it_is_not_reserved(self) -> None:
+        """Steps too coarse to land inside a pass leave it unreserved."""
+        hours = 12
+        step = 900
         config = _config(hours, stations=True)
         planner = PriorityPlanner(
             config, [], BEGIN, BEGIN + timedelta(hours=hours), step_size=step
         )
         plan = planner.schedule()
 
-        off_grid = {
+        unreachable = {
             gspass.station
             for gspass in planner.ctx.predict_passes()
-            if (gspass.begin - T0) % step
+            if planner.ctx.ceil_step(gspass.begin) >= gspass.utime[-1]
         }
-        assert off_grid
-        assert [entry.station for entry in plan if entry.station in off_grid] == []
-        assert len(list(plan)) > 0
+        assert unreachable
+        stations = {entry.station for entry in plan if entry.obstype == ObsType.GSP}
+        assert stations and not stations & unreachable
         ditl = _execute(config, plan, hours, step)
         assert ditl.validate_plan_matches_execution() == []
