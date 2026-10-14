@@ -42,7 +42,11 @@ Scheduling and Planning
    :maxdepth: 2
 
    conops.schedulers
+   conops.schedulers.context
+   conops.schedulers.priority_planner
    conops.schedulers.protocols
+   conops.schedulers.queue_planner
+   conops.schedulers.sequential_planner
    conops.schedulers.scheduler
    conops.schedulers.queue_scheduler
    conops.targets

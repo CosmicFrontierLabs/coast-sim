@@ -192,7 +192,9 @@ disabled by default for performance. To enable it, pass
 
 ### Scheduling (`conops.schedulers`)
 
-Target observation queue management and intelligent scheduling algorithms (DumbScheduler, DumbQueueScheduler).
+Target observation queue management and planners (PriorityPlanner, SequentialPlanner, QueuePlanner). The
+former names `DumbScheduler` and `DumbQueueScheduler` remain as aliases of
+`SequentialPlanner` and `QueuePlanner`.
 
 ### Targets (`conops.targets`)
 
@@ -234,8 +236,12 @@ conops/
 │   └── queue_ditl.py
 ├── schedulers/              # Scheduling algorithms
 │   ├── __init__.py
-│   ├── scheduler.py
-│   └── queue_scheduler.py
+│   ├── context.py
+│   ├── priority_planner.py
+│   ├── sequential_planner.py
+│   ├── queue_planner.py
+│   ├── scheduler.py         # DumbScheduler alias
+│   └── queue_scheduler.py   # DumbQueueScheduler alias
 ├── targets/                 # Target management and planning
 │   ├── __init__.py
 │   ├── pointing.py
