@@ -510,7 +510,7 @@ class TestMountedTelescope:
         assert ditl.validate_plan_matches_execution() == []
 
 
-class TestGroundPassExit:
+class TestGroundContacts:
     def test_activity_after_a_contact_starts_from_the_braking_rest_attitude(
         self,
     ) -> None:
@@ -545,3 +545,24 @@ class TestGroundPassExit:
         assert ditl.validate_plan_matches_execution() == []
         executed = sum(hk.collection_seconds for hk in ditl.telemetry.housekeeping)
         assert executed == pytest.approx(_planned_collection(plan))
+
+    def test_contact_starting_between_steps_is_not_reserved(self) -> None:
+        """Acquisition only works on a step, so an off-grid contact is left out."""
+        hours = 12
+        step = 120
+        config = _config(hours, stations=True)
+        planner = PriorityPlanner(
+            config, [], BEGIN, BEGIN + timedelta(hours=hours), step_size=step
+        )
+        plan = planner.schedule()
+
+        off_grid = {
+            gspass.station
+            for gspass in planner.ctx.predict_passes()
+            if (gspass.begin - T0) % step
+        }
+        assert off_grid
+        assert [entry.station for entry in plan if entry.station in off_grid] == []
+        assert len(list(plan)) > 0
+        ditl = _execute(config, plan, hours, step)
+        assert ditl.validate_plan_matches_execution() == []

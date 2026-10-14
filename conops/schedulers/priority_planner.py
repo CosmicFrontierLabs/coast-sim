@@ -435,8 +435,17 @@ class PriorityPlanner:
 
     def _place_pass(self, gspass: Pass) -> None:
         """Reserve a ground pass on the first tracking profile that can be reached."""
+        acquire = self._acquisition_step(gspass)
+        if acquire is None:
+            self._log(
+                gspass.begin,
+                f"Pass at {gspass.station} does not start on a simulation step; "
+                "not reserved",
+                gspass.obsid,
+            )
+            return
         for profile in gspass.available_tracking_profiles():
-            block = self._pass_block(gspass, profile)
+            block = self._pass_block(gspass, profile, acquire)
             if block is not None and self._insert_fixed(block):
                 gspass.select_tracking_profile(profile)
                 return
@@ -447,7 +456,22 @@ class PriorityPlanner:
             gspass.obsid,
         )
 
-    def _pass_block(self, gspass: Pass, profile: TrackingProfile) -> _Block | None:
+    def _acquisition_step(self, gspass: Pass) -> float | None:
+        """Return the step a contact is acquired on, or None if it cannot be.
+
+        Contact starts on the first step inside the pass, where the spacecraft
+        must already hold the tracking attitude of that moment. A pass that
+        begins between steps has moved on to a later sample by then, which the
+        ingress slew cannot have targeted.
+        """
+        acquire = self.ctx.ceil_step(gspass.begin)
+        if gspass.utime and acquire > float(gspass.utime[0]):
+            return None
+        return acquire
+
+    def _pass_block(
+        self, gspass: Pass, profile: TrackingProfile, acquire: float
+    ) -> _Block | None:
         """Build the plan entry and timeline block for a ground contact.
 
         Returns None if the profile cannot be tracked within the motion limits.
@@ -486,7 +510,7 @@ class PriorityPlanner:
             # Tracking brakes past the last sample, so the contact leaves the
             # spacecraft at rest later, and elsewhere, than the profile ends.
             attitude_out=rest_attitude,
-            ready=gspass.begin,
+            ready=acquire,
             end=max(float(gspass.end), rest_time),
             gspass=gspass,
         )
