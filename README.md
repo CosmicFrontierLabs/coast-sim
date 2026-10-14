@@ -198,8 +198,9 @@ Planners that build an observing plan ahead of time: `PriorityPlanner` places
 requests in priority order, `LocalSearchPlanner` improves that plan by local search,
 and `CpSatPlanner` optimizes it with OR-Tools CP-SAT. `LongRangeAllocator` decides on
 which day each request is observed over runs of days to months, and steers dispatch
-and rolling re-planning. `FirstFitPlanner` and `GreedyDispatchPlanner` are simple
-legacy planners. See the planning guide in the documentation.
+and rolling re-planning. `SequentialPlanner` and `QueuePlanner` are simple
+planners; the former names `DumbScheduler` and `DumbQueueScheduler` remain as
+aliases of them. See the planning guide in the documentation.
 
 ### Targets (`conops.targets`)
 
@@ -241,8 +242,12 @@ conops/
 │   └── queue_ditl.py
 ├── schedulers/              # Scheduling algorithms
 │   ├── __init__.py
-│   ├── scheduler.py
-│   └── queue_scheduler.py
+│   ├── context.py
+│   ├── priority_planner.py
+│   ├── sequential_planner.py
+│   ├── queue_planner.py
+│   ├── scheduler.py         # DumbScheduler alias
+│   └── queue_scheduler.py   # DumbQueueScheduler alias
 ├── targets/                 # Target management and planning
 │   ├── __init__.py
 │   ├── pointing.py

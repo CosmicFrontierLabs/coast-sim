@@ -68,15 +68,16 @@ from .ditl import (
 from .schedulers import (
     CpSatPlanner,
     DispatchPolicy,
-    FirstFitPlanner,
-    GreedyDispatchPlanner,
+    DumbQueueScheduler,
+    DumbScheduler,
     LocalSearchPlanner,
     LongRangeAllocator,
     Planner,
     PriorityPlanner,
+    QueuePlanner,
     SchedulingContext,
+    SequentialPlanner,
 )
-from .schedulers._renamed import renamed_getattr
 from .simulation import (
     ACS,
     SAA,
@@ -140,13 +141,15 @@ __all__ = [
     "DTOR",
     "CpSatPlanner",
     "DispatchPolicy",
-    "FirstFitPlanner",
-    "GreedyDispatchPlanner",
+    "DumbQueueScheduler",
+    "DumbScheduler",
     "LocalSearchPlanner",
     "LongRangeAllocator",
     "Planner",
     "PriorityPlanner",
+    "QueuePlanner",
     "SchedulingContext",
+    "SequentialPlanner",
     "EmergencyCharging",
     "optimum_body_roll",
     "optimum_instrument_roll",
@@ -216,5 +219,3 @@ __all__ = [
 # Resolve forward references in Pydantic models
 ACSCommand.model_rebuild()
 Slew.model_rebuild()
-
-__getattr__ = renamed_getattr(__name__, globals())

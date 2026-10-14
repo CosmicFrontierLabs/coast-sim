@@ -507,6 +507,18 @@ class PlanExecutionValidator:
         return mismatches
 
 
+def planned_contact_begin(entry: PlanEntry, gspass: Pass) -> float:
+    """Return when a plan expects a contact to be acquired.
+
+    A contact can only be acquired on a simulation step, so a plan may pick up
+    a pass that starts between steps after its nominal begin.
+    """
+    contact_begin = entry.contact_begin
+    if contact_begin is None:
+        return float(gspass.begin)
+    return min(max(float(contact_begin), float(gspass.begin)), float(gspass.end))
+
+
 def matching_pass_for_entry(entry: PlanEntry, passes: Sequence[Pass]) -> Pass | None:
     """Find the pass matching a GSP plan entry's station and contact window."""
     station = entry.station
@@ -515,9 +527,12 @@ def matching_pass_for_entry(entry: PlanEntry, passes: Sequence[Pass]) -> Pass | 
     for gspass in passes:
         if station is not None and gspass.station != station:
             continue
-        begin_matches = (
-            contact_begin is None
-            or abs(float(gspass.begin) - float(contact_begin)) <= 1e-6
+        # A plan may acquire a contact after its nominal start, so its window
+        # need only lie within the pass it identifies.
+        begin_matches = contact_begin is None or (
+            float(gspass.begin) - 1e-6
+            <= float(contact_begin)
+            <= float(gspass.end) + 1e-6
         )
         end_matches = (
             contact_end is None or abs(float(gspass.end) - float(contact_end)) <= 1e-6

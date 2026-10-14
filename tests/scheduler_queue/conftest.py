@@ -14,7 +14,7 @@ from conops import (
     DAY_SECONDS,
     AttitudeControlSystem,
     Constraint,
-    GreedyDispatchPlanner,
+    DumbQueueScheduler,
     MissionConfig,
     QueueDITL,
     SolarArrayDriveState,
@@ -241,6 +241,7 @@ def queue_ditl(mock_config: Mock, mock_ephem: DummyEphemeris) -> QueueDITL:
         mock_acs.executed_commands = []
         mock_acs.last_slew = None
         mock_acs.current_slew = None  # No active slew by default
+        mock_acs.current_pass = None  # No acquired contact by default
         mock_acs.ra = 0.0  # Current pointing RA
         mock_acs.dec = 0.0  # Current pointing Dec
         mock_acs.roll = 0.0
@@ -399,11 +400,11 @@ def mock_queue(mock_ephemeris: Mock) -> Mock:
 
 
 @pytest.fixture
-def scheduler(mock_queue: Mock, mock_ephemeris: Mock) -> GreedyDispatchPlanner:
-    """Create a GreedyDispatchPlanner instance."""
+def scheduler(mock_queue: Mock, mock_ephemeris: Mock) -> DumbQueueScheduler:
+    """Create a DumbQueueScheduler instance."""
     begin = datetime(2021, 1, 4, tzinfo=timezone.utc)
     end = begin + timedelta(days=1)
-    scheduler = GreedyDispatchPlanner(queue=mock_queue, begin=begin, end=end)
+    scheduler = DumbQueueScheduler(queue=mock_queue, begin=begin, end=end)
     scheduler.queue.ephem = mock_ephemeris
     # Override get to return None for basic tests
     cast(Any, scheduler.queue).get = Mock(return_value=None)
@@ -507,11 +508,11 @@ def queue_get_from_list() -> Callable[..., list[tuple[float, float]]]:
 
 
 @pytest.fixture
-def scheduler_2022_100_len2(mock_queue: Mock) -> GreedyDispatchPlanner:
+def scheduler_2022_100_len2(mock_queue: Mock) -> DumbQueueScheduler:
     plan = Plan()
     begin = datetime(2022, 4, 10, tzinfo=timezone.utc)
     end = begin + timedelta(days=2)
-    return GreedyDispatchPlanner(queue=mock_queue, plan=plan, begin=begin, end=end)
+    return DumbQueueScheduler(queue=mock_queue, plan=plan, begin=begin, end=end)
 
 
 # TOO-related fixtures for reducing test code duplication
@@ -716,6 +717,7 @@ def queue_ditl_no_queue_log(
         mock_acs.slew_dists = []
         mock_acs.last_slew = None
         mock_acs.current_slew = None  # No active slew by default
+        mock_acs.current_pass = None  # No acquired contact by default
         mock_acs.ra = 0.0  # Current pointing RA
         mock_acs.dec = 0.0  # Current pointing Dec
         mock_acs.roll = 0.0
@@ -808,6 +810,7 @@ def queue_ditl_acs_no_ephem(
         mock_acs.slew_dists = []
         mock_acs.last_slew = None
         mock_acs.current_slew = None  # No active slew by default
+        mock_acs.current_pass = None  # No acquired contact by default
         mock_acs.ra = 0.0  # Current pointing RA
         mock_acs.dec = 0.0  # Current pointing Dec
         mock_acs.roll = 0.0

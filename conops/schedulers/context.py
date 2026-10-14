@@ -18,6 +18,7 @@ from ..common.enums import SlewAlgorithm
 from ..config import MissionConfig
 from ..config.constraint import attitude_constraint_name_for_scopes
 from ..simulation.acs import ACS
+from ..simulation.attitude import AttitudeExecutionError, AttitudeTrajectory
 from ..simulation.passes import Pass, PassTimes
 from ..simulation.roll import optimum_roll
 from ..simulation.slew import Slew
@@ -235,9 +236,14 @@ class SchedulingContext:
         """Return when a target is clear of its roll-independent constraints.
 
         Every roll is excluded outside these windows, so a planner can skip
-        them before checking a specific roll.
+        them before checking a specific roll. A mounted instrument's windows
+        follow its science line of sight, not the body attitude.
         """
-        constraint = self.config.constraint.roll_independent_constraint
+        constraint = (
+            target.roll_independent_visibility_constraint()
+            if target.constraint is not None
+            else self.config.constraint.roll_independent_constraint
+        )
         if constraint is None:
             return [(self.ustart, self.uend)]
         result = constraint.evaluate(
@@ -260,7 +266,9 @@ class SchedulingContext:
         when the plan is executed.
         """
         passtimes = PassTimes(config=self.config)
-        span = self.simulation_end.timestamp() - self.origin
+        # PassTimes.get counts days from midnight UTC of the start date.
+        day_start = self.origin - self.origin % 86400
+        span = self.simulation_end.timestamp() - day_start
         length = max(1, int(np.ceil(span / 86400)))
         start = self.simulation_start
         passtimes.get(start.year, start.timetuple().tm_yday, length)
@@ -269,3 +277,50 @@ class SchedulingContext:
             for gspass in passtimes.passes
             if self.ustart <= gspass.begin and gspass.end <= self.uend
         ]
+
+    def tracking_samples(
+        self, gspass: Pass, profile: Sequence[Attitude], acquire: float
+    ) -> list[tuple[float, Attitude]]:
+        """Return the timed attitudes ACS tracks after acquiring at ``acquire``.
+
+        Acquisition holds the attitude the profile calls for at that moment,
+        and the profile is picked up from the first sample after it, exactly as
+        :meth:`~conops.simulation.acs.ACS._start_pass` builds its trajectory.
+        """
+        held = gspass.attitude_for_profile_at(list(profile), acquire)
+        if held is None:
+            return []
+        samples: list[tuple[float, Attitude]] = [(float(acquire), held)]
+        samples.extend(
+            (float(utime), (float(ra), float(dec), float(roll)))
+            for utime, (ra, dec, roll) in zip(gspass.utime, profile, strict=True)
+            if float(utime) > acquire
+        )
+        return samples
+
+    def tracking_rest(
+        self, gspass: Pass, profile: Sequence[Attitude], acquire: float
+    ) -> tuple[float, Attitude] | None:
+        """Return when a tracked contact comes to rest, and the attitude it rests at.
+
+        ACS cannot stop a tracking rate instantly: it brakes past the profile's
+        last sample, so a contact neither ends at that sample's attitude nor at
+        the contact's end time. Tracking starts from rest at ``acquire``, so a
+        late acquisition has to turn harder to catch the profile up. Returns
+        None when the profile cannot be flown within the motion limits.
+        """
+        samples = self.tracking_samples(gspass, profile, acquire)
+        if not samples:
+            return None
+        if len(samples) < 2:
+            # A single sample is held, not tracked, so there is nothing to brake.
+            return float(gspass.end), samples[-1][1]
+        try:
+            trajectory = AttitudeTrajectory.tracking(
+                samples,
+                self.config.spacecraft_bus.attitude_control,
+                initial_rate=(0.0, 0.0, 0.0),
+            )
+        except AttitudeExecutionError:
+            return None
+        return float(trajectory.end), trajectory.state(trajectory.end).attitude

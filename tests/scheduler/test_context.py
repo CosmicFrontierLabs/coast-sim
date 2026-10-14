@@ -133,3 +133,18 @@ class TestPasses:
         passes = ctx.predict_passes()
 
         assert all(T0 <= p.begin and p.end <= END.timestamp() for p in passes)
+
+    def test_predicts_passes_after_midnight(self, config: MissionConfig) -> None:
+        begin = BEGIN + timedelta(hours=18)
+        end = begin + timedelta(hours=18)
+        config.ground_stations = GroundStationRegistry.default()
+        # PassTimes.get counts days from midnight, where this ephemeris starts.
+        config.constraint.ephem = TLEEphemeris(
+            tle="examples/example.tle", begin=BEGIN, end=end, step_size=60
+        )
+        ctx = SchedulingContext(config, begin, end)
+
+        passes = ctx.predict_passes()
+
+        midnight = (BEGIN + timedelta(days=1)).timestamp()
+        assert any(p.begin >= midnight for p in passes)

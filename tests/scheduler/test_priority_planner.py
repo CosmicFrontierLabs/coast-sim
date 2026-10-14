@@ -4,13 +4,21 @@ from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
+from rust_ephem import SunConstraint
 
 from conops import DITL
 from conops.common import ObsType
-from conops.config import MissionConfig, TargetConfig
+from conops.config import (
+    Constraint,
+    MissionConfig,
+    OnboardRecorder,
+    Payload,
+    TargetConfig,
+    Telescope,
+)
 from conops.config.observation_categories import ObservationCategory
-from conops.schedulers import PriorityPlanner
-from conops.targets import Plan, PlanEntry
+from conops.schedulers import PriorityPlanner, SchedulingContext
+from conops.targets import Plan, PlanEntry, Pointing
 
 from .planning_scenario import (
     BEGIN,
@@ -127,6 +135,62 @@ class TestOrdering:
 
         assert [e.obsid for e in _science(plan)] == [1, 2]
 
+    def test_merit_orders_requests_without_the_legacy_alias(self) -> None:
+        """Ordering follows the canonical merit field, not the legacy ``fom``."""
+        config = _config(2)
+        targets = []
+        # Obsids whose tie-break alone would order the low-merit request first.
+        for obsid, (ra, dec), merit in (
+            (2, (105.0, 10.0), 10.0),
+            (3, (110.0, 10.0), 90.0),
+        ):
+            target = Pointing(
+                config=config,
+                obsid=obsid,
+                name=f"T{obsid}",
+                ra=ra,
+                dec=dec,
+                merit=merit,
+                ss_min=20 * MIN,
+                ss_max=20 * MIN,
+            )
+            target.exptime = 20 * MIN
+            targets.append(target)
+
+        plan = PriorityPlanner(
+            config, targets, BEGIN, BEGIN + timedelta(hours=2)
+        ).schedule()
+
+        assert [e.obsid for e in _science(plan)] == [3, 2]
+
+    def test_delivered_program_shares_order_the_first_pass(self) -> None:
+        """An over-served program loses its completion-deficit credit."""
+        categories = [
+            ObservationCategory(
+                name="A", obsid_min=1, obsid_max=2, program="A", time_share=0.5
+            ),
+            ObservationCategory(
+                name="B", obsid_min=2, obsid_max=3, program="B", time_share=0.5
+            ),
+        ]
+        config = _config(
+            2,
+            weights=TargetConfig(completion_deficit_weight=100),
+            categories=categories,
+        )
+        over_served = _target(config, 1, 105.0, 10.0, merit=60)
+        under_served = _target(config, 2, 110.0, 10.0, merit=50)
+        for target, delivered in ((over_served, 900.0), (under_served, 100.0)):
+            target.record_collection(T0 - HOUR, delivered)
+            target.exptime = 20 * MIN
+
+        plan = PriorityPlanner(
+            config, [over_served, under_served], BEGIN, BEGIN + timedelta(hours=2)
+        ).schedule()
+
+        assert [e.obsid for e in _science(plan)] == [2, 1]
+        assert [e.merit for e in _science(plan)] == [90.0, 20.0]
+
 
 class TestSnapshots:
     def test_exposure_is_split_into_snapshots(self) -> None:
@@ -149,6 +213,16 @@ class TestSnapshots:
         plan = planner.schedule()
 
         assert [entry.exposure for entry in _science(plan)] == [20 * MIN]
+        assert planner.unplaced == []
+
+    def test_zero_minimum_snapshot_stops_when_the_request_is_met(self) -> None:
+        config = _config(2)
+        target = _target(config, 1, 105.0, 10.0, minutes=1, ss_min=0)
+
+        planner = PriorityPlanner(config, [target], BEGIN, BEGIN + timedelta(hours=2))
+        plan = planner.schedule()
+
+        assert [entry.exposure for entry in _science(plan)] == [MIN]
         assert planner.unplaced == []
 
     def test_inputs_are_not_modified(self) -> None:
@@ -285,6 +359,30 @@ class TestLockedEntries:
         ditl = _execute(config, plan, hours, planner.ctx.step_size)
         assert ditl.validate_plan_matches_execution() == []
 
+    def test_locked_entry_outside_the_horizon_is_left_out(self) -> None:
+        config = _config(6)
+        start = T0 + 4 * HOUR
+        locked = PlanEntry(
+            config=config,
+            name="Locked",
+            ra=115.0,
+            dec=10.0,
+            roll=0.0,
+            obsid=900,
+            obstype=ObsType.AT,
+            begin=start,
+            end=start + 20 * MIN,
+            collection_begin=start,
+            collection_end=start + 20 * MIN,
+            ss_min=60,
+        )
+
+        plan = PriorityPlanner(
+            config, [], BEGIN, BEGIN + timedelta(hours=2), locked=[locked]
+        ).schedule()
+
+        assert all(entry.obsid != 900 for entry in plan)
+
     def test_locked_entry_needs_a_collection_window(self) -> None:
         config = _config(1)
         locked = PlanEntry(config=config, obsid=900, begin=T0, end=T0 + 600)
@@ -293,6 +391,247 @@ class TestLockedEntries:
             PriorityPlanner(
                 config, [], BEGIN, BEGIN + timedelta(hours=1), locked=[locked]
             ).schedule()
+
+    def test_locked_entry_that_breaks_its_constraints_is_left_out(self) -> None:
+        """A lock reachable at ingress but not holdable for its whole window."""
+        hours = 6
+        config = _config(hours)
+        probe = _target(config, 900, *CONSTRAINED[0])
+        probe.visibility()
+        window = probe.windows[0]
+        locked = PlanEntry(
+            config=config,
+            name="Locked",
+            ra=CONSTRAINED[0][0],
+            dec=CONSTRAINED[0][1],
+            roll=0.0,
+            obsid=900,
+            obstype=ObsType.AT,
+            begin=window[0] + 300,
+            end=window[1] + 600,
+            collection_begin=window[0] + 300,
+            collection_end=window[1] + 600,
+            ss_min=60,
+        )
+
+        planner = PriorityPlanner(
+            config, [], BEGIN, BEGIN + timedelta(hours=hours), locked=[locked]
+        )
+        plan = planner.schedule()
+
+        assert all(entry.obsid != 900 for entry in plan)
+        ditl = _execute(config, plan, hours, planner.ctx.step_size)
+        assert ditl.validate_plan_matches_execution() == []
+
+    def test_locked_snapshot_counts_against_its_request(self) -> None:
+        hours = 3
+        config = _config(hours)
+        target = _target(config, 1, 105.0, 10.0, minutes=40, snapshot=20)
+        first = PriorityPlanner(
+            config, [target], BEGIN, BEGIN + timedelta(hours=hours)
+        ).schedule()
+        locked = _science(first)[0]
+
+        replan = PriorityPlanner(
+            config,
+            [target],
+            BEGIN,
+            BEGIN + timedelta(hours=hours),
+            locked=[locked],
+        ).schedule()
+
+        assert len(_science(replan)) == 2
+        assert _planned_collection(replan) == pytest.approx(40 * MIN)
+
+
+class TestMountedTelescope:
+    def test_science_windows_follow_the_mounted_line_of_sight(self) -> None:
+        """A body keepout must not discard windows at the science coordinates."""
+        hours = 2
+        config = _config(hours)
+        config.constraint = Constraint(
+            safety_constraint=SunConstraint(min_angle=10),
+            ephem=config.constraint.ephem,
+        )
+        telescope = Telescope(name="Rear", boresight=(-1.0, 0.0, 0.0))
+        config.payload = Payload(instruments=[telescope])
+        target = _target(config, 1, 216.0, -14.5, minutes=20)
+        target.instrument_name = telescope.name
+
+        planner = PriorityPlanner(config, [target], BEGIN, BEGIN + timedelta(hours=2))
+        plan = planner.schedule()
+
+        assert len(_science(plan)) == 1
+        ditl = _execute(config, plan, hours, planner.ctx.step_size)
+        assert ditl.validate_plan_matches_execution() == []
+
+
+class TestGroundContacts:
+    def test_activity_after_a_contact_starts_from_the_braking_rest_attitude(
+        self,
+    ) -> None:
+        """Tracking brakes past the profile, so a contact does not end on it."""
+        hours = 12
+        config = _config(hours, stations=True)
+        contacts = PriorityPlanner(
+            config, [], BEGIN, BEGIN + timedelta(hours=hours)
+        ).schedule()
+        contact = next(entry for entry in contacts if entry.obstype == ObsType.GSP)
+        locked = PlanEntry(
+            config=config,
+            name="Locked",
+            ra=contact.track_end_ra,
+            dec=contact.track_end_dec,
+            roll=contact.track_end_roll,
+            obsid=900,
+            obstype=ObsType.AT,
+            begin=contact.end,
+            end=contact.end + 600,
+            collection_begin=contact.end,
+            collection_end=contact.end + 600,
+            ss_min=60,
+        )
+
+        planner = PriorityPlanner(
+            config, [], BEGIN, BEGIN + timedelta(hours=hours), locked=[locked]
+        )
+        plan = planner.schedule()
+
+        ditl = _execute(config, plan, hours, planner.ctx.step_size)
+        assert ditl.validate_plan_matches_execution() == []
+        executed = sum(hk.collection_seconds for hk in ditl.telemetry.housekeeping)
+        assert executed == pytest.approx(_planned_collection(plan))
+
+    def test_contact_starting_between_steps_is_acquired_late(self) -> None:
+        """A pass beginning off the step grid is picked up on the next step."""
+        hours = 12
+        step = 180
+        config = _config(hours, stations=True)
+        targets = [
+            _target(config, 100 + i, ra, dec, merit=90 - i, minutes=60, snapshot=20)
+            for i, (ra, dec) in enumerate(PATCH)
+        ]
+        planner = PriorityPlanner(
+            config, targets, BEGIN, BEGIN + timedelta(hours=hours), step_size=step
+        )
+        plan = planner.schedule()
+
+        predicted = {gspass.station: gspass for gspass in planner.ctx.predict_passes()}
+        contacts = [entry for entry in plan if entry.obstype == ObsType.GSP]
+        assert {entry.station for entry in contacts} == set(predicted)
+        off_grid = [
+            entry
+            for entry in contacts
+            if (predicted[entry.station].begin - T0) % step  # type: ignore[index]
+        ]
+        assert off_grid
+        for entry in contacts:
+            gspass = predicted[entry.station]  # type: ignore[index]
+            acquire = planner.ctx.ceil_step(gspass.begin)
+            assert entry.contact_begin == acquire
+            assert entry.contact_end == gspass.end
+            assert entry.exptime == round(gspass.end - acquire)
+
+        ditl = _execute(config, plan, hours, step)
+        assert ditl.validate_plan_matches_execution() == []
+        executed = sum(hk.collection_seconds for hk in ditl.telemetry.housekeeping)
+        assert executed == pytest.approx(_planned_collection(plan))
+
+    def test_contact_blocked_at_its_first_step_is_acquired_at_a_later_one(
+        self,
+    ) -> None:
+        """A lock leaves no time to reach the first step, but the next one fits."""
+        hours = 12
+        step = 180
+        config = _config(hours, stations=True)
+        ctx = SchedulingContext(
+            config, BEGIN, BEGIN + timedelta(hours=hours), step_size=step
+        )
+        mal = next(p for p in ctx.predict_passes() if p.station == "MAL")
+        first, second = ctx.steps(mal.begin, mal.end)[:2]
+        locked = PlanEntry(
+            config=config,
+            name="Locked",
+            ra=105.0,
+            dec=10.0,
+            roll=0.0,
+            obsid=900,
+            obstype=ObsType.AT,
+            begin=mal.begin - 600,
+            end=mal.begin + 60,
+            collection_begin=mal.begin - 600,
+            collection_end=mal.begin + 60,
+            ss_min=60,
+        )
+        assert first <= locked.end < second
+
+        planner = PriorityPlanner(
+            config,
+            [],
+            BEGIN,
+            BEGIN + timedelta(hours=hours),
+            step_size=step,
+            locked=[locked],
+        )
+        plan = planner.schedule()
+
+        contact = next(e for e in plan if e.station == "MAL")
+        assert contact.contact_begin == second
+        assert contact.contact_end == mal.end
+        assert contact.exptime == round(mal.end - second)
+        ditl = _execute(config, plan, hours, step)
+        assert ditl.validate_plan_matches_execution() == []
+        executed = sum(hk.collection_seconds for hk in ditl.telemetry.housekeeping)
+        assert executed == pytest.approx(660)
+
+    def test_downlink_is_credited_only_for_the_usable_contact(self) -> None:
+        """Contacts acquired late and ending mid-step downlink only while in contact."""
+        hours = 12
+        step = 180
+        config = _config(hours, stations=True)
+        config.recorder = OnboardRecorder(capacity_gb=1000, current_volume_gb=100)
+        planner = PriorityPlanner(
+            config, [], BEGIN, BEGIN + timedelta(hours=hours), step_size=step
+        )
+        plan = planner.schedule()
+        contacts = [entry for entry in plan if entry.obstype == ObsType.GSP]
+        assert contacts
+        # Some contact ends partway through a step.
+        assert any((float(e.contact_end) - T0) % step for e in contacts)  # type: ignore[arg-type]
+
+        ditl = _execute(config, plan, hours, step)
+
+        assert ditl.validate_plan_matches_execution() == []
+        expected = 0.0
+        for entry in contacts:
+            assert entry.contact_begin is not None and entry.contact_end is not None
+            station = config.ground_stations.get(entry.station)  # type: ignore[arg-type]
+            rate_mbps = ditl._get_effective_data_rate(station)
+            assert rate_mbps
+            seconds = float(entry.contact_end) - float(entry.contact_begin)
+            expected += rate_mbps * seconds / 1000.0 / 8.0
+        assert ditl.data_downlinked_gb[-1] == pytest.approx(expected)
+
+    def test_contact_with_no_step_inside_it_is_not_reserved(self) -> None:
+        """Steps too coarse to land inside a pass leave it unreserved."""
+        hours = 12
+        step = 900
+        config = _config(hours, stations=True)
+        planner = PriorityPlanner(
+            config, [], BEGIN, BEGIN + timedelta(hours=hours), step_size=step
+        )
+        plan = planner.schedule()
+
+        unreachable = {
+            gspass.station
+            for gspass in planner.ctx.predict_passes()
+            if planner.ctx.ceil_step(gspass.begin) >= gspass.utime[-1]
+        }
+        assert unreachable
+        stations = {entry.station for entry in plan if entry.obstype == ObsType.GSP}
+        assert stations and not stations & unreachable
+        ditl = _execute(config, plan, hours, step)
+        assert ditl.validate_plan_matches_execution() == []
 
 
 class TestSuccessorRetries:

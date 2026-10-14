@@ -51,12 +51,14 @@ Scheduling and Planning
    conops.schedulers.allocator
    conops.schedulers.context
    conops.schedulers.cpsat_planner
-   conops.schedulers.first_fit_planner
-   conops.schedulers.greedy_dispatch_planner
    conops.schedulers.local_search
    conops.schedulers.priority_planner
    conops.schedulers.protocols
+   conops.schedulers.queue_planner
    conops.schedulers.registry
+   conops.schedulers.sequential_planner
+   conops.schedulers.scheduler
+   conops.schedulers.queue_scheduler
    conops.targets
    conops.targets.merit
    conops.targets.pointing

@@ -1,11 +1,11 @@
-"""Unit tests for the FirstFitPlanner class."""
+"""Unit tests for the DumbScheduler class."""
 
 import pytest
 from astropy.time import Time  # type: ignore[import-untyped]
 
 from conops import (
     ACSMode,
-    FirstFitPlanner,
+    DumbScheduler,
     PlanEntry,
     SingleAxisSolarArrayDrive,
     SolarArrayDriveControl,
@@ -13,19 +13,19 @@ from conops import (
 )
 
 
-class TestFirstFitPlannerInit:
-    """Test FirstFitPlanner initialization."""
+class TestDumbSchedulerInit:
+    """Test DumbScheduler initialization."""
 
     def test_init_sets_constraint(self, mock_config):
-        scheduler = FirstFitPlanner(config=mock_config, days=1)
+        scheduler = DumbScheduler(config=mock_config, days=1)
         assert scheduler.constraint is mock_config.constraint
 
     def test_init_sets_ephem(self, mock_config):
-        scheduler = FirstFitPlanner(config=mock_config, days=1)
+        scheduler = DumbScheduler(config=mock_config, days=1)
         assert scheduler.ephem is mock_config.constraint.ephem
 
     def test_init_sets_days(self, mock_config):
-        scheduler = FirstFitPlanner(config=mock_config, days=1)
+        scheduler = DumbScheduler(config=mock_config, days=1)
         assert scheduler.days == 1
 
     def test_init_without_constraint(self, mock_config):
@@ -34,35 +34,35 @@ class TestFirstFitPlannerInit:
         # raises AttributeError if constraint is None. Update the test to assert
         # that AttributeError is raised instead of ValueError.
         with pytest.raises(AttributeError):
-            FirstFitPlanner(config=mock_config, days=1)
+            DumbScheduler(config=mock_config, days=1)
 
     def test_init_constraint_without_ephem(self, mock_config):
         mock_config.constraint.ephem = None
         with pytest.raises(ValueError, match="Constraint.ephem must be set"):
-            FirstFitPlanner(config=mock_config, days=1)
+            DumbScheduler(config=mock_config, days=1)
 
     def test_init_default_mintime(self, mock_config):
-        scheduler = FirstFitPlanner(config=mock_config)
+        scheduler = DumbScheduler(config=mock_config)
         assert scheduler.mintime == 300  # 5 minutes
 
     def test_init_default_step_size(self, mock_config):
-        scheduler = FirstFitPlanner(config=mock_config)
+        scheduler = DumbScheduler(config=mock_config)
         assert scheduler.step_size == 60  # seconds
 
     def test_init_default_days(self, mock_config):
-        scheduler = FirstFitPlanner(config=mock_config)
+        scheduler = DumbScheduler(config=mock_config)
         assert scheduler.days == 1
 
     def test_init_default_plan_empty(self, mock_config):
-        scheduler = FirstFitPlanner(config=mock_config)
+        scheduler = DumbScheduler(config=mock_config)
         assert len(scheduler.plan) == 0
 
     def test_init_default_scheduled_empty(self, mock_config):
-        scheduler = FirstFitPlanner(config=mock_config)
+        scheduler = DumbScheduler(config=mock_config)
         assert len(scheduler.scheduled) == 0
 
 
-class TestFirstFitPlannerTargetList:
+class TestDumbSchedulerTargetList:
     """Test scheduler target list management."""
 
     def test_add_targets_to_list(self, scheduler, sample_targets):
@@ -82,7 +82,7 @@ class TestFirstFitPlannerTargetList:
         assert len(scheduler.targlist) == 0
 
 
-class TestFirstFitPlannerSAA:
+class TestDumbSchedulerSAA:
     """Test SAA initialization."""
 
     def test_saa_pre_set_in_fixture(self, scheduler, simple_target_factory):
@@ -103,7 +103,7 @@ class TestFirstFitPlannerSAA:
         assert scheduler.saa.ephem is scheduler.ephem
 
 
-class TestFirstFitPlannerScheduling:
+class TestDumbSchedulerScheduling:
     """Test the core scheduling algorithm."""
 
     def test_schedule_creates_plan(self, scheduler, sample_targets):
@@ -113,7 +113,7 @@ class TestFirstFitPlannerScheduling:
         assert len(scheduler.plan) > 0
 
     def test_schedule_returns_its_plan(self, scheduler, sample_targets):
-        """FirstFitPlanner implements the Planner protocol."""
+        """DumbScheduler implements the Planner protocol."""
         for target in sample_targets:
             scheduler.targlist.add_target(target)
         assert scheduler.schedule() is scheduler.plan
@@ -343,7 +343,7 @@ class TestFirstFitPlannerScheduling:
             assert ppt.begin < scheduler.ephem.utime[0] + 86400
 
 
-class TestFirstFitPlannerPlanEntry:
+class TestDumbSchedulerPlanEntry:
     """Test plan entry properties."""
 
     def test_plan_entry_begin_not_none(self, scheduler, simple_target_factory) -> None:
@@ -385,7 +385,7 @@ class TestFirstFitPlannerPlanEntry:
         assert ppt.constraint is scheduler.constraint
 
 
-class TestFirstFitPlannerConstraints:
+class TestDumbSchedulerConstraints:
     """Test constraint evaluation."""
 
     def test_constraint_in_constraint_called(self, scheduler, simple_target_factory):
@@ -423,7 +423,7 @@ class TestFirstFitPlannerConstraints:
         assert len(scheduler.plan) == 0
 
 
-class TestFirstFitPlannerProperties:
+class TestDumbSchedulerProperties:
     """Test scheduler configuration properties."""
 
     def test_mintime_configuration(self, scheduler, simple_target_factory):
@@ -449,7 +449,7 @@ class TestFirstFitPlannerProperties:
         assert scheduler.sidemount is True
 
 
-class TestFirstFitPlannerEdgeCases:
+class TestDumbSchedulerEdgeCases:
     """Test edge cases and error handling."""
 
     def test_extremely_short_observation_runs(self, scheduler, simple_target_factory):
@@ -489,7 +489,7 @@ class TestFirstFitPlannerEdgeCases:
         # No assert: behavior depends on implementation
 
 
-class TestFirstFitPlannerIntegration:
+class TestDumbSchedulerIntegration:
     """Integration tests for the scheduler."""
 
     def test_full_scheduling_workflow_target_count(self, scheduler, sample_targets):
@@ -520,7 +520,7 @@ class TestFirstFitPlannerIntegration:
     def test_scheduler_with_custom_config_mintime(
         self, mock_constraint, mock_saa, mock_config, sample_targets
     ):
-        scheduler = FirstFitPlanner(config=mock_config, days=1)
+        scheduler = DumbScheduler(config=mock_config, days=1)
         scheduler.saa = mock_saa
         scheduler.config = mock_config
         scheduler.mintime = 600
@@ -533,7 +533,7 @@ class TestFirstFitPlannerIntegration:
     def test_scheduler_with_custom_config_stepsize(
         self, mock_constraint, mock_saa, mock_config, sample_targets
     ):
-        scheduler = FirstFitPlanner(config=mock_config, days=1)
+        scheduler = DumbScheduler(config=mock_config, days=1)
         scheduler.saa = mock_saa
         scheduler.config = mock_config
         scheduler.mintime = 600

@@ -1,13 +1,14 @@
-from ._renamed import renamed_getattr
 from .allocator import AllocatedTime, Allocation, LongRangeAllocator
 from .context import SchedulingContext
 from .cpsat_planner import CpSatPlanner
-from .first_fit_planner import FirstFitPlanner
-from .greedy_dispatch_planner import GreedyDispatchPlanner
 from .local_search import LocalSearchPlanner
 from .priority_planner import PriorityPlanner
 from .protocols import DispatchPolicy, Planner
+from .queue_planner import QueuePlanner
+from .queue_scheduler import DumbQueueScheduler
 from .registry import PLANNERS, planner_class
+from .scheduler import DumbScheduler
+from .sequential_planner import SequentialPlanner
 
 __all__ = [
     "PLANNERS",
@@ -15,14 +16,14 @@ __all__ = [
     "Allocation",
     "CpSatPlanner",
     "DispatchPolicy",
-    "FirstFitPlanner",
-    "GreedyDispatchPlanner",
+    "DumbQueueScheduler",
+    "DumbScheduler",
     "LocalSearchPlanner",
     "LongRangeAllocator",
     "Planner",
     "PriorityPlanner",
+    "QueuePlanner",
     "SchedulingContext",
+    "SequentialPlanner",
     "planner_class",
 ]
-
-__getattr__ = renamed_getattr(__name__, globals())

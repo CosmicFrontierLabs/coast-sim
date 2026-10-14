@@ -8,6 +8,7 @@ block a better packing.
 """
 
 import hashlib
+from collections import defaultdict
 from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime
 from enum import Enum, auto
@@ -96,6 +97,11 @@ class _Request(BaseModel):
     cadence: float | None = None
     """Seconds a visit waits after the target's last one, when cadence counts."""
 
+    @property
+    def wants_more(self) -> bool:
+        """Whether enough exposure is left for another snapshot."""
+        return self.remaining > 0 and self.remaining >= float(self.target.ss_min)
+
 
 def program_shares(seconds: Mapping[str, float]) -> dict[str, float]:
     """Return each program's fraction of the science seconds given."""
@@ -103,6 +109,11 @@ def program_shares(seconds: Mapping[str, float]) -> dict[str, float]:
     if total <= 0.0:
         return {}
     return {program: value / total for program, value in seconds.items()}
+
+
+def _long_enough(collection_seconds: float, ss_min: float) -> bool:
+    """Whether a snapshot collects something, and at least ``ss_min``."""
+    return collection_seconds > 0 and collection_seconds >= ss_min
 
 
 class PriorityPlanner:
@@ -314,7 +325,7 @@ class PriorityPlanner:
             block = (
                 # Such as allocated time shorter than a snapshot.
                 None
-                if request.remaining < float(request.target.ss_min)
+                if not request.wants_more
                 else self._place_snapshot(request, self._cadence_release(request))
             )
             if block is not None:
@@ -324,7 +335,7 @@ class PriorityPlanner:
                 request.remaining -= collected
                 placed[id(request)] += 1
                 self._record_visit(request, block, program_seconds)
-                if request.remaining >= float(request.target.ss_min):
+                if request.wants_more:
                     continue
             active.remove(request)
             rest = self._rest_of.get(id(request))
@@ -333,7 +344,7 @@ class PriorityPlanner:
                 # with the rest of the request's exposure.
                 rest.remaining += max(request.remaining, 0.0)
                 continue
-            if request.remaining >= float(request.target.ss_min):
+            if request.wants_more:
                 self.unplaced.append(request.target)
                 self._log(
                     self.ctx.ustart,
@@ -381,6 +392,11 @@ class PriorityPlanner:
     def _requests(self) -> list[_Request]:
         """Return the requests in planning order: tier, then value, then a stable tie-break."""
         merit_model = MeritModel(self.config)
+        # Committed science, outside this plan or locked into it, will be
+        # collected before what this plan places.
+        reserved = self._reserved_collection()
+        for obsid, seconds in self.reserved_seconds.items():
+            reserved[obsid] += seconds
         seed = self.config.random_seed if self.config.random_seed is not None else 0
         self._delivered: dict[str, float] = {}
         """Science already collected, by program."""
@@ -388,8 +404,7 @@ class PriorityPlanner:
         """When each cadence target was last observed, collected or planned."""
         for target in self.targets:
             obsid = int(target.obsid)
-            # Committed science will be collected before this plan's.
-            seconds = target.collected_seconds + self.reserved_seconds.get(obsid, 0.0)
+            seconds = target.collected_seconds + reserved.get(obsid, 0.0)
             if seconds > 0.0:
                 program = merit_model.category(target).program_name
                 self._delivered[program] = self._delivered.get(program, 0.0) + seconds
@@ -405,12 +420,12 @@ class PriorityPlanner:
         requests = []
         for target in self.targets:
             exptime = target.exptime if target.exptime is not None else target.ss_max
-            exptime -= self.reserved_seconds.get(int(target.obsid), 0.0)
-            if target.done or exptime < target.ss_min:
+            remaining = float(exptime) - reserved.get(int(target.obsid), 0.0)
+            if target.done or remaining < target.ss_min:
                 continue
             category = merit_model.category(target)
             merit = merit_model.value_terms(
-                target, self.ctx.ustart, base=float(target.fom), delivered_shares=shares
+                target, self.ctx.ustart, delivered_shares=shares
             )
             if self.preferred is not None or (
                 self.allocated is not None and self.allocation_strictness == "tier"
@@ -430,7 +445,7 @@ class PriorityPlanner:
                 _Request(
                     target=target,
                     merit=merit,
-                    remaining=float(exptime),
+                    remaining=remaining,
                     windows=self.ctx.visibility_windows(target),
                     category=category,
                     # Visits wait for their cadence, so each has full pressure.
@@ -520,6 +535,18 @@ class PriorityPlanner:
         # Stable, so a request's spans keep their time order.
         placing.sort(key=self._rank, reverse=True)
         return placing
+
+    def _reserved_collection(self) -> dict[int, float]:
+        """Return the collection seconds accepted locks already hold per request."""
+        reserved: dict[int, float] = defaultdict(float)
+        for block in self.timeline:
+            if block.is_pass:
+                continue
+            entry = block.entry
+            reserved[int(entry.obsid)] += entry.collection_seconds_between(
+                entry.begin, entry.end
+            )
+        return reserved
 
     # ── Timeline neighbours and connections ──────────────────────────────
 
@@ -676,6 +703,27 @@ class PriorityPlanner:
             raise ValueError(
                 f"Locked entry {entry.obsid} needs a collection window to keep"
             )
+        if (
+            float(entry.collection_begin) < self.ctx.ustart
+            or float(entry.end) > self.ctx.uend
+        ):
+            self._log(
+                float(entry.begin),
+                f"Locked entry {entry.obsid} is outside the planning horizon; "
+                "leaving it out",
+                entry.obsid,
+            )
+            return
+        if float(entry.collection_end) + self.ctx.post_collection_seconds > float(
+            entry.end
+        ):
+            self._log(
+                float(entry.begin),
+                f"Locked entry {entry.obsid} does not reserve its post-collection "
+                "time; leaving it out",
+                entry.obsid,
+            )
+            return
         Plan(entries=[entry]).bind_runtime(self.config, self.ctx.ephem)
         attitude = entry.target_body_attitude()
         block = _Block(
@@ -686,6 +734,19 @@ class PriorityPlanner:
             end=float(entry.end),
         )
         entry.visibility()
+        # The slew in only reaches the attitude; the lock must also hold it for
+        # its whole setup, collection and cleanup budget.
+        violation = self.ctx.first_science_violation(
+            entry, attitude, block.ready, self.ctx.ceil_step(block.end)
+        )
+        if violation is not None:
+            self._log(
+                violation,
+                f"Locked entry {entry.obsid} cannot hold its attitude at "
+                f"{unixtime2date(violation)}; leaving it out",
+                entry.obsid,
+            )
+            return
         if not self._insert_fixed(block):
             self._log(
                 float(entry.begin),
@@ -694,31 +755,69 @@ class PriorityPlanner:
             )
 
     def _place_pass(self, gspass: Pass) -> None:
-        """Reserve a ground pass on the first tracking profile that can be reached."""
-        for profile in gspass.available_tracking_profiles():
-            block = self._pass_block(gspass, profile)
-            if self._insert_fixed(block):
-                gspass.select_tracking_profile(profile)
-                return
+        """Reserve a ground pass at its earliest reachable acquisition step.
+
+        Each step inside the pass is tried in turn, on every tracking profile,
+        so a pass whose first step is blocked can still be acquired later.
+        """
+        acquisitions = self._acquisition_steps(gspass)
+        if not acquisitions:
+            self._log(
+                gspass.begin,
+                f"Pass at {gspass.station} has no simulation step left to acquire "
+                "it on; not reserved",
+                gspass.obsid,
+            )
+            return
+        profiles = gspass.available_tracking_profiles()
+        for acquire in acquisitions:
+            for profile in profiles:
+                block = self._pass_block(gspass, profile, acquire)
+                if block is not None and self._insert_fixed(block):
+                    gspass.select_tracking_profile(profile)
+                    return
         self._log(
             gspass.begin,
-            f"Pass at {gspass.station} cannot be reached on any safe tracking "
-            "profile; not reserved",
+            f"Pass at {gspass.station} cannot be reached at any acquisition step "
+            "on any safe tracking profile; not reserved",
             gspass.obsid,
         )
 
-    def _pass_block(self, gspass: Pass, profile: TrackingProfile) -> _Block:
-        """Build the plan entry and timeline block for a ground contact."""
-        start, finish = profile[0], profile[-1]
+    def _acquisition_steps(self, gspass: Pass) -> list[float]:
+        """Return the steps a contact could be acquired on, earliest first.
+
+        Contact can only start on a step, where the spacecraft must already
+        hold the tracking attitude of that moment. A pass beginning between
+        steps is therefore acquired late, and the time before that is lost.
+        """
+        last_sample = float(gspass.utime[-1]) if gspass.utime else float(gspass.end)
+        end = min(float(gspass.end), last_sample)
+        return [float(step) for step in self.ctx.steps(gspass.begin, end)]
+
+    def _pass_block(
+        self, gspass: Pass, profile: TrackingProfile, acquire: float
+    ) -> _Block | None:
+        """Build the plan entry and timeline block for a ground contact.
+
+        Returns None if the profile cannot be tracked within the motion limits.
+        """
+        rest = self.ctx.tracking_rest(gspass, profile, acquire)
+        if rest is None:
+            return None
+        rest_time, rest_attitude = rest
+        start = gspass.attitude_for_profile_at(profile, acquire)
+        if start is None:
+            return None
+        finish = profile[-1]
         entry = PlanEntry(config=self.config)
         entry.name = f"{gspass.station}_PASS"
         entry.ra, entry.dec, entry.roll = start
-        entry.begin = gspass.begin
+        entry.begin = acquire
         entry.end = gspass.end
         entry.obsid = gspass.obsid
         entry.obstype = ObsType.GSP
         entry.ss_min = 0
-        duration = max(0, int(round(gspass.end - gspass.begin)))
+        duration = max(0, int(round(gspass.end - acquire)))
         entry.ss_max = duration
         entry.exptime = duration
         entry.station = gspass.station
@@ -729,16 +828,20 @@ class PriorityPlanner:
             entry.station_alt_m = float(station.elevation_m)
         except KeyError:
             pass
-        entry.contact_begin = gspass.begin
+        # A contact only earns the time from acquisition, but it is still the
+        # whole predicted pass: its end identifies which one.
+        entry.contact_begin = acquire
         entry.contact_end = gspass.end
         entry.track_start_ra, entry.track_start_dec, entry.track_start_roll = start
         entry.track_end_ra, entry.track_end_dec, entry.track_end_roll = finish
         return _Block(
             entry=entry,
             attitude_in=start,
-            attitude_out=finish,
-            ready=gspass.begin,
-            end=gspass.end,
+            # Tracking brakes past the last sample, so the contact leaves the
+            # spacecraft at rest later, and elsewhere, than the profile ends.
+            attitude_out=rest_attitude,
+            ready=acquire,
+            end=max(float(gspass.end), rest_time),
             gspass=gspass,
         )
 
@@ -906,7 +1009,7 @@ class PriorityPlanner:
                 collection_begin + snapshot,
                 latest_end - self.ctx.post_collection_seconds,
             )
-            if collection_end - collection_begin < ss_min:
+            if not _long_enough(collection_end - collection_begin, ss_min):
                 if succ is not None and latest_end < window[1]:
                     # Starting later only leaves less room before the successor.
                     return None
@@ -965,7 +1068,7 @@ class PriorityPlanner:
         # End the observation at the step the attitude stops being allowed.
         assert entry.collection_begin is not None
         collection_end = violation - self.ctx.post_collection_seconds
-        if collection_end - entry.collection_begin < ss_min:
+        if not _long_enough(collection_end - entry.collection_begin, ss_min):
             return None
         entry.collection_end = collection_end
         entry.end = violation

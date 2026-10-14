@@ -1,8 +1,8 @@
-conops.schedulers.first\_fit\_planner
+conops.schedulers.sequential\_planner
 =====================================
 
-.. automodule:: conops.schedulers.first_fit_planner
-   :members: FirstFitPlanner
+.. automodule:: conops.schedulers.sequential_planner
+   :members: SequentialPlanner
    :undoc-members:
    :show-inheritance:
    :special-members: __init__

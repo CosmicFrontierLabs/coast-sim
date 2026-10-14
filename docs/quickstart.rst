@@ -245,8 +245,8 @@ COASTSim is organized into several key modules:
 * `conops.config`: Configuration classes for spacecraft components (battery, solar panels, instruments, etc.)
 * `conops.targets`: Target management classes (Pointing, Queue, Plan, PlanEntry)
 * `conops.schedulers`: Planners (PriorityPlanner, LocalSearchPlanner, CpSatPlanner),
-  the long-range allocator (LongRangeAllocator) and two simple legacy planners
-  (FirstFitPlanner, GreedyDispatchPlanner); see :doc:`planning`
+  the long-range allocator (LongRangeAllocator) and two simple planners
+  (SequentialPlanner, QueuePlanner); see :doc:`planning`
 * `conops.simulation`: Core simulation components (ACS, DITL classes, constraints, etc.)
 * `conops.ditl`: Day-In-The-Life simulations (DITL, QueueDITL, RollingHorizonDITL) and
   create_ditl, which builds the one the configuration selects
@@ -258,7 +258,7 @@ All classes are available directly from the ``conops`` package:
 
    from conops import (
        MissionConfig, ACS, DITL, QueueDITL, Pointing, Queue,
-       FirstFitPlanner, ACSMode, ACSCommandType
+       SequentialPlanner, ACSMode, ACSCommandType
    )
 
 Next Steps
