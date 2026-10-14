@@ -4,6 +4,8 @@ from datetime import timedelta
 
 import pytest
 
+from conops.config import TargetConfig
+from conops.config.observation_categories import ObservationCategory
 from conops.ditl import ReplanReason, RollingHorizonDITL
 from conops.targets import Pointing
 
@@ -102,6 +104,59 @@ class TestScheduledReplanning:
 
         assert all(t.collected_seconds <= 20 * MIN for t in targets)
         assert ditl.validate_plan_matches_execution() == []
+
+    def test_replan_during_a_contact_starts_from_its_braking_rest(self) -> None:
+        """A contact ends at rest after its last tracking sample, not on it."""
+        config = _config(10, stations=True)
+        # Slow braking, so the rest is well past the last sample.
+        config.spacecraft_bus.attitude_control.slew_acceleration = 0.01
+        targets = [_target(config, 1, *PATCH[0], minutes=600, snapshot=10)]
+
+        # The second plan is built at 8 h, during the first contact.
+        ditl = _run(9, targets, replan_interval=timedelta(hours=8))
+
+        replan = ditl.replans[1].utime
+        assert any(
+            e.obstype.name == "GSP" and float(e.begin) < replan < float(e.end)
+            for e in ditl.plan
+        )
+        planned = sum(
+            e.collection_seconds_between(e.begin, e.end)
+            for e in ditl.plan
+            if e.obstype.name == "AT"
+        )
+        assert planned == pytest.approx(_executed_seconds(ditl))
+        assert ditl.validate_plan_matches_execution() == []
+
+    def test_finished_targets_still_count_towards_program_shares(self) -> None:
+        """Program A has its whole share once its first target is done."""
+        config = _config(
+            2,
+            weights=TargetConfig(completion_deficit_weight=100.0),
+            categories=[
+                ObservationCategory(
+                    name="A", obsid_min=1, obsid_max=99, time_share=1.0
+                ),
+                ObservationCategory(name="B", obsid_min=100, obsid_max=199),
+            ],
+        )
+        targets = [
+            _target(config, 1, *PATCH[0], merit=500, minutes=10),
+            _target(config, 2, *PATCH[1], merit=10, minutes=60, snapshot=10),
+            _target(config, 100, *PATCH[2], merit=100, minutes=60, snapshot=10),
+        ]
+
+        ditl = _run(
+            1,
+            targets,
+            horizon=timedelta(minutes=15),
+            replan_interval=timedelta(minutes=15),
+        )
+
+        assert targets[0].done
+        science = [int(e.obsid) for e in ditl.plan if e.obstype.name == "AT"]
+        # Without target 1's science, A would look behind and win at 10 + 100.
+        assert science[:2] == [1, 100]
 
 
 GRB = {

@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict
 
 from ..common import ObsType
 from ..config import MissionConfig
+from ..schedulers.context import Attitude, tracking_rest
 from ..schedulers.priority_planner import PriorityPlanner, StartState
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing
@@ -356,10 +357,11 @@ class RollingHorizonDITL(DITL):
         unplaced = 0
         began = time.perf_counter()
         if horizon_end > start:
-            pool = [t for t in self.targets if not t.done]
             planner = self.planner(
                 self.config,
-                pool,
+                # Finished targets too: the planner does not place them, but
+                # their science counts towards their programs' shares.
+                self.targets,
                 _as_datetime(start),
                 _as_datetime(horizon_end),
                 step_size=self.step_size,
@@ -469,10 +471,10 @@ class RollingHorizonDITL(DITL):
         """Return where the new plan takes over from the committed activities."""
         pending = [e for e in committed if float(e.end) > utime]
         if pending:
-            last = max(pending, key=lambda e: float(e.end))
-            return StartState(
-                time=max(cutoff, float(last.end)), attitude=_final_attitude(last)
+            rest_time, attitude = max(
+                (self._rest_after(e) for e in pending), key=lambda rest: rest[0]
             )
+            return StartState(time=max(cutoff, rest_time), attitude=attitude)
         if not committed:
             # Never commanded: the planner replays the freshly started spacecraft.
             return None
@@ -480,6 +482,32 @@ class RollingHorizonDITL(DITL):
             time=cutoff,
             attitude=(float(self.acs.ra), float(self.acs.dec), float(self.acs.roll)),
         )
+
+    def _rest_after(self, entry: PlanEntry) -> tuple[float, Attitude]:
+        """Return when an entry leaves the spacecraft at rest, and where.
+
+        A ground contact brakes past its tracking profile, so it comes to rest
+        after the contact ends and away from the profile's last sample.
+        """
+        gspass = self._entry_passes.get(id(entry))
+        if entry_obstype(entry) == ObsType.GSP and gspass is not None:
+            # The profile the plan selected, which ACS flies.
+            profile = list(
+                zip(
+                    gspass.ra,
+                    gspass.dec,
+                    gspass.roll or [gspass.gsstartroll] * len(gspass.ra),
+                    strict=True,
+                )
+            )
+            acquire = float(entry.contact_begin or entry.begin)
+            rest = tracking_rest(
+                gspass, profile, acquire, self.config.spacecraft_bus.attitude_control
+            )
+            if rest is not None:
+                rest_time, attitude = rest
+                return max(float(entry.end), rest_time), attitude
+        return float(entry.end), _final_attitude(entry)
 
     @staticmethod
     def _reserved_seconds(
