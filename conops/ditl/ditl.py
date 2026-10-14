@@ -274,11 +274,12 @@ class DITL(DITLMixin, DITLStats):
                 and mode in (ACSMode.SCIENCE, ACSMode.SLEWING)
             ):
                 self.ppt.set_collection_window(self.config.payload.observation_timing)
-            collection_seconds = self._collection_seconds_for_step(
+            collection_start, collection_stop = self._collection_interval_for_step(
                 self.utime[i], mode, obsid
             )
+            collection_seconds = collection_stop - collection_start
             if collection_seconds > 0 and self.ppt is not None:
-                self._credit_collection(self.ppt, self.utime[i], collection_seconds)
+                self._credit_collection(self.ppt, collection_start, collection_stop)
 
             # Determine the power usage in Watts based on mode from config
             bus_power = self.spacecraft_bus.power(mode, in_eclipse=self.acs.in_eclipse)
@@ -590,10 +591,11 @@ class DITL(DITLMixin, DITLStats):
             science_obstypes=PLAN_SCIENCE_OBSTYPES,
         ).validate()
 
-    def _credit_collection(
-        self, entry: PlanEntry, utime: float, seconds: float
-    ) -> None:
+    def _credit_collection(self, entry: PlanEntry, start: float, stop: float) -> None:
         """Hook called for each step that collects science for ``entry``.
+
+        ``start`` and ``stop`` bound the science collected in the step, which
+        may begin or end partway through it.
 
         DITL executes a fixed plan, so nothing needs crediting. Subclasses that
         track the requests behind a plan override this.
