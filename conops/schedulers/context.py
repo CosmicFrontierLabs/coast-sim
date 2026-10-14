@@ -222,9 +222,14 @@ class SchedulingContext:
         """Return when a target is clear of its roll-independent constraints.
 
         Every roll is excluded outside these windows, so a planner can skip
-        them before checking a specific roll.
+        them before checking a specific roll. A mounted instrument's windows
+        follow its science line of sight, not the body attitude.
         """
-        constraint = self.config.constraint.roll_independent_constraint
+        constraint = (
+            target.roll_independent_visibility_constraint()
+            if target.constraint is not None
+            else self.config.constraint.roll_independent_constraint
+        )
         if constraint is None:
             return [(self.ustart, self.uend)]
         result = constraint.evaluate(

@@ -18,6 +18,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from rust_ephem.constraints import ConstraintConfig
 
 from ..common import givename, unixtime2date
 from ..common.enums import ACSMode, ObsType
@@ -506,6 +507,31 @@ class PlanEntry(BaseModel):
     def givename(self, stem: str = "") -> None:
         self.name = givename(self.ra, self.dec, stem=stem)
 
+    def roll_independent_visibility_constraint(self) -> ConstraintConfig | None:
+        """Return the roll-independent constraints on this target's line of sight.
+
+        For a mounted instrument the science line of sight is not the body
+        attitude, so only constraints defined in the science frame (plus the
+        telescope's own) apply here; body constraints belong to the concrete
+        attitude checks.
+        """
+        if self.constraint is None:
+            return None
+        if not self.uses_mounted_attitude():
+            return self.constraint.roll_independent_constraint
+        telescope = self.science_telescope()
+        combined = self.constraint.science_line_of_sight_constraint
+        telescope_constraint = (
+            telescope.constraint.roll_independent_constraint
+            if telescope is not None and telescope.constraint is not None
+            else None
+        )
+        if combined is None:
+            return telescope_constraint
+        if telescope_constraint is None:
+            return combined
+        return combined | telescope_constraint
+
     def visibility(
         self,
     ) -> int:
@@ -526,22 +552,11 @@ class PlanEntry(BaseModel):
         assert self.constraint is not None, (
             "Constraint must be set to calculate visibility"
         )
-        telescope = self.science_telescope()
         if self.uses_mounted_attitude():
-            assert telescope is not None
             # Visibility belongs to the selected science line of sight. Physical
             # bus hardware constraints are checked after a concrete instrument
             # roll has been converted to a body attitude.
-            combined_constraint = self.constraint.science_line_of_sight_constraint
-            telescope_constraint = (
-                telescope.constraint.roll_independent_constraint
-                if telescope.constraint is not None
-                else None
-            )
-            if combined_constraint is None:
-                combined_constraint = telescope_constraint
-            elif telescope_constraint is not None:
-                combined_constraint = combined_constraint | telescope_constraint
+            combined_constraint = self.roll_independent_visibility_constraint()
             effective_roll = None
         elif self.constraint.ignore_roll:
             # ignore_roll=True → field-of-regard scheduling.

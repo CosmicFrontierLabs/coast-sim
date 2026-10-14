@@ -8,6 +8,7 @@ block a better packing.
 """
 
 import hashlib
+from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -187,19 +188,25 @@ class PriorityPlanner:
     def _requests(self) -> list[_Request]:
         """Return the requests in planning order: tier, then value, then a stable tie-break."""
         merit_model = MeritModel(self.config)
+        delivered_shares = merit_model.delivered_shares(self.targets)
+        reserved = self._reserved_collection()
         seed = self.config.random_seed if self.config.random_seed is not None else 0
         requests = []
         for target in self.targets:
             exptime = target.exptime if target.exptime is not None else target.ss_max
-            if target.done or exptime < target.ss_min:
+            remaining = float(exptime) - reserved.get(int(target.obsid), 0.0)
+            if target.done or remaining < target.ss_min:
                 continue
             requests.append(
                 _Request(
                     target=target,
                     merit=merit_model.value_terms(
-                        target, self.ctx.ustart, base=float(target.fom)
+                        target,
+                        self.ctx.ustart,
+                        base=float(target.fom),
+                        delivered_shares=delivered_shares,
                     ),
-                    remaining=float(exptime),
+                    remaining=remaining,
                     windows=self.ctx.visibility_windows(target),
                 )
             )
@@ -215,6 +222,18 @@ class PriorityPlanner:
             reverse=True,
         )
         return requests
+
+    def _reserved_collection(self) -> dict[int, float]:
+        """Return the collection seconds accepted locks already hold per request."""
+        reserved: dict[int, float] = defaultdict(float)
+        for block in self.timeline:
+            if block.is_pass:
+                continue
+            entry = block.entry
+            reserved[int(entry.obsid)] += entry.collection_seconds_between(
+                entry.begin, entry.end
+            )
+        return reserved
 
     # ── Timeline neighbours and connections ──────────────────────────────
 
@@ -375,6 +394,16 @@ class PriorityPlanner:
                 entry.obsid,
             )
             return
+        if float(entry.collection_end) + self.ctx.post_collection_seconds > float(
+            entry.end
+        ):
+            self._log(
+                float(entry.begin),
+                f"Locked entry {entry.obsid} does not reserve its post-collection "
+                "time; leaving it out",
+                entry.obsid,
+            )
+            return
         Plan(entries=[entry]).bind_runtime(self.config, self.ctx.ephem)
         attitude = entry.target_body_attitude()
         block = _Block(
@@ -385,6 +414,19 @@ class PriorityPlanner:
             end=float(entry.end),
         )
         entry.visibility()
+        # The slew in only reaches the attitude; the lock must also hold it for
+        # its whole setup, collection and cleanup budget.
+        violation = self.ctx.first_science_violation(
+            entry, attitude, block.ready, self.ctx.ceil_step(block.end)
+        )
+        if violation is not None:
+            self._log(
+                violation,
+                f"Locked entry {entry.obsid} cannot hold its attitude at "
+                f"{unixtime2date(violation)}; leaving it out",
+                entry.obsid,
+            )
+            return
         if not self._insert_fixed(block):
             self._log(
                 float(entry.begin),

@@ -13,11 +13,13 @@ from conops.config import (
     Constraint,
     GroundStationRegistry,
     MissionConfig,
+    Payload,
     RadiatorConfiguration,
     SolarPanelSet,
     SpacecraftBus,
     StarTrackerConfiguration,
     TargetConfig,
+    Telescope,
 )
 from conops.config.observation_categories import (
     ObservationCategories,
@@ -210,6 +212,34 @@ class TestOrdering:
 
         assert [e.obsid for e in _science(plan)] == [1, 2]
 
+    def test_delivered_program_shares_order_the_first_pass(self) -> None:
+        """An over-served program loses its completion-deficit credit."""
+        categories = [
+            ObservationCategory(
+                name="A", obsid_min=1, obsid_max=2, program="A", time_share=0.5
+            ),
+            ObservationCategory(
+                name="B", obsid_min=2, obsid_max=3, program="B", time_share=0.5
+            ),
+        ]
+        config = _config(
+            2,
+            weights=TargetConfig(completion_deficit_weight=100),
+            categories=categories,
+        )
+        over_served = _target(config, 1, 105.0, 10.0, merit=60)
+        under_served = _target(config, 2, 110.0, 10.0, merit=50)
+        for target, delivered in ((over_served, 900.0), (under_served, 100.0)):
+            target.record_collection(T0 - HOUR, delivered)
+            target.exptime = 20 * MIN
+
+        plan = PriorityPlanner(
+            config, [over_served, under_served], BEGIN, BEGIN + timedelta(hours=2)
+        ).schedule()
+
+        assert [e.obsid for e in _science(plan)] == [2, 1]
+        assert [e.merit for e in _science(plan)] == [90.0, 20.0]
+
 
 class TestSnapshots:
     def test_exposure_is_split_into_snapshots(self) -> None:
@@ -377,3 +407,76 @@ class TestLockedEntries:
             PriorityPlanner(
                 config, [], BEGIN, BEGIN + timedelta(hours=1), locked=[locked]
             ).schedule()
+
+    def test_locked_entry_that_breaks_its_constraints_is_left_out(self) -> None:
+        """A lock reachable at ingress but not holdable for its whole window."""
+        hours = 6
+        config = _config(hours)
+        probe = _target(config, 900, *CONSTRAINED[0])
+        probe.visibility()
+        window = probe.windows[0]
+        locked = PlanEntry(
+            config=config,
+            name="Locked",
+            ra=CONSTRAINED[0][0],
+            dec=CONSTRAINED[0][1],
+            roll=0.0,
+            obsid=900,
+            obstype=ObsType.AT,
+            begin=window[0] + 300,
+            end=window[1] + 600,
+            collection_begin=window[0] + 300,
+            collection_end=window[1] + 600,
+            ss_min=60,
+        )
+
+        planner = PriorityPlanner(
+            config, [], BEGIN, BEGIN + timedelta(hours=hours), locked=[locked]
+        )
+        plan = planner.schedule()
+
+        assert all(entry.obsid != 900 for entry in plan)
+        ditl = _execute(config, plan, hours, planner.ctx.step_size)
+        assert ditl.validate_plan_matches_execution() == []
+
+    def test_locked_snapshot_counts_against_its_request(self) -> None:
+        hours = 3
+        config = _config(hours)
+        target = _target(config, 1, 105.0, 10.0, minutes=40, snapshot=20)
+        first = PriorityPlanner(
+            config, [target], BEGIN, BEGIN + timedelta(hours=hours)
+        ).schedule()
+        locked = _science(first)[0]
+
+        replan = PriorityPlanner(
+            config,
+            [target],
+            BEGIN,
+            BEGIN + timedelta(hours=hours),
+            locked=[locked],
+        ).schedule()
+
+        assert len(_science(replan)) == 2
+        assert _planned_collection(replan) == pytest.approx(40 * MIN)
+
+
+class TestMountedTelescope:
+    def test_science_windows_follow_the_mounted_line_of_sight(self) -> None:
+        """A body keepout must not discard windows at the science coordinates."""
+        hours = 2
+        config = _config(hours)
+        config.constraint = Constraint(
+            safety_constraint=SunConstraint(min_angle=10),
+            ephem=config.constraint.ephem,
+        )
+        telescope = Telescope(name="Rear", boresight=(-1.0, 0.0, 0.0))
+        config.payload = Payload(instruments=[telescope])
+        target = _target(config, 1, 216.0, -14.5, minutes=20)
+        target.instrument_name = telescope.name
+
+        planner = PriorityPlanner(config, [target], BEGIN, BEGIN + timedelta(hours=2))
+        plan = planner.schedule()
+
+        assert len(_science(plan)) == 1
+        ditl = _execute(config, plan, hours, planner.ctx.step_size)
+        assert ditl.validate_plan_matches_execution() == []
