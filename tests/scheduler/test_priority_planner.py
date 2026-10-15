@@ -774,6 +774,28 @@ class TestFillingTimeATargetIsHidden:
         moves = [e for e in planner.log.events if e.description.startswith("Moved")]
         assert any("shorter" in e.description for e in moves)
 
+    def test_a_request_cut_short_is_placed_again(self) -> None:
+        """Exposure a move cuts from a finished request is planned elsewhere."""
+        config, planner = self._plan()
+
+        events = planner.log.events
+        cut = {
+            k: int(e.obsid)
+            for k, e in enumerate(events)
+            if e.description.startswith("Moved") and "shorter" in e.description
+        }
+        assert cut
+        placed_again = [
+            obsid
+            for k, obsid in cut.items()
+            if any(
+                e.description.startswith(f"Placed {obsid} ") for e in events[k + 1 :]
+            )
+        ]
+        assert placed_again
+        ditl = _execute(config, planner.plan, self.HOURS, 60)
+        assert ditl.validate_plan_matches_execution() == []
+
     def test_program_shares_count_only_what_the_plan_delivers(self) -> None:
         """A move that cuts a snapshot short takes its science off its program."""
         config = _config(

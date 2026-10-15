@@ -299,6 +299,8 @@ class PriorityPlanner:
         placed = dict.fromkeys(order, 0)
         self._program_seconds = dict(self._delivered)
         """Science by program: collected, committed and planned so far."""
+        self._cut_short: list[_Request] = []
+        """Requests a move has cut short since the last placement."""
         while active:
             request = active[0]
             if self._balancing:
@@ -312,6 +314,7 @@ class PriorityPlanner:
                     ),
                 )
             block = self._place_snapshot(request, self._cadence_release(request))
+            self._reactivate_cut_short(active, order)
             if block is not None:
                 collected = block.entry.collection_seconds_between(
                     block.entry.begin, block.entry.end
@@ -335,6 +338,23 @@ class PriorityPlanner:
                     request.target.obsid,
                 )
 
+    def _reactivate_cut_short(
+        self, active: list[_Request], order: Mapping[int, int]
+    ) -> None:
+        """Put requests a move cut short back among those still to place.
+
+        A finished request cut short by at least ``ss_min`` can be placed
+        again. ``active`` stays in planning order. This always ends: a cut is
+        only made when it raises the plan's value-weighted science.
+        """
+        waiting = {id(request) for request in active}
+        for request in self._cut_short:
+            if id(request) not in waiting and request.wants_more:
+                active.append(request)
+                waiting.add(id(request))
+        self._cut_short = []
+        active.sort(key=lambda request: order[id(request)])
+
     def _value(self, request: _Request, shares: Mapping[str, float]) -> float:
         """Value of a snapshot of ``request`` when the plan delivers ``shares``."""
         if not self._deficit_weight:
@@ -350,27 +370,29 @@ class PriorityPlanner:
         last = self._last_visit.get(int(request.target.obsid))
         return None if last is None else last + request.cadence
 
-    def _locked_cadence_release(self, request: _Request, block: _Block) -> float | None:
-        """Return when a cadence visit may next start, if ``block`` is too close
-        to a locked visit of its target.
+    def _next_locked_visit(
+        self, request: _Request, start: float
+    ) -> tuple[float, float] | None:
+        """Return the first locked visit a cadence visit starting at ``start``
+        must end before.
 
-        A visit must end a cadence before a locked visit's slew starts, or
-        start a cadence after its collection ends, as visits the planner
-        places are spaced from each other. None if ``block`` is clear of them
-        all, or its request has no cadence.
+        Visits are spaced by the cadence: a visit must start at least a
+        cadence after a locked visit's collection ends, or end at least a
+        cadence before its slew starts. Returns that locked visit's slew start
+        and collection end, or None if the request has no cadence or
+        ``start`` is clear of every locked visit.
         """
         if request.cadence is None:
             return None
-        entry = block.entry
-        assert entry.collection_end is not None
-        for locked_start, locked_end in self._locked_visits.get(
-            int(request.target.obsid), ()
-        ):
-            clear_before = float(entry.collection_end) + request.cadence <= locked_start
-            clear_after = float(entry.begin) >= locked_end + request.cadence
-            if not (clear_before or clear_after):
-                return locked_end + request.cadence
-        return None
+        visits = sorted(self._locked_visits.get(int(request.target.obsid), ()))
+        return next(
+            (
+                (locked_start, locked_end)
+                for locked_start, locked_end in visits
+                if start < locked_end + request.cadence
+            ),
+            None,
+        )
 
     def _record_visit(self, request: _Request, block: _Block) -> None:
         """Count a placed snapshot towards its program and the target's last visit."""
@@ -920,6 +942,8 @@ class PriorityPlanner:
             move.request.remaining += move.lost
             program = move.request.category.program_name
             self._program_seconds[program] -= move.lost
+            if move.lost:
+                self._cut_short.append(move.request)
             moved = move.new_block.entry
             self._log(
                 float(moved.begin),
@@ -1018,6 +1042,24 @@ class PriorityPlanner:
                 collection_begin + snapshot,
                 latest_end - self.ctx.post_collection_seconds,
             )
+
+            # A cadence visit before a locked visit of its target must end a
+            # cadence before that visit starts, so try a shorter snapshot that
+            # does. If even the shortest is too long, try again a cadence after
+            # the locked visit.
+            locked = self._next_locked_visit(request, start)
+            if locked is not None:
+                assert request.cadence is not None
+                locked_start, locked_end = locked
+                cadence_end = locked_start - request.cadence
+                if not _long_enough(cadence_end - collection_begin, ss_min):
+                    start = max(
+                        start + self.ctx.step_size,
+                        self.ctx.ceil_step(locked_end + request.cadence),
+                    )
+                    continue
+                collection_end = min(collection_end, cadence_end)
+
             if not _long_enough(collection_end - collection_begin, ss_min):
                 if succ is not None and latest_end < window[1]:
                     # Starting later only leaves less room before the successor.
@@ -1042,13 +1084,6 @@ class PriorityPlanner:
             )
             fitted = self._check_snapshot(block, slew, ss_min)
             if fitted is not None:
-                # A cadence visit too close to a locked visit of its target
-                # tries again a cadence after that visit.
-                release = self._locked_cadence_release(request, fitted)
-                if release is not None:
-                    start = max(start + self.ctx.step_size, self.ctx.ceil_step(release))
-                    continue
-
                 succ_slew = None
                 if succ is not None:
                     succ_slew = self._connect(

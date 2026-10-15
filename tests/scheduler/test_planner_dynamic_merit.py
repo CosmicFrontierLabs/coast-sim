@@ -102,13 +102,13 @@ def _share(plan: Plan, low: int, high: int) -> float:
     return seconds[True] / total if total else 0.0
 
 
-def _executes_exactly(config: MissionConfig, plan: Plan) -> bool:
+def _executes_exactly(config: MissionConfig, plan: Plan, hours: int = HOURS) -> bool:
     ditl = DITL(
         config=config,
         ephem=config.constraint.ephem,
         plan=Plan.model_validate_json(plan.model_dump_json()),
         begin=BEGIN,
-        end=BEGIN + timedelta(hours=HOURS),
+        end=BEGIN + timedelta(hours=hours),
     )
     ditl.step_size = 60
     assert ditl.calc()
@@ -200,6 +200,33 @@ class TestCadenceWithLockedVisits:
             for begin, _ in planned
             if begin > lock_start
         )
+
+    def test_a_shorter_visit_fits_before_a_locked_one(self) -> None:
+        """A full snapshot would end too close to the locked visit; a shorter
+        one ends a cadence before it."""
+        hours = 2
+        config = _config(
+            hours,
+            weights=TargetConfig(cadence_weight=50),
+            categories=[MONITOR],
+        )
+        lock_start = T0 + 90 * MIN
+        locked = self._locked(config, lock_start)
+        monitor = _target(
+            config, 1, *PATCH[0], merit=60, minutes=80, snapshot=40, ss_min=5
+        )
+        plan = PriorityPlanner(
+            config,
+            [monitor],
+            BEGIN,
+            BEGIN + timedelta(hours=hours),
+            locked=[locked],
+        ).schedule()
+
+        before = [v for v in _visits(plan, 1) if v[0] < lock_start]
+        assert before
+        assert all(end + HOUR <= lock_start for _, end in before)
+        assert _executes_exactly(config, plan, hours)
 
 
 class TestCompletionDeficit:
