@@ -28,6 +28,7 @@ Core Modules
    conops.ditl.ditl_stats
    conops.ditl.plan_validator
    conops.ditl.queue_ditl
+   conops.ditl.rolling_ditl
    conops.ditl.telemetry
    conops.simulation
    conops.simulation.acs

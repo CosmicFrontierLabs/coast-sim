@@ -282,8 +282,9 @@ class TestPassEntries:
         ditl.acs.passrequests.passes = []
         ditl._entries_to_command = [contact]
         ditl._entry_passes = {}
+        ditl._predicted_passes = None
 
-        ditl._resolve_planned_passes()
+        ditl._sync_planned_passes()
 
         ditl.acs.passrequests.get.assert_called_once_with(
             2018, 331, 2, apply_scheduling=False

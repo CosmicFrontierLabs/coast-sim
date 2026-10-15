@@ -67,6 +67,16 @@ class DITLLog(BaseModel):
                 # Non-fatal: keep in-memory log even if persistence fails
                 pass
 
+    def add_events(self, events: list[DITLEvent]) -> None:
+        """Append already-built events, persisting them as ``log_event`` does."""
+        self.events.extend(events)
+        if self.store is not None and self.run_id is not None and events:
+            try:
+                self.store.add_events(self.run_id, events)
+            except Exception:
+                # Non-fatal: keep in-memory log even if persistence fails
+                pass
+
     def print_log(self) -> None:
         """Print the DITL event log to stdout."""
         for event in self.events:

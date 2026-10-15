@@ -15,7 +15,7 @@ import rust_ephem
 
 from ..common import ACSMode, ObsType
 from ..common.enums import SlewAlgorithm
-from ..config import MissionConfig
+from ..config import AttitudeControlSystem, MissionConfig
 from ..config.constraint import attitude_constraint_name_for_scopes
 from ..simulation.acs import ACS
 from ..simulation.attitude import AttitudeExecutionError, AttitudeTrajectory
@@ -32,8 +32,8 @@ class SchedulingContext:
     """Spacecraft, sky and timing model for offline planning.
 
     Times are Unix seconds. Plans execute on a fixed step grid starting at
-    ``begin``; activities start on grid steps and constraints are evaluated at
-    grid steps, exactly as :class:`~conops.ditl.DITL` samples them.
+    the simulation start; activities start on grid steps and constraints are
+    evaluated at grid steps, exactly as :class:`~conops.ditl.DITL` samples them.
 
     Args:
         config: Mission configuration, with an ephemeris on its constraint.
@@ -41,6 +41,12 @@ class SchedulingContext:
         end: End of the planning horizon.
         step_size: Simulation step in seconds. Defaults to the ephemeris step.
             Execute the plan with a DITL using the same step.
+        simulation_start: Start of the simulation that will execute the plan,
+            which anchors the step grid and the initial attitude. Defaults to
+            ``begin``; set it when replanning part-way through a simulation.
+        simulation_end: End of that simulation. Ground passes are predicted
+            over the whole simulation, as DITL predicts them, so that a plan for
+            part of it reserves the same passes. Defaults to ``end``.
     """
 
     def __init__(
@@ -49,6 +55,8 @@ class SchedulingContext:
         begin: datetime,
         end: datetime,
         step_size: int | None = None,
+        simulation_start: datetime | None = None,
+        simulation_end: datetime | None = None,
     ) -> None:
         ephem = config.constraint.ephem
         if ephem is None:
@@ -59,6 +67,11 @@ class SchedulingContext:
         self.end = end
         self.ustart = begin.timestamp()
         self.uend = end.timestamp()
+        self.simulation_start = simulation_start or begin
+        self.simulation_end = simulation_end or end
+        self.origin = self.simulation_start.timestamp()
+        if self.origin > self.ustart:
+            raise ValueError("simulation_start must not be after begin")
         self.step_size = int(step_size if step_size is not None else ephem.step_size)
         if self.step_size <= 0:
             raise ValueError("step_size must be positive")
@@ -79,13 +92,13 @@ class SchedulingContext:
 
     def ceil_step(self, utime: float) -> float:
         """Return the first grid step at or after ``utime``."""
-        steps = np.ceil((utime - self.ustart) / self.step_size - 1e-9)
-        return self.ustart + max(0.0, float(steps)) * self.step_size
+        steps = np.ceil((utime - self.origin) / self.step_size - 1e-9)
+        return self.origin + max(0.0, float(steps)) * self.step_size
 
     def floor_step(self, utime: float) -> float:
         """Return the last grid step at or before ``utime``."""
-        steps = np.floor((utime - self.ustart) / self.step_size + 1e-9)
-        return self.ustart + float(steps) * self.step_size
+        steps = np.floor((utime - self.origin) / self.step_size + 1e-9)
+        return self.origin + float(steps) * self.step_size
 
     def steps(self, begin: float, end: float) -> np.ndarray:
         """Return the grid steps in ``[begin, end)``."""
@@ -105,9 +118,9 @@ class SchedulingContext:
         """
         if self._initial_acs is None:
             self._initial_acs = ACS(config=self.config)
-        index = int(round((self.floor_step(utime) - self.ustart) / self.step_size))
+        index = int(round((self.floor_step(utime) - self.origin) / self.step_size))
         while len(self._initial_attitudes) <= index:
-            step = self.ustart + len(self._initial_attitudes) * self.step_size
+            step = self.origin + len(self._initial_attitudes) * self.step_size
             ra, dec, roll, _ = self._initial_acs.pointing(step)
             self._initial_attitudes.append((float(ra), float(dec), float(roll)))
         return self._initial_attitudes[index]
@@ -253,59 +266,75 @@ class SchedulingContext:
         when the plan is executed.
         """
         passtimes = PassTimes(config=self.config)
-        # PassTimes.get counts days from midnight UTC of the begin date.
-        day_start = self.ustart - self.ustart % 86400
-        length = max(1, int(np.ceil((self.uend - day_start) / 86400)))
-        passtimes.get(self.begin.year, self.begin.timetuple().tm_yday, length)
+        # PassTimes.get counts days from midnight UTC of the start date.
+        day_start = self.origin - self.origin % 86400
+        span = self.simulation_end.timestamp() - day_start
+        length = max(1, int(np.ceil(span / 86400)))
+        start = self.simulation_start
+        passtimes.get(start.year, start.timetuple().tm_yday, length)
         return [
             gspass
             for gspass in passtimes.passes
             if self.ustart <= gspass.begin and gspass.end <= self.uend
         ]
 
-    def tracking_samples(
-        self, gspass: Pass, profile: Sequence[Attitude], acquire: float
-    ) -> list[tuple[float, Attitude]]:
-        """Return the timed attitudes ACS tracks after acquiring at ``acquire``.
-
-        Acquisition holds the attitude the profile calls for at that moment,
-        and the profile is picked up from the first sample after it, exactly as
-        :meth:`~conops.simulation.acs.ACS._start_pass` builds its trajectory.
-        """
-        held = gspass.attitude_for_profile_at(list(profile), acquire)
-        if held is None:
-            return []
-        samples: list[tuple[float, Attitude]] = [(float(acquire), held)]
-        samples.extend(
-            (float(utime), (float(ra), float(dec), float(roll)))
-            for utime, (ra, dec, roll) in zip(gspass.utime, profile, strict=True)
-            if float(utime) > acquire
-        )
-        return samples
-
     def tracking_rest(
         self, gspass: Pass, profile: Sequence[Attitude], acquire: float
     ) -> tuple[float, Attitude] | None:
         """Return when a tracked contact comes to rest, and the attitude it rests at.
 
-        ACS cannot stop a tracking rate instantly: it brakes past the profile's
-        last sample, so a contact neither ends at that sample's attitude nor at
-        the contact's end time. Tracking starts from rest at ``acquire``, so a
-        late acquisition has to turn harder to catch the profile up. Returns
-        None when the profile cannot be flown within the motion limits.
+        See :func:`tracking_rest`.
         """
-        samples = self.tracking_samples(gspass, profile, acquire)
-        if not samples:
-            return None
-        if len(samples) < 2:
-            # A single sample is held, not tracked, so there is nothing to brake.
-            return float(gspass.end), samples[-1][1]
-        try:
-            trajectory = AttitudeTrajectory.tracking(
-                samples,
-                self.config.spacecraft_bus.attitude_control,
-                initial_rate=(0.0, 0.0, 0.0),
-            )
-        except AttitudeExecutionError:
-            return None
-        return float(trajectory.end), trajectory.state(trajectory.end).attitude
+        return tracking_rest(
+            gspass, profile, acquire, self.config.spacecraft_bus.attitude_control
+        )
+
+
+def tracking_samples(
+    gspass: Pass, profile: Sequence[Attitude], acquire: float
+) -> list[tuple[float, Attitude]]:
+    """Return the timed attitudes ACS tracks after acquiring at ``acquire``.
+
+    Acquisition holds the attitude the profile calls for at that moment, and
+    the profile is picked up from the first sample after it, exactly as
+    :meth:`~conops.simulation.acs.ACS._start_pass` builds its trajectory.
+    """
+    held = gspass.attitude_for_profile_at(list(profile), acquire)
+    if held is None:
+        return []
+    samples: list[tuple[float, Attitude]] = [(float(acquire), held)]
+    samples.extend(
+        (float(utime), (float(ra), float(dec), float(roll)))
+        for utime, (ra, dec, roll) in zip(gspass.utime, profile, strict=True)
+        if float(utime) > acquire
+    )
+    return samples
+
+
+def tracking_rest(
+    gspass: Pass,
+    profile: Sequence[Attitude],
+    acquire: float,
+    attitude_control: AttitudeControlSystem,
+) -> tuple[float, Attitude] | None:
+    """Return when a tracked contact comes to rest, and the attitude it rests at.
+
+    ACS cannot stop a tracking rate instantly: it brakes past the profile's
+    last sample, so a contact neither ends at that sample's attitude nor at the
+    contact's end time. Tracking starts from rest at ``acquire``, so a late
+    acquisition has to turn harder to catch the profile up. Returns None when
+    the profile cannot be flown within the motion limits.
+    """
+    samples = tracking_samples(gspass, profile, acquire)
+    if not samples:
+        return None
+    if len(samples) < 2:
+        # A single sample is held, not tracked, so there is nothing to brake.
+        return float(gspass.end), samples[-1][1]
+    try:
+        trajectory = AttitudeTrajectory.tracking(
+            samples, attitude_control, initial_rate=(0.0, 0.0, 0.0)
+        )
+    except AttitudeExecutionError:
+        return None
+    return float(trajectory.end), trajectory.state(trajectory.end).attitude
