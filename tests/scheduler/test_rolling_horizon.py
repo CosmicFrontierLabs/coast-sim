@@ -1,12 +1,13 @@
 """RollingHorizonDITL: follow a plan rebuilt as the simulation runs."""
 
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 
 from conops.config import TargetConfig
 from conops.config.observation_categories import ObservationCategory
-from conops.ditl import ReplanReason, RollingHorizonDITL
+from conops.ditl import DITLLogStore, ReplanReason, RollingHorizonDITL
 from conops.targets import Pointing
 
 from .planning_scenario import BEGIN, HOUR, MIN, PATCH, T0
@@ -369,6 +370,61 @@ class TestTargetsOfOpportunity:
         assert science[:1] == [1] and science.count(1) == 1
         assert ditl.validate_plan_matches_execution() == []
 
+    def test_infeasible_top_ranked_too_falls_back_to_the_next(self) -> None:
+        """A Sun-blocked higher-ranked ToO must not cost a feasible one its slot."""
+        blocked = {
+            **GRB,
+            "obsid": 1_000_002,
+            "name": "Blocked",
+            "ra": 215.0,
+            "dec": -15.0,
+            "merit": 600.0,
+            "deadline": T0 + 30 * MIN,
+        }
+        ditl = _run(
+            3,
+            _long_observation(),
+            toos=(blocked, {**GRB, "deadline": T0 + 30 * MIN}),
+            replan_interval=timedelta(hours=4),
+        )
+
+        rapid = [r for r in ditl.replans if r.reason is ReplanReason.RAPID]
+        assert [(r.trigger_obsid, r.interrupted_obsid) for r in rapid] == [
+            (GRB["obsid"], 1)
+        ]
+        assert ditl.too_response_times()[1_000_001] is not None
+        assert ditl.too_response_times()[1_000_002] is None
+        assert ditl.validate_plan_matches_execution() == []
+
+    def test_rejected_interrupt_leaves_no_events_in_the_store(
+        self, tmp_path: Path
+    ) -> None:
+        config = _long_observation()[0].config
+        assert config is not None
+        targets = [
+            _target(
+                config, 1, 105.0, 10.0, merit=10, minutes=60, snapshot=60, ss_min=10
+            )
+        ]
+        ditl = RollingHorizonDITL(
+            config,
+            targets,
+            begin=BEGIN,
+            end=BEGIN + timedelta(hours=3),
+            replan_interval=timedelta(hours=4),
+        )
+        ditl.step_size = 60
+        ditl.submit_too(**{**GRB, "ra": 215.0, "dec": -15.0, "deadline": T0 + 30 * MIN})  # type: ignore[arg-type]
+        with DITLLogStore(tmp_path / "log.sqlite") as store:
+            ditl.log.store = store
+            ditl.log.run_id = "run"
+            assert ditl.calc()
+            stored = [e.description for e in store.fetch_events("run")]
+
+        assert all(r.interrupted_obsid is None for r in ditl.replans)
+        assert not any("interrupts observation" in d for d in stored)
+        assert sorted(stored) == sorted(e.description for e in ditl.log.events)
+
     def test_interrupt_ranking_uses_delivered_program_shares(self) -> None:
         """Program B is ahead, so its ToO does not outrank program A's work."""
         config = _config(
@@ -401,6 +457,38 @@ class TestTargetsOfOpportunity:
 
         rapid = [r for r in ditl.replans if r.reason is ReplanReason.RAPID]
         assert rapid and all(r.interrupted_obsid is None for r in rapid)
+
+
+class TestConsecutiveIntervals:
+    def test_completed_too_is_not_observed_again_in_the_next_interval(
+        self,
+    ) -> None:
+        config = _config(3)
+        ditl = RollingHorizonDITL(
+            config,
+            [],
+            begin=BEGIN,
+            end=BEGIN + timedelta(hours=1),
+            replan_interval=timedelta(hours=4),
+        )
+        ditl.step_size = 60
+        too = ditl.submit_too(
+            obsid=1_000_001, ra=115.0, dec=10.0, merit=500.0, exptime=600, name="GRB"
+        )
+        assert ditl.calc()
+        assert too.executed
+        response = ditl.too_response_times()[1_000_001]
+        assert response is not None
+
+        ditl.begin += timedelta(hours=1)
+        ditl.end += timedelta(hours=1)
+        assert ditl.calc()
+
+        assert [int(t.obsid) for t in ditl.targets] == [1_000_001]
+        assert ditl.targets[0].collected_seconds == pytest.approx(600)
+        assert not any(int(e.obsid) == 1_000_001 for e in ditl.plan)
+        assert too.executed
+        assert ditl.too_response_times()[1_000_001] == response
 
 
 class TestArguments:

@@ -144,8 +144,10 @@ rebuilds it as the simulation runs:
    replan the observation running at the commit cutoff, started or not, is cut short
    there when ``allow_interrupts`` is set and the ToO's tier and value, evaluated now,
    beat the tier and value frozen onto that observation. Science it has already
-   collected is kept, and its cleanup follows the cut. If several ToOs need a rapid
-   replan at the same time, the highest-ranked one decides whether to interrupt.
+   collected is kept, and its cleanup follows the cut. The cut is kept only if the new
+   plan can collect the ToO. If several ToOs need a rapid replan at the same time, they
+   are tried highest-ranked first, and the first that outranks the observation and can
+   be placed interrupts it.
 
 .. code-block:: python
 
