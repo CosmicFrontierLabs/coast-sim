@@ -318,6 +318,90 @@ class TestTargetsOfOpportunity:
             float(entry.collection_begin) - float(GRB["submit_time"])  # type: ignore[arg-type]
         )
 
+    def test_urgent_too_on_a_scheduled_boundary_interrupts(self) -> None:
+        ditl = _run(
+            3,
+            _long_observation(),
+            toos=({**GRB, "deadline": T0 + 22 * MIN},),
+            replan_interval=timedelta(minutes=20),
+        )
+
+        boundary = next(r for r in ditl.replans if r.utime == GRB["submit_time"])
+        assert boundary.reason is ReplanReason.SCHEDULED
+        assert boundary.trigger_obsid == GRB["obsid"]
+        assert boundary.interrupted_obsid == 1
+        assert ditl.too_register[0].executed
+        assert ditl.validate_plan_matches_execution() == []
+
+    def test_committed_observation_blocking_the_deadline_triggers_rapid_replan(
+        self,
+    ) -> None:
+        config = _config(3)
+        targets = [
+            _target(
+                config, 1, 105.0, 10.0, merit=10, minutes=120, snapshot=120, ss_min=10
+            )
+        ]
+
+        ditl = _run(
+            3,
+            targets,
+            toos=({**GRB, "deadline": T0 + 90 * MIN},),
+            replan_interval=timedelta(hours=1),
+        )
+
+        rapid = [r for r in ditl.replans if r.reason is ReplanReason.RAPID]
+        assert [r.interrupted_obsid for r in rapid] == [1]
+        assert ditl.too_register[0].executed
+
+    def test_infeasible_urgent_too_does_not_interrupt(self) -> None:
+        """A ToO inside the Sun keepout cannot replace the observation."""
+        ditl = _run(
+            3,
+            _long_observation(),
+            toos=({**GRB, "ra": 215.0, "dec": -15.0, "deadline": T0 + 30 * MIN},),
+            replan_interval=timedelta(hours=4),
+        )
+
+        assert all(r.interrupted_obsid is None for r in ditl.replans)
+        assert not ditl.too_register[0].executed
+        science = [int(e.obsid) for e in ditl.plan if e.obstype.name == "AT"]
+        assert science[:1] == [1] and science.count(1) == 1
+        assert ditl.validate_plan_matches_execution() == []
+
+    def test_interrupt_ranking_uses_delivered_program_shares(self) -> None:
+        """Program B is ahead, so its ToO does not outrank program A's work."""
+        config = _config(
+            3,
+            weights=TargetConfig(completion_deficit_weight=100.0),
+            categories=[
+                ObservationCategory(
+                    name="A", obsid_min=1, obsid_max=99, time_share=0.5
+                ),
+                ObservationCategory(
+                    name="B", obsid_min=100, obsid_max=2_000_000, time_share=0.5
+                ),
+            ],
+        )
+        delivered = _target(config, 100, *PATCH[2], minutes=1000)
+        delivered.record_collection(T0, 60_000)
+        targets = [
+            _target(
+                config, 1, 105.0, 10.0, merit=50, minutes=60, snapshot=60, ss_min=10
+            ),
+            delivered,
+        ]
+
+        ditl = _run(
+            3,
+            targets,
+            toos=({**GRB, "merit": 70.0, "deadline": T0 + 30 * MIN},),
+            replan_interval=timedelta(hours=4),
+        )
+
+        rapid = [r for r in ditl.replans if r.reason is ReplanReason.RAPID]
+        assert rapid and all(r.interrupted_obsid is None for r in rapid)
+
 
 class TestArguments:
     @pytest.mark.parametrize(
