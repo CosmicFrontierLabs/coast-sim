@@ -90,6 +90,21 @@ each dynamic merit term in turn:
 
 See :doc:`configuration` (Dynamic Merit) and :doc:`target_of_opportunity` for reference.
 
+Rolling-Horizon Replanning
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Location**: ``examples/Rolling_Horizon_DITL_Example.ipynb``
+
+This notebook simulates a ground-planned mission with ``RollingHorizonDITL``:
+
+* Planning 12 hours ahead and replanning every 6 hours, with a commit lead time
+* A Target of Opportunity that triggers a rapid replan and interrupts an observation
+* What each replan kept, dropped and added, and how long it took
+* Checking that the simulation executed the plan it followed
+* A comparison with ``QueueDITL`` dispatch on the same targets
+
+See :doc:`planning` (Rolling-horizon replanning) for reference.
+
 Example Configuration
 ~~~~~~~~~~~~~~~~~~~~~
 
