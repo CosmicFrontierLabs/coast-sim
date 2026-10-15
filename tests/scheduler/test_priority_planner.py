@@ -1,6 +1,7 @@
 """PriorityPlanner: plans must execute in DITL exactly as planned."""
 
 from datetime import timedelta
+from unittest.mock import patch
 
 import pytest
 from rust_ephem import SunConstraint
@@ -598,3 +599,43 @@ class TestGroundContacts:
         assert stations and not stations & unreachable
         ditl = _execute(config, plan, hours, step)
         assert ditl.validate_plan_matches_execution() == []
+
+
+class TestSuccessorRetries:
+    """A limit on later starts tried in a gap whose successor is unreachable."""
+
+    HOURS = 12
+
+    def _plan(self, retries: int | None) -> tuple[MissionConfig, PriorityPlanner, int]:
+        config = _config(self.HOURS, stations=True)
+        targets = [
+            _target(config, 100 + i, ra, dec, merit=90 - 3 * i, minutes=60, snapshot=20)
+            for i, (ra, dec) in enumerate(PATCH + CONSTRAINED)
+        ]
+        planner = PriorityPlanner(
+            config,
+            targets,
+            BEGIN,
+            BEGIN + timedelta(hours=self.HOURS),
+            successor_retries=retries,
+        )
+        with patch.object(planner, "_connect", wraps=planner._connect) as connect:
+            planner.schedule()
+        return config, planner, connect.call_count
+
+    def test_a_limit_searches_less_and_still_executes_exactly(self) -> None:
+        _, exhaustive, exhaustive_calls = self._plan(None)
+        config, limited, limited_calls = self._plan(0)
+
+        assert limited_calls < exhaustive_calls
+        assert len(limited.plan) > 0
+        ditl = _execute(config, limited.plan, self.HOURS, 60)
+        assert ditl.validate_plan_matches_execution() == []
+
+    def test_rejects_a_negative_limit(self) -> None:
+        config = _config(1)
+
+        with pytest.raises(ValueError, match="successor_retries"):
+            PriorityPlanner(
+                config, [], BEGIN, BEGIN + timedelta(hours=1), successor_retries=-1
+            )

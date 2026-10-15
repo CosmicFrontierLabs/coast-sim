@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..common import ACSMode, ObsType, unixtime2date
 from ..config import MissionConfig
+from ..config.observation_categories import ObservationCategory
 from ..ditl.ditl_log import DITLLog
 from ..simulation.passes import Pass
 from ..simulation.slew import Slew
@@ -85,13 +86,28 @@ class _Request(BaseModel):
 
     target: Pointing
     merit: MeritBreakdown
+    """Merit at the start of the horizon; its tier and ranking."""
     remaining: float
     windows: list[tuple[float, float]] = Field(default_factory=list)
+    category: ObservationCategory
+    steady_value: float = 0.0
+    """Value of a snapshot apart from the completion deficit, which depends
+    on what the plan has collected before it."""
+    cadence: float | None = None
+    """Seconds a visit waits after the target's last one, when cadence counts."""
 
     @property
     def wants_more(self) -> bool:
         """Whether enough exposure is left for another snapshot."""
         return self.remaining > 0 and self.remaining >= float(self.target.ss_min)
+
+
+def program_shares(seconds: Mapping[str, float]) -> dict[str, float]:
+    """Return each program's fraction of the science seconds given."""
+    total = sum(seconds.values())
+    if total <= 0.0:
+        return {}
+    return {program: value / total for program, value in seconds.items()}
 
 
 def _long_enough(collection_seconds: float, ss_min: float) -> bool:
@@ -110,6 +126,14 @@ class PriorityPlanner:
        horizon (see :class:`~conops.targets.merit.MeritModel`). Each request is
        split into snapshots of up to ``ss_max`` seconds, never shorter than
        ``ss_min``, until its ``exptime`` is used or it no longer fits.
+
+       Merit follows the plan as it would follow execution. With a
+       completion-deficit weight, programs with a time share are re-ranked
+       after every snapshot by the shares the plan delivers so far, counting
+       science already collected. With a cadence weight, a target in a
+       category with a cadence is visited no sooner than its cadence after
+       its last visit, planned or collected; each visit then has the full
+       cadence value.
     4. Each snapshot goes in the earliest slot where every check
        :class:`~conops.ditl.DITL` will apply passes: the slew starts on a step,
        its path and the held attitude clear their mode's constraints, the
@@ -138,7 +162,15 @@ class PriorityPlanner:
             starts at ``begin`` from a freshly started spacecraft.
         reserved_seconds: Exposure, by obsid, already scheduled outside this
             plan and not yet collected; it is subtracted from each target's
-            remaining exposure.
+            remaining exposure and counts towards its program's share.
+        reserved_visits: When observations scheduled outside this plan and not
+            yet collected will finish collecting, by obsid; a cadence target's
+            next visit waits for its cadence after them.
+        successor_retries: When a snapshot fits a gap but the activity after
+            it cannot then be reached, how many later starts to try in that gap
+            before giving up on it (default 3). This plans much faster when many
+            requests cannot be placed, but can miss a fit late in a gap. None
+            tries every start, which finds every fit.
     """
 
     def __init__(
@@ -156,6 +188,8 @@ class PriorityPlanner:
         simulation_end: datetime | None = None,
         start_state: StartState | None = None,
         reserved_seconds: Mapping[int, float] | None = None,
+        reserved_visits: Mapping[int, float] | None = None,
+        successor_retries: int | None = 3,
     ) -> None:
         self.config = config
         self.targets = list(targets)
@@ -169,6 +203,10 @@ class PriorityPlanner:
         self.simulation_end = simulation_end
         self.start_state = start_state
         self.reserved_seconds = dict(reserved_seconds or {})
+        self.reserved_visits = dict(reserved_visits or {})
+        if successor_retries is not None and successor_retries < 0:
+            raise ValueError("successor_retries must not be negative")
+        self.successor_retries = successor_retries
         self.unplaced: list[Pointing] = []
         """Targets left with at least ``ss_min`` of exposure unplanned."""
         self.plan = Plan()
@@ -205,25 +243,7 @@ class PriorityPlanner:
             for gspass in self.ctx.predict_passes():
                 self._place_pass(gspass)
 
-        for request in self._requests():
-            placed = 0
-            while request.wants_more:
-                block = self._place_snapshot(request)
-                if block is None:
-                    break
-                collected = block.entry.collection_seconds_between(
-                    block.entry.begin, block.entry.end
-                )
-                request.remaining -= collected
-                placed += 1
-            if request.wants_more:
-                self.unplaced.append(request.target)
-                self._log(
-                    self.ctx.ustart,
-                    f"Target {request.target.obsid} left {request.remaining:.0f}s "
-                    f"unplanned after {placed} snapshot(s)",
-                    request.target.obsid,
-                )
+        self._place_requests(self._requests())
 
         self.plan = Plan(
             entries=[block.entry for block in self.timeline],
@@ -231,36 +251,133 @@ class PriorityPlanner:
         )
         return self.plan
 
+    def _place_requests(self, requests: Sequence[_Request]) -> None:
+        """Place snapshots of the highest-ranked request at their earliest fit.
+
+        Without a completion deficit the ranking never changes, so each
+        request is placed in full before the next.
+        """
+        active = list(requests)
+        order = {id(request): k for k, request in enumerate(active)}
+        placed = dict.fromkeys(order, 0)
+        program_seconds = dict(self._delivered)
+        while active:
+            request = active[0]
+            if self._balancing:
+                shares = program_shares(program_seconds)
+                request = max(
+                    active,
+                    key=lambda r: (
+                        r.merit.tier,
+                        self._value(r, shares),
+                        -order[id(r)],
+                    ),
+                )
+            block = self._place_snapshot(request, self._cadence_release(request))
+            if block is not None:
+                collected = block.entry.collection_seconds_between(
+                    block.entry.begin, block.entry.end
+                )
+                request.remaining -= collected
+                placed[id(request)] += 1
+                self._record_visit(request, block, program_seconds)
+                if request.wants_more:
+                    continue
+            active.remove(request)
+            if request.wants_more:
+                self.unplaced.append(request.target)
+                self._log(
+                    self.ctx.ustart,
+                    f"Target {request.target.obsid} left {request.remaining:.0f}s "
+                    f"unplanned after {placed[id(request)]} snapshot(s)",
+                    request.target.obsid,
+                )
+
+    def _value(self, request: _Request, shares: Mapping[str, float]) -> float:
+        """Value of a snapshot of ``request`` when the plan delivers ``shares``."""
+        if not self._deficit_weight:
+            return request.steady_value
+        return request.steady_value + self._deficit_weight * (
+            MeritModel.completion_deficit(request.category, shares)
+        )
+
+    def _cadence_release(self, request: _Request) -> float | None:
+        """Earliest slew start of the request's next visit, if cadence spaces them."""
+        if request.cadence is None:
+            return None
+        last = self._last_visit.get(int(request.target.obsid))
+        return None if last is None else last + request.cadence
+
+    def _record_visit(
+        self, request: _Request, block: _Block, program_seconds: dict[str, float]
+    ) -> None:
+        """Count a placed snapshot towards its program and the target's last visit."""
+        entry = block.entry
+        seconds = entry.collection_seconds_between(entry.begin, entry.end)
+        program = request.category.program_name
+        program_seconds[program] = program_seconds.get(program, 0.0) + seconds
+        if request.cadence is not None and entry.collection_end is not None:
+            self._last_visit[int(request.target.obsid)] = float(entry.collection_end)
+
     # ── Requests ──────────────────────────────────────────────────────────
 
     def _requests(self) -> list[_Request]:
         """Return the requests in planning order: tier, then value, then a stable tie-break."""
         merit_model = MeritModel(self.config)
-        delivered_shares = merit_model.delivered_shares(self.targets)
         # Science committed outside this plan or locked into it will be
         # collected before what this plan places.
         reserved = self._reserved_collection()
         for obsid, seconds in self.reserved_seconds.items():
             reserved[obsid] += seconds
         seed = self.config.random_seed if self.config.random_seed is not None else 0
+        self._delivered: dict[str, float] = {}
+        """Science already collected, by program."""
+        self._last_visit: dict[int, float] = {}
+        """When each cadence target was last observed, collected or planned."""
+        for target in self.targets:
+            obsid = int(target.obsid)
+            seconds = target.collected_seconds + reserved.get(obsid, 0.0)
+            if seconds > 0.0:
+                program = merit_model.category(target).program_name
+                self._delivered[program] = self._delivered.get(program, 0.0) + seconds
+            visits = [
+                t
+                for t in (target.last_collection_time, self.reserved_visits.get(obsid))
+                if t is not None
+            ]
+            if visits:
+                self._last_visit[obsid] = max(visits)
+        shares = program_shares(self._delivered)
+        cadence_weight = merit_model.cadence_weight
         requests = []
         for target in self.targets:
             exptime = target.exptime if target.exptime is not None else target.ss_max
             remaining = float(exptime) - reserved.get(int(target.obsid), 0.0)
             if target.done or remaining < target.ss_min:
                 continue
+            category = merit_model.category(target)
+            merit = merit_model.value_terms(
+                target, self.ctx.ustart, delivered_shares=shares
+            )
+            cadence = category.cadence_seconds if cadence_weight > 0.0 else None
             requests.append(
                 _Request(
                     target=target,
-                    merit=merit_model.value_terms(
-                        target,
-                        self.ctx.ustart,
-                        delivered_shares=delivered_shares,
-                    ),
+                    merit=merit,
                     remaining=remaining,
                     windows=self.ctx.visibility_windows(target),
+                    category=category,
+                    # Visits wait for their cadence, so each has full pressure.
+                    steady_value=merit.base
+                    + merit.urgency
+                    + (cadence_weight if cadence is not None else 0.0),
+                    cadence=cadence,
                 )
             )
+        self._deficit_weight = merit_model.completion_deficit_weight
+        self._balancing = self._deficit_weight > 0.0 and any(
+            r.category.time_share is not None for r in requests
+        )
 
         def tie_break(request: _Request) -> int:
             payload = f"{seed}:{request.target.obsid}".encode()
@@ -585,12 +702,17 @@ class PriorityPlanner:
 
     # ── Science snapshots ────────────────────────────────────────────────
 
-    def _place_snapshot(self, request: _Request) -> _Block | None:
-        """Place one snapshot of a request in the earliest slot that fits."""
+    def _place_snapshot(
+        self, request: _Request, not_before: float | None = None
+    ) -> _Block | None:
+        """Place one snapshot of a request in the earliest slot that fits.
+
+        Its slew starts no earlier than ``not_before``, if given.
+        """
         for index in range(len(self.timeline) + 1):
             pred = self._pred_at(index)
             succ = self.timeline[index] if index < len(self.timeline) else None
-            candidate = self._fit_in_gap(request, pred, succ)
+            candidate = self._fit_in_gap(request, pred, succ, not_before)
             if candidate is None:
                 continue
             block, slew, succ_slew = candidate
@@ -606,19 +728,30 @@ class PriorityPlanner:
         return None
 
     def _fit_in_gap(
-        self, request: _Request, pred: _Block | None, succ: _Block | None
+        self,
+        request: _Request,
+        pred: _Block | None,
+        succ: _Block | None,
+        not_before: float | None = None,
     ) -> tuple[_Block, Slew, Slew | None] | None:
-        """Find the earliest snapshot of ``request`` between ``pred`` and ``succ``."""
+        """Find the earliest snapshot of ``request`` between ``pred`` and ``succ``.
+
+        The slew starts no earlier than ``not_before``, if given.
+        """
         target = request.target
         ss_min = float(target.ss_min)
         earliest = self._earliest_start(pred)
         gap_end = succ.ready if succ is not None else self.ctx.uend
-        if gap_end - earliest < ss_min:
+        start = earliest
+        if not_before is not None:
+            start = max(start, self.ctx.ceil_step(not_before))
+        if gap_end - start < ss_min:
             return None
         idle_limit = self._idle_limit(pred, earliest, gap_end)
         snapshot = min(float(target.ss_max), request.remaining)
+        # Starts at which the snapshot fitted but its successor was unreachable.
+        unreachable = 0
 
-        start = earliest
         while start <= min(idle_limit, gap_end):
             window = next((w for w in request.windows if w[0] <= start < w[1]), None)
             if window is None:
@@ -685,6 +818,12 @@ class PriorityPlanner:
                     )
                 if succ is None or succ_slew is not None:
                     return fitted, slew, succ_slew
+                unreachable += 1
+                if (
+                    self.successor_retries is not None
+                    and unreachable > self.successor_retries
+                ):
+                    return None
             start += self.ctx.step_size
         return None
 

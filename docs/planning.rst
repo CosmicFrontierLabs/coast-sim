@@ -80,7 +80,8 @@ How a plan is built
    :doc:`configuration`). Each request is split into snapshots of up to ``ss_max``
    seconds and never shorter than ``ss_min``, until its ``exptime`` is used or it no
    longer fits. A request whose deadline is close gains urgency and so is placed
-   ahead of flexible requests with higher base merit.
+   ahead of flexible requests with higher base merit. Cadence and completion deficit
+   follow the plan as it is built (see below).
 4. **Each snapshot** goes in the earliest slot where every check ``DITL`` and the plan
    validator will apply passes:
 
@@ -99,14 +100,51 @@ Requests left with at least ``ss_min`` of exposure unplanned are listed in
 ``planner.unplaced``. Every placement and rejection is logged to ``planner.log``.
 The input targets are not modified.
 
+**Planning faster when many requests cannot fit.** Most planning time in a crowded
+horizon goes to requests that end up unplaced: a snapshot fits a gap, but the activity
+after it cannot then be reached, so each later start in the gap is tried in turn, each
+with a full search for the slew onward. ``successor_retries`` limits how many later
+starts are tried after that happens before the gap is given up (3 by default). This
+plans much faster in a crowded horizon, but can miss a fit late in a gap; set it to
+None to try every start. Rolling replans use the default.
+
+Cadence and program shares in plans
+-----------------------------------
+
+The cadence and completion-deficit merit terms depend on what has already been
+observed, so the planner evaluates them against the plan as well as the science
+already collected, as :class:`~conops.ditl.QueueDITL` does against what it has
+executed:
+
+* **Completion deficit.** With ``completion_deficit_weight`` set and programs with a
+  ``time_share``, each program's share counts the science its targets have collected
+  (``collected_seconds``) plus what the plan has given them so far. The planner
+  re-ranks the requests after every snapshot, so a program falling behind its share
+  moves up.
+* **Cadence.** With ``cadence_weight`` set, a target in a category with
+  ``cadence_seconds`` is visited no sooner than that long after its last visit,
+  planned or collected (``last_collection_time``), so every visit has the full
+  cadence value. Each visit is placed at the earliest fit once it is due.
+
+When :class:`~conops.ditl.RollingHorizonDITL` replans, observations it has already
+committed but not finished collecting count too: their exposure towards their
+program's share (``reserved_seconds``) and their collection end as the target's last
+visit (``reserved_visits``), so a new plan does not revisit a target straight after a
+committed visit.
+
+Without these weights, plans are built exactly as before.
+
 Limitations
 -----------
 
 * **No battery model.** The planner does not schedule charging, and ``DITL`` does not
   charge on its own while executing a plan.
-* **Static ordering.** Merit is evaluated once, at the start of the horizon. Cadence
-  and completion deficit therefore set the order of requests but do not space or
-  balance their snapshots through the plan.
+* **Urgency at the start of the horizon.** Urgency is evaluated once, when the plan is
+  built; deadlines are kept as constraints.
+* **Cadence as a minimum spacing.** A visit before its cadence is due is never
+  planned, though dispatch may take one when nothing else is worth more. Spreading
+  many visits through the day also leaves the planner more, smaller gaps to search,
+  which lengthens planning.
 * **Greedy.** Placements are never revisited. If a flexible, high-merit request is
   placed first, it can take the only slot a lower-merit request with a short window
   could use, and that request goes unplaced. Urgency avoids this when it raises the
