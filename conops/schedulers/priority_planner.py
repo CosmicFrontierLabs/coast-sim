@@ -12,6 +12,7 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from enum import Enum, auto
+from typing import NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -108,6 +109,26 @@ def program_shares(seconds: Mapping[str, float]) -> dict[str, float]:
     if total <= 0.0:
         return {}
     return {program: value / total for program, value in seconds.items()}
+
+
+_MAX_DELAYED = 4
+"""Most snapshots moved later to fit one before them."""
+
+
+class _Move(NamedTuple):
+    """A snapshot placed again later, to make room before it."""
+
+    old_block: _Block
+    request: _Request
+    new_block: _Block
+    slew: Slew
+    lost: float
+    """Collection seconds the move cut short."""
+
+
+def _collection_seconds(block: _Block) -> float:
+    """Return the science a block collects."""
+    return block.entry.collection_seconds_between(block.entry.begin, block.entry.end)
 
 
 def _long_enough(collection_seconds: float, ss_min: float) -> bool:
@@ -291,6 +312,10 @@ class PriorityPlanner:
                 if request.wants_more:
                     continue
             active.remove(request)
+
+        # Checked once all are placed: moving a snapshot later to make room
+        # can cut short a request that was already finished.
+        for request in requests:
             if request.wants_more:
                 self.unplaced.append(request.target)
                 self._log(
@@ -728,8 +753,9 @@ class PriorityPlanner:
                 self._commit(index, block, slew, succ, succ_slew)
             elif self._can_delay(succ):
                 # The snapshot fitted, but only the one after it was then
-                # unreachable: try again with that one moved later.
-                delayed = self._fit_delaying_successor(request, index, not_before)
+                # unreachable: try again with that one, and any packed behind
+                # it, moved later.
+                delayed = self._fit_delaying_successors(request, index, not_before)
                 if delayed is None:
                     continue
                 block = delayed
@@ -748,81 +774,140 @@ class PriorityPlanner:
         return None
 
     def _can_delay(self, succ: _Block | None) -> bool:
-        """Whether the last gap search failed only because of ``succ``, and it may move.
+        """Whether the last gap search failed only because of ``succ``, and it may move."""
+        return succ is not None and self._successor_blocked and self._may_move(succ)
+
+    def _may_move(self, block: _Block) -> bool:
+        """Whether a block may be placed again later to make room before it.
 
         Only science snapshots this planner placed may move, and not those of
-        cadence targets, whose later visits are spaced from them.
+        cadence targets, whose later visits are spaced from them. Locked
+        entries and passes never move.
         """
-        if succ is None or not self._successor_blocked:
-            return False
-        succ_request = self._movable.get(id(succ))
-        return succ_request is not None and succ_request.cadence is None
+        request = self._movable.get(id(block))
+        return request is not None and request.cadence is None
 
-    def _fit_delaying_successor(
+    def _fit_delaying_successors(
         self, request: _Request, index: int, not_before: float | None
     ) -> _Block | None:
         """Fit a snapshot before timeline block ``index`` by moving that block later.
 
         This handles a gap the snapshot fits, but only if the science snapshot
-        after it could start later. That happens most often when the later
-        snapshot sits at the start of its target's next visibility window: ACS
-        cannot slew to the target before it is visible, so nothing can be
-        placed in front of it.
+        after it could start later. Typically that snapshot starts the moment
+        its target rises, and the spacecraft could only be there on time by
+        staying on the target while it was hidden: anything else placed in
+        that time would get there late. Without this, the whole time the
+        target was hidden is lost.
 
-        The later snapshot is placed again, right after the new one, and must
-        collect as long as it did and still reach whatever follows it. If any
-        of that fails, the timeline is left unchanged and None is returned.
+        The later snapshot is moved by as little as it can be. When it is
+        packed against the snapshots after it, those move too: first the one
+        snapshot is tried, then it and the next, and so on, up to
+        ``_MAX_DELAYED`` snapshots or the first that may not move. Returns the
+        new snapshot's block, or None with the timeline unchanged.
         """
-        later = self.timeline[index]
-        later_request = self._movable[id(later)]
-        pred = self._pred_at(index)
-        after = self.timeline[index + 1] if index + 1 < len(self.timeline) else None
+        for count in range(1, _MAX_DELAYED + 1):
+            run = self.timeline[index : index + count]
+            if len(run) < count or not self._may_move(run[-1]):
+                return None
+            block = self._fit_delaying_run(request, index, count, not_before)
+            if block is not None:
+                return block
+        return None
 
-        # 1. Fit the new snapshot as if the later one were not there.
-        new_fit = self._fit_in_gap(request, pred, after, not_before)
+    def _fit_delaying_run(
+        self, request: _Request, index: int, count: int, not_before: float | None
+    ) -> _Block | None:
+        """Fit a snapshot at timeline position ``index``, moving the ``count``
+        snapshots there later.
+
+        Moving a snapshot may cut it short, where its target's visibility ends
+        sooner after the move. That is accepted only if the trade is worth it:
+        no snapshot cut short outranks the new one's tier, and the new
+        snapshot's value-weighted seconds exceed those lost. Returns the new
+        snapshot's block, or None with the timeline unchanged.
+        """
+        pred = self._pred_at(index)
+        run = self.timeline[index : index + count]
+        end = index + count
+        after = self.timeline[end] if end < len(self.timeline) else None
+        # Everything placed here must be done before the block after the run.
+        until = after.ready if after is not None else None
+
+        # 1. Fit the new snapshot as if the run were not there. The run follows
+        #    it, so it need not reach the block after the run itself.
+        new_fit = self._fit_in_gap(request, pred, None, not_before, until)
         if new_fit is None:
             return None
         new_block, new_slew, _ = new_fit
+        gained = _collection_seconds(new_block)
 
-        # 2. Fit the later snapshot again, after the new one, for the same
-        #    collection time it had.
-        later_seconds = later.entry.collection_seconds_between(
-            later.entry.begin, later.entry.end
-        )
-        same_length = later_request.model_copy(update={"remaining": later_seconds})
-        moved_fit = self._fit_in_gap(same_length, new_block, after)
-        if moved_fit is None:
+        # 2. Fit each snapshot of the run again, in order, after the new one,
+        #    for up to the collection time it had. Only the last must reach the
+        #    block after the run. Nothing changes until all fit.
+        moves: list[_Move] = []
+        after_slew = None
+        previous = new_block
+        for position, old_block in enumerate(run):
+            old_request = self._movable[id(old_block)]
+            seconds = _collection_seconds(old_block)
+            same_length = old_request.model_copy(update={"remaining": seconds})
+            last = position == len(run) - 1
+            moved_fit = self._fit_in_gap(
+                same_length,
+                previous,
+                after if last else None,
+                until=None if last else until,
+            )
+            if moved_fit is None:
+                return None
+            moved_block, moved_slew, after_slew = moved_fit
+            lost = max(0.0, seconds - _collection_seconds(moved_block))
+            moves.append(_Move(old_block, old_request, moved_block, moved_slew, lost))
+            previous = moved_block
+
+        # 3. Check the trade, if moving cut anything short.
+        if not self._worth_cutting(request, gained, moves):
             return None
-        moved_block, moved_slew, after_slew = moved_fit
 
-        # A constraint may have shortened it; moving must not lose science.
-        moved = moved_block.entry
-        moved_seconds = moved.collection_seconds_between(moved.begin, moved.end)
-        if moved_seconds < later_seconds - 1e-6:
-            return None
-
-        # 3. Both fit: record the new slews and swap the blocks into place.
+        # 4. Record the new slews and put the blocks in place.
         self._apply_slew(new_block, new_slew)
-        self._apply_slew(moved_block, moved_slew)
+        for move in moves:
+            self._apply_slew(move.new_block, move.slew)
         if after is not None and after_slew is not None:
             self._apply_slew(after, after_slew)
 
-        self.timeline[index] = moved_block
-        self.timeline.insert(index, new_block)
+        self.timeline[index:end] = [new_block] + [move.new_block for move in moves]
 
-        # The moved snapshot is a new block, so it takes the old one's place
-        # among the blocks that may move again.
-        del self._movable[id(later)]
-        self._movable[id(moved_block)] = later_request
-
-        self._log(
-            float(moved.begin),
-            f"Moved {later_request.target.obsid} to "
-            f"{unixtime2date(float(moved.collection_begin or 0))} to fit "
-            f"{request.target.obsid} before it",
-            later_request.target.obsid,
-        )
+        for move in moves:
+            # A moved snapshot is a new block, so it takes the old one's place
+            # among the blocks that may move again.
+            del self._movable[id(move.old_block)]
+            self._movable[id(move.new_block)] = move.request
+            # Exposure cut short is left for the request to plan elsewhere.
+            move.request.remaining += move.lost
+            moved = move.new_block.entry
+            self._log(
+                float(moved.begin),
+                f"Moved {move.request.target.obsid} to "
+                f"{unixtime2date(float(moved.collection_begin or 0))}"
+                + (f", {move.lost:.0f}s shorter," if move.lost else "")
+                + f" to fit {request.target.obsid} before it",
+                move.request.target.obsid,
+            )
         return new_block
+
+    @staticmethod
+    def _worth_cutting(
+        request: _Request, gained: float, moves: Sequence["_Move"]
+    ) -> bool:
+        """Whether a new snapshot is worth the science its moves cut short."""
+        cut = [move for move in moves if move.lost > 1e-6]
+        if not cut:
+            return True
+        if any(move.request.merit.tier > request.merit.tier for move in cut):
+            return False
+        lost_value = sum(move.lost * move.request.steady_value for move in cut)
+        return gained * request.steady_value > lost_value
 
     def _fit_in_gap(
         self,
@@ -830,16 +915,20 @@ class PriorityPlanner:
         pred: _Block | None,
         succ: _Block | None,
         not_before: float | None = None,
+        until: float | None = None,
     ) -> tuple[_Block, Slew, Slew | None] | None:
         """Find the earliest snapshot of ``request`` between ``pred`` and ``succ``.
 
-        The slew starts no earlier than ``not_before``, if given.
+        The slew starts no earlier than ``not_before``, if given. Without a
+        ``succ``, the snapshot ends by ``until``, if given, rather than the end
+        of the horizon.
         """
         self._successor_blocked = False
         target = request.target
         ss_min = float(target.ss_min)
         earliest = self._earliest_start(pred)
-        gap_end = succ.ready if succ is not None else self.ctx.uend
+        horizon_end = self.ctx.uend if until is None else min(until, self.ctx.uend)
+        gap_end = succ.ready if succ is not None else horizon_end
         start = earliest
         if not_before is not None:
             start = max(start, self.ctx.ceil_step(not_before))
@@ -880,7 +969,7 @@ class PriorityPlanner:
             if target.deadline is not None and collection_begin > target.deadline:
                 return None
 
-            latest_end = min(window[1], self.ctx.uend)
+            latest_end = min(window[1], horizon_end)
             succ_slewtime = 0.0
             if succ is not None:
                 succ_slewtime = self.ctx.slew(

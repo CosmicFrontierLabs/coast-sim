@@ -1,8 +1,9 @@
 """PriorityPlanner: plans must execute in DITL exactly as planned."""
 
 from datetime import timedelta
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
+import numpy as np
 import pytest
 from rust_ephem import SunConstraint
 
@@ -18,6 +19,7 @@ from conops.config import (
 )
 from conops.config.observation_categories import ObservationCategory
 from conops.schedulers import PriorityPlanner, SchedulingContext
+from conops.schedulers.priority_planner import _Move
 from conops.targets import Plan, PlanEntry, Pointing
 
 from .planning_scenario import (
@@ -669,7 +671,7 @@ class TestDelayingSuccessors:
     def test_plans_more_science_than_leaving_the_gap(self) -> None:
         _, delaying = self._plan()
         with patch.object(
-            PriorityPlanner, "_fit_delaying_successor", return_value=None
+            PriorityPlanner, "_fit_delaying_successors", return_value=None
         ):
             _, fixed = self._plan()
 
@@ -714,3 +716,99 @@ class TestSlewBeforeVisible:
         _, planner = self._plan(allowed=False)
 
         assert self._early_slews(planner) == 0
+
+
+class TestFillingTimeATargetIsHidden:
+    """Time a target is hidden between two of its snapshots is filled.
+
+    The later snapshot starts as its target rises, so by default only staying
+    on the hidden target reaches it on time. Fitting another snapshot first
+    makes it start later, which is allowed.
+    """
+
+    HOURS = 12
+
+    def _plan(self) -> tuple[MissionConfig, PriorityPlanner]:
+        config = _config(self.HOURS)
+        rng = np.random.default_rng(5)
+        targets = [
+            _target(
+                config,
+                100 + i,
+                rng.uniform(0, 360),
+                rng.uniform(-90, 90),
+                merit=rng.uniform(10, 100),
+                minutes=2000 / 60,
+                snapshot=1000 / 60,
+                ss_min=5,
+            )
+            for i in range(40)
+        ]
+        planner = PriorityPlanner(
+            config, targets, BEGIN, BEGIN + timedelta(hours=self.HOURS)
+        )
+        planner.schedule()
+        return config, planner
+
+    @staticmethod
+    def _long_gaps(planner: PriorityPlanner) -> list[float]:
+        timeline = planner.timeline
+        gaps = [
+            float(after.entry.begin) - float(before.end)
+            for before, after in zip(timeline, timeline[1:])
+        ]
+        return [gap for gap in gaps if gap > 20 * MIN]
+
+    def test_leaves_no_long_gaps_and_executes_exactly(self) -> None:
+        config, planner = self._plan()
+
+        assert self._long_gaps(planner) == []
+        ditl = _execute(config, planner.plan, self.HOURS, 60)
+        assert ditl.validate_plan_matches_execution() == []
+
+    def test_some_moves_cut_a_snapshot_short(self) -> None:
+        _, planner = self._plan()
+
+        moves = [e for e in planner.log.events if e.description.startswith("Moved")]
+        assert any("shorter" in e.description for e in moves)
+
+    def test_without_moving_snapshots_the_gaps_stay(self) -> None:
+        """Guards the test above: the scenario must have such gaps to fill."""
+        with patch.object(
+            PriorityPlanner, "_fit_delaying_successors", return_value=None
+        ):
+            _, planner = self._plan()
+
+        assert self._long_gaps(planner)
+
+
+class TestWorthCutting:
+    """When a move may cut a snapshot short to fit a new one before it."""
+
+    @staticmethod
+    def _request(tier: int, value: float) -> Mock:
+        request = Mock()
+        request.merit.tier = tier
+        request.steady_value = value
+        return request
+
+    def _move(self, lost: float, tier: int = 0, value: float = 50.0) -> _Move:
+        return _Move(Mock(), self._request(tier, value), Mock(), Mock(), lost)
+
+    def test_moves_that_cut_nothing_are_always_worth_it(self) -> None:
+        new = self._request(0, 1.0)
+
+        assert PriorityPlanner._worth_cutting(new, 10.0, [self._move(0.0)])
+
+    def test_worth_it_when_the_new_snapshot_is_worth_more(self) -> None:
+        new = self._request(0, 20.0)
+
+        assert PriorityPlanner._worth_cutting(new, 900.0, [self._move(300.0)])
+        assert not PriorityPlanner._worth_cutting(new, 300.0, [self._move(300.0)])
+
+    def test_never_cuts_a_higher_tier(self) -> None:
+        new = self._request(0, 1000.0)
+
+        assert not PriorityPlanner._worth_cutting(
+            new, 900.0, [self._move(1.0, tier=1, value=1.0)]
+        )

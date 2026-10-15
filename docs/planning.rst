@@ -98,19 +98,23 @@ How a plan is built
    * the next activity can still be reached on time, with its own slew and wait
      checked the same way.
 
-   If a snapshot would fit a gap but the science snapshot after it could then not be
-   reached in time (typically one placed at the start of its target's next visibility
-   window, which ACS cannot slew to earlier), that snapshot is moved later to make
-   room, keeping its length, as long as the activity after it can still be reached.
+   **Moving snapshots later to make room.** A request whose snapshots straddle a time
+   its target is hidden gets its next snapshot the moment the target rises. By
+   default ACS starts a slew only once its target is visible, so the only way to be
+   on the target then is to stay on it while it is hidden: anything else placed in
+   that time would get there late. So if a snapshot would fit a gap but the science
+   snapshot after it could then not be reached in time, that snapshot is moved later
+   to make room, along with up to three more packed behind it, as long as the
+   activity after them can still be reached. Moving a snapshot can cut it short
+   where its target's visibility ends; that is allowed only if no snapshot cut short
+   is in a higher tier than the new one and the new snapshot's value-weighted seconds
+   exceed those lost. Exposure cut short is left for the request to plan elsewhere.
    Ground passes, locked entries and snapshots of cadence targets are never moved.
 
-   **Slewing before a target is visible.** By default ACS starts a slew only once
-   its target is visible. A request whose snapshots straddle a time its target is
-   hidden then holds on the hidden target, to start observing the moment it rises,
-   and nothing else can be placed in that time: no other slew could reach the target
-   by then. Setting ``slew_before_visible`` in the ACS configuration lets a slew start
-   early enough to arrive as the target rises, so that time can be used. In a 24-hour
-   rolling-horizon run of 100 random targets, it cut idle time from about 16% to 3%.
+   **Slewing before a target is visible.** Setting ``slew_before_visible`` in the
+   ACS configuration lets a slew start early enough to arrive as its target rises,
+   rather than waiting for it to rise. That saves a slew's time each time a target
+   rises, and the snapshot after a gap no longer needs to move to make room.
 
 Requests left with at least ``ss_min`` of exposure unplanned are listed in
 ``planner.unplaced``. Every placement and rejection is logged to ``planner.log``.
