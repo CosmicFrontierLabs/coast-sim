@@ -2,6 +2,7 @@
 
 from bisect import bisect_left
 from collections.abc import Callable, Sequence
+from math import isclose, isfinite
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict
@@ -70,8 +71,11 @@ class PlanExecutionValidator:
         dropped_science_windows: ``(begin, end, obsid)`` windows of science the
             scheduler deliberately dropped from the plan as under-collected.
         science_obstypes: Entry types checked as science observations.
-        housekeeping: Optional per-step collection records, aligned with utime.
-        step_size: Duration of a collection telemetry step in seconds.
+        housekeeping: Optional per-step records, aligned with utime. An empty
+            sequence or entirely absent collection_seconds uses legacy mode-only
+            validation, which cannot verify science between telemetry ticks.
+        step_size: Duration of a collection telemetry step in seconds. Must be
+            finite and positive when housekeeping is nonempty.
     """
 
     def __init__(
@@ -94,6 +98,8 @@ class PlanExecutionValidator:
         housekeeping: Sequence[Housekeeping] = (),
         step_size: float = 0.0,
     ) -> None:
+        if housekeeping and (not isfinite(step_size) or step_size <= 0):
+            raise ValueError("step_size must be finite and positive with housekeeping")
         self.config = config
         self.plan = plan
         self.utime = utime
@@ -110,10 +116,16 @@ class PlanExecutionValidator:
         self.science_obstypes = science_obstypes
         self.housekeeping = housekeeping
         self.step_size = step_size
+        self._has_collection_telemetry = any(
+            hk.collection_seconds is not None for hk in housekeeping
+        )
 
     def validate(self) -> list[PlanExecutionMismatch]:
         """Return plan/ACS mismatches over exported science and contact intervals."""
         mismatch = self._telemetry_length_mismatch()
+        if mismatch is not None:
+            return [mismatch]
+        mismatch = self._telemetry_timestamp_mismatch()
         if mismatch is not None:
             return [mismatch]
 
@@ -273,12 +285,28 @@ class PlanExecutionValidator:
             "obsid": len(self.obsid),
             "mode": len(self.mode),
         }
+        if self.housekeeping:
+            lengths["housekeeping"] = len(self.housekeeping)
         if len(set(lengths.values())) == 1:
             return None
         return PlanExecutionMismatch(
             utime=self.end_time,
             message=f"telemetry_length_mismatch: {lengths}",
         )
+
+    def _telemetry_timestamp_mismatch(self) -> PlanExecutionMismatch | None:
+        """Check index alignment, allowing datetime's microsecond rounding."""
+        for i, hk in enumerate(self.housekeeping):
+            timestamp = hk.timestamp.timestamp()
+            if not isclose(timestamp, self.utime[i], rel_tol=0.0, abs_tol=1e-6):
+                return PlanExecutionMismatch(
+                    utime=self.utime[i],
+                    message=(
+                        f"telemetry_timestamp_mismatch: housekeeping[{i}] "
+                        f"timestamp={timestamp} != utime[{i}]={self.utime[i]}"
+                    ),
+                )
+        return None
 
     @staticmethod
     def _science_start_time(entry: PlanEntry) -> float:
@@ -397,8 +425,9 @@ class PlanExecutionValidator:
         if end <= start:
             return mismatches
 
+        indices = self._window_indices(start, end)
         science_samples = 0
-        for i in self._window_indices(start, end):
+        for i in indices:
             utime = self.utime[i]
             mode = self._mode_at_index(i)
             if mode == ACSMode.SAA:
@@ -433,7 +462,7 @@ class PlanExecutionValidator:
 
         recorded_collection = self._has_recorded_science_collection(entry, start, end)
         if recorded_collection is False or (
-            recorded_collection is None and science_samples == 0
+            recorded_collection is None and len(indices) > 0 and science_samples == 0
         ):
             mismatches.append(
                 self._mismatch(
@@ -452,20 +481,21 @@ class PlanExecutionValidator:
         """Check collection telemetry, including the step containing science start.
 
         A slew may finish and collect within one step without a SCIENCE-mode
-        sample in the collection window. Legacy telemetry without collection
-        accounting returns None so the caller can still use mode samples.
+        sample in the collection window. Only telemetry without any collection
+        accounting returns None for legacy mode-only validation. Missing records
+        within otherwise modern telemetry cannot prove collection occurred.
         """
+        if not self._has_collection_telemetry:
+            return None
         lo = max(0, bisect_left(self.utime, start) - 1)
-        hi = min(len(self.housekeeping), bisect_left(self.utime, end))
-        recorded = False
+        hi = min(len(self.utime), bisect_left(self.utime, end))
         for i in range(lo, hi):
             utime = self.utime[i]
             if utime < entry.begin or utime + self.step_size <= start:
                 continue
             hk = self.housekeeping[i]
-            if hk.timestamp.timestamp() != utime or hk.collection_seconds is None:
+            if hk.collection_seconds is None:
                 continue
-            recorded = True
             if (
                 hk.obsid == int(entry.obsid)
                 and int(self.obsid[i]) == int(entry.obsid)
@@ -473,7 +503,7 @@ class PlanExecutionValidator:
                 and hk.collection_seconds > 0
             ):
                 return True
-        return False if recorded else None
+        return False
 
     def _gsp_entry_mismatches(
         self, entry: PlanEntry, tolerance_deg: float
