@@ -10,7 +10,7 @@ from conops.common import ObsType
 from conops.config import MissionConfig, TargetConfig
 from conops.config.observation_categories import ObservationCategory
 from conops.schedulers import PriorityPlanner
-from conops.targets import Plan, Pointing
+from conops.targets import Plan, PlanEntry, Pointing
 
 from .planning_scenario import BEGIN, HOUR, MIN, PATCH, T0
 from .planning_scenario import make_config as _config
@@ -68,7 +68,7 @@ def _programs(config: MissionConfig) -> list[Pointing]:
 def _plan(
     config: MissionConfig,
     targets: Sequence[Pointing],
-    **options: Mapping[int, float],
+    **options: Mapping[int, float] | Sequence[PlanEntry],
 ) -> Plan:
     planner = PriorityPlanner(
         config,
@@ -146,6 +146,60 @@ class TestCadence:
 
         first, _ = _visits(plan, 1)[0]
         assert first >= T0 + 30 * MIN
+
+
+class TestCadenceWithLockedVisits:
+    """Planned visits keep a cadence from locked visits of the same target."""
+
+    @staticmethod
+    def _locked(config: MissionConfig, start: float) -> PlanEntry:
+        return PlanEntry(
+            config=config,
+            name="locked",
+            ra=PATCH[0][0],
+            dec=PATCH[0][1],
+            roll=0.0,
+            obsid=1,
+            obstype=ObsType.AT,
+            begin=start,
+            end=start + 10 * MIN,
+            collection_begin=start,
+            collection_end=start + 10 * MIN,
+            ss_min=60,
+        )
+
+    def test_the_next_visit_waits_a_cadence_after_a_locked_one(self) -> None:
+        config = _monitor_config(cadence_weight=50)
+        locked = self._locked(config, T0 + 10 * MIN)
+
+        plan = _plan(config, _monitored(config), locked=[locked])
+
+        visits = _visits(plan, 1)
+        planned = [v for v in visits if v != (T0 + 10 * MIN, T0 + 20 * MIN)]
+        assert planned
+        assert all(begin >= T0 + 20 * MIN + HOUR for begin, _ in planned)
+        assert _executes_exactly(config, plan)
+
+    def test_visits_before_a_later_locked_one_end_a_cadence_before_it(
+        self,
+    ) -> None:
+        config = _monitor_config(cadence_weight=50)
+        lock_start = T0 + 90 * MIN
+        locked = self._locked(config, lock_start)
+
+        plan = _plan(config, _monitored(config), locked=[locked])
+
+        planned = [
+            v for v in _visits(plan, 1) if v != (lock_start, lock_start + 10 * MIN)
+        ]
+        before = [v for v in planned if v[0] < lock_start]
+        assert before
+        assert all(end + HOUR <= lock_start for _, end in before)
+        assert all(
+            begin >= lock_start + 10 * MIN + HOUR
+            for begin, _ in planned
+            if begin > lock_start
+        )
 
 
 class TestCompletionDeficit:

@@ -267,6 +267,15 @@ class PriorityPlanner:
 
         for entry in self.locked:
             self._place_locked(entry)
+        self._locked_visits: dict[int, list[tuple[float, float]]] = defaultdict(list)
+        """Locked science visits by obsid: when each slew starts and its
+        collection ends. Cadence visits are kept clear of them."""
+        for block in self.timeline:
+            entry = block.entry
+            if entry.collection_end is not None:
+                self._locked_visits[int(entry.obsid)].append(
+                    (float(entry.begin), float(entry.collection_end))
+                )
         if self.include_passes:
             for gspass in self.ctx.predict_passes():
                 self._place_pass(gspass)
@@ -288,11 +297,12 @@ class PriorityPlanner:
         active = list(requests)
         order = {id(request): k for k, request in enumerate(active)}
         placed = dict.fromkeys(order, 0)
-        program_seconds = dict(self._delivered)
+        self._program_seconds = dict(self._delivered)
+        """Science by program: collected, committed and planned so far."""
         while active:
             request = active[0]
             if self._balancing:
-                shares = program_shares(program_seconds)
+                shares = program_shares(self._program_seconds)
                 request = max(
                     active,
                     key=lambda r: (
@@ -308,7 +318,7 @@ class PriorityPlanner:
                 )
                 request.remaining -= collected
                 placed[id(request)] += 1
-                self._record_visit(request, block, program_seconds)
+                self._record_visit(request, block)
                 if request.wants_more:
                     continue
             active.remove(request)
@@ -340,14 +350,36 @@ class PriorityPlanner:
         last = self._last_visit.get(int(request.target.obsid))
         return None if last is None else last + request.cadence
 
-    def _record_visit(
-        self, request: _Request, block: _Block, program_seconds: dict[str, float]
-    ) -> None:
+    def _locked_cadence_release(self, request: _Request, block: _Block) -> float | None:
+        """Return when a cadence visit may next start, if ``block`` is too close
+        to a locked visit of its target.
+
+        A visit must end a cadence before a locked visit's slew starts, or
+        start a cadence after its collection ends, as visits the planner
+        places are spaced from each other. None if ``block`` is clear of them
+        all, or its request has no cadence.
+        """
+        if request.cadence is None:
+            return None
+        entry = block.entry
+        assert entry.collection_end is not None
+        for locked_start, locked_end in self._locked_visits.get(
+            int(request.target.obsid), ()
+        ):
+            clear_before = float(entry.collection_end) + request.cadence <= locked_start
+            clear_after = float(entry.begin) >= locked_end + request.cadence
+            if not (clear_before or clear_after):
+                return locked_end + request.cadence
+        return None
+
+    def _record_visit(self, request: _Request, block: _Block) -> None:
         """Count a placed snapshot towards its program and the target's last visit."""
         entry = block.entry
         seconds = entry.collection_seconds_between(entry.begin, entry.end)
         program = request.category.program_name
-        program_seconds[program] = program_seconds.get(program, 0.0) + seconds
+        self._program_seconds[program] = (
+            self._program_seconds.get(program, 0.0) + seconds
+        )
         if request.cadence is not None and entry.collection_end is not None:
             self._last_visit[int(request.target.obsid)] = float(entry.collection_end)
 
@@ -883,8 +915,11 @@ class PriorityPlanner:
             # among the blocks that may move again.
             del self._movable[id(move.old_block)]
             self._movable[id(move.new_block)] = move.request
-            # Exposure cut short is left for the request to plan elsewhere.
+            # Exposure cut short is left for the request to plan elsewhere,
+            # and no longer counts towards its program's share.
             move.request.remaining += move.lost
+            program = move.request.category.program_name
+            self._program_seconds[program] -= move.lost
             moved = move.new_block.entry
             self._log(
                 float(moved.begin),
@@ -1007,6 +1042,13 @@ class PriorityPlanner:
             )
             fitted = self._check_snapshot(block, slew, ss_min)
             if fitted is not None:
+                # A cadence visit too close to a locked visit of its target
+                # tries again a cadence after that visit.
+                release = self._locked_cadence_release(request, fitted)
+                if release is not None:
+                    start = max(start + self.ctx.step_size, self.ctx.ceil_step(release))
+                    continue
+
                 succ_slew = None
                 if succ is not None:
                     succ_slew = self._connect(

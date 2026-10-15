@@ -728,8 +728,10 @@ class TestFillingTimeATargetIsHidden:
 
     HOURS = 12
 
-    def _plan(self) -> tuple[MissionConfig, PriorityPlanner]:
-        config = _config(self.HOURS)
+    def _plan(
+        self, config: MissionConfig | None = None
+    ) -> tuple[MissionConfig, PriorityPlanner]:
+        config = config if config is not None else _config(self.HOURS)
         rng = np.random.default_rng(5)
         targets = [
             _target(
@@ -771,6 +773,29 @@ class TestFillingTimeATargetIsHidden:
 
         moves = [e for e in planner.log.events if e.description.startswith("Moved")]
         assert any("shorter" in e.description for e in moves)
+
+    def test_program_shares_count_only_what_the_plan_delivers(self) -> None:
+        """A move that cuts a snapshot short takes its science off its program."""
+        config = _config(
+            self.HOURS,
+            weights=TargetConfig(completion_deficit_weight=50),
+            categories=[
+                ObservationCategory(
+                    name="A", obsid_min=100, obsid_max=120, time_share=0.5
+                ),
+                ObservationCategory(
+                    name="B", obsid_min=120, obsid_max=140, time_share=0.5
+                ),
+            ],
+        )
+        _, planner = self._plan(config)
+
+        assert any("shorter" in e.description for e in planner.log.events)
+        planned = {"A": 0.0, "B": 0.0}
+        for entry in _science(planner.plan):
+            program = "A" if int(entry.obsid) < 120 else "B"
+            planned[program] += entry.collection_seconds_between(entry.begin, entry.end)
+        assert planner._program_seconds == pytest.approx(planned)
 
     def test_without_moving_snapshots_the_gaps_stay(self) -> None:
         """Guards the test above: the scenario must have such gaps to fill."""
