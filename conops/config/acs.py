@@ -53,6 +53,14 @@ class AttitudeControlSystem(ConfigModel):
     settle_time: float = Field(
         default=120.0, description="Time to settle after slew completion in seconds"
     )
+    slew_before_visible: bool = Field(
+        default=False,
+        description=(
+            "Whether a slew to a science target that is not visible yet may "
+            "start before it becomes visible, timed to arrive as it does. If "
+            "False, the slew waits until the target is visible."
+        ),
+    )
     idle_min_hold_s: float = Field(
         default=300.0,
         ge=0.0,

@@ -327,6 +327,7 @@ The :class:`~conops.config.AttitudeControlSystem` defines slew performance and p
 * ``max_slew_rate_body`` (tuple[float, float, float] | None): Optional body +X/+Y/+Z slew-rate limits in deg/s
 * ``slew_accuracy`` (float): Pointing accuracy after slew completion in degrees
 * ``settle_time`` (float): Time to settle after slew completion in seconds
+* ``slew_before_visible`` (bool, default False): Whether a slew to a science target that is not visible yet may start before it becomes visible, timed to arrive as it does. If False, ACS waits until the target is visible before starting the slew, so the slew time after the target rises is lost, and the planners must hold on a hidden target to start observing it the moment it rises. When True, a slew to a target that is not visible yet is not flown if it would arrive no earlier than the end of its plan entry.
 * ``stored_momentum`` (:class:`~conops.config.momentum.StoredMomentumConfig`): Optional planning-level momentum tracking
 * ``slew_algorithm`` (:class:`~conops.common.enums.SlewAlgorithm`): Algorithm for computing slew paths:
 

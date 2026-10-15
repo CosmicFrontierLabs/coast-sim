@@ -674,3 +674,43 @@ class TestDelayingSuccessors:
             _, fixed = self._plan()
 
         assert _planned_collection(delaying.plan) > _planned_collection(fixed.plan)
+
+
+class TestSlewBeforeVisible:
+    """With slew_before_visible, slews may start before their target rises."""
+
+    HOURS = 12
+
+    def _plan(self, allowed: bool) -> tuple[MissionConfig, PriorityPlanner]:
+        config = _config(self.HOURS)
+        config.spacecraft_bus.attitude_control.slew_before_visible = allowed
+        targets = [
+            _target(config, 100 + i, ra, dec, merit=90 - 7 * i, minutes=60, snapshot=20)
+            for i, (ra, dec) in enumerate(PATCH + CONSTRAINED)
+        ]
+        planner = PriorityPlanner(
+            config, targets, BEGIN, BEGIN + timedelta(hours=self.HOURS)
+        )
+        planner.schedule()
+        return config, planner
+
+    @staticmethod
+    def _early_slews(planner: PriorityPlanner) -> int:
+        """Science slews that start while their target is not visible."""
+        return sum(
+            1
+            for entry in _science(planner.plan)
+            if entry.slewtime and not entry.visible(entry.begin, entry.begin)
+        )
+
+    def test_slews_start_before_the_target_rises_and_execute_exactly(self) -> None:
+        config, planner = self._plan(allowed=True)
+
+        assert self._early_slews(planner) > 0
+        ditl = _execute(config, planner.plan, self.HOURS, 60)
+        assert ditl.validate_plan_matches_execution() == []
+
+    def test_without_it_every_slew_starts_while_the_target_is_visible(self) -> None:
+        _, planner = self._plan(allowed=False)
+
+        assert self._early_slews(planner) == 0

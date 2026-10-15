@@ -137,8 +137,9 @@ class PriorityPlanner:
     4. Each snapshot goes in the earliest slot where every check
        :class:`~conops.ditl.DITL` will apply passes: the slew starts on a step,
        its path and the held attitude clear their mode's constraints, the
-       target is visible when the slew starts, collection starts by the
-       target's deadline, and the following activity can still be reached.
+       target is visible when the slew starts (or, if ACS may slew before a
+       target is visible, when it arrives), collection starts by the target's
+       deadline, and the following activity can still be reached.
 
     The plan is built for execution by :class:`~conops.ditl.DITL` with the same
     configuration, ephemeris, horizon and step size. The planner does not model
@@ -500,8 +501,9 @@ class PriorityPlanner:
                 ACSMode.IDLE,
             )
         else:
-            # ACS only starts a science slew while the target is visible.
-            if not block.entry.visible(slew.slewstart, slew.slewstart):
+            # ACS only flies a science slew the target is visible for.
+            needed = self._visibility_needed_at(slew)
+            if not block.entry.visible(needed, needed):
                 return _Verdict.SLEW_NOT_ALLOWED
             wait_violation = self.ctx.first_science_violation(
                 block.entry, target, slew.slewend, block.ready
@@ -849,14 +851,6 @@ class PriorityPlanner:
         unreachable = 0
 
         while start <= min(idle_limit, gap_end):
-            window = next((w for w in request.windows if w[0] <= start < w[1]), None)
-            if window is None:
-                upcoming = [w[0] for w in request.windows if w[0] > start]
-                if not upcoming:
-                    return None
-                start = self.ctx.ceil_step(min(upcoming))
-                continue
-
             instrument_roll = self.ctx.instrument_roll(target, start)
             attitude = target.target_body_attitude(instrument_roll)
             slew = self.ctx.slew(
@@ -865,6 +859,23 @@ class PriorityPlanner:
                 start,
                 obsid=target.obsid,
             )
+
+            # The target must be visible when ACS needs it to be. If it is
+            # not, start again when it next becomes visible, less the slew
+            # time if the slew may start before then.
+            needed = self._visibility_needed_at(slew)
+            window = next((w for w in request.windows if w[0] <= needed < w[1]), None)
+            if window is None:
+                upcoming = [w[0] for w in request.windows if w[0] > needed]
+                if not upcoming:
+                    return None
+                lead = needed - float(slew.slewstart)
+                start = max(
+                    start + self.ctx.step_size,
+                    self.ctx.ceil_step(min(upcoming) - lead),
+                )
+                continue
+
             collection_begin = float(slew.slewend) + self.ctx.setup_seconds
             if target.deadline is not None and collection_begin > target.deadline:
                 return None
@@ -924,6 +935,17 @@ class PriorityPlanner:
             start += self.ctx.step_size
         return None
 
+    def _visibility_needed_at(self, slew: Slew) -> float:
+        """When a science target must be visible for ACS to fly ``slew`` to it.
+
+        ACS starts the slew only once the target is visible, unless it may
+        slew before then (``slew_before_visible``), when the target need only
+        be visible on arrival.
+        """
+        if self.config.spacecraft_bus.attitude_control.slew_before_visible:
+            return float(slew.slewend)
+        return float(slew.slewstart)
+
     def _check_snapshot(
         self, block: _Block, slew: Slew, ss_min: float
     ) -> _Block | None:
@@ -932,7 +954,8 @@ class PriorityPlanner:
         if self.ctx.first_slew_violation(slew, ACSMode.SLEWING) is not None:
             return None
         entry.visibility()
-        if not entry.visible(slew.slewstart, slew.slewstart):
+        needed = self._visibility_needed_at(slew)
+        if not entry.visible(needed, needed):
             return None
         violation = self.ctx.first_science_violation(
             entry, block.attitude_in, slew.slewend, self.ctx.ceil_step(block.end)

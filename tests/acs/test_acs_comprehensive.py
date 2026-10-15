@@ -176,6 +176,33 @@ class TestAddSlewClass:
         assert acs.command_queue[-1].execution_time == 1514765000.0
 
     @patch("conops.targets.Pointing")
+    def test_enqueue_command_slews_before_visibility_when_allowed(
+        self, mock_too, acs
+    ) -> None:
+        """With slew_before_visible, the slew starts early enough to arrive as
+        the target becomes visible."""
+        acs.config.spacecraft_bus.attitude_control = (
+            acs.config.spacecraft_bus.attitude_control.model_copy(
+                update={"slew_before_visible": True}
+            )
+        )
+        now = 1514764800.0
+        visible = now + 3600.0
+        mock_at = Mock(spec=Pointing)
+        mock_at.visibility = Mock()
+        mock_at.next_vis = Mock(return_value=visible)
+        mock_too.return_value = mock_at
+
+        acs.last_slew = None
+        result = acs._enqueue_slew(45.0, 30.0, 100, now, "PPT")
+
+        assert result is True
+        command = acs.command_queue[-1]
+        assert command.slew is not None
+        assert 0 < command.slew.slewtime < visible - now
+        assert command.execution_time == pytest.approx(visible - command.slew.slewtime)
+
+    @patch("conops.targets.Pointing")
     @patch("conops.unixtime2yearday")
     def test_enqueue_command_during_existing_slew(
         self, mock_yearday, mock_too, acs

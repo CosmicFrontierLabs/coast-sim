@@ -87,7 +87,9 @@ How a plan is built
 
    * the slew starts on a simulation step, after the previous activity ends;
    * the slew path clears the ``SLEWING`` attitude-constraint scopes;
-   * the target is visible when the slew starts (ACS will not start it otherwise);
+   * the target is visible when the slew starts (ACS will not start it otherwise),
+     or, with ``slew_before_visible`` set in the ACS configuration, when the slew
+     arrives;
    * the held attitude clears the ``SCIENCE`` scopes for the whole observation,
      including setup, cleanup and handoff time; an observation that would run into
      a constraint is shortened, but never below ``ss_min``;
@@ -101,6 +103,14 @@ How a plan is built
    window, which ACS cannot slew to earlier), that snapshot is moved later to make
    room, keeping its length, as long as the activity after it can still be reached.
    Ground passes, locked entries and snapshots of cadence targets are never moved.
+
+   **Slewing before a target is visible.** By default ACS starts a slew only once
+   its target is visible. A request whose snapshots straddle a time its target is
+   hidden then holds on the hidden target, to start observing the moment it rises,
+   and nothing else can be placed in that time: no other slew could reach the target
+   by then. Setting ``slew_before_visible`` in the ACS configuration lets a slew start
+   early enough to arrive as the target rises, so that time can be used. In a 24-hour
+   rolling-horizon run of 100 random targets, it cut idle time from about 16% to 3%.
 
 Requests left with at least ``ss_min`` of exposure unplanned are listed in
 ``planner.unplaced``. Every placement and rejection is logged to ``planner.log``.

@@ -156,6 +156,76 @@ def test_replay_with_real_acs_cancels_a_slew_deferred_to_the_entry_end(monkeypat
     assert all(h.acs_mode != ACSMode.SLEWING for h in ditl.telemetry.housekeeping)
 
 
+def _slew_before_visible_config() -> MissionConfig:
+    return MissionConfig(
+        constraint=scenario.DeterministicConstraint(),
+        ground_stations=GroundStationRegistry(stations=[]),
+        solar_panel=SolarPanelSet(panels=[]),
+        spacecraft_bus=SpacecraftBus(
+            attitude_control=AttitudeControlSystem(slew_before_visible=True),
+            star_trackers=StarTrackerConfiguration(
+                star_trackers=[], min_functional_trackers=0, modes_require_lock=[]
+            ),
+            radiators=RadiatorConfiguration(radiators=[]),
+        ),
+    )
+
+
+def test_replay_with_slew_before_visible_arrives_as_the_target_rises(monkeypatch):
+    """The slew starts before the target is visible and arrives as it rises."""
+    config = _slew_before_visible_config()
+    begin = scenario.SCENARIO_BEGIN
+    end = begin + timedelta(seconds=1800)
+    ephem = scenario.DeterministicEphemeris(begin, end, step_size_seconds=60)
+    config.constraint.ephem = ephem
+    # Longer than the slew, so the slew can start late and still arrive.
+    rises = begin.timestamp() + 1200
+    entry = PlanEntry(
+        begin=begin.timestamp(), end=end.timestamp(), ra=180, dec=0, roll=0, obsid=7
+    )
+    monkeypatch.setattr(PlanEntry, "next_vis", lambda self, utime: max(utime, rises))
+    ditl = DITL(
+        config=config, ephem=ephem, plan=Plan(entries=[entry]), begin=begin, end=end
+    )
+
+    assert ditl.calc()
+    (slew,) = [
+        c.slew
+        for c in ditl.acs.executed_commands
+        if c.slew is not None and c.slew.obsid == 7
+    ]
+    assert slew.slewstart < rises
+    assert slew.slewstart + slew.slewtime == pytest.approx(rises, abs=60)
+
+
+def test_replay_with_slew_before_visible_skips_a_slew_arriving_at_the_entry_end(
+    monkeypatch,
+):
+    """A slew that could only arrive after its entry ends is not flown."""
+    config = _slew_before_visible_config()
+    begin = scenario.SCENARIO_BEGIN
+    entry_end = begin + timedelta(seconds=600)
+    end = begin + timedelta(seconds=900)
+    ephem = scenario.DeterministicEphemeris(begin, end, step_size_seconds=60)
+    config.constraint.ephem = ephem
+    entry = PlanEntry(
+        begin=begin.timestamp(),
+        end=entry_end.timestamp(),
+        ra=180,
+        dec=0,
+        roll=0,
+        obsid=7,
+    )
+    monkeypatch.setattr(PlanEntry, "next_vis", lambda self, utime: entry.end)
+    ditl = DITL(
+        config=config, ephem=ephem, plan=Plan(entries=[entry]), begin=begin, end=end
+    )
+
+    assert ditl.calc()
+    assert all(c.slew is None or c.slew.obsid != 7 for c in ditl.acs.executed_commands)
+    assert all(h.acs_mode != ACSMode.SLEWING for h in ditl.telemetry.housekeeping)
+
+
 def test_queue_plan_replays_identically_through_plan_driven_ditl(monkeypatch):
     """A serialized QueueDITL plan, executed by DITL, must fly the same timeline."""
     constructor = scenario.QueueDITL

@@ -589,6 +589,9 @@ class ACS:
         slew.obsid = obsid
         slew.instrument_roll = instrument_roll
 
+        # A plan entry commanded by DITL, which ends at a set time.
+        planned_entry = target_request
+        not_visible_yet = False
         # For SAFE mode, skip visibility checking (emergency situation)
         if obstype == ObsType.SAFE:
             # Initialize slew positions without target
@@ -604,6 +607,7 @@ class ACS:
             slew.at = target_request
 
             visstart = target_request.next_vis(utime)
+            not_visible_yet = bool(visstart) and visstart > utime
             is_first_slew = self._initialize_slew_positions(slew)
 
             # Validate slew is possible
@@ -617,6 +621,24 @@ class ACS:
 
         slew.slewstart = execution_time
         slew.calc_slewtime()
+
+        # A slew to a target that is not visible yet is not flown if it would
+        # arrive no earlier than the end of its plan entry: there would be
+        # nothing left to observe.
+        if (
+            planned_entry is not None
+            and not_visible_yet
+            and slew.slewstart + slew.slewtime >= float(planned_entry.end)
+            and self.config.spacecraft_bus.attitude_control.slew_before_visible
+        ):
+            self._log_or_print(
+                utime,
+                "SLEW",
+                f"{unixtime2date(utime)}: Slew rejected - target not visible "
+                "before the entry ends",
+            )
+            return False
+
         self.slew_dists.append(slew.slewdist)
 
         # Enqueue the slew command
@@ -700,16 +722,23 @@ class ACS:
 
         # Wait for target visibility if constrained
         if visstart > execution_time and slew.obstype == ObsType.PPT:
-            self._log_or_print(
-                utime,
-                "SLEW",
-                "%s: Slew delayed by %.1fs"
-                % (
-                    unixtime2date(utime),
-                    visstart - execution_time,
-                ),
-            )
-            execution_time = visstart
+            start = visstart
+            if self.config.spacecraft_bus.attitude_control.slew_before_visible:
+                # Start early enough to arrive as the target becomes visible.
+                slew.slewstart = execution_time
+                slew.calc_slewtime()
+                start = max(execution_time, visstart - slew.slewtime)
+            if start > execution_time:
+                self._log_or_print(
+                    utime,
+                    "SLEW",
+                    "%s: Slew delayed by %.1fs"
+                    % (
+                        unixtime2date(utime),
+                        start - execution_time,
+                    ),
+                )
+                execution_time = start
 
         return execution_time
 
