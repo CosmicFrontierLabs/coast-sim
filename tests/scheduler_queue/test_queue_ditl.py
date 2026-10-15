@@ -1233,7 +1233,8 @@ class TestFetchNewPPT:
         acs.last_slew = None
         queue_ditl.acs = acs
 
-        def inspect_prediction(time, ra, dec):
+        def inspect_prediction(time, ra, dec, *, enqueue_slew=True):
+            assert enqueue_slew
             assert queue_ditl._ppt_slew_execution_time(time) == pytest.approx(1104)
             assert queue_ditl._expected_slew_start_attitude(
                 time, 1104
