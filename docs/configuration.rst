@@ -954,6 +954,11 @@ Each dynamic term is its weight times a factor bounded to ``[0, 1]`` (``[-1, 1]`
 for the deficit), so no term can exceed its weight. With every weight at
 ``0.0`` and every category in tier ``0`` (the defaults), selection is unchanged.
 
+The planners apply the same terms. :class:`~conops.schedulers.PriorityPlanner`,
+and :class:`~conops.ditl.RollingHorizonDITL` through it, evaluate the cadence and
+completion deficit against the plan as it is built as well as the science already
+collected (see :doc:`planning`).
+
 When a target is selected, ``QueueDITL`` logs a ``QUEUE`` event with the full
 term breakdown (``Selected <obsid>: tier=... base=... urgency=... score=...``),
 and the target's ``merit`` is frozen at its value. That frozen value is
