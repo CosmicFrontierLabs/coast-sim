@@ -1,4 +1,6 @@
 from bisect import bisect_left
+from copy import copy, deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from math import ceil, floor
 from typing import Protocol, TypedDict
@@ -113,6 +115,19 @@ class _ScienceDeadlineInputs(BaseModel):
     charge_deadline: float | None
 
 
+@dataclass(frozen=True)
+class _CommittedTOO:
+    """An admitted replacement whose predecessor has reserved teardown."""
+
+    request: TOORequest
+    target: Pointing
+    prepared: Pointing
+    slew: Slew
+    interrupted: Pointing
+    value: MeritBreakdown
+    dispatch_time: float
+
+
 class QueueDITL(DITLMixin, DITLStats):
     """
     Class to run a Day In The Life (DITL) simulation based on a target
@@ -194,6 +209,7 @@ class QueueDITL(DITLMixin, DITLStats):
         self.too_register: list[TOORequest] = []
         # Queue target created for each activated TOO, keyed by id(TOORequest)
         self._too_targets: dict[int, Pointing] = {}
+        self._committed_too: _CommittedTOO | None = None
         self.merit_model = MeritModel(self.config)
 
         # Target Queue (use provided queue or create default)
@@ -390,6 +406,10 @@ class QueueDITL(DITLMixin, DITLStats):
         observation is terminated. If none is admissible, the current
         observation keeps running.
 
+        Reserving payload teardown commits to the admitted replacement. Later
+        priority changes do not cancel that handoff; protective operations can
+        still terminate the predecessor and supersede the commitment.
+
         With no observation in progress nothing is interrupted; the TOO is
         already in the queue for the next selection.
 
@@ -410,6 +430,8 @@ class QueueDITL(DITLMixin, DITLStats):
                 too.executed = True
                 continue
             active.append((too, target))
+        if self._committed_too is not None:
+            return self._dispatch_committed_too(utime)
         if self.ppt is None or not active:
             return False
 
@@ -445,6 +467,30 @@ class QueueDITL(DITLMixin, DITLStats):
         if dispatch_time >= self._simulation_end_deadline():
             return False
 
+        if dispatch_time > utime:
+            # Installed motion does not predict queued commands. Leave the
+            # observation intact until those commands have actually executed.
+            if any(
+                command.execution_time <= dispatch_time
+                for command in self.acs.command_queue
+            ):
+                return False
+            commitment = self._preview_too_admission(dispatch_time, outranking)
+            if commitment is None:
+                return False
+            if any(
+                command.execution_time <= commitment.slew.slewstart
+                for command in self.acs.command_queue
+            ):
+                return False
+            # Commit to this admitted replacement before reserving teardown.
+            # No later merit comparison or queue fetch can abandon the handoff.
+            self._committed_too = commitment
+            self._reserve_too_cleanup(
+                utime + dispatch_time - cleanup_end, decision_time=utime
+            )
+            return False
+
         # Admit a replacement before touching the current observation. Only
         # the outranking TOOs are offered: every other target, including the
         # interrupted observation, is held out of this selection.
@@ -460,29 +506,13 @@ class QueueDITL(DITLMixin, DITLStats):
             target.done = True
         self.ppt = None
         try:
-            if dispatch_time > utime:
-                # Check the actual post-cleanup dispatch tick without advancing
-                # ACS or queuing a command while the current task still owns it.
-                future_ra, future_dec, _ = self.acs.predicted_attitude(dispatch_time)
-                self._fetch_new_ppt(
-                    dispatch_time, future_ra, future_dec, enqueue_slew=False
-                )
-            else:
-                self._fetch_new_ppt(utime, ra, dec)
+            self._fetch_new_ppt(utime, ra, dec)
             replacement = self.ppt
         finally:
             self.ppt = interrupted
             for target in held_out:
                 target.done = False
         if replacement is None:
-            self._ppt_unavailable = ppt_unavailable
-            return False
-
-        if dispatch_time > utime:
-            # Only a feasible replacement can stop collection. Keep the TOO
-            # pending and recheck admission at the real dispatch tick.
-            # Collect on until teardown ends exactly at the dispatch tick.
-            self._reserve_too_cleanup(utime + dispatch_time - cleanup_end)
             self._ppt_unavailable = ppt_unavailable
             return False
 
@@ -507,6 +537,122 @@ class QueueDITL(DITLMixin, DITLStats):
         too.executed = True
         return True
 
+    def _preview_too_admission(
+        self,
+        dispatch_time: float,
+        candidates: list[tuple[TOORequest, Pointing, MeritBreakdown]],
+    ) -> _CommittedTOO | None:
+        """Run normal admission on an isolated queue, target state and event log."""
+        assert self.ppt is not None
+        preview = copy(self)
+        preview.log = DITLLog()
+        # Config and ephemeris are read-only admission inputs and may contain
+        # native objects that cannot be copied. Copy the policy's mutable state,
+        # including all target metadata, caches, ordering and current time.
+        memo: dict[int, object] = {
+            id(self.config): self.config,
+            id(self.ephem): self.ephem,
+            id(self.constraint): self.constraint,
+            id(
+                self.spacecraft_bus.attitude_control
+            ): self.spacecraft_bus.attitude_control,
+            id(
+                self.config.payload.observation_timing
+            ): self.config.payload.observation_timing,
+            id(self.log): preview.log,
+        }
+        for target in self.queue.targets:
+            for runtime in (
+                target.config,
+                target.constraint,
+                target.acs_config,
+                target.ephem,
+                target.saa,
+            ):
+                if runtime is not None:
+                    memo[id(runtime)] = runtime
+        if self.queue.log is not None:
+            memo[id(self.queue.log)] = preview.log
+        preview.queue = deepcopy(self.queue, memo)
+        preview.queue.log = preview.log
+        preview._ppt_optimum_roll_cache = self._ppt_optimum_roll_cache.copy()
+        offered = {id(memo[id(target)]) for _, target, _ in candidates}
+        for target in preview.queue.targets:
+            if id(target) not in offered:
+                target.done = True
+        preview.ppt = None
+        future_ra, future_dec, _ = self.acs.predicted_attitude(dispatch_time)
+        slew = preview._fetch_new_ppt(
+            dispatch_time, future_ra, future_dec, enqueue_slew=False
+        )
+        if slew is None or preview.ppt is None:
+            return None
+        too, target, value = next(
+            item for item in candidates if memo[id(item[1])] is preview.ppt
+        )
+        return _CommittedTOO(
+            too, target, preview.ppt, slew, self.ppt, value, dispatch_time
+        )
+
+    def _dispatch_committed_too(self, utime: float) -> bool:
+        """Dispatch the admitted replacement once its reserved teardown is over."""
+        commitment = self._committed_too
+        assert commitment is not None
+        if self.ppt is not commitment.interrupted or utime > commitment.dispatch_time:
+            # Protective operations can supersede a science observation. Never
+            # revive a handoff after its predecessor or dispatch tick is gone.
+            self._committed_too = None
+            return False
+        if utime < commitment.dispatch_time:
+            return False
+        self._committed_too = None
+        target = commitment.target
+        prepared = commitment.prepared
+        for name in (
+            "begin",
+            "end",
+            "slewtime",
+            "slewdist",
+            "slewpath",
+            "roll",
+            "spacecraft_attitude",
+            "instrument_name",
+            "collection_begin",
+            "collection_end",
+            "merit",
+        ):
+            setattr(target, name, getattr(prepared, name))
+        target.merit_breakdown = prepared.merit_breakdown
+        commitment.slew.at = target
+        self.log.log_event(
+            utime=utime,
+            event_type="TOO",
+            description=(
+                f"TOO interrupt: {commitment.request.name} "
+                f"(obsid={target.obsid}, {commitment.value.describe()}) "
+                "dispatching after reserved cleanup/handoff"
+            ),
+            obsid=target.obsid,
+            acs_mode=self.acs.acsmode,
+        )
+        self._terminate_ppt(
+            utime,
+            reason=f"Preempted by TOO {commitment.request.name} (obsid={target.obsid})",
+            mark_done=False,
+        )
+        self.ppt = target
+        self.acs.slew_dists.append(commitment.slew.slewdist)
+        self.acs.enqueue_command(
+            ACSCommand(
+                command_type=ACSCommandType.SLEW_TO_TARGET,
+                execution_time=commitment.slew.slewstart,
+                slew=commitment.slew,
+            )
+        )
+        self._ppt_unavailable = False
+        commitment.request.executed = True
+        return True
+
     def _too_cleanup_end(self, utime: float) -> float:
         """Return the earliest task end if collection stops for a TOO now."""
         ppt = self.ppt
@@ -522,7 +668,7 @@ class QueueDITL(DITLMixin, DITLStats):
             return utime
         return min(ppt.end, utime + post_collection)
 
-    def _reserve_too_cleanup(self, utime: float) -> None:
+    def _reserve_too_cleanup(self, utime: float, *, decision_time: float) -> None:
         """Stop future collection after a replacement passed delayed admission."""
         cleanup_end = self._too_cleanup_end(utime)
         ppt = self.ppt
@@ -536,10 +682,11 @@ class QueueDITL(DITLMixin, DITLStats):
                 self.plan[-1].collection_end = ppt.collection_end
                 self.plan[-1].end = ppt.end
             self.log.log_event(
-                utime=utime,
+                utime=decision_time,
                 event_type="TOO",
                 description=(
-                    f"Stopping collection for obsid {ppt.obsid}; TOO preemption "
+                    f"Reserved TOO cleanup for obsid {ppt.obsid}; collection "
+                    f"stops at {unixtime2date(utime)}, preemption "
                     f"waits for cleanup/handoff until {unixtime2date(ppt.end)}"
                 ),
                 obsid=ppt.obsid,
@@ -560,6 +707,7 @@ class QueueDITL(DITLMixin, DITLStats):
         # Reset per-run state so re-runs on the same instance start clean
         self._attitude_constraint_violations = []
         self._active_gsp_end_time = None
+        self._committed_too = None
         if self._run_started:
             self.plan = Plan()
             self.charging_ppt = None
@@ -2210,6 +2358,11 @@ class QueueDITL(DITLMixin, DITLStats):
             Whether to mark the PPT as done
         """
         assert self.ppt is not None
+        if (
+            self._committed_too is not None
+            and self._committed_too.interrupted is self.ppt
+        ):
+            self._committed_too = None
         self.log.log_event(
             utime=utime,
             event_type="OBSERVATION",
@@ -2696,7 +2849,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _fetch_new_ppt(
         self, utime: float, ra: float, dec: float, *, enqueue_slew: bool = True
-    ) -> None:
+    ) -> Slew | None:
         """Admit a target, optionally without advancing ACS or commanding its slew."""
         # A just-issued charge/pass termination can replace tracking with a
         # braking arc. Commit that command before predicting a new slew's start.
@@ -2709,10 +2862,12 @@ class QueueDITL(DITLMixin, DITLStats):
         try:
             while True:
                 self._retry_ppt_fetch_requested = False
-                self._fetch_new_ppt_inner(utime, ra, dec, enqueue_slew=enqueue_slew)
+                slew = self._fetch_new_ppt_inner(
+                    utime, ra, dec, enqueue_slew=enqueue_slew
+                )
                 if self._retry_ppt_fetch_requested:
                     continue
-                return
+                return slew
         finally:
             temporary_rejections = self._temporary_rejected_ppts or []
             for rejected_ppt, was_done in temporary_rejections:
@@ -2722,7 +2877,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _fetch_new_ppt_inner(
         self, utime: float, ra: float, dec: float, *, enqueue_slew: bool = True
-    ) -> None:
+    ) -> Slew | None:
         """Fetch one candidate PPT from the queue, validate it, and enqueue its slew.
 
         May request a retry (via `_retry_fetch_without_current_ppt`) if the
@@ -2737,7 +2892,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 acs_mode=self.acs.acsmode,
             )
             self._ppt_unavailable = None
-            return
+            return None
 
         # Don't issue science slews during an active pass - this prevents the
         # teleportation bug where a slew is issued with start position from the
@@ -2752,7 +2907,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 acs_mode=self.acs.acsmode,
             )
             self._ppt_unavailable = None
-            return
+            return None
 
         self.log.log_event(
             utime=utime,
@@ -2814,7 +2969,7 @@ class QueueDITL(DITLMixin, DITLStats):
                     acs_mode=self.acs.acsmode,
                 )
                 self._ppt_unavailable = True
-                return
+                return None
 
             # Calculate slew timing
             hold_start = self._ppt_slew_execution_time(utime)
@@ -2857,7 +3012,7 @@ class QueueDITL(DITLMixin, DITLStats):
             ):
                 # Leave no later than the last safe sample, not the first bad one.
                 self._retry_fetch_without_current_ppt(utime, ra, dec)
-                return
+                return None
 
             # When ignore_roll=True, verify that a valid roll exists before slewing.
             # Roll optimization falls back to the unconstrained solar roll when
@@ -2891,7 +3046,7 @@ class QueueDITL(DITLMixin, DITLStats):
                             acs_mode=self.acs.acsmode,
                         )
                         self._retry_fetch_without_current_ppt(utime, ra, dec)
-                        return
+                        return None
 
             self._complete_ppt_slew(slew, self.ppt, utime, execution_time)
 
@@ -2915,7 +3070,7 @@ class QueueDITL(DITLMixin, DITLStats):
                     acs_mode=self.acs.acsmode,
                 )
                 self._retry_fetch_without_current_ppt(utime, ra, dec)
-                return
+                return None
 
             violation = self._slew_attitude_constraint_violation(slew, ACSMode.SLEWING)
             if violation is not None:
@@ -2932,7 +3087,7 @@ class QueueDITL(DITLMixin, DITLStats):
                     acs_mode=self.acs.acsmode,
                 )
                 self._retry_fetch_without_current_ppt(utime, ra, dec)
-                return
+                return None
 
             # Validate that the locked roll satisfies constraints for at least
             # ss_min seconds after slew completion.  The ACS holds roll constant
@@ -2968,7 +3123,7 @@ class QueueDITL(DITLMixin, DITLStats):
                     acs_mode=self.acs.acsmode,
                 )
                 self._retry_fetch_without_current_ppt(utime, ra, dec)
-                return
+                return None
 
             # Verify slew won't overlap with a pass - check both start and end
             slew_end = execution_time + slew.slewtime
@@ -2982,7 +3137,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 )
                 self.ppt = None
                 self._ppt_unavailable = True
-                return
+                return None
             if self.acs.passrequests.current_pass(slew_end) is not None:
                 self.log.log_event(
                     utime=utime,
@@ -2993,7 +3148,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 )
                 self.ppt = None
                 self._ppt_unavailable = True
-                return
+                return None
 
             if self._reject_current_ppt_if_insufficient_collect_time(
                 slew_end,
@@ -3002,7 +3157,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 dec,
                 target_roll=slew.endroll,
             ):
-                return
+                return None
 
             self._apply_slew_metadata(self.ppt, slew, update_end=True)
             timing = self.config.payload.observation_timing
@@ -3023,9 +3178,9 @@ class QueueDITL(DITLMixin, DITLStats):
             self.ppt.set_collection_window(timing)
             if self.ppt.exposure < self.ppt.ss_min:
                 self._retry_fetch_without_current_ppt(utime, ra, dec)
-                return
+                return None
             if not enqueue_slew:
-                return
+                return slew
             self.acs.slew_dists.append(slew.slewdist)
 
             self.log.log_event(
@@ -3045,8 +3200,7 @@ class QueueDITL(DITLMixin, DITLStats):
             self.acs.enqueue_command(command)
             self._ppt_unavailable = False
 
-            # Return the new target coordinates
-            return
+            return slew
         else:
             self.log.log_event(
                 utime=utime,
@@ -3055,7 +3209,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 acs_mode=self.acs.acsmode,
             )
             self._ppt_unavailable = True
-            return
+            return None
 
     def _record_pointing_data(
         self, ra: float, dec: float, roll: float, obsid: int, mode: ACSMode
