@@ -15,7 +15,7 @@ import rust_ephem
 
 from ..common import ACSMode, ObsType
 from ..common.enums import SlewAlgorithm
-from ..config import MissionConfig
+from ..config import AttitudeControlSystem, MissionConfig
 from ..config.constraint import attitude_constraint_name_for_scopes
 from ..simulation.acs import ACS
 from ..simulation.attitude import AttitudeExecutionError, AttitudeTrajectory
@@ -278,49 +278,63 @@ class SchedulingContext:
             if self.ustart <= gspass.begin and gspass.end <= self.uend
         ]
 
-    def tracking_samples(
-        self, gspass: Pass, profile: Sequence[Attitude], acquire: float
-    ) -> list[tuple[float, Attitude]]:
-        """Return the timed attitudes ACS tracks after acquiring at ``acquire``.
-
-        Acquisition holds the attitude the profile calls for at that moment,
-        and the profile is picked up from the first sample after it, exactly as
-        :meth:`~conops.simulation.acs.ACS._start_pass` builds its trajectory.
-        """
-        held = gspass.attitude_for_profile_at(list(profile), acquire)
-        if held is None:
-            return []
-        samples: list[tuple[float, Attitude]] = [(float(acquire), held)]
-        samples.extend(
-            (float(utime), (float(ra), float(dec), float(roll)))
-            for utime, (ra, dec, roll) in zip(gspass.utime, profile, strict=True)
-            if float(utime) > acquire
-        )
-        return samples
-
     def tracking_rest(
         self, gspass: Pass, profile: Sequence[Attitude], acquire: float
     ) -> tuple[float, Attitude] | None:
         """Return when a tracked contact comes to rest, and the attitude it rests at.
 
-        ACS cannot stop a tracking rate instantly: it brakes past the profile's
-        last sample, so a contact neither ends at that sample's attitude nor at
-        the contact's end time. Tracking starts from rest at ``acquire``, so a
-        late acquisition has to turn harder to catch the profile up. Returns
-        None when the profile cannot be flown within the motion limits.
+        See :func:`tracking_rest`.
         """
-        samples = self.tracking_samples(gspass, profile, acquire)
-        if not samples:
-            return None
-        if len(samples) < 2:
-            # A single sample is held, not tracked, so there is nothing to brake.
-            return float(gspass.end), samples[-1][1]
-        try:
-            trajectory = AttitudeTrajectory.tracking(
-                samples,
-                self.config.spacecraft_bus.attitude_control,
-                initial_rate=(0.0, 0.0, 0.0),
-            )
-        except AttitudeExecutionError:
-            return None
-        return float(trajectory.end), trajectory.state(trajectory.end).attitude
+        return tracking_rest(
+            gspass, profile, acquire, self.config.spacecraft_bus.attitude_control
+        )
+
+
+def tracking_samples(
+    gspass: Pass, profile: Sequence[Attitude], acquire: float
+) -> list[tuple[float, Attitude]]:
+    """Return the timed attitudes ACS tracks after acquiring at ``acquire``.
+
+    Acquisition holds the attitude the profile calls for at that moment, and
+    the profile is picked up from the first sample after it, exactly as
+    :meth:`~conops.simulation.acs.ACS._start_pass` builds its trajectory.
+    """
+    held = gspass.attitude_for_profile_at(list(profile), acquire)
+    if held is None:
+        return []
+    samples: list[tuple[float, Attitude]] = [(float(acquire), held)]
+    samples.extend(
+        (float(utime), (float(ra), float(dec), float(roll)))
+        for utime, (ra, dec, roll) in zip(gspass.utime, profile, strict=True)
+        if float(utime) > acquire
+    )
+    return samples
+
+
+def tracking_rest(
+    gspass: Pass,
+    profile: Sequence[Attitude],
+    acquire: float,
+    attitude_control: AttitudeControlSystem,
+) -> tuple[float, Attitude] | None:
+    """Return when a tracked contact comes to rest, and the attitude it rests at.
+
+    ACS cannot stop a tracking rate instantly: it brakes past the profile's
+    last sample, so a contact neither ends at that sample's attitude nor at the
+    contact's end time. Tracking starts from rest at ``acquire``, so a late
+    acquisition has to turn harder to catch the profile up. Returns None when
+    the profile cannot be flown within the motion limits.
+    """
+    samples = tracking_samples(gspass, profile, acquire)
+    if not samples:
+        return None
+    if len(samples) < 2:
+        # A single sample is held, not tracked, so there is nothing to brake.
+        return float(gspass.end), samples[-1][1]
+    try:
+        trajectory = AttitudeTrajectory.tracking(
+            samples, attitude_control, initial_rate=(0.0, 0.0, 0.0)
+        )
+    except AttitudeExecutionError:
+        return None
+    return float(trajectory.end), trajectory.state(trajectory.end).attitude
