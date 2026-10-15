@@ -824,6 +824,8 @@ class QueueDITL(DITLMixin, DITLStats):
             obsid=self.obsid,
             mode=self.mode,
             end_time=self.uend or self.ustart,
+            housekeeping=self.telemetry.housekeeping,
+            step_size=self.step_size,
             passes=self.acs.passrequests.passes,
             attitude_violation_at=self._attitude_violation_at,
             rate_mismatches=[
