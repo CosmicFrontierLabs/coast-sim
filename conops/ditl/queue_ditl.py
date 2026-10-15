@@ -481,7 +481,8 @@ class QueueDITL(DITLMixin, DITLStats):
         if dispatch_time > utime:
             # Only a feasible replacement can stop collection. Keep the TOO
             # pending and recheck admission at the real dispatch tick.
-            self._reserve_too_cleanup(utime)
+            # Collect on until teardown ends exactly at the dispatch tick.
+            self._reserve_too_cleanup(utime + dispatch_time - cleanup_end)
             self._ppt_unavailable = ppt_unavailable
             return False
 

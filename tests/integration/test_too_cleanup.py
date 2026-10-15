@@ -92,10 +92,13 @@ def _simulation(
     return ditl, request
 
 
-@pytest.mark.parametrize("cleanup,handoff", [(0, 0), (20, 5), (85, 40)])
+@pytest.mark.parametrize(
+    "cleanup,handoff,collection_stop_offset",
+    [(0, 0, 900), (20, 5, 935), (40, 20, 900), (85, 40, 955)],
+)
 @pytest.mark.parametrize("submit_offset", [60, 900, 1920])
 def test_too_waits_for_cleanup_without_losing_collected_science(
-    monkeypatch, cleanup, handoff, submit_offset
+    monkeypatch, cleanup, handoff, collection_stop_offset, submit_offset
 ):
     begin = SCENARIO_BEGIN
     ditl, request = _simulation(monkeypatch, cleanup, handoff, submit_offset)
@@ -117,7 +120,13 @@ def test_too_waits_for_cleanup_without_losing_collected_science(
     else:
         first = interrupted[0]
         assert first.collection_begin == begin.timestamp() + 115
-        cutoff = min(begin.timestamp() + submit_offset, first.collection_begin + 1800)
+        # Keep collecting through the unused fraction of the dispatch tick;
+        # an observation already in teardown retains its original window.
+        cutoff = (
+            begin.timestamp() + collection_stop_offset
+            if submit_offset == 900
+            else first.collection_begin + 1800
+        )
         assert first.collection_end == cutoff
         assert first.end == cutoff + cleanup + handoff
         ready_offset = max(submit_offset, first.end - begin.timestamp())
@@ -137,6 +146,24 @@ def test_too_waits_for_cleanup_without_losing_collected_science(
     assert target.exptime == pytest.approx(0)
     total_collection = sum(hk.collection_seconds for hk in ditl.telemetry.housekeeping)
     assert ditl.data_generated_gb[-1] == pytest.approx(total_collection * 0.001)
+
+
+def test_alignment_does_not_extend_an_observation_that_will_finish(monkeypatch):
+    begin = SCENARIO_BEGIN.timestamp()
+    ditl, request = _simulation(monkeypatch, cleanup=85, handoff=40, submit_offset=1860)
+    target = ditl.queue.targets[0]
+
+    assert ditl.calc()
+    assert request.executed
+    original = [entry for entry in ditl.plan if entry.obsid == 1]
+    assert len(original) == 1
+    assert original[0].collection_end == begin + 1915
+    assert original[0].end == begin + 2040
+    too = next(entry for entry in ditl.plan if entry.obsid == 30001)
+    assert too.begin == begin + 2040
+    assert target.collected_seconds == pytest.approx(1800)
+    assert target.exptime == pytest.approx(0)
+    assert ditl.validate_plan_matches_execution() == []
 
 
 def test_deadline_that_only_fits_without_cleanup_does_not_interrupt(monkeypatch):
@@ -209,8 +236,8 @@ def test_urgency_preemption_waits_without_commanding_or_marking_executed(monkeyp
             assert not result
             assert not request.executed
             assert ditl.ppt.obsid == 1
-            assert ditl.ppt.collection_end == begin + 900
-            assert ditl.ppt.end == begin + 1025
+            assert ditl.ppt.collection_end == begin + 955
+            assert ditl.ppt.end == begin + 1080
             assert ditl.acs.command_queue == queued
             assert ditl.acs.executed_commands == executed
             assert ditl.acs.slew_dists == distances
