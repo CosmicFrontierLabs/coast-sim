@@ -37,6 +37,7 @@ from .plan_validator import (
     PlanExecutionValidator,
     entry_obstype,
     matching_pass_for_entry,
+    planned_contact_begin,
 )
 from .telemetry import Housekeeping, PayloadData
 
@@ -570,6 +571,8 @@ class DITL(DITLMixin, DITLStats):
             obsid=self.obsid,
             mode=self.mode,
             end_time=self.uend or self.ustart,
+            housekeeping=self.telemetry.housekeeping,
+            step_size=self.step_size,
             passes=self.acs.passrequests.passes,
             attitude_violation_at=lambda index, _mode: (
                 self._attitude_constraint_violations[index]
@@ -800,14 +803,17 @@ class DITL(DITLMixin, DITLStats):
         gspass = self._entry_passes.get(id(entry))
         if gspass is None:
             return False
-        # Join an already-running contact on the profile, as QueueDITL does.
+        # Aim at the attitude the contact is acquired on: where the profile
+        # starts, where the plan picks it up late, or — joining a contact
+        # already under way, as QueueDITL does — where it is now.
         end_ra, end_dec, end_roll = (
             gspass.gsstartra,
             gspass.gsstartdec,
             gspass.gsstartroll,
         )
-        if utime >= gspass.begin:
-            ra, dec, roll = gspass.attitude_at(utime)
+        acquire = max(utime, planned_contact_begin(entry, gspass))
+        if acquire >= gspass.begin:
+            ra, dec, roll = gspass.attitude_at(acquire)
             if ra is not None and dec is not None:
                 end_ra, end_dec, end_roll = ra, dec, roll
         slew = Slew(config=self.config)
@@ -843,8 +849,12 @@ class DITL(DITLMixin, DITLStats):
             or entry.track_start_roll is None
         ):
             return profiles[0] if profiles else None
+        acquire = planned_contact_begin(entry, gspass)
         for profile in profiles:
-            ra, dec, roll = profile[0]
+            acquired = gspass.attitude_for_profile_at(profile, acquire)
+            if acquired is None:
+                continue
+            ra, dec, roll = acquired
             if (
                 angular_separation(ra, dec, entry.track_start_ra, entry.track_start_dec)
                 <= 1e-6

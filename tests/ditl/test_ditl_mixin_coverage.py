@@ -124,6 +124,8 @@ def test_process_data_management_generates_and_downlinks(mock_config):
     pass_obj = Mock()
     pass_obj.in_pass = Mock(return_value=True)
     pass_obj.station = "GS1"
+    pass_obj.begin = utime
+    pass_obj.end = utime + 3600
     # Pass API uses `config.spacecraft_bus.communications` for comms; create that structure
     pass_obj.config = Mock()
     pass_obj.config.spacecraft_bus = Mock()
@@ -132,6 +134,8 @@ def test_process_data_management_generates_and_downlinks(mock_config):
         return_value=50.0
     )  # Mbps
     mixin.acs.passrequests.passes = [pass_obj]
+    mixin.acs.current_pass = pass_obj
+    mixin.uend = utime + 3600
     # ground station
     station = Mock()
     station.supported_bands = Mock(return_value=["X"])  # one band
