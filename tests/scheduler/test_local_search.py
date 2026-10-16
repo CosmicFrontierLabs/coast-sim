@@ -306,6 +306,64 @@ class TestEarliness:
         assert [obsid for obsid, _, _ in _science(plan)] == [2, 1]
         assert planner.score > planner.initial_score
 
+    def test_earliest_start_is_kept_by_every_change(self) -> None:
+        config = _config(3)
+        filler = _target(config, 1, 105.0, 10.0, merit=60, minutes=20)
+        later = _target(
+            config,
+            2,
+            110.0,
+            10.0,
+            merit=50,
+            minutes=20,
+            earliest_start=T0 + HOUR,
+            deadline=T0 + 2 * HOUR,
+        )
+
+        planner = LocalSearchPlanner(
+            config,
+            [filler, later],
+            BEGIN,
+            BEGIN + timedelta(hours=3),
+            max_iterations=300,
+            seed=1,
+        )
+        plan = planner.schedule()
+
+        entry = next(e for e in plan if e.obsid == 2)
+        assert entry.collection_begin is not None
+        assert T0 + HOUR <= entry.collection_begin <= T0 + 2 * HOUR
+
+    def test_lateness_counts_from_the_earliest_start(self) -> None:
+        """Starting at its earliest start, a request loses nothing."""
+        config = _config(3)
+        target = _target(
+            config,
+            1,
+            105.0,
+            10.0,
+            merit=50,
+            minutes=20,
+            earliest_start=T0 + HOUR,
+            deadline=T0 + 2 * HOUR,
+        )
+        planner = LocalSearchPlanner(
+            config,
+            [target],
+            BEGIN,
+            BEGIN + timedelta(hours=3),
+            max_iterations=0,
+            earliness_weight=1.0,
+        )
+
+        plan = planner.schedule()
+
+        (entry,) = (e for e in plan if e.obstype != ObsType.GSP)
+        assert entry.collection_begin is not None
+        delay = float(entry.collection_begin) - (T0 + HOUR)
+        expected = 50 * 20 * MIN * (1.0 - delay / HOUR)
+        assert planner.score[0] == pytest.approx(expected)
+
     def test_late_snapshot_still_counts(self) -> None:
         """A snapshot starting at its deadline keeps part of its value."""
         config = _config(2)

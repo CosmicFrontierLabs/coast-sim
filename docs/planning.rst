@@ -62,6 +62,9 @@ Building and executing a plan
    ditl.calc()
    assert ditl.validate_plan_matches_execution() == []
 
+A target's ``earliest_start`` and ``deadline`` (Unix seconds, a datetime or an
+ISO-8601 string) limit when its science collection may begin.
+
 Execute the plan with the same configuration, ephemeris, horizon and step size it
 was built with. The plan can also be saved and loaded (see :doc:`plan_serialization`)
 before execution.
@@ -95,7 +98,8 @@ How a plan is built
      including setup, cleanup and handoff time; an observation that would run into
      a constraint is shortened, but never below ``ss_min``;
    * any wait at the previous attitude clears the ``IDLE`` scopes;
-   * collection starts by the target's ``deadline``;
+   * collection starts no earlier than the target's ``earliest_start`` and by its
+     ``deadline``;
    * the next activity can still be reached on time, with its own slew and wait
      checked the same way.
 
@@ -226,8 +230,9 @@ priority-first scheduler.
 * ``neighborhood``: how many positions apart a swap or move can be (default 3);
 * ``history_length``: length of the late-acceptance history (default 50);
 * ``earliness_weight``: fraction of a deadline request's value lost if it starts at
-  its deadline rather than at the start of the horizon (default 0.5). It must be at
-  most 1, so a late snapshot is always worth more than none.
+  its deadline rather than at the start of the horizon, or at its earliest start if
+  that is later (default 0.5). It must be at most 1, so a late snapshot is always
+  worth more than none.
 
 Ground passes and locked entries stay where the priority-first plan put them.
 

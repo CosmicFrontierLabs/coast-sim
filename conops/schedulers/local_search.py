@@ -104,9 +104,9 @@ class LocalSearchPlanner(PriorityPlanner):
     search can cross plateaus. The objective is merit-weighted science time,
     compared tier by tier from the highest. A snapshot of a request with a
     deadline is worth less the later it starts: starting at the deadline
-    rather than the start of the horizon costs ``earliness_weight`` of its
-    value. The best plan found is returned, and never one worse than the
-    priority-first plan.
+    rather than the start of the horizon, or its earliest start if later,
+    costs ``earliness_weight`` of its value. The best plan found is returned,
+    and never one worse than the priority-first plan.
 
     Each plan entry's merit is the value its snapshot has where the decoder
     places it, with the program shares the plan delivers before it; a Target
@@ -258,10 +258,12 @@ class LocalSearchPlanner(PriorityPlanner):
         """
         entry = block.entry
         worth = value * _collection_seconds(block)
-        deadline = request.target.deadline
+        target = request.target
+        deadline = target.deadline
         if deadline is None or self.earliness_weight == 0.0:
             return worth
-        opens = self.ctx.ustart
+        # Lateness counts from when the request could first start.
+        opens = max(self.ctx.ustart, target.earliest_start or self.ctx.ustart)
         available = deadline - opens
         if available <= 0.0 or entry.collection_begin is None:
             return worth
