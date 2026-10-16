@@ -105,6 +105,22 @@ This notebook simulates a ground-planned mission with ``RollingHorizonDITL``:
 
 See :doc:`planning` (Rolling-horizon replanning) for reference.
 
+Local Search Planning
+~~~~~~~~~~~~~~~~~~~~~
+
+**Location**: ``examples/Local_Search_Planner_Example.ipynb``
+
+This notebook compares ``LocalSearchPlanner`` with ``PriorityPlanner`` on 100 random
+targets:
+
+* One-day plans from each, executed to check that they run exactly as planned
+* Where the time goes: science, slewing and idle time, and the two timelines
+* Merit-weighted science through the day, and which targets gained or lost time
+* How the result and the planning time grow with the number of changes tried
+* A benchmark of ``RollingHorizonDITL`` runs with each planner over several target sets
+
+See :doc:`planning` (Improving plans by local search) for reference.
+
 Example Configuration
 ~~~~~~~~~~~~~~~~~~~~~
 

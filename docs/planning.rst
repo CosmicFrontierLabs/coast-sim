@@ -240,6 +240,9 @@ Ground passes and locked entries stay where the priority-first plan put them.
 change is decoded from the point it touches, so a search of a few thousand changes
 takes tens of seconds for a day with a few hundred targets.
 
+The notebook ``examples/Local_Search_Planner_Example.ipynb`` compares the two planners
+on a one-day plan, as the number of changes grows, and in rolling-horizon runs.
+
 The scheduling context
 ----------------------
 
