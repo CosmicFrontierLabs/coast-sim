@@ -65,13 +65,16 @@ class Slew(BaseModel):
     instrument_name: str | None = None
     instrument_roll: float | None = None
     at: "PlanEntry | None" = None  # In quotes to avoid circular import
+    # Private defaults are copied per instance, so these lists are never
+    # shared. A default_factory would cost far more: pydantic inspects the
+    # factory's signature for every instance, and planners build many slews.
     # Quaternion SLERP: intermediate roll values along the path
-    _quat_roll_path: list[float] = PrivateAttr(default_factory=list)
+    _quat_roll_path: list[float] = PrivateAttr(default=[])
     # Shortest maneuver axis resolved in the initial spacecraft body frame.
     _rotation_axis_body: tuple[float, float, float] | None = PrivateAttr(default=None)
     # Maneuvers are rest-to-rest SLERP segments, each with its own angular
     # distance, initial body-frame rotation axis, and exact quaternion endpoints.
-    _slew_segments: list[_SlewSegment] = PrivateAttr(default_factory=list)
+    _slew_segments: list[_SlewSegment] = PrivateAttr(default=[])
 
     @model_validator(mode="after")
     def _derive_from_config(self) -> "Slew":

@@ -12,11 +12,13 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from enum import Enum, auto
+from typing import NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..common import ACSMode, ObsType, unixtime2date
 from ..config import MissionConfig
+from ..config.observation_categories import ObservationCategory
 from ..ditl.ditl_log import DITLLog
 from ..simulation.passes import Pass
 from ..simulation.slew import Slew
@@ -85,13 +87,48 @@ class _Request(BaseModel):
 
     target: Pointing
     merit: MeritBreakdown
+    """Merit at the start of the horizon; its tier and ranking."""
     remaining: float
     windows: list[tuple[float, float]] = Field(default_factory=list)
+    category: ObservationCategory
+    steady_value: float = 0.0
+    """Value of a snapshot apart from the completion deficit, which depends
+    on what the plan has collected before it."""
+    cadence: float | None = None
+    """Seconds a visit waits after the target's last one, when cadence counts."""
 
     @property
     def wants_more(self) -> bool:
         """Whether enough exposure is left for another snapshot."""
         return self.remaining > 0 and self.remaining >= float(self.target.ss_min)
+
+
+def program_shares(seconds: Mapping[str, float]) -> dict[str, float]:
+    """Return each program's fraction of the science seconds given."""
+    total = sum(seconds.values())
+    if total <= 0.0:
+        return {}
+    return {program: value / total for program, value in seconds.items()}
+
+
+_MAX_DELAYED = 4
+"""Most snapshots moved later to fit one before them."""
+
+
+class _Move(NamedTuple):
+    """A snapshot placed again later, to make room before it."""
+
+    old_block: _Block
+    request: _Request
+    new_block: _Block
+    slew: Slew
+    lost: float
+    """Collection seconds the move cut short."""
+
+
+def _collection_seconds(block: _Block) -> float:
+    """Return the science a block collects."""
+    return block.entry.collection_seconds_between(block.entry.begin, block.entry.end)
 
 
 def _long_enough(collection_seconds: float, ss_min: float) -> bool:
@@ -110,11 +147,20 @@ class PriorityPlanner:
        horizon (see :class:`~conops.targets.merit.MeritModel`). Each request is
        split into snapshots of up to ``ss_max`` seconds, never shorter than
        ``ss_min``, until its ``exptime`` is used or it no longer fits.
+
+       Merit follows the plan as it would follow execution. With a
+       completion-deficit weight, programs with a time share are re-ranked
+       after every snapshot by the shares the plan delivers so far, counting
+       science already collected. With a cadence weight, a target in a
+       category with a cadence is visited no sooner than its cadence after
+       its last visit, planned or collected; each visit then has the full
+       cadence value.
     4. Each snapshot goes in the earliest slot where every check
        :class:`~conops.ditl.DITL` will apply passes: the slew starts on a step,
        its path and the held attitude clear their mode's constraints, the
-       target is visible when the slew starts, collection starts by the
-       target's deadline, and the following activity can still be reached.
+       target is visible when the slew starts (or, if ACS may slew before a
+       target is visible, when it arrives), collection starts by the target's
+       deadline, and the following activity can still be reached.
 
     The plan is built for execution by :class:`~conops.ditl.DITL` with the same
     configuration, ephemeris, horizon and step size. The planner does not model
@@ -138,7 +184,15 @@ class PriorityPlanner:
             starts at ``begin`` from a freshly started spacecraft.
         reserved_seconds: Exposure, by obsid, already scheduled outside this
             plan and not yet collected; it is subtracted from each target's
-            remaining exposure.
+            remaining exposure and counts towards its program's share.
+        reserved_visits: When observations scheduled outside this plan and not
+            yet collected will finish collecting, by obsid; a cadence target's
+            next visit waits for its cadence after them.
+        successor_retries: When a snapshot fits a gap but the activity after
+            it cannot then be reached, how many later starts to try in that gap
+            before giving up on it (default 3). This plans much faster when many
+            requests cannot be placed, but can miss a fit late in a gap. None
+            tries every start, which finds every fit.
     """
 
     def __init__(
@@ -156,6 +210,8 @@ class PriorityPlanner:
         simulation_end: datetime | None = None,
         start_state: StartState | None = None,
         reserved_seconds: Mapping[int, float] | None = None,
+        reserved_visits: Mapping[int, float] | None = None,
+        successor_retries: int | None = 3,
     ) -> None:
         self.config = config
         self.targets = list(targets)
@@ -169,6 +225,10 @@ class PriorityPlanner:
         self.simulation_end = simulation_end
         self.start_state = start_state
         self.reserved_seconds = dict(reserved_seconds or {})
+        self.reserved_visits = dict(reserved_visits or {})
+        if successor_retries is not None and successor_retries < 0:
+            raise ValueError("successor_retries must not be negative")
+        self.successor_retries = successor_retries
         self.unplaced: list[Pointing] = []
         """Targets left with at least ``ss_min`` of exposure unplanned."""
         self.plan = Plan()
@@ -186,6 +246,12 @@ class PriorityPlanner:
             simulation_end=self.simulation_end,
         )
         self.timeline: list[_Block] = []
+        self._movable: dict[int, _Request] = {}
+        """Science blocks placed by this planner that may move later, by id,
+        with their requests; locked entries and passes never move."""
+        self._successor_blocked = False
+        """Whether the last gap searched held a fit that only the activity
+        after it prevented."""
         self.unplaced = []
         self._origin: _Block | None = None
         if self.start_state is not None:
@@ -201,29 +267,20 @@ class PriorityPlanner:
 
         for entry in self.locked:
             self._place_locked(entry)
+        self._locked_visits: dict[int, list[tuple[float, float]]] = defaultdict(list)
+        """Locked science visits by obsid: when each slew starts and its
+        collection ends. Cadence visits are kept clear of them."""
+        for block in self.timeline:
+            entry = block.entry
+            if entry.collection_end is not None:
+                self._locked_visits[int(entry.obsid)].append(
+                    (float(entry.begin), float(entry.collection_end))
+                )
         if self.include_passes:
             for gspass in self.ctx.predict_passes():
                 self._place_pass(gspass)
 
-        for request in self._requests():
-            placed = 0
-            while request.wants_more:
-                block = self._place_snapshot(request)
-                if block is None:
-                    break
-                collected = block.entry.collection_seconds_between(
-                    block.entry.begin, block.entry.end
-                )
-                request.remaining -= collected
-                placed += 1
-            if request.wants_more:
-                self.unplaced.append(request.target)
-                self._log(
-                    self.ctx.ustart,
-                    f"Target {request.target.obsid} left {request.remaining:.0f}s "
-                    f"unplanned after {placed} snapshot(s)",
-                    request.target.obsid,
-                )
+        self._place_requests(self._requests())
 
         self.plan = Plan(
             entries=[block.entry for block in self.timeline],
@@ -231,36 +288,186 @@ class PriorityPlanner:
         )
         return self.plan
 
+    def _place_requests(self, requests: Sequence[_Request]) -> None:
+        """Place snapshots of the highest-ranked request at their earliest fit.
+
+        Without a completion deficit the ranking never changes, so each
+        request is placed in full before the next.
+        """
+        active = list(requests)
+        order = {id(request): k for k, request in enumerate(active)}
+        placed = dict.fromkeys(order, 0)
+        self._program_seconds = dict(self._delivered)
+        """Science by program: collected, committed and planned so far."""
+        self._cut_short: list[_Request] = []
+        """Requests a move has cut short since the last placement."""
+        while active:
+            shares = program_shares(self._program_seconds)
+            request = active[0]
+            if self._balancing:
+                request = max(
+                    active,
+                    key=lambda r: (
+                        r.merit.tier,
+                        self._value(r, shares),
+                        -order[id(r)],
+                    ),
+                )
+            block = self._place_snapshot(request, self._cadence_release(request))
+            self._reactivate_cut_short(active, order)
+            if block is not None:
+                # Freeze the value the snapshot was selected at onto its entry,
+                # as dispatch does: a Target of Opportunity must beat it to
+                # interrupt the observation.
+                block.entry.merit = self._value(request, shares)
+                collected = block.entry.collection_seconds_between(
+                    block.entry.begin, block.entry.end
+                )
+                request.remaining -= collected
+                placed[id(request)] += 1
+                self._record_visit(request, block)
+                if request.wants_more:
+                    continue
+            active.remove(request)
+
+        # Checked once all are placed: moving a snapshot later to make room
+        # can cut short a request that was already finished.
+        for request in requests:
+            if request.wants_more:
+                self.unplaced.append(request.target)
+                self._log(
+                    self.ctx.ustart,
+                    f"Target {request.target.obsid} left {request.remaining:.0f}s "
+                    f"unplanned after {placed[id(request)]} snapshot(s)",
+                    request.target.obsid,
+                )
+
+    def _reactivate_cut_short(
+        self, active: list[_Request], order: Mapping[int, int]
+    ) -> None:
+        """Put requests a move cut short back among those still to place.
+
+        A finished request cut short by at least ``ss_min`` can be placed
+        again. ``active`` stays in planning order. This always ends: a cut is
+        only made when it raises the plan's value-weighted science.
+        """
+        waiting = {id(request) for request in active}
+        for request in self._cut_short:
+            if id(request) not in waiting and request.wants_more:
+                active.append(request)
+                waiting.add(id(request))
+        self._cut_short = []
+        active.sort(key=lambda request: order[id(request)])
+
+    def _value(self, request: _Request, shares: Mapping[str, float]) -> float:
+        """Value of a snapshot of ``request`` when the plan delivers ``shares``."""
+        if not self._deficit_weight:
+            return request.steady_value
+        return request.steady_value + self._deficit_weight * (
+            MeritModel.completion_deficit(request.category, shares)
+        )
+
+    def _cadence_release(self, request: _Request) -> float | None:
+        """Earliest slew start of the request's next visit, if cadence spaces them."""
+        if request.cadence is None:
+            return None
+        last = self._last_visit.get(int(request.target.obsid))
+        return None if last is None else last + request.cadence
+
+    def _next_locked_visit(
+        self, request: _Request, start: float
+    ) -> tuple[float, float] | None:
+        """Return the first locked visit a cadence visit starting at ``start``
+        must end before.
+
+        Visits are spaced by the cadence: a visit must start at least a
+        cadence after a locked visit's collection ends, or end at least a
+        cadence before its slew starts. Returns that locked visit's slew start
+        and collection end, or None if the request has no cadence or
+        ``start`` is clear of every locked visit.
+        """
+        if request.cadence is None:
+            return None
+        visits = sorted(self._locked_visits.get(int(request.target.obsid), ()))
+        return next(
+            (
+                (locked_start, locked_end)
+                for locked_start, locked_end in visits
+                if start < locked_end + request.cadence
+            ),
+            None,
+        )
+
+    def _record_visit(self, request: _Request, block: _Block) -> None:
+        """Count a placed snapshot towards its program and the target's last visit."""
+        entry = block.entry
+        seconds = entry.collection_seconds_between(entry.begin, entry.end)
+        program = request.category.program_name
+        self._program_seconds[program] = (
+            self._program_seconds.get(program, 0.0) + seconds
+        )
+        if request.cadence is not None and entry.collection_end is not None:
+            self._last_visit[int(request.target.obsid)] = float(entry.collection_end)
+
     # ── Requests ──────────────────────────────────────────────────────────
 
     def _requests(self) -> list[_Request]:
         """Return the requests in planning order: tier, then value, then a stable tie-break."""
         merit_model = MeritModel(self.config)
-        delivered_shares = merit_model.delivered_shares(self.targets)
         # Science committed outside this plan or locked into it will be
         # collected before what this plan places.
         reserved = self._reserved_collection()
         for obsid, seconds in self.reserved_seconds.items():
             reserved[obsid] += seconds
         seed = self.config.random_seed if self.config.random_seed is not None else 0
+        self._delivered: dict[str, float] = {}
+        """Science already collected, by program."""
+        self._last_visit: dict[int, float] = {}
+        """When each cadence target was last observed, collected or planned."""
+        for target in self.targets:
+            obsid = int(target.obsid)
+            seconds = target.collected_seconds + reserved.get(obsid, 0.0)
+            if seconds > 0.0:
+                program = merit_model.category(target).program_name
+                self._delivered[program] = self._delivered.get(program, 0.0) + seconds
+            visits = [
+                t
+                for t in (target.last_collection_time, self.reserved_visits.get(obsid))
+                if t is not None
+            ]
+            if visits:
+                self._last_visit[obsid] = max(visits)
+        shares = program_shares(self._delivered)
+        cadence_weight = merit_model.cadence_weight
         requests = []
         for target in self.targets:
             exptime = target.exptime if target.exptime is not None else target.ss_max
             remaining = float(exptime) - reserved.get(int(target.obsid), 0.0)
             if target.done or remaining < target.ss_min:
                 continue
+            category = merit_model.category(target)
+            merit = merit_model.value_terms(
+                target, self.ctx.ustart, delivered_shares=shares
+            )
+            cadence = category.cadence_seconds if cadence_weight > 0.0 else None
             requests.append(
                 _Request(
                     target=target,
-                    merit=merit_model.value_terms(
-                        target,
-                        self.ctx.ustart,
-                        delivered_shares=delivered_shares,
-                    ),
+                    merit=merit,
                     remaining=remaining,
                     windows=self.ctx.visibility_windows(target),
+                    category=category,
+                    # Visits wait for their cadence, so each has full pressure.
+                    steady_value=merit.base
+                    + merit.urgency
+                    + (cadence_weight if cadence is not None else 0.0),
+                    cadence=cadence,
                 )
             )
+        self._deficit_weight = merit_model.completion_deficit_weight
+        self._balancing = self._deficit_weight > 0.0 and any(
+            r.category.time_share is not None for r in requests
+        )
 
         def tie_break(request: _Request) -> int:
             payload = f"{seed}:{request.target.obsid}".encode()
@@ -268,8 +475,11 @@ class PriorityPlanner:
                 hashlib.blake2b(payload, digest_size=8).digest(), "big"
             )
 
+        # Ranked by the value of a visit when it is placed, as selection uses:
+        # a cadence target's visits wait until they are due, so each has the
+        # full cadence value, not the part it has at the start of the horizon.
         requests.sort(
-            key=lambda r: (r.merit.value_rank, tie_break(r)),
+            key=lambda r: (r.merit.tier, self._value(r, shares), tie_break(r)),
             reverse=True,
         )
         return requests
@@ -377,8 +587,9 @@ class PriorityPlanner:
                 ACSMode.IDLE,
             )
         else:
-            # ACS only starts a science slew while the target is visible.
-            if not block.entry.visible(slew.slewstart, slew.slewstart):
+            # ACS only flies a science slew the target is visible for.
+            needed = self._visibility_needed_at(slew)
+            if not block.entry.visible(needed, needed):
                 return _Verdict.SLEW_NOT_ALLOWED
             wait_violation = self.ctx.first_science_violation(
                 block.entry, target, slew.slewend, block.ready
@@ -585,16 +796,34 @@ class PriorityPlanner:
 
     # ── Science snapshots ────────────────────────────────────────────────
 
-    def _place_snapshot(self, request: _Request) -> _Block | None:
-        """Place one snapshot of a request in the earliest slot that fits."""
+    def _place_snapshot(
+        self, request: _Request, not_before: float | None = None
+    ) -> _Block | None:
+        """Place one snapshot of a request in the earliest slot that fits.
+
+        Its slew starts no earlier than ``not_before``, if given.
+        """
         for index in range(len(self.timeline) + 1):
             pred = self._pred_at(index)
             succ = self.timeline[index] if index < len(self.timeline) else None
-            candidate = self._fit_in_gap(request, pred, succ)
-            if candidate is None:
+
+            # First try the gap as it is.
+            candidate = self._fit_in_gap(request, pred, succ, not_before)
+            if candidate is not None:
+                block, slew, succ_slew = candidate
+                self._commit(index, block, slew, succ, succ_slew)
+            elif self._can_delay(succ):
+                # The snapshot fitted, but only the one after it was then
+                # unreachable: try again with that one, and any packed behind
+                # it, moved later.
+                delayed = self._fit_delaying_successors(request, index, not_before)
+                if delayed is None:
+                    continue
+                block = delayed
+            else:
                 continue
-            block, slew, succ_slew = candidate
-            self._commit(index, block, slew, succ, succ_slew)
+
+            self._movable[id(block)] = request
             self._log(
                 block.entry.begin,
                 f"Placed {request.target.obsid} at "
@@ -605,29 +834,180 @@ class PriorityPlanner:
             return block
         return None
 
+    def _can_delay(self, succ: _Block | None) -> bool:
+        """Whether the last gap search failed only because of ``succ``, and it may move."""
+        return succ is not None and self._successor_blocked and self._may_move(succ)
+
+    def _may_move(self, block: _Block) -> bool:
+        """Whether a block may be placed again later to make room before it.
+
+        Only science snapshots this planner placed may move, and not those of
+        cadence targets, whose later visits are spaced from them. Locked
+        entries and passes never move.
+        """
+        request = self._movable.get(id(block))
+        return request is not None and request.cadence is None
+
+    def _fit_delaying_successors(
+        self, request: _Request, index: int, not_before: float | None
+    ) -> _Block | None:
+        """Fit a snapshot before timeline block ``index`` by moving that block later.
+
+        This handles a gap the snapshot fits, but only if the science snapshot
+        after it could start later. Typically that snapshot starts the moment
+        its target rises, and the spacecraft could only be there on time by
+        staying on the target while it was hidden: anything else placed in
+        that time would get there late. Without this, the whole time the
+        target was hidden is lost.
+
+        The later snapshot is moved by as little as it can be. When it is
+        packed against the snapshots after it, those move too: first the one
+        snapshot is tried, then it and the next, and so on, up to
+        ``_MAX_DELAYED`` snapshots or the first that may not move. Returns the
+        new snapshot's block, or None with the timeline unchanged.
+        """
+        for count in range(1, _MAX_DELAYED + 1):
+            run = self.timeline[index : index + count]
+            if len(run) < count or not self._may_move(run[-1]):
+                return None
+            block = self._fit_delaying_run(request, index, count, not_before)
+            if block is not None:
+                return block
+        return None
+
+    def _fit_delaying_run(
+        self, request: _Request, index: int, count: int, not_before: float | None
+    ) -> _Block | None:
+        """Fit a snapshot at timeline position ``index``, moving the ``count``
+        snapshots there later.
+
+        Moving a snapshot may cut it short, where its target's visibility ends
+        sooner after the move. That is accepted only if the trade is worth it:
+        no snapshot cut short outranks the new one's tier, and the new
+        snapshot's value-weighted seconds exceed those lost. Returns the new
+        snapshot's block, or None with the timeline unchanged.
+        """
+        pred = self._pred_at(index)
+        run = self.timeline[index : index + count]
+        end = index + count
+        after = self.timeline[end] if end < len(self.timeline) else None
+        # Everything placed here must be done before the block after the run.
+        until = after.ready if after is not None else None
+
+        # 1. Fit the new snapshot as if the run were not there. The run follows
+        #    it, so it need not reach the block after the run itself.
+        new_fit = self._fit_in_gap(request, pred, None, not_before, until)
+        if new_fit is None:
+            return None
+        new_block, new_slew, _ = new_fit
+        gained = _collection_seconds(new_block)
+
+        # 2. Fit each snapshot of the run again, in order, after the new one,
+        #    for up to the collection time it had. Only the last must reach the
+        #    block after the run. Nothing changes until all fit.
+        moves: list[_Move] = []
+        after_slew = None
+        previous = new_block
+        for position, old_block in enumerate(run):
+            old_request = self._movable[id(old_block)]
+            seconds = _collection_seconds(old_block)
+            same_length = old_request.model_copy(update={"remaining": seconds})
+            last = position == len(run) - 1
+            moved_fit = self._fit_in_gap(
+                same_length,
+                previous,
+                after if last else None,
+                until=None if last else until,
+            )
+            if moved_fit is None:
+                return None
+            moved_block, moved_slew, after_slew = moved_fit
+            lost = max(0.0, seconds - _collection_seconds(moved_block))
+            moves.append(_Move(old_block, old_request, moved_block, moved_slew, lost))
+            previous = moved_block
+
+        # 3. Check the trade, if moving cut anything short.
+        if not self._worth_cutting(request, gained, moves):
+            return None
+
+        # 4. Record the new slews and put the blocks in place.
+        self._apply_slew(new_block, new_slew)
+        for move in moves:
+            self._apply_slew(move.new_block, move.slew)
+        if after is not None and after_slew is not None:
+            self._apply_slew(after, after_slew)
+
+        self.timeline[index:end] = [new_block] + [move.new_block for move in moves]
+
+        for move in moves:
+            # A moved snapshot is a new block, so it takes the old one's place
+            # among the blocks that may move again.
+            del self._movable[id(move.old_block)]
+            self._movable[id(move.new_block)] = move.request
+            # It keeps the value it was selected at.
+            move.new_block.entry.merit = move.old_block.entry.merit
+            # Exposure cut short is left for the request to plan elsewhere,
+            # and no longer counts towards its program's share.
+            move.request.remaining += move.lost
+            program = move.request.category.program_name
+            self._program_seconds[program] -= move.lost
+            if move.lost:
+                self._cut_short.append(move.request)
+            moved = move.new_block.entry
+            self._log(
+                float(moved.begin),
+                f"Moved {move.request.target.obsid} to "
+                f"{unixtime2date(float(moved.collection_begin or 0))}"
+                + (f", {move.lost:.0f}s shorter," if move.lost else "")
+                + f" to fit {request.target.obsid} before it",
+                move.request.target.obsid,
+            )
+        return new_block
+
+    @staticmethod
+    def _worth_cutting(
+        request: _Request, gained: float, moves: Sequence["_Move"]
+    ) -> bool:
+        """Whether a new snapshot is worth the science its moves cut short."""
+        cut = [move for move in moves if move.lost > 1e-6]
+        if not cut:
+            return True
+        if any(move.request.merit.tier > request.merit.tier for move in cut):
+            return False
+        lost_value = sum(move.lost * move.request.steady_value for move in cut)
+        return gained * request.steady_value > lost_value
+
     def _fit_in_gap(
-        self, request: _Request, pred: _Block | None, succ: _Block | None
+        self,
+        request: _Request,
+        pred: _Block | None,
+        succ: _Block | None,
+        not_before: float | None = None,
+        until: float | None = None,
     ) -> tuple[_Block, Slew, Slew | None] | None:
-        """Find the earliest snapshot of ``request`` between ``pred`` and ``succ``."""
+        """Find the earliest snapshot of ``request`` between ``pred`` and ``succ``.
+
+        The slew starts no earlier than ``not_before``, if given. Without a
+        ``succ``, the snapshot ends by ``until``, if given, rather than the end
+        of the horizon.
+        """
+        self._successor_blocked = False
         target = request.target
         ss_min = float(target.ss_min)
         earliest = self._earliest_start(pred)
-        gap_end = succ.ready if succ is not None else self.ctx.uend
-        if gap_end - earliest < ss_min:
+        horizon_end = self.ctx.uend if until is None else min(until, self.ctx.uend)
+        gap_end = succ.ready if succ is not None else horizon_end
+        start = earliest
+        if not_before is not None:
+            start = max(start, self.ctx.ceil_step(not_before))
+        if gap_end - start < ss_min:
             return None
         idle_limit = self._idle_limit(pred, earliest, gap_end)
         snapshot = min(float(target.ss_max), request.remaining)
+        # Starts at which the snapshot fitted but its successor was unreachable.
+        unreachable = 0
 
-        start = earliest
         while start <= min(idle_limit, gap_end):
-            window = next((w for w in request.windows if w[0] <= start < w[1]), None)
-            if window is None:
-                upcoming = [w[0] for w in request.windows if w[0] > start]
-                if not upcoming:
-                    return None
-                start = self.ctx.ceil_step(min(upcoming))
-                continue
-
             instrument_roll = self.ctx.instrument_roll(target, start)
             attitude = target.target_body_attitude(instrument_roll)
             slew = self.ctx.slew(
@@ -636,11 +1016,28 @@ class PriorityPlanner:
                 start,
                 obsid=target.obsid,
             )
+
+            # The target must be visible when ACS needs it to be. If it is
+            # not, start again when it next becomes visible, less the slew
+            # time if the slew may start before then.
+            needed = self._visibility_needed_at(slew)
+            window = next((w for w in request.windows if w[0] <= needed < w[1]), None)
+            if window is None:
+                upcoming = [w[0] for w in request.windows if w[0] > needed]
+                if not upcoming:
+                    return None
+                lead = needed - float(slew.slewstart)
+                start = max(
+                    start + self.ctx.step_size,
+                    self.ctx.ceil_step(min(upcoming) - lead),
+                )
+                continue
+
             collection_begin = float(slew.slewend) + self.ctx.setup_seconds
             if target.deadline is not None and collection_begin > target.deadline:
                 return None
 
-            latest_end = min(window[1], self.ctx.uend)
+            latest_end = min(window[1], horizon_end)
             succ_slewtime = 0.0
             if succ is not None:
                 succ_slewtime = self.ctx.slew(
@@ -654,6 +1051,24 @@ class PriorityPlanner:
                 collection_begin + snapshot,
                 latest_end - self.ctx.post_collection_seconds,
             )
+
+            # A cadence visit before a locked visit of its target must end a
+            # cadence before that visit starts, so try a shorter snapshot that
+            # does. If even the shortest is too long, try again a cadence after
+            # the locked visit.
+            locked = self._next_locked_visit(request, start)
+            if locked is not None:
+                assert request.cadence is not None
+                locked_start, locked_end = locked
+                cadence_end = locked_start - request.cadence
+                if not _long_enough(cadence_end - collection_begin, ss_min):
+                    start = max(
+                        start + self.ctx.step_size,
+                        self.ctx.ceil_step(locked_end + request.cadence),
+                    )
+                    continue
+                collection_end = min(collection_end, cadence_end)
+
             if not _long_enough(collection_end - collection_begin, ss_min):
                 if succ is not None and latest_end < window[1]:
                     # Starting later only leaves less room before the successor.
@@ -685,8 +1100,26 @@ class PriorityPlanner:
                     )
                 if succ is None or succ_slew is not None:
                     return fitted, slew, succ_slew
+                unreachable += 1
+                self._successor_blocked = True
+                if (
+                    self.successor_retries is not None
+                    and unreachable > self.successor_retries
+                ):
+                    return None
             start += self.ctx.step_size
         return None
+
+    def _visibility_needed_at(self, slew: Slew) -> float:
+        """When a science target must be visible for ACS to fly ``slew`` to it.
+
+        ACS starts the slew only once the target is visible, unless it may
+        slew before then (``slew_before_visible``), when the target need only
+        be visible on arrival.
+        """
+        if self.config.spacecraft_bus.attitude_control.slew_before_visible:
+            return float(slew.slewend)
+        return float(slew.slewstart)
 
     def _check_snapshot(
         self, block: _Block, slew: Slew, ss_min: float
@@ -696,7 +1129,8 @@ class PriorityPlanner:
         if self.ctx.first_slew_violation(slew, ACSMode.SLEWING) is not None:
             return None
         entry.visibility()
-        if not entry.visible(slew.slewstart, slew.slewstart):
+        needed = self._visibility_needed_at(slew)
+        if not entry.visible(needed, needed):
             return None
         violation = self.ctx.first_science_violation(
             entry, block.attitude_in, slew.slewend, self.ctx.ceil_step(block.end)

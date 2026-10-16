@@ -1,7 +1,9 @@
 """PriorityPlanner: plans must execute in DITL exactly as planned."""
 
 from datetime import timedelta
+from unittest.mock import Mock, patch
 
+import numpy as np
 import pytest
 from rust_ephem import SunConstraint
 
@@ -17,6 +19,7 @@ from conops.config import (
 )
 from conops.config.observation_categories import ObservationCategory
 from conops.schedulers import PriorityPlanner, SchedulingContext
+from conops.schedulers.priority_planner import _Move
 from conops.targets import Plan, PlanEntry, Pointing
 
 from .planning_scenario import (
@@ -188,7 +191,10 @@ class TestOrdering:
         ).schedule()
 
         assert [e.obsid for e in _science(plan)] == [2, 1]
-        assert [e.merit for e in _science(plan)] == [90.0, 20.0]
+        # Each entry keeps the value it was selected at. By the time A is
+        # placed, B's 1200 s snapshot has moved A to 900 of 2200 seconds.
+        a_value = 60 + 100 * (0.5 - 900 / 2200)
+        assert [e.merit for e in _science(plan)] == [90.0, pytest.approx(a_value)]
 
 
 class TestSnapshots:
@@ -598,3 +604,261 @@ class TestGroundContacts:
         assert stations and not stations & unreachable
         ditl = _execute(config, plan, hours, step)
         assert ditl.validate_plan_matches_execution() == []
+
+
+class TestSuccessorRetries:
+    """A limit on later starts tried in a gap whose successor is unreachable."""
+
+    HOURS = 12
+
+    def _plan(self, retries: int | None) -> tuple[MissionConfig, PriorityPlanner, int]:
+        config = _config(self.HOURS, stations=True)
+        targets = [
+            _target(config, 100 + i, ra, dec, merit=90 - 3 * i, minutes=60, snapshot=20)
+            for i, (ra, dec) in enumerate(PATCH + CONSTRAINED)
+        ]
+        planner = PriorityPlanner(
+            config,
+            targets,
+            BEGIN,
+            BEGIN + timedelta(hours=self.HOURS),
+            successor_retries=retries,
+        )
+        with patch.object(planner, "_connect", wraps=planner._connect) as connect:
+            planner.schedule()
+        return config, planner, connect.call_count
+
+    def test_a_limit_searches_less_and_still_executes_exactly(self) -> None:
+        _, exhaustive, exhaustive_calls = self._plan(None)
+        config, limited, limited_calls = self._plan(0)
+
+        assert limited_calls < exhaustive_calls
+        assert len(limited.plan) > 0
+        ditl = _execute(config, limited.plan, self.HOURS, 60)
+        assert ditl.validate_plan_matches_execution() == []
+
+    def test_rejects_a_negative_limit(self) -> None:
+        config = _config(1)
+
+        with pytest.raises(ValueError, match="successor_retries"):
+            PriorityPlanner(
+                config, [], BEGIN, BEGIN + timedelta(hours=1), successor_retries=-1
+            )
+
+
+class TestDelayingSuccessors:
+    """A snapshot that only the next one blocks is fitted by moving that one later."""
+
+    HOURS = 12
+
+    def _plan(self) -> tuple[MissionConfig, PriorityPlanner]:
+        config = _config(self.HOURS)
+        targets = [
+            _target(config, 100 + i, ra, dec, merit=90 - 7 * i, minutes=60, snapshot=20)
+            for i, (ra, dec) in enumerate(PATCH + CONSTRAINED)
+        ]
+        planner = PriorityPlanner(
+            config, targets, BEGIN, BEGIN + timedelta(hours=self.HOURS)
+        )
+        planner.schedule()
+        return config, planner
+
+    def test_moves_a_snapshot_later_and_still_executes_exactly(self) -> None:
+        config, planner = self._plan()
+
+        moves = [e for e in planner.log.events if e.description.startswith("Moved")]
+        assert moves
+        ditl = _execute(config, planner.plan, self.HOURS, 60)
+        assert ditl.validate_plan_matches_execution() == []
+
+    def test_plans_more_science_than_leaving_the_gap(self) -> None:
+        _, delaying = self._plan()
+        with patch.object(
+            PriorityPlanner, "_fit_delaying_successors", return_value=None
+        ):
+            _, fixed = self._plan()
+
+        assert _planned_collection(delaying.plan) > _planned_collection(fixed.plan)
+
+
+class TestSlewBeforeVisible:
+    """With slew_before_visible, slews may start before their target rises."""
+
+    HOURS = 12
+
+    def _plan(self, allowed: bool) -> tuple[MissionConfig, PriorityPlanner]:
+        config = _config(self.HOURS)
+        config.spacecraft_bus.attitude_control.slew_before_visible = allowed
+        targets = [
+            _target(config, 100 + i, ra, dec, merit=90 - 7 * i, minutes=60, snapshot=20)
+            for i, (ra, dec) in enumerate(PATCH + CONSTRAINED)
+        ]
+        planner = PriorityPlanner(
+            config, targets, BEGIN, BEGIN + timedelta(hours=self.HOURS)
+        )
+        planner.schedule()
+        return config, planner
+
+    @staticmethod
+    def _early_slews(planner: PriorityPlanner) -> int:
+        """Science slews that start while their target is not visible."""
+        return sum(
+            1
+            for entry in _science(planner.plan)
+            if entry.slewtime and not entry.visible(entry.begin, entry.begin)
+        )
+
+    def test_slews_start_before_the_target_rises_and_execute_exactly(self) -> None:
+        config, planner = self._plan(allowed=True)
+
+        assert self._early_slews(planner) > 0
+        ditl = _execute(config, planner.plan, self.HOURS, 60)
+        assert ditl.validate_plan_matches_execution() == []
+
+    def test_without_it_every_slew_starts_while_the_target_is_visible(self) -> None:
+        _, planner = self._plan(allowed=False)
+
+        assert self._early_slews(planner) == 0
+
+
+class TestFillingTimeATargetIsHidden:
+    """Time a target is hidden between two of its snapshots is filled.
+
+    The later snapshot starts as its target rises, so by default only staying
+    on the hidden target reaches it on time. Fitting another snapshot first
+    makes it start later, which is allowed.
+    """
+
+    HOURS = 12
+
+    def _plan(
+        self, config: MissionConfig | None = None
+    ) -> tuple[MissionConfig, PriorityPlanner]:
+        config = config if config is not None else _config(self.HOURS)
+        rng = np.random.default_rng(5)
+        targets = [
+            _target(
+                config,
+                100 + i,
+                rng.uniform(0, 360),
+                rng.uniform(-90, 90),
+                merit=rng.uniform(10, 100),
+                minutes=2000 / 60,
+                snapshot=1000 / 60,
+                ss_min=5,
+            )
+            for i in range(40)
+        ]
+        planner = PriorityPlanner(
+            config, targets, BEGIN, BEGIN + timedelta(hours=self.HOURS)
+        )
+        planner.schedule()
+        return config, planner
+
+    @staticmethod
+    def _long_gaps(planner: PriorityPlanner) -> list[float]:
+        timeline = planner.timeline
+        gaps = [
+            float(after.entry.begin) - float(before.end)
+            for before, after in zip(timeline, timeline[1:])
+        ]
+        return [gap for gap in gaps if gap > 20 * MIN]
+
+    def test_leaves_no_long_gaps_and_executes_exactly(self) -> None:
+        config, planner = self._plan()
+
+        assert self._long_gaps(planner) == []
+        ditl = _execute(config, planner.plan, self.HOURS, 60)
+        assert ditl.validate_plan_matches_execution() == []
+
+    def test_some_moves_cut_a_snapshot_short(self) -> None:
+        _, planner = self._plan()
+
+        moves = [e for e in planner.log.events if e.description.startswith("Moved")]
+        assert any("shorter" in e.description for e in moves)
+
+    def test_a_request_cut_short_is_placed_again(self) -> None:
+        """Exposure a move cuts from a finished request is planned elsewhere."""
+        config, planner = self._plan()
+
+        events = planner.log.events
+        cut = {
+            k: int(e.obsid)
+            for k, e in enumerate(events)
+            if e.description.startswith("Moved") and "shorter" in e.description
+        }
+        assert cut
+        placed_again = [
+            obsid
+            for k, obsid in cut.items()
+            if any(
+                e.description.startswith(f"Placed {obsid} ") for e in events[k + 1 :]
+            )
+        ]
+        assert placed_again
+        ditl = _execute(config, planner.plan, self.HOURS, 60)
+        assert ditl.validate_plan_matches_execution() == []
+
+    def test_program_shares_count_only_what_the_plan_delivers(self) -> None:
+        """A move that cuts a snapshot short takes its science off its program."""
+        config = _config(
+            self.HOURS,
+            weights=TargetConfig(completion_deficit_weight=50),
+            categories=[
+                ObservationCategory(
+                    name="A", obsid_min=100, obsid_max=120, time_share=0.5
+                ),
+                ObservationCategory(
+                    name="B", obsid_min=120, obsid_max=140, time_share=0.5
+                ),
+            ],
+        )
+        _, planner = self._plan(config)
+
+        assert any("shorter" in e.description for e in planner.log.events)
+        planned = {"A": 0.0, "B": 0.0}
+        for entry in _science(planner.plan):
+            program = "A" if int(entry.obsid) < 120 else "B"
+            planned[program] += entry.collection_seconds_between(entry.begin, entry.end)
+        assert planner._program_seconds == pytest.approx(planned)
+
+    def test_without_moving_snapshots_the_gaps_stay(self) -> None:
+        """Guards the test above: the scenario must have such gaps to fill."""
+        with patch.object(
+            PriorityPlanner, "_fit_delaying_successors", return_value=None
+        ):
+            _, planner = self._plan()
+
+        assert self._long_gaps(planner)
+
+
+class TestWorthCutting:
+    """When a move may cut a snapshot short to fit a new one before it."""
+
+    @staticmethod
+    def _request(tier: int, value: float) -> Mock:
+        request = Mock()
+        request.merit.tier = tier
+        request.steady_value = value
+        return request
+
+    def _move(self, lost: float, tier: int = 0, value: float = 50.0) -> _Move:
+        return _Move(Mock(), self._request(tier, value), Mock(), Mock(), lost)
+
+    def test_moves_that_cut_nothing_are_always_worth_it(self) -> None:
+        new = self._request(0, 1.0)
+
+        assert PriorityPlanner._worth_cutting(new, 10.0, [self._move(0.0)])
+
+    def test_worth_it_when_the_new_snapshot_is_worth_more(self) -> None:
+        new = self._request(0, 20.0)
+
+        assert PriorityPlanner._worth_cutting(new, 900.0, [self._move(300.0)])
+        assert not PriorityPlanner._worth_cutting(new, 300.0, [self._move(300.0)])
+
+    def test_never_cuts_a_higher_tier(self) -> None:
+        new = self._request(0, 1000.0)
+
+        assert not PriorityPlanner._worth_cutting(
+            new, 900.0, [self._move(1.0, tier=1, value=1.0)]
+        )

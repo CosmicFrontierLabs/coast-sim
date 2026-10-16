@@ -80,13 +80,16 @@ How a plan is built
    :doc:`configuration`). Each request is split into snapshots of up to ``ss_max``
    seconds and never shorter than ``ss_min``, until its ``exptime`` is used or it no
    longer fits. A request whose deadline is close gains urgency and so is placed
-   ahead of flexible requests with higher base merit.
+   ahead of flexible requests with higher base merit. Cadence and completion deficit
+   follow the plan as it is built (see below).
 4. **Each snapshot** goes in the earliest slot where every check ``DITL`` and the plan
    validator will apply passes:
 
    * the slew starts on a simulation step, after the previous activity ends;
    * the slew path clears the ``SLEWING`` attitude-constraint scopes;
-   * the target is visible when the slew starts (ACS will not start it otherwise);
+   * the target is visible when the slew starts (ACS will not start it otherwise),
+     or, with ``slew_before_visible`` set in the ACS configuration, when the slew
+     arrives;
    * the held attitude clears the ``SCIENCE`` scopes for the whole observation,
      including setup, cleanup and handoff time; an observation that would run into
      a constraint is shortened, but never below ``ss_min``;
@@ -95,22 +98,78 @@ How a plan is built
    * the next activity can still be reached on time, with its own slew and wait
      checked the same way.
 
+   **Moving snapshots later to make room.** A request whose snapshots straddle a time
+   its target is hidden gets its next snapshot the moment the target rises. By
+   default ACS starts a slew only once its target is visible, so the only way to be
+   on the target then is to stay on it while it is hidden: anything else placed in
+   that time would get there late. So if a snapshot would fit a gap but the science
+   snapshot after it could then not be reached in time, that snapshot is moved later
+   to make room, along with up to three more packed behind it, as long as the
+   activity after them can still be reached. Moving a snapshot can cut it short
+   where its target's visibility ends; that is allowed only if no snapshot cut short
+   is in a higher tier than the new one and the new snapshot's value-weighted seconds
+   exceed those lost. Exposure cut short is left for the request to plan elsewhere.
+   Ground passes, locked entries and snapshots of cadence targets are never moved.
+
+   **Slewing before a target is visible.** Setting ``slew_before_visible`` in the
+   ACS configuration lets a slew start early enough to arrive as its target rises,
+   rather than waiting for it to rise. That saves a slew's time each time a target
+   rises, and the snapshot after a gap no longer needs to move to make room.
+
 Requests left with at least ``ss_min`` of exposure unplanned are listed in
 ``planner.unplaced``. Every placement and rejection is logged to ``planner.log``.
 The input targets are not modified.
+
+**Planning faster when many requests cannot fit.** Most planning time in a crowded
+horizon goes to requests that end up unplaced: a snapshot fits a gap, but the activity
+after it cannot then be reached, so each later start in the gap is tried in turn, each
+with a full search for the slew onward. ``successor_retries`` limits how many later
+starts are tried after that happens before the gap is given up (3 by default). This
+plans much faster in a crowded horizon, but can miss a fit late in a gap; set it to
+None to try every start. Rolling replans use the default.
+
+Cadence and program shares in plans
+-----------------------------------
+
+The cadence and completion-deficit merit terms depend on what has already been
+observed, so the planner evaluates them against the plan as well as the science
+already collected, as :class:`~conops.ditl.QueueDITL` does against what it has
+executed:
+
+* **Completion deficit.** With ``completion_deficit_weight`` set and programs with a
+  ``time_share``, each program's share counts the science its targets have collected
+  (``collected_seconds``) plus what the plan has given them so far. The planner
+  re-ranks the requests after every snapshot, so a program falling behind its share
+  moves up.
+* **Cadence.** With ``cadence_weight`` set, a target in a category with
+  ``cadence_seconds`` is visited no sooner than that long after its last visit,
+  planned or collected (``last_collection_time``), so every visit has the full
+  cadence value. Each visit is placed at the earliest fit once it is due.
+
+When :class:`~conops.ditl.RollingHorizonDITL` replans, observations it has already
+committed but not finished collecting count too: their exposure towards their
+program's share (``reserved_seconds``) and their collection end as the target's last
+visit (``reserved_visits``), so a new plan does not revisit a target straight after a
+committed visit.
+
+Without these weights, plans are built exactly as before.
 
 Limitations
 -----------
 
 * **No battery model.** The planner does not schedule charging, and ``DITL`` does not
   charge on its own while executing a plan.
-* **Static ordering.** Merit is evaluated once, at the start of the horizon. Cadence
-  and completion deficit therefore set the order of requests but do not space or
-  balance their snapshots through the plan.
-* **Greedy.** Placements are never revisited. If a flexible, high-merit request is
-  placed first, it can take the only slot a lower-merit request with a short window
-  could use, and that request goes unplaced. Urgency avoids this when it raises the
-  short-window request above the flexible one, so it is placed first.
+* **Urgency at the start of the horizon.** Urgency is evaluated once, when the plan is
+  built; deadlines are kept as constraints.
+* **Cadence as a minimum spacing.** A visit before its cadence is due is never
+  planned, though dispatch may take one when nothing else is worth more. Spreading
+  many visits through the day also leaves the planner more, smaller gaps to search,
+  which lengthens planning.
+* **Greedy.** Apart from moving a snapshot later to make room before it, placements
+  are never revisited. If a flexible, high-merit request is placed first, it can take
+  the only slot a lower-merit request with a short window could use, and that request
+  goes unplaced. Urgency avoids this when it raises the short-window request above
+  the flexible one, so it is placed first.
 
 The scheduling context
 ----------------------

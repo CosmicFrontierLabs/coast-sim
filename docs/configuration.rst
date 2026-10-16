@@ -327,6 +327,7 @@ The :class:`~conops.config.AttitudeControlSystem` defines slew performance and p
 * ``max_slew_rate_body`` (tuple[float, float, float] | None): Optional body +X/+Y/+Z slew-rate limits in deg/s
 * ``slew_accuracy`` (float): Pointing accuracy after slew completion in degrees
 * ``settle_time`` (float): Time to settle after slew completion in seconds
+* ``slew_before_visible`` (bool, default False): Whether a slew to a science target that is not visible yet may start before it becomes visible, timed to arrive as it does. If False, ACS waits until the target is visible before starting the slew, so the slew time after the target rises is lost. When True, a slew to a target that is not visible yet is not flown if it would arrive no earlier than the end of its plan entry.
 * ``stored_momentum`` (:class:`~conops.config.momentum.StoredMomentumConfig`): Optional planning-level momentum tracking
 * ``slew_algorithm`` (:class:`~conops.common.enums.SlewAlgorithm`): Algorithm for computing slew paths:
 
@@ -953,6 +954,11 @@ merits. Within a tier the dynamic terms decide.
 Each dynamic term is its weight times a factor bounded to ``[0, 1]`` (``[-1, 1]``
 for the deficit), so no term can exceed its weight. With every weight at
 ``0.0`` and every category in tier ``0`` (the defaults), selection is unchanged.
+
+The planners apply the same terms. :class:`~conops.schedulers.PriorityPlanner`,
+and :class:`~conops.ditl.RollingHorizonDITL` through it, evaluate the cadence and
+completion deficit against the plan as it is built as well as the science already
+collected (see :doc:`planning`).
 
 When a target is selected, ``QueueDITL`` logs a ``QUEUE`` event with the full
 term breakdown (``Selected <obsid>: tier=... base=... urgency=... score=...``),
