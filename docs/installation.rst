@@ -26,6 +26,18 @@ To install COASTSim from source:
    cd coast-sim
    pip install -e .
 
+Optional: CP-SAT planner
+------------------------
+
+:class:`~conops.schedulers.CpSatPlanner` uses Google's OR-Tools CP-SAT solver, which
+is an optional dependency:
+
+.. code-block:: bash
+
+   pip install -e ".[cpsat]"
+
+The ``dev`` and ``test`` extras include it.
+
 Development Installation
 ------------------------
 
