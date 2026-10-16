@@ -23,7 +23,9 @@ snapshot in the earliest slot that still fits, without moving anything already
 placed. It is fast and deterministic, and its plans are traceable to the priority
 order. Because placements are never revisited, an early placement can block a
 better packing. :class:`~conops.schedulers.LocalSearchScheduler` starts from its plan
-and improves it (see `Improving plans by local search`_).
+and improves it (see `Improving plans by local search`_), and
+:class:`~conops.schedulers.CpSatScheduler` optimizes it with a constraint solver (see
+`Optimizing plans with CP-SAT`_).
 
 Building and executing a plan
 -----------------------------
@@ -145,12 +147,15 @@ executed:
   ``time_share``, each program's share counts the science its targets have collected
   (``collected_seconds``) plus what the plan has given them so far. The scheduler
   re-ranks the requests after every snapshot, so a program falling behind its share
-  moves up; local search values each snapshot by the shares in the plan before it.
+  moves up; local search values each snapshot by the shares in the plan before it;
+  CP-SAT uses the shares at the start of each chunk.
 * **Cadence.** With ``cadence_weight`` set, a target in a category with
   ``cadence_seconds`` is visited no sooner than that long after its last visit,
   planned or collected (``last_collection_time``), so every visit has the full
   cadence value. The priority-first scheduler and local search place each visit at the
-  earliest fit once it is due.
+  earliest fit once it is due; CP-SAT keeps the same spacing between a target's
+  candidates and discounts a visit by ``earliness_weight`` for each cadence it waits
+  after falling due.
 
 When :class:`~conops.ditl.RollingHorizonDITL` replans, observations it has already
 committed but not finished collecting count too: their exposure towards their
@@ -166,8 +171,8 @@ Limitations
 * **No battery model.** The scheduler does not schedule charging, and ``DITL`` does not
   charge on its own while executing a plan.
 * **Urgency at the start of the horizon.** Urgency is evaluated once, when the plan is
-  built; deadlines are kept as constraints and, in local search, by the earliness
-  discount.
+  built; deadlines are kept as constraints and, in local search and CP-SAT, by the
+  earliness discount.
 * **Cadence as a minimum spacing.** A visit before its cadence is due is never
   planned, though dispatch may take one when nothing else is worth more. Spreading
   many visits through the day also leaves the scheduler more, smaller gaps to search,
@@ -246,6 +251,82 @@ takes tens of seconds for a day with a few hundred targets.
 The notebook ``examples/Local_Search_Scheduler_Example.ipynb`` compares the two schedulers
 on a one-day plan, as the number of changes grows, and in rolling-horizon runs.
 
+Optimizing plans with CP-SAT
+----------------------------
+
+:class:`~conops.schedulers.CpSatScheduler` builds plans with the CP-SAT constraint solver
+from Google's OR-Tools, which is an optional dependency (see :doc:`installation`). It
+optimizes the same objective as local search, but chooses which snapshots to observe
+and in what order by solving a constraint model rather than by trying changes one at
+a time.
+
+The horizon is solved in consecutive ``chunk`` lengths (three hours by default). A
+chunk holds the snapshots whose slews start in it; a snapshot may finish in the next.
+For each chunk, a candidate is one snapshot of a request in one of its visibility
+windows (as many per window as the exposure needs and the window holds), with an
+optional arrival time and a collection length between its ``ss_min`` and ``ss_max``.
+CP-SAT chooses candidates and their order:
+
+* a circuit through the chosen candidates fixes the order;
+* each slew starts on the first simulation step after the task before it ends, and
+  once its target is visible; each snapshot finishes within its window;
+* collection starts no earlier than the request's ``earliest_start`` and by its
+  ``deadline``;
+* ground passes are fixed tasks that snapshots must leave room to slew to;
+* a request's snapshots never add up to more than its remaining exposure;
+* a cadence target's visits are at least its cadence apart, and after its last one;
+* the objective is merit-weighted science, with the completion deficit at the chunk's
+  start and the earliness discount for requests with a deadline and for cadence
+  visits.
+
+The priority-first plan's snapshots in each chunk are the solver's starting hint,
+adjusted where the model's approximate slews need it, so the solver starts from a
+feasible solution. Each chunk finishes before the priority-first plan's next slew and
+leaves the exposure that plan collects later to it, so the rest of that plan can
+always follow. Because the model approximates slews (each target's roll is chosen
+before solving), each chunk's order is decoded with the scheduler's exact checks, as in
+local search. It is kept if, followed by the rest of the priority-first plan, it
+scores at least as well as that plan does from the same point; otherwise, or if the
+solver found no solution in its time, the priority-first plan's snapshots for the
+chunk are kept. The next chunk is solved from where the kept snapshots leave the
+spacecraft. Every plan therefore executes as planned and is never worse than the
+priority-first plan; ``solver_chunks_used`` shows which chunks the solver improved.
+
+The exact decoding also applies the rules the model leaves out: visits stay a cadence
+clear of locked visits of the same target, ``slew_before_visible`` lets a slew start
+before its target rises, and each plan entry's ``merit`` is the value its snapshot has
+where it is placed.
+
+.. code-block:: python
+
+   from conops import CpSatScheduler
+
+   scheduler = CpSatScheduler(config, targets, begin, end, solver_time_limit=20.0)
+   plan = scheduler.schedule()
+   print(scheduler.solver_statuses, scheduler.initial_score, "->", scheduler.score)
+
+``CpSatScheduler`` takes the arguments of ``LocalSearchScheduler``, plus:
+
+* ``solver_time_limit``: seconds CP-SAT may search, shared across the chunks
+  (default 20);
+* ``chunk``: length of each chunk (default three hours);
+* ``workers``: CP-SAT search workers (default 8). Use 1, with ``seed``, for runs that
+  repeat exactly;
+* ``max_candidates``: candidates per chunk at most (default 120), those of the
+  priority-first plan first, then in priority order.
+
+``time_limit`` defaults to 0 here; set it to spend that many seconds improving the
+solver's plan by local search afterwards. The plan's metadata records
+``"scheduler": "cp_sat"``, and ``solver_score`` and ``solver_seconds`` give the score
+and time of the solver's plan before any local search.
+
+**Limitations.** Chunks are solved one after another. A chunk cannot borrow time or
+exposure the priority-first plan uses later, so improvements that would need to
+rearrange several chunks at once are left to local search. The model's slews are
+approximate; the exact decoding corrects them but can drop or shorten a snapshot the
+solver chose. With very short limits (well under a second per chunk) the solver may
+find nothing, and the plan is the priority-first one.
+
 The scheduling context
 ----------------------
 
@@ -310,8 +391,9 @@ rebuilds it as the simulation runs:
    print(ditl.too_response_times())       # seconds to first science, by obsid
    assert ditl.validate_plan_matches_execution() == []
 
-Pass ``scheduler=LocalSearchScheduler`` (and, for example,
-``scheduler_options={"time_limit": 10.0}``) to build each plan by local search.
+Pass ``scheduler=LocalSearchScheduler`` or ``scheduler=CpSatScheduler`` (and, for example,
+``scheduler_options={"time_limit": 10.0}`` or ``{"solver_time_limit": 10.0}``) to build
+each plan by local search or with CP-SAT.
 
 **Results**
 
