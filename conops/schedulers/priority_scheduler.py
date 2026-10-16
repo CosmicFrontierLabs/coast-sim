@@ -195,6 +195,9 @@ class PriorityScheduler:
             tries every start, which finds every fit.
     """
 
+    scheduler_name = "priority"
+    """Recorded in the plan's metadata."""
+
     def __init__(
         self,
         config: MissionConfig,
@@ -237,6 +240,12 @@ class PriorityScheduler:
 
     def schedule(self) -> Plan:
         """Build and return the plan."""
+        self._reserve_fixed()
+        self._place_requests(self._requests())
+        return self._finish(self.timeline)
+
+    def _reserve_fixed(self) -> None:
+        """Start a timeline holding the locked entries and reachable passes."""
         self.ctx = SchedulingContext(
             self.config,
             self.begin,
@@ -280,11 +289,14 @@ class PriorityScheduler:
             for gspass in self.ctx.predict_passes():
                 self._place_pass(gspass)
 
-        self._place_requests(self._requests())
-
+    def _finish(self, timeline: Sequence[_Block]) -> Plan:
+        """Record and return the plan for a finished timeline."""
         self.plan = Plan(
-            entries=[block.entry for block in self.timeline],
-            metadata={"scheduler": "priority", "step_size": self.ctx.step_size},
+            entries=[block.entry for block in timeline],
+            metadata={
+                "scheduler": self.scheduler_name,
+                "step_size": self.ctx.step_size,
+            },
         )
         return self.plan
 

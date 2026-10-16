@@ -44,6 +44,7 @@ Scheduling and Planning
 
    conops.schedulers
    conops.schedulers.context
+   conops.schedulers.local_search_scheduler
    conops.schedulers.priority_scheduler
    conops.schedulers.protocols
    conops.schedulers.queue_scheduler

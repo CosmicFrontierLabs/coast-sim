@@ -956,7 +956,8 @@ for the deficit), so no term can exceed its weight. With every weight at
 ``0.0`` and every category in tier ``0`` (the defaults), selection is unchanged.
 
 The schedulers apply the same terms. :class:`~conops.schedulers.PriorityScheduler`,
-and :class:`~conops.ditl.RollingHorizonDITL` through it, evaluate the cadence and
+:class:`~conops.schedulers.LocalSearchScheduler`, and
+:class:`~conops.ditl.RollingHorizonDITL` through them, evaluate the cadence and
 completion deficit against the plan as it is built as well as the science already
 collected (see :doc:`planning`).
 
