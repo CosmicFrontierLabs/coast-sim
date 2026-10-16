@@ -148,6 +148,37 @@ class TestCadence:
         assert first >= T0 + 30 * MIN
 
 
+class TestCadenceOrdering:
+    def test_a_recently_observed_target_outranks_filler_worth_less_than_its_visits(
+        self,
+    ) -> None:
+        """Filler is worth more than the target's cadence value at the start of
+        the horizon, but less than each of its visits, which wait until due."""
+        hours = 3
+        config = _config(
+            hours, weights=TargetConfig(cadence_weight=50), categories=[MONITOR]
+        )
+        monitor = _target(config, 1, *PATCH[0], merit=60, minutes=30, snapshot=10)
+        monitor.record_collection(T0 - 30 * MIN, 60.0)
+        filler = [
+            _target(config, 10 + i, ra, dec, merit=100, minutes=60, snapshot=20)
+            for i, (ra, dec) in enumerate(PATCH[1:])
+        ]
+
+        plan = PriorityPlanner(
+            config, [monitor, *filler], BEGIN, BEGIN + timedelta(hours=hours)
+        ).schedule()
+
+        # The third visit is not due until too late to fit in the horizon.
+        visits = _visits(plan, 1)
+        assert len(visits) == 2
+        assert visits[0][0] >= T0 + 30 * MIN
+        for (_, end), (begin, _) in zip(visits, visits[1:]):
+            assert begin >= end + HOUR
+        assert all(e.merit == pytest.approx(110.0) for e in plan if int(e.obsid) == 1)
+        assert _executes_exactly(config, plan, hours)
+
+
 class TestCadenceWithLockedVisits:
     """Planned visits keep a cadence from locked visits of the same target."""
 

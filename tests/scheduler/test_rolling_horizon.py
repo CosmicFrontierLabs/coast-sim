@@ -179,6 +179,49 @@ def _long_observation() -> list[Pointing]:
 
 
 class TestTargetsOfOpportunity:
+    def test_a_too_beats_the_value_an_observation_was_selected_at(self) -> None:
+        """After program shares change, an entry keeps its value at selection,
+        not its value at the start of the horizon, so a ToO worth more than
+        that interrupts it."""
+        programs = [
+            ObservationCategory(name="A", obsid_min=1, obsid_max=2, time_share=0.5),
+            ObservationCategory(name="B", obsid_min=2, obsid_max=3, time_share=0.5),
+        ]
+        config = _config(
+            3,
+            weights=TargetConfig(completion_deficit_weight=100),
+            categories=programs,
+        )
+        # A is worth 150 at first, B 110; A's third snapshot is selected once
+        # each has 1200 s, at 100.
+        a = _target(config, 1, 105.0, 10.0, merit=100, minutes=60, snapshot=20)
+        b = _target(config, 2, 110.0, 10.0, merit=60, minutes=60, snapshot=20)
+
+        ditl = _run(
+            3,
+            [a, b],
+            toos=(
+                {
+                    **GRB,
+                    "merit": 120.0,
+                    "submit_time": T0 + 50 * MIN,
+                    "deadline": T0 + 55 * MIN,
+                },
+            ),
+            replan_interval=timedelta(hours=4),
+        )
+
+        assert [int(e.obsid) for e in ditl.plan if e.obstype.name == "AT"][:3] == [
+            1,
+            2,
+            1,
+        ]
+        third = [e for e in ditl.plan if e.obstype.name == "AT"][2]
+        assert float(third.merit) == pytest.approx(100.0)
+        assert any(r.interrupted_obsid == 1 for r in ditl.replans)
+        assert ditl.too_response_times()[1_000_001] is not None
+        assert ditl.validate_plan_matches_execution() == []
+
     def test_close_deadline_triggers_rapid_replan_and_interrupt(self) -> None:
         ditl = _run(
             3,

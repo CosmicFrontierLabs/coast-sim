@@ -302,9 +302,9 @@ class PriorityPlanner:
         self._cut_short: list[_Request] = []
         """Requests a move has cut short since the last placement."""
         while active:
+            shares = program_shares(self._program_seconds)
             request = active[0]
             if self._balancing:
-                shares = program_shares(self._program_seconds)
                 request = max(
                     active,
                     key=lambda r: (
@@ -316,6 +316,10 @@ class PriorityPlanner:
             block = self._place_snapshot(request, self._cadence_release(request))
             self._reactivate_cut_short(active, order)
             if block is not None:
+                # Freeze the value the snapshot was selected at onto its entry,
+                # as dispatch does: a Target of Opportunity must beat it to
+                # interrupt the observation.
+                block.entry.merit = self._value(request, shares)
                 collected = block.entry.collection_seconds_between(
                     block.entry.begin, block.entry.end
                 )
@@ -471,8 +475,11 @@ class PriorityPlanner:
                 hashlib.blake2b(payload, digest_size=8).digest(), "big"
             )
 
+        # Ranked by the value of a visit when it is placed, as selection uses:
+        # a cadence target's visits wait until they are due, so each has the
+        # full cadence value, not the part it has at the start of the horizon.
         requests.sort(
-            key=lambda r: (r.merit.value_rank, tie_break(r)),
+            key=lambda r: (r.merit.tier, self._value(r, shares), tie_break(r)),
             reverse=True,
         )
         return requests
@@ -937,6 +944,8 @@ class PriorityPlanner:
             # among the blocks that may move again.
             del self._movable[id(move.old_block)]
             self._movable[id(move.new_block)] = move.request
+            # It keeps the value it was selected at.
+            move.new_block.entry.merit = move.old_block.entry.merit
             # Exposure cut short is left for the request to plan elsewhere,
             # and no longer counts towards its program's share.
             move.request.remaining += move.lost

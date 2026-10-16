@@ -191,7 +191,10 @@ class TestOrdering:
         ).schedule()
 
         assert [e.obsid for e in _science(plan)] == [2, 1]
-        assert [e.merit for e in _science(plan)] == [90.0, 20.0]
+        # Each entry keeps the value it was selected at. By the time A is
+        # placed, B's 1200 s snapshot has moved A to 900 of 2200 seconds.
+        a_value = 60 + 100 * (0.5 - 900 / 2200)
+        assert [e.merit for e in _science(plan)] == [90.0, pytest.approx(a_value)]
 
 
 class TestSnapshots:
