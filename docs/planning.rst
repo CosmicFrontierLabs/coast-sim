@@ -327,6 +327,10 @@ approximate; the exact decoding corrects them but can drop or shorten a snapshot
 solver chose. With very short limits (well under a second per chunk) the solver may
 find nothing, and the plan is the priority-first one.
 
+The notebook ``examples/CP_SAT_Planner_Example.ipynb`` compares CP-SAT with local
+search on a one-day plan, chunk by chunk, as the planning time grows, and in
+rolling-horizon runs.
+
 The scheduling context
 ----------------------
 
