@@ -234,6 +234,41 @@ class TestSearch:
             (b.entry.obsid, b.entry.begin, b.end) for b in redecoded.final.timeline
         ] == [(b.entry.obsid, b.entry.begin, b.end) for b in best.final.timeline]
 
+    def test_replace_swaps_one_snapshot_for_another_request(self) -> None:
+        """A replace move puts a full-length snapshot of a request with exposure
+        left where another snapshot was, and decodes like a full decode."""
+
+        class ReplaceAtOne:
+            """Stands in for the search's random source: picks a replace move
+            at position 1, with the first candidate request."""
+
+            def random(self) -> float:
+                return 0.3
+
+            def choices(self, options: range, weights: list[float]) -> list[int]:
+                return [1]
+
+            def choice(self, options: list[int]) -> int:
+                return options[0]
+
+        targets = _targets(4)
+        scheduler = _scheduler(targets, 4, iterations=0)
+        start = scheduler._start_from_priority_plan()
+
+        move = scheduler._random_move(start, ReplaceAtOne())  # type: ignore[arg-type]
+
+        assert move is not None
+        sequence, first, last, shift = move
+        assert (first, last, shift) == (1, 1, 0)
+        replaced = sequence[1]
+        assert replaced.obsid != start.sequence[1].obsid
+        assert start.final.remaining[replaced.obsid] > 0
+        assert replaced == scheduler._released(replaced.obsid)
+        assert sequence[:1] + sequence[2:] == start.sequence[:1] + start.sequence[2:]
+        decoded = scheduler._redecode(start, *move)
+        full = scheduler._decode(sequence)
+        assert scheduler._objective(decoded.final) == scheduler._objective(full.final)
+
     def test_same_seed_and_budget_give_the_same_plan(self) -> None:
         first = _scheduler(_targets(3), 3, iterations=150).schedule()
         second = _scheduler(_targets(3), 3, iterations=150).schedule()
@@ -333,6 +368,42 @@ class TestEarliness:
         entry = next(e for e in plan if e.obsid == 2)
         assert entry.collection_begin is not None
         assert T0 + HOUR <= entry.collection_begin <= T0 + 2 * HOUR
+
+    def test_earliest_start_and_deadline_met_when_the_slew_lengthens(
+        self,
+    ) -> None:
+        """The slew to this target is a second longer at the step estimated
+        from its duration at the horizon start, which would collect after
+        the deadline; the step before meets both earliest start and deadline."""
+        config = _config(6)
+        target = _target(
+            config,
+            33,
+            271.24954384622714,
+            -10.971713550878292,
+            minutes=10,
+            snapshot=10,
+            ss_min=5,
+            earliest_start=T0 + 9809,
+            deadline=T0 + 9819,
+        )
+        scheduler = LocalSearchScheduler(
+            config,
+            [target],
+            BEGIN,
+            BEGIN + timedelta(hours=6),
+            step_size=60,
+            include_passes=False,
+            max_iterations=50,
+            seed=1,
+        )
+        plan = scheduler.schedule()
+
+        (entry,) = (e for e in plan if e.obstype != ObsType.GSP)
+        assert entry.collection_begin is not None
+        assert T0 + 9809 <= entry.collection_begin <= T0 + 9819
+        ditl = _execute([target], plan, 6)
+        assert ditl.validate_plan_matches_execution() == []
 
     def test_lateness_counts_from_the_earliest_start(self) -> None:
         """Starting at its earliest start, a request loses nothing."""

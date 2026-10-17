@@ -296,6 +296,43 @@ class TestDeadlinesAndConstraints:
 
         assert ditl.validate_plan_matches_execution() == []
 
+    def test_earliest_start_and_deadline_met_when_the_slew_lengthens(
+        self,
+    ) -> None:
+        """Only the start at 9600 s collects between 9809 s and 9819 s.
+
+        From the horizon start the slew takes 208 s, which puts the estimate
+        for an earliest start of 9809 s at 9660 s. The slew takes 209 s from
+        there, so collection there would begin at 9869 s, after the deadline.
+        """
+        config = _config(6)
+        target = _target(
+            config,
+            33,
+            271.24954384622714,
+            -10.971713550878292,
+            minutes=10,
+            snapshot=10,
+            ss_min=5,
+            earliest_start=T0 + 9809,
+            deadline=T0 + 9819,
+        )
+        scheduler = PriorityScheduler(
+            config,
+            [target],
+            BEGIN,
+            BEGIN + timedelta(hours=6),
+            step_size=60,
+            include_passes=False,
+        )
+        plan = scheduler.schedule()
+
+        (entry,) = _science(plan)
+        assert entry.collection_begin is not None
+        assert T0 + 9809 <= entry.collection_begin <= T0 + 9819
+        ditl = _execute(config, plan, 6, scheduler.ctx.step_size)
+        assert ditl.validate_plan_matches_execution() == []
+
     def test_priority_order_can_cost_a_short_window_request(self) -> None:
         """Placed first, a flexible high-merit request takes the slot B needed."""
         config = _config(3)

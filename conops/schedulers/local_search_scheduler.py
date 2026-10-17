@@ -11,7 +11,7 @@ so far, and a cadence target's visits wait for their cadence, as in
 :class:`~conops.schedulers.PriorityScheduler`.
 
 :class:`LocalSearchScheduler` starts from the priority-first plan and searches
-for a better order by inserting, removing, swapping and moving snapshots,
+for a better order by inserting, replacing, removing, swapping and moving snapshots,
 keeping the best plan it finds within a time or iteration budget.
 """
 
@@ -93,6 +93,7 @@ class LocalSearchScheduler(PriorityScheduler):
     each order into a timeline (see the module description). It tries:
 
     * inserting a snapshot of a request with exposure left to place,
+    * replacing a snapshot with one of another request with exposure left,
     * releasing a snapshot from the time and length the priority-first plan
       gave it,
     * removing a snapshot,
@@ -487,13 +488,9 @@ class LocalSearchScheduler(PriorityScheduler):
         size = len(sequence)
         kind = rng.random()
 
-        if kind < 0.3:
+        if kind < 0.25:
             # Insert a full-length snapshot of a request with exposure left.
-            open_requests = [
-                obsid
-                for obsid, request in self._by_obsid.items()
-                if _wants_more(request, current.final.remaining[obsid])
-            ]
+            open_requests = self._open_requests(current)
             if not open_requests:
                 return None
             obsid = rng.choice(open_requests)
@@ -502,6 +499,28 @@ class LocalSearchScheduler(PriorityScheduler):
             return [*sequence[:at], added, *sequence[at:]], at, at, 1
         if size == 0:
             return None
+
+        if kind < 0.35:
+            # Replace a snapshot with a full-length one of another request
+            # with exposure left. Removing a snapshot can free time that only
+            # a different target can use, as when the spacecraft waits on a
+            # hidden target to observe it the moment it rises. Inserting
+            # first then makes that snapshot late, pushing everything after
+            # it later, and removing first loses science, so neither change
+            # is kept on its own. Snapshots that idle time comes before are
+            # the ones worth replacing, so they are picked more often.
+            weights = [idle + self.ctx.step_size for idle in self._idle_before(current)]
+            at = rng.choices(range(size), weights=weights)[0]
+            others = [
+                obsid
+                for obsid in self._open_requests(current)
+                if obsid != sequence[at].obsid
+            ]
+            if not others:
+                return None
+            changed = list(sequence)
+            changed[at] = self._released(rng.choice(others))
+            return changed, at, at, 0
 
         if kind < 0.55:
             # Release a snapshot from its earlier time and length.
@@ -533,6 +552,34 @@ class LocalSearchScheduler(PriorityScheduler):
         for k in range(lo, hi + 1):
             changed[k] = self._released(changed[k].obsid)
         return changed, lo, hi, 0
+
+    def _open_requests(self, current: _Decoded) -> list[int]:
+        """Return the requests the current plan leaves exposure to place."""
+        return [
+            obsid
+            for obsid, request in self._by_obsid.items()
+            if _wants_more(request, current.final.remaining[obsid])
+        ]
+
+    def _idle_before(self, current: _Decoded) -> list[float]:
+        """Return, for each snapshot in the sequence, the idle seconds before it.
+
+        That is the time from the end of the block before it to the start of
+        its slew; zero for a snapshot that did not fit.
+        """
+        idle = []
+        for before, after in zip(current.states, current.states[1:]):
+            if after.cursor == before.cursor:
+                # Not placed: _step returned the state unchanged.
+                idle.append(0.0)
+                continue
+            block = after.timeline[after.cursor - 1]
+            pred = (
+                after.timeline[after.cursor - 2] if after.cursor > 1 else self._origin
+            )
+            start = pred.end if pred is not None else self.ctx.ustart
+            idle.append(max(0.0, float(block.entry.begin) - start))
+        return idle
 
     def _released(self, obsid: int) -> _Snapshot:
         """Return a full-length snapshot of ``obsid`` with no release time."""

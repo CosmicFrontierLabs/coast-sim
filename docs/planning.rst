@@ -194,6 +194,9 @@ planned. Each snapshot starts out tied to the time and length the priority-first
 gave it, so the starting point is that plan. The search then tries:
 
 * **inserting** a snapshot of a request that still has exposure to place;
+* **replacing** a snapshot with one of another request that still has exposure to
+  place, which frees time that only a different target can use, such as the time the
+  spacecraft would otherwise spend waiting on a hidden target until it rises;
 * **releasing** a snapshot from its earlier time and length, letting it move earlier
   and run to its full ``ss_max``;
 * **removing** a snapshot;
