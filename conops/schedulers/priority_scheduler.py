@@ -159,8 +159,9 @@ class PriorityScheduler:
        :class:`~conops.ditl.DITL` will apply passes: the slew starts on a step,
        its path and the held attitude clear their mode's constraints, the
        target is visible when the slew starts (or, if ACS may slew before a
-       target is visible, when it arrives), collection starts by the target's
-       deadline, and the following activity can still be reached.
+       target is visible, when it arrives), collection starts no earlier than
+       the target's earliest start and by its deadline, and the following
+       activity can still be reached.
 
     The plan is built for execution by :class:`~conops.ditl.DITL` with the same
     configuration, ephemeris, horizon and step size. The scheduler does not model
@@ -194,6 +195,9 @@ class PriorityScheduler:
             requests cannot be placed, but can miss a fit late in a gap. None
             tries every start, which finds every fit.
     """
+
+    scheduler_name = "priority"
+    """Recorded in the plan's metadata."""
 
     def __init__(
         self,
@@ -237,6 +241,12 @@ class PriorityScheduler:
 
     def schedule(self) -> Plan:
         """Build and return the plan."""
+        self._reserve_fixed()
+        self._place_requests(self._requests())
+        return self._finish(self.timeline)
+
+    def _reserve_fixed(self) -> None:
+        """Start a timeline holding the locked entries and reachable passes."""
         self.ctx = SchedulingContext(
             self.config,
             self.begin,
@@ -280,11 +290,14 @@ class PriorityScheduler:
             for gspass in self.ctx.predict_passes():
                 self._place_pass(gspass)
 
-        self._place_requests(self._requests())
-
+    def _finish(self, timeline: Sequence[_Block]) -> Plan:
+        """Record and return the plan for a finished timeline."""
         self.plan = Plan(
-            entries=[block.entry for block in self.timeline],
-            metadata={"scheduler": "priority", "step_size": self.ctx.step_size},
+            entries=[block.entry for block in timeline],
+            metadata={
+                "scheduler": self.scheduler_name,
+                "step_size": self.ctx.step_size,
+            },
         )
         return self.plan
 
@@ -1034,6 +1047,35 @@ class PriorityScheduler:
                 continue
 
             collection_begin = float(slew.slewend) + self.ctx.setup_seconds
+            if (
+                target.earliest_start is not None
+                and collection_begin < target.earliest_start
+            ):
+                # Start later by the shortfall, so collection begins at the
+                # earliest start if the slew takes as long. It need not: its
+                # duration changes with the instrument roll, so a longer slew
+                # there can leave this step too late for a deadline that an
+                # earlier step meets. So step back while the step before
+                # still begins collection by the earliest start. No earlier
+                # start can then do so: a slew's duration changes by far less
+                # than a step from one step to the next, so collection begins
+                # later the later the slew starts.
+                jump = max(
+                    start + self.ctx.step_size,
+                    self.ctx.ceil_step(
+                        start + target.earliest_start - collection_begin
+                    ),
+                )
+                while (
+                    jump - self.ctx.step_size > start
+                    and self._collection_begin_at(
+                        target, pred, jump - self.ctx.step_size
+                    )
+                    >= target.earliest_start
+                ):
+                    jump -= self.ctx.step_size
+                start = jump
+                continue
             if target.deadline is not None and collection_begin > target.deadline:
                 return None
 
@@ -1109,6 +1151,17 @@ class PriorityScheduler:
                     return None
             start += self.ctx.step_size
         return None
+
+    def _collection_begin_at(
+        self, target: Pointing, pred: _Block | None, start: float
+    ) -> float:
+        """Return when collection of ``target`` begins if the slew to it after
+        ``pred`` starts at ``start``."""
+        attitude = target.target_body_attitude(self.ctx.instrument_roll(target, start))
+        slew = self.ctx.slew(
+            self._start_attitude(pred, start), attitude, start, obsid=target.obsid
+        )
+        return float(slew.slewend) + self.ctx.setup_seconds
 
     def _visibility_needed_at(self, slew: Slew) -> float:
         """When a science target must be visible for ACS to fly ``slew`` to it.

@@ -111,8 +111,10 @@ class RollingHorizonDITL(DITL):
             observation in progress.
         include_passes: Whether plans reserve ground-station passes.
         scheduler: Scheduler class that builds each plan:
-            :class:`~conops.schedulers.PriorityScheduler` or a subclass of it.
-        scheduler_options: Extra keyword arguments for the scheduler.
+            :class:`~conops.schedulers.PriorityScheduler` or a subclass such as
+            :class:`~conops.schedulers.LocalSearchScheduler`.
+        scheduler_options: Extra keyword arguments for the scheduler, such as
+            ``{"time_limit": 5.0}`` for a local-search scheduler.
         calculate_field_of_regard: Whether to compute field-of-regard telemetry.
     """
 

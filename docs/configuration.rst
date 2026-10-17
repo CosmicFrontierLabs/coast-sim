@@ -942,6 +942,8 @@ merits. Within a tier the dynamic terms decide.
   ``timescale / time_to_close`` before that. The closing time is the deadline,
   or the end of the current visibility window when no later window opens
   before the deadline. A target cannot be selected once its deadline has passed.
+  A target with an ``earliest_start`` (``queue.add(..., earliest_start=...)``),
+  the earliest time science collection may begin, cannot be selected before it.
 * ``config.targets.cadence_weight`` - Merit added once a target's category
   ``cadence_seconds`` has elapsed since it last collected science, rising
   linearly from ``0`` just after a visit. A target never yet observed gets the
@@ -956,7 +958,8 @@ for the deficit), so no term can exceed its weight. With every weight at
 ``0.0`` and every category in tier ``0`` (the defaults), selection is unchanged.
 
 The schedulers apply the same terms. :class:`~conops.schedulers.PriorityScheduler`,
-and :class:`~conops.ditl.RollingHorizonDITL` through it, evaluate the cadence and
+:class:`~conops.schedulers.LocalSearchScheduler`, and
+:class:`~conops.ditl.RollingHorizonDITL` through them, evaluate the cadence and
 completion deficit against the plan as it is built as well as the science already
 collected (see :doc:`planning`).
 
