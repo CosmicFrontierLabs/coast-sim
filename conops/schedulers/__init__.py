@@ -1,4 +1,5 @@
 from .context import SchedulingContext
+from .cpsat_scheduler import CpSatScheduler
 from .local_search_scheduler import LocalSearchScheduler
 from .priority_scheduler import PriorityScheduler
 from .protocols import DispatchPolicy, Scheduler
@@ -7,6 +8,7 @@ from .scheduler import DumbScheduler
 from .sequential_scheduler import SequentialScheduler
 
 __all__ = [
+    "CpSatScheduler",
     "DispatchPolicy",
     "DumbQueueScheduler",
     "DumbScheduler",
