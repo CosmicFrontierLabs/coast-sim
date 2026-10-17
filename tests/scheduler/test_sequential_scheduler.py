@@ -93,7 +93,7 @@ class TestDumbSchedulerShim:
     def test_is_a_sequential_scheduler(self) -> None:
         assert issubclass(DumbScheduler, SequentialScheduler)
 
-    def test_matches_sequential_planner_over_whole_days(self) -> None:
+    def test_matches_sequential_scheduler_over_whole_days(self) -> None:
         config = _config(24)
         scheduler = SequentialScheduler(
             config, _targets(config), BEGIN, BEGIN + timedelta(days=1)

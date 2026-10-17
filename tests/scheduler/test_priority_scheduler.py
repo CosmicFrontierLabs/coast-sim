@@ -265,7 +265,7 @@ class TestDeadlinesAndConstraints:
         config = _config(2)
         target = _target(config, 1, 105.0, 10.0, earliest_start=T0 + 30 * MIN)
 
-        plan = PriorityPlanner(
+        plan = PriorityScheduler(
             config, [target], BEGIN, BEGIN + timedelta(hours=2)
         ).schedule()
 
@@ -278,7 +278,7 @@ class TestDeadlinesAndConstraints:
         later = _target(config, 1, 105.0, 10.0, merit=90, earliest_start=T0 + 40 * MIN)
         now = _target(config, 2, 110.0, 10.0, merit=10)
 
-        plan = PriorityPlanner(
+        plan = PriorityScheduler(
             config, [later, now], BEGIN, BEGIN + timedelta(hours=2)
         ).schedule()
 
@@ -287,10 +287,12 @@ class TestDeadlinesAndConstraints:
     def test_executes_as_planned_with_an_earliest_start(self) -> None:
         config = _config(2)
         target = _target(config, 1, 105.0, 10.0, earliest_start=T0 + 30 * MIN)
-        planner = PriorityPlanner(config, [target], BEGIN, BEGIN + timedelta(hours=2))
-        plan = planner.schedule()
+        scheduler = PriorityScheduler(
+            config, [target], BEGIN, BEGIN + timedelta(hours=2)
+        )
+        plan = scheduler.schedule()
 
-        ditl = _execute(config, plan, 2, planner.ctx.step_size)
+        ditl = _execute(config, plan, 2, scheduler.ctx.step_size)
 
         assert ditl.validate_plan_matches_execution() == []
 

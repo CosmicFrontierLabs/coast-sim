@@ -3,14 +3,14 @@
 A plan's science can be described by the order of its snapshots alone. A
 decoder turns an order into a timeline by placing each snapshot at the earliest
 time it fits after the one before, with the checks
-:class:`~conops.schedulers.PriorityPlanner` applies, so every decoded timeline
+:class:`~conops.schedulers.PriorityScheduler` applies, so every decoded timeline
 executes as planned. Decoding in time order also closes the gaps that placing
 requests in priority order leaves behind, and lets each snapshot's merit follow
 the plan before it: its completion deficit counts the program shares delivered
 so far, and a cadence target's visits wait for their cadence, as in
-:class:`~conops.schedulers.PriorityPlanner`.
+:class:`~conops.schedulers.PriorityScheduler`.
 
-:class:`LocalSearchPlanner` starts from the priority-first plan and searches
+:class:`LocalSearchScheduler` starts from the priority-first plan and searches
 for a better order by inserting, removing, swapping and moving snapshots,
 keeping the best plan it finds within a time or iteration budget.
 """
@@ -24,8 +24,8 @@ from pydantic import BaseModel, ConfigDict
 
 from ..config import MissionConfig
 from ..targets import Plan, Pointing
-from .priority_planner import (
-    PriorityPlanner,
+from .priority_scheduler import (
+    PriorityScheduler,
     _Block,
     _collection_seconds,
     _Request,
@@ -86,7 +86,7 @@ def _wants_more(request: _Request, remaining: float) -> bool:
     return remaining > 0 and remaining >= float(request.target.ss_min)
 
 
-class LocalSearchPlanner(PriorityPlanner):
+class LocalSearchScheduler(PriorityScheduler):
     """Build a priority-first plan, then improve it by local search.
 
     The search changes the order of the plan's science snapshots and decodes
@@ -114,7 +114,7 @@ class LocalSearchPlanner(PriorityPlanner):
 
     Ground passes and locked entries stay where the priority-first plan put
     them. Takes the same arguments as
-    :class:`~conops.schedulers.PriorityPlanner`, plus:
+    :class:`~conops.schedulers.PriorityScheduler`, plus:
 
     Args:
         time_limit: Seconds of search after the priority-first plan is built.
@@ -128,7 +128,7 @@ class LocalSearchPlanner(PriorityPlanner):
             snapshot worth more than none.
     """
 
-    planner_name = "local_search"
+    scheduler_name = "local_search"
 
     def __init__(
         self,
@@ -340,7 +340,7 @@ class LocalSearchPlanner(PriorityPlanner):
                 placed.extend(timeline[index + 1 :])
 
             # Freeze the value the snapshot has here onto its entry, as the
-            # priority-first planner does: a Target of Opportunity must beat
+            # priority-first scheduler does: a Target of Opportunity must beat
             # it to interrupt the observation.
             value = self._value(request, program_shares(state.programs))
             block.entry.merit = value

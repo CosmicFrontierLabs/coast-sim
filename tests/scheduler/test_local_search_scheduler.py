@@ -1,4 +1,4 @@
-"""LocalSearchPlanner: improve priority-first plans without breaking execution."""
+"""LocalSearchScheduler: improve priority-first plans without breaking execution."""
 
 from datetime import timedelta
 
@@ -10,8 +10,8 @@ from conops.common import ObsType
 from conops.config import MissionConfig, TargetConfig
 from conops.config.observation_categories import ObservationCategory
 from conops.ditl import RollingHorizonDITL
-from conops.schedulers import LocalSearchPlanner, PriorityPlanner
-from conops.schedulers.priority_planner import program_shares
+from conops.schedulers import LocalSearchScheduler, PriorityScheduler
+from conops.schedulers.priority_scheduler import program_shares
 from conops.targets import Plan, PlanEntry, Pointing
 
 from .planning_scenario import BEGIN, CONSTRAINED, HOUR, MIN, PATCH, T0
@@ -33,7 +33,7 @@ def _targets(hours: int, config: MissionConfig | None = None) -> list[Pointing]:
 
 def _random_targets(config: MissionConfig) -> list[Pointing]:
     """Targets whose snapshots straddle Earth occultations, so the priority-first
-    planner moves snapshots later to fill the time a target is hidden."""
+    scheduler moves snapshots later to fill the time a target is hidden."""
     rng = np.random.default_rng(5)
     return [
         _target(
@@ -97,15 +97,15 @@ def _execute(targets: list[Pointing], plan: Plan, hours: int) -> DITL:
     return ditl
 
 
-def _planner(
+def _scheduler(
     targets: list[Pointing],
     hours: int,
     iterations: int,
     **options: float | dict[int, float] | list[PlanEntry],
-) -> LocalSearchPlanner:
+) -> LocalSearchScheduler:
     config = targets[0].config
     assert config is not None
-    return LocalSearchPlanner(
+    return LocalSearchScheduler(
         config,
         targets,
         BEGIN,
@@ -120,7 +120,7 @@ def _planner(
 def _priority_plan(targets: list[Pointing], hours: int) -> Plan:
     config = targets[0].config
     assert config is not None
-    return PriorityPlanner(
+    return PriorityScheduler(
         config, targets, BEGIN, BEGIN + timedelta(hours=hours)
     ).schedule()
 
@@ -130,34 +130,34 @@ class TestStartingPoint:
         targets = _targets(4)
         greedy = _priority_plan(targets, 4)
 
-        planner = _planner(targets, 4, iterations=0)
-        plan = planner.schedule()
+        scheduler = _scheduler(targets, 4, iterations=0)
+        plan = scheduler.schedule()
 
-        assert planner.start_score == planner.initial_score
+        assert scheduler.start_score == scheduler.initial_score
         assert _science(plan) == _science(greedy)
         assert plan.metadata is not None
-        assert plan.metadata["planner"] == "local_search"
+        assert plan.metadata["scheduler"] == "local_search"
 
-    def test_snapshots_the_priority_first_planner_moved_start_where_it_left_them(
+    def test_snapshots_the_priority_first_scheduler_moved_start_where_it_left_them(
         self,
     ) -> None:
         """Moved, and sometimes cut short, they still decode to the same plan.
 
-        Where the priority-first planner fitted a snapshot before another, the
+        Where the priority-first scheduler fitted a snapshot before another, the
         slew to that other one starts as late as it can, and may arrive before
         its collection starts. The decoder starts that collection on arrival,
         so it can start a little earlier, for the same length.
         """
         hours = 12
         config = _config(hours)
-        greedy = PriorityPlanner(
+        greedy = PriorityScheduler(
             config, _random_targets(config), BEGIN, BEGIN + timedelta(hours=hours)
         )
         greedy.schedule()
         assert any("shorter" in e.description for e in greedy.log.events)
 
-        planner = _planner(_random_targets(config), hours, iterations=0)
-        plan = planner.schedule()
+        scheduler = _scheduler(_random_targets(config), hours, iterations=0)
+        plan = scheduler.schedule()
 
         def snapshots(plan: Plan) -> list[tuple[int, float, float]]:
             return [
@@ -166,7 +166,7 @@ class TestStartingPoint:
                 if e.obstype != ObsType.GSP
             ]
 
-        assert planner.start_score == planner.initial_score
+        assert scheduler.start_score == scheduler.initial_score
         assert snapshots(plan) == snapshots(greedy.plan)
         for decoded, placed in zip(plan, greedy.plan):
             assert decoded.collection_begin is not None
@@ -180,31 +180,31 @@ class TestStartingPoint:
         config.spacecraft_bus.attitude_control.slew_before_visible = True
         greedy = _priority_plan(_targets(4, config), 4)
 
-        planner = _planner(_targets(4, config), 4, iterations=0)
-        plan = planner.schedule()
+        scheduler = _scheduler(_targets(4, config), 4, iterations=0)
+        plan = scheduler.schedule()
 
-        assert planner.start_score == planner.initial_score
+        assert scheduler.start_score == scheduler.initial_score
         assert _science(plan) == _science(greedy)
 
 
 @pytest.fixture(scope="module")
-def searched() -> tuple[LocalSearchPlanner, Plan, list[Pointing]]:
+def searched() -> tuple[LocalSearchScheduler, Plan, list[Pointing]]:
     targets = _targets(4)
-    planner = _planner(targets, 4, iterations=400)
-    return planner, planner.schedule(), targets
+    scheduler = _scheduler(targets, 4, iterations=400)
+    return scheduler, scheduler.schedule(), targets
 
 
 class TestSearch:
     def test_never_worse_than_priority_first(
-        self, searched: tuple[LocalSearchPlanner, Plan, list[Pointing]]
+        self, searched: tuple[LocalSearchScheduler, Plan, list[Pointing]]
     ) -> None:
-        planner, _, _ = searched
+        scheduler, _, _ = searched
 
-        assert planner.score >= planner.initial_score
-        assert planner.iterations == 400
+        assert scheduler.score >= scheduler.initial_score
+        assert scheduler.iterations == 400
 
     def test_improved_plan_executes_exactly_as_planned(
-        self, searched: tuple[LocalSearchPlanner, Plan, list[Pointing]]
+        self, searched: tuple[LocalSearchScheduler, Plan, list[Pointing]]
     ) -> None:
         _, plan, targets = searched
 
@@ -223,27 +223,27 @@ class TestSearch:
 
     def test_incremental_decoding_matches_a_full_decode(self) -> None:
         targets = _targets(4)
-        planner = _planner(targets, 4, iterations=200)
-        planner.schedule()
-        best = planner._best
+        scheduler = _scheduler(targets, 4, iterations=200)
+        scheduler.schedule()
+        best = scheduler._best
 
-        redecoded = planner._decode(best.sequence)
+        redecoded = scheduler._decode(best.sequence)
 
-        assert planner._objective(redecoded.final) == planner._objective(best.final)
+        assert scheduler._objective(redecoded.final) == scheduler._objective(best.final)
         assert [
             (b.entry.obsid, b.entry.begin, b.end) for b in redecoded.final.timeline
         ] == [(b.entry.obsid, b.entry.begin, b.end) for b in best.final.timeline]
 
     def test_same_seed_and_budget_give_the_same_plan(self) -> None:
-        first = _planner(_targets(3), 3, iterations=150).schedule()
-        second = _planner(_targets(3), 3, iterations=150).schedule()
+        first = _scheduler(_targets(3), 3, iterations=150).schedule()
+        second = _scheduler(_targets(3), 3, iterations=150).schedule()
 
         assert _science(first) == _science(second)
 
     def test_inputs_are_not_modified(self) -> None:
         targets = _targets(3)
 
-        _planner(targets, 3, iterations=100).schedule()
+        _scheduler(targets, 3, iterations=100).schedule()
 
         assert all(t.exptime == 60 * MIN for t in targets)
 
@@ -251,11 +251,11 @@ class TestSearch:
         config = _config(4)
         config.spacecraft_bus.attitude_control.slew_before_visible = True
         targets = _targets(4, config)
-        planner = _planner(targets, 4, iterations=300)
+        scheduler = _scheduler(targets, 4, iterations=300)
 
-        plan = planner.schedule()
+        plan = scheduler.schedule()
 
-        assert planner.score >= planner.initial_score
+        assert scheduler.score >= scheduler.initial_score
         ditl = _execute(targets, plan, 4)
         assert ditl.validate_plan_matches_execution() == []
 
@@ -269,7 +269,7 @@ class TestShortWindowRequest:
             config, 2, 110.0, 10.0, merit=70, minutes=30, deadline=T0 + 30 * MIN
         )
 
-        planner = LocalSearchPlanner(
+        scheduler = LocalSearchScheduler(
             config,
             [flexible, urgent],
             BEGIN,
@@ -277,11 +277,11 @@ class TestShortWindowRequest:
             max_iterations=200,
             seed=1,
         )
-        plan = planner.schedule()
+        plan = scheduler.schedule()
 
         assert [obsid for obsid, _, _ in _science(plan)] == [2, 1]
-        assert planner.unplaced == []
-        assert planner.score > planner.initial_score
+        assert scheduler.unplaced == []
+        assert scheduler.score > scheduler.initial_score
 
 
 class TestEarliness:
@@ -293,7 +293,7 @@ class TestEarliness:
             config, 2, 110.0, 10.0, merit=50, minutes=20, deadline=T0 + 2 * 3600
         )
 
-        planner = LocalSearchPlanner(
+        scheduler = LocalSearchScheduler(
             config,
             [filler, deadline],
             BEGIN,
@@ -301,10 +301,10 @@ class TestEarliness:
             max_iterations=300,
             seed=1,
         )
-        plan = planner.schedule()
+        plan = scheduler.schedule()
 
         assert [obsid for obsid, _, _ in _science(plan)] == [2, 1]
-        assert planner.score > planner.initial_score
+        assert scheduler.score > scheduler.initial_score
 
     def test_earliest_start_is_kept_by_every_change(self) -> None:
         config = _config(3)
@@ -320,7 +320,7 @@ class TestEarliness:
             deadline=T0 + 2 * HOUR,
         )
 
-        planner = LocalSearchPlanner(
+        scheduler = LocalSearchScheduler(
             config,
             [filler, later],
             BEGIN,
@@ -328,7 +328,7 @@ class TestEarliness:
             max_iterations=300,
             seed=1,
         )
-        plan = planner.schedule()
+        plan = scheduler.schedule()
 
         entry = next(e for e in plan if e.obsid == 2)
         assert entry.collection_begin is not None
@@ -347,7 +347,7 @@ class TestEarliness:
             earliest_start=T0 + HOUR,
             deadline=T0 + 2 * HOUR,
         )
-        planner = LocalSearchPlanner(
+        scheduler = LocalSearchScheduler(
             config,
             [target],
             BEGIN,
@@ -356,19 +356,19 @@ class TestEarliness:
             earliness_weight=1.0,
         )
 
-        plan = planner.schedule()
+        plan = scheduler.schedule()
 
         (entry,) = (e for e in plan if e.obstype != ObsType.GSP)
         assert entry.collection_begin is not None
         delay = float(entry.collection_begin) - (T0 + HOUR)
         expected = 50 * 20 * MIN * (1.0 - delay / HOUR)
-        assert planner.score[0] == pytest.approx(expected)
+        assert scheduler.score[0] == pytest.approx(expected)
 
     def test_late_snapshot_still_counts(self) -> None:
         """A snapshot starting at its deadline keeps part of its value."""
         config = _config(2)
         target = _target(config, 1, 105.0, 10.0, merit=50, deadline=T0 + 3600)
-        planner = LocalSearchPlanner(
+        scheduler = LocalSearchScheduler(
             config,
             [target],
             BEGIN,
@@ -377,14 +377,14 @@ class TestEarliness:
             earliness_weight=1.0,
         )
 
-        planner.schedule()
+        scheduler.schedule()
 
-        assert planner.score[0] > 0
+        assert scheduler.score[0] > 0
 
 
 class TestDynamicMerit:
     """The search keeps the cadence and program-share rules of the
-    priority-first planner."""
+    priority-first scheduler."""
 
     HOURS = 4
 
@@ -399,7 +399,7 @@ class TestDynamicMerit:
         config = self._monitor_config()
         targets = _monitored(config)
 
-        plan = _planner(targets, self.HOURS, iterations=300).schedule()
+        plan = _scheduler(targets, self.HOURS, iterations=300).schedule()
 
         visits = _visits(plan, 1)
         assert len(visits) >= 2
@@ -412,7 +412,7 @@ class TestDynamicMerit:
         config = self._monitor_config()
         targets = _monitored(config)
 
-        plan = _planner(
+        plan = _scheduler(
             targets,
             self.HOURS,
             iterations=300,
@@ -440,7 +440,7 @@ class TestDynamicMerit:
             ss_min=60,
         )
 
-        plan = _planner(
+        plan = _scheduler(
             _monitored(config), self.HOURS, iterations=300, locked=[locked]
         ).schedule()
 
@@ -474,17 +474,17 @@ class TestDynamicMerit:
             _target(config, 200 + i, ra, dec, merit=60, minutes=120, snapshot=20)
             for i, (ra, dec) in enumerate(PATCH[2:])
         ]
-        planner = _planner([*a, *b], self.HOURS, iterations=300)
+        scheduler = _scheduler([*a, *b], self.HOURS, iterations=300)
 
-        plan = planner.schedule()
+        plan = scheduler.schedule()
 
         programs: dict[str, float] = {}
         merits = []
         for entry in sorted(
             (e for e in plan if e.obstype != ObsType.GSP), key=lambda e: e.begin
         ):
-            request = planner._by_obsid[int(entry.obsid)]
-            expected = planner._value(request, program_shares(programs))
+            request = scheduler._by_obsid[int(entry.obsid)]
+            expected = scheduler._value(request, program_shares(programs))
             merits.append(float(entry.merit))
             assert float(entry.merit) == pytest.approx(expected)
             program = request.category.program_name
@@ -512,7 +512,7 @@ class TestArguments:
         config = _config(1)
 
         with pytest.raises(ValueError):
-            LocalSearchPlanner(
+            LocalSearchScheduler(
                 config,
                 [],
                 BEGIN,
@@ -522,7 +522,7 @@ class TestArguments:
 
 
 class TestRollingHorizon:
-    def test_rolling_replanning_uses_the_local_search_planner(self) -> None:
+    def test_rolling_replanning_uses_the_local_search_scheduler(self) -> None:
         targets = _targets(3)
         ditl = RollingHorizonDITL(
             targets[0].config,  # type: ignore[arg-type]
@@ -530,8 +530,8 @@ class TestRollingHorizon:
             begin=BEGIN,
             end=BEGIN + timedelta(hours=3),
             replan_interval=timedelta(hours=1),
-            planner=LocalSearchPlanner,
-            planner_options={"time_limit": 600, "max_iterations": 100, "seed": 1},
+            scheduler=LocalSearchScheduler,
+            scheduler_options={"time_limit": 600, "max_iterations": 100, "seed": 1},
         )
         ditl.step_size = 60
 
