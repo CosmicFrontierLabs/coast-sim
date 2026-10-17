@@ -1,6 +1,6 @@
-"""Time-sequential first-fit planner.
+"""Time-sequential first-fit scheduler.
 
-:class:`SequentialPlanner` walks forward through the horizon and, at each
+:class:`SequentialScheduler` walks forward through the horizon and, at each
 point, observes the first target in list order whose attitude stays clear of
 constraints long enough. It is simple and quick, and list order acts as
 priority. It is myopic: it never looks ahead or back, observes each target at
@@ -48,7 +48,7 @@ class _Selection:
     """Contiguous constraint-free time from the slew start, slew included."""
 
 
-class SequentialPlanner:
+class SequentialScheduler:
     """Build a plan by observing, at each time, the first target that fits.
 
     Steps:
@@ -147,11 +147,11 @@ class SequentialPlanner:
 
     @staticmethod
     def _validated_ephem(config: MissionConfig) -> rust_ephem.Ephemeris:
-        """Return the configuration's ephemeris, rejecting what this planner can't plan."""
+        """Return the configuration's ephemeris, rejecting what this scheduler can't plan."""
         if config.payload.observation_timing.total_seconds > 0:
             raise ValueError(
                 "Observation timing budgets require QueueDITL, not "
-                "SequentialPlanner or DumbScheduler"
+                "SequentialScheduler or DumbScheduler"
             )
         ephem = config.constraint.ephem
         if ephem is None:
@@ -179,7 +179,7 @@ class SequentialPlanner:
     def _start_run(self) -> None:
         """Clear the results of any previous run."""
         self.scheduled = []
-        self.plan = Plan(metadata={"planner": "sequential"})
+        self.plan = Plan(metadata={"scheduler": "sequential"})
 
     def _horizon(self) -> tuple[float, float]:
         """Return the planning horizon in Unix seconds."""

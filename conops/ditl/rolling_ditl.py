@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict
 from ..common import ObsType
 from ..config import MissionConfig
 from ..schedulers.context import Attitude, tracking_rest
-from ..schedulers.priority_planner import PriorityPlanner, StartState
+from ..schedulers.priority_scheduler import PriorityScheduler, StartState
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing
 from ..targets.merit import MeritModel
@@ -65,8 +65,8 @@ class RollingHorizonDITL(DITL):
     """Follow a plan rebuilt from the spacecraft's actual state as time passes.
 
     This models a ground-planned mission. A plan for the next ``horizon`` is
-    built with ``planner`` (by default
-    :class:`~conops.schedulers.PriorityPlanner`) at the start and
+    built with ``scheduler`` (by default
+    :class:`~conops.schedulers.PriorityScheduler`) at the start and
     every ``replan_interval`` after that. Each replan keeps everything already
     commanded or due to start within ``commit_lead_time`` (the time a new plan
     takes to reach the spacecraft), and plans the rest again from the
@@ -110,9 +110,9 @@ class RollingHorizonDITL(DITL):
         allow_interrupts: Whether a rapid replan may cut short the
             observation in progress.
         include_passes: Whether plans reserve ground-station passes.
-        planner: Planner class that builds each plan:
-            :class:`~conops.schedulers.PriorityPlanner` or a subclass of it.
-        planner_options: Extra keyword arguments for the planner.
+        scheduler: Scheduler class that builds each plan:
+            :class:`~conops.schedulers.PriorityScheduler` or a subclass of it.
+        scheduler_options: Extra keyword arguments for the scheduler.
         calculate_field_of_regard: Whether to compute field-of-regard telemetry.
     """
 
@@ -130,8 +130,8 @@ class RollingHorizonDITL(DITL):
         rapid_replans: bool = True,
         allow_interrupts: bool = True,
         include_passes: bool = True,
-        planner: type[PriorityPlanner] = PriorityPlanner,
-        planner_options: Mapping[str, object] | None = None,
+        scheduler: type[PriorityScheduler] = PriorityScheduler,
+        scheduler_options: Mapping[str, object] | None = None,
         calculate_field_of_regard: bool = False,
     ) -> None:
         if horizon <= timedelta(0) or replan_interval <= timedelta(0):
@@ -153,8 +153,8 @@ class RollingHorizonDITL(DITL):
         self.rapid_replans = rapid_replans
         self.allow_interrupts = allow_interrupts
         self.include_passes = include_passes
-        self.planner = planner
-        self.planner_options = dict(planner_options or {})
+        self.scheduler = scheduler
+        self.scheduler_options = dict(scheduler_options or {})
         self.merit_model = MeritModel(config)
         self.too_register: list[TOORequest] = []
         self.replans: list[ReplanRecord] = []
@@ -439,9 +439,9 @@ class RollingHorizonDITL(DITL):
         horizon_end = min(utime + self.horizon.total_seconds(), self.uend)
         if horizon_end <= start:
             return committed, dropped, [], 0
-        planner = self.planner(
+        scheduler = self.scheduler(
             self.config,
-            # Finished targets too: the planner does not place them, but their
+            # Finished targets too: the scheduler does not place them, but their
             # science counts towards their programs' shares.
             self.targets,
             _as_datetime(start),
@@ -454,13 +454,13 @@ class RollingHorizonDITL(DITL):
             start_state=start_state,
             reserved_seconds=self._reserved_seconds(committed, utime),
             reserved_visits=self._reserved_visits(committed, utime),
-            **self.planner_options,  # type: ignore[arg-type]
+            **self.scheduler_options,  # type: ignore[arg-type]
         )
         return (
             committed,
             dropped,
-            list(planner.schedule().entries),
-            len(planner.unplaced),
+            list(scheduler.schedule().entries),
+            len(scheduler.unplaced),
         )
 
     def _interrupt_for(
@@ -541,7 +541,7 @@ class RollingHorizonDITL(DITL):
             )
             return StartState(time=max(cutoff, rest_time), attitude=attitude)
         if not committed:
-            # Never commanded: the planner replays the freshly started spacecraft.
+            # Never commanded: the scheduler replays the freshly started spacecraft.
             return None
         return StartState(
             time=cutoff,

@@ -1,6 +1,6 @@
-"""Priority-first construction planner.
+"""Priority-first construction scheduler.
 
-:class:`PriorityPlanner` reserves ground contacts first, then takes requests
+:class:`PriorityScheduler` reserves ground contacts first, then takes requests
 in priority order and places each snapshot in the earliest slot that still fits,
 without moving anything already placed. It is fast and deterministic, and its
 plans are traceable to the priority order. It is myopic: an early placement can
@@ -70,7 +70,7 @@ class StartState(BaseModel):
     """Where the spacecraft is when a plan takes over part-way through a run.
 
     Attributes:
-        time: First time (Unix seconds) a new activity may start; the planner
+        time: First time (Unix seconds) a new activity may start; the scheduler
             rounds it up to a simulation step.
         attitude: Body attitude the spacecraft holds from ``time`` until the
             first planned slew.
@@ -136,7 +136,7 @@ def _long_enough(collection_seconds: float, ss_min: float) -> bool:
     return collection_seconds > 0 and collection_seconds >= ss_min
 
 
-class PriorityPlanner:
+class PriorityScheduler:
     """Build a plan by placing requests in priority order at their earliest fit.
 
     Steps:
@@ -163,7 +163,7 @@ class PriorityPlanner:
        deadline, and the following activity can still be reached.
 
     The plan is built for execution by :class:`~conops.ditl.DITL` with the same
-    configuration, ephemeris, horizon and step size. The planner does not model
+    configuration, ephemeris, horizon and step size. The scheduler does not model
     battery state, so it does not schedule charging.
 
     Args:
@@ -247,7 +247,7 @@ class PriorityPlanner:
         )
         self.timeline: list[_Block] = []
         self._movable: dict[int, _Request] = {}
-        """Science blocks placed by this planner that may move later, by id,
+        """Science blocks placed by this scheduler that may move later, by id,
         with their requests; locked entries and passes never move."""
         self._successor_blocked = False
         """Whether the last gap searched held a fit that only the activity
@@ -284,7 +284,7 @@ class PriorityPlanner:
 
         self.plan = Plan(
             entries=[block.entry for block in self.timeline],
-            metadata={"planner": "priority", "step_size": self.ctx.step_size},
+            metadata={"scheduler": "priority", "step_size": self.ctx.step_size},
         )
         return self.plan
 
@@ -841,7 +841,7 @@ class PriorityPlanner:
     def _may_move(self, block: _Block) -> bool:
         """Whether a block may be placed again later to make room before it.
 
-        Only science snapshots this planner placed may move, and not those of
+        Only science snapshots this scheduler placed may move, and not those of
         cadence targets, whose later visits are spaced from them. Locked
         entries and passes never move.
         """

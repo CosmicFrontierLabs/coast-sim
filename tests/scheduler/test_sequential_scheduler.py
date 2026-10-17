@@ -1,12 +1,12 @@
-"""SequentialPlanner: horizon, reruns and reporting, and its DumbScheduler shim."""
+"""SequentialScheduler: horizon, reruns and reporting, and its DumbScheduler shim."""
 
 from datetime import timedelta
 
 import pytest
 
-from conops import DITLLog, DumbScheduler, SequentialPlanner
+from conops import DITLLog, DumbScheduler, SequentialScheduler
 
-from .test_priority_planner import BEGIN, HOUR, _config, _target
+from .test_priority_scheduler import BEGIN, HOUR, _config, _target
 
 
 def _targets(config, count=12):
@@ -19,49 +19,49 @@ def _targets(config, count=12):
 def test_plans_within_horizon() -> None:
     config = _config(6)
     begin, end = BEGIN + timedelta(hours=1), BEGIN + timedelta(hours=3)
-    planner = SequentialPlanner(config, _targets(config), begin, end)
+    scheduler = SequentialScheduler(config, _targets(config), begin, end)
 
-    plan = planner.schedule()
+    plan = scheduler.schedule()
 
-    assert plan is planner.plan
+    assert plan is scheduler.plan
     assert len(plan) > 0
     assert all(begin.timestamp() <= e.begin < end.timestamp() for e in plan)
     assert all(e.end <= end.timestamp() for e in plan)
-    assert plan.metadata == {"planner": "sequential"}
+    assert plan.metadata == {"scheduler": "sequential"}
 
 
 def test_rerun_starts_fresh() -> None:
     config = _config(6)
-    planner = SequentialPlanner(
+    scheduler = SequentialScheduler(
         config, _targets(config), BEGIN, BEGIN + timedelta(hours=2)
     )
-    first = planner.schedule()
+    first = scheduler.schedule()
 
-    second = planner.schedule()
+    second = scheduler.schedule()
 
     assert second is not first
-    assert planner.scheduled == [e.obsid for e in second]
+    assert scheduler.scheduled == [e.obsid for e in second]
 
 
 def test_reports_unplaced_targets() -> None:
     config = _config(6)
     targets = _targets(config)
-    planner = SequentialPlanner(config, targets, BEGIN, BEGIN + timedelta(hours=1))
+    scheduler = SequentialScheduler(config, targets, BEGIN, BEGIN + timedelta(hours=1))
 
-    planner.schedule()
+    scheduler.schedule()
 
-    assert planner.unplaced
-    assert planner.unplaced == [t for t in targets if t.exptime]
+    assert scheduler.unplaced
+    assert scheduler.unplaced == [t for t in targets if t.exptime]
 
 
 def test_starts_on_the_first_step_at_or_after_begin() -> None:
     config = _config(6)
     begin = BEGIN + timedelta(seconds=1)
-    planner = SequentialPlanner(
+    scheduler = SequentialScheduler(
         config, _targets(config), begin, BEGIN + timedelta(hours=2)
     )
 
-    plan = planner.schedule()
+    plan = scheduler.schedule()
 
     assert plan[0].begin == (BEGIN + timedelta(minutes=1)).timestamp()
 
@@ -69,19 +69,19 @@ def test_starts_on_the_first_step_at_or_after_begin() -> None:
 def test_partially_observed_target_is_unplaced() -> None:
     config = _config(6)
     target = _target(config, 3, 111.0, -1.0, minutes=600)
-    planner = SequentialPlanner(config, [target], BEGIN, BEGIN + timedelta(hours=2))
+    scheduler = SequentialScheduler(config, [target], BEGIN, BEGIN + timedelta(hours=2))
 
-    planner.schedule()
+    scheduler.schedule()
 
-    assert planner.scheduled == [3]
+    assert scheduler.scheduled == [3]
     assert 0 < target.exptime < 600 * 60
-    assert planner.unplaced == [target]
+    assert scheduler.unplaced == [target]
 
 
 def test_logs_instead_of_printing(capsys: pytest.CaptureFixture[str]) -> None:
     config = _config(6)
     log = DITLLog()
-    SequentialPlanner(
+    SequentialScheduler(
         config, _targets(config), BEGIN, BEGIN + timedelta(hours=1), log=log
     ).schedule()
 
@@ -90,12 +90,12 @@ def test_logs_instead_of_printing(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 class TestDumbSchedulerShim:
-    def test_is_a_sequential_planner(self) -> None:
-        assert issubclass(DumbScheduler, SequentialPlanner)
+    def test_is_a_sequential_scheduler(self) -> None:
+        assert issubclass(DumbScheduler, SequentialScheduler)
 
     def test_matches_sequential_planner_over_whole_days(self) -> None:
         config = _config(24)
-        planner = SequentialPlanner(
+        scheduler = SequentialScheduler(
             config, _targets(config), BEGIN, BEGIN + timedelta(days=1)
         )
         legacy_config = _config(24)
@@ -103,7 +103,7 @@ class TestDumbSchedulerShim:
         for target in _targets(legacy_config):
             legacy.targlist.add_target(target)
 
-        expected = planner.schedule()
+        expected = scheduler.schedule()
         actual = legacy.schedule()
 
         assert [(e.obsid, e.begin, e.end, e.exposure) for e in actual] == [
@@ -125,9 +125,9 @@ class TestDumbSchedulerShim:
 def test_exposure_is_capped_at_the_request() -> None:
     config = _config(6)
     target = _target(config, 3, 111.0, -1.0, minutes=20)
-    planner = SequentialPlanner(config, [target], BEGIN, BEGIN + timedelta(hours=2))
+    scheduler = SequentialScheduler(config, [target], BEGIN, BEGIN + timedelta(hours=2))
 
-    plan = planner.schedule()
+    plan = scheduler.schedule()
 
     assert [e.exposure for e in plan] == [20 * 60]
     assert target.exptime == 0
@@ -136,20 +136,20 @@ def test_exposure_is_capped_at_the_request() -> None:
 def test_horizon_too_short_for_min_window_plans_nothing() -> None:
     config = _config(6)
     target = _target(config, 3, 111.0, -1.0, minutes=20)
-    planner = SequentialPlanner(
+    scheduler = SequentialScheduler(
         config, [target], BEGIN, BEGIN + timedelta(minutes=4), min_window=300
     )
 
-    assert len(planner.schedule()) == 0
-    assert planner.unplaced == [target]
+    assert len(scheduler.schedule()) == 0
+    assert scheduler.unplaced == [target]
 
 
 def test_off_grid_horizon_end_does_not_overlap_entries() -> None:
     config = _config(6)
     end = BEGIN + timedelta(minutes=10, seconds=29)
-    planner = SequentialPlanner(config, _targets(config), BEGIN, end, min_window=0)
+    scheduler = SequentialScheduler(config, _targets(config), BEGIN, end, min_window=0)
 
-    plan = planner.schedule()
+    plan = scheduler.schedule()
 
     assert all(e.exposure > 0 for e in plan)
     assert all(a.end <= b.begin for a, b in zip(plan, plan[1:]))

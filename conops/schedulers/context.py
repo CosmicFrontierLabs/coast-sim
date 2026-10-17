@@ -1,6 +1,6 @@
-"""The spacecraft model a planner schedules against.
+"""The spacecraft model a scheduler schedules against.
 
-:class:`SchedulingContext` answers the questions a planner asks while it builds
+:class:`SchedulingContext` answers the questions a scheduler asks while it builds
 a timeline (how long a slew takes, whether an attitude is allowed in a given
 ACS mode, which ground passes are available) using the same models
 :class:`~conops.ditl.DITL` executes with. A plan built against it should
@@ -235,7 +235,7 @@ class SchedulingContext:
     def visibility_windows(self, target: PlanEntry) -> list[tuple[float, float]]:
         """Return when a target is clear of its roll-independent constraints.
 
-        Every roll is excluded outside these windows, so a planner can skip
+        Every roll is excluded outside these windows, so a scheduler can skip
         them before checking a specific roll. A mounted instrument's windows
         follow its science line of sight, not the body attitude.
         """
