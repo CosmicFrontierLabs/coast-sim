@@ -102,11 +102,11 @@ class SpacecraftBus(ConfigModel):
         )
         if (
             gravity_gradient_enabled is True
-            and getattr(self, "inertia_tensor_body_kg_m2", None) is None
-        ):
+            or getattr(stored_momentum, "capacity_enabled", False) is True
+        ) and getattr(self, "inertia_tensor_body_kg_m2", None) is None:
             raise ValueError(
                 "inertia_tensor_body_kg_m2 is required when gravity-gradient "
-                "momentum tracking is enabled"
+                "momentum tracking or momentum capacity enforcement is enabled"
             )
         return self
 
