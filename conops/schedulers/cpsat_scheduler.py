@@ -1,6 +1,6 @@
 """Plan with the OR-Tools CP-SAT constraint solver.
 
-:class:`CpSatPlanner` splits the horizon into consecutive chunks and, for each,
+:class:`CpSatScheduler` splits the horizon into consecutive chunks and, for each,
 lets CP-SAT choose which snapshots to observe and in what order. A candidate is
 one snapshot of a request in one of its visibility windows (as many per window
 as the exposure needs and the window holds), with an optional start and a
@@ -9,10 +9,10 @@ through the chosen candidates sets their order. Each slew starts on the first
 simulation step after the task before it ends, and once its target is visible,
 as ACS requires. Ground passes are fixed tasks. The objective is the
 merit-weighted, earliness-discounted science time that
-:class:`~conops.schedulers.LocalSearchPlanner` maximizes.
+:class:`~conops.schedulers.LocalSearchScheduler` maximizes.
 
 The model approximates slews (each target's roll is chosen before solving), so
-each chunk's order is decoded with the planner's exact checks before the next
+each chunk's order is decoded with the scheduler's exact checks before the next
 chunk is solved from where it leaves the spacecraft. Every plan therefore
 executes as planned.
 """
@@ -29,8 +29,14 @@ from ..config.acs import scheduled_slew_time
 from ..simulation.slew import Slew
 from ..targets import Plan, Pointing
 from .context import Attitude
-from .local_search import LocalSearchPlanner, Score, _Decoded, _Snapshot, _State
-from .priority_planner import _Block, _Request, program_shares
+from .local_search_scheduler import (
+    LocalSearchScheduler,
+    Score,
+    _Decoded,
+    _Snapshot,
+    _State,
+)
+from .priority_scheduler import _Block, _Request, program_shares
 
 WindowKey = tuple[int, float]
 """A request's obsid and the Unix start time of one of its visibility windows."""
@@ -94,7 +100,7 @@ class _Task:
         return self.duration + self.overhead + self.collection[0]
 
 
-class CpSatPlanner(LocalSearchPlanner):
+class CpSatScheduler(LocalSearchScheduler):
     """Plan chunk by chunk with CP-SAT, decoding each chunk exactly.
 
     1. The priority-first plan is built. Its snapshots in each chunk are
@@ -102,16 +108,16 @@ class CpSatPlanner(LocalSearchPlanner):
     2. The horizon is split into ``chunk`` lengths. For each, CP-SAT chooses
        snapshots and their order within its share of ``solver_time_limit``,
        leaving room and exposure for the rest of the priority-first plan to
-       follow. The order is decoded with the planner's exact checks and kept
+       follow. The order is decoded with the scheduler's exact checks and kept
        if it scores at least as well as the priority-first plan's snapshots
        for the chunk; otherwise, or if the solver finds no solution in time,
        those are kept instead.
     3. Any remaining ``time_limit`` is spent improving the result by local
-       search (see :class:`~conops.schedulers.LocalSearchPlanner`).
+       search (see :class:`~conops.schedulers.LocalSearchScheduler`).
 
     The plan returned is never worse than the priority-first plan;
     :attr:`solver_chunks_used` shows where the solver improved on it. Takes
-    the arguments of :class:`~conops.schedulers.LocalSearchPlanner`
+    the arguments of :class:`~conops.schedulers.LocalSearchScheduler`
     (``time_limit`` defaults to 0, so no local search), plus:
 
     Args:
@@ -123,7 +129,7 @@ class CpSatPlanner(LocalSearchPlanner):
             of the priority-first plan first, then in priority order.
     """
 
-    planner_name = "cp_sat"
+    scheduler_name = "cp_sat"
 
     def __init__(
         self,
@@ -184,8 +190,8 @@ class CpSatPlanner(LocalSearchPlanner):
             from ortools.sat.python import cp_model  # noqa: F401
         except ImportError as exc:
             raise ImportError(
-                "CpSatPlanner needs OR-Tools (the ortools package); install it "
-                'with pip install "coast-sim[cpsat]", or use LocalSearchPlanner'
+                "CpSatScheduler needs OR-Tools (the ortools package); install it "
+                'with pip install "coast-sim[cpsat]", or use LocalSearchScheduler'
             ) from exc
 
         hints = [

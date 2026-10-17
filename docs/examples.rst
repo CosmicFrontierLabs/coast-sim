@@ -124,10 +124,10 @@ See :doc:`planning` (Improving plans by local search) for reference.
 CP-SAT Planning
 ~~~~~~~~~~~~~~~
 
-**Location**: ``examples/CP_SAT_Planner_Example.ipynb``
+**Location**: ``examples/CP_SAT_Scheduler_Example.ipynb``
 
-This notebook compares ``CpSatPlanner`` with ``LocalSearchPlanner``, with
-``PriorityPlanner`` as the baseline, on 100 random targets (it needs the ``cpsat``
+This notebook compares ``CpSatScheduler`` with ``LocalSearchScheduler``, with
+``PriorityScheduler`` as the baseline, on 100 random targets (it needs the ``cpsat``
 extra):
 
 * One-day plans from each, with the same planning time, executed to check that they
@@ -135,8 +135,8 @@ extra):
 * Science, merit-weighted science, idle time and targets completed
 * The gain in each of CP-SAT's chunks, and through the day
 * Which targets gained or lost time
-* How each planner's result grows with planning time
-* A benchmark of ``RollingHorizonDITL`` runs with each planner over several target sets
+* How each scheduler's result grows with planning time
+* A benchmark of ``RollingHorizonDITL`` runs with each scheduler over several target sets
 
 See :doc:`planning` (Optimizing plans with CP-SAT) for reference.
 
