@@ -65,7 +65,7 @@ from .ditl import (
     TOORequest,
 )
 from .schedulers import (
-    CpSatPlanner,
+    CpSatScheduler,
     DispatchPolicy,
     DumbQueueScheduler,
     DumbScheduler,
@@ -128,7 +128,7 @@ __all__ = [
     "Battery",
     "ChargeState",
     "Constraint",
-    "CpSatPlanner",
+    "CpSatScheduler",
     "DITLEvent",
     "DITLLog",
     "DITLLogStore",

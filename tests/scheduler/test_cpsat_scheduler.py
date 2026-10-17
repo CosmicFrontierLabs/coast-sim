@@ -1,4 +1,4 @@
-"""CpSatPlanner: solver plans must execute exactly and never lose to priority-first."""
+"""CpSatScheduler: solver plans must execute exactly and never lose to priority-first."""
 
 import sys
 from datetime import timedelta
@@ -15,8 +15,8 @@ from conops.common import ObsType  # noqa: E402
 from conops.config import MissionConfig, TargetConfig  # noqa: E402
 from conops.config.observation_categories import ObservationCategory  # noqa: E402
 from conops.ditl import RollingHorizonDITL  # noqa: E402
-from conops.schedulers import CpSatPlanner  # noqa: E402
-from conops.schedulers.priority_planner import program_shares  # noqa: E402
+from conops.schedulers import CpSatScheduler  # noqa: E402
+from conops.schedulers.priority_scheduler import program_shares  # noqa: E402
 from conops.targets import Plan, PlanEntry, Pointing  # noqa: E402
 
 from .planning_scenario import BEGIN, CONSTRAINED, HOUR, MIN, PATCH, T0  # noqa: E402
@@ -44,7 +44,7 @@ def _targets(
 
 def _random_targets(config: MissionConfig) -> list[Pointing]:
     """Targets whose snapshots straddle Earth occultations, so the priority-first
-    planner moves snapshots later to fill the time a target is hidden."""
+    scheduler moves snapshots later to fill the time a target is hidden."""
     rng = np.random.default_rng(5)
     return [
         _target(
@@ -87,7 +87,9 @@ def _programs(config: MissionConfig) -> list[Pointing]:
 Option = float | int | timedelta | dict[int, float] | list[PlanEntry]
 
 
-def _planner(targets: list[Pointing], hours: int, **options: Option) -> CpSatPlanner:
+def _scheduler(
+    targets: list[Pointing], hours: int, **options: Option
+) -> CpSatScheduler:
     config = targets[0].config
     assert config is not None
     settings: dict[str, Option] = {
@@ -96,7 +98,7 @@ def _planner(targets: list[Pointing], hours: int, **options: Option) -> CpSatPla
         "seed": 1,
     }
     settings.update(options)
-    return CpSatPlanner(
+    return CpSatScheduler(
         config,
         targets,
         BEGIN,
@@ -168,35 +170,35 @@ def _collected(plan: Plan) -> float:
 class TestPlans:
     def test_never_worse_than_priority_first_and_executes_exactly(self) -> None:
         targets = _targets(4)
-        planner = _planner(targets, 4)
+        scheduler = _scheduler(targets, 4)
 
-        plan = planner.schedule()
+        plan = scheduler.schedule()
         ditl = _execute(targets, plan, 4)
 
-        assert planner.score >= planner.initial_score
-        assert planner.solver_statuses
-        assert set(planner.solver_statuses) <= {"OPTIMAL", "FEASIBLE"}
+        assert scheduler.score >= scheduler.initial_score
+        assert scheduler.solver_statuses
+        assert set(scheduler.solver_statuses) <= {"OPTIMAL", "FEASIBLE"}
         assert ditl.validate_plan_matches_execution() == []
         executed = sum(hk.collection_seconds for hk in ditl.telemetry.housekeeping)
         assert executed == pytest.approx(_collected(plan))
 
     def test_solves_in_several_chunks(self) -> None:
         targets = _targets(3)
-        planner = _planner(targets, 3, chunk=timedelta(hours=1))
+        scheduler = _scheduler(targets, 3, chunk=timedelta(hours=1))
 
-        plan = planner.schedule()
+        plan = scheduler.schedule()
 
-        assert len(planner.solver_statuses) == 3
-        assert len(planner.solver_chunks_used) == 3
-        assert planner.solver_score is not None
-        assert planner.solver_score >= planner.start_score
+        assert len(scheduler.solver_statuses) == 3
+        assert len(scheduler.solver_chunks_used) == 3
+        assert scheduler.solver_score is not None
+        assert scheduler.solver_score >= scheduler.start_score
         assert _execute(targets, plan, 3).validate_plan_matches_execution() == []
 
     def test_plan_with_ground_passes_executes_exactly(self) -> None:
         targets = _targets(12, stations=True)
-        planner = _planner(targets, 12, solver_time_limit=8.0)
+        scheduler = _scheduler(targets, 12, solver_time_limit=8.0)
 
-        plan = planner.schedule()
+        plan = scheduler.schedule()
 
         assert any(entry.obstype == ObsType.GSP for entry in plan)
         assert _execute(targets, plan, 12).validate_plan_matches_execution() == []
@@ -204,7 +206,7 @@ class TestPlans:
     def test_inputs_are_not_modified(self) -> None:
         targets = _targets(3)
 
-        _planner(targets, 3).schedule()
+        _scheduler(targets, 3).schedule()
 
         assert all(t.exptime == 60 * MIN for t in targets)
 
@@ -212,22 +214,22 @@ class TestPlans:
         config = _config(4)
         config.spacecraft_bus.attitude_control.slew_before_visible = True
         targets = _targets(4, config=config)
-        planner = _planner(targets, 4)
+        scheduler = _scheduler(targets, 4)
 
-        plan = planner.schedule()
+        plan = scheduler.schedule()
 
-        assert planner.score >= planner.initial_score
+        assert scheduler.score >= scheduler.initial_score
         assert _execute(targets, plan, 4).validate_plan_matches_execution() == []
 
     def test_local_search_after_the_solver_keeps_its_gains(self) -> None:
         targets = _targets(4)
-        planner = _planner(targets, 4, time_limit=600, max_iterations=200)
+        scheduler = _scheduler(targets, 4, time_limit=600, max_iterations=200)
 
-        plan = planner.schedule()
+        plan = scheduler.schedule()
 
-        assert planner.iterations == 200
-        assert planner.solver_score is not None
-        assert planner.score >= planner.solver_score
+        assert scheduler.iterations == 200
+        assert scheduler.solver_score is not None
+        assert scheduler.score >= scheduler.solver_score
         assert _execute(targets, plan, 4).validate_plan_matches_execution() == []
 
 
@@ -243,29 +245,29 @@ class TestHint:
         """
         _hinted_only(monkeypatch)
         targets = _targets(12, stations=True)
-        planner = _planner(targets, 12)
+        scheduler = _scheduler(targets, 12)
 
-        planner.schedule()
+        scheduler.schedule()
 
-        assert set(planner.solver_statuses) == {"OPTIMAL"}
-        assert all(planner.solver_chunks_used)
-        assert planner.solver_score == planner.start_score
+        assert set(scheduler.solver_statuses) == {"OPTIMAL"}
+        assert all(scheduler.solver_chunks_used)
+        assert scheduler.solver_score == scheduler.start_score
 
     def test_hint_is_feasible_where_snapshots_were_moved_into_gaps(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The priority-first planner moved and cut short snapshots to fill the
+        """The priority-first scheduler moved and cut short snapshots to fill the
         time targets were hidden; the hint must still reproduce its plan."""
         _hinted_only(monkeypatch)
         hours = 12
         config = _config(hours)
         targets = _random_targets(config)
-        planner = _planner(targets, hours)
+        scheduler = _scheduler(targets, hours)
 
-        plan = planner.schedule()
+        plan = scheduler.schedule()
 
-        assert set(planner.solver_statuses) == {"OPTIMAL"}
-        assert planner.solver_score == planner.start_score
+        assert set(scheduler.solver_statuses) == {"OPTIMAL"}
+        assert scheduler.solver_score == scheduler.start_score
         assert _execute(targets, plan, hours).validate_plan_matches_execution() == []
 
     def test_hint_is_feasible_with_slews_before_targets_rise(
@@ -274,22 +276,22 @@ class TestHint:
         _hinted_only(monkeypatch)
         config = _config(4)
         config.spacecraft_bus.attitude_control.slew_before_visible = True
-        planner = _planner(_targets(4, config=config), 4)
+        scheduler = _scheduler(_targets(4, config=config), 4)
 
-        planner.schedule()
+        scheduler.schedule()
 
-        assert set(planner.solver_statuses) == {"OPTIMAL"}
-        assert planner.solver_score == planner.start_score
+        assert set(scheduler.solver_statuses) == {"OPTIMAL"}
+        assert scheduler.solver_score == scheduler.start_score
 
     def test_no_solution_in_time_keeps_the_priority_first_plan(self) -> None:
         targets = _targets(6)
-        planner = _planner(targets, 6, solver_time_limit=1e-6)
+        scheduler = _scheduler(targets, 6, solver_time_limit=1e-6)
 
-        plan = planner.schedule()
+        plan = scheduler.schedule()
 
-        assert "UNKNOWN" in planner.solver_statuses
-        assert not any(planner.solver_chunks_used)
-        assert planner.solver_score == planner.start_score
+        assert "UNKNOWN" in scheduler.solver_statuses
+        assert not any(scheduler.solver_chunks_used)
+        assert scheduler.solver_score == scheduler.start_score
         assert _execute(targets, plan, 6).validate_plan_matches_execution() == []
 
 
@@ -297,7 +299,7 @@ class TestSeveralSnapshotsInAWindow:
     def test_solver_collects_an_exposure_longer_than_one_snapshot(self) -> None:
         config = _config(2)
         target = _target(config, 1, 105.0, 10.0, minutes=60, snapshot=20)
-        planner = CpSatPlanner(
+        scheduler = CpSatScheduler(
             config,
             [target],
             BEGIN,
@@ -307,9 +309,9 @@ class TestSeveralSnapshotsInAWindow:
             seed=1,
         )
 
-        plan = planner.schedule()
+        plan = scheduler.schedule()
 
-        assert planner.solver_chunks_used == [True]
+        assert scheduler.solver_chunks_used == [True]
         assert _science(plan) == [1, 1, 1]
         assert _collected(plan) == pytest.approx(60 * MIN)
 
@@ -323,7 +325,7 @@ class TestShortWindowRequest:
             config, 2, 110.0, 10.0, merit=70, minutes=30, deadline=T0 + 30 * MIN
         )
 
-        planner = CpSatPlanner(
+        scheduler = CpSatScheduler(
             config,
             [flexible, urgent],
             BEGIN,
@@ -332,11 +334,11 @@ class TestShortWindowRequest:
             workers=1,
             seed=1,
         )
-        plan = planner.schedule()
+        plan = scheduler.schedule()
 
         assert _science(plan) == [2, 1]
-        assert planner.solver_score is not None
-        assert planner.solver_score > planner.initial_score
+        assert scheduler.solver_score is not None
+        assert scheduler.solver_score > scheduler.initial_score
         urgent_entry = next(e for e in plan if e.obsid == 2)
         assert urgent_entry.collection_begin is not None
         assert urgent_entry.collection_begin <= T0 + 30 * MIN
@@ -357,7 +359,7 @@ class TestEarliestStart:
             deadline=T0 + 90 * MIN,
         )
 
-        planner = CpSatPlanner(
+        scheduler = CpSatScheduler(
             config,
             [flexible, later],
             BEGIN,
@@ -366,7 +368,7 @@ class TestEarliestStart:
             workers=1,
             seed=1,
         )
-        plan = planner.schedule()
+        plan = scheduler.schedule()
 
         entry = next(e for e in plan if e.obsid == 2)
         assert entry.collection_begin is not None
@@ -375,7 +377,7 @@ class TestEarliestStart:
 
 class TestDynamicMerit:
     """The solver keeps the cadence and program-share rules of the
-    priority-first planner, and its hint stays feasible with them."""
+    priority-first scheduler, and its hint stays feasible with them."""
 
     HOURS = 4
 
@@ -395,7 +397,7 @@ class TestDynamicMerit:
         config = self._monitor_config()
         targets = _monitored(config)
 
-        plan = _planner(targets, self.HOURS, solver_time_limit=3.0).schedule()
+        plan = _scheduler(targets, self.HOURS, solver_time_limit=3.0).schedule()
 
         visits = _visits(plan, 1)
         assert len(visits) == 3
@@ -408,7 +410,7 @@ class TestDynamicMerit:
     def test_committed_visits_delay_the_next(self) -> None:
         config = self._monitor_config()
 
-        plan = _planner(
+        plan = _scheduler(
             _monitored(config),
             self.HOURS,
             solver_time_limit=3.0,
@@ -436,7 +438,7 @@ class TestDynamicMerit:
             ss_min=60,
         )
 
-        plan = _planner(
+        plan = _scheduler(
             _monitored(config), self.HOURS, solver_time_limit=3.0, locked=[locked]
         ).schedule()
 
@@ -451,7 +453,7 @@ class TestDynamicMerit:
         config = self._programs_config()
         targets = _programs(config)
 
-        plan = _planner(targets, self.HOURS, solver_time_limit=3.0).schedule()
+        plan = _scheduler(targets, self.HOURS, solver_time_limit=3.0).schedule()
 
         assert _share(plan, 200, 300) > 0.2
         assert (
@@ -462,17 +464,17 @@ class TestDynamicMerit:
         """Each entry's merit counts the program shares the plan delivers before
         it, so a Target of Opportunity must beat that value to interrupt it."""
         config = self._programs_config()
-        planner = _planner(_programs(config), self.HOURS, solver_time_limit=3.0)
+        scheduler = _scheduler(_programs(config), self.HOURS, solver_time_limit=3.0)
 
-        plan = planner.schedule()
+        plan = scheduler.schedule()
 
         programs: dict[str, float] = {}
         merits = []
         for entry in sorted(
             (e for e in plan if e.obstype != ObsType.GSP), key=lambda e: e.begin
         ):
-            request = planner._by_obsid[int(entry.obsid)]
-            expected = planner._value(request, program_shares(programs))
+            request = scheduler._by_obsid[int(entry.obsid)]
+            expected = scheduler._value(request, program_shares(programs))
             merits.append(float(entry.merit))
             assert float(entry.merit) == pytest.approx(expected)
             program = request.category.program_name
@@ -491,20 +493,20 @@ class TestDynamicMerit:
             weights=TargetConfig(cadence_weight=50, completion_deficit_weight=100),
             categories=[MONITOR, *PROGRAMS],
         )
-        planner = _planner(
+        scheduler = _scheduler(
             [*_monitored(config), *_programs(config)],
             self.HOURS,
             chunk=timedelta(hours=1),
         )
 
-        planner.schedule()
+        scheduler.schedule()
 
-        assert set(planner.solver_statuses) == {"OPTIMAL"}
-        assert planner.solver_score == planner.start_score
+        assert set(scheduler.solver_statuses) == {"OPTIMAL"}
+        assert scheduler.solver_score == scheduler.start_score
 
 
 class TestRollingHorizon:
-    def test_rolling_replanning_uses_the_cp_sat_planner(self) -> None:
+    def test_rolling_replanning_uses_the_cp_sat_scheduler(self) -> None:
         targets = _targets(3)
         ditl = RollingHorizonDITL(
             targets[0].config,  # type: ignore[arg-type]
@@ -512,8 +514,8 @@ class TestRollingHorizon:
             begin=BEGIN,
             end=BEGIN + timedelta(hours=3),
             replan_interval=timedelta(hours=1),
-            planner=CpSatPlanner,
-            planner_options={"solver_time_limit": 3.0, "workers": 1, "seed": 1},
+            scheduler=CpSatScheduler,
+            scheduler_options={"solver_time_limit": 3.0, "workers": 1, "seed": 1},
         )
         ditl.step_size = 60
 
@@ -539,7 +541,7 @@ class TestArguments:
         config = _config(1)
 
         with pytest.raises(ValueError):
-            CpSatPlanner(
+            CpSatScheduler(
                 config,
                 [],
                 BEGIN,
@@ -554,4 +556,4 @@ class TestArguments:
         monkeypatch.setitem(sys.modules, "ortools.sat.python", None)
 
         with pytest.raises(ImportError, match="ortools"):
-            _planner(targets, 1).schedule()
+            _scheduler(targets, 1).schedule()
