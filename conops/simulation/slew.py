@@ -67,7 +67,7 @@ class Slew(BaseModel):
     at: "PlanEntry | None" = None  # In quotes to avoid circular import
     # Private defaults are copied per instance, so these lists are never
     # shared. A default_factory would cost far more: pydantic inspects the
-    # factory's signature for every instance, and planners build many slews.
+    # factory's signature for every instance, and schedulers build many slews.
     # Quaternion SLERP: intermediate roll values along the path
     _quat_roll_path: list[float] = PrivateAttr(default=[])
     # Shortest maneuver axis resolved in the initial spacecraft body frame.

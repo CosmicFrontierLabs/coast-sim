@@ -1,4 +1,4 @@
-"""Back-compatible name for :class:`~conops.schedulers.SequentialPlanner`."""
+"""Back-compatible name for :class:`~conops.schedulers.SequentialScheduler`."""
 
 from collections.abc import Iterable
 from datetime import timedelta
@@ -7,14 +7,14 @@ from typing import TYPE_CHECKING
 from ..common import dtutcfromtimestamp
 from ..config import MissionConfig
 from ..targets import PlanEntry, TargetList
-from .sequential_planner import SequentialPlanner
+from .sequential_scheduler import SequentialScheduler
 
 if TYPE_CHECKING:
     from ..ditl.ditl_log import DITLLog
 
 
-class DumbScheduler(SequentialPlanner):
-    """Deprecated name for :class:`~conops.schedulers.SequentialPlanner`.
+class DumbScheduler(SequentialScheduler):
+    """Deprecated name for :class:`~conops.schedulers.SequentialScheduler`.
 
     The horizon starts at the beginning of the ephemeris and lasts ``days``.
     Targets are added to ``targlist`` after construction, ``mintime`` is the

@@ -1,4 +1,4 @@
-"""Shared real-orbit scenario for planner and replanning tests."""
+"""Shared real-orbit scenario for scheduler and replanning tests."""
 
 from datetime import datetime, timedelta, timezone
 

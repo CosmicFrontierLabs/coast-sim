@@ -9,7 +9,7 @@ COASTSim runs a scheduler in one of three ways:
 * **Dispatch** (closed loop): :class:`~conops.ditl.queue_ditl.QueueDITL` asks a
   target queue for the next target each time the spacecraft is free. This is the
   default way to simulate a queue-scheduled mission.
-* **Planning** (open loop): a planner builds a whole
+* **Planning** (open loop): a scheduler builds a whole
   :class:`~conops.targets.Plan` up front, and :class:`~conops.ditl.ditl.DITL`
   executes it.
 * **Rolling-horizon replanning** (closed loop):
@@ -17,7 +17,7 @@ COASTSim runs a scheduler in one of three ways:
   it from the spacecraft's actual state as time passes, as a ground-planned mission
   does. See `Rolling-horizon replanning`_.
 
-:class:`~conops.schedulers.PriorityPlanner` is the planning engine. It reserves
+:class:`~conops.schedulers.PriorityScheduler` is the planning engine. It reserves
 ground contacts first, then takes requests in priority order and places each
 snapshot in the earliest slot that still fits, without moving anything already
 placed. It is fast and deterministic, and its plans are traceable to the priority
@@ -33,7 +33,7 @@ Building and executing a plan
 
    from rust_ephem import TLEEphemeris
 
-   from conops import DITL, MissionConfig, PriorityPlanner
+   from conops import DITL, MissionConfig, PriorityScheduler
    from conops.targets import Pointing
 
    begin = datetime(2025, 11, 1, tzinfo=timezone.utc)
@@ -52,12 +52,12 @@ Building and executing a plan
        target.exptime = 2400  # split into snapshots of up to ss_max
        targets.append(target)
 
-   planner = PriorityPlanner(config, targets, begin, end)
-   plan = planner.schedule()
-   print(f"{len(plan)} entries; unplaced: {[t.obsid for t in planner.unplaced]}")
+   scheduler = PriorityScheduler(config, targets, begin, end)
+   plan = scheduler.schedule()
+   print(f"{len(plan)} entries; unplaced: {[t.obsid for t in scheduler.unplaced]}")
 
    ditl = DITL(config=config, plan=plan, begin=begin, end=end)
-   ditl.step_size = planner.ctx.step_size
+   ditl.step_size = scheduler.ctx.step_size
    ditl.calc()
    assert ditl.validate_plan_matches_execution() == []
 
@@ -117,7 +117,7 @@ How a plan is built
    rises, and the snapshot after a gap no longer needs to move to make room.
 
 Requests left with at least ``ss_min`` of exposure unplanned are listed in
-``planner.unplaced``. Every placement and rejection is logged to ``planner.log``.
+``scheduler.unplaced``. Every placement and rejection is logged to ``scheduler.log``.
 The input targets are not modified.
 
 **Planning faster when many requests cannot fit.** Most planning time in a crowded
@@ -132,13 +132,13 @@ Cadence and program shares in plans
 -----------------------------------
 
 The cadence and completion-deficit merit terms depend on what has already been
-observed, so the planner evaluates them against the plan as well as the science
+observed, so the scheduler evaluates them against the plan as well as the science
 already collected, as :class:`~conops.ditl.QueueDITL` does against what it has
 executed:
 
 * **Completion deficit.** With ``completion_deficit_weight`` set and programs with a
   ``time_share``, each program's share counts the science its targets have collected
-  (``collected_seconds``) plus what the plan has given them so far. The planner
+  (``collected_seconds``) plus what the plan has given them so far. The scheduler
   re-ranks the requests after every snapshot, so a program falling behind its share
   moves up.
 * **Cadence.** With ``cadence_weight`` set, a target in a category with
@@ -157,13 +157,13 @@ Without these weights, plans are built exactly as before.
 Limitations
 -----------
 
-* **No battery model.** The planner does not schedule charging, and ``DITL`` does not
+* **No battery model.** The scheduler does not schedule charging, and ``DITL`` does not
   charge on its own while executing a plan.
 * **Urgency at the start of the horizon.** Urgency is evaluated once, when the plan is
   built; deadlines are kept as constraints.
 * **Cadence as a minimum spacing.** A visit before its cadence is due is never
   planned, though dispatch may take one when nothing else is worth more. Spreading
-  many visits through the day also leaves the planner more, smaller gaps to search,
+  many visits through the day also leaves the scheduler more, smaller gaps to search,
   which lengthens planning.
 * **Greedy.** Apart from moving a snapshot later to make room before it, placements
   are never revisited. If a flexible, high-merit request is placed first, it can take
@@ -174,11 +174,11 @@ Limitations
 The scheduling context
 ----------------------
 
-:class:`~conops.schedulers.SchedulingContext` answers the questions a planner asks,
+:class:`~conops.schedulers.SchedulingContext` answers the questions a scheduler asks,
 using the models ``DITL`` executes with: slew durations and paths from the real
 :class:`~conops.simulation.Slew`, scoped attitude-constraint checks as ``DITL``
 records them, the attitude a fresh simulation idles at before its first command,
-and the ground passes in the horizon. Future planners are built on the same
+and the ground passes in the horizon. Future schedulers are built on the same
 context so that their plans also execute as planned.
 
 Rolling-horizon replanning
@@ -186,7 +186,7 @@ Rolling-horizon replanning
 
 :class:`~conops.ditl.rolling_ditl.RollingHorizonDITL` simulates a mission that is
 planned on the ground and replanned periodically. It runs like
-:class:`~conops.ditl.ditl.DITL`, but builds its own plan with ``PriorityPlanner`` and
+:class:`~conops.ditl.ditl.DITL`, but builds its own plan with ``PriorityScheduler`` and
 rebuilds it as the simulation runs:
 
 1. **Initial plan.** At the start, a plan is built for the next ``horizon``.
@@ -235,8 +235,8 @@ rebuilds it as the simulation runs:
    print(ditl.too_response_times())       # seconds to first science, by obsid
    assert ditl.validate_plan_matches_execution() == []
 
-Pass ``planner`` to build each plan with a subclass of ``PriorityPlanner``, and
-``planner_options`` for its extra keyword arguments.
+Pass ``scheduler`` to build each plan with a subclass of ``PriorityScheduler``, and
+``scheduler_options`` for its extra keyword arguments.
 
 **Results**
 

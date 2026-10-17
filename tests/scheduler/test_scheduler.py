@@ -113,7 +113,7 @@ class TestDumbSchedulerScheduling:
         assert len(scheduler.plan) > 0
 
     def test_schedule_returns_its_plan(self, scheduler, sample_targets):
-        """DumbScheduler implements the Planner protocol."""
+        """DumbScheduler implements the Scheduler protocol."""
         for target in sample_targets:
             scheduler.targlist.add_target(target)
         assert scheduler.schedule() is scheduler.plan
