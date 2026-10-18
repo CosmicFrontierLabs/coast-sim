@@ -806,6 +806,10 @@ class CpSatScheduler(LocalSearchScheduler):
                 )
                 if spacing is not None:
                     copies = min(copies, 1 + (window[1] - earliest) // spacing)
+                # A fixed task in the window can split the exposure into more,
+                # shorter snapshots; keep at least those of the priority-first
+                # plan, so the hint can reproduce it.
+                copies = max(copies, len(planned.get((obsid, w0), ())))
                 priority = 0 if (obsid, w0) in planned else 1
                 for copy in range(copies):
                     task = _Task(

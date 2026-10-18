@@ -496,6 +496,64 @@ class TestSeveralSnapshotsInAWindow:
         assert _science(plan) == [1, 1, 1]
         assert _collected(plan) == pytest.approx(60 * MIN)
 
+    def test_snapshots_split_by_a_fixed_task_have_a_candidate_each(self) -> None:
+        """One full-length snapshot would cover the exposure, but a locked
+        observation splits the window, so the priority-first plan takes two
+        shorter ones. With one candidate the solver could propose only one,
+        and the chunk lost to the priority-first plan."""
+        candidates: list[list[_Task]] = []
+        proposed: list[list[_Snapshot] | None] = []
+
+        class Capture(CpSatScheduler):
+            def _candidates(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+                candidates.append(super()._candidates(*args, **kwargs))
+                return candidates[-1]
+
+            def _solve_chunk(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+                proposed.append(super()._solve_chunk(*args, **kwargs))
+                return proposed[-1]
+
+        config = _config(1)
+        target = _target(
+            config, 1, 105.0, 10.0, merit=100, minutes=20, snapshot=20, ss_min=5
+        )
+        locked = PlanEntry(
+            config=config,
+            name="Fixed",
+            obsid=900,
+            ra=115.0,
+            dec=10.0,
+            roll=0.0,
+            obstype=ObsType.AT,
+            begin=T0 + 720,
+            end=T0 + 1320,
+            collection_begin=T0 + 720,
+            collection_end=T0 + 1320,
+            ss_min=300,
+        )
+        scheduler = Capture(
+            config,
+            [target],
+            BEGIN,
+            BEGIN + timedelta(minutes=35),
+            solver_time_limit=3.0,
+            workers=1,
+            seed=1,
+            include_passes=False,
+            locked=[locked],
+        )
+
+        plan = scheduler.schedule()
+
+        assert len(_visits(plan, 1)) == 2
+        assert len(candidates[0]) == 2
+        assert proposed[0] is not None
+        assert sum(snapshot.seconds for snapshot in proposed[0]) == pytest.approx(
+            20 * MIN
+        )
+        assert scheduler.solver_statuses == ["OPTIMAL"]
+        assert scheduler.solver_chunks_used == [True]
+
 
 class TestShortWindowRequest:
     def test_solver_fits_the_request_priority_order_lost(self) -> None:
