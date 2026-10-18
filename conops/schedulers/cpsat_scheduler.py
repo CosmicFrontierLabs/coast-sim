@@ -113,9 +113,11 @@ class _Task:
         self.rate = rate
         """Objective value per second of collection."""
         self.earliness = earliness
-        """Objective value lost per second the arrival is delayed."""
+        """Value per second of collection lost per second the arrival is delayed."""
         self.offset = offset
-        """Objective value of observing the candidate at all, beyond the rate."""
+        """Value per second of collection added to the rate for an arrival at the
+        chunk's origin, before the earliness discount; negative when the
+        discount has already begun there."""
 
     @property
     def obsid(self) -> int | None:
@@ -213,8 +215,11 @@ class _ChunkModel:
             if task.spacing is not None and task.obsid is not None:
                 visits_of.setdefault(task.obsid, []).append(k)
         for visits in visits_of.values():
-            # Candidates are in time order, and each visit waits for its
-            # cadence after the collection before it ends.
+            # Candidates are ranked, with the windows the priority-first plan
+            # used first, so a later window can come before an earlier one.
+            # Put the visits in time order: each waits for its cadence after
+            # the collection before it ends.
+            visits.sort(key=lambda k: (self.tasks[k].window[0], self.tasks[k].copy))
             for n, i in enumerate(visits):
                 spacing = self.tasks[i].spacing
                 assert spacing is not None
@@ -275,8 +280,9 @@ class _ChunkModel:
         model, present = self.model, self.present
         self.counted: dict[int, cp_model.IntVar] = {}
         """A candidate's collection if present, and 0 if not."""
-        self.delayed: dict[int, cp_model.IntVar] = {}
-        """A deadline or cadence candidate's arrival if present, and 0 if not."""
+        self.collection_arrival: dict[int, cp_model.IntVar] = {}
+        """A deadline or cadence candidate's collection times its arrival, which
+        its earliness discount follows; 0 if it is absent."""
         totals: dict[int, list[cp_model.IntVar]] = {}
         objective = []
         for k, task in enumerate(self.tasks):
@@ -289,14 +295,16 @@ class _ChunkModel:
             model.add(counted == self.collection[k]).only_enforce_if(present[k])
             model.add(counted == 0).only_enforce_if(~present[k])
             totals.setdefault(obsid, []).append(counted)
-            objective.append(task.rate * counted + task.offset * present[k])
+            objective.append((task.rate + task.offset) * counted)
             if task.earliness > 0.0:
-                delayed = self.delayed[k] = model.new_int_var(
-                    0, task.arrival[1], f"delay{k}"
+                # A late snapshot loses a fraction of its value, so a shorter
+                # one loses less: the discount is per second of collection.
+                # counted is 0 when the candidate is absent, and so is this.
+                product = self.collection_arrival[k] = model.new_int_var(
+                    0, task.collection[1] * task.arrival[1], f"collection_arrival{k}"
                 )
-                model.add(delayed == self.arrival[k]).only_enforce_if(present[k])
-                model.add(delayed == 0).only_enforce_if(~present[k])
-                objective.append(-task.earliness * delayed)
+                model.add_multiplication_equality(product, [counted, self.arrival[k]])
+                objective.append(-task.earliness * product)
         for obsid, counted_list in totals.items():
             model.add(sum(counted_list) <= int(budget[obsid]))
         model.maximize(sum(objective))
@@ -324,8 +332,11 @@ class _ChunkModel:
             if task.optional:
                 model.add_hint(self.present[k], k in hint)
                 model.add_hint(self.counted[k], collection if k in hint else 0)
-                if k in self.delayed:
-                    model.add_hint(self.delayed[k], arrival if k in hint else 0)
+                if k in self.collection_arrival:
+                    model.add_hint(
+                        self.collection_arrival[k],
+                        collection * arrival if k in hint else 0,
+                    )
 
     def solve(
         self, time_limit: float, workers: int, seed: int
@@ -681,7 +692,7 @@ class CpSatScheduler(LocalSearchScheduler):
                     ctx.instrument_roll(target, max(w0, origin_time))
                 )
                 rate, earliness, offset = self._candidate_value(
-                    request, weights, shares, longest, origin_time, opens
+                    request, weights, shares, origin_time, opens
                 )
                 # As many snapshots as the exposure needs and the window holds.
                 copies = min(
@@ -732,15 +743,15 @@ class CpSatScheduler(LocalSearchScheduler):
         request: _Request,
         weights: dict[int, float],
         shares: dict[str, float],
-        longest: int,
         origin_time: float,
         opens: float,
     ) -> tuple[float, float, float]:
-        """A candidate's objective terms: its rate, earliness and offset.
+        """A candidate's objective terms per second of collection: its rate,
+        earliness and offset (see :class:`_Task`).
 
         The value counts the program shares delivered before the chunk. A
         candidate of a request with a deadline, or with a cadence, loses value
-        the later it arrives.
+        the later it arrives, in proportion to the collection it gets.
         """
         ctx = self.ctx
         setup = ctx.setup_seconds
@@ -752,15 +763,14 @@ class CpSatScheduler(LocalSearchScheduler):
             available = target.deadline - released
             if available > 0:
                 # Delay counts from the horizon start, or the earliest
-                # start if later, at collection start, valued at the
-                # candidate's longest collection.
-                earliness = rate * longest * self.earliness_weight / available
+                # start if later, at collection start, as in local search.
+                earliness = rate * self.earliness_weight / available
                 offset = -earliness * (origin_time + setup - released)
         if request.cadence is not None and self.earliness_weight > 0.0:
             # A visit is worth taking soon after it is due, so the
             # visits keep to the cadence: a visit a whole cadence late
             # loses earliness_weight of its value.
-            late = rate * longest * self.earliness_weight / request.cadence
+            late = rate * self.earliness_weight / request.cadence
             earliness += late
             offset -= late * (origin_time + setup - opens)
         return rate, earliness, offset

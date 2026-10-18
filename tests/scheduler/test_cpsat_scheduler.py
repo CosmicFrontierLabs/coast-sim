@@ -16,6 +16,7 @@ from conops.config import MissionConfig, TargetConfig  # noqa: E402
 from conops.config.observation_categories import ObservationCategory  # noqa: E402
 from conops.ditl import RollingHorizonDITL  # noqa: E402
 from conops.schedulers import CpSatScheduler  # noqa: E402
+from conops.schedulers.cpsat_scheduler import _ChunkModel, _Task  # noqa: E402
 from conops.schedulers.priority_scheduler import program_shares  # noqa: E402
 from conops.targets import Plan, PlanEntry, Pointing  # noqa: E402
 
@@ -231,6 +232,107 @@ class TestPlans:
         assert scheduler.solver_score is not None
         assert scheduler.score >= scheduler.solver_score
         assert _execute(targets, plan, 4).validate_plan_matches_execution() == []
+
+
+def _solve_tasks(tasks: list[_Task], budget: dict[int, float]) -> list[bool]:
+    """Solve a chunk of the given tasks, with no time to slew between them,
+    and return which are present."""
+    chunk = _ChunkModel(tasks, np.zeros((len(tasks), len(tasks))), 60, 10_000, budget)
+    solver = cp_model.CpSolver()
+    solver.parameters.num_workers = 1
+    solver.parameters.max_time_in_seconds = 10.0
+    assert solver.solve(chunk.model) == cp_model.OPTIMAL
+    return [bool(solver.value(present)) for present in chunk.present]
+
+
+ORIGIN = ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+
+
+class TestCadenceOrder:
+    def test_visits_listed_later_window_first_are_spaced_in_time_order(
+        self,
+    ) -> None:
+        """Candidates are ranked, so a later window can be listed before an
+        earlier one. Both visits fit an hour apart and both are taken."""
+
+        def visit(window_start: int) -> _Task:
+            window = (window_start, window_start + 3000)
+            return _Task(
+                (1, float(window_start)),
+                ORIGIN,
+                (window[0], window[1] - 300),
+                spacing=HOUR,
+                collection=(300, 300),
+                window=window,
+                rate=1.0,
+            )
+
+        tasks = [_Task(None, ORIGIN, (0, 0)), visit(6000), visit(0)]
+
+        assert _solve_tasks(tasks, {1: 600}) == [True, True, True]
+
+
+class TestLatenessDiscount:
+    HOURS = 3
+    WEIGHT = 1.0
+
+    def _scheduler_and_request(
+        self,
+    ) -> tuple[CpSatScheduler, int, float, float]:
+        config = _config(self.HOURS)
+        deadline = T0 + 2 * HOUR
+        target = _target(
+            config, 100, *PATCH[0], minutes=60, snapshot=60, ss_min=1, deadline=deadline
+        )
+        scheduler = _scheduler(
+            [target], self.HOURS, earliness_weight=self.WEIGHT, time_limit=0.0
+        )
+        scheduler._start_from_priority_plan()
+        return scheduler, 100, deadline - T0, scheduler.ctx.setup_seconds
+
+    def test_the_discount_is_local_search_s_for_any_collection(self) -> None:
+        """Per second of collection, the solver's value at an arrival is the
+        value local search gives the snapshot, so a shortened snapshot loses
+        in proportion to its collection, not to the longest it could have."""
+        scheduler, obsid, available, setup = self._scheduler_and_request()
+        request = scheduler._by_obsid[obsid]
+        rate, earliness, offset = scheduler._candidate_value(
+            request, scheduler._tier_weights(), {}, T0, T0
+        )
+
+        for arrival in (0, 1800, 5400, 7000):
+            for collection in (60, 600, 3600):
+                solver_value = (rate + offset - earliness * arrival) * collection
+                delay = arrival + setup
+                local_search = rate * collection * (1 - self.WEIGHT * delay / available)
+                assert solver_value == pytest.approx(local_search)
+                assert solver_value > 0
+
+    def test_a_short_late_snapshot_is_worth_taking(self) -> None:
+        """Only 100 s fit, near the deadline: worth a little, but more than
+        nothing. Valued at its longest collection it was worth less than none."""
+        scheduler, obsid, available, setup = self._scheduler_and_request()
+        rate, earliness, offset = scheduler._candidate_value(
+            scheduler._by_obsid[obsid], scheduler._tier_weights(), {}, T0, T0
+        )
+        # On a step, so the slew can start as it arrives, a few minutes
+        # before the deadline.
+        start = (int(available - setup) - 200) // 60 * 60
+        window = (start, start + 100)
+        late = _Task(
+            (obsid, float(start)),
+            ORIGIN,
+            (start, start),
+            collection=(60, 3600),
+            window=window,
+            rate=rate,
+            earliness=earliness,
+            offset=offset,
+        )
+
+        present = _solve_tasks([_Task(None, ORIGIN, (0, 0)), late], {obsid: 3600})
+
+        assert present == [True, True]
 
 
 class TestNoMinimumSnapshot:
