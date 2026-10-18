@@ -8,7 +8,7 @@ import rust_ephem
 from ..config import MissionConfig
 from ..config.scheduler import SchedulerMode
 from ..schedulers.registry import scheduler_class
-from ..targets import Pointing, Queue
+from ..targets import Plan, Pointing, Queue
 from .ditl import DITL
 from .queue_ditl import QueueDITL
 from .rolling_ditl import RollingHorizonDITL
@@ -105,9 +105,12 @@ def queue_targets(ditl: QueueDITL, targets: Sequence[Pointing]) -> None:
     if not isinstance(queue, Queue):
         raise TypeError("targets can only be added to a QueueDITL's own Queue")
     config = ditl.config
-    for target in targets:
-        queued = target.model_copy()
-        queued.config = config
+    copies = [target.model_copy() for target in targets]
+    # A target caches its constraint, ephemeris and ACS settings from the
+    # configuration it was made with, if any, so give the copies the
+    # simulation's: visibility is computed from them.
+    Plan(entries=list(copies)).bind_runtime(config)
+    for queued in copies:
         # The queue ranks targets from fom, a legacy alias of merit that is
         # not kept in step with it.
         queued.fom = queued.merit

@@ -4,6 +4,7 @@ import importlib.util
 from datetime import timedelta
 
 import pytest
+from rust_ephem import TLEEphemeris
 
 from conops import DITL, QueueDITL, RollingHorizonDITL, create_ditl
 from conops.config import (
@@ -89,6 +90,40 @@ class TestDispatch:
         # Ten minutes into its hourly cadence, not due as if never observed.
         cadence = MeritModel(config).value_terms(queued, T0).cadence
         assert cadence == pytest.approx(50 * (10 * MIN) / HOUR)
+
+    def test_a_target_made_without_a_config_is_queued(self) -> None:
+        config, _ = _setup(SchedulerConfig())
+        bare = Pointing(ra=PATCH[0][0], dec=PATCH[0][1], obsid=100, merit=50)
+        bare.exptime = 20 * MIN
+
+        ditl = create_ditl(config, [bare], BEGIN, END)
+
+        assert isinstance(ditl, QueueDITL)
+        (queued,) = ditl.queue.targets
+        assert queued.windows
+        _run(ditl)
+
+    def test_queued_targets_use_the_simulation_ephemeris(self) -> None:
+        """Targets made with the configuration's ephemeris, run with a new one
+        for the next day, are visible during the run, not the day before."""
+        config, targets = _setup(SchedulerConfig())
+        begin = BEGIN + timedelta(days=1)
+        end = begin + timedelta(hours=HOURS)
+        ephem = TLEEphemeris(
+            tle="examples/example.tle", begin=begin, end=end, step_size=60
+        )
+
+        ditl = create_ditl(config, targets, begin, end, ephem=ephem)
+
+        assert isinstance(ditl, QueueDITL)
+        for queued in ditl.queue.targets:
+            assert queued.ephem is ephem
+            assert queued.windows
+            assert all(
+                begin.timestamp() <= start and stop <= end.timestamp()
+                for start, stop in queued.windows
+            )
+        _run(ditl)
 
     def test_the_run_leaves_the_targets_passed_in_unchanged(self) -> None:
         config, targets = _setup(SchedulerConfig())
