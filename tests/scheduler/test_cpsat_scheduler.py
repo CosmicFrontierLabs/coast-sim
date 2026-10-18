@@ -233,6 +233,20 @@ class TestPlans:
         assert _execute(targets, plan, 4).validate_plan_matches_execution() == []
 
 
+class TestNoMinimumSnapshot:
+    def test_a_request_with_no_minimum_length_is_planned(self) -> None:
+        """With ss_min of zero and no observation overhead, a snapshot is
+        still at least a second long, as in the priority-first scheduler."""
+        config = _config(1)
+        target = _target(config, 100, *PATCH[0], minutes=1, snapshot=1, ss_min=0)
+
+        plan = _scheduler([target], 1).schedule()
+
+        assert _science(plan) == [100]
+        ditl = _execute([target], plan, 1)
+        assert ditl.validate_plan_matches_execution() == []
+
+
 class TestHint:
     def test_hint_is_feasible_and_reproduces_the_priority_first_plan(
         self, monkeypatch: pytest.MonkeyPatch
@@ -548,6 +562,31 @@ class TestArguments:
                 BEGIN + timedelta(hours=1),
                 **options,  # type: ignore[arg-type]
             )
+
+    @pytest.mark.parametrize("seed", [2**32 - 1, 2**31, -1])
+    def test_seeds_outside_cp_sat_range_are_accepted(self, seed: int) -> None:
+        """CP-SAT's seed is a signed 32-bit integer; local search takes any."""
+        targets = _targets(1)
+
+        plan = _scheduler(targets, 1, seed=seed).schedule()
+
+        assert _science(plan)
+
+    def test_a_large_configured_seed_is_accepted(self) -> None:
+        config = _config(1)
+        config.random_seed = 2**32 - 1
+        targets = _targets(1, config=config)
+
+        scheduler = CpSatScheduler(
+            config,
+            targets,
+            BEGIN,
+            BEGIN + timedelta(hours=1),
+            solver_time_limit=5.0,
+            workers=1,
+        )
+
+        assert _science(scheduler.schedule())
 
     def test_missing_ortools_names_the_package(
         self, monkeypatch: pytest.MonkeyPatch

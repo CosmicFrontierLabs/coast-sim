@@ -45,6 +45,9 @@ if TYPE_CHECKING:
 WindowKey = tuple[int, float]
 """A request's obsid and the Unix start time of one of its visibility windows."""
 
+_SEED_RANGE = 2**31
+"""Seeds CP-SAT accepts are 0 up to this, exclusive."""
+
 
 class _PlannedSnapshot(NamedTuple):
     """Where the priority-first plan put a snapshot."""
@@ -336,7 +339,9 @@ class _ChunkModel:
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = time_limit
         solver.parameters.num_workers = workers
-        solver.parameters.random_seed = seed
+        # CP-SAT's seed is a signed 32-bit integer; the search's seed, like
+        # Python's, can be any integer.
+        solver.parameters.random_seed = seed % _SEED_RANGE
         # Presolve can take longer than a short time limit leaves a chunk, and
         # the search does better with the time.
         solver.parameters.cp_model_presolve = False
@@ -647,7 +652,10 @@ class CpSatScheduler(LocalSearchScheduler):
             target = request.target
             obsid = int(target.obsid)
             remaining = budget[obsid]
-            shortest = int(np.ceil(float(target.ss_min)))
+            # A snapshot must collect something, as in the priority-first
+            # scheduler, even with an ss_min of zero; this also keeps the
+            # snapshot counts below from dividing by zero.
+            shortest = max(1, int(np.ceil(float(target.ss_min))))
             longest = int(np.floor(min(float(target.ss_max), remaining)))
             if longest < shortest:
                 continue
