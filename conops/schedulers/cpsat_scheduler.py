@@ -91,6 +91,9 @@ class _Task:
         rate: float = 0.0,
         earliness: float = 0.0,
         offset: float = 0.0,
+        late: float = 0.0,
+        due: int = 0,
+        cadence: int = 0,
     ) -> None:
         self.key = key
         """Request and window of a candidate snapshot; None for the start and passes."""
@@ -109,15 +112,24 @@ class _Task:
         self.collection = collection
         """Shortest and longest collection of a candidate snapshot, in seconds."""
         self.window = window
-        """The candidate's visibility window."""
+        """The candidate's visibility window, in which its slew starts."""
         self.rate = rate
         """Objective value per second of collection."""
         self.earliness = earliness
-        """Value per second of collection lost per second the arrival is delayed."""
+        """For a request with a deadline, value per second of collection lost
+        per second the arrival is delayed."""
         self.offset = offset
         """Value per second of collection added to the rate for an arrival at the
         chunk's origin, before the earliness discount; negative when the
         discount has already begun there."""
+        self.late = late
+        """For a request whose visits wait for its cadence, value per second of
+        collection lost per second the slew starts after the visit is due, for
+        up to a cadence."""
+        self.due = due
+        """For such a request, when its first visit in the chunk is due."""
+        self.cadence = cadence
+        """For such a request, its cadence, in whole seconds."""
 
     @property
     def obsid(self) -> int | None:
@@ -178,6 +190,8 @@ class _ChunkModel:
         self.slew_step = [
             model.new_int_var(0, last_step, f"slew{k}") for k in range(len(tasks))
         ]
+        self.last_slew = step * last_step
+        """The latest any slew can start."""
         self._add_snapshot_constraints()
         self._add_cadence_spacing()
         self._add_circuit()
@@ -209,8 +223,11 @@ class _ChunkModel:
                 ).only_enforce_if(present[k])
 
     def _add_cadence_spacing(self) -> None:
-        """Keep a cadence request's visits at least its cadence apart."""
+        """Keep a cadence request's visits at least its cadence apart, and
+        measure how late each visit is."""
         visits_of: dict[int, list[int]] = {}
+        self.visits_of = visits_of
+        """Each cadence request's candidates, in time order."""
         for k, task in enumerate(self.tasks):
             if task.spacing is not None and task.obsid is not None:
                 visits_of.setdefault(task.obsid, []).append(k)
@@ -228,6 +245,57 @@ class _ChunkModel:
                         self.step * self.slew_step[j]
                         >= self.arrival[i] + self.collection[i] + spacing
                     ).only_enforce_if([self.present[i], self.present[j]])
+        model, step = self.model, self.step
+        self.next_due: dict[int, cp_model.IntVar] = {}
+        """When the visit after a cadence candidate is due, if it is present."""
+        self.due: dict[int, cp_model.IntVar] = {}
+        """When a cadence candidate is due."""
+        self.overdue: dict[int, cp_model.IntVar] = {}
+        """At least the seconds a present cadence candidate's slew starts after
+        it is due, and no less than 0."""
+        self.lateness: dict[int, cp_model.IntVar] = {}
+        """Its overdue seconds, up to a cadence; its discount follows this."""
+        for visits in visits_of.values():
+            if self.tasks[visits[0]].late == 0.0:
+                continue
+            for n, j in enumerate(visits):
+                task = self.tasks[j]
+                spacing = task.spacing
+                assert spacing is not None
+                next_due = self.next_due[j] = model.new_int_var(
+                    0, _next_due_bound(task), f"next_due{j}"
+                )
+                model.add(
+                    next_due == self.arrival[j] + self.collection[j] + spacing
+                ).only_enforce_if(self.present[j])
+                model.add(next_due == 0).only_enforce_if(~self.present[j])
+                # A visit is due a cadence after the latest present visit
+                # before it ends or, if none, when the request's next visit
+                # is. An absent visit's next_due is 0, no later than task.due.
+                earlier = [self.next_due[i] for i in visits[:n]]
+                due = self.due[j] = model.new_int_var(
+                    task.due,
+                    max(
+                        [
+                            task.due,
+                            *(_next_due_bound(self.tasks[i]) for i in visits[:n]),
+                        ]
+                    ),
+                    f"due{j}",
+                )
+                model.add_max_equality(due, [task.due, *earlier])
+                # Lateness up to a cadence costs value, so a visit after a
+                # long gap is still worth taking.
+                overdue = self.overdue[j] = model.new_int_var(
+                    0, self.last_slew, f"overdue{j}"
+                )
+                model.add(overdue >= step * self.slew_step[j] - due).only_enforce_if(
+                    self.present[j]
+                )
+                lateness = self.lateness[j] = model.new_int_var(
+                    0, task.cadence, f"lateness{j}"
+                )
+                model.add_min_equality(lateness, [overdue, task.cadence])
 
     def _add_circuit(self) -> None:
         """Order the tasks by a circuit from the start, timing each slew.
@@ -281,8 +349,11 @@ class _ChunkModel:
         self.counted: dict[int, cp_model.IntVar] = {}
         """A candidate's collection if present, and 0 if not."""
         self.collection_arrival: dict[int, cp_model.IntVar] = {}
-        """A deadline or cadence candidate's collection times its arrival, which
-        its earliness discount follows; 0 if it is absent."""
+        """A deadline candidate's collection times its arrival, which its
+        earliness discount follows; 0 if it is absent."""
+        self.collection_lateness: dict[int, cp_model.IntVar] = {}
+        """A cadence candidate's collection times its lateness, which its
+        discount follows; 0 if it is absent."""
         totals: dict[int, list[cp_model.IntVar]] = {}
         objective = []
         for k, task in enumerate(self.tasks):
@@ -305,6 +376,13 @@ class _ChunkModel:
                 )
                 model.add_multiplication_equality(product, [counted, self.arrival[k]])
                 objective.append(-task.earliness * product)
+            if k in self.lateness:
+                # Likewise for a cadence visit's lateness.
+                product = self.collection_lateness[k] = model.new_int_var(
+                    0, task.collection[1] * task.cadence, f"collection_lateness{k}"
+                )
+                model.add_multiplication_equality(product, [counted, self.lateness[k]])
+                objective.append(-task.late * product)
         for obsid, counted_list in totals.items():
             model.add(sum(counted_list) <= int(budget[obsid]))
         model.maximize(sum(objective))
@@ -337,6 +415,29 @@ class _ChunkModel:
                         self.collection_arrival[k],
                         collection * arrival if k in hint else 0,
                     )
+        for visits in self.visits_of.values():
+            if visits[0] not in self.due:
+                continue
+            due = self.tasks[visits[0]].due
+            for k in visits:
+                task = self.tasks[k]
+                assert task.spacing is not None
+                overdue = 0
+                if k in hint:
+                    slew_step, arrival, collection = hint[k]
+                    overdue = max(0, self.step * slew_step - due)
+                model.add_hint(self.due[k], due)
+                model.add_hint(self.overdue[k], overdue)
+                lateness = min(overdue, task.cadence)
+                model.add_hint(self.lateness[k], lateness)
+                if k in self.collection_lateness:
+                    model.add_hint(
+                        self.collection_lateness[k],
+                        collection * lateness if k in hint else 0,
+                    )
+                next_due = arrival + collection + task.spacing if k in hint else 0
+                model.add_hint(self.next_due[k], next_due)
+                due = max(due, next_due)
 
     def solve(
         self, time_limit: float, workers: int, seed: int
@@ -670,43 +771,47 @@ class CpSatScheduler(LocalSearchScheduler):
             longest = int(np.floor(min(float(target.ss_max), remaining)))
             if longest < shortest:
                 continue
-            opens = self._opens(request, state, origin_time)
-            spacing = None
+            slews_from, opens = self._opens(request, state, origin_time)
+            spacing = cadence = None
             if request.cadence is not None:
                 spacing = int(np.ceil(setup + request.cadence))
+                cadence = int(np.ceil(request.cadence))
             for w0, w1 in request.windows:
                 if w1 <= opens or w0 >= chunk_end:
                     continue
                 window = (
-                    int(np.ceil(max(w0, opens) - origin_time)),
+                    int(np.ceil(max(w0, slews_from) - origin_time)),
                     int(np.floor(min(w1, ctx.uend, finish) - origin_time)),
                 )
+                # The slew may start before the earliest start, which bounds
+                # only the arrival.
+                earliest = int(np.ceil(max(w0, opens) - origin_time))
                 # The slew must start in the chunk (see _ChunkModel); the
                 # snapshot may arrive after it ends.
                 latest = window[1] - overhead - shortest
                 if target.deadline is not None:
                     latest = min(latest, int(target.deadline - origin_time - setup))
-                if latest < window[0] or window[0] >= chunk_end - origin_time:
+                if latest < earliest or window[0] >= chunk_end - origin_time:
                     continue
                 attitude = target.target_body_attitude(
                     ctx.instrument_roll(target, max(w0, origin_time))
                 )
-                rate, earliness, offset = self._candidate_value(
-                    request, weights, shares, origin_time, opens
+                rate, earliness, offset, late = self._candidate_value(
+                    request, weights, shares, origin_time
                 )
                 # As many snapshots as the exposure needs and the window holds.
                 copies = min(
                     int(np.ceil(remaining / longest)),
-                    max(1, (window[1] - window[0]) // (overhead + shortest)),
+                    max(1, (window[1] - earliest) // (overhead + shortest)),
                 )
                 if spacing is not None:
-                    copies = min(copies, 1 + (window[1] - window[0]) // spacing)
+                    copies = min(copies, 1 + (window[1] - earliest) // spacing)
                 priority = 0 if (obsid, w0) in planned else 1
                 for copy in range(copies):
                     task = _Task(
                         (obsid, w0),
                         (attitude, attitude),
-                        (window[0], latest),
+                        (earliest, latest),
                         copy=copy,
                         spacing=spacing,
                         overhead=overhead,
@@ -715,28 +820,35 @@ class CpSatScheduler(LocalSearchScheduler):
                         rate=rate,
                         earliness=earliness,
                         offset=offset,
+                        late=late,
+                        due=int(np.ceil(opens - origin_time)),
+                        cadence=cadence or 0,
                     )
                     candidates.append((priority, rank, task))
         # Stable, so a window's snapshots stay together and in order.
         candidates.sort(key=lambda item: (item[0], item[1]))
         return [task for _, _, task in candidates[: self.max_candidates]]
 
-    def _opens(self, request: _Request, state: _State, origin_time: float) -> float:
-        """Earliest arrival of the request's next snapshot.
+    def _opens(
+        self, request: _Request, state: _State, origin_time: float
+    ) -> tuple[float, float]:
+        """Earliest slew and earliest arrival of the request's next snapshot.
 
-        That is no earlier than the chunk's origin, its earliest start less
-        setup, and, for a cadence request, a cadence after its last visit.
+        The slew starts no earlier than the chunk's origin and, for a cadence
+        request, a cadence after its last visit ends. The snapshot also
+        arrives no earlier than its earliest start less setup.
         """
-        opens = origin_time
+        slews_from = origin_time
         target = request.target
-        if target.earliest_start is not None:
-            # Collection begins setup after the snapshot arrives.
-            opens = max(opens, target.earliest_start - self.ctx.setup_seconds)
         if request.cadence is not None:
             last = state.last_visit.get(int(target.obsid))
             if last is not None:
-                opens = max(opens, last + request.cadence)
-        return opens
+                slews_from = max(slews_from, last + request.cadence)
+        opens = slews_from
+        if target.earliest_start is not None:
+            # Collection begins setup after the snapshot arrives.
+            opens = max(opens, target.earliest_start - self.ctx.setup_seconds)
+        return slews_from, opens
 
     def _candidate_value(
         self,
@@ -744,20 +856,20 @@ class CpSatScheduler(LocalSearchScheduler):
         weights: dict[int, float],
         shares: dict[str, float],
         origin_time: float,
-        opens: float,
-    ) -> tuple[float, float, float]:
+    ) -> tuple[float, float, float, float]:
         """A candidate's objective terms per second of collection: its rate,
-        earliness and offset (see :class:`_Task`).
+        earliness, offset and lateness discount (see :class:`_Task`).
 
         The value counts the program shares delivered before the chunk. A
-        candidate of a request with a deadline, or with a cadence, loses value
-        the later it arrives, in proportion to the collection it gets.
+        candidate of a request with a deadline loses value the later it
+        arrives, and one with a cadence the later after its visit is due, in
+        proportion to the collection it gets.
         """
         ctx = self.ctx
         setup = ctx.setup_seconds
         target = request.target
         rate = weights[request.merit.tier] * self._value(request, shares)
-        earliness = offset = 0.0
+        earliness = offset = late = 0.0
         if target.deadline is not None and self.earliness_weight > 0.0:
             released = max(ctx.ustart, target.earliest_start or ctx.ustart)
             available = target.deadline - released
@@ -771,9 +883,7 @@ class CpSatScheduler(LocalSearchScheduler):
             # visits keep to the cadence: a visit a whole cadence late
             # loses earliness_weight of its value.
             late = rate * self.earliness_weight / request.cadence
-            earliness += late
-            offset -= late * (origin_time + setup - opens)
-        return rate, earliness, offset
+        return rate, earliness, offset, late
 
     def _hint(
         self,
@@ -909,6 +1019,12 @@ def _require_ortools() -> None:
             "CpSatScheduler needs OR-Tools (the ortools package); install it "
             'with pip install "coast-sim[cpsat]", or use LocalSearchScheduler'
         ) from exc
+
+
+def _next_due_bound(task: _Task) -> int:
+    """The latest the visit after a cadence candidate can be due."""
+    assert task.spacing is not None
+    return task.arrival[1] + task.collection[1] + task.spacing
 
 
 def _ceil(seconds: int, step: int) -> int:

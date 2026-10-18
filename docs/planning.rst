@@ -155,7 +155,8 @@ executed:
   cadence value. The priority-first scheduler and local search place each visit at the
   earliest fit once it is due; CP-SAT keeps the same spacing between a target's
   candidates and discounts a visit by ``earliness_weight`` for each cadence it waits
-  after falling due.
+  after falling due, a cadence after the visit before it, up to ``earliness_weight``
+  in all.
 
 When :class:`~conops.ditl.RollingHorizonDITL` replans, observations it has already
 committed but not finished collecting count too: their exposure towards their
@@ -271,7 +272,7 @@ CP-SAT chooses candidates and their order:
 * each slew starts on the first simulation step after the task before it ends, and
   once its target is visible; each snapshot finishes within its window;
 * collection starts no earlier than the request's ``earliest_start`` and by its
-  ``deadline``;
+  ``deadline``, though its slew may start before the earliest start;
 * ground passes are fixed tasks that snapshots must leave room to slew to;
 * a request's snapshots never add up to more than its remaining exposure;
 * a cadence target's visits are at least its cadence apart, and after its last one;

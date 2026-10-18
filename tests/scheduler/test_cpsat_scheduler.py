@@ -17,6 +17,7 @@ from conops.config.observation_categories import ObservationCategory  # noqa: E4
 from conops.ditl import RollingHorizonDITL  # noqa: E402
 from conops.schedulers import CpSatScheduler  # noqa: E402
 from conops.schedulers.cpsat_scheduler import _ChunkModel, _Task  # noqa: E402
+from conops.schedulers.local_search_scheduler import _Snapshot  # noqa: E402
 from conops.schedulers.priority_scheduler import program_shares  # noqa: E402
 from conops.targets import Plan, PlanEntry, Pointing  # noqa: E402
 
@@ -272,6 +273,70 @@ class TestCadenceOrder:
         assert _solve_tasks(tasks, {1: 600}) == [True, True, True]
 
 
+class TestCadenceLateness:
+    def test_every_visit_on_cadence_is_proposed(self) -> None:
+        """Each visit's lateness counts from when it is due, a cadence after
+        the visit before it. Counted from the first visit's due time, later
+        visits were worth less than nothing and the solver proposed two of
+        six; the chunk then lost to the priority-first plan."""
+        proposed: list[list[_Snapshot] | None] = []
+
+        class Capture(CpSatScheduler):
+            def _solve_chunk(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+                proposed.append(super()._solve_chunk(*args, **kwargs))
+                return proposed[-1]
+
+        hours = 3
+        config = _config(
+            hours,
+            weights=TargetConfig(cadence_weight=50),
+            categories=[
+                ObservationCategory(
+                    name="Monitor", obsid_min=1, obsid_max=2, cadence_seconds=600
+                )
+            ],
+        )
+        target = _target(config, 1, *PATCH[0], merit=60, minutes=30, snapshot=5)
+        scheduler = Capture(
+            config,
+            [target],
+            BEGIN,
+            BEGIN + timedelta(hours=hours),
+            solver_time_limit=3.0,
+            workers=1,
+            seed=1,
+            include_passes=False,
+        )
+
+        scheduler.schedule()
+
+        assert scheduler.solver_statuses == ["OPTIMAL"]
+        assert scheduler.solver_chunks_used == [True]
+        assert proposed[0] is not None and len(proposed[0]) == 6
+
+    def test_a_visit_long_overdue_is_still_worth_taking(self) -> None:
+        """A visit loses at most earliness_weight of its value, however late,
+        as a deadline request does at its deadline."""
+        cadence = 600
+        weight = 0.5
+        window = (6000, 9000)
+        visit = _Task(
+            (1, float(window[0])),
+            ORIGIN,
+            (window[0], window[1] - 300),
+            spacing=cadence,
+            collection=(300, 300),
+            window=window,
+            rate=1.0,
+            late=weight / cadence,
+            cadence=cadence,
+        )
+
+        present = _solve_tasks([_Task(None, ORIGIN, (0, 0)), visit], {1: 300})
+
+        assert present == [True, True]
+
+
 class TestLatenessDiscount:
     HOURS = 3
     WEIGHT = 1.0
@@ -296,8 +361,8 @@ class TestLatenessDiscount:
         in proportion to its collection, not to the longest it could have."""
         scheduler, obsid, available, setup = self._scheduler_and_request()
         request = scheduler._by_obsid[obsid]
-        rate, earliness, offset = scheduler._candidate_value(
-            request, scheduler._tier_weights(), {}, T0, T0
+        rate, earliness, offset, _ = scheduler._candidate_value(
+            request, scheduler._tier_weights(), {}, T0
         )
 
         for arrival in (0, 1800, 5400, 7000):
@@ -312,8 +377,8 @@ class TestLatenessDiscount:
         """Only 100 s fit, near the deadline: worth a little, but more than
         nothing. Valued at its longest collection it was worth less than none."""
         scheduler, obsid, available, setup = self._scheduler_and_request()
-        rate, earliness, offset = scheduler._candidate_value(
-            scheduler._by_obsid[obsid], scheduler._tier_weights(), {}, T0, T0
+        rate, earliness, offset, _ = scheduler._candidate_value(
+            scheduler._by_obsid[obsid], scheduler._tier_weights(), {}, T0
         )
         # On a step, so the slew can start as it arrives, a few minutes
         # before the deadline.
@@ -489,6 +554,36 @@ class TestEarliestStart:
         entry = next(e for e in plan if e.obsid == 2)
         assert entry.collection_begin is not None
         assert T0 + HOUR <= entry.collection_begin <= T0 + 90 * MIN
+
+
+class TestSlewBeforeEarliestStart:
+    def test_slew_may_start_before_the_earliest_start(self) -> None:
+        """The earliest start bounds the collection, not the slew. The request's
+        one-minute collection window is shorter than its slew, so the slew
+        must start before the window opens."""
+        config = _config(3)
+        flexible = _target(config, 1, 105.0, 10.0, merit=100, minutes=60)
+        urgent = _target(
+            config,
+            2,
+            110.0,
+            10.0,
+            merit=70,
+            minutes=30,
+            earliest_start=T0 + 1200,
+            deadline=T0 + 1260,
+        )
+        targets = [flexible, urgent]
+        scheduler = _scheduler(targets, 3, solver_time_limit=3.0, include_passes=False)
+
+        plan = scheduler.schedule()
+
+        assert {entry.obsid for entry in plan} == {1, 2}
+        entry = next(e for e in plan if e.obsid == 2)
+        assert entry.collection_begin is not None
+        assert T0 + 1200 <= entry.collection_begin <= T0 + 1260
+        assert float(entry.begin) < T0 + 1200
+        assert _execute(targets, plan, 3).validate_plan_matches_execution() == []
 
 
 class TestDynamicMerit:
