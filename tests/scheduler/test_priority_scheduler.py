@@ -333,6 +333,26 @@ class TestDeadlinesAndConstraints:
         ditl = _execute(config, plan, 6, scheduler.ctx.step_size)
         assert ditl.validate_plan_matches_execution() == []
 
+    def test_request_opening_after_the_horizon_does_not_abort_the_plan(
+        self,
+    ) -> None:
+        """A request whose earliest start is past the horizon goes unplaced
+        without stopping others from being placed."""
+        config = _config(2)
+        later = _target(config, 1, *PATCH[0], merit=100, earliest_start=T0 + 3 * HOUR)
+        now = _target(config, 2, *PATCH[1], merit=50)
+        scheduler = PriorityScheduler(
+            config,
+            [later, now],
+            BEGIN,
+            BEGIN + timedelta(hours=2),
+            include_passes=False,
+        )
+        plan = scheduler.schedule()
+
+        assert [entry.obsid for entry in _science(plan)] == [2]
+        assert [target.obsid for target in scheduler.unplaced] == [1]
+
     def test_priority_order_can_cost_a_short_window_request(self) -> None:
         """Placed first, a flexible high-merit request takes the slot B needed."""
         config = _config(3)

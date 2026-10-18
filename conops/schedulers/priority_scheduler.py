@@ -1019,8 +1019,9 @@ class PriorityScheduler:
         snapshot = min(float(target.ss_max), request.remaining)
         # Starts at which the snapshot fitted but its successor was unreachable.
         unreachable = 0
+        search_end = min(idle_limit, gap_end)
 
-        while start <= min(idle_limit, gap_end):
+        while start <= search_end:
             instrument_roll = self.ctx.instrument_roll(target, start)
             attitude = target.target_body_attitude(instrument_roll)
             slew = self.ctx.slew(
@@ -1066,6 +1067,7 @@ class PriorityScheduler:
                         start + target.earliest_start - collection_begin
                     ),
                 )
+                jump = min(jump, self.ctx.floor_step(search_end) + self.ctx.step_size)
                 while (
                     jump - self.ctx.step_size > start
                     and self._collection_begin_at(

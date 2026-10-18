@@ -405,6 +405,28 @@ class TestEarliness:
         ditl = _execute([target], plan, 6)
         assert ditl.validate_plan_matches_execution() == []
 
+    def test_request_opening_after_the_horizon_does_not_abort_the_plan(
+        self,
+    ) -> None:
+        """A request whose earliest start is past the horizon goes unplaced
+        without stopping others from being placed."""
+        config = _config(2)
+        later = _target(config, 1, *PATCH[0], merit=100, earliest_start=T0 + 3 * HOUR)
+        now = _target(config, 2, *PATCH[1], merit=50)
+        scheduler = LocalSearchScheduler(
+            config,
+            [later, now],
+            BEGIN,
+            BEGIN + timedelta(hours=2),
+            include_passes=False,
+            max_iterations=50,
+            seed=1,
+        )
+        plan = scheduler.schedule()
+
+        assert [obsid for obsid, _, _ in _science(plan)] == [2]
+        assert [target.obsid for target in scheduler.unplaced] == [1]
+
     def test_lateness_counts_from_the_earliest_start(self) -> None:
         """Starting at its earliest start, a request loses nothing."""
         config = _config(3)
