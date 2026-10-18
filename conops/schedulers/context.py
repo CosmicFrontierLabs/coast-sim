@@ -62,6 +62,11 @@ class SchedulingContext:
         ephem = config.constraint.ephem
         if ephem is None:
             raise ValueError("config.constraint.ephem must be set to plan")
+        # The star tracker and radiator constraints need the ephemeris too. A
+        # DITL attaches it when it is created, but a plan can be built before
+        # any DITL exists.
+        config.spacecraft_bus.star_trackers.set_ephem(ephem)
+        config.spacecraft_bus.radiators.set_ephem(ephem)
         self.config = config
         self.ephem: rust_ephem.Ephemeris = ephem
         self.begin = begin

@@ -16,7 +16,7 @@ from conops.config import (
     SpacecraftBus,
     StarTrackerConfiguration,
 )
-from conops.schedulers import SchedulingContext
+from conops.schedulers import PriorityScheduler, SchedulingContext
 from conops.simulation.acs import ACS
 from conops.targets import Pointing
 
@@ -50,6 +50,51 @@ def config() -> MissionConfig:
 @pytest.fixture
 def ctx(config: MissionConfig) -> SchedulingContext:
     return SchedulingContext(config, BEGIN, END)
+
+
+class TestHardwareEphemeris:
+    """A plan can be built before any DITL exists, so the context gives the
+    star trackers and radiators the ephemeris, as a DITL does."""
+
+    @pytest.fixture
+    def default_config(self) -> MissionConfig:
+        # The default spacecraft has a star tracker and a radiator.
+        config = MissionConfig()
+        config.constraint.ephem = TLEEphemeris(
+            tle="examples/example.tle", begin=BEGIN, end=END, step_size=60
+        )
+        return config
+
+    def test_star_trackers_and_radiators_get_the_ephemeris(
+        self, default_config: MissionConfig
+    ) -> None:
+        ephem = default_config.constraint.ephem
+        bus = default_config.spacecraft_bus
+        assert bus.star_trackers.num_trackers() > 0
+        assert bus.radiators.num_radiators() > 0
+
+        SchedulingContext(default_config, BEGIN, END)
+
+        hardware = [
+            constraint
+            for tracker in bus.star_trackers.star_trackers
+            for constraint in (tracker.hard_constraint, tracker.soft_constraint)
+        ] + [radiator.hard_constraint for radiator in bus.radiators.radiators]
+        attached = [constraint for constraint in hardware if constraint is not None]
+        assert attached
+        assert all(constraint.ephem is ephem for constraint in attached)
+
+    def test_a_scheduler_plans_before_any_ditl_exists(
+        self, default_config: MissionConfig
+    ) -> None:
+        target = Pointing(
+            config=default_config, ra=105.0, dec=10.0, obsid=1, ss_min=60, ss_max=600
+        )
+        target.exptime = 600
+
+        plan = PriorityScheduler(default_config, [target], BEGIN, END).schedule()
+
+        assert any(int(e.obsid) == 1 for e in plan)
 
 
 class TestStepGrid:

@@ -57,10 +57,6 @@ def create_ditl(
     scheduler = scheduler_class(settings.kind)
     options = settings.scheduler_options()
     if settings.mode is SchedulerMode.PLANNED:
-        # A DITL attaches the ephemeris to the star trackers and radiators
-        # when it is created, but the plan is built before the DITL exists.
-        config.spacecraft_bus.star_trackers.set_ephem(ephemeris)
-        config.spacecraft_bus.radiators.set_ephem(ephemeris)
         builder = scheduler(
             config,
             targets,
