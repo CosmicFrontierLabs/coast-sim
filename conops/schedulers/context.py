@@ -17,6 +17,7 @@ from ..common import ACSMode, ObsType
 from ..common.enums import SlewAlgorithm
 from ..config import AttitudeControlSystem, MissionConfig
 from ..config.constraint import attitude_constraint_name_for_scopes
+from ..ditl.ditl_log import DITLLog
 from ..simulation.acs import ACS
 from ..simulation.attitude import AttitudeExecutionError, AttitudeTrajectory
 from ..simulation.passes import Pass, PassTimes
@@ -114,10 +115,12 @@ class SchedulingContext:
 
         Before its first command the spacecraft idles at an Earth-opposite
         attitude whose roll ACS keeps optimizing, so the attitude depends on
-        time. It is replayed step by step with a real ACS.
+        time. It is replayed step by step with a real ACS. The replay's events
+        go to a log of their own, which is discarded: the simulation records
+        its own, and an ACS without a log prints them.
         """
         if self._initial_acs is None:
-            self._initial_acs = ACS(config=self.config)
+            self._initial_acs = ACS(config=self.config, log=DITLLog())
         index = int(round((self.floor_step(utime) - self.origin) / self.step_size))
         while len(self._initial_attitudes) <= index:
             step = self.origin + len(self._initial_attitudes) * self.step_size

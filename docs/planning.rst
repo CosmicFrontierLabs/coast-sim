@@ -22,7 +22,8 @@ ground contacts first, then takes requests in priority order and places each
 snapshot in the earliest slot that still fits, without moving anything already
 placed. It is fast and deterministic, and its plans are traceable to the priority
 order. Because placements are never revisited, an early placement can block a
-better packing.
+better packing. :class:`~conops.schedulers.LocalSearchScheduler` starts from its plan
+and improves it (see `Improving plans by local search`_).
 
 Building and executing a plan
 -----------------------------
@@ -61,6 +62,9 @@ Building and executing a plan
    ditl.calc()
    assert ditl.validate_plan_matches_execution() == []
 
+A target's ``earliest_start`` and ``deadline`` (Unix seconds, a datetime or an
+ISO-8601 string) limit when its science collection may begin.
+
 Execute the plan with the same configuration, ephemeris, horizon and step size it
 was built with. The plan can also be saved and loaded (see :doc:`plan_serialization`)
 before execution.
@@ -94,7 +98,8 @@ How a plan is built
      including setup, cleanup and handoff time; an observation that would run into
      a constraint is shortened, but never below ``ss_min``;
    * any wait at the previous attitude clears the ``IDLE`` scopes;
-   * collection starts by the target's ``deadline``;
+   * collection starts no earlier than the target's ``earliest_start`` and by its
+     ``deadline``;
    * the next activity can still be reached on time, with its own slew and wait
      checked the same way.
 
@@ -140,11 +145,12 @@ executed:
   ``time_share``, each program's share counts the science its targets have collected
   (``collected_seconds``) plus what the plan has given them so far. The scheduler
   re-ranks the requests after every snapshot, so a program falling behind its share
-  moves up.
+  moves up; local search values each snapshot by the shares in the plan before it.
 * **Cadence.** With ``cadence_weight`` set, a target in a category with
   ``cadence_seconds`` is visited no sooner than that long after its last visit,
   planned or collected (``last_collection_time``), so every visit has the full
-  cadence value. Each visit is placed at the earliest fit once it is due.
+  cadence value. The priority-first scheduler and local search place each visit at the
+  earliest fit once it is due.
 
 When :class:`~conops.ditl.RollingHorizonDITL` replans, observations it has already
 committed but not finished collecting count too: their exposure towards their
@@ -160,7 +166,8 @@ Limitations
 * **No battery model.** The scheduler does not schedule charging, and ``DITL`` does not
   charge on its own while executing a plan.
 * **Urgency at the start of the horizon.** Urgency is evaluated once, when the plan is
-  built; deadlines are kept as constraints.
+  built; deadlines are kept as constraints and, in local search, by the earliness
+  discount.
 * **Cadence as a minimum spacing.** A visit before its cadence is due is never
   planned, though dispatch may take one when nothing else is worth more. Spreading
   many visits through the day also leaves the scheduler more, smaller gaps to search,
@@ -169,7 +176,75 @@ Limitations
   are never revisited. If a flexible, high-merit request is placed first, it can take
   the only slot a lower-merit request with a short window could use, and that request
   goes unplaced. Urgency avoids this when it raises the short-window request above
-  the flexible one, so it is placed first.
+  the flexible one, so it is placed first; local search can also recover it (see
+  below).
+
+Improving plans by local search
+-------------------------------
+
+Placing requests in priority order leaves gaps: a high-priority snapshot placed
+early can strand time around it that nothing else fits into.
+:class:`~conops.schedulers.LocalSearchScheduler` builds the priority-first plan and
+then improves it.
+
+The search works on the *order* of the plan's science snapshots. A decoder turns an
+order into a timeline by placing each snapshot at the earliest time it fits after the
+one before, with every check described above, so every plan it considers executes as
+planned. Each snapshot starts out tied to the time and length the priority-first plan
+gave it, so the starting point is that plan. The search then tries:
+
+* **inserting** a snapshot of a request that still has exposure to place;
+* **replacing** a snapshot with one of another request that still has exposure to
+  place, which frees time that only a different target can use, such as the time the
+  spacecraft would otherwise spend waiting on a hidden target until it rises;
+* **releasing** a snapshot from its earlier time and length, letting it move earlier
+  and run to its full ``ss_max``;
+* **removing** a snapshot;
+* **swapping** two nearby snapshots, or **moving** one a few positions.
+
+A change is kept when it is no worse than the current plan, or than the plan of
+``history_length`` steps ago (late-acceptance hill climbing), which lets the search
+cross plateaus. The objective is merit-weighted science time, compared tier by tier
+from the highest, with each snapshot's completion deficit taken from the program
+shares in the plan before it. A snapshot of a request with a deadline is worth less
+the later it starts, so ToOs and other time-critical requests are not pushed later
+than they need to be. The best plan found is returned, and it is never worse than the
+priority-first plan.
+
+Cadence visits keep their spacing, from each other and from locked visits, and each
+plan entry's ``merit`` is the value its snapshot has where it is placed, as in the
+priority-first scheduler.
+
+.. code-block:: python
+
+   from conops import LocalSearchScheduler
+
+   scheduler = LocalSearchScheduler(config, targets, begin, end, time_limit=30.0)
+   plan = scheduler.schedule()
+   print(scheduler.initial_score, "->", scheduler.score, f"after {scheduler.iterations} changes")
+
+``LocalSearchScheduler`` takes the same arguments as ``PriorityScheduler``, plus:
+
+* ``time_limit``: seconds of search after the priority-first plan is built
+  (default 10);
+* ``max_iterations``: changes to try at most. A run limited only by time depends on
+  machine speed; set ``max_iterations`` (and ``seed``) for reproducible plans;
+* ``seed``: random seed, defaulting to the configuration's;
+* ``neighborhood``: how many positions apart a swap or move can be (default 3);
+* ``history_length``: length of the late-acceptance history (default 50);
+* ``earliness_weight``: fraction of a deadline request's value lost if it starts at
+  its deadline rather than at the start of the horizon, or at its earliest start if
+  that is later (default 0.5). It must be at most 1, so a late snapshot is always
+  worth more than none.
+
+Ground passes and locked entries stay where the priority-first plan put them.
+
+**Limitations.** Only requests with a deadline are rewarded for starting early. Each
+change is decoded from the point it touches, so a search of a few thousand changes
+takes tens of seconds for a day with a few hundred targets.
+
+The notebook ``examples/Local_Search_Scheduler_Example.ipynb`` compares the two schedulers
+on a one-day plan, as the number of changes grows, and in rolling-horizon runs.
 
 The scheduling context
 ----------------------
@@ -235,8 +310,8 @@ rebuilds it as the simulation runs:
    print(ditl.too_response_times())       # seconds to first science, by obsid
    assert ditl.validate_plan_matches_execution() == []
 
-Pass ``scheduler`` to build each plan with a subclass of ``PriorityScheduler``, and
-``scheduler_options`` for its extra keyword arguments.
+Pass ``scheduler=LocalSearchScheduler`` (and, for example,
+``scheduler_options={"time_limit": 10.0}``) to build each plan by local search.
 
 **Results**
 
