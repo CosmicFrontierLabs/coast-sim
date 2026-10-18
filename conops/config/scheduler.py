@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from enum import Enum
+from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
@@ -95,12 +96,14 @@ class SchedulerConfig(ConfigModel):
     include_passes: bool = Field(
         default=True, description="Whether plans reserve ground-station passes"
     )
-    successor_retries: int | None = Field(
+    # "unlimited" rather than null, which the YAML writer leaves out like
+    # every other unset setting, so a saved configuration would come back
+    # with the default.
+    successor_retries: Annotated[int, Field(ge=0)] | Literal["unlimited"] = Field(
         default=3,
-        ge=0,
         description=(
             "Later starts to try in a gap once a snapshot fits but the activity "
-            "after it cannot be reached; null tries every start"
+            "after it cannot be reached; unlimited tries every start"
         ),
     )
     seed: int | None = Field(
@@ -171,8 +174,10 @@ class SchedulerConfig(ConfigModel):
             for name in (*_SEARCH_FIELDS, *_SOLVER_FIELDS)
             if getattr(self, name) is not None and name != "chunk_seconds"
         }
-        # None is a setting here: try every start.
-        options["successor_retries"] = self.successor_retries
+        # The schedulers take None for trying every start.
+        options["successor_retries"] = (
+            None if self.successor_retries == "unlimited" else self.successor_retries
+        )
         if self.chunk_seconds is not None:
             options["chunk"] = timedelta(seconds=self.chunk_seconds)
         return options

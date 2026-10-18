@@ -12,11 +12,14 @@ from conops.config import (
     SchedulerConfig,
     SchedulerKind,
     SchedulerMode,
+    TargetConfig,
 )
+from conops.config.observation_categories import ObservationCategory
 from conops.schedulers import SCHEDULERS, LocalSearchScheduler, PriorityScheduler
 from conops.targets import Pointing
+from conops.targets.merit import MeritModel
 
-from .planning_scenario import BEGIN, MIN, PATCH, T0
+from .planning_scenario import BEGIN, HOUR, MIN, PATCH, T0
 from .planning_scenario import make_config as _config
 from .planning_scenario import make_target as _target
 
@@ -60,6 +63,43 @@ class TestDispatch:
         assert queued[101].earliest_start == T0 + 20 * MIN
         assert queued[100].exptime == targets[0].exptime
         _run(ditl)
+
+    def test_queued_targets_keep_their_observation_history(self) -> None:
+        monitor_category = ObservationCategory(
+            name="Monitor", obsid_min=1, obsid_max=2, cadence_seconds=HOUR
+        )
+        config = _config(
+            HOURS,
+            weights=TargetConfig(cadence_weight=50),
+            categories=[monitor_category],
+        )
+        monitor = _target(config, 1, *PATCH[0], merit=60, minutes=40)
+        # Observed for 5 minutes, ending 10 minutes before the run starts.
+        monitor.record_collection(T0 - 10 * MIN, 5 * MIN)
+
+        ditl = create_ditl(config, [monitor], BEGIN, END)
+
+        assert isinstance(ditl, QueueDITL)
+        (queued,) = ditl.queue.targets
+        assert queued is not monitor
+        assert queued.collected_seconds == 5 * MIN
+        assert queued.last_collection_time == T0 - 10 * MIN
+        assert queued.exptime == 35 * MIN
+        assert queued.exporig == 40 * MIN
+        # Ten minutes into its hourly cadence, not due as if never observed.
+        cadence = MeritModel(config).value_terms(queued, T0).cadence
+        assert cadence == pytest.approx(50 * (10 * MIN) / HOUR)
+
+    def test_the_run_leaves_the_targets_passed_in_unchanged(self) -> None:
+        config, targets = _setup(SchedulerConfig())
+
+        ditl = create_ditl(config, targets, BEGIN, END)
+        _run(ditl)
+
+        assert isinstance(ditl, QueueDITL)
+        assert sum(t.collected_seconds for t in ditl.queue.targets) > 0
+        assert all(t.collected_seconds == 0 for t in targets)
+        assert all(t.exptime == 40 * MIN for t in targets)
 
 
 class TestPlanned:

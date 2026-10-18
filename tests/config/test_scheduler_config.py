@@ -2,6 +2,7 @@
 
 from datetime import timedelta
 from pathlib import Path
+from typing import Literal
 
 import pytest
 from pydantic import ValidationError
@@ -25,9 +26,10 @@ class TestDefaults:
     def test_unset_settings_use_scheduler_defaults(self) -> None:
         assert SchedulerConfig().scheduler_options() == {"successor_retries": 3}
 
-    def test_successor_retries_can_be_unlimited(self) -> None:
-        options = SchedulerConfig(successor_retries=None).scheduler_options()
+    def test_unlimited_successor_retries_tries_every_start(self) -> None:
+        options = SchedulerConfig(successor_retries="unlimited").scheduler_options()
 
+        # The schedulers take None for no limit.
         assert options["successor_retries"] is None
 
 
@@ -87,6 +89,10 @@ class TestSchedulerOptions:
             {"kind": "local_search", "time_limit": -1},
             {"kind": "cp_sat", "solver_time_limit": 0},
             {"successor_retries": -1},
+            {"successor_retries": "all"},
+            # Null would mean no limit here but the default once saved as YAML,
+            # which leaves nulls out.
+            {"successor_retries": None},
             {"kind": "unknown"},
             {"mode": "unknown"},
         ],
@@ -138,6 +144,18 @@ class TestSerialization:
         loaded = MissionConfig.from_yaml_file(str(path))
 
         assert loaded.scheduler == config.scheduler
+
+    @pytest.mark.parametrize("retries", [0, "unlimited"])
+    def test_yaml_round_trip_keeps_successor_retries(
+        self, retries: int | Literal["unlimited"], tmp_path: Path
+    ) -> None:
+        config = MissionConfig(scheduler=SchedulerConfig(successor_retries=retries))
+        path = tmp_path / "mission.yaml"
+        config.to_yaml_file(str(path))
+
+        loaded = MissionConfig.from_yaml_file(str(path))
+
+        assert loaded.scheduler.successor_retries == retries
 
     def test_mode_and_kind_are_written_as_names(self, config: MissionConfig) -> None:
         dumped = config.model_dump(mode="json")["scheduler"]

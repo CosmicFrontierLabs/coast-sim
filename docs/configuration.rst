@@ -1559,8 +1559,8 @@ dispatch, so configurations without this section behave as before.
 * ``kind`` (str): the scheduler that builds plans in ``planned`` and ``rolling``
   modes: ``priority`` (the default), ``local_search`` or ``cp_sat`` (needs
   ``coast-sim[cpsat]``)
-* ``include_passes`` (default true) and ``successor_retries`` (3 by default, ``null``
-  for no limit; see :doc:`planning`), for every scheduler
+* ``include_passes`` (default true) and ``successor_retries`` (3 by default,
+  ``unlimited`` to try every start; see :doc:`planning`), for every scheduler
 * local search, for ``local_search`` and ``cp_sat``: ``seed`` (defaults to
   ``random_seed``, which the priority scheduler uses to break ties), ``time_limit``,
   ``max_iterations``, ``earliness_weight``, ``neighborhood``, ``history_length``

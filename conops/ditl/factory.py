@@ -8,7 +8,7 @@ import rust_ephem
 from ..config import MissionConfig
 from ..config.scheduler import SchedulerMode
 from ..schedulers.registry import scheduler_class
-from ..targets import Pointing
+from ..targets import Pointing, Queue
 from .ditl import DITL
 from .queue_ditl import QueueDITL
 from .rolling_ditl import RollingHorizonDITL
@@ -93,23 +93,31 @@ def create_ditl(
 
 
 def queue_targets(ditl: QueueDITL, targets: Sequence[Pointing]) -> None:
-    """Add each target to a QueueDITL's queue, with its settings."""
+    """Add a copy of each target to a QueueDITL's queue.
+
+    The copy keeps the target's settings and its observation history: the
+    science it has collected, when it last collected it, and its original
+    exposure. Cadence and program-share merit follow that history, so a
+    target observed before the run is ranked as one. The targets passed in
+    are not changed by the run.
+    """
+    queue = ditl.queue
+    if not isinstance(queue, Queue):
+        raise TypeError("targets can only be added to a QueueDITL's own Queue")
+    config = ditl.config
     for target in targets:
-        ditl.queue.add(
-            ra=target.ra,
-            dec=target.dec,
-            obsid=target.obsid,
-            name=target.name,
-            merit=float(target.merit),
-            exptime=int(
-                target.exptime if target.exptime is not None else target.ss_max
-            ),
-            ss_min=int(target.ss_min),
-            ss_max=int(target.ss_max),
-            instrument_name=target.instrument_name,
-            deadline=target.deadline,
-            earliest_start=target.earliest_start,
-        )
+        queued = target.model_copy()
+        queued.config = config
+        # The queue ranks targets from fom, a legacy alias of merit that is
+        # not kept in step with it.
+        queued.fom = queued.merit
+        if queued.exptime is None:
+            queued.exptime = queued.ss_max
+        # As Queue.add does: observe with the telescope the payload assigns.
+        telescope = config.payload.telescope_for_target(queued.instrument_name)
+        queued.instrument_name = telescope.name if telescope is not None else None
+        queued.visibility()
+        queue.append(queued)
 
 
 def _as_utc(timestamp: datetime) -> datetime:
