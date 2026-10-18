@@ -63,6 +63,7 @@ from .ditl import (
     ReplanRecord,
     RollingHorizonDITL,
     TOORequest,
+    create_ditl,
 )
 from .schedulers import (
     CpSatScheduler,
@@ -183,6 +184,7 @@ __all__ = [
     "StoredMomentumConfig",
     "StoredMomentumTracker",
     "TOORequest",
+    "create_ditl",
     "TargetList",
     "TargetQueue",
     "TargetSlewEstimate",
