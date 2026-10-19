@@ -572,6 +572,7 @@ class RollingHorizonDITL(DITL):
             reserved_seconds=reserved,
             reserved_visits=self._reserved_visits(leading, utime),
             held=[int(t.obsid) for t in held],
+            start_volume_gb=float(self.recorder.current_volume_gb),
             **options,  # type: ignore[arg-type]
         )
         return (
