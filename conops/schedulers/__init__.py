@@ -1,3 +1,4 @@
+from .allocator import AllocatedTime, Allocation, LongRangeAllocator
 from .context import SchedulingContext
 from .cpsat_scheduler import CpSatScheduler
 from .local_search_scheduler import LocalSearchScheduler
@@ -10,11 +11,14 @@ from .sequential_scheduler import SequentialScheduler
 
 __all__ = [
     "SCHEDULERS",
+    "AllocatedTime",
+    "Allocation",
     "CpSatScheduler",
     "DispatchPolicy",
     "DumbQueueScheduler",
     "DumbScheduler",
     "LocalSearchScheduler",
+    "LongRangeAllocator",
     "PriorityScheduler",
     "QueueScheduler",
     "Scheduler",

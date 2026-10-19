@@ -1573,6 +1573,25 @@ dispatch, so configurations without this section behave as before.
   ``horizon_seconds`` (default one day), ``replan_interval_seconds`` (default 12
   hours), ``commit_lead_time_seconds`` (default 0), ``rapid_replans`` and
   ``allow_interrupts`` (both default true)
+* ``allocation`` (:class:`~conops.config.AllocationSettings`, unset by default): a
+  long-range allocator for ``dispatch`` and ``rolling`` modes, with ``bin_seconds``
+  (default one day), ``efficiency`` (default 0.75), ``reserve``, the fraction of
+  each day kept free for ToOs (default 0.1), ``solver`` (``milp``, the default,
+  which needs ``coast-sim[cpsat]``, or ``greedy``), ``time_limit_seconds`` for the
+  MILP solver, HiGHS (default 10), ``strictness``, how closely scheduling follows
+  the allocation, and ``bonus`` (see below); not allowed in ``planned`` mode.
+
+  ``strictness`` is one of:
+
+  * ``strict`` (the default): a request's allocated time, in the bin it is allocated
+    to, comes ahead of all unallocated work, whatever its tier. Work ahead of the
+    allocation only uses the time left;
+  * ``tier``: allocated time comes ahead of the unallocated work in its own tier only,
+    so a higher tier's work can take a lower tier's allocated time;
+  * ``weighted``: allocated time stays in its tier and gains ``bonus`` (default 0.5)
+    of its value, shown as the ``allocation`` merit term. Scheduling then trades
+    keeping to the allocation against merit; ``bonus: 0`` ignores when a request was
+    allocated.
 
 Scheduler settings left unset use the scheduler's defaults; setting one that does
 not apply to the chosen scheduler is an error. ``dispatch`` mode uses none of them.
@@ -1589,6 +1608,10 @@ See :doc:`planning` for what each mode and scheduler does.
        horizon_seconds: 43200
        replan_interval_seconds: 21600
        commit_lead_time_seconds: 1800
+     allocation:
+       bin_seconds: 86400
+       reserve: 0.1
+       strictness: strict
 
 .. code-block:: python
 

@@ -39,6 +39,8 @@ from .radiator import (
 )
 from .recorder import OnboardRecorder
 from .scheduler import (
+    AllocationSettings,
+    AllocationStrictness,
     ReplanSettings,
     SchedulerConfig,
     SchedulerKind,
@@ -72,6 +74,8 @@ __all__ = [
     "Battery",
     "CommunicationsSystem",
     "MissionConfig",
+    "AllocationSettings",
+    "AllocationStrictness",
     "ReplanSettings",
     "SchedulerConfig",
     "SchedulerKind",

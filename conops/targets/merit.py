@@ -43,6 +43,9 @@ class MeritBreakdown(BaseModel):
     urgency: float = 0.0
     cadence: float = 0.0
     completion_deficit: float = 0.0
+    allocation: float = 0.0
+    """Value added for being in the time a long-range allocation gives it,
+    with ``weighted`` allocation strictness."""
     slew_distance: float = 0.0
     slew_time: float = 0.0
     collection: float = 0.0
@@ -51,7 +54,13 @@ class MeritBreakdown(BaseModel):
     @property
     def value(self) -> float:
         """Science value: base merit plus the dynamic value terms."""
-        return self.base + self.urgency + self.cadence + self.completion_deficit
+        return (
+            self.base
+            + self.urgency
+            + self.cadence
+            + self.completion_deficit
+            + self.allocation
+        )
 
     @property
     def score(self) -> float:
@@ -81,6 +90,7 @@ class MeritBreakdown(BaseModel):
             "urgency",
             "cadence",
             "completion_deficit",
+            "allocation",
             "slew_distance",
             "slew_time",
             "collection",
