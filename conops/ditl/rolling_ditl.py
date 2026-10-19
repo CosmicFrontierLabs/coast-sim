@@ -10,7 +10,7 @@ import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
 from ..common import ObsType
-from ..config import AllocationStrictness, MissionConfig, ScienceData
+from ..config import MissionConfig, ScienceData
 from ..schedulers.allocator import Allocation, LongRangeAllocator
 from ..schedulers.context import Attitude, tracking_rest
 from ..schedulers.priority_scheduler import PriorityScheduler, StartState
@@ -81,9 +81,9 @@ class RollingHorizonDITL(DITL):
     rapid replan at once, or an interrupt in a scheduled replan due then.
     The observation running at the commit cutoff is cut there if
     ``allow_interrupts`` is set, the ToO allows it (its ``interrupt`` flag),
-    the observation's category is ``interruptible``, the ToO's tier and value,
-    evaluated now, beat the tier and value frozen onto that observation, and
-    the new plan can collect the ToO. When several ToOs need a rapid replan at once, they are
+    the observation's category is ``interruptible``, the ToO's value,
+    evaluated now, beats the value frozen onto that observation, and the new
+    plan can collect the ToO. When several ToOs need a rapid replan at once, they are
     tried highest-ranked first, and the first that qualifies and can be placed
     interrupts. A ToO that may not interrupt does not take the cut
     observation's place either: it is planned in after the interrupting ToO.
@@ -124,17 +124,14 @@ class RollingHorizonDITL(DITL):
         allocator: Long-range allocator over the whole run. If given, each
             replan allocates the remaining exposure again from when the new
             plan starts, and the scheduler plans each request's allocated
-            seconds in their bin, ranked as ``allocation_strictness`` says (see
+            seconds in their bin, worth ``allocation_bonus`` more (see
             :class:`~conops.schedulers.LongRangeAllocator`).
         allocation: A long-range allocation to follow instead, made
             elsewhere, such as a weekly long-range plan. Each replan plans each
             request's allocated seconds in their bin, less what has been
             collected or committed in the bin. Not with ``allocator``.
-        allocation_strictness: How closely plans follow the allocation:
-            ``strict``, ``tier`` or ``weighted`` (see
-            :data:`~conops.config.AllocationStrictness`).
         allocation_bonus: Fraction of a request's value its allocated time
-            gains with ``weighted`` strictness.
+            gains; how strongly plans follow the allocation.
         calculate_field_of_regard: Whether to compute field-of-regard telemetry.
     """
 
@@ -156,7 +153,6 @@ class RollingHorizonDITL(DITL):
         scheduler_options: Mapping[str, object] | None = None,
         allocator: LongRangeAllocator | None = None,
         allocation: Allocation | None = None,
-        allocation_strictness: AllocationStrictness = "strict",
         allocation_bonus: float = 0.5,
         calculate_field_of_regard: bool = False,
     ) -> None:
@@ -184,7 +180,6 @@ class RollingHorizonDITL(DITL):
         self.scheduler = scheduler
         self.scheduler_options = dict(scheduler_options or {})
         self.allocator = allocator
-        self.allocation_strictness = allocation_strictness
         self.allocation_bonus = allocation_bonus
         self.allocation: Allocation | None = allocation
         """The allocation the plans follow: the one given, or the one made at
@@ -374,7 +369,7 @@ class RollingHorizonDITL(DITL):
                             self._too_targets[id(too)],
                             utime,
                             delivered_shares=shares,
-                        ).value_rank
+                        ).value
                     ),
                     reverse=True,
                 )
@@ -560,7 +555,6 @@ class RollingHorizonDITL(DITL):
                 horizon_end,
                 used,
             )
-            options["allocation_strictness"] = self.allocation_strictness
             options["allocation_bonus"] = self.allocation_bonus
         scheduler = self.scheduler(
             self.config,
@@ -613,13 +607,12 @@ class RollingHorizonDITL(DITL):
         if not category.interruptible:
             return None
         target = self._too_targets[id(too)]
-        too_rank = self.merit_model.value_terms(
+        too_value = self.merit_model.value_terms(
             target,
             utime,
             delivered_shares=self.merit_model.delivered_shares(self.targets),
-        ).value_rank
-        current_rank = (category.tier, float(entry.merit))
-        if too_rank <= current_rank:
+        ).value
+        if too_value <= float(entry.merit):
             return None
         # A slew under way finishes first, so the cut is at the step after the
         # observation's slew ends, if that is after the cutoff.
