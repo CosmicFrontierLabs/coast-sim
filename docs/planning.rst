@@ -172,6 +172,42 @@ committed visit.
 
 Without these weights, plans are built exactly as before.
 
+Planning within the recorder
+----------------------------
+
+Every scheduler keeps the onboard recorder within its planning limit,
+``recorder.planning_limit`` as a fraction of ``capacity_gb`` (see
+:doc:`data_management`). By default it is the recorder's ``red_threshold``, so no
+plan drives the recorder into the red; set it lower to keep margin, or to ``None``
+to plan without regard to the recorder.
+
+The recorder fills between ground contacts and empties during them, so its volume
+is highest just before each contact and at the end of the horizon. The reserved
+contacts cut the horizon into segments, and the plan is checked at every segment's
+peak:
+
+* each segment's peak is what was left after the contact before it, plus the
+  housekeeping data generated in it, plus the science data of the snapshots placed
+  in it: for each snapshot, each instrument's rate for its collection time plus its
+  fixed per-observation amount, at the target's own rates where it sets them;
+* each contact removes what its rate and length allow, and no more than is there,
+  so what it cannot remove carries over to the segments after it;
+* housekeeping is counted at the nominal rate throughout, and at the ``PASS`` rate
+  during contacts, since the plan does not know when the spacecraft will be in
+  other modes.
+
+A snapshot is placed only where every peak from its segment onwards stays within
+the limit. It is never shortened to fit: a snapshot that does not fit before a
+contact is placed after one, or not at all, and the log says so. The priority-first
+scheduler places higher-merit requests first, so when data runs short it is the
+lowest-merit science that waits, whatever its data rate; local search then trades
+snapshots in and out on merit within the same limit, and CP-SAT's solutions are
+decoded against it.
+
+:class:`~conops.ditl.RollingHorizonDITL` starts each plan from the recorder's
+actual volume, so a contact that downlinked less than planned is made up for at
+the next replan.
+
 Limitations
 -----------
 

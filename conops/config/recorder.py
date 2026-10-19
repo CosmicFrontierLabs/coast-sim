@@ -19,6 +19,11 @@ class OnboardRecorder(ConfigModel):
             Defaults to 0.7 (70% full).
         red_threshold (float): Fraction of capacity that triggers red alert (0-1).
             Defaults to 0.9 (90% full).
+        planning_limit (float | None): Fraction of capacity the schedulers plan
+            within: no plan lets the recorder exceed it, assuming every pass
+            downlinks for its whole contact. Defaults to ``red_threshold``, so
+            a plan never drives the recorder into the red. None plans without
+            regard to the recorder.
 
     Methods:
         add_data(data_gb): Add data to the recorder, returns amount actually stored.
@@ -58,6 +63,23 @@ class OnboardRecorder(ConfigModel):
     red_threshold: float = Field(
         default=0.9, ge=0.0, le=1.0, description="Fraction of capacity for red alert"
     )
+    planning_limit: float | None = Field(
+        default=None,
+        gt=0.0,
+        le=1.0,
+        validate_default=False,
+        description=(
+            "Fraction of capacity the schedulers keep the recorder within; "
+            "the red threshold unless set, None to plan without regard to the recorder"
+        ),
+    )
+
+    @property
+    def planning_limit_gb(self) -> float | None:
+        """The volume in Gb the schedulers keep the recorder within, or None."""
+        if self.planning_limit is None:
+            return None
+        return self.planning_limit * self.capacity_gb
 
     @model_validator(mode="after")
     def _validate_recorder_state(self) -> "OnboardRecorder":
@@ -66,6 +88,9 @@ class OnboardRecorder(ConfigModel):
             self.current_volume_gb = self.capacity_gb
         if self.red_threshold < self.yellow_threshold:
             raise ValueError("red_threshold must be >= yellow_threshold")
+        if "planning_limit" not in self.model_fields_set:
+            # Set, not left as the default, so it survives a save and load.
+            self.planning_limit = self.red_threshold
         return self
 
     def add_data(self, data_gb: float) -> float:
