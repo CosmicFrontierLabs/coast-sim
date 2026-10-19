@@ -1504,6 +1504,8 @@ Each :class:`~conops.config.ObservationCategory` also carries:
   category name
 * ``cadence_seconds`` (float, optional): Desired interval between visits
 * ``time_share`` (float in ``[0, 1]``, optional): Allocated fraction of science time
+* ``interruptible`` (bool, default ``True``): Whether a Target of Opportunity may cut
+  short the category's observations (see :doc:`target_of_opportunity`)
 
 .. code-block:: python
 
@@ -1522,6 +1524,7 @@ Each :class:`~conops.config.ObservationCategory` also carries:
                obsid_min=90000,
                obsid_max=91000,
                color="gray",
+               interruptible=False,  # ToOs wait for calibrations to finish
            ),
            ObservationCategory(
                name="Monitoring",
