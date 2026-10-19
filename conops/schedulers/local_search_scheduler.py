@@ -36,6 +36,10 @@ Score = tuple[float, ...]
 """Merit-weighted science seconds per tier, highest tier first."""
 
 
+_VOLUME_TOLERANCE_GB = 1e-9
+"""Within which two ledgers' volumes are the same, allowing for rounding."""
+
+
 class _Snapshot(BaseModel):
     """One snapshot in the sequence: its request, length and release time."""
 
@@ -64,6 +68,8 @@ class _State(BaseModel):
     """Science collected and planned so far, by program."""
     last_visit: dict[int, float]
     """When each cadence target was last observed, collected or planned."""
+    volumes: tuple[float, ...]
+    """Science volume planned in each segment of the recorder ledger."""
 
 
 class _Decoded(BaseModel):
@@ -191,6 +197,7 @@ class LocalSearchScheduler(PriorityScheduler):
         }
         self._tiers = sorted({r.merit.tier for r in requests}, reverse=True)
         self._initial_last_visit = dict(self._last_visit)
+        self._initial_volumes = tuple(self._volumes)
 
         self._place_requests(requests)
         self._greedy_timeline = list(self.timeline)
@@ -293,6 +300,7 @@ class LocalSearchScheduler(PriorityScheduler):
             score={},
             programs=dict(self._delivered),
             last_visit=dict(self._initial_last_visit),
+            volumes=self._initial_volumes,
         )
 
     def _decode(self, sequence: list[_Snapshot]) -> _Decoded:
@@ -329,6 +337,12 @@ class LocalSearchScheduler(PriorityScheduler):
             if fit is None:
                 continue
             block, slew, succ_slew = fit
+            # Only where the recorder has room for it; later gaps may be
+            # after a contact that makes room.
+            volume = self._block_volume(block)
+            segment = self._block_segment(block)
+            if not self._ledger.fits(state.volumes, segment, volume):
+                continue
 
             # Put the snapshot in place, reconnecting the fixed block after it.
             self._apply_slew(block, slew)
@@ -365,20 +379,26 @@ class LocalSearchScheduler(PriorityScheduler):
                 score=score,
                 programs=programs,
                 last_visit=last_visit,
+                volumes=self._ledger.add(state.volumes, segment, volume),
             )
         return state
 
-    @staticmethod
-    def _same_state(a: _State, b: _State) -> bool:
+    def _same_state(self, a: _State, b: _State) -> bool:
         """Return whether decoding continues identically from two states.
 
         Equal remaining exposure means equal program totals, so the program
-        shares, and with them every later snapshot's value, agree too.
+        shares, and with them every later snapshot's value, agree too. When
+        the recorder limits the plan, what is on it must agree as well.
         """
         if (
             a.remaining != b.remaining
             or a.last_visit != b.last_visit
             or len(a.timeline) - a.cursor != len(b.timeline) - b.cursor
+        ):
+            return False
+        if self._ledger.active and any(
+            abs(x - y) > _VOLUME_TOLERANCE_GB
+            for x, y in zip(a.volumes, b.volumes, strict=True)
         ):
             return False
         if a.cursor == 0 or b.cursor == 0:
@@ -443,6 +463,12 @@ class LocalSearchScheduler(PriorityScheduler):
                     score=score,
                     programs=later.programs,
                     last_visit=later.last_visit,
+                    volumes=tuple(
+                        a + b - c
+                        for a, b, c in zip(
+                            here.volumes, later.volumes, there.volumes, strict=True
+                        )
+                    ),
                 )
             )
         return _Decoded.model_construct(sequence=sequence, states=states)
