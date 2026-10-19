@@ -20,9 +20,6 @@ class ObservationCategory(ConfigModel):
         Maximum obsid value (exclusive) for this category.
     color : str
         Matplotlib color specification for visualization.
-    tier : int
-        Scheduling tier. A target in a higher tier is always selected over a
-        target in a lower tier, whatever their merits.
     program : str or None
         Program whose share of science time the category's targets count
         toward. Defaults to the category name.
@@ -38,13 +35,6 @@ class ObservationCategory(ConfigModel):
     obsid_max: int = Field(description="Maximum observation ID (exclusive)")
     color: str = Field(
         default="tab:blue", description="Matplotlib color for visualization"
-    )
-    tier: int = Field(
-        default=0,
-        description=(
-            "Scheduling tier; targets in a higher tier always outrank targets "
-            "in a lower tier"
-        ),
     )
     program: str | None = Field(
         default=None,

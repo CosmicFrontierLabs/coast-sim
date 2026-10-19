@@ -26,7 +26,6 @@ from ..common.ephemeris import position_vectors
 from ..common.vector import attitude_to_quat, quaternion_attitude_delta
 from ..config import (
     DAY_SECONDS,
-    AllocationStrictness,
     AttitudeConstraintScope,
     MissionConfig,
     ScienceData,
@@ -178,7 +177,6 @@ class QueueDITL(DITLMixin, DITLStats):
         queue: DispatchPolicy | None = None,
         calculate_field_of_regard: bool = False,
         allocator: LongRangeAllocator | None = None,
-        allocation_strictness: AllocationStrictness = "strict",
         allocation_bonus: float = 0.5,
     ) -> None:
         """Initialize a queue-driven DITL simulation.
@@ -188,16 +186,12 @@ class QueueDITL(DITLMixin, DITLStats):
                 :class:`~conops.targets.TargetQueue`.
             allocator: Long-range allocator over the whole run. If given, the
                 queue's remaining exposure is allocated again at the start of
-                each of its bins, and the queue chooses targets allocated to
-                the current bin ahead of the others, as
-                ``allocation_strictness`` says (see
+                each of its bins, and targets allocated to the current bin are
+                worth ``allocation_bonus`` more (see
                 :class:`~conops.schedulers.LongRangeAllocator`). Needs the
                 queue to be a :class:`~conops.targets.TargetQueue`.
-            allocation_strictness: How allocated targets rank against the
-                others: ``strict``, ``tier`` or ``weighted`` (see
-                :data:`~conops.config.AllocationStrictness`).
             allocation_bonus: Fraction of an allocated target's value it gains
-                with ``weighted`` strictness.
+                while it has time allocated.
         """
         # Initialize mixin
         DITLMixin.__init__(
@@ -266,7 +260,6 @@ class QueueDITL(DITLMixin, DITLStats):
         if allocator is not None:
             if not isinstance(self.queue, Queue):
                 raise TypeError("an allocator needs the queue to be a TargetQueue")
-            self.queue.allocation_strictness = allocation_strictness
             self.queue.allocation_bonus = allocation_bonus
         self.allocator = allocator
         self.allocation: Allocation | None = None
@@ -338,17 +331,17 @@ class QueueDITL(DITLMixin, DITLStats):
         A TOO is an ordinary queue request with a short window. Once its
         ``submit_time`` is reached it joins the target queue with its own merit
         and deadline, and is selected whenever it ranks highest. It interrupts
-        the observation in progress only when it is visible, its tier and
-        value, evaluated now, beat the tier and value frozen onto the current
-        observation when it was selected, it is allowed to interrupt
-        (``interrupt``), and the observation's category is ``interruptible``.
+        the observation in progress only when it is visible, its value,
+        evaluated now, beats the value frozen onto the current observation when
+        it was selected, it is allowed to interrupt (``interrupt``), and the
+        observation's category is ``interruptible``.
 
         Args:
             obsid: Unique observation identifier for this TOO
             ra: Right ascension in degrees
             dec: Declination in degrees
-            merit: Base merit. Within a tier, a TOO interrupts only if its value
-                exceeds the current observation's.
+            merit: Base merit. A TOO interrupts only if its value exceeds the
+                current observation's.
             exptime: Requested exposure time in seconds
             name: Human-readable name for the TOO target
             submit_time: When the TOO becomes active, as a Unix timestamp or a
@@ -438,14 +431,14 @@ class QueueDITL(DITLMixin, DITLStats):
             )
         return target
 
-    def _current_value_rank(self) -> tuple[int, float]:
-        """Return the tier and frozen value of the observation in progress."""
+    def _current_value(self) -> float:
+        """Return the frozen value of the observation in progress."""
         if self.ppt is None:
-            return np.iinfo(np.int64).min, -np.inf
+            return -np.inf
         breakdown = self.ppt.merit_breakdown
         if breakdown is not None:
-            return breakdown.value_rank
-        return self.merit_model.tier(self.ppt), float(self.ppt.merit)
+            return breakdown.value
+        return float(self.ppt.merit)
 
     def _check_too_interrupt(self, utime: float, ra: float, dec: float) -> bool:
         """Queue newly active TOOs and interrupt the current observation for one.
@@ -459,8 +452,7 @@ class QueueDITL(DITLMixin, DITLStats):
            category is ``interruptible``.
         3. Its deadline, if any, has not passed.
         4. Its target is visible now.
-        5. Its tier and value now beat the current observation's frozen tier
-           and value.
+        5. Its value now beats the current observation's frozen value.
 
         The best candidate must then pass normal dispatch admission (minimum
         exposure, slew timing, deadline and constraints) before the current
@@ -500,7 +492,7 @@ class QueueDITL(DITLMixin, DITLStats):
             # the TOOs are already queued for the next selection.
             return False
 
-        current_rank = self._current_value_rank()
+        current_value = self._current_value()
         delivered_shares = (
             self.merit_model.delivered_shares(self.queue.targets)
             if self.merit_model.completion_deficit_weight > 0.0
@@ -522,7 +514,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 visibility_window=visibility_window,
                 delivered_shares=delivered_shares,
             )
-            if value.value_rank > current_rank:
+            if value.value > current_value:
                 outranking.append((too, target, value))
         if not outranking:
             return False
@@ -597,7 +589,7 @@ class QueueDITL(DITLMixin, DITLStats):
             description=(
                 f"TOO interrupt: {too.name} (obsid={too.obsid}, "
                 f"{value.describe()}) preempting current observation "
-                f"(tier={current_rank[0]}, value={current_rank[1]:g})"
+                f"(value={current_value:g})"
             ),
             obsid=too.obsid,
             acs_mode=self.acs.acsmode,
