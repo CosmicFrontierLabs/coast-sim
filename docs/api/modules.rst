@@ -51,6 +51,7 @@ Scheduling and Planning
    conops.schedulers.priority_scheduler
    conops.schedulers.protocols
    conops.schedulers.queue_scheduler
+   conops.schedulers.recorder
    conops.schedulers.registry
    conops.schedulers.sequential_scheduler
    conops.schedulers.scheduler
