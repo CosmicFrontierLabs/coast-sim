@@ -110,9 +110,6 @@ def queue_targets(ditl: QueueDITL, targets: Sequence[Pointing]) -> None:
     copies = [target.model_copy() for target in targets]
     _bind_targets(config, copies)
     for queued in copies:
-        # The queue ranks targets from fom, a legacy alias of merit that is
-        # not kept in step with it.
-        queued.fom = queued.merit
         if queued.exptime is None:
             queued.exptime = queued.ss_max
         # As Queue.add does: observe with the telescope the payload assigns.

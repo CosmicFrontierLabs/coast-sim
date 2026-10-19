@@ -53,7 +53,7 @@ Building and executing a plan
    targets = []
    for obsid, (ra, dec, merit) in enumerate([(105, 10, 90), (30, 40, 60)], 10000):
        target = Pointing(
-           config=config, obsid=obsid, ra=ra, dec=dec, merit=merit, fom=merit,
+           config=config, obsid=obsid, ra=ra, dec=dec, merit=merit,
            ss_min=300, ss_max=1200,
        )
        target.exptime = 2400  # split into snapshots of up to ss_max

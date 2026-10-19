@@ -282,7 +282,6 @@ class RollingHorizonDITL(DITL):
                 obsid=too.obsid,
                 name=too.name,
                 merit=too.merit,
-                fom=too.merit,
                 ss_min=min(300, too.exptime),
                 ss_max=too.exptime,
                 deadline=too.deadline,

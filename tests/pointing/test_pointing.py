@@ -109,6 +109,14 @@ class TestPointing:
     def test_fom_100(self, pointing: Pointing) -> None:
         assert pointing.fom == 100.0  # fom is maintained as legacy alias for merit
 
+    def test_fom_is_merit(self) -> None:
+        assert Pointing(merit=50).fom == 50
+        assert Pointing(fom=50).merit == 50
+
+    def test_setting_fom_sets_merit(self, pointing: Pointing) -> None:
+        pointing.fom = 50
+        assert pointing.merit == 50
+
     def test_merit_100(self, pointing: Pointing) -> None:
         assert pointing.merit == 100
 

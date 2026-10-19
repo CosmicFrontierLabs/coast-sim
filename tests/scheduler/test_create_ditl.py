@@ -94,6 +94,70 @@ class TestDispatch:
         cadence = MeritModel(config).value_terms(queued, T0).cadence
         assert cadence == pytest.approx(50 * (10 * MIN) / HOUR)
 
+    def test_a_target_from_an_earlier_run_is_not_left_invisible(self) -> None:
+        """A target not visible during one run is ranked by its merit in the
+        next, not by the penalty the queue gave it while hidden."""
+        config = _config(HOURS)
+        target = _target(config, 1, 30, 40, merit=60, minutes=40, snapshot=5, ss_min=1)
+        split = BEGIN + timedelta(minutes=10)
+        first = create_ditl(config, [target], BEGIN, split)
+        _run(first)
+        assert isinstance(first, QueueDITL)
+        (previous,) = first.queue.targets
+        assert previous.collected_seconds == 0  # Not visible in the first run.
+        assert previous.merit == 60
+
+        second = create_ditl(config, first.queue.targets, split, END)
+        _run(second)
+
+        assert isinstance(second, QueueDITL)
+        (queued,) = second.queue.targets
+        assert queued.collected_seconds == 40 * MIN
+
+    def test_a_target_from_an_earlier_run_does_not_keep_its_bonus(self) -> None:
+        """A target selected with a cadence bonus is ranked by its merit in the
+        next run, not by the value it was selected with."""
+        monitor_category = ObservationCategory(
+            name="Monitor", obsid_min=1, obsid_max=2, cadence_seconds=HOUR
+        )
+        config = _config(
+            HOURS,
+            weights=TargetConfig(cadence_weight=1),
+            categories=[monitor_category],
+        )
+        monitor = _target(config, 1, *PATCH[0], merit=60, minutes=60, snapshot=5)
+        monitor.record_collection(T0 - HOUR, 5 * MIN)
+        split = BEGIN + timedelta(minutes=8)
+        first = create_ditl(config, [monitor], BEGIN, split)
+        _run(first)
+        assert isinstance(first, QueueDITL)
+        (previous,) = first.queue.targets
+        assert previous.merit_breakdown is not None
+        assert previous.merit_breakdown.value == pytest.approx(61)
+        assert previous.merit == 60
+        fresh = _target(config, 3, *PATCH[1], merit=60.5, minutes=20, snapshot=5)
+
+        second = create_ditl(config, [previous, fresh], split, END)
+        _run(second)
+
+        assert isinstance(second, QueueDITL)
+        science = [e for e in second.plan if e.obstype != ObsType.GSP]
+        assert int(science[0].obsid) == 3
+
+    def test_a_target_made_with_only_a_merit_is_ranked_by_it(self) -> None:
+        """Not by the default of fom, the legacy name of merit."""
+        config, _ = _setup(SchedulerConfig())
+        lower = Pointing(ra=PATCH[0][0], dec=PATCH[0][1], obsid=100, merit=50)
+        higher = Pointing(ra=PATCH[1][0], dec=PATCH[1][1], obsid=101, merit=60)
+        for target in (lower, higher):
+            target.exptime = 20 * MIN
+
+        ditl = create_ditl(config, [lower, higher], BEGIN, END)
+        _run(ditl)
+
+        science = [e for e in ditl.plan if e.obstype != ObsType.GSP]
+        assert [int(e.obsid) for e in science[:2]] == [101, 100]
+
     def test_a_target_made_without_a_config_is_queued(self) -> None:
         config, _ = _setup(SchedulerConfig())
         bare = Pointing(ra=PATCH[0][0], dec=PATCH[0][1], obsid=100, merit=50)
