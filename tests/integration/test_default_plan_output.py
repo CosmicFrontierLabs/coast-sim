@@ -13,6 +13,7 @@ from conops.config import (
     MissionConfig,
     ObservationTiming,
     RadiatorConfiguration,
+    ScienceData,
     SolarPanelSet,
     SpacecraftBus,
     StarTrackerConfiguration,
@@ -48,7 +49,9 @@ def test_budgeted_plan_matches_fractional_collection_and_data(monkeypatch, budge
             handoff_seconds=budgets[2],
         )
         payload.instruments = [
-            Instrument(data_generation=DataGeneration(rate_gbps=0.001))
+            Instrument(
+                data_generation=DataGeneration(science=ScienceData(rate_gbps=0.001))
+            )
         ]
         ditl = constructor(**kwargs)
         simulations.append(ditl)
@@ -92,7 +95,7 @@ def test_replay_with_real_acs_does_not_collect_during_a_longer_than_planned_slew
         ),
     )
     config.payload.instruments = [
-        Instrument(data_generation=DataGeneration(rate_gbps=0.01))
+        Instrument(data_generation=DataGeneration(science=ScienceData(rate_gbps=0.01)))
     ]
     begin = scenario.SCENARIO_BEGIN
     end = begin + timedelta(seconds=120)
@@ -278,12 +281,12 @@ def test_plan_generates_housekeeping_science_and_per_observation_data(monkeypatc
         config = kwargs["config"]
         config.payload.instruments = [
             Instrument(
-                data_generation=DataGeneration(rate_gbps=0.001, per_observation_gb=0.5)
+                data_generation=DataGeneration(
+                    science=ScienceData(rate_gbps=0.001, per_observation_gb=0.5)
+                )
             )
         ]
-        config.spacecraft_bus.data_generation = HousekeepingData(
-            housekeeping_rate_gbps=0.0001
-        )
+        config.spacecraft_bus.data_generation = HousekeepingData(rate_gbps=0.0001)
         ditl = constructor(**kwargs)
         simulations.append(ditl)
         return ditl

@@ -110,7 +110,8 @@ def test_process_data_management_generates_and_downlinks(mock_config):
     step = 60
 
     # SCIENCE mode generates data
-    mock_config.data_generated = Mock(return_value=0.5)  # Gb per step
+    mock_config.housekeeping_generated = Mock(return_value=0.0)
+    mock_config.science_generated = Mock(return_value=0.5)  # Gb per step
     mock_config.recorder.add_data = Mock()
     gen, dl = mixin._process_data_management(
         utime, ACSMode.SCIENCE, step, collection_seconds=step
@@ -150,7 +151,6 @@ def test_process_data_management_generates_and_downlinks(mock_config):
     # recorder remove_data returns the amount actually removed (Gb)
     mock_config.recorder.remove_data = Mock(return_value=0.3)
 
-    mock_config.data_generated = Mock(return_value=0.0)
     gen2, dl2 = mixin._process_data_management(
         utime, ACSMode.PASS, step, collection_seconds=0
     )

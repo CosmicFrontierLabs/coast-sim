@@ -33,10 +33,8 @@ def test_replay_collection_and_data_exclude_setup_and_teardown(
         ditl.config.payload.observation_timing = ObservationTiming()
     ditl.plan.entries = [entry]
     ditl.acs.pointing.return_value = (0, 0, 0, 7)
-    ditl.config.data_generated = Mock(
-        side_effect=lambda seconds, *, collection_seconds, **_: (
-            collection_seconds * 0.01
-        )
+    ditl.config.science_generated = Mock(
+        side_effect=lambda collected, science=None: collected * 0.01
     )
 
     assert ditl.calc()
@@ -73,10 +71,8 @@ def test_replay_waits_for_executed_slew_and_saved_setup(
     ditl.acs.get_mode.side_effect = lambda t: (
         ACSMode.SLEWING if t < start + actual_slew else ACSMode.SCIENCE
     )
-    ditl.config.data_generated = Mock(
-        side_effect=lambda seconds, *, collection_seconds, **_: (
-            collection_seconds * 0.01
-        )
+    ditl.config.science_generated = Mock(
+        side_effect=lambda collected, science=None: collected * 0.01
     )
 
     assert ditl.calc()

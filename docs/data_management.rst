@@ -91,29 +91,34 @@ During ground station passes, data is removed from the recorder to simulate down
 DataGeneration
 --------------
 
-Data comes in two kinds:
+Data comes in two kinds, and what drives each is different:
 
-* **Housekeeping data**, at all times: ``housekeeping_rate_gbps``, the engineering
-  telemetry (temperatures, voltages, attitude, status) generated whatever is
-  observed. ``housekeeping_rate_mode`` sets a different rate in
-  particular ACS modes, given by name or number, the way
-  :class:`~conops.config.PowerDraw` sets power by mode.
-* **Science data**, only while science is collected: ``rate_gbps`` for every second
-  collected, plus ``per_observation_gb`` once for each observation, such as
-  calibration frames or headers. A target can set its own for each instrument.
+* **Science data** depends on *what is observed*, and is generated only while
+  observing it: :class:`~conops.config.ScienceData` is ``rate_gbps`` for every
+  second collected, and ``per_observation_gb``, a fixed amount each observation
+  generates whatever its length, such as a frame readout or headers. An instrument
+  sets what it generates by default, and a target can set its own for each
+  instrument (below).
+* **Housekeeping data** depends on *what the spacecraft is doing*, and never stops:
+  :class:`~conops.config.HousekeepingData` is ``rate_gbps`` at all times, the
+  engineering telemetry (temperatures, voltages, attitude, status) generated
+  whatever is observed. ``rate_mode`` sets a different rate in particular ACS modes,
+  given by name or number, the way :class:`~conops.config.PowerDraw` sets power by
+  mode.
 
-The spacecraft bus generates housekeeping data only, set by its
-:class:`~conops.config.HousekeepingData`. Each instrument has a
-:class:`~conops.config.DataGeneration`, which generates both.
+The spacecraft bus generates housekeeping data only, so its ``data_generation`` is a
+``HousekeepingData``. An instrument generates both, so its ``data_generation`` is a
+:class:`~conops.config.DataGeneration` with a ``science`` and a ``housekeeping`` part.
 
 .. code-block:: python
 
    from conops.config import (
-       HousekeepingData,
        DataGeneration,
+       HousekeepingData,
        Instrument,
        MissionConfig,
        Payload,
+       ScienceData,
        SpacecraftBus,
    )
 
@@ -121,8 +126,7 @@ The spacecraft bus generates housekeeping data only, set by its
        spacecraft_bus=SpacecraftBus(
            # 1 Mbps of housekeeping, 4 Mbps of diagnostics in safe mode
            data_generation=HousekeepingData(
-               housekeeping_rate_gbps=0.001,
-               housekeeping_rate_mode={"SAFE": 0.004},
+               rate_gbps=0.001, rate_mode={"SAFE": 0.004}
            ),
        ),
        payload=Payload(
@@ -131,44 +135,61 @@ The spacecraft bus generates housekeeping data only, set by its
                Instrument(
                    name="camera",
                    data_generation=DataGeneration(
-                       rate_gbps=0.5, housekeeping_rate_gbps=0.0002
+                       science=ScienceData(rate_gbps=0.5),
+                       housekeeping=HousekeepingData(rate_gbps=0.0002),
                    ),
                ),
-               # 5 Gb for each observation, whatever its length; off in SAA
+               # 5 Gb for each observation, whatever its length; off in the SAA
                Instrument(
                    name="spectrometer",
                    data_generation=DataGeneration(
-                       per_observation_gb=5.0,
-                       housekeeping_rate_gbps=0.0001,
-                       housekeeping_rate_mode={"SAA": 0.0},
+                       science=ScienceData(per_observation_gb=5.0),
+                       housekeeping=HousekeepingData(
+                           rate_gbps=0.0001, rate_mode={"SAA": 0.0}
+                       ),
                    ),
                ),
            ]
        ),
    )
 
-Each generator computes its own data with its ``data_generated`` method. For an
-instrument, with only a duration, it is one observation collecting for all of it:
+Each part computes its own data with ``data_generated``. Science data is what an
+observation generates having collected for some seconds: its rate for those seconds
+plus its fixed amount. Housekeeping data is the rate for the length of the interval,
+in its ACS mode. An instrument's ``DataGeneration`` adds the two; with only a
+duration, the observation collects for all of it.
 
 .. code-block:: python
 
    camera = config.payload.instruments[0]
-   camera.data_generation.data_generated(60)  # 0.5 * 60 + 0.0002 * 60 = 30.012 Gb
+   camera.data_generation.science.data_generated(60)      # 0.5 * 60 = 30 Gb
+   camera.data_generation.housekeeping.data_generated(60)  # 0.0002 * 60 = 0.012 Gb
+   camera.data_generation.data_generated(60)              # 30.012 Gb
+
+   spectrometer = config.payload.instruments[1]
+   spectrometer.data_generation.science.data_generated(60)   # 5 Gb, whatever the length
+   spectrometer.data_generation.data_generated(60)           # 5 + 0.0001 * 60 = 5.006 Gb
 
 :meth:`Payload.data_generated <conops.config.Payload.data_generated>`,
 :meth:`SpacecraftBus.data_generated <conops.config.SpacecraftBus.data_generated>` and
 :meth:`MissionConfig.data_generated <conops.config.MissionConfig.data_generated>` sum
-what their generators produce over an interval, given the ACS mode, the seconds
-collected and the observations that began in it:
+what their generators produce over an interval, given the ACS mode and the seconds
+collected. ``housekeeping_generated`` and ``science_generated`` give the two parts:
 
 .. code-block:: python
 
    from conops.common.enums import ACSMode
 
-   # A 60 s step in which a new observation collected for 45 s
-   config.data_generated(
-       60, mode=ACSMode.SCIENCE, collection_seconds=45, observations=1
-   )
+   # A 60 s step in safe mode
+   config.housekeeping_generated(60, mode=ACSMode.SAFE)
+   # An observation that has collected for 45 s
+   config.science_generated(45)
+   # Both: an observation collecting for 45 s of a 60 s interval
+   config.data_generated(60, mode=ACSMode.SCIENCE, collection_seconds=45)
+
+Configurations saved before housekeeping data existed give an instrument's science
+fields directly (``data_generation: {rate_gbps: ..., per_observation_gb: ...}``); they
+still load, as the ``science`` part.
 
 Target Science Data
 ~~~~~~~~~~~~~~~~~~~
@@ -206,9 +227,10 @@ with the plan. A name that matches no configured instrument is an error when the
 target is created with a configuration.
 
 In a DITL simulation, each step generates housekeeping data for the whole step, in the
-step's ACS mode, and science data for the seconds collected, at the observed target's
-rates. Per-observation data is generated once, in the step an observation first
-collects; a later visit to the same target is a new observation.
+step's ACS mode. For science data it keeps what the observation in progress has
+generated so far, its rate for the seconds it has collected plus its fixed amount, and
+adds the step's increase, so the fixed amount is counted once. A later visit to the
+same target is a new observation.
 
 Downlink Operations
 -------------------

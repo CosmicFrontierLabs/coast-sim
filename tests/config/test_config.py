@@ -26,6 +26,7 @@ from conops.config import (
     CommunicationsSystem,
     DataGeneration,
     PowerDraw,
+    ScienceData,
     StarTracker,
     StarTrackerConfiguration,
     StarTrackerOrientation,
@@ -382,7 +383,7 @@ class TestConfig:
                     name="Primary Telescope",
                     power_draw=PowerDraw(nominal_power=10.0, peak_power=20.0),
                     data_generation=DataGeneration(
-                        rate_gbps=0.5, per_observation_gb=1.2
+                        science=ScienceData(rate_gbps=0.5, per_observation_gb=1.2)
                     ),
                     optics=TelescopeConfig(
                         aperture_m=0.6,

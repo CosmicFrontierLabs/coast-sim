@@ -92,10 +92,10 @@ spacecraft_bus:
       eclipse_power_mode: {}
   # data_generation: Data the bus generates at all times, such as housekeeping
   data_generation:
-    # housekeeping_rate_gbps: Data generation rate in Gbps at all times, such as housekeeping
-    housekeeping_rate_gbps: 0.0
-    # housekeeping_rate_mode: Housekeeping rate in Gbps in particular ACS modes, by name or number
-    housekeeping_rate_mode: {}
+    # rate_gbps: Data generation rate in Gbps at all times
+    rate_gbps: 0.0
+    # rate_mode: Rate in Gbps in particular ACS modes, by name or number
+    rate_mode: {}
   # star_trackers: Star tracker configuration
   star_trackers:
     star_trackers:
@@ -200,10 +200,18 @@ payload:
           '1': 50.0
           '2': 50.0
         eclipse_power_mode: {}
-      # data_generation: Data generation characteristics
+      # data_generation: Science data while collecting, and housekeeping data at all times
       data_generation:
-        rate_gbps: 0.0001953125
-        per_observation_gb: 0.0
+        science:
+          # rate_gbps: Data generation rate in Gbps while collecting
+          rate_gbps: 0.0001953125
+          # per_observation_gb: Fixed data generated once per observation in Gb
+          per_observation_gb: 0.0
+        housekeeping:
+          # rate_gbps: Data generation rate in Gbps at all times
+          rate_gbps: 0.0
+          # rate_mode: Rate in Gbps in particular ACS modes, by name or number
+          rate_mode: {}
 
 # Battery Configuration. Defines battery capacity, voltage, and charging parameters
 battery:

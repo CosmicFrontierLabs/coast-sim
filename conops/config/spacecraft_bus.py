@@ -1,3 +1,5 @@
+from collections.abc import Mapping
+
 import numpy as np
 from pydantic import Field, field_validator, model_validator
 
@@ -5,7 +7,7 @@ from ..common.enums import ACSMode
 from ._base import ConfigModel
 from .acs import AttitudeControlSystem
 from .communications import CommunicationsSystem
-from .data_generator import DataMixin, HousekeepingData
+from .data_generator import HousekeepingData
 from .power import PowerDraw
 from .radiator import DefaultRadiatorConfiguration, RadiatorConfiguration
 from .star_tracker import DefaultStarTrackerConfiguration, StarTrackerConfiguration
@@ -58,21 +60,21 @@ class SpacecraftBus(ConfigModel):
 
     @field_validator("data_generation", mode="before")
     @classmethod
-    def _no_science_data(cls, value: object) -> object:
-        """Reject science data for the bus, which collects none.
+    def _older_format(cls, value: object) -> object:
+        """Load the older format, which gave the bus science fields it never used.
 
-        Configurations saved before the bus had its own data type carry its
-        unused science fields as zero; those are dropped.
+        Those files have ``per_observation_gb``, which housekeeping data does
+        not; the fields are dropped when zero and an error otherwise.
         """
-        if isinstance(value, HousekeepingData):
-            value = value.model_dump()
-        if not isinstance(value, dict):
+        if not isinstance(value, Mapping) or "per_observation_gb" not in value:
             return value
-        science = set(DataMixin.model_fields) & value.keys()
-        if any(value[name] for name in science):
+        science = {
+            k: value[k] for k in ("rate_gbps", "per_observation_gb") if k in value
+        }
+        if any(science.values()):
             raise ValueError(
                 "the spacecraft bus collects no science data: set "
-                f"{sorted(science)} on an instrument, or use housekeeping_rate_gbps"
+                f"{sorted(science)} on an instrument"
             )
         return {k: v for k, v in value.items() if k not in science}
 

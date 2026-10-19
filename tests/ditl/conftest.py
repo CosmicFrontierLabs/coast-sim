@@ -22,6 +22,7 @@ from conops.config import (
     ObservationTiming,
     OnboardRecorder,
     Payload,
+    ScienceData,
     SolarArrayDriveState,
     SolarPanelSet,
     SpacecraftBus,
@@ -211,7 +212,8 @@ def mock_config():
     ]
     cfg.battery = Mock()
     cfg.battery.max_depth_of_discharge = 0.5
-    cfg.data_generated = Mock(return_value=0.0)
+    cfg.housekeeping_generated = Mock(return_value=0.0)
+    cfg.science_generated = Mock(return_value=0.0)
     cfg.recorder = Mock()
     cfg.recorder.yellow_threshold = 0.7
     cfg.recorder.red_threshold = 0.9
@@ -288,7 +290,8 @@ def mock_config_detailed():
     config.payload = Mock()
     config.payload.observation_timing = ObservationTiming()
     config.payload.power = Mock(return_value=30.0)
-    config.data_generated = Mock(return_value=0.0)
+    config.housekeeping_generated = Mock(return_value=0.0)
+    config.science_generated = Mock(return_value=0.0)
 
     # Mock recorder
     config.recorder = Mock()
@@ -589,7 +592,7 @@ def plot_figure(populated_ditl):
 def ditl_with_payload_and_recorder(ditl_instance):
     """Fixture to set up ditl with payload and recorder mocks."""
     ditl, _, _ = ditl_instance
-    ditl.config.data_generated = Mock(return_value=0.1)
+    ditl.config.science_generated = Mock(return_value=0.1)
     ditl.recorder = Mock()
     ditl.recorder.add_data.return_value = None
     ditl.recorder.remove_data.return_value = 0.05
@@ -600,7 +603,7 @@ def ditl_with_payload_and_recorder(ditl_instance):
 def ditl_with_pass_setup(ditl_instance, mock_config):
     """Fixture to set up ditl with pass-related mocks."""
     ditl, _, _ = ditl_instance
-    ditl.config.data_generated = Mock(return_value=0.1)
+    ditl.config.science_generated = Mock(return_value=0.1)
     ditl.recorder = Mock()
     ditl.recorder.add_data.return_value = None
     ditl.recorder.remove_data.return_value = 0.05
@@ -638,7 +641,9 @@ def config_with_data_generation() -> MissionConfig:
     # Create instruments with data generation
     camera = Instrument(
         name="Camera",
-        data_generation=DataGeneration(rate_gbps=0.01),  # 0.01 Gbps
+        data_generation=DataGeneration(
+            science=ScienceData(rate_gbps=0.01)
+        ),  # 0.01 Gbps
     )
     payload = Payload(instruments=[camera])
 

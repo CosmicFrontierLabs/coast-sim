@@ -1010,7 +1010,7 @@ The :class:`~conops.config.Payload` contains the science instruments.
 
 .. code-block:: python
 
-   from conops.config import Payload, Instrument, PowerDraw, DataGeneration
+   from conops.config import Payload, Instrument, PowerDraw, DataGeneration, ScienceData
 
    payload = Payload(
        instruments=[
@@ -1022,14 +1022,14 @@ The :class:`~conops.config.Payload` contains the science instruments.
                    power_mode={0: 120.0, 1: 80.0},
                ),
                data_generation=DataGeneration(
-                   rate_gbps=0.001,  # 1 Mbps while collecting
+                   science=ScienceData(rate_gbps=0.001),  # 1 Mbps while collecting
                ),
            ),
            Instrument(
                name="Fine Guidance Sensor",
                power_draw=PowerDraw(nominal_power=15.0),
                data_generation=DataGeneration(
-                   per_observation_gb=0.01,  # Fixed per observation
+                   science=ScienceData(per_observation_gb=0.01),  # Fixed per observation
                ),
            ),
        ]
@@ -1211,6 +1211,7 @@ on the spacecraft constraint configuration, where spacecraft roll is defined.
        TelescopeType,
        PowerDraw,
        DataGeneration,
+       ScienceData,
    )
 
    import math
@@ -1220,7 +1221,7 @@ on the spacecraft constraint configuration, where spacecraft roll is defined.
        name="Primary Telescope",
        boresight=(1.0, 0.0, 0.0),         # aligned with spacecraft boresight (default)
        power_draw=PowerDraw(nominal_power=80.0, peak_power=120.0),
-       data_generation=DataGeneration(rate_gbps=0.5),
+       data_generation=DataGeneration(science=ScienceData(rate_gbps=0.5)),
        optics=TelescopeConfig(
            aperture_m=0.5,
            focal_length_m=3.5,             # f_number → 7.0 (auto-derived)
@@ -1650,6 +1651,7 @@ Here is a complete example of creating a ``MissionConfig`` programmatically:
        FaultManagement,
        PowerDraw,
        DataGeneration,
+       ScienceData,
        BandCapability,
        AttitudeControlSystem,
        Heater,
@@ -1704,7 +1706,7 @@ Here is a complete example of creating a ``MissionConfig`` programmatically:
                Instrument(
                    name="Main Instrument",
                    power_draw=PowerDraw(nominal_power=100.0, peak_power=150.0),
-                   data_generation=DataGeneration(rate_gbps=0.001)
+                   data_generation=DataGeneration(science=ScienceData(rate_gbps=0.001))
                )
            ]
        ),

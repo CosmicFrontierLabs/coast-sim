@@ -75,6 +75,7 @@ class DITLMixin:
 
     ppt: PlanEntry | None
     _data_observation: tuple[int, float] | None
+    _data_collected: float
     ra: list[float]
     dec: list[float]
     roll: list[float]
@@ -191,8 +192,9 @@ class DITLMixin:
 
         # Current target
         self.ppt = None
-        # Observation whose per-observation data has been generated
+        # The observation whose data is being generated, and its collection so far
         self._data_observation = None
+        self._data_collected = 0.0
 
         # Initialize common subsystems (can be overridden by subclasses)
         self._init_subsystems()
@@ -218,6 +220,7 @@ class DITLMixin:
             self.acs._hold_idle_attitude(ra, dec, roll, self.begin.timestamp())
             self.ppt = None
             self._data_observation = None
+            self._data_collected = 0.0
             self.telemetry = Telemetry()
             self.executed_passes = PassTimes(config=self.config)
             # Do not concatenate samples from separate runs (possibly covering
@@ -648,25 +651,28 @@ class DITLMixin:
         """
         data_downlinked = 0.0
 
-        # Housekeeping data for the whole step, and science data for the time
-        # collected, which can be less: ACS science pointing can include
-        # payload setup and cleanup.
-        observations = 0
-        science = None
-        if collection_seconds > 0 and self.ppt is not None:
-            science = self.ppt.science_data
-            # Per-observation data comes once, when an observation first collects.
-            observation = (id(self.ppt), float(self.ppt.begin))
-            if observation != self._data_observation:
-                self._data_observation = observation
-                observations = 1
-        data_generated = self.config.data_generated(
-            max(0.0, min(utime + step_size, self.uend) - utime),
-            mode=mode,
-            collection_seconds=collection_seconds,
-            observations=observations,
-            science=science,
-        )
+        # Housekeeping data for the whole step, in its ACS mode.
+        interval = max(0.0, min(utime + step_size, self.uend) - utime)
+        data_generated = self.config.housekeeping_generated(interval, mode=mode)
+
+        # Science data for the time collected, which can be less than the
+        # step: ACS science pointing can include payload setup and cleanup.
+        # What an observation has generated is its rate for the seconds it
+        # has collected plus its fixed amount, so the step adds the increase.
+        if collection_seconds > 0:
+            science = self.ppt.science_data if self.ppt is not None else None
+            observation = (
+                (id(self.ppt), float(self.ppt.begin)) if self.ppt is not None else None
+            )
+            before = (
+                self._data_collected if observation == self._data_observation else 0.0
+            )
+            after = before + collection_seconds
+            data_generated += self.config.science_generated(after, science=science)
+            if before > 0:
+                data_generated -= self.config.science_generated(before, science=science)
+            self._data_observation = observation
+            self._data_collected = after
         if data_generated > 0:
             self.recorder.add_data(data_generated)
 

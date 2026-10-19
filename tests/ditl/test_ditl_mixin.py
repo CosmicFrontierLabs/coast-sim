@@ -275,20 +275,15 @@ class TestDITLMixin:
     def test_process_data_management_science_mode_calls_data_generated(
         self, ditl_with_payload_and_recorder: DITLMixin
     ) -> None:
-        """_process_data_management in SCIENCE mode should call data_generated."""
+        """_process_data_management in SCIENCE mode generates science data."""
         ditl = ditl_with_payload_and_recorder
         from conops.common.enums import ACSMode
 
         ditl._process_data_management(
             1000.0, ACSMode.SCIENCE, 60, collection_seconds=60
         )
-        ditl.config.data_generated.assert_called_with(
-            ANY,
-            mode=ACSMode.SCIENCE,
-            collection_seconds=60,
-            observations=0,
-            science=None,
-        )
+        ditl.config.housekeeping_generated.assert_called_with(ANY, mode=ACSMode.SCIENCE)
+        ditl.config.science_generated.assert_called_once_with(60, science=None)
 
     def test_process_data_management_science_mode_calls_add_data(
         self, ditl_with_payload_and_recorder: DITLMixin
@@ -310,8 +305,8 @@ class TestDITLMixin:
         from conops.common.enums import ACSMode
 
         ditl._process_data_management(1000.0, ACSMode.PASS, 60, collection_seconds=0)
-        assert ditl.config.data_generated.call_args.kwargs["collection_seconds"] == 0
-        assert ditl.config.data_generated.call_args.kwargs["mode"] == ACSMode.PASS
+        ditl.config.housekeeping_generated.assert_called_with(ANY, mode=ACSMode.PASS)
+        ditl.config.science_generated.assert_not_called()
 
     def test_process_data_management_pass_mode_data_dl(
         self, ditl_with_pass_setup: DITLMixin
