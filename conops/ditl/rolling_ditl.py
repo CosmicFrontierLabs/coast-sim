@@ -79,9 +79,10 @@ class RollingHorizonDITL(DITL):
     activities it keeps, a worst-case slew and the setup time) triggers a
     rapid replan at once, or an interrupt in a scheduled replan due then.
     The observation running at the commit cutoff is cut there if
-    ``allow_interrupts`` is set, the ToO's tier and value, evaluated now, beat
-    the tier and value frozen onto that observation, and the new plan can
-    collect the ToO. When several ToOs need a rapid replan at once, they are
+    ``allow_interrupts`` is set, the ToO allows it (its ``interrupt`` flag),
+    the observation's category is ``interruptible``, the ToO's tier and value,
+    evaluated now, beat the tier and value frozen onto that observation, and
+    the new plan can collect the ToO. When several ToOs need a rapid replan at once, they are
     tried highest-ranked first, and the first that qualifies and can be placed
     interrupts. A rejected attempt leaves no events in the log. Science
     already collected is kept, and the cut
@@ -180,6 +181,7 @@ class RollingHorizonDITL(DITL):
         name: str,
         submit_time: float | datetime | None = None,
         deadline: float | datetime | None = None,
+        interrupt: bool = True,
     ) -> TOORequest:
         """Submit a Target of Opportunity that joins the target pool when active.
 
@@ -194,6 +196,9 @@ class RollingHorizonDITL(DITL):
                 None means from the start of the simulation.
             deadline: Latest time science collection may begin (Unix time or
                 datetime), or None for no deadline.
+            interrupt: Whether it may cut short the observation in progress.
+                If False, a rapid replan for it starts it once that
+                observation ends.
         """
         too = TOORequest(
             obsid=obsid,
@@ -204,6 +209,7 @@ class RollingHorizonDITL(DITL):
             name=name,
             submit_time=_unix_time(submit_time) if submit_time is not None else 0.0,
             deadline=_unix_time(deadline) if deadline is not None else None,
+            interrupt=interrupt,
         )
         self.too_register.append(too)
         return too
@@ -486,7 +492,10 @@ class RollingHorizonDITL(DITL):
             ),
             None,
         )
-        if not self.allow_interrupts or entry is None:
+        if not self.allow_interrupts or not too.interrupt or entry is None:
+            return None
+        category = self.merit_model.categories.get_category(int(entry.obsid))
+        if not category.interruptible:
             return None
         target = self._too_targets[id(too)]
         too_rank = self.merit_model.value_terms(
@@ -494,10 +503,7 @@ class RollingHorizonDITL(DITL):
             utime,
             delivered_shares=self.merit_model.delivered_shares(self.targets),
         ).value_rank
-        current_rank = (
-            self.merit_model.categories.get_category(int(entry.obsid)).tier,
-            float(entry.merit),
-        )
+        current_rank = (category.tier, float(entry.merit))
         if too_rank <= current_rank:
             return None
         # A slew under way finishes first, so the cut is at the step after the
