@@ -121,9 +121,8 @@ How a plan is built
    snapshot after it could then not be reached in time, that snapshot is moved later
    to make room, along with up to three more packed behind it, as long as the
    activity after them can still be reached. Moving a snapshot can cut it short
-   where its target's visibility ends; that is allowed only if no snapshot cut short
-   is in a higher tier than the new one and the new snapshot's value-weighted seconds
-   exceed those lost. Exposure cut short is left for the request to plan elsewhere.
+   where its target's visibility ends; that is allowed only if the new snapshot's
+   value-weighted seconds exceed those lost. Exposure cut short is left for the request to plan elsewhere.
    Ground passes and locked entries are never moved. A cadence target's visit moves
    only if it is the target's latest, and never earlier than it was, so its visits
    stay a cadence apart.
