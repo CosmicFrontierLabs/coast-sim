@@ -33,9 +33,6 @@ from .priority_scheduler import (
     program_shares,
 )
 
-Score = tuple[float, ...]
-"""Merit-weighted science seconds per tier, highest tier first."""
-
 
 _VOLUME_TOLERANCE_GB = 1e-9
 """Within which two ledgers' volumes are the same, allowing for rounding."""
@@ -63,8 +60,8 @@ class _State(BaseModel):
     cursor: int
     """Timeline position after the last placed snapshot; the next goes after it."""
     remaining: dict[int, float]
-    score: dict[int, float]
-    """Merit-weighted science seconds by tier."""
+    score: float
+    """Merit-weighted science seconds."""
     programs: dict[str, float]
     """Science collected and planned so far, by program."""
     last_visit: dict[int, float]
@@ -113,14 +110,13 @@ class LocalSearchScheduler(PriorityScheduler):
 
     A change is kept by late-acceptance hill climbing: when it is no worse than
     the current plan, or than the plan of ``history_length`` steps ago, so the
-    search can cross plateaus. The objective is merit-weighted science time,
-    compared tier by tier from the highest. A snapshot of a request with a
+    search can cross plateaus. The objective is merit-weighted science time.
+    A snapshot of a request with a
     deadline is worth less the later it starts: starting at the deadline
     rather than the start of the horizon, or its earliest start if later,
     costs ``earliness_weight`` of its value. With ``allocated`` time, a
     snapshot's seconds that use what is left of the span its collection starts
-    in score in the tier ``allocation_strictness`` raises allocated time to,
-    worth ``allocation_bonus`` more with ``weighted`` strictness. The best plan
+    in are worth ``allocation_bonus`` more. The best plan
     found is returned, and never one worse than the priority-first plan.
 
     Each plan entry's merit is the value its snapshot has where the decoder
@@ -179,11 +175,11 @@ class LocalSearchScheduler(PriorityScheduler):
         """Changes tried in the last :meth:`schedule`."""
         self.accepted = 0
         """Changes the search kept."""
-        self.initial_score: Score = ()
+        self.initial_score = 0.0
         """Objective of the priority-first plan."""
-        self.start_score: Score = ()
+        self.start_score = 0.0
         """Objective of the decoded starting sequence; equals ``initial_score``."""
-        self.score: Score = ()
+        self.score = 0.0
         """Objective of the returned plan."""
 
     def schedule(self) -> Plan:
@@ -209,16 +205,6 @@ class LocalSearchScheduler(PriorityScheduler):
             for obsid, spans in allocated.items()
             for n, span in enumerate(spans)
         }
-        # Allocated time scores in its own tier (see _allocated_offset).
-        self._tiers = sorted(
-            {r.merit.tier for r in requests}
-            | {
-                r.merit.tier + self._allocated_offset
-                for r in requests
-                if allocated.get(int(r.target.obsid))
-            },
-            reverse=True,
-        )
         self._initial_last_visit = dict(self._last_visit)
         self._initial_volumes = tuple(self._volumes)
         self._initial_energy = tuple(self._energy)
@@ -256,12 +242,13 @@ class LocalSearchScheduler(PriorityScheduler):
 
     # ── Objective ────────────────────────────────────────────────────────
 
-    def _objective(self, state: _State) -> Score:
-        return tuple(state.score.get(tier, 0.0) for tier in self._tiers)
+    @staticmethod
+    def _objective(state: _State) -> float:
+        return state.score
 
-    def _timeline_score(self, science: Sequence[_Block]) -> Score:
+    def _timeline_score(self, science: Sequence[_Block]) -> float:
         """Score a priority-first timeline's science blocks, in time order."""
-        totals: dict[int, float] = {}
+        total = 0.0
         programs = dict(self._delivered)
         left = dict(self._initial_allocated)
         for block in sorted(science, key=lambda b: float(b.entry.begin)):
@@ -269,9 +256,9 @@ class LocalSearchScheduler(PriorityScheduler):
             if request is None:
                 continue
             value = self._value(request, program_shares(programs))
-            self._add_score(totals, left, request, block, value)
+            total += self._scored(left, request, block, value)
             self._add_program_seconds(programs, request, block)
-        return tuple(totals.get(tier, 0.0) for tier in self._tiers)
+        return total
 
     @staticmethod
     def _add_program_seconds(
@@ -280,36 +267,28 @@ class LocalSearchScheduler(PriorityScheduler):
         program = request.category.program_name
         programs[program] = programs.get(program, 0.0) + _collection_seconds(block)
 
-    def _add_score(
+    def _scored(
         self,
-        score: dict[int, float],
         left: dict[tuple[int, int], float],
         request: _Request,
         block: _Block,
         value: float,
-    ) -> None:
-        """Add a snapshot's contribution to ``score``, by tier.
+    ) -> float:
+        """Return a snapshot's contribution to the score.
 
         Its seconds, up to what is left of the allocated time of the span its
-        collection starts in, score in the allocated tier, worth
-        ``_allocated_factor`` more (see ``allocation_strictness``), and use up
-        that time in ``left``; the rest score in its request's tier.
+        collection starts in, are worth ``_allocated_factor`` more, and use up
+        that time in ``left``.
         """
         worth = self._contribution(request, block, value)
-        tier = request.merit.tier
         entry = block.entry
         seconds = _collection_seconds(block)
         span = self._span_of(int(entry.obsid), entry.collection_begin)
         counted = min(seconds, left.get(span, 0.0)) if span is not None else 0.0
         if counted > 0.0 and span is not None:
-            share = counted / seconds
-            raised = tier + self._allocated_offset
-            score[raised] = (
-                score.get(raised, 0.0) + worth * share * self._allocated_factor
-            )
             left[span] -= counted
-            worth *= 1.0 - share
-        score[tier] = score.get(tier, 0.0) + worth
+            worth *= 1.0 + (self._allocated_factor - 1.0) * counted / seconds
+        return worth
 
     def _span_of(
         self, obsid: int, collection_begin: float | None
@@ -361,7 +340,7 @@ class LocalSearchScheduler(PriorityScheduler):
             timeline=list(self._fixed),
             cursor=0,
             remaining=dict(self._initial_remaining),
-            score={},
+            score=0.0,
             programs=dict(self._delivered),
             last_visit=dict(self._initial_last_visit),
             volumes=self._initial_volumes,
@@ -434,9 +413,8 @@ class LocalSearchScheduler(PriorityScheduler):
             # it to interrupt the observation.
             value = self._value(request, program_shares(state.programs))
             block.entry.merit = value
-            score = dict(state.score)
             allocated_left = dict(state.allocated_left)
-            self._add_score(score, allocated_left, request, block, value)
+            score = state.score + self._scored(allocated_left, request, block, value)
 
             left = dict(state.remaining)
             left[obsid] = remaining - _collection_seconds(block)
@@ -527,12 +505,7 @@ class LocalSearchScheduler(PriorityScheduler):
         offset = here.cursor - there.cursor
         for later in current.states[old + 1 :]:
             # What the reused snapshots add to the score is the same from here.
-            score = {
-                tier: here.score.get(tier, 0.0)
-                + later.score.get(tier, 0.0)
-                - there.score.get(tier, 0.0)
-                for tier in {*here.score, *later.score, *there.score}
-            }
+            score = here.score + later.score - there.score
             states.append(
                 _State.model_construct(
                     timeline=[*prefix, *later.timeline[there.cursor :]],

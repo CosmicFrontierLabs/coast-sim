@@ -111,7 +111,6 @@ class _Demand(BaseModel):
     """One request as the allocator sees it."""
 
     obsid: int
-    tier: int
     value: float
     remaining: float
     ss_min: float
@@ -135,9 +134,9 @@ class LongRangeAllocator:
     :meth:`allocate` are allocated first and use the reserve before the rest.
 
     By default the allocation is solved as a mixed-integer program with HiGHS,
-    which comes with OR-Tools, the optional ``cpsat`` extra. It maximizes merit-weighted seconds, one level at
-    a time, unplanned requests first and then each tier, each with the levels
-    above fixed at their solution, subject to:
+    which comes with OR-Tools, the optional ``cpsat`` extra. It maximizes merit-weighted seconds in two
+    levels, unplanned requests first and then the rest, with the unplanned
+    requests' allocation fixed while the rest are solved, subject to:
 
     * each request gets, in each bin, either nothing or at least its ``ss_min``,
       and no more than its target is visible there between its earliest
@@ -150,17 +149,16 @@ class LongRangeAllocator:
 
     Requests with a deadline are worth slightly more in earlier bins. Keeping
     seconds in the bin the previous allocation gave them is worth 1% more, so
-    that allocating again moves requests only for a real gain. As a tiebreak in
-    each level, the planned load of the level and those above it is spread
-    evenly over the bins, as far as visibility allows, worth a thousandth of the
-    level's least merit per second, so the slack is spread across the run
-    rather than left in a few bins. Each level
-    starts from the greedy allocation of its requests into the room the levels
-    above leave, so the solver only improves on it; ``solver="greedy"`` uses
-    the greedy allocation on its own: requests in order of tier and merit, each
-    in the bins least contended by the requests still to come. If the solver
-    finds no solution for a level in time, that level and those below it are
-    allocated greedily.
+    that allocating again moves requests only for a real gain. As a tiebreak,
+    the planned load is spread evenly over the bins, as far as visibility
+    allows, worth a thousandth of the least merit per second, so the slack is
+    spread across the run rather than left in a few bins. Each level starts
+    from the greedy allocation of its requests into the room the level above
+    leaves, so the solver only improves on it; ``solver="greedy"`` uses the
+    greedy allocation on its own: requests in order of merit, each in the bins
+    least contended by the requests still to come. If the solver finds no
+    solution for a level in time, that level and any below it are allocated
+    greedily.
 
     Args:
         config: Mission configuration, with an ephemeris on its constraint.
@@ -281,10 +279,11 @@ class LongRangeAllocator:
     ) -> dict[int, dict[int, float]]:
         """Add ``demands`` to ``allocated`` in priority order, each where it fits.
 
-        Unplanned requests go first, then by tier and value. A request with a
+        Unplanned requests go first, then by value. A request with a
         cadence is spread evenly over the bins it is visible in; one with a
-        deadline goes in its earliest bins; the rest go in the bins the
-        requests not yet placed are expected to need least.
+        deadline goes in its earliest bins; the rest go in the bins expected
+        to be least full: what is already allocated there, plus what the
+        requests not yet placed are expected to need.
         """
         seconds = {obsid: dict(bins) for obsid, bins in allocated.items()}
         # Seconds allocated in each bin to unplanned requests, and to the rest.
@@ -305,7 +304,7 @@ class LongRangeAllocator:
 
         order = sorted(
             demands,
-            key=lambda d: (d.obsid not in unplanned_set, -d.tier, -d.value, d.obsid),
+            key=lambda d: (d.obsid not in unplanned_set, -d.value, d.obsid),
         )
         for demand in order:
             is_unplanned = demand.obsid in unplanned_set
@@ -316,7 +315,9 @@ class LongRangeAllocator:
             need = demand.remaining
             bins = sorted(demand.visible)
             if demand.deadline is None and not demand.spread:
-                bins.sort(key=lambda k: (pressure[k] / max(capacity[k], 1.0), k))
+                bins.sort(
+                    key=lambda k: ((load[k] + pressure[k]) / max(capacity[k], 1.0), k)
+                )
             given = seconds.setdefault(demand.obsid, {})
             if demand.spread and bins:
                 even = max(need / len(bins), demand.ss_min)
@@ -348,10 +349,10 @@ class LongRangeAllocator:
     ) -> tuple[dict[int, dict[int, float]], list[_Demand]]:
         """Solve the allocation as a MILP with HiGHS, level by level.
 
-        Levels are unplanned requests, then each tier from the highest. Each
-        level's value is maximized with the levels above fixed at their
-        solution, so no level gives up anything for the levels below it. Each
-        planned level also evens out the bins' planned loads, as a tiebreak. Each level starts from
+        The levels are unplanned requests, then the rest. The unplanned
+        requests' value is maximized first and their solution fixed, so they
+        give up nothing for the rest. The rest also even out the bins' planned
+        loads, as a tiebreak. Each level starts from
         the levels already solved with its own requests added greedily where
         they fit, which is feasible for it, so the solver only improves on the
         greedy allocation. Each level may use the time limit's remainder shared
@@ -373,29 +374,29 @@ class LongRangeAllocator:
         model = Model(name="long-range allocation")
         seconds: dict[tuple[int, int], variables.Variable] = {}
         previous = self._previous.seconds if self._previous is not None else {}
-        terms: dict[tuple[bool, int], list[variables.LinearTerm]] = {}
+        terms: dict[bool, list[variables.LinearTerm]] = {}
         planned_in: dict[int, list[variables.Variable]] = {}
         unplanned_in: dict[int, list[variables.Variable]] = {}
-        planned_by_level: dict[tuple[bool, int], dict[int, list[variables.Variable]]]
+        planned_by_level: dict[bool, dict[int, list[variables.Variable]]]
         planned_by_level = {}
         # Each seconds variable's binary, and its stability variable with the
         # seconds kept from the previous allocation.
         used_of: dict[tuple[int, int], variables.Variable] = {}
         stays_of: dict[tuple[int, int], tuple[variables.Variable, float]] = {}
-        level_of: dict[int, tuple[bool, int]] = {}
-        by_level: dict[tuple[bool, int], list[_Demand]] = {}
+        level_of: dict[int, bool] = {}
+        by_level: dict[bool, list[_Demand]] = {}
         limits: dict[int, tuple[float, float]] = {}
         last_bin = max(len(self.bins) - 1, 1)
         for demand in demands:
             remaining = float(int(demand.remaining))
             smallest = min(float(np.ceil(demand.ss_min)), remaining)
-            level_of[demand.obsid] = (demand.obsid in unplanned, demand.tier)
+            level_of[demand.obsid] = demand.obsid in unplanned
             by_level.setdefault(level_of[demand.obsid], []).append(demand)
             limits[demand.obsid] = (smallest, remaining)
             even = None
             if demand.spread and demand.visible:
                 even = max(demand.remaining / len(demand.visible), demand.ss_min)
-            level = (demand.obsid in unplanned, demand.tier)
+            level = level_of[demand.obsid]
             own: list[variables.Variable] = []
             for k, seen in demand.visible.items():
                 most = min(remaining, float(int(seen)))
@@ -411,8 +412,8 @@ class LongRangeAllocator:
                 seconds[(demand.obsid, k)] = x
                 used_of[(demand.obsid, k)] = used
                 own.append(x)
-                (unplanned_in if level[0] else planned_in).setdefault(k, []).append(x)
-                if not level[0]:
+                (unplanned_in if level else planned_in).setdefault(k, []).append(x)
+                if not level:
                     planned_by_level.setdefault(level, {}).setdefault(k, []).append(x)
                 rate = demand.value
                 if demand.deadline is not None:
@@ -446,14 +447,14 @@ class LongRangeAllocator:
         statuses: list[str] = []
         solved: dict[tuple[int, int], float] | None = None
         last_values: dict[variables.Variable, float] = {}
-        done: set[tuple[bool, int]] = set()
+        done: set[bool] = set()
         # Each load-balancing deviation, its goal and the seconds it sums.
         deviations: list[
             tuple[variables.Variable, float, list[variables.Variable]]
         ] = []
         deadline = time.monotonic() + self.time_limit
 
-        def start_for(level: tuple[bool, int]) -> dict[variables.Variable, float]:
+        def start_for(level: bool) -> dict[variables.Variable, float]:
             """A feasible solution to start ``level`` from.
 
             The levels solved keep their solution exactly, so they still meet
@@ -498,7 +499,7 @@ class LongRangeAllocator:
             return values
 
         def run(
-            level: tuple[bool, int], objective: variables.LinearSum, stages_left: int
+            level: bool, objective: variables.LinearSum, stages_left: int
         ) -> float | None:
             """Maximize ``objective`` for ``level``; return its value."""
             nonlocal solved
@@ -537,40 +538,31 @@ class LongRangeAllocator:
             solved = {key: values[x] for key, x in seconds.items()}
             return outcome.objective_value()
 
-        # Spread the planned load over the run, level by level: with each
-        # planned level, the seconds it and the planned levels above it have in
-        # each bin are kept as close as visibility allows to the fill their
-        # demand would give if spread evenly, so each level evens out what the
-        # levels above leave. It is a tiebreak in the level's objective, worth a
-        # thousandth of the level's least merit per second, so it never costs a
-        # second of science for less than a thousand seconds of better balance,
-        # and below the stability bonus, so allocating again still stays put.
-        balance: dict[tuple[bool, int], list[variables.LinearTerm]] = {}
+        # Spread the planned load over the run: the planned seconds in each
+        # bin are kept as close as visibility allows to the fill their demand
+        # would give if spread evenly. It is a tiebreak in the planned level's
+        # objective, worth a thousandth of its least merit per second, so it
+        # never costs a second of science for less than a thousand seconds of
+        # better balance, and below the stability bonus, so allocating again
+        # still stays put. It is too small to steer the solver by itself in a
+        # large allocation, so the greedy start is balanced too.
+        balance: list[variables.LinearTerm] = []
+        planned = by_level.get(False, [])
+        planned_demand = sum(min(d.remaining, sum(d.visible.values())) for d in planned)
         rooms = sum(capacity[k] - held[k] for k in range(len(self.bins)))
-        above: dict[int, list[variables.Variable]] = {}
-        demand_above = 0.0
-        for level in levels:
-            if level[0]:
-                continue
-            for k, summed in planned_by_level.get(level, {}).items():
-                above.setdefault(k, []).extend(summed)
-            demand_above += sum(
-                min(d.remaining, sum(d.visible.values())) for d in by_level[level]
-            )
-            fill = min(1.0, demand_above / max(rooms, 1.0))
-            least = min(term.coefficient for term in terms[level])
-            for k, summed in above.items():
-                goal = fill * (capacity[k] - held[k])
-                deviation = model.add_variable(lb=0.0, name=f"dev{level[1]}_{k}")
-                load = expressions.fast_sum(summed)
-                model.add_linear_constraint(deviation >= load - goal)
-                model.add_linear_constraint(deviation >= goal - load)
-                balance.setdefault(level, []).append(
-                    variables.LinearTerm(deviation, -1e-3 * least)
-                )
-                deviations.append((deviation, goal, list(summed)))
+        fill = min(1.0, planned_demand / max(rooms, 1.0))
+        least = min((t.coefficient for t in terms.get(False, [])), default=0.0)
+        for k, summed in planned_by_level.get(False, {}).items():
+            goal = fill * (capacity[k] - held[k])
+            deviation = model.add_variable(lb=0.0, name=f"dev{k}")
+            load = expressions.fast_sum(summed)
+            model.add_linear_constraint(deviation >= load - goal)
+            model.add_linear_constraint(deviation >= goal - load)
+            balance.append(variables.LinearTerm(deviation, -1e-3 * least))
+            deviations.append((deviation, goal, list(summed)))
         for n, level in enumerate(levels):
-            objective = expressions.fast_sum([*terms[level], *balance.get(level, [])])
+            tiebreak = [] if level else balance
+            objective = expressions.fast_sum([*terms[level], *tiebreak])
             if run(level, objective, len(levels) - n) is None:
                 break
             done.add(level)
@@ -590,9 +582,7 @@ class LongRangeAllocator:
         )
         result: dict[int, dict[int, float]] = {d.obsid: {} for d in demands}
         # Requests with no seconds to allocate form no level and are done.
-        unsolved = [
-            d for d in demands if (d.obsid in unplanned, d.tier) in set(levels) - done
-        ]
+        unsolved = [d for d in demands if (d.obsid in unplanned) in set(levels) - done]
         if solved is None:
             return result, unsolved
         missing = {d.obsid for d in unsolved}
@@ -629,7 +619,6 @@ class LongRangeAllocator:
         merit = self.merit_model.value_terms(target, start)
         return _Demand(
             obsid=obsid,
-            tier=category.tier,
             value=merit.value,
             remaining=remaining,
             ss_min=float(target.ss_min),

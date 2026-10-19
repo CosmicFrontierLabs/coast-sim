@@ -361,9 +361,7 @@ class TestLatenessDiscount:
         in proportion to its collection, not to the longest it could have."""
         scheduler, obsid, available, setup = self._scheduler_and_request()
         request = scheduler._by_obsid[obsid]
-        rate, earliness, offset, _ = scheduler._candidate_value(
-            request, scheduler._tier_weights(), {}, T0
-        )
+        rate, earliness, offset, _ = scheduler._candidate_value(request, {}, T0)
 
         for arrival in (0, 1800, 5400, 7000):
             for collection in (60, 600, 3600):
@@ -378,7 +376,7 @@ class TestLatenessDiscount:
         nothing. Valued at its longest collection it was worth less than none."""
         scheduler, obsid, available, setup = self._scheduler_and_request()
         rate, earliness, offset, _ = scheduler._candidate_value(
-            scheduler._by_obsid[obsid], scheduler._tier_weights(), {}, T0
+            scheduler._by_obsid[obsid], {}, T0
         )
         # On a step, so the slew can start as it arrives, a few minutes
         # before the deadline.

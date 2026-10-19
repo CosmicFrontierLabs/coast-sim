@@ -455,7 +455,7 @@ class TestEarliness:
         assert entry.collection_begin is not None
         delay = float(entry.collection_begin) - (T0 + HOUR)
         expected = 50 * 20 * MIN * (1.0 - delay / HOUR)
-        assert scheduler.score[0] == pytest.approx(expected)
+        assert scheduler.score == pytest.approx(expected)
 
     def test_late_snapshot_still_counts(self) -> None:
         """A snapshot starting at its deadline keeps part of its value."""
@@ -472,7 +472,7 @@ class TestEarliness:
 
         scheduler.schedule()
 
-        assert scheduler.score[0] > 0
+        assert scheduler.score > 0
 
 
 class TestDynamicMerit:

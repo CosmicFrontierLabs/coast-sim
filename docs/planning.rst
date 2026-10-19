@@ -89,7 +89,7 @@ How a plan is built
    configuration's random seed, so ``DITL`` predicts the same passes when it executes
    the plan. Each pass is reserved on the first tracking profile the spacecraft can
    reach safely. Pass ``include_passes=False`` to plan science only.
-3. **Requests** are sorted by tier, then by merit value at the start of the horizon
+3. **Requests** are sorted by merit value at the start of the horizon
    (base merit plus the urgency, cadence and completion-deficit terms; see
    :doc:`configuration`). Each request is split into snapshots of up to ``ss_max``
    seconds and never shorter than ``ss_min``, until its ``exptime`` is used or it no
@@ -342,8 +342,7 @@ gave it, so the starting point is that plan. The search then tries:
 
 A change is kept when it is no worse than the current plan, or than the plan of
 ``history_length`` steps ago (late-acceptance hill climbing), which lets the search
-cross plateaus. The objective is merit-weighted science time, compared tier by tier
-from the highest, with each snapshot's completion deficit taken from the program
+cross plateaus. The objective is merit-weighted science time, with each snapshot's completion deficit taken from the program
 shares in the plan before it. A snapshot of a request with a deadline is worth less
 the later it starts, so ToOs and other time-critical requests are not pushed later
 than they need to be. The best plan found is returned, and it is never worse than the
@@ -524,8 +523,8 @@ rebuilds it as the simulation runs:
    replan the observation running at the commit cutoff, started or not, is cut short
    there when ``allow_interrupts`` is set, the ToO allows it (``interrupt``, an
    argument of ``submit_too``), the observation's category is ``interruptible``, and
-   the ToO's tier and value, evaluated now, beat the tier and value frozen onto that
-   observation. Otherwise the ToO can start only after the observation ends. Science it has already
+   the ToO's value, evaluated now, beats the value frozen onto that observation.
+   Otherwise the ToO can start only after the observation ends. Science it has already
    collected is kept, and its cleanup follows the cut. The cut is kept only if the new
    plan can collect the ToO. If several ToOs need a rapid replan at the same time, they
    are tried highest-ranked first, and the first that outranks the observation and can
@@ -610,23 +609,20 @@ each request's remaining exposure to collect in which bin:
   that fits in the reserve doesn't push planned requests to later days;
 * the allocation is solved as a mixed-integer program with HiGHS, which comes with
   OR-Tools (the optional ``cpsat`` extra; see :doc:`installation`), maximizing
-  merit-weighted time. ToOs come first, then each tier in turn, each solved with the
-  allocation of the ones above it fixed, so a tier never gives anything up for a lower
-  one. Each tier starts from a greedy allocation of its requests into the room left,
-  and if the solver finds no solution in time, that tier and the ones below it keep
-  the greedy allocation. A request gets either nothing in a bin or at least its
+  merit-weighted time. ToOs come first, and their allocation is fixed while the rest
+  are solved, so they give up nothing for planned requests. Each level starts from a
+  greedy allocation of its requests into the room left, and if the solver finds no
+  solution in time, that level and any after it keep the greedy allocation. A request gets either nothing in a bin or at least its
   ``ss_min``, never more than its remaining exposure, and a request with a cadence no
   more than an even share per bin. Requests with a deadline are worth slightly more
   in earlier bins;
 * the planned load is spread evenly over the bins as far as visibility allows, so
-  every week keeps some slack. Each tier evens out the load it and the tiers above
-  it place, so a lower tier, such as filler, fills what the tiers above leave
-  light. This is a tiebreak: it never costs a second of science for less than a
+  every week keeps some slack. This is a tiebreak: it never costs a second of science for less than a
   thousand seconds of better balance;
 * re-allocating keeps the previous allocation unless changing it gains something:
   keeping a request's seconds where they were is worth an extra 1%. A ToO that fits
   in the reserve leaves every planned request where it was;
-* ``solver="greedy"`` instead takes requests in order of tier and merit, each into
+* ``solver="greedy"`` instead takes requests in order of merit, each into
   the bins with the least competing demand. It is quicker but not optimal, is the
   MILP's starting point, and does not need OR-Tools.
 
@@ -636,21 +632,17 @@ scheduling follows it:
 * a plan covering several bins plans each request's allocated seconds in the bin
   they are allocated to. Collection starting in the bin counts, up to the seconds
   allocated there; a bin the plan's end cuts short counts pro rata;
-* how far ahead allocated time comes is the strictness (``allocation_strictness``,
-  or ``strictness`` in the configuration). ``strict``, the default, puts it ahead of
-  every unallocated request, with tiers in order among allocated time: the
-  allocation has already weighed the tiers, so even a filler tier's allocated time
-  is kept. ``tier`` puts it ahead of the unallocated requests in its own tier only.
-  ``weighted`` keeps it in its tier, worth ``allocation_bonus`` more, so scheduling
-  trades keeping to the allocation against merit;
+* allocated time is worth ``allocation_bonus`` (``bonus`` in the configuration,
+  default 0.5) more of its request's value, shown as the ``allocation`` merit term.
+  That is the only way the allocation steers scheduling: allocated time competes
+  with everything else on merit, so a larger bonus follows the allocation more
+  closely, and ``0`` ignores when a request was allocated;
 * the rest of a request's exposure, and allocated seconds that don't fit their bin,
-  are planned like unallocated requests, by tier, in the time the allocated ones
-  leave. So with ``strict`` strictness a plan can work ahead, but not at the expense
-  of what the allocation put in a bin;
+  are planned like unallocated requests, by merit, so a plan can work ahead where
+  that is worth more than the allocated time it displaces;
 * local search and CP-SAT score allocated time the same way, so they improve a plan
   without trading away what the allocation put in a bin;
-* dispatch takes the requests allocated to the current bin first, with the same
-  strictness.
+* dispatch adds the same bonus to the requests allocated to the current bin.
 
 A request the allocator hasn't seen, such as a ToO submitted after the last
 allocation, is treated as allocated throughout. Rolling runs re-allocate at every

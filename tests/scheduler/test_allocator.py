@@ -378,21 +378,52 @@ class TestOptionalOrTools:
         assert sum(allocation.seconds[1].values()) == pytest.approx(20 * MIN)
 
 
+class TestBalance:
+    """Work that fits anywhere is spread over the bins, not packed into the first."""
+
+    @pytest.mark.parametrize(
+        "solver", ["greedy", pytest.param("milp", marks=needs_ortools)]
+    )
+    def test_spreads_the_load_over_the_bins(self, solver: str) -> None:
+        hours = 6
+        config = _config(hours)
+        # Nine 20-minute requests, visible throughout, in six one-hour bins
+        # that each hold 40.5 planned minutes: room for twelve.
+        targets = [
+            _target(config, 1 + n, 105.0 + n, 10.0, minutes=20) for n in range(9)
+        ]
+        allocator = LongRangeAllocator(
+            config,
+            BEGIN,
+            BEGIN + timedelta(hours=hours),
+            bin_length=timedelta(hours=1),
+            solver=solver,  # type: ignore[arg-type]
+        )
+
+        allocation = allocator.allocate(targets, T0)
+
+        load = [0.0] * hours
+        for per_bin in allocation.seconds.values():
+            for k, seconds in per_bin.items():
+                load[k] += seconds
+        assert sum(load) == pytest.approx(9 * 20 * MIN)
+        # Evenly, 30 minutes a bin; packed in order, two bins get nothing.
+        assert min(load) >= 20 * MIN
+
+
 @needs_ortools
 class TestSolver:
     def test_a_level_without_a_solution_is_allocated_greedily(self) -> None:
-        """If the solver finds nothing for a lower tier, it still gets time."""
+        """If the solver finds nothing for the planned requests, after the
+        unplanned ones, they still get time."""
         from types import SimpleNamespace
 
         from ortools.math_opt.python import solve
         from ortools.math_opt.python.result import TerminationReason
 
-        categories = [
-            ObservationCategory(name="Low", obsid_min=100, obsid_max=200, tier=-1)
-        ]
-        config = _config(4, categories=categories)
-        science = _target(config, 1, 105.0, 10.0, minutes=60, snapshot=20)
-        filler = _target(config, 100, 110.0, 10.0, minutes=40, snapshot=20)
+        config = _config(4)
+        too = _target(config, 1, 105.0, 10.0, minutes=60, snapshot=20)
+        planned = _target(config, 100, 110.0, 10.0, minutes=40, snapshot=20)
         allocator = LongRangeAllocator(
             config, BEGIN, BEGIN + timedelta(hours=4), bin_length=timedelta(hours=1)
         )
@@ -411,18 +442,15 @@ class TestSolver:
             return real(*args, **kwargs)  # type: ignore[arg-type]
 
         with patch.object(solve, "solve", second_finds_nothing):
-            allocation = allocator.allocate([science, filler], T0)
+            allocation = allocator.allocate([too, planned], T0, unplanned=[1])
 
         assert allocator.solver_status == "OPTIMAL,NO_SOLUTION_FOUND"
         assert sum(allocation.seconds[1].values()) == pytest.approx(60 * MIN)
-        # Greedily, into the room the science left: at least a snapshot.
+        # Greedily, into the room the ToO left: at least a snapshot.
         assert sum(allocation.seconds[100].values()) >= 20 * MIN
 
     def test_every_level_is_solved_from_the_level_before(self) -> None:
-        categories = [
-            ObservationCategory(name="Low", obsid_min=100, obsid_max=200, tier=-1)
-        ]
-        config = _config(4, categories=categories)
+        config = _config(4)
         targets = [
             _target(config, 1, 105.0, 10.0, minutes=60, snapshot=20),
             _target(config, 100, 110.0, 10.0, minutes=60, snapshot=20),
@@ -431,7 +459,7 @@ class TestSolver:
             config, BEGIN, BEGIN + timedelta(hours=4), bin_length=timedelta(hours=1)
         )
 
-        allocation = allocator.allocate(targets, T0)
+        allocation = allocator.allocate(targets, T0, unplanned=[1])
 
         assert allocator.solver_status == "OPTIMAL"
         assert sum(allocation.seconds[100].values()) == pytest.approx(60 * MIN)
@@ -540,34 +568,9 @@ def _queue(ditl: QueueDITL) -> TargetQueue:
 
 
 class TestDispatchPreference:
-    @pytest.mark.parametrize(
-        ("strictness", "chosen"), [("strict", 100), ("tier", 1), ("weighted", 1)]
-    )
-    def test_dispatch_follows_the_strictness(
-        self, strictness: str, chosen: int
-    ) -> None:
-        """Filler (tier -1) allocated now; tier-0 science that is not."""
-        categories = [
-            ObservationCategory(name="Filler", obsid_min=100, obsid_max=200, tier=-1)
-        ]
-        config = _config(2, categories=categories)
-        ditl = QueueDITL(config=config, begin=BEGIN, end=BEGIN + timedelta(hours=2))
-        queue_targets(
-            ditl,
-            [
-                _target(config, 100, 105.0, 10.0, merit=10),
-                _target(config, 1, 110.0, 10.0, merit=90),
-            ],
-        )
-        queue = _queue(ditl)
-        queue.prefer = lambda obsid: obsid == 100
-        queue.allocation_strictness = strictness  # type: ignore[assignment]
-
-        target = queue.get(105.0, 10.0, T0 + 10 * MIN)
-
-        assert target is not None and int(target.obsid) == chosen
-
-    def test_dispatch_weighted_bonus_is_a_merit_term(self) -> None:
+    @staticmethod
+    def _queue_with_preference(bonus: float) -> TargetQueue:
+        """Merit 40 allocated now; merit 50 not."""
         config = _config(2)
         ditl = QueueDITL(config=config, begin=BEGIN, end=BEGIN + timedelta(hours=2))
         queue_targets(
@@ -579,8 +582,23 @@ class TestDispatchPreference:
         )
         queue = _queue(ditl)
         queue.prefer = lambda obsid: obsid == 1
-        queue.allocation_strictness = "weighted"
-        queue.allocation_bonus = 0.5
+        queue.allocation_bonus = bonus
+        return queue
+
+    @pytest.mark.parametrize(("bonus", "chosen"), [(0.5, 1), (0.1, 2)])
+    def test_dispatch_trades_the_bonus_against_merit(
+        self, bonus: float, chosen: int
+    ) -> None:
+        """Allocated, merit 40 is worth 60 with a bonus of 0.5 and beats 50;
+        with 0.1 it is worth 44 and does not."""
+        queue = self._queue_with_preference(bonus)
+
+        target = queue.get(105.0, 10.0, T0 + 10 * MIN)
+
+        assert target is not None and int(target.obsid) == chosen
+
+    def test_dispatch_bonus_is_a_merit_term(self) -> None:
+        queue = self._queue_with_preference(0.5)
 
         target = queue.get(105.0, 10.0, T0 + 10 * MIN)
 
@@ -588,23 +606,6 @@ class TestDispatchPreference:
         assert target.merit_breakdown is not None
         assert target.merit_breakdown.allocation == pytest.approx(20.0)
         assert target.merit == pytest.approx(60.0)
-
-    def test_dispatch_prefers_within_a_tier(self) -> None:
-        config = _config(2)
-        ditl = QueueDITL(config=config, begin=BEGIN, end=BEGIN + timedelta(hours=2))
-        queue_targets(
-            ditl,
-            [
-                _target(config, 1, 105.0, 10.0, merit=10),
-                _target(config, 2, 110.0, 10.0, merit=90),
-            ],
-        )
-        queue = _queue(ditl)
-        queue.prefer = lambda obsid: obsid == 1
-
-        chosen = queue.get(105.0, 10.0, T0 + 10 * MIN)
-
-        assert chosen is not None and int(chosen.obsid) == 1
 
 
 def _science(plan: Plan) -> list[tuple[int, float]]:
@@ -654,38 +655,9 @@ class TestAllocatedTime:
         (begin,) = (begin for obsid, begin in science if obsid == 1)
         assert T0 + HOUR <= begin < T0 + 2 * HOUR
 
-    def test_allocated_time_outranks_unallocated_work_in_higher_tiers(self) -> None:
-        """The allocation has weighed the tiers; working ahead uses what is left."""
-        assert [obsid for obsid, _ in self._filler_and_ahead("strict")] == [100, 1]
-
-    @staticmethod
-    def _filler_and_ahead(
-        strictness: str, bonus: float = 0.5
-    ) -> list[tuple[int, float]]:
-        """Filler (tier -1) allocated the first hour; tier-0 work to do ahead."""
-        categories = [
-            ObservationCategory(name="Filler", obsid_min=100, obsid_max=200, tier=-1)
-        ]
-        config = _config(3, categories=categories)
-        filler = _target(config, 100, 105.0, 10.0, merit=10)
-        ahead = _target(config, 1, 110.0, 10.0, merit=90)
-        plan = PriorityScheduler(
-            config,
-            [filler, ahead],
-            BEGIN,
-            BEGIN + timedelta(hours=3),
-            allocated={100: [AllocatedTime(T0, T0 + HOUR, 20 * MIN)], 1: []},
-            allocation_strictness=strictness,  # type: ignore[arg-type]
-            allocation_bonus=bonus,
-        ).schedule()
-        return _science(plan)
-
-    def test_tier_strictness_lets_a_higher_tier_take_allocated_time(self) -> None:
-        assert [obsid for obsid, _ in self._filler_and_ahead("tier")] == [1, 100]
-
     @staticmethod
     def _low_allocated_high_ahead(bonus: float) -> list[tuple[int, float]]:
-        """In one tier: merit 40 allocated the first hour, merit 50 unallocated."""
+        """Merit 40 allocated the first hour, merit 50 unallocated."""
         config = _config(3)
         allocated = _target(config, 1, 105.0, 10.0, merit=40)
         ahead = _target(config, 2, 110.0, 10.0, merit=50)
@@ -695,17 +667,16 @@ class TestAllocatedTime:
             BEGIN,
             BEGIN + timedelta(hours=3),
             allocated={1: [AllocatedTime(T0, T0 + HOUR, 20 * MIN)], 2: []},
-            allocation_strictness="weighted",
             allocation_bonus=bonus,
         ).schedule()
         return _science(plan)
 
-    def test_weighted_strictness_trades_the_bonus_against_merit(self) -> None:
+    def test_the_bonus_trades_against_merit(self) -> None:
         # 40 * 1.1 < 50: merit wins; 40 * 1.5 > 50: the allocation wins.
         assert [o for o, _ in self._low_allocated_high_ahead(0.1)] == [2, 1]
         assert [o for o, _ in self._low_allocated_high_ahead(0.5)] == [1, 2]
 
-    def test_weighted_local_search_scores_the_bonus(self) -> None:
+    def test_local_search_scores_the_bonus(self) -> None:
         config = _config(3)
         target = _target(config, 1, 105.0, 10.0, merit=10)
         scheduler = LocalSearchScheduler(
@@ -714,29 +685,20 @@ class TestAllocatedTime:
             BEGIN,
             BEGIN + timedelta(hours=3),
             allocated={1: [self.SECOND_HOUR]},
-            allocation_strictness="weighted",
             allocation_bonus=0.5,
             max_iterations=0,
         )
 
         scheduler.schedule()
 
-        # One tier; the 20 allocated minutes are worth 1.5 times their merit.
-        assert scheduler.score == (pytest.approx(1.5 * 10 * 20 * MIN),)
+        # The 20 allocated minutes are worth 1.5 times their merit.
+        assert scheduler.score == pytest.approx(1.5 * 10 * 20 * MIN)
 
-    @pytest.mark.parametrize(
-        "options",
-        [{"allocation_strictness": "loose"}, {"allocation_bonus": -0.1}],
-    )
-    def test_rejects_invalid_strictness(self, options: dict[str, object]) -> None:
+    def test_rejects_a_negative_bonus(self) -> None:
         config = _config(2)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="allocation_bonus"):
             PriorityScheduler(
-                config,
-                [],
-                BEGIN,
-                BEGIN + timedelta(hours=2),
-                **options,  # type: ignore[arg-type]
+                config, [], BEGIN, BEGIN + timedelta(hours=2), allocation_bonus=-0.1
             )
 
     def test_exposure_beyond_the_allocation_is_planned_like_the_rest(self) -> None:
@@ -801,24 +763,6 @@ class TestAllocatedTime:
 
         assert len(_science(plan)) == 1
         assert scheduler.unplaced == []
-
-    def test_local_search_scores_allocated_seconds_a_tier_up(self) -> None:
-        config = _config(3)
-        later = _target(config, 1, 105.0, 10.0, merit=10)
-        scheduler = LocalSearchScheduler(
-            config,
-            [later],
-            BEGIN,
-            BEGIN + timedelta(hours=3),
-            allocated={1: [self.SECOND_HOUR]},
-            max_iterations=0,
-        )
-
-        scheduler.schedule()
-
-        # Tiers 1 (allocated) and 0; all 20 minutes count as allocated.
-        assert scheduler.score[0] == pytest.approx(10 * 20 * MIN)
-        assert scheduler.score[1] == 0.0
 
     @needs_ortools
     def test_cp_sat_hint_reproduces_the_plan_with_allocated_time(
@@ -1022,32 +966,26 @@ class TestConfiguration:
             assert allocator.solver == "greedy"
             assert allocator.time_limit == 3.0
 
-    def test_create_ditl_passes_the_strictness(self) -> None:
+    def test_create_ditl_passes_the_bonus(self) -> None:
         for mode in (SchedulerMode.DISPATCH, SchedulerMode.ROLLING):
             config = _config(2)
             config.scheduler = SchedulerConfig(
                 mode=mode,
-                allocation=AllocationSettings(
-                    solver="greedy", strictness="weighted", bonus=0.25
-                ),
+                allocation=AllocationSettings(solver="greedy", bonus=0.25),
             )
 
             ditl = create_ditl(config, _targets(config))
 
             if isinstance(ditl, QueueDITL):
-                assert _queue(ditl).allocation_strictness == "weighted"
                 assert _queue(ditl).allocation_bonus == 0.25
             else:
                 assert isinstance(ditl, RollingHorizonDITL)
-                assert ditl.allocation_strictness == "weighted"
                 assert ditl.allocation_bonus == 0.25
 
-    def test_strictness_is_strict_by_default(self) -> None:
-        settings = AllocationSettings()
-
-        assert settings.strictness == "strict"
+    def test_bonus_defaults_to_half_and_is_not_negative(self) -> None:
+        assert AllocationSettings().bonus == 0.5
         with pytest.raises(ValidationError):
-            AllocationSettings(strictness="loose")  # type: ignore[arg-type]
+            AllocationSettings(bonus=-0.1)
 
     def test_planned_mode_rejects_an_allocation(self) -> None:
         with pytest.raises(ValidationError, match="allocation"):
@@ -1068,7 +1006,7 @@ class TestConfiguration:
         config.scheduler = SchedulerConfig(
             mode=SchedulerMode.ROLLING,
             allocation=AllocationSettings(
-                bin_seconds=2 * HOUR, solver="greedy", strictness="tier", bonus=0.2
+                bin_seconds=2 * HOUR, solver="greedy", bonus=0.2
             ),
         )
         path = Path(str(tmp_path)) / "config.yaml"
