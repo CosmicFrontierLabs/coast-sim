@@ -12,7 +12,7 @@ Key Features
 ------------
 
 * **Ordinary requests**: An active TOO is a queue target; nothing boosts its merit
-* **Tier- and merit-based preemption**: A TOO interrupts only when its tier and value, evaluated now, beat the tier and value frozen onto the current observation when it was selected
+* **Merit-based preemption**: A TOO interrupts only when its value, evaluated now, beats the value frozen onto the current observation when it was selected
 * **Deadlines**: An optional deadline drives the urgency merit term and stops the TOO being selected once it passes
 * **Visibility checking**: TOOs only interrupt when the target is actually observable
 * **Interrupt controls**: A TOO can be submitted to wait for the current observation instead of interrupting it, and a category's observations can be protected from interruption
@@ -47,7 +47,7 @@ Attributes
 * ``obsid`` (int): Unique observation identifier for this TOO
 * ``ra`` (float): Right ascension in degrees
 * ``dec`` (float): Declination in degrees
-* ``merit`` (float): Base merit. Within a tier, the TOO interrupts only if its value exceeds the current observation's
+* ``merit`` (float): Base merit. The TOO interrupts only if its value exceeds the current observation's
 * ``exptime`` (int): Requested exposure time in seconds
 * ``name`` (str): Human-readable name for the TOO target (e.g., "GRB 250101A")
 * ``submit_time`` (float): Unix timestamp when the TOO becomes active. Default is 0.0, meaning active from simulation start
@@ -129,7 +129,7 @@ During each simulation step in science or idle modes:
    * the TOO may interrupt (``interrupt``) and the observation's category is ``interruptible``;
    * its deadline, if any, has not passed;
    * its target is visible now; and
-   * its tier and value, evaluated now, beat the current observation's frozen tier and value.
+   * its value, evaluated now, beats the current observation's frozen value.
 
 When a TOO interrupts:
 
@@ -177,19 +177,11 @@ Making TOOs Win
 
 There is no automatic merit boost. A TOO outranks other work through:
 
-* **Tier**: Put TOO obsids in an observation category with a higher ``tier`` than normal science. A higher tier always wins, whatever the merits.
-* **Merit**: Within a tier, give TOOs a base merit above normal targets (normal targets typically use 1-1000).
+* **Merit**: Give TOOs a base merit above normal targets (normal targets typically use 1-1000).
 * **Deadline and urgency**: Give the TOO a ``deadline`` and set ``config.targets.urgency_weight``; its value rises as the deadline approaches.
 
 .. code-block:: python
 
-   from conops.config import ObservationCategories, ObservationCategory
-
-   cfg.observation_categories = ObservationCategories(
-       categories=[
-           ObservationCategory(name="TOO", obsid_min=1000000, obsid_max=2000000, tier=1),
-       ]
-   )
    cfg.targets.urgency_weight = 50.0
 
    ditl.submit_too(
@@ -240,7 +232,7 @@ TOO events are logged to ``ditl.log`` with event type ``"TOO"``. You can filter 
 Example output::
 
    2025-01-01T02:30:00Z: Queued TOO GRB 250101A (obsid=1000001, merit=10000.0)
-   2025-01-01T02:34:56Z: TOO interrupt: GRB 250101A (obsid=1000001, tier=0 base=10000 value=10000.000 score=10000.000) preempting current observation (tier=0, value=500)
+   2025-01-01T02:34:56Z: TOO interrupt: GRB 250101A (obsid=1000001, base=10000 value=10000.000 score=10000.000) preempting current observation (value=500)
 
 Complete Example
 ----------------

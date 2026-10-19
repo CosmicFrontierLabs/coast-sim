@@ -6290,40 +6290,6 @@ class TestTOOFunctionality:
 
         assert too.executed is True
 
-    @pytest.mark.parametrize(
-        ("too_tier", "too_merit", "interrupts"),
-        [(1, 10.0, True), (0, 10000.0, True), (-1, 10000.0, False)],
-    )
-    def test_check_too_interrupt_compares_tier_before_value(
-        self,
-        mock_too_interrupt_success,
-        queue_ditl,
-        queued_targets,
-        low_merit_current_ppt,
-        too_tier,
-        too_merit,
-        interrupts,
-    ) -> None:
-        from conops.config.observation_categories import (
-            ObservationCategories,
-            ObservationCategory,
-        )
-        from conops.targets.merit import MeritModel
-
-        queue_ditl.config.observation_categories = ObservationCategories(
-            categories=[
-                ObservationCategory(
-                    name="TOO", obsid_min=1000000, obsid_max=2000000, tier=too_tier
-                )
-            ]
-        )
-        queue_ditl.merit_model = MeritModel(queue_ditl.config)
-        self._submit(queue_ditl, merit=too_merit)
-
-        result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
-
-        assert result is interrupts
-
     def test_too_request_pydantic_validation_valid(self) -> None:
         """Test TOORequest Pydantic validation - valid creation."""
         from conops.ditl import TOORequest

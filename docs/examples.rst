@@ -82,7 +82,6 @@ This notebook demonstrates how the queue scheduler chooses its next target, turn
 each dynamic merit term in turn:
 
 * Urgency, which observes a short-window request that priority order would lose
-* Tiers, which give a class of work absolute priority
 * Cadence, which revisits monitoring targets on schedule
 * Completion deficit, which keeps programs near their allocated share of time
 * Targets of Opportunity as ordinary short-window requests, including when they
