@@ -187,9 +187,9 @@ collected. ``housekeeping_generated`` and ``science_generated`` give the two par
    # Both: an observation collecting for 45 s of a 60 s interval
    config.data_generated(60, mode=ACSMode.SCIENCE, collection_seconds=45)
 
-Configurations saved before housekeeping data existed give an instrument's science
-fields directly (``data_generation: {rate_gbps: ..., per_observation_gb: ...}``); they
-still load, as the ``science`` part.
+For many simulations only the science rate matters, so as a shorthand an instrument's
+science fields may be given directly: ``DataGeneration(rate_gbps=0.5)``, or
+``data_generation: {rate_gbps: 0.5}`` in a file, is its ``science`` part.
 
 Target Science Data
 ~~~~~~~~~~~~~~~~~~~

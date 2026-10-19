@@ -145,8 +145,8 @@ class DataGeneration(ConfigModel):
         >>> data.data_generated(60)  # an observation collecting for 60 s
         30.06
 
-    Configurations saved before housekeeping data existed give the science
-    fields directly (``rate_gbps`` and ``per_observation_gb``); they still load.
+    As a shorthand, the science fields may be given directly:
+    ``DataGeneration(rate_gbps=0.5)`` is ``DataGeneration(science=ScienceData(rate_gbps=0.5))``.
     """
 
     science: ScienceData = Field(
@@ -161,7 +161,7 @@ class DataGeneration(ConfigModel):
     @model_validator(mode="before")
     @classmethod
     def _science_fields_given_directly(cls, data: object) -> object:
-        """Load the older format, which had only the science fields."""
+        """Take science fields given directly as the science part."""
         if not isinstance(data, Mapping):
             return data
         direct = {k: v for k, v in data.items() if k in ScienceData.model_fields}

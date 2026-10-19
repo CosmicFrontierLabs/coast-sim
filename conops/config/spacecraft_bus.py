@@ -1,5 +1,3 @@
-from collections.abc import Mapping
-
 import numpy as np
 from pydantic import Field, field_validator, model_validator
 
@@ -57,26 +55,6 @@ class SpacecraftBus(ConfigModel):
         default_factory=DefaultRadiatorConfiguration,
         description="Body-mounted radiator configuration",
     )
-
-    @field_validator("data_generation", mode="before")
-    @classmethod
-    def _older_format(cls, value: object) -> object:
-        """Load the older format, which gave the bus science fields it never used.
-
-        Those files have ``per_observation_gb``, which housekeeping data does
-        not; the fields are dropped when zero and an error otherwise.
-        """
-        if not isinstance(value, Mapping) or "per_observation_gb" not in value:
-            return value
-        science = {
-            k: value[k] for k in ("rate_gbps", "per_observation_gb") if k in value
-        }
-        if any(science.values()):
-            raise ValueError(
-                "the spacecraft bus collects no science data: set "
-                f"{sorted(science)} on an instrument"
-            )
-        return {k: v for k, v in value.items() if k not in science}
 
     @field_validator("inertia_tensor_body_kg_m2", mode="before")
     @classmethod
