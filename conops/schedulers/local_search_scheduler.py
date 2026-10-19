@@ -73,6 +73,8 @@ class _State(BaseModel):
     """Science volume planned in each segment of the recorder ledger."""
     energy: tuple[Additions, ...]
     """What the plan draws from the battery, by segment of the battery ledger."""
+    allocated_left: dict[tuple[int, int], float]
+    """Allocated seconds not yet used, by obsid and span (see ``allocated``)."""
 
 
 class _Decoded(BaseModel):
@@ -115,8 +117,11 @@ class LocalSearchScheduler(PriorityScheduler):
     compared tier by tier from the highest. A snapshot of a request with a
     deadline is worth less the later it starts: starting at the deadline
     rather than the start of the horizon, or its earliest start if later,
-    costs ``earliness_weight`` of its value. The best plan found is returned,
-    and never one worse than the priority-first plan.
+    costs ``earliness_weight`` of its value. With ``allocated`` time, a
+    snapshot's seconds that use what is left of the span its collection starts
+    in score in the tier ``allocation_strictness`` raises allocated time to,
+    worth ``allocation_bonus`` more with ``weighted`` strictness. The best plan
+    found is returned, and never one worse than the priority-first plan.
 
     Each plan entry's merit is the value its snapshot has where the decoder
     places it, with the program shares the plan delivers before it; a Target
@@ -198,12 +203,27 @@ class LocalSearchScheduler(PriorityScheduler):
         self._initial_remaining = {
             obsid: r.remaining for obsid, r in self._by_obsid.items()
         }
-        self._tiers = sorted({r.merit.tier for r in requests}, reverse=True)
+        allocated = self.allocated or {}
+        self._initial_allocated = {
+            (obsid, n): span.seconds
+            for obsid, spans in allocated.items()
+            for n, span in enumerate(spans)
+        }
+        # Allocated time scores in its own tier (see _allocated_offset).
+        self._tiers = sorted(
+            {r.merit.tier for r in requests}
+            | {
+                r.merit.tier + self._allocated_offset
+                for r in requests
+                if allocated.get(int(r.target.obsid))
+            },
+            reverse=True,
+        )
         self._initial_last_visit = dict(self._last_visit)
         self._initial_volumes = tuple(self._volumes)
         self._initial_energy = tuple(self._energy)
 
-        self._place_requests(requests)
+        self._place_requests(self._with_allocated_time(requests))
         self._greedy_timeline = list(self.timeline)
         science = [b for b in self._greedy_timeline if id(b.entry) not in fixed_entries]
         self.initial_score = self._timeline_score(science)
@@ -243,15 +263,13 @@ class LocalSearchScheduler(PriorityScheduler):
         """Score a priority-first timeline's science blocks, in time order."""
         totals: dict[int, float] = {}
         programs = dict(self._delivered)
+        left = dict(self._initial_allocated)
         for block in sorted(science, key=lambda b: float(b.entry.begin)):
             request = self._by_obsid.get(int(block.entry.obsid))
             if request is None:
                 continue
             value = self._value(request, program_shares(programs))
-            tier = request.merit.tier
-            totals[tier] = totals.get(tier, 0.0) + self._contribution(
-                request, block, value
-            )
+            self._add_score(totals, left, request, block, value)
             self._add_program_seconds(programs, request, block)
         return tuple(totals.get(tier, 0.0) for tier in self._tiers)
 
@@ -261,6 +279,48 @@ class LocalSearchScheduler(PriorityScheduler):
     ) -> None:
         program = request.category.program_name
         programs[program] = programs.get(program, 0.0) + _collection_seconds(block)
+
+    def _add_score(
+        self,
+        score: dict[int, float],
+        left: dict[tuple[int, int], float],
+        request: _Request,
+        block: _Block,
+        value: float,
+    ) -> None:
+        """Add a snapshot's contribution to ``score``, by tier.
+
+        Its seconds, up to what is left of the allocated time of the span its
+        collection starts in, score in the allocated tier, worth
+        ``_allocated_factor`` more (see ``allocation_strictness``), and use up
+        that time in ``left``; the rest score in its request's tier.
+        """
+        worth = self._contribution(request, block, value)
+        tier = request.merit.tier
+        entry = block.entry
+        seconds = _collection_seconds(block)
+        span = self._span_of(int(entry.obsid), entry.collection_begin)
+        counted = min(seconds, left.get(span, 0.0)) if span is not None else 0.0
+        if counted > 0.0 and span is not None:
+            share = counted / seconds
+            raised = tier + self._allocated_offset
+            score[raised] = (
+                score.get(raised, 0.0) + worth * share * self._allocated_factor
+            )
+            left[span] -= counted
+            worth *= 1.0 - share
+        score[tier] = score.get(tier, 0.0) + worth
+
+    def _span_of(
+        self, obsid: int, collection_begin: float | None
+    ) -> tuple[int, int] | None:
+        """The span of allocated time a collection starting then falls in."""
+        if self.allocated is None or collection_begin is None:
+            return None
+        for n, span in enumerate(self.allocated.get(obsid, [])):
+            if span.begin <= collection_begin < span.end:
+                return obsid, n
+        return None
 
     def _contribution(self, request: _Request, block: _Block, value: float) -> float:
         """Return a snapshot's merit-weighted science, discounted for lateness.
@@ -306,6 +366,7 @@ class LocalSearchScheduler(PriorityScheduler):
             last_visit=dict(self._initial_last_visit),
             volumes=self._initial_volumes,
             energy=self._initial_energy,
+            allocated_left=dict(self._initial_allocated),
         )
 
     def _decode(self, sequence: list[_Snapshot]) -> _Decoded:
@@ -373,11 +434,9 @@ class LocalSearchScheduler(PriorityScheduler):
             # it to interrupt the observation.
             value = self._value(request, program_shares(state.programs))
             block.entry.merit = value
-            tier = request.merit.tier
             score = dict(state.score)
-            score[tier] = score.get(tier, 0.0) + self._contribution(
-                request, block, value
-            )
+            allocated_left = dict(state.allocated_left)
+            self._add_score(score, allocated_left, request, block, value)
 
             left = dict(state.remaining)
             left[obsid] = remaining - _collection_seconds(block)
@@ -395,6 +454,7 @@ class LocalSearchScheduler(PriorityScheduler):
                 last_visit=last_visit,
                 volumes=self._ledger.add_all(state.volumes, additions),
                 energy=self._charged_energy(placed),
+                allocated_left=allocated_left,
             )
         return state
 
@@ -408,6 +468,7 @@ class LocalSearchScheduler(PriorityScheduler):
         if (
             a.remaining != b.remaining
             or a.last_visit != b.last_visit
+            or a.allocated_left != b.allocated_left
             or len(a.timeline) - a.cursor != len(b.timeline) - b.cursor
         ):
             return False
@@ -489,6 +550,7 @@ class LocalSearchScheduler(PriorityScheduler):
                     energy=self._charged_energy(
                         [*prefix, *later.timeline[there.cursor :]]
                     ),
+                    allocated_left=later.allocated_left,
                 )
             )
         return _Decoded.model_construct(sequence=sequence, states=states)

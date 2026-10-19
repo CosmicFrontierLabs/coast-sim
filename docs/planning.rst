@@ -17,6 +17,10 @@ COASTSim runs a scheduler in one of three ways:
   it from the spacecraft's actual state as time passes, as a ground-planned mission
   does. See `Rolling-horizon replanning`_.
 
+Over runs of days to months, a long-range allocator can decide on which day each
+request is observed, and dispatch or rolling replanning follow it (see
+`Long-range allocation`_).
+
 A mission configuration's ``scheduler`` section selects the mode and scheduler, and
 :func:`~conops.ditl.create_ditl` builds the matching simulation (see
 :doc:`configuration`). The classes below can also be used directly.
@@ -577,3 +581,105 @@ each plan by local search or with CP-SAT.
 Comparing a run with :class:`~conops.ditl.queue_ditl.QueueDITL` dispatch on the same
 targets shows what planning ahead gains or costs in science time and ToO response.
 A ``RollingHorizonDITL`` instance runs once; create a new one for each simulation.
+
+Long-range allocation
+---------------------
+
+:class:`~conops.schedulers.LongRangeAllocator` is a long-range plan: it decides on
+which day (or other period) each request should be observed, over a run of days to
+months. The short-term scheduling, rolling replans or dispatch, then decides the order
+within each day. This is the split between long-range and short-term planning that
+observatories use.
+
+It matters because the short-term scheduling looks only hours ahead. On its own, it
+spends each day on the best targets available that day, so a target observable for
+only part of the run, such as one the Sun will soon cover, or a request due beyond the
+horizon, can miss its chance while time goes to targets that could have waited.
+
+The allocator splits the run into bins (a day by default) and decides how much of
+each request's remaining exposure to collect in which bin:
+
+* each request can be allocated only the seconds its target is visible in a bin,
+  between its earliest start and its deadline, from the same visibility windows the
+  schedulers use;
+* each bin is expected to hold ``efficiency`` (default 0.75) of its length in science,
+  the rest going to slews, setup and ground passes;
+* ``reserve`` (default 0.1) of that capacity is kept free for work that isn't known
+  yet, such as ToOs. Planned requests are never allocated it. ToOs the simulation has
+  received are allocated first and use the reserve before anything else, so a ToO
+  that fits in the reserve doesn't push planned requests to later days;
+* the allocation is solved as a mixed-integer program with HiGHS, which comes with
+  OR-Tools (the optional ``cpsat`` extra; see :doc:`installation`), maximizing
+  merit-weighted time. ToOs come first, then each tier in turn, each solved with the
+  allocation of the ones above it fixed, so a tier never gives anything up for a lower
+  one. Each tier starts from a greedy allocation of its requests into the room left,
+  and if the solver finds no solution in time, that tier and the ones below it keep
+  the greedy allocation. A request gets either nothing in a bin or at least its
+  ``ss_min``, never more than its remaining exposure, and a request with a cadence no
+  more than an even share per bin. Requests with a deadline are worth slightly more
+  in earlier bins;
+* the planned load is spread evenly over the bins as far as visibility allows, so
+  every week keeps some slack. Each tier evens out the load it and the tiers above
+  it place, so a lower tier, such as filler, fills what the tiers above leave
+  light. This is a tiebreak: it never costs a second of science for less than a
+  thousand seconds of better balance;
+* re-allocating keeps the previous allocation unless changing it gains something:
+  keeping a request's seconds where they were is worth an extra 1%. A ToO that fits
+  in the reserve leaves every planned request where it was;
+* ``solver="greedy"`` instead takes requests in order of tier and merit, each into
+  the bins with the least competing demand. It is quicker but not optimal, is the
+  MILP's starting point, and does not need OR-Tools.
+
+The allocation says when each request should be observed, and short-term
+scheduling follows it:
+
+* a plan covering several bins plans each request's allocated seconds in the bin
+  they are allocated to. Collection starting in the bin counts, up to the seconds
+  allocated there; a bin the plan's end cuts short counts pro rata;
+* how far ahead allocated time comes is the strictness (``allocation_strictness``,
+  or ``strictness`` in the configuration). ``strict``, the default, puts it ahead of
+  every unallocated request, with tiers in order among allocated time: the
+  allocation has already weighed the tiers, so even a filler tier's allocated time
+  is kept. ``tier`` puts it ahead of the unallocated requests in its own tier only.
+  ``weighted`` keeps it in its tier, worth ``allocation_bonus`` more, so scheduling
+  trades keeping to the allocation against merit;
+* the rest of a request's exposure, and allocated seconds that don't fit their bin,
+  are planned like unallocated requests, by tier, in the time the allocated ones
+  leave. So with ``strict`` strictness a plan can work ahead, but not at the expense
+  of what the allocation put in a bin;
+* local search and CP-SAT score allocated time the same way, so they improve a plan
+  without trading away what the allocation put in a bin;
+* dispatch takes the requests allocated to the current bin first, with the same
+  strictness.
+
+A request the allocator hasn't seen, such as a ToO submitted after the last
+allocation, is treated as allocated throughout. Rolling runs re-allocate at every
+replan and dispatch at the start of every bin, using the exposure still remaining.
+A rolling run can instead follow a fixed allocation made elsewhere, such as a weekly
+long-range plan (``allocation=``); each replan then counts what has been collected or
+committed in each bin against its seconds.
+
+.. code-block:: python
+
+   from datetime import timedelta
+   from conops import LongRangeAllocator, RollingHorizonDITL
+
+   allocator = LongRangeAllocator(config, begin, end, bin_length=timedelta(days=1))
+   ditl = RollingHorizonDITL(config, targets, begin=begin, end=end, allocator=allocator)
+   ditl.calc()
+   print(ditl.allocation.seconds[10042])   # seconds allocated to each bin
+
+Pass the same ``allocator`` to :class:`~conops.ditl.QueueDITL` for dispatch, or set
+``scheduler.allocation`` in the configuration (see :doc:`configuration`). Schedulers
+take the steering as ``allocated``, the seconds each request has in each span of
+time, from :meth:`~conops.schedulers.Allocation.allocated`:
+
+.. code-block:: python
+
+   allocation = allocator.allocate(targets, begin.timestamp())
+   scheduler = PriorityScheduler(
+       config, targets, begin, end,
+       allocated=allocation.allocated(
+           [t.obsid for t in targets], begin.timestamp(), end.timestamp()
+       ),
+   )
