@@ -34,8 +34,10 @@ def create_ditl(
 
     Args:
         config: Mission configuration, including its ``scheduler`` section.
-        targets: Targets to observe. Dispatch adds copies of them to its
-            queue; rolling replanning updates their remaining exposure.
+        targets: Targets to observe. Each is given the simulation's
+            configuration, constraint, ephemeris and ACS settings. Dispatch
+            and planned modes use copies of them; rolling replanning uses
+            them, and updates their remaining exposure.
         begin: Simulation start; defaults to the start of the ephemeris.
         end: Simulation end; defaults to the end of the ephemeris.
         ephem: Ephemeris; defaults to the one on the config's constraint.
@@ -57,9 +59,11 @@ def create_ditl(
     scheduler = scheduler_class(settings.kind)
     options = settings.scheduler_options()
     if settings.mode is SchedulerMode.PLANNED:
+        copies = [target.model_copy() for target in targets]
+        _bind_targets(config, copies)
         builder = scheduler(
             config,
-            targets,
+            copies,
             begin,
             end,
             include_passes=settings.include_passes,
@@ -69,6 +73,8 @@ def create_ditl(
         ditl.step_size = builder.ctx.step_size
         return ditl
 
+    # Rolling replanning records collection on the targets themselves.
+    _bind_targets(config, targets)
     replanning = settings.replanning
     rolling = RollingHorizonDITL(
         config,
@@ -102,10 +108,7 @@ def queue_targets(ditl: QueueDITL, targets: Sequence[Pointing]) -> None:
         raise TypeError("targets can only be added to a QueueDITL's own Queue")
     config = ditl.config
     copies = [target.model_copy() for target in targets]
-    # A target caches its constraint, ephemeris and ACS settings from the
-    # configuration it was made with, if any, so give the copies the
-    # simulation's: visibility is computed from them.
-    Plan(entries=list(copies)).bind_runtime(config)
+    _bind_targets(config, copies)
     for queued in copies:
         # The queue ranks targets from fom, a legacy alias of merit that is
         # not kept in step with it.
@@ -117,6 +120,17 @@ def queue_targets(ditl: QueueDITL, targets: Sequence[Pointing]) -> None:
         queued.instrument_name = telescope.name if telescope is not None else None
         queued.visibility()
         queue.append(queued)
+
+
+def _bind_targets(config: MissionConfig, targets: Sequence[Pointing]) -> None:
+    """Give targets the simulation's configuration, constraint, ephemeris and
+    ACS settings.
+
+    A target caches these from the configuration it was made with, and one
+    loaded from JSON has none. Visibility, and the telescope a target asks
+    for, are resolved from them.
+    """
+    Plan(entries=list(targets)).bind_runtime(config)
 
 
 def _as_utc(timestamp: datetime) -> datetime:

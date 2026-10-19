@@ -7,13 +7,16 @@ import pytest
 from rust_ephem import TLEEphemeris
 
 from conops import DITL, QueueDITL, RollingHorizonDITL, create_ditl
+from conops.common import ObsType
 from conops.config import (
     MissionConfig,
+    Payload,
     ReplanSettings,
     SchedulerConfig,
     SchedulerKind,
     SchedulerMode,
     TargetConfig,
+    Telescope,
 )
 from conops.config.observation_categories import ObservationCategory
 from conops.schedulers import SCHEDULERS, LocalSearchScheduler, PriorityScheduler
@@ -232,6 +235,58 @@ class TestRolling:
         }
         _run(ditl)
         assert len(ditl.replans) == 4
+
+
+class TestRuntimeBinding:
+    """Targets loaded from JSON have no configuration attached; every mode
+    gives them the simulation's, so they keep the telescope they ask for."""
+
+    def _loaded_targets(
+        self, scheduler: SchedulerConfig
+    ) -> tuple[MissionConfig, list[Pointing]]:
+        config, targets = _setup(scheduler)
+        config.payload = Payload(
+            instruments=[
+                Telescope(name="Front", boresight=(1.0, 0.0, 0.0)),
+                Telescope(name="Rear", boresight=(-1.0, 0.0, 0.0)),
+            ]
+        )
+        for target in targets:
+            target.instrument_name = "Rear"
+        loaded = [Pointing.model_validate_json(t.model_dump_json()) for t in targets]
+        assert all(target.config is None for target in loaded)
+        return config, loaded
+
+    @staticmethod
+    def _instruments(ditl: DITL | RollingHorizonDITL) -> set[str | None]:
+        return {e.instrument_name for e in ditl.plan if e.obstype != ObsType.GSP}
+
+    def test_planned_targets_keep_their_telescope(self) -> None:
+        config, targets = self._loaded_targets(
+            SchedulerConfig(mode=SchedulerMode.PLANNED)
+        )
+
+        ditl = create_ditl(config, targets, BEGIN, END)
+
+        assert isinstance(ditl, DITL)
+        assert len(ditl.plan) > 0
+        assert self._instruments(ditl) == {"Rear"}
+        # The targets passed in are left as they were.
+        assert all(target.config is None for target in targets)
+        _run(ditl)
+
+    def test_rolling_targets_keep_their_telescope(self) -> None:
+        config, targets = self._loaded_targets(
+            SchedulerConfig(mode=SchedulerMode.ROLLING, include_passes=False)
+        )
+
+        ditl = create_ditl(config, targets, BEGIN, END)
+        _run(ditl)
+
+        assert isinstance(ditl, RollingHorizonDITL)
+        assert self._instruments(ditl) == {"Rear"}
+        # Rolling replanning updates the targets passed in.
+        assert sum(target.collected_seconds for target in targets) > 0
 
 
 class TestDefaults:
