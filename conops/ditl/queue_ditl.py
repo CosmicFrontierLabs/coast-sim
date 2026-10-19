@@ -26,6 +26,7 @@ from ..common.ephemeris import position_vectors
 from ..common.vector import attitude_to_quat, quaternion_attitude_delta
 from ..config import (
     DAY_SECONDS,
+    AllocationStrictness,
     AttitudeConstraintScope,
     MissionConfig,
     ScienceData,
@@ -37,6 +38,7 @@ from ..config.constraint import (
     attitude_constraint_scope_label,
 )
 from ..schedulers import DispatchPolicy
+from ..schedulers.allocator import Allocation, LongRangeAllocator
 from ..schedulers.recorder import contact_downlink_gb
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
@@ -175,12 +177,27 @@ class QueueDITL(DITLMixin, DITLStats):
         end: datetime | None = None,
         queue: DispatchPolicy | None = None,
         calculate_field_of_regard: bool = False,
+        allocator: LongRangeAllocator | None = None,
+        allocation_strictness: AllocationStrictness = "strict",
+        allocation_bonus: float = 0.5,
     ) -> None:
         """Initialize a queue-driven DITL simulation.
 
         Args:
             queue: Policy that selects each next target. Defaults to an empty
                 :class:`~conops.targets.TargetQueue`.
+            allocator: Long-range allocator over the whole run. If given, the
+                queue's remaining exposure is allocated again at the start of
+                each of its bins, and the queue chooses targets allocated to
+                the current bin ahead of the others, as
+                ``allocation_strictness`` says (see
+                :class:`~conops.schedulers.LongRangeAllocator`). Needs the
+                queue to be a :class:`~conops.targets.TargetQueue`.
+            allocation_strictness: How allocated targets rank against the
+                others: ``strict``, ``tier`` or ``weighted`` (see
+                :data:`~conops.config.AllocationStrictness`).
+            allocation_bonus: Fraction of an allocated target's value it gains
+                with ``weighted`` strictness.
         """
         # Initialize mixin
         DITLMixin.__init__(
@@ -245,6 +262,16 @@ class QueueDITL(DITLMixin, DITLStats):
                 log=self.log,
                 ephem=self.ephem,
             )
+
+        if allocator is not None:
+            if not isinstance(self.queue, Queue):
+                raise TypeError("an allocator needs the queue to be a TargetQueue")
+            self.queue.allocation_strictness = allocation_strictness
+            self.queue.allocation_bonus = allocation_bonus
+        self.allocator = allocator
+        self.allocation: Allocation | None = None
+        """The allocation in force, if there is an allocator."""
+        self._next_allocation: float | None = None
 
         # Wire log into ACS so it can log events
         self.acs.log = self.log
@@ -840,10 +867,12 @@ class QueueDITL(DITLMixin, DITLStats):
         # Set up simulation length from begin/end datetimes
         simlen = int((self.end - self.begin).total_seconds() / self.step_size)
         self._dropped_science_windows.clear()
+        self._next_allocation = None
 
         # DITL loop
         for i in range(simlen):
             utime = self.ustart + i * self.step_size
+            self._allocate_if_due(utime)
 
             # Track PPT in timeline
             self._track_ppt_in_timeline()
@@ -1947,6 +1976,24 @@ class QueueDITL(DITLMixin, DITLStats):
             and gspass.end > entry.begin
             for entry in self.plan
         )
+
+    def _allocate_if_due(self, utime: float) -> None:
+        """Allocate the remaining exposure again when a new bin begins."""
+        if self.allocator is None or not isinstance(self.queue, Queue):
+            return
+        if self._next_allocation is not None and utime < self._next_allocation:
+            return
+        allocation = self.allocator.allocate(
+            self.queue.targets,
+            utime,
+            unplanned={int(t.obsid) for t in self._too_targets.values()},
+        )
+        bin_end = next(
+            (b1 for b0, b1 in allocation.bins if b0 <= utime < b1), self.uend
+        )
+        self.allocation = allocation
+        self._next_allocation = bin_end
+        self.queue.prefer = lambda obsid: allocation.prefers(obsid, utime, bin_end)
 
     def _gsp_activity_in_progress(self, utime: float) -> bool:
         """Return whether a ground station contact is still active at utime."""
