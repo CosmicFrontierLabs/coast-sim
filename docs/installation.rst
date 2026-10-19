@@ -26,11 +26,12 @@ To install COASTSim from source:
    cd coast-sim
    pip install -e .
 
-Optional: CP-SAT scheduler
---------------------------
+Optional: CP-SAT scheduler and long-range allocation
+----------------------------------------------------
 
-:class:`~conops.schedulers.CpSatScheduler` uses Google's OR-Tools CP-SAT solver, which
-is an optional dependency:
+:class:`~conops.schedulers.CpSatScheduler` uses Google's OR-Tools CP-SAT solver, and
+:class:`~conops.schedulers.LongRangeAllocator`'s default ``milp`` solver uses the HiGHS
+solver that comes with OR-Tools. OR-Tools is an optional dependency:
 
 .. code-block:: bash
 
