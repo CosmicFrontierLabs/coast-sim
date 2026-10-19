@@ -32,7 +32,7 @@ def create_ditl(
 
     With ``scheduler.allocation`` set, dispatch and rolling simulations get a
     :class:`~conops.schedulers.LongRangeAllocator` over the run, and follow
-    its allocation as closely as its ``strictness`` says.
+    its allocation, with allocated time worth its ``bonus`` more.
 
     The simulation is ready for :meth:`calc`. Targets of Opportunity can be
     submitted to the dispatch and rolling simulations before running them.
@@ -68,7 +68,7 @@ def create_ditl(
             solver=allocation.solver,
             time_limit=allocation.time_limit_seconds,
         )
-    # How closely scheduling follows the allocation, if there is one.
+    # How strongly scheduling follows the allocation, if there is one.
     steering = allocation or AllocationSettings()
 
     if settings.mode is SchedulerMode.DISPATCH:
@@ -77,7 +77,6 @@ def create_ditl(
             begin=begin,
             end=end,
             allocator=allocator,
-            allocation_strictness=steering.strictness,
             allocation_bonus=steering.bonus,
         )
         queue_targets(queue_ditl, targets)
@@ -117,7 +116,6 @@ def create_ditl(
         scheduler=scheduler,
         scheduler_options=options,
         allocator=allocator,
-        allocation_strictness=steering.strictness,
         allocation_bonus=steering.bonus,
     )
     rolling.step_size = int(ephemeris.step_size)

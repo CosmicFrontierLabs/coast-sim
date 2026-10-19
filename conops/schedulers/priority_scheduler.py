@@ -17,7 +17,7 @@ from typing import NamedTuple
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..common import ACSMode, ObsType, unixtime2date
-from ..config import AllocationStrictness, MissionConfig
+from ..config import MissionConfig
 from ..config.observation_categories import ObservationCategory
 from ..ditl.ditl_log import DITLLog
 from ..simulation.passes import Pass
@@ -88,7 +88,7 @@ class _Request(BaseModel):
 
     target: Pointing
     merit: MeritBreakdown
-    """Merit at the start of the horizon; its tier and ranking."""
+    """Merit at the start of the horizon."""
     remaining: float
     windows: list[tuple[float, float]] = Field(default_factory=list)
     category: ObservationCategory
@@ -144,7 +144,7 @@ class PriorityScheduler:
 
     1. Locked entries keep their collection windows and are placed first.
     2. Ground passes the spacecraft can reach are reserved.
-    3. Requests are sorted by tier, then by merit value at the start of the
+    3. Requests are sorted by merit value at the start of the
        horizon (see :class:`~conops.targets.merit.MeritModel`). Each request is
        split into snapshots of up to ``ss_max`` seconds, never shorter than
        ``ss_min``, until its ``exptime`` is used or it no longer fits.
@@ -197,18 +197,13 @@ class PriorityScheduler:
             tries every start, which finds every fit.
         allocated: Time allocated to requests, by obsid, such as from
             :meth:`~conops.schedulers.Allocation.allocated`. A request's
-            allocated seconds in each span are planned in that span, ranked by
-            ``allocation_strictness``; collection starting in the span counts.
+            allocated seconds in each span are planned in that span, worth
+            ``allocation_bonus`` more; collection starting in the span counts.
             The rest of its exposure, and any allocated seconds that do not fit
             their span, are planned like an unallocated request, which may work
             ahead. None (the default) treats all requests alike.
-        allocation_strictness: How allocated time ranks against unallocated
-            work: ``strict`` (the default) ahead of all of it, whatever its
-            tier; ``tier`` ahead of the unallocated work in its own tier;
-            ``weighted`` in its own tier, with ``allocation_bonus`` of its
-            value added (see :data:`~conops.config.AllocationStrictness`).
         allocation_bonus: Fraction of a request's value its allocated time
-            gains with ``weighted`` strictness.
+            gains, so plans trade keeping to the allocation against merit.
     """
 
     scheduler_name = "priority"
@@ -232,7 +227,6 @@ class PriorityScheduler:
         reserved_visits: Mapping[int, float] | None = None,
         successor_retries: int | None = 3,
         allocated: Mapping[int, Sequence[AllocatedTime]] | None = None,
-        allocation_strictness: AllocationStrictness = "strict",
         allocation_bonus: float = 0.5,
     ) -> None:
         self.config = config
@@ -251,10 +245,6 @@ class PriorityScheduler:
         if successor_retries is not None and successor_retries < 0:
             raise ValueError("successor_retries must not be negative")
         self.successor_retries = successor_retries
-        if allocation_strictness not in ("strict", "tier", "weighted"):
-            raise ValueError(
-                'allocation_strictness must be "strict", "tier" or "weighted"'
-            )
         if allocation_bonus < 0.0:
             raise ValueError("allocation_bonus must not be negative")
         self.allocated = (
@@ -262,7 +252,6 @@ class PriorityScheduler:
             if allocated is None
             else {int(obsid): list(spans) for obsid, spans in allocated.items()}
         )
-        self.allocation_strictness = allocation_strictness
         self.allocation_bonus = allocation_bonus
         self.unplaced: list[Pointing] = []
         """Targets left with at least ``ss_min`` of exposure unplanned."""
@@ -357,7 +346,6 @@ class PriorityScheduler:
                 request = max(
                     active,
                     key=lambda r: (
-                        r.merit.tier,
                         self._value(r, shares),
                         -order[id(r)],
                     ),
@@ -488,7 +476,7 @@ class PriorityScheduler:
     # ── Requests ──────────────────────────────────────────────────────────
 
     def _requests(self) -> list[_Request]:
-        """Return the requests in planning order: tier, then value, then a stable tie-break."""
+        """Return the requests in planning order: value, then a stable tie-break."""
         merit_model = MeritModel(self.config)
         # Science committed outside this plan or locked into it will be
         # collected before what this plan places.
@@ -525,11 +513,6 @@ class PriorityScheduler:
             merit = merit_model.value_terms(
                 target, self.ctx.ustart, delivered_shares=shares
             )
-            if self.allocated is not None and self.allocation_strictness == "tier":
-                # Tiers doubled, so allocated time can rank above the rest of
-                # its own tier and below the tier above: every ranking and
-                # tier-by-tier objective in the schedulers follows this tier.
-                merit = merit.model_copy(update={"tier": 2 * merit.tier})
             cadence = category.cadence_seconds if cadence_weight > 0.0 else None
             requests.append(
                 _Request(
@@ -552,27 +535,13 @@ class PriorityScheduler:
 
         self._seed = seed
         self._shares = shares
-        tiers = [r.merit.tier for r in requests]
-        # How far allocated time's tier is raised, and the factor on its value.
-        # Strict: above every unallocated request, in tier order among itself,
-        # as the allocation has already weighed the tiers. Tier: just above
-        # its own tier's unallocated requests (tiers are doubled above).
-        # Weighted: in its own tier, worth more.
-        self._allocated_offset = {
-            "strict": max(tiers) - min(tiers) + 1 if tiers else 1,
-            "tier": 1,
-            "weighted": 0,
-        }[self.allocation_strictness]
-        self._allocated_factor = (
-            1.0 + self.allocation_bonus
-            if self.allocation_strictness == "weighted"
-            else 1.0
-        )
+        # Allocated time is worth its request's value plus the bonus.
+        self._allocated_factor = 1.0 + self.allocation_bonus
         requests.sort(key=self._rank, reverse=True)
         return requests
 
-    def _rank(self, request: _Request) -> tuple[int, float, int]:
-        """Planning order: tier, then value, then a stable tie-break.
+    def _rank(self, request: _Request) -> tuple[float, int]:
+        """Planning order: value, then a stable tie-break.
 
         Ranked by the value of a visit when it is placed, as selection uses:
         a cadence target's visits wait until they are due, so each has the
@@ -582,16 +551,15 @@ class PriorityScheduler:
         tie_break = int.from_bytes(
             hashlib.blake2b(payload, digest_size=8).digest(), "big"
         )
-        return request.merit.tier, self._value(request, self._shares), tie_break
+        return self._value(request, self._shares), tie_break
 
     def _with_allocated_time(self, requests: Sequence[_Request]) -> list[_Request]:
         """Requests to place: allocated time first, in its span, then the rest.
 
         Each span of a request's allocated time becomes a request for those
-        seconds, limited to the span, ranked by ``allocation_strictness``: its
-        tier raised by ``_allocated_offset`` and its value by
+        seconds, limited to the span, its value raised by
         ``_allocated_factor``. Seconds too few for a snapshot stay with the
-        rest of the target's exposure, a request in its own tier. Allocated
+        rest of the target's exposure. Allocated
         seconds that do not fit their span go back to the rest (see
         :meth:`_place_requests`).
         """
@@ -616,7 +584,6 @@ class PriorityScheduler:
                         ],
                         "merit": request.merit.model_copy(
                             update={
-                                "tier": request.merit.tier + self._allocated_offset,
                                 "allocation": (self._allocated_factor - 1.0)
                                 * request.merit.value,
                             }
@@ -1032,8 +999,7 @@ class PriorityScheduler:
 
         Moving a snapshot may cut it short, where its target's visibility ends
         sooner after the move. That is accepted only if the trade is worth it:
-        no snapshot cut short outranks the new one's tier, and the new
-        snapshot's value-weighted seconds exceed those lost. Returns the new
+        the new snapshot's value-weighted seconds exceed those lost. Returns the new
         snapshot's block, or None with the timeline unchanged.
         """
         pred = self._pred_at(index)
@@ -1121,8 +1087,6 @@ class PriorityScheduler:
         cut = [move for move in moves if move.lost > 1e-6]
         if not cut:
             return True
-        if any(move.request.merit.tier > request.merit.tier for move in cut):
-            return False
         lost_value = sum(move.lost * move.request.steady_value for move in cut)
         return gained * request.steady_value > lost_value
 

@@ -32,7 +32,6 @@ from ..targets import Plan, Pointing
 from .context import Attitude
 from .local_search_scheduler import (
     LocalSearchScheduler,
-    Score,
     _Decoded,
     _Snapshot,
     _State,
@@ -405,7 +404,8 @@ class _ChunkModel:
         for obsid, counted_list in totals.items():
             model.add(sum(counted_list) <= int(budget[obsid]))
         # Allocated seconds: collection that starts in a span of the request's
-        # allocated time, up to what is left of it, is worth its allocated tier.
+        # allocated time, up to what is left of it, is worth allocation_bonus
+        # more.
         self.in_span: dict[tuple[int, int], cp_model.IntVar] = {}
         """Whether a candidate's collection starts in one of its spans."""
         self.span_seconds: dict[tuple[int, int], cp_model.IntVar] = {}
@@ -610,7 +610,7 @@ class CpSatScheduler(LocalSearchScheduler):
         self.solver_chunks_used: list[bool] = []
         """For each chunk, whether the solver's snapshots were kept; if not,
         the priority-first plan's were, as they scored better."""
-        self.solver_score: Score | None = None
+        self.solver_score: float | None = None
         """Objective of the solver's plan after exact decoding."""
         self.solver_seconds = 0.0
         """Wall-clock time spent building, solving and decoding chunks."""
@@ -688,7 +688,7 @@ class CpSatScheduler(LocalSearchScheduler):
             if snapshot.release is not None and begin <= snapshot.release < end
         ]
 
-    def _final_score(self, state: _State, sequence: Sequence[_Snapshot]) -> Score:
+    def _final_score(self, state: _State, sequence: Sequence[_Snapshot]) -> float:
         """Objective after decoding ``sequence`` from ``state``."""
         for snapshot in sequence:
             state = self._step(state, snapshot)
@@ -831,10 +831,9 @@ class CpSatScheduler(LocalSearchScheduler):
         ctx = self.ctx
         setup = ctx.setup_seconds
         overhead = int(np.ceil(setup + ctx.post_collection_seconds))
-        weights = self._tier_weights()
         shares = program_shares(state.programs) if self._deficit_weight else {}
         ranked = sorted(
-            self._by_obsid.values(), key=lambda r: r.merit.value_rank, reverse=True
+            self._by_obsid.values(), key=lambda r: r.merit.value, reverse=True
         )
         candidates: list[tuple[int, int, _Task]] = []
         for rank, request in enumerate(ranked):
@@ -874,19 +873,15 @@ class CpSatScheduler(LocalSearchScheduler):
                     ctx.instrument_roll(target, max(w0, origin_time))
                 )
                 rate, earliness, offset, late = self._candidate_value(
-                    request, weights, shares, origin_time
+                    request, shares, origin_time
                 )
-                # Allocated time is worth its raised tier (see
-                # allocation_strictness), beyond the rate.
-                tier = request.merit.tier
-                raised = weights.get(tier + self._allocated_offset, 0.0)
+                # Allocated time is worth allocation_bonus more, beyond the rate.
                 spans = self._spans(
                     state,
                     obsid,
                     origin_time,
                     (earliest, latest),
-                    (raised * self._allocated_factor - weights[tier])
-                    * self._value(request, shares),
+                    (self._allocated_factor - 1.0) * self._value(request, shares),
                 )
                 # As many snapshots as the exposure needs and the window holds.
                 copies = min(
@@ -947,7 +942,6 @@ class CpSatScheduler(LocalSearchScheduler):
     def _candidate_value(
         self,
         request: _Request,
-        weights: dict[int, float],
         shares: dict[str, float],
         origin_time: float,
     ) -> tuple[float, float, float, float]:
@@ -962,7 +956,7 @@ class CpSatScheduler(LocalSearchScheduler):
         ctx = self.ctx
         setup = ctx.setup_seconds
         target = request.target
-        rate = weights[request.merit.tier] * self._value(request, shares)
+        rate = self._value(request, shares)
         earliness = offset = late = 0.0
         if target.deadline is not None and self.earliness_weight > 0.0:
             released = max(ctx.ustart, target.earliest_start or ctx.ustart)
@@ -1083,43 +1077,6 @@ class CpSatScheduler(LocalSearchScheduler):
             if lo <= hi:
                 spans.append(_Span((obsid, n), (lo, hi), rate))
         return spans
-
-    def _tier_weights(self) -> dict[int, float]:
-        """Weights that keep every tier above all the tiers below it."""
-        weights: dict[int, float] = {}
-        below = 0.0
-        for tier in sorted(self._tiers):
-            weights[tier] = below + 1.0
-            tier_total = sum(
-                self._tier_value(obsid, r, tier) for obsid, r in self._by_obsid.items()
-            )
-            below += weights[tier] * tier_total
-        if not weights:
-            return {}
-        top = weights[max(self._tiers)]
-        return {tier: weight / top for tier, weight in weights.items()}
-
-    def _tier_value(self, obsid: int, request: _Request, tier: int) -> float:
-        """Most the request's science can be worth in ``tier``.
-
-        All its exposure in its own tier, and its allocated time, at its
-        greater worth, in its allocated tier (see ``allocation_strictness``).
-        """
-        bound = self._value_bound(request)
-        worth = 0.0
-        if tier == request.merit.tier:
-            worth += bound * self._initial_remaining[obsid]
-        if tier == request.merit.tier + self._allocated_offset and self.allocated:
-            allocated = sum(span.seconds for span in self.allocated.get(obsid, []))
-            seconds = min(self._initial_remaining[obsid], allocated)
-            worth += bound * self._allocated_factor * seconds
-        return worth
-
-    def _value_bound(self, request: _Request) -> float:
-        """Most a second of the request's science can be worth."""
-        if request.category.time_share is None:
-            return request.steady_value
-        return request.steady_value + self._deficit_weight
 
     def _slews(self, tasks: Sequence[_Task]) -> np.ndarray:
         """Seconds of the scheduled slew from each task to each other task."""

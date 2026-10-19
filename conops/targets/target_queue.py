@@ -8,7 +8,6 @@ from pydantic import BaseModel, ConfigDict
 
 from ..common import unixtime2date
 from ..config import (
-    AllocationStrictness,
     AttitudeControlSystem,
     Constraint,
     MissionConfig,
@@ -43,18 +42,11 @@ class TargetQueue:
     config: MissionConfig | None
     random_seed: int
     prefer: Callable[[int], bool] | None
-    """Returns, for an obsid, whether to choose it ahead of the other targets,
-    such as those a long-range allocation assigns to now; how far ahead
-    follows ``allocation_strictness``. None (the default) treats all targets
-    alike."""
-    allocation_strictness: AllocationStrictness
-    """How preferred targets rank against the others: ``strict`` (the
-    default) ahead of all of them, whatever their tier; ``tier`` ahead of the
-    others in their tier; ``weighted`` in their tier, with
-    ``allocation_bonus`` of their value added."""
+    """Returns, for an obsid, whether to favour it, such as a target a
+    long-range allocation assigns to now. None (the default) treats all
+    targets alike."""
     allocation_bonus: float
-    """Fraction of a preferred target's value added with ``weighted``
-    strictness."""
+    """Fraction of its value a preferred target gains."""
 
     def __init__(
         self,
@@ -85,30 +77,11 @@ class TargetQueue:
         self.random_seed = config.random_seed if config.random_seed is not None else 0
         self.merit_model = MeritModel(config)
         self.prefer = None
-        self.allocation_strictness = "strict"
         self.allocation_bonus = 0.5
-        self._tier_span = 1
-        """Tiers from the lowest to the highest among the targets."""
-
-    def _level(self, target: Pointing) -> int:
-        """Rank that selection compares before merit: the tier, and preferred
-        targets ahead of the others as ``allocation_strictness`` says."""
-        tier = self.merit_model.tier(target)
-        if self.prefer is None or self.allocation_strictness == "weighted":
-            return tier
-        preferred = int(self.prefer(int(target.obsid)))
-        if self.allocation_strictness == "tier":
-            return 2 * tier + preferred
-        # Strict: above every target that is not preferred, in tier order.
-        return tier + self._tier_span * preferred
 
     def _bonus(self, target: Pointing) -> float:
         """Fraction of its value a target gains for being preferred."""
-        if (
-            self.prefer is None
-            or self.allocation_strictness != "weighted"
-            or not self.prefer(int(target.obsid))
-        ):
+        if self.prefer is None or not self.prefer(int(target.obsid)):
             return 0.0
         return self.allocation_bonus
 
@@ -199,11 +172,8 @@ class TargetQueue:
                 target.merit = -900
                 continue
 
-        tiers = [self.merit_model.tier(target) for target in self.targets]
-        self._tier_span = max(tiers) - min(tiers) + 1 if tiers else 1
         self.targets.sort(
             key=lambda target: (
-                self._level(target),
                 target.merit * (1.0 + self._bonus(target)),
                 self._target_tie_breaker(target),
             ),
@@ -433,7 +403,7 @@ class TargetQueue:
             print(msg)
         best_target = None
         best_breakdown: MeritBreakdown | None = None
-        best_rank: tuple[int, float] = (np.iinfo(np.int64).min, -np.inf)
+        best_score = -np.inf
         last_unix = self.ephem.timestamp[-1].timestamp()
         prune_by_score_bound = (
             score_candidates and self._score_upper_bound_pruning_is_safe()
@@ -453,7 +423,7 @@ class TargetQueue:
                     utime=utime,
                     last_unix=last_unix,
                 )
-                if (self._level(target), upper_bound) <= best_rank:
+                if upper_bound <= best_score:
                     continue
 
             if not self._can_fit_min_snapshot_with_zero_slew(
@@ -523,7 +493,7 @@ class TargetQueue:
                 if bonus:
                     value = value.model_copy(update={"allocation": bonus * value.value})
                 # If nothing beyond merit order matters, return the first
-                # visible target in tier and merit order (fast path)
+                # visible target in merit order (fast path)
                 if not score_candidates:
                     self._select(target, value)
                     return target
@@ -585,9 +555,8 @@ class TargetQueue:
                         "radiator": radiator,
                     }
                 )
-                rank = (self._level(target), breakdown.score)
-                if rank > best_rank:
-                    best_rank = rank
+                if breakdown.score > best_score:
+                    best_score = breakdown.score
                     best_target = target
                     best_breakdown = breakdown
 

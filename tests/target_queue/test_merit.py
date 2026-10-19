@@ -22,7 +22,7 @@ def _config(**weights: float) -> MissionConfig:
     config.observation_categories = ObservationCategories(
         categories=[
             ObservationCategory(
-                name="ToO", obsid_min=1000, obsid_max=2000, tier=2, program="Rapid"
+                name="ToO", obsid_min=1000, obsid_max=2000, program="Rapid"
             ),
             ObservationCategory(
                 name="Monitor",
@@ -46,7 +46,6 @@ def _target(obsid: int = 5000, merit: float = 10.0, **fields: object) -> Pointin
 class TestMeritBreakdown:
     def test_value_and_score_sum_their_terms(self) -> None:
         breakdown = MeritBreakdown(
-            tier=1,
             base=10.0,
             urgency=2.0,
             cadence=1.0,
@@ -59,29 +58,21 @@ class TestMeritBreakdown:
 
         assert breakdown.value == pytest.approx(12.5)
         assert breakdown.score == pytest.approx(12.25)
-        assert breakdown.rank == (1, pytest.approx(12.25))
-        assert breakdown.value_rank == (1, pytest.approx(12.5))
-
-    def test_tier_outranks_any_score(self) -> None:
-        low_tier = MeritBreakdown(tier=0, base=1e9)
-        high_tier = MeritBreakdown(tier=1, base=-1e9)
-
-        assert high_tier.rank > low_tier.rank
 
     def test_describe_lists_nonzero_terms_only(self) -> None:
-        text = MeritBreakdown(tier=0, base=10.0, urgency=2.5).describe()
+        text = MeritBreakdown(base=10.0, urgency=2.5).describe()
 
         assert "urgency=+2.500" in text
         assert "cadence" not in text
         assert "value=12.500" in text
 
 
-class TestTier:
-    def test_tier_comes_from_category(self) -> None:
-        model = MeritModel(_config())
-
-        assert model.tier(_target(obsid=1500)) == 2
-        assert model.tier(_target(obsid=5000)) == 0
+class TestNoTiers:
+    def test_a_category_with_a_tier_is_rejected(self) -> None:
+        """Tiers were removed: a configuration that sets one fails to load
+        rather than silently losing its ranking."""
+        with pytest.raises(ValidationError, match="tier"):
+            ObservationCategory(name="Cal", obsid_min=1, obsid_max=2, tier=1)
 
 
 class TestZeroWeights:
