@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 import matplotlib
 from matplotlib.figure import Figure
@@ -282,7 +282,13 @@ class TestDITLMixin:
         ditl._process_data_management(
             1000.0, ACSMode.SCIENCE, 60, collection_seconds=60
         )
-        ditl.payload.data_generated.assert_called_with(60)
+        ditl.config.data_generated.assert_called_with(
+            ANY,
+            mode=ACSMode.SCIENCE,
+            collection_seconds=60,
+            observations=0,
+            science=None,
+        )
 
     def test_process_data_management_science_mode_calls_add_data(
         self, ditl_with_payload_and_recorder: DITLMixin
@@ -296,17 +302,16 @@ class TestDITLMixin:
         )
         ditl.recorder.add_data.assert_called_with(0.1)
 
-    def test_process_data_management_pass_mode_data_gen_zero(
+    def test_process_data_management_pass_mode_collects_no_science(
         self, ditl_with_pass_setup: DITLMixin
     ) -> None:
-        """_process_data_management in PASS mode should have zero data generation."""
+        """_process_data_management in PASS mode generates only housekeeping data."""
         ditl = ditl_with_pass_setup
         from conops.common.enums import ACSMode
 
-        data_gen, data_dl = ditl._process_data_management(
-            1000.0, ACSMode.PASS, 60, collection_seconds=0
-        )
-        assert data_gen == 0.0
+        ditl._process_data_management(1000.0, ACSMode.PASS, 60, collection_seconds=0)
+        assert ditl.config.data_generated.call_args.kwargs["collection_seconds"] == 0
+        assert ditl.config.data_generated.call_args.kwargs["mode"] == ACSMode.PASS
 
     def test_process_data_management_pass_mode_data_dl(
         self, ditl_with_pass_setup: DITLMixin
@@ -333,7 +338,7 @@ class TestDITLMixin:
     def test_process_data_management_other_modes_data_gen_zero(
         self, ditl_instance: tuple[DITLMixin, Mock, Mock]
     ) -> None:
-        """_process_data_management in other modes should have zero data generation."""
+        """_process_data_management records what the configuration generates."""
         ditl, _, _ = ditl_instance
         from conops.common.enums import ACSMode
 
@@ -341,6 +346,7 @@ class TestDITLMixin:
             1000.0, ACSMode.SLEWING, 60, collection_seconds=0
         )
         assert data_gen == 0.0
+        ditl.recorder.add_data.assert_not_called()
 
     def test_process_data_management_other_modes_data_dl_zero(
         self, ditl_instance: tuple[DITLMixin, Mock, Mock]

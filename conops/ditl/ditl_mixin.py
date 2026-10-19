@@ -74,6 +74,7 @@ class DITLMixin:
     """Shared initialization, plotting, and data-management logic for DITL simulations."""
 
     ppt: PlanEntry | None
+    _data_observation: tuple[int, float] | None
     ra: list[float]
     dec: list[float]
     roll: list[float]
@@ -190,6 +191,8 @@ class DITLMixin:
 
         # Current target
         self.ppt = None
+        # Observation whose per-observation data has been generated
+        self._data_observation = None
 
         # Initialize common subsystems (can be overridden by subclasses)
         self._init_subsystems()
@@ -214,6 +217,7 @@ class DITLMixin:
             self.acs.ra, self.acs.dec, self.acs.roll = ra, dec, roll
             self.acs._hold_idle_attitude(ra, dec, roll, self.begin.timestamp())
             self.ppt = None
+            self._data_observation = None
             self.telemetry = Telemetry()
             self.executed_passes = PassTimes(config=self.config)
             # Do not concatenate samples from separate runs (possibly covering
@@ -642,12 +646,28 @@ class DITLMixin:
         Returns:
             Tuple of (data_generated, data_downlinked) in Gb for this timestep.
         """
-        data_generated = 0.0
         data_downlinked = 0.0
 
-        # ACS science pointing can include payload setup and cleanup.
-        if collection_seconds > 0:
-            data_generated = self.payload.data_generated(collection_seconds)
+        # Housekeeping data for the whole step, and science data for the time
+        # collected, which can be less: ACS science pointing can include
+        # payload setup and cleanup.
+        observations = 0
+        science = None
+        if collection_seconds > 0 and self.ppt is not None:
+            science = self.ppt.science_data
+            # Per-observation data comes once, when an observation first collects.
+            observation = (id(self.ppt), float(self.ppt.begin))
+            if observation != self._data_observation:
+                self._data_observation = observation
+                observations = 1
+        data_generated = self.config.data_generated(
+            max(0.0, min(utime + step_size, self.uend) - utime),
+            mode=mode,
+            collection_seconds=collection_seconds,
+            observations=observations,
+            science=science,
+        )
+        if data_generated > 0:
             self.recorder.add_data(data_generated)
 
         # Downlink data during PASS mode, once ACS has acquired the contact:

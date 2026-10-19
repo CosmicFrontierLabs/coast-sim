@@ -1,5 +1,5 @@
 import hashlib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import cast
 
 import numpy as np
@@ -7,7 +7,7 @@ import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
 from ..common import unixtime2date
-from ..config import AttitudeControlSystem, Constraint, MissionConfig
+from ..config import AttitudeControlSystem, Constraint, MissionConfig, ScienceData
 from ..config.acs import scheduled_slew_time
 from ..ditl.ditl_log import DITLLog
 from . import Pointing
@@ -89,6 +89,7 @@ class TargetQueue:
         instrument_name: str | None = None,
         deadline: float | None = None,
         earliest_start: float | None = None,
+        science_data: Mapping[str, ScienceData] | None = None,
     ) -> Pointing:
         """Add a pointing target to the queue.
 
@@ -107,6 +108,8 @@ class TargetQueue:
             deadline: Latest time (Unix seconds) science collection may begin
             earliest_start: Earliest time (Unix seconds) science collection
                 may begin
+            science_data: Science data observing the target generates, keyed
+                by instrument name; other instruments generate their own
 
         Returns:
             The added target.
@@ -126,6 +129,7 @@ class TargetQueue:
             instrument_name=telescope.name if telescope is not None else None,
             deadline=deadline,
             earliest_start=earliest_start,
+            science_data=dict(science_data or {}),
         )
         pointing.exptime = exptime
         pointing.visibility()

@@ -1,4 +1,5 @@
 from bisect import bisect_left
+from collections.abc import Mapping
 from copy import copy, deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -8,7 +9,7 @@ from typing import Protocol, TypedDict
 import numpy as np
 import numpy.typing as npt
 import rust_ephem
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..common import (
     ACSMode,
@@ -22,7 +23,12 @@ from ..common import (
 from ..common.enums import ACSCommandType, SlewAlgorithm
 from ..common.ephemeris import position_vectors
 from ..common.vector import attitude_to_quat, quaternion_attitude_delta
-from ..config import DAY_SECONDS, AttitudeConstraintScope, MissionConfig
+from ..config import (
+    DAY_SECONDS,
+    AttitudeConstraintScope,
+    MissionConfig,
+    ScienceData,
+)
 from ..config.acs import scheduled_slew_time
 from ..config.constraint import (
     all_attitude_constraint_name,
@@ -91,6 +97,8 @@ class TOORequest(BaseModel):
         deadline: Latest Unix time science collection may begin, or None for
             no deadline. Urgency rises as it approaches, and the TOO cannot be
             selected after it.
+        science_data: Science data observing the TOO generates, keyed by
+            instrument name; other instruments generate their own.
         executed: Whether this TOO has been dispatched as the current
             observation
     """
@@ -103,6 +111,7 @@ class TOORequest(BaseModel):
     name: str
     submit_time: float = 0.0
     deadline: float | None = None
+    science_data: dict[str, ScienceData] = Field(default_factory=dict)
     executed: bool = False
 
 
@@ -281,6 +290,7 @@ class QueueDITL(DITLMixin, DITLStats):
         name: str,
         submit_time: float | datetime | None = None,
         deadline: float | datetime | None = None,
+        science_data: Mapping[str, ScienceData] | None = None,
     ) -> TOORequest:
         """Submit a Target of Opportunity (TOO) request.
 
@@ -303,6 +313,8 @@ class QueueDITL(DITLMixin, DITLStats):
                 datetime. None means active from the start of the simulation.
             deadline: Latest time science collection may begin, as a Unix
                 timestamp or a datetime. None means no deadline.
+            science_data: Science data observing the TOO generates, keyed by
+                instrument name; other instruments generate their own.
 
         Returns:
             The created TOORequest object
@@ -342,6 +354,7 @@ class QueueDITL(DITLMixin, DITLStats):
             if submit_time is not None
             else 0.0,
             deadline=self._unix_time(deadline) if deadline is not None else None,
+            science_data=dict(science_data or {}),
             executed=False,
         )
         self.too_register.append(too)
@@ -368,6 +381,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 merit=too.merit,
                 exptime=too.exptime,
                 deadline=too.deadline,
+                science_data=too.science_data,
             )
             self._too_targets[id(too)] = target
             self.log.log_event(

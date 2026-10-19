@@ -313,7 +313,7 @@ The :class:`~conops.config.SpacecraftBus` defines the spacecraft bus subsystems.
 * ``attitude_control`` (:class:`~conops.config.AttitudeControlSystem`): ACS configuration
 * ``communications`` (:class:`~conops.config.CommunicationsSystem`): Optional comms system
 * ``heater`` (:class:`~conops.config.Heater`): Optional thermal heater
-* ``data_generation`` (:class:`~conops.config.DataGeneration`): Bus-level data generation
+* ``data_generation`` (:class:`~conops.config.HousekeepingData`): Data the bus generates at all times, such as housekeeping, by ACS mode; see :doc:`data_management`
 * ``star_trackers`` (:class:`~conops.config.StarTrackerConfiguration`): Optional star tracker configuration
 * ``radiators`` (:class:`~conops.config.RadiatorConfiguration`): Optional body-mounted radiator configuration
 
@@ -1006,7 +1006,7 @@ The :class:`~conops.config.Payload` contains the science instruments.
 * ``name`` (str): Instrument identifier
 * ``power_draw`` (:class:`~conops.config.PowerDraw`): Power consumption
 * ``heater`` (:class:`~conops.config.Heater`): Optional thermal heater
-* ``data_generation`` (:class:`~conops.config.DataGeneration`): Data output characteristics
+* ``data_generation`` (:class:`~conops.config.DataGeneration`): Science data the instrument generates while collecting, and its housekeeping data; targets can set their own science data for it by its ``name``. See :doc:`data_management`
 
 .. code-block:: python
 
@@ -1022,7 +1022,7 @@ The :class:`~conops.config.Payload` contains the science instruments.
                    power_mode={0: 120.0, 1: 80.0},
                ),
                data_generation=DataGeneration(
-                   rate_gbps=0.001,  # 1 Mbps continuous
+                   rate_gbps=0.001,  # 1 Mbps while collecting
                ),
            ),
            Instrument(

@@ -8,6 +8,7 @@ from conops.config import (
     AttitudeControlSystem,
     DataGeneration,
     GroundStationRegistry,
+    HousekeepingData,
     Instrument,
     MissionConfig,
     ObservationTiming,
@@ -189,11 +190,11 @@ def test_replay_with_slew_before_visible_arrives_as_the_target_rises(monkeypatch
     )
 
     assert ditl.calc()
-    (slew,) = [
+    (slew,) = (
         c.slew
         for c in ditl.acs.executed_commands
         if c.slew is not None and c.slew.obsid == 7
-    ]
+    )
     assert slew.slewstart < rises
     assert slew.slewstart + slew.slewtime == pytest.approx(rises, abs=60)
 
@@ -267,3 +268,37 @@ def test_queue_plan_replays_identically_through_plan_driven_ditl(monkeypatch):
         hk.collection_seconds for hk in queue.telemetry.housekeeping
     ]
     assert replay.validate_plan_matches_execution() == []
+
+
+def test_plan_generates_housekeeping_science_and_per_observation_data(monkeypatch):
+    constructor = scenario.QueueDITL
+    simulations = []
+
+    def simulation_with_data(**kwargs):
+        config = kwargs["config"]
+        config.payload.instruments = [
+            Instrument(
+                data_generation=DataGeneration(rate_gbps=0.001, per_observation_gb=0.5)
+            )
+        ]
+        config.spacecraft_bus.data_generation = HousekeepingData(
+            housekeeping_rate_gbps=0.0001
+        )
+        ditl = constructor(**kwargs)
+        simulations.append(ditl)
+        return ditl
+
+    monkeypatch.setattr(scenario, "QueueDITL", simulation_with_data)
+    scenario.build_default_plan_payload()
+    ditl = simulations[0]
+    observations = [
+        entry
+        for entry in ditl.plan
+        if entry.collection_begin is not None
+        and entry.collection_end > entry.collection_begin
+    ]
+    collected = sum(hk.collection_seconds for hk in ditl.telemetry.housekeeping)
+    assert len(observations) > 1
+    assert ditl.data_generated_gb[-1] == pytest.approx(
+        0.0001 * (ditl.uend - ditl.ustart) + 0.001 * collected + 0.5 * len(observations)
+    )

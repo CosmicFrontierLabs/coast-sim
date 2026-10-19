@@ -49,13 +49,12 @@ class TestDataGeneration:
         data = data_gen.data_generated(120)
         assert data == 5.0
 
-    def test_data_generated_per_observation_takes_precedence(self):
-        """Test that per_observation_gb takes precedence over rate_gbps."""
+    def test_data_generated_adds_per_observation_to_rate(self):
+        """An observation generates its fixed data and its rate for its length."""
         data_gen = DataGeneration(rate_gbps=0.1, per_observation_gb=5.0)
 
-        # Should use per_observation_gb, not rate_gbps
         data = data_gen.data_generated(60)
-        assert data == 5.0
+        assert data == pytest.approx(11.0)
 
     def test_data_generated_zero(self):
         """Test data generation with no configuration."""

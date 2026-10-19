@@ -31,7 +31,7 @@ from conops import (
     TOORequest,
 )
 from conops.common.enums import ObsType
-from conops.config import Payload, Telescope
+from conops.config import Instrument, Payload, ScienceData, Telescope
 from conops.config.config import MissionConfig
 from conops.ditl.telemetry import Housekeeping
 from conops.simulation.acs import IDLE_OBSID
@@ -5962,6 +5962,7 @@ class TestTOOFunctionality:
             merit: float,
             exptime: int,
             deadline: float | None = None,
+            science_data: dict[str, ScienceData] | None = None,
         ) -> Pointing:
             target = Pointing(
                 config=queue_ditl.config,
@@ -5972,6 +5973,7 @@ class TestTOOFunctionality:
                 fom=merit,
                 merit=merit,
                 deadline=deadline,
+                science_data=science_data or {},
             )
             target.exptime = exptime
             created.append(target)
@@ -6014,7 +6016,28 @@ class TestTOOFunctionality:
             merit=10000.0,
             exptime=3600,
             deadline=5000.0,
+            science_data={},
         )
+
+    def test_queued_too_carries_its_science_data(
+        self, mock_pointing_visibility, queue_ditl, queued_targets
+    ) -> None:
+        """What observing the TOO generates reaches the queued target."""
+        queue_ditl.config.payload.instruments = [Instrument(name="camera")]
+        science = {"camera": ScienceData(rate_gbps=0.2)}
+        queue_ditl.submit_too(
+            obsid=1000001,
+            ra=180.0,
+            dec=45.0,
+            merit=10000.0,
+            exptime=3600,
+            name="Successful TOO",
+            science_data=science,
+        )
+
+        queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
+
+        assert [target.science_data for target in queued_targets] == [science]
 
     def test_check_too_interrupt_merit_too_low(
         self, mock_too_interrupt_success, queue_ditl, queued_targets
@@ -6315,6 +6338,7 @@ class TestTOOFunctionality:
             "name": "Test TOO",
             "submit_time": 1234567890.0,
             "deadline": None,
+            "science_data": {},
             "executed": True,
         }
         assert data == expected

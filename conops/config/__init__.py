@@ -8,7 +8,7 @@ from .communications import (
 from .config import MissionConfig
 from .constants import DAY_SECONDS, DTOR
 from .constraint import AttitudeConstraintScope, Constraint, DefaultConstraint
-from .data_generator import DataGeneration
+from .data_generator import DataGeneration, HousekeepingData, ScienceData
 from .fault_management import (
     FaultConstraint,
     FaultEvent,
@@ -78,7 +78,9 @@ __all__ = [
     "SchedulerMode",
     "Constraint",
     "DefaultConstraint",
+    "HousekeepingData",
     "DataGeneration",
+    "ScienceData",
     "FaultConstraint",
     "FaultEvent",
     "FaultManagement",

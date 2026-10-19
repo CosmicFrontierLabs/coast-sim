@@ -27,7 +27,13 @@ from ..common.vector import (
     quat_to_attitude,
     quaternion_attitude_delta,
 )
-from ..config import AttitudeControlSystem, Constraint, MissionConfig, Telescope
+from ..config import (
+    AttitudeControlSystem,
+    Constraint,
+    MissionConfig,
+    ScienceData,
+    Telescope,
+)
 from ..config.acs import scheduled_slew_time
 from ..config.constraint import (
     attitude_constraint_names_for_scopes,
@@ -120,6 +126,14 @@ class PlanEntry(BaseModel):
     ephem: rust_ephem.Ephemeris | None = Field(default=None, exclude=True)
     name: str = ""
     instrument_name: str | None = None
+    science_data: dict[str, ScienceData] = Field(
+        default_factory=dict,
+        exclude_if=lambda v: not v,
+        description=(
+            "Science data observing this target generates, keyed by instrument "
+            "name; instruments not named generate their configured science data"
+        ),
+    )
     ra: float = 0.0
     dec: float = 0.0
     roll: float = -1.0
@@ -197,6 +211,14 @@ class PlanEntry(BaseModel):
         """Populate constraint/ephem/acs_config from config, when not already set."""
         if self.config is None:
             return self
+        if self.science_data:
+            unknown = set(self.science_data) - {
+                instrument.name for instrument in self.config.payload.instruments
+            }
+            if unknown:
+                raise ValueError(
+                    f"science data for unconfigured instruments: {sorted(unknown)}"
+                )
         if self.constraint is None:
             self.constraint = self.config.constraint
         assert self.constraint is not None, "Constraint must be set for PlanEntry class"

@@ -16,7 +16,7 @@ Overview
 The data management system consists of three main components:
 
 1. **OnboardRecorder**: Simulates the spacecraft's solid-state recorder (SSR) or data storage device
-2. **DataGeneration**: Models how instruments produce data during observations
+2. **DataGeneration**: Models how the bus and each instrument produce data, and how targets change it
 3. **Downlink Operations**: Simulates data transfer during ground station passes
 
 These components work together seamlessly in DITL simulations to track data flow throughout
@@ -91,67 +91,124 @@ During ground station passes, data is removed from the recorder to simulate down
 DataGeneration
 --------------
 
-The :class:`~conops.config.instrument.DataGeneration` class models how instruments
-produce data. It supports two generation modes:
+Data comes in two kinds:
 
-Rate-Based Generation
-~~~~~~~~~~~~~~~~~~~~~
+* **Housekeeping data**, at all times: ``housekeeping_rate_gbps``, the engineering
+  telemetry (temperatures, voltages, attitude, status) generated whatever is
+  observed. ``housekeeping_rate_mode`` sets a different rate in
+  particular ACS modes, given by name or number, the way
+  :class:`~conops.config.PowerDraw` sets power by mode.
+* **Science data**, only while science is collected: ``rate_gbps`` for every second
+  collected, plus ``per_observation_gb`` once for each observation, such as
+  calibration frames or headers. A target can set its own for each instrument.
 
-Instruments generate data continuously at a specified rate in Gigabits per second (Gbps).
-This is appropriate for instruments like cameras or spectrometers that produce continuous
-data streams.
+The spacecraft bus generates housekeeping data only, set by its
+:class:`~conops.config.HousekeepingData`. Each instrument has a
+:class:`~conops.config.DataGeneration`, which generates both.
 
 .. code-block:: python
 
-   from conops.config import DataGeneration, Instrument
-
-   # Camera generating 0.5 Gbps continuously
-   camera_data = DataGeneration(rate_gbps=0.5)
-
-   camera = Instrument(
-       name="High-Resolution Camera",
-       data_generation=camera_data
+   from conops.config import (
+       HousekeepingData,
+       DataGeneration,
+       Instrument,
+       MissionConfig,
+       Payload,
+       SpacecraftBus,
    )
 
-   # Calculate data generated over 60 seconds
-   data = camera.data_generation.data_generated(60)  # Returns 30.0 Gb
-
-Per-Observation Generation
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Instruments generate a fixed amount of data per observation, regardless of duration.
-This is appropriate for instruments that capture discrete snapshots or measurements.
-
-.. code-block:: python
-
-   # Spectrometer generating 5 Gb per observation
-   spec_data = DataGeneration(per_observation_gb=5.0)
-
-   spectrometer = Instrument(
-       name="X-ray Spectrometer",
-       data_generation=spec_data
+   config = MissionConfig(
+       spacecraft_bus=SpacecraftBus(
+           # 1 Mbps of housekeeping, 4 Mbps of diagnostics in safe mode
+           data_generation=HousekeepingData(
+               housekeeping_rate_gbps=0.001,
+               housekeeping_rate_mode={"SAFE": 0.004},
+           ),
+       ),
+       payload=Payload(
+           instruments=[
+               # 0.5 Gbps while collecting, and its own housekeeping
+               Instrument(
+                   name="camera",
+                   data_generation=DataGeneration(
+                       rate_gbps=0.5, housekeeping_rate_gbps=0.0002
+                   ),
+               ),
+               # 5 Gb for each observation, whatever its length; off in SAA
+               Instrument(
+                   name="spectrometer",
+                   data_generation=DataGeneration(
+                       per_observation_gb=5.0,
+                       housekeeping_rate_gbps=0.0001,
+                       housekeeping_rate_mode={"SAA": 0.0},
+                   ),
+               ),
+           ]
+       ),
    )
 
-   # Returns 5.0 Gb regardless of duration
-   data = spectrometer.data_generation.data_generated(60)
-
-Payload-Level Data Rates
-~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The :class:`~conops.config.instrument.Payload` class aggregates data generation
-across all instruments:
+Each generator computes its own data with its ``data_generated`` method. For an
+instrument, with only a duration, it is one observation collecting for all of it:
 
 .. code-block:: python
 
-   from conops.config import Payload
+   camera = config.payload.instruments[0]
+   camera.data_generation.data_generated(60)  # 0.5 * 60 + 0.0002 * 60 = 30.012 Gb
 
-   payload = Payload(instruments=[camera, spectrometer])
+:meth:`Payload.data_generated <conops.config.Payload.data_generated>`,
+:meth:`SpacecraftBus.data_generated <conops.config.SpacecraftBus.data_generated>` and
+:meth:`MissionConfig.data_generated <conops.config.MissionConfig.data_generated>` sum
+what their generators produce over an interval, given the ACS mode, the seconds
+collected and the observations that began in it:
 
-   # Get total data rate across all instruments
-   total_rate = payload.total_data_rate_gbps()  # 0.5 Gbps from camera
+.. code-block:: python
 
-   # Calculate total data generated over a period
-   total_data = payload.data_generated(60)  # Camera: 30 Gb + Spec: 5 Gb = 35 Gb
+   from conops.common.enums import ACSMode
+
+   # A 60 s step in which a new observation collected for 45 s
+   config.data_generated(
+       60, mode=ACSMode.SCIENCE, collection_seconds=45, observations=1
+   )
+
+Target Science Data
+~~~~~~~~~~~~~~~~~~~
+
+What an observation generates depends on what is observed: a bright source fills a
+photon-counting detector faster than a faint one. A target's ``science_data`` sets,
+for each instrument by name, the :class:`~conops.config.ScienceData` that instrument
+generates while observing it, replacing the instrument's ``rate_gbps`` and
+``per_observation_gb``. Instruments it does not name generate their own, and
+housekeeping data is unchanged.
+
+.. code-block:: python
+
+   from conops.config import ScienceData
+
+   queue.add(
+       ra=83.63,
+       dec=22.01,
+       obsid=1001,
+       name="Crab",
+       science_data={
+           "camera": ScienceData(rate_gbps=1.2),
+           "spectrometer": ScienceData(per_observation_gb=12.0),
+       },
+   )
+
+   ditl.submit_too(
+       obsid=2001, ra=180.0, dec=45.0, merit=10000.0, exptime=3600,
+       name="GRB 250101A",
+       science_data={"camera": ScienceData(rate_gbps=2.0)},
+   )
+
+Schedulers copy a target's ``science_data`` onto its plan entries, and it is saved
+with the plan. A name that matches no configured instrument is an error when the
+target is created with a configuration.
+
+In a DITL simulation, each step generates housekeeping data for the whole step, in the
+step's ACS mode, and science data for the seconds collected, at the observed target's
+rates. Per-observation data is generated once, in the step an observation first
+collects; a later visit to the same target is a new observation.
 
 Downlink Operations
 -------------------

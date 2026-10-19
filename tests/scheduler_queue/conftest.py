@@ -183,7 +183,11 @@ def mock_config() -> Mock:
     config.payload = Mock()
     config.payload.observation_timing = ObservationTiming()
     config.payload.power = Mock(return_value=30.0)
-    config.payload.data_generated = Mock(return_value=1.0)
+    config.data_generated = Mock(
+        side_effect=lambda seconds, *, collection_seconds, **_: (
+            1.0 if collection_seconds > 0 else 0.0
+        )
+    )
 
     # Mock solar panel
     config.solar_panel = Mock()

@@ -63,8 +63,8 @@
             }
         },
         "data_generation": {
-            "rate_gbps": 0.0,
-            "per_observation_gb": 0.0
+            "housekeeping_rate_gbps": 0.0,
+            "housekeeping_rate_mode": {}
         },
         "star_trackers": {
             "star_trackers": [
