@@ -199,6 +199,14 @@ peak:
   during contacts, since the plan does not know when the spacecraft will be in
   other modes.
 
+The arithmetic is not particular to the recorder. Anything a spacecraft
+accumulates between the events that remove it, and must keep within a limit
+meanwhile, has the same shape: stored momentum builds up until a dump unloads it,
+for instance. :class:`~conops.schedulers.ConsumableLedger` holds that arithmetic
+(segments between removals, accrual, removals that take no more than is there,
+and the check at every later peak), and
+:class:`~conops.schedulers.RecorderLedger` maps the recorder onto it.
+
 A snapshot is placed only where every peak from its segment onwards stays within
 the limit. It is never shortened to fit: a snapshot that does not fit before a
 contact is placed after one, or not at all, and the log says so. The priority-first

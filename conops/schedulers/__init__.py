@@ -1,4 +1,5 @@
 from .allocator import AllocatedTime, Allocation, LongRangeAllocator
+from .consumable import ConsumableLedger
 from .context import SchedulingContext
 from .cpsat_scheduler import CpSatScheduler
 from .local_search_scheduler import LocalSearchScheduler
@@ -14,6 +15,7 @@ __all__ = [
     "SCHEDULERS",
     "AllocatedTime",
     "Allocation",
+    "ConsumableLedger",
     "CpSatScheduler",
     "DispatchPolicy",
     "DumbQueueScheduler",

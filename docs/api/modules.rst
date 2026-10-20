@@ -46,6 +46,7 @@ Scheduling and Planning
 
    conops.schedulers
    conops.schedulers.allocator
+   conops.schedulers.consumable
    conops.schedulers.context
    conops.schedulers.cpsat_scheduler
    conops.schedulers.local_search_scheduler
