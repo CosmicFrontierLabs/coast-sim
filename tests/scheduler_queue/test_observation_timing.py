@@ -38,14 +38,16 @@ def test_no_collection_in_other_operational_modes(timed_ditl, mode):
 
 
 def test_data_generation_and_remaining_exposure_use_collection_seconds(timed_ditl):
-    timed_ditl.payload.data_generated = Mock(side_effect=lambda seconds: seconds * 0.1)
+    timed_ditl.config.science_generated = Mock(
+        side_effect=lambda collected, science=None: collected * 0.1
+    )
     timed_ditl._handle_data_management(160, ACSMode.SCIENCE)
-    timed_ditl.payload.data_generated.assert_called_once_with(27)
+    timed_ditl.config.science_generated.assert_called_once_with(27, science={})
     assert timed_ditl.ppt.exptime == 168
     assert timed_ditl.data_generated_gb[-1] == pytest.approx(2.7)
-    timed_ditl.payload.data_generated.reset_mock()
     timed_ditl._handle_data_management(388, ACSMode.SCIENCE)
-    timed_ditl.payload.data_generated.assert_not_called()
+    timed_ditl.config.science_generated.assert_called_once()
+    assert timed_ditl.data_generated_gb[-1] == pytest.approx(2.7)
     assert timed_ditl.ppt.exptime == 168
 
 

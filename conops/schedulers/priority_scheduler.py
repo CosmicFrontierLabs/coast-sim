@@ -1220,6 +1220,7 @@ class PriorityScheduler:
             config=self.config,
             name=target.name,
             instrument_name=telescope.name if telescope is not None else None,
+            science_data=target.science_data,
             ra=target.ra,
             dec=target.dec,
             roll=instrument_roll,

@@ -8,10 +8,12 @@ from conops.config import (
     AttitudeControlSystem,
     DataGeneration,
     GroundStationRegistry,
+    HousekeepingData,
     Instrument,
     MissionConfig,
     ObservationTiming,
     RadiatorConfiguration,
+    ScienceData,
     SolarPanelSet,
     SpacecraftBus,
     StarTrackerConfiguration,
@@ -47,7 +49,9 @@ def test_budgeted_plan_matches_fractional_collection_and_data(monkeypatch, budge
             handoff_seconds=budgets[2],
         )
         payload.instruments = [
-            Instrument(data_generation=DataGeneration(rate_gbps=0.001))
+            Instrument(
+                data_generation=DataGeneration(science=ScienceData(rate_gbps=0.001))
+            )
         ]
         ditl = constructor(**kwargs)
         simulations.append(ditl)
@@ -91,7 +95,7 @@ def test_replay_with_real_acs_does_not_collect_during_a_longer_than_planned_slew
         ),
     )
     config.payload.instruments = [
-        Instrument(data_generation=DataGeneration(rate_gbps=0.01))
+        Instrument(data_generation=DataGeneration(science=ScienceData(rate_gbps=0.01)))
     ]
     begin = scenario.SCENARIO_BEGIN
     end = begin + timedelta(seconds=120)
@@ -189,11 +193,11 @@ def test_replay_with_slew_before_visible_arrives_as_the_target_rises(monkeypatch
     )
 
     assert ditl.calc()
-    (slew,) = [
+    (slew,) = (
         c.slew
         for c in ditl.acs.executed_commands
         if c.slew is not None and c.slew.obsid == 7
-    ]
+    )
     assert slew.slewstart < rises
     assert slew.slewstart + slew.slewtime == pytest.approx(rises, abs=60)
 
@@ -267,3 +271,37 @@ def test_queue_plan_replays_identically_through_plan_driven_ditl(monkeypatch):
         hk.collection_seconds for hk in queue.telemetry.housekeeping
     ]
     assert replay.validate_plan_matches_execution() == []
+
+
+def test_plan_generates_housekeeping_science_and_per_observation_data(monkeypatch):
+    constructor = scenario.QueueDITL
+    simulations = []
+
+    def simulation_with_data(**kwargs):
+        config = kwargs["config"]
+        config.payload.instruments = [
+            Instrument(
+                data_generation=DataGeneration(
+                    science=ScienceData(rate_gbps=0.001, per_observation_gb=0.5)
+                )
+            )
+        ]
+        config.spacecraft_bus.data_generation = HousekeepingData(rate_gbps=0.0001)
+        ditl = constructor(**kwargs)
+        simulations.append(ditl)
+        return ditl
+
+    monkeypatch.setattr(scenario, "QueueDITL", simulation_with_data)
+    scenario.build_default_plan_payload()
+    ditl = simulations[0]
+    observations = [
+        entry
+        for entry in ditl.plan
+        if entry.collection_begin is not None
+        and entry.collection_end > entry.collection_begin
+    ]
+    collected = sum(hk.collection_seconds for hk in ditl.telemetry.housekeeping)
+    assert len(observations) > 1
+    assert ditl.data_generated_gb[-1] == pytest.approx(
+        0.0001 * (ditl.uend - ditl.ustart) + 0.001 * collected + 0.5 * len(observations)
+    )

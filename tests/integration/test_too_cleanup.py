@@ -18,6 +18,7 @@ from conops.config import (
     MissionConfig,
     ObservationTiming,
     RadiatorConfiguration,
+    ScienceData,
     SolarPanelSet,
     SpacecraftBus,
     StarTrackerConfiguration,
@@ -67,7 +68,7 @@ def _simulation(
     )
     config.targets = TargetConfig(urgency_weight=urgency)
     config.payload.instruments = [
-        Instrument(data_generation=DataGeneration(rate_gbps=0.001))
+        Instrument(data_generation=DataGeneration(science=ScienceData(rate_gbps=0.001)))
     ]
     monkeypatch.setattr(
         rust_ephem,

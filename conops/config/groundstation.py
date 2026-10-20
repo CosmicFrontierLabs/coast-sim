@@ -3,7 +3,7 @@ from __future__ import annotations
 from pydantic import Field, field_validator
 
 from ._base import ConfigModel
-from .communications import BandCapability
+from .communications import BandCapability, CommunicationsSystem
 
 
 class GroundStation(ConfigModel):
@@ -63,6 +63,15 @@ class GroundStation(ConfigModel):
             rates = [bc.downlink_rate_mbps for bc in self.bands]
             return max(rates) if rates else 0.0
         return None
+
+    def effective_downlink_rate_mbps(
+        self, communications: CommunicationsSystem | None
+    ) -> float | None:
+        """The downlink rate a spacecraft gets from this station, in Mbps.
+
+        See :func:`effective_downlink_rate_mbps`.
+        """
+        return effective_downlink_rate_mbps(self, communications)
 
     @property
     def supports_downlink(self) -> bool:
@@ -159,3 +168,27 @@ class GroundStationRegistry(ConfigModel):
 
     def schedule_probability_for(self, code: str) -> float:
         return self.get(code).schedule_probability
+
+
+def effective_downlink_rate_mbps(
+    station: GroundStation, communications: CommunicationsSystem | None
+) -> float | None:
+    """The downlink rate a spacecraft gets from a station, in Mbps.
+
+    Per band it is the lower of the station's and the spacecraft's rates; the
+    best band is used. A spacecraft without a communications system gets the
+    station's best rate. None if no band carries a link.
+
+    Args:
+        station: The ground station.
+        communications: The spacecraft's communications system, if any.
+    """
+    if communications is None:
+        return station.get_overall_max_downlink()
+    best = 0.0
+    for band in station.supported_bands():
+        gs_rate = station.get_downlink_rate(band) or 0.0
+        sc_rate = communications.get_downlink_rate(band) or 0.0
+        if gs_rate > 0.0 and sc_rate > 0.0:
+            best = max(best, min(gs_rate, sc_rate))
+    return best if best > 0.0 else None

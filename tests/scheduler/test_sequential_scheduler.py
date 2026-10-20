@@ -5,6 +5,7 @@ from datetime import timedelta
 import pytest
 
 from conops import DITLLog, DumbScheduler, SequentialScheduler
+from conops.config import ScienceData
 
 from .test_priority_scheduler import BEGIN, HOUR, _config, _target
 
@@ -154,3 +155,20 @@ def test_off_grid_horizon_end_does_not_overlap_entries() -> None:
     assert all(e.exposure > 0 for e in plan)
     assert all(a.end <= b.begin for a, b in zip(plan, plan[1:]))
     assert all(e.end <= end.timestamp() for e in plan)
+
+
+def test_entries_carry_the_targets_science_data() -> None:
+    config = _config(6)
+    targets = _targets(config)
+    for target in targets:
+        target.science_data = {
+            "Default Instrument": ScienceData(rate_gbps=0.001 * target.obsid)
+        }
+    by_obsid = {target.obsid: target.science_data for target in targets}
+
+    plan = SequentialScheduler(
+        config, targets, BEGIN, BEGIN + timedelta(hours=3)
+    ).schedule()
+
+    assert len(plan) > 0
+    assert all(e.science_data == by_obsid[e.obsid] for e in plan)

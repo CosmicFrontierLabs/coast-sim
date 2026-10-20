@@ -10,7 +10,7 @@ import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
 from ..common import ObsType
-from ..config import MissionConfig
+from ..config import MissionConfig, ScienceData
 from ..schedulers.context import Attitude, tracking_rest
 from ..schedulers.priority_scheduler import PriorityScheduler, StartState
 from ..simulation.slew import Slew
@@ -180,6 +180,7 @@ class RollingHorizonDITL(DITL):
         name: str,
         submit_time: float | datetime | None = None,
         deadline: float | datetime | None = None,
+        science_data: Mapping[str, ScienceData] | None = None,
     ) -> TOORequest:
         """Submit a Target of Opportunity that joins the target pool when active.
 
@@ -194,6 +195,8 @@ class RollingHorizonDITL(DITL):
                 None means from the start of the simulation.
             deadline: Latest time science collection may begin (Unix time or
                 datetime), or None for no deadline.
+            science_data: Science data observing the ToO generates, keyed by
+                instrument name; other instruments generate their own.
         """
         too = TOORequest(
             obsid=obsid,
@@ -204,6 +207,7 @@ class RollingHorizonDITL(DITL):
             name=name,
             submit_time=_unix_time(submit_time) if submit_time is not None else 0.0,
             deadline=_unix_time(deadline) if deadline is not None else None,
+            science_data=dict(science_data or {}),
         )
         self.too_register.append(too)
         return too
@@ -285,6 +289,7 @@ class RollingHorizonDITL(DITL):
                 ss_min=min(300, too.exptime),
                 ss_max=too.exptime,
                 deadline=too.deadline,
+                science_data=too.science_data,
             )
             target.exptime = too.exptime
             self._too_targets[id(too)] = target

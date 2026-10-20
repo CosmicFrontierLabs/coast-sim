@@ -227,6 +227,7 @@ Configure and simulate onboard data storage, generation, and downlink:
 
    from conops.config import (
        DataGeneration,
+       ScienceData,
        Instrument,
        Payload,
        OnboardRecorder,
@@ -238,13 +239,13 @@ Configure and simulate onboard data storage, generation, and downlink:
    camera = Instrument(
        name="High-Res Camera",
        power_draw=PowerDraw(nominal_power=100),
-       data_generation=DataGeneration(rate_gbps=0.5)  # 0.5 Gbps continuous
+       data_generation=DataGeneration(science=ScienceData(rate_gbps=0.5))  # 0.5 Gbps while collecting
    )
 
    spectrometer = Instrument(
        name="Spectrometer",
        power_draw=PowerDraw(nominal_power=50),
-       data_generation=DataGeneration(per_observation_gb=2.0)  # 2 Gb per obs
+       data_generation=DataGeneration(science=ScienceData(per_observation_gb=2.0))  # 2 Gb per obs
    )
 
    payload = Payload(instruments=[camera, spectrometer])

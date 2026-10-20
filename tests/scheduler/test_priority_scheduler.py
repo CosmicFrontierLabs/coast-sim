@@ -14,6 +14,7 @@ from conops.config import (
     MissionConfig,
     OnboardRecorder,
     Payload,
+    ScienceData,
     TargetConfig,
     Telescope,
 )
@@ -197,6 +198,20 @@ class TestOrdering:
         # placed, B's 1200 s snapshot has moved A to 900 of 2200 seconds.
         a_value = 60 + 100 * (0.5 - 900 / 2200)
         assert [e.merit for e in _science(plan)] == [90.0, pytest.approx(a_value)]
+
+
+class TestScienceData:
+    def test_entries_carry_the_targets_science_data(self) -> None:
+        config = _config(2)
+        target = _target(config, 1, 105.0, 10.0)
+        target.science_data = {"Default Instrument": ScienceData(rate_gbps=0.2)}
+
+        plan = PriorityScheduler(
+            config, [target], BEGIN, BEGIN + timedelta(hours=2)
+        ).schedule()
+
+        assert _science(plan)
+        assert all(e.science_data == target.science_data for e in _science(plan))
 
 
 class TestSnapshots:
@@ -687,7 +702,7 @@ class TestGroundContacts:
             rate_mbps = ditl._get_effective_data_rate(station)
             assert rate_mbps
             seconds = float(entry.contact_end) - float(entry.contact_begin)
-            expected += rate_mbps * seconds / 1000.0 / 8.0
+            expected += rate_mbps * seconds / 1000.0
         assert ditl.data_downlinked_gb[-1] == pytest.approx(expected)
 
     def test_contact_with_no_step_inside_it_is_not_reserved(self) -> None:

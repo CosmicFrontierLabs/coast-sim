@@ -312,6 +312,8 @@ class SequentialScheduler:
         entry.dec = target.dec
         entry.roll = selection.roll
         entry.instrument_name = telescope.name if telescope is not None else None
+        if _is_plan_entry(target):
+            entry.science_data = target.science_data
         entry.spacecraft_attitude = target.spacecraft_attitude
         entry.begin = begin
         entry.slewtime = int(selection.slewtime)

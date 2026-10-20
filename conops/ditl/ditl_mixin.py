@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict
 
 from conops.common.enums import ACSMode
 from conops.common.vector import quaternion_attitude_delta
-from conops.config.groundstation import GroundStation
+from conops.config.groundstation import GroundStation, effective_downlink_rate_mbps
 
 from ..config import FaultManagementRun, MissionConfig, SolarArrayDriveState
 from ..simulation.acs import ACS
@@ -74,6 +74,8 @@ class DITLMixin:
     """Shared initialization, plotting, and data-management logic for DITL simulations."""
 
     ppt: PlanEntry | None
+    _data_observation: tuple[int, float] | None
+    _data_collected: float
     ra: list[float]
     dec: list[float]
     roll: list[float]
@@ -190,6 +192,9 @@ class DITLMixin:
 
         # Current target
         self.ppt = None
+        # The observation whose data is being generated, and its collection so far
+        self._data_observation = None
+        self._data_collected = 0.0
 
         # Initialize common subsystems (can be overridden by subclasses)
         self._init_subsystems()
@@ -214,6 +219,8 @@ class DITLMixin:
             self.acs.ra, self.acs.dec, self.acs.roll = ra, dec, roll
             self.acs._hold_idle_attitude(ra, dec, roll, self.begin.timestamp())
             self.ppt = None
+            self._data_observation = None
+            self._data_collected = 0.0
             self.telemetry = Telemetry()
             self.executed_passes = PassTimes(config=self.config)
             # Do not concatenate samples from separate runs (possibly covering
@@ -642,72 +649,77 @@ class DITLMixin:
         Returns:
             Tuple of (data_generated, data_downlinked) in Gb for this timestep.
         """
-        data_generated = 0.0
         data_downlinked = 0.0
 
-        # ACS science pointing can include payload setup and cleanup.
+        # Housekeeping data for the whole step, in its ACS mode.
+        interval = max(0.0, min(utime + step_size, self.uend) - utime)
+        data_generated = self.config.housekeeping_generated(interval, mode=mode)
+
+        # Science data for the time collected, which can be less than the
+        # step: ACS science pointing can include payload setup and cleanup.
+        # What an observation has generated is its rate for the seconds it
+        # has collected plus its fixed amount, so the step adds the increase.
         if collection_seconds > 0:
-            data_generated = self.payload.data_generated(collection_seconds)
-            self.recorder.add_data(data_generated)
+            science = self.ppt.science_data if self.ppt is not None else None
+            observation = (
+                (id(self.ppt), float(self.ppt.begin)) if self.ppt is not None else None
+            )
+            before = (
+                self._data_collected if observation == self._data_observation else 0.0
+            )
+            after = before + collection_seconds
+            data_generated += self.config.science_generated(after, science=science)
+            if before > 0:
+                data_generated -= self.config.science_generated(before, science=science)
+            self._data_observation = observation
+            self._data_collected = after
 
         # Downlink data during PASS mode, once ACS has acquired the contact:
         # the ingress slew also reports PASS, but carries no link.
         current_pass = self.acs.current_pass
+        contact_start = contact_stop = utime
+        data_to_downlink = 0.0
         if mode == ACSMode.PASS and current_pass is not None:
             # A contact can end partway through a step, and the run can end
             # before the step does; only the time in contact is credited.
             contact_start = max(utime, float(current_pass.begin))
-            contact_stop = min(utime + step_size, float(current_pass.end), self.uend)
-            contact_seconds = max(0.0, contact_stop - contact_start)
+            contact_stop = max(
+                contact_start,
+                min(utime + step_size, float(current_pass.end), self.uend),
+            )
             station = self.config.ground_stations.get(current_pass.station)
 
             # Determine actual data rate based on both ground station and spacecraft capabilities
             effective_rate_mbps = self._get_effective_data_rate(station)
+            if effective_rate_mbps is not None and effective_rate_mbps > 0:
+                # Mbps * seconds = megabits; the recorder counts gigabits.
+                megabits = effective_rate_mbps * (contact_stop - contact_start)
+                data_to_downlink = megabits / 1000.0
 
-            if (
-                contact_seconds > 0
-                and effective_rate_mbps is not None
-                and effective_rate_mbps > 0
-            ):
-                # Convert Mbps to Gb: Mbps * seconds / 1000 / 8 = Gb
-                megabits = effective_rate_mbps * contact_seconds
-                data_to_downlink = megabits / 1000.0 / 8.0  # Convert to Gb
-                data_downlinked = self.recorder.remove_data(data_to_downlink)
+        if data_to_downlink <= 0:
+            if data_generated > 0:
+                self.recorder.add_data(data_generated)
+            return data_generated, data_downlinked
 
+        # Generation runs on through the contact, so the step is taken in
+        # pieces: what is generated before the contact is stored, what is
+        # generated during it meets the downlink at the recorder, and what is
+        # generated after it is stored. The contact never sends data generated
+        # after it ends, and nothing is lost to a full recorder while the link
+        # empties it faster than data arrives.
+        rate = data_generated / interval
+        self.recorder.add_data(rate * (contact_start - utime))
+        data_downlinked = self.recorder.transfer(
+            rate * (contact_stop - contact_start), data_to_downlink
+        )
+        self.recorder.add_data(rate * (utime + interval - contact_stop))
         return data_generated, data_downlinked
 
     def _get_effective_data_rate(self, station: GroundStation) -> float | None:
-        """Calculate effective downlink data rate based on ground station and spacecraft capabilities.
+        """The downlink rate in Mbps the spacecraft gets from ``station``, or None.
 
-        The effective rate is, per band, min(GS downlink rate, SC downlink rate);
-        we take the maximum of this across all common bands.
-
-        Args:
-            station: GroundStation object with antenna capabilities
-
-        Returns:
-            Effective data rate in Mbps, or None if no compatible bands/rates
+        See :func:`~conops.config.groundstation.effective_downlink_rate_mbps`.
         """
-        # If pass has no comms config, use GS overall maximum across bands
-        if self.config.spacecraft_bus.communications is None:
-            return station.get_overall_max_downlink()
-
-        # If GS has no per-band capabilities, no defined rate
-        gs_bands = set(station.supported_bands()) if station.bands else set()
-        if not gs_bands:
-            # No bands defined on ground station
-            return None
-
-        # Compute effective rate per common band
-        best_effective = 0.0
-        for band in gs_bands:
-            gs_rate = station.get_downlink_rate(band) or 0.0
-            sc_rate = (
-                self.config.spacecraft_bus.communications.get_downlink_rate(band) or 0.0
-            )
-            if gs_rate > 0.0 and sc_rate > 0.0:
-                effective = min(gs_rate, sc_rate)
-                if effective > best_effective:
-                    best_effective = effective
-
-        return best_effective if best_effective > 0.0 else None
+        return effective_downlink_rate_mbps(
+            station, self.config.spacecraft_bus.communications
+        )

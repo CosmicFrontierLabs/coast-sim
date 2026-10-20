@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from conops.config import TargetConfig
+from conops.config import ScienceData, TargetConfig
 from conops.config.observation_categories import ObservationCategory
 from conops.ditl import DITLLogStore, ReplanReason, RollingHorizonDITL
 from conops.targets import Pointing
@@ -532,6 +532,30 @@ class TestConsecutiveIntervals:
         assert not any(int(e.obsid) == 1_000_001 for e in ditl.plan)
         assert too.executed
         assert ditl.too_response_times()[1_000_001] == response
+
+
+class TestScienceData:
+    def test_too_science_data_reaches_its_plan_entries(self) -> None:
+        config = _config(2)
+        ditl = RollingHorizonDITL(
+            config, [], begin=BEGIN, end=BEGIN + timedelta(hours=1)
+        )
+        ditl.step_size = 60
+        science = {"Default Instrument": ScienceData(rate_gbps=0.2)}
+        ditl.submit_too(
+            obsid=1_000_001,
+            ra=115.0,
+            dec=10.0,
+            merit=500.0,
+            exptime=600,
+            name="GRB",
+            science_data=science,
+        )
+        assert ditl.calc()
+
+        entries = [e for e in ditl.plan if int(e.obsid) == 1_000_001]
+        assert entries
+        assert all(e.science_data == science for e in entries)
 
 
 class TestArguments:

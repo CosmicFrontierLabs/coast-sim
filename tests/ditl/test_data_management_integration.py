@@ -11,6 +11,7 @@ from conops.config import (
     MissionConfig,
     OnboardRecorder,
     Payload,
+    ScienceData,
     SolarPanelSet,
     SpacecraftBus,
 )
@@ -75,7 +76,7 @@ class TestDataGenerationScenarios:
             instruments=[
                 Instrument(
                     name="Camera",
-                    data_generation=DataGeneration(rate_gbps=0.1),
+                    data_generation=DataGeneration(science=ScienceData(rate_gbps=0.1)),
                 )
             ]
         )
@@ -103,15 +104,16 @@ class TestDataGenerationScenarios:
             instruments=[
                 Instrument(
                     name="Spectrometer",
-                    data_generation=DataGeneration(per_observation_gb=2.0),
+                    data_generation=DataGeneration(
+                        science=ScienceData(per_observation_gb=2.0)
+                    ),
                 )
             ]
         )
 
         # Simulate 10 observations
         for _ in range(10):
-            data = payload.data_generated(1)  # Duration doesn't matter
-            recorder.add_data(data)
+            recorder.add_data(payload.data_generated(1))  # Duration doesn't matter
 
         assert recorder.current_volume_gb == 20.0
         assert recorder.get_fill_fraction() == 0.2
@@ -123,7 +125,7 @@ class TestDataGenerationScenarios:
             instruments=[
                 Instrument(
                     name="High-Rate Camera",
-                    data_generation=DataGeneration(rate_gbps=0.5),
+                    data_generation=DataGeneration(science=ScienceData(rate_gbps=0.5)),
                 )
             ]
         )
@@ -156,7 +158,7 @@ class TestDataGenerationScenarios:
             instruments=[
                 Instrument(
                     name="Camera",
-                    data_generation=DataGeneration(rate_gbps=0.1),
+                    data_generation=DataGeneration(science=ScienceData(rate_gbps=0.1)),
                 )
             ]
         )
@@ -188,15 +190,17 @@ class TestDataGenerationScenarios:
         instruments = [
             Instrument(
                 name="Continuous Camera",
-                data_generation=DataGeneration(rate_gbps=0.05),
+                data_generation=DataGeneration(science=ScienceData(rate_gbps=0.05)),
             ),
             Instrument(
                 name="Snapshot Imager",
-                data_generation=DataGeneration(per_observation_gb=1.0),
+                data_generation=DataGeneration(
+                    science=ScienceData(per_observation_gb=1.0)
+                ),
             ),
             Instrument(
                 name="Spectrometer",
-                data_generation=DataGeneration(rate_gbps=0.01),
+                data_generation=DataGeneration(science=ScienceData(rate_gbps=0.01)),
             ),
         ]
         payload = Payload(instruments=instruments)
@@ -218,7 +222,7 @@ class TestDataGenerationScenarios:
             instruments=[
                 Instrument(
                     name="Science Instrument",
-                    data_generation=DataGeneration(rate_gbps=0.02),
+                    data_generation=DataGeneration(science=ScienceData(rate_gbps=0.02)),
                 )
             ]
         )

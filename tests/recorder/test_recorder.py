@@ -260,3 +260,34 @@ class TestDataManagementScenarios:
         # After 24 hours: 2.4 Gb generated, ~15 Gb downlinked
         # Net should be empty (started at 0, generated 2.4, downlinked more than that)
         assert recorder.current_volume_gb < 2.5
+
+
+class TestTransfer:
+    """Generation and downlink over the same interval."""
+
+    def test_the_link_carries_what_is_generated_during_the_contact(self):
+        """31 of 32 Gb, 6 Gb generated and 6 Gb downlinked: the volume is
+        unchanged, where adding and then removing would lose 5 Gb."""
+        recorder = OnboardRecorder(capacity_gb=32.0, current_volume_gb=31.0)
+        assert recorder.transfer(6.0, 6.0) == pytest.approx(6.0)
+        assert recorder.current_volume_gb == pytest.approx(31.0)
+
+    def test_an_empty_recorder_passes_data_straight_down_the_link(self):
+        recorder = OnboardRecorder(capacity_gb=32.0)
+        assert recorder.transfer(0.03, 3.0) == pytest.approx(0.03)
+        assert recorder.current_volume_gb == 0.0
+
+    def test_the_link_removes_no_more_than_there_is(self):
+        recorder = OnboardRecorder(capacity_gb=32.0, current_volume_gb=2.0)
+        assert recorder.transfer(1.0, 10.0) == pytest.approx(3.0)
+        assert recorder.current_volume_gb == 0.0
+
+    def test_generation_faster_than_the_link_fills_the_recorder(self):
+        recorder = OnboardRecorder(capacity_gb=32.0, current_volume_gb=30.0)
+        assert recorder.transfer(6.0, 2.0) == pytest.approx(2.0)
+        assert recorder.current_volume_gb == 32.0
+
+    def test_negative_amounts_count_as_nothing(self):
+        recorder = OnboardRecorder(capacity_gb=32.0, current_volume_gb=5.0)
+        assert recorder.transfer(-1.0, -1.0) == 0.0
+        assert recorder.current_volume_gb == 5.0
