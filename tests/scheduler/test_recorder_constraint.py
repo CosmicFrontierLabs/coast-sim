@@ -1,4 +1,8 @@
-"""Plans keep the onboard recorder within its planning limit."""
+"""Plans keep the onboard recorder within its planning limit.
+
+The ledger's arithmetic is tested in test_consumable.py; here it is the
+recorder's mapping onto it, and the schedulers' use of it.
+"""
 
 from datetime import timedelta
 
@@ -190,47 +194,6 @@ class TestLedger:
         science = PlanEntry(begin=200.0, end=300.0)
         ledger = RecorderLedger(config, 0.0, 1000.0, [science], start_volume_gb=0.0)
         assert ledger.segments == 1
-
-    def test_peaks_carry_over_what_a_contact_cannot_remove(
-        self, config: MissionConfig
-    ) -> None:
-        ledger = RecorderLedger(
-            config,
-            0.0,
-            1000.0,
-            [_contact(200.0, 300.0, "TWENTY"), _contact(600.0, 700.0, "THIRTY")],
-            start_volume_gb=5.0,
-        )
-        # Segment 0: 5 + 0.2 housekeeping + 40 science = 45.2 before the first
-        # contact, which removes 20 of it and adds 0.3: 25.5 left.
-        # Segment 1: + 0.3 housekeeping + 10 = 35.8; the contact removes all 30
-        # but 5.8, and adds 0.3. Segment 2: + 0.3 + 0 = 6.4.
-        assert ledger.peaks((40.0, 10.0, 0.0)) == pytest.approx([45.2, 35.8, 6.4])
-
-    def test_a_contact_removes_no_more_than_is_there(
-        self, config: MissionConfig
-    ) -> None:
-        ledger = RecorderLedger(
-            config, 0.0, 1000.0, [_contact(200.0, 300.0, "FIFTY")], start_volume_gb=0.0
-        )
-        assert ledger.peaks((1.0, 0.0)) == pytest.approx([1.2, 0.7])
-
-    def test_fits_checks_every_later_peak(self, config: MissionConfig) -> None:
-        ledger = RecorderLedger(
-            config,
-            0.0,
-            1000.0,
-            [_contact(200.0, 300.0, "TWENTY"), _contact(600.0, 700.0, "ONE")],
-            start_volume_gb=0.0,
-        )
-        volumes = (0.0, 0.0, 70.0)
-        # 29 Gb in segment 0 leaves 9.5 after the first contact, 9.1 after
-        # the second, and the last segment at 79.4 of 80; 30 Gb puts it over,
-        # though both are well within the limit where they are added.
-        assert ledger.fits(volumes, 0, 29.0)
-        assert not ledger.fits(volumes, 0, 30.0)
-        assert not ledger.fits(volumes, 0, 85.0)
-        assert ledger.add(volumes, 0, 10.0) == (10.0, 0.0, 70.0)
 
     def test_no_limit_fits_anything(self, config: MissionConfig) -> None:
         config.recorder.planning_limit = None
