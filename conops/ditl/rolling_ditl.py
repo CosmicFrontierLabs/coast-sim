@@ -13,7 +13,7 @@ from ..common import ObsType
 from ..config import MissionConfig, ScienceData
 from ..schedulers.context import Attitude, tracking_rest
 from ..schedulers.priority_scheduler import PriorityScheduler, StartState
-from ..schedulers.recorder import Contact, RecorderLedger, contact_downlink_gb
+from ..schedulers.recorder import RecorderLedger
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing
 from ..targets.merit import MeritModel
@@ -552,24 +552,9 @@ class RollingHorizonDITL(DITL):
         now = float(self.recorder.current_volume_gb)
         if start <= utime:
             return now
-        contacts = []
+        contacts = [e for e in committed if entry_obstype(e) == ObsType.GSP]
         science: list[tuple[float, float]] = []
         for entry in committed:
-            if entry_obstype(entry) == ObsType.GSP:
-                if (
-                    entry.station is None
-                    or entry.contact_begin is None
-                    or entry.contact_end is None
-                ):
-                    continue
-                begin = max(float(entry.contact_begin), utime)
-                end = min(float(entry.contact_end), start)
-                if end > begin:
-                    downlink = contact_downlink_gb(
-                        self.config, entry.station, end - begin
-                    )
-                    contacts.append(Contact(begin, end, downlink))
-                continue
             if entry.collection_begin is None or entry.collection_end is None:
                 continue
             begin = max(float(entry.collection_begin), utime)

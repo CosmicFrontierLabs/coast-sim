@@ -2,7 +2,7 @@ conops.schedulers.recorder
 ==========================
 
 .. automodule:: conops.schedulers.recorder
-   :members: RecorderLedger, Contact, contact_downlink_gb
+   :members: RecorderLedger, contact_downlink_gb
    :undoc-members:
    :show-inheritance:
    :special-members: __init__

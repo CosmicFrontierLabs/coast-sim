@@ -17,7 +17,6 @@ from __future__ import annotations
 
 from bisect import bisect_right
 from collections.abc import Sequence
-from typing import NamedTuple
 
 from ..common.enums import ACSMode
 from ..config import MissionConfig
@@ -25,16 +24,6 @@ from ..targets import PlanEntry
 
 _TOLERANCE_GB = 1e-9
 """Slack for rounding in sums of volumes."""
-
-
-class Contact(NamedTuple):
-    """A ground contact a plan downlinks during."""
-
-    begin: float
-    """When the link is acquired."""
-    end: float
-    downlink_gb: float
-    """What the contact can remove: its rate for its whole length."""
 
 
 def contact_downlink_gb(config: MissionConfig, station: str, seconds: float) -> float:
@@ -60,10 +49,14 @@ class RecorderLedger:
 
     Args:
         config: Mission configuration: the recorder and its planning limit,
-            and what the bus and instruments generate.
+            what the bus and instruments generate, and the ground stations'
+            downlink rates.
         begin: Start of the horizon (Unix seconds).
         end: End of the horizon.
-        contacts: The contacts the plan downlinks during, within the horizon.
+        contacts: The plan's ground-contact entries: each has a ``station``
+            and the ``contact_begin`` and ``contact_end`` of its link. Those
+            outside the horizon are ignored, and one that straddles its start
+            or end counts for the part inside it.
         start_volume_gb: What is on the recorder at ``begin``.
 
     Housekeeping is counted at the nominal rate throughout, and at the
@@ -76,25 +69,37 @@ class RecorderLedger:
         config: MissionConfig,
         begin: float,
         end: float,
-        contacts: Sequence[Contact],
+        contacts: Sequence[PlanEntry],
         *,
         start_volume_gb: float,
     ) -> None:
         self.config = config
         self.limit_gb = config.recorder.planning_limit_gb
         self.start_volume_gb = float(start_volume_gb)
-        inside = sorted(
-            (c for c in contacts if begin <= c.begin and c.end <= end),
-            key=lambda c: c.begin,
-        )
+        inside: list[tuple[float, float, str]] = []
+        for entry in contacts:
+            if (
+                entry.station is None
+                or entry.contact_begin is None
+                or entry.contact_end is None
+            ):
+                continue
+            link_begin = max(float(entry.contact_begin), begin)
+            link_end = min(float(entry.contact_end), end)
+            if link_end > link_begin:
+                inside.append((link_begin, link_end, entry.station))
+        inside.sort()
         # Segment k starts at bounds[k]; contact k - 1 is at the start of segment k.
-        self.bounds: list[float] = [begin, *(c.begin for c in inside), end]
-        self.downlink_gb: list[float] = [0.0, *(c.downlink_gb for c in inside)]
+        self.bounds: list[float] = [begin, *(c[0] for c in inside), end]
+        self.downlink_gb: list[float] = [
+            0.0,
+            *(contact_downlink_gb(config, station, e - b) for b, e, station in inside),
+        ]
         self.contact_housekeeping_gb: list[float] = [
             0.0,
             *(
-                config.housekeeping_generated(c.end - c.begin, mode=ACSMode.PASS)
-                for c in inside
+                config.housekeeping_generated(e - b, mode=ACSMode.PASS)
+                for b, e, _ in inside
             ),
         ]
         self.housekeeping_gb: list[float] = []
@@ -102,7 +107,7 @@ class RecorderLedger:
         for k in range(self.segments):
             seconds = self.bounds[k + 1] - self.bounds[k]
             if k > 0:
-                seconds -= inside[k - 1].end - inside[k - 1].begin
+                seconds -= inside[k - 1][1] - inside[k - 1][0]
             self.housekeeping_gb.append(
                 config.housekeeping_generated(max(0.0, seconds))
             )
