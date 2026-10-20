@@ -204,7 +204,9 @@ decoded against it.
 
 :class:`~conops.ditl.RollingHorizonDITL` starts each plan from the recorder's
 actual volume, so a contact that downlinked less than planned is made up for at
-the next replan.
+the next replan. A plan takes effect after the commit lead time, so it starts from
+what the committed activities leave on the recorder by then: what they go on to
+generate, less what a committed contact downlinks.
 
 Limitations
 -----------
