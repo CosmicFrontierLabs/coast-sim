@@ -277,9 +277,10 @@ towards the Sun, charges only in the sunlit idle time it has anyway and fills th
 day with science. One whose panels only generate pointing at the Sun charges in
 every idle sunlit stretch and refuses the science the battery cannot carry through
 the eclipse after it; it is then the lowest-merit science that waits, as with the
-recorder. Local search decodes its sequences through the same check, and
+recorder. Local search decodes its sequences through the same check;
 :class:`~conops.ditl.RollingHorizonDITL` starts each plan from the battery the
-committed activities, charges included, leave by the time the plan takes over.
+committed activities, charges included, leave by the time the plan takes over; and
+CP-SAT has the battery in its model (see `Optimizing plans with CP-SAT`_).
 
 Limitations
 -----------
@@ -401,6 +402,23 @@ CP-SAT chooses candidates and their order:
 * the objective is merit-weighted science, with the completion deficit at the chunk's
   start and the earliness discount for requests with a deadline and for cadence
   visits.
+
+The battery is in the model too, where the battery limits the plan. The horizon
+from the chunk's run to its end is cut into sunlit and eclipse runs. Each candidate
+is in the run its arrival falls in, placed directly where its arrival domain spans
+one run and by a boolean per run where it spans several, and adds to that run's
+energy its net power, its mode's draw less what its panels generate at its
+power-optimal roll, less the run's idle power, for its collection and overhead, plus
+a typical slew in at the slewing power. A run's energy is then its idle power for
+its whole length, charging in sunlight at the charging attitude and drawing in
+eclipse, plus what the candidates and the already planned activities change; the
+deficit carried into each run is bounded below by the previous run's and by zero,
+and every run's end must stay within the limit. In an eclipse run everything draws,
+so the run's end is its peak; in a sunlit run the deficit can rise and fall within
+the run, and the model is linear, so the decoder, which walks the plan exactly, has
+the last word: a chunk whose solution does not hold up keeps the priority-first
+plan. The priority-first plan is hinted into the run and carry-over variables, so
+the solver starts from a feasible solution.
 
 The priority-first plan's snapshots in each chunk are the solver's starting hint,
 adjusted where the model's approximate slews need it, so the solver starts from a
