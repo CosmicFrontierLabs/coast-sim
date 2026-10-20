@@ -19,11 +19,11 @@ class OnboardRecorder(ConfigModel):
             Defaults to 0.7 (70% full).
         red_threshold (float): Fraction of capacity that triggers red alert (0-1).
             Defaults to 0.9 (90% full).
-        planning_limit (float | None): Fraction of capacity the schedulers plan
-            within: no plan lets the recorder exceed it, assuming every pass
-            downlinks for its whole contact. Defaults to ``red_threshold``, so
-            a plan never drives the recorder into the red. None plans without
-            regard to the recorder.
+        planning_limit (float | None): Fraction of capacity the schedulers keep
+            the recorder below, assuming every pass downlinks for its whole
+            contact. Defaults to ``red_threshold``, which is where the red
+            alert fires, so a plan stops just short of the red. None plans
+            without regard to the recorder.
 
     Methods:
         add_data(data_gb): Add data to the recorder, returns amount actually stored.
@@ -69,7 +69,7 @@ class OnboardRecorder(ConfigModel):
         le=1.0,
         validate_default=False,
         description=(
-            "Fraction of capacity the schedulers keep the recorder within; "
+            "Fraction of capacity the schedulers keep the recorder below; "
             "the red threshold unless set, None to plan without regard to the recorder"
         ),
     )

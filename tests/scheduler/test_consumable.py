@@ -79,6 +79,35 @@ class TestLevels:
         assert not ledger.fits(planned, 0, 85.0)
         assert ledger.add(planned, 0, 10.0) == (10.0, 0.0, 70.0)
 
+    def test_fits_keeps_the_level_below_the_limit_not_at_it(self) -> None:
+        """The limit is where an alert fires, so reaching it is not within it."""
+        ledger = _ledger([], rate=0.0)
+        assert ledger.fits((0.0,), 0, 79.999)
+        assert not ledger.fits((0.0,), 0, 80.0)
+
+    def test_a_removals_lead_in_accrues_at_its_own_rate(self) -> None:
+        """The 50 s before the removal accrue 1.0 instead of the plain rate,
+        in the segment before it; clipped to the horizon like the removal, and
+        counted even when the removal itself is past the horizon's end."""
+        lead = Removal(200.0, 300.0, 20.0, lead=50.0, lead_accrual=1.0)
+        ledger = _ledger([lead])
+        assert ledger.bounds == [0.0, 200.0, 1000.0]
+        assert ledger.accrual == pytest.approx([0.15 + 1.0, 0.7])
+        clipped = ConsumableLedger(
+            180.0, 1000.0, [lead], limit=80.0, start=0.0, accrual=lambda s: 0.001 * s
+        )
+        assert clipped.accrual == pytest.approx([0.4, 0.7])
+        after = ConsumableLedger(
+            0.0,
+            1000.0,
+            [Removal(1020.0, 1100.0, 20.0, lead=50.0, lead_accrual=1.0)],
+            limit=80.0,
+            start=0.0,
+            accrual=lambda s: 0.001 * s,
+        )
+        assert after.segments == 1
+        assert after.accrual == pytest.approx([0.97 + 0.6])
+
     def test_no_limit_fits_anything(self) -> None:
         ledger = _ledger([], limit=None)
         assert not ledger.active
