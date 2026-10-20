@@ -25,7 +25,7 @@ from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing
 from ..targets.merit import MeritBreakdown, MeritModel
 from .context import Attitude, SchedulingContext
-from .recorder import Contact, RecorderLedger, contact_downlink_gb
+from .recorder import RecorderLedger
 
 TrackingProfile = list[tuple[float, float, float]]
 
@@ -307,19 +307,6 @@ class PriorityScheduler:
 
     def _recorder_ledger(self) -> RecorderLedger:
         """The recorder over the horizon, downlinking during the reserved contacts."""
-        contacts = []
-        for block in self.timeline:
-            if block.gspass is None:
-                continue
-            begin = float(block.entry.contact_begin or block.ready)
-            end = float(block.gspass.end)
-            contacts.append(
-                Contact(
-                    begin,
-                    end,
-                    contact_downlink_gb(self.config, block.gspass.station, end - begin),
-                )
-            )
         start_volume = (
             self.start_volume_gb
             if self.start_volume_gb is not None
@@ -329,7 +316,7 @@ class PriorityScheduler:
             self.config,
             self.ctx.ustart,
             self.ctx.uend,
-            contacts,
+            [block.entry for block in self.timeline if block.is_pass],
             start_volume_gb=start_volume,
         )
 
