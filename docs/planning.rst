@@ -244,6 +244,11 @@ through it:
   it; a charge draws ``CHARGING`` power and generates at the charging attitude;
 * idle time draws the idle power and generates at the attitude the activity before
   it leaves the spacecraft in;
+* a panel on a finite solar-array drive is carried along as the simulation carries
+  it, tracking the Sun in the modes its control lists and holding its angle in the
+  rest, so each activity is counted at the drive angles the plan reaches it with,
+  and a plan's charges take the charging attitude for those angles; a rolling
+  replan starts from where the drive is;
 * the deficit never falls below zero: a surplus before a draw is lost, as a full
   battery wastes what its panels make; and generation is not counted past
   ``planning_recharge_level``, so a plan never assumes the battery above it (a
@@ -403,7 +408,8 @@ is in the run its arrival falls in, placed directly where its arrival domain spa
 one run and by a boolean per run where it spans several, and adds to that run's
 energy its net power, its mode's draw less what its panels generate at its
 power-optimal roll, less the run's idle power, for its collection and overhead, plus
-a typical slew in at the slewing power. A run's energy is then its idle power for
+a typical slew in at the slewing power; what spills past the run's end is counted in
+each run after it for the seconds it holds. A run's energy is then its idle power for
 its whole length, charging in sunlight at the charging attitude and drawing in
 eclipse, plus what the candidates and the already planned activities change; the
 deficit carried into each run is bounded below by the previous run's, by zero, and

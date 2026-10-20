@@ -19,13 +19,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..common import ACSMode, ObsType, unixtime2date
 from ..config import MissionConfig
 from ..config.observation_categories import ObservationCategory
+from ..config.solar_panel import SolarArrayDriveState
 from ..ditl.ditl_log import DITLLog
 from ..ditl.plan_validator import entry_obstype
 from ..simulation.passes import Pass
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing
 from ..targets.merit import MeritBreakdown, MeritModel
-from .battery import MIN_CHARGE_SECONDS, Addition, Additions, BatteryLedger
+from .battery import MIN_CHARGE_SECONDS, Addition, Additions, Angles, BatteryLedger
 from .context import Attitude, SchedulingContext
 from .recorder import RecorderLedger
 
@@ -216,6 +217,8 @@ class PriorityScheduler:
             configured recorder's volume if None.
         start_deficit_wh: How far below full the battery is, in Wh, when the
             horizon starts; the configured battery's charge if None.
+        start_drive_state: Where the solar-array drive is when the horizon
+            starts; its configured initial state if None.
     """
 
     scheduler_name = "priority"
@@ -240,9 +243,13 @@ class PriorityScheduler:
         successor_retries: int | None = 3,
         start_volume_gb: float | None = None,
         start_deficit_wh: float | None = None,
+        start_drive_state: SolarArrayDriveState | None = None,
     ) -> None:
         self.config = config
         self.targets = list(targets)
+        self.start_drive_state = start_drive_state
+        """Where the solar-array drive is when the horizon starts; its
+        configured initial state if None."""
         self.begin = begin
         self.end = end
         self.step_size = step_size
@@ -366,6 +373,7 @@ class PriorityScheduler:
             start_deficit_wh=start_deficit,
             step_size=self.ctx.step_size,
             origin=self.ctx.origin,
+            drive_state=self.start_drive_state,
         )
 
     def _timeline_energy(self, timeline: Sequence[_Block]) -> tuple[Additions, ...]:
@@ -1580,11 +1588,17 @@ class PriorityScheduler:
         if not self._battery.active:
             return list(timeline)
         charged: list[_Block] = []
+        # Where the solar-array drive is as the timeline goes: a charge's
+        # attitude depends on it. Idle time holds the drive, so only the
+        # blocks move it.
+        angles = self._battery.drive_start
         for index in range(len(timeline) + 1):
             pred = timeline[index - 1] if index > 0 else self._origin
             succ = timeline[index] if index < len(timeline) else None
-            charges, succ_slew = self._gap_charges(pred, succ)
+            charges, succ_slew = self._gap_charges(pred, succ, angles)
             charged.extend(charges)
+            for charge in charges:
+                angles = self._angles_after(charge, angles)
             if succ is None:
                 continue
             if charges and succ_slew is not None:
@@ -1594,21 +1608,31 @@ class PriorityScheduler:
                     succ = succ.model_copy(update={"entry": succ.entry.model_copy()})
                     self._apply_slew(succ, succ_slew)
             charged.append(succ)
+            angles = self._angles_after(succ, angles)
         return charged
 
+    def _angles_after(self, block: _Block, angles: Angles) -> Angles:
+        """Where the solar-array drive is after ``block``, reached at ``angles``."""
+        if not self._battery.driven:
+            return angles
+        return self._battery.driven_deltas(self._block_addition(block), angles)[1]
+
     def _gap_charges(
-        self, pred: _Block | None, succ: _Block | None
+        self, pred: _Block | None, succ: _Block | None, angles: Angles
     ) -> tuple[list[_Block], Slew | None]:
         """The charges that fit between ``pred`` and ``succ``, and the slew that
         then takes ``succ`` from the last of them.
 
         Charges are chained through the gap's sunlit stretches, each slewing
-        from the block before it. The last must leave ``succ`` reachable from
-        its charging attitude; where it does not, it is shortened, and failing
-        that dropped and the one before it tried, until the chain connects.
-        Keyed on what the gap depends on, since the same gap is seen again
-        and again as placements are tried around it.
+        from the block before it, at the charging attitude for where the
+        solar-array drive is then (``angles`` as the gap starts, and where
+        each charge leaves it after). The last must leave ``succ`` reachable
+        from its charging attitude; where it does not, it is shortened, and
+        failing that dropped and the one before it tried, until the chain
+        connects. Keyed on what the gap depends on, since the same gap is
+        seen again and again as placements are tried around it.
         """
+        ledger = self._battery
         key = (
             id(pred) if pred is not None else None,
             pred.end if pred is not None else None,
@@ -1616,11 +1640,13 @@ class PriorityScheduler:
             id(succ) if succ is not None else None,
             succ.ready if succ is not None else None,
             succ.attitude_in if succ is not None else None,
+            tuple(None if a is None else round(a, 3) for a in angles)
+            if ledger.driven
+            else (),
         )
         cached = self._gap_charges_cache.get(key)
         if cached is not None:
             return cached
-        ledger = self._battery
         idle_begin = self._earliest_start(pred)
         idle_end = succ.ready if succ is not None else self.ctx.uend
         chain: list[tuple[_Block, float, float]] = []
@@ -1628,17 +1654,20 @@ class PriorityScheduler:
         for span_begin, span_end, stretch in ledger.charges_in(idle_begin, idle_end):
             if stretch.attitude is None or last is not None and span_end <= last.end:
                 continue
-            placed = self._charge_block(
-                last,
-                None,
-                stretch.attitude,
-                max(span_begin, self._earliest_start(last)),
-                span_end,
+            start = max(span_begin, self._earliest_start(last))
+            attitude = (
+                ledger.charging_attitude(start, angles)
+                if ledger.driven
+                else stretch.attitude
             )
+            if attitude is None:
+                continue
+            placed = self._charge_block(last, None, attitude, start, span_end)
             if placed is None:
                 continue
             chain.append((placed[0], span_begin, span_end))
             last = placed[0]
+            angles = self._angles_after(last, angles)
         succ_slew: Slew | None = None
         while chain and succ is not None:
             block, span_begin, span_end = chain[-1]

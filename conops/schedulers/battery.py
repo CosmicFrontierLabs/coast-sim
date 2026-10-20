@@ -27,7 +27,10 @@ step by step, which is what the schedulers place charges from. The segments
 start at each sunrise. The limit is the battery's planning level.
 
 The walk is the simulation's own arithmetic, mode by mode and step by step,
-at the attitudes the simulation flies.
+at the attitudes the simulation flies. A panel on a finite drive is carried
+along as the simulation carries it, tracking the Sun in the modes its
+control lists and holding its angle in the rest, so each addition is counted
+at the drive angles the plan reaches it with.
 """
 
 from __future__ import annotations
@@ -41,6 +44,7 @@ import numpy as np
 from ..common.enums import ACSMode, ObsType
 from ..config import MissionConfig
 from ..config.constraint import attitude_constraint_name_for_scopes
+from ..config.solar_panel import SolarArrayDriveState
 from ..ditl.ditl_log import DITLLog
 from ..ditl.plan_validator import PLAN_SCIENCE_OBSTYPES, entry_obstype
 from ..simulation.emergency_charging import EmergencyCharging
@@ -65,11 +69,22 @@ class Addition(NamedTuple):
     deltas: tuple[float, ...] = ()
     """Its energy step by step, in Wh, one for each grid step that starts
     within it: the deficit cannot fall below zero within it, so a surplus
-    before a draw is lost, as it is in the simulation."""
+    before a draw is lost, as it is in the simulation. With a solar-array
+    drive these are at the drive angles the horizon starts with; the walk
+    counts the addition at the angles it is reached with."""
+    profile: int = -1
+    """The ledger's record of the mode and attitude held at each of its
+    steps, from which the walk counts it at any drive angles; -1 if none."""
 
 
 Additions = tuple[Addition, ...]
 """A segment's additions, in time order."""
+
+Angles = tuple[float | None, ...]
+"""Solar-array drive angles, one per panel; None for an undriven panel."""
+
+_Profile = tuple[tuple[ACSMode, Attitude | None], ...]
+"""The mode and attitude held at each grid step of an addition."""
 
 
 class _Stretch(NamedTuple):
@@ -97,9 +112,15 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
         step_size: Simulation step in seconds: energy is summed step by step,
             as the simulation drains and charges the battery.
         origin: A time the step grid passes through; ``begin`` if None.
+        drive_state: The solar-array drive's state at ``begin``; the
+            configured initial state if None.
 
     Energy is counted the way the simulation counts it, in watt-hours per step,
-    with the draw of each mode and the eclipse state of each step.
+    with the draw of each mode and the eclipse state of each step. Where a
+    panel is on a finite drive, the walk carries the drive along as the
+    simulation does: it tracks the Sun in the modes its control lists and
+    holds its angle in the rest, so what an activity generates depends on
+    the angles it is reached with, and the walk counts it at those.
     """
 
     def __init__(
@@ -111,6 +132,7 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
         start_deficit_wh: float,
         step_size: float,
         origin: float | None = None,
+        drive_state: SolarArrayDriveState | None = None,
     ) -> None:
         self.config = config
         ephem = config.constraint.ephem
@@ -119,6 +141,26 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
         self.ephem = ephem
         self.step_size = float(step_size)
         self.origin = float(begin if origin is None else origin)
+        self.driven = any(
+            panel.single_axis_drive is not None for panel in config.solar_panel.panels
+        )
+        """Whether a panel is on a finite drive, so that generation depends
+        on where the drive is."""
+        self.drive_start: Angles = tuple(
+            (
+                config.solar_panel.initial_drive_state()
+                if drive_state is None
+                else drive_state
+            ).angles_deg
+        )
+        """The drive angles at the start of the horizon."""
+        self._profiles: list[_Profile] = []
+        """What each addition holds at each of its steps, by profile index."""
+        self._driven_cache: dict[
+            tuple[int, tuple[float | None, ...]], tuple[tuple[float, ...], Angles]
+        ] = {}
+        """An addition's deltas and the drive angles it leaves, by profile and
+        the angles it is reached with."""
         self._generation_cache: dict[
             tuple[float, float, float, float, float], float
         ] = {}
@@ -160,11 +202,16 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
 
     # ── The step grid ─────────────────────────────────────────────────────
 
+    def _first_step(self, begin: float) -> float:
+        """The first grid step at or after ``begin``."""
+        return float(
+            self.origin
+            + self.step_size * np.ceil((begin - self.origin) / self.step_size - 1e-9)
+        )
+
     def steps(self, begin: float, end: float) -> np.ndarray:
         """The grid steps in ``[begin, end)``."""
-        first = self.origin + self.step_size * np.ceil(
-            (begin - self.origin) / self.step_size - 1e-9
-        )
+        first = self._first_step(begin)
         if first >= end:
             return np.empty(0)
         return np.arange(first, end, self.step_size, dtype=float)
@@ -221,15 +268,36 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
             begin, end, lambda utime: self._watts(mode, self.in_eclipse(utime))
         )
 
-    def generation_watts(self, attitude: Attitude, utime: float) -> float:
-        """What the panels generate holding ``attitude`` at ``utime``, in watts."""
+    def generation_watts(
+        self, attitude: Attitude, utime: float, angles: Angles | None = None
+    ) -> float:
+        """What the panels generate holding ``attitude`` at ``utime``, in
+        watts, with the drive at ``angles``, or where the horizon starts."""
         ra, dec, roll = attitude
         return float(
-            self.config.solar_panel.power(utime, ra, dec, self.ephem, roll=roll)
+            self.config.solar_panel.power(
+                utime,
+                ra,
+                dec,
+                self.ephem,
+                roll=roll,
+                drive_state=self._drive_state(
+                    self.drive_start if angles is None else angles
+                ),
+            )
         )
 
+    def _drive_state(
+        self, angles: Angles, updated_at: float | None = None
+    ) -> SolarArrayDriveState | None:
+        """A drive state at ``angles``, or None where nothing is driven."""
+        if not self.driven:
+            return None
+        return SolarArrayDriveState(angles_deg=angles, updated_at_s=updated_at)
+
     def generation(self, attitude: Attitude, begin: float, end: float) -> float:
-        """Energy the panels generate holding ``attitude`` over a span, in Wh."""
+        """Energy the panels generate holding ``attitude`` over a span, in Wh,
+        with the drive where the horizon starts."""
         ra, dec, roll = attitude
         key = (round(ra, 6), round(dec, 6), round(roll, 6), begin, end)
         cached = self._generation_cache.get(key)
@@ -241,11 +309,50 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
         self._generation_cache[key] = energy
         return energy
 
+    def _step_generation(
+        self,
+        utime: float,
+        mode: ACSMode,
+        attitude: Attitude | None,
+        angles: Angles,
+    ) -> tuple[float, Angles]:
+        """What the panels generate at one step, in watts, and where the
+        drive is after it: advanced over the step as the simulation advances
+        it, tracking the Sun in ``mode`` if its control says so and holding
+        otherwise; it holds through a step with no attitude known."""
+        if attitude is None or not self.driven:
+            watts = 0.0 if attitude is None else self.generation_watts(attitude, utime)
+            return watts, angles
+        ra, dec, roll = attitude
+        _, watts, state = self.config.solar_panel.evaluate_executed_attitude(
+            utime,
+            ra,
+            dec,
+            self.ephem,
+            SolarArrayDriveState(
+                angles_deg=angles, updated_at_s=utime - self.step_size
+            ),
+            roll=roll,
+            acs_mode=mode,
+        )
+        return float(watts), tuple(state.angles_deg)
+
     # ── Charging ──────────────────────────────────────────────────────────
 
-    def charging_attitude(self, utime: float) -> Attitude | None:
-        """A constraint-valid attitude that points the panels at the Sun at ``utime``."""
-        pointing = self._charger.create_charging_pointing(utime, self.ephem)
+    def charging_attitude(
+        self, utime: float, angles: Angles | None = None
+    ) -> Attitude | None:
+        """A constraint-valid attitude that points the panels at the Sun at
+        ``utime``, with the drive at ``angles``, or where the horizon starts:
+        the roll ACS's charging guidance settles on depends on where the
+        drive is."""
+        pointing = self._charger.create_charging_pointing(
+            utime,
+            self.ephem,
+            drive_state=self._drive_state(
+                self.drive_start if angles is None else angles
+            ),
+        )
         if pointing is None:
             return None
         return (float(pointing.ra), float(pointing.dec), float(pointing.roll))
@@ -272,14 +379,16 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
         charge = np.zeros(len(steps))
         attitude = self.charging_attitude(begin)
         if attitude is not None:
+            # With a drive, as a charge from the start of the run would find
+            # it: tracking the Sun in charging mode if its control says so.
+            angles = self.drive_start
             for k, utime in enumerate(steps):
                 if not self.charging_allowed(attitude, float(utime)):
                     break
-                charge[k] = max(
-                    0.0,
-                    self.generation_watts(attitude, float(utime))
-                    - self._watts(ACSMode.CHARGING, False),
+                watts, angles = self._step_generation(
+                    float(utime), ACSMode.CHARGING, attitude, angles
                 )
+                charge[k] = max(0.0, watts - self._watts(ACSMode.CHARGING, False))
         if not np.any(charge > 0.0):
             # Nothing to gain by pointing at the Sun: no panels, or none that
             # beat the draw. The run is idle time like any other.
@@ -379,7 +488,7 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
                     return (float(track_ra), float(track_dec), float(track_roll))
             return own
 
-        def watts_at(utime: float) -> float:
+        def held_at(utime: float) -> tuple[ACSMode, Attitude | None]:
             if utime < arrival:
                 # ACS reports the slew into a contact as PASS, and the slew
                 # into anything else as SLEWING.
@@ -388,13 +497,9 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
                 step_mode = ACSMode.SLEWING
             else:
                 step_mode = mode
-            watts = self._watts(step_mode, self.in_eclipse(utime))
-            attitude = attitude_at(utime)
-            if attitude is not None:
-                watts -= self.generation_watts(attitude, utime)
-            return watts
+            return step_mode, attitude_at(utime)
 
-        addition = self._addition_over(begin, braking, watts_at)
+        addition = self._addition_over(begin, braking, held_at)
         self._addition_cache[key] = addition
         return addition
 
@@ -410,30 +515,62 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
         if key in self._addition_cache:
             return self._addition_cache[key]
         held = (float(ra), float(dec), float(roll))
-
-        def watts_at(utime: float) -> float:
-            return self._watts(mode, self.in_eclipse(utime)) - self.generation_watts(
-                held, utime
-            )
-
-        addition = self._addition_over(begin, end, watts_at)
+        addition = self._addition_over(begin, end, lambda utime: (mode, held))
         self._addition_cache[key] = addition
         return addition
 
     def _addition_over(
-        self, begin: float, end: float, watts_at: Callable[[float], float]
+        self,
+        begin: float,
+        end: float,
+        held_at: Callable[[float], tuple[ACSMode, Attitude | None]],
     ) -> Addition:
-        """An addition over ``[begin, end)`` at ``watts_at`` each grid step.
+        """An addition over ``[begin, end)`` holding what ``held_at`` says at
+        each grid step: the mode's draw less what the panels generate at the
+        attitude, with the drive where the horizon starts.
 
         As the simulation does, each grid step that starts in the span counts
         for the whole step at the rate then, and a span no step starts in
         counts for nothing.
         """
-        deltas = tuple(
-            watts_at(float(step)) * self.step_size / 3600.0
-            for step in self.steps(begin, end)
+        profile = tuple(held_at(float(step)) for step in self.steps(begin, end))
+        self._profiles.append(profile)
+        deltas = self._deltas(begin, profile, self.drive_start)[0]
+        return Addition(begin, end, sum(deltas), deltas, len(self._profiles) - 1)
+
+    def _deltas(
+        self, begin: float, profile: _Profile, angles: Angles
+    ) -> tuple[tuple[float, ...], Angles]:
+        """An addition's energy step by step from ``angles``, in Wh, and the
+        drive angles it leaves."""
+        deltas = []
+        utime = self._first_step(begin)
+        for mode, attitude in profile:
+            watts, angles = self._step_generation(utime, mode, attitude, angles)
+            draw = self._watts(mode, self.in_eclipse(utime)) - watts
+            deltas.append(draw * self.step_size / 3600.0)
+            utime += self.step_size
+        return tuple(deltas), angles
+
+    def driven_deltas(
+        self, addition: Addition, angles: Angles
+    ) -> tuple[tuple[float, ...], Angles]:
+        """An addition's deltas as the walk counts them, reached with the drive
+        at ``angles``, and the angles it leaves: its own deltas where nothing
+        is driven or it has no profile."""
+        if not self.driven or addition.profile < 0:
+            return addition.deltas, angles
+        key = (
+            addition.profile,
+            tuple(None if a is None else round(a, 3) for a in angles),
         )
-        return Addition(begin, end, sum(deltas), deltas)
+        cached = self._driven_cache.get(key)
+        if cached is None:
+            cached = self._deltas(
+                addition.begin, self._profiles[addition.profile], angles
+            )
+            self._driven_cache[key] = cached
+        return cached
 
     def additions(self, entries: Sequence[PlanEntry]) -> tuple[Additions, ...]:
         """The plan's additions by segment, in time order."""
@@ -460,6 +597,7 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
         self, planned: Sequence[Additions]
     ) -> tuple[list[float], list[float]]:
         level = self.start
+        angles = self.drive_start
         cursor = self.bounds[0]
         peaks = []
         levels = []
@@ -469,7 +607,8 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
                 if addition.begin > cursor:
                     idle_peak, level = self._idle(level, cursor, addition.begin)
                     peak = max(peak, idle_peak)
-                for delta in addition.deltas:
+                deltas, angles = self.driven_deltas(addition, angles)
+                for delta in deltas:
                     level = self._after(level, delta)
                     peak = max(peak, level)
                 cursor = max(cursor, addition.end)
@@ -486,6 +625,7 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
         if self.limit is None:
             return None
         level = self.start
+        angles = self.drive_start
         cursor = self.bounds[0]
         for group in planned:
             for addition in group:
@@ -495,8 +635,9 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
                         _, level = self._idle(level, float(step), stop)
                         if level > self.limit + 1e-9:
                             return float(step)
+                deltas, angles = self.driven_deltas(addition, angles)
                 for step, delta in zip(
-                    self.steps(addition.begin, addition.end), addition.deltas
+                    self.steps(addition.begin, addition.end), deltas
                 ):
                     level = self._after(level, delta)
                     if level > self.limit + 1e-9:
@@ -508,6 +649,18 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
             if level > self.limit + 1e-9:
                 return float(step)
         return None
+
+    def walk_deltas(
+        self, planned: Sequence[Additions]
+    ) -> dict[Addition, tuple[float, ...]]:
+        """Each addition's deltas as the walk counts them, reached with the
+        drive where the plan's additions before it leave it."""
+        angles = self.drive_start
+        counted: dict[Addition, tuple[float, ...]] = {}
+        for group in planned:
+            for addition in group:
+                counted[addition], angles = self.driven_deltas(addition, angles)
+        return counted
 
     def _after(self, level: float, delta: float) -> float:
         """The deficit after a step adds ``delta``: a draw adds in full, and
@@ -606,7 +759,19 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
 
     def level_at(self, planned: Sequence[Additions], utime: float) -> float:
         """The deficit at ``utime``, walking the plan's additions up to it."""
+        return self._at(planned, utime)[0]
+
+    def drive_state_at(
+        self, planned: Sequence[Additions], utime: float
+    ) -> SolarArrayDriveState | None:
+        """Where the drive is at ``utime``, walking the plan's additions up to
+        it; None where nothing is driven."""
+        return self._drive_state(self._at(planned, utime)[1])
+
+    def _at(self, planned: Sequence[Additions], utime: float) -> tuple[float, Angles]:
+        """The deficit and the drive angles at ``utime``."""
         level = self.start
+        angles = self.drive_start
         cursor = self.bounds[0]
         for group in planned:
             for addition in group:
@@ -614,8 +779,25 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
                     break
                 if addition.begin > cursor:
                     _, level = self._idle(level, cursor, addition.begin)
+                deltas, left = self.driven_deltas(addition, angles)
+                if addition.end <= utime:
+                    angles = left
+                else:
+                    # Only the steps before ``utime``: the drive is where
+                    # they leave it, step by step.
+                    profile = (
+                        self._profiles[addition.profile]
+                        if addition.profile >= 0
+                        else ()
+                    )
+                    step = self._first_step(addition.begin)
+                    for k, (mode, attitude) in enumerate(profile):
+                        if step >= utime:
+                            break
+                        _, angles = self._step_generation(step, mode, attitude, angles)
+                        step += self.step_size
                 for step, delta in zip(
-                    self.steps(addition.begin, addition.end), addition.deltas
+                    self.steps(addition.begin, addition.end), deltas
                 ):
                     if float(step) >= utime:
                         break
@@ -623,7 +805,7 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
                 cursor = max(cursor, min(addition.end, utime))
         if utime > cursor:
             _, level = self._idle(level, cursor, utime)
-        return level
+        return level, angles
 
     # ── In the battery's terms ────────────────────────────────────────────
 

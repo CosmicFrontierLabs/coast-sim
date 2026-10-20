@@ -563,7 +563,8 @@ class _ChunkModel:
         """Keep the battery above its level at the end of every run.
 
         A candidate is in the run its arrival falls in, and what spills past
-        that run's end is in the next. Its energy is its net power less the
+        that run's end is in the runs after, each for the seconds it holds
+        of the candidate. Its energy is its net power less the
         run's idle power for the seconds it occupies in each, plus the slewing
         power less the idle power for its slew in; so a run's energy is its
         idle power for its whole length, plus what each candidate changes. In
@@ -601,46 +602,43 @@ class _ChunkModel:
             lo, hi = task.arrival
             possible = [r for r in range(runs) if starts[r] <= hi and lo < ends[r]]
             literals = []
-            for r in possible:
-                net = task.power[0] if battery.sunlit[r] else task.power[1]
-                slew_change = (battery.slew[r] - battery.idle[r]) * task.slew_in
-                if r < runs - 1:
-                    # What spills past the run's end is in the next run. The
-                    # spill is defined whatever run the candidate is in, so
-                    # its domain allows an arrival after this run's end; it
-                    # only counts where the candidate is in this run.
-                    spill = model.new_int_var(
-                        0, max(0, hi + longest - ends[r]), f"spill{k}_{r}"
-                    )
-                    model.add_max_equality(
-                        spill, [0, self.arrival[k] + occupied - ends[r]]
-                    )
-                    next_net = task.power[0] if battery.sunlit[r + 1] else task.power[1]
-                    change = (net - battery.idle[r]) * (occupied - spill) + (
-                        slew_change * present[k]
-                    )
-                    next_change: cp_model.LinearExprT = (
-                        next_net - battery.idle[r + 1]
-                    ) * spill
-                else:
-                    change = (net - battery.idle[r]) * occupied + (
-                        slew_change * present[k]
-                    )
-                    next_change = 0
-                bound = (
-                    max(abs(net - battery.idle[r]), 1) * longest
-                    + abs(slew_change)
-                    + (
-                        abs(task.power[0] - battery.idle[r + 1]) * longest
-                        + abs(task.power[1] - battery.idle[r + 1]) * longest
-                        if r < runs - 1
-                        else 0
-                    )
+            # What spills past each run's end, the seconds of the candidate
+            # after it: defined whatever run the candidate is in, so its
+            # domain allows an arrival after the run's end, and 0 where the
+            # candidate cannot reach past the end at all. A long candidate
+            # spills through several runs: the seconds in each run after the
+            # one it arrives in are what spills past the run before, less
+            # what spills past the run itself.
+            beyond: dict[int, cp_model.IntVar] = {}
+            for b in range(runs - 1):
+                if hi + longest - ends[b] <= 0:
+                    continue
+                spill = model.new_int_var(0, hi + longest - ends[b], f"spill{k}_{b}")
+                model.add_max_equality(spill, [0, self.arrival[k] + occupied - ends[b]])
+                beyond[b] = spill
+
+            def rate(r: int) -> int:
+                return (task.power[0] if battery.sunlit[r] else task.power[1]) - (
+                    battery.idle[r]
                 )
+
+            for r in possible:
+                slew_change = (battery.slew[r] - battery.idle[r]) * task.slew_in
+                changes: dict[int, cp_model.LinearExprT] = {}
+                inside: cp_model.LinearExpr = (
+                    occupied - beyond[r] if r in beyond else occupied
+                )
+                changes[r] = rate(r) * inside + slew_change * present[k]
+                bound = max(abs(rate(r)), 1) * longest + abs(slew_change)
+                q = r + 1
+                while q - 1 in beyond:
+                    past: cp_model.LinearExpr | int = beyond[q] if q in beyond else 0
+                    changes[q] = rate(q) * (beyond[q - 1] - past)
+                    bound += abs(rate(q)) * longest
+                    q += 1
                 if len(possible) == 1:
-                    energy[r].append(change)
-                    if r < runs - 1:
-                        energy[r + 1].append(next_change)
+                    for q, change in changes.items():
+                        energy[q].append(change)
                     continue
                 literal = self.in_run[(k, r)] = model.new_bool_var(f"run{k}_{r}")
                 literals.append(literal)
@@ -648,15 +646,11 @@ class _ChunkModel:
                     model.add(self.arrival[k] >= starts[r]).only_enforce_if(literal)
                 if r < runs - 1:
                     model.add(self.arrival[k] < ends[r]).only_enforce_if(literal)
-                part = model.new_int_var(-bound, bound, f"energy{k}_{r}")
-                model.add(part == change).only_enforce_if(literal)
-                model.add(part == 0).only_enforce_if(~literal)
-                energy[r].append(part)
-                if r < runs - 1:
-                    next_part = model.new_int_var(-bound, bound, f"spilled{k}_{r}")
-                    model.add(next_part == next_change).only_enforce_if(literal)
-                    model.add(next_part == 0).only_enforce_if(~literal)
-                    energy[r + 1].append(next_part)
+                for q, change in changes.items():
+                    part = model.new_int_var(-bound, bound, f"energy{k}_{r}_{q}")
+                    model.add(part == change).only_enforce_if(literal)
+                    model.add(part == 0).only_enforce_if(~literal)
+                    energy[q].append(part)
             if len(possible) > 1:
                 model.add(sum(literals) == present[k])
         self.level: list[cp_model.IntVar] = []
@@ -704,16 +698,17 @@ class _ChunkModel:
                 arrival = hint[k].arrival
                 run = sum(1 for edge in battery.edges if edge <= arrival)
                 occupied = hint[k].collection + task.overhead
-                net = task.power[0] if battery.sunlit[run] else task.power[1]
-                spill = max(0, arrival + occupied - ends[run]) if run < runs - 1 else 0
-                energy[run] += (net - battery.idle[run]) * (occupied - spill) + (
-                    battery.slew[run] - battery.idle[run]
-                ) * task.slew_in
-                if spill:
-                    next_net = (
-                        task.power[0] if battery.sunlit[run + 1] else task.power[1]
-                    )
-                    energy[run + 1] += (next_net - battery.idle[run + 1]) * spill
+                energy[run] += (battery.slew[run] - battery.idle[run]) * task.slew_in
+                # The seconds in each run, from the one it arrives in through
+                # every run it spills into.
+                beyond = [
+                    max(0, arrival + occupied - ends[q]) if q < runs - 1 else 0
+                    for q in range(runs)
+                ]
+                for q in range(run, runs):
+                    inside = (occupied if q == run else beyond[q - 1]) - beyond[q]
+                    net = task.power[0] if battery.sunlit[q] else task.power[1]
+                    energy[q] += (net - battery.idle[q]) * inside
             model.add_hint(self.occupied[k], occupied)
             for r in range(runs):
                 literal = self.in_run.get((k, r))
@@ -1174,10 +1169,13 @@ class CpSatScheduler(LocalSearchScheduler):
                 and float(b.entry.begin) in releases
             ),
         ]
+        # With a solar-array drive, as the walk counts them where the plan's
+        # additions leave the drive; a block not in the plan at its own deltas.
+        counted = ledger.walk_deltas(state.energy)
         for block in blocks:
             addition = self._block_addition(block)
             steps = ledger.steps(addition.begin, addition.end)
-            for utime, delta in zip(steps, addition.deltas):
+            for utime, delta in zip(steps, counted.get(addition, addition.deltas)):
                 if utime < origin_time:
                     continue
                 r = run_of(float(utime))

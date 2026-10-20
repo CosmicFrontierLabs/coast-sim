@@ -15,6 +15,8 @@ from conops.config import (
     Battery,
     MissionConfig,
     PowerDraw,
+    SingleAxisSolarArrayDrive,
+    SolarArrayDriveControl,
     SolarPanel,
     SolarPanelSet,
 )
@@ -514,6 +516,71 @@ class TestRollingHorizon:
         assert ditl.validate_plan_matches_execution() == []
 
 
+def _driven_config() -> MissionConfig:
+    """The side-panel scenario with contacts and the panel on a single-axis
+    drive about the boresight that tracks the Sun during contacts and holds
+    its angle in every other mode: a contact leaves the panel turned, and the
+    science after it generates at that angle, not the initial one."""
+    config = _battery_config(SIDE, stations=True)
+    config.solar_panel = SolarPanelSet(
+        panels=[
+            SolarPanel(
+                name="panel",
+                normal=SIDE,
+                max_power=600.0,
+                single_axis_drive=SingleAxisSolarArrayDrive(
+                    rotation_axis=(0.0, 0.0, 1.0),
+                    min_angle_deg=-90.0,
+                    max_angle_deg=90.0,
+                    max_rate_deg_per_s=1.0,
+                    initial_angle_deg=0.0,
+                ),
+                drive_control=SolarArrayDriveControl(sun_tracking_modes=[ACSMode.PASS]),
+            )
+        ]
+    )
+    return config
+
+
+class TestSolarArrayDrive:
+    def test_a_hold_is_counted_at_the_angles_it_is_reached_with(self) -> None:
+        """Idle time holds the drive, so a hold reached at the starting angle
+        is its own deltas; reached with the drive turned, it generates
+        differently and leaves the drive where it found it."""
+        ledger = _ledger(_driven_config())
+        assert ledger.driven
+        stretch = ledger.stretches[1]
+        assert stretch.attitude is not None
+        hold = ledger.hold_addition(
+            stretch.attitude, ACSMode.IDLE, stretch.begin, stretch.end
+        )
+        assert hold is not None
+        deltas, left = ledger.driven_deltas(hold, ledger.drive_start)
+        assert deltas == pytest.approx(hold.deltas) and left == ledger.drive_start
+        turned, left = ledger.driven_deltas(hold, (60.0,))
+        assert left == (60.0,)
+        assert sum(turned) != pytest.approx(sum(deltas))
+
+    def test_the_plan_executes_as_the_ledger_predicts(self) -> None:
+        """Contacts turn the drive towards the Sun and science holds it there,
+        so what the science after a contact generates depends on the contact;
+        the walk carries the drive along, and the executed battery's lowest
+        point is the ledger's."""
+        config = _driven_config()
+        scheduler = PriorityScheduler(
+            config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
+        )
+        plan = scheduler.schedule()
+        assert _science(plan)
+        predicted = min(scheduler._battery.charge_levels(scheduler._energy))
+        ditl = _execute(config, plan)
+        assert ditl.acs.solar_array_drive_state.angles_deg[0] != 0.0
+        assert min(ditl.batterylevel) == pytest.approx(predicted, abs=0.01)
+        assert min(ditl.batterylevel) >= LEVEL - 1e-6
+        assert ditl.validate_plan_matches_execution() == []
+        assert _charges(plan)
+
+
 class TestValidator:
     def test_a_charge_executed_elsewhere_is_a_mismatch(self) -> None:
         config = _battery_config(BORESIGHT)
@@ -524,6 +591,29 @@ class TestValidator:
         ditl = _execute(config, plan)
         assert ditl.validate_plan_matches_execution() == []
         charge.ra = (float(charge.ra) + 40.0) % 360.0
+        mismatches = ditl.validate_plan_matches_execution()
+        assert mismatches
+        assert all("charge" in m.message for m in mismatches)
+
+    def test_idle_in_sunlight_during_a_charge_is_a_mismatch(self) -> None:
+        """IDLE is accepted over a charge only in eclipse, where ACS reports no
+        charging; the sunlit samples must be in CHARGING mode."""
+        config = _battery_config(BORESIGHT)
+        plan = PriorityScheduler(
+            config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
+        ).schedule()
+        ditl = _execute(config, plan)
+        assert ditl.validate_plan_matches_execution() == []
+        charging = [
+            i
+            for i, m in enumerate(ditl.mode)
+            if ACSMode(int(m)) is ACSMode.CHARGING
+            and not config.constraint.in_eclipse(ra=0.0, dec=0.0, time=ditl.utime[i])
+        ]
+        assert charging
+        for i in charging:
+            ditl.mode[i] = int(ACSMode.IDLE)
+            ditl.obsid[i] = 0
         mismatches = ditl.validate_plan_matches_execution()
         assert mismatches
         assert all("charge" in m.message for m in mismatches)
