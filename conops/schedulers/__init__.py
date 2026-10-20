@@ -1,3 +1,4 @@
+from .consumable import ConsumableLedger
 from .context import SchedulingContext
 from .cpsat_scheduler import CpSatScheduler
 from .local_search_scheduler import LocalSearchScheduler
@@ -11,6 +12,7 @@ from .sequential_scheduler import SequentialScheduler
 
 __all__ = [
     "SCHEDULERS",
+    "ConsumableLedger",
     "CpSatScheduler",
     "DispatchPolicy",
     "DumbQueueScheduler",
