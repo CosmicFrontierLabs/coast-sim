@@ -145,6 +145,20 @@ class TestChunkModel:
         floored = _battery(edges, sunlit, limit_wh=100.0, idle=idle, floor_wh=60.0)
         assert _solve(tasks, floored)[0] == [True, False]
 
+    def test_a_snapshot_spilling_through_a_short_run_is_counted_in_each(
+        self,
+    ) -> None:
+        """A 600 s snapshot at 300 W from 700 s: 300 s in an eclipse run at
+        0 W idle, 100 s in a 100 s sunlit run charging at 400 W, and 200 s in
+        the eclipse after. That is 25 + 19.4 + 16.7 Wh, less the 11.1 Wh the
+        sunlit run's idle charges: 50 Wh, within a 60 Wh limit. Spilled
+        wholly into the sunlit run it counted 72 Wh and was left out."""
+        tasks = [_Task(None, ORIGIN, (0, 0)), _snapshot(1, (700, 700), 300)]
+        battery = _battery(
+            [1000, 1100], [False, True, False], limit_wh=60.0, idle=[0, -400, 0]
+        )
+        assert _solve(tasks, battery)[0] == [True, True]
+
     def test_without_a_battery_everything_fits(self) -> None:
         tasks = [
             _Task(None, ORIGIN, (0, 0)),

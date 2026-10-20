@@ -529,7 +529,11 @@ class PlanExecutionValidator:
         for i in self._window_indices(start, end):
             utime = self.utime[i]
             mode = self._mode_at_index(i)
-            if mode not in (ACSMode.CHARGING, ACSMode.IDLE):
+            idle_in_eclipse = (
+                mode == ACSMode.IDLE
+                and self.config.constraint.in_eclipse(ra=0.0, dec=0.0, time=utime)
+            )
+            if mode != ACSMode.CHARGING and not idle_in_eclipse:
                 mismatches.append(
                     self._mode_mismatch(entry, utime, mode, ACSMode.CHARGING, "charge")
                 )
