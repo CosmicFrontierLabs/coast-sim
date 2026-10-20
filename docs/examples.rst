@@ -153,8 +153,9 @@ each:
   the contacts, and filling, losing data and safing the spacecraft in the other
 * The scheduler's ledger: what each contact downlinks and the recorder's peak before
   the next one
-* Which targets are observed under the limit, and how local search fills the time
-  the recorder left idle, trading on merit-weighted science within the limit
+* Which targets are observed under the limit, how local search fills the time the
+  recorder left idle, trading on merit-weighted science within the limit, and how
+  CP-SAT does the same with the recorder in its model
 * Keeping margin with a lower ``planning_limit``, and rolling-horizon replans that
   start from the recorder's actual volume
 

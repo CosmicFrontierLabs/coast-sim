@@ -212,8 +212,9 @@ the limit. It is never shortened to fit: a snapshot that does not fit before a
 contact is placed after one, or not at all, and the log says so. The priority-first
 scheduler places higher-merit requests first, so when data runs short it is the
 lowest-merit science that waits, whatever its data rate; local search then trades
-snapshots in and out on merit within the same limit, and CP-SAT's solutions are
-decoded against it.
+snapshots in and out on merit within the same limit; and CP-SAT has the recorder in
+its model, so the solver trades high-data science against low-data science directly
+(see `Optimizing plans with CP-SAT`_).
 
 :class:`~conops.ditl.RollingHorizonDITL` starts each plan from the recorder's
 actual volume, so a contact that downlinked less than planned is made up for at
@@ -330,6 +331,14 @@ CP-SAT chooses candidates and their order:
 * ground passes are fixed tasks that snapshots must leave room to slew to;
 * a request's snapshots never add up to more than its remaining exposure;
 * a cadence target's visits are at least its cadence apart, and after its last one;
+* the recorder stays within its planning limit: each candidate's data (its rate for
+  its collection, plus its fixed amount, at the observed target's rates) goes on the
+  recorder in the segment, between contacts, where its collection starts; each
+  segment's volume is what entered it after its contact, plus housekeeping and the
+  science already planned there, plus the chunk's candidates; what a contact cannot
+  remove carries over; and every segment from the chunk's to the end of the horizon
+  is kept within the limit, so a candidate is traded against the room it takes from
+  everything after it (see `Planning within the recorder`_);
 * the objective is merit-weighted science, with the completion deficit at the chunk's
   start and the earliness discount for requests with a deadline and for cadence
   visits.
