@@ -445,9 +445,10 @@ class RollingHorizonDITL(DITL):
         ToOs submitted with ``interrupt=False`` wait for the observation in
         progress, so they may not take its place either: a higher-ranked one
         would push the interrupting ToO past its deadline and undo the cut.
-        They are held back while the interrupting ToO is placed, then planned
-        in after it; one whose deadline falls before that waits for the next
-        plan.
+        They are held back while the interrupting ToO is placed, then the
+        plan up to and including its entry is pinned and the rest of the
+        horizon planned again with them; one whose deadline falls before the
+        entry ends waits for the next plan.
         """
         waiting = [
             self._too_targets[id(request)]
@@ -466,20 +467,9 @@ class RollingHorizonDITL(DITL):
             return planned
         follow = float(placed.end)
         held = [t for t in waiting if t.deadline is not None and t.deadline < follow]
-        starts = {id(t): t.earliest_start for t in waiting}
+        pinned = planned[2][: planned[2].index(placed) + 1]
         again = DITLLog()
-        try:
-            for target in waiting:
-                target.earliest_start = max(follow, target.earliest_start or follow)
-            replanned = self._plan_after(utime, cutoff, again, held=held)
-        finally:
-            for target in waiting:
-                target.earliest_start = starts[id(target)]
-        if self._placed(replanned[2], too.obsid) is None:
-            # Planned in after it, they still crowd the ToO out: the plan
-            # without them stands, and they go into the next one.
-            log.add_events(first.events)
-            return planned
+        replanned = self._plan_after(utime, cutoff, again, held=held, pinned=pinned)
         log.add_events(again.events)
         return replanned
 
@@ -502,20 +492,24 @@ class RollingHorizonDITL(DITL):
         log: DITLLog,
         *,
         held: Sequence[Pointing] = (),
+        pinned: Sequence[PlanEntry] = (),
     ) -> tuple[list[PlanEntry], list[PlanEntry], list[PlanEntry], int]:
         """Plan the horizon after the committed activities.
 
-        ``held`` targets are left out of this plan. Returns the committed and
-        dropped entries, the new entries and how many targets could not be
-        placed.
+        ``held`` targets are left out of this plan. ``pinned`` entries, planned
+        earlier for this replan, lead the new entries as they are: the plan
+        takes over where the last of them leaves the spacecraft, and their
+        science counts as collected. Returns the committed and dropped
+        entries, the new entries and how many targets could not be placed.
         """
         committed = [e for e in self.plan.entries if float(e.begin) < cutoff]
         dropped = [e for e in self.plan.entries if float(e.begin) >= cutoff]
-        start_state = self._start_state(committed, utime, cutoff)
+        leading = [*committed, *pinned]
+        start_state = self._start_state(leading, utime, cutoff)
         start = start_state.time if start_state is not None else cutoff
         horizon_end = min(utime + self.horizon.total_seconds(), self.uend)
         if horizon_end <= start:
-            return committed, dropped, [], 0
+            return committed, dropped, list(pinned), 0
         held_ids = {id(t) for t in held}
         scheduler = self.scheduler(
             self.config,
@@ -530,14 +524,14 @@ class RollingHorizonDITL(DITL):
             simulation_start=self.begin,
             simulation_end=self.end,
             start_state=start_state,
-            reserved_seconds=self._reserved_seconds(committed, utime),
-            reserved_visits=self._reserved_visits(committed, utime),
+            reserved_seconds=self._reserved_seconds(leading, utime),
+            reserved_visits=self._reserved_visits(leading, utime),
             **self.scheduler_options,  # type: ignore[arg-type]
         )
         return (
             committed,
             dropped,
-            list(scheduler.schedule().entries),
+            [*pinned, *scheduler.schedule().entries],
             len(scheduler.unplaced),
         )
 

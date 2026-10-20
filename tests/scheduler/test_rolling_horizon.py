@@ -303,6 +303,46 @@ class TestTargetsOfOpportunity:
         assert all(too.executed for too in ditl.too_register)
         assert ditl.validate_plan_matches_execution() == []
 
+    @pytest.mark.parametrize("allowed_deadline", [80, 30])
+    def test_the_interrupting_too_keeps_its_slot_when_a_waiting_too_is_planned(
+        self, allowed_deadline: int
+    ) -> None:
+        """The interrupting ToO's entry is pinned, with its slew and setup,
+        while a waiting ToO is planned in after it. Bounding only the waiting
+        ToO's collection start by the entry's end let its slew and setup take
+        the slot, and the interrupting ToO follow it. The deadline that the
+        pushed-back interrupting ToO would miss changes nothing: both fit in
+        order, and neither waits for the next plan."""
+        targets = _long_observation()
+        assert targets[0].config is not None
+        targets[0].config.payload.observation_timing.setup_seconds = 300
+        deferred = {
+            **GRB,
+            "obsid": 1_000_002,
+            "name": "Deferred",
+            "merit": 500.0,
+            "exptime": 1800,
+            "deadline": T0 + 90 * MIN,
+            "interrupt": False,
+        }
+        allowed = {**GRB, "merit": 400.0, "deadline": T0 + allowed_deadline * MIN}
+        ditl = _run(
+            3,
+            targets,
+            toos=(deferred, allowed),
+            replan_interval=timedelta(hours=4),
+        )
+
+        assert [r.interrupted_obsid for r in ditl.replans][-1] == 1
+        science = [e for e in ditl.plan if e.obstype.name == "AT"]
+        assert [int(e.obsid) for e in science] == [1, 1_000_001, 1_000_002, 1]
+        _, allowed_entry, deferred_entry, _ = science
+        # Pinned where the first pass placed it, straight after the cut.
+        assert float(allowed_entry.begin) == T0 + 20 * MIN
+        assert float(deferred_entry.begin) >= float(allowed_entry.end)
+        assert all(too.executed for too in ditl.too_register)
+        assert ditl.validate_plan_matches_execution() == []
+
     def test_a_non_interruptible_observation_is_not_cut(self) -> None:
         """The ToO that interrupts this observation in its default category
         cannot when the category is not interruptible, and misses its
