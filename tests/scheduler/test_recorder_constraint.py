@@ -395,3 +395,38 @@ class TestRollingHorizon:
         assert starts[1] != starts[0]
         assert max(ditl.recorder_volume_gb) <= LIMIT + 1e-6
         assert ACSMode.PASS in {hk.acs_mode for hk in ditl.telemetry.housekeeping}
+
+    def test_a_replan_counts_what_committed_activities_still_generate(self) -> None:
+        """A new plan starts after a commit lead time; the recorder volume it
+        starts from includes what the committed activities generate until then."""
+        config = _recorder_config()
+        starts: list[float] = []
+        volumes: list[float] = []
+
+        class Recording(PriorityScheduler):
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                starts.append(float(kwargs["start_volume_gb"]))  # type: ignore[arg-type]
+                volumes.append(float(config.recorder.current_volume_gb))
+                super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+
+        targets = [
+            _data_target(config, 1, 105.0, 10.0, HIGH_RATE, merit=90, minutes=200),
+            _data_target(config, 2, 110.0, 10.0, LOW_RATE, merit=50, minutes=200),
+        ]
+        ditl = RollingHorizonDITL(
+            config,
+            targets,
+            begin=BEGIN,
+            end=BEGIN + timedelta(hours=HOURS),
+            horizon=timedelta(hours=6),
+            replan_interval=timedelta(hours=2),
+            commit_lead_time=timedelta(minutes=30),
+            scheduler=Recording,
+        )
+        ditl.step_size = STEP
+        assert ditl.calc()
+
+        assert max(ditl.recorder_volume_gb) <= LIMIT + 1e-6
+        # At least one replan started from more than was on the recorder when
+        # it was built: what the committed snapshot went on to generate.
+        assert any(s > v + 1.0 for s, v in zip(starts, volumes, strict=True))
