@@ -709,3 +709,88 @@ time, from :meth:`~conops.schedulers.Allocation.allocated`:
            [t.obsid for t in targets], begin.timestamp(), end.timestamp()
        ),
    )
+
+Comparing scheduling modes
+--------------------------
+
+:mod:`conops.benchmark` runs the same scenario through each scheduling mode and
+measures them the same way, from telemetry. A
+:class:`~conops.benchmark.BenchmarkScenario` provides factories for a fresh
+configuration and target pool, since simulations change both, and lists the ToOs
+that arrive during the run. The contenders are:
+
+* :func:`~conops.benchmark.dispatch`: ``QueueDITL`` picks each next target;
+* :func:`~conops.benchmark.planned`: one plan built up front by a scheduler and
+  executed by ``DITL``. A plan built in advance cannot react to ToOs;
+* :func:`~conops.benchmark.rolling`: ``RollingHorizonDITL`` with a scheduler and
+  replanning settings;
+* :func:`~conops.benchmark.configured`: whatever the scenario configuration's
+  ``scheduler`` section selects (see :doc:`configuration`), built with
+  :func:`~conops.ditl.create_ditl`, so a configured run can be measured against
+  the explicit modes.
+
+Dispatch and rolling contenders can be steered by a long-range allocator
+(``allocation``, the bin length, and ``allocation_reserve``), which their names show
+as ``+alloc``.
+
+.. code-block:: python
+
+   from conops.benchmark import (
+       configured, dispatch, format_results, planned, rolling, run_benchmark,
+   )
+   from conops.schedulers import LocalSearchScheduler, PriorityScheduler
+
+   results = run_benchmark(scenario, [
+       dispatch(),
+       planned(PriorityScheduler),
+       planned(LocalSearchScheduler, time_limit=10.0),
+       rolling(LocalSearchScheduler, scheduler_options={"time_limit": 10.0}),
+       configured(),
+   ])
+   print(format_results(results))
+
+Each :class:`~conops.benchmark.BenchmarkResult` reports, measured the same way for every
+contender:
+
+* science time and merit-weighted science;
+* time slewing, idle and in contact, and the number of observations;
+* each ToO's response time, and how many started by their deadline;
+* how many other requests with a deadline got their whole exposure;
+* each program's share of the science collected;
+* for targets with a cadence, how far the mean gap between visits missed the requested
+  interval, and how many targets were revisited at all;
+* planning and run time, and plan/execution mismatches.
+
+A contender that fails is reported with its error instead of stopping the benchmark:
+the table shows the error's type, and the full message is listed below it.
+
+Standard scenarios
+^^^^^^^^^^^^^^^^^^
+
+:mod:`conops.benchmark.scenarios` provides six scenarios, each stressing a different
+part of scheduling. All use one low-Earth orbit from a TLE, Sun and Earth-limb
+avoidance, the default ground stations, a battery that never limits operations (the
+spacecraft has no solar panels, so the battery's recharge alerts are turned off rather
+than letting it drain into emergency charging), and seeded random targets:
+
+* ``baseline``: a day of 200 targets and one ToO with a one-hour deadline;
+* ``too-heavy``: eight ToOs across the day, half urgent (merit 1000, deadlines of 30
+  minutes to 2 hours) and half routine (merit 500, 4 to 12 hours);
+* ``oversubscribed``: 600 targets requesting far more time than the day holds, a third
+  of them with deadlines;
+* ``cadence``: twelve monitoring targets wanting a visit every four hours, and two
+  survey programs with equal time shares but different merit, with the cadence and
+  completion-deficit merit terms switched on;
+* ``multi-day``: three days, 400 targets and a ToO a day, for replanning over a long
+  run;
+* ``long-range``: a week of 300 targets, half with deadlines spread across it, two
+  programs by the Sun's avoidance zone ("Early" targets that the Sun covers as the
+  week goes on and "Late" ones it uncovers), and 10 ToOs arriving through the week,
+  alternately due within hours and within days, for long-range allocation.
+
+``scripts/benchmark_schedulers.py`` runs the standard contenders on one scenario or all of
+them, with rolling replans every six hours (or four times in a shorter run) and a
+30-minute commit lead time. Runs of two days or more also compare dispatch and rolling
+steered by an allocator with one-day bins::
+
+   uv run python scripts/benchmark_schedulers.py --scenario all --time-limit 10
