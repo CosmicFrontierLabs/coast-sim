@@ -343,6 +343,77 @@ class TestTargetsOfOpportunity:
         assert all(too.executed for too in ditl.too_register)
         assert ditl.validate_plan_matches_execution() == []
 
+    def test_a_held_toos_collected_science_still_counts_towards_its_share(
+        self,
+    ) -> None:
+        """A ``interrupt=False`` ToO already observing is held out of the
+        interrupt attempt's placement, but its collected science must still
+        count towards its program's share: three ToOs in program A, which has
+        delivered all the science, so the interrupting one is worth its merit
+        less the deficit weight times half, 150, not 250, and the later ToO
+        worth 175 can interrupt it in turn before its deadline."""
+        programs = [
+            ObservationCategory(
+                name="A", obsid_min=1_000_000, obsid_max=1_000_010, time_share=0.5
+            ),
+            ObservationCategory(name="B", obsid_min=1, obsid_max=10, time_share=0.5),
+        ]
+        config = _config(
+            3,
+            weights=TargetConfig(completion_deficit_weight=100),
+            categories=programs,
+        )
+        initial = {
+            **GRB,
+            "name": "Initial",
+            "ra": 105.0,
+            "merit": 10.0,
+            "exptime": 3600,
+            "submit_time": T0,
+            "interrupt": False,
+        }
+        first = {
+            **GRB,
+            "obsid": 1_000_002,
+            "name": "First",
+            "merit": 200.0,
+            "exptime": 3600,
+            "deadline": T0 + 30 * MIN,
+        }
+        second = {
+            **GRB,
+            "obsid": 1_000_003,
+            "name": "Second",
+            "ra": 110.0,
+            "merit": 225.0,
+            "exptime": 600,
+            "submit_time": T0 + 40 * MIN,
+            "deadline": T0 + 50 * MIN,
+        }
+        ditl = RollingHorizonDITL(
+            config,
+            [],
+            begin=BEGIN,
+            end=BEGIN + timedelta(hours=3),
+            replan_interval=timedelta(hours=4),
+        )
+        ditl.step_size = 60
+        for too in (initial, first, second):
+            ditl.submit_too(**too)  # type: ignore[arg-type]
+        assert ditl.calc()
+
+        science = [e for e in ditl.plan if e.obstype.name == "AT"]
+        first_entry = next(e for e in science if int(e.obsid) == 1_000_002)
+        assert float(first_entry.merit) == pytest.approx(150.0)
+        interrupted = [
+            r.interrupted_obsid for r in ditl.replans if r.interrupted_obsid is not None
+        ]
+        assert interrupted == [1_000_001, 1_000_002]
+        response = ditl.too_response_times()[1_000_003]
+        assert response is not None and response <= 10 * MIN
+        assert all(too.executed for too in ditl.too_register)
+        assert ditl.validate_plan_matches_execution() == []
+
     def test_a_non_interruptible_observation_is_not_cut(self) -> None:
         """The ToO that interrupts this observation in its default category
         cannot when the category is not interruptible, and misses its

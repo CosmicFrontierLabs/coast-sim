@@ -496,11 +496,14 @@ class RollingHorizonDITL(DITL):
     ) -> tuple[list[PlanEntry], list[PlanEntry], list[PlanEntry], int]:
         """Plan the horizon after the committed activities.
 
-        ``held`` targets are left out of this plan. ``pinned`` entries, planned
-        earlier for this replan, lead the new entries as they are: the plan
-        takes over where the last of them leaves the spacecraft, and their
-        science counts as collected. Returns the committed and dropped
-        entries, the new entries and how many targets could not be placed.
+        ``held`` targets are not placed by this plan, though their science,
+        collected and committed, still counts towards their programs' shares:
+        one of them may be the observation being interrupted. ``pinned``
+        entries, planned earlier for this replan, lead the new entries as
+        they are: the plan takes over where the last of them leaves the
+        spacecraft, and their science counts as collected. Returns the
+        committed and dropped entries, the new entries and how many targets
+        could not be placed.
         """
         committed = [e for e in self.plan.entries if float(e.begin) < cutoff]
         dropped = [e for e in self.plan.entries if float(e.begin) >= cutoff]
@@ -510,12 +513,11 @@ class RollingHorizonDITL(DITL):
         horizon_end = min(utime + self.horizon.total_seconds(), self.uend)
         if horizon_end <= start:
             return committed, dropped, list(pinned), 0
-        held_ids = {id(t) for t in held}
         scheduler = self.scheduler(
             self.config,
-            # Finished targets too: the scheduler does not place them, but their
-            # science counts towards their programs' shares.
-            [t for t in self.targets if id(t) not in held_ids],
+            # Finished and held targets too: the scheduler does not place
+            # them, but their science counts towards their programs' shares.
+            self.targets,
             _as_datetime(start),
             _as_datetime(horizon_end),
             step_size=self.step_size,
@@ -526,6 +528,7 @@ class RollingHorizonDITL(DITL):
             start_state=start_state,
             reserved_seconds=self._reserved_seconds(leading, utime),
             reserved_visits=self._reserved_visits(leading, utime),
+            held=[int(t.obsid) for t in held],
             **self.scheduler_options,  # type: ignore[arg-type]
         )
         return (
