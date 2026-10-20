@@ -44,6 +44,11 @@ Scheduling and Planning
 .. toctree::
    :maxdepth: 2
 
+   conops.benchmark
+   conops.benchmark.contenders
+   conops.benchmark.harness
+   conops.benchmark.metrics
+   conops.benchmark.scenarios
    conops.schedulers
    conops.schedulers.allocator
    conops.schedulers.context
