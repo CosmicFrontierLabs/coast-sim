@@ -8,7 +8,12 @@ from conops.schedulers.consumable import ConsumableLedger, Removal
 def _ledger(removals, *, limit=80.0, start=0.0, rate=0.001):
     """A horizon of 1000 s accruing ``rate`` per second outside removals."""
     return ConsumableLedger(
-        0.0, 1000.0, removals, limit=limit, start=start, accrual=lambda s: rate * s
+        0.0,
+        1000.0,
+        removals,
+        limit=limit,
+        start=start,
+        accrual=lambda b, e: rate * (e - b),
     )
 
 
@@ -33,7 +38,7 @@ class TestSegments:
             [Removal(950.0, 1000.0, 1.0), Removal(0.0, 100.0, 1.0)],
             limit=None,
             start=0.0,
-            accrual=lambda s: 0.0,
+            accrual=lambda b, e: 0.0,
         )
         assert ledger.segments == 1
 
@@ -46,7 +51,7 @@ class TestSegments:
             [Removal(200.0, 300.0, 20.0, accrual=0.3)],
             limit=None,
             start=0.0,
-            accrual=lambda s: 0.0,
+            accrual=lambda b, e: 0.0,
         )
         assert ledger.bounds == [250.0, 250.0, 900.0]
         assert ledger.removal == pytest.approx([0.0, 10.0])
@@ -94,7 +99,12 @@ class TestLevels:
         assert ledger.bounds == [0.0, 200.0, 1000.0]
         assert ledger.accrual == pytest.approx([0.15 + 1.0, 0.7])
         clipped = ConsumableLedger(
-            180.0, 1000.0, [lead], limit=80.0, start=0.0, accrual=lambda s: 0.001 * s
+            180.0,
+            1000.0,
+            [lead],
+            limit=80.0,
+            start=0.0,
+            accrual=lambda b, e: 0.001 * (e - b),
         )
         assert clipped.accrual == pytest.approx([0.4, 0.7])
         after = ConsumableLedger(
@@ -103,7 +113,7 @@ class TestLevels:
             [Removal(1020.0, 1100.0, 20.0, lead=50.0, lead_accrual=1.0)],
             limit=80.0,
             start=0.0,
-            accrual=lambda s: 0.001 * s,
+            accrual=lambda b, e: 0.001 * (e - b),
         )
         assert after.segments == 1
         assert after.accrual == pytest.approx([0.97 + 0.6])

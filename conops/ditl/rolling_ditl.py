@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict
 
 from ..common import ObsType
 from ..config import MissionConfig, ScienceData
+from ..schedulers.battery import Addition, BatteryLedger
 from ..schedulers.context import Attitude, tracking_rest
 from ..schedulers.priority_scheduler import PriorityScheduler, StartState
 from ..schedulers.recorder import RecorderLedger
@@ -464,6 +465,7 @@ class RollingHorizonDITL(DITL):
             reserved_seconds=self._reserved_seconds(committed, utime),
             reserved_visits=self._reserved_visits(committed, utime),
             start_volume_gb=self._recorder_volume_at(utime, start, committed),
+            start_deficit_wh=self._battery_deficit_at(utime, start, committed),
             **self.scheduler_options,  # type: ignore[arg-type]
         )
         return (
@@ -573,6 +575,35 @@ class RollingHorizonDITL(DITL):
         for begin, volume in science:
             volumes[ledger.segment(begin)] += volume
         return ledger.peaks(volumes)[-1]
+
+    def _battery_deficit_at(
+        self, utime: float, start: float, committed: Sequence[PlanEntry]
+    ) -> float:
+        """How far below full the battery is when a new plan starts.
+
+        The committed activities run on until then, drawing and charging as
+        they go, so the plan starts from what they leave rather than from the
+        battery now; the part of each already past ``utime`` is in the
+        battery's charge already.
+        """
+        battery = self.config.battery
+        now = max(0.0, float(battery.watthour) - float(battery.charge_level))
+        if start <= utime:
+            return now
+        ledger = BatteryLedger(
+            self.config,
+            utime,
+            start,
+            start_deficit_wh=now,
+            step_size=self.step_size,
+            origin=self.ustart,
+        )
+        planned: list[list[Addition]] = [[] for _ in range(ledger.segments)]
+        for entry in committed:
+            addition = ledger.addition(entry, after=utime)
+            if addition is not None:
+                planned[ledger.segment(addition.begin)].append(addition)
+        return ledger.level_at(tuple(tuple(sorted(g)) for g in planned), start)
 
     def _start_state(
         self, committed: Sequence[PlanEntry], utime: float, cutoff: float

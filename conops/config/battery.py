@@ -48,6 +48,26 @@ class Battery(ConfigModel):
         default=1.0,
         description="Illumination threshold for emergency charging (0.0-1.0)",
     )
+    planning_level: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        validate_default=False,
+        description=(
+            "Battery level fraction the schedulers keep a plan above, charging "
+            "when needed; the depth-of-discharge floor (1 - max_depth_of_discharge) "
+            "unless set, None to plan without regard to the battery"
+        ),
+    )
+    planning_recharge_level: float = Field(
+        default=1.0,
+        gt=0.0,
+        le=1.0,
+        description=(
+            "Battery level fraction below which a plan charges in its idle "
+            "sunlit time, and the level a planned charge is counted to recover"
+        ),
+    )
 
     _last_charge_power: float = PrivateAttr(default=0.0)
 
@@ -78,6 +98,9 @@ class Battery(ConfigModel):
             self.recharge_clear_threshold = min(
                 1.0, self.recharge_threshold + DEFAULT_RECHARGE_CLEAR_HYSTERESIS
             )
+        if "planning_level" not in self.model_fields_set:
+            # Set, not left as the default, so it survives a save and load.
+            self.planning_level = self.minimum_charge_level
 
         return self
 
@@ -91,7 +114,29 @@ class Battery(ConfigModel):
                 "recharge_clear_threshold must be greater than or equal to "
                 "recharge_threshold"
             )
+        # getattr, as above: a test double may not carry the planning fields.
+        planning_level = getattr(self, "planning_level", None)
+        if (
+            planning_level is not None
+            and getattr(self, "planning_recharge_level", 1.0) < planning_level
+        ):
+            raise ValueError(
+                "planning_recharge_level must be greater than or equal to "
+                "planning_level"
+            )
         return self
+
+    @property
+    def planning_deficit_wh(self) -> float | None:
+        """The energy below full, in Wh, a plan keeps the battery within, or None."""
+        if self.planning_level is None:
+            return None
+        return (1.0 - self.planning_level) * self.watthour
+
+    @property
+    def planning_recharge_deficit_wh(self) -> float:
+        """The energy below full, in Wh, a planned charge recovers the battery to."""
+        return (1.0 - self.planning_recharge_level) * self.watthour
 
     def model_post_init(self, __context: object) -> None:
         self.charge_level = self.watthour

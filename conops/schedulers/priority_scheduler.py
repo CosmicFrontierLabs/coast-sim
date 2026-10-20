@@ -20,12 +20,17 @@ from ..common import ACSMode, ObsType, unixtime2date
 from ..config import MissionConfig
 from ..config.observation_categories import ObservationCategory
 from ..ditl.ditl_log import DITLLog
+from ..ditl.plan_validator import entry_obstype
 from ..simulation.passes import Pass
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing
 from ..targets.merit import MeritBreakdown, MeritModel
+from .battery import MIN_CHARGE_SECONDS, Addition, Additions, BatteryLedger
 from .context import Attitude, SchedulingContext
 from .recorder import RecorderLedger
+
+CHARGE_OBSID = 999000
+"""Obsid of the first planned charge; the rest follow."""
 
 TrackingProfile = list[tuple[float, float, float]]
 
@@ -55,6 +60,10 @@ class _Block(BaseModel):
     @property
     def is_pass(self) -> bool:
         return self.gspass is not None
+
+    @property
+    def is_charge(self) -> bool:
+        return entry_obstype(self.entry) == ObsType.CHARGE
 
     @property
     def slew_start(self) -> float:
@@ -115,6 +124,9 @@ def program_shares(seconds: Mapping[str, float]) -> dict[str, float]:
 _MAX_DELAYED = 4
 """Most snapshots moved later to fit one before them."""
 
+_BATTERY_RETRIES = 5
+"""Later starts tried in a gap for a snapshot the battery refuses."""
+
 
 class _Move(NamedTuple):
     """A snapshot placed again later, to make room before it."""
@@ -164,9 +176,14 @@ class PriorityScheduler:
        the target's earliest start and by its deadline, and the following
        activity can still be reached.
 
+    5. The plan keeps the battery above its planning level: every snapshot
+       is checked against the energy the plan draws and generates, with a
+       charge in every idle sunlit stretch one fits (see
+       :class:`~conops.schedulers.BatteryLedger`), and the finished plan
+       carries those charges as ``CHARGE`` entries.
+
     The plan is built for execution by :class:`~conops.ditl.DITL` with the same
-    configuration, ephemeris, horizon and step size. The scheduler does not model
-    battery state, so it does not schedule charging.
+    configuration, ephemeris, horizon and step size.
 
     Args:
         config: Mission configuration, with an ephemeris on its constraint.
@@ -195,6 +212,10 @@ class PriorityScheduler:
             before giving up on it (default 3). This plans much faster when many
             requests cannot be placed, but can miss a fit late in a gap. None
             tries every start, which finds every fit.
+        start_volume_gb: What is on the recorder when the horizon starts; the
+            configured recorder's volume if None.
+        start_deficit_wh: How far below full the battery is, in Wh, when the
+            horizon starts; the configured battery's charge if None.
     """
 
     scheduler_name = "priority"
@@ -218,6 +239,7 @@ class PriorityScheduler:
         reserved_visits: Mapping[int, float] | None = None,
         successor_retries: int | None = 3,
         start_volume_gb: float | None = None,
+        start_deficit_wh: float | None = None,
     ) -> None:
         self.config = config
         self.targets = list(targets)
@@ -238,6 +260,9 @@ class PriorityScheduler:
         self.start_volume_gb = start_volume_gb
         """What is on the recorder when the horizon starts; the configured
         recorder's volume if None."""
+        self.start_deficit_wh = start_deficit_wh
+        """How far below full the battery is when the horizon starts; the
+        configured battery's charge if None."""
         self.unplaced: list[Pointing] = []
         """Targets left with at least ``ss_min`` of exposure unplanned."""
         self.plan = Plan()
@@ -260,6 +285,16 @@ class PriorityScheduler:
             simulation_start=self.simulation_start,
             simulation_end=self.simulation_end,
         )
+        self._battery = self._battery_ledger()
+        self._gap_charges_cache: dict[
+            tuple[object, ...], tuple[list[_Block], Slew | None]
+        ] = {}
+        """Charges by gap (see :meth:`_gap_charges`)."""
+        self._next_charge_obsid = CHARGE_OBSID
+        self._energy: tuple[Additions, ...] = tuple(
+            () for _ in range(self._battery.segments)
+        )
+        """What the plan draws from the battery, by segment and in time order."""
         self.timeline: list[_Block] = []
         self._movable: dict[int, _Request] = {}
         """Science blocks placed by this scheduler that may move later, by id,
@@ -299,6 +334,7 @@ class PriorityScheduler:
             [block.entry for block in self.timeline]
         )
         """Science volume planned in each of the ledger's segments."""
+        self._energy = self._charged_energy(self.timeline)
 
     def _recorder_ledger(self) -> RecorderLedger:
         """The recorder over the horizon, downlinking during the reserved contacts."""
@@ -315,6 +351,78 @@ class PriorityScheduler:
             start_volume_gb=start_volume,
         )
 
+    def _battery_ledger(self) -> BatteryLedger:
+        """The battery over the horizon, charging in its idle sunlit time."""
+        battery = self.config.battery
+        start_deficit = (
+            self.start_deficit_wh
+            if self.start_deficit_wh is not None
+            else max(0.0, float(battery.watthour) - float(battery.charge_level))
+        )
+        return BatteryLedger(
+            self.config,
+            self.ctx.ustart,
+            self.ctx.uend,
+            start_deficit_wh=start_deficit,
+            step_size=self.ctx.step_size,
+            origin=self.ctx.origin,
+        )
+
+    def _timeline_energy(self, timeline: Sequence[_Block]) -> tuple[Additions, ...]:
+        """What a timeline draws from the battery, by segment, every span at the
+        attitude the spacecraft holds through it: each block over its slew and
+        hold, and the idle time between blocks at the attitude the block before
+        leaves it in (the start state's, or a freshly started spacecraft's,
+        before the first)."""
+        ledger = self._battery
+        planned: list[list[Addition]] = [[] for _ in range(ledger.segments)]
+        cursor = self.ctx.ustart
+        held = (
+            self._origin.attitude_out
+            if self._origin is not None
+            else self.ctx.initial_attitude(self.ctx.ustart)
+        )
+
+        def add(addition: Addition | None) -> None:
+            if addition is not None:
+                planned[ledger.segment(addition.begin)].append(addition)
+
+        for block in sorted(timeline, key=lambda b: float(b.entry.begin)):
+            begin = float(block.entry.begin)
+            if begin > cursor:
+                add(ledger.hold_addition(held, ACSMode.IDLE, cursor, begin))
+            addition = self._block_addition(block)
+            add(addition)
+            cursor = max(cursor, addition.end)
+            held = block.attitude_out
+        if self.ctx.uend > cursor:
+            add(ledger.hold_addition(held, ACSMode.IDLE, cursor, self.ctx.uend))
+        return tuple(tuple(sorted(group)) for group in planned)
+
+    def _block_addition(self, block: _Block) -> Addition:
+        """What a block draws from the battery over its slew and hold, with the
+        panels' generation along the slew, at the attitude held, or along a
+        contact's tracking profile. A contact goes on drawing until the
+        spacecraft is at rest after it."""
+        slew = block.slew
+        addition = self._battery.addition(
+            block.entry,
+            rest=block.end if block.is_pass else None,
+            path=slew.attitude if slew is not None else None,
+            path_start=(
+                (float(slew.startra), float(slew.startdec), float(slew.startroll))
+                if slew is not None
+                else None
+            ),
+            track=block.gspass.attitude_at if block.gspass is not None else None,
+        )
+        assert addition is not None
+        return addition
+
+    def _charged_energy(self, timeline: Sequence[_Block]) -> tuple[Additions, ...]:
+        """A timeline's energy with the charges its idle sunlit time holds."""
+        return self._timeline_energy(self._charged_timeline(list(timeline)))
+
     def _block_volume(self, block: _Block) -> float:
         """What a science block puts on the recorder."""
         return self._ledger.science_volume(block.entry, _collection_seconds(block))
@@ -323,7 +431,8 @@ class PriorityScheduler:
         return self._ledger.segment(float(block.entry.collection_begin or block.ready))
 
     def _finish(self, timeline: Sequence[_Block]) -> Plan:
-        """Record and return the plan for a finished timeline."""
+        """Record and return the plan for a finished timeline, with its charging."""
+        timeline = self._plan_charging(list(timeline))
         self.plan = Plan(
             entries=[block.entry for block in timeline],
             metadata={
@@ -533,7 +642,7 @@ class PriorityScheduler:
         """Return the collection seconds accepted locks already hold per request."""
         reserved: dict[int, float] = defaultdict(float)
         for block in self.timeline:
-            if block.is_pass:
+            if block.is_pass or block.is_charge:
                 continue
             entry = block.entry
             reserved[int(entry.obsid)] += entry.collection_seconds_between(
@@ -586,7 +695,12 @@ class PriorityScheduler:
         its ready time with every check passing.
         """
         target = attitude_in if attitude_in is not None else block.attitude_in
-        obstype = ObsType.GSP if block.is_pass else ObsType.PPT
+        if block.is_pass:
+            obstype = ObsType.GSP
+        elif block.is_charge:
+            obstype = ObsType.CHARGE
+        else:
+            obstype = ObsType.PPT
         idle_limit = self._idle_limit(pred, earliest, block.ready)
 
         start = self.ctx.floor_step(block.ready)
@@ -630,6 +744,10 @@ class PriorityScheduler:
                 slew.slewend,
                 self.ctx.ceil_step(block.ready),
                 ACSMode.IDLE,
+            )
+        elif block.is_charge:
+            wait_violation = self.ctx.first_hold_violation(
+                target, slew.slewend, self.ctx.ceil_step(block.ready), ACSMode.IDLE
             )
         else:
             # ACS only flies a science slew the target is visible for.
@@ -679,6 +797,7 @@ class PriorityScheduler:
         if succ is not None and succ_slew is not None:
             self._apply_slew(succ, succ_slew)
         self.timeline.insert(index, block)
+        self._energy = self._charged_energy(self.timeline)
 
     @staticmethod
     def _apply_slew(block: _Block, slew: Slew) -> None:
@@ -850,7 +969,7 @@ class PriorityScheduler:
         goes only where the recorder has room for what it generates, before
         the next contact and after; it is never shortened to fit.
         """
-        recorder_full = False
+        recorder_full = battery_low = False
         for index in range(len(self.timeline) + 1):
             pred = self._pred_at(index)
             succ = self.timeline[index] if index < len(self.timeline) else None
@@ -864,6 +983,19 @@ class PriorityScheduler:
                 if not self._ledger.fits(self._volumes, segment, volume):
                     # Nothing else in this gap fits either: it is all before
                     # the same contact. Try the gaps after it.
+                    recorder_full = True
+                    continue
+                charged = self._fit_within_battery(
+                    request, pred, succ, not_before, candidate, self.timeline, index
+                )
+                if charged is None:
+                    # A later gap is after more sunlit idle time, which charges.
+                    battery_low = True
+                    continue
+                block, slew, succ_slew = charged
+                volume = self._block_volume(block)
+                segment = self._block_segment(block)
+                if not self._ledger.fits(self._volumes, segment, volume):
                     recorder_full = True
                     continue
                 self._commit(index, block, slew, succ, succ_slew)
@@ -896,7 +1028,98 @@ class PriorityScheduler:
                 f"generates {self._ledger.science_volume(request.target, snapshot):.2f} Gb",
                 request.target.obsid,
             )
+        if battery_low:
+            self._log(
+                self.ctx.ustart,
+                f"Not enough charge for {request.target.obsid}: a snapshot would "
+                f"take the battery below {self.config.battery.planning_level:.0%}",
+                request.target.obsid,
+            )
         return None
+
+    def _fit_within_battery(
+        self,
+        request: _Request,
+        pred: _Block | None,
+        succ: _Block | None,
+        not_before: float | None,
+        candidate: tuple[_Block, Slew, Slew | None],
+        timeline: Sequence[_Block],
+        index: int,
+    ) -> tuple[_Block, Slew, Slew | None] | None:
+        """Keep a fitted snapshot where the battery stays above its level.
+
+        The snapshot is checked in the timeline it would join at ``index``,
+        with the activity after it re-slewed from it. If it would take the
+        battery below the level there, it is tried again later in the same
+        gap, after the charging time its idle sunlit start then leaves, as
+        long as that could cover the shortfall. Returns the fit, or None.
+        """
+        if not self._battery.active:
+            return candidate
+        until = succ.ready if succ is not None else self.ctx.uend
+        target = request.target
+        snapshot = min(float(target.ss_max), request.remaining)
+        # The latest a slew can start and still fit the whole snapshot before
+        # ``until``, with the longest slew; a later gap holds it otherwise.
+        latest = self.ctx.floor_step(
+            until
+            - snapshot
+            - self.ctx.setup_seconds
+            - self.ctx.post_collection_seconds
+            - self._battery.slew_allowance
+        )
+        for _ in range(_BATTERY_RETRIES + 1):
+            block, _, succ_slew = candidate
+            trial = self._charged_energy(
+                self._trial_timeline(timeline, index, block, succ, succ_slew)
+            )
+            if self._within_level(trial):
+                return candidate
+            addition = self._block_addition(block)
+            segment = self._battery.segment(addition.begin)
+            limit = self._battery.limit
+            assert limit is not None
+            excess = max(self._battery.peaks(trial)[segment:]) - limit
+            later = self._battery.time_to_fit(
+                self._charged_energy(timeline), addition, until, excess
+            )
+            if later is None:
+                return None
+            later = min(later, latest)
+            if later <= addition.begin:
+                return None
+            retry = self._fit_in_gap(request, pred, succ, later)
+            if retry is None:
+                return None
+            candidate = retry
+        return None
+
+    def _trial_timeline(
+        self,
+        timeline: Sequence[_Block],
+        index: int,
+        block: _Block,
+        succ: _Block | None,
+        succ_slew: Slew | None,
+    ) -> list[_Block]:
+        """The timeline with ``block`` at ``index`` and its successor re-slewed,
+        on copies, so nothing is committed."""
+        trial = [*timeline[:index], block]
+        if succ is not None:
+            moved = succ.model_copy(update={"entry": succ.entry.model_copy()})
+            if succ_slew is not None:
+                self._apply_slew(moved, succ_slew)
+            trial.append(moved)
+            trial.extend(timeline[index + 1 :])
+        return trial
+
+    def _within_level(self, energy: Sequence[Additions]) -> bool:
+        """Whether a timeline's energy keeps the battery above its level throughout."""
+        limit = self._battery.limit
+        if limit is None:
+            return True
+        return all(peak <= limit + 1e-9 for peak in self._battery.peaks(energy))
 
     def _can_delay(self, succ: _Block | None) -> bool:
         """Whether the last gap search failed only because of ``succ``, and it may move."""
@@ -1003,6 +1226,15 @@ class PriorityScheduler:
         )
         if not self._ledger.fits(self._volumes, segment, extra):
             return None
+        trial = [*self.timeline[:index], new_block, *(m.new_block for m in moves)]
+        if after is not None:
+            moved_after = after.model_copy(update={"entry": after.entry.model_copy()})
+            if after_slew is not None:
+                self._apply_slew(moved_after, after_slew)
+            trial.append(moved_after)
+            trial.extend(self.timeline[end + 1 :])
+        if not self._within_level(self._charged_energy(trial)):
+            return None
         self._volumes = self._ledger.add(self._volumes, segment, extra)
 
         # 4. Record the new slews and put the blocks in place.
@@ -1013,6 +1245,7 @@ class PriorityScheduler:
             self._apply_slew(after, after_slew)
 
         self.timeline[index:end] = [new_block] + [move.new_block for move in moves]
+        self._energy = self._charged_energy(self.timeline)
 
         for move in moves:
             # A moved snapshot is a new block, so it takes the old one's place
@@ -1301,6 +1534,208 @@ class PriorityScheduler:
         )
         entry.exptime = collection_end - collection_begin
         return entry
+
+    # ── Charging ─────────────────────────────────────────────────────────
+
+    def _plan_charging(self, timeline: list[_Block]) -> list[_Block]:
+        """Put the charges a finished plan relies on into it.
+
+        Every placement was checked with the charges its idle sunlit time
+        holds (see :meth:`_charged_timeline`); this commits them: each charge
+        goes into the plan, and the activity after it is re-slewed from the
+        charging attitude.
+        """
+        if not self._battery.active:
+            return timeline
+        charged = self._charged_timeline(timeline, commit=True)
+        for block in charged:
+            if block.is_charge:
+                self._log(
+                    float(block.entry.begin),
+                    f"Charging at {unixtime2date(block.ready)} for "
+                    f"{block.end - block.ready:.0f}s, putting back "
+                    f"{self._battery.net_charge(block.attitude_in, block.ready, block.end):.0f} Wh",
+                    block.entry.obsid,
+                )
+        violation = self._battery.first_over_limit(self._timeline_energy(charged))
+        if violation is not None:
+            self._log(
+                violation,
+                "The battery goes below its planning level at "
+                f"{unixtime2date(violation)}",
+            )
+        return charged
+
+    def _charged_timeline(
+        self, timeline: Sequence[_Block], commit: bool = False
+    ) -> list[_Block]:
+        """The timeline with a charge in every idle sunlit stretch one fits.
+
+        Between each pair of blocks, charges are chained through the sunlit
+        stretches of the idle time (see :meth:`_gap_charges`), and the block
+        after them is re-slewed from the last charging attitude. Unless
+        ``commit`` is set, that re-slew goes on a copy, so the timeline given
+        is not changed.
+        """
+        if not self._battery.active:
+            return list(timeline)
+        charged: list[_Block] = []
+        for index in range(len(timeline) + 1):
+            pred = timeline[index - 1] if index > 0 else self._origin
+            succ = timeline[index] if index < len(timeline) else None
+            charges, succ_slew = self._gap_charges(pred, succ)
+            charged.extend(charges)
+            if succ is None:
+                continue
+            if charges and succ_slew is not None:
+                if commit:
+                    self._apply_slew(succ, succ_slew)
+                else:
+                    succ = succ.model_copy(update={"entry": succ.entry.model_copy()})
+                    self._apply_slew(succ, succ_slew)
+            charged.append(succ)
+        return charged
+
+    def _gap_charges(
+        self, pred: _Block | None, succ: _Block | None
+    ) -> tuple[list[_Block], Slew | None]:
+        """The charges that fit between ``pred`` and ``succ``, and the slew that
+        then takes ``succ`` from the last of them.
+
+        Charges are chained through the gap's sunlit stretches, each slewing
+        from the block before it. The last must leave ``succ`` reachable from
+        its charging attitude; where it does not, it is shortened, and failing
+        that dropped and the one before it tried, until the chain connects.
+        Keyed on what the gap depends on, since the same gap is seen again
+        and again as placements are tried around it.
+        """
+        key = (
+            id(pred) if pred is not None else None,
+            pred.end if pred is not None else None,
+            pred.attitude_out if pred is not None else None,
+            id(succ) if succ is not None else None,
+            succ.ready if succ is not None else None,
+            succ.attitude_in if succ is not None else None,
+        )
+        cached = self._gap_charges_cache.get(key)
+        if cached is not None:
+            return cached
+        ledger = self._battery
+        idle_begin = self._earliest_start(pred)
+        idle_end = succ.ready if succ is not None else self.ctx.uend
+        chain: list[tuple[_Block, float, float]] = []
+        last = pred
+        for span_begin, span_end, stretch in ledger.charges_in(idle_begin, idle_end):
+            if stretch.attitude is None or last is not None and span_end <= last.end:
+                continue
+            placed = self._charge_block(
+                last,
+                None,
+                stretch.attitude,
+                max(span_begin, self._earliest_start(last)),
+                span_end,
+            )
+            if placed is None:
+                continue
+            chain.append((placed[0], span_begin, span_end))
+            last = placed[0]
+        succ_slew: Slew | None = None
+        while chain and succ is not None:
+            block, span_begin, span_end = chain[-1]
+            succ_slew = self._connect(block, succ, self._earliest_start(block))
+            if succ_slew is not None:
+                break
+            chain.pop()
+            before = chain[-1][0] if chain else pred
+            shorter = self._charge_block(
+                before,
+                succ,
+                block.attitude_in,
+                max(span_begin, self._earliest_start(before)),
+                span_end,
+            )
+            if shorter is not None:
+                chain.append((shorter[0], span_begin, span_end))
+                succ_slew = shorter[1]
+                break
+        result = ([block for block, _, _ in chain], succ_slew)
+        self._gap_charges_cache[key] = result
+        return result
+
+    def _charge_block(
+        self,
+        pred: _Block | None,
+        succ: _Block | None,
+        attitude: Attitude,
+        span_begin: float,
+        span_end: float,
+    ) -> tuple[_Block, Slew | None] | None:
+        """Build a charge in a sunlit idle span, or None if none fits.
+
+        The charge slews from ``pred`` as soon as it can, holds the charging
+        attitude while it is allowed until the span ends, and ends early
+        enough for ``succ`` to be reached from the charging attitude.
+        """
+        ledger = self._battery
+        start = self.ctx.ceil_step(span_begin)
+        slew = self.ctx.slew(
+            self._start_attitude(pred, start),
+            attitude,
+            start,
+            obstype=ObsType.CHARGE,
+            obsid=self._next_charge_obsid,
+        )
+        if self.ctx.first_slew_violation(slew, ACSMode.SLEWING) is not None:
+            return None
+        hold_begin = self.ctx.ceil_step(float(slew.slewend))
+        latest = self.ctx.floor_step(span_end - ledger.slew_allowance)
+        violation = self.ctx.first_hold_violation(
+            attitude, hold_begin, latest, ACSMode.CHARGING
+        )
+        if violation is not None:
+            latest = min(latest, violation)
+        hold_end = latest
+        while hold_end - hold_begin >= MIN_CHARGE_SECONDS:
+            block = self._charge_entry(attitude, slew, hold_begin, hold_end)
+            if succ is None:
+                return block, None
+            succ_slew = self._connect(block, succ, self.ctx.ceil_step(hold_end))
+            if succ_slew is not None:
+                return block, succ_slew
+            hold_end -= self.ctx.step_size
+        return None
+
+    def _charge_entry(
+        self, attitude: Attitude, slew: Slew, hold_begin: float, hold_end: float
+    ) -> _Block:
+        """The plan entry and block of a charge holding ``attitude``."""
+        ra, dec, roll = attitude
+        duration = max(0, int(round(hold_end - hold_begin)))
+        entry = PlanEntry(
+            config=self.config,
+            name="CHARGE",
+            ra=ra,
+            dec=dec,
+            roll=roll,
+            begin=float(slew.slewstart),
+            slewtime=int(slew.slewtime),
+            slewdist=float(slew.slewdist),
+            end=hold_end,
+            obsid=self._next_charge_obsid,
+            obstype=ObsType.CHARGE,
+            ss_min=0,
+            ss_max=duration,
+        )
+        entry.exptime = duration
+        self._next_charge_obsid += 1
+        return _Block(
+            entry=entry,
+            attitude_in=attitude,
+            attitude_out=attitude,
+            ready=hold_begin,
+            end=hold_end,
+            slew=slew,
+        )
 
     def _log(self, utime: float, description: str, obsid: int | None = None) -> None:
         self.log.log_event(
