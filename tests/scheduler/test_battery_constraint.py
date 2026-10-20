@@ -171,6 +171,16 @@ class TestPlanningLevel:
         )
         assert Battery(planning_level=None).planning_deficit_wh is None
 
+    def test_disabled_survives_a_save_and_load(self, tmp_path) -> None:
+        """None is a setting, not an absence: a save that leaves out None
+        fields keeps it, so a load does not restore the derived default."""
+        config = _battery_config(level=None)
+        path = str(tmp_path / "config.yaml")
+        config.to_yaml_file(path)
+        assert MissionConfig.from_yaml_file(path).battery.planning_level is None
+        with open(path) as f:
+            assert "planning_level: null" in f.read()
+
     def test_recharge_level_defaults_to_full_and_is_above_the_level(self) -> None:
         assert Battery().planning_recharge_level == 1.0
         assert Battery(watthour=500.0).planning_recharge_deficit_wh == 0.0
@@ -234,6 +244,63 @@ class TestLedger:
         assert addition.deltas[0] == pytest.approx(230.0 / 60.0)
         # Observing at 200 W with a sun-rolled side panel: net generation.
         assert all(delta < 0 for delta in addition.deltas[2:])
+
+    def test_a_contacts_ingress_slew_draws_pass_power(self) -> None:
+        """ACS reports the slew into a contact as PASS, and the braking after
+        it as SLEWING; the ledger counts each as ACS runs it."""
+        config = _battery_config(panels=False)
+        config.spacecraft_bus.power_draw.power_mode[int(ACSMode.PASS)] = 400.0
+        ledger = _ledger(config)
+        begin = ledger.stretches[1].begin
+        end = begin + 10 * MIN
+        entry = PlanEntry(
+            config=config,
+            ra=0.0,
+            dec=0.0,
+            roll=0.0,
+            begin=begin,
+            slewtime=120,
+            end=end,
+            obsid=50000,
+            obstype=ObsType.GSP,
+        )
+        addition = ledger.addition(
+            entry,
+            rest=end + 2 * MIN,
+            path=lambda t: (0.0, 0.0, 0.0),
+            path_start=(0.0, 0.0, 0.0),
+        )
+        assert addition is not None
+        eclipse = ledger.in_eclipse(begin)
+        pass_watts = ledger._watts(ACSMode.PASS, eclipse)
+        slew_watts = ledger._watts(ACSMode.SLEWING, eclipse)
+        assert pass_watts != slew_watts
+        assert len(addition.deltas) == 12
+        assert addition.deltas[0] == pytest.approx(pass_watts / 60.0)
+        assert addition.deltas[5] == pytest.approx(pass_watts / 60.0)
+        assert addition.deltas[-1] == pytest.approx(slew_watts / 60.0)
+
+    def test_charging_is_not_counted_above_the_recharge_level(self) -> None:
+        """A plan never assumes the battery above ``planning_recharge_level``:
+        held at the charging attitude, the deficit comes down to that floor
+        and no further, and a deficit already below it is left where it is."""
+        config = _battery_config(BORESIGHT)
+        config.battery.planning_recharge_level = 0.8
+        floor = 0.2 * WATTHOUR
+        full = _ledger(_battery_config(BORESIGHT))
+        stretch_end = full.stretches[1].end
+        assert (
+            full.level_at(_with_hold(full, _empty(full), T0, stretch_end), stretch_end)
+            == 0.0
+        )
+        drained = _ledger(config, start_deficit=floor + 100.0)
+        planned = _with_hold(drained, _empty(drained), T0, stretch_end)
+        assert drained.level_at(planned, stretch_end) == pytest.approx(floor)
+        charged = _ledger(config, start_deficit=50.0)
+        planned = _with_hold(charged, _empty(charged), T0, stretch_end)
+        at_sunrise = charged.level_at(planned, charged.stretches[1].begin)
+        assert 50.0 < at_sunrise < floor, "the eclipse before drew"
+        assert charged.level_at(planned, stretch_end) == pytest.approx(at_sunrise)
 
     def test_a_surplus_before_a_draw_is_lost_as_the_battery_is_full(self) -> None:
         """A block that generates in sunlight and then draws in eclipse ends
@@ -333,6 +400,22 @@ class TestPriorityScheduler:
         # Charges execute in charging mode at their attitude.
         modes = [ACSMode(int(m)) for m in ditl.mode]
         assert ACSMode.CHARGING in modes
+
+    def test_a_contact_that_draws_more_than_a_slew_executes_above_the_level(
+        self,
+    ) -> None:
+        """The slews into contacts run in PASS mode: with a contact draw well
+        above the slewing draw, the plan still executes above the level."""
+        config = _battery_config(BORESIGHT, stations=True)
+        config.spacecraft_bus.power_draw.power_mode[int(ACSMode.PASS)] = 450.0
+        scheduler = PriorityScheduler(
+            config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
+        )
+        plan = scheduler.schedule()
+        assert _charges(plan) and _science(plan)
+        ditl = _execute(config, plan)
+        assert min(ditl.batterylevel) >= LEVEL - 1e-6
+        assert ditl.validate_plan_matches_execution() == []
 
     def test_without_the_limit_the_battery_goes_below_the_level(self) -> None:
         config = _battery_config(BORESIGHT, level=None)
