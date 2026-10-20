@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict
 
 from ..common import ObsType
 from ..config import MissionConfig, ScienceData
+from ..config.solar_panel import SolarArrayDriveState
 from ..schedulers.battery import Addition, BatteryLedger
 from ..schedulers.context import Attitude, tracking_rest
 from ..schedulers.priority_scheduler import PriorityScheduler, StartState
@@ -515,6 +516,9 @@ class RollingHorizonDITL(DITL):
         horizon_end = min(utime + self.horizon.total_seconds(), self.uend)
         if horizon_end <= start:
             return committed, dropped, list(pinned), 0
+        start_deficit_wh, start_drive_state = self._battery_start(
+            utime, start, leading
+        )
         scheduler = self.scheduler(
             self.config,
             # Finished and held targets too: the scheduler does not place
@@ -532,7 +536,8 @@ class RollingHorizonDITL(DITL):
             reserved_visits=self._reserved_visits(leading, utime),
             held=[int(t.obsid) for t in held],
             start_volume_gb=self._recorder_volume_at(utime, start, leading),
-            start_deficit_wh=self._battery_deficit_at(utime, start, leading),
+            start_deficit_wh=start_deficit_wh,
+            start_drive_state=start_drive_state,
             **self.scheduler_options,  # type: ignore[arg-type]
         )
         return (
@@ -652,20 +657,22 @@ class RollingHorizonDITL(DITL):
             volumes[ledger.ingress_segment(entry)] += ledger.ingress_volume(entry)
         return ledger.peaks(volumes)[-1]
 
-    def _battery_deficit_at(
+    def _battery_start(
         self, utime: float, start: float, committed: Sequence[PlanEntry]
-    ) -> float:
-        """How far below full the battery is when a new plan starts.
+    ) -> tuple[float, SolarArrayDriveState]:
+        """The battery's deficit and the solar-array drive's state when a new
+        plan starts.
 
         The committed activities run on until then, drawing and charging as
-        they go, so the plan starts from what they leave rather than from the
-        battery now; the part of each already past ``utime`` is in the
-        battery's charge already.
+        they go and turning the drive, so the plan starts from what they
+        leave rather than from the battery now; the part of each already
+        past ``utime`` is in the battery's charge already.
         """
         battery = self.config.battery
         now = max(0.0, float(battery.watthour) - float(battery.charge_level))
+        drive = self.acs.solar_array_drive_state
         if start <= utime:
-            return now
+            return now, drive
         ledger = BatteryLedger(
             self.config,
             utime,
@@ -673,13 +680,18 @@ class RollingHorizonDITL(DITL):
             start_deficit_wh=now,
             step_size=self.step_size,
             origin=self.ustart,
+            drive_state=drive,
         )
         planned: list[list[Addition]] = [[] for _ in range(ledger.segments)]
         for entry in committed:
             addition = ledger.addition(entry, after=utime)
             if addition is not None:
                 planned[ledger.segment(addition.begin)].append(addition)
-        return ledger.level_at(tuple(tuple(sorted(g)) for g in planned), start)
+        energy = tuple(tuple(sorted(g)) for g in planned)
+        return (
+            ledger.level_at(energy, start),
+            ledger.drive_state_at(energy, start) or drive,
+        )
 
     def _start_state(
         self, committed: Sequence[PlanEntry], utime: float, cutoff: float
