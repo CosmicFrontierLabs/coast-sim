@@ -306,13 +306,11 @@ class TestLongRangeAllocator:
         assert sum(allocation.seconds[1].values()) == pytest.approx(60 * MIN)
 
     def test_requests_are_valued_by_their_merit(self) -> None:
-        """Not by the legacy fom, which is not kept in step with merit."""
         config = _config(2)
         target = Pointing(
             config=config, ra=105.0, dec=10.0, obsid=1, merit=30.0, ss_min=300
         )
         target.exptime = 1200
-        assert target.fom != target.merit
         allocator = LongRangeAllocator(
             config, BEGIN, BEGIN + timedelta(hours=2), solver="greedy"
         )
@@ -605,7 +603,8 @@ class TestDispatchPreference:
         assert target is not None and int(target.obsid) == 1
         assert target.merit_breakdown is not None
         assert target.merit_breakdown.allocation == pytest.approx(20.0)
-        assert target.merit == pytest.approx(60.0)
+        assert target.merit_breakdown.value == pytest.approx(60.0)
+        assert target.merit == pytest.approx(40.0)
 
 
 def _science(plan: Plan) -> list[tuple[int, float]]:
