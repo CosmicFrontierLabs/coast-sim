@@ -673,33 +673,46 @@ class DITLMixin:
                 data_generated -= self.config.science_generated(before, science=science)
             self._data_observation = observation
             self._data_collected = after
-        if data_generated > 0:
-            self.recorder.add_data(data_generated)
 
         # Downlink data during PASS mode, once ACS has acquired the contact:
         # the ingress slew also reports PASS, but carries no link.
         current_pass = self.acs.current_pass
+        contact_start = contact_stop = utime
+        data_to_downlink = 0.0
         if mode == ACSMode.PASS and current_pass is not None:
             # A contact can end partway through a step, and the run can end
             # before the step does; only the time in contact is credited.
             contact_start = max(utime, float(current_pass.begin))
-            contact_stop = min(utime + step_size, float(current_pass.end), self.uend)
-            contact_seconds = max(0.0, contact_stop - contact_start)
+            contact_stop = max(
+                contact_start,
+                min(utime + step_size, float(current_pass.end), self.uend),
+            )
             station = self.config.ground_stations.get(current_pass.station)
 
             # Determine actual data rate based on both ground station and spacecraft capabilities
             effective_rate_mbps = self._get_effective_data_rate(station)
-
-            if (
-                contact_seconds > 0
-                and effective_rate_mbps is not None
-                and effective_rate_mbps > 0
-            ):
+            if effective_rate_mbps is not None and effective_rate_mbps > 0:
                 # Mbps * seconds = megabits; the recorder counts gigabits.
-                megabits = effective_rate_mbps * contact_seconds
+                megabits = effective_rate_mbps * (contact_stop - contact_start)
                 data_to_downlink = megabits / 1000.0
-                data_downlinked = self.recorder.remove_data(data_to_downlink)
 
+        if data_to_downlink <= 0:
+            if data_generated > 0:
+                self.recorder.add_data(data_generated)
+            return data_generated, data_downlinked
+
+        # Generation runs on through the contact, so the step is taken in
+        # pieces: what is generated before the contact is stored, what is
+        # generated during it meets the downlink at the recorder, and what is
+        # generated after it is stored. The contact never sends data generated
+        # after it ends, and nothing is lost to a full recorder while the link
+        # empties it faster than data arrives.
+        rate = data_generated / interval
+        self.recorder.add_data(rate * (contact_start - utime))
+        data_downlinked = self.recorder.transfer(
+            rate * (contact_stop - contact_start), data_to_downlink
+        )
+        self.recorder.add_data(rate * (utime + interval - contact_stop))
         return data_generated, data_downlinked
 
     def _get_effective_data_rate(self, station: GroundStation) -> float | None:

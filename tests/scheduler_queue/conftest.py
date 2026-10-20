@@ -123,6 +123,7 @@ def mock_config() -> Mock:
     config.recorder.get_alert_level = Mock(return_value=0)
     config.recorder.add_data = Mock()
     config.recorder.remove_data = Mock(return_value=0.0)
+    config.recorder.transfer = Mock(return_value=0.0)
 
     # Mock spacecraft bus
     config.spacecraft_bus = Mock()

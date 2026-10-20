@@ -302,6 +302,7 @@ def mock_config_detailed():
     config.recorder.get_alert_level = Mock(return_value=0)  # 0 = no alert
     config.recorder.add_data = Mock()
     config.recorder.remove_data = Mock(return_value=0.0)
+    config.recorder.transfer = Mock(return_value=0.0)
 
     # Mock solar panel
     config.solar_panel = Mock()
@@ -595,7 +596,7 @@ def ditl_with_payload_and_recorder(ditl_instance):
     ditl.config.science_generated = Mock(return_value=0.1)
     ditl.recorder = Mock()
     ditl.recorder.add_data.return_value = None
-    ditl.recorder.remove_data.return_value = 0.05
+    ditl.recorder.transfer.return_value = 0.05
     return ditl
 
 
@@ -606,7 +607,7 @@ def ditl_with_pass_setup(ditl_instance, mock_config):
     ditl.config.science_generated = Mock(return_value=0.1)
     ditl.recorder = Mock()
     ditl.recorder.add_data.return_value = None
-    ditl.recorder.remove_data.return_value = 0.05
+    ditl.recorder.transfer.return_value = 0.05
     mock_pass = Mock()
     mock_pass.in_pass.return_value = True
     mock_pass.station = "station1"

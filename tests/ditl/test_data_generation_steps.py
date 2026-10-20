@@ -1,10 +1,15 @@
 """Data the DITL generates each step from the configuration and the target."""
 
+from unittest.mock import Mock
+
 import pytest
 
 from conops.common.enums import ACSMode
 from conops.config import (
+    BandCapability,
     DataGeneration,
+    GroundStation,
+    GroundStationRegistry,
     HousekeepingData,
     Instrument,
     OnboardRecorder,
@@ -97,3 +102,94 @@ def test_the_target_sets_its_instruments_science_data(ditl) -> None:
 def test_housekeeping_stops_at_the_end_of_the_simulation(ditl) -> None:
     ditl.uend = 20
     assert _step(ditl, 0, 0, ACSMode.SLEWING) == pytest.approx(0.001 * 20)
+
+
+def _contact(ditl, begin: float, end: float, *, rate_mbps: float, hk_gbps: float):
+    """Put the DITL in a contact from ``begin`` to ``end`` at ``rate_mbps``,
+    with housekeeping generated at ``hk_gbps`` in every mode."""
+    ditl.config = MissionConfig(
+        spacecraft_bus=SpacecraftBus(
+            data_generation=HousekeepingData(rate_gbps=hk_gbps)
+        ),
+        ground_stations=GroundStationRegistry(
+            stations=[
+                GroundStation(
+                    code="GS",
+                    name="GS",
+                    latitude_deg=0.0,
+                    longitude_deg=0.0,
+                    bands=[BandCapability(band="X", downlink_rate_mbps=rate_mbps)],
+                )
+            ]
+        ),
+    )
+    contact = Mock()
+    contact.station = "GS"
+    contact.begin = begin
+    contact.end = end
+    ditl.acs.current_pass = contact
+
+
+def test_a_full_contact_near_capacity_keeps_the_recorder_level(ditl) -> None:
+    """31 of 32 Gb, housekeeping at 0.1 Gbps and a 100 Mbps link for the whole
+    60 s step: the link carries what is generated and the volume stays at 31 Gb.
+    Adding the step's data before removing the downlink lost 5 Gb to the cap."""
+    _contact(ditl, 0, 3600, rate_mbps=100.0, hk_gbps=0.1)
+    ditl.recorder = OnboardRecorder(capacity_gb=32.0, current_volume_gb=31.0)
+
+    generated, downlinked = ditl._process_data_management(
+        0, ACSMode.PASS, STEP, collection_seconds=0
+    )
+
+    assert generated == pytest.approx(6.0)
+    assert downlinked == pytest.approx(6.0)
+    assert ditl.recorder.current_volume_gb == pytest.approx(31.0)
+
+
+def test_a_contact_ending_mid_step_sends_only_what_it_saw(ditl) -> None:
+    """An empty recorder, housekeeping at 1 Mbps and a 100 Mbps contact over the
+    first 30 s of a 60 s step: 0.03 Gb goes down the link and the 0.03 Gb
+    generated after the contact stays on the recorder."""
+    _contact(ditl, -600, 30, rate_mbps=100.0, hk_gbps=0.001)
+    ditl.recorder = OnboardRecorder(capacity_gb=32.0)
+
+    generated, downlinked = ditl._process_data_management(
+        0, ACSMode.PASS, STEP, collection_seconds=0
+    )
+
+    assert generated == pytest.approx(0.06)
+    assert downlinked == pytest.approx(0.03)
+    assert ditl.recorder.current_volume_gb == pytest.approx(0.03)
+
+
+def test_a_contact_starting_mid_step_stores_what_came_before_it(ditl) -> None:
+    """A 100 Mbps contact over the last 30 s of the step empties the 1 Gb on
+    the recorder and the 0.03 Gb generated before it, as well as the 0.03 Gb
+    generated during it: the step ends with the recorder empty."""
+    _contact(ditl, 30, 3600, rate_mbps=100.0, hk_gbps=0.001)
+    ditl.recorder = OnboardRecorder(capacity_gb=32.0, current_volume_gb=1.0)
+
+    generated, downlinked = ditl._process_data_management(
+        0, ACSMode.PASS, STEP, collection_seconds=0
+    )
+
+    assert generated == pytest.approx(0.06)
+    assert downlinked == pytest.approx(1.06)
+    assert ditl.recorder.current_volume_gb == pytest.approx(0.0)
+
+
+def test_the_same_contact_in_one_step_or_many_ends_the_same(ditl) -> None:
+    """A 60 s step and sixty 1 s steps over the same contact leave the same
+    volume and downlink the same amount."""
+    results = []
+    for step in (60, 1):
+        _contact(ditl, 15, 45, rate_mbps=100.0, hk_gbps=0.05)
+        ditl.recorder = OnboardRecorder(capacity_gb=32.0, current_volume_gb=31.0)
+        downlinked = sum(
+            ditl._process_data_management(
+                utime, ACSMode.PASS, step, collection_seconds=0
+            )[1]
+            for utime in range(0, 60, step)
+        )
+        results.append((downlinked, ditl.recorder.current_volume_gb))
+    assert results[0] == pytest.approx(results[1])

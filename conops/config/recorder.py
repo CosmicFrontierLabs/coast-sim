@@ -23,6 +23,8 @@ class OnboardRecorder(ConfigModel):
     Methods:
         add_data(data_gb): Add data to the recorder, returns amount actually stored.
         remove_data(data_gb): Remove data from the recorder during downlink.
+        transfer(data_in_gb, data_out_gb): Add and remove data over the same
+            interval, as during a contact.
         get_fill_fraction(): Get the current fill level as a fraction (0-1).
         get_alert_level(): Get current alert level (0=none, 1=yellow, 2=red).
         is_full(): Check if recorder is at or above capacity.
@@ -107,6 +109,30 @@ class OnboardRecorder(ConfigModel):
 
         removed = min(data_gb, self.current_volume_gb)
         self.current_volume_gb -= removed
+        return removed
+
+    def transfer(self, data_in_gb: float, data_out_gb: float) -> float:
+        """Add and remove data over the same interval, at steady rates.
+
+        Generation and downlink run concurrently during a contact, so the
+        recorder's volume moves at their net rate: it cannot overflow while
+        the link removes data faster than it arrives, and data generated
+        while the recorder is empty goes straight down the link. Adding and
+        then removing the two amounts in turn would get both wrong.
+
+        Args:
+            data_in_gb: Data generated over the interval in Gigabits.
+            data_out_gb: The most the link can remove over the interval.
+
+        Returns:
+            float: Amount of data actually removed, at most what was there
+            plus what was generated.
+        """
+        data_in_gb = max(0.0, data_in_gb)
+        data_out_gb = max(0.0, data_out_gb)
+        offered = self.current_volume_gb + data_in_gb
+        removed = min(data_out_gb, offered)
+        self.current_volume_gb = min(self.capacity_gb, offered - removed)
         return removed
 
     def get_fill_fraction(self) -> float:

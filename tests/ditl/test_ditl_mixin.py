@@ -320,16 +320,16 @@ class TestDITLMixin:
         )
         assert data_dl == 0.05
 
-    def test_process_data_management_pass_mode_calls_remove_data(
+    def test_process_data_management_pass_mode_calls_transfer(
         self, ditl_with_pass_setup: DITLMixin
     ):
-        """_process_data_management in PASS mode should call remove_data."""
+        """_process_data_management in PASS mode downlinks through transfer."""
         ditl = ditl_with_pass_setup
         from conops.common.enums import ACSMode
 
         ditl._process_data_management(1000.0, ACSMode.PASS, 60, collection_seconds=0)
-        # 100 Mbps for 60 s = 6000 Mb = 6 Gb
-        ditl.recorder.remove_data.assert_called_with(6.0)
+        # 100 Mbps for 60 s = 6000 Mb = 6 Gb, with the step's housekeeping
+        ditl.recorder.transfer.assert_called_with(0.0, 6.0)
 
     def test_process_data_management_other_modes_data_gen_zero(
         self, ditl_instance: tuple[DITLMixin, Mock, Mock]

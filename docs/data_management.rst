@@ -265,10 +265,10 @@ Downlink Calculation
 During a ground station pass in DITL simulation:
 
 1. The simulation identifies the active pass
-2. Retrieves the antenna's ``max_data_rate_mbps``
+2. Takes the rate the spacecraft gets from the station (:func:`~conops.config.groundstation.effective_downlink_rate_mbps`)
 3. Converts rate to Gbps (divide by 1000)
-4. Calculates data volume: ``rate × time_step``
-5. Removes that amount from the recorder
+4. Calculates data volume: ``rate × seconds in contact`` this step
+5. Removes that amount from the recorder, alongside what the step generates
 
 .. code-block:: python
 
@@ -276,6 +276,16 @@ During a ground station pass in DITL simulation:
    downlink_rate_gbps = 100.0 / 1000.0  # 0.1 Gbps
    time_step = 60  # seconds
    data_downlinked = downlink_rate_gbps * time_step  # 6.0 Gb
+
+Housekeeping data goes on being generated through a contact, and the link carries it
+along with what is already stored, so within a step the two are applied together
+rather than one after the other (:meth:`~conops.config.OnboardRecorder.transfer`):
+the recorder's volume moves at the net rate, it cannot overflow while the link removes
+data faster than it arrives, and data generated while the recorder is empty goes
+straight down the link. A contact that begins or ends partway through a step is
+credited for the seconds in contact only: what is generated before it is stored
+first, and what is generated after it stays on the recorder. The result is the same
+whatever the step size.
 
 Ground Station Pass Plan Entries
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
