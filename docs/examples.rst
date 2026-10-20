@@ -177,8 +177,8 @@ eclipse of observing:
   past its discharge limit in every eclipse in the other
 * The scheduler's ledger: the lowest level in each orbit, what the charges in the
   idle sunlit time put back, and which science waited for charge
-* Local search trading snapshots on merit within the same level, and CP-SAT, whose
-  plans are within the level too but whose model does not yet know the battery
+* Local search trading snapshots on merit within the same level, and CP-SAT with
+  the battery in its model, trading eclipse science on energy directly
 * Keeping margin with a higher ``planning_level``, and rolling-horizon replans that
   start from the battery's actual charge
 
