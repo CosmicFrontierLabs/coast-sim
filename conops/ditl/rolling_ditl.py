@@ -608,7 +608,16 @@ class RollingHorizonDITL(DITL):
         )
         planned: list[list[Addition]] = [[] for _ in range(ledger.segments)]
         for entry in committed:
-            addition = ledger.addition(entry, after=utime)
+            # A contact flies its tracking profile and brakes to rest after
+            # it, which is what turns the drive and generates meanwhile.
+            gspass = self._entry_passes.get(id(entry))
+            is_contact = entry_obstype(entry) == ObsType.GSP and gspass is not None
+            addition = ledger.addition(
+                entry,
+                after=utime,
+                rest=self._rest_after(entry)[0] if is_contact else None,
+                track=gspass.attitude_at if is_contact and gspass is not None else None,
+            )
             if addition is not None:
                 planned[ledger.segment(addition.begin)].append(addition)
         energy = tuple(tuple(sorted(g)) for g in planned)
