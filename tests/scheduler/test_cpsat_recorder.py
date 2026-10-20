@@ -9,6 +9,7 @@ pytest.importorskip("ortools")
 
 from ortools.sat.python import cp_model  # noqa: E402
 
+from conops.config import HousekeepingData  # noqa: E402
 from conops.schedulers import CpSatScheduler  # noqa: E402
 from conops.schedulers.cpsat_scheduler import (  # noqa: E402
     _ChunkModel,
@@ -212,6 +213,32 @@ class TestScheduler:
         assert set(scheduler.solver_statuses) == {"OPTIMAL"}
         assert all(scheduler.solver_chunks_used)
         assert scheduler.solver_score == scheduler.start_score
+
+    def test_rates_round_up_so_the_model_never_undercounts(self) -> None:
+        """Two targets at 0.005000245 Gbps: a 20-minute snapshot is 6.0003 Gb
+        and two are 12.0006, over a 12.0004 Gb limit. Rounded to the nearest
+        kilobit per second the model counted 12.0000 and accepted both, and
+        the decoder then rejected every chunk; rounded up it counts 12.0024
+        and places one after the contact, as the ledger would."""
+        config = _recorder_config(12.0004 / 20.0)
+        config.spacecraft_bus.data_generation = HousekeepingData(rate_gbps=0.0)
+        rate = 0.005000245
+        targets = [
+            _data_target(config, 1, 105.0, 10.0, rate, merit=90, minutes=20),
+            _data_target(config, 2, 110.0, 10.0, rate, merit=80, minutes=20),
+        ]
+        scheduler = _scheduler(config, targets)
+
+        plan = scheduler.schedule()
+
+        assert scheduler._candidate_data(targets[0]) == (5001, 0)
+        assert "INFEASIBLE" not in scheduler.solver_statuses
+        assert all(scheduler.solver_chunks_used)
+        assert scheduler.solver_score >= scheduler.start_score
+        assert len(_science(plan)) == 2
+        ditl = _execute(config, plan, HOURS, STEP)
+        assert ditl.validate_plan_matches_execution() == []
+        assert max(ditl.recorder_volume_gb) < 12.0004
 
     def test_without_a_limit_the_model_has_no_recorder(self) -> None:
         config = _recorder_config(None)

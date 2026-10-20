@@ -164,6 +164,25 @@ class TestLedger:
         assert ledger.housekeeping_gb == pytest.approx([0.2, 0.7])
         assert ledger.contact_housekeeping_gb == pytest.approx([0.0, 0.3])
 
+    def test_housekeeping_at_the_pass_rate_during_the_slew_into_a_contact(
+        self, config: MissionConfig
+    ) -> None:
+        """ACS runs the slew into a contact in PASS mode, so the 60 s slew
+        counts at the PASS rate in the segment before the contact."""
+        contact = PlanEntry(
+            obstype=ObsType.GSP,
+            station="TWENTY",
+            begin=140.0,
+            slewtime=60,
+            end=300.0,
+            contact_begin=200.0,
+            contact_end=300.0,
+        )
+        ledger = RecorderLedger(config, 0.0, 1000.0, [contact], start_volume_gb=0.0)
+        assert ledger.bounds == [0.0, 200.0, 1000.0]
+        assert ledger.housekeeping_gb == pytest.approx([0.14 + 0.18, 0.7])
+        assert ledger.contact_housekeeping_gb == pytest.approx([0.0, 0.3])
+
     def test_contacts_outside_the_horizon_are_ignored(
         self, config: MissionConfig
     ) -> None:
@@ -255,6 +274,43 @@ class TestPriorityScheduler:
         assert ditl.validate_plan_matches_execution() == []
         assert max(ditl.recorder_volume_gb) <= LIMIT + 1e-6
         assert max(ditl.recorder_volume_gb) > 0.5 * LIMIT
+
+    def test_a_snapshot_that_reaches_the_limit_exactly_is_refused(self) -> None:
+        """The red alert fires at the limit, so a plan stops short of it:
+        with no housekeeping, a 20-minute snapshot of exactly 18 Gb on an
+        empty recorder fits nowhere."""
+        config = _recorder_config()
+        config.spacecraft_bus.data_generation = HousekeepingData(rate_gbps=0.0)
+        exact = _data_target(config, 1, 105.0, 10.0, LIMIT / (20 * MIN), minutes=20)
+        scheduler = PriorityScheduler(
+            config, [exact], BEGIN, BEGIN + timedelta(hours=HOURS), step_size=STEP
+        )
+        plan = scheduler.schedule()
+        assert not _science(plan)
+        assert all(peak < LIMIT for peak in _peaks_of(scheduler))
+
+    def test_the_slew_into_a_contact_counts_at_the_pass_rate(self) -> None:
+        """Housekeeping only in PASS mode, at 1 Mbps, and a snapshot just
+        under the limit: counted at the nominal rate, the slew into the first
+        contact would let the recorder reach the red before acquisition."""
+        config = _recorder_config()
+        config.spacecraft_bus.data_generation = HousekeepingData(
+            rate_gbps=0.0, rate_mode={"PASS": 0.001}
+        )
+        nearly = _data_target(
+            config, 1, 105.0, 10.0, (LIMIT - 0.05) / (20 * MIN), minutes=20
+        )
+        scheduler = PriorityScheduler(
+            config, [nearly], BEGIN, BEGIN + timedelta(hours=HOURS), step_size=STEP
+        )
+        plan = scheduler.schedule()
+        placed = _science(plan)
+        assert len(placed) == 1
+        assert float(placed[0].begin) > _first_contact(plan)
+        ditl = _execute(config, plan, HOURS, STEP)
+        assert ditl.validate_plan_matches_execution() == []
+        assert max(ditl.recorder_volume_gb) < LIMIT
+        assert max(ditl.recorder_alert) < 2
 
     def test_without_the_limit_the_recorder_goes_into_the_red(self) -> None:
         config, _, plan = self._plan(None)

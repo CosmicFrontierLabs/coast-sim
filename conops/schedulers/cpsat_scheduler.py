@@ -56,11 +56,21 @@ _SEED_RANGE = 2**31
 """Seeds CP-SAT accepts are 0 up to this, exclusive."""
 
 _KB_PER_GB = 1_000_000
-"""The model counts data in kilobits, so that volumes are whole numbers."""
+"""The model counts data in kilobits, so that volumes are whole numbers:
+whatever adds data is rounded up to a whole kilobit and whatever removes it
+down, so the model never counts less data than the ledger does."""
+
+_KB_ROUNDING = 1e-6
+"""Kilobits within which a value is taken as the whole number it is next to,
+so a rate that is whole in gigabits per second does not round up."""
 
 
-def _kb(gb: float) -> int:
-    return int(round(gb * _KB_PER_GB))
+def _kb_up(gb: float) -> int:
+    return int(np.ceil(gb * _KB_PER_GB - _KB_ROUNDING))
+
+
+def _kb_down(gb: float) -> int:
+    return int(np.floor(gb * _KB_PER_GB + _KB_ROUNDING))
 
 
 class _ChunkRecorder(NamedTuple):
@@ -85,7 +95,8 @@ class _ChunkRecorder(NamedTuple):
     removal_accrual: list[int]
     """Housekeeping generated during that contact."""
     limit: int
-    """The planning limit, less a kilobit for each rounded term."""
+    """The planning limit, rounded down and less a kilobit: the recorder is
+    kept below the limit, not at it."""
     setup: int
     """Seconds from a candidate's arrival to its collection, which places it
     in a segment."""
@@ -927,21 +938,20 @@ class CpSatScheduler(LocalSearchScheduler):
         entering = levels[first] - ledger.accrual[first] - volumes[first]
         limit = ledger.limit
         assert limit is not None
-        segments = ledger.segments - first
-        candidates = sum(1 for _ in self._by_obsid)
+        # What adds data rounds up and what removes it rounds down, so the
+        # model's volumes are never below the ledger's, and a plan the model
+        # keeps a kilobit under the limit passes the decoder's exact check.
         return _ChunkRecorder(
             edges=[
                 int(round(bound - origin_time))
                 for bound in ledger.bounds[first + 1 : -1]
             ],
-            entering=_kb(entering),
-            accrual=[_kb(x) for x in ledger.accrual[first:]],
-            fixed=[_kb(x) for x in volumes[first:]],
-            removal=[_kb(x) for x in ledger.removal[first:]],
-            removal_accrual=[_kb(x) for x in ledger.removal_accrual[first:]],
-            # Each rounded term is off by at most half a kilobit; the slack
-            # keeps a plan the model accepts within the exact limit.
-            limit=_kb(limit) - 4 * segments - 2 * candidates - 1,
+            entering=_kb_up(entering),
+            accrual=[_kb_up(x) for x in ledger.accrual[first:]],
+            fixed=[_kb_up(x) for x in volumes[first:]],
+            removal=[_kb_down(x) for x in ledger.removal[first:]],
+            removal_accrual=[_kb_up(x) for x in ledger.removal_accrual[first:]],
+            limit=_kb_down(limit) - 1,
             setup=int(np.ceil(self.ctx.setup_seconds)),
         )
 
@@ -1117,12 +1127,13 @@ class CpSatScheduler(LocalSearchScheduler):
         return [task for _, _, task in candidates[: self.max_candidates]]
 
     def _candidate_data(self, target: Pointing) -> tuple[int, int]:
-        """Kilobits a snapshot of ``target`` generates per second, and once."""
+        """Kilobits a snapshot of ``target`` generates per second, and once,
+        each rounded up so the model never counts less than the ledger."""
         if not self._ledger.active:
             return (0, 0)
         once = self.config.science_generated(0.0, target.science_data)
         per_second = self.config.science_generated(1.0, target.science_data) - once
-        return (_kb(per_second), _kb(once))
+        return (_kb_up(per_second), _kb_up(once))
 
     def _opens(
         self, request: _Request, state: _State, origin_time: float
