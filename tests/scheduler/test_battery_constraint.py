@@ -580,6 +580,31 @@ class TestSolarArrayDrive:
         assert ditl.validate_plan_matches_execution() == []
         assert _charges(plan)
 
+    def test_a_replan_forecasts_committed_contacts_along_their_profiles(
+        self,
+    ) -> None:
+        """A replan starts from where the committed activities leave the
+        drive. A committed contact turns it along its tracking profile, so
+        the forecast must fly that profile rather than the entry's fixed
+        attitude, or it hands the next plan the wrong angle and the plan
+        overestimates its generation."""
+        config = _driven_config()
+        ditl = RollingHorizonDITL(
+            config,
+            _targets(config),
+            begin=BEGIN,
+            end=BEGIN + timedelta(hours=HOURS),
+            horizon=timedelta(hours=6),
+            replan_interval=timedelta(hours=2),
+            commit_lead_time=timedelta(minutes=30),
+        )
+        ditl.step_size = STEP
+        assert ditl.calc()
+        assert len(ditl.replans) > 3
+        assert not ditl.acs.in_safe_mode
+        assert min(ditl.batterylevel) >= LEVEL - 1e-6
+        assert ditl.validate_plan_matches_execution() == []
+
 
 class TestValidator:
     def test_a_charge_executed_elsewhere_is_a_mismatch(self) -> None:
