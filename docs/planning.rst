@@ -373,7 +373,9 @@ rebuilds it as the simulation runs:
    collected is kept, and its cleanup follows the cut. The cut is kept only if the new
    plan can collect the ToO. If several ToOs need a rapid replan at the same time, they
    are tried highest-ranked first, and the first that outranks the observation and can
-   be placed interrupts it.
+   be placed interrupts it. A ToO that may not interrupt does not take the cut
+   observation's place either, however it ranks: it is planned in after the
+   interrupting ToO, or, if its deadline falls before that, in the next plan.
 
 .. code-block:: python
 

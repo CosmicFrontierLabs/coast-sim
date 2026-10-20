@@ -84,7 +84,9 @@ class RollingHorizonDITL(DITL):
     evaluated now, beat the tier and value frozen onto that observation, and
     the new plan can collect the ToO. When several ToOs need a rapid replan at once, they are
     tried highest-ranked first, and the first that qualifies and can be placed
-    interrupts. A rejected attempt leaves no events in the log. Science
+    interrupts. A ToO that may not interrupt does not take the cut
+    observation's place either: it is planned in after the interrupting ToO.
+    A rejected attempt leaves no events in the log. Science
     already collected is kept, and the cut
     observation's cleanup follows it.
 
@@ -393,11 +395,8 @@ class RollingHorizonDITL(DITL):
             cut = self._interrupt_for(too, utime, cutoff, attempt)
             if cut is None:
                 continue
-            planned = self._plan_after(utime, cutoff, attempt)
-            if any(
-                int(e.obsid) == too.obsid and entry_obstype(e) in PLAN_SCIENCE_OBSTYPES
-                for e in planned[2]
-            ):
+            planned = self._plan_interrupt(too, utime, cutoff, attempt)
+            if planned is not None:
                 trigger, interrupted = too, int(cut[0].obsid)
                 self.log.add_events(attempt.events)
                 break
@@ -405,7 +404,6 @@ class RollingHorizonDITL(DITL):
             # whole unless a lower-ranked one can replace it.
             entry, original = cut
             entry.end, entry.collection_begin, entry.collection_end = original
-            planned = None
         if planned is None:
             planned = self._plan_after(utime, cutoff, self.log)
         committed, dropped, new_entries, unplaced = planned
@@ -438,13 +436,78 @@ class RollingHorizonDITL(DITL):
         if reason is not ReplanReason.RAPID:
             self._next_replan = utime + self.replan_interval.total_seconds()
 
+    def _plan_interrupt(
+        self, too: TOORequest, utime: float, cutoff: float, log: DITLLog
+    ) -> tuple[list[PlanEntry], list[PlanEntry], list[PlanEntry], int] | None:
+        """Plan the horizon after an interrupt for ``too``, or None if the
+        plan cannot collect it.
+
+        ToOs submitted with ``interrupt=False`` wait for the observation in
+        progress, so they may not take its place either: a higher-ranked one
+        would push the interrupting ToO past its deadline and undo the cut.
+        They are held back while the interrupting ToO is placed, then planned
+        in after it; one whose deadline falls before that waits for the next
+        plan.
+        """
+        waiting = [
+            self._too_targets[id(request)]
+            for request in self.too_register
+            if not request.interrupt
+            and id(request) in self._too_targets
+            and not self._too_targets[id(request)].done
+        ]
+        first = DITLLog()
+        planned = self._plan_after(utime, cutoff, first, held=waiting)
+        placed = self._placed(planned[2], too.obsid)
+        if placed is None:
+            return None
+        if not waiting:
+            log.add_events(first.events)
+            return planned
+        follow = float(placed.end)
+        held = [t for t in waiting if t.deadline is not None and t.deadline < follow]
+        starts = {id(t): t.earliest_start for t in waiting}
+        again = DITLLog()
+        try:
+            for target in waiting:
+                target.earliest_start = max(follow, target.earliest_start or follow)
+            replanned = self._plan_after(utime, cutoff, again, held=held)
+        finally:
+            for target in waiting:
+                target.earliest_start = starts[id(target)]
+        if self._placed(replanned[2], too.obsid) is None:
+            # Planned in after it, they still crowd the ToO out: the plan
+            # without them stands, and they go into the next one.
+            log.add_events(first.events)
+            return planned
+        log.add_events(again.events)
+        return replanned
+
+    @staticmethod
+    def _placed(entries: Sequence[PlanEntry], obsid: int) -> PlanEntry | None:
+        """The first science entry for ``obsid`` among ``entries``, if any."""
+        return next(
+            (
+                e
+                for e in entries
+                if int(e.obsid) == obsid and entry_obstype(e) in PLAN_SCIENCE_OBSTYPES
+            ),
+            None,
+        )
+
     def _plan_after(
-        self, utime: float, cutoff: float, log: DITLLog
+        self,
+        utime: float,
+        cutoff: float,
+        log: DITLLog,
+        *,
+        held: Sequence[Pointing] = (),
     ) -> tuple[list[PlanEntry], list[PlanEntry], list[PlanEntry], int]:
         """Plan the horizon after the committed activities.
 
-        Returns the committed and dropped entries, the new entries and how
-        many targets could not be placed.
+        ``held`` targets are left out of this plan. Returns the committed and
+        dropped entries, the new entries and how many targets could not be
+        placed.
         """
         committed = [e for e in self.plan.entries if float(e.begin) < cutoff]
         dropped = [e for e in self.plan.entries if float(e.begin) >= cutoff]
@@ -453,11 +516,12 @@ class RollingHorizonDITL(DITL):
         horizon_end = min(utime + self.horizon.total_seconds(), self.uend)
         if horizon_end <= start:
             return committed, dropped, [], 0
+        held_ids = {id(t) for t in held}
         scheduler = self.scheduler(
             self.config,
             # Finished targets too: the scheduler does not place them, but their
             # science counts towards their programs' shares.
-            self.targets,
+            [t for t in self.targets if id(t) not in held_ids],
             _as_datetime(start),
             _as_datetime(horizon_end),
             step_size=self.step_size,
