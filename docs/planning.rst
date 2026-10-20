@@ -17,6 +17,10 @@ COASTSim runs a scheduler in one of three ways:
   it from the spacecraft's actual state as time passes, as a ground-planned mission
   does. See `Rolling-horizon replanning`_.
 
+A mission configuration's ``scheduler`` section selects the mode and scheduler, and
+:func:`~conops.ditl.create_ditl` builds the matching simulation (see
+:doc:`configuration`). The classes below can also be used directly.
+
 :class:`~conops.schedulers.PriorityScheduler` is the planning engine. It reserves
 ground contacts first, then takes requests in priority order and places each
 snapshot in the earliest slot that still fits, without moving anything already
@@ -49,7 +53,7 @@ Building and executing a plan
    targets = []
    for obsid, (ra, dec, merit) in enumerate([(105, 10, 90), (30, 40, 60)], 10000):
        target = Pointing(
-           config=config, obsid=obsid, ra=ra, dec=dec, merit=merit, fom=merit,
+           config=config, obsid=obsid, ra=ra, dec=dec, merit=merit,
            ss_min=300, ss_max=1200,
        )
        target.exptime = 2400  # split into snapshots of up to ss_max

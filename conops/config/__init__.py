@@ -38,6 +38,12 @@ from .radiator import (
     RadiatorOrientation,
 )
 from .recorder import OnboardRecorder
+from .scheduler import (
+    ReplanSettings,
+    SchedulerConfig,
+    SchedulerKind,
+    SchedulerMode,
+)
 from .solar_panel import (
     SingleAxisSolarArrayDrive,
     SolarArrayDriveControl,
@@ -66,6 +72,10 @@ __all__ = [
     "Battery",
     "CommunicationsSystem",
     "MissionConfig",
+    "ReplanSettings",
+    "SchedulerConfig",
+    "SchedulerKind",
+    "SchedulerMode",
     "Constraint",
     "DefaultConstraint",
     "DataGeneration",

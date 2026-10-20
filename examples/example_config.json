@@ -530,5 +530,28 @@
         "collection_time_weight": 0.0,
         "radiator_sun_exposure_weight": 0.0,
         "radiator_earth_exposure_weight": 0.0
+    },
+    "scheduler": {
+        "mode": "dispatch",
+        "kind": "priority",
+        "include_passes": true,
+        "successor_retries": 3,
+        "seed": null,
+        "time_limit": null,
+        "max_iterations": null,
+        "earliness_weight": null,
+        "neighborhood": null,
+        "history_length": null,
+        "solver_time_limit": null,
+        "chunk_seconds": null,
+        "workers": null,
+        "max_candidates": null,
+        "replanning": {
+            "horizon_seconds": 86400.0,
+            "replan_interval_seconds": 43200.0,
+            "commit_lead_time_seconds": 0.0,
+            "rapid_replans": true,
+            "allow_interrupts": true
+        }
     }
 }

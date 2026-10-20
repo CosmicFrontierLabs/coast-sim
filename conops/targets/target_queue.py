@@ -120,7 +120,6 @@ class TargetQueue:
             dec=dec,
             obsid=obsid,
             name=name,
-            fom=merit,
             merit=merit,
             ss_min=ss_min,
             ss_max=ss_max,
@@ -134,34 +133,25 @@ class TargetQueue:
         return pointing
 
     def meritsort(self) -> None:
-        """Sort target queue by merit based on visibility, type, and trigger recency."""
-        utime = self.utime
-        for target in self.targets:
-            # Initialize merit using any pre-configured merit on the target.
-            # Previously this used a `fom` attribute; prefer setting `merit`
-            # directly on targets now.
-            if getattr(target, "fom", None) is None:
-                target.merit = 100
-            else:
-                target.merit = target.fom
-
-            # Penalize constrained targets — cache result per utime since visibility
-            # windows don't change and the same utime is checked many times per fetch.
-            if getattr(target, "_vis_cache_utime", None) != utime:
-                target._vis_cache_utime = utime  # type: ignore[attr-defined]
-                target._vis_cache_result = target.visible(utime, utime)  # type: ignore[attr-defined]
-            if getattr(target, "_vis_cache_result", None) is False:
-                target.merit = -900
-                continue
-
+        """Sort target queue by tier and merit, ranking targets not visible
+        now below every visible target in their tier."""
         self.targets.sort(
             key=lambda target: (
                 self.merit_model.tier(target),
-                target.merit,
+                target.merit if self._visible_now(target) else -900,
                 self._target_tie_breaker(target),
             ),
             reverse=True,
         )
+
+    def _visible_now(self, target: Pointing) -> bool:
+        """Whether ``target`` is visible at the queue's current time."""
+        # Cached per utime: the same utime is checked many times per fetch.
+        utime = self.utime
+        if getattr(target, "_vis_cache_utime", None) != utime:
+            target._vis_cache_utime = utime  # type: ignore[attr-defined]
+            target._vis_cache_result = target.visible(utime, utime)  # type: ignore[attr-defined]
+        return getattr(target, "_vis_cache_result", None) is not False
 
     def _target_tie_breaker(self, target: Pointing) -> int:
         """Return a deterministic tie-break value for equal-merit targets."""
@@ -350,6 +340,7 @@ class TargetQueue:
             t
             for t in self.targets
             if t.merit > 0
+            and self._visible_now(t)
             and not t.done
             and (t.deadline is None or utime <= t.deadline)
             # Selected now, it collects after now.
@@ -544,8 +535,7 @@ class TargetQueue:
         return best_target
 
     def _select(self, target: Pointing, breakdown: MeritBreakdown) -> None:
-        """Freeze the selected target's merit at its value and log its terms."""
-        target.merit = breakdown.value
+        """Freeze the selected target's value and log its terms."""
         target.merit_breakdown = breakdown
         if self.log is not None:
             self.log.log_event(

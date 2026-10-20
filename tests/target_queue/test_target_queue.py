@@ -62,14 +62,15 @@ class TestQueueBasicOps:
 
 
 class TestMeritsort:
-    def test_meritsort_invisible_target_merit(self, queue_instance) -> None:
-        """The invisible target should get the hidden-target merit."""
+    def test_meritsort_leaves_an_invisible_targets_merit(self, queue_instance) -> None:
+        """Ranking an invisible target low does not change its merit."""
         invisible_target = queue_instance.targets[1]
         invisible_target.visible.return_value = False
+        merit = invisible_target.merit
 
         queue_instance.meritsort()
 
-        assert invisible_target.merit == -900
+        assert invisible_target.merit == merit
 
     def test_meritsort_sorted_descending(self, queue_instance):
         """Check that the targets are sorted by merit descending."""

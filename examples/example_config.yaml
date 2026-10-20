@@ -542,3 +542,26 @@ targets:
   radiator_sun_exposure_weight: 0.0
   # radiator_earth_exposure_weight: Weight to penalize radiator earth exposure during target selection
   radiator_earth_exposure_weight: 0.0
+
+# Scheduler. How simulations built with create_ditl decide what to observe: queue dispatch, one plan, or rolling replanning
+scheduler:
+  # mode: dispatch, planned or rolling
+  mode: dispatch
+  # kind: Scheduler that builds plans in planned and rolling modes
+  kind: priority
+  # include_passes: Whether plans reserve ground-station passes
+  include_passes: true
+  # successor_retries: Later starts to try in a gap once a snapshot fits but the activity after it cannot be reached; unlimited tries every start
+  successor_retries: 3
+  # replanning: Replanning schedule for rolling mode
+  replanning:
+    # horizon_seconds: How far ahead each plan looks
+    horizon_seconds: 86400.0
+    # replan_interval_seconds: Time between scheduled replans
+    replan_interval_seconds: 43200.0
+    # commit_lead_time_seconds: Time between building a plan and it taking effect
+    commit_lead_time_seconds: 0.0
+    # rapid_replans: Whether a ToO with a close deadline triggers an immediate replan
+    rapid_replans: true
+    # allow_interrupts: Whether a rapid replan may cut short the observation in progress
+    allow_interrupts: true

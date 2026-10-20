@@ -191,6 +191,48 @@ Here is an example of adding targets to the observation queue:
     )
 
 
+Choosing How to Schedule
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Queue dispatch is one of three ways COASTSim can decide what to observe. A
+configuration's ``scheduler`` section chooses between them, and ``create_ditl``
+builds the matching simulation from a list of targets:
+
+* ``dispatch`` (the default): a `QueueDITL` picks the next target each time the
+  spacecraft is free.
+* ``planned``: a scheduler builds one plan for the whole run, which a `DITL`
+  executes.
+* ``rolling``: a `RollingHorizonDITL` follows a plan and rebuilds it as the run
+  goes on, as a mission planned on the ground does.
+
+In ``planned`` and ``rolling`` modes, ``kind`` chooses the scheduler that builds
+the plans: ``priority`` (the default), ``local_search`` or ``cp_sat``.
+
+.. code-block:: python
+
+    from conops import Pointing, create_ditl
+    from conops.config import SchedulerConfig
+
+    config.scheduler = SchedulerConfig(mode="rolling", kind="local_search", time_limit=5)
+
+    target = Pointing(config=config, ra=266, dec=-29, obsid=10000, merit=55)
+    target.exptime = 1000
+
+    ditl = create_ditl(config, [target], begin, end, ephem=ephemeris)
+    ditl.calc()
+
+The same section can be saved with the rest of the configuration:
+
+.. code-block:: yaml
+
+    scheduler:
+      mode: rolling
+      kind: local_search
+      time_limit: 5
+
+See :doc:`configuration` for every setting, and :doc:`planning` for what each
+mode and scheduler does.
+
 
 Constraints
 ~~~~~~~~~~~
@@ -246,7 +288,7 @@ COASTSim is organized into several key modules:
 * `conops.targets`: Target management classes (Pointing, Queue, Plan, PlanEntry)
 * `conops.schedulers`: Schedulers (PriorityScheduler, SequentialScheduler, QueueScheduler)
 * `conops.simulation`: Core simulation components (ACS, DITL classes, constraints, etc.)
-* `conops.ditl`: Day-In-The-Life simulation classes (DITL, DITLMixin, QueueDITL)
+* `conops.ditl`: Day-In-The-Life simulation classes (DITL, DITLMixin, QueueDITL, RollingHorizonDITL) and ``create_ditl``
 * `conops.visualization`: Visualization utilities for plotting results (sky pointing, timelines, etc.)
 
 All classes are available directly from the ``conops`` package:

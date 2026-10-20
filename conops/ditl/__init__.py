@@ -4,6 +4,7 @@ from .ditl_log import DITLLog
 from .ditl_log_store import DITLLogStore
 from .ditl_mixin import AttitudeRateContinuityError, DITLMixin
 from .ditl_stats import DITLStats
+from .factory import create_ditl
 from .plan_validator import (
     PlanExecutionMismatch,
     PlanExecutionMismatchError,
@@ -22,6 +23,7 @@ __all__ = [
     "DITLLogStore",
     "DITLMixin",
     "DITLStats",
+    "create_ditl",
     "QueueDITL",
     "ReplanReason",
     "ReplanRecord",

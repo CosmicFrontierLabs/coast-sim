@@ -22,11 +22,6 @@ class Pointing(PlanEntry):
     name: str = "FakeTarget"
     merit: float = 100.0
     isat: bool = False
-    # ``fom`` is maintained as a legacy alias for ``merit`` for
-    # backwards compatibility (e.g. tests and older code). The
-    # canonical field we use internally is ``merit`` which can be
-    # recomputed each scheduling iteration by ``Queue.meritsort``.
-    fom: float = Field(default=100.0, exclude=True)
     obstype: ObsType = ObsType.AT
     roll: float = 0.0
     deadline: float | None = Field(
@@ -71,6 +66,25 @@ class Pointing(PlanEntry):
         if v is None:
             return None
         return datetime.fromtimestamp(v, tz=timezone.utc).isoformat()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_fom(cls, data: object) -> object:
+        """Accept ``fom``, the legacy name of ``merit``."""
+        if isinstance(data, dict) and "fom" in data:
+            data = dict(data)
+            fom = data.pop("fom")
+            data.setdefault("merit", fom)
+        return data
+
+    @property
+    def fom(self) -> float:
+        """Legacy alias of :attr:`merit`."""
+        return self.merit
+
+    @fom.setter
+    def fom(self, value: float) -> None:
+        self.merit = value
 
     @model_validator(mode="after")
     def _check_start_before_deadline(self) -> "Pointing":

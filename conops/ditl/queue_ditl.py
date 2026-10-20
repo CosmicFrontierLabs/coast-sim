@@ -1349,7 +1349,11 @@ class QueueDITL(DITLMixin, DITLStats):
                     # Set end to the begin time of new PPT (no gap between entries)
                     self._close_last_plan_entry(self.ppt.begin)
 
-            self.plan.append(self.ppt.model_copy())
+            entry = self.ppt.model_copy()
+            # As planned schedules do, record the value it was selected with.
+            if isinstance(entry, Pointing) and entry.merit_breakdown is not None:
+                entry.merit = entry.merit_breakdown.value
+            self.plan.append(entry)
 
     def _process_due_acs_commands(
         self, utime: float
