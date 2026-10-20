@@ -105,6 +105,41 @@ This notebook simulates a ground-planned mission with ``RollingHorizonDITL``:
 
 See :doc:`planning` (Rolling-horizon replanning) for reference.
 
+Local Search Planning
+~~~~~~~~~~~~~~~~~~~~~
+
+**Location**: ``examples/Local_Search_Scheduler_Example.ipynb``
+
+This notebook compares ``LocalSearchScheduler`` with ``PriorityScheduler`` on 100 random
+targets:
+
+* One-day plans from each, executed to check that they run exactly as planned
+* Where the time goes: science, slewing and idle time, and the two timelines
+* Merit-weighted science through the day, and which targets gained or lost time
+* How the result and the planning time grow with the number of changes tried
+* A benchmark of ``RollingHorizonDITL`` runs with each scheduler over several target sets
+
+See :doc:`planning` (Improving plans by local search) for reference.
+
+CP-SAT Planning
+~~~~~~~~~~~~~~~
+
+**Location**: ``examples/CP_SAT_Scheduler_Example.ipynb``
+
+This notebook compares ``CpSatScheduler`` with ``LocalSearchScheduler``, with
+``PriorityScheduler`` as the baseline, on 100 random targets (it needs the ``cpsat``
+extra):
+
+* One-day plans from each, with the same planning time, executed to check that they
+  run exactly as planned
+* Science, merit-weighted science, idle time and targets completed
+* The gain in each of CP-SAT's chunks, and through the day
+* Which targets gained or lost time
+* How each scheduler's result grows with planning time
+* A benchmark of ``RollingHorizonDITL`` runs with each scheduler over several target sets
+
+See :doc:`planning` (Optimizing plans with CP-SAT) for reference.
+
 Example Configuration
 ~~~~~~~~~~~~~~~~~~~~~
 

@@ -177,7 +177,7 @@ violation is unambiguously a simulation bug.  During ``SLEWING`` the spacecraft 
 actively rotating between targets and may briefly sweep through a soft-constraint zone
 by design — flagging that as an error would produce false positives.  The
 ``attitude_constraint_scopes`` map lets you express, per ACS mode, which categories
-of attitude constraints the planner is expected to enforce.
+of attitude constraints the scheduler is expected to enforce.
 
 If any sample fails its configured scope check, a
 :class:`~conops.ditl.plan_validator.PlanExecutionMismatch` is recorded and
@@ -186,16 +186,16 @@ If any sample fails its configured scope check, a
 message includes the first few violations — mode, obsid, RA/Dec/roll, and the constraint
 name — to aid debugging.
 
-**Planner admission guarantees vs. FM-monitored runtime conditions**
+**Scheduler admission guarantees vs. FM-monitored runtime conditions**
 
 Not every constraint violation is a scheduling failure. The scopes per mode encode
-which violations the planner claims to prevent, and therefore which post-simulation
+which violations the scheduler claims to prevent, and therefore which post-simulation
 telemetry samples should be reported as planning mismatches. Fault Management still
 monitors configured telemetry thresholds at runtime.
 
-* **Planner admission guarantee** — a constraint the scheduler evaluates via
+* **Scheduler admission guarantee** — a constraint the scheduler evaluates via
   ``in_constraint()`` before accepting an attitude into the plan.  If telemetry shows
-  a violation in one of these modes, the planner broke its contract and the simulation
+  a violation in one of these modes, the scheduler broke its contract and the simulation
   records a :class:`~conops.ditl.plan_validator.PlanExecutionMismatch`.  This covers the
   configured scopes for that mode.
 
@@ -646,7 +646,7 @@ sample, so they reflect the resulting physical drive angle without advancing its
 state again. Existing fixed-panel radiator shadowing is preserved. Combining
 ``PanelGeometry`` with ``single_axis_drive`` is rejected until articulated shadow
 transforms are supported, rather than treating the zero-angle rectangle as the
-executed geometry. ``SequentialPlanner`` also rejects a finite drive with active
+executed geometry. ``SequentialScheduler`` also rejects a finite drive with active
 tracking modes because it cannot propagate runtime drive state; use the queue
 simulation for dynamic finite drives.
 
@@ -1021,6 +1021,8 @@ merits. Within a tier the dynamic terms decide.
   ``timescale / time_to_close`` before that. The closing time is the deadline,
   or the end of the current visibility window when no later window opens
   before the deadline. A target cannot be selected once its deadline has passed.
+  A target with an ``earliest_start`` (``queue.add(..., earliest_start=...)``),
+  the earliest time science collection may begin, cannot be selected before it.
 * ``config.targets.cadence_weight`` - Merit added once a target's category
   ``cadence_seconds`` has elapsed since it last collected science, rising
   linearly from ``0`` just after a visit. A target never yet observed gets the
@@ -1034,8 +1036,9 @@ Each dynamic term is its weight times a factor bounded to ``[0, 1]`` (``[-1, 1]`
 for the deficit), so no term can exceed its weight. With every weight at
 ``0.0`` and every category in tier ``0`` (the defaults), selection is unchanged.
 
-The planners apply the same terms. :class:`~conops.schedulers.PriorityPlanner`,
-and :class:`~conops.ditl.RollingHorizonDITL` through it, evaluate the cadence and
+The schedulers apply the same terms. :class:`~conops.schedulers.PriorityScheduler`,
+:class:`~conops.schedulers.LocalSearchScheduler`, and
+:class:`~conops.ditl.RollingHorizonDITL` through them, evaluate the cadence and
 completion deficit against the plan as it is built as well as the science already
 collected (see :doc:`planning`).
 
@@ -1191,7 +1194,7 @@ preserves serialized collection windows, deriving them from configuration only
 when absent. Collection cannot begin before the executed slew and setup finish,
 even if the slew takes longer than planned. A late start reduces collection;
 it does not move the planned cutoff or rewrite the delivered plan.
-``SequentialPlanner`` does not
+``SequentialScheduler`` does not
 support these budgets and rejects nonzero values; use ``QueueDITL`` to generate
 budgeted plans.
 

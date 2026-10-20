@@ -11,7 +11,7 @@ Execution contract
 ------------------
 
 * Every motion uses a quaternion trajectory with the configured scalar or
-  directional rate and acceleration limits. Ordinary slews share the planner's
+  directional rate and acceleration limits. Ordinary slews share the scheduler's
   analytic rest-to-rest motion profile; tracking preserves rate through knots.
 * Trajectories snapshot geometry and motion coefficients. Mutating a command's
   slew object cannot rewrite installed motion. Changing configuration during a

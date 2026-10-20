@@ -192,9 +192,9 @@ disabled by default for performance. To enable it, pass
 
 ### Scheduling (`conops.schedulers`)
 
-Target observation queue management and planners (PriorityPlanner, SequentialPlanner, QueuePlanner). The
+Target observation queue management and schedulers (PriorityScheduler, SequentialScheduler, QueueScheduler). The
 former names `DumbScheduler` and `DumbQueueScheduler` remain as aliases of
-`SequentialPlanner` and `QueuePlanner`.
+`SequentialScheduler` and `QueueScheduler`.
 
 ### Targets (`conops.targets`)
 
@@ -237,9 +237,9 @@ conops/
 ├── schedulers/              # Scheduling algorithms
 │   ├── __init__.py
 │   ├── context.py
-│   ├── priority_planner.py
-│   ├── sequential_planner.py
-│   ├── queue_planner.py
+│   ├── priority_scheduler.py
+│   ├── sequential_scheduler.py
+│   ├── queue_scheduler.py
 │   ├── scheduler.py         # DumbScheduler alias
 │   └── queue_scheduler.py   # DumbQueueScheduler alias
 ├── targets/                 # Target management and planning
@@ -269,13 +269,13 @@ pytest tests/
 ```
 
 The test suite includes a COAST-owned default plan output regression check. Run
-it directly when reviewing planner/output changes:
+it directly when reviewing scheduler/output changes:
 
 ```bash
 python scripts/check_default_plan_output.py
 ```
 
-If a planner change intentionally changes the default output, update and review
+If a scheduler change intentionally changes the default output, update and review
 the checked-in baseline:
 
 ```bash

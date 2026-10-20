@@ -240,7 +240,7 @@ class MeritModel:
     ) -> float:
         """Return allocated minus delivered share for the program, in [-1, 1].
 
-        This is the completion-deficit factor before its weight; planners use
+        This is the completion-deficit factor before its weight; schedulers use
         it with the shares their plan would deliver.
         """
         if category.time_share is None:

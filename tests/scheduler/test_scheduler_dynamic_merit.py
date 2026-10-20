@@ -1,4 +1,4 @@
-"""PriorityPlanner follows the dynamic merit terms: cadence and completion deficit."""
+"""PriorityScheduler follows the dynamic merit terms: cadence and completion deficit."""
 
 from collections.abc import Mapping, Sequence
 from datetime import timedelta
@@ -9,7 +9,7 @@ from conops import DITL
 from conops.common import ObsType
 from conops.config import MissionConfig, TargetConfig
 from conops.config.observation_categories import ObservationCategory
-from conops.schedulers import PriorityPlanner
+from conops.schedulers import PriorityScheduler
 from conops.targets import Plan, PlanEntry, Pointing
 
 from .planning_scenario import BEGIN, HOUR, MIN, PATCH, T0
@@ -70,14 +70,14 @@ def _plan(
     targets: Sequence[Pointing],
     **options: Mapping[int, float] | Sequence[PlanEntry],
 ) -> Plan:
-    planner = PriorityPlanner(
+    scheduler = PriorityScheduler(
         config,
         targets,
         BEGIN,
         BEGIN + timedelta(hours=HOURS),
         **options,  # type: ignore[arg-type]
     )
-    return planner.schedule()
+    return scheduler.schedule()
 
 
 def _visits(plan: Plan, obsid: int) -> list[tuple[float, float]]:
@@ -165,7 +165,7 @@ class TestCadenceOrdering:
             for i, (ra, dec) in enumerate(PATCH[1:])
         ]
 
-        plan = PriorityPlanner(
+        plan = PriorityScheduler(
             config, [monitor, *filler], BEGIN, BEGIN + timedelta(hours=hours)
         ).schedule()
 
@@ -246,7 +246,7 @@ class TestCadenceWithLockedVisits:
         monitor = _target(
             config, 1, *PATCH[0], merit=60, minutes=80, snapshot=40, ss_min=5
         )
-        plan = PriorityPlanner(
+        plan = PriorityScheduler(
             config,
             [monitor],
             BEGIN,

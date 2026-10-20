@@ -1,4 +1,4 @@
-"""PriorityPlanner: plans must execute in DITL exactly as planned."""
+"""PriorityScheduler: plans must execute in DITL exactly as planned."""
 
 from datetime import timedelta
 from unittest.mock import Mock, patch
@@ -18,8 +18,8 @@ from conops.config import (
     Telescope,
 )
 from conops.config.observation_categories import ObservationCategory
-from conops.schedulers import PriorityPlanner, SchedulingContext
-from conops.schedulers.priority_planner import _Move
+from conops.schedulers import PriorityScheduler, SchedulingContext
+from conops.schedulers.priority_scheduler import _Move
 from conops.targets import Plan, PlanEntry, Pointing
 
 from .planning_scenario import (
@@ -69,12 +69,12 @@ class TestExecution:
             _target(config, 100 + i, ra, dec, merit=90 - i, minutes=40, snapshot=20)
             for i, (ra, dec) in enumerate(PATCH + CONSTRAINED)
         ]
-        planner = PriorityPlanner(
+        scheduler = PriorityScheduler(
             config, targets, BEGIN, BEGIN + timedelta(hours=hours)
         )
 
-        plan = planner.schedule()
-        ditl = _execute(config, plan, hours, planner.ctx.step_size)
+        plan = scheduler.schedule()
+        ditl = _execute(config, plan, hours, scheduler.ctx.step_size)
 
         assert len(_science(plan)) >= 5
         assert ditl.validate_plan_matches_execution() == []
@@ -88,12 +88,12 @@ class TestExecution:
             _target(config, 100 + i, ra, dec, merit=90 - i, minutes=60, snapshot=20)
             for i, (ra, dec) in enumerate(PATCH + CONSTRAINED)
         ]
-        planner = PriorityPlanner(
+        scheduler = PriorityScheduler(
             config, targets, BEGIN, BEGIN + timedelta(hours=hours)
         )
 
-        plan = planner.schedule()
-        ditl = _execute(config, plan, hours, planner.ctx.step_size)
+        plan = scheduler.schedule()
+        ditl = _execute(config, plan, hours, scheduler.ctx.step_size)
 
         assert any(entry.obstype == ObsType.GSP for entry in plan)
         assert ditl.validate_plan_matches_execution() == []
@@ -105,11 +105,13 @@ class TestExecution:
         targets = [
             _target(config, 100 + i, ra, dec) for i, (ra, dec) in enumerate(PATCH)
         ]
-        planner = PriorityPlanner(config, targets, BEGIN, BEGIN + timedelta(hours=2))
+        scheduler = PriorityScheduler(
+            config, targets, BEGIN, BEGIN + timedelta(hours=2)
+        )
 
-        plan = planner.schedule()
+        plan = scheduler.schedule()
 
-        assert all((entry.begin - T0) % planner.ctx.step_size == 0 for entry in plan)
+        assert all((entry.begin - T0) % scheduler.ctx.step_size == 0 for entry in plan)
 
 
 class TestOrdering:
@@ -118,7 +120,7 @@ class TestOrdering:
         low = _target(config, 1, 105.0, 10.0, merit=10)
         high = _target(config, 2, 110.0, 10.0, merit=90)
 
-        plan = PriorityPlanner(
+        plan = PriorityScheduler(
             config, [low, high], BEGIN, BEGIN + timedelta(hours=2)
         ).schedule()
 
@@ -131,7 +133,7 @@ class TestOrdering:
         calibration = _target(config, 1, 105.0, 10.0, merit=1)
         science = _target(config, 2, 110.0, 10.0, merit=90)
 
-        plan = PriorityPlanner(
+        plan = PriorityScheduler(
             config, [science, calibration], BEGIN, BEGIN + timedelta(hours=2)
         ).schedule()
 
@@ -159,7 +161,7 @@ class TestOrdering:
             target.exptime = 20 * MIN
             targets.append(target)
 
-        plan = PriorityPlanner(
+        plan = PriorityScheduler(
             config, targets, BEGIN, BEGIN + timedelta(hours=2)
         ).schedule()
 
@@ -186,7 +188,7 @@ class TestOrdering:
             target.record_collection(T0 - HOUR, delivered)
             target.exptime = 20 * MIN
 
-        plan = PriorityPlanner(
+        plan = PriorityScheduler(
             config, [over_served, under_served], BEGIN, BEGIN + timedelta(hours=2)
         ).schedule()
 
@@ -202,7 +204,7 @@ class TestSnapshots:
         config = _config(2)
         target = _target(config, 1, 105.0, 10.0, minutes=40, snapshot=20)
 
-        plan = PriorityPlanner(
+        plan = PriorityScheduler(
             config, [target], BEGIN, BEGIN + timedelta(hours=2)
         ).schedule()
 
@@ -214,27 +216,33 @@ class TestSnapshots:
         config = _config(2)
         target = _target(config, 1, 105.0, 10.0, minutes=25, snapshot=20, ss_min=10)
 
-        planner = PriorityPlanner(config, [target], BEGIN, BEGIN + timedelta(hours=2))
-        plan = planner.schedule()
+        scheduler = PriorityScheduler(
+            config, [target], BEGIN, BEGIN + timedelta(hours=2)
+        )
+        plan = scheduler.schedule()
 
         assert [entry.exposure for entry in _science(plan)] == [20 * MIN]
-        assert planner.unplaced == []
+        assert scheduler.unplaced == []
 
     def test_zero_minimum_snapshot_stops_when_the_request_is_met(self) -> None:
         config = _config(2)
         target = _target(config, 1, 105.0, 10.0, minutes=1, ss_min=0)
 
-        planner = PriorityPlanner(config, [target], BEGIN, BEGIN + timedelta(hours=2))
-        plan = planner.schedule()
+        scheduler = PriorityScheduler(
+            config, [target], BEGIN, BEGIN + timedelta(hours=2)
+        )
+        plan = scheduler.schedule()
 
         assert [entry.exposure for entry in _science(plan)] == [MIN]
-        assert planner.unplaced == []
+        assert scheduler.unplaced == []
 
     def test_inputs_are_not_modified(self) -> None:
         config = _config(2)
         target = _target(config, 1, 105.0, 10.0, minutes=40, snapshot=20)
 
-        PriorityPlanner(config, [target], BEGIN, BEGIN + timedelta(hours=2)).schedule()
+        PriorityScheduler(
+            config, [target], BEGIN, BEGIN + timedelta(hours=2)
+        ).schedule()
 
         assert target.exptime == 40 * MIN
         assert not target.done
@@ -245,13 +253,105 @@ class TestDeadlinesAndConstraints:
         config = _config(2)
         target = _target(config, 1, 105.0, 10.0, deadline=T0 + 30 * MIN)
 
-        plan = PriorityPlanner(
+        plan = PriorityScheduler(
             config, [target], BEGIN, BEGIN + timedelta(hours=2)
         ).schedule()
 
         (entry,) = _science(plan)
         assert entry.collection_begin is not None
         assert entry.collection_begin <= T0 + 30 * MIN
+
+    def test_collection_starts_no_earlier_than_the_earliest_start(self) -> None:
+        config = _config(2)
+        target = _target(config, 1, 105.0, 10.0, earliest_start=T0 + 30 * MIN)
+
+        plan = PriorityScheduler(
+            config, [target], BEGIN, BEGIN + timedelta(hours=2)
+        ).schedule()
+
+        (entry,) = _science(plan)
+        assert entry.collection_begin is not None
+        assert T0 + 30 * MIN <= entry.collection_begin < T0 + 35 * MIN
+
+    def test_other_requests_use_the_time_before_the_earliest_start(self) -> None:
+        config = _config(2)
+        later = _target(config, 1, 105.0, 10.0, merit=90, earliest_start=T0 + 40 * MIN)
+        now = _target(config, 2, 110.0, 10.0, merit=10)
+
+        plan = PriorityScheduler(
+            config, [later, now], BEGIN, BEGIN + timedelta(hours=2)
+        ).schedule()
+
+        assert [int(e.obsid) for e in _science(plan)] == [2, 1]
+
+    def test_executes_as_planned_with_an_earliest_start(self) -> None:
+        config = _config(2)
+        target = _target(config, 1, 105.0, 10.0, earliest_start=T0 + 30 * MIN)
+        scheduler = PriorityScheduler(
+            config, [target], BEGIN, BEGIN + timedelta(hours=2)
+        )
+        plan = scheduler.schedule()
+
+        ditl = _execute(config, plan, 2, scheduler.ctx.step_size)
+
+        assert ditl.validate_plan_matches_execution() == []
+
+    def test_earliest_start_and_deadline_met_when_the_slew_lengthens(
+        self,
+    ) -> None:
+        """Only the start at 9600 s collects between 9809 s and 9819 s.
+
+        From the horizon start the slew takes 208 s, which puts the estimate
+        for an earliest start of 9809 s at 9660 s. The slew takes 209 s from
+        there, so collection there would begin at 9869 s, after the deadline.
+        """
+        config = _config(6)
+        target = _target(
+            config,
+            33,
+            271.24954384622714,
+            -10.971713550878292,
+            minutes=10,
+            snapshot=10,
+            ss_min=5,
+            earliest_start=T0 + 9809,
+            deadline=T0 + 9819,
+        )
+        scheduler = PriorityScheduler(
+            config,
+            [target],
+            BEGIN,
+            BEGIN + timedelta(hours=6),
+            step_size=60,
+            include_passes=False,
+        )
+        plan = scheduler.schedule()
+
+        (entry,) = _science(plan)
+        assert entry.collection_begin is not None
+        assert T0 + 9809 <= entry.collection_begin <= T0 + 9819
+        ditl = _execute(config, plan, 6, scheduler.ctx.step_size)
+        assert ditl.validate_plan_matches_execution() == []
+
+    def test_request_opening_after_the_horizon_does_not_abort_the_plan(
+        self,
+    ) -> None:
+        """A request whose earliest start is past the horizon goes unplaced
+        without stopping others from being placed."""
+        config = _config(2)
+        later = _target(config, 1, *PATCH[0], merit=100, earliest_start=T0 + 3 * HOUR)
+        now = _target(config, 2, *PATCH[1], merit=50)
+        scheduler = PriorityScheduler(
+            config,
+            [later, now],
+            BEGIN,
+            BEGIN + timedelta(hours=2),
+            include_passes=False,
+        )
+        plan = scheduler.schedule()
+
+        assert [entry.obsid for entry in _science(plan)] == [2]
+        assert [target.obsid for target in scheduler.unplaced] == [1]
 
     def test_priority_order_can_cost_a_short_window_request(self) -> None:
         """Placed first, a flexible high-merit request takes the slot B needed."""
@@ -261,13 +361,13 @@ class TestDeadlinesAndConstraints:
             config, 2, 110.0, 10.0, merit=70, minutes=30, deadline=T0 + 30 * MIN
         )
 
-        planner = PriorityPlanner(
+        scheduler = PriorityScheduler(
             config, [flexible, urgent], BEGIN, BEGIN + timedelta(hours=3)
         )
-        plan = planner.schedule()
+        plan = scheduler.schedule()
 
         assert [e.obsid for e in _science(plan)] == [1]
-        assert planner.unplaced == [urgent]
+        assert scheduler.unplaced == [urgent]
 
     def test_urgency_orders_the_short_window_request_first(self) -> None:
         config = _config(3, weights=TargetConfig(urgency_weight=50))
@@ -276,23 +376,25 @@ class TestDeadlinesAndConstraints:
             config, 2, 110.0, 10.0, merit=70, minutes=30, deadline=T0 + 30 * MIN
         )
 
-        planner = PriorityPlanner(
+        scheduler = PriorityScheduler(
             config, [flexible, urgent], BEGIN, BEGIN + timedelta(hours=3)
         )
-        plan = planner.schedule()
+        plan = scheduler.schedule()
 
         assert [e.obsid for e in _science(plan)] == [2, 1]
-        assert planner.unplaced == []
+        assert scheduler.unplaced == []
 
     def test_target_never_clear_of_the_sun_is_unplaced(self) -> None:
         config = _config(2)
         near_sun = _target(config, 1, 216.0, -14.5)
 
-        planner = PriorityPlanner(config, [near_sun], BEGIN, BEGIN + timedelta(hours=2))
-        plan = planner.schedule()
+        scheduler = PriorityScheduler(
+            config, [near_sun], BEGIN, BEGIN + timedelta(hours=2)
+        )
+        plan = scheduler.schedule()
 
         assert _science(plan) == []
-        assert planner.unplaced == [near_sun]
+        assert scheduler.unplaced == [near_sun]
 
 
 class TestLockedEntries:
@@ -318,17 +420,17 @@ class TestLockedEntries:
             for i, (ra, dec) in enumerate(PATCH)
         ]
 
-        planner = PriorityPlanner(
+        scheduler = PriorityScheduler(
             config, others, BEGIN, BEGIN + timedelta(hours=hours), locked=[locked]
         )
-        plan = planner.schedule()
+        plan = scheduler.schedule()
 
         kept = next(entry for entry in plan if entry.obsid == 900)
         assert (kept.collection_begin, kept.collection_end) == (
             T0 + HOUR,
             T0 + HOUR + 20 * MIN,
         )
-        ditl = _execute(config, plan, hours, planner.ctx.step_size)
+        ditl = _execute(config, plan, hours, scheduler.ctx.step_size)
         assert ditl.validate_plan_matches_execution() == []
 
     def test_locked_entry_outside_the_horizon_is_left_out(self) -> None:
@@ -349,7 +451,7 @@ class TestLockedEntries:
             ss_min=60,
         )
 
-        plan = PriorityPlanner(
+        plan = PriorityScheduler(
             config, [], BEGIN, BEGIN + timedelta(hours=2), locked=[locked]
         ).schedule()
 
@@ -360,7 +462,7 @@ class TestLockedEntries:
         locked = PlanEntry(config=config, obsid=900, begin=T0, end=T0 + 600)
 
         with pytest.raises(ValueError, match="collection window"):
-            PriorityPlanner(
+            PriorityScheduler(
                 config, [], BEGIN, BEGIN + timedelta(hours=1), locked=[locked]
             ).schedule()
 
@@ -386,25 +488,25 @@ class TestLockedEntries:
             ss_min=60,
         )
 
-        planner = PriorityPlanner(
+        scheduler = PriorityScheduler(
             config, [], BEGIN, BEGIN + timedelta(hours=hours), locked=[locked]
         )
-        plan = planner.schedule()
+        plan = scheduler.schedule()
 
         assert all(entry.obsid != 900 for entry in plan)
-        ditl = _execute(config, plan, hours, planner.ctx.step_size)
+        ditl = _execute(config, plan, hours, scheduler.ctx.step_size)
         assert ditl.validate_plan_matches_execution() == []
 
     def test_locked_snapshot_counts_against_its_request(self) -> None:
         hours = 3
         config = _config(hours)
         target = _target(config, 1, 105.0, 10.0, minutes=40, snapshot=20)
-        first = PriorityPlanner(
+        first = PriorityScheduler(
             config, [target], BEGIN, BEGIN + timedelta(hours=hours)
         ).schedule()
         locked = _science(first)[0]
 
-        replan = PriorityPlanner(
+        replan = PriorityScheduler(
             config,
             [target],
             BEGIN,
@@ -430,11 +532,13 @@ class TestMountedTelescope:
         target = _target(config, 1, 216.0, -14.5, minutes=20)
         target.instrument_name = telescope.name
 
-        planner = PriorityPlanner(config, [target], BEGIN, BEGIN + timedelta(hours=2))
-        plan = planner.schedule()
+        scheduler = PriorityScheduler(
+            config, [target], BEGIN, BEGIN + timedelta(hours=2)
+        )
+        plan = scheduler.schedule()
 
         assert len(_science(plan)) == 1
-        ditl = _execute(config, plan, hours, planner.ctx.step_size)
+        ditl = _execute(config, plan, hours, scheduler.ctx.step_size)
         assert ditl.validate_plan_matches_execution() == []
 
 
@@ -445,7 +549,7 @@ class TestGroundContacts:
         """Tracking brakes past the profile, so a contact does not end on it."""
         hours = 12
         config = _config(hours, stations=True)
-        contacts = PriorityPlanner(
+        contacts = PriorityScheduler(
             config, [], BEGIN, BEGIN + timedelta(hours=hours)
         ).schedule()
         contact = next(entry for entry in contacts if entry.obstype == ObsType.GSP)
@@ -464,12 +568,12 @@ class TestGroundContacts:
             ss_min=60,
         )
 
-        planner = PriorityPlanner(
+        scheduler = PriorityScheduler(
             config, [], BEGIN, BEGIN + timedelta(hours=hours), locked=[locked]
         )
-        plan = planner.schedule()
+        plan = scheduler.schedule()
 
-        ditl = _execute(config, plan, hours, planner.ctx.step_size)
+        ditl = _execute(config, plan, hours, scheduler.ctx.step_size)
         assert ditl.validate_plan_matches_execution() == []
         executed = sum(hk.collection_seconds for hk in ditl.telemetry.housekeeping)
         assert executed == pytest.approx(_planned_collection(plan))
@@ -483,12 +587,14 @@ class TestGroundContacts:
             _target(config, 100 + i, ra, dec, merit=90 - i, minutes=60, snapshot=20)
             for i, (ra, dec) in enumerate(PATCH)
         ]
-        planner = PriorityPlanner(
+        scheduler = PriorityScheduler(
             config, targets, BEGIN, BEGIN + timedelta(hours=hours), step_size=step
         )
-        plan = planner.schedule()
+        plan = scheduler.schedule()
 
-        predicted = {gspass.station: gspass for gspass in planner.ctx.predict_passes()}
+        predicted = {
+            gspass.station: gspass for gspass in scheduler.ctx.predict_passes()
+        }
         contacts = [entry for entry in plan if entry.obstype == ObsType.GSP]
         assert {entry.station for entry in contacts} == set(predicted)
         off_grid = [
@@ -499,7 +605,7 @@ class TestGroundContacts:
         assert off_grid
         for entry in contacts:
             gspass = predicted[entry.station]  # type: ignore[index]
-            acquire = planner.ctx.ceil_step(gspass.begin)
+            acquire = scheduler.ctx.ceil_step(gspass.begin)
             assert entry.contact_begin == acquire
             assert entry.contact_end == gspass.end
             assert entry.exptime == round(gspass.end - acquire)
@@ -537,7 +643,7 @@ class TestGroundContacts:
         )
         assert first <= locked.end < second
 
-        planner = PriorityPlanner(
+        scheduler = PriorityScheduler(
             config,
             [],
             BEGIN,
@@ -545,7 +651,7 @@ class TestGroundContacts:
             step_size=step,
             locked=[locked],
         )
-        plan = planner.schedule()
+        plan = scheduler.schedule()
 
         contact = next(e for e in plan if e.station == "MAL")
         assert contact.contact_begin == second
@@ -562,10 +668,10 @@ class TestGroundContacts:
         step = 180
         config = _config(hours, stations=True)
         config.recorder = OnboardRecorder(capacity_gb=1000, current_volume_gb=100)
-        planner = PriorityPlanner(
+        scheduler = PriorityScheduler(
             config, [], BEGIN, BEGIN + timedelta(hours=hours), step_size=step
         )
-        plan = planner.schedule()
+        plan = scheduler.schedule()
         contacts = [entry for entry in plan if entry.obstype == ObsType.GSP]
         assert contacts
         # Some contact ends partway through a step.
@@ -589,15 +695,15 @@ class TestGroundContacts:
         hours = 12
         step = 900
         config = _config(hours, stations=True)
-        planner = PriorityPlanner(
+        scheduler = PriorityScheduler(
             config, [], BEGIN, BEGIN + timedelta(hours=hours), step_size=step
         )
-        plan = planner.schedule()
+        plan = scheduler.schedule()
 
         unreachable = {
             gspass.station
-            for gspass in planner.ctx.predict_passes()
-            if planner.ctx.ceil_step(gspass.begin) >= gspass.utime[-1]
+            for gspass in scheduler.ctx.predict_passes()
+            if scheduler.ctx.ceil_step(gspass.begin) >= gspass.utime[-1]
         }
         assert unreachable
         stations = {entry.station for entry in plan if entry.obstype == ObsType.GSP}
@@ -611,22 +717,24 @@ class TestSuccessorRetries:
 
     HOURS = 12
 
-    def _plan(self, retries: int | None) -> tuple[MissionConfig, PriorityPlanner, int]:
+    def _plan(
+        self, retries: int | None
+    ) -> tuple[MissionConfig, PriorityScheduler, int]:
         config = _config(self.HOURS, stations=True)
         targets = [
             _target(config, 100 + i, ra, dec, merit=90 - 3 * i, minutes=60, snapshot=20)
             for i, (ra, dec) in enumerate(PATCH + CONSTRAINED)
         ]
-        planner = PriorityPlanner(
+        scheduler = PriorityScheduler(
             config,
             targets,
             BEGIN,
             BEGIN + timedelta(hours=self.HOURS),
             successor_retries=retries,
         )
-        with patch.object(planner, "_connect", wraps=planner._connect) as connect:
-            planner.schedule()
-        return config, planner, connect.call_count
+        with patch.object(scheduler, "_connect", wraps=scheduler._connect) as connect:
+            scheduler.schedule()
+        return config, scheduler, connect.call_count
 
     def test_a_limit_searches_less_and_still_executes_exactly(self) -> None:
         _, exhaustive, exhaustive_calls = self._plan(None)
@@ -641,7 +749,7 @@ class TestSuccessorRetries:
         config = _config(1)
 
         with pytest.raises(ValueError, match="successor_retries"):
-            PriorityPlanner(
+            PriorityScheduler(
                 config, [], BEGIN, BEGIN + timedelta(hours=1), successor_retries=-1
             )
 
@@ -651,30 +759,30 @@ class TestDelayingSuccessors:
 
     HOURS = 12
 
-    def _plan(self) -> tuple[MissionConfig, PriorityPlanner]:
+    def _plan(self) -> tuple[MissionConfig, PriorityScheduler]:
         config = _config(self.HOURS)
         targets = [
             _target(config, 100 + i, ra, dec, merit=90 - 7 * i, minutes=60, snapshot=20)
             for i, (ra, dec) in enumerate(PATCH + CONSTRAINED)
         ]
-        planner = PriorityPlanner(
+        scheduler = PriorityScheduler(
             config, targets, BEGIN, BEGIN + timedelta(hours=self.HOURS)
         )
-        planner.schedule()
-        return config, planner
+        scheduler.schedule()
+        return config, scheduler
 
     def test_moves_a_snapshot_later_and_still_executes_exactly(self) -> None:
-        config, planner = self._plan()
+        config, scheduler = self._plan()
 
-        moves = [e for e in planner.log.events if e.description.startswith("Moved")]
+        moves = [e for e in scheduler.log.events if e.description.startswith("Moved")]
         assert moves
-        ditl = _execute(config, planner.plan, self.HOURS, 60)
+        ditl = _execute(config, scheduler.plan, self.HOURS, 60)
         assert ditl.validate_plan_matches_execution() == []
 
     def test_plans_more_science_than_leaving_the_gap(self) -> None:
         _, delaying = self._plan()
         with patch.object(
-            PriorityPlanner, "_fit_delaying_successors", return_value=None
+            PriorityScheduler, "_fit_delaying_successors", return_value=None
         ):
             _, fixed = self._plan()
 
@@ -686,39 +794,39 @@ class TestSlewBeforeVisible:
 
     HOURS = 12
 
-    def _plan(self, allowed: bool) -> tuple[MissionConfig, PriorityPlanner]:
+    def _plan(self, allowed: bool) -> tuple[MissionConfig, PriorityScheduler]:
         config = _config(self.HOURS)
         config.spacecraft_bus.attitude_control.slew_before_visible = allowed
         targets = [
             _target(config, 100 + i, ra, dec, merit=90 - 7 * i, minutes=60, snapshot=20)
             for i, (ra, dec) in enumerate(PATCH + CONSTRAINED)
         ]
-        planner = PriorityPlanner(
+        scheduler = PriorityScheduler(
             config, targets, BEGIN, BEGIN + timedelta(hours=self.HOURS)
         )
-        planner.schedule()
-        return config, planner
+        scheduler.schedule()
+        return config, scheduler
 
     @staticmethod
-    def _early_slews(planner: PriorityPlanner) -> int:
+    def _early_slews(scheduler: PriorityScheduler) -> int:
         """Science slews that start while their target is not visible."""
         return sum(
             1
-            for entry in _science(planner.plan)
+            for entry in _science(scheduler.plan)
             if entry.slewtime and not entry.visible(entry.begin, entry.begin)
         )
 
     def test_slews_start_before_the_target_rises_and_execute_exactly(self) -> None:
-        config, planner = self._plan(allowed=True)
+        config, scheduler = self._plan(allowed=True)
 
-        assert self._early_slews(planner) > 0
-        ditl = _execute(config, planner.plan, self.HOURS, 60)
+        assert self._early_slews(scheduler) > 0
+        ditl = _execute(config, scheduler.plan, self.HOURS, 60)
         assert ditl.validate_plan_matches_execution() == []
 
     def test_without_it_every_slew_starts_while_the_target_is_visible(self) -> None:
-        _, planner = self._plan(allowed=False)
+        _, scheduler = self._plan(allowed=False)
 
-        assert self._early_slews(planner) == 0
+        assert self._early_slews(scheduler) == 0
 
 
 class TestFillingTimeATargetIsHidden:
@@ -733,7 +841,7 @@ class TestFillingTimeATargetIsHidden:
 
     def _plan(
         self, config: MissionConfig | None = None
-    ) -> tuple[MissionConfig, PriorityPlanner]:
+    ) -> tuple[MissionConfig, PriorityScheduler]:
         config = config if config is not None else _config(self.HOURS)
         rng = np.random.default_rng(5)
         targets = [
@@ -749,15 +857,15 @@ class TestFillingTimeATargetIsHidden:
             )
             for i in range(40)
         ]
-        planner = PriorityPlanner(
+        scheduler = PriorityScheduler(
             config, targets, BEGIN, BEGIN + timedelta(hours=self.HOURS)
         )
-        planner.schedule()
-        return config, planner
+        scheduler.schedule()
+        return config, scheduler
 
     @staticmethod
-    def _long_gaps(planner: PriorityPlanner) -> list[float]:
-        timeline = planner.timeline
+    def _long_gaps(scheduler: PriorityScheduler) -> list[float]:
+        timeline = scheduler.timeline
         gaps = [
             float(after.entry.begin) - float(before.end)
             for before, after in zip(timeline, timeline[1:])
@@ -765,23 +873,23 @@ class TestFillingTimeATargetIsHidden:
         return [gap for gap in gaps if gap > 20 * MIN]
 
     def test_leaves_no_long_gaps_and_executes_exactly(self) -> None:
-        config, planner = self._plan()
+        config, scheduler = self._plan()
 
-        assert self._long_gaps(planner) == []
-        ditl = _execute(config, planner.plan, self.HOURS, 60)
+        assert self._long_gaps(scheduler) == []
+        ditl = _execute(config, scheduler.plan, self.HOURS, 60)
         assert ditl.validate_plan_matches_execution() == []
 
     def test_some_moves_cut_a_snapshot_short(self) -> None:
-        _, planner = self._plan()
+        _, scheduler = self._plan()
 
-        moves = [e for e in planner.log.events if e.description.startswith("Moved")]
+        moves = [e for e in scheduler.log.events if e.description.startswith("Moved")]
         assert any("shorter" in e.description for e in moves)
 
     def test_a_request_cut_short_is_placed_again(self) -> None:
         """Exposure a move cuts from a finished request is planned elsewhere."""
-        config, planner = self._plan()
+        config, scheduler = self._plan()
 
-        events = planner.log.events
+        events = scheduler.log.events
         cut = {
             k: int(e.obsid)
             for k, e in enumerate(events)
@@ -796,7 +904,7 @@ class TestFillingTimeATargetIsHidden:
             )
         ]
         assert placed_again
-        ditl = _execute(config, planner.plan, self.HOURS, 60)
+        ditl = _execute(config, scheduler.plan, self.HOURS, 60)
         assert ditl.validate_plan_matches_execution() == []
 
     def test_program_shares_count_only_what_the_plan_delivers(self) -> None:
@@ -813,23 +921,23 @@ class TestFillingTimeATargetIsHidden:
                 ),
             ],
         )
-        _, planner = self._plan(config)
+        _, scheduler = self._plan(config)
 
-        assert any("shorter" in e.description for e in planner.log.events)
+        assert any("shorter" in e.description for e in scheduler.log.events)
         planned = {"A": 0.0, "B": 0.0}
-        for entry in _science(planner.plan):
+        for entry in _science(scheduler.plan):
             program = "A" if int(entry.obsid) < 120 else "B"
             planned[program] += entry.collection_seconds_between(entry.begin, entry.end)
-        assert planner._program_seconds == pytest.approx(planned)
+        assert scheduler._program_seconds == pytest.approx(planned)
 
     def test_without_moving_snapshots_the_gaps_stay(self) -> None:
         """Guards the test above: the scenario must have such gaps to fill."""
         with patch.object(
-            PriorityPlanner, "_fit_delaying_successors", return_value=None
+            PriorityScheduler, "_fit_delaying_successors", return_value=None
         ):
-            _, planner = self._plan()
+            _, scheduler = self._plan()
 
-        assert self._long_gaps(planner)
+        assert self._long_gaps(scheduler)
 
 
 class TestWorthCutting:
@@ -848,17 +956,17 @@ class TestWorthCutting:
     def test_moves_that_cut_nothing_are_always_worth_it(self) -> None:
         new = self._request(0, 1.0)
 
-        assert PriorityPlanner._worth_cutting(new, 10.0, [self._move(0.0)])
+        assert PriorityScheduler._worth_cutting(new, 10.0, [self._move(0.0)])
 
     def test_worth_it_when_the_new_snapshot_is_worth_more(self) -> None:
         new = self._request(0, 20.0)
 
-        assert PriorityPlanner._worth_cutting(new, 900.0, [self._move(300.0)])
-        assert not PriorityPlanner._worth_cutting(new, 300.0, [self._move(300.0)])
+        assert PriorityScheduler._worth_cutting(new, 900.0, [self._move(300.0)])
+        assert not PriorityScheduler._worth_cutting(new, 300.0, [self._move(300.0)])
 
     def test_never_cuts_a_higher_tier(self) -> None:
         new = self._request(0, 1000.0)
 
-        assert not PriorityPlanner._worth_cutting(
+        assert not PriorityScheduler._worth_cutting(
             new, 900.0, [self._move(1.0, tier=1, value=1.0)]
         )

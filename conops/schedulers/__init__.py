@@ -1,18 +1,21 @@
 from .context import SchedulingContext
-from .priority_planner import PriorityPlanner
-from .protocols import DispatchPolicy, Planner
-from .queue_planner import QueuePlanner
-from .queue_scheduler import DumbQueueScheduler
+from .cpsat_scheduler import CpSatScheduler
+from .local_search_scheduler import LocalSearchScheduler
+from .priority_scheduler import PriorityScheduler
+from .protocols import DispatchPolicy, Scheduler
+from .queue_scheduler import DumbQueueScheduler, QueueScheduler
 from .scheduler import DumbScheduler
-from .sequential_planner import SequentialPlanner
+from .sequential_scheduler import SequentialScheduler
 
 __all__ = [
+    "CpSatScheduler",
     "DispatchPolicy",
     "DumbQueueScheduler",
     "DumbScheduler",
-    "Planner",
-    "PriorityPlanner",
-    "QueuePlanner",
+    "LocalSearchScheduler",
+    "PriorityScheduler",
+    "QueueScheduler",
+    "Scheduler",
     "SchedulingContext",
-    "SequentialPlanner",
+    "SequentialScheduler",
 ]

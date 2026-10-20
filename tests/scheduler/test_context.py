@@ -103,6 +103,26 @@ class TestSlews:
         assert ctx.initial_attitude(T0 + 180) == pytest.approx(expected[3])
         assert ctx.initial_attitude(T0 + 60) == pytest.approx(expected[1])
 
+    def test_initial_attitude_replay_does_not_print_its_events(
+        self,
+        ctx: SchedulingContext,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        pointing = ACS.pointing
+
+        def pointing_with_event(
+            acs: ACS, utime: float
+        ) -> tuple[float, float, float, int]:
+            acs._log_or_print(utime, "ACS", "replay event")
+            return pointing(acs, utime)
+
+        monkeypatch.setattr(ACS, "pointing", pointing_with_event)
+
+        ctx.initial_attitude(T0 + 120)
+
+        assert "replay event" not in capsys.readouterr().out
+
 
 class TestConstraints:
     def test_attitude_at_the_sun_is_not_allowed(self, ctx: SchedulingContext) -> None:

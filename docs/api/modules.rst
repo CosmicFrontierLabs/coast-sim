@@ -44,12 +44,13 @@ Scheduling and Planning
 
    conops.schedulers
    conops.schedulers.context
-   conops.schedulers.priority_planner
+   conops.schedulers.cpsat_scheduler
+   conops.schedulers.local_search_scheduler
+   conops.schedulers.priority_scheduler
    conops.schedulers.protocols
-   conops.schedulers.queue_planner
-   conops.schedulers.sequential_planner
-   conops.schedulers.scheduler
    conops.schedulers.queue_scheduler
+   conops.schedulers.sequential_scheduler
+   conops.schedulers.scheduler
    conops.targets
    conops.targets.merit
    conops.targets.pointing

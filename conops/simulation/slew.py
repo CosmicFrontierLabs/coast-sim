@@ -68,7 +68,7 @@ class Slew(BaseModel):
     at: "PlanEntry | None" = None  # In quotes to avoid circular import
     # Private defaults are copied per instance, so these lists are never
     # shared. A default_factory would cost far more: pydantic inspects the
-    # factory's signature for every instance, and planners build many slews.
+    # factory's signature for every instance, and schedulers build many slews.
     rate_fraction: float = Field(default=1.0, gt=0.0, le=1.0, allow_inf_nan=False)
     _momentum_trajectory: "AttitudeTrajectory | None" = PrivateAttr(default=None)
     _momentum_hold_end: float | None = PrivateAttr(default=None)

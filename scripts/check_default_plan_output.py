@@ -30,7 +30,7 @@ os.environ.setdefault("MPLCONFIGDIR", str(_MPLCONFIGDIR))
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASELINE = REPO_ROOT / "tests" / "baselines" / "default_plan_output.golden"
-# Only absorb platform-level float roundoff; planner or timing changes should fail.
+# Only absorb platform-level float roundoff; scheduler or timing changes should fail.
 DEFAULT_NUMERIC_ABS_TOL = 1e-9
 sys.path.insert(0, str(REPO_ROOT))
 
@@ -378,7 +378,7 @@ def main(argv: list[str] | None = None) -> int:
         if len(diffs) > 25:
             print(f"  - ... {len(diffs) - 25} more differences")
         print(
-            "If this planner/output change is intentional, run "
+            "If this scheduler/output change is intentional, run "
             "`python scripts/check_default_plan_output.py --update` and commit the "
             "baseline diff."
         )

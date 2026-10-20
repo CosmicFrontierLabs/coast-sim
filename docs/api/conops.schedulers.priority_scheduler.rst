@@ -1,8 +1,8 @@
-conops.schedulers.sequential\_planner
+conops.schedulers.priority\_scheduler
 =====================================
 
-.. automodule:: conops.schedulers.sequential_planner
-   :members: SequentialPlanner
+.. automodule:: conops.schedulers.priority_scheduler
+   :members: PriorityScheduler
    :undoc-members:
    :show-inheritance:
    :special-members: __init__

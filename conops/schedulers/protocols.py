@@ -5,7 +5,7 @@ COASTSim runs a scheduler in one of two ways:
 - **Dispatch** (closed loop): :class:`~conops.ditl.QueueDITL` asks a
   :class:`DispatchPolicy` for the next target each time the spacecraft is
   free, so every decision sees the simulated state at that moment.
-- **Planning** (open loop): a :class:`Planner` builds a whole
+- **Planning** (open loop): a :class:`Scheduler` builds a whole
   :class:`~conops.targets.Plan` up front, and :class:`~conops.ditl.DITL`
   executes it. ``DITL.validate_plan_matches_execution`` then lists where
   execution differed from the plan.
@@ -67,16 +67,19 @@ class DispatchPolicy(Protocol):
         ss_max: int = 86400,
         instrument_name: str | None = None,
         deadline: float | None = None,
+        earliest_start: float | None = None,
     ) -> Pointing:
         """Add a target and return it, as QueueDITL does for a Target of Opportunity.
 
         Args:
             deadline: Latest time (Unix seconds) science collection may begin.
+            earliest_start: Earliest time (Unix seconds) science collection
+                may begin.
         """
         ...
 
 
-class Planner(Protocol):
+class Scheduler(Protocol):
     """Builds an observing plan for :class:`~conops.ditl.DITL` to execute."""
 
     def schedule(self) -> Plan:

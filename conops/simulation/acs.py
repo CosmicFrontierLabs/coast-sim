@@ -1015,7 +1015,7 @@ class ACS:
         """Runtime instrument-safety check for idle holds.
 
         Distinct from post-simulation planning validation (queue_ditl): this asks
-        "should the ACS repoint to protect hardware?" not "did the planner break a
+        "should the ACS repoint to protect hardware?" not "did the scheduler break a
         scheduling contract?"
 
         The configured IDLE scopes describe the attitude constraints that must

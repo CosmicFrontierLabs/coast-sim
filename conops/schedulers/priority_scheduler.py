@@ -1,6 +1,6 @@
-"""Priority-first construction planner.
+"""Priority-first construction scheduler.
 
-:class:`PriorityPlanner` reserves ground contacts first, then takes requests
+:class:`PriorityScheduler` reserves ground contacts first, then takes requests
 in priority order and places each snapshot in the earliest slot that still fits,
 without moving anything already placed. It is fast and deterministic, and its
 plans are traceable to the priority order. It is myopic: an early placement can
@@ -70,7 +70,7 @@ class StartState(BaseModel):
     """Where the spacecraft is when a plan takes over part-way through a run.
 
     Attributes:
-        time: First time (Unix seconds) a new activity may start; the planner
+        time: First time (Unix seconds) a new activity may start; the scheduler
             rounds it up to a simulation step.
         attitude: Body attitude the spacecraft holds from ``time`` until the
             first planned slew.
@@ -136,7 +136,7 @@ def _long_enough(collection_seconds: float, ss_min: float) -> bool:
     return collection_seconds > 0 and collection_seconds >= ss_min
 
 
-class PriorityPlanner:
+class PriorityScheduler:
     """Build a plan by placing requests in priority order at their earliest fit.
 
     Steps:
@@ -159,11 +159,12 @@ class PriorityPlanner:
        :class:`~conops.ditl.DITL` will apply passes: the slew starts on a step,
        its path and the held attitude clear their mode's constraints, the
        target is visible when the slew starts (or, if ACS may slew before a
-       target is visible, when it arrives), collection starts by the target's
-       deadline, and the following activity can still be reached.
+       target is visible, when it arrives), collection starts no earlier than
+       the target's earliest start and by its deadline, and the following
+       activity can still be reached.
 
     The plan is built for execution by :class:`~conops.ditl.DITL` with the same
-    configuration, ephemeris, horizon and step size. The planner does not model
+    configuration, ephemeris, horizon and step size. The scheduler does not model
     battery state, so it does not schedule charging.
 
     Args:
@@ -194,6 +195,9 @@ class PriorityPlanner:
             requests cannot be placed, but can miss a fit late in a gap. None
             tries every start, which finds every fit.
     """
+
+    scheduler_name = "priority"
+    """Recorded in the plan's metadata."""
 
     def __init__(
         self,
@@ -237,6 +241,12 @@ class PriorityPlanner:
 
     def schedule(self) -> Plan:
         """Build and return the plan."""
+        self._reserve_fixed()
+        self._place_requests(self._requests())
+        return self._finish(self.timeline)
+
+    def _reserve_fixed(self) -> None:
+        """Start a timeline holding the locked entries and reachable passes."""
         self.ctx = SchedulingContext(
             self.config,
             self.begin,
@@ -247,7 +257,7 @@ class PriorityPlanner:
         )
         self.timeline: list[_Block] = []
         self._movable: dict[int, _Request] = {}
-        """Science blocks placed by this planner that may move later, by id,
+        """Science blocks placed by this scheduler that may move later, by id,
         with their requests; locked entries and passes never move."""
         self._successor_blocked = False
         """Whether the last gap searched held a fit that only the activity
@@ -280,11 +290,14 @@ class PriorityPlanner:
             for gspass in self.ctx.predict_passes():
                 self._place_pass(gspass)
 
-        self._place_requests(self._requests())
-
+    def _finish(self, timeline: Sequence[_Block]) -> Plan:
+        """Record and return the plan for a finished timeline."""
         self.plan = Plan(
-            entries=[block.entry for block in self.timeline],
-            metadata={"planner": "priority", "step_size": self.ctx.step_size},
+            entries=[block.entry for block in timeline],
+            metadata={
+                "scheduler": self.scheduler_name,
+                "step_size": self.ctx.step_size,
+            },
         )
         return self.plan
 
@@ -841,7 +854,7 @@ class PriorityPlanner:
     def _may_move(self, block: _Block) -> bool:
         """Whether a block may be placed again later to make room before it.
 
-        Only science snapshots this planner placed may move, and not those of
+        Only science snapshots this scheduler placed may move, and not those of
         cadence targets, whose later visits are spaced from them. Locked
         entries and passes never move.
         """
@@ -1006,8 +1019,9 @@ class PriorityPlanner:
         snapshot = min(float(target.ss_max), request.remaining)
         # Starts at which the snapshot fitted but its successor was unreachable.
         unreachable = 0
+        search_end = min(idle_limit, gap_end)
 
-        while start <= min(idle_limit, gap_end):
+        while start <= search_end:
             instrument_roll = self.ctx.instrument_roll(target, start)
             attitude = target.target_body_attitude(instrument_roll)
             slew = self.ctx.slew(
@@ -1034,6 +1048,36 @@ class PriorityPlanner:
                 continue
 
             collection_begin = float(slew.slewend) + self.ctx.setup_seconds
+            if (
+                target.earliest_start is not None
+                and collection_begin < target.earliest_start
+            ):
+                # Start later by the shortfall, so collection begins at the
+                # earliest start if the slew takes as long. It need not: its
+                # duration changes with the instrument roll, so a longer slew
+                # there can leave this step too late for a deadline that an
+                # earlier step meets. So step back while the step before
+                # still begins collection by the earliest start. No earlier
+                # start can then do so: a slew's duration changes by far less
+                # than a step from one step to the next, so collection begins
+                # later the later the slew starts.
+                jump = max(
+                    start + self.ctx.step_size,
+                    self.ctx.ceil_step(
+                        start + target.earliest_start - collection_begin
+                    ),
+                )
+                jump = min(jump, self.ctx.floor_step(search_end) + self.ctx.step_size)
+                while (
+                    jump - self.ctx.step_size > start
+                    and self._collection_begin_at(
+                        target, pred, jump - self.ctx.step_size
+                    )
+                    >= target.earliest_start
+                ):
+                    jump -= self.ctx.step_size
+                start = jump
+                continue
             if target.deadline is not None and collection_begin > target.deadline:
                 return None
 
@@ -1109,6 +1153,17 @@ class PriorityPlanner:
                     return None
             start += self.ctx.step_size
         return None
+
+    def _collection_begin_at(
+        self, target: Pointing, pred: _Block | None, start: float
+    ) -> float:
+        """Return when collection of ``target`` begins if the slew to it after
+        ``pred`` starts at ``start``."""
+        attitude = target.target_body_attitude(self.ctx.instrument_roll(target, start))
+        slew = self.ctx.slew(
+            self._start_attitude(pred, start), attitude, start, obsid=target.obsid
+        )
+        return float(slew.slewend) + self.ctx.setup_seconds
 
     def _visibility_needed_at(self, slew: Slew) -> float:
         """When a science target must be visible for ACS to fly ``slew`` to it.
