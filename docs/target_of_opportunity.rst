@@ -143,7 +143,7 @@ With no observation in progress nothing is interrupted: the TOO is already in th
 Preventing Interrupts
 ^^^^^^^^^^^^^^^^^^^^^
 
-A TOO submitted with ``interrupt=False`` never cuts short the observation in progress. It is queued as usual and competes at the next selection, when that observation ends:
+A TOO submitted with ``interrupt=False`` never cuts short the observation in progress. It is queued as usual and competes at the next selection, when that observation ends. Nor does it take the place of an observation another TOO interrupts: in a rolling-horizon replan it is planned in after the interrupting TOO (see :doc:`planning`):
 
 .. code-block:: python
 
