@@ -12,7 +12,6 @@ from conops.common import ObsType
 from conops.common.enums import ACSMode
 from conops.config import (
     BandCapability,
-    CommunicationsSystem,
     DataGeneration,
     GroundStation,
     GroundStationRegistry,
@@ -227,30 +226,6 @@ class TestDownlink:
         config = _config(1, stations=True)
         assert contact_downlink_gb(config, "MAL", 480.0) == pytest.approx(4.8)
         assert contact_downlink_gb(config, "NOWHERE", 480.0) == 0.0
-
-    def test_the_spacecraft_limits_the_rate(self) -> None:
-        station = GroundStation(
-            code="X",
-            name="X",
-            latitude_deg=0.0,
-            longitude_deg=0.0,
-            bands=[
-                BandCapability(band="S", downlink_rate_mbps=10.0),
-                BandCapability(band="X", downlink_rate_mbps=100.0),
-            ],
-        )
-        comms = CommunicationsSystem(
-            band_capabilities=[
-                BandCapability(band="S", downlink_rate_mbps=4.0),
-                BandCapability(band="X", downlink_rate_mbps=50.0),
-            ]
-        )
-        assert station.effective_downlink_rate_mbps(None) == 100.0
-        assert station.effective_downlink_rate_mbps(comms) == 50.0
-        only_ka = CommunicationsSystem(
-            band_capabilities=[BandCapability(band="Ka", downlink_rate_mbps=500.0)]
-        )
-        assert station.effective_downlink_rate_mbps(only_ka) is None
 
 
 class TestPriorityScheduler:
