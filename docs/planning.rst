@@ -175,11 +175,11 @@ Without these weights, plans are built exactly as before.
 Planning within the recorder
 ----------------------------
 
-Every scheduler keeps the onboard recorder within its planning limit,
+Every scheduler keeps the onboard recorder below its planning limit,
 ``recorder.planning_limit`` as a fraction of ``capacity_gb`` (see
-:doc:`data_management`). By default it is the recorder's ``red_threshold``, so no
-plan drives the recorder into the red; set it lower to keep margin, or to ``None``
-to plan without regard to the recorder.
+:doc:`data_management`). By default it is the recorder's ``red_threshold``, which
+is where the red alert fires, so a plan stops just short of the red; set it lower
+to keep margin, or to ``None`` to plan without regard to the recorder.
 
 The recorder fills between ground contacts and empties during them, so its volume
 is highest just before each contact and at the end of the horizon. The reserved
@@ -193,8 +193,8 @@ peak:
 * each contact removes what its rate and length allow, and no more than is there,
   so what it cannot remove carries over to the segments after it;
 * housekeeping is counted at the nominal rate throughout, and at the ``PASS`` rate
-  during contacts, since the plan does not know when the spacecraft will be in
-  other modes.
+  during contacts and the slews into them, which ACS runs in ``PASS`` mode, since
+  the plan does not know when the spacecraft will be in other modes.
 
 The arithmetic is not particular to the recorder. Anything a spacecraft
 accumulates between the events that remove it, and must keep within a limit
@@ -329,8 +329,9 @@ CP-SAT chooses candidates and their order:
 * ground passes are fixed tasks that snapshots must leave room to slew to;
 * a request's snapshots never add up to more than its remaining exposure;
 * a cadence target's visits are at least its cadence apart, and after its last one;
-* the recorder stays within its planning limit: each candidate's data (its rate for
-  its collection, plus its fixed amount, at the observed target's rates) goes on the
+* the recorder stays below its planning limit: each candidate's data (its rate for
+  its collection, plus its fixed amount, at the observed target's rates, rounded up
+  to whole kilobits so the model never counts less than the ledger) goes on the
   recorder in the segment, between contacts, where its collection starts; each
   segment's volume is what entered it after its contact, plus housekeeping and the
   science already planned there, plus the chunk's candidates; what a contact cannot

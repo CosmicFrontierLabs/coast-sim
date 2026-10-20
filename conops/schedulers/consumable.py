@@ -27,7 +27,8 @@ from collections.abc import Callable, Sequence
 from typing import NamedTuple
 
 _TOLERANCE = 1e-9
-"""Slack for rounding in sums."""
+"""How far below the limit a plan keeps the level: the limit is where an
+alert fires, so reaching it is not within it, and sums round."""
 
 
 class Removal(NamedTuple):
@@ -39,6 +40,11 @@ class Removal(NamedTuple):
     """The most it removes; it never removes more than is there."""
     accrual: float = 0.0
     """What accrues during the event itself, before its removal."""
+    lead: float = 0.0
+    """Seconds before ``begin`` the event occupies without removing anything,
+    such as the slew into a contact, which accrue at the event's own rate."""
+    lead_accrual: float = 0.0
+    """What accrues during the lead."""
 
 
 class ConsumableLedger:
@@ -50,10 +56,10 @@ class ConsumableLedger:
         removals: The events that remove the consumable. Those outside the
             horizon are ignored, and one that straddles its start or end counts
             for the part inside it, with its amount and accrual scaled to it.
-        limit: The level a plan keeps the consumable within; None for no limit.
+        limit: The level a plan keeps the consumable below; None for no limit.
         start: The level at ``begin``.
         accrual: What accrues on its own, apart from any plan, over a number of
-            seconds outside removals.
+            seconds outside removals and their leads.
     """
 
     def __init__(
@@ -69,7 +75,18 @@ class ConsumableLedger:
         self.limit = limit
         self.start = float(start)
         inside: list[Removal] = []
+        leads: list[tuple[float, float, float]] = []
+        """Each lead inside the horizon: when it starts, its seconds, and
+        what accrues in it. A lead belongs to the segment it starts in, that
+        of the removal before it, whether or not its own removal is inside."""
         for removal in sorted(removals, key=lambda r: r.begin):
+            lead_begin = max(removal.begin - removal.lead, begin)
+            lead_end = min(removal.begin, end)
+            if removal.lead > 0 and lead_end > lead_begin:
+                share = (lead_end - lead_begin) / removal.lead
+                leads.append(
+                    (lead_begin, lead_end - lead_begin, removal.lead_accrual * share)
+                )
             clipped_begin = max(removal.begin, begin)
             clipped_end = min(removal.end, end)
             if clipped_end <= clipped_begin:
@@ -90,12 +107,19 @@ class ConsumableLedger:
         self.removal_accrual: list[float] = [0.0, *(r.accrual for r in inside)]
         """What accrues during the removal at the start of each segment."""
         self.accrual: list[float] = []
-        """What accrues on its own in each segment, outside its removal."""
+        """What accrues on its own in each segment, outside its removal: at
+        the plain rate, and at their own rate in the leads of the removals
+        that start in it."""
         for k in range(self.segments):
             seconds = self.bounds[k + 1] - self.bounds[k]
             if k > 0:
                 seconds -= inside[k - 1].end - inside[k - 1].begin
-            self.accrual.append(accrual(max(0.0, seconds)))
+            led = 0.0
+            for lead_begin, lead_seconds, lead_accrual in leads:
+                if self.bounds[k] <= lead_begin < self.bounds[k + 1]:
+                    seconds -= lead_seconds
+                    led += lead_accrual
+            self.accrual.append(accrual(max(0.0, seconds)) + led)
 
     @property
     def active(self) -> bool:
@@ -126,12 +150,15 @@ class ConsumableLedger:
         return levels
 
     def fits(self, planned: Sequence[float], segment: int, extra: float) -> bool:
-        """Whether ``extra`` more in ``segment`` keeps every level within the limit."""
+        """Whether ``extra`` more in ``segment`` keeps every level below the limit.
+
+        Below, not at it: the limit is where an alert fires.
+        """
         if self.limit is None:
             return True
         trial = list(planned)
         trial[segment] += extra
-        return all(level <= self.limit + _TOLERANCE for level in self.levels(trial))
+        return all(level + _TOLERANCE < self.limit for level in self.levels(trial))
 
     @staticmethod
     def add(planned: Sequence[float], segment: int, extra: float) -> tuple[float, ...]:
