@@ -4,12 +4,14 @@ from datetime import timedelta
 
 import pytest
 
+from conops.common import ObsType
 from conops.common.enums import ACSMode
 from conops.config import (
     BandCapability,
     CommunicationsSystem,
     DataGeneration,
     GroundStation,
+    GroundStationRegistry,
     HousekeepingData,
     Instrument,
     MissionConfig,
@@ -20,7 +22,7 @@ from conops.config import (
 )
 from conops.ditl import RollingHorizonDITL
 from conops.schedulers import LocalSearchScheduler, PriorityScheduler
-from conops.schedulers.recorder import Contact, RecorderLedger, contact_downlink_gb
+from conops.schedulers.recorder import RecorderLedger, contact_downlink_gb
 from conops.targets import PlanEntry, Pointing
 
 from .planning_scenario import BEGIN, HOUR, MIN, T0
@@ -59,6 +61,28 @@ def _data_target(
 
 def _peaks_of(scheduler: PriorityScheduler) -> list[float]:
     return scheduler._ledger.peaks(scheduler._volumes)
+
+
+def _station(code: str, rate_mbps: float) -> GroundStation:
+    return GroundStation(
+        code=code,
+        name=code,
+        latitude_deg=0.0,
+        longitude_deg=0.0,
+        bands=[BandCapability(band="S", downlink_rate_mbps=rate_mbps)],
+    )
+
+
+def _contact(begin: float, end: float, station: str) -> PlanEntry:
+    """A plan's ground-contact entry, linked for its whole length."""
+    return PlanEntry(
+        obstype=ObsType.GSP,
+        station=station,
+        begin=begin,
+        end=end,
+        contact_begin=begin,
+        contact_end=end,
+    )
 
 
 def _first_contact(plan) -> float:
@@ -101,6 +125,14 @@ class TestLedger:
                 ]
             ),
             recorder=OnboardRecorder(capacity_gb=100.0, planning_limit=0.8),
+            ground_stations=GroundStationRegistry(
+                stations=[
+                    _station("TWENTY", 200.0),
+                    _station("THIRTY", 300.0),
+                    _station("FIFTY", 500.0),
+                    _station("ONE", 10.0),
+                ]
+            ),
         )
 
     def test_contacts_cut_the_horizon_into_segments(
@@ -110,7 +142,7 @@ class TestLedger:
             config,
             0.0,
             1000.0,
-            [Contact(600.0, 700.0, 30.0), Contact(200.0, 300.0, 20.0)],
+            [_contact(600.0, 700.0, "THIRTY"), _contact(200.0, 300.0, "TWENTY")],
             start_volume_gb=5.0,
         )
         assert ledger.segments == 3
@@ -124,7 +156,7 @@ class TestLedger:
         self, config: MissionConfig
     ) -> None:
         ledger = RecorderLedger(
-            config, 0.0, 1000.0, [Contact(200.0, 300.0, 20.0)], start_volume_gb=0.0
+            config, 0.0, 1000.0, [_contact(200.0, 300.0, "TWENTY")], start_volume_gb=0.0
         )
         assert ledger.housekeeping_gb == pytest.approx([0.2, 0.7])
         assert ledger.contact_housekeeping_gb == pytest.approx([0.0, 0.3])
@@ -133,8 +165,30 @@ class TestLedger:
         self, config: MissionConfig
     ) -> None:
         ledger = RecorderLedger(
-            config, 100.0, 900.0, [Contact(50.0, 150.0, 1.0)], start_volume_gb=0.0
+            config, 100.0, 900.0, [_contact(950.0, 1000.0, "ONE")], start_volume_gb=0.0
         )
+        assert ledger.segments == 1
+
+    def test_a_contact_straddling_the_horizon_counts_for_the_part_inside(
+        self, config: MissionConfig
+    ) -> None:
+        """As when a replan starts partway through a committed contact."""
+        ledger = RecorderLedger(
+            config,
+            250.0,
+            900.0,
+            [_contact(200.0, 300.0, "TWENTY")],
+            start_volume_gb=0.0,
+        )
+        assert ledger.bounds == [250.0, 250.0, 900.0]
+        assert ledger.downlink_gb == pytest.approx([0.0, 10.0])
+        assert ledger.contact_housekeeping_gb == pytest.approx([0.0, 0.15])
+
+    def test_entries_without_a_link_are_not_contacts(
+        self, config: MissionConfig
+    ) -> None:
+        science = PlanEntry(begin=200.0, end=300.0)
+        ledger = RecorderLedger(config, 0.0, 1000.0, [science], start_volume_gb=0.0)
         assert ledger.segments == 1
 
     def test_peaks_carry_over_what_a_contact_cannot_remove(
@@ -144,7 +198,7 @@ class TestLedger:
             config,
             0.0,
             1000.0,
-            [Contact(200.0, 300.0, 20.0), Contact(600.0, 700.0, 30.0)],
+            [_contact(200.0, 300.0, "TWENTY"), _contact(600.0, 700.0, "THIRTY")],
             start_volume_gb=5.0,
         )
         # Segment 0: 5 + 0.2 housekeeping + 40 science = 45.2 before the first
@@ -157,7 +211,7 @@ class TestLedger:
         self, config: MissionConfig
     ) -> None:
         ledger = RecorderLedger(
-            config, 0.0, 1000.0, [Contact(200.0, 300.0, 50.0)], start_volume_gb=0.0
+            config, 0.0, 1000.0, [_contact(200.0, 300.0, "FIFTY")], start_volume_gb=0.0
         )
         assert ledger.peaks((1.0, 0.0)) == pytest.approx([1.2, 0.7])
 
@@ -166,7 +220,7 @@ class TestLedger:
             config,
             0.0,
             1000.0,
-            [Contact(200.0, 300.0, 20.0), Contact(600.0, 700.0, 1.0)],
+            [_contact(200.0, 300.0, "TWENTY"), _contact(600.0, 700.0, "ONE")],
             start_volume_gb=0.0,
         )
         volumes = (0.0, 0.0, 70.0)
@@ -195,7 +249,7 @@ class TestLedger:
         self, config: MissionConfig
     ) -> None:
         ledger = RecorderLedger(
-            config, 0.0, 1000.0, [Contact(500.0, 600.0, 1.0)], start_volume_gb=0.0
+            config, 0.0, 1000.0, [_contact(500.0, 600.0, "ONE")], start_volume_gb=0.0
         )
         entries = [
             PlanEntry(begin=0, end=100, collection_begin=10, collection_end=70),
