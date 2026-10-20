@@ -482,7 +482,7 @@ class MissionConfig(ConfigModel):
         yaml_lines.append(
             "#   Data rates: Gigabits per second (Gbps) or Megabits per second (Mbps)"
         )
-        yaml_lines.append("#   Data volume: Gigabits (Gb) or Gigabytes (GB)")
+        yaml_lines.append("#   Data volume: Gigabits (Gb)")
         yaml_lines.append("#   Slew rates: degrees per second (deg/s)")
         yaml_lines.append("#   Acceleration: degrees per second squared (deg/s²)")
         yaml_lines.append("")

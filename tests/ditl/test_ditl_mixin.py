@@ -328,7 +328,8 @@ class TestDITLMixin:
         from conops.common.enums import ACSMode
 
         ditl._process_data_management(1000.0, ACSMode.PASS, 60, collection_seconds=0)
-        ditl.recorder.remove_data.assert_called_with(0.75)
+        # 100 Mbps for 60 s = 6000 Mb = 6 Gb
+        ditl.recorder.remove_data.assert_called_with(6.0)
 
     def test_process_data_management_other_modes_data_gen_zero(
         self, ditl_instance: tuple[DITLMixin, Mock, Mock]

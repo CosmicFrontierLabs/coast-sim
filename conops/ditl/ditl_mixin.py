@@ -695,9 +695,9 @@ class DITLMixin:
                 and effective_rate_mbps is not None
                 and effective_rate_mbps > 0
             ):
-                # Convert Mbps to Gb: Mbps * seconds / 1000 / 8 = Gb
+                # Mbps * seconds = megabits; the recorder counts gigabits.
                 megabits = effective_rate_mbps * contact_seconds
-                data_to_downlink = megabits / 1000.0 / 8.0  # Convert to Gb
+                data_to_downlink = megabits / 1000.0
                 data_downlinked = self.recorder.remove_data(data_to_downlink)
 
         return data_generated, data_downlinked

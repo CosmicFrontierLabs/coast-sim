@@ -154,7 +154,7 @@ def test_process_data_management_generates_and_downlinks(mock_config):
     gen2, dl2 = mixin._process_data_management(
         utime, ACSMode.PASS, step, collection_seconds=0
     )
-    # 50 Mbps effective => 50*60 / 1000 / 8 = 0.375 Gb per step, but recorder returns 0.3
+    # 50 Mbps effective => 50*60 / 1000 = 3 Gb per step, but recorder returns 0.3
     assert gen2 == 0.0
     assert dl2 == 0.3
 

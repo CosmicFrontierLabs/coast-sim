@@ -702,7 +702,7 @@ class TestGroundContacts:
             rate_mbps = ditl._get_effective_data_rate(station)
             assert rate_mbps
             seconds = float(entry.contact_end) - float(entry.contact_begin)
-            expected += rate_mbps * seconds / 1000.0 / 8.0
+            expected += rate_mbps * seconds / 1000.0
         assert ditl.data_downlinked_gb[-1] == pytest.approx(expected)
 
     def test_contact_with_no_step_inside_it_is_not_reserved(self) -> None:
