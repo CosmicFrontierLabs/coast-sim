@@ -109,9 +109,9 @@ class _ChunkBattery(NamedTuple):
     candidate occupies it: the run's idle power for every second, replaced by
     the candidate's net power for the seconds it is there, and the slewing
     power for its slew in. The deficit at a run's end carries into the next,
-    never below zero, and must stay within the limit; in a sunlit run, where
-    science can put energy back, the draws are also checked on their own,
-    as if they came first.
+    never below zero, and charging never takes it below the recharge floor
+    or below where it entered the run already under the floor; it must stay
+    within the limit at every run's end.
     """
 
     edges: list[int]
@@ -130,6 +130,8 @@ class _ChunkBattery(NamedTuple):
     passes in the chunk and the priority-first plan's snapshots after it."""
     limit: int
     """The planning limit as a deficit."""
+    floor: int
+    """The deficit charging is not counted below."""
     horizon: int
     """Seconds from the origin to the end of the horizon."""
 
@@ -569,7 +571,9 @@ class _ChunkModel:
         sunlit run the deficit can rise and fall, and the decoder, which walks
         the plan exactly, has the last word. The carry-over between runs is
         only bounded below, which is exact: a larger carry-over only tightens
-        the later limits.
+        the later limits. Where charging is credited only down to a recharge
+        floor, the carry-over is also at least the smaller of the floor and
+        the deficit entering the run, as the walk never goes below that.
         """
         battery = self.battery
         if battery is None:
@@ -658,6 +662,7 @@ class _ChunkModel:
         self.level: list[cp_model.IntVar] = []
         """The deficit as each run after the first starts."""
         level: cp_model.LinearExpr = cp_model.LinearExpr.constant(battery.entering)
+        entering: cp_model.LinearExprT = battery.entering
         for r in range(runs):
             level = cp_model.LinearExpr.sum(
                 [level, battery.idle[r] * lengths[r] + battery.fixed[r], *energy[r]]
@@ -666,8 +671,16 @@ class _ChunkModel:
             if r < runs - 1:
                 carry = model.new_int_var(0, battery.limit, f"level{r + 1}")
                 model.add(carry >= level)
+                if battery.floor > 0:
+                    if isinstance(entering, int):
+                        model.add(carry >= min(entering, battery.floor))
+                    else:
+                        kept = model.new_int_var(0, battery.limit, f"kept{r + 1}")
+                        model.add_min_equality(kept, [entering, battery.floor])
+                        model.add(carry >= kept)
                 self.level.append(carry)
                 level = carry
+                entering = carry
 
     def _hint_battery(self, hint: dict[int, _TaskHint]) -> None:
         """Hint the run and carry-over variables from the hinted snapshots."""
@@ -708,7 +721,7 @@ class _ChunkModel:
                     model.add_hint(literal, r == run)
         level = battery.entering
         for r in range(runs - 1):
-            level = max(0, level + energy[r])
+            level = max(level + energy[r], min(level, battery.floor), 0)
             model.add_hint(self.level[r], min(level, battery.limit))
 
     def add_hint(self, hint: dict[int, _TaskHint]) -> None:
@@ -1178,6 +1191,7 @@ class CpSatScheduler(LocalSearchScheduler):
             slew=slew,
             fixed=fixed,
             limit=int(np.floor(limit * 3600.0)),
+            floor=int(np.ceil(ledger.recharge_floor * 3600.0)),
             horizon=int(round(ledger.bounds[-1] - origin_time)),
         )
 

@@ -247,13 +247,15 @@ through it:
 * a slew draws ``SLEWING`` power and generates along its path; a science snapshot
   draws ``SCIENCE`` power and generates at its attitude and the power-optimal roll
   the scheduler gives it, which the simulation flies; a contact draws ``PASS`` power
-  and generates along its tracking profile, then ``SLEWING`` power until the
-  spacecraft is at rest after it; a charge draws ``CHARGING`` power and generates at
-  the charging attitude;
+  from the start of its slew, which ACS runs in ``PASS`` mode, and generates along
+  its tracking profile, then ``SLEWING`` power until the spacecraft is at rest after
+  it; a charge draws ``CHARGING`` power and generates at the charging attitude;
 * idle time draws the idle power and generates at the attitude the activity before
   it leaves the spacecraft in;
 * the deficit never falls below zero: a surplus before a draw is lost, as a full
-  battery wastes what its panels make;
+  battery wastes what its panels make; and generation is not counted past
+  ``planning_recharge_level``, so a plan never assumes the battery above it (a
+  deficit already below that floor is left where it is until something draws);
 * the segments start at each sunrise, and the plan is checked at every segment's
   peak.
 
@@ -412,8 +414,9 @@ power-optimal roll, less the run's idle power, for its collection and overhead, 
 a typical slew in at the slewing power. A run's energy is then its idle power for
 its whole length, charging in sunlight at the charging attitude and drawing in
 eclipse, plus what the candidates and the already planned activities change; the
-deficit carried into each run is bounded below by the previous run's and by zero,
-and every run's end must stay within the limit. In an eclipse run everything draws,
+deficit carried into each run is bounded below by the previous run's, by zero, and
+by the smaller of the recharge floor and the deficit entering the run, and every
+run's end must stay within the limit. In an eclipse run everything draws,
 so the run's end is its peak; in a sunlit run the deficit can rise and fall within
 the run, and the model is linear, so the decoder, which walks the plan exactly, has
 the last word: a chunk whose solution does not hold up keeps the priority-first

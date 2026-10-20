@@ -127,6 +127,9 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
         scheduler re-slews entries as it places others before them, and reads
         a timeline's additions again each time."""
         self._charger = EmergencyCharging(config, log=DITLLog())
+        self.recharge_floor = float(config.battery.planning_recharge_deficit_wh)
+        """The deficit generation is not counted below: a plan never assumes
+        the battery above ``planning_recharge_level``."""
         self.slew_allowance = float(
             Slew.duration_upper_bound(config.spacecraft_bus.attitude_control)
         )
@@ -317,11 +320,12 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
 
         Every step draws its mode's power less what the panels generate at the
         attitude held then: along the slew's ``path`` from ``path_start``
-        (none counted without one), then the entry's own attitude in
-        ``SCIENCE`` or ``CHARGING`` mode, or the contact's ``track`` in
-        ``PASS`` mode, and ``SLEWING`` power at the contact's last attitude
-        while it brakes to ``rest`` after its end. Only the part from
-        ``after`` counts, if given.
+        (none counted without one) at ``SLEWING`` power, or ``PASS`` power
+        into a contact, as ACS reports the slew; then the entry's own
+        attitude in ``SCIENCE`` or ``CHARGING`` mode, or the contact's
+        ``track`` in ``PASS`` mode, and ``SLEWING`` power at the contact's
+        last attitude while it brakes to ``rest`` after its end. Only the
+        part from ``after`` counts, if given.
         """
         obstype = entry_obstype(entry)
         key = (
@@ -376,7 +380,11 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
             return own
 
         def watts_at(utime: float) -> float:
-            if utime < arrival or utime >= end:
+            if utime < arrival:
+                # ACS reports the slew into a contact as PASS, and the slew
+                # into anything else as SLEWING.
+                step_mode = ACSMode.PASS if mode is ACSMode.PASS else ACSMode.SLEWING
+            elif utime >= end:
                 step_mode = ACSMode.SLEWING
             else:
                 step_mode = mode
@@ -462,7 +470,7 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
                     idle_peak, level = self._idle(level, cursor, addition.begin)
                     peak = max(peak, idle_peak)
                 for delta in addition.deltas:
-                    level = max(0.0, level + delta)
+                    level = self._after(level, delta)
                     peak = max(peak, level)
                 cursor = max(cursor, addition.end)
             if self.bounds[k + 1] > cursor:
@@ -490,7 +498,7 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
                 for step, delta in zip(
                     self.steps(addition.begin, addition.end), addition.deltas
                 ):
-                    level = max(0.0, level + delta)
+                    level = self._after(level, delta)
                     if level > self.limit + 1e-9:
                         return float(step)
                 cursor = max(cursor, addition.end)
@@ -500,6 +508,14 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
             if level > self.limit + 1e-9:
                 return float(step)
         return None
+
+    def _after(self, level: float, delta: float) -> float:
+        """The deficit after a step adds ``delta``: a draw adds in full, and
+        generation takes the deficit no lower than the recharge floor, or
+        than where it already is below the floor, and never below zero."""
+        if delta < 0.0:
+            return max(level + delta, min(level, self.recharge_floor), 0.0)
+        return level + delta
 
     def _idle(self, level: float, begin: float, end: float) -> tuple[float, float]:
         """Walk idle time from ``level``: the peak reached and the level at its end.
@@ -557,8 +573,7 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
         if self.limit is None or excess <= 1e-9:
             return None
         at_start = self.level_at(planned, addition.begin)
-        floor = self.config.battery.planning_recharge_deficit_wh
-        if at_start - excess < floor:
+        if at_start - excess < self.recharge_floor:
             # Charging cannot take the deficit low enough for the addition.
             return None
         # The idle time before the addition: a hold spanning its start, or
@@ -604,7 +619,7 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
                 ):
                     if float(step) >= utime:
                         break
-                    level = max(0.0, level + delta)
+                    level = self._after(level, delta)
                 cursor = max(cursor, min(addition.end, utime))
         if utime > cursor:
             _, level = self._idle(level, cursor, utime)
