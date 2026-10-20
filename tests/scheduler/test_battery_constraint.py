@@ -1,0 +1,446 @@
+"""Plans keep the battery above its planning level, charging when they must.
+
+The ledger's segment arithmetic is tested in test_consumable.py; here it is
+the battery's mapping onto it, with additions ordered in time, and the
+schedulers' use of it.
+"""
+
+from datetime import timedelta
+
+import pytest
+
+from conops.common import ObsType
+from conops.common.enums import ACSMode
+from conops.config import (
+    Battery,
+    MissionConfig,
+    PowerDraw,
+    SolarPanel,
+    SolarPanelSet,
+)
+from conops.ditl import DITL, RollingHorizonDITL
+from conops.ditl.plan_validator import entry_obstype
+from conops.schedulers import (
+    BatteryLedger,
+    LocalSearchScheduler,
+    PriorityScheduler,
+    SchedulingContext,
+)
+from conops.schedulers.battery import MIN_CHARGE_SECONDS, Addition
+from conops.targets import PlanEntry, Pointing
+
+from .planning_scenario import BEGIN, HOUR, MIN, PATCH, T0
+from .planning_scenario import make_config as _config
+from .planning_scenario import make_target as _target
+from .test_priority_scheduler import _science
+
+HOURS = 14
+STEP = 60
+WATTHOUR = 1000.0
+LEVEL = 0.7
+"""The default planning level is the depth-of-discharge floor."""
+LIMIT_WH = (1.0 - LEVEL) * WATTHOUR
+SIDE = (0.0, 1.0, 0.0)
+"""A side-mounted panel: rolled towards the Sun, it generates while observing."""
+BORESIGHT = (1.0, 0.0, 0.0)
+"""A panel on the boresight: it generates only pointing at the Sun."""
+
+
+def _battery_config(
+    normal: tuple[float, float, float] = BORESIGHT,
+    *,
+    level: float | None | str = "default",
+    panels: bool = True,
+    stations: bool = False,
+    watthour: float = WATTHOUR,
+) -> MissionConfig:
+    """The scenario with a 1 kWh battery, one 600 W panel and modal draws:
+    200 W observing, 230 W slewing, 140 W idle and 130 W charging. The
+    battery alert is set at the planning level, so an alert in a run means
+    the plan let the battery below it."""
+    config = _config(HOURS, stations=stations)
+    config.solar_panel = SolarPanelSet(
+        panels=[SolarPanel(name="panel", normal=normal, max_power=600.0)]
+        if panels
+        else []
+    )
+    config.battery = Battery(
+        watthour=watthour,
+        max_depth_of_discharge=1.0 - LEVEL,
+        recharge_threshold=LEVEL,
+    )
+    if level != "default":
+        config.battery.planning_level = level  # type: ignore[assignment]
+    config.spacecraft_bus.power_draw = PowerDraw(
+        nominal_power=100.0, power_mode={0: 150.0, 1: 180.0, 4: 80.0, 6: 90.0}
+    )
+    return config
+
+
+def _targets(config: MissionConfig, minutes: float = 200) -> list[Pointing]:
+    return [
+        _target(config, 100 + i, ra, dec, merit=90 - i, minutes=minutes, snapshot=20)
+        for i, (ra, dec) in enumerate(PATCH)
+    ]
+
+
+def _ledger(config: MissionConfig, start_deficit: float = 0.0) -> BatteryLedger:
+    return BatteryLedger(
+        config, T0, T0 + HOURS * HOUR, start_deficit_wh=start_deficit, step_size=STEP
+    )
+
+
+def _empty(ledger: BatteryLedger) -> tuple[tuple[Addition, ...], ...]:
+    return tuple(() for _ in range(ledger.segments))
+
+
+def _with_hold(
+    ledger: BatteryLedger,
+    planned: tuple[tuple[Addition, ...], ...],
+    begin: float,
+    end: float,
+) -> tuple[tuple[Addition, ...], ...]:
+    """``planned`` with the spacecraft held at each sunlit run's charging
+    attitude through ``[begin, end)``, as a plan with charges would have it."""
+    for stretch in ledger.stretches:
+        if stretch.attitude is None:
+            continue
+        hold = ledger.hold_addition(stretch.attitude, ACSMode.IDLE, begin, end)
+        if hold is not None:
+            return ledger.add(planned, ledger.segment(begin), hold)
+    return planned
+
+
+def _science_entry(
+    config: MissionConfig, begin: float, minutes: float, ra: float = 105.0
+) -> PlanEntry:
+    """A snapshot as the scheduler would place it: at the power-optimal roll."""
+    end = begin + minutes * MIN
+    target = Pointing(config=config, ra=ra, dec=10.0, obsid=1)
+    ctx = SchedulingContext(
+        config, BEGIN, BEGIN + timedelta(hours=HOURS), step_size=STEP
+    )
+    roll = ctx.instrument_roll(target, begin)
+    return PlanEntry(
+        config=config,
+        ra=ra,
+        dec=10.0,
+        roll=roll,
+        begin=begin,
+        slewtime=120,
+        end=end,
+        obsid=1,
+        obstype=ObsType.AT,
+        collection_begin=begin + 150,
+        collection_end=end - 30,
+    )
+
+
+def _execute(config: MissionConfig, plan) -> DITL:
+    ditl = DITL(
+        config=config, plan=plan, begin=BEGIN, end=BEGIN + timedelta(hours=HOURS)
+    )
+    ditl.step_size = STEP
+    ditl.calc()
+    return ditl
+
+
+def _charges(plan) -> list[PlanEntry]:
+    return [e for e in plan if entry_obstype(e) == ObsType.CHARGE]
+
+
+def _observations(plan) -> list[PlanEntry]:
+    return [e for e in plan if entry_obstype(e) == ObsType.AT]
+
+
+def _timing(plan) -> list[tuple[int, float, float]]:
+    return [(int(e.obsid), float(e.begin), float(e.end)) for e in plan]
+
+
+class TestPlanningLevel:
+    def test_defaults_to_the_depth_of_discharge_floor(self) -> None:
+        battery = Battery(watthour=500.0, max_depth_of_discharge=0.4)
+        assert battery.planning_level == pytest.approx(0.6)
+        assert battery.planning_deficit_wh == pytest.approx(200.0)
+        loaded = Battery.model_validate_json(battery.model_dump_json())
+        assert loaded.planning_level == pytest.approx(0.6)
+
+    def test_can_be_set_or_disabled(self) -> None:
+        assert Battery(watthour=500.0, planning_level=0.9).planning_deficit_wh == (
+            pytest.approx(50.0)
+        )
+        assert Battery(planning_level=None).planning_deficit_wh is None
+
+    def test_recharge_level_defaults_to_full_and_is_above_the_level(self) -> None:
+        assert Battery().planning_recharge_level == 1.0
+        assert Battery(watthour=500.0).planning_recharge_deficit_wh == 0.0
+        with pytest.raises(ValueError, match="planning_recharge_level"):
+            Battery(planning_level=0.8, planning_recharge_level=0.7)
+
+
+class TestLedger:
+    def test_segments_start_at_each_sunrise(self) -> None:
+        ledger = _ledger(_battery_config())
+        runs = ledger.sunlit_runs(T0, T0 + HOURS * HOUR)
+        assert len(runs) > 5
+        assert ledger.bounds[1:-1] == [b for b, _ in runs]
+        assert ledger.limit == pytest.approx(LIMIT_WH)
+
+    def test_idle_time_with_no_attitude_only_draws(self) -> None:
+        """A plan read on its own: idle time draws the idle power and the
+        deficit only rises. The schedulers give idle time the attitude held."""
+        ledger = _ledger(_battery_config())
+        levels = ledger.levels(_empty(ledger))
+        assert levels == sorted(levels)
+        hour = ledger.levels(_empty(ledger))[-1] / (HOURS)
+        assert hour == pytest.approx(140.0, rel=0.05)
+
+    def test_a_hold_generates_at_its_attitude(self) -> None:
+        """Held at the charging attitude, a sunlit run puts energy back; in
+        eclipse the same hold draws the idle power."""
+        ledger = _ledger(_battery_config())
+        stretch = ledger.stretches[1]
+        assert stretch.attitude is not None
+        sunlit = ledger.hold_addition(
+            stretch.attitude, ACSMode.IDLE, stretch.begin, stretch.end
+        )
+        eclipse = ledger.hold_addition(
+            stretch.attitude, ACSMode.IDLE, stretch.end, ledger.stretches[2].begin
+        )
+        assert sunlit is not None and eclipse is not None
+        assert sunlit.amount < -100.0
+        assert all(delta < 0 for delta in sunlit.deltas)
+        assert eclipse.amount == pytest.approx(
+            140.0 * (ledger.stretches[2].begin - stretch.end) / 3600.0
+        )
+
+    def test_without_panels_the_sun_is_idle_time_too(self) -> None:
+        ledger = _ledger(_battery_config(panels=False))
+        assert all(stretch.attitude is None for stretch in ledger.stretches)
+        assert ledger.charges_in(T0, T0 + HOURS * HOUR) == []
+
+    def test_a_science_addition_is_the_simulations_arithmetic(self) -> None:
+        """Slewing power over the slew, then science power less what the
+        panel generates at the attitude, step by step."""
+        config = _battery_config(SIDE)
+        ledger = _ledger(config)
+        begin = ledger.stretches[1].begin
+        entry = _science_entry(config, begin, 20)
+        addition = ledger.addition(entry)
+        assert addition is not None
+        assert len(addition.deltas) == 20
+        assert addition.amount == pytest.approx(sum(addition.deltas))
+        # Slewing at 230 W for two minutes, no generation counted.
+        assert addition.deltas[0] == pytest.approx(230.0 / 60.0)
+        # Observing at 200 W with a sun-rolled side panel: net generation.
+        assert all(delta < 0 for delta in addition.deltas[2:])
+
+    def test_a_surplus_before_a_draw_is_lost_as_the_battery_is_full(self) -> None:
+        """A block that generates in sunlight and then draws in eclipse ends
+        with the eclipse's draw on the deficit, not the net of the two."""
+        config = _battery_config(SIDE)
+        ledger = _ledger(config)
+        stretch = ledger.stretches[1]
+        # Starts 10 minutes before the eclipse, runs 30 minutes into it.
+        entry = _science_entry(config, stretch.end - 10 * MIN, 40)
+        addition = ledger.addition(entry)
+        assert addition is not None
+        sunlit = [d for d in addition.deltas[2:] if d < 0]
+        assert len(sunlit) >= 5, "the sunlit minutes generate"
+        # Held at the charging attitude until then, the battery is full.
+        planned = _with_hold(ledger, _empty(ledger), T0, addition.begin)
+        level_before = ledger.level_at(planned, addition.begin)
+        assert level_before < 1.0
+        planned = ledger.add(planned, ledger.segment(addition.begin), addition)
+        level_after = ledger.level_at(planned, addition.end)
+        # The walk ends above the net sum: the surplus beyond what the deficit
+        # could absorb went nowhere.
+        assert level_after - level_before > addition.amount + 10.0
+
+    def test_fits_refuses_what_takes_the_battery_below_the_level(self) -> None:
+        config = _battery_config(BORESIGHT)
+        ledger = _ledger(config)
+        begin = ledger.stretches[1].begin
+        short = ledger.addition(_science_entry(config, begin, 20))
+        long = ledger.addition(_science_entry(config, begin, 120))
+        assert short is not None and long is not None
+        segment = ledger.segment(begin)
+        # Held at the charging attitude before and after, as a plan would.
+        before = _with_hold(ledger, _empty(ledger), T0, begin)
+        end = T0 + HOURS * HOUR
+        assert ledger.fits(_with_hold(ledger, before, short.end, end), segment, short)
+        assert not ledger.fits(_with_hold(ledger, before, long.end, end), segment, long)
+
+    def test_time_to_fit_waits_for_charging_in_the_gap(self) -> None:
+        """A snapshot refused at the start of a sunlit run fits after enough
+        of the run has charged the battery."""
+        config = _battery_config(BORESIGHT)
+        ledger = _ledger(config, start_deficit=LIMIT_WH - 20.0)
+        # The horizon starts in sunlight, so the first run starts at once.
+        begin = ledger.stretches[0].begin
+        assert begin == T0
+        addition = ledger.addition(_science_entry(config, begin, 20))
+        assert addition is not None
+        excess = LIMIT_WH - 20.0 + addition.amount - LIMIT_WH
+        assert excess > 0
+        later = ledger.time_to_fit(
+            _empty(ledger), addition, ledger.stretches[0].end, excess
+        )
+        assert later is not None
+        assert later > begin + MIN_CHARGE_SECONDS
+
+    def test_no_limit_fits_anything(self) -> None:
+        config = _battery_config(BORESIGHT, level=None)
+        ledger = _ledger(config)
+        assert not ledger.active
+        addition = ledger.addition(_science_entry(config, T0, 600))
+        assert addition is not None
+        assert ledger.fits(_empty(ledger), 0, addition)
+
+
+class TestPriorityScheduler:
+    def test_a_side_panel_observes_all_day_without_charging(self) -> None:
+        """Rolled towards the Sun, the panel generates more than observing
+        draws, so the plan fills the day and has no idle time to charge in."""
+        config = _battery_config(SIDE, stations=True)
+        scheduler = PriorityScheduler(
+            config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
+        )
+        plan = scheduler.schedule()
+        assert not _charges(plan)
+        assert len(_science(plan)) > 30
+        ditl = _execute(config, plan)
+        assert min(ditl.batterylevel) >= LEVEL
+        assert ditl.validate_plan_matches_execution() == []
+
+    def test_a_boresight_panel_plans_charges_and_stays_above_the_level(self) -> None:
+        """Observing draws without generating, so the plan charges in its idle
+        sunlit time and refuses the science the battery cannot carry."""
+        config = _battery_config(BORESIGHT, stations=True)
+        scheduler = PriorityScheduler(
+            config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
+        )
+        plan = scheduler.schedule()
+        charges = _charges(plan)
+        assert charges
+        assert all(float(c.end) - float(c.begin) >= MIN_CHARGE_SECONDS for c in charges)
+        assert _science(plan)
+        assert any("Not enough charge" in e.description for e in scheduler.log.events)
+        ditl = _execute(config, plan)
+        assert min(ditl.batterylevel) >= LEVEL - 1e-6
+        assert not any(ditl.batteryalert)
+        assert ditl.validate_plan_matches_execution() == []
+        # Charges execute in charging mode at their attitude.
+        modes = [ACSMode(int(m)) for m in ditl.mode]
+        assert ACSMode.CHARGING in modes
+
+    def test_without_the_limit_the_battery_goes_below_the_level(self) -> None:
+        config = _battery_config(BORESIGHT, level=None)
+        plan = PriorityScheduler(
+            config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
+        ).schedule()
+        assert not _charges(plan)
+        ditl = _execute(config, plan)
+        assert min(ditl.batterylevel) < LEVEL
+
+    def test_without_panels_nothing_is_charged_and_the_plan_is_as_before(self) -> None:
+        """A battery the plan cannot run down, and nothing to charge it with."""
+        config = _battery_config(panels=False, level=None, watthour=100_000.0)
+        before = PriorityScheduler(
+            config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
+        ).schedule()
+        config = _battery_config(panels=False, watthour=100_000.0)
+        plan = PriorityScheduler(
+            config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
+        ).schedule()
+        assert not _charges(plan)
+        assert _timing(plan) == _timing(before)
+
+    def test_a_low_battery_at_the_start_is_counted(self) -> None:
+        config = _battery_config(BORESIGHT)
+        targets = _targets(config)
+        full = PriorityScheduler(
+            config, targets, BEGIN, BEGIN + timedelta(hours=HOURS)
+        ).schedule()
+        low = PriorityScheduler(
+            config,
+            targets,
+            BEGIN,
+            BEGIN + timedelta(hours=HOURS),
+            start_deficit_wh=LIMIT_WH - 60.0,
+        ).schedule()
+        assert float(_observations(low)[0].begin) > float(_observations(full)[0].begin)
+
+    def test_a_snapshot_refused_at_the_start_of_a_run_is_placed_later_in_it(
+        self,
+    ) -> None:
+        """Starting low, the first snapshot waits for the sunlit idle time
+        before it to charge, rather than for the next gap."""
+        config = _battery_config(BORESIGHT)
+        scheduler = PriorityScheduler(
+            config,
+            _targets(config)[:1],
+            BEGIN,
+            BEGIN + timedelta(hours=HOURS),
+            start_deficit_wh=LIMIT_WH - 80.0,
+        )
+        plan = scheduler.schedule()
+        first = float(_observations(plan)[0].begin)
+        assert T0 + MIN_CHARGE_SECONDS < first < T0 + 3 * HOUR
+        assert _charges(plan)
+        assert float(_charges(plan)[0].end) <= first
+
+
+class TestLocalSearch:
+    def test_the_search_keeps_every_plan_within_the_level(self) -> None:
+        config = _battery_config(BORESIGHT, stations=True)
+        scheduler = LocalSearchScheduler(
+            config,
+            _targets(config),
+            BEGIN,
+            BEGIN + timedelta(hours=HOURS),
+            time_limit=600,
+            max_iterations=40,
+            seed=1,
+        )
+        plan = scheduler.schedule()
+        assert scheduler.score >= scheduler.initial_score
+        assert _charges(plan)
+        ditl = _execute(config, plan)
+        assert min(ditl.batterylevel) >= LEVEL - 1e-6
+        assert ditl.validate_plan_matches_execution() == []
+
+
+class TestRollingHorizon:
+    def test_each_replan_starts_from_the_battery_it_will_have(self) -> None:
+        config = _battery_config(BORESIGHT, stations=True)
+        ditl = RollingHorizonDITL(
+            config,
+            _targets(config),
+            begin=BEGIN,
+            end=BEGIN + timedelta(hours=HOURS),
+            horizon=timedelta(hours=6),
+            replan_interval=timedelta(hours=3),
+            commit_lead_time=timedelta(minutes=10),
+        )
+        ditl.step_size = STEP
+        assert ditl.calc()
+        assert len(ditl.replans) >= 4
+        assert min(ditl.batterylevel) >= LEVEL - 1e-6
+        assert _charges(ditl.plan)
+        assert ditl.validate_plan_matches_execution() == []
+
+
+class TestValidator:
+    def test_a_charge_executed_elsewhere_is_a_mismatch(self) -> None:
+        config = _battery_config(BORESIGHT)
+        plan = PriorityScheduler(
+            config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
+        ).schedule()
+        charge = _charges(plan)[0]
+        ditl = _execute(config, plan)
+        assert ditl.validate_plan_matches_execution() == []
+        charge.ra = (float(charge.ra) + 40.0) % 360.0
+        mismatches = ditl.validate_plan_matches_execution()
+        assert mismatches
+        assert all("charge" in m.message for m in mismatches)

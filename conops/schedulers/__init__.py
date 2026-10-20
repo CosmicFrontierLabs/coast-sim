@@ -1,3 +1,4 @@
+from .battery import BatteryLedger
 from .consumable import ConsumableLedger
 from .context import SchedulingContext
 from .cpsat_scheduler import CpSatScheduler
@@ -12,6 +13,7 @@ from .sequential_scheduler import SequentialScheduler
 
 __all__ = [
     "SCHEDULERS",
+    "BatteryLedger",
     "ConsumableLedger",
     "CpSatScheduler",
     "DispatchPolicy",

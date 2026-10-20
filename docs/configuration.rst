@@ -1302,6 +1302,8 @@ The :class:`~conops.config.Battery` models the spacecraft battery system.
 * ``recharge_clear_threshold`` (float): SOC level that clears emergency recharge
   (0-1, defaults to ``recharge_threshold + 0.005`` capped at 1.0)
 * ``charge_level`` (float): Current charge in Watt-hours
+* ``planning_level`` (float | None): Battery level fraction the schedulers keep a plan above, charging in idle sunlit time when they must. Defaults to the depth-of-discharge floor, ``1 - max_depth_of_discharge``; ``None`` plans without regard to the battery. See :doc:`planning`.
+* ``planning_recharge_level`` (float): Battery level fraction a planned charge is counted to recover the battery to, and so the most a plan expects from charging (0-1, default 1.0)
 
 .. code-block:: python
 
