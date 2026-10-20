@@ -1,4 +1,11 @@
-from pydantic import Field, PrivateAttr, model_validator
+from pydantic import (
+    Field,
+    PrivateAttr,
+    SerializationInfo,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 from ..common import ChargeState
 from ._base import ConfigModel
@@ -64,8 +71,8 @@ class Battery(ConfigModel):
         gt=0.0,
         le=1.0,
         description=(
-            "Battery level fraction below which a plan charges in its idle "
-            "sunlit time, and the level a planned charge is counted to recover"
+            "Battery level fraction a plan never assumes the battery above: "
+            "charging, planned or during an observation, is not counted past it"
         ),
     )
 
@@ -125,6 +132,20 @@ class Battery(ConfigModel):
                 "planning_level"
             )
         return self
+
+    @model_serializer(mode="wrap")
+    def _keep_disabled_planning(
+        self, handler: SerializerFunctionWrapHandler, info: SerializationInfo
+    ) -> dict[str, object]:
+        """Keep ``planning_level: None`` in a dump that excludes None fields.
+
+        None is a setting, not an absence: it disables planning within the
+        battery, and a save that dropped it would load as the derived default.
+        """
+        dumped: dict[str, object] = handler(self)
+        if info.exclude_none and getattr(self, "planning_level", 0) is None:
+            dumped["planning_level"] = None
+        return dumped
 
     @property
     def planning_deficit_wh(self) -> float | None:
