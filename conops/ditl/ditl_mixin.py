@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict
 
 from conops.common.enums import ACSMode
 from conops.common.vector import quaternion_attitude_delta
-from conops.config.groundstation import GroundStation
+from conops.config.groundstation import GroundStation, effective_downlink_rate_mbps
 
 from ..config import FaultManagementRun, MissionConfig, SolarArrayDriveState
 from ..simulation.acs import ACS
@@ -703,37 +703,10 @@ class DITLMixin:
         return data_generated, data_downlinked
 
     def _get_effective_data_rate(self, station: GroundStation) -> float | None:
-        """Calculate effective downlink data rate based on ground station and spacecraft capabilities.
+        """The downlink rate in Mbps the spacecraft gets from ``station``, or None.
 
-        The effective rate is, per band, min(GS downlink rate, SC downlink rate);
-        we take the maximum of this across all common bands.
-
-        Args:
-            station: GroundStation object with antenna capabilities
-
-        Returns:
-            Effective data rate in Mbps, or None if no compatible bands/rates
+        See :func:`~conops.config.groundstation.effective_downlink_rate_mbps`.
         """
-        # If pass has no comms config, use GS overall maximum across bands
-        if self.config.spacecraft_bus.communications is None:
-            return station.get_overall_max_downlink()
-
-        # If GS has no per-band capabilities, no defined rate
-        gs_bands = set(station.supported_bands()) if station.bands else set()
-        if not gs_bands:
-            # No bands defined on ground station
-            return None
-
-        # Compute effective rate per common band
-        best_effective = 0.0
-        for band in gs_bands:
-            gs_rate = station.get_downlink_rate(band) or 0.0
-            sc_rate = (
-                self.config.spacecraft_bus.communications.get_downlink_rate(band) or 0.0
-            )
-            if gs_rate > 0.0 and sc_rate > 0.0:
-                effective = min(gs_rate, sc_rate)
-                if effective > best_effective:
-                    best_effective = effective
-
-        return best_effective if best_effective > 0.0 else None
+        return effective_downlink_rate_mbps(
+            station, self.config.spacecraft_bus.communications
+        )
