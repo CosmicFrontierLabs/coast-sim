@@ -148,6 +148,7 @@ def _walk(
     *,
     step: float = 60.0,
     handover: float = 0.0,
+    acquisition: float = 0.0,
 ) -> StationCoverage:
     """A coverage built from a visibility matrix (stations by steps) alone,
     to test the contact scheduling on its own."""
@@ -155,6 +156,7 @@ def _walk(
     coverage.times = np.arange(len(visible[0]), dtype=float) * step
     coverage.step_size = step
     coverage.handover_seconds = handover
+    coverage.acquisition_seconds = acquisition
     coverage.stations = [
         GroundStation(
             code=f"S{k}",
@@ -210,6 +212,23 @@ class TestScheduling:
         ]
         assert coverage.handovers == 1
 
+    def test_every_contact_starts_after_its_acquisition(self) -> None:
+        coverage = _walk(
+            [[1, 1, 0, 0, 0, 0], [0, 1, 1, 1, 0, 0], [0, 0, 0, 0, 0, 1]],
+            [10.0] * 3,
+            handover=30.0,
+            acquisition=20.0,
+        )
+        assert coverage.contacts == [
+            # Acquired 20 s after S0 came into view.
+            ContactSpan(20.0, 120.0, "S0", 10.0),
+            # Handed over at 120 s: the handover and the acquisition.
+            ContactSpan(170.0, 240.0, "S1", 10.0),
+            # After a gap: the acquisition alone.
+            ContactSpan(320.0, 360.0, "S2", 10.0),
+        ]
+        assert coverage.handovers == 1
+
     def test_a_handover_longer_than_the_view_downlinks_nothing(self) -> None:
         coverage = _walk([[1, 1, 0, 0], [0, 1, 1, 0]], [10.0, 10.0], handover=200.0)
         assert coverage.contacts == [ContactSpan(0.0, 120.0, "S0", 10.0)]
@@ -232,23 +251,30 @@ class TestScheduling:
         )
         config.spacecraft_bus.communications = _comms(AntennaType.OMNI)
         config.spacecraft_bus.communications.handover_seconds = 120.0
+        config.spacecraft_bus.communications.acquisition_seconds = 30.0
         coverage = StationCoverage.for_config(config)
         assert coverage is not None
         assert int((coverage.visible.sum(axis=0) > 1).sum()) > 0
         assert coverage.handovers > 0
+        step = coverage.step_size
         codes = [s.code for s in coverage.stations]
         for earlier, later in zip(coverage.contacts, coverage.contacts[1:]):
             assert earlier.end <= later.begin
-            if later.begin - earlier.end < 120.0:
-                # Only a handover sits closer than its latency, and it is
-                # exactly the latency after the station set.
-                assert later.begin - earlier.end == pytest.approx(120.0)
+            if later.begin - earlier.end < 150.0:
+                # Only a handover sits closer than its latencies, and it is
+                # exactly the handover and the acquisition after the station set.
+                assert later.begin - earlier.end == pytest.approx(150.0)
                 assert earlier.station != later.station
         for span in coverage.contacts:
             k = codes.index(span.station)
-            first = coverage.index(span.begin)
-            last = coverage.index(span.end - 1e-6)
-            assert coverage.visible[k, first : last + 1].all()
+            # The station came into view at a step, 30 s or 150 s before.
+            rise = span.begin - 30.0
+            if (rise - coverage.times[0]) % step != 0:
+                rise = span.begin - 150.0
+            assert (rise - coverage.times[0]) % step == 0
+            assert coverage.visible[
+                k, coverage.index(rise) : coverage.index(span.end - 1e-6) + 1
+            ].all()
         # Fewer contacts than rises of stations: the link does not swap
         # between two stations in view at once.
         rises = sum(
