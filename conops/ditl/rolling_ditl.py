@@ -14,9 +14,10 @@ from ..config import MissionConfig, ScienceData
 from ..config.solar_panel import SolarArrayDriveState
 from ..schedulers.allocator import Allocation, LongRangeAllocator
 from ..schedulers.battery import Addition, BatteryLedger
-from ..schedulers.context import Attitude, tracking_rest
+from ..schedulers.context import Attitude, SchedulingContext, tracking_rest
 from ..schedulers.priority_scheduler import PriorityScheduler, StartState
 from ..schedulers.recorder import RecorderLedger
+from ..simulation.passes import Pass
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing
 from ..targets.merit import MeritModel
@@ -187,6 +188,8 @@ class RollingHorizonDITL(DITL):
         self.allocation: Allocation | None = allocation
         """The allocation the plans follow: the one given, or the one made at
         the last replan if there is an allocator."""
+        self._run_passes: list[Pass] | None = None
+        """The run's ground passes, predicted once for every plan."""
         self.merit_model = MeritModel(config)
         self.too_register: list[TOORequest] = []
         self.replans: list[ReplanRecord] = []
@@ -538,6 +541,15 @@ class RollingHorizonDITL(DITL):
         horizon_end = min(utime + self.horizon.total_seconds(), self.uend)
         if horizon_end <= start:
             return committed, dropped, list(pinned), 0
+        if self.include_passes and self._run_passes is None:
+            # Predicted once, as every plan would predict them for itself:
+            # the same seed, start and length give the same passes. Every
+            # contact the plans hold comes from them, so they are also the
+            # passes to command, and DITL need not predict them again.
+            self._run_passes = list(
+                SchedulingContext(self.config, self.begin, self.end).predict_passes()
+            )
+            self._predicted_passes = list(self._run_passes)
         reserved = self._reserved_seconds(leading, utime)
         options = dict(self.scheduler_options)
         used = None
@@ -582,6 +594,7 @@ class RollingHorizonDITL(DITL):
             start_volume_gb=self._recorder_volume_at(utime, start, committed),
             start_deficit_wh=start_deficit_wh,
             start_drive_state=start_drive_state,
+            passes=self._run_passes,
             **options,  # type: ignore[arg-type]
         )
         return (
