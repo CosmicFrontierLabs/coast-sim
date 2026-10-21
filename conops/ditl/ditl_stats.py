@@ -6,6 +6,7 @@ import numpy as np
 from ..common import ChargeState, normalize_acs_mode
 from ..config.config import MissionConfig
 from ..simulation.acs import ACS
+from ..simulation.coverage import StationCoverage
 from ..simulation.passes import PassTimes
 
 
@@ -29,6 +30,7 @@ class DITLStats:
     data_generated_gb: list[float]
     data_downlinked_gb: list[float]
     executed_passes: PassTimes
+    coverage: StationCoverage | None
     acs: ACS
 
     def print_statistics(self) -> None:
@@ -312,5 +314,19 @@ class DITLStats:
                 sum((p.end - p.begin) for p in self.executed_passes.passes) / 3600
             )
             print(f"Total Pass Time: {total_pass_time:.2f} hours")
+
+        # Station coverage for an antenna that needs no attitude
+        if self.coverage is not None:
+            print("\n" + "-" * 70)
+            print("GROUND STATION COVERAGE")
+            print("-" * 70)
+            begin, end = self.begin.timestamp(), self.end.timestamp()
+            spans = self.coverage.spans(begin, end)
+            in_contact = sum(span.end - span.begin for span in spans) / 3600
+            print(f"Contacts: {len(spans)}")
+            print(
+                f"Time in Contact: {in_contact:.2f} hours "
+                f"({100 * self.coverage.fraction(begin, end):.1f}% of the run)"
+            )
 
         print("\n" + "=" * 70)

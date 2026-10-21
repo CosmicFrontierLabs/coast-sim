@@ -22,6 +22,7 @@ from ..config.observation_categories import ObservationCategory
 from ..config.solar_panel import SolarArrayDriveState
 from ..ditl.ditl_log import DITLLog
 from ..ditl.plan_validator import entry_obstype
+from ..simulation.coverage import StationCoverage
 from ..simulation.passes import Pass
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing
@@ -264,6 +265,7 @@ class PriorityScheduler:
         start_deficit_wh: float | None = None,
         start_drive_state: SolarArrayDriveState | None = None,
         passes: Sequence[Pass] | None = None,
+        coverage: StationCoverage | None = None,
     ) -> None:
         self.config = config
         self.targets = list(targets)
@@ -281,6 +283,9 @@ class PriorityScheduler:
         self.simulation_end = simulation_end
         self.passes = passes
         """The run's predicted ground passes, where the caller has them."""
+        self.coverage = coverage
+        """Station coverage for an antenna that needs no attitude, where the
+        caller has it; built from the configuration otherwise."""
         self.start_state = start_state
         self.reserved_seconds = dict(reserved_seconds or {})
         self.reserved_visits = dict(reserved_visits or {})
@@ -326,6 +331,7 @@ class PriorityScheduler:
             simulation_start=self.simulation_start,
             simulation_end=self.simulation_end,
             passes=self.passes,
+            coverage=self.coverage,
         )
         self._battery = self._battery_ledger()
         self._gap_charges_cache: dict[
@@ -391,6 +397,7 @@ class PriorityScheduler:
             self.ctx.uend,
             [block.entry for block in self.timeline if block.is_pass],
             start_volume_gb=start_volume,
+            coverage=self.ctx.coverage,
         )
 
     def _battery_ledger(self) -> BatteryLedger:
@@ -1101,19 +1108,35 @@ class PriorityScheduler:
             pred = self._pred_at(index)
             succ = self.timeline[index] if index < len(self.timeline) else None
 
-            # First try the gap as it is.
-            candidate = self._fit_in_gap(request, pred, succ, not_before)
-            if candidate is not None:
+            # First try the gap as it is. Where the recorder has no room
+            # before the next contact, nothing earlier in the gap fits
+            # either; a contact that is no block on the timeline (an antenna
+            # that needs no attitude downlinks in whatever mode ACS is in)
+            # can fall within the gap, so the gap is tried again after it.
+            after = not_before
+            while True:
+                candidate = self._fit_in_gap(request, pred, succ, after)
+                if candidate is None:
+                    full = False
+                    break
                 block, slew, succ_slew = candidate
                 volume = self._block_volume(block)
                 segment = self._block_segment(block)
-                if not self._ledger.fits(self._volumes, segment, volume):
-                    # Nothing else in this gap fits either: it is all before
-                    # the same contact. Try the gaps after it.
-                    recorder_full = True
-                    continue
+                if self._ledger.fits(self._volumes, segment, volume):
+                    full = False
+                    break
+                recorder_full = full = True
+                if segment + 1 >= self._ledger.segments:
+                    break
+                after = self._ledger.bounds[segment + 1]
+                if succ is not None and after >= succ.ready:
+                    break
+            if full:
+                # Nothing before the gap's last contact fits: try the gaps after it.
+                continue
+            if candidate is not None:
                 charged = self._fit_within_battery(
-                    request, pred, succ, not_before, candidate, self.timeline, index
+                    request, pred, succ, after, candidate, self.timeline, index
                 )
                 if charged is None:
                     # A later gap is after more sunlit idle time, which charges.
@@ -1131,7 +1154,7 @@ class PriorityScheduler:
                 # The snapshot fitted, but only the one after it was then
                 # unreachable: try again with that one, and any packed behind
                 # it, moved later.
-                delayed = self._fit_delaying_successors(request, index, not_before)
+                delayed = self._fit_delaying_successors(request, index, after)
                 if delayed is None:
                     continue
                 block = delayed

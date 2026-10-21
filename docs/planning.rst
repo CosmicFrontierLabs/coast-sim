@@ -199,6 +199,15 @@ peak:
   during contacts and the slews into them, which ACS runs in ``PASS`` mode, since
   the plan does not know when the spacecraft will be in other modes.
 
+With an omni or gimballed antenna there are no passes to reserve: the contacts are
+the spans of station coverage in the horizon (see :doc:`communications`), each
+downlinking at its station's rate, and housekeeping is at the nominal rate
+throughout since the spacecraft stays in whatever mode it is in. Such a contact is
+no block on the timeline, so a snapshot that does not fit before it is tried after
+it within the same gap. The schedulers and :class:`~conops.ditl.RollingHorizonDITL`
+take the coverage from the configuration, or from ``coverage=`` where the caller
+has it: a rolling run builds it once and gives it to every plan.
+
 The arithmetic is not particular to the recorder. Anything a spacecraft
 accumulates between the events that remove it, and must keep within a limit
 meanwhile, has the same shape: stored momentum builds up until a dump unloads it,
@@ -227,7 +236,8 @@ Dispatch (:class:`~conops.ditl.queue_ditl.QueueDITL`) keeps within the recorder
 too. When it selects the next target it works out how much science the recorder can
 take before its next contact: what is free under the planning limit now, less the
 housekeeping that accrues until that contact begins, or until the run ends if none
-is coming. A candidate collects no more than that room holds at its own rates, and
+is coming. With an omni or gimballed antenna the next contact is the next span of
+station coverage, or now while a station is in view. A candidate collects no more than that room holds at its own rates, and
 one that cannot collect its minimum snapshot within it is passed over; the log says
 how many were and how much room there was. A contact during the snapshot is not
 counted on. ``config.targets.data_volume_weight`` adds a price on top, in merit
@@ -624,7 +634,8 @@ each request's remaining exposure to collect in which bin:
   generates housekeeping, at the ``PASS`` rate during its contacts, plus the science
   data of the requests allocated to it: each target's rate for its allocated seconds
   and its fixed amount per observation, once per bin. Its contacts, from the same
-  pass prediction the schedulers use, take off what they can, and what they cannot
+  pass prediction the schedulers use, or from the same station coverage for an omni
+  or gimballed antenna, take off what they can, and what they cannot
   is carried on the recorder into the next bin, where it must stay within the
   recorder's planning limit (see `Planning within the recorder`_). The allocation
   starts from what is on the recorder, so a run that begins with a full recorder

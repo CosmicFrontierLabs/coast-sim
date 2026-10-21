@@ -67,9 +67,26 @@ Defines how the antenna is mounted and pointed.
   with a deprecation warning and do not affect generated GSP attitudes.
 * ``gimbal_range_deg``: Angular range for gimbaled antennas (from boresight)
 
-Only ``FIXED`` antennas currently drive spacecraft attitude during generated
-ground-station-pass profiles. ``OMNI`` and ``GIMBALED`` antennas do not imply a
-body-frame tracking vector.
+The antenna type decides how the spacecraft gets its contacts. A ``FIXED``
+antenna has to be pointed at the station, so it downlinks during ground-station
+passes: the schedulers reserve each pass on a tracking profile, ACS flies it in
+``PASS`` mode, and science stops for it (see :doc:`planning`). An ``OMNI`` or
+``GIMBALED`` antenna needs no spacecraft attitude, so no passes are predicted for
+it and the spacecraft downlinks whenever a station is in view, in whatever ACS
+mode it is in: :class:`~conops.simulation.StationCoverage` finds, at each step of
+the ephemeris, the station above its elevation mask with the best downlink rate
+(by elevation where rates tie), and from that the spans of continuous contact.
+Each span downlinks at the effective rate through the bands the station and the
+spacecraft share. A gimballed antenna reaches the station only within
+``gimbal_range_deg`` of ``fixed_boresight_body`` from the attitude flown, which
+the simulation checks at each step; planning takes the station as reachable.
+Every station with a downlink carries data this way, whether or not
+``schedule_for_tracking`` allows it to be scheduled for passes.
+
+A configuration without a communications system keeps the body-fixed behaviour.
+With coverage, a DITL's ``coverage`` holds the model, its data telemetry shows
+the downlink, and ``print_statistics`` reports the number of contacts and the
+fraction of the run with a station in view.
 
 Polarization
 ^^^^^^^^^^^^

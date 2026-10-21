@@ -15,6 +15,7 @@ from collections.abc import Sequence
 
 from ..common.enums import ACSMode
 from ..config import MissionConfig
+from ..simulation.coverage import StationCoverage
 from ..targets import PlanEntry
 from .consumable import ConsumableLedger, Removal
 
@@ -52,6 +53,11 @@ class RecorderLedger(ConsumableLedger[float, float]):
             the horizon are ignored, and one that straddles its start or end
             counts for the part inside it.
         start_volume_gb: What is on the recorder at ``begin``.
+        coverage: Station coverage for an antenna that needs no attitude.
+            Its spans of contact in the horizon downlink at their station's
+            rate; the spacecraft stays in whatever mode it is in, so
+            housekeeping is at the nominal rate throughout. A plan for such
+            an antenna has no ground-contact entries.
 
     Housekeeping is counted at the nominal rate throughout, and at the
     ``PASS`` rate during contacts and the slews into them, which ACS runs in
@@ -68,9 +74,21 @@ class RecorderLedger(ConsumableLedger[float, float]):
         contacts: Sequence[PlanEntry],
         *,
         start_volume_gb: float,
+        coverage: StationCoverage | None = None,
     ) -> None:
         self.config = config
         removals = []
+        if coverage is not None:
+            for span in coverage.spans(begin, end):
+                seconds = span.end - span.begin
+                removals.append(
+                    Removal(
+                        span.begin,
+                        span.end,
+                        span.rate_mbps * seconds / 1000.0,
+                        config.housekeeping_generated(seconds),
+                    )
+                )
         for entry in contacts:
             if (
                 entry.station is None
