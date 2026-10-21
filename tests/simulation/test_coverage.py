@@ -141,28 +141,121 @@ class TestSpans:
         assert 0.02 < coverage.fraction(T0, END) < 0.3
         assert coverage.fraction(T0, T0) == 0.0
 
-    def test_the_best_station_in_view_is_taken(
-        self, omni: tuple[MissionConfig, StationCoverage]
+
+def _walk(
+    visible: list[list[int]],
+    rates: list[float],
+    *,
+    step: float = 60.0,
+    handover: float = 0.0,
+) -> StationCoverage:
+    """A coverage built from a visibility matrix (stations by steps) alone,
+    to test the contact scheduling on its own."""
+    coverage = StationCoverage.__new__(StationCoverage)
+    coverage.times = np.arange(len(visible[0]), dtype=float) * step
+    coverage.step_size = step
+    coverage.handover_seconds = handover
+    coverage.stations = [
+        GroundStation(
+            code=f"S{k}",
+            name=f"S{k}",
+            latitude_deg=0.0,
+            longitude_deg=0.0,
+            bands=[BandCapability(band="S", downlink_rate_mbps=rate)],
+        )
+        for k, rate in enumerate(rates)
+    ]
+    coverage.rates = np.array(rates, dtype=float)
+    coverage.visible = np.array(visible, dtype=bool)
+    coverage.contacts = []
+    coverage.handovers = 0
+    coverage._schedule_contacts()
+    coverage._begins = [span.begin for span in coverage.contacts]
+    return coverage
+
+
+class TestScheduling:
+    """One station is tracked at a time, handed over when it sets."""
+
+    def test_a_contact_stays_with_its_station_until_it_sets(self) -> None:
+        # S1 rises while S0 is still tracked, and stays up after S0 sets.
+        coverage = _walk([[1, 1, 1, 1, 0, 0], [0, 0, 1, 1, 1, 1]], [10.0, 10.0])
+        assert coverage.contacts == [
+            ContactSpan(0.0, 240.0, "S0", 10.0),
+            ContactSpan(240.0, 360.0, "S1", 10.0),
+        ]
+        assert coverage.handovers == 1
+
+    def test_the_highest_rate_then_the_longest_view_is_chosen(self) -> None:
+        # Three stations rise together: S1 has the rate, S2 the longer view.
+        coverage = _walk([[1, 1, 1, 0], [1, 1, 0, 0], [1, 1, 1, 1]], [10.0, 20.0, 10.0])
+        assert [c.station for c in coverage.contacts] == ["S1", "S2"]
+        coverage = _walk([[1, 1, 1, 0], [1, 1, 0, 0], [1, 1, 1, 1]], [10.0] * 3)
+        assert [c.station for c in coverage.contacts] == ["S2"]
+
+    def test_a_handover_costs_its_latency_but_a_fresh_contact_does_not(
+        self,
     ) -> None:
-        """Where stations overlap, the one with the higher rate, then the
-        higher elevation, is the contact."""
-        config, coverage = omni
-        stations = {s.code: s for s in config.ground_stations.stations}
-        for step in range(len(coverage.times)):
-            best = int(coverage.best[step])
-            visible = [
-                k
-                for k, station in enumerate(coverage.stations)
-                if coverage.elevation_deg[k, step] > station.min_elevation_deg
-            ]
-            if not visible:
-                assert best == -1
-                continue
-            assert best in visible
-            assert coverage.elevation_deg[best, step] == max(
-                coverage.elevation_deg[k, step] for k in visible
+        coverage = _walk(
+            [[1, 1, 0, 0, 0, 0], [0, 1, 1, 1, 0, 0], [0, 0, 0, 0, 0, 1]],
+            [10.0] * 3,
+            handover=90.0,
+        )
+        assert coverage.contacts == [
+            ContactSpan(0.0, 120.0, "S0", 10.0),
+            # Handed over at 120 s, linked 90 s later.
+            ContactSpan(210.0, 240.0, "S1", 10.0),
+            # Acquired after a gap with nothing in view: no latency.
+            ContactSpan(300.0, 360.0, "S2", 10.0),
+        ]
+        assert coverage.handovers == 1
+
+    def test_a_handover_longer_than_the_view_downlinks_nothing(self) -> None:
+        coverage = _walk([[1, 1, 0, 0], [0, 1, 1, 0]], [10.0, 10.0], handover=200.0)
+        assert coverage.contacts == [ContactSpan(0.0, 120.0, "S0", 10.0)]
+        assert coverage.handovers == 1
+
+    def test_no_station_no_contacts(self) -> None:
+        assert _walk([[0, 0, 0]], [10.0]).contacts == []
+
+    def test_contacts_never_overlap_and_track_a_visible_station(self) -> None:
+        """With a station near Svalbard the two are often in view together."""
+        config = _config(HOURS, stations=True)
+        config.ground_stations.add(
+            GroundStation(
+                code="KIR",
+                name="Kiruna",
+                latitude_deg=67.86,
+                longitude_deg=20.22,
+                bands=[BandCapability(band="S", downlink_rate_mbps=10.0)],
             )
-        assert set(stations) >= {span.station for span in coverage.spans(T0, END)}
+        )
+        config.spacecraft_bus.communications = _comms(AntennaType.OMNI)
+        config.spacecraft_bus.communications.handover_seconds = 120.0
+        coverage = StationCoverage.for_config(config)
+        assert coverage is not None
+        assert int((coverage.visible.sum(axis=0) > 1).sum()) > 0
+        assert coverage.handovers > 0
+        codes = [s.code for s in coverage.stations]
+        for earlier, later in zip(coverage.contacts, coverage.contacts[1:]):
+            assert earlier.end <= later.begin
+            if later.begin - earlier.end < 120.0:
+                # Only a handover sits closer than its latency, and it is
+                # exactly the latency after the station set.
+                assert later.begin - earlier.end == pytest.approx(120.0)
+                assert earlier.station != later.station
+        for span in coverage.contacts:
+            k = codes.index(span.station)
+            first = coverage.index(span.begin)
+            last = coverage.index(span.end - 1e-6)
+            assert coverage.visible[k, first : last + 1].all()
+        # Fewer contacts than rises of stations: the link does not swap
+        # between two stations in view at once.
+        rises = sum(
+            int((np.diff(coverage.visible[k].astype(int)) > 0).sum())
+            for k in range(len(codes))
+        )
+        assert len(coverage.contacts) < rises
 
 
 class TestContactAt:
@@ -207,9 +300,8 @@ class TestContactAt:
         assert coverage is not None
         first = coverage.spans(T0, END)[0]
         step = coverage.index(first.begin)
-        ra, dec = np.degrees(
-            vec2radec(coverage._to_station[int(coverage.best[step]), step])
-        )
+        station = [s.code for s in coverage.stations].index(first.station)
+        ra, dec = np.degrees(vec2radec(coverage._to_station[station, step]))
         # The boresight is -X in the body frame: the body +X axis pointed
         # away from the station puts the boresight on it.
         toward = (float(ra) + 180.0, -float(dec), 0.0)

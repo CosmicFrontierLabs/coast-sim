@@ -153,6 +153,16 @@ class CommunicationsSystem(ConfigModel):
         description="Antenna polarization type",
     )
 
+    handover_seconds: float = Field(
+        default=0.0,
+        description=(
+            "Seconds to switch the link straight from one ground station to "
+            "another, for an omni or gimballed antenna, during which nothing "
+            "is downlinked"
+        ),
+        ge=0.0,
+    )
+
     def get_band(self, band: str) -> BandCapability | None:
         """Get capability for a specific band.
 
