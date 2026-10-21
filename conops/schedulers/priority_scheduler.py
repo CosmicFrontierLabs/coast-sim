@@ -24,6 +24,7 @@ from ..simulation.passes import Pass
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing
 from ..targets.merit import MeritBreakdown, MeritModel
+from .allocator import AllocatedTime
 from .context import Attitude, SchedulingContext
 
 TrackingProfile = list[tuple[float, float, float]]
@@ -87,7 +88,7 @@ class _Request(BaseModel):
 
     target: Pointing
     merit: MeritBreakdown
-    """Merit at the start of the horizon; its tier and ranking."""
+    """Merit at the start of the horizon."""
     remaining: float
     windows: list[tuple[float, float]] = Field(default_factory=list)
     category: ObservationCategory
@@ -143,7 +144,7 @@ class PriorityScheduler:
 
     1. Locked entries keep their collection windows and are placed first.
     2. Ground passes the spacecraft can reach are reserved.
-    3. Requests are sorted by tier, then by merit value at the start of the
+    3. Requests are sorted by merit value at the start of the
        horizon (see :class:`~conops.targets.merit.MeritModel`). Each request is
        split into snapshots of up to ``ss_max`` seconds, never shorter than
        ``ss_min``, until its ``exptime`` is used or it no longer fits.
@@ -194,6 +195,15 @@ class PriorityScheduler:
             before giving up on it (default 3). This plans much faster when many
             requests cannot be placed, but can miss a fit late in a gap. None
             tries every start, which finds every fit.
+        allocated: Time allocated to requests, by obsid, such as from
+            :meth:`~conops.schedulers.Allocation.allocated`. A request's
+            allocated seconds in each span are planned in that span, worth
+            ``allocation_bonus`` more; collection starting in the span counts.
+            The rest of its exposure, and any allocated seconds that do not fit
+            their span, are planned like an unallocated request, which may work
+            ahead. None (the default) treats all requests alike.
+        allocation_bonus: Fraction of a request's value its allocated time
+            gains, so plans trade keeping to the allocation against merit.
     """
 
     scheduler_name = "priority"
@@ -216,6 +226,8 @@ class PriorityScheduler:
         reserved_seconds: Mapping[int, float] | None = None,
         reserved_visits: Mapping[int, float] | None = None,
         successor_retries: int | None = 3,
+        allocated: Mapping[int, Sequence[AllocatedTime]] | None = None,
+        allocation_bonus: float = 0.5,
     ) -> None:
         self.config = config
         self.targets = list(targets)
@@ -233,16 +245,27 @@ class PriorityScheduler:
         if successor_retries is not None and successor_retries < 0:
             raise ValueError("successor_retries must not be negative")
         self.successor_retries = successor_retries
+        if allocation_bonus < 0.0:
+            raise ValueError("allocation_bonus must not be negative")
+        self.allocated = (
+            None
+            if allocated is None
+            else {int(obsid): list(spans) for obsid, spans in allocated.items()}
+        )
+        self.allocation_bonus = allocation_bonus
         self.unplaced: list[Pointing] = []
         """Targets left with at least ``ss_min`` of exposure unplanned."""
         self.plan = Plan()
+        self._rest_of: dict[int, _Request] = {}
+        """For each request for allocated time, by id, the request for the
+        rest of its target's exposure."""
 
     # ── Public API ────────────────────────────────────────────────────────
 
     def schedule(self) -> Plan:
         """Build and return the plan."""
         self._reserve_fixed()
-        self._place_requests(self._requests())
+        self._place_requests(self._with_allocated_time(self._requests()))
         return self._finish(self.timeline)
 
     def _reserve_fixed(self) -> None:
@@ -307,8 +330,10 @@ class PriorityScheduler:
         Without a completion deficit the ranking never changes, so each
         request is placed in full before the next.
         """
-        active = list(requests)
-        order = {id(request): k for k, request in enumerate(active)}
+        # The request for the rest of a target's exposure can start with none,
+        # all of it allocated, and take allocated seconds that do not fit.
+        active = [request for request in requests if request.wants_more]
+        order = {id(request): k for k, request in enumerate(requests)}
         placed = dict.fromkeys(order, 0)
         self._program_seconds = dict(self._delivered)
         """Science by program: collected, committed and planned so far."""
@@ -321,7 +346,6 @@ class PriorityScheduler:
                 request = max(
                     active,
                     key=lambda r: (
-                        r.merit.tier,
                         self._value(r, shares),
                         -order[id(r)],
                     ),
@@ -341,12 +365,17 @@ class PriorityScheduler:
                 self._record_visit(request, block)
                 if request.wants_more:
                     continue
-            active.remove(request)
+            # By identity: a request for allocated time can equal the request
+            # for the rest of its target's exposure field for field.
+            active[:] = [r for r in active if r is not request]
+            self._return_allocated_time(request, active, order)
 
         # Checked once all are placed: moving a snapshot later to make room
         # can cut short a request that was already finished.
         for request in requests:
-            if request.wants_more:
+            self._return_allocated_time(request, None, order)
+        for request in requests:
+            if id(request) not in self._rest_of and request.wants_more:
                 self.unplaced.append(request.target)
                 self._log(
                     self.ctx.ustart,
@@ -371,6 +400,28 @@ class PriorityScheduler:
                 waiting.add(id(request))
         self._cut_short = []
         active.sort(key=lambda request: order[id(request)])
+
+    def _return_allocated_time(
+        self,
+        request: _Request,
+        active: list[_Request] | None,
+        order: Mapping[int, int],
+    ) -> None:
+        """Give allocated seconds that did not fit their span to the rest of
+        the target's exposure, and put that back among ``active`` if it can
+        now take another snapshot."""
+        rest = self._rest_of.get(id(request))
+        if rest is None or request.remaining <= 0.0:
+            return
+        rest.remaining += request.remaining
+        request.remaining = 0.0
+        if (
+            active is not None
+            and all(r is not rest for r in active)
+            and rest.wants_more
+        ):
+            active.append(rest)
+            active.sort(key=lambda r: order[id(r)])
 
     def _value(self, request: _Request, shares: Mapping[str, float]) -> float:
         """Value of a snapshot of ``request`` when the plan delivers ``shares``."""
@@ -425,7 +476,7 @@ class PriorityScheduler:
     # ── Requests ──────────────────────────────────────────────────────────
 
     def _requests(self) -> list[_Request]:
-        """Return the requests in planning order: tier, then value, then a stable tie-break."""
+        """Return the requests in planning order: value, then a stable tie-break."""
         merit_model = MeritModel(self.config)
         # Science committed outside this plan or locked into it will be
         # collected before what this plan places.
@@ -482,20 +533,72 @@ class PriorityScheduler:
             r.category.time_share is not None for r in requests
         )
 
-        def tie_break(request: _Request) -> int:
-            payload = f"{seed}:{request.target.obsid}".encode()
-            return int.from_bytes(
-                hashlib.blake2b(payload, digest_size=8).digest(), "big"
-            )
-
-        # Ranked by the value of a visit when it is placed, as selection uses:
-        # a cadence target's visits wait until they are due, so each has the
-        # full cadence value, not the part it has at the start of the horizon.
-        requests.sort(
-            key=lambda r: (r.merit.tier, self._value(r, shares), tie_break(r)),
-            reverse=True,
-        )
+        self._seed = seed
+        self._shares = shares
+        # Allocated time is worth its request's value plus the bonus.
+        self._allocated_factor = 1.0 + self.allocation_bonus
+        requests.sort(key=self._rank, reverse=True)
         return requests
+
+    def _rank(self, request: _Request) -> tuple[float, int]:
+        """Planning order: value, then a stable tie-break.
+
+        Ranked by the value of a visit when it is placed, as selection uses:
+        a cadence target's visits wait until they are due, so each has the
+        full cadence value, not the part it has at the start of the horizon.
+        """
+        payload = f"{self._seed}:{request.target.obsid}".encode()
+        tie_break = int.from_bytes(
+            hashlib.blake2b(payload, digest_size=8).digest(), "big"
+        )
+        return self._value(request, self._shares), tie_break
+
+    def _with_allocated_time(self, requests: Sequence[_Request]) -> list[_Request]:
+        """Requests to place: allocated time first, in its span, then the rest.
+
+        Each span of a request's allocated time becomes a request for those
+        seconds, limited to the span, its value raised by
+        ``_allocated_factor``. Seconds too few for a snapshot stay with the
+        rest of the target's exposure. Allocated
+        seconds that do not fit their span go back to the rest (see
+        :meth:`_place_requests`).
+        """
+        self._rest_of = {}
+        if self.allocated is None:
+            return list(requests)
+        placing = []
+        for request in requests:
+            rest = request.model_copy()
+            left = request.remaining
+            for span in self.allocated.get(int(request.target.obsid), []):
+                seconds = min(span.seconds, left)
+                if seconds <= 0.0 or seconds < float(request.target.ss_min):
+                    continue
+                part = request.model_copy(
+                    update={
+                        "remaining": seconds,
+                        "windows": [
+                            (max(w0, span.begin), min(w1, span.end))
+                            for w0, w1 in request.windows
+                            if w0 < span.end and span.begin < w1
+                        ],
+                        "merit": request.merit.model_copy(
+                            update={
+                                "allocation": (self._allocated_factor - 1.0)
+                                * request.merit.value,
+                            }
+                        ),
+                        "steady_value": request.steady_value * self._allocated_factor,
+                    }
+                )
+                self._rest_of[id(part)] = rest
+                placing.append(part)
+                left -= seconds
+            rest.remaining = left
+            placing.append(rest)
+        # Stable, so a request's spans keep their time order.
+        placing.sort(key=self._rank, reverse=True)
+        return placing
 
     def _reserved_collection(self) -> dict[int, float]:
         """Return the collection seconds accepted locks already hold per request."""
@@ -904,8 +1007,7 @@ class PriorityScheduler:
 
         Moving a snapshot may cut it short, where its target's visibility ends
         sooner after the move. That is accepted only if the trade is worth it:
-        no snapshot cut short outranks the new one's tier, and the new
-        snapshot's value-weighted seconds exceed those lost. Returns the new
+        the new snapshot's value-weighted seconds exceed those lost. Returns the new
         snapshot's block, or None with the timeline unchanged.
         """
         pred = self._pred_at(index)
@@ -1003,8 +1105,6 @@ class PriorityScheduler:
         cut = [move for move in moves if move.lost > 1e-6]
         if not cut:
             return True
-        if any(move.request.merit.tier > request.merit.tier for move in cut):
-            return False
         lost_value = sum(move.lost * move.request.steady_value for move in cut)
         return gained * request.steady_value > lost_value
 

@@ -1,9 +1,7 @@
 """Figure of merit used to choose between observation targets.
 
-A target's merit is a set of named terms. Its **tier** comes from its
-observation category and is absolute: a target in a higher tier is always
-preferred, whatever the other terms say. Within a tier, targets are compared
-by **score**, the sum of two groups of terms:
+A target's merit is a set of named terms. Targets are compared by **score**,
+the sum of two groups of terms:
 
 - **Value** terms say how much the observation is worth now: the target's base
   merit plus urgency, cadence and completion-deficit terms. The value at
@@ -38,11 +36,12 @@ class MeritBreakdown(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    tier: int = 0
     base: float
     urgency: float = 0.0
     cadence: float = 0.0
     completion_deficit: float = 0.0
+    allocation: float = 0.0
+    """Value added for being in the time a long-range allocation gives it."""
     slew_distance: float = 0.0
     slew_time: float = 0.0
     collection: float = 0.0
@@ -51,11 +50,17 @@ class MeritBreakdown(BaseModel):
     @property
     def value(self) -> float:
         """Science value: base merit plus the dynamic value terms."""
-        return self.base + self.urgency + self.cadence + self.completion_deficit
+        return (
+            self.base
+            + self.urgency
+            + self.cadence
+            + self.completion_deficit
+            + self.allocation
+        )
 
     @property
     def score(self) -> float:
-        """Value plus the cost terms; what targets in one tier are ranked by."""
+        """Value plus the cost terms; what targets are ranked by."""
         return (
             self.value
             + self.slew_distance
@@ -64,23 +69,14 @@ class MeritBreakdown(BaseModel):
             + self.radiator
         )
 
-    @property
-    def rank(self) -> tuple[int, float]:
-        """Sort key for selection: tier first, then score."""
-        return self.tier, self.score
-
-    @property
-    def value_rank(self) -> tuple[int, float]:
-        """Sort key for interrupt decisions: tier first, then value."""
-        return self.tier, self.value
-
     def describe(self) -> str:
         """Return a one-line breakdown of every nonzero term."""
-        terms = [f"tier={self.tier}", f"base={self.base:g}"]
+        terms = [f"base={self.base:g}"]
         for name in (
             "urgency",
             "cadence",
             "completion_deficit",
+            "allocation",
             "slew_distance",
             "slew_time",
             "collection",
@@ -95,12 +91,11 @@ class MeritBreakdown(BaseModel):
 
 
 class MeritModel:
-    """Evaluate the tier and value terms of a target's merit.
+    """Evaluate the value terms of a target's merit.
 
-    Weights come from ``config.targets`` and per-category settings (tier,
-    program, cadence and time share) from ``config.observation_categories``.
-    With every weight at zero and every category in tier 0, a target's merit is
-    its base merit.
+    Weights come from ``config.targets`` and per-category settings (program,
+    cadence and time share) from ``config.observation_categories``. With every
+    weight at zero, a target's merit is its base merit.
     """
 
     def __init__(self, config: MissionConfig) -> None:
@@ -131,10 +126,6 @@ class MeritModel:
         """Return the observation category a target belongs to."""
         return self.categories.get_category(int(target.obsid))
 
-    def tier(self, target: "Pointing") -> int:
-        """Return a target's scheduling tier."""
-        return self.category(target).tier
-
     def delivered_shares(self, targets: Iterable["Pointing"]) -> dict[str, float]:
         """Return each program's fraction of the science collected so far."""
         collected: dict[str, float] = defaultdict(float)
@@ -157,7 +148,7 @@ class MeritModel:
         visibility_window: Sequence[float] | None = None,
         delivered_shares: Mapping[str, float] | None = None,
     ) -> MeritBreakdown:
-        """Evaluate a target's tier and value terms at ``utime``.
+        """Evaluate a target's value terms at ``utime``.
 
         Args:
             target: Target to evaluate.
@@ -186,7 +177,6 @@ class MeritModel:
             else 0.0
         )
         return MeritBreakdown(
-            tier=category.tier,
             base=float(target.merit) if base is None else base,
             urgency=urgency,
             cadence=cadence,

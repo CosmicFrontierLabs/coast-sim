@@ -120,7 +120,7 @@ Comprehensive examples are provided in the `examples/` directory as Jupyter note
 
 - **`Example_Spacecraft_DITL.ipynb`**: Complete spacecraft DITL simulation with custom spacecraft configuration, including power modeling, attitude control, and observation scheduling
 - **`Example_DITL_from_JSON.ipynb`**: Simplified workflow using JSON configuration files for quick simulations
-- **`Dynamic_Merit_Example.ipynb`**: How the queue scheduler ranks targets with tiers, urgency, cadence and program-balance merit terms, and how Targets of Opportunity interrupt
+- **`Dynamic_Merit_Example.ipynb`**: How the queue scheduler ranks targets with urgency, cadence and program-balance merit terms, and how Targets of Opportunity interrupt
 
 To run the examples:
 
@@ -201,6 +201,16 @@ former names `DumbScheduler` and `DumbQueueScheduler` remain as aliases of
 Target management classes including Pointing, Queue, TargetList, Plan, and PlanEntry for
 observation planning and portable plan export.
 
+### Benchmark (`conops.benchmark`)
+
+Runs one scenario through each scheduling mode (queue dispatch, a plan built up front,
+rolling-horizon replanning, or whatever the configuration selects) and measures every run
+the same way from telemetry: science and merit-weighted science, slewing and idle time,
+ToO response and deadlines, program shares, cadence error, planning time and
+plan/execution mismatches. Six standard scenarios come with it, and
+`scripts/benchmark_schedulers.py` compares the modes on them. See the planning
+documentation for details.
+
 ### Simulation (`conops.simulation`)
 
 Core simulation components including ACS (Attitude Control System), slew modeling, SAA handling, emergency charging, and other simulation utilities.
@@ -234,6 +244,12 @@ conops/
 │   ├── ditl.py
 │   ├── ditl_mixin.py
 │   └── queue_ditl.py
+├── benchmark/               # Comparing scheduling modes on a scenario
+│   ├── __init__.py
+│   ├── contenders.py
+│   ├── harness.py
+│   ├── metrics.py
+│   └── scenarios.py
 ├── schedulers/              # Scheduling algorithms
 │   ├── __init__.py
 │   ├── context.py
@@ -286,6 +302,14 @@ Run with coverage:
 
 ```bash
 pytest --cov=conops tests/
+```
+
+To compare the scheduling modes on the standard benchmark scenarios (see
+`conops.benchmark`), run one scenario or all of them:
+
+```bash
+python scripts/benchmark_schedulers.py --scenario baseline
+python scripts/benchmark_schedulers.py --scenario all --time-limit 10
 ```
 
 ## Documentation

@@ -33,6 +33,7 @@ from conops import (
 from conops.common.enums import ObsType
 from conops.config import Instrument, Payload, ScienceData, Telescope
 from conops.config.config import MissionConfig
+from conops.config.observation_categories import ObservationCategory
 from conops.ditl.telemetry import Housekeeping
 from conops.simulation.acs import IDLE_OBSID
 from conops.targets import Plan, PlanEntry, Pointing
@@ -5988,6 +5989,7 @@ class TestTOOFunctionality:
         queue_ditl,
         merit: float = 10000.0,
         deadline: float | None = None,
+        interrupt: bool = True,
     ) -> TOORequest:
         return queue_ditl.submit_too(
             obsid=1000001,
@@ -5997,6 +5999,7 @@ class TestTOOFunctionality:
             exptime=3600,
             name="Successful TOO",
             deadline=deadline,
+            interrupt=interrupt,
         )
 
     def test_check_too_interrupt_queues_active_too_once(
@@ -6111,6 +6114,46 @@ class TestTOOFunctionality:
         )
         mock_too_interrupt_success["fetch"].assert_called_once_with(1000.0, 180.0, 45.0)
         assert queue_ditl.ppt is queued_targets[0]
+
+    def test_check_too_interrupt_not_allowed_to_interrupt(
+        self,
+        mock_too_interrupt_success,
+        queue_ditl,
+        queued_targets,
+        low_merit_current_ppt,
+    ) -> None:
+        """A TOO that may not interrupt is queued, and waits for the
+        observation to end."""
+        too = self._submit(queue_ditl, interrupt=False)
+
+        result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
+
+        assert result is False
+        assert not too.interrupt
+        mock_too_interrupt_success["terminate"].assert_not_called()
+        queue_ditl.queue.add.assert_called_once()
+
+    def test_check_too_interrupt_observation_not_interruptible(
+        self,
+        mock_too_interrupt_success,
+        queue_ditl,
+        queued_targets,
+        low_merit_current_ppt,
+    ) -> None:
+        """An observation whose category is not interruptible is not cut short;
+        the TOO is queued for the next selection."""
+        queue_ditl.config.observation_categories.categories = [
+            ObservationCategory(
+                name="Locked", obsid_min=1, obsid_max=2, interruptible=False
+            )
+        ]
+        self._submit(queue_ditl)
+
+        result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
+
+        assert result is False
+        mock_too_interrupt_success["terminate"].assert_not_called()
+        queue_ditl.queue.add.assert_called_once()
 
     def test_check_too_interrupt_executed_when_too_is_selected(
         self,
@@ -6247,40 +6290,6 @@ class TestTOOFunctionality:
 
         assert too.executed is True
 
-    @pytest.mark.parametrize(
-        ("too_tier", "too_merit", "interrupts"),
-        [(1, 10.0, True), (0, 10000.0, True), (-1, 10000.0, False)],
-    )
-    def test_check_too_interrupt_compares_tier_before_value(
-        self,
-        mock_too_interrupt_success,
-        queue_ditl,
-        queued_targets,
-        low_merit_current_ppt,
-        too_tier,
-        too_merit,
-        interrupts,
-    ) -> None:
-        from conops.config.observation_categories import (
-            ObservationCategories,
-            ObservationCategory,
-        )
-        from conops.targets.merit import MeritModel
-
-        queue_ditl.config.observation_categories = ObservationCategories(
-            categories=[
-                ObservationCategory(
-                    name="TOO", obsid_min=1000000, obsid_max=2000000, tier=too_tier
-                )
-            ]
-        )
-        queue_ditl.merit_model = MeritModel(queue_ditl.config)
-        self._submit(queue_ditl, merit=too_merit)
-
-        result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
-
-        assert result is interrupts
-
     def test_too_request_pydantic_validation_valid(self) -> None:
         """Test TOORequest Pydantic validation - valid creation."""
         from conops.ditl import TOORequest
@@ -6339,6 +6348,7 @@ class TestTOOFunctionality:
             "submit_time": 1234567890.0,
             "deadline": None,
             "science_data": {},
+            "interrupt": True,
             "executed": True,
         }
         assert data == expected

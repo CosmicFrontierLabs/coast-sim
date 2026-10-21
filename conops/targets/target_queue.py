@@ -37,6 +37,12 @@ class TargetQueue:
     acs_config: AttitudeControlSystem | None
     config: MissionConfig | None
     random_seed: int
+    prefer: Callable[[int], bool] | None
+    """Returns, for an obsid, whether to favour it, such as a target a
+    long-range allocation assigns to now. None (the default) treats all
+    targets alike."""
+    allocation_bonus: float
+    """Fraction of its value a preferred target gains."""
 
     def __init__(
         self,
@@ -66,6 +72,14 @@ class TargetQueue:
         )
         self.random_seed = config.random_seed if config.random_seed is not None else 0
         self.merit_model = MeritModel(config)
+        self.prefer = None
+        self.allocation_bonus = 0.5
+
+    def _bonus(self, target: Pointing) -> float:
+        """Fraction of its value a target gains for being preferred."""
+        if self.prefer is None or not self.prefer(int(target.obsid)):
+            return 0.0
+        return self.allocation_bonus
 
     def __getitem__(self, number: int) -> Pointing:
         return self.targets[number]
@@ -137,12 +151,13 @@ class TargetQueue:
         return pointing
 
     def meritsort(self) -> None:
-        """Sort target queue by tier and merit, ranking targets not visible
-        now below every visible target in their tier."""
+        """Sort target queue by merit, ranking targets not visible now below
+        every visible target."""
         self.targets.sort(
             key=lambda target: (
-                self.merit_model.tier(target),
-                target.merit if self._visible_now(target) else -900,
+                target.merit * (1.0 + self._bonus(target))
+                if self._visible_now(target)
+                else -900,
                 self._target_tie_breaker(target),
             ),
             reverse=True,
@@ -266,7 +281,9 @@ class TargetQueue:
         if not visibility_window:
             return -np.inf
 
-        upper_bound = float(target.merit) + self.merit_model.max_dynamic_value
+        upper_bound = (float(target.merit) + self.merit_model.max_dynamic_value) * (
+            1.0 + self._bonus(target)
+        )
         if self.collection_time_weight > 0.0:
             collection_seconds = self._candidate_collection_seconds(
                 target=target,
@@ -379,7 +396,7 @@ class TargetQueue:
             print(msg)
         best_target = None
         best_breakdown: MeritBreakdown | None = None
-        best_rank: tuple[int, float] = (np.iinfo(np.int64).min, -np.inf)
+        best_score = -np.inf
         last_unix = self.ephem.timestamp[-1].timestamp()
         prune_by_score_bound = (
             score_candidates and self._score_upper_bound_pruning_is_safe()
@@ -399,7 +416,7 @@ class TargetQueue:
                     utime=utime,
                     last_unix=last_unix,
                 )
-                if (merit_model.tier(target), upper_bound) <= best_rank:
+                if upper_bound <= best_score:
                     continue
 
             if not self._can_fit_min_snapshot_with_zero_slew(
@@ -465,8 +482,11 @@ class TargetQueue:
                     visibility_window=visibility_window,
                     delivered_shares=delivered_shares,
                 )
+                bonus = self._bonus(target)
+                if bonus:
+                    value = value.model_copy(update={"allocation": bonus * value.value})
                 # If nothing beyond merit order matters, return the first
-                # visible target in tier and merit order (fast path)
+                # visible target in merit order (fast path)
                 if not score_candidates:
                     self._select(target, value)
                     return target
@@ -528,8 +548,8 @@ class TargetQueue:
                         "radiator": radiator,
                     }
                 )
-                if breakdown.rank > best_rank:
-                    best_rank = breakdown.rank
+                if breakdown.score > best_score:
+                    best_score = breakdown.score
                     best_target = target
                     best_breakdown = breakdown
 

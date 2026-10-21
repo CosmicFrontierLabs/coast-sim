@@ -17,6 +17,10 @@ COASTSim runs a scheduler in one of three ways:
   it from the spacecraft's actual state as time passes, as a ground-planned mission
   does. See `Rolling-horizon replanning`_.
 
+Over runs of days to months, a long-range allocator can decide on which day each
+request is observed, and dispatch or rolling replanning follow it (see
+`Long-range allocation`_).
+
 A mission configuration's ``scheduler`` section selects the mode and scheduler, and
 :func:`~conops.ditl.create_ditl` builds the matching simulation (see
 :doc:`configuration`). The classes below can also be used directly.
@@ -85,7 +89,7 @@ How a plan is built
    configuration's random seed, so ``DITL`` predicts the same passes when it executes
    the plan. Each pass is reserved on the first tracking profile the spacecraft can
    reach safely. Pass ``include_passes=False`` to plan science only.
-3. **Requests** are sorted by tier, then by merit value at the start of the horizon
+3. **Requests** are sorted by merit value at the start of the horizon
    (base merit plus the urgency, cadence and completion-deficit terms; see
    :doc:`configuration`). Each request is split into snapshots of up to ``ss_max``
    seconds and never shorter than ``ss_min``, until its ``exptime`` is used or it no
@@ -117,12 +121,11 @@ How a plan is built
    snapshot after it could then not be reached in time, that snapshot is moved later
    to make room, along with up to three more packed behind it, as long as the
    activity after them can still be reached. Moving a snapshot can cut it short
-   where its target's visibility ends; that is allowed only if no snapshot cut short
-   is in a higher tier than the new one and the new snapshot's value-weighted seconds
-   exceed those lost. Exposure cut short is left for the request to plan elsewhere.
-   Ground passes and locked entries are never moved. A cadence target's visit moves
-   only if it is the target's latest, and never earlier than it was, so its visits
-   stay a cadence apart.
+   where its target's visibility ends; that is allowed only if the new snapshot's
+   value-weighted seconds exceed those lost. Exposure cut short is left for the
+   request to plan elsewhere. Ground passes and locked entries are never moved. A
+   cadence target's visit moves only if it is the target's latest, and never earlier
+   than it was, so its visits stay a cadence apart.
 
    **Slewing before a target is visible.** Setting ``slew_before_visible`` in the
    ACS configuration lets a slew start early enough to arrive as its target rises,
@@ -216,8 +219,7 @@ gave it, so the starting point is that plan. The search then tries:
 
 A change is kept when it is no worse than the current plan, or than the plan of
 ``history_length`` steps ago (late-acceptance hill climbing), which lets the search
-cross plateaus. The objective is merit-weighted science time, compared tier by tier
-from the highest, with each snapshot's completion deficit taken from the program
+cross plateaus. The objective is merit-weighted science time, with each snapshot's completion deficit taken from the program
 shares in the plan before it. A snapshot of a request with a deadline is worth less
 the later it starts, so ToOs and other time-critical requests are not pushed later
 than they need to be. The best plan found is returned, and it is never worse than the
@@ -368,12 +370,16 @@ rebuilds it as the simulation runs:
    ``deadline`` falls before that plan could start collecting it (its lead time plus a
    worst-case slew and the setup time), a **rapid replan** runs at once. In a rapid
    replan the observation running at the commit cutoff, started or not, is cut short
-   there when ``allow_interrupts`` is set and the ToO's tier and value, evaluated now,
-   beat the tier and value frozen onto that observation. Science it has already
+   there when ``allow_interrupts`` is set, the ToO allows it (``interrupt``, an
+   argument of ``submit_too``), the observation's category is ``interruptible``, and
+   the ToO's value, evaluated now, beats the value frozen onto that observation.
+   Otherwise the ToO can start only after the observation ends. Science it has already
    collected is kept, and its cleanup follows the cut. The cut is kept only if the new
    plan can collect the ToO. If several ToOs need a rapid replan at the same time, they
    are tried highest-ranked first, and the first that outranks the observation and can
-   be placed interrupts it.
+   be placed interrupts it. A ToO that may not interrupt does not take the cut
+   observation's place either, however it ranks: it is planned in after the
+   interrupting ToO, or, if its deadline falls before that, in the next plan.
 
 .. code-block:: python
 
@@ -423,3 +429,183 @@ each plan by local search or with CP-SAT.
 Comparing a run with :class:`~conops.ditl.queue_ditl.QueueDITL` dispatch on the same
 targets shows what planning ahead gains or costs in science time and ToO response.
 A ``RollingHorizonDITL`` instance runs once; create a new one for each simulation.
+
+Long-range allocation
+---------------------
+
+:class:`~conops.schedulers.LongRangeAllocator` is a long-range plan: it decides on
+which day (or other period) each request should be observed, over a run of days to
+months. The short-term scheduling, rolling replans or dispatch, then decides the order
+within each day. This is the split between long-range and short-term planning that
+observatories use.
+
+It matters because the short-term scheduling looks only hours ahead. On its own, it
+spends each day on the best targets available that day, so a target observable for
+only part of the run, such as one the Sun will soon cover, or a request due beyond the
+horizon, can miss its chance while time goes to targets that could have waited.
+
+The allocator splits the run into bins (a day by default) and decides how much of
+each request's remaining exposure to collect in which bin:
+
+* each request can be allocated only the seconds its target is visible in a bin,
+  between its earliest start and its deadline, from the same visibility windows the
+  schedulers use;
+* each bin is expected to hold ``efficiency`` (default 0.75) of its length in science,
+  the rest going to slews, setup and ground passes;
+* ``reserve`` (default 0.1) of that capacity is kept free for work that isn't known
+  yet, such as ToOs. Planned requests are never allocated it. ToOs the simulation has
+  received are allocated first and use the reserve before anything else, so a ToO
+  that fits in the reserve doesn't push planned requests to later days;
+* the allocation is solved as a mixed-integer program with HiGHS, which comes with
+  OR-Tools (the optional ``cpsat`` extra; see :doc:`installation`), maximizing
+  merit-weighted time. ToOs come first, and their allocation is fixed while the rest
+  are solved, so they give up nothing for planned requests. Each level starts from a
+  greedy allocation of its requests into the room left, and if the solver finds no
+  solution in time, that level and any after it keep the greedy allocation. A request gets either nothing in a bin or at least its
+  ``ss_min``, never more than its remaining exposure, and a request with a cadence no
+  more than an even share per bin. Requests with a deadline are worth slightly more
+  in earlier bins;
+* the planned load is spread evenly over the bins as far as visibility allows, so
+  every week keeps some slack. This is a tiebreak: it never costs a second of science for less than a
+  thousand seconds of better balance;
+* re-allocating keeps the previous allocation unless changing it gains something:
+  keeping a request's seconds where they were is worth an extra 1%. A ToO that fits
+  in the reserve leaves every planned request where it was;
+* ``solver="greedy"`` instead takes requests in order of merit, each into
+  the bins with the least competing demand. It is quicker but not optimal, is the
+  MILP's starting point, and does not need OR-Tools.
+
+The allocation says when each request should be observed, and short-term
+scheduling follows it:
+
+* a plan covering several bins plans each request's allocated seconds in the bin
+  they are allocated to. Collection starting in the bin counts, up to the seconds
+  allocated there; a bin the plan's end cuts short counts pro rata;
+* allocated time is worth ``allocation_bonus`` (``bonus`` in the configuration,
+  default 0.5) more of its request's value, shown as the ``allocation`` merit term.
+  That is the only way the allocation steers scheduling: allocated time competes
+  with everything else on merit, so a larger bonus follows the allocation more
+  closely, and ``0`` ignores when a request was allocated;
+* the rest of a request's exposure, and allocated seconds that don't fit their bin,
+  are planned like unallocated requests, by merit, so a plan can work ahead where
+  that is worth more than the allocated time it displaces;
+* local search and CP-SAT score allocated time the same way, so they improve a plan
+  without trading away what the allocation put in a bin;
+* dispatch adds the same bonus to the requests allocated to the current bin.
+
+A request the allocator hasn't seen, such as a ToO submitted after the last
+allocation, is treated as allocated throughout. Rolling runs re-allocate at every
+replan and dispatch at the start of every bin, using the exposure still remaining.
+A rolling run can instead follow a fixed allocation made elsewhere, such as a weekly
+long-range plan (``allocation=``); each replan then counts what has been collected or
+committed in each bin against its seconds.
+
+.. code-block:: python
+
+   from datetime import timedelta
+   from conops import LongRangeAllocator, RollingHorizonDITL
+
+   allocator = LongRangeAllocator(config, begin, end, bin_length=timedelta(days=1))
+   ditl = RollingHorizonDITL(config, targets, begin=begin, end=end, allocator=allocator)
+   ditl.calc()
+   print(ditl.allocation.seconds[10042])   # seconds allocated to each bin
+
+Pass the same ``allocator`` to :class:`~conops.ditl.QueueDITL` for dispatch, or set
+``scheduler.allocation`` in the configuration (see :doc:`configuration`). Schedulers
+take the steering as ``allocated``, the seconds each request has in each span of
+time, from :meth:`~conops.schedulers.Allocation.allocated`:
+
+.. code-block:: python
+
+   allocation = allocator.allocate(targets, begin.timestamp())
+   scheduler = PriorityScheduler(
+       config, targets, begin, end,
+       allocated=allocation.allocated(
+           [t.obsid for t in targets], begin.timestamp(), end.timestamp()
+       ),
+   )
+
+Comparing scheduling modes
+--------------------------
+
+:mod:`conops.benchmark` runs the same scenario through each scheduling mode and
+measures them the same way, from telemetry. A
+:class:`~conops.benchmark.BenchmarkScenario` provides factories for a fresh
+configuration and target pool, since simulations change both, and lists the ToOs
+that arrive during the run. The contenders are:
+
+* :func:`~conops.benchmark.dispatch`: ``QueueDITL`` picks each next target;
+* :func:`~conops.benchmark.planned`: one plan built up front by a scheduler and
+  executed by ``DITL``. A plan built in advance cannot react to ToOs;
+* :func:`~conops.benchmark.rolling`: ``RollingHorizonDITL`` with a scheduler and
+  replanning settings;
+* :func:`~conops.benchmark.configured`: whatever the scenario configuration's
+  ``scheduler`` section selects (see :doc:`configuration`), built with
+  :func:`~conops.ditl.create_ditl`, so a configured run can be measured against
+  the explicit modes.
+
+Dispatch and rolling contenders can be steered by a long-range allocator
+(``allocation``, the bin length, and ``allocation_reserve``), which their names show
+as ``+alloc``.
+
+.. code-block:: python
+
+   from conops.benchmark import (
+       configured, dispatch, format_results, planned, rolling, run_benchmark,
+   )
+   from conops.schedulers import LocalSearchScheduler, PriorityScheduler
+
+   results = run_benchmark(scenario, [
+       dispatch(),
+       planned(PriorityScheduler),
+       planned(LocalSearchScheduler, time_limit=10.0),
+       rolling(LocalSearchScheduler, scheduler_options={"time_limit": 10.0}),
+       configured(),
+   ])
+   print(format_results(results))
+
+Each :class:`~conops.benchmark.BenchmarkResult` reports, measured the same way for every
+contender:
+
+* science time and merit-weighted science;
+* time slewing, idle and in contact, and the number of observations;
+* each ToO's response time, and how many started by their deadline;
+* how many other requests with a deadline got their whole exposure;
+* each program's share of the science collected;
+* for targets with a cadence, how far the mean gap between visits missed the requested
+  interval, and how many targets were revisited at all;
+* planning and run time, and plan/execution mismatches.
+
+A contender that fails is reported with its error instead of stopping the benchmark:
+the table shows the error's type, and the full message is listed below it.
+
+Standard scenarios
+^^^^^^^^^^^^^^^^^^
+
+:mod:`conops.benchmark.scenarios` provides six scenarios, each stressing a different
+part of scheduling. All use one low-Earth orbit from a TLE, Sun and Earth-limb
+avoidance, the default ground stations, a battery that never limits operations (the
+spacecraft has no solar panels, so the battery's recharge alerts are turned off rather
+than letting it drain into emergency charging), and seeded random targets:
+
+* ``baseline``: a day of 200 targets and one ToO with a one-hour deadline;
+* ``too-heavy``: eight ToOs across the day, half urgent (merit 1000, deadlines of 30
+  minutes to 2 hours) and half routine (merit 500, 4 to 12 hours);
+* ``oversubscribed``: 600 targets requesting far more time than the day holds, a third
+  of them with deadlines;
+* ``cadence``: twelve monitoring targets wanting a visit every four hours, and two
+  survey programs with equal time shares but different merit, with the cadence and
+  completion-deficit merit terms switched on;
+* ``multi-day``: three days, 400 targets and a ToO a day, for replanning over a long
+  run;
+* ``long-range``: a week of 300 targets, half with deadlines spread across it, two
+  programs by the Sun's avoidance zone ("Early" targets that the Sun covers as the
+  week goes on and "Late" ones it uncovers), and 10 ToOs arriving through the week,
+  alternately due within hours and within days, for long-range allocation.
+
+``scripts/benchmark_schedulers.py`` runs the standard contenders on one scenario or all of
+them, with rolling replans every six hours (or four times in a shorter run) and a
+30-minute commit lead time. Runs of two days or more also compare dispatch and rolling
+steered by an allocator with one-day bins::
+
+   uv run python scripts/benchmark_schedulers.py --scenario all --time-limit 10

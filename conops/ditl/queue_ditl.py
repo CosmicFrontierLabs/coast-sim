@@ -36,6 +36,7 @@ from ..config.constraint import (
     attitude_constraint_scope_label,
 )
 from ..schedulers import DispatchPolicy
+from ..schedulers.allocator import Allocation, LongRangeAllocator
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
 from ..simulation.idle_safety import IdleSafetyPlanner
@@ -112,6 +113,9 @@ class TOORequest(BaseModel):
     submit_time: float = 0.0
     deadline: float | None = None
     science_data: dict[str, ScienceData] = Field(default_factory=dict)
+    interrupt: bool = True
+    """Whether the TOO may cut short the observation in progress. If False it
+    waits for that observation to end."""
     executed: bool = False
 
 
@@ -164,12 +168,22 @@ class QueueDITL(DITLMixin, DITLStats):
         end: datetime | None = None,
         queue: DispatchPolicy | None = None,
         calculate_field_of_regard: bool = False,
+        allocator: LongRangeAllocator | None = None,
+        allocation_bonus: float = 0.5,
     ) -> None:
         """Initialize a queue-driven DITL simulation.
 
         Args:
             queue: Policy that selects each next target. Defaults to an empty
                 :class:`~conops.targets.TargetQueue`.
+            allocator: Long-range allocator over the whole run. If given, the
+                queue's remaining exposure is allocated again at the start of
+                each of its bins, and targets allocated to the current bin are
+                worth ``allocation_bonus`` more (see
+                :class:`~conops.schedulers.LongRangeAllocator`). Needs the
+                queue to be a :class:`~conops.targets.TargetQueue`.
+            allocation_bonus: Fraction of an allocated target's value it gains
+                while it has time allocated.
         """
         # Initialize mixin
         DITLMixin.__init__(
@@ -233,6 +247,15 @@ class QueueDITL(DITLMixin, DITLStats):
                 ephem=self.ephem,
             )
 
+        if allocator is not None:
+            if not isinstance(self.queue, Queue):
+                raise TypeError("an allocator needs the queue to be a TargetQueue")
+            self.queue.allocation_bonus = allocation_bonus
+        self.allocator = allocator
+        self.allocation: Allocation | None = None
+        """The allocation in force, if there is an allocator."""
+        self._next_allocation: float | None = None
+
         # Wire log into ACS so it can log events
         self.acs.log = self.log
 
@@ -291,22 +314,24 @@ class QueueDITL(DITLMixin, DITLStats):
         submit_time: float | datetime | None = None,
         deadline: float | datetime | None = None,
         science_data: Mapping[str, ScienceData] | None = None,
+        interrupt: bool = True,
     ) -> TOORequest:
         """Submit a Target of Opportunity (TOO) request.
 
         A TOO is an ordinary queue request with a short window. Once its
         ``submit_time`` is reached it joins the target queue with its own merit
         and deadline, and is selected whenever it ranks highest. It interrupts
-        the observation in progress only when it is visible and its tier and
-        value, evaluated now, beat the tier and value frozen onto the current
-        observation when it was selected.
+        the observation in progress only when it is visible, its value,
+        evaluated now, beats the value frozen onto the current observation when
+        it was selected, it is allowed to interrupt (``interrupt``), and the
+        observation's category is ``interruptible``.
 
         Args:
             obsid: Unique observation identifier for this TOO
             ra: Right ascension in degrees
             dec: Declination in degrees
-            merit: Base merit. Within a tier, a TOO interrupts only if its value
-                exceeds the current observation's.
+            merit: Base merit. A TOO interrupts only if its value exceeds the
+                current observation's.
             exptime: Requested exposure time in seconds
             name: Human-readable name for the TOO target
             submit_time: When the TOO becomes active, as a Unix timestamp or a
@@ -315,6 +340,8 @@ class QueueDITL(DITLMixin, DITLStats):
                 timestamp or a datetime. None means no deadline.
             science_data: Science data observing the TOO generates, keyed by
                 instrument name; other instruments generate their own.
+            interrupt: Whether the TOO may interrupt the observation in
+                progress; if False it is chosen when that observation ends.
 
         Returns:
             The created TOORequest object
@@ -355,6 +382,7 @@ class QueueDITL(DITLMixin, DITLStats):
             else 0.0,
             deadline=self._unix_time(deadline) if deadline is not None else None,
             science_data=dict(science_data or {}),
+            interrupt=interrupt,
             executed=False,
         )
         self.too_register.append(too)
@@ -393,14 +421,14 @@ class QueueDITL(DITLMixin, DITLStats):
             )
         return target
 
-    def _current_value_rank(self) -> tuple[int, float]:
-        """Return the tier and frozen value of the observation in progress."""
+    def _current_value(self) -> float:
+        """Return the frozen value of the observation in progress."""
         if self.ppt is None:
-            return np.iinfo(np.int64).min, -np.inf
+            return -np.inf
         breakdown = self.ppt.merit_breakdown
         if breakdown is not None:
-            return breakdown.value_rank
-        return self.merit_model.tier(self.ppt), float(self.ppt.merit)
+            return breakdown.value
+        return float(self.ppt.merit)
 
     def _check_too_interrupt(self, utime: float, ra: float, dec: float) -> bool:
         """Queue newly active TOOs and interrupt the current observation for one.
@@ -410,10 +438,11 @@ class QueueDITL(DITLMixin, DITLStats):
         interrupt the observation in progress when:
 
         1. It is active (``submit_time <= utime``) and not yet dispatched.
-        2. Its deadline, if any, has not passed.
-        3. Its target is visible now.
-        4. Its tier and value now beat the current observation's frozen tier
-           and value.
+        2. It may interrupt (``interrupt``), and the current observation's
+           category is ``interruptible``.
+        3. Its deadline, if any, has not passed.
+        4. Its target is visible now.
+        5. Its value now beats the current observation's frozen value.
 
         The best candidate must then pass normal dispatch admission (minimum
         exposure, slew timing, deadline and constraints) before the current
@@ -448,8 +477,12 @@ class QueueDITL(DITLMixin, DITLStats):
             return self._dispatch_committed_too(utime)
         if self.ppt is None or not active:
             return False
+        if not self.merit_model.category(self.ppt).interruptible:
+            # The observation's category does not allow it to be cut short;
+            # the TOOs are already queued for the next selection.
+            return False
 
-        current_rank = self._current_value_rank()
+        current_value = self._current_value()
         delivered_shares = (
             self.merit_model.delivered_shares(self.queue.targets)
             if self.merit_model.completion_deficit_weight > 0.0
@@ -457,6 +490,8 @@ class QueueDITL(DITLMixin, DITLStats):
         )
         outranking: list[tuple[TOORequest, Pointing, MeritBreakdown]] = []
         for too, target in active:
+            if not too.interrupt:
+                continue
             if too.deadline is not None and utime > too.deadline:
                 continue
             visibility_window = target.visible(utime, utime)
@@ -469,7 +504,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 visibility_window=visibility_window,
                 delivered_shares=delivered_shares,
             )
-            if value.value_rank > current_rank:
+            if value.value > current_value:
                 outranking.append((too, target, value))
         if not outranking:
             return False
@@ -537,7 +572,7 @@ class QueueDITL(DITLMixin, DITLStats):
             description=(
                 f"TOO interrupt: {too.name} (obsid={too.obsid}, "
                 f"{value.describe()}) preempting current observation "
-                f"(tier={current_rank[0]}, value={current_rank[1]:g})"
+                f"(value={current_value:g})"
             ),
             obsid=too.obsid,
             acs_mode=self.acs.acsmode,
@@ -763,10 +798,12 @@ class QueueDITL(DITLMixin, DITLStats):
         # Set up simulation length from begin/end datetimes
         simlen = int((self.end - self.begin).total_seconds() / self.step_size)
         self._dropped_science_windows.clear()
+        self._next_allocation = None
 
         # DITL loop
         for i in range(simlen):
             utime = self.ustart + i * self.step_size
+            self._allocate_if_due(utime)
 
             # Track PPT in timeline
             self._track_ppt_in_timeline()
@@ -1869,6 +1906,24 @@ class QueueDITL(DITLMixin, DITLStats):
             and gspass.end > entry.begin
             for entry in self.plan
         )
+
+    def _allocate_if_due(self, utime: float) -> None:
+        """Allocate the remaining exposure again when a new bin begins."""
+        if self.allocator is None or not isinstance(self.queue, Queue):
+            return
+        if self._next_allocation is not None and utime < self._next_allocation:
+            return
+        allocation = self.allocator.allocate(
+            self.queue.targets,
+            utime,
+            unplanned={int(t.obsid) for t in self._too_targets.values()},
+        )
+        bin_end = next(
+            (b1 for b0, b1 in allocation.bins if b0 <= utime < b1), self.uend
+        )
+        self.allocation = allocation
+        self._next_allocation = bin_end
+        self.queue.prefer = lambda obsid: allocation.prefers(obsid, utime, bin_end)
 
     def _gsp_activity_in_progress(self, utime: float) -> bool:
         """Return whether a ground station contact is still active at utime."""

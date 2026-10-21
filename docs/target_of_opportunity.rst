@@ -12,9 +12,10 @@ Key Features
 ------------
 
 * **Ordinary requests**: An active TOO is a queue target; nothing boosts its merit
-* **Tier- and merit-based preemption**: A TOO interrupts only when its tier and value, evaluated now, beat the tier and value frozen onto the current observation when it was selected
+* **Merit-based preemption**: A TOO interrupts only when its value, evaluated now, beats the value frozen onto the current observation when it was selected
 * **Deadlines**: An optional deadline drives the urgency merit term and stops the TOO being selected once it passes
 * **Visibility checking**: TOOs only interrupt when the target is actually observable
+* **Interrupt controls**: A TOO can be submitted to wait for the current observation instead of interrupting it, and a category's observations can be protected from interruption
 * **Scheduled submission**: TOOs can be scheduled to become active at a future time
 * **Full event logging**: Queuing, interrupts and the merit breakdown of each selection are logged
 
@@ -36,6 +37,7 @@ The ``TOORequest`` class is a Pydantic model that represents a pending TOO. It c
        name="GRB 250101A",   # Human-readable name
        submit_time=0.0,      # When TOO becomes active (Unix timestamp)
        deadline=None,        # Latest start of science (Unix timestamp), or None
+       interrupt=True,       # Whether it may cut short the current observation
        executed=False,       # Whether TOO has been dispatched
    )
 
@@ -45,11 +47,12 @@ Attributes
 * ``obsid`` (int): Unique observation identifier for this TOO
 * ``ra`` (float): Right ascension in degrees
 * ``dec`` (float): Declination in degrees
-* ``merit`` (float): Base merit. Within a tier, the TOO interrupts only if its value exceeds the current observation's
+* ``merit`` (float): Base merit. The TOO interrupts only if its value exceeds the current observation's
 * ``exptime`` (int): Requested exposure time in seconds
 * ``name`` (str): Human-readable name for the TOO target (e.g., "GRB 250101A")
 * ``submit_time`` (float): Unix timestamp when the TOO becomes active. Default is 0.0, meaning active from simulation start
 * ``deadline`` (float or None): Latest Unix time science collection may begin. Drives the urgency term (``config.targets.urgency_weight``); the TOO cannot be selected after it
+* ``interrupt`` (bool): Whether the TOO may cut short the observation in progress. Default is True. If False, it waits in the queue for that observation to end
 * ``executed`` (bool): Whether this TOO has been dispatched. Set to True once it becomes the current observation
 
 Submitting TOOs
@@ -123,9 +126,10 @@ During each simulation step in science or idle modes:
 2. A TOO that is already the current observation, or has collected science, is marked **executed**.
 3. If an observation is in progress, a pending TOO **interrupts** it when:
 
+   * the TOO may interrupt (``interrupt``) and the observation's category is ``interruptible``;
    * its deadline, if any, has not passed;
    * its target is visible now; and
-   * its tier and value, evaluated now, beat the current observation's frozen tier and value.
+   * its value, evaluated now, beats the current observation's frozen value.
 
 When a TOO interrupts:
 
@@ -136,24 +140,48 @@ When a TOO interrupts:
 
 With no observation in progress nothing is interrupted: the TOO is already in the queue and is considered at the next selection.
 
+Preventing Interrupts
+^^^^^^^^^^^^^^^^^^^^^
+
+A TOO submitted with ``interrupt=False`` never cuts short the observation in progress. It is queued as usual and competes at the next selection, when that observation ends. Nor does it take the place of an observation another TOO interrupts: in a rolling-horizon replan it is planned in after the interrupting TOO (see :doc:`planning`):
+
+.. code-block:: python
+
+   ditl.submit_too(
+       obsid=1000004,
+       ra=120.0,
+       dec=-20.0,
+       merit=10000.0,
+       exptime=1800,
+       name="Follow-up",
+       interrupt=False,  # wait for the current observation to finish
+   )
+
+To protect a kind of observation from every TOO, set ``interruptible=False`` on its observation category (see :doc:`configuration`). Its observations run to their end; a TOO waiting for one is selected when it finishes, if it still ranks highest.
+
+.. code-block:: python
+
+   from conops.config import ObservationCategory
+
+   ObservationCategory(
+       name="Calibration",
+       obsid_min=90000,
+       obsid_max=91000,
+       interruptible=False,
+   )
+
+Both controls also apply to :class:`~conops.ditl.RollingHorizonDITL`: a rapid replan for such a TOO starts it once the observation in progress ends.
+
 Making TOOs Win
 ---------------
 
 There is no automatic merit boost. A TOO outranks other work through:
 
-* **Tier**: Put TOO obsids in an observation category with a higher ``tier`` than normal science. A higher tier always wins, whatever the merits.
-* **Merit**: Within a tier, give TOOs a base merit above normal targets (normal targets typically use 1-1000).
+* **Merit**: Give TOOs a base merit above normal targets (normal targets typically use 1-1000).
 * **Deadline and urgency**: Give the TOO a ``deadline`` and set ``config.targets.urgency_weight``; its value rises as the deadline approaches.
 
 .. code-block:: python
 
-   from conops.config import ObservationCategories, ObservationCategory
-
-   cfg.observation_categories = ObservationCategories(
-       categories=[
-           ObservationCategory(name="TOO", obsid_min=1000000, obsid_max=2000000, tier=1),
-       ]
-   )
    cfg.targets.urgency_weight = 50.0
 
    ditl.submit_too(
@@ -204,7 +232,7 @@ TOO events are logged to ``ditl.log`` with event type ``"TOO"``. You can filter 
 Example output::
 
    2025-01-01T02:30:00Z: Queued TOO GRB 250101A (obsid=1000001, merit=10000.0)
-   2025-01-01T02:34:56Z: TOO interrupt: GRB 250101A (obsid=1000001, tier=0 base=10000 value=10000.000 score=10000.000) preempting current observation (tier=0, value=500)
+   2025-01-01T02:34:56Z: TOO interrupt: GRB 250101A (obsid=1000001, base=10000 value=10000.000 score=10000.000) preempting current observation (value=500)
 
 Complete Example
 ----------------
