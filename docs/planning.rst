@@ -525,6 +525,20 @@ each request's remaining exposure to collect in which bin:
 * re-allocating keeps the previous allocation unless changing it gains something:
   keeping a request's seconds where they were is worth an extra 1%. A ToO that fits
   in the reserve leaves every planned request where it was;
+* the data the run generates fits what its ground contacts can downlink. Each bin
+  generates housekeeping, at the ``PASS`` rate during its contacts, plus the science
+  data of the requests allocated to it: each target's rate for its allocated seconds
+  and its fixed amount per observation, once per bin. Its contacts, from the same
+  pass prediction the schedulers use, take off what they can, and what they cannot
+  is carried on the recorder into the next bin, where it must stay within the
+  recorder's planning limit (see `Planning within the recorder`_). The allocation
+  starts from what is on the recorder, so a run that begins with a full recorder
+  allocates its first day no more data than that day downlinks. High-data science
+  then gives way to low-data science where the contacts cannot keep up, rather than
+  being allocated and refused day by day. There is no budget without a planning
+  limit, or when no request generates data, and nothing is predicted for it then;
+  :attr:`~conops.schedulers.Allocation.downlink`, ``housekeeping`` and ``science``
+  by bin and :meth:`~conops.schedulers.Allocation.recorder_volumes` report it;
 * ``solver="greedy"`` instead takes requests in order of merit, each into
   the bins with the least competing demand. It is quicker but not optimal, is the
   MILP's starting point, and does not need OR-Tools.
