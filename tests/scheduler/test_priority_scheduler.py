@@ -192,7 +192,7 @@ class TestScienceData:
     def test_entries_carry_the_targets_science_data(self) -> None:
         config = _config(2)
         target = _target(config, 1, 105.0, 10.0)
-        target.science_data = {"Default Instrument": ScienceData(rate_gbps=0.2)}
+        target.science_data = {"Default Instrument": ScienceData(rate_gbps=0.001)}
 
         plan = PriorityScheduler(
             config, [target], BEGIN, BEGIN + timedelta(hours=2)

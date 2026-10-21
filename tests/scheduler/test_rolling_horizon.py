@@ -728,7 +728,7 @@ class TestScienceData:
             config, [], begin=BEGIN, end=BEGIN + timedelta(hours=1)
         )
         ditl.step_size = 60
-        science = {"Default Instrument": ScienceData(rate_gbps=0.2)}
+        science = {"Default Instrument": ScienceData(rate_gbps=0.001)}
         ditl.submit_too(
             obsid=1_000_001,
             ra=115.0,

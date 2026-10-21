@@ -173,6 +173,53 @@ committed visit.
 
 Without these weights, plans are built exactly as before.
 
+Planning within the recorder
+----------------------------
+
+Every scheduler keeps the onboard recorder below its planning limit,
+``recorder.planning_limit`` as a fraction of ``capacity_gb`` (see
+:doc:`data_management`). By default it is the recorder's ``red_threshold``, which
+is where the red alert fires, so a plan stops just short of the red; set it lower
+to keep margin, or to ``None`` to plan without regard to the recorder.
+
+The recorder fills between ground contacts and empties during them, so its volume
+is highest just before each contact and at the end of the horizon. The reserved
+contacts cut the horizon into segments, and the plan is checked at every segment's
+peak:
+
+* each segment's peak is what was left after the contact before it, plus the
+  housekeeping data generated in it, plus the science data of the snapshots placed
+  in it: for each snapshot, each instrument's rate for its collection time plus its
+  fixed per-observation amount, at the target's own rates where it sets them;
+* each contact removes what its rate and length allow, and no more than is there,
+  so what it cannot remove carries over to the segments after it;
+* housekeeping is counted at the nominal rate throughout, and at the ``PASS`` rate
+  during contacts and the slews into them, which ACS runs in ``PASS`` mode, since
+  the plan does not know when the spacecraft will be in other modes.
+
+The arithmetic is not particular to the recorder. Anything a spacecraft
+accumulates between the events that remove it, and must keep within a limit
+meanwhile, has the same shape: stored momentum builds up until a dump unloads it,
+for instance. :class:`~conops.schedulers.ConsumableLedger` holds that arithmetic
+(segments between removals, accrual, removals that take no more than is there,
+and the check at every later peak), and
+:class:`~conops.schedulers.RecorderLedger` maps the recorder onto it.
+
+A snapshot is placed only where every peak from its segment onwards stays within
+the limit. It is never shortened to fit: a snapshot that does not fit before a
+contact is placed after one, or not at all, and the log says so. The priority-first
+scheduler places higher-merit requests first, so when data runs short it is the
+lowest-merit science that waits, whatever its data rate; local search then trades
+snapshots in and out on merit within the same limit; and CP-SAT has the recorder in
+its model, so the solver trades high-data science against low-data science directly
+(see `Optimizing plans with CP-SAT`_).
+
+:class:`~conops.ditl.RollingHorizonDITL` starts each plan from the recorder's
+actual volume, so a contact that downlinked less than planned is made up for at
+the next replan. A plan takes effect after the commit lead time, so it starts from
+what the committed activities leave on the recorder by then: what they go on to
+generate, less what a committed contact downlinks.
+
 Limitations
 -----------
 
@@ -282,6 +329,15 @@ CP-SAT chooses candidates and their order:
 * ground passes are fixed tasks that snapshots must leave room to slew to;
 * a request's snapshots never add up to more than its remaining exposure;
 * a cadence target's visits are at least its cadence apart, and after its last one;
+* the recorder stays below its planning limit: each candidate's data (its rate for
+  its collection, plus its fixed amount, at the observed target's rates, rounded up
+  to whole kilobits so the model never counts less than the ledger) goes on the
+  recorder in the segment, between contacts, where its collection starts; each
+  segment's volume is what entered it after its contact, plus housekeeping and the
+  science already planned there, plus the chunk's candidates; what a contact cannot
+  remove carries over; and every segment from the chunk's to the end of the horizon
+  is kept within the limit, so a candidate is traded against the room it takes from
+  everything after it (see `Planning within the recorder`_);
 * the objective is merit-weighted science, with the completion deficit at the chunk's
   start and the earliness discount for requests with a deadline and for cadence
   visits.
