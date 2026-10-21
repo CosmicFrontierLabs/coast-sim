@@ -2964,11 +2964,17 @@ class QueueDITL(DITLMixin, DITLStats):
         # A test double's recorder has no number for a limit.
         if not isinstance(limit, (int, float)):
             return None
-        passes = self.acs.passrequests.passes or []
-        next_contact = min(
-            (float(p.begin) for p in passes if float(p.begin) > utime),
-            default=self.uend,
-        )
+        if self.coverage is not None:
+            # In contact now, the room is what is free now; otherwise it is
+            # the room until the next span of coverage begins.
+            upcoming = self.coverage.next_contact(utime)
+            next_contact = self.uend if upcoming is None else min(upcoming, self.uend)
+        else:
+            passes = self.acs.passrequests.passes or []
+            next_contact = min(
+                (float(p.begin) for p in passes if float(p.begin) > utime),
+                default=self.uend,
+            )
         housekeeping = self.config.housekeeping_generated(
             max(0.0, next_contact - utime)
         )

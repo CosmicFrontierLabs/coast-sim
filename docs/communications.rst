@@ -46,6 +46,16 @@ When only the ``band`` is specified, standard defaults are automatically applied
 UHF has no generic default rate; specify mission-specific uplink and downlink
 rates explicitly. Explicitly specified values override all defaults.
 
+A band's rate can vary with the spacecraft-to-station range:
+``downlink_rate_vs_range_km`` is a table of ``(range_km, rate_mbps)`` rows in
+increasing range, interpolated linearly between rows and held at the end rows
+beyond them. Either side of a link may carry one, and the effective rate at a
+range is the lower of the two sides' rates there, on the best band. The table is
+used where the range is known: the contacts of an omni or gimballed antenna take
+the rate at each step's range, so a contact at low elevation downlinks less than
+one overhead, and each contact span reports its time-weighted mean rate. A
+body-fixed antenna's passes use ``downlink_rate_mbps`` throughout.
+
 AntennaPointing
 ^^^^^^^^^^^^^^^
 
@@ -67,9 +77,37 @@ Defines how the antenna is mounted and pointed.
   with a deprecation warning and do not affect generated GSP attitudes.
 * ``gimbal_range_deg``: Angular range for gimbaled antennas (from boresight)
 
-Only ``FIXED`` antennas currently drive spacecraft attitude during generated
-ground-station-pass profiles. ``OMNI`` and ``GIMBALED`` antennas do not imply a
-body-frame tracking vector.
+The antenna type decides how the spacecraft gets its contacts. A ``FIXED``
+antenna has to be pointed at the station, so it downlinks during ground-station
+passes: the schedulers reserve each pass on a tracking profile, ACS flies it in
+``PASS`` mode, and science stops for it (see :doc:`planning`). An ``OMNI`` or
+``GIMBALED`` antenna needs no spacecraft attitude, so no passes are predicted for
+it and the spacecraft downlinks whenever it has a link to a station, in whatever
+ACS mode it is in. :class:`~conops.simulation.StationCoverage` finds, at each
+step of the ephemeris, which stations are above their elevation masks and
+schedules the contacts from that. One station is tracked at a time: a contact
+stays with its station until it sets, so two stations in view at once do not
+share the time; when it sets, or when none was tracked, the link goes to the
+station in view with the highest downlink rate, and of those the one in view for
+longest. Every contact begins the communications system's ``acquisition_seconds``
+after its station comes into view, and a switch straight from one station to
+another adds ``handover_seconds`` to that; nothing is downlinked meanwhile. A
+station acquired after a gap with none in view pays no handover, since the
+antenna can be pointed at it in advance. Each contact downlinks at the effective rate through
+the bands the station and the spacecraft share. A gimballed antenna reaches the station only within
+``gimbal_range_deg`` of ``fixed_boresight_body`` from the attitude flown, which
+the simulation checks at each step; planning takes the station as reachable.
+Every station with a downlink carries data this way, whether or not
+``schedule_for_tracking`` allows it to be scheduled for passes.
+
+A configuration without a communications system keeps the body-fixed behaviour.
+With coverage, a DITL's ``coverage`` holds the model, its data telemetry shows
+the downlink, and ``print_statistics`` reports the number of contacts and
+handovers and the fraction of the run in contact. The timeline plots show the contacts
+in their ``Ground Contact`` row, coloured by station: one bar per span on a run
+up to two days long, and on a longer run one bar per hour with a contact, as
+dark as the hour's fraction in contact against the run's fullest hour, since a
+span of minutes is narrower than a pixel at that scale.
 
 Polarization
 ^^^^^^^^^^^^
@@ -96,6 +134,11 @@ Main configuration class for the communications system.
 * ``antenna_pointing``: Antenna pointing configuration
 * ``pointing_accuracy_deg``: Maximum pointing error to maintain good signal (degrees)
 * ``polarization``: Antenna polarization type
+* ``acquisition_seconds``: Seconds to acquire the link at the start of every contact,
+  for an omni or gimballed antenna, during which nothing is downlinked (default 0)
+* ``handover_seconds``: Seconds to switch the link straight from one ground station to
+  another, for an omni or gimballed antenna, on top of the acquisition, during which
+  nothing is downlinked (default 0)
 
 **Methods:**
 

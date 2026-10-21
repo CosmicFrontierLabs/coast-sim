@@ -19,6 +19,53 @@ class BandCapability(ConfigModel):
     downlink_rate_mbps: float = Field(
         default=0.0, description="Downlink data rate in Mbps", ge=0.0
     )
+    downlink_rate_vs_range_km: list[tuple[float, float]] | None = Field(
+        default=None,
+        description=(
+            "Downlink rate against spacecraft-to-station range, as (range_km, "
+            "rate_mbps) rows in increasing range, interpolated linearly between "
+            "rows and held at the end rows beyond them. Used where the range is "
+            "known: the contacts of an omni or gimballed antenna. Without it the "
+            "rate is downlink_rate_mbps at every range."
+        ),
+    )
+
+    @field_validator("downlink_rate_vs_range_km")
+    @classmethod
+    def _validate_rate_table(
+        cls, table: list[tuple[float, float]] | None
+    ) -> list[tuple[float, float]] | None:
+        if table is None:
+            return None
+        if not table:
+            raise ValueError("downlink_rate_vs_range_km must have at least one row")
+        for range_km, rate in table:
+            if range_km < 0.0 or rate < 0.0:
+                raise ValueError(
+                    "downlink_rate_vs_range_km ranges and rates must be >= 0"
+                )
+        ranges = [row[0] for row in table]
+        if any(b <= a for a, b in zip(ranges, ranges[1:])):
+            raise ValueError("downlink_rate_vs_range_km ranges must increase")
+        return [(float(r), float(rate)) for r, rate in table]
+
+    def downlink_rate_at(self, range_km: float | None) -> float:
+        """The downlink rate in Mbps at a range, or the nominal rate without one.
+
+        The table, where there is one, is interpolated linearly between its
+        rows and held at its end rows beyond them.
+        """
+        table = self.downlink_rate_vs_range_km
+        if range_km is None or table is None:
+            return self.downlink_rate_mbps
+        if range_km <= table[0][0]:
+            return table[0][1]
+        if range_km >= table[-1][0]:
+            return table[-1][1]
+        for (r0, rate0), (r1, rate1) in zip(table, table[1:]):
+            if r0 <= range_km <= r1:
+                return rate0 + (rate1 - rate0) * (range_km - r0) / (r1 - r0)
+        return self.downlink_rate_mbps
 
     @model_validator(mode="before")
     @classmethod
@@ -153,6 +200,25 @@ class CommunicationsSystem(ConfigModel):
         description="Antenna polarization type",
     )
 
+    acquisition_seconds: float = Field(
+        default=0.0,
+        description=(
+            "Seconds to acquire the link at the start of every contact, for an "
+            "omni or gimballed antenna, during which nothing is downlinked"
+        ),
+        ge=0.0,
+    )
+
+    handover_seconds: float = Field(
+        default=0.0,
+        description=(
+            "Seconds to switch the link straight from one ground station to "
+            "another, for an omni or gimballed antenna, on top of the "
+            "acquisition, during which nothing is downlinked"
+        ),
+        ge=0.0,
+    )
+
     def get_band(self, band: str) -> BandCapability | None:
         """Get capability for a specific band.
 
@@ -167,17 +233,20 @@ class CommunicationsSystem(ConfigModel):
                 return capability
         return None
 
-    def get_downlink_rate(self, band: str) -> float:
+    def get_downlink_rate(self, band: str, range_km: float | None = None) -> float:
         """Get downlink rate for a specific band in Mbps.
 
         Args:
             band: Band identifier (e.g., "S", "X", "Ka")
+            range_km: The range to the station, where known: the rate is then
+                read from the band's ``downlink_rate_vs_range_km`` table if it
+                has one (see :meth:`BandCapability.downlink_rate_at`).
 
         Returns:
             Downlink rate in Mbps, or 0.0 if band not supported
         """
         capability = self.get_band(band)
-        return capability.downlink_rate_mbps if capability else 0.0
+        return capability.downlink_rate_at(range_km) if capability else 0.0
 
     def get_uplink_rate(self, band: str) -> float:
         """Get uplink rate for a specific band in Mbps.
