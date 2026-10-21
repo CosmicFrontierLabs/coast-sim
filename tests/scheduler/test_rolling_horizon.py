@@ -204,9 +204,9 @@ class TestPassPrediction:
         assert ditl.calc()
 
         assert len(ditl.replans) >= 4
-        # One scheduled prediction for the plans; DITL's own reconstruction of
-        # the physical passes it commands, without the draw, is the other.
-        assert predictions.count(True) == 1
+        # One prediction for the plans, which DITL also commands from, so it
+        # does not reconstruct the passes for itself.
+        assert predictions == [True]
         assert any(e.obstype.name == "GSP" for e in ditl.plan)
         assert ditl.validate_plan_matches_execution() == []
 
