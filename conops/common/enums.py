@@ -3,6 +3,7 @@ from typing import Literal
 
 DITLEventType = Literal[
     "ACS",
+    "ANTENNA",
     "CHARGING",
     "CONSTRAINT",
     "ERROR",

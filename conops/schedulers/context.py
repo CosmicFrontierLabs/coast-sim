@@ -20,7 +20,7 @@ from ..config.constraint import attitude_constraint_name_for_scopes
 from ..ditl.ditl_log import DITLLog
 from ..simulation.acs import ACS
 from ..simulation.attitude import AttitudeExecutionError, AttitudeTrajectory
-from ..simulation.coverage import StationCoverage
+from ..simulation.coverage import StationCoverage, cut_windows
 from ..simulation.passes import Pass, PassTimes
 from ..simulation.roll import optimum_roll
 from ..simulation.slew import Slew
@@ -262,17 +262,33 @@ class SchedulingContext:
             else self.config.constraint.roll_independent_constraint
         )
         if constraint is None:
-            return [(self.ustart, self.uend)]
-        result = constraint.evaluate(
-            ephemeris=self.ephem,
-            target_ra=target.ra,
-            target_dec=target.dec,
-            target_roll=None,
-        )
-        return [
-            (window.start_time.timestamp(), window.end_time.timestamp())
-            for window in result.visibility
-        ]
+            windows = [(self.ustart, self.uend)]
+        else:
+            result = constraint.evaluate(
+                ephemeris=self.ephem,
+                target_ra=target.ra,
+                target_dec=target.dec,
+                target_roll=None,
+            )
+            windows = [
+                (window.start_time.timestamp(), window.end_time.timestamp())
+                for window in result.visibility
+            ]
+        return self.without_repoints(target, windows)
+
+    def without_repoints(
+        self, target: PlanEntry, windows: list[tuple[float, float]]
+    ) -> list[tuple[float, float]]:
+        """``windows`` less the antenna repoints, for a target whose category
+        forbids a repoint during an observation; unchanged otherwise."""
+        coverage = self.coverage
+        if coverage is None or not coverage.repoints:
+            return windows
+        if self.config.observation_categories.antenna_repoints(int(target.obsid)) != (
+            "forbidden"
+        ):
+            return windows
+        return cut_windows(windows, coverage.repoint_cuts(self.ustart, self.uend))
 
     # ── Ground passes ─────────────────────────────────────────────────────
 
