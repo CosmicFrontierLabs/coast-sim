@@ -45,8 +45,8 @@ def _solve(
         60,
         20_000,
         {1: 1e9, 2: 1e9},
-        None,
-        battery,
+        recorder=None,
+        battery=battery,
     )
     solver = cp_model.CpSolver()
     solver.parameters.num_workers = 1
