@@ -60,6 +60,7 @@ class TargetQueue:
         self.slew_distance_weight = config.targets.slew_distance_weight
         self.slew_time_weight = config.targets.slew_time_weight
         self.collection_time_weight = config.targets.collection_time_weight
+        self.data_volume_weight = config.targets.data_volume_weight
         self.radiator_sun_exposure_weight = config.targets.radiator_sun_exposure_weight
         self.radiator_earth_exposure_weight = (
             config.targets.radiator_earth_exposure_weight
@@ -312,6 +313,7 @@ class TargetQueue:
         collection_deadline: Callable[[Pointing, float], float | None] | None = None,
         slew_estimator: Callable[[Pointing], TargetSlewEstimate] | None = None,
         roll: float | None = None,
+        recorder_room_gb: float | None = None,
     ) -> Pointing | None:
         """Get the next best target to observe from the queue.
 
@@ -328,6 +330,12 @@ class TargetQueue:
                 cost for a candidate target.
             roll: Current roll in degrees. Required when body-axis slew limits
                 are configured and no attitude-aware slew estimator is supplied.
+            recorder_room_gb: Gb of science the recorder can take before
+                its next contact, under its planning limit. A candidate
+                collects no more than the room holds at its own rates, and
+                one that cannot collect its minimum snapshot within it is
+                passed over, as the schedulers pass over what the recorder
+                cannot hold. None checks nothing.
 
         Returns:
             Next target to observe, or None if no suitable target found.
@@ -354,10 +362,13 @@ class TargetQueue:
             self.slew_distance_weight != 0.0
             or self.slew_time_weight != 0.0
             or self.collection_time_weight != 0.0
+            or self.data_volume_weight != 0.0
             or self.radiator_sun_exposure_weight != 0.0
             or self.radiator_earth_exposure_weight != 0.0
             or merit_model.is_dynamic
         )
+        overfill = 0
+        """Candidates passed over because the recorder cannot hold their data."""
         delivered_shares = (
             merit_model.delivered_shares(self.targets)
             if merit_model.completion_deficit_weight > 0.0
@@ -449,6 +460,15 @@ class TargetQueue:
                 collection = self._candidate_collection_seconds(
                     target, visibility_window, utime
                 )
+                if recorder_room_gb is not None:
+                    # Collect no more than the recorder can hold from its
+                    # fill now; a snapshot shorter than the minimum waits.
+                    collection = min(
+                        collection, self._collection_within(target, recorder_room_gb)
+                    )
+                    if collection < target.ss_min:
+                        overfill += 1
+                        continue
                 if collection < target.ss_min:
                     continue
                 target.end = min(
@@ -479,17 +499,25 @@ class TargetQueue:
                     if collection_deadline is not None
                     else None
                 )
-                collection_seconds = self._candidate_collection_seconds(
-                    target=target,
-                    visibility_window=visibility_window,
-                    utime=utime,
-                    deadline=deadline,
+                collection_seconds = min(
+                    collection,
+                    self._candidate_collection_seconds(
+                        target=target,
+                        visibility_window=visibility_window,
+                        utime=utime,
+                        deadline=deadline,
+                    ),
                 )
                 if collection_deadline is not None and collection_seconds < float(
                     target.ss_min
                 ):
                     continue
                 collection_minutes = collection_seconds / 60.0
+                data_gb = (
+                    self._snapshot_science_gb(target, collection_seconds)
+                    if self.data_volume_weight != 0.0
+                    else 0.0
+                )
 
                 radiator = 0.0
                 if (
@@ -526,6 +554,7 @@ class TargetQueue:
                         "slew_time": -(self.slew_time_weight * slew_minutes),
                         "collection": self.collection_time_weight * collection_minutes,
                         "radiator": radiator,
+                        "data": -(self.data_volume_weight * data_gb),
                     }
                 )
                 if breakdown.rank > best_rank:
@@ -533,10 +562,42 @@ class TargetQueue:
                     best_target = target
                     best_breakdown = breakdown
 
+        if overfill and self.log is not None:
+            self.log.log_event(
+                utime=utime,
+                event_type="QUEUE",
+                description=(
+                    f"{overfill} targets passed over: the recorder can take "
+                    f"{recorder_room_gb:.2f} Gb of science before its next contact"
+                ),
+                obsid=None,
+                acs_mode=None,
+            )
         if best_target is not None:
             assert best_breakdown is not None
             self._select(best_target, best_breakdown)
         return best_target
+
+    def _collection_within(self, target: Pointing, room_gb: float) -> float:
+        """Seconds of collection whose science fits in ``room_gb``: without
+        limit when the target generates nothing per second, and negative when
+        not even its fixed per-observation data fits."""
+        base = self._snapshot_science_gb(target, 0.0)
+        per_second = self._snapshot_science_gb(target, 1.0) - base
+        if per_second <= 0.0:
+            return float("inf") if base <= room_gb + 1e-9 else -1.0
+        return (room_gb - base) / per_second
+
+    def _snapshot_science_gb(
+        self, target: Pointing, collection_seconds: float
+    ) -> float:
+        """Gb of science a snapshot of ``target`` collecting for
+        ``collection_seconds`` puts on the recorder, at the target's own
+        rates: its rate for the seconds plus its fixed amount per observation."""
+        assert self.config is not None
+        return float(
+            self.config.science_generated(collection_seconds, target.science_data)
+        )
 
     def _select(self, target: Pointing, breakdown: MeritBreakdown) -> None:
         """Freeze the selected target's value and log its terms."""

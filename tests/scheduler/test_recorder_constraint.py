@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from conops import create_ditl
 from conops.common import ObsType
 from conops.common.enums import ACSMode
 from conops.config import (
@@ -687,3 +688,51 @@ class TestRollingHorizon:
         # At least one replan started from more than was on the recorder when
         # it was built: what the committed snapshot went on to generate.
         assert any(s > v + 1.0 for s, v in zip(starts, volumes, strict=True))
+
+
+class TestDispatch:
+    def _targets(self, config: MissionConfig) -> list[Pointing]:
+        """Twenty-minute snapshots: 12 Gb each for the hungry target, 1.2 Gb
+        for the frugal ones, on an 18 Gb limit."""
+        return [
+            _data_target(
+                config, 1, 105.0, 10.0, HIGH_RATE, merit=90, minutes=200, snapshot=20
+            ),
+            _data_target(
+                config, 2, 110.0, 10.0, LOW_RATE, merit=50, minutes=200, snapshot=20
+            ),
+            _data_target(
+                config, 3, 115.0, 5.0, LOW_RATE, merit=60, minutes=100, snapshot=20
+            ),
+        ]
+
+    def test_dispatch_selects_only_what_the_recorder_can_hold(self) -> None:
+        """Queue dispatch passes over a snapshot the recorder cannot hold from
+        its fill now, so the executed recorder stays below the planning limit
+        and never goes into the red, and the hungry target still gets its
+        snapshots once the contacts have made room."""
+        config = _recorder_config()
+        ditl = create_ditl(
+            config, self._targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
+        )
+        ditl.step_size = STEP
+        assert ditl.calc()
+
+        assert max(ditl.recorder_volume_gb) <= LIMIT + 1e-6
+        assert max(ditl.recorder_alert) < 2
+        observed = {hk.obsid for hk in ditl.telemetry.housekeeping if hk.obsid}
+        assert {1, 2, 3} <= observed
+        assert any(
+            "passed over" in e.description
+            for e in ditl.log.events
+            if e.event_type == "QUEUE"
+        )
+
+    def test_without_the_limit_dispatch_fills_the_recorder(self) -> None:
+        config = _recorder_config(None)
+        ditl = create_ditl(
+            config, self._targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
+        )
+        ditl.step_size = STEP
+        assert ditl.calc()
+        assert max(ditl.recorder_volume_gb) > LIMIT
