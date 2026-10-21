@@ -21,6 +21,7 @@ from ..config import (
 from ..config.data_storage import DataStorage, RecorderSummary, RecorderView
 from ..schedulers.recorder import contact_downlink_gb
 from ..simulation.acs import ACS
+from ..simulation.coverage import StationCoverage
 from ..simulation.momentum import MomentumSample, StoredMomentumTracker
 from ..simulation.momentum_budget import MomentumLimitError
 from ..simulation.passes import Pass, PassTimes
@@ -289,6 +290,10 @@ class DITLMixin:
             if isinstance(self.config.data_storage, DataStorage)
             else self.config.recorder
         )
+        self.coverage: StationCoverage | None = StationCoverage.for_config(self.config)
+        """Station coverage for an antenna that needs no attitude, which
+        downlinks whenever a station is in view; None for a body-fixed
+        antenna, which downlinks during ground passes."""
 
     def _build_stored_momentum_tracker(self) -> StoredMomentumTracker | None:
         attitude_control = self.config.spacecraft_bus.attitude_control
@@ -761,12 +766,25 @@ class DITLMixin:
             self._data_observation = observation
             self._data_collected = after
 
-        # Downlink data during PASS mode, once ACS has acquired the contact:
-        # the ingress slew also reports PASS, but carries no link.
         current_pass = self.acs.current_pass
         contact_start = contact_stop = utime
         data_to_downlink = 0.0
-        if mode == ACSMode.PASS and current_pass is not None:
+        if self.coverage is not None:
+            # An antenna that needs no attitude downlinks whenever a station
+            # is in view, in whatever mode ACS is in. A gimballed antenna
+            # reaches the station only within its range from the attitude
+            # flown, taken as the attitude at the start of the step.
+            attitude = (
+                (self.acs.ra, self.acs.dec, self.acs.roll)
+                if self.coverage.gimballed
+                else None
+            )
+            contact_start, contact_stop, data_to_downlink = self.coverage.contact_in(
+                utime, utime + interval, attitude
+            )
+        elif mode == ACSMode.PASS and current_pass is not None:
+            # Downlink data during PASS mode, once ACS has acquired the
+            # contact: the ingress slew also reports PASS, but carries no link.
             # A contact can end partway through a step, and the run can end
             # before the step does; only the time in contact is credited.
             contact_start = max(utime, float(current_pass.begin))

@@ -1,5 +1,6 @@
 from .acs import ACS
 from .acs_command import ACSCommand
+from .coverage import Contact, ContactSpan, StationCoverage
 from .emergency_charging import EmergencyCharging
 from .momentum import (
     MomentumSample,
@@ -19,6 +20,9 @@ from .slew import Slew
 __all__ = [
     "ACS",
     "ACSCommand",
+    "Contact",
+    "ContactSpan",
+    "StationCoverage",
     "EmergencyCharging",
     "optimum_body_roll",
     "optimum_instrument_roll",

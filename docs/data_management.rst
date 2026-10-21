@@ -17,7 +17,8 @@ The data management system consists of three main components:
 
 1. **OnboardRecorder**: Simulates the spacecraft's solid-state recorder (SSR) or data storage device
 2. **DataGeneration**: Models how the bus and each instrument produce data, and how targets change it
-3. **Downlink Operations**: Simulates data transfer during ground station passes
+3. **Downlink Operations**: Simulates data transfer during ground station passes, or,
+   for an omni or gimballed antenna, whenever a station is in view (see :doc:`communications`)
 
 These components work together seamlessly in DITL simulations to track data flow throughout
 the spacecraft's operations.
@@ -80,7 +81,8 @@ The recorder provides three alert levels based on fill fraction:
 
 **Data Removal**
 
-During ground station passes, data is removed from the recorder to simulate downlink:
+During ground station passes, or whenever a station is in view of an antenna that needs
+no spacecraft attitude, data is removed from the recorder to simulate downlink:
 
 .. code-block:: python
 
