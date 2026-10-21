@@ -8,6 +8,7 @@ import pytest
 from conops.config import ScienceData, TargetConfig
 from conops.config.observation_categories import ObservationCategory
 from conops.ditl import DITLLogStore, ReplanReason, RollingHorizonDITL
+from conops.schedulers import LongRangeAllocator
 from conops.simulation.passes import PassTimes
 from conops.targets import Pointing
 
@@ -208,6 +209,54 @@ class TestPassPrediction:
         # does not reconstruct the passes for itself.
         assert predictions == [True]
         assert any(e.obstype.name == "GSP" for e in ditl.plan)
+        assert ditl.validate_plan_matches_execution() == []
+
+    def test_the_allocator_shares_the_runs_passes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An allocator with a data budget predicts the run's passes for its
+        downlink per bin; a rolling run gives it the passes it has predicted
+        for its plans, so the run still predicts once."""
+        config = _config(14, stations=True)
+        targets = [
+            _target(config, 100 + i, ra, dec, merit=90 - i, minutes=60, snapshot=20)
+            for i, (ra, dec) in enumerate(PATCH)
+        ]
+        for target in targets:
+            target.science_data = {"Default Instrument": ScienceData(rate_gbps=0.001)}
+        predictions: list[bool] = []
+        original = PassTimes.get
+
+        def counted(self: PassTimes, *args: object, **kwargs: object) -> None:
+            predictions.append(bool(kwargs.get("apply_scheduling", True)))
+            original(self, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(PassTimes, "get", counted)
+        allocator = LongRangeAllocator(
+            config,
+            BEGIN,
+            BEGIN + timedelta(hours=14),
+            bin_length=timedelta(hours=7),
+            solver="greedy",
+        )
+        ditl = RollingHorizonDITL(
+            config,
+            targets,
+            begin=BEGIN,
+            end=BEGIN + timedelta(hours=14),
+            horizon=timedelta(hours=6),
+            replan_interval=timedelta(hours=3),
+            allocator=allocator,
+        )
+        ditl.step_size = 60
+        assert ditl.calc()
+
+        assert predictions == [True]
+        assert ditl.allocation is not None
+        assert allocator.passes is not None
+        assert [p.begin for p in allocator.passes] == [
+            p.begin for p in ditl._run_passes or []
+        ]
         assert ditl.validate_plan_matches_execution() == []
 
 
