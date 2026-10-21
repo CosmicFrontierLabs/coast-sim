@@ -86,7 +86,11 @@ Every station with a downlink carries data this way, whether or not
 A configuration without a communications system keeps the body-fixed behaviour.
 With coverage, a DITL's ``coverage`` holds the model, its data telemetry shows
 the downlink, and ``print_statistics`` reports the number of contacts and the
-fraction of the run with a station in view.
+fraction of the run with a station in view. The timeline plots show the contacts
+in their ``Ground Contact`` row, coloured by station: one bar per span on a run
+up to two days long, and on a longer run one bar per hour with a contact, as
+dark as the hour's fraction in contact against the run's fullest hour, since a
+span of minutes is narrower than a pixel at that scale.
 
 Polarization
 ^^^^^^^^^^^^
