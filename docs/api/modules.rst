@@ -51,6 +51,7 @@ Scheduling and Planning
    conops.benchmark.scenarios
    conops.schedulers
    conops.schedulers.allocator
+   conops.schedulers.battery
    conops.schedulers.consumable
    conops.schedulers.context
    conops.schedulers.cpsat_scheduler

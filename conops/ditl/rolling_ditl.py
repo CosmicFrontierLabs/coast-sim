@@ -11,7 +11,9 @@ from pydantic import BaseModel, ConfigDict
 
 from ..common import ObsType
 from ..config import MissionConfig, ScienceData
+from ..config.solar_panel import SolarArrayDriveState
 from ..schedulers.allocator import Allocation, LongRangeAllocator
+from ..schedulers.battery import Addition, BatteryLedger
 from ..schedulers.context import Attitude, tracking_rest
 from ..schedulers.priority_scheduler import PriorityScheduler, StartState
 from ..schedulers.recorder import RecorderLedger
@@ -558,6 +560,9 @@ class RollingHorizonDITL(DITL):
                 used,
             )
             options["allocation_bonus"] = self.allocation_bonus
+        start_deficit_wh, start_drive_state = self._battery_start(
+            utime, start, committed
+        )
         scheduler = self.scheduler(
             self.config,
             # Finished and held targets too: the scheduler does not place
@@ -575,6 +580,8 @@ class RollingHorizonDITL(DITL):
             reserved_visits=self._reserved_visits(leading, utime),
             held=[int(t.obsid) for t in held],
             start_volume_gb=self._recorder_volume_at(utime, start, committed),
+            start_deficit_wh=start_deficit_wh,
+            start_drive_state=start_drive_state,
             **options,  # type: ignore[arg-type]
         )
         return (
@@ -683,6 +690,51 @@ class RollingHorizonDITL(DITL):
         for begin, volume in science:
             volumes[ledger.segment(begin)] += volume
         return ledger.peaks(volumes)[-1]
+
+    def _battery_start(
+        self, utime: float, start: float, committed: Sequence[PlanEntry]
+    ) -> tuple[float, SolarArrayDriveState]:
+        """The battery's deficit and the solar-array drive's state when a new
+        plan starts.
+
+        The committed activities run on until then, drawing and charging as
+        they go and turning the drive, so the plan starts from what they
+        leave rather than from the battery now; the part of each already
+        past ``utime`` is in the battery's charge already.
+        """
+        battery = self.config.battery
+        now = max(0.0, float(battery.watthour) - float(battery.charge_level))
+        drive = self.acs.solar_array_drive_state
+        if start <= utime:
+            return now, drive
+        ledger = BatteryLedger(
+            self.config,
+            utime,
+            start,
+            start_deficit_wh=now,
+            step_size=self.step_size,
+            origin=self.ustart,
+            drive_state=drive,
+        )
+        planned: list[list[Addition]] = [[] for _ in range(ledger.segments)]
+        for entry in committed:
+            # A contact flies its tracking profile and brakes to rest after
+            # it, which is what turns the drive and generates meanwhile.
+            gspass = self._entry_passes.get(id(entry))
+            is_contact = entry_obstype(entry) == ObsType.GSP and gspass is not None
+            addition = ledger.addition(
+                entry,
+                after=utime,
+                rest=self._rest_after(entry)[0] if is_contact else None,
+                track=gspass.attitude_at if is_contact and gspass is not None else None,
+            )
+            if addition is not None:
+                planned[ledger.segment(addition.begin)].append(addition)
+        energy = tuple(tuple(sorted(g)) for g in planned)
+        return (
+            ledger.level_at(energy, start),
+            ledger.drive_state_at(energy, start) or drive,
+        )
 
     def _start_state(
         self, committed: Sequence[PlanEntry], utime: float, cutoff: float

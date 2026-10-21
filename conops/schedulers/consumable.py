@@ -24,11 +24,17 @@ from __future__ import annotations
 
 from bisect import bisect_right
 from collections.abc import Callable, Sequence
-from typing import NamedTuple
+from typing import Generic, NamedTuple, TypeVar, cast
 
 _TOLERANCE = 1e-9
 """How far below the limit a plan keeps the level: the limit is where an
 alert fires, so reaching it is not within it, and sums round."""
+
+S = TypeVar("S")
+"""What a plan has added in a segment: a number, unless a subclass orders its
+additions in time."""
+E = TypeVar("E")
+"""One more addition to a segment: a number, or one ordered addition."""
 
 
 class Removal(NamedTuple):
@@ -47,7 +53,7 @@ class Removal(NamedTuple):
     """What accrues during the lead."""
 
 
-class ConsumableLedger:
+class ConsumableLedger(Generic[S, E]):
     """A consumable's level over a horizon, by the segments its removals cut it into.
 
     Args:
@@ -58,8 +64,9 @@ class ConsumableLedger:
             for the part inside it, with its amount and accrual scaled to it.
         limit: The level a plan keeps the consumable below; None for no limit.
         start: The level at ``begin``.
-        accrual: What accrues on its own, apart from any plan, over a number of
-            seconds outside removals and their leads.
+        accrual: What accrues on its own, apart from any plan, over a span of
+            time (its begin and end, Unix seconds) outside removals and their
+            leads.
     """
 
     def __init__(
@@ -70,13 +77,13 @@ class ConsumableLedger:
         *,
         limit: float | None,
         start: float,
-        accrual: Callable[[float], float],
+        accrual: Callable[[float, float], float],
     ) -> None:
         self.limit = limit
         self.start = float(start)
         inside: list[Removal] = []
         leads: list[tuple[float, float, float]] = []
-        """Each lead inside the horizon: when it starts, its seconds, and
+        """Each lead inside the horizon: when it starts, when it ends, and
         what accrues in it. A lead belongs to the segment it starts in, that
         of the removal before it, whether or not its own removal is inside."""
         for removal in sorted(removals, key=lambda r: r.begin):
@@ -84,9 +91,7 @@ class ConsumableLedger:
             lead_end = min(removal.begin, end)
             if removal.lead > 0 and lead_end > lead_begin:
                 share = (lead_end - lead_begin) / removal.lead
-                leads.append(
-                    (lead_begin, lead_end - lead_begin, removal.lead_accrual * share)
-                )
+                leads.append((lead_begin, lead_end, removal.lead_accrual * share))
             clipped_begin = max(removal.begin, begin)
             clipped_end = min(removal.end, end)
             if clipped_end <= clipped_begin:
@@ -106,20 +111,25 @@ class ConsumableLedger:
         """What the removal at the start of each segment takes off."""
         self.removal_accrual: list[float] = [0.0, *(r.accrual for r in inside)]
         """What accrues during the removal at the start of each segment."""
+        self.removal_ends: list[float] = [begin, *(r.end for r in inside)]
+        """When the removal at the start of each segment ends; the start of
+        the horizon for the first segment, which has none."""
         self.accrual: list[float] = []
         """What accrues on its own in each segment, outside its removal: at
         the plain rate, and at their own rate in the leads of the removals
         that start in it."""
         for k in range(self.segments):
-            seconds = self.bounds[k + 1] - self.bounds[k]
-            if k > 0:
-                seconds -= inside[k - 1].end - inside[k - 1].begin
-            led = 0.0
-            for lead_begin, lead_seconds, lead_accrual in leads:
+            # The removal at the start of a segment accrues on its own terms,
+            # and so does each lead that starts in the segment.
+            cursor = self.removal_ends[k]
+            span_end = max(cursor, self.bounds[k + 1])
+            accrued = 0.0
+            for lead_begin, lead_end, lead_accrual in leads:
                 if self.bounds[k] <= lead_begin < self.bounds[k + 1]:
-                    seconds -= lead_seconds
-                    led += lead_accrual
-            self.accrual.append(accrual(max(0.0, seconds)) + led)
+                    plain_end = min(max(lead_begin, cursor), span_end)
+                    accrued += accrual(cursor, plain_end) + lead_accrual
+                    cursor = min(max(lead_end, cursor), span_end)
+            self.accrual.append(accrued + accrual(cursor, span_end))
 
     @property
     def active(self) -> bool:
@@ -134,35 +144,60 @@ class ConsumableLedger:
         """The segment a time falls in."""
         return min(max(bisect_right(self.bounds, time) - 1, 0), self.segments - 1)
 
-    def levels(self, planned: Sequence[float]) -> list[float]:
+    def _run(self, level: float, segment: int, planned: S) -> tuple[float, float]:
+        """Run a segment from the level it starts at: its peak and its end level.
+
+        The plan's additions in a segment are a number here, added with what
+        accrues; the level only rises within a segment, so its peak is its
+        end. A subclass whose additions are ordered in time, and can take the
+        consumable off as well as put it on, walks them instead.
+        """
+        assert isinstance(planned, (int, float))
+        end = level + self.accrual[segment] + float(planned)
+        return end, end
+
+    def _peaks_and_levels(
+        self, planned: Sequence[S]
+    ) -> tuple[list[float], list[float]]:
+        level = self.start
+        peaks = []
+        levels = []
+        for k in range(self.segments):
+            if k > 0:
+                level = max(0.0, level + self.removal_accrual[k] - self.removal[k])
+            peak, level = self._run(level, k, planned[k])
+            peaks.append(peak)
+            levels.append(level)
+        return peaks, levels
+
+    def levels(self, planned: Sequence[S]) -> list[float]:
         """The level at the end of each segment, given the plan's additions in each.
 
         A removal takes off what it can of what is there when it starts, and
         no more than that.
         """
-        level = self.start
-        levels = []
-        for k in range(self.segments):
-            if k > 0:
-                level = max(0.0, level + self.removal_accrual[k] - self.removal[k])
-            level += self.accrual[k] + planned[k]
-            levels.append(level)
-        return levels
+        return self._peaks_and_levels(planned)[1]
 
-    def fits(self, planned: Sequence[float], segment: int, extra: float) -> bool:
-        """Whether ``extra`` more in ``segment`` keeps every level below the limit.
+    def peaks(self, planned: Sequence[S]) -> list[float]:
+        """The highest level reached in each segment."""
+        return self._peaks_and_levels(planned)[0]
+
+    def fits(self, planned: Sequence[S], segment: int, extra: E) -> bool:
+        """Whether ``extra`` more in ``segment`` keeps every peak below the limit.
 
         Below, not at it: the limit is where an alert fires.
         """
         if self.limit is None:
             return True
-        trial = list(planned)
-        trial[segment] += extra
-        return all(level + _TOLERANCE < self.limit for level in self.levels(trial))
+        return all(
+            peak + _TOLERANCE < self.limit
+            for peak in self.peaks(self.add(planned, segment, extra))
+        )
 
-    @staticmethod
-    def add(planned: Sequence[float], segment: int, extra: float) -> tuple[float, ...]:
+    def add(self, planned: Sequence[S], segment: int, extra: E) -> tuple[S, ...]:
         """The plan's additions with ``extra`` more in ``segment``."""
+        current = planned[segment]
+        assert isinstance(current, (int, float)) and isinstance(extra, (int, float))
         added = list(planned)
-        added[segment] += extra
+        added[segment] = cast(S, float(current) + float(extra))
         return tuple(added)

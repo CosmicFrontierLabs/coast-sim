@@ -1,4 +1,5 @@
 from .allocator import AllocatedTime, Allocation, LongRangeAllocator
+from .battery import BatteryLedger
 from .consumable import ConsumableLedger
 from .context import SchedulingContext
 from .cpsat_scheduler import CpSatScheduler
@@ -15,6 +16,7 @@ __all__ = [
     "SCHEDULERS",
     "AllocatedTime",
     "Allocation",
+    "BatteryLedger",
     "ConsumableLedger",
     "CpSatScheduler",
     "DispatchPolicy",

@@ -577,6 +577,7 @@ class DITL(DITLMixin, DITLStats):
             housekeeping=self.telemetry.housekeeping,
             step_size=self.step_size,
             passes=self.acs.passrequests.passes,
+            check_charges=True,
             attitude_violation_at=lambda index, _mode: (
                 self._attitude_constraint_violations[index]
             ),

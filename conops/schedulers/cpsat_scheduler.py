@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 
+from ..common import ACSMode
 from ..common.vector import quaternion_attitude_delta
 from ..config import MissionConfig
 from ..config.acs import scheduled_slew_time
@@ -112,6 +113,41 @@ class _Span(NamedTuple):
     """Objective value per allocated second, beyond the candidate's rate."""
 
 
+class _ChunkBattery(NamedTuple):
+    """The battery over a chunk's runs, in watt-seconds and seconds from the origin.
+
+    The runs are the sunlit and eclipse runs from the one the chunk starts in
+    to the end of the horizon. Energy in a run is linear in how long each
+    candidate occupies it: the run's idle power for every second, replaced by
+    the candidate's net power for the seconds it is there, and the slewing
+    power for its slew in. The deficit at a run's end carries into the next,
+    never below zero, and charging never takes it below the recharge floor
+    or below where it entered the run already under the floor; it must stay
+    within the limit at every run's end.
+    """
+
+    edges: list[int]
+    """Where each run after the first starts."""
+    sunlit: list[bool]
+    """Whether each run is in sunlight."""
+    entering: int
+    """The deficit at the chunk's origin."""
+    idle: list[int]
+    """Watts drawn by idle time in each run: negative in a sunlit run with a
+    charging attitude, where idle time charges."""
+    slew: list[int]
+    """Watts drawn by a slew in each run."""
+    fixed: list[int]
+    """Energy already planned in each run, relative to its idle power: the
+    passes in the chunk and the priority-first plan's snapshots after it."""
+    limit: int
+    """The planning limit as a deficit."""
+    floor: int
+    """The deficit charging is not counted below."""
+    horizon: int
+    """Seconds from the origin to the end of the horizon."""
+
+
 class _PlannedSnapshot(NamedTuple):
     """Where the priority-first plan put a snapshot."""
 
@@ -159,6 +195,7 @@ class _Task:
         cadence: int = 0,
         spans: Sequence[_Span] = (),
         data: tuple[int, int] = (0, 0),
+        power: tuple[int, int] = (0, 0),
     ) -> None:
         self.key = key
         """Request and window of a candidate snapshot; None for the start and passes."""
@@ -200,6 +237,11 @@ class _Task:
         self.data = data
         """Kilobits the snapshot puts on the recorder per second of collection,
         and once whatever its length."""
+        self.power = power
+        """Net watts the snapshot draws in sunlight, at its attitude, and in
+        eclipse."""
+        self.slew_in = 0
+        """The shortest slew into the snapshot, in seconds."""
 
     @property
     def obsid(self) -> int | None:
@@ -234,11 +276,13 @@ class _ChunkModel:
         budget: dict[int, float],
         allocated_left: Mapping[SpanKey, float] | None = None,
         recorder: _ChunkRecorder | None = None,
+        battery: _ChunkBattery | None = None,
     ) -> None:
         from ortools.sat.python import cp_model
 
         self.tasks = tasks
         self.recorder = recorder
+        self.battery = battery
         self.slews = slews
         """Seconds of the scheduled slew from each task to each other task."""
         self.step = step
@@ -272,6 +316,7 @@ class _ChunkModel:
         self._add_circuit()
         self._add_objective(budget)
         self._add_recorder()
+        self._add_battery()
 
     def _add_snapshot_constraints(self) -> None:
         """Keep each present candidate in its window and the chunk."""
@@ -557,6 +602,166 @@ class _ChunkModel:
             )
             model.add(level <= recorder.limit)
 
+    def _add_battery(self) -> None:
+        """Keep the battery above its level at the end of every run.
+
+        A candidate is in the run its arrival falls in, and what spills past
+        that run's end is in the runs after, each for the seconds it holds
+        of the candidate. Its energy is its net power less the
+        run's idle power for the seconds it occupies in each, plus the slewing
+        power less the idle power for its slew in; so a run's energy is its
+        idle power for its whole length, plus what each candidate changes. In
+        an eclipse run everything draws, so the run's end is its peak; in a
+        sunlit run the deficit can rise and fall, and the decoder, which walks
+        the plan exactly, has the last word. The carry-over between runs is
+        only bounded below, which is exact: a larger carry-over only tightens
+        the later limits. Where charging is credited only down to a recharge
+        floor, the carry-over is also at least the smaller of the floor and
+        the deficit entering the run, as the walk never goes below that.
+        """
+        battery = self.battery
+        if battery is None:
+            return
+        from ortools.sat.python import cp_model
+
+        model, present, counted = self.model, self.present, self.counted
+        runs = len(battery.idle)
+        starts = [-(2**40), *battery.edges]
+        ends = [*battery.edges, 2**40]
+        lengths = [
+            min(ends[r], battery.horizon) - max(starts[r], 0) for r in range(runs)
+        ]
+        self.in_run: dict[tuple[int, int], cp_model.IntVar] = {}
+        """Whether a candidate arrives in a run, where it could in more than one."""
+        self.occupied: dict[int, cp_model.IntVar] = {}
+        """Seconds a candidate occupies: its collection and overhead, 0 if absent."""
+        energy: list[list[cp_model.LinearExprT]] = [[] for _ in range(runs)]
+        for k, task in enumerate(self.tasks):
+            if not task.optional:
+                continue
+            longest = task.collection[1] + task.overhead
+            occupied = self.occupied[k] = model.new_int_var(0, longest, f"occupied{k}")
+            model.add(occupied == counted[k] + task.overhead * present[k])
+            lo, hi = task.arrival
+            possible = [r for r in range(runs) if starts[r] <= hi and lo < ends[r]]
+            literals = []
+            # What spills past each run's end, the seconds of the candidate
+            # after it: defined whatever run the candidate is in, so its
+            # domain allows an arrival after the run's end, and 0 where the
+            # candidate cannot reach past the end at all. A long candidate
+            # spills through several runs: the seconds in each run after the
+            # one it arrives in are what spills past the run before, less
+            # what spills past the run itself.
+            beyond: dict[int, cp_model.IntVar] = {}
+            for b in range(runs - 1):
+                if hi + longest - ends[b] <= 0:
+                    continue
+                spill = model.new_int_var(0, hi + longest - ends[b], f"spill{k}_{b}")
+                model.add_max_equality(spill, [0, self.arrival[k] + occupied - ends[b]])
+                beyond[b] = spill
+
+            def rate(r: int) -> int:
+                return (task.power[0] if battery.sunlit[r] else task.power[1]) - (
+                    battery.idle[r]
+                )
+
+            for r in possible:
+                slew_change = (battery.slew[r] - battery.idle[r]) * task.slew_in
+                changes: dict[int, cp_model.LinearExprT] = {}
+                inside: cp_model.LinearExpr = (
+                    occupied - beyond[r] if r in beyond else occupied
+                )
+                changes[r] = rate(r) * inside + slew_change * present[k]
+                bound = max(abs(rate(r)), 1) * longest + abs(slew_change)
+                q = r + 1
+                while q - 1 in beyond:
+                    past: cp_model.LinearExpr | int = beyond[q] if q in beyond else 0
+                    changes[q] = rate(q) * (beyond[q - 1] - past)
+                    bound += abs(rate(q)) * longest
+                    q += 1
+                if len(possible) == 1:
+                    for q, change in changes.items():
+                        energy[q].append(change)
+                    continue
+                literal = self.in_run[(k, r)] = model.new_bool_var(f"run{k}_{r}")
+                literals.append(literal)
+                if r > 0:
+                    model.add(self.arrival[k] >= starts[r]).only_enforce_if(literal)
+                if r < runs - 1:
+                    model.add(self.arrival[k] < ends[r]).only_enforce_if(literal)
+                for q, change in changes.items():
+                    part = model.new_int_var(-bound, bound, f"energy{k}_{r}_{q}")
+                    model.add(part == change).only_enforce_if(literal)
+                    model.add(part == 0).only_enforce_if(~literal)
+                    energy[q].append(part)
+            if len(possible) > 1:
+                model.add(sum(literals) == present[k])
+        self.level: list[cp_model.IntVar] = []
+        """The deficit as each run after the first starts."""
+        level: cp_model.LinearExpr = cp_model.LinearExpr.constant(battery.entering)
+        entering: cp_model.LinearExprT = battery.entering
+        for r in range(runs):
+            level = cp_model.LinearExpr.sum(
+                [level, battery.idle[r] * lengths[r] + battery.fixed[r], *energy[r]]
+            )
+            model.add(level <= battery.limit)
+            if r < runs - 1:
+                carry = model.new_int_var(0, battery.limit, f"level{r + 1}")
+                model.add(carry >= level)
+                if battery.floor > 0:
+                    if isinstance(entering, int):
+                        model.add(carry >= min(entering, battery.floor))
+                    else:
+                        kept = model.new_int_var(0, battery.limit, f"kept{r + 1}")
+                        model.add_min_equality(kept, [entering, battery.floor])
+                        model.add(carry >= kept)
+                self.level.append(carry)
+                level = carry
+                entering = carry
+
+    def _hint_battery(self, hint: dict[int, _TaskHint]) -> None:
+        """Hint the run and carry-over variables from the hinted snapshots."""
+        battery = self.battery
+        if battery is None:
+            return
+        model = self.model
+        runs = len(battery.idle)
+        starts = [-(2**40), *battery.edges]
+        ends = [*battery.edges, 2**40]
+        lengths = [
+            min(ends[r], battery.horizon) - max(starts[r], 0) for r in range(runs)
+        ]
+        energy = [battery.idle[r] * lengths[r] + battery.fixed[r] for r in range(runs)]
+        for k, task in enumerate(self.tasks):
+            if not task.optional:
+                continue
+            run = None
+            occupied = 0
+            if k in hint:
+                arrival = hint[k].arrival
+                run = sum(1 for edge in battery.edges if edge <= arrival)
+                occupied = hint[k].collection + task.overhead
+                energy[run] += (battery.slew[run] - battery.idle[run]) * task.slew_in
+                # The seconds in each run, from the one it arrives in through
+                # every run it spills into.
+                beyond = [
+                    max(0, arrival + occupied - ends[q]) if q < runs - 1 else 0
+                    for q in range(runs)
+                ]
+                for q in range(run, runs):
+                    inside = (occupied if q == run else beyond[q - 1]) - beyond[q]
+                    net = task.power[0] if battery.sunlit[q] else task.power[1]
+                    energy[q] += (net - battery.idle[q]) * inside
+            model.add_hint(self.occupied[k], occupied)
+            for r in range(runs):
+                literal = self.in_run.get((k, r))
+                if literal is not None:
+                    model.add_hint(literal, r == run)
+        level = battery.entering
+        for r in range(runs - 1):
+            level = max(level + energy[r], min(level, battery.floor), 0)
+            model.add_hint(self.level[r], min(level, battery.limit))
+
     def add_hint(self, hint: dict[int, _TaskHint]) -> None:
         """Hint every variable, from the hinted tasks in time order.
 
@@ -624,6 +829,7 @@ class _ChunkModel:
                 model.add_hint(within, False)
                 model.add_hint(self.span_seconds[(k, n)], 0)
         self._hint_recorder(hint)
+        self._hint_battery(hint)
 
     def _hint_recorder(self, hint: dict[int, _TaskHint]) -> None:
         """Hint the segment and carry-over variables from the hinted snapshots."""
@@ -893,10 +1099,21 @@ class CpSatScheduler(LocalSearchScheduler):
             return []
 
         slews = self._slews(tasks)
+        for k, task in enumerate(tasks):
+            if task.optional:
+                # The shortest slew in: the model errs on the side of letting
+                # the solver try, and the decoder, which is exact, decides.
+                others = [int(x) for i, x in enumerate(slews[:, k]) if i != k]
+                task.slew_in = min(others) if others else 0
         chunk_seconds = int(round(chunk_end - origin_time))
         recorder = (
             self._chunk_recorder(state, later, origin_time)
             if self._ledger.active
+            else None
+        )
+        battery = (
+            self._chunk_battery(state, later, origin_time, tasks)
+            if self._battery.active
             else None
         )
         chunk = _ChunkModel(
@@ -907,6 +1124,7 @@ class CpSatScheduler(LocalSearchScheduler):
             budget,
             state.allocated_left,
             recorder,
+            battery,
         )
         chunk.add_hint(
             self._hint(tasks, planned, origin_time, slews, budget, chunk_seconds)
@@ -956,6 +1174,124 @@ class CpSatScheduler(LocalSearchScheduler):
         )
 
     # ── Tasks ────────────────────────────────────────────────────────────
+
+    def _chunk_battery(
+        self,
+        state: _State,
+        later: Sequence[_Snapshot],
+        origin_time: float,
+        tasks: Sequence[_Task],
+    ) -> _ChunkBattery:
+        """The battery from the chunk's run to the end of the horizon.
+
+        What is already planned counts as fixed, relative to each run's idle
+        power, exactly as the ledger counts it: the passes after the cursor
+        and the priority-first plan's snapshots after the chunk.
+        """
+        ledger = self._battery
+        limit = ledger.limit
+        assert limit is not None
+        bounds = [ledger.bounds[0]]
+        sunlit = []
+        for stretch in ledger.stretches:
+            if stretch.begin > bounds[-1]:
+                bounds.append(stretch.begin)
+                sunlit.append(False)
+            bounds.append(stretch.end)
+            sunlit.append(True)
+        if bounds[-1] < ledger.bounds[-1]:
+            bounds.append(ledger.bounds[-1])
+            sunlit.append(False)
+        else:
+            bounds.pop()
+        # Runs from the one the chunk starts in.
+        first = max(0, sum(1 for b in bounds[1:] if b <= origin_time))
+        edges = [int(round(b - origin_time)) for b in bounds[first + 1 :]]
+        sunlit = sunlit[first:]
+        runs = len(sunlit)
+        starts = [0, *edges]
+        idle = []
+        slew = []
+        for r in range(runs):
+            at = origin_time + starts[r]
+            eclipse = not sunlit[r]
+            idle_watts = int(np.ceil(ledger._watts(ACSMode.IDLE, eclipse)))
+            lit = ledger.stretch_at(at) if sunlit[r] else None
+            if lit is not None and lit.attitude is not None:
+                charging = lit.charge[lit.charge > 0.0]
+                if len(charging):
+                    idle_watts = -int(np.floor(charging.mean()))
+            idle.append(idle_watts)
+            slew.append(int(np.ceil(ledger._watts(ACSMode.SLEWING, eclipse))))
+
+        def run_of(utime: float) -> int:
+            return min(
+                sum(1 for edge in edges if origin_time + edge <= utime), runs - 1
+            )
+
+        # What is already planned, exactly as the ledger counts it, step by
+        # step in the run of each step, relative to the run's idle power: the
+        # passes after the cursor, and the priority-first plan's snapshots
+        # released after the chunk, which the chunk must leave room for.
+        fixed = [0] * runs
+        step_size = self.ctx.step_size
+        releases = {snapshot.release for snapshot in later}
+        blocks = [
+            *(b for b in state.timeline[state.cursor :] if b.is_pass),
+            *(
+                b
+                for b in self._greedy_timeline
+                if not b.is_pass
+                and not b.is_charge
+                and float(b.entry.begin) in releases
+            ),
+        ]
+        # With a solar-array drive, as the walk counts them where the plan's
+        # additions leave the drive; a block not in the plan at its own deltas.
+        counted = ledger.walk_deltas(state.energy)
+        for block in blocks:
+            addition = self._block_addition(block)
+            steps = ledger.steps(addition.begin, addition.end)
+            for utime, delta in zip(steps, counted.get(addition, addition.deltas)):
+                if utime < origin_time:
+                    continue
+                r = run_of(float(utime))
+                fixed[r] += int(np.ceil(delta * 3600.0)) - idle[r] * step_size
+        entering = ledger.level_at(state.energy, origin_time) * 3600.0
+        return _ChunkBattery(
+            edges=edges,
+            sunlit=sunlit,
+            entering=int(np.ceil(entering)),
+            idle=idle,
+            slew=slew,
+            fixed=fixed,
+            limit=int(np.floor(limit * 3600.0)),
+            floor=int(np.ceil(ledger.recharge_floor * 3600.0)),
+            horizon=int(round(ledger.bounds[-1] - origin_time)),
+        )
+
+    def _candidate_power(self, target: Pointing, when: float) -> tuple[int, int]:
+        """Net watts a snapshot of ``target`` draws in sunlight, at the
+        power-optimal roll for ``when``, and in eclipse; draws rounded up and
+        generation down."""
+        ledger = self._battery
+        if not ledger.active:
+            return (0, 0)
+        attitude = target.target_body_attitude(self.ctx.instrument_roll(target, when))
+        lit = next(
+            (
+                float(s)
+                for s in ledger.grid
+                if float(s) >= when and not ledger.in_eclipse(float(s))
+            ),
+            None,
+        )
+        generation = 0.0 if lit is None else ledger.generation_watts(attitude, lit)
+        sunlit = int(
+            np.ceil(ledger._watts(ACSMode.SCIENCE, False)) - np.floor(generation)
+        )
+        eclipse = int(np.ceil(ledger._watts(ACSMode.SCIENCE, True)))
+        return (sunlit, eclipse)
 
     def _pass_tasks(
         self, state: _State, origin_time: float, chunk_end: float
@@ -1090,6 +1426,7 @@ class CpSatScheduler(LocalSearchScheduler):
                     (self._allocated_factor - 1.0) * self._value(request, shares),
                 )
                 data = self._candidate_data(target)
+                power = self._candidate_power(target, max(w0, origin_time))
                 # As many snapshots as the exposure needs and the window holds.
                 copies = min(
                     int(np.ceil(remaining / longest)),
@@ -1120,6 +1457,7 @@ class CpSatScheduler(LocalSearchScheduler):
                         cadence=cadence or 0,
                         spans=spans,
                         data=data,
+                        power=power,
                     )
                     candidates.append((priority, rank, task))
         # Stable, so a window's snapshots stay together and in order.
