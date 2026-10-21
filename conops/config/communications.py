@@ -153,12 +153,21 @@ class CommunicationsSystem(ConfigModel):
         description="Antenna polarization type",
     )
 
+    acquisition_seconds: float = Field(
+        default=0.0,
+        description=(
+            "Seconds to acquire the link at the start of every contact, for an "
+            "omni or gimballed antenna, during which nothing is downlinked"
+        ),
+        ge=0.0,
+    )
+
     handover_seconds: float = Field(
         default=0.0,
         description=(
             "Seconds to switch the link straight from one ground station to "
-            "another, for an omni or gimballed antenna, during which nothing "
-            "is downlinked"
+            "another, for an omni or gimballed antenna, on top of the "
+            "acquisition, during which nothing is downlinked"
         ),
         ge=0.0,
     )
