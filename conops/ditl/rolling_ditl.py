@@ -522,10 +522,13 @@ class RollingHorizonDITL(DITL):
         start_deficit_wh, start_drive_state = self._battery_start(utime, start, leading)
         if self.include_passes and self._run_passes is None:
             # Predicted once, as every plan would predict them for itself:
-            # the same seed, start and length give the same passes.
+            # the same seed, start and length give the same passes. Every
+            # contact the plans hold comes from them, so they are also the
+            # passes to command, and DITL need not predict them again.
             self._run_passes = list(
                 SchedulingContext(self.config, self.begin, self.end).predict_passes()
             )
+            self._predicted_passes = list(self._run_passes)
         scheduler = self.scheduler(
             self.config,
             # Finished and held targets too: the scheduler does not place
