@@ -41,11 +41,16 @@ class DispatchPolicy(Protocol):
         collection_deadline: Callable[[Pointing, float], float | None] | None = None,
         slew_estimator: Callable[[Pointing], TargetSlewEstimate] | None = None,
         roll: float | None = None,
+        recorder_room_gb: float | None = None,
     ) -> Pointing | None:
         """Return the target to observe next, or None if nothing can be observed.
 
         Args:
             ra, dec, roll: Current spacecraft attitude in degrees.
+            recorder_room_gb: Gb of science the recorder can take before
+                its next contact, under its planning limit; a target collects
+                no more than fits, and one that cannot collect its minimum
+                snapshot is passed over. None checks nothing.
             utime: Current time in Unix seconds.
             collection_deadline: Returns the latest time science may be
                 collected for a candidate, given when its slew ends.

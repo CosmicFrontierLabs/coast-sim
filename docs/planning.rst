@@ -217,6 +217,18 @@ the next replan. A plan takes effect after the commit lead time, so it starts fr
 what the committed activities leave on the recorder by then: what they go on to
 generate, less what a committed contact downlinks.
 
+Dispatch (:class:`~conops.ditl.queue_ditl.QueueDITL`) keeps within the recorder
+too. When it selects the next target it works out how much science the recorder can
+take before its next contact: what is free under the planning limit now, less the
+housekeeping that accrues until that contact begins, or until the run ends if none
+is coming. A candidate collects no more than that room holds at its own rates, and
+one that cannot collect its minimum snapshot within it is passed over; the log says
+how many were and how much room there was. A contact during the snapshot is not
+counted on. ``config.targets.data_volume_weight`` adds a price on top, in merit
+points per gigabit of science data, so that high-data science gives way to low-data
+science before the recorder is full rather than only once it is (see
+:doc:`configuration`).
+
 Limitations
 -----------
 
