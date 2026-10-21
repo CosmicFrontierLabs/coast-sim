@@ -18,10 +18,13 @@ from typing import Literal, NamedTuple
 import numpy as np
 from pydantic import BaseModel, ConfigDict
 
+from ..common.enums import ACSMode
 from ..config import MissionConfig
+from ..simulation.passes import Pass
 from ..targets import Pointing
 from ..targets.merit import MeritModel
 from .context import SchedulingContext
+from .recorder import contact_downlink_gb
 
 
 class AllocatedTime(NamedTuple):
@@ -50,6 +53,28 @@ class Allocation(BaseModel):
     seconds: dict[int, dict[int, float]]
     """Allocated seconds by obsid, then by bin index. Every request the
     allocator considered has an entry, even if nothing was allocated to it."""
+    downlink: list[float] = []
+    """Gb each bin's ground contacts can take off the recorder."""
+    housekeeping: list[float] = []
+    """Gb each bin generates on its own, at the housekeeping rates."""
+    science: list[float] = []
+    """Gb the science allocated to each bin generates."""
+    data_limit: float | None = None
+    """Gb the recorder is kept within from bin to bin, the recorder's
+    planning limit; None where the allocation had no data budget."""
+    start_volume_gb: float = 0.0
+    """Gb on the recorder when the allocation starts."""
+
+    def recorder_volumes(self) -> list[float]:
+        """Gb carried on the recorder out of each bin: what the bin generates,
+        housekeeping and allocated science, less what its contacts take off,
+        and never below zero. Nothing where the allocation had no data
+        budget, since nothing was counted."""
+        if not self.downlink:
+            return [0.0] * len(self.bins)
+        return _carries(
+            self.start_volume_gb, self.housekeeping, self.science, self.downlink
+        )
 
     def bins_overlapping(self, begin: float, end: float) -> list[int]:
         """Indices of the bins that overlap ``[begin, end)``."""
@@ -119,6 +144,70 @@ class _Demand(BaseModel):
     """Whether its exposure should be spread across bins, as for a cadence."""
     visible: dict[int, float]
     """Seconds it is visible in each bin where it can be observed."""
+    rate: float = 0.0
+    """Gb its target generates per second of collection."""
+    fixed: float = 0.0
+    """Gb its target generates per observation, whatever its length; counted
+    once in each bin it is allocated in."""
+
+
+class _Budget(NamedTuple):
+    """The data a run can carry, by bin, as the allocator sees it."""
+
+    limit: float | None
+    """Gb the recorder is kept within from bin to bin; None for no budget."""
+    start: float
+    """Gb on the recorder when the allocation starts."""
+    downlink: list[float]
+    """Gb each bin's contacts take off."""
+    housekeeping: list[float]
+    """Gb each bin generates on its own."""
+    rates: dict[int, tuple[float, float]]
+    """Each request's Gb per second of collection and per observation."""
+
+    @property
+    def active(self) -> bool:
+        """Whether the budget limits what may be allocated: a limit, and a
+        request that generates data."""
+        return self.limit is not None and any(
+            rate > 0.0 or fixed > 0.0 for rate, fixed in self.rates.values()
+        )
+
+    def science(self, seconds: Mapping[int, Mapping[int, float]]) -> list[float]:
+        """Gb the science in ``seconds`` (by obsid, then bin) generates in each
+        bin; nothing where there is no budget."""
+        if not self.downlink:
+            return []
+        generated = [0.0] * len(self.downlink)
+        for obsid, per_bin in seconds.items():
+            rate, fixed = self.rates.get(obsid, (0.0, 0.0))
+            for k, part in per_bin.items():
+                if part > 0.0:
+                    generated[k] += rate * part + fixed
+        return generated
+
+    def room(self, science: Sequence[float], k: int) -> float:
+        """The most data bin ``k`` can take with ``science`` already allocated
+        by bin, keeping what every bin from it on carries within the limit."""
+        assert self.limit is not None
+        carries = _carries(self.start, self.housekeeping, science, self.downlink)
+        return min(self.limit - carry for carry in carries[k:])
+
+
+def _carries(
+    start: float,
+    housekeeping: Sequence[float],
+    science: Sequence[float],
+    downlink: Sequence[float],
+) -> list[float]:
+    """Gb carried on the recorder out of each bin, from ``start``: what the
+    bin generates less what its contacts take off, never below zero."""
+    carries = []
+    volume = start
+    for generated, own, removed in zip(science, housekeeping, downlink, strict=True):
+        volume = max(0.0, volume + own + generated - removed)
+        carries.append(volume)
+    return carries
 
 
 class LongRangeAllocator:
@@ -145,7 +234,14 @@ class LongRangeAllocator:
     * each bin's planned requests fit its capacity less the reserve, and all its
       requests fit its capacity;
     * a request with a cadence gets no more than an even share in any bin, so its
-      visits are spread across the run.
+      visits are spread across the run;
+    * the data the run generates fits what its ground contacts can downlink:
+      each bin generates housekeeping and the science data of the requests
+      allocated to it (each target's rate for its seconds, plus its fixed
+      amount per observation once per bin), its contacts take off what they
+      can, and what they cannot is carried to the next bin and must stay
+      within the recorder's planning limit. There is no budget without a
+      planning limit, or when no request generates data.
 
     Requests with a deadline are worth slightly more in earlier bins. Keeping
     seconds in the bin the previous allocation gave them is worth 1% more, so
@@ -171,6 +267,9 @@ class LongRangeAllocator:
         solver: "milp" (the default), which needs OR-Tools, or "greedy",
             which does not.
         time_limit: Seconds the MILP solver may search per allocation.
+        passes: The run's predicted ground passes, for the data budget, where
+            the caller has them; predicted once otherwise, which takes a
+            while for a long run.
 
     Raises:
         ImportError: If ``solver`` is "milp" and OR-Tools is not installed.
@@ -187,6 +286,7 @@ class LongRangeAllocator:
         reserve: float = 0.1,
         solver: Literal["milp", "greedy"] = "milp",
         time_limit: float = 10.0,
+        passes: Sequence[Pass] | None = None,
     ) -> None:
         if bin_length <= timedelta(0):
             raise ValueError("bin_length must be positive")
@@ -215,6 +315,8 @@ class LongRangeAllocator:
         self.ctx = SchedulingContext(config, begin, end)
         self.merit_model = MeritModel(config)
         self._windows: dict[int, list[tuple[float, float]]] = {}
+        self._passes: list[Pass] | None = list(passes) if passes is not None else None
+        """The run's predicted ground passes, once given or predicted."""
         length = bin_length.total_seconds()
         ustart, uend = begin.timestamp(), end.timestamp()
         count = max(1, int(-(-(uend - ustart) // length)))
@@ -229,6 +331,7 @@ class LongRangeAllocator:
         start: float,
         reserved_seconds: Mapping[int, float] | None = None,
         unplanned: Collection[int] = (),
+        start_volume_gb: float | None = None,
     ) -> Allocation:
         """Allocate the targets' remaining exposure from ``start`` to the end.
 
@@ -242,6 +345,8 @@ class LongRangeAllocator:
             unplanned: Obsids of requests that arrived unplanned, such as ToOs.
                 They are allocated before the others and may use each bin's
                 reserve.
+            start_volume_gb: Gb on the recorder at ``start``; the configured
+                recorder's volume if None.
         """
         reserved = reserved_seconds or {}
         capacity = [
@@ -253,18 +358,33 @@ class LongRangeAllocator:
             for target in targets
             if (demand := self._demand(target, start, reserved)) is not None
         ]
+        budget = self._budget(start, demands, start_volume_gb)
         unplanned_set = set(unplanned)
         empty: dict[int, dict[int, float]] = {d.obsid: {} for d in demands}
         if self.solver == "greedy" or not demands:
-            seconds = self._greedy(demands, capacity, held, unplanned_set, empty)
+            seconds = self._greedy(
+                demands, capacity, held, unplanned_set, empty, budget
+            )
         else:
-            seconds, unsolved = self._solve(demands, capacity, held, unplanned_set)
+            seconds, unsolved = self._solve(
+                demands, capacity, held, unplanned_set, budget
+            )
             if unsolved:
                 # Levels the solver found no solution for go greedily into
                 # the room the solved levels leave.
-                seconds = self._greedy(unsolved, capacity, held, unplanned_set, seconds)
+                seconds = self._greedy(
+                    unsolved, capacity, held, unplanned_set, seconds, budget
+                )
         allocation = Allocation(
-            bins=list(self.bins), capacity=capacity, reserve=held, seconds=seconds
+            bins=list(self.bins),
+            capacity=capacity,
+            reserve=held,
+            seconds=seconds,
+            downlink=budget.downlink,
+            housekeeping=budget.housekeeping,
+            science=budget.science(seconds),
+            data_limit=budget.limit if budget.active else None,
+            start_volume_gb=budget.start,
         )
         self._previous = allocation
         return allocation
@@ -276,6 +396,7 @@ class LongRangeAllocator:
         held: Sequence[float],
         unplanned_set: Collection[int],
         allocated: Mapping[int, Mapping[int, float]],
+        budget: _Budget,
     ) -> dict[int, dict[int, float]]:
         """Add ``demands`` to ``allocated`` in priority order, each where it fits.
 
@@ -283,7 +404,9 @@ class LongRangeAllocator:
         cadence is spread evenly over the bins it is visible in; one with a
         deadline goes in its earliest bins; the rest go in the bins expected
         to be least full: what is already allocated there, plus what the
-        requests not yet placed are expected to need.
+        requests not yet placed are expected to need. Where the data budget
+        binds, a request gets in a bin no more seconds than the data room
+        there allows, keeping every later bin's carry-over within the limit.
         """
         seconds = {obsid: dict(bins) for obsid, bins in allocated.items()}
         # Seconds allocated in each bin to unplanned requests, and to the rest.
@@ -294,6 +417,7 @@ class LongRangeAllocator:
             for k, part in per_bin.items():
                 load[k] += part
         pressure = self._pressure(demands)
+        science = budget.science(seconds)
 
         def room(k: int, is_unplanned: bool) -> float:
             if is_unplanned:
@@ -301,6 +425,22 @@ class LongRangeAllocator:
             # Planned requests leave the reserve, or as much of the bin as
             # unplanned requests have already taken, whichever is more.
             return capacity[k] - max(surprise[k], held[k]) - planned[k]
+
+        def data_seconds(demand: _Demand, k: int, first: bool) -> float:
+            """Seconds the data room in bin ``k`` allows the request there."""
+            if not budget.active:
+                return math.inf
+            left = budget.room(science, k) - (demand.fixed if first else 0.0)
+            if left < 0.0:
+                return 0.0
+            return left / demand.rate if demand.rate > 0.0 else math.inf
+
+        def give(demand: _Demand, k: int, part: float) -> None:
+            first = given.get(k, 0.0) <= 0.0
+            given[k] = given.get(k, 0.0) + part
+            load[k] += part
+            if budget.active:
+                science[k] += demand.rate * part + (demand.fixed if first else 0.0)
 
         order = sorted(
             demands,
@@ -323,20 +463,20 @@ class LongRangeAllocator:
                 even = max(need / len(bins), demand.ss_min)
                 for k in bins:
                     part = min(even, demand.visible[k], room(k, is_unplanned), need)
+                    part = min(part, data_seconds(demand, k, given.get(k, 0.0) <= 0.0))
                     if part < min(demand.ss_min, need):
                         continue
-                    given[k] = given.get(k, 0.0) + part
-                    load[k] += part
+                    give(demand, k, part)
                     need -= part
             for k in bins:
                 if need < demand.ss_min:
                     break
                 part = min(need, demand.visible[k] - given.get(k, 0.0))
                 part = min(part, room(k, is_unplanned))
+                part = min(part, data_seconds(demand, k, given.get(k, 0.0) <= 0.0))
                 if part < min(demand.ss_min, need):
                     continue
-                given[k] = given.get(k, 0.0) + part
-                load[k] += part
+                give(demand, k, part)
                 need -= part
         return seconds
 
@@ -346,6 +486,7 @@ class LongRangeAllocator:
         capacity: Sequence[float],
         held: Sequence[float],
         unplanned: Collection[int],
+        budget: _Budget,
     ) -> tuple[dict[int, dict[int, float]], list[_Demand]]:
         """Solve the allocation as a MILP with HiGHS, level by level.
 
@@ -443,6 +584,48 @@ class LongRangeAllocator:
             if every:
                 model.add_linear_constraint(expressions.fast_sum(every) <= capacity[k])
 
+        # The data budget: what each bin carries on the recorder into the
+        # next, its housekeeping and allocated science less its downlink, is
+        # bounded below by the chain and above by the limit; a lower bound
+        # is exact, since a larger carry-over only tightens the bins after.
+        # Housekeeping alone can exceed the limit; a bin's bound is then
+        # what it carries with no science, so the model stays feasible and
+        # the science that fits elsewhere is still allocated.
+        carries: list[variables.Variable] = []
+        if budget.active:
+            assert budget.limit is not None
+            unavoidable = _carries(
+                budget.start,
+                budget.housekeeping,
+                [0.0] * len(self.bins),
+                budget.downlink,
+            )
+            generated_in: dict[int, list[variables.LinearTerm]] = {}
+            for (obsid, k), x in seconds.items():
+                rate, fixed = budget.rates.get(obsid, (0.0, 0.0))
+                if rate > 0.0:
+                    generated_in.setdefault(k, []).append(variables.LinearTerm(x, rate))
+                if fixed > 0.0:
+                    generated_in.setdefault(k, []).append(
+                        variables.LinearTerm(used_of[(obsid, k)], fixed)
+                    )
+            previous_carry: variables.Variable | float = budget.start
+            for k in range(len(self.bins)):
+                carry = model.add_variable(
+                    lb=0.0,
+                    ub=max(budget.limit, unavoidable[k]),
+                    name=f"v{k}",
+                )
+                model.add_linear_constraint(
+                    carry
+                    >= previous_carry
+                    + budget.housekeeping[k]
+                    - budget.downlink[k]
+                    + expressions.fast_sum(generated_in.get(k, []))
+                )
+                carries.append(carry)
+                previous_carry = carry
+
         levels = sorted(terms, reverse=True)
         statuses: list[str] = []
         solved: dict[tuple[int, int], float] | None = None
@@ -466,7 +649,9 @@ class LongRangeAllocator:
             for (obsid, k), value in (solved or {}).items():
                 if level_of[obsid] in done and value > 0.0:
                     base.setdefault(obsid, {})[k] = value
-            filled = self._greedy(by_level[level], capacity, held, unplanned, base)
+            filled = self._greedy(
+                by_level[level], capacity, held, unplanned, base, budget
+            )
             own: dict[tuple[int, int], float] = {}
             for demand in by_level[level]:
                 smallest, remaining = limits[demand.obsid]
@@ -496,6 +681,19 @@ class LongRangeAllocator:
                     values[stays] = min(kept, part)
             for deviation, goal, summed in deviations:
                 values[deviation] = abs(sum(values[x] for x in summed) - goal)
+            if carries:
+                started: dict[int, dict[int, float]] = {}
+                for (obsid, k), x in seconds.items():
+                    if values[x] > 0.0:
+                        started.setdefault(obsid, {})[k] = values[x]
+                chain = _carries(
+                    budget.start,
+                    budget.housekeeping,
+                    budget.science(started),
+                    budget.downlink,
+                )
+                for carry, value in zip(carries, chain, strict=True):
+                    values[carry] = min(value, carry.upper_bound)
             return values
 
         def run(
@@ -617,6 +815,8 @@ class LongRangeAllocator:
                 visible[k] = seen
         category = self.merit_model.category(target)
         merit = self.merit_model.value_terms(target, start)
+        fixed = self.config.science_generated(0.0, target.science_data)
+        rate = self.config.science_generated(1.0, target.science_data) - fixed
         return _Demand(
             obsid=obsid,
             value=merit.value,
@@ -626,6 +826,55 @@ class LongRangeAllocator:
             spread=category.cadence_seconds is not None
             and self.merit_model.cadence_weight > 0.0,
             visible=visible,
+            rate=max(0.0, rate),
+            fixed=max(0.0, fixed),
+        )
+
+    def _budget(
+        self, start: float, demands: Sequence[_Demand], start_volume_gb: float | None
+    ) -> _Budget:
+        """The run's data budget from ``start``: what each bin's contacts
+        downlink and what it generates on its own, from the same pass
+        prediction and rates the schedulers use. A contact straddling a bin
+        boundary counts in each bin for the part inside it."""
+        recorder = self.config.recorder
+        rates = {d.obsid: (d.rate, d.fixed) for d in demands}
+        start_volume = float(
+            recorder.current_volume_gb if start_volume_gb is None else start_volume_gb
+        )
+        if recorder.planning_limit_gb is None or not any(
+            rate > 0.0 or fixed > 0.0 for rate, fixed in rates.values()
+        ):
+            # No budget: nothing is predicted or counted, as predicting a
+            # run's passes is slow.
+            return _Budget(None, start_volume, [], [], rates)
+        if self._passes is None:
+            self._passes = list(self.ctx.predict_passes())
+        downlink = [0.0] * len(self.bins)
+        contact_seconds = [0.0] * len(self.bins)
+        for gspass in self._passes:
+            for k, (b0, b1) in enumerate(self.bins):
+                lo, hi = max(b0, start, gspass.begin), min(b1, gspass.end)
+                if hi > lo:
+                    downlink[k] += contact_downlink_gb(
+                        self.config, gspass.station, hi - lo
+                    )
+                    contact_seconds[k] += hi - lo
+        housekeeping = []
+        for k, (b0, b1) in enumerate(self.bins):
+            seconds = max(0.0, b1 - max(b0, start))
+            housekeeping.append(
+                self.config.housekeeping_generated(seconds - contact_seconds[k])
+                + self.config.housekeeping_generated(
+                    contact_seconds[k], mode=ACSMode.PASS
+                )
+            )
+        return _Budget(
+            limit=recorder.planning_limit_gb,
+            start=start_volume,
+            downlink=downlink,
+            housekeeping=housekeeping,
+            rates=rates,
         )
 
     @staticmethod
