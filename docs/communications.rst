@@ -46,6 +46,16 @@ When only the ``band`` is specified, standard defaults are automatically applied
 UHF has no generic default rate; specify mission-specific uplink and downlink
 rates explicitly. Explicitly specified values override all defaults.
 
+A band's rate can vary with the spacecraft-to-station range:
+``downlink_rate_vs_range_km`` is a table of ``(range_km, rate_mbps)`` rows in
+increasing range, interpolated linearly between rows and held at the end rows
+beyond them. Either side of a link may carry one, and the effective rate at a
+range is the lower of the two sides' rates there, on the best band. The table is
+used where the range is known: the contacts of an omni or gimballed antenna take
+the rate at each step's range, so a contact at low elevation downlinks less than
+one overhead, and each contact span reports its time-weighted mean rate. A
+body-fixed antenna's passes use ``downlink_rate_mbps`` throughout.
+
 AntennaPointing
 ^^^^^^^^^^^^^^^
 

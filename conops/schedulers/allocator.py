@@ -887,11 +887,8 @@ class LongRangeAllocator:
         if coverage is not None:
             # An antenna that needs no attitude downlinks whenever a station
             # is in view, with the spacecraft in whatever mode it is in.
-            for span in coverage.spans(start, self.bins[-1][1]):
-                for k, (b0, b1) in enumerate(self.bins):
-                    lo, hi = max(b0, span.begin), min(b1, span.end)
-                    if hi > lo:
-                        downlink[k] += span.rate_mbps * (hi - lo) / 1000.0
+            for k, (b0, b1) in enumerate(self.bins):
+                downlink[k] += coverage.downlink_gb(max(b0, start), b1)
         else:
             if self._passes is None:
                 self._passes = list(self.ctx.predict_passes())
