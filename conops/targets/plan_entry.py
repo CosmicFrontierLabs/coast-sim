@@ -478,8 +478,8 @@ class PlanEntry(BaseModel):
         """Return the telescope assigned to this target, if configured."""
         if self.config is None or self.obstype not in self._STATIC_TARGET_OBSTYPES:
             return None
-        telescope = self.config.payload.telescope_for_target(self.instrument_name)
-        return telescope if issubclass(type(telescope), Telescope) else None
+        instrument = self.config.payload.telescope_for_target(self.instrument_name)
+        return instrument if isinstance(instrument, Telescope) else None
 
     def uses_mounted_attitude(self) -> bool:
         """Return whether science coordinates differ from the body attitude."""
