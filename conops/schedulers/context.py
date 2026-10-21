@@ -48,6 +48,9 @@ class SchedulingContext:
         simulation_end: End of that simulation. Ground passes are predicted
             over the whole simulation, as DITL predicts them, so that a plan for
             part of it reserves the same passes. Defaults to ``end``.
+        passes: The run's predicted ground passes, where the caller has them:
+            :meth:`predict_passes` then filters them to the horizon instead of
+            predicting, which takes several seconds a day of simulation.
     """
 
     def __init__(
@@ -58,7 +61,10 @@ class SchedulingContext:
         step_size: int | None = None,
         simulation_start: datetime | None = None,
         simulation_end: datetime | None = None,
+        passes: Sequence[Pass] | None = None,
     ) -> None:
+        self._passes: list[Pass] | None = list(passes) if passes is not None else None
+        """The run's predicted ground passes, when the caller has them."""
         ephem = config.constraint.ephem
         if ephem is None:
             raise ValueError("config.constraint.ephem must be set to plan")
@@ -271,8 +277,17 @@ class SchedulingContext:
         """Predict the ground passes in the horizon, as DITL will when executing.
 
         Uses the configuration's random seed, so the same passes are predicted
-        when the plan is executed.
+        when the plan is executed. Predicting covers the whole simulation and
+        takes several seconds a day of it, so a caller that has the run's
+        passes gives them as ``passes`` and they are filtered to the horizon
+        instead.
         """
+        if self._passes is not None:
+            return [
+                gspass
+                for gspass in self._passes
+                if self.ustart <= gspass.begin and gspass.end <= self.uend
+            ]
         passtimes = PassTimes(config=self.config)
         # PassTimes.get counts days from midnight UTC of the start date.
         day_start = self.origin - self.origin % 86400

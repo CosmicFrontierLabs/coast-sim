@@ -18,6 +18,7 @@ from conops.config import (
 )
 from conops.schedulers import PriorityScheduler, SchedulingContext
 from conops.simulation.acs import ACS
+from conops.simulation.passes import PassTimes
 from conops.targets import Pointing
 
 BEGIN = datetime(2025, 11, 1, tzinfo=timezone.utc)
@@ -198,6 +199,31 @@ class TestPasses:
         passes = ctx.predict_passes()
 
         assert all(T0 <= p.begin and p.end <= END.timestamp() for p in passes)
+
+    def test_given_passes_are_filtered_and_nothing_is_predicted(
+        self, config: MissionConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config.ground_stations = GroundStationRegistry.default()
+        end = BEGIN + timedelta(hours=14)
+        config.constraint.ephem = TLEEphemeris(
+            tle="examples/example.tle", begin=BEGIN, end=end, step_size=60
+        )
+        run = SchedulingContext(config, BEGIN, end).predict_passes()
+        assert len(run) > 1
+        middle = BEGIN + timedelta(hours=7)
+
+        def no_prediction(*args: object, **kwargs: object) -> None:
+            raise AssertionError("passes were predicted again")
+
+        monkeypatch.setattr(PassTimes, "get", no_prediction)
+        first_half = SchedulingContext(config, BEGIN, middle, passes=run)
+        second_half = SchedulingContext(config, middle, end, passes=run)
+
+        split = middle.timestamp()
+        assert list(first_half.predict_passes()) == [p for p in run if p.end <= split]
+        assert list(second_half.predict_passes()) == [
+            p for p in run if p.begin >= split
+        ]
 
     def test_predicts_passes_after_midnight(self, config: MissionConfig) -> None:
         begin = BEGIN + timedelta(hours=18)
