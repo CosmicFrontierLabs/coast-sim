@@ -566,6 +566,10 @@ class RollingHorizonDITL(DITL):
         options = dict(self.scheduler_options)
         used = None
         if self.allocator is not None:
+            if self.allocator.passes is None and self._run_passes is not None:
+                # The allocator's data budget predicts the run's passes for
+                # itself otherwise; they are the ones just predicted.
+                self.allocator.passes = list(self._run_passes)
             if self.coverage is not None:
                 # The run's coverage, so the allocator does not build its own.
                 self.allocator.ctx.coverage = self.coverage
