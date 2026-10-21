@@ -6113,6 +6113,7 @@ class TestTOOFunctionality:
         mock_too_interrupt_success["terminate"].assert_called_once_with(
             1000.0,
             reason="Preempted by TOO Successful TOO (obsid=1000001)",
+            interrupted=True,
             mark_done=False,
         )
         mock_too_interrupt_success["fetch"].assert_called_once_with(

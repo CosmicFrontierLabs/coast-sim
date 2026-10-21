@@ -34,6 +34,7 @@ from ..config import MissionConfig
 from ..config.acs import scheduled_slew_time
 from ..simulation.slew import Slew
 from ..targets import Plan, Pointing
+from ..targets.plan_entry import snapshot_min_seconds
 from .context import Attitude
 from .local_search_scheduler import (
     LocalSearchScheduler,
@@ -1385,7 +1386,7 @@ class CpSatScheduler(LocalSearchScheduler):
             # A snapshot must collect something, as in the priority-first
             # scheduler, even with an ss_min of zero; this also keeps the
             # snapshot counts below from dividing by zero.
-            shortest = max(1, int(np.ceil(float(target.ss_min))))
+            shortest = max(1, int(np.ceil(snapshot_min_seconds(target))))
             longest = int(np.floor(min(float(target.ss_max), remaining)))
             if longest < shortest:
                 continue

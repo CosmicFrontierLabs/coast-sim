@@ -356,7 +356,7 @@ def test_safehold_closes_science_and_blocks_discretionary_scheduling(recovery_qu
     ditl._fetch_new_ppt = Mock()
     ditl._handle_science_mode(start, 0.0, 0.0, ACSMode.SAFE)
     ditl._terminate_ppt.assert_called_once_with(
-        start, "Observation interrupted by safehold"
+        start, "Observation interrupted by safehold", interrupted=True
     )
     ditl._should_initiate_charging.assert_not_called()
     ditl._check_too_interrupt.assert_not_called()

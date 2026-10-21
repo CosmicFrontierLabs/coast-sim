@@ -19,6 +19,7 @@ from ..config.config import housekeeping_while_waiting
 from ..ditl.ditl_log import DITLLog
 from . import Pointing
 from .merit import MeritBreakdown, MeritModel
+from .plan_entry import snapshot_min_seconds
 
 
 class TargetSlewEstimate(BaseModel):
@@ -282,7 +283,9 @@ class TargetQueue:
         immediate visibility/deadline window, any nonnegative slew also cannot.
         """
         zero_slew_endtime = (
-            utime + float(target.ss_min) + self.observation_timing.total_seconds
+            utime
+            + float(snapshot_min_seconds(target))
+            + self.observation_timing.total_seconds
         )
         if zero_slew_endtime > last_unix:
             zero_slew_endtime = last_unix
@@ -295,7 +298,7 @@ class TargetQueue:
         # or visibility before asking the caller to optimize the attitude.
         if self._candidate_collection_seconds(
             target, visibility_window, utime, slewtime=0.0
-        ) < float(target.ss_min):
+        ) < float(snapshot_min_seconds(target)):
             return False
         if collection_deadline is None:
             return True
@@ -307,7 +310,7 @@ class TargetQueue:
             deadline=deadline,
             slewtime=0.0,
         )
-        return collection_seconds >= float(target.ss_min)
+        return collection_seconds >= float(snapshot_min_seconds(target))
 
     def _score_upper_bound_pruning_is_safe(self) -> bool:
         """Return True when configured weights make the score bound conservative."""
@@ -332,7 +335,9 @@ class TargetQueue:
         cannot either.
         """
         zero_slew_endtime = (
-            utime + float(target.ss_min) + self.observation_timing.total_seconds
+            utime
+            + float(snapshot_min_seconds(target))
+            + self.observation_timing.total_seconds
         )
         if zero_slew_endtime > last_unix:
             zero_slew_endtime = last_unix
@@ -484,7 +489,9 @@ class TargetQueue:
         # Check each candidate target
         for target in targets:
             # Skip targets with remaining exposure less than minimum snapshot
-            if target.exptime is not None and target.exptime < target.ss_min:
+            if target.exptime is not None and target.exptime < snapshot_min_seconds(
+                target
+            ):
                 continue
 
             # Reject score-bound losers before the deadline callback can compute
@@ -534,7 +541,7 @@ class TargetQueue:
             endtime = (
                 utime
                 + target.slewtime
-                + target.ss_min
+                + snapshot_min_seconds(target)
                 + self.observation_timing.total_seconds
             )
 
@@ -558,13 +565,13 @@ class TargetQueue:
                         # Whole seconds, as the visit is executed: the data
                         # of the fraction dropped keeps the limit below.
                         collection = float(math.floor(within))
-                        if collection < target.ss_min:
+                        if collection < snapshot_min_seconds(target):
                             overfill += 1
                             continue
                         # The dispatcher applies the slew it flies and its
                         # own deadlines, but keeps to this.
                         target.collection_limit = collection
-                if collection < target.ss_min:
+                if collection < snapshot_min_seconds(target):
                     continue
                 target.end = min(
                     float(visibility_window[1]),
@@ -605,7 +612,7 @@ class TargetQueue:
                     ),
                 )
                 if collection_deadline is not None and collection_seconds < float(
-                    target.ss_min
+                    snapshot_min_seconds(target)
                 ):
                     continue
                 if collection_seconds != collection:
