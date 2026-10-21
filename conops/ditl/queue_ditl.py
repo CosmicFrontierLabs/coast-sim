@@ -45,6 +45,7 @@ from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing, Queue, TargetSlewEstimate
 from ..targets.merit import MeritBreakdown, MeritModel
+from ..targets.plan_entry import snapshot_min_seconds
 from .ditl_log import DITLLog
 from .ditl_mixin import AttitudeRateContinuityError, DITLMixin
 from .ditl_stats import DITLStats
@@ -580,6 +581,7 @@ class QueueDITL(DITLMixin, DITLStats):
         self._terminate_ppt(
             utime,
             reason=f"Preempted by TOO {too.name} (obsid={too.obsid})",
+            interrupted=True,
             mark_done=False,  # Don't mark as done, it was interrupted
         )
         self.ppt = replacement
@@ -687,6 +689,7 @@ class QueueDITL(DITLMixin, DITLStats):
         self._terminate_ppt(
             utime,
             reason=f"Preempted by TOO {commitment.request.name} (obsid={target.obsid})",
+            interrupted=True,
             mark_done=False,
         )
         self.ppt = target
@@ -1020,7 +1023,7 @@ class QueueDITL(DITLMixin, DITLStats):
         collection_time = self._science_collection_time(entry)
         if collection_time is None:
             return False
-        return collection_time < max(0.0, float(entry.ss_min))
+        return collection_time < max(0.0, snapshot_min_seconds(entry))
 
     def _entry_obstype(self, entry: PlanEntry) -> ObsType | None:
         """Return the entry's obstype as an ObsType, or None if it cannot be coerced."""
@@ -1154,10 +1157,14 @@ class QueueDITL(DITLMixin, DITLStats):
         )
         raise PlanExecutionMismatchError(message)
 
-    def _close_last_plan_entry(self, end_time: float) -> None:
+    def _close_last_plan_entry(
+        self, end_time: float, *, interrupted: bool = False
+    ) -> None:
         """Close the last plan entry in the timeline by setting its end time.
         If it's a science observation that didn't meet the minimum snapshot
-        requirement, log it and remove it from the plan."""
+        requirement, log it and remove it from the plan; unless it was
+        ``interrupted``, since its science counts and its target is revisited
+        for the rest."""
         if len(self.plan) == 0:
             return
         entry = self.plan[-1]
@@ -1197,7 +1204,10 @@ class QueueDITL(DITLMixin, DITLStats):
                 entry.collection_begin, min(entry.collection_end, cutoff, end_time)
             )
         self.plan[-1].end = end_time
-        if self._is_short_science_entry(self.plan[-1]):
+        # A cut entry stays only if it collected something; one cut during
+        # its slew or setup has no science to keep.
+        kept = interrupted and (self._science_collection_time(self.plan[-1]) or 0) > 0
+        if not kept and self._is_short_science_entry(self.plan[-1]):
             entry = self.plan[-1]
             self._dropped_science_windows.append(
                 (float(entry.begin), float(entry.end), int(entry.obsid))
@@ -1209,7 +1219,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 event_type="QUEUE",
                 description=(
                     f"Dropping under-collected science entry {entry.obsid} - "
-                    f"collected {collected:.0f}s of required {float(entry.ss_min):.0f}s"
+                    f"collected {collected:.0f}s of required {snapshot_min_seconds(entry):.0f}s"
                 ),
                 obsid=entry.obsid,
                 acs_mode=self.acs.acsmode,
@@ -1627,7 +1637,9 @@ class QueueDITL(DITLMixin, DITLStats):
         """Handle science mode operations: charging, observations, and target acquisition."""
         if mode == ACSMode.SAFE:
             if self.ppt is not None:
-                self._terminate_ppt(utime, "Observation interrupted by safehold")
+                self._terminate_ppt(
+                    utime, "Observation interrupted by safehold", interrupted=True
+                )
             return
         # Finish protective motion before considering discretionary preemption.
         if (
@@ -2419,7 +2431,12 @@ class QueueDITL(DITLMixin, DITLStats):
         return None
 
     def _terminate_ppt(
-        self, utime: float, reason: str, mark_done: bool = False
+        self,
+        utime: float,
+        reason: str,
+        mark_done: bool = False,
+        *,
+        interrupted: bool = False,
     ) -> None:
         """Terminate the current PPT.
 
@@ -2431,6 +2448,10 @@ class QueueDITL(DITLMixin, DITLStats):
             Reason for termination (for logging)
         mark_done : bool
             Whether to mark the PPT as done
+        interrupted : bool
+            Whether the observation is cut short rather than finished: the
+            interruption is recorded on the target, which is revisited for
+            what remains, and the cut entry stays in the plan.
         """
         assert self.ppt is not None
         if (
@@ -2448,8 +2469,10 @@ class QueueDITL(DITLMixin, DITLStats):
 
         # Update plan timeline with actual end time
         if len(self.plan) > 0:
-            self._close_last_plan_entry(utime)
+            self._close_last_plan_entry(utime, interrupted=interrupted)
 
+        if interrupted:
+            self.ppt.record_interruption(utime)
         if mark_done:
             self.ppt.done = True
 
@@ -2888,7 +2911,7 @@ class QueueDITL(DITLMixin, DITLStats):
         """Check if the current PPT has enough time to collect before the next
         science deadline."""
         assert self.ppt is not None
-        if self.ppt.ss_min <= 0:
+        if snapshot_min_seconds(self.ppt) <= 0:
             return False
 
         # Check if there's enough time to collect before the next science
@@ -2901,12 +2924,12 @@ class QueueDITL(DITLMixin, DITLStats):
         available_collect_time = (
             deadline - slew_end - self.config.payload.observation_timing.total_seconds
         )
-        if available_collect_time >= self.ppt.ss_min:
+        if available_collect_time >= snapshot_min_seconds(self.ppt):
             return False
 
         # If not enough time to collect, reject this target and try fetching
         # another one
-        ss_min = self.ppt.ss_min
+        ss_min = snapshot_min_seconds(self.ppt)
         obsid = self.ppt.obsid
         self.log.log_event(
             utime=utime,
@@ -3205,7 +3228,7 @@ class QueueDITL(DITLMixin, DITLStats):
             ephem_end = self._ephem_timestamp_to_utime(ephem.timestamp[-1])
             obs_val_end = min(
                 obs_start_time
-                + self.ppt.ss_min
+                + snapshot_min_seconds(self.ppt)
                 + self.config.payload.observation_timing.total_seconds,
                 ephem_end,
             )
@@ -3282,7 +3305,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 # Leave from a still-valid sample, with teardown already over.
                 self.ppt.end = min(self.ppt.end, violation[0] - self.step_size)
             self.ppt.set_collection_window(timing)
-            if self.ppt.exposure < self.ppt.ss_min:
+            if self.ppt.exposure < snapshot_min_seconds(self.ppt):
                 self._retry_fetch_without_current_ppt(utime, ra, dec)
                 return None
             if not enqueue_slew:

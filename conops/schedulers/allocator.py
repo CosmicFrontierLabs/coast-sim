@@ -24,6 +24,7 @@ from ..simulation.coverage import StationCoverage
 from ..simulation.passes import Pass
 from ..targets import Pointing
 from ..targets.merit import MeritModel
+from ..targets.plan_entry import snapshot_min_seconds
 from .context import SchedulingContext
 from .recorder import contact_downlink_gb
 
@@ -801,7 +802,7 @@ class LongRangeAllocator:
         obsid = int(target.obsid)
         exptime = target.exptime if target.exptime is not None else target.ss_max
         remaining = float(exptime) - reserved.get(obsid, 0.0)
-        if target.done or remaining < float(target.ss_min):
+        if target.done or remaining < float(snapshot_min_seconds(target)):
             return None
         windows = self._windows.get(obsid)
         if windows is None:
@@ -816,7 +817,7 @@ class LongRangeAllocator:
             if hi <= lo:
                 continue
             seen = sum(max(0.0, min(w1, hi) - max(w0, lo)) for w0, w1 in windows)
-            if seen >= float(target.ss_min):
+            if seen >= float(snapshot_min_seconds(target)):
                 visible[k] = seen
         category = self.merit_model.category(target)
         merit = self.merit_model.value_terms(target, start)
@@ -826,7 +827,7 @@ class LongRangeAllocator:
             obsid=obsid,
             value=merit.value,
             remaining=remaining,
-            ss_min=float(target.ss_min),
+            ss_min=float(snapshot_min_seconds(target)),
             deadline=target.deadline,
             spread=category.cadence_seconds is not None
             and self.merit_model.cadence_weight > 0.0,

@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict
 
 from ..config import MissionConfig
 from ..targets import Plan, Pointing
+from ..targets.plan_entry import snapshot_min_seconds
 from .battery import Additions
 from .priority_scheduler import (
     PriorityScheduler,
@@ -90,7 +91,7 @@ class _Decoded(BaseModel):
 
 def _wants_more(request: _Request, remaining: float) -> bool:
     """Whether ``remaining`` seconds are enough for another snapshot of ``request``."""
-    return remaining > 0 and remaining >= float(request.target.ss_min)
+    return remaining > 0 and remaining >= float(snapshot_min_seconds(request.target))
 
 
 class LocalSearchScheduler(PriorityScheduler):

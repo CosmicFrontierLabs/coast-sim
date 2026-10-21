@@ -27,6 +27,7 @@ from ..simulation.passes import Pass
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing
 from ..targets.merit import MeritBreakdown, MeritModel
+from ..targets.plan_entry import snapshot_min_seconds
 from .allocator import AllocatedTime
 from .battery import MIN_CHARGE_SECONDS, Addition, Additions, Angles, BatteryLedger
 from .context import Attitude, SchedulingContext
@@ -113,7 +114,9 @@ class _Request(BaseModel):
     @property
     def wants_more(self) -> bool:
         """Whether enough exposure is left for another snapshot."""
-        return self.remaining > 0 and self.remaining >= float(self.target.ss_min)
+        return self.remaining > 0 and self.remaining >= float(
+            snapshot_min_seconds(self.target)
+        )
 
 
 def program_shares(seconds: Mapping[str, float]) -> dict[str, float]:
@@ -678,7 +681,7 @@ class PriorityScheduler:
             if (
                 target.done
                 or int(target.obsid) in self.held
-                or remaining < target.ss_min
+                or remaining < snapshot_min_seconds(target)
             ):
                 continue
             category = merit_model.category(target)
@@ -744,7 +747,9 @@ class PriorityScheduler:
             left = request.remaining
             for span in self.allocated.get(int(request.target.obsid), []):
                 seconds = min(span.seconds, left)
-                if seconds <= 0.0 or seconds < float(request.target.ss_min):
+                if seconds <= 0.0 or seconds < float(
+                    snapshot_min_seconds(request.target)
+                ):
                     continue
                 part = request.model_copy(
                     update={
@@ -1466,7 +1471,7 @@ class PriorityScheduler:
         """
         self._successor_blocked = False
         target = request.target
-        ss_min = float(target.ss_min)
+        ss_min = float(snapshot_min_seconds(target))
         earliest = self._earliest_start(pred)
         horizon_end = self.ctx.uend if until is None else min(until, self.ctx.uend)
         gap_end = succ.ready if succ is not None else horizon_end
@@ -1694,7 +1699,7 @@ class PriorityScheduler:
             obsid=target.obsid,
             obstype=target.obstype,
             merit=request.merit.value,
-            ss_min=target.ss_min,
+            ss_min=snapshot_min_seconds(target),
             ss_max=target.ss_max,
         )
         entry.exptime = collection_end - collection_begin
