@@ -1,7 +1,7 @@
 import hashlib
 import math
 from collections.abc import Callable, Mapping
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import rust_ephem
@@ -21,6 +21,9 @@ from ..ditl.ditl_log import DITLLog
 from . import Pointing
 from .merit import MeritBreakdown, MeritModel
 from .plan_entry import snapshot_min_seconds
+
+if TYPE_CHECKING:
+    from ..simulation.coverage import StationCoverage
 
 
 class TargetSlewEstimate(BaseModel):
@@ -68,6 +71,10 @@ class TargetQueue:
         self.constraint = config.constraint
         self.acs_config = config.spacecraft_bus.attitude_control
         self.observation_timing = config.payload.observation_timing
+        self.coverage: "StationCoverage | None" = None
+        """The run's station coverage, where its antenna needs no attitude:
+        a candidate whose category forbids antenna repoints during an
+        observation is kept between them."""
 
         self.targets = []
         self.ephem = ephem
@@ -205,6 +212,14 @@ class TargetQueue:
         pointing.visibility()
         self.targets.append(pointing)
         return pointing
+
+    def _repoints_forbidden(self, target: Pointing) -> bool:
+        """Whether an antenna repoint must not fall in an observation of ``target``."""
+        if self.coverage is None or not self.coverage.repoints:
+            return False
+        assert self.config is not None
+        categories = self.config.observation_categories
+        return categories.antenna_repoints(int(target.obsid)) == "forbidden"
 
     def meritsort(self) -> None:
         """Sort target queue by merit, ranking targets not visible now below
@@ -552,6 +567,18 @@ class TargetQueue:
 
             # Check if target is visible for full observation
             visibility_window = target.visible(utime, endtime)
+            if visibility_window and self._repoints_forbidden(target):
+                # Not during a repoint, and the minimum snapshot before the
+                # next one; the window then ends where the repoint begins.
+                assert self.coverage is not None
+                cut = self.coverage.next_repoint_cut(utime)
+                if cut is not None and (cut[0] <= utime or cut[0] < endtime):
+                    continue
+                if cut is not None:
+                    visibility_window = [
+                        float(visibility_window[0]),
+                        min(float(visibility_window[1]), cut[0]),
+                    ]
             if visibility_window:
                 target.begin = int(utime)
                 collection = self._candidate_collection_seconds(

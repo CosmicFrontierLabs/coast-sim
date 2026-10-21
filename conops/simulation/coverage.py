@@ -18,7 +18,8 @@ passes.
 from __future__ import annotations
 
 from bisect import bisect_right
-from typing import NamedTuple
+from collections.abc import Sequence
+from typing import Literal, NamedTuple
 
 import numpy as np
 import numpy.typing as npt
@@ -26,6 +27,7 @@ import rust_ephem
 
 from ..common import AntennaType, scbodyvector
 from ..config import CommunicationsSystem, MissionConfig
+from ..config.communications import interpolate_range_table
 from ..config.groundstation import (
     GroundStation,
     effective_downlink_rate_mbps,
@@ -49,6 +51,42 @@ class ContactSpan(NamedTuple):
     """The mean downlink rate through the span, in Mbps: the span downlinks
     this rate for its length. With a rate that varies with range it is the
     time-weighted mean of the rate at each step."""
+
+
+class Repoint(NamedTuple):
+    """A repoint of a gimballed antenna at a station.
+
+    The antenna moves from ``time`` to ``end``: for an acquisition or a
+    handover, from the moment the link switches to the moment it is up; for
+    a drift repoint, for the communications system's ``repoint_seconds``.
+    An instant when both are equal.
+    """
+
+    time: float
+    end: float
+    station: str
+    kind: Literal["acquisition", "handover", "drift"]
+
+
+def cut_windows(
+    windows: Sequence[tuple[float, float]], cuts: Sequence[tuple[float, float]]
+) -> list[tuple[float, float]]:
+    """``windows`` less ``cuts``; a cut of no length splits a window in two."""
+    result: list[tuple[float, float]] = []
+    ordered = sorted(cuts)
+    for w0, w1 in windows:
+        start = float(w0)
+        for c0, c1 in ordered:
+            if c1 < start or c0 >= w1:
+                continue
+            if c0 > start:
+                result.append((start, c0))
+            start = max(start, c1)
+            if start >= w1:
+                break
+        if w1 > start:
+            result.append((start, float(w1)))
+    return result
 
 
 class Contact(NamedTuple):
@@ -82,6 +120,16 @@ class StationCoverage:
     the station within its gimbal range from its boresight, which depends
     on the attitude flown and is checked at execution (:meth:`contact_at`);
     planning takes the station as reachable.
+
+    A gimballed antenna is re-pointed at each acquisition and handover, and
+    within a contact as the spacecraft moves: when the
+    station's direction has drifted ``repoint_threshold_deg`` since the last
+    repoint (the direction drifts in the body frame as it drifts in the
+    sky while an attitude is held, so the chain is fixed by the geometry
+    from the contact's start), or at the interval the antenna's
+    ``repoint_interval_vs_range_km`` table gives at the spacecraft's range
+    from the Earth's centre. A repoint takes ``repoint_seconds``, during
+    which nothing is downlinked; the contact is split around it.
     """
 
     def __init__(self, config: MissionConfig) -> None:
@@ -118,6 +166,18 @@ class StationCoverage:
             dtype=float,
         )
         satellite = np.asarray(ephem.gcrs_pv.position, dtype=float)
+        self.earth_range_km: npt.NDArray[np.float64] = np.linalg.norm(satellite, axis=1)
+        """The spacecraft's distance from the Earth's centre at each step."""
+        antenna = (
+            communications.antenna_pointing if communications is not None else None
+        )
+        self.repointing = (
+            antenna is not None and antenna.antenna_type == AntennaType.GIMBALED
+        )
+        """Whether the antenna is re-pointed at all: only a gimballed one is."""
+        self.repoint_threshold_deg = antenna.repoint_threshold_deg if antenna else None
+        self.repoint_table = antenna.repoint_interval_vs_range_km if antenna else None
+        self.repoint_seconds = float(antenna.repoint_seconds) if antenna else 0.0
         count, steps = len(self.stations), len(self.times)
         self.elevation_deg = np.full((count, steps), -90.0)
         self.range_km = np.full((count, steps), np.inf)
@@ -171,6 +231,10 @@ class StationCoverage:
         """The scheduled contacts over the whole ephemeris, in time order."""
         self.handovers = 0
         """How many contacts began with a handover from another station."""
+        self.acquisitions = 0
+        """How many contacts began after a gap with no station in view."""
+        self.repoints: list[Repoint] = []
+        """Every repoint of the antenna over the ephemeris, in time order."""
         self._schedule_contacts()
         self._begins = [span.begin for span in self.contacts]
 
@@ -230,13 +294,71 @@ class StationCoverage:
             if current >= 0:
                 begin += self.handover_seconds
                 self.handovers += 1
+                kind: Literal["acquisition", "handover"] = "handover"
+            else:
+                self.acquisitions += 1
+                kind = "acquisition"
             current = chosen
+            if self.repointing:
+                self.repoints.append(
+                    Repoint(t, begin, self.stations[chosen].code, kind)
+                )
         if current >= 0:
             self._add_contact(current, begin, float(self.times[-1]) + self.step_size)
+        self.repoints.sort(key=lambda r: (r.time, r.end))
 
     def _add_contact(self, station: int, begin: float, end: float) -> None:
-        if end > begin:
-            self.contacts.append(self._span(station, begin, end))
+        """The contact with ``station`` over ``[begin, end)``, split around
+        the drift repoints within it."""
+        if end <= begin:
+            return
+        code = self.stations[station].code
+        cursor = begin
+        for t, t_end in self._drift_repoints(station, begin, end):
+            self.repoints.append(Repoint(t, t_end, code, "drift"))
+            if t_end <= t:
+                # An instant: the link stays up.
+                continue
+            if t > cursor:
+                self.contacts.append(self._span(station, cursor, t))
+            cursor = max(cursor, t_end)
+        if end > cursor:
+            self.contacts.append(self._span(station, cursor, end))
+
+    def _drift_repoints(
+        self, station: int, begin: float, end: float
+    ) -> list[tuple[float, float]]:
+        """When the antenna is re-pointed within a contact, and until when."""
+        repoints: list[tuple[float, float]] = []
+        if not self.repointing:
+            return repoints
+        if self.repoint_table is not None:
+            t = begin
+            while True:
+                t += interpolate_range_table(
+                    self.repoint_table, float(self.earth_range_km[self.index(t)])
+                )
+                if t >= end:
+                    break
+                repoints.append((t, min(t + self.repoint_seconds, end)))
+        elif self.repoint_threshold_deg is not None:
+            directions = self._to_station[station]
+            last = self.index(end - 1e-6)
+            k = self.index(begin)
+            while k < last:
+                reference = directions[k]
+                cosines = np.clip(directions[k + 1 : last + 1] @ reference, -1.0, 1.0)
+                drifted = np.flatnonzero(
+                    np.degrees(np.arccos(cosines)) > self.repoint_threshold_deg
+                )
+                if drifted.size == 0:
+                    break
+                k = k + 1 + int(drifted[0])
+                t = float(self.times[k])
+                if t <= begin or t >= end:
+                    continue
+                repoints.append((t, min(t + self.repoint_seconds, end)))
+        return repoints
 
     def _span(self, station: int, begin: float, end: float) -> ContactSpan:
         """A span with ``station`` over ``[begin, end)`` at its mean rate."""
@@ -373,6 +495,25 @@ class StationCoverage:
             return utime
         i = bisect_right(self._begins, utime)
         return self.contacts[i].begin if i < len(self.contacts) else None
+
+    # ── Repoints ──────────────────────────────────────────────────────────
+
+    def repoints_in(self, begin: float, end: float) -> list[Repoint]:
+        """The repoints that begin in ``[begin, end)``."""
+        return [r for r in self.repoints if begin <= r.time < end]
+
+    def repoint_cuts(self, begin: float, end: float) -> list[tuple[float, float]]:
+        """When the antenna is moving in ``[begin, end)``, as ``(time, end)``
+        pairs, to cut from the windows of an observation that must not
+        contain a repoint (see :func:`cut_windows`)."""
+        return [
+            (r.time, r.end) for r in self.repoints if r.time < end and r.end >= begin
+        ]
+
+    def next_repoint_cut(self, utime: float) -> tuple[float, float] | None:
+        """The first repoint still to end after ``utime``: in progress if it
+        began at or before ``utime``, else the next one; None without one."""
+        return next(((r.time, r.end) for r in self.repoints if r.end > utime), None)
 
     def fraction(self, begin: float, end: float) -> float:
         """The fraction of ``[begin, end)`` in contact."""

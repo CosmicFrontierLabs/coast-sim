@@ -275,6 +275,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 log=self.log,
                 ephem=self.ephem,
             )
+        self.queue.coverage = self.coverage
 
         if allocator is not None:
             if not isinstance(self.queue, Queue):
@@ -3792,6 +3793,11 @@ class QueueDITL(DITLMixin, DITLStats):
         target.end = min(
             deadline, collection_start + timing.post_collection_seconds + remaining
         )
+        if self.coverage is not None and self._antenna_repoints(target) == "forbidden":
+            # The observation ends before the antenna next moves.
+            cut = self.coverage.next_repoint_cut(slew_end)
+            if cut is not None:
+                target.end = min(target.end, cut[0])
         target.set_collection_window(timing)
         target.collection_begin = min(target.end, collection_start)
         target.collection_end = max(
