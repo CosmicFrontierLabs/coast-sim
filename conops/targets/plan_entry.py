@@ -183,6 +183,7 @@ class PlanEntry(BaseModel):
     _exporig: float | None = PrivateAttr(default=None)
     _collected_seconds: float = PrivateAttr(default=0.0)
     _last_collection_time: float | None = PrivateAttr(default=None)
+    _interruptions: list[float] = PrivateAttr(default_factory=list)
     _serialized_target_attitude: TargetAttitudeSchema | None = PrivateAttr(default=None)
 
     @model_validator(mode="wrap")
@@ -350,6 +351,21 @@ class PlanEntry(BaseModel):
             self.exptime = max(0, self.exptime - seconds)
         self._collected_seconds += seconds
         self._last_collection_time = utime
+
+    @property
+    def snapshot_min_seconds(self) -> float:
+        """The least a snapshot of this target may collect; see
+        :func:`snapshot_min_seconds`."""
+        return snapshot_min_seconds(self)
+
+    @property
+    def interruptions(self) -> tuple[float, ...]:
+        """When this target's observations were cut short, in order."""
+        return tuple(self._interruptions)
+
+    def record_interruption(self, utime: float) -> None:
+        """Record that an observation of this target was cut short at ``utime``."""
+        self._interruptions.append(utime)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -719,3 +735,25 @@ class PlanEntry(BaseModel):
         self.slewdist, self.slewpath = self.acs_config.predict_slew(
             lastra, lastdec, endra, enddec
         )
+
+
+def snapshot_min_seconds(entry: PlanEntry) -> float:
+    """The least a snapshot of ``entry`` may collect, in seconds.
+
+    ``ss_min`` for its first snapshot; once it has collected anything, the
+    smaller of ``ss_min`` and what remains, so a target cut short by an
+    interruption, or left with a remainder, finishes its exposure instead
+    of losing what is below ``ss_min``. Reads the public attributes, so a
+    test double with a numeric ``ss_min`` and no collection record gets its
+    ``ss_min``.
+    """
+    ss_min = float(entry.ss_min)
+    collected = getattr(entry, "collected_seconds", 0.0)
+    remaining = entry.exptime
+    if (
+        not isinstance(collected, (int, float))
+        or collected <= 0.0
+        or not isinstance(remaining, (int, float))
+    ):
+        return ss_min
+    return min(ss_min, max(0.0, float(remaining)))

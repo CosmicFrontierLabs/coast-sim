@@ -184,6 +184,7 @@ class Pointing(PlanEntry):
         self.done = False
         self._collected_seconds = 0.0
         self._last_collection_time = None
+        self._interruptions = []
         self._merit_breakdown = None
         self.collection_limit = None
         self.begin = 0
