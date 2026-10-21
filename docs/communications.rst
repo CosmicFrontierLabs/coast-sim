@@ -79,10 +79,11 @@ schedules the contacts from that. One station is tracked at a time: a contact
 stays with its station until it sets, so two stations in view at once do not
 share the time; when it sets, or when none was tracked, the link goes to the
 station in view with the highest downlink rate, and of those the one in view for
-longest. A switch straight from one station to another takes the communications
-system's ``handover_seconds``, during which nothing is downlinked; a station
-acquired after a gap with none in view takes none, since the antenna can be
-pointed at it in advance. Each contact downlinks at the effective rate through
+longest. Every contact begins the communications system's ``acquisition_seconds``
+after its station comes into view, and a switch straight from one station to
+another adds ``handover_seconds`` to that; nothing is downlinked meanwhile. A
+station acquired after a gap with none in view pays no handover, since the
+antenna can be pointed at it in advance. Each contact downlinks at the effective rate through
 the bands the station and the spacecraft share. A gimballed antenna reaches the station only within
 ``gimbal_range_deg`` of ``fixed_boresight_body`` from the attitude flown, which
 the simulation checks at each step; planning takes the station as reachable.
@@ -123,9 +124,11 @@ Main configuration class for the communications system.
 * ``antenna_pointing``: Antenna pointing configuration
 * ``pointing_accuracy_deg``: Maximum pointing error to maintain good signal (degrees)
 * ``polarization``: Antenna polarization type
+* ``acquisition_seconds``: Seconds to acquire the link at the start of every contact,
+  for an omni or gimballed antenna, during which nothing is downlinked (default 0)
 * ``handover_seconds``: Seconds to switch the link straight from one ground station to
-  another, for an omni or gimballed antenna, during which nothing is downlinked
-  (default 0)
+  another, for an omni or gimballed antenna, on top of the acquisition, during which
+  nothing is downlinked (default 0)
 
 **Methods:**
 

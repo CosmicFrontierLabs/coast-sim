@@ -8,8 +8,9 @@ matter of geometry and of the link: :class:`StationCoverage` finds, at every
 step of the ephemeris, which stations are above their elevation masks, and
 schedules the contacts from that. One station is tracked at a time: a contact
 stays with its station until it sets, then the link is handed over to the
-best station then in view, which costs the communications system's handover
-latency, during which nothing is downlinked. Every station with a downlink
+best station then in view. Every contact starts with the communications
+system's acquisition latency, and a handover adds its own, during which
+nothing is downlinked. Every station with a downlink
 carries data, whether or not it may be scheduled for spacecraft-tracking
 passes.
 """
@@ -65,11 +66,12 @@ class StationCoverage:
     with its station until that station sets, so two stations in view at
     once do not share the time; when it sets, or when no station was
     tracked, the link goes to the station in view with the highest downlink
-    rate, and of those the one in view for longest. A switch straight from
-    one station to another takes the communications system's
-    ``handover_seconds``, during which nothing is downlinked; a station
-    acquired after a gap with none in view takes none, since the antenna
-    can be pointed at it in advance. A gimballed antenna also has to reach
+    rate, and of those the one in view for longest. Every contact begins
+    the communications system's ``acquisition_seconds`` after its station
+    comes into view, and a switch straight from one station to another
+    adds ``handover_seconds`` to that; nothing is downlinked meanwhile. A
+    station acquired after a gap with none in view pays no handover, since
+    the antenna can be pointed at it in advance. A gimballed antenna also has to reach
     the station within its gimbal range from its boresight, which depends
     on the attitude flown and is checked at execution (:meth:`contact_at`);
     planning takes the station as reachable.
@@ -86,6 +88,11 @@ class StationCoverage:
         )
         self.step_size = float(ephem.step_size)
         communications = config.spacecraft_bus.communications
+        self.acquisition_seconds = (
+            float(communications.acquisition_seconds)
+            if communications is not None
+            else 0.0
+        )
         self.handover_seconds = (
             float(communications.handover_seconds)
             if communications is not None
@@ -189,11 +196,10 @@ class StationCoverage:
                 (int(j) for j in in_view),
                 key=lambda j: (self.rates[j], remaining[j, k], -j),
             )
+            begin = t + self.acquisition_seconds
             if current >= 0:
-                begin = t + self.handover_seconds
+                begin += self.handover_seconds
                 self.handovers += 1
-            else:
-                begin = t
             current = chosen
         if current >= 0:
             self._add_contact(current, begin, float(self.times[-1]) + self.step_size)
