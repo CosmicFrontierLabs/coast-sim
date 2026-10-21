@@ -566,6 +566,9 @@ class RollingHorizonDITL(DITL):
         options = dict(self.scheduler_options)
         used = None
         if self.allocator is not None:
+            if self.coverage is not None:
+                # The run's coverage, so the allocator does not build its own.
+                self.allocator.ctx.coverage = self.coverage
             # Allocated from the exposure that remains, so nothing is used.
             self.allocation = self.allocator.allocate(
                 self.targets,
@@ -604,6 +607,7 @@ class RollingHorizonDITL(DITL):
             start_deficit_wh=start_deficit_wh,
             start_drive_state=start_drive_state,
             passes=self._run_passes,
+            coverage=self.coverage,
             **options,  # type: ignore[arg-type]
         )
         return (
@@ -732,6 +736,7 @@ class RollingHorizonDITL(DITL):
             start_volume_gb=now,
             step_size=self.step_size,
             origin=self.ustart,
+            coverage=self.coverage,
         )
         volumes = [0.0] * ledger.segments
         for begin, volume in science:
