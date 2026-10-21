@@ -854,12 +854,20 @@ class PriorityScheduler:
     def _may_move(self, block: _Block) -> bool:
         """Whether a block may be placed again later to make room before it.
 
-        Only science snapshots this scheduler placed may move, and not those of
-        cadence targets, whose later visits are spaced from them. Locked
-        entries and passes never move.
+        Only science snapshots this scheduler placed may move. A cadence
+        target's visit may move only if it is the target's latest, as its
+        next visit is spaced from it; visits are placed in time order, so it
+        usually is. Locked entries and passes never move.
         """
         request = self._movable.get(id(block))
-        return request is not None and request.cadence is None
+        if request is None:
+            return False
+        if request.cadence is None:
+            return True
+        end = block.entry.collection_end
+        return end is not None and self._last_visit.get(
+            int(request.target.obsid)
+        ) == float(end)
 
     def _fit_delaying_successors(
         self, request: _Request, index: int, not_before: float | None
@@ -930,6 +938,11 @@ class PriorityScheduler:
                 same_length,
                 previous,
                 after if last else None,
+                # A cadence visit starts no earlier than it did, which kept
+                # it a cadence after the target's previous visit.
+                not_before=float(old_block.entry.begin)
+                if old_request.cadence is not None
+                else None,
                 until=None if last else until,
             )
             if moved_fit is None:
@@ -959,6 +972,11 @@ class PriorityScheduler:
             self._movable[id(move.new_block)] = move.request
             # It keeps the value it was selected at.
             move.new_block.entry.merit = move.old_block.entry.merit
+            moved_end = move.new_block.entry.collection_end
+            if move.request.cadence is not None and moved_end is not None:
+                # Only a cadence target's latest visit moves (see
+                # _may_move): its next visit is spaced from the new end.
+                self._last_visit[int(move.request.target.obsid)] = float(moved_end)
             # Exposure cut short is left for the request to plan elsewhere,
             # and no longer counts towards its program's share.
             move.request.remaining += move.lost

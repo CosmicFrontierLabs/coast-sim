@@ -120,7 +120,9 @@ How a plan is built
    where its target's visibility ends; that is allowed only if no snapshot cut short
    is in a higher tier than the new one and the new snapshot's value-weighted seconds
    exceed those lost. Exposure cut short is left for the request to plan elsewhere.
-   Ground passes, locked entries and snapshots of cadence targets are never moved.
+   Ground passes and locked entries are never moved. A cadence target's visit moves
+   only if it is the target's latest, and never earlier than it was, so its visits
+   stay a cadence apart.
 
    **Slewing before a target is visible.** Setting ``slew_before_visible`` in the
    ACS configuration lets a slew start early enough to arrive as its target rises,
