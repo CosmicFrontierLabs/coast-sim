@@ -1860,8 +1860,9 @@ class QueueDITL(DITLMixin, DITLStats):
             # Extract year and day-of-year from begin datetime
             year = self.begin.year
             day = self.begin.timetuple().tm_yday
-            # Calculate length in days from begin/end
-            length = int((self.end - self.begin).total_seconds() / 86400)
+            # Calculate length in days from begin/end: every day the run
+            # touches, so a run shorter than a day still gets its passes.
+            length = max(1, int(-(-(self.end - self.begin).total_seconds() // 86400)))
             self.acs.passrequests.get(year, day, length)
             for p in self.acs.passrequests.passes:
                 self.log.log_event(
@@ -2949,6 +2950,30 @@ class QueueDITL(DITLMixin, DITLStats):
             self._temporary_rejected_ppts = None
             self._retry_ppt_fetch_requested = False
 
+    def _recorder_room_gb(self, utime: float) -> float | None:
+        """Gb of science the recorder can take before its next contact, under
+        its planning limit, or None without one.
+
+        What is free now, less the housekeeping that accrues until the next
+        contact begins, or until the run ends if none is coming: dispatch
+        selects only what the recorder can hold until a contact can empty
+        it, as the schedulers place only what it can hold before the next
+        contact.
+        """
+        limit = self.config.recorder.planning_limit_gb
+        # A test double's recorder has no number for a limit.
+        if not isinstance(limit, (int, float)):
+            return None
+        passes = self.acs.passrequests.passes or []
+        next_contact = min(
+            (float(p.begin) for p in passes if float(p.begin) > utime),
+            default=self.uend,
+        )
+        housekeeping = self.config.housekeeping_generated(
+            max(0.0, next_contact - utime)
+        )
+        return limit - float(self.recorder.current_volume_gb) - housekeeping
+
     def _fetch_new_ppt_inner(
         self, utime: float, ra: float, dec: float, *, enqueue_slew: bool = True
     ) -> Slew | None:
@@ -3027,6 +3052,7 @@ class QueueDITL(DITLMixin, DITLStats):
             collection_deadline=collection_deadline,
             slew_estimator=lambda target: self._estimate_ppt_slew(target, utime),
             roll=self.acs.roll,
+            recorder_room_gb=self._recorder_room_gb(utime),
         )
 
         if self.ppt is not None:

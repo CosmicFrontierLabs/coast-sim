@@ -46,6 +46,8 @@ class MeritBreakdown(BaseModel):
     slew_time: float = 0.0
     collection: float = 0.0
     radiator: float = 0.0
+    data: float = 0.0
+    """The price of the data a snapshot puts on the recorder; zero or negative."""
 
     @property
     def value(self) -> float:
@@ -67,6 +69,7 @@ class MeritBreakdown(BaseModel):
             + self.slew_time
             + self.collection
             + self.radiator
+            + self.data
         )
 
     def describe(self) -> str:
@@ -81,6 +84,7 @@ class MeritBreakdown(BaseModel):
             "slew_time",
             "collection",
             "radiator",
+            "data",
         ):
             amount = getattr(self, name)
             if amount != 0.0:

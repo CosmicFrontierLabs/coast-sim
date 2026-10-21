@@ -839,6 +839,7 @@ class TestFetchNewPPT:
             collection_deadline=ANY,
             slew_estimator=ANY,
             roll=0.0,
+            recorder_room_gb=None,
         )
 
     def test_fetch_ppt_reuses_charge_deadline_for_candidate_scoring(
@@ -1498,6 +1499,7 @@ class TestFetchNewPPT:
             collection_deadline=ANY,
             slew_estimator=ANY,
             roll=0.0,
+            recorder_room_gb=None,
         )
         cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
@@ -1559,6 +1561,7 @@ class TestFetchNewPPT:
             collection_deadline=ANY,
             slew_estimator=ANY,
             roll=0.0,
+            recorder_room_gb=None,
         )
         cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
