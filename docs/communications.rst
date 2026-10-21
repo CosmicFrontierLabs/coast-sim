@@ -72,12 +72,18 @@ antenna has to be pointed at the station, so it downlinks during ground-station
 passes: the schedulers reserve each pass on a tracking profile, ACS flies it in
 ``PASS`` mode, and science stops for it (see :doc:`planning`). An ``OMNI`` or
 ``GIMBALED`` antenna needs no spacecraft attitude, so no passes are predicted for
-it and the spacecraft downlinks whenever a station is in view, in whatever ACS
-mode it is in: :class:`~conops.simulation.StationCoverage` finds, at each step of
-the ephemeris, the station above its elevation mask with the best downlink rate
-(by elevation where rates tie), and from that the spans of continuous contact.
-Each span downlinks at the effective rate through the bands the station and the
-spacecraft share. A gimballed antenna reaches the station only within
+it and the spacecraft downlinks whenever it has a link to a station, in whatever
+ACS mode it is in. :class:`~conops.simulation.StationCoverage` finds, at each
+step of the ephemeris, which stations are above their elevation masks and
+schedules the contacts from that. One station is tracked at a time: a contact
+stays with its station until it sets, so two stations in view at once do not
+share the time; when it sets, or when none was tracked, the link goes to the
+station in view with the highest downlink rate, and of those the one in view for
+longest. A switch straight from one station to another takes the communications
+system's ``handover_seconds``, during which nothing is downlinked; a station
+acquired after a gap with none in view takes none, since the antenna can be
+pointed at it in advance. Each contact downlinks at the effective rate through
+the bands the station and the spacecraft share. A gimballed antenna reaches the station only within
 ``gimbal_range_deg`` of ``fixed_boresight_body`` from the attitude flown, which
 the simulation checks at each step; planning takes the station as reachable.
 Every station with a downlink carries data this way, whether or not
@@ -85,8 +91,8 @@ Every station with a downlink carries data this way, whether or not
 
 A configuration without a communications system keeps the body-fixed behaviour.
 With coverage, a DITL's ``coverage`` holds the model, its data telemetry shows
-the downlink, and ``print_statistics`` reports the number of contacts and the
-fraction of the run with a station in view. The timeline plots show the contacts
+the downlink, and ``print_statistics`` reports the number of contacts and
+handovers and the fraction of the run in contact. The timeline plots show the contacts
 in their ``Ground Contact`` row, coloured by station: one bar per span on a run
 up to two days long, and on a longer run one bar per hour with a contact, as
 dark as the hour's fraction in contact against the run's fullest hour, since a
@@ -117,6 +123,9 @@ Main configuration class for the communications system.
 * ``antenna_pointing``: Antenna pointing configuration
 * ``pointing_accuracy_deg``: Maximum pointing error to maintain good signal (degrees)
 * ``polarization``: Antenna polarization type
+* ``handover_seconds``: Seconds to switch the link straight from one ground station to
+  another, for an omni or gimballed antenna, during which nothing is downlinked
+  (default 0)
 
 **Methods:**
 
