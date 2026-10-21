@@ -169,6 +169,10 @@ def _walk(
     ]
     coverage.rates = np.array(rates, dtype=float)
     coverage.visible = np.array(visible, dtype=bool)
+    coverage.rate_steps = np.where(coverage.visible, coverage.rates[:, None], 0.0)
+    coverage._ranged = [False] * len(rates)
+    coverage._cumulative = np.zeros((len(rates), len(visible[0]) + 1))
+    coverage._cumulative[:, 1:] = np.cumsum(coverage.rate_steps * step / 1000.0, axis=1)
     coverage.contacts = []
     coverage.handovers = 0
     coverage._schedule_contacts()
