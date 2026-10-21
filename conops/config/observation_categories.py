@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field, model_validator
 
 from ._base import ConfigModel
@@ -55,6 +57,16 @@ class ObservationCategory(ConfigModel):
         default=True,
         description=(
             "Whether a Target of Opportunity may cut short the category's observations"
+        ),
+    )
+    antenna_repoints: Literal["allowed", "reported", "forbidden"] = Field(
+        default="allowed",
+        description=(
+            "What an antenna repoint during one of the category's observations "
+            "means: nothing ('allowed'); it is counted and logged ('reported'); "
+            "or the observation must not contain one ('forbidden'), so the "
+            "schedulers and dispatch place the category's snapshots between "
+            "repoints"
         ),
     )
 
@@ -139,6 +151,12 @@ class ObservationCategories(ConfigModel):
             obsid_max=10000000,
             color=self.default_color,
         )
+
+    def antenna_repoints(self, obsid: int) -> str:
+        """What an antenna repoint during an observation of ``obsid`` means:
+        "allowed", "reported" or "forbidden" (see
+        :attr:`ObservationCategory.antenna_repoints`)."""
+        return self.get_category(obsid).antenna_repoints
 
     def get_all_category_names(self) -> list[str]:
         """Get list of all defined category names including default."""

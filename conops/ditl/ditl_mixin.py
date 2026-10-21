@@ -18,6 +18,7 @@ from ..simulation.coverage import StationCoverage
 from ..simulation.momentum import MomentumSample, StoredMomentumTracker
 from ..simulation.passes import Pass, PassTimes
 from ..targets import Plan, PlanEntry
+from .ditl_log import DITLLog
 from .telemetry import SolarArrayDriveAngle, Telemetry
 
 ATTITUDE_RATE_NUMERICAL_TOLERANCE_DEG = 1e-9
@@ -75,6 +76,8 @@ class DITLMixin:
     """Shared initialization, plotting, and data-management logic for DITL simulations."""
 
     ppt: PlanEntry | None
+    log: DITLLog
+    repoints_in_observations: list[tuple[float, int, str]]
     _data_observation: tuple[int, float] | None
     _data_collected: float
     ra: list[float]
@@ -224,6 +227,7 @@ class DITLMixin:
             self._data_collected = 0.0
             self.telemetry = Telemetry()
             self.executed_passes = PassTimes(config=self.config)
+            self.repoints_in_observations = []
             # Do not concatenate samples from separate runs (possibly covering
             # identical dates) into a single attitude audit or plotting timeline.
             for name in (
@@ -262,6 +266,19 @@ class DITLMixin:
         """Station coverage for an antenna that needs no attitude, which
         downlinks whenever a station is in view; None for a body-fixed
         antenna, which downlinks during ground passes."""
+        self.repoints_in_observations = []
+        """Each antenna repoint that fell in an observation whose category
+        reports or forbids them: when, the observation's obsid, and the
+        category's setting."""
+
+    def _antenna_repoints(self, target: PlanEntry) -> str:
+        """The category setting for antenna repoints during ``target``."""
+        categories = getattr(self.config, "observation_categories", None)
+        setting = getattr(categories, "antenna_repoints", None)
+        if not callable(setting):
+            return "allowed"
+        result = setting(int(target.obsid))
+        return result if isinstance(result, str) else "allowed"
 
     def _build_stored_momentum_tracker(self) -> StoredMomentumTracker | None:
         attitude_control = self.config.spacecraft_bus.attitude_control
@@ -695,6 +712,7 @@ class DITLMixin:
             contact_start, contact_stop, data_to_downlink = self.coverage.contact_in(
                 utime, utime + interval, attitude
             )
+            self._log_repoints(utime, utime + interval, collection_seconds)
         elif mode == ACSMode.PASS and current_pass is not None:
             # Downlink data during PASS mode, once ACS has acquired the
             # contact: the ingress slew also reports PASS, but carries no link.
@@ -732,6 +750,28 @@ class DITLMixin:
         )
         self.recorder.add_data(rate * (utime + interval - contact_stop))
         return data_generated, data_downlinked
+
+    def _log_repoints(
+        self, begin: float, end: float, collection_seconds: float
+    ) -> None:
+        """Log the antenna repoints in ``[begin, end)``, and note each that
+        falls in an observation whose category reports or forbids them."""
+        assert self.coverage is not None
+        for repoint in self.coverage.repoints_in(begin, end):
+            description = f"Antenna repoint to {repoint.station} ({repoint.kind})"
+            if self.ppt is not None and collection_seconds > 0:
+                setting = self._antenna_repoints(self.ppt)
+                if setting in ("reported", "forbidden"):
+                    obsid = int(self.ppt.obsid)
+                    self.repoints_in_observations.append((repoint.time, obsid, setting))
+                    description += f" during observation {obsid} ({setting})"
+            self.log.log_event(
+                utime=repoint.time,
+                event_type="ANTENNA",
+                description=description,
+                obsid=int(self.ppt.obsid) if self.ppt is not None else None,
+                acs_mode=self.acs.acsmode,
+            )
 
     def _get_effective_data_rate(self, station: GroundStation) -> float | None:
         """The downlink rate in Mbps the spacecraft gets from ``station``, or None.

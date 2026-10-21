@@ -19,6 +19,7 @@ from ..targets import Plan, Pointing, TargetSlewEstimate
 
 if TYPE_CHECKING:
     from ..ditl.ditl_log import DITLLog
+    from ..simulation.coverage import StationCoverage
 
 
 class DispatchPolicy(Protocol):
@@ -32,6 +33,10 @@ class DispatchPolicy(Protocol):
 
     log: "DITLLog | None"
     """Event log; QueueDITL attaches its own when this is None."""
+
+    coverage: "StationCoverage | None"
+    """The run's station coverage, where its antenna needs no attitude;
+    QueueDITL attaches its own."""
 
     def get(
         self,
