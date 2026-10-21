@@ -1,5 +1,7 @@
 """DITL event logging system."""
 
+from collections.abc import Iterator
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..common import ACSMode, DITLEventType
@@ -66,6 +68,14 @@ class DITLLog(BaseModel):
             except Exception:
                 # Non-fatal: keep in-memory log even if persistence fails
                 pass
+
+    def __iter__(self) -> Iterator[DITLEvent]:  # type: ignore[override]
+        """Iterate over the logged events, in order.
+
+        A pydantic model iterates over its fields otherwise, which is never
+        what a caller walking a log wants.
+        """
+        return iter(self.events)
 
     def add_events(self, events: list[DITLEvent]) -> None:
         """Append already-built events, persisting them as ``log_event`` does."""
