@@ -217,7 +217,12 @@ throughout since the spacecraft stays in whatever mode it is in. Such a contact 
 no block on the timeline, so a snapshot that does not fit before it is tried after
 it within the same gap. The schedulers and :class:`~conops.ditl.RollingHorizonDITL`
 take the coverage from the configuration, or from ``coverage=`` where the caller
-has it: a rolling run builds it once and gives it to every plan.
+has it: a rolling run builds it once and gives it to every plan. Where the antenna is
+re-pointed within contacts (see :doc:`communications`), a target whose category sets
+``antenna_repoints: forbidden`` has its visibility windows cut at each repoint, so every
+scheduler places its snapshots between repoints as it places them between constraint
+violations, and dispatch starts such an observation only when its minimum snapshot
+fits before the next repoint and ends it there.
 
 The arithmetic is not particular to the recorder. Anything a spacecraft
 accumulates between the events that remove it, and must keep within a limit
