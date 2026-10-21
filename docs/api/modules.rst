@@ -35,6 +35,7 @@ Core Modules
    conops.simulation
    conops.simulation.acs
    conops.simulation.acs_command
+   conops.simulation.coverage
    conops.simulation.momentum
    conops.simulation.roll
 

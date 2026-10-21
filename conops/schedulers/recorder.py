@@ -17,6 +17,7 @@ from collections.abc import Sequence
 from ..common.enums import ACSMode, ObsType
 from ..config import MissionConfig
 from ..ditl.plan_validator import entry_obstype
+from ..simulation.coverage import StationCoverage
 from ..targets import PlanEntry
 from .consumable import ConsumableLedger, Removal
 
@@ -58,6 +59,11 @@ class RecorderLedger(ConsumableLedger[float, float]):
             starts in, so the ledger counts it the same way: a span counts
             for the steps that start in it. None counts spans exactly.
         origin: A time the step grid passes through; ``begin`` if None.
+        coverage: Station coverage for an antenna that needs no attitude.
+            Its spans of contact in the horizon downlink at their station's
+            rate; the spacecraft stays in whatever mode it is in, so
+            housekeeping is at the nominal rate throughout. A plan for such
+            an antenna has no ground-contact entries.
 
     Housekeeping is counted at the nominal rate throughout, and at the
     ``PASS`` rate during contacts: the plan does not know when the spacecraft
@@ -81,6 +87,7 @@ class RecorderLedger(ConsumableLedger[float, float]):
         start_volume_gb: float,
         step_size: float | None = None,
         origin: float | None = None,
+        coverage: StationCoverage | None = None,
     ) -> None:
         self.config = config
         self.step_size = float(step_size) if step_size is not None else None
@@ -90,6 +97,17 @@ class RecorderLedger(ConsumableLedger[float, float]):
         """Where each contact's removal starts, and what the step its link
         ends in generates after the link, at the PASS rate, beyond the
         nominal rate the segment counts it at."""
+        if coverage is not None:
+            for span in coverage.spans(begin, end):
+                seconds = span.end - span.begin
+                removals.append(
+                    Removal(
+                        span.begin,
+                        span.end,
+                        span.rate_mbps * seconds / 1000.0,
+                        config.housekeeping_generated(seconds),
+                    )
+                )
         for entry in contacts:
             if (
                 entry.station is None

@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict
 
 from ..common.enums import ACSMode
 from ..config import MissionConfig
+from ..simulation.coverage import StationCoverage
 from ..simulation.passes import Pass
 from ..targets import Pointing
 from ..targets.merit import MeritModel
@@ -271,6 +272,9 @@ class LongRangeAllocator:
         passes: The run's predicted ground passes, for the data budget, where
             the caller has them; predicted once otherwise, which takes a
             while for a long run.
+        coverage: Station coverage for an antenna that needs no attitude,
+            for the data budget, where the caller has it; built from the
+            configuration otherwise.
 
     Raises:
         ImportError: If ``solver`` is "milp" and OR-Tools is not installed.
@@ -288,6 +292,7 @@ class LongRangeAllocator:
         solver: Literal["milp", "greedy"] = "milp",
         time_limit: float = 10.0,
         passes: Sequence[Pass] | None = None,
+        coverage: StationCoverage | None = None,
     ) -> None:
         if bin_length <= timedelta(0):
             raise ValueError("bin_length must be positive")
@@ -313,7 +318,7 @@ class LongRangeAllocator:
         """The MILP solver's status for each stage of the last allocation,
         or "OPTIMAL" if every stage was solved to optimality."""
         self._previous: Allocation | None = None
-        self.ctx = SchedulingContext(config, begin, end)
+        self.ctx = SchedulingContext(config, begin, end, coverage=coverage)
         self.merit_model = MeritModel(config)
         self._windows: dict[int, list[tuple[float, float]]] = {}
         self._passes: list[Pass] | None = list(passes) if passes is not None else None
@@ -876,18 +881,28 @@ class LongRangeAllocator:
             # No budget: nothing is predicted or counted, as predicting a
             # run's passes is slow.
             return _Budget(None, start_volume, [], [], rates)
-        if self._passes is None:
-            self._passes = list(self.ctx.predict_passes())
         downlink = [0.0] * len(self.bins)
         contact_seconds = [0.0] * len(self.bins)
-        for gspass in self._passes:
-            for k, (b0, b1) in enumerate(self.bins):
-                lo, hi = max(b0, start, gspass.begin), min(b1, gspass.end)
-                if hi > lo:
-                    downlink[k] += contact_downlink_gb(
-                        self.config, gspass.station, hi - lo
-                    )
-                    contact_seconds[k] += hi - lo
+        coverage = self.ctx.coverage
+        if coverage is not None:
+            # An antenna that needs no attitude downlinks whenever a station
+            # is in view, with the spacecraft in whatever mode it is in.
+            for span in coverage.spans(start, self.bins[-1][1]):
+                for k, (b0, b1) in enumerate(self.bins):
+                    lo, hi = max(b0, span.begin), min(b1, span.end)
+                    if hi > lo:
+                        downlink[k] += span.rate_mbps * (hi - lo) / 1000.0
+        else:
+            if self._passes is None:
+                self._passes = list(self.ctx.predict_passes())
+            for gspass in self._passes:
+                for k, (b0, b1) in enumerate(self.bins):
+                    lo, hi = max(b0, start, gspass.begin), min(b1, gspass.end)
+                    if hi > lo:
+                        downlink[k] += contact_downlink_gb(
+                            self.config, gspass.station, hi - lo
+                        )
+                        contact_seconds[k] += hi - lo
         housekeeping = []
         for k, (b0, b1) in enumerate(self.bins):
             seconds = max(0.0, b1 - max(b0, start))

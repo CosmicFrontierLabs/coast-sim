@@ -210,6 +210,15 @@ peak:
   step its link ends in generates after the link stays on the recorder, as the
   simulation stores it after the downlink.
 
+With an omni or gimballed antenna there are no passes to reserve: the contacts are
+the spans of station coverage in the horizon (see :doc:`communications`), each
+downlinking at its station's rate, and housekeeping is at the nominal rate
+throughout since the spacecraft stays in whatever mode it is in. Such a contact is
+no block on the timeline, so a snapshot that does not fit before it is tried after
+it within the same gap. The schedulers and :class:`~conops.ditl.RollingHorizonDITL`
+take the coverage from the configuration, or from ``coverage=`` where the caller
+has it: a rolling run builds it once and gives it to every plan.
+
 The arithmetic is not particular to the recorder. Anything a spacecraft
 accumulates between the events that remove it, and must keep within a limit
 meanwhile, has the same shape: stored momentum builds up until a dump unloads it,
@@ -655,7 +664,8 @@ each request's remaining exposure to collect in which bin:
   generates housekeeping, at the ``PASS`` rate during its contacts, plus the science
   data of the requests allocated to it: each target's rate for its allocated seconds
   and its fixed amount per observation, once per bin. Its contacts, from the same
-  pass prediction the schedulers use, take off what they can, and what they cannot
+  pass prediction the schedulers use, or from the same station coverage for an omni
+  or gimballed antenna, take off what they can, and what they cannot
   is carried on the recorder into the next bin, where it must stay within the
   recorder's planning limit (see `Planning within the recorder`_). The allocation
   starts from what is on the recorder, so a run that begins with a full recorder

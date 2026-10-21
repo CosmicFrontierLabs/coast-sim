@@ -3100,6 +3100,9 @@ class QueueDITL(DITLMixin, DITLStats):
         What the candidate's own slew and science generate beyond the
         waiting rate the queue counts against the room, as it does the
         science.
+        Passes without spacecraft tracking use their usable link spans:
+        there is no ingress slew, housekeeping stays at the waiting rate,
+        and each span downlinks at its mean rate for its length.
         """
         limit = self.config.recorder.planning_limit_gb
         # A test double's recorder has no number for a limit.
@@ -3115,14 +3118,43 @@ class QueueDITL(DITLMixin, DITLStats):
             if isinstance(projected, (int, float))
             else float(self.recorder.current_volume_gb)
         )
-        passes = sorted(
-            (
-                p
-                for p in self.acs.passrequests.passes or []
-                if utime < float(p.begin) < self.uend
-            ),
-            key=lambda p: float(p.begin),
-        )
+        # Each contact to come: when it begins and ends, the pass whose slew
+        # ACS flies into it (None for a span of coverage) and what it
+        # downlinks for its length.
+        contacts: list[tuple[float, float, Pass | None, float]]
+        if self.coverage is not None:
+            contacts = [
+                (
+                    float(span.begin),
+                    float(span.end),
+                    None,
+                    span.rate_mbps * (span.end - span.begin) / 1000.0,
+                )
+                for span in self.coverage.spans(utime, self.uend)
+            ]
+        else:
+            passes = sorted(
+                (
+                    p
+                    for p in self.acs.passrequests.passes or []
+                    if utime < float(p.begin) < self.uend
+                ),
+                key=lambda p: float(p.begin),
+            )
+            contacts = [
+                (
+                    float(p.begin),
+                    min(float(p.begin) + float(p.length), self.uend),
+                    p,
+                    contact_downlink_gb(
+                        config,
+                        p.station,
+                        min(float(p.begin) + float(p.length), self.uend)
+                        - float(p.begin),
+                    ),
+                )
+                for p in passes
+            ]
 
         def highest(extra: float) -> float:
             """The most the recorder holds from now to the run's end with
@@ -3130,34 +3162,34 @@ class QueueDITL(DITLMixin, DITLStats):
             volume = volume_now + extra
             worst = volume
             cursor = utime
-            for gspass in passes:
-                begin = float(gspass.begin)
-                end = min(begin + float(gspass.length), self.uend)
+            for begin, end, gspass, downlink in contacts:
                 span = whole_steps(begin - cursor, step)
                 volume += config.housekeeping_while_waiting(span)
-                ingress = min(
-                    span,
-                    whole_steps(
-                        self._pass_ingress_seconds(gspass, cursor, ra, dec, roll), step
-                    ),
-                )
-                # The ingress is an upper bound: a PASS rate below the
-                # waiting rate is not credited with a saving over it.
-                volume += max(
-                    0.0,
-                    config.housekeeping_generated(ingress, mode=ACSMode.PASS)
-                    - config.housekeeping_while_waiting(ingress),
-                )
+                if gspass is not None:
+                    ingress = min(
+                        span,
+                        whole_steps(
+                            self._pass_ingress_seconds(gspass, cursor, ra, dec, roll),
+                            step,
+                        ),
+                    )
+                    # The ingress is an upper bound: a PASS rate below the
+                    # waiting rate is not credited with a saving over it.
+                    volume += max(
+                        0.0,
+                        config.housekeeping_generated(ingress, mode=ACSMode.PASS)
+                        - config.housekeeping_while_waiting(ingress),
+                    )
                 worst = max(worst, volume)
                 contact = whole_steps(end - begin, step)
-                volume += max(
-                    config.housekeeping_while_waiting(contact),
-                    config.housekeeping_generated(contact, mode=ACSMode.PASS),
-                )
-                volume = max(
-                    0.0,
-                    volume - contact_downlink_gb(config, gspass.station, end - begin),
-                )
+                during = config.housekeeping_while_waiting(contact)
+                if gspass is not None:
+                    during = max(
+                        during,
+                        config.housekeeping_generated(contact, mode=ACSMode.PASS),
+                    )
+                volume += during
+                volume = max(0.0, volume - downlink)
                 cursor = end
             volume += config.housekeeping_while_waiting(
                 whole_steps(self.uend - cursor, step)
@@ -3179,6 +3211,7 @@ class QueueDITL(DITLMixin, DITLStats):
             else:
                 high = middle
         return low
+
 
     def _pass_ingress_seconds(
         self, gspass: Pass, utime: float, ra: float, dec: float, roll: float
