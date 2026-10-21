@@ -2921,7 +2921,8 @@ class QueueDITL(DITLMixin, DITLStats):
         contact.
         """
         limit = self.config.recorder.planning_limit_gb
-        if limit is None:
+        # A test double's recorder has no number for a limit.
+        if not isinstance(limit, (int, float)):
             return None
         passes = self.acs.passrequests.passes or []
         next_contact = min(
