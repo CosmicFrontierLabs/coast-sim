@@ -426,6 +426,76 @@ class TestAllocator:
         assert ditl.allocation.downlink[-1] > 0.0
 
 
+class TestRangeDependentRates:
+    """A rate that varies with range is applied per step in the simulation,
+    per span in the ledger and per bin in the budget."""
+
+    TABLE = [(500.0, 20.0), (1500.0, 10.0), (3000.0, 2.0)]
+
+    def _ranged_config(self, hours: int = HOURS) -> MissionConfig:
+        config = _recorder_config(hours=hours)
+        for station in config.ground_stations.stations:
+            station.bands = [
+                BandCapability(
+                    band="S",
+                    downlink_rate_mbps=20.0,
+                    downlink_rate_vs_range_km=self.TABLE,
+                )
+            ]
+        config.spacecraft_bus.communications = CommunicationsSystem(
+            name="S-band",
+            band_capabilities=[BandCapability(band="S", downlink_rate_mbps=50.0)],
+            antenna_pointing=AntennaPointing(antenna_type=AntennaType.OMNI),
+        )
+        return config
+
+    def test_the_run_downlinks_at_the_rate_at_each_range(self) -> None:
+        config = self._ranged_config()
+        ditl = create_ditl(
+            config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
+        )
+        ditl.step_size = STEP
+        assert ditl.calc()
+        assert ditl.coverage is not None
+        end = T0 + HOURS * HOUR
+        planned = ditl.coverage.downlink_gb(T0, end)
+        assert 0.5 * planned < ditl.data_downlinked_gb[-1] <= planned + 1e-9
+        # The first contact's steps downlink different amounts.
+        first = ditl.coverage.spans(T0, end)[0]
+        k = ditl.utime.index(first.begin)
+        steps = [
+            ditl.data_downlinked_gb[i + 1] - ditl.data_downlinked_gb[i]
+            for i in range(k, ditl.utime.index(first.end) - 1)
+        ]
+        assert len({round(s, 6) for s in steps}) > 1
+        assert max(ditl.recorder_volume_gb) <= LIMIT + 1e-6
+
+    def test_the_ledger_and_the_budget_take_the_same_downlink(self) -> None:
+        config = self._ranged_config(hours=48)
+        coverage = StationCoverage.for_config(config)
+        assert coverage is not None
+        end = T0 + 48 * HOUR
+        ledger = RecorderLedger(
+            config, T0, end, [], start_volume_gb=0.0, coverage=coverage
+        )
+        assert sum(ledger.downlink_gb) == pytest.approx(coverage.downlink_gb(T0, end))
+        allocator = LongRangeAllocator(
+            config,
+            BEGIN,
+            BEGIN + timedelta(hours=48),
+            bin_length=timedelta(hours=24),
+            solver="greedy",
+            coverage=coverage,
+        )
+        allocation = allocator.allocate(_targets(config), T0)
+        assert allocation.downlink == pytest.approx(
+            [
+                coverage.downlink_gb(T0, T0 + 24 * HOUR),
+                coverage.downlink_gb(T0 + 24 * HOUR, end),
+            ]
+        )
+
+
 def test_a_ditl_without_coverage_has_the_legacy_downlink() -> None:
     config = _recorder_config(None)
     ditl = DITL(

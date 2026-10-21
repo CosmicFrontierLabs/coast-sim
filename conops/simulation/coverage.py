@@ -26,7 +26,11 @@ import rust_ephem
 
 from ..common import AntennaType, scbodyvector
 from ..config import CommunicationsSystem, MissionConfig
-from ..config.groundstation import GroundStation, effective_downlink_rate_mbps
+from ..config.groundstation import (
+    GroundStation,
+    effective_downlink_rate_mbps,
+    rate_varies_with_range,
+)
 
 Attitude = tuple[float, float, float]
 """Spacecraft body attitude: RA, Dec and roll in degrees."""
@@ -42,7 +46,9 @@ class ContactSpan(NamedTuple):
     station: str
     """The station's code."""
     rate_mbps: float
-    """The downlink rate through the span, in Mbps."""
+    """The mean downlink rate through the span, in Mbps: the span downlinks
+    this rate for its length. With a rate that varies with range it is the
+    time-weighted mean of the rate at each step."""
 
 
 class Contact(NamedTuple):
@@ -50,6 +56,7 @@ class Contact(NamedTuple):
 
     station: str
     rate_mbps: float
+    """The downlink rate at the step, at its range."""
     range_km: float
     """Distance from the spacecraft to the station."""
 
@@ -137,6 +144,29 @@ class StationCoverage:
         masks = np.array([s.min_elevation_deg for s in self.stations], dtype=float)
         self.visible: npt.NDArray[np.bool_] = self.elevation_deg > masks[:, None]
         """Whether each station is above its mask at each step."""
+        self.rate_steps = np.where(self.visible, self.rates[:, None], 0.0)
+        """The downlink rate from each station at each step in view, at the
+        step's range where a band's rate varies with it."""
+        self._ranged = [
+            rate_varies_with_range(s, communications) for s in self.stations
+        ]
+        """Whether each station's rate varies with range."""
+        for k, station in enumerate(self.stations):
+            if not self._ranged[k]:
+                continue
+            for step in np.flatnonzero(self.visible[k]):
+                self.rate_steps[k, step] = float(
+                    effective_downlink_rate_mbps(
+                        station, communications, float(self.range_km[k, step])
+                    )
+                    or 0.0
+                )
+        # Gb downlinked from each station by the start of each step, were it
+        # in contact throughout: the rate is constant within a step.
+        self._cumulative = np.zeros((count, steps + 1))
+        self._cumulative[:, 1:] = np.cumsum(
+            self.rate_steps * self.step_size / 1000.0, axis=1
+        )
         self.contacts: list[ContactSpan] = []
         """The scheduled contacts over the whole ephemeris, in time order."""
         self.handovers = 0
@@ -194,7 +224,7 @@ class StationCoverage:
                 continue
             chosen = max(
                 (int(j) for j in in_view),
-                key=lambda j: (self.rates[j], remaining[j, k], -j),
+                key=lambda j: (self.rate_steps[j, k], remaining[j, k], -j),
             )
             begin = t + self.acquisition_seconds
             if current >= 0:
@@ -206,11 +236,31 @@ class StationCoverage:
 
     def _add_contact(self, station: int, begin: float, end: float) -> None:
         if end > begin:
-            self.contacts.append(
-                ContactSpan(
-                    begin, end, self.stations[station].code, float(self.rates[station])
-                )
+            self.contacts.append(self._span(station, begin, end))
+
+    def _span(self, station: int, begin: float, end: float) -> ContactSpan:
+        """A span with ``station`` over ``[begin, end)`` at its mean rate."""
+        if self._ranged[station]:
+            downlinked = self._downlinked(station, end) - self._downlinked(
+                station, begin
             )
+            rate = downlinked * 1000.0 / (end - begin)
+        else:
+            rate = float(self.rates[station])
+        return ContactSpan(begin, end, self.stations[station].code, rate)
+
+    def _downlinked(self, station: int, utime: float) -> float:
+        """Gb from ``station`` by ``utime`` were it in contact throughout."""
+        k = self.index(utime)
+        into = min(max(utime - float(self.times[k]), 0.0), self.step_size)
+        return float(
+            self._cumulative[station, k] + self.rate_steps[station, k] * into / 1000.0
+        )
+
+    def _station_index(self, code: str) -> int:
+        return next(
+            n for n, station in enumerate(self.stations) if station.code == code
+        )
 
     # ── Lookup ────────────────────────────────────────────────────────────
 
@@ -246,9 +296,7 @@ class StationCoverage:
         if i < 0:
             return None
         span = self.contacts[i]
-        j = next(
-            n for n, station in enumerate(self.stations) if station.code == span.station
-        )
+        j = self._station_index(span.station)
         k = self.index(utime)
         if attitude is not None and self.gimballed:
             communications = self.config.spacecraft_bus.communications
@@ -269,10 +317,13 @@ class StationCoverage:
                 > antenna.gimbal_range_deg
             ):
                 return None
-        return Contact(span.station, span.rate_mbps, float(self.range_km[j, k]))
+        return Contact(
+            span.station, float(self.rate_steps[j, k]), float(self.range_km[j, k])
+        )
 
     def spans(self, begin: float, end: float) -> list[ContactSpan]:
-        """The contacts in ``[begin, end)``, clipped to the window."""
+        """The contacts in ``[begin, end)``, clipped to the window, each at
+        its mean rate over the part inside it."""
         spans: list[ContactSpan] = []
         first = max(0, bisect_right(self._begins, begin) - 1)
         for span in self.contacts[first:]:
@@ -280,8 +331,18 @@ class StationCoverage:
                 break
             lo, hi = max(span.begin, begin), min(span.end, end)
             if hi > lo:
-                spans.append(span._replace(begin=lo, end=hi))
+                if (lo, hi) == (span.begin, span.end):
+                    spans.append(span)
+                else:
+                    spans.append(self._span(self._station_index(span.station), lo, hi))
         return spans
+
+    def downlink_gb(self, begin: float, end: float) -> float:
+        """What the contacts in ``[begin, end)`` downlink, in Gb."""
+        return sum(
+            span.rate_mbps * (span.end - span.begin) / 1000.0
+            for span in self.spans(begin, end)
+        )
 
     def contact_in(
         self, begin: float, end: float, attitude: Attitude | None = None
