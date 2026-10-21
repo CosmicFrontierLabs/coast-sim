@@ -321,8 +321,9 @@ class LongRangeAllocator:
         self.ctx = SchedulingContext(config, begin, end, coverage=coverage)
         self.merit_model = MeritModel(config)
         self._windows: dict[int, list[tuple[float, float]]] = {}
-        self._passes: list[Pass] | None = list(passes) if passes is not None else None
-        """The run's predicted ground passes, once given or predicted."""
+        self.passes: list[Pass] | None = list(passes) if passes is not None else None
+        """The run's predicted ground passes, once given or predicted; a caller
+        that predicts them for the run sets them here before allocating."""
         length = bin_length.total_seconds()
         ustart, uend = begin.timestamp(), end.timestamp()
         count = max(1, int(-(-(uend - ustart) // length)))
@@ -863,9 +864,9 @@ class LongRangeAllocator:
             for k, (b0, b1) in enumerate(self.bins):
                 downlink[k] += coverage.downlink_gb(max(b0, start), b1)
         else:
-            if self._passes is None:
-                self._passes = list(self.ctx.predict_passes())
-            for gspass in self._passes:
+            if self.passes is None:
+                self.passes = list(self.ctx.predict_passes())
+            for gspass in self.passes:
                 for k, (b0, b1) in enumerate(self.bins):
                     lo, hi = max(b0, start, gspass.begin), min(b1, gspass.end)
                     if hi > lo:
