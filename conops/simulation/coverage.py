@@ -1,14 +1,17 @@
-"""Ground-station coverage for antennas that need no spacecraft attitude.
+"""Ground-station contacts for antennas that need no spacecraft attitude.
 
 A body-fixed antenna downlinks only during a ground-station pass, when the
 spacecraft points the antenna at the station (:class:`~conops.simulation.passes.PassTimes`).
-An omnidirectional or gimballed antenna downlinks whenever a station is in
-view, in whatever ACS mode the spacecraft is in, so the contact is a matter
-of geometry alone: :class:`StationCoverage` finds, at every step of the
-ephemeris, the station with the best downlink rate above its elevation mask,
-and from that the spans of continuous contact and the fraction of time with
-a station in view. Every station with a downlink carries data, whether or not
-it may be scheduled for spacecraft-tracking passes.
+An omnidirectional or gimballed antenna downlinks whenever it has a link to a
+station, in whatever ACS mode the spacecraft is in, so its contacts are a
+matter of geometry and of the link: :class:`StationCoverage` finds, at every
+step of the ephemeris, which stations are above their elevation masks, and
+schedules the contacts from that. One station is tracked at a time: a contact
+stays with its station until it sets, then the link is handed over to the
+best station then in view, which costs the communications system's handover
+latency, during which nothing is downlinked. Every station with a downlink
+carries data, whether or not it may be scheduled for spacecraft-tracking
+passes.
 """
 
 from __future__ import annotations
@@ -51,18 +54,25 @@ class Contact(NamedTuple):
 
 
 class StationCoverage:
-    """Which station an omni or gimballed antenna can downlink to at each step.
+    """The contacts of an omni or gimballed antenna over the ephemeris.
 
     Args:
         config: Mission configuration: the stations, the communications
             system and the ephemeris on its constraint.
 
-    At each step of the ephemeris the station in contact is the one with the
-    best downlink rate among those above their elevation mask, by elevation
-    where rates tie. A gimballed antenna also has to reach the station
-    within its gimbal range from its boresight, which depends on the
-    attitude flown and is checked at execution (:meth:`contact_at`); planning
-    takes the station as reachable.
+    At each step of the ephemeris a station is in view when its elevation is
+    above its mask. Contacts are scheduled from the views: the link stays
+    with its station until that station sets, so two stations in view at
+    once do not share the time; when it sets, or when no station was
+    tracked, the link goes to the station in view with the highest downlink
+    rate, and of those the one in view for longest. A switch straight from
+    one station to another takes the communications system's
+    ``handover_seconds``, during which nothing is downlinked; a station
+    acquired after a gap with none in view takes none, since the antenna
+    can be pointed at it in advance. A gimballed antenna also has to reach
+    the station within its gimbal range from its boresight, which depends
+    on the attitude flown and is checked at execution (:meth:`contact_at`);
+    planning takes the station as reachable.
     """
 
     def __init__(self, config: MissionConfig) -> None:
@@ -76,6 +86,11 @@ class StationCoverage:
         )
         self.step_size = float(ephem.step_size)
         communications = config.spacecraft_bus.communications
+        self.handover_seconds = (
+            float(communications.handover_seconds)
+            if communications is not None
+            else 0.0
+        )
         self.stations: list[GroundStation] = [
             station
             for station in config.ground_stations.stations
@@ -113,15 +128,14 @@ class StationCoverage:
             self.range_km[k] = distance
             self._to_station[k] = -to_satellite_unit
         masks = np.array([s.min_elevation_deg for s in self.stations], dtype=float)
-        visible = self.elevation_deg > masks[:, None]
-        # The best station at each step: highest rate, then highest elevation.
-        score = np.where(
-            visible, self.rates[:, None] * 1e6 + self.elevation_deg, -np.inf
-        )
-        self.best: npt.NDArray[np.int64] = np.where(
-            visible.any(axis=0), np.argmax(score, axis=0), -1
-        )
-        """Index of the station in contact at each step, -1 for none."""
+        self.visible: npt.NDArray[np.bool_] = self.elevation_deg > masks[:, None]
+        """Whether each station is above its mask at each step."""
+        self.contacts: list[ContactSpan] = []
+        """The scheduled contacts over the whole ephemeris, in time order."""
+        self.handovers = 0
+        """How many contacts began with a handover from another station."""
+        self._schedule_contacts()
+        self._begins = [span.begin for span in self.contacts]
 
     @classmethod
     def for_config(cls, config: MissionConfig) -> StationCoverage | None:
@@ -146,6 +160,54 @@ class StationCoverage:
             return None
         return cls(config)
 
+    # ── Scheduling ────────────────────────────────────────────────────────
+
+    def _schedule_contacts(self) -> None:
+        """Walk the ephemeris tracking one station at a time (see the class)."""
+        count, steps = self.visible.shape
+        if count == 0 or steps == 0:
+            return
+        # How many consecutive steps each station stays in view from each step.
+        remaining = np.zeros((count, steps), dtype=int)
+        for k in range(steps - 1, -1, -1):
+            later = remaining[:, k + 1] if k + 1 < steps else 0
+            remaining[:, k] = np.where(self.visible[:, k], later + 1, 0)
+        current = -1
+        begin = 0.0
+        for k in range(steps):
+            t = float(self.times[k])
+            if current >= 0 and self.visible[current, k]:
+                continue
+            if current >= 0:
+                # The tracked station has set.
+                self._add_contact(current, begin, t)
+            in_view = np.flatnonzero(self.visible[:, k])
+            if in_view.size == 0:
+                current = -1
+                continue
+            chosen = max(
+                (int(j) for j in in_view),
+                key=lambda j: (self.rates[j], remaining[j, k], -j),
+            )
+            if current >= 0:
+                begin = t + self.handover_seconds
+                self.handovers += 1
+            else:
+                begin = t
+            current = chosen
+        if current >= 0:
+            self._add_contact(current, begin, float(self.times[-1]) + self.step_size)
+
+    def _add_contact(self, station: int, begin: float, end: float) -> None:
+        if end > begin:
+            self.contacts.append(
+                ContactSpan(
+                    begin, end, self.stations[station].code, float(self.rates[station])
+                )
+            )
+
+    # ── Lookup ────────────────────────────────────────────────────────────
+
     @property
     def gimballed(self) -> bool:
         communications = self.config.spacecraft_bus.communications
@@ -158,6 +220,13 @@ class StationCoverage:
         """The ephemeris step at or before ``utime``."""
         return min(max(bisect_right(self.times, utime) - 1, 0), len(self.times) - 1)
 
+    def _contact_index(self, utime: float) -> int:
+        """The index of the contact in progress at ``utime``, or -1."""
+        i = bisect_right(self._begins, utime) - 1
+        if i >= 0 and utime < self.contacts[i].end:
+            return i
+        return -1
+
     def contact_at(
         self, utime: float, attitude: Attitude | None = None
     ) -> Contact | None:
@@ -165,12 +234,16 @@ class StationCoverage:
 
         With ``attitude`` (RA, Dec, roll in degrees) a gimballed antenna must
         reach the station within its gimbal range from its boresight; an
-        omni antenna reaches every station in view.
+        omni antenna reaches every station it is linked to.
         """
-        k = self.index(utime)
-        best = int(self.best[k])
-        if best < 0:
+        i = self._contact_index(utime)
+        if i < 0:
             return None
+        span = self.contacts[i]
+        j = next(
+            n for n, station in enumerate(self.stations) if station.code == span.station
+        )
+        k = self.index(utime)
         if attitude is not None and self.gimballed:
             communications = self.config.spacecraft_bus.communications
             assert communications is not None
@@ -180,7 +253,7 @@ class StationCoverage:
                 np.deg2rad(ra),
                 np.deg2rad(dec),
                 np.deg2rad(roll),
-                self._to_station[best, k],
+                self._to_station[j, k],
             )
             boresight = np.asarray(antenna.fixed_boresight_body, dtype=float)
             boresight /= np.linalg.norm(boresight)
@@ -190,38 +263,18 @@ class StationCoverage:
                 > antenna.gimbal_range_deg
             ):
                 return None
-        station = self.stations[best]
-        return Contact(
-            station.code, float(self.rates[best]), float(self.range_km[best, k])
-        )
+        return Contact(span.station, span.rate_mbps, float(self.range_km[j, k]))
 
     def spans(self, begin: float, end: float) -> list[ContactSpan]:
-        """The spans of continuous contact in ``[begin, end)``, by station.
-
-        Each step is in contact with its best station for the whole step;
-        consecutive steps with the same station form one span, clipped to
-        the window.
-        """
+        """The contacts in ``[begin, end)``, clipped to the window."""
         spans: list[ContactSpan] = []
-        first = max(0, self.index(begin))
-        for k in range(first, len(self.times)):
-            step_begin = float(self.times[k])
-            if step_begin >= end:
+        first = max(0, bisect_right(self._begins, begin) - 1)
+        for span in self.contacts[first:]:
+            if span.begin >= end:
                 break
-            best = int(self.best[k])
-            if best < 0:
-                continue
-            step_end = min(step_begin + self.step_size, end)
-            step_begin = max(step_begin, begin)
-            if step_end <= step_begin:
-                continue
-            station = self.stations[best].code
-            if spans and spans[-1].station == station and spans[-1].end >= step_begin:
-                spans[-1] = spans[-1]._replace(end=step_end)
-            else:
-                spans.append(
-                    ContactSpan(step_begin, step_end, station, float(self.rates[best]))
-                )
+            lo, hi = max(span.begin, begin), min(span.end, end)
+            if hi > lo:
+                spans.append(span._replace(begin=lo, end=hi))
         return spans
 
     def contact_in(
@@ -249,15 +302,12 @@ class StationCoverage:
     def next_contact(self, utime: float) -> float | None:
         """When the next contact begins at or after ``utime``: ``utime`` itself
         while in contact, else the start of the next span, or None."""
-        k = self.index(utime)
-        if self.best[k] >= 0 and self.times[k] + self.step_size > utime:
+        if self._contact_index(utime) >= 0:
             return utime
-        later = np.flatnonzero(self.best[k + 1 :] >= 0)
-        if later.size == 0:
-            return None
-        return float(self.times[k + 1 + int(later[0])])
+        i = bisect_right(self._begins, utime)
+        return self.contacts[i].begin if i < len(self.contacts) else None
 
     def fraction(self, begin: float, end: float) -> float:
-        """The fraction of ``[begin, end)`` with a station in contact."""
+        """The fraction of ``[begin, end)`` in contact."""
         covered = sum(span.end - span.begin for span in self.spans(begin, end))
         return covered / (end - begin) if end > begin else 0.0

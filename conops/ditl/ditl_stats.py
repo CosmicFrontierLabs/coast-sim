@@ -324,6 +324,7 @@ class DITLStats:
             spans = self.coverage.spans(begin, end)
             in_contact = sum(span.end - span.begin for span in spans) / 3600
             print(f"Contacts: {len(spans)}")
+            print(f"Handovers: {self.coverage.handovers}")
             print(
                 f"Time in Contact: {in_contact:.2f} hours "
                 f"({100 * self.coverage.fraction(begin, end):.1f}% of the run)"
