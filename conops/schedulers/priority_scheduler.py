@@ -27,6 +27,7 @@ from ..simulation.passes import Pass
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing
 from ..targets.merit import MeritBreakdown, MeritModel
+from ..targets.plan_entry import snapshot_min_seconds
 from .allocator import AllocatedTime
 from .battery import MIN_CHARGE_SECONDS, Addition, Additions, Angles, BatteryLedger
 from .context import Attitude, SchedulingContext
@@ -123,7 +124,9 @@ class _Request(BaseModel):
     @property
     def wants_more(self) -> bool:
         """Whether enough exposure is left for another snapshot."""
-        return self.remaining > 0 and self.remaining >= float(self.target.ss_min)
+        return self.remaining > 0 and self.remaining >= float(
+            snapshot_min_seconds(self.target)
+        )
 
 
 def program_shares(seconds: Mapping[str, float]) -> dict[str, float]:
@@ -159,7 +162,7 @@ def _collection_seconds(block: _Block) -> float:
 
 def _usable(request: _Request, seconds: float) -> bool:
     """Whether ``seconds`` of the request's exposure are none or a snapshot's worth."""
-    return seconds <= 0.0 or seconds >= float(request.target.ss_min)
+    return seconds <= 0.0 or seconds >= float(snapshot_min_seconds(request.target))
 
 
 def _long_enough(collection_seconds: float, ss_min: float) -> bool:
@@ -781,7 +784,7 @@ class PriorityScheduler:
             if (
                 target.done
                 or int(target.obsid) in self.held
-                or remaining < target.ss_min
+                or remaining < snapshot_min_seconds(target)
             ):
                 continue
             category = merit_model.category(target)
@@ -844,7 +847,7 @@ class PriorityScheduler:
         for request in requests:
             rest = request.model_copy()
             left = request.remaining
-            ss_min = float(request.target.ss_min)
+            ss_min = float(snapshot_min_seconds(request.target))
             ss_max = float(request.target.ss_max)
             for span in self.allocated.get(int(request.target.obsid), []):
                 allocated = min(span.seconds, left)
@@ -1622,7 +1625,7 @@ class PriorityScheduler:
         """
         self._successor_blocked = False
         target = request.target
-        ss_min = request.remaining if request.whole else float(target.ss_min)
+        ss_min = request.remaining if request.whole else float(snapshot_min_seconds(target))
         earliest = self._earliest_start(pred)
         horizon_end = self.ctx.uend if until is None else min(until, self.ctx.uend)
         gap_end = succ.ready if succ is not None else horizon_end
@@ -1850,7 +1853,7 @@ class PriorityScheduler:
             obsid=target.obsid,
             obstype=target.obstype,
             merit=request.merit.value,
-            ss_min=target.ss_min,
+            ss_min=snapshot_min_seconds(target),
             ss_max=target.ss_max,
         )
         entry.exptime = collection_end - collection_begin

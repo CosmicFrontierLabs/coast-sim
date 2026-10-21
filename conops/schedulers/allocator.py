@@ -25,6 +25,7 @@ from ..simulation.coverage import StationCoverage
 from ..simulation.passes import Pass
 from ..targets import Pointing
 from ..targets.merit import MeritModel
+from ..targets.plan_entry import snapshot_min_seconds
 from .context import SchedulingContext
 from .recorder import contact_downlink_gb
 
@@ -282,80 +283,6 @@ class _StoreBudget(NamedTuple):
             )
         incoming = carries[k - 1] if k else self.start
         return allowed - incoming
-
-
-class _Budget(NamedTuple):
-    """The run's data budget: what each recorder can carry, by store name."""
-
-    stores: dict[str, _StoreBudget]
-
-    @property
-    def active(self) -> bool:
-        """Whether any recorder's budget limits what may be allocated."""
-        return any(store.active for store in self.stores.values())
-
-    def science(
-        self, seconds: Mapping[int, Mapping[int, float]]
-    ) -> dict[str, list[float]]:
-        """Gb the science in ``seconds`` (by obsid, then bin) generates in
-        each bin on each recorder with a budget."""
-        return {
-            name: store.science(seconds)
-            for name, store in self.stores.items()
-            if store.active
-        }
-
-    def data_seconds(
-        self,
-        demand: _Demand,
-        science: Mapping[str, Sequence[float]],
-        k: int,
-        first: bool,
-    ) -> float:
-        """Seconds the data room in bin ``k`` allows the request there, on
-        every recorder it generates data on, with ``science`` already
-        allocated by recorder and bin."""
-        most = math.inf
-        for name, store in self.stores.items():
-            if not store.active:
-                continue
-            rate, fixed = store.rates.get(demand.obsid, (0.0, 0.0))
-            if rate <= 0.0 and fixed <= 0.0:
-                continue
-            left = store.room(science[name], k) - (fixed if first else 0.0)
-            if left < 0.0:
-                return 0.0
-            if rate > 0.0:
-                most = min(most, left / rate)
-        return most
-
-    def add(
-        self,
-        science: Mapping[str, list[float]],
-        demand: _Demand,
-        k: int,
-        part: float,
-        first: bool,
-    ) -> None:
-        """Count ``part`` seconds of the request in bin ``k`` on each recorder."""
-        for name, store in self.stores.items():
-            if store.active:
-                rate, fixed = store.rates.get(demand.obsid, (0.0, 0.0))
-                science[name][k] += rate * part + (fixed if first else 0.0)
-
-
-def _summed(lists: Iterable[Sequence[float]]) -> list[float]:
-    """The lists summed element by element, skipping empty ones; empty if
-    all are."""
-    total: list[float] = []
-    for values in lists:
-        if not values:
-            continue
-        if not total:
-            total = list(values)
-        else:
-            total = [a + b for a, b in zip(total, values, strict=True)]
-    return total
 
 
 class _Budget(NamedTuple):
@@ -1080,7 +1007,7 @@ class LongRangeAllocator:
         obsid = int(target.obsid)
         exptime = target.exptime if target.exptime is not None else target.ss_max
         remaining = float(exptime) - reserved.get(obsid, 0.0)
-        if target.done or remaining < float(target.ss_min):
+        if target.done or remaining < float(snapshot_min_seconds(target)):
             return None
         windows = self._windows.get(obsid)
         if windows is None:
@@ -1095,7 +1022,7 @@ class LongRangeAllocator:
             if hi <= lo:
                 continue
             seen = sum(max(0.0, min(w1, hi) - max(w0, lo)) for w0, w1 in windows)
-            if seen >= float(target.ss_min):
+            if seen >= float(snapshot_min_seconds(target)):
                 visible[k] = seen
         category = self.merit_model.category(target)
         merit = self.merit_model.value_terms(target, start, delivered_shares=shares)
@@ -1108,7 +1035,7 @@ class LongRangeAllocator:
             obsid=obsid,
             value=merit.value,
             remaining=remaining,
-            ss_min=float(target.ss_min),
+            ss_min=float(snapshot_min_seconds(target)),
             deadline=target.deadline,
             spread=category.cadence_seconds is not None
             and self.merit_model.cadence_weight > 0.0,
