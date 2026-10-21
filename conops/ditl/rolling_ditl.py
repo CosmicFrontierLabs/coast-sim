@@ -11,8 +11,9 @@ from pydantic import BaseModel, ConfigDict
 
 from ..common import ObsType
 from ..config import MissionConfig, ScienceData
-from ..schedulers.context import Attitude, tracking_rest
+from ..schedulers.context import Attitude, SchedulingContext, tracking_rest
 from ..schedulers.priority_scheduler import PriorityScheduler, StartState
+from ..simulation.passes import Pass
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing
 from ..targets.merit import MeritModel
@@ -162,6 +163,8 @@ class RollingHorizonDITL(DITL):
         self.include_passes = include_passes
         self.scheduler = scheduler
         self.scheduler_options = dict(scheduler_options or {})
+        self._run_passes: list[Pass] | None = None
+        """The run's ground passes, predicted once for every plan."""
         self.merit_model = MeritModel(config)
         self.too_register: list[TOORequest] = []
         self.replans: list[ReplanRecord] = []
@@ -513,6 +516,12 @@ class RollingHorizonDITL(DITL):
         horizon_end = min(utime + self.horizon.total_seconds(), self.uend)
         if horizon_end <= start:
             return committed, dropped, list(pinned), 0
+        if self.include_passes and self._run_passes is None:
+            # Predicted once, as every plan would predict them for itself:
+            # the same seed, start and length give the same passes.
+            self._run_passes = list(
+                SchedulingContext(self.config, self.begin, self.end).predict_passes()
+            )
         scheduler = self.scheduler(
             self.config,
             # Finished and held targets too: the scheduler does not place
@@ -529,6 +538,7 @@ class RollingHorizonDITL(DITL):
             reserved_seconds=self._reserved_seconds(leading, utime),
             reserved_visits=self._reserved_visits(leading, utime),
             held=[int(t.obsid) for t in held],
+            passes=self._run_passes,
             **self.scheduler_options,  # type: ignore[arg-type]
         )
         return (

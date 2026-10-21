@@ -180,6 +180,9 @@ class PriorityScheduler:
         simulation_start: Start of the simulation that will execute the plan,
             when the plan covers only part of it. Defaults to ``begin``.
         simulation_end: End of that simulation. Defaults to ``end``.
+        passes: The run's predicted ground passes, where the caller has them;
+            the plan then reserves those in its horizon instead of predicting
+            the whole simulation's, which takes several seconds a day.
         start_state: Time and attitude the plan starts from, when it takes
             over from activities already committed. Without it the plan
             starts at ``begin`` from a freshly started spacecraft.
@@ -220,6 +223,7 @@ class PriorityScheduler:
         reserved_visits: Mapping[int, float] | None = None,
         held: Iterable[int] = (),
         successor_retries: int | None = 3,
+        passes: Sequence[Pass] | None = None,
     ) -> None:
         self.config = config
         self.targets = list(targets)
@@ -232,6 +236,8 @@ class PriorityScheduler:
         self.log = log if log is not None else DITLLog()
         self.simulation_start = simulation_start
         self.simulation_end = simulation_end
+        self.passes = passes
+        """The run's predicted ground passes, where the caller has them."""
         self.start_state = start_state
         self.reserved_seconds = dict(reserved_seconds or {})
         self.reserved_visits = dict(reserved_visits or {})
@@ -259,6 +265,7 @@ class PriorityScheduler:
             step_size=self.step_size,
             simulation_start=self.simulation_start,
             simulation_end=self.simulation_end,
+            passes=self.passes,
         )
         self.timeline: list[_Block] = []
         self._movable: dict[int, _Request] = {}
