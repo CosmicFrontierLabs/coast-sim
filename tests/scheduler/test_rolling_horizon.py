@@ -303,6 +303,117 @@ class TestTargetsOfOpportunity:
         assert all(too.executed for too in ditl.too_register)
         assert ditl.validate_plan_matches_execution() == []
 
+    @pytest.mark.parametrize("allowed_deadline", [80, 30])
+    def test_the_interrupting_too_keeps_its_slot_when_a_waiting_too_is_planned(
+        self, allowed_deadline: int
+    ) -> None:
+        """The interrupting ToO's entry is pinned, with its slew and setup,
+        while a waiting ToO is planned in after it. Bounding only the waiting
+        ToO's collection start by the entry's end let its slew and setup take
+        the slot, and the interrupting ToO follow it. The deadline that the
+        pushed-back interrupting ToO would miss changes nothing: both fit in
+        order, and neither waits for the next plan."""
+        targets = _long_observation()
+        assert targets[0].config is not None
+        targets[0].config.payload.observation_timing.setup_seconds = 300
+        deferred = {
+            **GRB,
+            "obsid": 1_000_002,
+            "name": "Deferred",
+            "merit": 500.0,
+            "exptime": 1800,
+            "deadline": T0 + 90 * MIN,
+            "interrupt": False,
+        }
+        allowed = {**GRB, "merit": 400.0, "deadline": T0 + allowed_deadline * MIN}
+        ditl = _run(
+            3,
+            targets,
+            toos=(deferred, allowed),
+            replan_interval=timedelta(hours=4),
+        )
+
+        assert [r.interrupted_obsid for r in ditl.replans][-1] == 1
+        science = [e for e in ditl.plan if e.obstype.name == "AT"]
+        assert [int(e.obsid) for e in science] == [1, 1_000_001, 1_000_002, 1]
+        _, allowed_entry, deferred_entry, _ = science
+        # Pinned where the first pass placed it, straight after the cut.
+        assert float(allowed_entry.begin) == T0 + 20 * MIN
+        assert float(deferred_entry.begin) >= float(allowed_entry.end)
+        assert all(too.executed for too in ditl.too_register)
+        assert ditl.validate_plan_matches_execution() == []
+
+    def test_a_held_toos_collected_science_still_counts_towards_its_share(
+        self,
+    ) -> None:
+        """A ``interrupt=False`` ToO already observing is held out of the
+        interrupt attempt's placement, but its collected science must still
+        count towards its program's share: three ToOs in program A, which has
+        delivered all the science, so the interrupting one is worth its merit
+        less the deficit weight times half, 150, not 250, and the later ToO
+        worth 175 can interrupt it in turn before its deadline."""
+        programs = [
+            ObservationCategory(
+                name="A", obsid_min=1_000_000, obsid_max=1_000_010, time_share=0.5
+            ),
+            ObservationCategory(name="B", obsid_min=1, obsid_max=10, time_share=0.5),
+        ]
+        config = _config(
+            3,
+            weights=TargetConfig(completion_deficit_weight=100),
+            categories=programs,
+        )
+        initial = {
+            **GRB,
+            "name": "Initial",
+            "ra": 105.0,
+            "merit": 10.0,
+            "exptime": 3600,
+            "submit_time": T0,
+            "interrupt": False,
+        }
+        first = {
+            **GRB,
+            "obsid": 1_000_002,
+            "name": "First",
+            "merit": 200.0,
+            "exptime": 3600,
+            "deadline": T0 + 30 * MIN,
+        }
+        second = {
+            **GRB,
+            "obsid": 1_000_003,
+            "name": "Second",
+            "ra": 110.0,
+            "merit": 225.0,
+            "exptime": 600,
+            "submit_time": T0 + 40 * MIN,
+            "deadline": T0 + 50 * MIN,
+        }
+        ditl = RollingHorizonDITL(
+            config,
+            [],
+            begin=BEGIN,
+            end=BEGIN + timedelta(hours=3),
+            replan_interval=timedelta(hours=4),
+        )
+        ditl.step_size = 60
+        for too in (initial, first, second):
+            ditl.submit_too(**too)  # type: ignore[arg-type]
+        assert ditl.calc()
+
+        science = [e for e in ditl.plan if e.obstype.name == "AT"]
+        first_entry = next(e for e in science if int(e.obsid) == 1_000_002)
+        assert float(first_entry.merit) == pytest.approx(150.0)
+        interrupted = [
+            r.interrupted_obsid for r in ditl.replans if r.interrupted_obsid is not None
+        ]
+        assert interrupted == [1_000_001, 1_000_002]
+        response = ditl.too_response_times()[1_000_003]
+        assert response is not None and response <= 10 * MIN
+        assert all(too.executed for too in ditl.too_register)
+        assert ditl.validate_plan_matches_execution() == []
+
     def test_a_non_interruptible_observation_is_not_cut(self) -> None:
         """The ToO that interrupts this observation in its default category
         cannot when the category is not interruptible, and misses its
@@ -617,7 +728,7 @@ class TestScienceData:
             config, [], begin=BEGIN, end=BEGIN + timedelta(hours=1)
         )
         ditl.step_size = 60
-        science = {"Default Instrument": ScienceData(rate_gbps=0.2)}
+        science = {"Default Instrument": ScienceData(rate_gbps=0.001)}
         ditl.submit_too(
             obsid=1_000_001,
             ra=115.0,

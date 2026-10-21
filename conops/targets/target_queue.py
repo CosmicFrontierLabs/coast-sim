@@ -7,7 +7,12 @@ import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
 from ..common import unixtime2date
-from ..config import AttitudeControlSystem, Constraint, MissionConfig, ScienceData
+from ..config import (
+    AttitudeControlSystem,
+    Constraint,
+    MissionConfig,
+    ScienceData,
+)
 from ..config.acs import scheduled_slew_time
 from ..ditl.ditl_log import DITLLog
 from . import Pointing

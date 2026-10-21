@@ -14,6 +14,7 @@ from ..config import MissionConfig, ScienceData
 from ..schedulers.allocator import Allocation, LongRangeAllocator
 from ..schedulers.context import Attitude, tracking_rest
 from ..schedulers.priority_scheduler import PriorityScheduler, StartState
+from ..schedulers.recorder import RecorderLedger
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing
 from ..targets.merit import MeritModel
@@ -467,9 +468,10 @@ class RollingHorizonDITL(DITL):
         ToOs submitted with ``interrupt=False`` wait for the observation in
         progress, so they may not take its place either: a higher-ranked one
         would push the interrupting ToO past its deadline and undo the cut.
-        They are held back while the interrupting ToO is placed, then planned
-        in after it; one whose deadline falls before that waits for the next
-        plan.
+        They are held back while the interrupting ToO is placed, then the
+        plan up to and including its entry is pinned and the rest of the
+        horizon planned again with them; one whose deadline falls before the
+        entry ends waits for the next plan.
         """
         waiting = [
             self._too_targets[id(request)]
@@ -488,20 +490,9 @@ class RollingHorizonDITL(DITL):
             return planned
         follow = float(placed.end)
         held = [t for t in waiting if t.deadline is not None and t.deadline < follow]
-        starts = {id(t): t.earliest_start for t in waiting}
+        pinned = planned[2][: planned[2].index(placed) + 1]
         again = DITLLog()
-        try:
-            for target in waiting:
-                target.earliest_start = max(follow, target.earliest_start or follow)
-            replanned = self._plan_after(utime, cutoff, again, held=held)
-        finally:
-            for target in waiting:
-                target.earliest_start = starts[id(target)]
-        if self._placed(replanned[2], too.obsid) is None:
-            # Planned in after it, they still crowd the ToO out: the plan
-            # without them stands, and they go into the next one.
-            log.add_events(first.events)
-            return planned
+        replanned = self._plan_after(utime, cutoff, again, held=held, pinned=pinned)
         log.add_events(again.events)
         return replanned
 
@@ -524,22 +515,28 @@ class RollingHorizonDITL(DITL):
         log: DITLLog,
         *,
         held: Sequence[Pointing] = (),
+        pinned: Sequence[PlanEntry] = (),
     ) -> tuple[list[PlanEntry], list[PlanEntry], list[PlanEntry], int]:
         """Plan the horizon after the committed activities.
 
-        ``held`` targets are left out of this plan. Returns the committed and
-        dropped entries, the new entries and how many targets could not be
-        placed.
+        ``held`` targets are not placed by this plan, though their science,
+        collected and committed, still counts towards their programs' shares:
+        one of them may be the observation being interrupted. ``pinned``
+        entries, planned earlier for this replan, lead the new entries as
+        they are: the plan takes over where the last of them leaves the
+        spacecraft, and their science counts as collected. Returns the
+        committed and dropped entries, the new entries and how many targets
+        could not be placed.
         """
         committed = [e for e in self.plan.entries if float(e.begin) < cutoff]
         dropped = [e for e in self.plan.entries if float(e.begin) >= cutoff]
-        start_state = self._start_state(committed, utime, cutoff)
+        leading = [*committed, *pinned]
+        start_state = self._start_state(leading, utime, cutoff)
         start = start_state.time if start_state is not None else cutoff
         horizon_end = min(utime + self.horizon.total_seconds(), self.uend)
         if horizon_end <= start:
-            return committed, dropped, [], 0
-        held_ids = {id(t) for t in held}
-        reserved = self._reserved_seconds(committed, utime)
+            return committed, dropped, list(pinned), 0
+        reserved = self._reserved_seconds(leading, utime)
         options = dict(self.scheduler_options)
         used = None
         if self.allocator is not None:
@@ -549,9 +546,10 @@ class RollingHorizonDITL(DITL):
                 start,
                 reserved,
                 unplanned={int(t.obsid) for t in self._too_targets.values()},
+                start_volume_gb=self._recorder_volume_at(utime, start, committed),
             )
         elif self.allocation is not None:
-            used = self._used_by_bin(self.allocation, committed)
+            used = self._used_by_bin(self.allocation, leading)
         if self.allocation is not None:
             options["allocated"] = self.allocation.allocated(
                 [int(t.obsid) for t in self.targets if not t.done],
@@ -562,9 +560,9 @@ class RollingHorizonDITL(DITL):
             options["allocation_bonus"] = self.allocation_bonus
         scheduler = self.scheduler(
             self.config,
-            # Finished targets too: the scheduler does not place them, but their
-            # science counts towards their programs' shares.
-            [t for t in self.targets if id(t) not in held_ids],
+            # Finished and held targets too: the scheduler does not place
+            # them, but their science counts towards their programs' shares.
+            self.targets,
             _as_datetime(start),
             _as_datetime(horizon_end),
             step_size=self.step_size,
@@ -574,13 +572,15 @@ class RollingHorizonDITL(DITL):
             simulation_end=self.end,
             start_state=start_state,
             reserved_seconds=reserved,
-            reserved_visits=self._reserved_visits(committed, utime),
+            reserved_visits=self._reserved_visits(leading, utime),
+            held=[int(t.obsid) for t in held],
+            start_volume_gb=self._recorder_volume_at(utime, start, committed),
             **options,  # type: ignore[arg-type]
         )
         return (
             committed,
             dropped,
-            list(scheduler.schedule().entries),
+            [*pinned, *scheduler.schedule().entries],
             len(scheduler.unplaced),
         )
 
@@ -649,6 +649,40 @@ class RollingHorizonDITL(DITL):
             obsid=too.obsid,
         )
         return entry, original
+
+    def _recorder_volume_at(
+        self, utime: float, start: float, committed: Sequence[PlanEntry]
+    ) -> float:
+        """What is on the recorder when a new plan starts.
+
+        The committed activities run on until then, generating data and
+        downlinking during their contacts, so the plan starts from what they
+        leave rather than from the volume now.
+        """
+        now = float(self.recorder.current_volume_gb)
+        if start <= utime:
+            return now
+        contacts = [e for e in committed if entry_obstype(e) == ObsType.GSP]
+        science: list[tuple[float, float]] = []
+        for entry in committed:
+            if entry.collection_begin is None or entry.collection_end is None:
+                continue
+            begin = max(float(entry.collection_begin), utime)
+            end = min(float(entry.collection_end), start)
+            if end <= begin:
+                continue
+            volume = self.config.science_generated(end - begin, entry.science_data)
+            if float(entry.collection_begin) < utime:
+                # Already collecting: its fixed amount is on the recorder.
+                volume -= self.config.science_generated(0.0, entry.science_data)
+            science.append((begin, volume))
+        ledger = RecorderLedger(
+            self.config, utime, start, contacts, start_volume_gb=now
+        )
+        volumes = [0.0] * ledger.segments
+        for begin, volume in science:
+            volumes[ledger.segment(begin)] += volume
+        return ledger.peaks(volumes)[-1]
 
     def _start_state(
         self, committed: Sequence[PlanEntry], utime: float, cutoff: float

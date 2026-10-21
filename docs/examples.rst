@@ -139,6 +139,29 @@ extra):
 
 See :doc:`planning` (Optimizing plans with CP-SAT) for reference.
 
+Planning Within the Recorder
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Location**: ``examples/Recorder_Constraint_Example.ipynb``
+
+This notebook plans a day for a spacecraft with a 32 Gb recorder, housekeeping data,
+fifty-two faint targets and eight bright ones whose single 20-minute visit is 5 Gb
+each:
+
+* One-day plans with and without the recorder's planning limit, executed to show the
+  recorder staying within the limit in one, with the bright visits rationed around
+  the contacts, and filling, losing data and safing the spacecraft in the other
+* The scheduler's ledger: what each contact downlinks and the recorder's peak before
+  the next one
+* Which targets are observed under the limit, how local search fills the time the
+  recorder left idle, trading on merit-weighted science within the limit, and how
+  CP-SAT does the same with the recorder in its model
+* Keeping margin with a lower ``planning_limit``, and rolling-horizon replans that
+  start from the recorder's actual volume
+
+See :doc:`planning` (Planning within the recorder) and :doc:`data_management` for
+reference.
+
 Example Configuration
 ~~~~~~~~~~~~~~~~~~~~~
 
