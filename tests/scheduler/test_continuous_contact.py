@@ -183,6 +183,53 @@ class TestExecution:
         assert ditl.calc()
         assert ditl.data_downlinked_gb[-1] > 0.0
 
+    def test_the_timeline_plot_shows_the_coverage_as_ground_contact(self) -> None:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        from conops.visualization.mpl.ditl_timeline import (
+            _extract_contacts,
+            _extract_ground_passes,
+            plot_ditl_timeline,
+        )
+        from conops.visualization.plotly.ditl_timeline import (
+            _extract_contacts as _extract_contacts_plotly,
+        )
+        from conops.visualization.plotly.ditl_timeline import (
+            plot_ditl_timeline_plotly,
+        )
+
+        config = _recorder_config()
+        ditl = create_ditl(
+            config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
+        )
+        ditl.step_size = STEP
+        assert ditl.calc()
+        assert ditl.coverage is not None
+        t_start = float(ditl.plan[0].begin)
+        spans = ditl.coverage.spans(T0, T0 + HOURS * HOUR)
+        assert len(spans) > 5
+        # No passes; one bar per span, by station, on a run this short.
+        assert _extract_ground_passes(ditl, t_start, 0.0) == []
+        bars = _extract_contacts(ditl, t_start, 0.0)
+        assert _extract_contacts_plotly(ditl, t_start, 0.0) == bars
+        assert [(b.start, b.duration, b.station, b.fraction) for b in bars] == [
+            pytest.approx(
+                ((s.begin - t_start) / 3600, (s.end - s.begin) / 3600, s.station, 1.0)
+            )
+            for s in spans
+        ]
+        fig, ax = plot_ditl_timeline(ditl)
+        assert "Ground Contact" in [t.get_text() for t in ax.get_yticklabels()]
+        labels = [t.get_text() for t in ax.get_legend().get_texts()]
+        assert {f"Contact: {s.station}" for s in spans} <= set(labels)
+        plt.close(fig)
+        figure = plot_ditl_timeline_plotly(ditl)
+        names = {trace.name for trace in figure.data}
+        assert {f"Contact: {s.station}" for s in spans} <= names
+
     def test_statistics_report_the_coverage(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
