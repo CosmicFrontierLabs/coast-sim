@@ -563,6 +563,7 @@ class RollingHorizonDITL(DITL):
                 start,
                 reserved,
                 unplanned={int(t.obsid) for t in self._too_targets.values()},
+                start_volume_gb=self._recorder_volume_at(utime, start, committed),
             )
         elif self.allocation is not None:
             used = self._used_by_bin(self.allocation, leading)
