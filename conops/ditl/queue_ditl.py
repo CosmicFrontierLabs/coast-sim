@@ -2025,6 +2025,7 @@ class QueueDITL(DITLMixin, DITLStats):
             self.queue.targets,
             utime,
             unplanned={int(t.obsid) for t in self._too_targets.values()},
+            start_volume_gb=float(self.recorder.current_volume_gb),
         )
         bin_end = next(
             (b1 for b0, b1 in allocation.bins if b0 <= utime < b1), self.uend

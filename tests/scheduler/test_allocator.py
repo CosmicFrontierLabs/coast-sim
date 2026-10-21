@@ -3,7 +3,7 @@
 import builtins
 import importlib.util
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from datetime import timedelta
 from types import ModuleType
 from unittest.mock import patch
@@ -16,6 +16,7 @@ from conops import DITL, QueueDITL, RollingHorizonDITL, create_ditl
 from conops.common import ObsType
 from conops.config import (
     AllocationSettings,
+    HousekeepingData,
     MissionConfig,
     ObservationTiming,
     OnboardRecorder,
@@ -35,6 +36,7 @@ from conops.schedulers import (
     PriorityScheduler,
     SchedulingContext,
 )
+from conops.simulation.passes import Pass
 from conops.targets import Plan, Pointing, TargetQueue
 
 from .planning_scenario import BEGIN, CONSTRAINED, HOUR, MIN, PATCH, T0
@@ -224,6 +226,143 @@ def _fresh(week: Week, **options: object) -> Week:
         **options,  # type: ignore[arg-type]
     )
     return config, targets, allocator, allocator.allocate(targets, T0)
+
+
+HIGH_GBPS = 0.01
+"""A high-data target: 12 Gb per 20-minute snapshot."""
+LOW_GBPS = 0.0005
+"""A low-data target: 0.6 Gb per 20-minute snapshot."""
+HIGH_COUNT = 60
+"""How many of the week's random targets are high-data."""
+HIGH_OBSIDS = range(10000, 10000 + HIGH_COUNT)
+DATA_DAYS = 3
+"""The data-budget allocations cover three days: predicting a run's passes
+takes several seconds a day."""
+
+
+def _data_week(
+    limit: float | None | str = "default",
+) -> tuple[MissionConfig, list[Pointing]]:
+    """The week with contacts, a 32 Gb recorder, housekeeping, and the first
+    60 random targets generating data at a high rate and the rest at a low
+    one: the contacts downlink some 45 to 53 Gb a day, far less than the
+    high-data targets alone would generate."""
+    config = _config(
+        DAYS * 24,
+        stations=True,
+        categories=[
+            ObservationCategory(name="Early", obsid_min=40000, obsid_max=40000 + EDGE),
+            ObservationCategory(name="Late", obsid_min=50000, obsid_max=50000 + EDGE),
+        ],
+    )
+    config.recorder = OnboardRecorder(capacity_gb=32.0)
+    if limit != "default":
+        config.recorder.planning_limit = limit  # type: ignore[assignment]
+    config.spacecraft_bus.data_generation = HousekeepingData(rate_gbps=0.0001)
+    targets = _week_targets(config)
+    for target in targets:
+        high = int(target.obsid) in HIGH_OBSIDS
+        target.science_data = {
+            "Default Instrument": ScienceData(rate_gbps=HIGH_GBPS if high else LOW_GBPS)
+        }
+    return config, targets
+
+
+@pytest.fixture(scope="module")
+def data_passes() -> list[Pass]:
+    """The data-budget run's passes, predicted once for the module."""
+    config, _ = _data_week()
+    ctx = SchedulingContext(config, BEGIN, BEGIN + timedelta(days=DATA_DAYS))
+    return list(ctx.predict_passes())
+
+
+def _data_allocator(
+    config: MissionConfig, passes: list[Pass], **options: object
+) -> LongRangeAllocator:
+    return LongRangeAllocator(
+        config,
+        BEGIN,
+        BEGIN + timedelta(days=DATA_DAYS),
+        passes=passes,
+        **options,  # type: ignore[arg-type]
+    )
+
+
+def _seconds_of(allocation: Allocation, obsids: Collection[int]) -> float:
+    return sum(
+        sum(per_bin.values())
+        for obsid, per_bin in allocation.seconds.items()
+        if obsid in obsids
+    )
+
+
+class TestDataBudget:
+    @pytest.mark.parametrize("solver", ["milp", "greedy"])
+    def test_the_run_carries_no_more_data_than_its_contacts_and_recorder_allow(
+        self, solver: str, data_passes: list[Pass]
+    ) -> None:
+        if solver == "milp" and not HAS_ORTOOLS:
+            pytest.skip("needs OR-Tools")
+        config, targets = _data_week()
+        allocation = _data_allocator(config, data_passes, solver=solver).allocate(
+            targets, T0
+        )
+
+        assert allocation.data_limit == pytest.approx(28.8)
+        assert min(allocation.downlink) > 40.0
+        assert all(h > 8.0 for h in allocation.housekeeping)
+        assert all(s > 0.0 for s in allocation.science)
+        # To within the whole-second rounding of the allocated seconds.
+        assert all(
+            carry <= allocation.data_limit + 0.01
+            for carry in allocation.recorder_volumes()
+        )
+        # The budget binds: the high-data targets are not allocated in full.
+        high = [t for t in targets if int(t.obsid) in HIGH_OBSIDS]
+        assert _seconds_of(allocation, HIGH_OBSIDS) < sum(t.exptime for t in high)
+
+    def test_high_data_science_gives_way_to_what_the_contacts_can_downlink(
+        self, data_passes: list[Pass]
+    ) -> None:
+        """Against the same run without a budget: the high-data targets get
+        less and the low-data ones take the time instead."""
+        if not HAS_ORTOOLS:
+            pytest.skip("needs OR-Tools")
+        config, targets = _data_week()
+        free_config, free_targets = _data_week(None)
+        budgeted = _data_allocator(config, data_passes).allocate(targets, T0)
+        free = _data_allocator(free_config, data_passes).allocate(free_targets, T0)
+
+        assert free.data_limit is None and free.science == []
+        low = {int(t.obsid) for t in targets} - set(HIGH_OBSIDS)
+        assert _seconds_of(budgeted, HIGH_OBSIDS) < 0.5 * _seconds_of(free, HIGH_OBSIDS)
+        assert _seconds_of(budgeted, low) > _seconds_of(free, low)
+
+    def test_what_is_on_the_recorder_at_the_start_counts(
+        self, data_passes: list[Pass]
+    ) -> None:
+        """Starting with the recorder at its limit, the first bin can take
+        no more science than its contacts downlink."""
+        if not HAS_ORTOOLS:
+            pytest.skip("needs OR-Tools")
+        config, targets = _data_week()
+        full = _data_allocator(config, data_passes).allocate(
+            targets, T0, start_volume_gb=28.8
+        )
+        empty = _data_allocator(config, data_passes).allocate(targets, T0)
+
+        assert full.start_volume_gb == 28.8
+        assert full.science[0] <= full.downlink[0] - full.housekeeping[0] + 0.01
+        assert full.science[0] < empty.science[0]
+        assert all(carry <= 28.8 + 0.01 for carry in full.recorder_volumes())
+
+    def test_without_data_there_is_no_budget(self, week: Week) -> None:
+        """The week's targets generate no data, so the recorder's limit does
+        not bind, nothing is predicted for it, and nothing is reported."""
+        _, _, _, allocation = week
+        assert allocation.data_limit is None
+        assert allocation.downlink == [] and allocation.science == []
+        assert allocation.recorder_volumes() == [0.0] * DAYS
 
 
 class TestLongRangeAllocator:
