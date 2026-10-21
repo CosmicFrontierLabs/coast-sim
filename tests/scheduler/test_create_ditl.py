@@ -47,6 +47,31 @@ def _run(ditl: QueueDITL | DITL | RollingHorizonDITL) -> None:
 
 
 class TestDispatch:
+    def test_a_target_can_name_a_plain_instrument(self) -> None:
+        """A plain instrument has no mounting, so the queued target keeps its
+        name and its science coordinates are the body attitude."""
+        from conops.config import Instrument
+
+        config, targets = _setup(SchedulerConfig())
+        config.payload.instruments = [
+            Instrument(name="Camera"),
+            Telescope(name="Scope", boresight=(0.0, 0.0, 1.0)),
+        ]
+        targets[0].instrument_name = "Camera"
+
+        ditl = create_ditl(config, targets[:1], BEGIN, END)
+
+        assert isinstance(ditl, QueueDITL)
+        queued = ditl.queue.targets[0]
+        assert queued.instrument_name == "Camera"
+        assert queued.science_telescope() is None
+        assert not queued.uses_mounted_attitude()
+        assert queued.target_body_attitude(0.0) == (
+            targets[0].ra,
+            targets[0].dec,
+            0.0,
+        )
+
     def test_queues_every_target_with_its_settings(self) -> None:
         config, targets = _setup(SchedulerConfig())
         targets[0].deadline = T0 + 30 * MIN
