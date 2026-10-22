@@ -12,7 +12,6 @@ from pydantic import (
 from ..common import unixtime2date, unixtime_from
 from ..common.enums import ObsType
 from ..config.acs import AttitudeControlSystem
-from ..config.instrument import ConcurrencyRules
 from ..config.observation_timing import ObservationTiming, timing_for
 from .merit import MeritBreakdown
 from .plan_entry import PlanEntry
@@ -231,15 +230,27 @@ class Pointing(PlanEntry):
 
     @model_validator(mode="after")
     def _instrument_modes_are_known(self) -> "Pointing":
-        """A request names instruments the payload has, in modes they
-        define, and what it has observing at once is allowed; so does each
-        step of its sequence, with its own modes or the target's."""
+        """The modes a pointing names, its own and each sequence step's, name
+        instruments the payload has, in modes they define, and are allowed
+        at once. A pointing naming none is not checked here: the simulation
+        builds pointings of its own that observe nothing, such as a charging
+        attitude, and a request naming none is checked as using every
+        instrument where it enters, by :meth:`check_instrument_modes`."""
+        self.check_instrument_modes(named_only=True)
+        return self
+
+    def check_instrument_modes(self, *, named_only: bool = False) -> None:
+        """Check this request's instrument modes against the payload: its
+        own and each sequence step's, with its own modes or the target's.
+        A mapping naming nothing stands for every instrument with modes in
+        ``SCIENCE`` and is checked as that, unless ``named_only``."""
         if self.config is None or self.obstype not in self._STATIC_TARGET_OBSTYPES:
-            return self
+            return
         payload = self.config.payload
-        rules = getattr(payload, "concurrency", None)
-        # A test double's payload has no rules.
-        active = isinstance(rules, ConcurrencyRules) and rules.active
+        check = getattr(payload, "check_request", None)
+        # A test double's payload checks nothing.
+        if not callable(check):
+            return
         checks = [self.instrument_modes]
         if self.sequence is not None:
             checks.extend(
@@ -249,9 +260,8 @@ class Pointing(PlanEntry):
                 for step in self.sequence.steps
             )
         for modes in checks:
-            if modes or active:
-                payload.check_request(modes)
-        return self
+            if modes or not named_only:
+                check(modes)
 
     def step_pointing(self, index: int) -> "Pointing":
         """The pointing step ``index`` of this target's sequence observes: at

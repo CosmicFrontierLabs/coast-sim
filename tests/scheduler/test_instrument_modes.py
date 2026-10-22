@@ -25,6 +25,7 @@ from conops.targets import (
     Pointing,
     ScheduledActivity,
     SequenceStep,
+    TargetQueue,
 )
 
 from .planning_scenario import BEGIN, HOUR, MIN, PATCH, T0
@@ -423,9 +424,60 @@ class TestConcurrency:
                 dec=0.0,
                 instrument_modes={"camera": "SCIENCE", "spectrograph": "SCIENCE"},
             )
-        # Naming no modes means every instrument with modes, which breaks them.
-        with pytest.raises(ValidationError, match="allows 1"):
-            Pointing(config=config, obsid=3, ra=0.0, dec=0.0)
+        # Naming no modes means every instrument with modes, which breaks
+        # them: not when the pointing is made, since the simulation builds
+        # pointings of its own, but where a request enters.
+        unnamed = Pointing(config=config, obsid=3, ra=PATCH[0][0], dec=PATCH[0][1])
+        with pytest.raises(ValueError, match="allows 1"):
+            unnamed.check_instrument_modes()
+        with pytest.raises(ValueError, match="allows 1"):
+            PriorityScheduler(config, [unnamed], BEGIN, END, step_size=STEP).schedule()
+        queue = TargetQueue(config=config, ephem=config.constraint.ephem)
+        with pytest.raises(ValueError, match="allows 1"):
+            queue.add(ra=PATCH[0][0], dec=PATCH[0][1], obsid=3, merit=1.0)
+        queue.add(
+            ra=PATCH[0][0],
+            dec=PATCH[0][1],
+            obsid=4,
+            merit=1.0,
+            instrument_modes={"camera": "SCIENCE"},
+        )
+
+    def test_the_simulations_own_pointings_are_not_requests(self) -> None:
+        """The charging attitude and the ACS slew target name no modes and
+        observe nothing; with rules on the payload they still construct, and
+        a planned run that charges completes."""
+        config = _moded_battery_config()
+        config.payload.concurrency = ConcurrencyRules(max_observing=1)
+        # As the emergency charging and the ACS build theirs: no modes, a
+        # science obstype at first.
+        own = Pointing(
+            config=config,
+            ra=PATCH[0][0],
+            dec=PATCH[0][1],
+            name="EMERGENCY_CHARGE_0",
+            obsid=999001,
+        )
+        assert own.effective_instrument_modes() == {
+            "camera": "SCIENCE",
+            "spectrograph": "SCIENCE",
+        }
+        target = _target(config, 1, *PATCH[0], merit=90.0, minutes=40, snapshot=40)
+        target.instrument_modes = {"camera": "SCIENCE"}
+        plan = PriorityScheduler(
+            config, [target], BEGIN, END, step_size=STEP
+        ).schedule()
+        replay = Plan.model_validate_json(plan.model_dump_json())
+        ditl = DITL(
+            config=config,
+            ephem=config.constraint.ephem,
+            plan=replay,
+            begin=BEGIN,
+            end=END,
+        )
+        ditl.step_size = STEP
+        assert ditl.calc()
+        assert ditl.validate_plan_matches_execution() == []
 
     def test_a_sequence_step_breaking_the_rules_is_rejected(self) -> None:
         config = _ruled_config()
