@@ -13,6 +13,7 @@ from ..common import ObsType
 from ..config import MissionConfig, ScienceData
 from ..schedulers.context import Attitude, tracking_rest
 from ..schedulers.priority_scheduler import PriorityScheduler, StartState
+from ..schedulers.recorder import RecorderLedger
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing
 from ..targets.merit import MeritModel
@@ -529,6 +530,7 @@ class RollingHorizonDITL(DITL):
             reserved_seconds=self._reserved_seconds(leading, utime),
             reserved_visits=self._reserved_visits(leading, utime),
             held=[int(t.obsid) for t in held],
+            start_volume_gb=self._recorder_volume_at(utime, start, leading),
             **self.scheduler_options,  # type: ignore[arg-type]
         )
         return (
@@ -604,6 +606,49 @@ class RollingHorizonDITL(DITL):
             obsid=too.obsid,
         )
         return entry, original
+
+    def _recorder_volume_at(
+        self, utime: float, start: float, committed: Sequence[PlanEntry]
+    ) -> float:
+        """What is on the recorder when a new plan starts.
+
+        The committed activities run on until then, generating data and
+        downlinking during their contacts, so the plan starts from what they
+        leave rather than from the volume now.
+        """
+        now = float(self.recorder.current_volume_gb)
+        if start <= utime:
+            return now
+        contacts = [e for e in committed if entry_obstype(e) == ObsType.GSP]
+        science: list[tuple[float, float]] = []
+        for entry in committed:
+            if entry.collection_begin is None or entry.collection_end is None:
+                continue
+            begin = max(float(entry.collection_begin), utime)
+            end = min(float(entry.collection_end), start)
+            if end <= begin:
+                continue
+            volume = self.config.science_generated(end - begin, entry.science_data)
+            if float(entry.collection_begin) < utime:
+                # Already collecting: its fixed amount is on the recorder.
+                volume -= self.config.science_generated(0.0, entry.science_data)
+            science.append((begin, volume))
+        ledger = RecorderLedger(
+            self.config,
+            utime,
+            start,
+            contacts,
+            start_volume_gb=now,
+            step_size=self.step_size,
+            origin=self.ustart,
+        )
+        volumes = [0.0] * ledger.segments
+        for begin, volume in science:
+            volumes[ledger.segment(begin)] += volume
+        for entry in contacts:
+            # The slew into a contact still to come, flown in PASS mode.
+            volumes[ledger.ingress_segment(entry)] += ledger.ingress_volume(entry)
+        return ledger.peaks(volumes)[-1]
 
     def _start_state(
         self, committed: Sequence[PlanEntry], utime: float, cutoff: float

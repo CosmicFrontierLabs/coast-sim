@@ -1421,6 +1421,7 @@ The :class:`~conops.config.OnboardRecorder` simulates onboard data storage.
 * ``current_volume_gb`` (float): Current stored data in Gigabits
 * ``yellow_threshold`` (float): Warning threshold (fraction, 0-1)
 * ``red_threshold`` (float): Critical threshold (fraction, 0-1)
+* ``planning_limit`` (float | None): Fraction of capacity the schedulers keep the recorder below, assuming every contact downlinks for its whole length. Defaults to ``red_threshold``, where the red alert fires; ``None`` plans without regard to the recorder. See :doc:`planning`.
 
 .. code-block:: python
 
@@ -1432,6 +1433,7 @@ The :class:`~conops.config.OnboardRecorder` simulates onboard data storage.
        current_volume_gb=0.0,
        yellow_threshold=0.7,  # 70% full warning
        red_threshold=0.9,     # 90% full critical
+       planning_limit=0.8,    # plans leave 20% for a missed contact
    )
 
 fault_management
