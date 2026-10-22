@@ -140,6 +140,14 @@ class InstrumentMode(ConfigModel):
             "mode; None: its data_generation's science data"
         ),
     )
+    observing: bool = Field(
+        default=True,
+        description=(
+            "Whether the instrument counts as observing in this mode for the "
+            "payload's concurrency rules; False for a standby mode that draws "
+            "its power without observing. IDLE never observes"
+        ),
+    )
 
     def power(self, in_eclipse: bool = False) -> float:
         """The mode's draw in watts."""
@@ -205,6 +213,10 @@ class Instrument(ConfigModel):
         for required in (IDLE_MODE, SCIENCE_MODE):
             if required not in names:
                 raise ValueError(f"instrument modes must include {required}")
+        for mode in modes:
+            if mode.name == IDLE_MODE and mode.observing:
+                # Idle is, by definition, not observing.
+                mode.observing = False
         return modes
 
     def mode(self, name: str) -> InstrumentMode | None:
@@ -567,7 +579,8 @@ _AnyInstrument = Annotated[
 class ConcurrencyRules(ConfigModel):
     """What may observe at once: rules on the instruments an observation
     uses, checked against each request's instrument modes. An instrument
-    observes when a request names it in any mode but ``IDLE``."""
+    observes when a request names it in a mode that observes: any mode but
+    ``IDLE``, unless the mode's ``observing`` flag says otherwise."""
 
     max_observing: int | None = Field(
         default=None,
@@ -722,14 +735,33 @@ class Payload(ConfigModel):
         with modes, in ``SCIENCE``."""
         return dict.fromkeys(self.instruments_with_modes(), SCIENCE_MODE)
 
-    def check_concurrency(self, instrument_modes: Mapping[str, str]) -> None:
-        """Raise if the instruments ``instrument_modes`` has observing, those
-        in any mode but ``IDLE``, break the payload's concurrency rules."""
+    def observes_in(self, instrument: str, mode: str) -> bool:
+        """Whether ``instrument`` counts as observing in ``mode``: any mode
+        but ``IDLE`` whose ``observing`` flag is set, which it is unless the
+        mode says otherwise; for an instrument without modes, any mode but
+        ``IDLE``."""
+        if mode == IDLE_MODE:
+            return False
+        for candidate in self.instruments:
+            if candidate.name == instrument:
+                own = candidate.mode(mode)
+                return own.observing if own is not None else True
+        return True
+
+    def check_concurrency(
+        self, instrument_modes: Mapping[str, str], *, pointing: bool = True
+    ) -> None:
+        """Raise if the instruments ``instrument_modes`` has observing break
+        the payload's concurrency rules. The required guider applies only to
+        an observation that points (``pointing``), not to a scheduled
+        activity, which holds the attitude it has."""
         rules = self.concurrency
         if not rules.active:
             return
         observing = sorted(
-            name for name, mode in instrument_modes.items() if mode != IDLE_MODE
+            name
+            for name, mode in instrument_modes.items()
+            if self.observes_in(name, mode)
         )
         if rules.max_observing is not None and len(observing) > rules.max_observing:
             raise ValueError(
@@ -737,7 +769,8 @@ class Payload(ConfigModel):
                 f"the payload allows {rules.max_observing}"
             )
         if (
-            rules.required_guider is not None
+            pointing
+            and rules.required_guider is not None
             and observing
             and rules.required_guider not in observing
         ):

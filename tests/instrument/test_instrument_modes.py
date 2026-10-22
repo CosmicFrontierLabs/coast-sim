@@ -209,3 +209,30 @@ class TestConcurrency:
         payload.check_concurrency({"camera": "SCIENCE", "spectrograph": "IDLE"})
         with pytest.raises(ValueError, match="cannot observe together"):
             payload.check_concurrency({"camera": "SCIENCE", "spectrograph": "SCIENCE"})
+
+    def test_a_standby_mode_draws_power_without_observing(self) -> None:
+        warm = Instrument(
+            name="warm",
+            modes=[
+                InstrumentMode(name="IDLE", power_w=1.0, observing=True),
+                InstrumentMode(name="SCIENCE", power_w=50.0),
+                InstrumentMode(name="STANDBY", power_w=20.0, observing=False),
+            ],
+        )
+        assert warm.mode("IDLE") is not None and not warm.mode("IDLE").observing
+        payload = Payload(
+            instruments=[_camera(), warm],
+            concurrency=ConcurrencyRules(
+                max_observing=1, exclusive=[("camera", "warm")]
+            ),
+        )
+        assert warm.power(instrument_mode="STANDBY") == 20.0
+        payload.check_concurrency({"camera": "SCIENCE", "warm": "STANDBY"})
+        with pytest.raises(ValueError, match="allows 1"):
+            payload.check_concurrency({"camera": "SCIENCE", "warm": "SCIENCE"})
+
+    def test_an_activity_needs_no_guider(self) -> None:
+        payload = self._payload(required_guider="guider")
+        with pytest.raises(ValueError, match="must also use"):
+            payload.check_concurrency({"camera": "SCIENCE"})
+        payload.check_concurrency({"camera": "SCIENCE"}, pointing=False)
