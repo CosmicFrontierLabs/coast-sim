@@ -2773,6 +2773,33 @@ class QueueDITL(DITLMixin, DITLStats):
         slew.calc_slewtime()
 
     def _ppt_optimum_roll(self, target: Pointing, execution_time: float) -> float:
+        """The roll a target is observed at, at ``execution_time``: the
+        power-optimal roll, cached, or the roll the target asks for (see
+        :meth:`Pointing.requested_roll`); the optimum where an absolute roll
+        is beyond the ACS limit, which :meth:`_roll_allowed` rejects."""
+        optimum = self._power_optimal_roll(target, execution_time)
+        requested = getattr(target, "requested_roll", None)
+        if not callable(requested):
+            return optimum
+        roll = requested(
+            optimum,
+            self.config.spacecraft_bus.attitude_control.max_roll_from_optimum_deg,
+        )
+        return optimum if roll is None else float(roll)
+
+    def _roll_allowed(self, target: Pointing, execution_time: float) -> bool:
+        """Whether the roll ``target`` asks for is within the ACS limit of the
+        power-optimal roll at ``execution_time``; True without a request."""
+        requested = getattr(target, "requested_roll", None)
+        if not callable(requested):
+            return True
+        limit = self.config.spacecraft_bus.attitude_control.max_roll_from_optimum_deg
+        return (
+            requested(self._power_optimal_roll(target, execution_time), limit)
+            is not None
+        )
+
+    def _power_optimal_roll(self, target: Pointing, execution_time: float) -> float:
         """Return the optimum roll for a target at the given time, caching the result."""
         telescope = (
             target.science_telescope() if issubclass(type(target), PlanEntry) else None
@@ -3177,6 +3204,20 @@ class QueueDITL(DITLMixin, DITLStats):
                         )
                         self._retry_fetch_without_current_ppt(utime, ra, dec)
                         return None
+
+            if not self._roll_allowed(self.ppt, execution_time):
+                self.log.log_event(
+                    utime=utime,
+                    event_type="QUEUE",
+                    description=(
+                        f"Target {self.ppt.obsid} skipped - its roll is beyond the "
+                        "ACS limit from the power-optimal roll now"
+                    ),
+                    obsid=self.ppt.obsid,
+                    acs_mode=self.acs.acsmode,
+                )
+                self._retry_fetch_without_current_ppt(utime, ra, dec)
+                return None
 
             self._complete_ppt_slew(slew, self.ppt, utime, execution_time)
 
