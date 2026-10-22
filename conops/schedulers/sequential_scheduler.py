@@ -148,7 +148,7 @@ class SequentialScheduler:
     @staticmethod
     def _validated_ephem(config: MissionConfig) -> rust_ephem.Ephemeris:
         """Return the configuration's ephemeris, rejecting what this scheduler can't plan."""
-        if config.payload.observation_timing.total_seconds > 0:
+        if any(timing.total_seconds > 0 for timing in config.observation_timings()):
             raise ValueError(
                 "Observation timing budgets require QueueDITL, not "
                 "SequentialScheduler or DumbScheduler"

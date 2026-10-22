@@ -19,6 +19,7 @@ from ..config import (
     SolarArrayDriveState,
 )
 from ..config.data_storage import DataStorage, RecorderSummary, RecorderView
+from ..config.observation_timing import ObservationTiming, timing_for
 from ..schedulers.recorder import contact_downlink_gb
 from ..simulation.acs import ACS
 from ..simulation.coverage import StationCoverage
@@ -317,6 +318,11 @@ class DITLMixin:
             if self.coverage is not None
             else None
         )
+
+    def _timing_for(self, entry: PlanEntry) -> ObservationTiming:
+        """The setup, cleanup and handoff budgets of ``entry`` under the run's
+        configuration: its category's where that sets them, else the payload's."""
+        return timing_for(self.config, int(getattr(entry, "obsid", 0) or 0))
 
     def _antenna_repoints(self, target: PlanEntry) -> str:
         """The category setting for antenna repoints during ``target``."""

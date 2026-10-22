@@ -82,7 +82,6 @@ def _recorder(
         removal=[0, *(int(r * GB) for r in removal)],
         removal_accrual=[0] * segments,
         limit=int(limit * GB),
-        setup=0,
     )
 
 
