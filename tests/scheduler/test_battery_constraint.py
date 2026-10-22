@@ -5,7 +5,7 @@ the battery's mapping onto it, with additions ordered in time, and the
 schedulers' use of it.
 """
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -17,6 +17,7 @@ from conops.config import (
     PowerDraw,
     SingleAxisSolarArrayDrive,
     SolarArrayDriveControl,
+    SolarArrayDriveState,
     SolarPanel,
     SolarPanelSet,
 )
@@ -516,11 +517,12 @@ class TestRollingHorizon:
         assert ditl.validate_plan_matches_execution() == []
 
 
-def _driven_config() -> MissionConfig:
+def _driven_config(rate: float = 1.0) -> MissionConfig:
     """The side-panel scenario with contacts and the panel on a single-axis
     drive about the boresight that tracks the Sun during contacts and holds
     its angle in every other mode: a contact leaves the panel turned, and the
-    science after it generates at that angle, not the initial one."""
+    science after it generates at that angle, not the initial one. The drive
+    turns at ``rate`` degrees per second."""
     config = _battery_config(SIDE, stations=True)
     config.solar_panel = SolarPanelSet(
         panels=[
@@ -532,7 +534,7 @@ def _driven_config() -> MissionConfig:
                     rotation_axis=(0.0, 0.0, 1.0),
                     min_angle_deg=-90.0,
                     max_angle_deg=90.0,
-                    max_rate_deg_per_s=1.0,
+                    max_rate_deg_per_s=rate,
                     initial_angle_deg=0.0,
                 ),
                 drive_control=SolarArrayDriveControl(sun_tracking_modes=[ACSMode.PASS]),
@@ -604,6 +606,49 @@ class TestSolarArrayDrive:
         assert not ditl.acs.in_safe_mode
         assert min(ditl.batterylevel) >= LEVEL - 1e-6
         assert ditl.validate_plan_matches_execution() == []
+
+    def test_a_replan_forecasts_the_slew_into_a_committed_contact(self) -> None:
+        """ACS flies the slew into a contact in PASS mode, in which the drive
+        tracks the Sun, so the drive turns during the slew as well as during
+        the contact. A drive slow enough that the contact does not bring it
+        to the Sun anyway shows whether the forecast flies the slew: without
+        it, the forecast handed the next plan an angle 12 degrees off."""
+        config = _driven_config(rate=0.2)
+        forecasts: list[tuple[float, float]] = []
+
+        class Recording(PriorityScheduler):
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                state = kwargs["start_drive_state"]
+                assert isinstance(state, SolarArrayDriveState)
+                begin = args[2]
+                assert isinstance(begin, datetime)
+                forecasts.append((begin.timestamp(), float(state.angles_deg[0])))
+                super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+
+        ditl = RollingHorizonDITL(
+            config,
+            _targets(config),
+            begin=BEGIN,
+            end=BEGIN + timedelta(hours=HOURS),
+            horizon=timedelta(hours=6),
+            replan_interval=timedelta(hours=2),
+            commit_lead_time=timedelta(minutes=30),
+            scheduler=Recording,
+        )
+        ditl.step_size = STEP
+        assert ditl.calc()
+        assert ditl.validate_plan_matches_execution() == []
+        executed = {
+            hk.timestamp.timestamp(): hk.solar_array_drive_angles_deg
+            for hk in ditl.telemetry.housekeeping
+        }
+        turned = 0
+        for start, forecast in forecasts[1:]:
+            angles = executed.get(start)
+            assert angles is not None, "a plan starts on a simulation step"
+            assert forecast == pytest.approx(angles[0], abs=0.5)
+            turned += angles[0] != 0.0
+        assert turned, "no committed contact turned the drive before a replan"
 
 
 class TestValidator:

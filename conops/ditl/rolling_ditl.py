@@ -757,24 +757,78 @@ class RollingHorizonDITL(DITL):
             drive_state=drive,
         )
         planned: list[list[Addition]] = [[] for _ in range(ledger.segments)]
-        for entry in committed:
+        # Each slew starts where the entry before leaves the spacecraft.
+        previous: Attitude = (
+            float(self.acs.ra),
+            float(self.acs.dec),
+            float(self.acs.roll),
+        )
+        for entry in sorted(committed, key=lambda e: float(e.begin)):
             # A contact flies its tracking profile and brakes to rest after
             # it, which is what turns the drive and generates meanwhile.
             gspass = self._entry_passes.get(id(entry))
             is_contact = entry_obstype(entry) == ObsType.GSP and gspass is not None
+            slew = self._committed_slew(entry, previous, utime)
             addition = ledger.addition(
                 entry,
                 after=utime,
                 rest=self._rest_after(entry)[0] if is_contact else None,
                 track=gspass.attitude_at if is_contact and gspass is not None else None,
+                path=slew.attitude if slew is not None else None,
+                path_start=(
+                    (float(slew.startra), float(slew.startdec), float(slew.startroll))
+                    if slew is not None
+                    else None
+                ),
             )
             if addition is not None:
                 planned[ledger.segment(addition.begin)].append(addition)
+            previous = self._rest_after(entry)[1]
         energy = tuple(tuple(sorted(g)) for g in planned)
         return (
             ledger.level_at(energy, start),
             ledger.drive_state_at(energy, start) or drive,
         )
+
+    def _committed_slew(
+        self, entry: PlanEntry, start: Attitude, utime: float
+    ) -> Slew | None:
+        """The slew into a committed entry, as ACS flies it: the one under
+        way now if it is this entry's, else as it will be flown from
+        ``start``, where the entry before leaves the spacecraft. None for an
+        entry without a slew, or whose slew is over by ``utime``: what it
+        generated is in the battery already.
+
+        The forecast flies it so that the drive turns along it as it does in
+        the simulation, in ``PASS`` mode into a contact and ``SLEWING``
+        otherwise, and the panels generate along the way.
+        """
+        begin = float(entry.begin)
+        slewtime = float(entry.slewtime or 0)
+        if slewtime <= 0.0 or begin + slewtime <= utime:
+            return None
+        flying = self.acs.last_slew
+        if (
+            flying is not None
+            and flying.is_slewing(utime)
+            and abs(float(flying.slewstart) - begin) <= self.step_size
+        ):
+            return flying
+        slew = Slew(config=self.config)
+        slew.startra, slew.startdec, slew.startroll = start
+        slew.slewstart = begin
+        if entry_obstype(entry) == ObsType.GSP:
+            slew.endra, slew.enddec, slew.endroll = (
+                float(entry.ra),
+                float(entry.dec),
+                float(entry.roll),
+            )
+            slew.obstype = ObsType.GSP
+        else:
+            slew.endra, slew.enddec, slew.endroll = entry.target_body_attitude()
+        slew.obsid = entry.obsid
+        slew.calc_slewtime()
+        return slew
 
     def _start_state(
         self, committed: Sequence[PlanEntry], utime: float, cutoff: float

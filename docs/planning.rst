@@ -353,7 +353,8 @@ through it:
   it, tracking the Sun in the modes its control lists and holding its angle in the
   rest, so each activity is counted at the drive angles the plan reaches it with,
   and a plan's charges take the charging attitude for those angles; a rolling
-  replan starts from where the drive is;
+  replan starts from where the drive is, the committed activities flown as ACS
+  flies them, slews included, until the plan takes over;
 * the deficit never falls below zero: a surplus before a draw is lost, as a full
   battery wastes what its panels make; and generation is not counted past
   ``planning_recharge_level``, so a plan never assumes the battery above it (a
