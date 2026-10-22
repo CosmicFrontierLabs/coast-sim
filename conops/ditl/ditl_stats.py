@@ -8,6 +8,7 @@ from ..config.config import MissionConfig
 from ..simulation.acs import ACS
 from ..simulation.coverage import StationCoverage
 from ..simulation.passes import PassTimes
+from .telemetry import Telemetry
 
 
 class DITLStats:
@@ -33,6 +34,26 @@ class DITLStats:
     coverage: StationCoverage | None
     repoints_in_observations: list[tuple[float, int, str]]
     acs: ACS
+    telemetry: Telemetry
+
+    def instrument_mode_hours(self) -> dict[str, dict[str, float]]:
+        """Hours each instrument with modes spent in each mode over the run,
+        by instrument then mode, from the telemetry: each step counts whole
+        in the mode the instrument is in at its start. Empty when no
+        instrument defines modes."""
+        hours: dict[str, dict[str, float]] = {}
+        samples = getattr(getattr(self, "telemetry", None), "housekeeping", None)
+        if not isinstance(samples, list):
+            return hours
+        step_hours = float(self.step_size) / 3600.0
+        for sample in samples:
+            modes = getattr(sample, "instrument_modes", None)
+            if not isinstance(modes, dict):
+                continue
+            for instrument, mode in modes.items():
+                by_mode = hours.setdefault(instrument, {})
+                by_mode[mode] = by_mode.get(mode, 0.0) + step_hours
+        return hours
 
     def print_statistics(self) -> None:
         """Print comprehensive statistics about the DITL simulation.
@@ -79,6 +100,20 @@ class DITLStats:
                 print(
                     f"{mode_name:<20} {count:<10} {percentage:>6.2f}%      {time_hours:>10.2f}"
                 )
+
+        # Instrument modes
+        mode_hours = self.instrument_mode_hours()
+        if mode_hours:
+            print("\n" + "-" * 70)
+            print("INSTRUMENT MODE HOURS")
+            print("-" * 70)
+            print(f"{'Instrument':<24} {'Mode':<16} {'Time (hours)':<15}")
+            print("-" * 70)
+            for instrument, by_mode in mode_hours.items():
+                for mode_name, time_hours in sorted(
+                    by_mode.items(), key=lambda item: item[1], reverse=True
+                ):
+                    print(f"{instrument:<24} {mode_name:<16} {time_hours:>10.2f}")
 
         # Observation statistics
         print("\n" + "-" * 70)

@@ -83,6 +83,12 @@ The quaternion remains an inertial-to-body coordinate transform. Consequently, a
      each identified by configured panel index and name
    - ``solar_array_drive_angles_deg``: Compatibility property exposing only the
      angles in configured driven-panel order
+   - ``instrument_modes``: The mode each instrument with modes is in at this
+     timestep, by name, resolved as its power is: the observation's for the
+     instruments it uses, ``IDLE`` or a mode named like the ACS mode for the rest;
+     ``None`` when no instrument defines modes. ``instrument_mode_hours()`` on a
+     DITL sums these into hours per instrument and mode, which
+     ``print_statistics()`` reports
    - ``power_usage``: Total spacecraft power consumption in W
    - ``power_bus``: Spacecraft bus power consumption in W
    - ``power_payload``: Payload power consumption in W

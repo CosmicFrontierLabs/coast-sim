@@ -478,3 +478,81 @@ class TestConcurrency:
             lamp.plan_entry(config, (0.0, 0.0, 0.0))
         quiet = ScheduledActivity(name="quiet", begin=T0, duration_seconds=600, obsid=6)
         assert quiet.plan_entry(config, (0.0, 0.0, 0.0)).instrument_modes == {}
+
+
+class TestTelemetry:
+    def test_the_telemetry_records_each_instruments_mode(self) -> None:
+        config = _moded_config()
+        target = _target(config, 1, *PATCH[0], minutes=30, snapshot=30)
+        target.instrument_modes = {"camera": "SCIENCE"}
+        plan = PriorityScheduler(
+            config, [target], BEGIN, END, step_size=STEP
+        ).schedule()
+        replay = Plan.model_validate_json(plan.model_dump_json())
+        ditl = DITL(
+            config=config,
+            ephem=config.constraint.ephem,
+            plan=replay,
+            begin=BEGIN,
+            end=END,
+        )
+        ditl.step_size = STEP
+        assert ditl.calc()
+        seen: dict[int, set[tuple[tuple[str, str], ...]]] = {}
+        for hk in ditl.telemetry.housekeeping:
+            assert hk.instrument_modes is not None
+            seen.setdefault(int(hk.acs_mode), set()).add(
+                tuple(sorted(hk.instrument_modes.items()))
+            )
+        assert seen[int(ACSMode.SCIENCE)] == {
+            (("camera", "SCIENCE"), ("spectrograph", "IDLE"))
+        }
+        for mode, modes in seen.items():
+            if mode != int(ACSMode.SCIENCE):
+                assert modes == {(("camera", "IDLE"), ("spectrograph", "IDLE"))}, (
+                    ACSMode(mode)
+                )
+        hours = ditl.instrument_mode_hours()
+        science_steps = sum(
+            1
+            for hk in ditl.telemetry.housekeeping
+            if int(hk.acs_mode) == int(ACSMode.SCIENCE)
+        )
+        assert hours["camera"]["SCIENCE"] == pytest.approx(
+            science_steps * STEP / 3600.0
+        )
+        assert hours["spectrograph"] == {
+            "IDLE": pytest.approx(len(ditl.telemetry.housekeeping) * STEP / 3600.0)
+        }
+        assert sum(hours["camera"].values()) == pytest.approx(
+            len(ditl.telemetry.housekeeping) * STEP / 3600.0
+        )
+
+    def test_dispatch_records_the_modes_of_what_it_observes(self) -> None:
+        config = _moded_config()
+        camera = _target(config, 1, *PATCH[0], merit=90.0, minutes=30, snapshot=30)
+        camera.instrument_modes = {"camera": "SCIENCE"}
+        both = _target(config, 2, *PATCH[1], merit=50.0, minutes=30, snapshot=30)
+        ditl = create_ditl(config, [camera, both], BEGIN, END)
+        assert isinstance(ditl, QueueDITL)
+        ditl.step_size = STEP
+        assert ditl.calc()
+        science = {
+            tuple(sorted(hk.instrument_modes.items()))
+            for hk in ditl.telemetry.housekeeping
+            if int(hk.acs_mode) == int(ACSMode.SCIENCE)
+            and hk.instrument_modes is not None
+        }
+        assert science == {
+            (("camera", "SCIENCE"), ("spectrograph", "IDLE")),
+            (("camera", "SCIENCE"), ("spectrograph", "SCIENCE")),
+        }
+        assert set(ditl.instrument_mode_hours()) == {"camera", "spectrograph"}
+
+    def test_a_run_without_modes_records_none(self) -> None:
+        config = _config(HOURS)
+        ditl = create_ditl(config, [_target(config, 1, *PATCH[0])], BEGIN, END)
+        ditl.step_size = STEP
+        assert ditl.calc()
+        assert all(hk.instrument_modes is None for hk in ditl.telemetry.housekeeping)
+        assert ditl.instrument_mode_hours() == {}

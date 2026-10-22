@@ -75,6 +75,29 @@ class AttitudeRateContinuityError(RuntimeError):
 
 
 class DITLMixin:
+    def _instrument_modes_telemetry(self, mode: ACSMode | int) -> dict[str, str] | None:
+        """The mode each instrument with modes is in at this step, by name,
+        resolved as its power is: the observation's for the instruments it
+        uses, and IDLE or a mode named like the ACS mode for the rest. None
+        when no instrument defines modes."""
+        payload = getattr(getattr(self, "config", None), "payload", None)
+        instruments = getattr(payload, "instruments", None)
+        # A test double's payload has no instruments.
+        if not isinstance(instruments, list):
+            return None
+        with_modes = [i for i in instruments if getattr(i, "modes", None)]
+        if not with_modes:
+            return None
+        try:
+            acs_mode = int(mode)
+        except (TypeError, ValueError):
+            acs_mode = None
+        named = self._instrument_modes_now(mode) or {}
+        return {
+            instrument.name: instrument.mode_in(acs_mode, named.get(instrument.name))
+            for instrument in with_modes
+        }
+
     def _instrument_modes_now(self, mode: ACSMode | int) -> dict[str, str] | None:
         """The mode each instrument is in at this step: the observation's
         while ACS is in SCIENCE mode, a scheduled activity's while ACS holds

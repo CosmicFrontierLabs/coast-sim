@@ -461,6 +461,7 @@ class DITL(DITLMixin, DITLStats):
                 collection_seconds=collection_seconds,
                 panel_illumination=panel_illumination,
                 solar_array_drive_angles=drive_angles,
+                instrument_modes=self._instrument_modes_telemetry(mode),
                 power_usage=power_usage,
                 power_bus=bus_power,
                 power_payload=payload_power,

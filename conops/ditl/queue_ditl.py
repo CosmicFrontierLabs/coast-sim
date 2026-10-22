@@ -1639,6 +1639,7 @@ class QueueDITL(DITLMixin, DITLStats):
             collection_seconds=self._collection_seconds_for_step(utime, mode),
             panel_illumination=panel_illumination,
             solar_array_drive_angles=drive_angles,
+            instrument_modes=self._instrument_modes_telemetry(mode),
             power_usage=total_power,
             power_bus=bus_power,
             power_payload=payload_power,
