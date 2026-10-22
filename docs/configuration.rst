@@ -883,6 +883,7 @@ When any weight is non-zero, visible candidates are scored as:
        - slew_distance_weight * slew_distance_degrees
        - slew_time_weight * slew_minutes
        + collection_time_weight * collection_minutes
+       - data_volume_weight * snapshot_gigabits
        - radiator_sun_exposure_weight * sun_exposure
        - radiator_earth_exposure_weight * earth_exposure
 
@@ -902,6 +903,13 @@ The available weights are:
   by the next science deadline, such as the next ground-station pass handoff or
   the simulation end. If that downstream deadline leaves less than ``ss_min`` of
   collection time, the candidate is skipped.
+* ``config.targets.data_volume_weight`` - Merit penalty per gigabit of science
+  data a snapshot would put on the recorder, for the collection it would get at the
+  target's own rates. A price on data, so that high-data science gives way to
+  low-data science as the recorder fills. Independently of any weight,
+  ``QueueDITL`` lets a candidate collect no more than the recorder can take before
+  its next contact under its planning limit, and passes over one that cannot
+  collect its minimum snapshot (see :doc:`planning`).
 * ``config.targets.radiator_sun_exposure_weight`` - Merit penalty per unit of
   radiator Sun exposure.
 * ``config.targets.radiator_earth_exposure_weight`` - Merit penalty per unit of
