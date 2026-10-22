@@ -478,3 +478,23 @@ class TestConcurrency:
             lamp.plan_entry(config, (0.0, 0.0, 0.0))
         quiet = ScheduledActivity(name="quiet", begin=T0, duration_seconds=600, obsid=6)
         assert quiet.plan_entry(config, (0.0, 0.0, 0.0)).instrument_modes == {}
+        # An activity does not point, so no guider is required of it.
+        config.payload.concurrency = ConcurrencyRules(required_guider="spectrograph")
+        with pytest.raises(ValidationError, match="must also use"):
+            Pointing(
+                config=config,
+                obsid=7,
+                ra=0.0,
+                dec=0.0,
+                instrument_modes={"camera": "SCIENCE"},
+            )
+        lamp_only = ScheduledActivity(
+            name="lamp",
+            begin=T0,
+            duration_seconds=600,
+            obsid=8,
+            instrument_modes={"camera": "SCIENCE"},
+        )
+        assert lamp_only.plan_entry(config, (0.0, 0.0, 0.0)).instrument_modes == {
+            "camera": "SCIENCE"
+        }

@@ -70,9 +70,10 @@ class ScheduledActivity(BaseModel):
         """
         assert self.obsid is not None, "assign_obsids first"
         if config is not None:
-            # An activity uses what it names and nothing else.
+            # An activity uses what it names and nothing else, and does not
+            # point, so no guider is required of it.
             config.payload.check_instrument_modes(self.instrument_modes)
-            config.payload.check_concurrency(self.instrument_modes)
+            config.payload.check_concurrency(self.instrument_modes, pointing=False)
         entry = PlanEntry(config=config)
         entry.name = self.name
         entry.instrument_modes = dict(self.instrument_modes)
