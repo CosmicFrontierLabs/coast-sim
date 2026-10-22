@@ -478,6 +478,51 @@ def _quaternion_delta(
     return angle_deg, (float(axis[0]), float(axis[1]), float(axis[2]))
 
 
+def quaternion_deltas(
+    q1: npt.NDArray[np.float64], q2: npt.NDArray[np.float64]
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """:func:`_quaternion_delta` for every pair of quaternions in two arrays.
+
+    ``q1`` is ``(P, 4)`` and ``q2`` is ``(N, 4)``. Returns the rotation angles
+    in degrees, ``(P, N)``, and the initial body-frame axes, ``(P, N, 3)``,
+    with a zero angle and axis where the attitudes are identical.
+    """
+    a = np.asarray(q1, dtype=np.float64)[:, None, :]
+    b = np.asarray(q2, dtype=np.float64)[None, :, :]
+    aw, ax, ay, az = a[..., 0], a[..., 1], a[..., 2], a[..., 3]
+    bw, bx, by, bz = b[..., 0], -b[..., 1], -b[..., 2], -b[..., 3]
+    delta = np.stack(
+        [
+            aw * bw - ax * bx - ay * by - az * bz,
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+        ],
+        axis=-1,
+    )
+    delta /= np.linalg.norm(delta, axis=-1)[..., None]
+    delta = np.where(delta[..., :1] < 0.0, -delta, delta)
+    vector_norm = np.linalg.norm(delta[..., 1:], axis=-1)
+    angles = np.rad2deg(2.0 * np.arctan2(vector_norm, np.maximum(0.0, delta[..., 0])))
+    still = vector_norm < 1e-12
+    angles = np.where(still, 0.0, angles)
+    axes = delta[..., 1:] / np.where(still, 1.0, vector_norm)[..., None]
+    axes = np.where(still[..., None], 0.0, axes)
+    return angles, axes
+
+
+def quaternion_distances(
+    q1: npt.NDArray[np.float64], q2: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """:func:`quaternion_attitude_distance` for every pair of quaternions.
+
+    ``q1`` is ``(P, 4)`` and ``q2`` is ``(N, 4)``; the result is ``(P, N)``
+    degrees.
+    """
+    dot = np.clip(np.abs(np.asarray(q1) @ np.asarray(q2).T), 0.0, 1.0)
+    return np.rad2deg(2.0 * np.arccos(dot))
+
+
 def _quat_mul(
     a: Sequence[float] | npt.NDArray[np.float64],
     b: Sequence[float] | npt.NDArray[np.float64],

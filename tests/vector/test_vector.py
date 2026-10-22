@@ -10,7 +10,13 @@ from conops import (
     scbodyvector,
     separation,
 )
-from conops.common.vector import normal_to_boresight_offset_euler_deg
+from conops.common.vector import (
+    attitude_to_quat,
+    normal_to_boresight_offset_euler_deg,
+    quaternion_attitude_delta,
+    quaternion_deltas,
+    quaternion_distances,
+)
 
 
 class TestQuaternionAttitudeDistance:
@@ -21,6 +27,49 @@ class TestQuaternionAttitudeDistance:
     def test_pure_roll_distance(self) -> None:
         distance = quaternion_attitude_distance(0.0, 0.0, 0.0, 0.0, 0.0, 90.0)
         assert distance == pytest.approx(90.0)
+
+
+class TestQuaternionPairs:
+    """The batched helpers give every pair what the scalar helpers give it."""
+
+    @staticmethod
+    def _attitudes(n: int, seed: int) -> list[tuple[float, float, float]]:
+        rng = np.random.default_rng(seed)
+        return [
+            (rng.uniform(0, 360), rng.uniform(-90, 90), rng.uniform(0, 360))
+            for _ in range(n)
+        ]
+
+    def test_deltas_match_the_scalar_helper(self) -> None:
+        first = self._attitudes(7, 1)
+        second = [*self._attitudes(4, 2), first[3]]  # one identical pair
+        q1 = np.array([attitude_to_quat(*a) for a in first])
+        q2 = np.array([attitude_to_quat(*b) for b in second])
+
+        angles, axes = quaternion_deltas(q1, q2)
+
+        assert angles.shape == (7, 5) and axes.shape == (7, 5, 3)
+        for i, a in enumerate(first):
+            for j, b in enumerate(second):
+                angle, axis = quaternion_attitude_delta(*a, *b)
+                assert angles[i, j] == pytest.approx(angle, abs=1e-9)
+                assert axes[i, j] == pytest.approx(axis, abs=1e-9)
+        assert angles[3, 4] == 0.0
+        assert not axes[3, 4].any()
+
+    def test_distances_match_the_scalar_helper(self) -> None:
+        first = self._attitudes(6, 3)
+        second = self._attitudes(3, 4)
+        q1 = np.array([attitude_to_quat(*a) for a in first])
+        q2 = np.array([attitude_to_quat(*b) for b in second])
+
+        distances = quaternion_distances(q1, q2)
+
+        assert distances.shape == (6, 3)
+        for i, a in enumerate(first):
+            for j, b in enumerate(second):
+                expected = quaternion_attitude_distance(*a, *b)
+                assert distances[i, j] == pytest.approx(expected, abs=1e-9)
 
 
 class TestRadec2vec:
