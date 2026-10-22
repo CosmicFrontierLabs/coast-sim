@@ -393,7 +393,9 @@ class LocalSearchScheduler(PriorityScheduler):
             # after a contact that makes room.
             volume = self._block_volume(block)
             segment = self._block_segment(block)
-            if not self._ledger.fits(state.volumes, segment, volume):
+            # With what the slew into a contact after it comes to.
+            additions = [(segment, volume), *self._ingress_deltas(succ, succ_slew)]
+            if not self._ledger.fits_all(state.volumes, additions):
                 continue
 
             # Put the snapshot in place, reconnecting the fixed block after it.
@@ -429,7 +431,7 @@ class LocalSearchScheduler(PriorityScheduler):
                 programs=programs,
                 last_visit=last_visit,
                 allocated_left=allocated_left,
-                volumes=self._ledger.add(state.volumes, segment, volume),
+                volumes=self._ledger.add_all(state.volumes, additions),
                 energy=self._charged_energy(placed),
             )
         return state

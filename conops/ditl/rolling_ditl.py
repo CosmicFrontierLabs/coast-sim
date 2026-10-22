@@ -720,10 +720,15 @@ class RollingHorizonDITL(DITL):
             contacts,
             start_volume_gb=now,
             coverage=self.coverage,
+            step_size=self.step_size,
+            origin=self.ustart,
         )
         volumes = [0.0] * ledger.segments
         for begin, volume in science:
             volumes[ledger.segment(begin)] += volume
+        for entry in contacts:
+            # The slew into a contact still to come, flown in PASS mode.
+            volumes[ledger.ingress_segment(entry)] += ledger.ingress_volume(entry)
         return ledger.peaks(volumes)[-1]
 
     def _battery_start(

@@ -194,6 +194,18 @@ class ConsumableLedger(Generic[S, E]):
             for peak in self.peaks(self.add(planned, segment, extra))
         )
 
+    def fits_all(
+        self, planned: Sequence[S], additions: Sequence[tuple[int, E]]
+    ) -> bool:
+        """Whether ``additions``, each some more in a segment, together keep
+        every peak below the limit."""
+        if self.limit is None:
+            return True
+        return all(
+            peak + _TOLERANCE < self.limit
+            for peak in self.peaks(self.add_all(planned, additions))
+        )
+
     def add(self, planned: Sequence[S], segment: int, extra: E) -> tuple[S, ...]:
         """The plan's additions with ``extra`` more in ``segment``."""
         current = planned[segment]
@@ -201,3 +213,12 @@ class ConsumableLedger(Generic[S, E]):
         added = list(planned)
         added[segment] = cast(S, float(current) + float(extra))
         return tuple(added)
+
+    def add_all(
+        self, planned: Sequence[S], additions: Sequence[tuple[int, E]]
+    ) -> tuple[S, ...]:
+        """The plan's additions with each of ``additions`` more in its segment."""
+        added = tuple(planned)
+        for segment, extra in additions:
+            added = self.add(added, segment, extra)
+        return added
