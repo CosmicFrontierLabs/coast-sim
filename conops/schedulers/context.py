@@ -24,7 +24,7 @@ from ..simulation.coverage import StationCoverage, cut_windows
 from ..simulation.passes import Pass, PassTimes
 from ..simulation.roll import optimum_roll
 from ..simulation.slew import Slew
-from ..targets import PlanEntry
+from ..targets import PlanEntry, Pointing
 
 Attitude = tuple[float, float, float]
 """Spacecraft body attitude: RA, Dec and roll in degrees."""
@@ -161,10 +161,10 @@ class SchedulingContext:
         limit from the optimum gives the optimum here; :meth:`roll_allowed`
         says whether the target can be observed at that time at all."""
         optimum = self.optimum_roll(target, utime)
-        requested = getattr(target, "requested_roll", None)
-        if not callable(requested):
+        if not isinstance(target, Pointing):
+            # A plan entry, or a test double, has no roll request.
             return optimum
-        roll = requested(
+        roll = target.requested_roll(
             optimum,
             self.config.spacecraft_bus.attitude_control.max_roll_from_optimum_deg,
         )
@@ -173,11 +173,12 @@ class SchedulingContext:
     def roll_allowed(self, target: PlanEntry, utime: float) -> bool:
         """Whether the roll ``target`` asks for is within the ACS limit of the
         power-optimal roll at ``utime``; True without a request."""
-        requested = getattr(target, "requested_roll", None)
-        if not callable(requested):
+        if not isinstance(target, Pointing):
             return True
         limit = self.config.spacecraft_bus.attitude_control.max_roll_from_optimum_deg
-        return requested(self.optimum_roll(target, utime), limit) is not None
+        return (
+            target.requested_roll(self.optimum_roll(target, utime), limit) is not None
+        )
 
     def slew(
         self,
