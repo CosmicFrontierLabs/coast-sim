@@ -22,6 +22,7 @@ from ..ditl.ditl_log import DITLLog
 from . import Pointing
 from .merit import MeritBreakdown, MeritModel
 from .plan_entry import snapshot_min_seconds
+from .sequence import ObservationSequence
 
 if TYPE_CHECKING:
     from ..simulation.coverage import StationCoverage
@@ -168,6 +169,8 @@ class TargetQueue:
         deadline: float | None = None,
         earliest_start: float | None = None,
         science_data: Mapping[str, ScienceData] | None = None,
+        sequence: ObservationSequence | None = None,
+        visits: int = 1,
     ) -> Pointing:
         """Add a pointing target to the queue.
 
@@ -208,8 +211,12 @@ class TargetQueue:
             deadline=deadline,
             earliest_start=earliest_start,
             science_data=dict(science_data or {}),
+            sequence=sequence,
+            visits=visits,
         )
-        pointing.exptime = exptime
+        pointing.exptime = (
+            visits * sequence.science_seconds if sequence is not None else exptime
+        )
         pointing.visibility()
         self.targets.append(pointing)
         return pointing
@@ -227,6 +234,15 @@ class TargetQueue:
             if timing is not None:
                 return timing
         return self.observation_timing
+
+    def _visit_overhead(self, target: Pointing) -> float:
+        """Seconds a visit of a sequence target takes beyond its science and
+        the payload's budgets; 0 for a plain pointing or a test double."""
+        overhead = getattr(target, "sequence_overhead_seconds", None)
+        if getattr(target, "sequence", None) is None or not callable(overhead):
+            return 0.0
+        seconds = overhead(self.acs_config, self._timing(target))
+        return float(seconds) if isinstance(seconds, (int, float)) else 0.0
 
     def _repoints_forbidden(self, target: Pointing) -> bool:
         """Whether an antenna repoint must not fall in an observation of ``target``."""
@@ -290,6 +306,13 @@ class TargetQueue:
         )
         window_seconds = max(0.0, collection_end - collection_start)
         max_snapshot = float(target.ss_max)
+        overhead = self._visit_overhead(target)
+        if overhead > 0.0:
+            # A sequence visit runs whole or not at all: its science, with
+            # the calibration and slews between its steps around it.
+            if window_seconds < max_snapshot + overhead:
+                return 0.0
+            return max_snapshot
         remaining_exposure = target.exptime
         if remaining_exposure is None:
             return min(window_seconds, max_snapshot)
@@ -317,6 +340,7 @@ class TargetQueue:
             utime
             + float(snapshot_min_seconds(target))
             + self._timing(target).total_seconds
+            + self._visit_overhead(target)
         )
         if zero_slew_endtime > last_unix:
             zero_slew_endtime = last_unix
@@ -369,6 +393,7 @@ class TargetQueue:
             utime
             + float(snapshot_min_seconds(target))
             + self._timing(target).total_seconds
+            + self._visit_overhead(target)
         )
         if zero_slew_endtime > last_unix:
             zero_slew_endtime = last_unix
@@ -575,6 +600,7 @@ class TargetQueue:
                 + target.slewtime
                 + snapshot_min_seconds(target)
                 + timing.total_seconds
+                + self._visit_overhead(target)
             )
 
             # If the end time exceeds ephemeris, clamp it
@@ -619,7 +645,11 @@ class TargetQueue:
                     continue
                 target.end = min(
                     float(visibility_window[1]),
-                    utime + target.slewtime + collection + timing.total_seconds,
+                    utime
+                    + target.slewtime
+                    + collection
+                    + timing.total_seconds
+                    + self._visit_overhead(target),
                 )
                 target.set_collection_window(timing)
                 terms = merit_model.value_terms(
