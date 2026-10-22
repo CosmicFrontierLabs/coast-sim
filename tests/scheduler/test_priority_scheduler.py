@@ -955,6 +955,92 @@ class TestFillingTimeATargetIsHidden:
         assert self._long_gaps(scheduler)
 
 
+class TestMovingCadenceVisits:
+    """A cadence target's latest visit may move later to fill time before it.
+
+    Each visit waits a cadence after the last, so visits often start as their
+    target rises, with nothing placed before them yet.
+    """
+
+    HOURS = 12
+    CADENCE = HOUR
+
+    def _plan(self) -> tuple[MissionConfig, PriorityScheduler]:
+        config = _config(
+            self.HOURS,
+            weights=TargetConfig(cadence_weight=40.0),
+            categories=[
+                ObservationCategory(
+                    name="Monitor",
+                    obsid_min=100,
+                    obsid_max=200,
+                    cadence_seconds=self.CADENCE,
+                )
+            ],
+        )
+        rng = np.random.default_rng(5)
+        targets = [
+            _target(
+                config,
+                100 + i,
+                rng.uniform(0, 360),
+                rng.uniform(-90, 90),
+                merit=rng.uniform(10, 100),
+                minutes=2000 / 60,
+                snapshot=1000 / 60,
+                ss_min=5,
+            )
+            for i in range(40)
+        ]
+        scheduler = PriorityScheduler(
+            config, targets, BEGIN, BEGIN + timedelta(hours=self.HOURS)
+        )
+        scheduler.schedule()
+        return config, scheduler
+
+    @staticmethod
+    def _never_moving_cadence_visits(
+        scheduler: PriorityScheduler, block: object
+    ) -> bool:
+        request = scheduler._movable.get(id(block))
+        return request is not None and request.cadence is None
+
+    def test_moves_visits_and_executes_exactly(self) -> None:
+        config, scheduler = self._plan()
+
+        assert any(e.description.startswith("Moved") for e in scheduler.log.events)
+        assert TestFillingTimeATargetIsHidden._long_gaps(scheduler) == []
+        ditl = _execute(config, scheduler.plan, self.HOURS, 60)
+        assert ditl.validate_plan_matches_execution() == []
+
+    def test_visits_stay_a_cadence_apart(self) -> None:
+        """A moved visit is fitted again after the new snapshot, which can be
+        earlier than it was: it must not move closer to the visit before."""
+        _, scheduler = self._plan()
+
+        visits: dict[int, list[PlanEntry]] = {}
+        for entry in _science(scheduler.plan):
+            visits.setdefault(int(entry.obsid), []).append(entry)
+        spacings = [
+            float(later.collection_begin) - float(earlier.collection_end)
+            for entries in visits.values()
+            for earlier, later in zip(entries, entries[1:])
+        ]
+        assert spacings
+        assert min(spacings) >= self.CADENCE
+
+    def test_without_moving_them_time_is_lost(self) -> None:
+        """Guards the tests above: the scenario must need cadence visits moved."""
+        _, moving = self._plan()
+        with patch.object(
+            PriorityScheduler, "_may_move", self._never_moving_cadence_visits
+        ):
+            _, fixed = self._plan()
+
+        assert TestFillingTimeATargetIsHidden._long_gaps(fixed)
+        assert _planned_collection(moving.plan) > _planned_collection(fixed.plan)
+
+
 class TestWorthCutting:
     """When a move may cut a snapshot short to fit a new one before it."""
 
