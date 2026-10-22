@@ -61,7 +61,9 @@ class RecorderLedger(ConsumableLedger):
 
     Housekeeping is counted at the nominal rate throughout, and at the
     ``PASS`` rate during contacts: the plan does not know when the spacecraft
-    will be in other modes. The slew into a contact, which ACS flies in
+    will be in other modes. A horizon that ends between steps counts the
+    last step whole, as a plan that hands over to another does; the
+    simulation's last step, cut at its end, generates a little less. The slew into a contact, which ACS flies in
     ``PASS`` mode too, depends on where the spacecraft is before it, so what
     it adds beyond the nominal rate is not in the ledger's own accrual: the
     schedulers add it with the contact, as they add science, and recompute it
@@ -84,6 +86,10 @@ class RecorderLedger(ConsumableLedger):
         self.step_size = float(step_size) if step_size is not None else None
         self.origin = float(begin if origin is None else origin)
         removals = []
+        tails: list[tuple[float, float]] = []
+        """Where each contact's removal starts, and what the step its link
+        ends in generates after the link, at the PASS rate, beyond the
+        nominal rate the segment counts it at."""
         for entry in contacts:
             if (
                 entry.station is None
@@ -91,23 +97,32 @@ class RecorderLedger(ConsumableLedger):
                 or entry.contact_end is None
             ):
                 continue
-            seconds = float(entry.contact_end) - float(entry.contact_begin)
-            # The steps in contact, in PASS mode; the link's own length sets
-            # what it downlinks.
-            link_begin = self.grid_step(float(entry.contact_begin))
-            link_end = self.grid_step(float(entry.contact_end))
-            if seconds <= 0.0 or link_end <= link_begin:
+            # The part of the link inside the horizon sets what it downlinks.
+            link_begin = max(float(entry.contact_begin), float(begin))
+            link_end = min(float(entry.contact_end), float(end))
+            if link_end <= link_begin:
                 continue
+            # The link removes data from the step it begins in, and what
+            # that step and the ones after generate up to the link's end;
+            # what the last step generates after the link stays on.
+            first = self.grid_step(link_begin)
             removals.append(
                 Removal(
-                    link_begin,
+                    first,
                     link_end,
-                    contact_downlink_gb(config, entry.station, seconds),
-                    config.housekeeping_generated(
-                        link_end - link_begin, mode=ACSMode.PASS
-                    ),
+                    contact_downlink_gb(config, entry.station, link_end - link_begin),
+                    config.housekeeping_generated(link_end - first, mode=ACSMode.PASS),
                 )
             )
+            after = self.grid_step(link_end) - link_end
+            if after > 0.0 and link_end < float(end):
+                tails.append(
+                    (
+                        first,
+                        config.housekeeping_generated(after, mode=ACSMode.PASS)
+                        - config.housekeeping_generated(after),
+                    )
+                )
         super().__init__(
             self.grid_step(begin),
             self.grid_step(end),
@@ -116,6 +131,8 @@ class RecorderLedger(ConsumableLedger):
             start=start_volume_gb,
             accrual=config.housekeeping_generated,
         )
+        for first, excess in tails:
+            self.accrual[self.segment(first)] += excess
 
     def grid_step(self, utime: float) -> float:
         """The first simulation step at or after ``utime``, or ``utime``
@@ -207,7 +224,8 @@ class RecorderLedger(ConsumableLedger):
         volumes = [0.0] * self.segments
         for entry in entries:
             ingress = self.ingress_volume(entry)
-            if ingress > 0.0:
+            if ingress != 0.0:
+                # Negative where the PASS rate is below the nominal one.
                 volumes[self.ingress_segment(entry)] += ingress
             if entry.collection_begin is None or entry.collection_end is None:
                 continue
