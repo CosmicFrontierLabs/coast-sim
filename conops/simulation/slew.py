@@ -21,6 +21,7 @@ from ..config.constants import DTOR
 
 if TYPE_CHECKING:
     from ..targets import PlanEntry
+    from .attitude import AttitudeTrajectory
 
 
 # The constraint-avoiding planner inserts at most one waypoint.
@@ -68,6 +69,10 @@ class Slew(BaseModel):
     # Private defaults are copied per instance, so these lists are never
     # shared. A default_factory would cost far more: pydantic inspects the
     # factory's signature for every instance, and schedulers build many slews.
+    rate_fraction: float = Field(default=1.0, gt=0.0, le=1.0, allow_inf_nan=False)
+    _momentum_trajectory: "AttitudeTrajectory | None" = PrivateAttr(default=None)
+    _momentum_hold_end: float | None = PrivateAttr(default=None)
+    _momentum_collection_end: float | None = PrivateAttr(default=None)
     # Quaternion SLERP: intermediate roll values along the path
     _quat_roll_path: list[float] = PrivateAttr(default=[])
     # Shortest maneuver axis resolved in the initial spacecraft body frame.
@@ -103,6 +108,26 @@ class Slew(BaseModel):
     def __eq__(self, other: object) -> bool:
         """Compare by identity, matching plain-object semantics (Slew instances are used as dict keys)."""
         return self is other
+
+    @property
+    def motion_limits(self) -> AttitudeControlSystem:
+        """A speed cap never changes acceleration, settling, or shared config."""
+        assert self.acs_config is not None
+        # Slew is mutable, so construction-time field validation is insufficient.
+        if not np.isfinite(self.rate_fraction) or not 0 < self.rate_fraction <= 1:
+            raise ValueError("Slew rate fraction must be finite and within (0, 1]")
+        if self.rate_fraction == 1:
+            return self.acs_config
+        return self.acs_config.model_copy(
+            update={
+                "max_slew_rate": self.acs_config.max_slew_rate * self.rate_fraction,
+                "max_slew_rate_body": tuple(
+                    x * self.rate_fraction for x in self.acs_config.max_slew_rate_body
+                )
+                if self.acs_config.max_slew_rate_body is not None
+                else None,
+            }
+        )
 
     def __hash__(self) -> int:
         """Hash by identity, matching plain-object semantics (Slew instances are used as dict keys)."""
@@ -188,23 +213,24 @@ class Slew(BaseModel):
             "ACS config must be set to calculate slew fraction"
         )
         total_dist = float(self.slewdist)
+        limits = self.motion_limits
         if self._slew_segments:
             remaining_time = max(0.0, float(t))
             s = 0.0
             for segment in self._slew_segments:
-                segment_time = self.acs_config.motion_time(
+                segment_time = limits.motion_time(
                     segment.distance_deg, segment.axis_body
                 )
                 if remaining_time >= segment_time:
                     s += segment.distance_deg
                     remaining_time -= segment_time
                     continue
-                s += self.acs_config.s_of_t(
+                s += limits.s_of_t(
                     segment.distance_deg, remaining_time, segment.axis_body
                 )
                 break
         else:
-            s = self.acs_config.s_of_t(total_dist, t, self._rotation_axis_body)
+            s = limits.s_of_t(total_dist, t, self._rotation_axis_body)
         return 0.0 if total_dist == 0 else max(0.0, min(1.0, s / total_dist))
 
     @staticmethod
@@ -358,20 +384,19 @@ class Slew(BaseModel):
         assert self.acs_config is not None, (
             "ACS config must be set to calculate slew time"
         )
+        limits = self.motion_limits
         if len(self._slew_segments) > 1:
             if distance <= 0.0:
                 self.slewtime = 0
             else:
                 motion_time = sum(
-                    self.acs_config.motion_time(segment.distance_deg, segment.axis_body)
+                    limits.motion_time(segment.distance_deg, segment.axis_body)
                     for segment in self._slew_segments
                 )
-                self.slewtime = scheduled_slew_time(
-                    motion_time + self.acs_config.settle_time
-                )
+                self.slewtime = scheduled_slew_time(motion_time + limits.settle_time)
         else:
             self.slewtime = scheduled_slew_time(
-                self.acs_config.slew_time(distance, self._rotation_axis_body)
+                limits.slew_time(distance, self._rotation_axis_body)
             )
 
         self.slewend = self.slewstart + self.slewtime

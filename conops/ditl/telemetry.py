@@ -237,6 +237,14 @@ class Housekeeping(BaseModel):
         default=None,
         description="Norm of accumulated stored momentum, in N m s",
     )
+    actuator_momentum_body_n_m_s: list[float] | None = Field(
+        default=None,
+        description="Rigid actuator demand including maneuver momentum, in body axes (N m s)",
+    )
+    actuator_momentum_norm_n_m_s: float | None = Field(
+        default=None,
+        description="Norm of rigid actuator momentum demand (N m s)",
+    )
 
     @classmethod
     def extract_field(

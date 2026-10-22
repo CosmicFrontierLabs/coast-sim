@@ -39,6 +39,7 @@ from ..schedulers import DispatchPolicy
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
 from ..simulation.idle_safety import IdleSafetyPlanner
+from ..simulation.momentum_planning import MomentumObservationPlanner
 from ..simulation.passes import Pass, pass_slew_trigger_buffer
 from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
 from ..simulation.slew import Slew
@@ -248,6 +249,7 @@ class QueueDITL(DITLMixin, DITLStats):
         )
         self._temporary_rejected_ppts: list[tuple[Pointing, bool]] | None = None
         self._retry_ppt_fetch_requested = False
+        self._momentum_recovery: Slew | None = None
 
         # Track whether the last PPT fetch attempt was unsuccessful (no target dispatched).
         # Set True when the queue is empty or all candidates are rejected; False on
@@ -747,6 +749,7 @@ class QueueDITL(DITLMixin, DITLStats):
             self._synced_executed_slew_count = 0
             self._ppt_unavailable = None
         self._ppt_optimum_roll_cache.clear()
+        self._momentum_recovery = None
 
         # If begin/end datetimes are naive, assume UTC by making them timezone-aware
         if self.begin.tzinfo is None:
@@ -837,6 +840,13 @@ class QueueDITL(DITLMixin, DITLStats):
             self._handle_fault_management(utime, hk)
 
         # Make sure an active PPT ends at the simulation boundary.
+        if (
+            self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_enabled
+            is True
+        ):
+            # Include the last interval, even when no housekeeping tick lands
+            # on the simulation end. No optimistic unvalidated tail.
+            self.acs._advance_attitude(self.uend)
         if self.plan and self.ppt is not None:
             self._close_last_plan_entry(self.uend)
 
@@ -934,11 +944,15 @@ class QueueDITL(DITLMixin, DITLStats):
                 "Recharge interrupts observation before its cleanup/handoff budget "
                 "can be reserved; no executable observation timeline can be exported"
             )
+        previous_collection_end = self.ppt.collection_end
         self.ppt.end = deadline
         self.ppt.set_collection_window(timing)
+        assert self.ppt.collection_end is not None
+        self.ppt.collection_end = min(self.ppt.collection_end, previous_collection_end)
         if self.plan and self.plan[-1].begin == self.ppt.begin:
             self.plan[-1].end = deadline
-            self.plan[-1].set_collection_window(timing)
+            self.plan[-1].collection_begin = self.ppt.collection_begin
+            self.plan[-1].collection_end = self.ppt.collection_end
 
     def _handle_fault_management(
         self, utime: float, hk: Housekeeping | None = None
@@ -1051,17 +1065,20 @@ class QueueDITL(DITLMixin, DITLStats):
         roll: float,
         utime: float,
         mode: ACSMode,
+        *,
+        target: PlanEntry | None = None,
     ) -> tuple[str, str] | None:
         """Return the violated constraint name and scope label for one attitude."""
         scopes = self.config.attitude_constraint_scopes_for_mode(mode)
+        science_target = target if target is not None else self.ppt
         mounted_science = (
             mode == ACSMode.SCIENCE
-            and self.ppt is not None
-            and self.ppt.uses_mounted_attitude() is True
+            and science_target is not None
+            and science_target.uses_mounted_attitude() is True
         )
         if mounted_science:
-            assert self.ppt is not None
-            names = self.ppt.attitude_constraint_names(
+            assert science_target is not None
+            names = science_target.attitude_constraint_names(
                 scopes,
                 (ra, dec, roll),
                 utime,
@@ -1363,6 +1380,17 @@ class QueueDITL(DITLMixin, DITLStats):
                 if momentum_sample is not None
                 else None
             ),
+            actuator_momentum_body_n_m_s=(
+                list(momentum_sample.actuator_momentum_body_n_m_s)
+                if momentum_sample is not None
+                and momentum_sample.actuator_momentum_body_n_m_s is not None
+                else None
+            ),
+            actuator_momentum_norm_n_m_s=(
+                momentum_sample.actuator_momentum_norm_n_m_s
+                if momentum_sample is not None
+                else None
+            ),
         )
 
     def _track_ppt_in_timeline(self) -> None:
@@ -1464,6 +1492,7 @@ class QueueDITL(DITLMixin, DITLStats):
         """Copy executed slew timing and physical attitude onto a plan entry."""
         entry.begin = int(slew.slewstart)
         entry.slewtime = int(round(slew.slewtime))
+        entry.slew_rate_fraction = slew.rate_fraction
         entry.slewdist = float(slew.slewdist)
         entry.slewpath = slew.slewpath
         if entry.uses_mounted_attitude():
@@ -1483,6 +1512,15 @@ class QueueDITL(DITLMixin, DITLStats):
         if entry.config is not None:
             timing = entry.config.payload.observation_timing
             entry.set_collection_window(timing)
+            if slew._momentum_collection_end is not None:
+                assert (
+                    entry.collection_end is not None
+                    and entry.collection_begin is not None
+                )
+                entry.collection_end = max(
+                    entry.collection_begin,
+                    min(entry.collection_end, slew._momentum_collection_end),
+                )
 
     @staticmethod
     def _entry_matches_science_slew(entry: PlanEntry, slew: Slew) -> bool:
@@ -1638,6 +1676,25 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _schedule_idle_recovery(self, utime: float) -> None:
         """Reserve and command a safe inertial hold before the current one expires."""
+        if (
+            self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_enabled
+            is True
+        ):
+            if self.acs.get_mode(utime) not in (ACSMode.IDLE, ACSMode.SAA):
+                return
+            recovery = self._momentum_recovery
+            self._momentum_recovery = None
+            if recovery is None or recovery.slewstart != utime:
+                recovery = MomentumObservationPlanner(self).idle_recovery(utime)
+            if recovery is not None:
+                self.acs.enqueue_command(
+                    ACSCommand(
+                        command_type=ACSCommandType.SLEW_TO_TARGET,
+                        execution_time=utime,
+                        slew=recovery,
+                    )
+                )
+            return
         planner = self._idle_safety
         if planner is None or self.acs.get_mode(utime) not in (
             ACSMode.IDLE,
@@ -2990,6 +3047,35 @@ class QueueDITL(DITLMixin, DITLStats):
         )
 
         if self.ppt is not None:
+            if (
+                self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_enabled
+                is True
+            ):
+                admitted = MomentumObservationPlanner(self).observation(self.ppt, utime)
+                if admitted is None:
+                    self.log.log_event(
+                        utime=utime,
+                        event_type="QUEUE",
+                        obsid=self.ppt.obsid,
+                        acs_mode=self.acs.acsmode,
+                        description="Target rejected: no momentum- and geometry-valid observation with recovery",
+                    )
+                    self._retry_fetch_without_current_ppt(utime, ra, dec)
+                    return
+                slew = admitted.slew
+                self.ppt.end = admitted.end
+                self._apply_slew_metadata(self.ppt, slew)
+                self._momentum_recovery = admitted.recovery
+                self.acs.slew_dists.append(slew.slewdist)
+                self.acs.enqueue_command(
+                    ACSCommand(
+                        command_type=ACSCommandType.SLEW_TO_TARGET,
+                        execution_time=slew.slewstart,
+                        slew=slew,
+                    )
+                )
+                self._ppt_unavailable = False
+                return
             slew = self._new_ppt_slew(self.ppt, utime)
 
             # Check if target is visible

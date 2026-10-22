@@ -138,6 +138,68 @@ class QuaternionHermite:
             polyval(fraction, acceleration) / denominator**2,
         )
 
+    @cached_property
+    def _rotation_polynomial(self) -> np.ndarray:
+        """Numerator of R_eci_to_body; the denominator is |p|²."""
+        p = self._coefficients
+        scalar = np.convolve(p[:, 0], p[:, 0]) - sum(
+            np.convolve(component, component) for component in p[:, 1:].T
+        )
+        rotation = scalar[:, None, None] * np.eye(3)
+        for i in range(3):
+            for j in range(3):
+                rotation[:, i, j] += 2 * np.convolve(p[:, i + 1], p[:, j + 1])
+        for i, j, k in ((0, 1, 2), (1, 2, 0), (2, 0, 1)):
+            cross = 2 * np.convolve(p[:, 0], p[:, k + 1])
+            rotation[:, i, j] -= cross
+            rotation[:, j, i] += cross
+        return rotation
+
+    def within_momentum_limit(
+        self,
+        first: float,
+        last: float,
+        inertia: np.ndarray,
+        momentum_eci: np.ndarray,
+        capacity: float,
+    ) -> bool:
+        """Bound actuator demand over a subinterval, not just its endpoints.
+
+        ``momentum_eci`` contains three ascending-power vector coefficients in
+        *local* interval time [0, 1]. A quadratic represents the integral of
+        linearly interpolated external torque, matching trapezoidal integration.
+        The rotating inertial momentum and I omega are combined before bounding
+        their norm, retaining off-axis inertia and vector cancellation.
+        """
+        if not (0 <= first < last <= 1 and isfinite(capacity) and capacity > 0):
+            return False
+        # Compose each degree-six polynomial with s = first + (last-first) u.
+        transform = np.asarray(
+            [
+                [
+                    comb(j, i) * first ** (j - i) * (last - first) ** i
+                    if j >= i
+                    else 0.0
+                    for j in range(7)
+                ]
+                for i in range(7)
+            ]
+        )
+        norm, rate, _ = self._polynomials
+        denominator = transform @ norm
+        rotation = np.einsum("ij,jkl->ikl", transform, self._rotation_polynomial)
+        numerator = np.zeros((9, 3))
+        for power, vector in enumerate(momentum_eci):
+            numerator[power : power + 7] += rotation @ vector
+        numerator[:7] -= np.deg2rad(transform[:, :6] @ rate) @ inertia.T
+        if not np.isfinite(numerator).all() or not np.isfinite(denominator).all():
+            return False
+        return _certify(
+            _bernstein_matrix(6) @ denominator,
+            _bernstein_matrix(8) @ (numerator / capacity),
+            1,
+        )
+
     def within_limits(
         self,
         rate_axes: tuple[float, float, float],
