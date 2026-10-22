@@ -235,3 +235,45 @@ class TestRolling:
         assert campaign.calibration_seconds == pytest.approx(
             10 * MIN * len(chains), abs=2 * STEP
         )
+
+
+class TestReplanCutoff:
+    def test_a_visit_under_way_at_a_replan_cutoff_is_finished(self) -> None:
+        """Replanning every half hour with a five-minute commit lead puts a
+        cutoff inside the first visit. The visit is kept whole across it:
+        every chain in the executed plan is a complete visit, and the target
+        is credited one visit per chain."""
+        config = _timed_config()
+        targets = _targets(config, visits=2)
+        interval, lead = timedelta(minutes=30), timedelta(minutes=5)
+        ditl = RollingHorizonDITL(
+            config,
+            targets,
+            begin=BEGIN,
+            end=END,
+            horizon=timedelta(hours=3),
+            replan_interval=interval,
+            commit_lead_time=lead,
+        )
+        ditl.step_size = STEP
+        assert ditl.calc()
+        assert ditl.validate_plan_matches_execution() == []
+        chains = _chains(ditl.plan)
+        assert len(chains) >= 2
+        for chain in chains:
+            _check_chain(chain)
+        begin = BEGIN.timestamp()
+        cutoffs = [
+            begin + k * interval.total_seconds() + lead.total_seconds()
+            for k in range(1, int(HOURS * 3600 / interval.total_seconds()))
+        ]
+        straddled = [
+            chain
+            for chain in chains
+            if any(float(chain[0].begin) < c < float(chain[-1].end) for c in cutoffs)
+        ]
+        assert straddled, "no visit crossed a replan cutoff"
+        campaign = targets[0]
+        assert campaign.collected_seconds == pytest.approx(
+            SCIENCE * len(chains), abs=2 * STEP
+        )
