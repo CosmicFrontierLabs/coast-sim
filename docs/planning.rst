@@ -248,6 +248,48 @@ the next replan. A plan takes effect after the commit lead time, so it starts fr
 what the committed activities leave on the recorder by then: what they go on to
 generate, less what a committed contact downlinks.
 
+Observation sequences
+^^^^^^^^^^^^^^^^^^^^^
+
+Some observations are a fixed series of steps rather than one pointing held for a
+time: a reference star, then the target, then the reference again, each for its own
+duration and perhaps with its own instrument, with calibration steps that take time
+but collect no science. A :class:`~conops.targets.ObservationSequence` on a
+:class:`~conops.targets.Pointing` lists the steps (``SequenceStep``: a name, a
+duration, an optional pointing and instrument, whether it collects science, and
+whether it pays the setup budget), and ``visits`` says how many times the sequence is
+wanted. A sequence target's snapshot is one visit's science, no more and no less, and
+its exposure is its visits' science unless given.
+
+Dispatch observes a visit step by step. The target is selected as any other, with the
+visit's calibration, the slews between steps that point elsewhere and any step setup
+counted in the time it needs; its first step is the observation admitted, paying the
+payload's setup, and when a step's time is up the next starts at once, with a real
+slew where it points elsewhere, no setup unless the step asks for it, and cleanup and
+handoff after the last step only. Nothing is inserted inside a visit: a Target of
+Opportunity waits for it to end. A step that cannot be observed, because its pointing
+is not visible throughout, its attitude or slew is constrained, or a ground pass
+falls in it, cuts the visit short, as does any other termination of a step; the cut
+is recorded on the target, which is revisited for the rest from its first step.
+Each step is its own plan entry with the target's obsid, its ``step`` name and, for
+a calibration step, ``calibration`` set; the target is credited the science steps'
+collection and, separately, the calibration time.
+
+The planners place a visit as one block of steps. The priority-first scheduler
+builds the chain from a candidate start: the first step's collection begins its
+setup after the slew in, each later step follows a slew where it points elsewhere
+and the setup budget where it asks, and cleanup and handoff come after the last;
+every step must be visible and allowed throughout and every slew between steps
+allowed, else the start is tried later. The visit fits before the next activity or
+not at all, the slew to that activity leaves from the last step's attitude, and the
+plan lists the steps as entries. The recorder ledger counts the science steps'
+data and the battery ledger the slews and holds of every step. Local search moves a
+visit as one block, and CP-SAT models it as one task whose length includes the
+calibration, the slews between steps and any step setup, arriving at the first
+step's attitude and leaving from the last's. A rolling run credits each executed
+step to its target, science or calibration, and ``DITL`` commands the steps as it
+commands any science entries.
+
 Dispatch (:class:`~conops.ditl.queue_ditl.QueueDITL`) keeps within the recorder
 too. When it selects the next target it works out how much science the recorder can
 take before its next contact: what is free under the planning limit now, less the
