@@ -125,6 +125,7 @@ class TargetQueue:
         sequence: ObservationSequence | None = None,
         visits: int = 1,
         visit_windows: Sequence[VisitWindow] | None = None,
+        instrument_modes: Mapping[str, str] | None = None,
     ) -> Pointing:
         """Add a pointing target to the queue.
 
@@ -150,6 +151,8 @@ class TargetQueue:
             visit_windows: When each visit may begin collecting, one visit
                 per window; the target is selected only while an unvisited
                 window is open
+            instrument_modes: The instruments the observation uses and the
+                mode each is in, by name; instruments not named idle
 
         Returns:
             The added target.
@@ -173,6 +176,7 @@ class TargetQueue:
             sequence=sequence,
             visits=visits,
             visit_windows=list(visit_windows or []),
+            instrument_modes=dict(instrument_modes or {}),
         )
         if pointing.visit_windows:
             pointing.exptime = pointing.visits * pointing.per_visit_seconds

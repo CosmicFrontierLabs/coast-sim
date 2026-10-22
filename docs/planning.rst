@@ -94,6 +94,17 @@ for the look-ahead described under dispatch. A plan entry's ``visit`` says which
 window it observes in, and the target records the windows its visits have
 collected in.
 
+A target's ``instrument_modes`` names the instruments its observation uses and
+the mode each is in, by name, such as ``{"camera": "SCIENCE"}``; a sequence step
+can name its own. Instruments not named idle for the observation. A target naming
+none uses the instrument it names with ``instrument_name``, or every instrument
+with modes, in ``SCIENCE``. The modes set what the payload draws while the target
+is observed, in both DITLs and in the battery ledger the planners keep, so a
+request that uses one instrument of several costs the battery less than one that
+uses them all (see the instrument modes under :doc:`configuration`). The modes are
+checked against the payload when the target is made, and the plan records them on
+each entry.
+
 A target is observed at the power-optimal instrument roll unless it asks for
 another: ``roll_offset_deg`` is added to the power-optimal roll, and ``roll_deg`` is
 the roll itself. Dispatch and the planners observe the target at that roll where the

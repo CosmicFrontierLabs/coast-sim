@@ -74,6 +74,22 @@ class AttitudeRateContinuityError(RuntimeError):
 
 
 class DITLMixin:
+    def _instrument_modes_now(self, mode: ACSMode | int) -> dict[str, str] | None:
+        """The mode each instrument is in at this step: the observation's
+        while ACS is in SCIENCE mode, else None, when every instrument idles
+        or holds a mode named like the ACS mode."""
+        try:
+            acs_mode = ACSMode(int(mode))
+        except (TypeError, ValueError):
+            return None
+        ppt = getattr(self, "ppt", None)
+        if acs_mode is not ACSMode.SCIENCE or ppt is None:
+            return None
+        modes = getattr(ppt, "effective_instrument_modes", None)
+        # A test double's observation names no modes.
+        resolved = modes() if callable(modes) else None
+        return resolved if isinstance(resolved, dict) else None
+
     """Shared initialization, plotting, and data-management logic for DITL simulations."""
 
     ppt: PlanEntry | None

@@ -105,6 +105,7 @@ class DispatchPolicy(Protocol):
         sequence: ObservationSequence | None = None,
         visits: int = 1,
         visit_windows: Sequence[VisitWindow] | None = None,
+        instrument_modes: Mapping[str, str] | None = None,
     ) -> Pointing:
         """Add a target and return it, as QueueDITL does for a Target of Opportunity.
 

@@ -3851,7 +3851,11 @@ class QueueDITL(DITLMixin, DITLStats):
             Tuple of (bus_power, payload_power, total_power) in watts
         """
         bus_power = self.spacecraft_bus.power(mode=mode, in_eclipse=in_eclipse)
-        payload_power = self.payload.power(mode=mode, in_eclipse=in_eclipse)
+        payload_power = self.payload.power(
+            mode=mode,
+            in_eclipse=in_eclipse,
+            instrument_modes=self._instrument_modes_now(mode),
+        )
         total_power = bus_power + payload_power
         return bus_power, payload_power, total_power
 

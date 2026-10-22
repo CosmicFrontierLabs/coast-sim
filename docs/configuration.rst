@@ -1022,13 +1022,16 @@ The :class:`~conops.config.Payload` contains the science instruments.
 **Instrument Attributes:**
 
 * ``name`` (str): Instrument identifier
-* ``power_draw`` (:class:`~conops.config.PowerDraw`): Power consumption
-* ``heater`` (:class:`~conops.config.Heater`): Optional thermal heater
+* ``power_draw`` (:class:`~conops.config.PowerDraw`): Power consumption by ACS mode, for an instrument without modes
+* ``modes`` (list[:class:`~conops.config.InstrumentMode`]): The instrument's operating modes, each a ``name``, a ``power_w`` and an optional ``eclipse_power_w``. With modes, the instrument draws its mode's power and ``power_draw`` is unused. During an observation it is in the mode the request names for it (``instrument_modes`` on the target), or ``SCIENCE`` when the request uses it without naming a mode; a request naming no modes uses the instrument it names, or every instrument with modes, in ``SCIENCE``. Outside the observation, and during an observation that does not use it, the instrument is in ``IDLE``, unless it defines a mode named like the ACS mode (``SAFE``, ``SLEWING``, ``PASS``, ``CHARGING``), which then applies. ``IDLE`` and ``SCIENCE`` must be defined when any mode is; other modes are free to add
+* ``heater`` (:class:`~conops.config.Heater`): Optional thermal heater, by ACS mode
 * ``data_generation`` (:class:`~conops.config.DataGeneration`): Science data the instrument generates while collecting, and its housekeeping data; targets can set their own science data for it by its ``name``. See :doc:`data_management`
 
 .. code-block:: python
 
-   from conops.config import Payload, Instrument, PowerDraw, DataGeneration, ScienceData
+   from conops.config import (
+       Payload, Instrument, InstrumentMode, PowerDraw, DataGeneration, ScienceData,
+   )
 
    payload = Payload(
        instruments=[
@@ -1050,8 +1053,21 @@ The :class:`~conops.config.Payload` contains the science instruments.
                    science=ScienceData(per_observation_gb=0.01),  # Fixed per observation
                ),
            ),
+           Instrument(
+               name="Spectrograph",
+               modes=[
+                   InstrumentMode(name="IDLE", power_w=20.0),
+                   InstrumentMode(name="SCIENCE", power_w=150.0, eclipse_power_w=160.0),
+                   InstrumentMode(name="SAFE", power_w=5.0),
+               ],
+           ),
        ]
    )
+
+A request says which instruments it uses and in which mode, by name; the
+spectrograph above draws 150 W during an observation whose
+``instrument_modes`` is ``{"Spectrograph": "SCIENCE"}`` and 20 W during one that
+leaves it out. See :doc:`planning`.
 
 Observation Timing Budgets
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
