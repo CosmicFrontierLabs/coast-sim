@@ -10,7 +10,7 @@ import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
 from ..common import ACSMode, ObsType
-from ..config import MissionConfig, ScienceData
+from ..config import MissionConfig, ObservationTiming, ScienceData
 from ..config.solar_panel import SolarArrayDriveState
 from ..schedulers.allocator import Allocation, LongRangeAllocator
 from ..schedulers.battery import Addition, BatteryLedger
@@ -358,7 +358,9 @@ class RollingHorizonDITL(DITL):
             next_effect = (
                 self._plan_start(utime if scheduled else self._next_replan)
                 + Slew.duration_upper_bound(self.config.spacecraft_bus.attitude_control)
-                + self.config.payload.observation_timing.setup_seconds
+                + ObservationTiming.bound(
+                    self.config.observation_timings()
+                ).setup_seconds
                 + self.step_size
             )
             urgent = [
@@ -665,7 +667,7 @@ class RollingHorizonDITL(DITL):
         end = cut
         collection = None
         if entry.collection_begin is not None and entry.collection_end is not None:
-            post = self.config.payload.observation_timing.post_collection_seconds
+            post = self._timing_for(entry).post_collection_seconds
             begin = min(float(entry.collection_begin), cut)
             # Science before ``utime`` is already collected, so collection
             # cannot stop before then; cleanup follows wherever it stops.

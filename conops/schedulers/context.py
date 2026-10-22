@@ -17,6 +17,7 @@ from ..common import ACSMode, ObsType
 from ..common.enums import SlewAlgorithm
 from ..config import AttitudeControlSystem, MissionConfig
 from ..config.constraint import attitude_constraint_name_for_scopes
+from ..config.observation_timing import ObservationTiming, timing_for
 from ..ditl.ditl_log import DITLLog
 from ..simulation.acs import ACS
 from ..simulation.attitude import AttitudeExecutionError, AttitudeTrajectory
@@ -90,9 +91,12 @@ class SchedulingContext:
         self.step_size = int(step_size if step_size is not None else ephem.step_size)
         if self.step_size <= 0:
             raise ValueError("step_size must be positive")
-        timing = config.payload.observation_timing
-        self.setup_seconds = float(timing.setup_seconds)
-        self.post_collection_seconds = float(timing.post_collection_seconds)
+        bound = ObservationTiming.bound(config.observation_timings())
+        self.setup_seconds = float(bound.setup_seconds)
+        """The longest setup any observation can have: a bound where the
+        observation is not known. :meth:`setup_for` gives an observation's own."""
+        self.post_collection_seconds = float(bound.post_collection_seconds)
+        """The longest cleanup and handoff any observation can have."""
         self._initial_acs: ACS | None = None
         self._initial_attitudes: list[Attitude] = []
         # Quaternion slews do not depend on when they start, so one slew per
@@ -315,6 +319,18 @@ class SchedulingContext:
     @coverage.setter
     def coverage(self, coverage: StationCoverage | None) -> None:
         self._coverage = coverage
+
+    # ── Observation timing ────────────────────────────────────────────────
+
+    def timing_for(self, obsid: int) -> ObservationTiming:
+        """The setup, cleanup and handoff budgets of observation ``obsid``."""
+        return timing_for(self.config, obsid)
+
+    def setup_for(self, obsid: int) -> float:
+        return float(self.timing_for(obsid).setup_seconds)
+
+    def post_collection_for(self, obsid: int) -> float:
+        return float(self.timing_for(obsid).post_collection_seconds)
 
     def predict_passes(self) -> Sequence[Pass]:
         """Predict the ground passes in the horizon, as DITL will when executing.
