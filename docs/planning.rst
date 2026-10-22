@@ -262,8 +262,22 @@ falls in it, cuts the visit short, as does any other termination of a step; the 
 is recorded on the target, which is revisited for the rest from its first step.
 Each step is its own plan entry with the target's obsid, its ``step`` name and, for
 a calibration step, ``calibration`` set; the target is credited the science steps'
-collection and, separately, the calibration time. The planners place sequence
-targets as plain snapshots of one visit's science at the target's pointing for now.
+collection and, separately, the calibration time.
+
+The planners place a visit as one block of steps. The priority-first scheduler
+builds the chain from a candidate start: the first step's collection begins its
+setup after the slew in, each later step follows a slew where it points elsewhere
+and the setup budget where it asks, and cleanup and handoff come after the last;
+every step must be visible and allowed throughout and every slew between steps
+allowed, else the start is tried later. The visit fits before the next activity or
+not at all, the slew to that activity leaves from the last step's attitude, and the
+plan lists the steps as entries. The recorder ledger counts the science steps'
+data and the battery ledger the slews and holds of every step. Local search moves a
+visit as one block, and CP-SAT models it as one task whose length includes the
+calibration, the slews between steps and any step setup, arriving at the first
+step's attitude and leaving from the last's. A rolling run credits each executed
+step to its target, science or calibration, and ``DITL`` commands the steps as it
+commands any science entries.
 
 Dispatch (:class:`~conops.ditl.queue_ditl.QueueDITL`) keeps within the recorder
 too. When it selects the next target it works out how much science the recorder can
