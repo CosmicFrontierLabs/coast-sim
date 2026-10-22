@@ -146,7 +146,7 @@ class SchedulingContext:
             self._initial_attitudes.append((float(ra), float(dec), float(roll)))
         return self._initial_attitudes[index]
 
-    def instrument_roll(self, target: PlanEntry, utime: float) -> float:
+    def optimum_roll(self, target: PlanEntry, utime: float) -> float:
         """Return the power-optimal instrument roll for a target at ``utime``."""
         return optimum_roll(
             target.ra,
@@ -157,6 +157,31 @@ class SchedulingContext:
             self.config.constraint,
             telescope=target.science_telescope(),
         )
+
+    def instrument_roll(self, target: PlanEntry, utime: float) -> float:
+        """The instrument roll a target is observed at, at ``utime``: the
+        power-optimal roll, or the roll the target asks for (see
+        :meth:`Pointing.requested_roll`). An absolute roll beyond the ACS
+        limit from the optimum gives the optimum here; :meth:`roll_allowed`
+        says whether the target can be observed at that time at all."""
+        optimum = self.optimum_roll(target, utime)
+        requested = getattr(target, "requested_roll", None)
+        if not callable(requested):
+            return optimum
+        roll = requested(
+            optimum,
+            self.config.spacecraft_bus.attitude_control.max_roll_from_optimum_deg,
+        )
+        return optimum if roll is None else float(roll)
+
+    def roll_allowed(self, target: PlanEntry, utime: float) -> bool:
+        """Whether the roll ``target`` asks for is within the ACS limit of the
+        power-optimal roll at ``utime``; True without a request."""
+        requested = getattr(target, "requested_roll", None)
+        if not callable(requested):
+            return True
+        limit = self.config.spacecraft_bus.attitude_control.max_roll_from_optimum_deg
+        return requested(self.optimum_roll(target, utime), limit) is not None
 
     def slew(
         self,

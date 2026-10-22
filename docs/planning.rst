@@ -75,6 +75,14 @@ Building and executing a plan
 A target's ``earliest_start`` and ``deadline`` (Unix seconds, a datetime or an
 ISO-8601 string) limit when its science collection may begin.
 
+A target is observed at the power-optimal instrument roll unless it asks for
+another: ``roll_offset_deg`` is added to the power-optimal roll, and ``roll_deg`` is
+the roll itself. Dispatch and the planners observe the target at that roll where the
+constraints allow it, and the plan entry's ``roll`` records it. The ACS's
+``max_roll_from_optimum_deg`` bounds either: an offset beyond it is a configuration
+error, and a target whose absolute roll is beyond it at a time is not selected or
+placed then, but may be later as the optimal roll moves.
+
 Execute the plan with the same configuration, ephemeris, horizon and step size it
 was built with. The plan can also be saved and loaded (see :doc:`plan_serialization`)
 before execution.

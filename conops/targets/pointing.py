@@ -69,6 +69,23 @@ class Pointing(PlanEntry):
         exclude_if=lambda v: v == 1,
         description="How many visits of the sequence are wanted",
     )
+    roll_deg: float | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description=(
+            "The instrument roll to observe at, in degrees, instead of the "
+            "power-optimal roll; the target is observed only when the "
+            "constraints allow it and it is within the ACS roll limit"
+        ),
+    )
+    roll_offset_deg: float | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description=(
+            "An offset from the power-optimal roll to observe at, in degrees; "
+            "it must be within the ACS roll limit"
+        ),
+    )
     _done: bool = PrivateAttr(default=False)
     _merit_breakdown: MeritBreakdown | None = PrivateAttr(default=None)
 
@@ -172,6 +189,42 @@ class Pointing(PlanEntry):
         if self.sequence is None:
             return 0.0
         return self.sequence.overhead_seconds(acs, timing, self.ra, self.dec)
+
+    @model_validator(mode="after")
+    def _one_roll_request(self) -> "Pointing":
+        if self.roll_deg is not None and self.roll_offset_deg is not None:
+            raise ValueError("give roll_deg or roll_offset_deg, not both")
+        return self
+
+    @property
+    def commands_roll(self) -> bool:
+        """Whether this target asks for a roll other than the power-optimal one."""
+        return self.roll_deg is not None or self.roll_offset_deg is not None
+
+    def requested_roll(self, optimum: float, max_delta: float | None) -> float | None:
+        """The roll this target is observed at, given the power-optimal roll
+        ``optimum`` and the ACS limit ``max_delta`` from it.
+
+        The optimum itself without a request; the optimum plus the offset;
+        or the absolute roll, where it is within the limit, else None: the
+        target cannot be observed at that time. An offset beyond the limit
+        is a configuration error.
+        """
+        if self.roll_offset_deg is not None:
+            if max_delta is not None and abs(self.roll_offset_deg) > max_delta + 1e-9:
+                raise ValueError(
+                    f"roll_offset_deg {self.roll_offset_deg} exceeds the ACS "
+                    f"max_roll_from_optimum_deg {max_delta}"
+                )
+            return (optimum + self.roll_offset_deg) % 360.0
+        if self.roll_deg is not None:
+            roll = self.roll_deg % 360.0
+            if max_delta is not None:
+                delta = abs((roll - optimum + 180.0) % 360.0 - 180.0)
+                if delta > max_delta + 1e-9:
+                    return None
+            return roll
+        return optimum
 
     @model_validator(mode="after")
     def _check_start_before_deadline(self) -> "Pointing":
