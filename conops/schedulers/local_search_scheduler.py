@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict
 
 from ..config import MissionConfig
 from ..targets import Plan, Pointing
+from .battery import Additions
 from .priority_scheduler import (
     PriorityScheduler,
     _Block,
@@ -70,6 +71,8 @@ class _State(BaseModel):
     """When each cadence target was last observed, collected or planned."""
     volumes: tuple[float, ...]
     """Science volume planned in each segment of the recorder ledger."""
+    energy: tuple[Additions, ...]
+    """What the plan draws from the battery, by segment of the battery ledger."""
 
 
 class _Decoded(BaseModel):
@@ -198,6 +201,7 @@ class LocalSearchScheduler(PriorityScheduler):
         self._tiers = sorted({r.merit.tier for r in requests}, reverse=True)
         self._initial_last_visit = dict(self._last_visit)
         self._initial_volumes = tuple(self._volumes)
+        self._initial_energy = tuple(self._energy)
 
         self._place_requests(requests)
         self._greedy_timeline = list(self.timeline)
@@ -301,6 +305,7 @@ class LocalSearchScheduler(PriorityScheduler):
             programs=dict(self._delivered),
             last_visit=dict(self._initial_last_visit),
             volumes=self._initial_volumes,
+            energy=self._initial_energy,
         )
 
     def _decode(self, sequence: list[_Snapshot]) -> _Decoded:
@@ -336,8 +341,15 @@ class LocalSearchScheduler(PriorityScheduler):
             fit = self._fit_in_gap(request, pred, succ, not_before)
             if fit is None:
                 continue
-            block, slew, succ_slew = fit
-            # Only where the recorder has room for it; later gaps may be
+            # Only where the battery stays above its planning level, charging
+            # first in the gap if that is what it takes.
+            charged = self._fit_within_battery(
+                request, pred, succ, not_before, fit, timeline, index
+            )
+            if charged is None:
+                continue
+            block, slew, succ_slew = charged
+            # And only where the recorder has room for it; later gaps may be
             # after a contact that makes room.
             volume = self._block_volume(block)
             segment = self._block_segment(block)
@@ -382,6 +394,7 @@ class LocalSearchScheduler(PriorityScheduler):
                 programs=programs,
                 last_visit=last_visit,
                 volumes=self._ledger.add_all(state.volumes, additions),
+                energy=self._charged_energy(placed),
             )
         return state
 
@@ -402,6 +415,8 @@ class LocalSearchScheduler(PriorityScheduler):
             abs(x - y) > _VOLUME_TOLERANCE_GB
             for x, y in zip(a.volumes, b.volumes, strict=True)
         ):
+            return False
+        if self._battery.active and a.energy != b.energy:
             return False
         if a.cursor == 0 or b.cursor == 0:
             return a.cursor == b.cursor
@@ -470,6 +485,9 @@ class LocalSearchScheduler(PriorityScheduler):
                         for a, b, c in zip(
                             here.volumes, later.volumes, there.volumes, strict=True
                         )
+                    ),
+                    energy=self._charged_energy(
+                        [*prefix, *later.timeline[there.cursor :]]
                     ),
                 )
             )

@@ -212,8 +212,9 @@ accumulates between the events that remove it, and must keep within a limit
 meanwhile, has the same shape: stored momentum builds up until a dump unloads it,
 for instance. :class:`~conops.schedulers.ConsumableLedger` holds that arithmetic
 (segments between removals, accrual, removals that take no more than is there,
-and the check at every later peak), and
-:class:`~conops.schedulers.RecorderLedger` maps the recorder onto it.
+and the check at every later peak), :class:`~conops.schedulers.RecorderLedger`
+maps the recorder onto it, and :class:`~conops.schedulers.BatteryLedger` the
+battery (see `Planning within the battery`_).
 
 A snapshot is placed only where every peak from its segment onwards stays within
 the limit. It is never shortened to fit: a snapshot that does not fit before a
@@ -230,11 +231,73 @@ the next replan. A plan takes effect after the commit lead time, so it starts fr
 what the committed activities leave on the recorder by then: what they go on to
 generate, less what a committed contact downlinks.
 
+Planning within the battery
+---------------------------
+
+Every scheduler keeps the battery above its planning level, ``battery.planning_level``
+as a fraction of full (see :doc:`configuration`). By default it is the
+depth-of-discharge floor, ``1 - max_depth_of_discharge``, so no plan takes the
+battery past the discharge it is allowed; set it higher to keep margin, or to
+``None`` to plan without regard to the battery. ``DITL`` does not charge on its own
+while executing a plan, so the plan carries its own charging.
+
+The battery is the second consumable on :class:`~conops.schedulers.ConsumableLedger`,
+as the *deficit*: the energy below full, in watt-hours. Unlike data on the recorder,
+which only comes off during a contact, energy comes back whenever the panels are
+lit, whatever the spacecraft is doing, so :class:`~conops.schedulers.BatteryLedger`
+orders a segment's additions in time and walks them, step by step as the simulation
+drains and charges the battery, every span at the attitude the spacecraft holds
+through it:
+
+* a slew draws ``SLEWING`` power and generates along its path; a science snapshot
+  draws ``SCIENCE`` power and generates at its attitude and the power-optimal roll
+  the scheduler gives it, which the simulation flies; a contact draws ``PASS`` power
+  from the start of its slew, which ACS runs in ``PASS`` mode, and generates along
+  its tracking profile, then ``SLEWING`` power until the spacecraft is at rest after
+  it; a charge draws ``CHARGING`` power and generates at the charging attitude;
+* idle time draws the idle power and generates at the attitude the activity before
+  it leaves the spacecraft in;
+* a panel on a finite solar-array drive is carried along as the simulation carries
+  it, tracking the Sun in the modes its control lists and holding its angle in the
+  rest, so each activity is counted at the drive angles the plan reaches it with,
+  and a plan's charges take the charging attitude for those angles; a rolling
+  replan starts from where the drive is, the committed activities flown as ACS
+  flies them, slews included, until the plan takes over;
+* the deficit never falls below zero: a surplus before a draw is lost, as a full
+  battery wastes what its panels make; and generation is not counted past
+  ``planning_recharge_level``, so a plan never assumes the battery above it (a
+  deficit already below that floor is left where it is until something draws);
+* the segments start at each sunrise, and the plan is checked at every segment's
+  peak.
+
+The scheduler charges where it can. As it evaluates each placement, it puts a charge
+into every idle sunlit stretch of the timeline long enough for one and its two
+slews: slewing from the activity before to the charging attitude, found as emergency
+charging finds it, holding it while the charging mode's constraints allow until the
+stretch ends, and leaving the activity after it reachable from the charging attitude,
+shortened or dropped where it is not. A snapshot is placed only where the deficit,
+with those charges, stays within the limit from there to the end of the horizon.
+Where it does not, the scheduler tries the snapshot later in the same gap, after the
+charging time its idle sunlit start then leaves, before moving to a later gap; it is
+never shortened to fit, and the log says when a request waits for charge. The
+finished plan carries its charges as ``CHARGE`` entries, which ``DITL`` executes as it
+does contacts and :meth:`~conops.ditl.DITL.validate_plan_matches_execution` checks.
+
+The ledger is the simulation's own arithmetic at the attitudes the simulation flies,
+so a plan it accepts keeps the battery above the level when executed. A spacecraft
+whose panels generate more than observing draws, such as a side-mounted array rolled
+towards the Sun, charges only in the sunlit idle time it has anyway and fills the
+day with science. One whose panels only generate pointing at the Sun charges in
+every idle sunlit stretch and refuses the science the battery cannot carry through
+the eclipse after it; it is then the lowest-merit science that waits, as with the
+recorder. Local search decodes its sequences through the same check;
+:class:`~conops.ditl.RollingHorizonDITL` starts each plan from the battery the
+committed activities, charges included, leave by the time the plan takes over; and
+CP-SAT has the battery in its model (see `Optimizing plans with CP-SAT`_).
+
 Limitations
 -----------
 
-* **No battery model.** The scheduler does not schedule charging, and ``DITL`` does not
-  charge on its own while executing a plan.
 * **Urgency at the start of the horizon.** Urgency is evaluated once, when the plan is
   built; deadlines are kept as constraints and, in local search and CP-SAT, by the
   earliness discount.
@@ -352,6 +415,25 @@ CP-SAT chooses candidates and their order:
 * the objective is merit-weighted science, with the completion deficit at the chunk's
   start and the earliness discount for requests with a deadline and for cadence
   visits.
+
+The battery is in the model too, where the battery limits the plan. The horizon
+from the chunk's run to its end is cut into sunlit and eclipse runs. Each candidate
+is in the run its arrival falls in, placed directly where its arrival domain spans
+one run and by a boolean per run where it spans several, and adds to that run's
+energy its net power, its mode's draw less what its panels generate at its
+power-optimal roll, less the run's idle power, for its collection and overhead, plus
+a typical slew in at the slewing power; what spills past the run's end is counted in
+each run after it for the seconds it holds. A run's energy is then its idle power for
+its whole length, charging in sunlight at the charging attitude and drawing in
+eclipse, plus what the candidates and the already planned activities change; the
+deficit carried into each run is bounded below by the previous run's, by zero, and
+by the smaller of the recharge floor and the deficit entering the run, and every
+run's end must stay within the limit. In an eclipse run everything draws,
+so the run's end is its peak; in a sunlit run the deficit can rise and fall within
+the run, and the model is linear, so the decoder, which walks the plan exactly, has
+the last word: a chunk whose solution does not hold up keeps the priority-first
+plan. The priority-first plan is hinted into the run and carry-over variables, so
+the solver starts from a feasible solution.
 
 The priority-first plan's snapshots in each chunk are the solver's starting hint,
 adjusted where the model's approximate slews need it, so the solver starts from a

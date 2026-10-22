@@ -97,10 +97,15 @@ class PlanExecutionValidator:
         science_obstypes: frozenset[ObsType] = QUEUE_SCIENCE_OBSTYPES,
         housekeeping: Sequence[Housekeeping] = (),
         step_size: float = 0.0,
+        check_charges: bool = False,
     ) -> None:
         if housekeeping and (not isfinite(step_size) or step_size <= 0):
             raise ValueError("step_size must be finite and positive with housekeeping")
         self.config = config
+        self.check_charges = check_charges
+        """Whether charging entries are checked against their mode and
+        attitude: true for a plan executed as written, not for dispatch, whose
+        charging entries record charges it cut short itself."""
         self.plan = plan
         self.utime = utime
         self.ra = ra
@@ -141,6 +146,8 @@ class PlanExecutionValidator:
                 mismatches.extend(self._science_entry_mismatches(entry, tolerance_deg))
             elif obstype == ObsType.GSP:
                 mismatches.extend(self._gsp_entry_mismatches(entry, tolerance_deg))
+            elif obstype == ObsType.CHARGE and self.check_charges:
+                mismatches.extend(self._charge_entry_mismatches(entry, tolerance_deg))
         mismatches.extend(self.attitude_constraint_mismatches())
         mismatches.extend(self.unplanned_execution_mismatches())
         return mismatches
@@ -504,6 +511,45 @@ class PlanExecutionValidator:
             ):
                 return True
         return False
+
+    def _charge_entry_mismatches(
+        self, entry: PlanEntry, tolerance_deg: float
+    ) -> list[PlanExecutionMismatch]:
+        """Check telemetry over a charging entry's hold against its mode and pointing.
+
+        From the end of its slew to its end the spacecraft holds the charging
+        attitude in ``CHARGING`` mode, or in ``IDLE`` mode where it is in
+        eclipse, since ACS does not report charging without sunlight.
+        """
+        start = float(entry.begin) + max(0.0, float(entry.slewtime))
+        end = float(entry.end)
+        mismatches: list[PlanExecutionMismatch] = []
+        if end <= start:
+            return mismatches
+        for i in self._window_indices(start, end):
+            utime = self.utime[i]
+            mode = self._mode_at_index(i)
+            idle_in_eclipse = (
+                mode == ACSMode.IDLE
+                and self.config.constraint.in_eclipse(ra=0.0, dec=0.0, time=utime)
+            )
+            if mode != ACSMode.CHARGING and not idle_in_eclipse:
+                mismatches.append(
+                    self._mode_mismatch(entry, utime, mode, ACSMode.CHARGING, "charge")
+                )
+                continue
+            if mode == ACSMode.CHARGING and int(self.obsid[i]) != int(entry.obsid):
+                mismatches.append(
+                    self._obsid_mismatch(entry, utime, self.obsid[i], "charge")
+                )
+            error_deg = angular_separation(
+                float(self.ra[i]), float(self.dec[i]), float(entry.ra), float(entry.dec)
+            )
+            if error_deg > tolerance_deg:
+                mismatches.append(
+                    self._pointing_mismatch(entry, utime, error_deg, "charge")
+                )
+        return mismatches
 
     def _gsp_entry_mismatches(
         self, entry: PlanEntry, tolerance_deg: float

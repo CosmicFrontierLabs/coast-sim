@@ -39,7 +39,7 @@ def contact_downlink_gb(config: MissionConfig, station: str, seconds: float) -> 
     return rate_mbps * max(0.0, seconds) / 1000.0
 
 
-class RecorderLedger(ConsumableLedger):
+class RecorderLedger(ConsumableLedger[float, float]):
     """Recorder volume over a horizon, by the segments its contacts cut it into.
 
     Args:
@@ -129,7 +129,9 @@ class RecorderLedger(ConsumableLedger):
             removals,
             limit=config.recorder.planning_limit_gb,
             start=start_volume_gb,
-            accrual=config.housekeeping_generated,
+            accrual=lambda span_begin, span_end: config.housekeeping_generated(
+                span_end - span_begin
+            ),
         )
         for first, excess in tails:
             self.accrual[self.segment(first)] += excess
@@ -169,10 +171,6 @@ class RecorderLedger(ConsumableLedger):
     def contact_housekeeping_gb(self) -> list[float]:
         """Housekeeping generated during the contact at the start of each segment."""
         return self.removal_accrual
-
-    def peaks(self, volumes: Sequence[float]) -> list[float]:
-        """The recorder volume at the end of each segment."""
-        return self.levels(volumes)
 
     # ── What a plan adds ──────────────────────────────────────────────────
 
