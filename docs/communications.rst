@@ -79,7 +79,7 @@ Defines how the antenna is mounted and pointed.
 * ``repoint_threshold_deg``: For a gimballed antenna, the pointing allowance: the
   radius of the cap about the antenna's pointing that the tracked station is kept in,
   the antenna being re-pointed ahead of the station where it would leave (default
-  None: no drift repoints)
+  None: no tracking repoints)
 * ``repoint_interval_vs_range_km``: Instead of the threshold, the interval between
   repoints in seconds against the spacecraft's distance from the Earth's centre, as
   ``(range_km, seconds)`` rows interpolated at the range at each repoint
@@ -115,15 +115,15 @@ Every station with a downlink carries data this way, whether or not
 **Antenna repoints.** A gimballed antenna is re-pointed at each acquisition and
 handover, and within a contact as the spacecraft moves along its orbit; an omni antenna
 is never re-pointed, so it has no repoint events. While an
-attitude is held the station's direction drifts in the body frame exactly as it drifts
-in the sky, so a drift repoint needs no attitude and the chain is fixed by the
+attitude is held the station's direction moves in the body frame exactly as it moves
+across the sky, so a tracking repoint needs no attitude and the chain is fixed by the
 geometry from the contact's start. With ``repoint_threshold_deg`` set, the antenna
 leads the station: at each repoint it is pointed at the centre of the longest arc of
 the station's coming track that fits within a cap of that radius, so the station
 enters the cap on one side and leaves on the other, and the next repoint comes where
 the arc no longer fits. Taking each arc as long as it can be gives the fewest repoints
 for the allowance, about half as many as re-pointing at the station each time it
-drifts the allowance away. With ``repoint_interval_vs_range_km`` set instead, repoints
+moves the allowance away. With ``repoint_interval_vs_range_km`` set instead, repoints
 follow the table's interval at the spacecraft's range from the Earth's centre, each
 pointing at the station. Each repoint records the antenna's pointing and how far it
 turned, and ``print_statistics`` reports the mean and largest turn. A repoint takes ``repoint_seconds``, during which nothing is
