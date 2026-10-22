@@ -1,4 +1,4 @@
-"""Roll-only slews: their own duration, and sequence steps at roll offsets."""
+"""Roll-only slews, and sequence steps at roll offsets."""
 
 from datetime import timedelta
 
@@ -24,17 +24,20 @@ ROLL_STEPS = ObservationSequence(
     ]
 )
 TIMING = ObservationTiming(setup_seconds=120, cleanup_seconds=60)
+X_AXIS = (1.0, 0.0, 0.0)
 
 
 def _delta(a: float, b: float) -> float:
     return abs((a - b + 180.0) % 360.0 - 180.0)
 
 
-def _roll_config(hours: int = HOURS, roll_only: float | None = 300.0) -> MissionConfig:
+def _roll_config(hours: int = HOURS) -> MissionConfig:
     config = _config(hours)
     config.payload.observation_timing = TIMING
     acs = config.spacecraft_bus.attitude_control
-    acs.roll_only_slew_seconds = roll_only
+    # The roll axis has less authority than the others.
+    acs.max_slew_rate_body = (0.25, 1.0, 1.0)
+    acs.slew_acceleration_body = (0.1, 0.5, 0.5)
     acs.max_roll_from_optimum_deg = 15.0
     return config
 
@@ -62,39 +65,30 @@ def _slew(config: MissionConfig, start: tuple, end: tuple) -> Slew:
 
 
 class TestSlewModel:
-    def test_a_roll_only_slew_is_recognised(self) -> None:
+    def test_a_roll_only_slew_is_timed_by_the_roll_axis(self) -> None:
         config = _roll_config()
-        assert _slew(config, (10.0, 20.0, 30.0), (10.0, 20.0, 45.0)).is_roll_only
-        assert not _slew(config, (10.0, 20.0, 30.0), (12.0, 20.0, 45.0)).is_roll_only
-        assert not _slew(config, (10.0, 20.0, 30.0), (10.0, 20.0, 30.0)).is_roll_only
-
-    def test_a_roll_only_slew_takes_its_own_time_plus_settle(self) -> None:
-        config = _roll_config(roll_only=300.0)
-        settle = config.spacecraft_bus.attitude_control.settle_time
-        roll = _slew(config, (10.0, 20.0, 30.0), (10.0, 20.0, 45.0))
-        assert roll.slewtime == 300 + settle
-        assert roll.slewdist == pytest.approx(15.0)
-        # A slew that moves the boresight keeps the kinematic time.
-        moved = _slew(config, (10.0, 20.0, 30.0), (12.0, 20.0, 45.0))
-        kinematic = config.spacecraft_bus.attitude_control.slew_time(moved.slewdist)
-        assert moved.slewtime == pytest.approx(kinematic, abs=1.0)
-        # Without the setting a roll is timed by the rates like any rotation.
-        plain = _roll_config(roll_only=None)
-        roll = _slew(plain, (10.0, 20.0, 30.0), (10.0, 20.0, 45.0))
-        assert roll.slewtime == pytest.approx(
-            plain.spacecraft_bus.attitude_control.slew_time(15.0), abs=1.0
-        )
-
-    def test_the_duration_bound_covers_a_roll_only_slew(self) -> None:
-        config = _roll_config(roll_only=3000.0)
         acs = config.spacecraft_bus.attitude_control
-        assert Slew.duration_upper_bound(acs) >= 3000 + acs.settle_time
-        assert Slew.duration_upper_bound(acs) >= Slew._kinematic_duration_upper_bound(
-            acs
+        roll = _slew(config, (10.0, 20.0, 30.0), (10.0, 20.0, 45.0))
+        assert len(roll._slew_segments) == 1
+        assert roll.slewdist == pytest.approx(15.0)
+        assert roll._slew_segments[0].axis_body == pytest.approx(X_AXIS, abs=1e-9)
+        # The roll axis's own rate and acceleration, plus settling.
+        assert roll.slewtime == pytest.approx(
+            acs.motion_time(15.0, X_AXIS) + acs.settle_time, abs=1.0
         )
-        assert Slew.duration_upper_bound(
-            _roll_config(roll_only=None).spacecraft_bus.attitude_control
-        ) == Slew._kinematic_duration_upper_bound(acs)
+        assert acs.motion_time(15.0, X_AXIS) > acs.motion_time(15.0, (0.0, 1.0, 0.0))
+
+    def test_a_slew_that_also_rolls_takes_longer(self) -> None:
+        """The rotation axis gains a component along the boresight, and the
+        slowest axis along it sets the time."""
+        config = _roll_config()
+        start = (10.0, 20.0, 30.0)
+        both = _slew(config, start, (25.0, 35.0, 75.0))
+        no_roll = _slew(config, start, (25.0, 35.0, 30.0))
+        assert abs(both._slew_segments[0].axis_body[0]) > abs(
+            no_roll._slew_segments[0].axis_body[0]
+        )
+        assert both.slewtime > no_roll.slewtime
 
 
 class TestStepRolls:
@@ -114,6 +108,7 @@ class TestStepRolls:
 
     def test_the_plan_rolls_between_steps_and_executes(self) -> None:
         config = _roll_config()
+        acs = config.spacecraft_bus.attitude_control
         scheduler = PriorityScheduler(
             config, [_roll_target(config)], BEGIN, END, step_size=STEP
         )
@@ -123,14 +118,17 @@ class TestStepRolls:
         rolls = [float(e.roll) for e in steps]
         assert _delta(rolls[1], rolls[0] - 15.0) < 1e-6
         assert _delta(rolls[2], rolls[0] + 15.0) < 1e-6
-        # The steps stay on the pointing and slew in roll only, each taking
-        # the roll-only time plus settling.
-        settle = config.spacecraft_bus.attitude_control.settle_time
+        # The steps keep the pointing and slew in roll only, each timed by
+        # the roll axis plus settling.
         assert all((e.ra, e.dec) == PATCH[0] for e in steps)
-        assert steps[1].slewtime == 300 + settle
-        assert steps[2].slewtime == 300 + settle
         assert steps[1].slewdist == pytest.approx(15.0)
         assert steps[2].slewdist == pytest.approx(30.0)
+        assert steps[1].slewtime == pytest.approx(
+            acs.motion_time(15.0, X_AXIS) + acs.settle_time, abs=1.0
+        )
+        assert steps[2].slewtime == pytest.approx(
+            acs.motion_time(30.0, X_AXIS) + acs.settle_time, abs=1.0
+        )
         replay = Plan.model_validate_json(plan.model_dump_json())
         ditl = DITL(
             config=config,
@@ -158,7 +156,6 @@ class TestStepRolls:
                 SequenceStep(name="target", duration_seconds=10 * MIN),
             ]
         )
-        target = _roll_target(config)
         target = Pointing(
             config=config,
             obsid=601,
@@ -188,6 +185,7 @@ class TestStepRolls:
 
     def test_dispatch_rolls_between_steps(self) -> None:
         config = _roll_config()
+        acs = config.spacecraft_bus.attitude_control
         ditl = create_ditl(config, [_roll_target(config)], BEGIN, END)
         ditl.step_size = STEP
         assert ditl.calc()
@@ -196,6 +194,10 @@ class TestStepRolls:
         rolls = [float(e.roll) for e in steps]
         assert _delta(rolls[1], rolls[0] - 15.0) < 0.5
         assert _delta(rolls[2], rolls[0] + 15.0) < 0.5
-        settle = config.spacecraft_bus.attitude_control.settle_time
-        assert steps[1].slewtime == 300 + settle and steps[2].slewtime == 300 + settle
+        assert steps[1].slewtime == pytest.approx(
+            acs.motion_time(15.0, X_AXIS) + acs.settle_time, abs=1.0
+        )
+        assert steps[2].slewtime == pytest.approx(
+            acs.motion_time(30.0, X_AXIS) + acs.settle_time, abs=1.0
+        )
         assert not any("cut short" in e.description for e in ditl.log.events)

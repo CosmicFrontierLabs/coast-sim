@@ -12,7 +12,7 @@ from pydantic import (
 from ..common import unixtime2date
 from ..common.enums import ObsType
 from ..config.acs import AttitudeControlSystem
-from ..config.observation_timing import ObservationTiming
+from ..config.observation_timing import ObservationTiming, timing_for
 from .merit import MeritBreakdown
 from .plan_entry import PlanEntry
 from .sequence import ObservationSequence
