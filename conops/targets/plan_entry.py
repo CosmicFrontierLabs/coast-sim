@@ -171,6 +171,16 @@ class PlanEntry(BaseModel):
     track_end_roll: float | None = None
     saa: SAA | None = Field(default=None, exclude=True)
     merit: float = 101
+    step: str | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="The sequence step this entry observes, for a sequence target",
+    )
+    calibration: bool = Field(
+        default=False,
+        exclude_if=lambda v: not v,
+        description="Whether this entry is a calibration step, collecting no science",
+    )
     windows: list[list[float]] = Field(default_factory=list, exclude=True)
     obstype: ObsType = ObsType.PPT
     slewpath: tuple[list[float], list[float]] = Field(
@@ -182,6 +192,8 @@ class PlanEntry(BaseModel):
     _exptime: float | None = PrivateAttr(default=None)
     _exporig: float | None = PrivateAttr(default=None)
     _collected_seconds: float = PrivateAttr(default=0.0)
+    _calibration_seconds: float = PrivateAttr(default=0.0)
+    _step_timing: ObservationTiming | None = PrivateAttr(default=None)
     _last_collection_time: float | None = PrivateAttr(default=None)
     _interruptions: list[float] = PrivateAttr(default_factory=list)
     _serialized_target_attitude: TargetAttitudeSchema | None = PrivateAttr(default=None)
@@ -350,6 +362,25 @@ class PlanEntry(BaseModel):
         if self.exptime is not None:
             self.exptime = max(0, self.exptime - seconds)
         self._collected_seconds += seconds
+        self._last_collection_time = utime
+
+    @property
+    def step_timing(self) -> ObservationTiming | None:
+        """The budgets this entry pays as a step of a sequence visit, where
+        it is one: set by :meth:`Pointing.step_pointing`; None otherwise."""
+        return self._step_timing
+
+    @property
+    def calibration_seconds(self) -> float:
+        """Calibration time taken on this target so far, in a sequence."""
+        return self._calibration_seconds
+
+    def record_calibration(self, utime: float, seconds: float) -> None:
+        """Count executed calibration time against this target: it is not
+        science, so the exposure is not reduced."""
+        if seconds <= 0:
+            return
+        self._calibration_seconds += seconds
         self._last_collection_time = utime
 
     @property
