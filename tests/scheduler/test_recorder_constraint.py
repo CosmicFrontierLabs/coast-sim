@@ -5,6 +5,7 @@ recorder's mapping onto it, and the schedulers' use of it.
 """
 
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 
@@ -107,6 +108,22 @@ class TestPlanningLimit:
         )
         assert OnboardRecorder(planning_limit=None).planning_limit_gb is None
 
+    def test_a_disabled_limit_survives_a_save_and_load(self, tmp_path: Path) -> None:
+        """A YAML save leaves out None fields, but a disabled limit is a
+        setting: left out, it would load as the red threshold."""
+        config = MissionConfig(recorder=OnboardRecorder(planning_limit=None))
+        dumped = config.model_dump(mode="json", exclude_none=True)
+        assert "planning_limit" in dumped["recorder"]
+        assert dumped["recorder"]["planning_limit"] is None
+        path = tmp_path / "config.yaml"
+        config.to_yaml_file(str(path))
+        loaded = MissionConfig.from_yaml_file(str(path))
+        assert loaded.recorder.planning_limit is None
+        assert loaded.recorder.planning_limit_gb is None
+        kept = MissionConfig(recorder=OnboardRecorder(planning_limit=0.5))
+        kept.to_yaml_file(str(path))
+        assert MissionConfig.from_yaml_file(str(path)).recorder.planning_limit == 0.5
+
 
 class TestLedger:
     @pytest.fixture
@@ -164,11 +181,12 @@ class TestLedger:
         assert ledger.housekeeping_gb == pytest.approx([0.2, 0.7])
         assert ledger.contact_housekeeping_gb == pytest.approx([0.0, 0.3])
 
-    def test_housekeeping_at_the_pass_rate_during_the_slew_into_a_contact(
+    def test_the_slew_into_a_contact_adds_the_pass_rates_excess(
         self, config: MissionConfig
     ) -> None:
-        """ACS runs the slew into a contact in PASS mode, so the 60 s slew
-        counts at the PASS rate in the segment before the contact."""
+        """ACS runs the slew into a contact in PASS mode: the 60 s slew adds
+        the difference between the rates, with the contact's other entries,
+        in the segment it starts in; the ledger's own accrual is nominal."""
         contact = PlanEntry(
             obstype=ObsType.GSP,
             station="TWENTY",
@@ -180,8 +198,63 @@ class TestLedger:
         )
         ledger = RecorderLedger(config, 0.0, 1000.0, [contact], start_volume_gb=0.0)
         assert ledger.bounds == [0.0, 200.0, 1000.0]
-        assert ledger.housekeeping_gb == pytest.approx([0.14 + 0.18, 0.7])
+        assert ledger.housekeeping_gb == pytest.approx([0.2, 0.7])
         assert ledger.contact_housekeeping_gb == pytest.approx([0.0, 0.3])
+        assert ledger.ingress_volume(contact) == pytest.approx(0.12)
+        assert ledger.ingress_segment(contact) == 0
+        assert ledger.initial_volumes([contact]) == pytest.approx((0.12, 0.0))
+        # As it would be flown from elsewhere, longer.
+        assert ledger.ingress_volume(contact, begin=100.0, slewtime=100.0) == (
+            pytest.approx(0.2)
+        )
+        # The wait on the track before the contact is not in PASS mode.
+        assert ledger.ingress_volume(contact, begin=100.0, slewtime=30.0) == (
+            pytest.approx(0.06)
+        )
+        # Only the part inside the horizon.
+        later = RecorderLedger(config, 170.0, 1000.0, [contact], start_volume_gb=0.0)
+        assert later.ingress_volume(contact) == pytest.approx(0.06)
+
+    def test_on_the_step_grid_each_step_counts_whole_in_its_mode(
+        self, config: MissionConfig
+    ) -> None:
+        """With 60 s steps from 0: the slew from 120 to 200 occupies the
+        steps at 120 and 180, so 120 s at the PASS rate; the link from 200
+        to 300 occupies the step at 240, so 60 s at the PASS rate, and
+        downlinks for its own 100 s; the horizon's steps are the 17 up to 960."""
+        contact = PlanEntry(
+            obstype=ObsType.GSP,
+            station="TWENTY",
+            begin=120.0,
+            slewtime=80,
+            end=300.0,
+            contact_begin=200.0,
+            contact_end=300.0,
+        )
+        ledger = RecorderLedger(
+            config, 0.0, 1000.0, [contact], start_volume_gb=0.0, step_size=60
+        )
+        assert ledger.bounds == [0.0, 240.0, 1020.0]
+        assert ledger.downlink_gb == pytest.approx([0.0, 20.0])
+        assert ledger.housekeeping_gb == pytest.approx([0.24, 0.72])
+        assert ledger.contact_housekeeping_gb == pytest.approx([0.0, 0.18])
+        assert ledger.ingress_volume(contact) == pytest.approx(0.24)
+        assert [ledger.segment(t) for t in (0, 239, 240, 1000)] == [0, 0, 1, 1]
+        # The grid passes through the origin, not the horizon's start.
+        shifted = RecorderLedger(
+            config, 30.0, 1000.0, [contact], start_volume_gb=0.0, step_size=60
+        )
+        assert shifted.bounds == [30.0, 210.0, 1050.0]
+        from_origin = RecorderLedger(
+            config,
+            30.0,
+            1000.0,
+            [contact],
+            start_volume_gb=0.0,
+            step_size=60,
+            origin=0.0,
+        )
+        assert from_origin.bounds == [60.0, 240.0, 1020.0]
 
     def test_contacts_outside_the_horizon_are_ignored(
         self, config: MissionConfig
@@ -312,6 +385,61 @@ class TestPriorityScheduler:
         assert max(ditl.recorder_volume_gb) < LIMIT
         assert max(ditl.recorder_alert) < 2
 
+    def _near_limit(self, rate: float):
+        """A snapshot of 20 minutes at ``rate`` with housekeeping at
+        0.1 Mbps, and 1 Mbps in PASS mode, on a recorder planned to 15 Gb."""
+        config = _recorder_config()
+        config.recorder.capacity_gb = 50.0 / 3.0
+        config.spacecraft_bus.data_generation = HousekeepingData(
+            rate_gbps=0.0001, rate_mode={"PASS": 0.001}
+        )
+        target = _data_target(config, 1, 105.0, 10.0, rate, minutes=20)
+        scheduler = PriorityScheduler(
+            config, [target], BEGIN, BEGIN + timedelta(hours=HOURS), step_size=STEP
+        )
+        return config, scheduler, scheduler.schedule()
+
+    def test_the_slew_into_a_contact_is_counted_as_executed(self) -> None:
+        """Counted for its own length at the PASS rate, the slew into the
+        first contact let a snapshot be placed that put the recorder over
+        the limit when executed: the simulation generates housekeeping for
+        whole steps in the mode each starts in, so the 151 s slew counts for
+        three 60 s steps. Counted that way, the plan executes as predicted."""
+        config, scheduler, plan = self._near_limit(0.009996)
+        limit = config.recorder.planning_limit_gb
+        assert limit == pytest.approx(15.0)
+        assert all(peak < limit for peak in _peaks_of(scheduler))
+        ditl = _execute(config, plan, HOURS, STEP)
+        assert ditl.validate_plan_matches_execution() == []
+        assert max(ditl.recorder_volume_gb) < limit
+        assert max(ditl.recorder_alert) < 2
+
+    def test_the_predicted_peak_is_the_executed_one(self) -> None:
+        config, scheduler, plan = self._near_limit(0.0099)
+        placed = _science(plan)
+        first = _first_contact(plan)
+        assert len(placed) == 1 and float(placed[0].begin) < first
+        ditl = _execute(config, plan, HOURS, STEP)
+        assert ditl.validate_plan_matches_execution() == []
+        executed = max(
+            v
+            for v, t in zip(ditl.recorder_volume_gb, ditl.utime, strict=True)
+            if t < first
+        )
+        assert executed == pytest.approx(_peaks_of(scheduler)[0], abs=0.002)
+
+    def test_the_volumes_kept_while_planning_are_those_of_the_plan(self) -> None:
+        """Snapshots placed before a contact change the slew into it; what
+        the ledger holds for it must be what the final timeline's is."""
+        _, scheduler, _ = self._plan()
+        entries = [block.entry for block in scheduler.timeline]
+        assert scheduler._volumes == pytest.approx(
+            scheduler._ledger.initial_volumes(entries)
+        )
+        assert any(
+            block.is_pass and block.entry.slewtime for block in scheduler.timeline
+        )
+
     def test_without_the_limit_the_recorder_goes_into_the_red(self) -> None:
         config, _, plan = self._plan(None)
 
@@ -408,9 +536,12 @@ class TestLocalSearch:
         best = scheduler._best.final
         peaks = scheduler._ledger.peaks(best.volumes)
         assert all(peak <= LIMIT + 1e-6 for peak in peaks)
-        # The spliced volumes are what decoding from the start gives.
+        # The spliced volumes are what decoding from the start gives, and
+        # what the decoded timeline, with its slews into contacts, comes to.
         fresh = scheduler._decode(scheduler._best.sequence).final
         assert fresh.volumes == pytest.approx(best.volumes)
+        entries = [block.entry for block in best.timeline]
+        assert best.volumes == pytest.approx(scheduler._ledger.initial_volumes(entries))
         ditl = _execute(config, plan, HOURS, STEP)
         assert max(ditl.recorder_volume_gb) <= LIMIT + 1e-6
 

@@ -160,9 +160,31 @@ class ConsumableLedger:
         trial[segment] += extra
         return all(level + _TOLERANCE < self.limit for level in self.levels(trial))
 
+    def fits_all(
+        self, planned: Sequence[float], additions: Sequence[tuple[int, float]]
+    ) -> bool:
+        """Whether ``additions``, each some more in a segment, together keep
+        every level below the limit."""
+        if self.limit is None:
+            return True
+        return all(
+            level + _TOLERANCE < self.limit
+            for level in self.levels(self.add_all(planned, additions))
+        )
+
     @staticmethod
     def add(planned: Sequence[float], segment: int, extra: float) -> tuple[float, ...]:
         """The plan's additions with ``extra`` more in ``segment``."""
         added = list(planned)
         added[segment] += extra
+        return tuple(added)
+
+    @staticmethod
+    def add_all(
+        planned: Sequence[float], additions: Sequence[tuple[int, float]]
+    ) -> tuple[float, ...]:
+        """The plan's additions with each of ``additions`` more in its segment."""
+        added = list(planned)
+        for segment, extra in additions:
+            added[segment] += extra
         return tuple(added)

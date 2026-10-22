@@ -193,8 +193,14 @@ peak:
 * each contact removes what its rate and length allow, and no more than is there,
   so what it cannot remove carries over to the segments after it;
 * housekeeping is counted at the nominal rate throughout, and at the ``PASS`` rate
-  during contacts and the slews into them, which ACS runs in ``PASS`` mode, since
-  the plan does not know when the spacecraft will be in other modes.
+  during contacts, since the plan does not know when the spacecraft will be in
+  other modes. It is counted on the simulation's step grid, as the simulation
+  generates it: each step counts whole at the rate of the mode it starts in;
+* the slew into a contact, which ACS flies in ``PASS`` mode too, adds the
+  difference between the two rates for the steps it is under way. How long it is
+  depends on where the spacecraft is before it, so the schedulers add it with the
+  contact, as they add science, and recompute it whenever a snapshot placed before
+  the contact changes the slew.
 
 The arithmetic is not particular to the recorder. Anything a spacecraft
 accumulates between the events that remove it, and must keep within a limit

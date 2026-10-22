@@ -1,4 +1,10 @@
-from pydantic import Field, model_validator
+from pydantic import (
+    Field,
+    SerializationInfo,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 from ._base import ConfigModel
 
@@ -92,6 +98,20 @@ class OnboardRecorder(ConfigModel):
             # Set, not left as the default, so it survives a save and load.
             self.planning_limit = self.red_threshold
         return self
+
+    @model_serializer(mode="wrap")
+    def _keep_disabled_planning(
+        self, handler: SerializerFunctionWrapHandler, info: SerializationInfo
+    ) -> dict[str, object]:
+        """Keep ``planning_limit: None`` in a dump that excludes None fields.
+
+        None is a setting, not an absence: it disables planning within the
+        recorder, and a save that dropped it would load as the red threshold.
+        """
+        dumped: dict[str, object] = handler(self)
+        if info.exclude_none and getattr(self, "planning_limit", 0) is None:
+            dumped["planning_limit"] = None
+        return dumped
 
     def add_data(self, data_gb: float) -> float:
         """Add data to the recorder.

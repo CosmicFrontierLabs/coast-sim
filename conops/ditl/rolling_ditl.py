@@ -634,11 +634,20 @@ class RollingHorizonDITL(DITL):
                 volume -= self.config.science_generated(0.0, entry.science_data)
             science.append((begin, volume))
         ledger = RecorderLedger(
-            self.config, utime, start, contacts, start_volume_gb=now
+            self.config,
+            utime,
+            start,
+            contacts,
+            start_volume_gb=now,
+            step_size=self.step_size,
+            origin=self.ustart,
         )
         volumes = [0.0] * ledger.segments
         for begin, volume in science:
             volumes[ledger.segment(begin)] += volume
+        for entry in contacts:
+            # The slew into a contact still to come, flown in PASS mode.
+            volumes[ledger.ingress_segment(entry)] += ledger.ingress_volume(entry)
         return ledger.peaks(volumes)[-1]
 
     def _start_state(
