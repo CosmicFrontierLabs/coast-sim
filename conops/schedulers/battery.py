@@ -497,7 +497,12 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
                     return (float(track_ra), float(track_dec), float(track_roll))
             return own
 
-        modes = entry.effective_instrument_modes() if mode is ACSMode.SCIENCE else None
+        # The instruments an observation, or an activity, uses while it holds.
+        modes = (
+            entry.effective_instrument_modes()
+            if mode is ACSMode.SCIENCE or obstype == ObsType.ACTIVITY
+            else None
+        )
 
         def held_at(utime: float) -> tuple[ACSMode, Attitude | None, Modes]:
             if utime < arrival:
@@ -511,7 +516,7 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
             return (
                 step_mode,
                 attitude_at(utime),
-                modes if step_mode is ACSMode.SCIENCE else None,
+                modes if arrival <= utime < end else None,
             )
 
         addition = self._addition_over(begin, braking, held_at)

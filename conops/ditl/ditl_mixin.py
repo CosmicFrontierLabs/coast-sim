@@ -8,7 +8,7 @@ import numpy.typing as npt
 import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
-from conops.common.enums import ACSMode
+from conops.common.enums import ACSMode, ObsType
 from conops.common.vector import quaternion_attitude_delta
 from conops.config.groundstation import GroundStation, effective_downlink_rate_mbps
 
@@ -76,11 +76,23 @@ class AttitudeRateContinuityError(RuntimeError):
 class DITLMixin:
     def _instrument_modes_now(self, mode: ACSMode | int) -> dict[str, str] | None:
         """The mode each instrument is in at this step: the observation's
-        while ACS is in SCIENCE mode, else None, when every instrument idles
-        or holds a mode named like the ACS mode."""
+        while ACS is in SCIENCE mode, a scheduled activity's while ACS holds
+        for it in IDLE mode, else None, when every instrument idles or holds
+        a mode named like the ACS mode."""
         try:
             acs_mode = ACSMode(int(mode))
         except (TypeError, ValueError):
+            return None
+        if acs_mode is ACSMode.IDLE:
+            # Dispatch holds the activity itself; a plan holds its entry.
+            active = getattr(self, "_active_activity", None)
+            modes = getattr(active, "instrument_modes", None)
+            if isinstance(modes, dict):
+                return dict(modes)
+            ppt = getattr(self, "ppt", None)
+            if getattr(ppt, "obstype", None) == ObsType.ACTIVITY:
+                modes = getattr(ppt, "instrument_modes", None)
+                return dict(modes) if isinstance(modes, dict) else None
             return None
         ppt = getattr(self, "ppt", None)
         if acs_mode is not ACSMode.SCIENCE or ppt is None:

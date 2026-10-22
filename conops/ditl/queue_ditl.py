@@ -123,6 +123,11 @@ class TOORequest(BaseModel):
     name: str
     submit_time: float = 0.0
     deadline: float | None = None
+    instrument_modes: dict[str, str] = Field(
+        default_factory=dict, exclude_if=lambda v: not v
+    )
+    """The instruments observing the TOO uses and the mode each is in, by
+    name; empty: every instrument with modes, in SCIENCE."""
     science_data: dict[str, ScienceData] = Field(default_factory=dict)
     interrupt: bool = True
     """Whether the TOO may cut short the observation in progress. If False it
@@ -360,6 +365,7 @@ class QueueDITL(DITLMixin, DITLStats):
         deadline: float | datetime | None = None,
         science_data: Mapping[str, ScienceData] | None = None,
         interrupt: bool = True,
+        instrument_modes: Mapping[str, str] | None = None,
     ) -> TOORequest:
         """Submit a Target of Opportunity (TOO) request.
 
@@ -387,6 +393,9 @@ class QueueDITL(DITLMixin, DITLStats):
                 instrument name; other instruments generate their own.
             interrupt: Whether the TOO may interrupt the observation in
                 progress; if False it is chosen when that observation ends.
+            instrument_modes: The instruments observing the TOO uses and the
+                mode each is in, by name; None: every instrument with modes,
+                in SCIENCE.
 
         Returns:
             The created TOORequest object
@@ -414,6 +423,7 @@ class QueueDITL(DITLMixin, DITLStats):
             ...     submit_time=ditl.ustart + 3600,
             ... )
         """
+        self.config.payload.check_instrument_modes(dict(instrument_modes or {}))
         too = TOORequest(
             obsid=obsid,
             ra=ra,
@@ -428,6 +438,7 @@ class QueueDITL(DITLMixin, DITLStats):
             deadline=self._unix_time(deadline) if deadline is not None else None,
             science_data=dict(science_data or {}),
             interrupt=interrupt,
+            instrument_modes=dict(instrument_modes or {}),
             executed=False,
         )
         self.too_register.append(too)
@@ -455,6 +466,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 exptime=too.exptime,
                 deadline=too.deadline,
                 science_data=too.science_data,
+                instrument_modes=too.instrument_modes,
             )
             self._too_targets[id(too)] = target
             self.log.log_event(
