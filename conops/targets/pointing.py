@@ -144,6 +144,11 @@ class Pointing(PlanEntry):
         windows = self.visit_windows
         if not windows:
             return self
+        if self.earliest_start is not None or self.deadline is not None:
+            raise ValueError(
+                "visit_windows bound each visit's start; earliest_start and "
+                "deadline cannot be set with them"
+            )
         ordered = sorted(windows, key=lambda w: w.start)
         for earlier, later in zip(ordered, ordered[1:], strict=False):
             if later.start <= earlier.deadline:

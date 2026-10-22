@@ -77,8 +77,10 @@ ISO-8601 string) limit when its science collection may begin.
 
 A target observed at set times is one request with ``visit_windows``: a list of
 :class:`~conops.targets.VisitWindow`, each the earliest and latest time one
-visit's collection may begin, in time order and not overlapping. The target is
-visited once per window, in order, each visit whole: one snapshot of ``ss_max``
+visit's collection may begin, in time order and not overlapping; a target with
+windows does not also set ``earliest_start`` or ``deadline``, which bound any
+snapshot's start where a window bounds one whole visit's. The target is visited
+once per window, in order, each visit whole: one snapshot of ``ss_max``
 seconds for a plain pointing (its ``ss_min`` is set to match), or one visit of its
 sequence. Its exposure is its visits' science unless given. The helpers
 :func:`~conops.targets.visit_windows` (windows opening at given times, each for a

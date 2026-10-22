@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from conops import DITL, QueueDITL, create_ditl
-from conops.config import MissionConfig
+from conops.config import MissionConfig, TargetConfig
 from conops.ditl import RollingHorizonDITL
 from conops.schedulers import LocalSearchScheduler, PriorityScheduler
 from conops.targets import (
@@ -18,6 +18,7 @@ from conops.targets import (
     cadence_windows,
     visit_windows,
 )
+from conops.targets.merit import MeritModel
 
 from .planning_scenario import BEGIN, HOUR, MIN, PATCH, T0
 from .planning_scenario import make_config as _config
@@ -110,6 +111,16 @@ class TestModel:
             visit_windows=[WINDOWS[2], WINDOWS[0], WINDOWS[1]],
         )
         assert [w.start for w in shuffled.visit_windows] == STARTS
+        with pytest.raises(ValidationError, match="earliest_start and deadline"):
+            Pointing(
+                config=config,
+                obsid=1,
+                ra=0.0,
+                dec=0.0,
+                ss_max=600,
+                deadline=T0 + HOUR,
+                visit_windows=list(WINDOWS),
+            )
         with pytest.raises(ValidationError, match="overlap"):
             Pointing(
                 config=config,
@@ -178,6 +189,21 @@ class TestQueue:
         target.record_collection(STARTS[0] + 3 * MIN, 3 * MIN)
         assert queue.get(ra=0, dec=0, utime=STARTS[0] + 5 * MIN).obsid == 1
         assert queue.get(ra=0, dec=0, utime=STARTS[1]).visit == 1
+
+    def test_urgency_rises_towards_the_next_windows_deadline(self) -> None:
+        """A windowed target's urgency is its next window's, as a deadline's
+        would be: none well before it, full within the timescale of it."""
+        config = _config(HOURS, weights=TargetConfig(urgency_weight=50.0))
+        model = MeritModel(config)
+        target = _timed_target(config)
+        target.visibility()
+        early = model.value_terms(target, STARTS[0] - 6 * HOUR).urgency
+        near = model.value_terms(target, WINDOWS[0].deadline - 10 * MIN).urgency
+        assert early < 50.0
+        assert near == pytest.approx(50.0)
+        target.record_collection(STARTS[0] + 3 * MIN, 3 * MIN)
+        later = model.value_terms(target, WINDOWS[0].deadline - 10 * MIN).urgency
+        assert later < near
 
     def test_the_next_window_is_a_request_opening(self) -> None:
         queue, target = self._queue()
