@@ -149,19 +149,6 @@ class TestUrgency:
         assert entry.collection_begin >= BEGIN + HOUR
 
 
-class TestTier:
-    def test_higher_tier_wins_regardless_of_merit(self) -> None:
-        categories = [
-            ObservationCategory(name="Low", obsid_min=10, obsid_max=11, tier=0),
-            ObservationCategory(name="High", obsid_min=11, obsid_max=12, tier=1),
-        ]
-        no_deadline = {**SHORT_WINDOW, "deadline": None}
-
-        ditl = _run([FLEXIBLE, no_deadline], categories=categories)
-
-        assert _science_order(ditl) == [11, 10]
-
-
 class TestTargetOfOpportunity:
     def test_too_interrupts_and_is_observed_before_its_deadline(self) -> None:
         submit = BEGIN + HOUR // 4

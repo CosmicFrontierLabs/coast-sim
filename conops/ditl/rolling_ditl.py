@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict
 
 from ..common import ObsType
 from ..config import MissionConfig, ScienceData
+from ..schedulers.allocator import Allocation, LongRangeAllocator
 from ..schedulers.context import Attitude, tracking_rest
 from ..schedulers.priority_scheduler import PriorityScheduler, StartState
 from ..simulation.slew import Slew
@@ -80,9 +81,9 @@ class RollingHorizonDITL(DITL):
     rapid replan at once, or an interrupt in a scheduled replan due then.
     The observation running at the commit cutoff is cut there if
     ``allow_interrupts`` is set, the ToO allows it (its ``interrupt`` flag),
-    the observation's category is ``interruptible``, the ToO's tier and value,
-    evaluated now, beat the tier and value frozen onto that observation, and
-    the new plan can collect the ToO. When several ToOs need a rapid replan at once, they are
+    the observation's category is ``interruptible``, the ToO's value,
+    evaluated now, beats the value frozen onto that observation, and the new
+    plan can collect the ToO. When several ToOs need a rapid replan at once, they are
     tried highest-ranked first, and the first that qualifies and can be placed
     interrupts. A ToO that may not interrupt does not take the cut
     observation's place either: it is planned in after the interrupting ToO.
@@ -120,6 +121,17 @@ class RollingHorizonDITL(DITL):
         scheduler_options: Extra keyword arguments for the scheduler, such as
             ``{"time_limit": 5.0}`` for a local-search scheduler or
             ``{"solver_time_limit": 10.0}`` for the CP-SAT scheduler.
+        allocator: Long-range allocator over the whole run. If given, each
+            replan allocates the remaining exposure again from when the new
+            plan starts, and the scheduler plans each request's allocated
+            seconds in their bin, worth ``allocation_bonus`` more (see
+            :class:`~conops.schedulers.LongRangeAllocator`).
+        allocation: A long-range allocation to follow instead, made
+            elsewhere, such as a weekly long-range plan. Each replan plans each
+            request's allocated seconds in their bin, less what has been
+            collected or committed in the bin. Not with ``allocator``.
+        allocation_bonus: Fraction of a request's value its allocated time
+            gains; how strongly plans follow the allocation.
         calculate_field_of_regard: Whether to compute field-of-regard telemetry.
     """
 
@@ -139,10 +151,15 @@ class RollingHorizonDITL(DITL):
         include_passes: bool = True,
         scheduler: type[PriorityScheduler] = PriorityScheduler,
         scheduler_options: Mapping[str, object] | None = None,
+        allocator: LongRangeAllocator | None = None,
+        allocation: Allocation | None = None,
+        allocation_bonus: float = 0.5,
         calculate_field_of_regard: bool = False,
     ) -> None:
         if horizon <= timedelta(0) or replan_interval <= timedelta(0):
             raise ValueError("horizon and replan_interval must be positive")
+        if allocator is not None and allocation is not None:
+            raise ValueError("give allocator or allocation, not both")
         if commit_lead_time < timedelta(0):
             raise ValueError("commit_lead_time must not be negative")
         super().__init__(
@@ -162,6 +179,11 @@ class RollingHorizonDITL(DITL):
         self.include_passes = include_passes
         self.scheduler = scheduler
         self.scheduler_options = dict(scheduler_options or {})
+        self.allocator = allocator
+        self.allocation_bonus = allocation_bonus
+        self.allocation: Allocation | None = allocation
+        """The allocation the plans follow: the one given, or the one made at
+        the last replan if there is an allocator."""
         self.merit_model = MeritModel(config)
         self.too_register: list[TOORequest] = []
         self.replans: list[ReplanRecord] = []
@@ -347,7 +369,7 @@ class RollingHorizonDITL(DITL):
                             self._too_targets[id(too)],
                             utime,
                             delivered_shares=shares,
-                        ).value_rank
+                        ).value
                     ),
                     reverse=True,
                 )
@@ -513,6 +535,27 @@ class RollingHorizonDITL(DITL):
         horizon_end = min(utime + self.horizon.total_seconds(), self.uend)
         if horizon_end <= start:
             return committed, dropped, list(pinned), 0
+        reserved = self._reserved_seconds(leading, utime)
+        options = dict(self.scheduler_options)
+        used = None
+        if self.allocator is not None:
+            # Allocated from the exposure that remains, so nothing is used.
+            self.allocation = self.allocator.allocate(
+                self.targets,
+                start,
+                reserved,
+                unplanned={int(t.obsid) for t in self._too_targets.values()},
+            )
+        elif self.allocation is not None:
+            used = self._used_by_bin(self.allocation, leading)
+        if self.allocation is not None:
+            options["allocated"] = self.allocation.allocated(
+                [int(t.obsid) for t in self.targets if not t.done],
+                start,
+                horizon_end,
+                used,
+            )
+            options["allocation_bonus"] = self.allocation_bonus
         scheduler = self.scheduler(
             self.config,
             # Finished and held targets too: the scheduler does not place
@@ -526,10 +569,10 @@ class RollingHorizonDITL(DITL):
             simulation_start=self.begin,
             simulation_end=self.end,
             start_state=start_state,
-            reserved_seconds=self._reserved_seconds(leading, utime),
+            reserved_seconds=reserved,
             reserved_visits=self._reserved_visits(leading, utime),
             held=[int(t.obsid) for t in held],
-            **self.scheduler_options,  # type: ignore[arg-type]
+            **options,  # type: ignore[arg-type]
         )
         return (
             committed,
@@ -564,13 +607,12 @@ class RollingHorizonDITL(DITL):
         if not category.interruptible:
             return None
         target = self._too_targets[id(too)]
-        too_rank = self.merit_model.value_terms(
+        too_value = self.merit_model.value_terms(
             target,
             utime,
             delivered_shares=self.merit_model.delivered_shares(self.targets),
-        ).value_rank
-        current_rank = (category.tier, float(entry.merit))
-        if too_rank <= current_rank:
+        ).value
+        if too_value <= float(entry.merit):
             return None
         # A slew under way finishes first, so the cut is at the step after the
         # observation's slew ends, if that is after the cutoff.
@@ -648,6 +690,23 @@ class RollingHorizonDITL(DITL):
                 rest_time, attitude = rest
                 return max(float(entry.end), rest_time), attitude
         return float(entry.end), _final_attitude(entry)
+
+    @staticmethod
+    def _used_by_bin(
+        allocation: Allocation, committed: Sequence[PlanEntry]
+    ) -> dict[int, dict[int, float]]:
+        """Science collected or committed, by obsid and the bin it starts in."""
+        used: dict[int, dict[int, float]] = {}
+        for entry in committed:
+            begin, end = entry.collection_begin, entry.collection_end
+            if begin is None or end is None:
+                continue
+            for k, (b0, b1) in enumerate(allocation.bins):
+                if b0 <= begin < b1:
+                    per_bin = used.setdefault(int(entry.obsid), {})
+                    per_bin[k] = per_bin.get(k, 0.0) + float(end) - float(begin)
+                    break
+        return used
 
     @staticmethod
     def _reserved_seconds(

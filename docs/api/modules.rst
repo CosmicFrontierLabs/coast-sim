@@ -45,6 +45,7 @@ Scheduling and Planning
    :maxdepth: 2
 
    conops.schedulers
+   conops.schedulers.allocator
    conops.schedulers.context
    conops.schedulers.cpsat_scheduler
    conops.schedulers.local_search_scheduler

@@ -70,13 +70,57 @@ class ReplanSettings(ConfigModel):
     )
 
 
+class AllocationSettings(ConfigModel):
+    """A long-range allocator for dispatch and rolling simulations.
+
+    See :class:`~conops.schedulers.LongRangeAllocator`.
+    """
+
+    bin_seconds: float = Field(
+        default=86400.0, gt=0, description="Length of each allocation bin"
+    )
+    efficiency: float = Field(
+        default=0.75,
+        gt=0,
+        le=1,
+        description="Fraction of each bin expected to hold science",
+    )
+    reserve: float = Field(
+        default=0.1,
+        ge=0,
+        lt=1,
+        description="Fraction of that capacity held back for unplanned work, such as ToOs",
+    )
+    solver: Literal["milp", "greedy"] = Field(
+        default="milp",
+        description=(
+            "milp solves the allocation optimally and needs OR-Tools "
+            "(coast-sim[cpsat]); greedy is a quick heuristic"
+        ),
+    )
+    time_limit_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description="Seconds the MILP solver may search per allocation",
+    )
+    bonus: float = Field(
+        default=0.5,
+        ge=0,
+        description=(
+            "Fraction of a request's value its allocated time gains, in the bin "
+            "it is allocated to; how strongly scheduling follows the allocation"
+        ),
+    )
+
+
 class SchedulerConfig(ConfigModel):
     """How a simulation schedules its observations.
 
     Used by :func:`conops.ditl.create_ditl` to build the matching simulation.
     The default, ``dispatch``, is queue scheduling with
-    :class:`~conops.ditl.QueueDITL`, which uses none of the other settings.
-    ``replanning`` applies to ``rolling`` mode only.
+    :class:`~conops.ditl.QueueDITL`, which uses only ``allocation``.
+    ``replanning`` applies to ``rolling`` mode only, and ``allocation`` to
+    ``dispatch`` and ``rolling`` modes.
 
     In ``planned`` and ``rolling`` modes, ``kind`` picks the scheduler that
     builds plans. Its settings left unset take the scheduler's defaults.
@@ -149,6 +193,12 @@ class SchedulerConfig(ConfigModel):
         default_factory=ReplanSettings,
         description="Replanning schedule for rolling mode",
     )
+    allocation: AllocationSettings | None = Field(
+        default=None,
+        description=(
+            "Long-range allocation for dispatch and rolling modes; unset for none"
+        ),
+    )
 
     @model_validator(mode="after")
     def _settings_fit_the_scheduler(self) -> SchedulerConfig:
@@ -160,6 +210,11 @@ class SchedulerConfig(ConfigModel):
         if unused:
             raise ValueError(
                 f"{', '.join(unused)} do not apply to the {self.kind.value} scheduler"
+            )
+        if self.allocation is not None and self.mode is SchedulerMode.PLANNED:
+            raise ValueError(
+                "allocation applies to dispatch and rolling modes; a planned "
+                "run already plans the whole run at once"
             )
         return self
 
