@@ -104,10 +104,12 @@ request that uses one instrument of several costs the battery less than one that
 uses them all, and what it generates on the recorder: each instrument used
 generates its mode's science data, or its own where the mode sets none, and an
 instrument with modes that is not used generates nothing (see the instrument modes
-under :doc:`configuration`). The modes are
-checked against the payload when the target is made, with the payload's
-``concurrency`` rules on what may observe at once (see :doc:`configuration`), as
-are each sequence step's, and the plan records them on each entry. A Target of Opportunity names its modes with the ``instrument_modes``
+under :doc:`configuration`). The modes a target
+names, its own and each sequence step's, are checked against the payload when it
+is made, with the payload's ``concurrency`` rules on what may observe at once (see
+:doc:`configuration`); a target naming none is checked as using every instrument
+with modes when it is added to the dispatch queue or given to a scheduler. The
+plan records the modes on each entry. A Target of Opportunity names its modes with the ``instrument_modes``
 argument of ``submit_too``.
 
 A target is observed at the power-optimal instrument roll unless it asks for

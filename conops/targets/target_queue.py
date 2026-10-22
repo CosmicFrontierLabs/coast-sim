@@ -184,6 +184,8 @@ class TargetQueue:
             pointing.exptime = (
                 visits * sequence.science_seconds if sequence is not None else exptime
             )
+        # A request naming no modes uses every instrument with modes.
+        pointing.check_instrument_modes()
         pointing.visibility()
         self.targets.append(pointing)
         return pointing
