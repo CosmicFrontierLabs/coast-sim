@@ -157,7 +157,7 @@ def _walk(
 ) -> StationCoverage:
     """A coverage built from a visibility matrix (stations by steps) alone,
     to test the contact scheduling on its own. ``directions`` are the unit
-    vectors to each station at each step, for drift repoints."""
+    vectors to each station at each step, for tracking repoints."""
     coverage = StationCoverage.__new__(StationCoverage)
     steps = len(visible[0])
     coverage.times = np.arange(steps, dtype=float) * step
@@ -349,28 +349,28 @@ class TestRepoints:
         coverage = _walk(
             [[1] * 10], [10.0], directions=_turning(10, 1.0), threshold=2.5
         )
-        acquisition, *drift = coverage.repoints
+        acquisition, *tracking = coverage.repoints
         assert acquisition[:4] == (0.0, 0.0, "S0", "acquisition")
         assert acquisition.pointing == pytest.approx(
             _turning(1, 0.0)[0, 0] @ _rotation(2.5)
         )
         assert acquisition.maneuver_deg is None
-        assert [(r.time, r.end, r.station, r.kind) for r in drift] == [
-            (360.0, 360.0, "S0", "drift")
+        assert [(r.time, r.end, r.station, r.kind) for r in tracking] == [
+            (360.0, 360.0, "S0", "tracking")
         ]
         # The second arc runs from step 6 to the end: its centre is at 7.5 degrees.
-        assert drift[0].pointing == pytest.approx(
+        assert tracking[0].pointing == pytest.approx(
             _turning(1, 0.0)[0, 0] @ _rotation(7.5)
         )
-        assert drift[0].maneuver_deg == pytest.approx(5.0)
+        assert tracking[0].maneuver_deg == pytest.approx(5.0)
         # Instant repoints leave the contact whole.
         assert coverage.contacts == [ContactSpan(0.0, 600.0, "S0", 10.0)]
 
     def test_a_tighter_allowance_repoints_more_often(self) -> None:
         tight = _walk([[1] * 40], [10.0], directions=_turning(40, 1.0), threshold=1.5)
         loose = _walk([[1] * 40], [10.0], directions=_turning(40, 1.0), threshold=4.5)
-        tight_times = [r.time for r in tight.repoints if r.kind == "drift"]
-        loose_times = [r.time for r in loose.repoints if r.kind == "drift"]
+        tight_times = [r.time for r in tight.repoints if r.kind == "tracking"]
+        loose_times = [r.time for r in loose.repoints if r.kind == "tracking"]
         # Four steps fit in a 1.5 degree cap (a 3 degree arc), ten in 4.5.
         assert tight_times == [240.0 * n for n in range(1, 10)]
         assert loose_times == [600.0, 1200.0, 1800.0]
@@ -406,9 +406,9 @@ class TestRepoints:
             repoint_seconds=10.0,
         )
         # 7000 km is seven tenths of the way between the rows: 255 s.
-        drift = [r for r in coverage.repoints if r.kind == "drift"]
-        assert [r.time for r in drift] == [255.0, 510.0]
-        assert [r.end for r in drift] == [265.0, 520.0]
+        tracking = [r for r in coverage.repoints if r.kind == "tracking"]
+        assert [r.time for r in tracking] == [255.0, 510.0]
+        assert [r.end for r in tracking] == [265.0, 520.0]
         # The table points the antenna at the station itself.
         assert all(r.pointing is None for r in coverage.repoints)
         assert [(c.begin, c.end) for c in coverage.contacts] == [
@@ -461,20 +461,20 @@ class TestRepoints:
         )
         coverage = StationCoverage.for_config(config)
         assert coverage is not None
-        drift = [r for r in coverage.repoints if r.kind == "drift"]
-        assert len(drift) > 10
+        tracking = [r for r in coverage.repoints if r.kind == "tracking"]
+        assert len(tracking) > 10
         # Each repoint turns the antenna forward along the station's track:
         # at least the cap's width, and in low Earth orbit, where the track
         # moves tens of degrees a step, often more.
-        turns = [r.maneuver_deg for r in drift if r.maneuver_deg is not None]
+        turns = [r.maneuver_deg for r in tracking if r.maneuver_deg is not None]
         assert turns and 10.0 < np.median(turns) < 90.0
         spans = coverage.spans(T0, END)
-        for repoint in drift:
+        for repoint in tracking:
             before = [s for s in spans if s.end == repoint.time]
             after = [s for s in spans if s.begin == repoint.end]
             assert before and after and before[0].station == repoint.station
         # In low Earth orbit the direction turns fast: repoints minutes apart.
-        gaps = np.diff([r.time for r in drift if r.station == "SGS"])
+        gaps = np.diff([r.time for r in tracking if r.station == "SGS"])
         assert 0 < np.median(gaps[gaps < 1200]) < 600
 
 

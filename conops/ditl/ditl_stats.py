@@ -349,7 +349,7 @@ class DITLStats:
             print(
                 f"Antenna Repoints: {len(repoints)} "
                 f"(acquisition {kinds['acquisition']}, handover {kinds['handover']}, "
-                f"drift {kinds['drift']})"
+                f"tracking {kinds['tracking']})"
             )
             turns = [r.maneuver_deg for r in repoints if r.maneuver_deg is not None]
             if turns:

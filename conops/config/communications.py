@@ -164,9 +164,9 @@ class AntennaPointing(ConfigModel):
         default=None,
         description=(
             "For a gimballed antenna: the antenna is re-pointed at the tracked "
-            "station when the station's direction has drifted this far since "
+            "station when the station's direction has moved this far since "
             "the last repoint, as the spacecraft moves along its orbit. "
-            "None: no drift repoints."
+            "None: no tracking repoints."
         ),
         gt=0.0,
         le=180.0,
@@ -174,7 +174,7 @@ class AntennaPointing(ConfigModel):
     repoint_interval_vs_range_km: list[tuple[float, float]] | None = Field(
         default=None,
         description=(
-            "Instead of the drift threshold: the interval between repoints in "
+            "Instead of the threshold: the interval between repoints in "
             "seconds against the spacecraft's distance from the Earth's centre "
             "in km, as (range_km, seconds) rows in increasing range, "
             "interpolated at the range at each repoint."
