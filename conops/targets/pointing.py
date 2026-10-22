@@ -140,6 +140,7 @@ class Pointing(PlanEntry):
         step = self.sequence.steps[index]
         ra, dec = self.sequence.pointing_of(index, self.ra, self.dec)
         base = timing_for(self.config, int(self.obsid))
+        roll_deg, roll_offset = self._step_roll_request(step.roll_offset_deg)
         pointing = Pointing(
             config=self.config,
             ra=ra,
@@ -159,6 +160,8 @@ class Pointing(PlanEntry):
             ss_max=step.duration_seconds,
             step=step.name,
             calibration=not step.science,
+            roll_deg=roll_deg,
+            roll_offset_deg=roll_offset,
         )
         pointing.exptime = step.duration_seconds
         pointing.merit_breakdown = self.merit_breakdown
@@ -166,6 +169,18 @@ class Pointing(PlanEntry):
         if self.ephem is not None:
             pointing.visibility()
         return pointing
+
+    def _step_roll_request(
+        self, offset: float | None
+    ) -> tuple[float | None, float | None]:
+        """The roll request a step carries, as ``(roll_deg, roll_offset_deg)``:
+        this target's, with the step's offset added to an absolute roll or
+        to the offset."""
+        if offset is None:
+            return self.roll_deg, self.roll_offset_deg
+        if self.roll_deg is not None:
+            return (self.roll_deg + offset) % 360.0, None
+        return None, (self.roll_offset_deg or 0.0) + offset
 
     def sequence_overhead_seconds(
         self, acs: AttitudeControlSystem, timing: ObservationTiming
