@@ -316,6 +316,7 @@ The :class:`~conops.config.SpacecraftBus` defines the spacecraft bus subsystems.
 * ``data_generation`` (:class:`~conops.config.HousekeepingData`): Data the bus generates at all times, such as housekeeping, by ACS mode; see :doc:`data_management`
 * ``star_trackers`` (:class:`~conops.config.StarTrackerConfiguration`): Optional star tracker configuration
 * ``radiators`` (:class:`~conops.config.RadiatorConfiguration`): Optional body-mounted radiator configuration
+* ``surfaces`` (:class:`~conops.config.SurfaceModel` | None): The spacecraft's surfaces as flat plates about its centre of mass, for the torques of sunlight and drag (see `Stored momentum`_ below); None builds a placeholder from the bus, panels and telescopes when those torques are tracked
 
 **AttitudeControlSystem Configuration:**
 
@@ -354,9 +355,28 @@ Constraint-avoiding paths are evaluated as rest-to-rest segments using each
 segment's own body-frame rotation axis. If both tuples are omitted, the scalar
 fields retain their existing behavior, including legacy RA/Dec-only estimates.
 
-Gravity-gradient momentum tracking is disabled by default. Enable it by supplying
+.. _Stored momentum:
+
+Stored-momentum tracking is disabled by default. Enable it by supplying
 a physical body-frame inertia tensor about the spacecraft center of mass and
-setting ``gravity_gradient_enabled``. Its principal moments must be positive and
+setting ``gravity_gradient_enabled``, ``solar_radiation_pressure_enabled``, or
+both. Each enabled torque source is evaluated in the body frame at every sample
+and the sources' sum is integrated; the telemetry reports each source's torque
+by name (``disturbance_torques_body_n_m``) and their total, so a run shows
+which term fills the wheels. Solar radiation pressure acts on the spacecraft's
+surfaces: ``spacecraft_bus.surfaces`` lists them as flat plates (a centre, an
+outward normal, an area, specular and diffuse reflectivities, a drag
+coefficient) about ``center_of_mass_m``; :func:`~conops.config.box_surfaces`,
+:func:`~conops.config.panel_surfaces` and :func:`~conops.config.telescope_surfaces`
+build plates from a box, the solar panels with a ``geometry`` and the
+telescopes' apertures. With no ``surfaces`` configured,
+:func:`~conops.config.guess_surfaces` builds a placeholder: a 1.5 × 1.5 × 2 m
+box at the body origin, the panels and the apertures, about a centre of mass
+5 cm behind the boresight. Its torques are of the right order and nothing
+more; a mission's mass properties replace it. Each sunlit plate takes the force
+of what it absorbs and reflects, specularly and diffusely, plates facing away
+from the Sun take none, and nothing does in eclipse; plates do not shadow one
+another. Aerodynamic drag is not yet a source. Its principal moments must be positive and
 satisfy the triangle inequalities; a planar-body equality is allowed, including
 relative rounding of approximately 1.5e-8 (the square root of float64 machine
 epsilon). The named ``INERTIA_RELATIVE_TOLERANCE`` allows roughly eight significant
@@ -406,6 +426,7 @@ cadences without replanning the science schedule.
      attitude_control:
        stored_momentum:
          gravity_gradient_enabled: true
+         solar_radiation_pressure_enabled: true
          max_sample_interval_s: 10.0
          max_attitude_step_deg: 5.0
          initial_momentum_body_n_m_s: [0.0, 0.0, 0.0]

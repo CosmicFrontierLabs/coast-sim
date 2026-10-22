@@ -14,6 +14,14 @@ class StoredMomentumConfig(ConfigModel):
             "gravity-gradient torque."
         ),
     )
+    solar_radiation_pressure_enabled: bool = Field(
+        default=False,
+        description=(
+            "Accumulate stored momentum required to reject the torque of "
+            "sunlight on the spacecraft's surfaces (spacecraft_bus.surfaces, "
+            "or a placeholder model built from the bus, panels and telescopes)"
+        ),
+    )
     max_sample_interval_s: float = Field(
         default=10.0,
         gt=0.0,
@@ -42,6 +50,11 @@ class StoredMomentumConfig(ConfigModel):
             "Initial stored-momentum vector in spacecraft body coordinates, in N m s."
         ),
     )
+
+    @property
+    def enabled(self) -> bool:
+        """Whether any torque source is tracked."""
+        return self.gravity_gradient_enabled or self.solar_radiation_pressure_enabled
 
     @field_validator("initial_momentum_body_n_m_s")
     @classmethod

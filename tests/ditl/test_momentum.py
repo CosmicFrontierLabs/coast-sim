@@ -152,3 +152,50 @@ def test_calc_checks_its_effective_execution_step(simulation, monkeypatch):
     else:
         with pytest.raises(ValueError, match="sample interval 60 s exceeds 2.5 s"):
             simulation.calc()
+
+
+@pytest.mark.parametrize("kind", [DITL, QueueDITL])
+def test_solar_radiation_pressure_is_tracked_and_reported(kind):
+    """With sunlight on the surfaces tracked, a run reports both sources'
+    torques by name and their total, the surfaces coming from the placeholder
+    model when none are configured."""
+    ephem = DummyEphemeris()
+    ephem.step_size = 1
+    ephem.timestamp = [ephem.timestamp[0] + timedelta(seconds=i) for i in range(5)]
+    bus = SpacecraftBus(
+        inertia_tensor_body_kg_m2=np.diag([10.0, 8.0, 6.0]),
+        attitude_control=AttitudeControlSystem(
+            max_slew_rate_body=(0.2, 0.2, 2.0),
+            stored_momentum=StoredMomentumConfig(
+                gravity_gradient_enabled=True, solar_radiation_pressure_enabled=True
+            ),
+        ),
+    )
+    sim = kind(config=MissionConfig(spacecraft_bus=bus), ephem=ephem)
+    sim.step_size = 1
+    sim._reset_stored_momentum_tracker()
+    tracker = sim._stored_momentum_tracker
+    assert [source.name for source in tracker.sources] == [
+        "gravity_gradient",
+        "solar_radiation_pressure",
+    ]
+    time = sim.begin.timestamp()
+    position = sim.ephem.gcrs_pv.position[0]
+    quaternion = attitude_to_quat(0.0, 45.0, 0.0)
+    sim._update_stored_momentum(time, position, quaternion, index=0)
+    sample = sim._update_stored_momentum(time + 1.0, position, quaternion, index=0)
+    assert set(sample.torques_body_n_m) == {
+        "gravity_gradient",
+        "solar_radiation_pressure",
+    }
+    assert np.linalg.norm(sample.torques_body_n_m["solar_radiation_pressure"]) > 0
+    assert sample.torque_body_n_m == pytest.approx(
+        np.add(*sample.torques_body_n_m.values())
+    )
+    # Sunlight alone, with no inertia asymmetry to speak of, still fills the wheels.
+    only_sun = StoredMomentumConfig(solar_radiation_pressure_enabled=True)
+    bus.attitude_control.stored_momentum = only_sun
+    sim._reset_stored_momentum_tracker()
+    assert [s.name for s in sim._stored_momentum_tracker.sources] == [
+        "solar_radiation_pressure"
+    ]

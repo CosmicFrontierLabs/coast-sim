@@ -65,6 +65,8 @@ class Housekeeping(BaseModel):
         quat_y: Attitude quaternion vector component (y)
         quat_z: Attitude quaternion vector component (z)
         gravity_gradient_torque_body_n_m: Gravity-gradient torque in body coordinates (N m)
+        disturbance_torques_body_n_m: Each tracked torque source's body torque, by name (N m)
+        disturbance_torque_body_n_m: The tracked sources' total body torque (N m)
         stored_momentum_body_n_m_s: Accumulated stored momentum in body coordinates (N m s)
         stored_momentum_norm_n_m_s: Norm of accumulated stored momentum (N m s)
     """
@@ -246,6 +248,17 @@ class Housekeeping(BaseModel):
     stored_momentum_norm_n_m_s: float | None = Field(
         default=None,
         description="Norm of accumulated stored momentum, in N m s",
+    )
+    disturbance_torques_body_n_m: dict[str, list[float]] | None = Field(
+        default=None,
+        description=(
+            "Each tracked torque source's torque in body coordinates [x, y, z], "
+            "in N m, by source name"
+        ),
+    )
+    disturbance_torque_body_n_m: list[float] | None = Field(
+        default=None,
+        description="The tracked torque sources' total in body coordinates, in N m",
     )
 
     @classmethod
@@ -542,6 +555,16 @@ class HousekeepingList(list[Housekeeping]):
     def stored_momentum_norm_n_m_s(self) -> list[float | None]:
         """Get stored-momentum norms from all records."""
         return [hk.stored_momentum_norm_n_m_s for hk in self]
+
+    @property
+    def disturbance_torques_body_n_m(self) -> list[dict[str, list[float]] | None]:
+        """Get each source's body-frame torque, by name, from all records."""
+        return [hk.disturbance_torques_body_n_m for hk in self]
+
+    @property
+    def disturbance_torque_body_n_m(self) -> list[list[float] | None]:
+        """Get the sources' total body-frame torque from all records."""
+        return [hk.disturbance_torque_body_n_m for hk in self]
 
 
 class Telemetry(BaseModel):

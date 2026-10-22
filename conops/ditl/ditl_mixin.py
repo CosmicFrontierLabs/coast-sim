@@ -12,11 +12,19 @@ from conops.common.enums import ACSMode, ObsType
 from conops.common.vector import quaternion_attitude_delta
 from conops.config.groundstation import GroundStation, effective_downlink_rate_mbps
 
+from ..common.ephemeris import position_vectors
 from ..config import FaultManagementRun, MissionConfig, SolarArrayDriveState
 from ..config.observation_timing import ObservationTiming, timing_for
+from ..config.surfaces import guess_surfaces
 from ..simulation.acs import ACS
 from ..simulation.coverage import StationCoverage
-from ..simulation.momentum import MomentumSample, StoredMomentumTracker
+from ..simulation.momentum import (
+    GravityGradientTorque,
+    MomentumSample,
+    SolarRadiationPressureTorque,
+    StoredMomentumTracker,
+    TorqueSource,
+)
 from ..simulation.passes import Pass, PassTimes
 from ..targets import Plan, PlanEntry
 from ..targets.plan_entry import extra_data_gb, instrument_modes_of
@@ -358,15 +366,23 @@ class DITLMixin:
     def _build_stored_momentum_tracker(self) -> StoredMomentumTracker | None:
         attitude_control = self.config.spacecraft_bus.attitude_control
         momentum_config = getattr(attitude_control, "stored_momentum", None)
-        if getattr(momentum_config, "gravity_gradient_enabled", False) is not True:
+        if getattr(momentum_config, "enabled", False) is not True:
             return None
         assert momentum_config is not None
         inertia = getattr(self.config.spacecraft_bus, "inertia_tensor_body_kg_m2", None)
         if inertia is None:
             raise ValueError(
-                "inertia_tensor_body_kg_m2 is required when gravity-gradient "
-                "momentum tracking is enabled"
+                "inertia_tensor_body_kg_m2 is required when stored-momentum "
+                "tracking is enabled"
             )
+        sources: list[TorqueSource] = []
+        if momentum_config.gravity_gradient_enabled:
+            sources.append(GravityGradientTorque(inertia))
+        if momentum_config.solar_radiation_pressure_enabled:
+            surfaces = self.config.spacecraft_bus.surfaces
+            if surfaces is None:
+                surfaces = guess_surfaces(self.config.solar_panel, self.config.payload)
+            sources.append(SolarRadiationPressureTorque(surfaces))
         # A coupled-axis ellipsoid cannot exceed its fastest principal rate.
         # Bound possible motion, not just endpoint separation: a complete slew
         # can occur between samples even when both endpoint torques are zero.
@@ -386,6 +402,7 @@ class DITLMixin:
                 momentum_config.max_sample_interval_s,
                 momentum_config.max_attitude_step_deg / fastest_rate,
             ),
+            sources=sources,
         )
 
     def _reset_stored_momentum_tracker(self) -> None:
@@ -400,14 +417,27 @@ class DITLMixin:
         utime: float,
         position_eci_km: npt.NDArray[np.float64],
         attitude_quaternion_eci_to_body: npt.NDArray[np.float64],
+        index: int | None = None,
     ) -> MomentumSample | None:
-        """Advance the tracker using values already computed for housekeeping."""
+        """Advance the tracker using values already computed for housekeeping;
+        ``index`` is the ephemeris sample, for the Sun vector and eclipse."""
         if self._stored_momentum_tracker is None:
             return None
+        sun_eci_km: npt.NDArray[np.float64] | None = None
+        sunlit = True
+        if index is not None:
+            sun_positions = position_vectors(self.ephem, "sun")
+            if index < len(sun_positions):
+                sun_eci_km = (
+                    np.asarray(sun_positions[index], dtype=np.float64) - position_eci_km
+                )
+            sunlit = not bool(getattr(self.acs, "in_eclipse", False))
         return self._stored_momentum_tracker.update(
             utime=utime,
             position_eci_km=position_eci_km,
             attitude_quaternion_eci_to_body=attitude_quaternion_eci_to_body,
+            sun_eci_km=sun_eci_km,
+            sunlit=sunlit,
         )
 
     def _solar_array_drive_telemetry(self) -> list[SolarArrayDriveAngle] | None:

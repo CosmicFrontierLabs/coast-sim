@@ -63,6 +63,14 @@ from .star_tracker import (
     StarTrackerOrientation,
     create_star_tracker_vector,
 )
+from .surfaces import (
+    Surface,
+    SurfaceModel,
+    box_surfaces,
+    guess_surfaces,
+    panel_surfaces,
+    telescope_surfaces,
+)
 from .targets import TargetConfig
 from .thermal import Heater
 from .visualization import VisualizationConfig
@@ -121,6 +129,12 @@ __all__ = [
     "SingleAxisSolarArrayDrive",
     "SpacecraftBus",
     "StoredMomentumConfig",
+    "Surface",
+    "SurfaceModel",
+    "box_surfaces",
+    "guess_surfaces",
+    "panel_surfaces",
+    "telescope_surfaces",
     "StarTracker",
     "DefaultStarTrackerConfiguration",
     "StarTrackerConfiguration",

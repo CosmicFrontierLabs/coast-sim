@@ -1681,7 +1681,7 @@ class QueueDITL(DITLMixin, DITLStats):
             roll_offset_deg = (roll - nominal_roll + 180.0) % 360.0 - 180.0
 
         _q = attitude_to_quat(ra, dec, roll)
-        momentum_sample = self._update_stored_momentum(utime, _pos, _q)
+        momentum_sample = self._update_stored_momentum(utime, _pos, _q, index=ei)
         drive_angles = self._solar_array_drive_telemetry()
         return Housekeeping(
             timestamp=datetime.fromtimestamp(utime, tz=timezone.utc),
@@ -1746,6 +1746,19 @@ class QueueDITL(DITLMixin, DITLStats):
             ),
             stored_momentum_norm_n_m_s=(
                 momentum_sample.stored_momentum_norm_n_m_s
+                if momentum_sample is not None
+                else None
+            ),
+            disturbance_torques_body_n_m=(
+                {
+                    name: list(torque)
+                    for name, torque in momentum_sample.torques_body_n_m.items()
+                }
+                if momentum_sample is not None
+                else None
+            ),
+            disturbance_torque_body_n_m=(
+                list(momentum_sample.torque_body_n_m)
                 if momentum_sample is not None
                 else None
             ),

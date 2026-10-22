@@ -1,13 +1,33 @@
+"""Stored momentum from the environmental torques.
+
+Reaction wheels absorb the angular impulse of every torque the environment
+puts on the spacecraft: gravity gradient from the Earth's field across the
+body, solar radiation pressure on its surfaces, aerodynamic drag at low
+altitude. Each torque is a :class:`TorqueSource` evaluated in the body frame
+at a sample of the orbit and attitude; :class:`StoredMomentumTracker`
+integrates their sum in inertial coordinates, so changing attitude alone
+never creates momentum, and reports the stored vector in the body frame
+with each source's torque.
+"""
+
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 import numpy.typing as npt
 
 from ..common.vector import quaternion_to_rotation_matrix
 
+if TYPE_CHECKING:
+    from ..config.surfaces import SurfaceModel
+
 EARTH_GRAVITATIONAL_PARAMETER_KM3_S2 = 398600.4418
+SOLAR_PRESSURE_N_M2 = 4.56e-6
+"""Solar radiation pressure at one astronomical unit."""
+ASTRONOMICAL_UNIT_KM = 149597870.7
 
 
 def _finite_vector3(value: npt.ArrayLike, *, name: str) -> npt.NDArray[np.float64]:
@@ -62,23 +82,150 @@ def gravity_gradient_torque_body(
     )
 
 
+def solar_radiation_pressure_torque_body(
+    sun_body_km: npt.ArrayLike,
+    surfaces: SurfaceModel,
+    *,
+    sunlit: bool = True,
+) -> npt.NDArray[np.float64]:
+    """Return the torque of sunlight on the spacecraft's surfaces, in body
+    coordinates, about the surface model's centre of mass.
+
+    ``sun_body_km`` is the vector from the spacecraft to the Sun in the body
+    frame; its length scales the pressure from one astronomical unit. Each
+    plate the Sun shines on takes the force of what it absorbs, reflects
+    specularly and reflects diffusely; plates facing away take none, and
+    nothing does in eclipse.
+    """
+    if not sunlit:
+        return np.zeros(3, dtype=np.float64)
+    sun = _finite_vector3(sun_body_km, name="sun_body_km")
+    distance_km = float(np.linalg.norm(sun))
+    if distance_km <= 0.0:
+        raise ValueError("sun_body_km must have nonzero magnitude")
+    direction = sun / distance_km
+    pressure = SOLAR_PRESSURE_N_M2 * (ASTRONOMICAL_UNIT_KM / distance_km) ** 2
+    center_of_mass = np.asarray(surfaces.center_of_mass_m, dtype=np.float64)
+    torque = np.zeros(3, dtype=np.float64)
+    for surface in surfaces.surfaces:
+        normal = np.asarray(surface.normal, dtype=np.float64)
+        cosine = float(normal @ direction)
+        if cosine <= 0.0:
+            continue
+        specular = surface.specular_reflectivity
+        diffuse = surface.diffuse_reflectivity
+        force = (
+            -pressure
+            * surface.area_m2
+            * cosine
+            * (
+                (1.0 - specular) * direction
+                + 2.0 * (specular * cosine + diffuse / 3.0) * normal
+            )
+        )
+        arm = np.asarray(surface.center_m, dtype=np.float64) - center_of_mass
+        torque += np.cross(arm, force)
+    return torque
+
+
+@dataclass(frozen=True)
+class OrbitSample:
+    """The orbit, Sun and attitude at one instant, as the torque sources
+    see them: the ECI position, the vector from the spacecraft to the Sun
+    (None where unknown), whether the spacecraft is sunlit, and the rotation
+    from ECI into the body frame."""
+
+    utime: float
+    position_eci_km: npt.NDArray[np.float64]
+    rotation_eci_to_body: npt.NDArray[np.float64]
+    sun_eci_km: npt.NDArray[np.float64] | None = None
+    sunlit: bool = True
+    velocity_eci_km_s: npt.NDArray[np.float64] | None = None
+
+    def to_body(self, vector_eci: npt.ArrayLike) -> npt.NDArray[np.float64]:
+        return np.asarray(
+            self.rotation_eci_to_body @ np.asarray(vector_eci), dtype=np.float64
+        )
+
+
+class TorqueSource(Protocol):
+    """One environmental torque, evaluated in the body frame."""
+
+    name: str
+
+    def torque_body_n_m(self, sample: OrbitSample) -> npt.NDArray[np.float64]: ...
+
+
+class GravityGradientTorque:
+    """Central-body gravity gradient on the inertia tensor."""
+
+    name = "gravity_gradient"
+
+    def __init__(self, inertia_tensor_body_kg_m2: npt.ArrayLike) -> None:
+        self.inertia_tensor_body_kg_m2 = _finite_matrix3(
+            inertia_tensor_body_kg_m2, name="inertia_tensor_body_kg_m2"
+        )
+
+    def torque_body_n_m(self, sample: OrbitSample) -> npt.NDArray[np.float64]:
+        position = sample.position_eci_km
+        radius_km = float(np.linalg.norm(position))
+        if radius_km <= 0.0:
+            raise ValueError("position_eci_km must have nonzero magnitude")
+        radial_body = sample.rotation_eci_to_body @ (position / radius_km)
+        return np.asarray(
+            3.0
+            * EARTH_GRAVITATIONAL_PARAMETER_KM3_S2
+            / radius_km**3
+            * np.cross(radial_body, self.inertia_tensor_body_kg_m2 @ radial_body),
+            dtype=np.float64,
+        )
+
+
+class SolarRadiationPressureTorque:
+    """Sunlight on the spacecraft's surfaces; nothing where the Sun vector
+    is unknown or the spacecraft is in eclipse."""
+
+    name = "solar_radiation_pressure"
+
+    def __init__(self, surfaces: SurfaceModel) -> None:
+        self.surfaces = surfaces
+
+    def torque_body_n_m(self, sample: OrbitSample) -> npt.NDArray[np.float64]:
+        if sample.sun_eci_km is None:
+            return np.zeros(3, dtype=np.float64)
+        return solar_radiation_pressure_torque_body(
+            sample.to_body(sample.sun_eci_km), self.surfaces, sunlit=sample.sunlit
+        )
+
+
 @dataclass(frozen=True)
 class MomentumSample:
-    """Instantaneous disturbance torque and accumulated stored momentum."""
+    """Instantaneous disturbance torques and accumulated stored momentum."""
 
     gravity_gradient_torque_body_n_m: tuple[float, float, float]
     stored_momentum_body_n_m_s: tuple[float, float, float]
     stored_momentum_norm_n_m_s: float
+    torques_body_n_m: dict[str, tuple[float, float, float]]
+    """Each source's torque in body coordinates, by source name."""
+    torque_body_n_m: tuple[float, float, float]
+    """The sources' total torque in body coordinates."""
+
+
+def _as_tuple(vector: npt.NDArray[np.float64]) -> tuple[float, float, float]:
+    return (float(vector[0]), float(vector[1]), float(vector[2]))
 
 
 class StoredMomentumTracker:
-    """Integrate momentum stored while rejecting gravity-gradient torque.
+    """Integrate the momentum stored while rejecting the environmental torques.
 
     Momentum is integrated in ECI so changing spacecraft attitude only changes
     its body-frame components; it does not create spurious stored momentum.
     This is a sampled integrator, not a trajectory interpolator. Callers must
     supply sufficiently fine executed-attitude and orbit samples, and lower
     ``max_sample_interval_s`` for fast motion or convergence studies.
+
+    ``sources`` are the torques integrated; by default the gravity gradient
+    on the inertia tensor alone.
     """
 
     def __init__(
@@ -87,6 +234,7 @@ class StoredMomentumTracker:
         initial_momentum_body_n_m_s: npt.ArrayLike = (0.0, 0.0, 0.0),
         *,
         max_sample_interval_s: float = 10.0,
+        sources: Sequence[TorqueSource] | None = None,
     ) -> None:
         if (
             not np.isfinite(max_sample_interval_s)
@@ -101,6 +249,11 @@ class StoredMomentumTracker:
         )
         self.initial_momentum_body_n_m_s = _finite_vector3(
             initial_momentum_body_n_m_s, name="initial_momentum_body_n_m_s"
+        )
+        self.sources: list[TorqueSource] = (
+            list(sources)
+            if sources is not None
+            else [GravityGradientTorque(self.inertia_tensor_body_kg_m2)]
         )
         self.reset()
 
@@ -127,8 +280,16 @@ class StoredMomentumTracker:
         utime: float,
         position_eci_km: npt.ArrayLike,
         attitude_quaternion_eci_to_body: npt.ArrayLike,
+        sun_eci_km: npt.ArrayLike | None = None,
+        sunlit: bool = True,
+        velocity_eci_km_s: npt.ArrayLike | None = None,
     ) -> MomentumSample:
-        """Advance to one attitude sample using trapezoidal torque integration."""
+        """Advance to one attitude sample using trapezoidal torque integration.
+
+        ``sun_eci_km`` is the vector from the spacecraft to the Sun, and
+        ``sunlit`` whether the Sun shines on it; a source that needs them
+        contributes nothing without them.
+        """
         if not np.isfinite(utime):
             raise ValueError("utime must be finite")
 
@@ -145,11 +306,28 @@ class StoredMomentumTracker:
         rotation_eci_to_body = quaternion_to_rotation_matrix(
             attitude_quaternion_eci_to_body
         )
-        torque_body = gravity_gradient_torque_body(
-            position_eci_km,
-            attitude_quaternion_eci_to_body,
-            self.inertia_tensor_body_kg_m2,
+        sample = OrbitSample(
+            utime=float(utime),
+            position_eci_km=_finite_vector3(position_eci_km, name="position_eci_km"),
+            rotation_eci_to_body=rotation_eci_to_body,
+            sun_eci_km=(
+                _finite_vector3(sun_eci_km, name="sun_eci_km")
+                if sun_eci_km is not None
+                else None
+            ),
+            sunlit=bool(sunlit),
+            velocity_eci_km_s=(
+                _finite_vector3(velocity_eci_km_s, name="velocity_eci_km_s")
+                if velocity_eci_km_s is not None
+                else None
+            ),
         )
+        torques: dict[str, tuple[float, float, float]] = {}
+        torque_body = np.zeros(3, dtype=np.float64)
+        for source in self.sources:
+            contribution = np.asarray(source.torque_body_n_m(sample), dtype=np.float64)
+            torques[source.name] = _as_tuple(contribution)
+            torque_body += contribution
         torque_eci = rotation_eci_to_body.T @ torque_body
 
         if self._previous_utime is None:
@@ -169,15 +347,11 @@ class StoredMomentumTracker:
         momentum_body = rotation_eci_to_body @ self._momentum_eci_n_m_s
 
         return MomentumSample(
-            gravity_gradient_torque_body_n_m=(
-                float(torque_body[0]),
-                float(torque_body[1]),
-                float(torque_body[2]),
+            gravity_gradient_torque_body_n_m=torques.get(
+                GravityGradientTorque.name, (0.0, 0.0, 0.0)
             ),
-            stored_momentum_body_n_m_s=(
-                float(momentum_body[0]),
-                float(momentum_body[1]),
-                float(momentum_body[2]),
-            ),
+            stored_momentum_body_n_m_s=_as_tuple(momentum_body),
             stored_momentum_norm_n_m_s=float(np.linalg.norm(self._momentum_eci_n_m_s)),
+            torques_body_n_m=torques,
+            torque_body_n_m=_as_tuple(torque_body),
         )
