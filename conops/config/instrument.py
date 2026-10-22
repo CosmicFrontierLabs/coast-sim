@@ -133,6 +133,13 @@ class InstrumentMode(ConfigModel):
         ge=0.0,
         description="Power draw in the mode during eclipse, in watts; None: power_w",
     )
+    science_data: ScienceData | None = Field(
+        default=None,
+        description=(
+            "Science data the instrument generates while collecting in this "
+            "mode; None: its data_generation's science data"
+        ),
+    )
 
     def power(self, in_eclipse: bool = False) -> float:
         """The mode's draw in watts."""
@@ -735,6 +742,7 @@ class Payload(ConfigModel):
         self,
         collection_seconds: float,
         science: Mapping[str, ScienceData] | None = None,
+        instrument_modes: Mapping[str, str] | None = None,
     ) -> float:
         """Science data an observation generates in all instruments.
 
@@ -745,17 +753,44 @@ class Payload(ConfigModel):
             collection_seconds: Seconds of science the observation collected.
             science: The observed target's science data, keyed by instrument
                 name; instruments not named generate their own.
+            instrument_modes: The mode each instrument is in during the
+                observation, by name. An instrument with modes that is not
+                named generates nothing, and one that is generates its
+                mode's science data, or its own where the mode sets none.
+                None: every instrument generates its own, as an instrument
+                without modes always does.
 
         Returns:
             float: Data generated in Gigabits.
         """
         science = science or {}
         return sum(
-            science.get(
-                instrument.name, instrument.data_generation.science
-            ).data_generated(collection_seconds)
+            data.data_generated(collection_seconds)
             for instrument in self.instruments
+            if (data := self._science_of(instrument, science, instrument_modes))
+            is not None
         )
+
+    @staticmethod
+    def _science_of(
+        instrument: Instrument,
+        science: Mapping[str, ScienceData],
+        instrument_modes: Mapping[str, str] | None,
+    ) -> ScienceData | None:
+        """What ``instrument`` generates while the observation collects:
+        the target's own for it, else its mode's, else its default; None
+        when it has modes and the observation does not use it."""
+        own = science.get(instrument.name)
+        if own is not None:
+            return own
+        if instrument.modes and instrument_modes is not None:
+            name = instrument_modes.get(instrument.name)
+            if name is None:
+                return None
+            mode = instrument.mode(name)
+            if mode is not None and mode.science_data is not None:
+                return mode.science_data
+        return instrument.data_generation.science
 
     def data_generated(
         self,
@@ -764,6 +799,7 @@ class Payload(ConfigModel):
         mode: ACSMode | None = None,
         collection_seconds: float | None = None,
         science: Mapping[str, ScienceData] | None = None,
+        instrument_modes: Mapping[str, str] | None = None,
     ) -> float:
         """Data an observation generates in all instruments over an interval.
 
@@ -777,6 +813,8 @@ class Payload(ConfigModel):
                 None for all of it.
             science: The observed target's science data, keyed by instrument
                 name; instruments not named generate their own.
+            instrument_modes: The mode each instrument is in during the
+                observation, by name; see :meth:`science_generated`.
 
         Returns:
             float: Total amount of data generated in Gigabits.
@@ -785,4 +823,4 @@ class Payload(ConfigModel):
             collection_seconds = duration_seconds
         return self.housekeeping_generated(
             duration_seconds, mode=mode
-        ) + self.science_generated(collection_seconds, science)
+        ) + self.science_generated(collection_seconds, science, instrument_modes)

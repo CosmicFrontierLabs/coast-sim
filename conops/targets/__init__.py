@@ -12,6 +12,7 @@ from .plan_entry import (
     AttitudeRotationSchema,
     PlanEntry,
     TargetAttitudeSchema,
+    instrument_modes_of,
 )
 from .plan_metadata import (
     EarthOrientationMetadata,
@@ -42,6 +43,7 @@ __all__ = [
     "cadence_windows",
     "visit_windows",
     "PlanEntry",
+    "instrument_modes_of",
     "TargetAttitudeSchema",
     "AttitudeRotationSchema",
     "AttitudePointingSchema",

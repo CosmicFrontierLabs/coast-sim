@@ -5,7 +5,14 @@ import pytest
 from pydantic import ValidationError
 
 from conops.common import ACSMode
-from conops.config import Instrument, InstrumentMode, Payload, PowerDraw
+from conops.config import (
+    DataGeneration,
+    Instrument,
+    InstrumentMode,
+    Payload,
+    PowerDraw,
+    ScienceData,
+)
 
 
 def _camera() -> Instrument:
@@ -101,3 +108,49 @@ class TestPayload:
             payload.check_instrument_modes({"camera": "WARM"})
         with pytest.raises(ValueError, match="has no modes"):
             payload.check_instrument_modes({"legacy": "FAST"})
+
+
+def _imager() -> Instrument:
+    return Instrument(
+        name="imager",
+        data_generation=DataGeneration(science=ScienceData(rate_gbps=0.01)),
+        modes=[
+            InstrumentMode(name="IDLE", power_w=1.0),
+            InstrumentMode(name="SCIENCE", power_w=2.0),
+            InstrumentMode(
+                name="FULL", power_w=3.0, science_data=ScienceData(rate_gbps=0.1)
+            ),
+        ],
+    )
+
+
+class TestScienceData:
+    def test_a_mode_sets_what_the_instrument_generates(self) -> None:
+        """In SCIENCE the imager generates its default; in FULL its mode's
+        rate; an instrument with modes that the observation does not use
+        generates nothing; one without modes always generates its own."""
+        payload = Payload(
+            instruments=[
+                _imager(),
+                Instrument(
+                    name="legacy",
+                    data_generation=DataGeneration(
+                        science=ScienceData(per_observation_gb=0.5)
+                    ),
+                ),
+            ]
+        )
+        assert payload.science_generated(100.0) == pytest.approx(1.0 + 0.5)
+        assert payload.science_generated(
+            100.0, instrument_modes={"imager": "SCIENCE"}
+        ) == (pytest.approx(1.0 + 0.5))
+        assert payload.science_generated(
+            100.0, instrument_modes={"imager": "FULL"}
+        ) == (pytest.approx(10.0 + 0.5))
+        assert payload.science_generated(100.0, instrument_modes={}) == pytest.approx(
+            0.5
+        )
+        # The target's own data for an instrument wins over its mode's.
+        assert payload.science_generated(
+            100.0, {"imager": ScienceData(rate_gbps=0.02)}, {"imager": "FULL"}
+        ) == pytest.approx(2.0 + 0.5)

@@ -78,6 +78,14 @@ class AttitudeRotationSchema(AttitudeRotationConventionSchema):
     values: tuple[float, float, float, float]
 
 
+def instrument_modes_of(entry: object) -> dict[str, str] | None:
+    """The instrument modes in effect for ``entry``, or None for an object
+    that cannot say, such as a test double: every instrument then generates."""
+    modes = getattr(entry, "effective_instrument_modes", None)
+    resolved = modes() if callable(modes) else None
+    return resolved if isinstance(resolved, dict) else None
+
+
 class AttitudePointingSchema(BaseModel):
     """Pointing parameters used to generate a target attitude."""
 

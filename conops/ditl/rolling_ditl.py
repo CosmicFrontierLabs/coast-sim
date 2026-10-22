@@ -21,6 +21,7 @@ from ..simulation.passes import Pass
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing, ScheduledActivity, assign_obsids
 from ..targets.merit import MeritModel
+from ..targets.plan_entry import instrument_modes_of
 from .ditl import DITL
 from .ditl_log import DITLLog
 from .plan_validator import PLAN_SCIENCE_OBSTYPES, entry_obstype
@@ -715,10 +716,13 @@ class RollingHorizonDITL(DITL):
             end = min(float(entry.collection_end), start)
             if end <= begin:
                 continue
-            volume = self.config.science_generated(end - begin, entry.science_data)
+            modes = instrument_modes_of(entry)
+            volume = self.config.science_generated(
+                end - begin, entry.science_data, modes
+            )
             if float(entry.collection_begin) < utime:
                 # Already collecting: its fixed amount is on the recorder.
-                volume -= self.config.science_generated(0.0, entry.science_data)
+                volume -= self.config.science_generated(0.0, entry.science_data, modes)
             science.append((begin, volume))
         ledger = RecorderLedger(
             self.config,

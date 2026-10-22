@@ -19,6 +19,7 @@ from ..simulation.coverage import StationCoverage
 from ..simulation.momentum import MomentumSample, StoredMomentumTracker
 from ..simulation.passes import Pass, PassTimes
 from ..targets import Plan, PlanEntry
+from ..targets.plan_entry import instrument_modes_of
 from .ditl_log import DITLLog
 from .telemetry import SolarArrayDriveAngle, Telemetry
 
@@ -724,9 +725,14 @@ class DITLMixin:
                 self._data_collected if observation == self._data_observation else 0.0
             )
             after = before + collection_seconds
-            data_generated += self.config.science_generated(after, science=science)
+            modes = instrument_modes_of(self.ppt)
+            data_generated += self.config.science_generated(
+                after, science=science, instrument_modes=modes
+            )
             if before > 0:
-                data_generated -= self.config.science_generated(before, science=science)
+                data_generated -= self.config.science_generated(
+                    before, science=science, instrument_modes=modes
+                )
             self._data_observation = observation
             self._data_collected = after
 

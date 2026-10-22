@@ -101,7 +101,10 @@ none uses the instrument it names with ``instrument_name``, or every instrument
 with modes, in ``SCIENCE``. The modes set what the payload draws while the target
 is observed, in both DITLs and in the battery ledger the planners keep, so a
 request that uses one instrument of several costs the battery less than one that
-uses them all (see the instrument modes under :doc:`configuration`). The modes are
+uses them all, and what it generates on the recorder: each instrument used
+generates its mode's science data, or its own where the mode sets none, and an
+instrument with modes that is not used generates nothing (see the instrument modes
+under :doc:`configuration`). The modes are
 checked against the payload when the target is made, and the plan records them on
 each entry. A Target of Opportunity names its modes with the ``instrument_modes``
 argument of ``submit_too``.

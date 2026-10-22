@@ -19,7 +19,7 @@ from ..config.observation_categories import ObservationCategories
 from ..ditl.ditl_log import DITLLog
 from . import Pointing
 from .merit import MeritBreakdown, MeritModel
-from .plan_entry import snapshot_min_seconds
+from .plan_entry import instrument_modes_of, snapshot_min_seconds
 from .sequence import ObservationSequence
 from .visits import VisitWindow
 
@@ -833,7 +833,9 @@ class TargetQueue:
         rates: its rate for the seconds plus its fixed amount per observation."""
         assert self.config is not None
         return float(
-            self.config.science_generated(collection_seconds, target.science_data)
+            self.config.science_generated(
+                collection_seconds, target.science_data, instrument_modes_of(target)
+            )
         )
 
     def _select(

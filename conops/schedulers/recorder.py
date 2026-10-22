@@ -19,6 +19,7 @@ from ..config import MissionConfig
 from ..ditl.plan_validator import entry_obstype
 from ..simulation.coverage import StationCoverage
 from ..targets import PlanEntry
+from ..targets.plan_entry import instrument_modes_of
 from .consumable import ConsumableLedger, Removal
 
 
@@ -200,7 +201,9 @@ class RecorderLedger(ConsumableLedger[float, float]):
 
     def science_volume(self, entry: PlanEntry, collection_seconds: float) -> float:
         """What a snapshot of ``entry`` collecting for some seconds generates."""
-        return self.config.science_generated(collection_seconds, entry.science_data)
+        return self.config.science_generated(
+            collection_seconds, entry.science_data, instrument_modes_of(entry)
+        )
 
     def ingress_volume(
         self,
