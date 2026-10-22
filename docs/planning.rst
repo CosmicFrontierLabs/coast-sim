@@ -276,7 +276,8 @@ duration and perhaps with its own instrument, with calibration steps that take t
 but collect no science. A :class:`~conops.targets.ObservationSequence` on a
 :class:`~conops.targets.Pointing` lists the steps (``SequenceStep``: a name, a
 duration, an optional pointing and instrument, whether it collects science, and
-whether it pays the setup budget), and ``visits`` says how many times the sequence is
+whether it pays the setup budget, and an optional ``roll_offset_deg`` on top of the
+target's own roll), and ``visits`` says how many times the sequence is
 wanted. A sequence target's snapshot is one visit's science, no more and no less, and
 its exposure is its visits' science unless given.
 

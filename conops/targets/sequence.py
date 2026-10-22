@@ -41,6 +41,13 @@ class SequenceStep(BaseModel):
             "time, which is counted separately, and collects none."
         ),
     )
+    roll_offset_deg: float | None = Field(
+        default=None,
+        description=(
+            "An offset in roll for this step, in degrees, on top of the "
+            "target's own roll; None: the target's roll"
+        ),
+    )
     setup: bool = Field(
         default=False,
         description=(
