@@ -173,6 +173,9 @@ class _SequenceRun:
     advancing: bool = False
     """Whether the step's observation is ending because the step is over,
     rather than being cut short."""
+    optimum: float | None = None
+    """The power-optimal instrument roll found at the visit's last change
+    of pointing, held through the steps at that pointing."""
 
     @property
     def sequence(self) -> ObservationSequence:
@@ -1140,7 +1143,17 @@ class QueueDITL(DITLMixin, DITLStats):
         execution_time = (
             utime + ceil((execution_time - utime) / self.step_size) * self.step_size
         )
-        self._complete_ppt_slew(slew, ppt, utime, execution_time)
+        # A step at the pointing of the step before keeps the power-optimal
+        # roll found there, as the planners do: its own roll offset is then a
+        # roll-only slew, and the same offset leaves the attitude where it
+        # is. A step elsewhere finds the optimum afresh.
+        parent = run.parent
+        same_pointing = run.index > 0 and run.sequence.pointing_of(
+            run.index, parent.ra, parent.dec
+        ) == run.sequence.pointing_of(run.index - 1, parent.ra, parent.dec)
+        if run.optimum is None or not same_pointing:
+            run.optimum = self._power_optimal_roll(ppt, execution_time)
+        self._complete_ppt_slew(slew, ppt, utime, execution_time, optimum=run.optimum)
         slew_end = execution_time + slew.slewtime
         end = slew_end + timing.total_seconds + step.duration_seconds
         # The checks below read the observation under way.
@@ -3074,13 +3087,16 @@ class QueueDITL(DITLMixin, DITLStats):
         target: Pointing,
         utime: float,
         execution_time: float,
+        optimum: float | None = None,
     ) -> None:
-        """Fill in a PPT slew's start attitude, end roll, and computed slew time."""
+        """Fill in a PPT slew's start attitude, end roll, and computed slew
+        time. ``optimum`` is the power-optimal roll to take as given, for a
+        sequence step holding the roll of the step before."""
         slew.slewstart = execution_time
         slew.startra, slew.startdec, slew.startroll = (
             self._expected_slew_start_attitude(utime, execution_time)
         )
-        instrument_roll = self._ppt_optimum_roll(target, execution_time)
+        instrument_roll = self._ppt_optimum_roll(target, execution_time, optimum)
         slew.endra, slew.enddec, slew.endroll = self._target_body_attitude(
             target, instrument_roll
         )
@@ -3098,12 +3114,16 @@ class QueueDITL(DITLMixin, DITLStats):
             )
         slew.calc_slewtime()
 
-    def _ppt_optimum_roll(self, target: Pointing, execution_time: float) -> float:
+    def _ppt_optimum_roll(
+        self, target: Pointing, execution_time: float, optimum: float | None = None
+    ) -> float:
         """The roll a target is observed at, at ``execution_time``: the
         power-optimal roll, cached, or the roll the target asks for (see
         :meth:`Pointing.requested_roll`); the optimum where an absolute roll
-        is beyond the ACS limit, which :meth:`_roll_allowed` rejects."""
-        optimum = self._power_optimal_roll(target, execution_time)
+        is beyond the ACS limit, which :meth:`_roll_allowed` rejects. A given
+        ``optimum`` stands in for the power-optimal roll now."""
+        if optimum is None:
+            optimum = self._power_optimal_roll(target, execution_time)
         if not isinstance(target, Pointing):
             # A test double has no roll request.
             return optimum
@@ -3560,6 +3580,12 @@ class QueueDITL(DITLMixin, DITLStats):
                 return None
 
             self._complete_ppt_slew(slew, self.ppt, utime, execution_time)
+            if self._sequence is not None:
+                # The visit's first step: the steps after it at this pointing
+                # hold the power-optimal roll found now.
+                self._sequence.optimum = self._power_optimal_roll(
+                    self.ppt, execution_time
+                )
 
             # Queue selection checks the deadline against an estimated slew;
             # enforce it again against the slew that will actually execute,

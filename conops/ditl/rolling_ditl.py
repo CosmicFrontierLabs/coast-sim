@@ -684,7 +684,8 @@ class RollingHorizonDITL(DITL):
         commit lead time reaches into it. Collection stops no earlier than
         ``utime``, as science before then is already collected, and the
         observation ends after its cleanup. Returns the cut entry with its
-        original end and collection window.
+        original end and collection window. A sequence visit is never cut:
+        the ToO waits for it.
         """
         entry = next(
             (
@@ -696,6 +697,22 @@ class RollingHorizonDITL(DITL):
             None,
         )
         if not self.allow_interrupts or not too.interrupt or entry is None:
+            return None
+        if entry.step is not None:
+            # A step of a sequence visit: the visit is taken whole, with
+            # nothing inserted inside it, so the ToO waits for it as it does
+            # in dispatch. Cutting the step would leave the visit's remaining
+            # steps committed after a shortened one. A decision, not an
+            # attempt, so it goes to the live log.
+            self.log.log_event(
+                utime=utime,
+                event_type="TOO",
+                description=(
+                    f"ToO {too.name} (obsid={too.obsid}) waits for the visit of "
+                    f"{entry.obsid} under way at the commit cutoff"
+                ),
+                obsid=too.obsid,
+            )
             return None
         category = self.merit_model.categories.get_category(int(entry.obsid))
         if not category.interruptible:

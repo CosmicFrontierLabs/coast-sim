@@ -234,6 +234,12 @@ class TestDispatch:
             assert entry.exposure == pytest.approx(step.duration_seconds, abs=STEP)
         assert (steps[1].ra, steps[1].dec) == REFERENCE
         assert (steps[2].ra, steps[2].dec) == TARGET
+        # The reference step keeps the roll of the calibration step at the
+        # same pointing, with no slew, rather than following the drift of
+        # the power-optimal roll; the steps elsewhere find it afresh.
+        assert float(steps[1].roll) == float(steps[0].roll)
+        assert steps[1].slewdist == 0 and steps[1].slewtime == 0
+        assert steps[2].slewdist > 0 and steps[3].slewdist > 0
         # The target is credited the science and the calibration separately.
         target = next(t for t in ditl.queue.targets if t.obsid == 500)
         assert target.collected_seconds == pytest.approx(SCIENCE, abs=STEP)

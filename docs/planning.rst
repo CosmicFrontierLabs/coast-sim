@@ -336,8 +336,10 @@ visit's calibration, the slews between steps that point elsewhere and any step s
 counted in the time it needs; its first step is the observation admitted, paying the
 payload's setup, and when a step's time is up the next starts at once, with a real
 slew where it points elsewhere, no setup unless the step asks for it, and cleanup and
-handoff after the last step only. Nothing is inserted inside a visit: a Target of
-Opportunity waits for it to end. A step that cannot be observed, because its pointing
+handoff after the last step only. A step at the pointing of the step before keeps the
+power-optimal roll found there, as the planners do, so its roll offset is a roll-only
+slew and the same offset leaves the attitude where it is. Nothing is inserted inside
+a visit: a Target of Opportunity waits for it to end. A step that cannot be observed, because its pointing
 is not visible throughout, its attitude or slew is constrained, or a ground pass
 falls in it, cuts the visit short, as does any other termination of a step; the cut
 is recorded on the target, which is revisited for the rest from its first step.
@@ -681,7 +683,8 @@ rebuilds it as the simulation runs:
    there when ``allow_interrupts`` is set, the ToO allows it (``interrupt``, an
    argument of ``submit_too``), the observation's category is ``interruptible``, and
    the ToO's value, evaluated now, beats the value frozen onto that observation.
-   Otherwise the ToO can start only after the observation ends. Science it has already
+   Otherwise the ToO can start only after the observation ends. A sequence visit is
+   never cut: the ToO waits for it, as it does in dispatch. Science it has already
    collected is kept, and its cleanup follows the cut. The cut is kept only if the new
    plan can collect the ToO. If several ToOs need a rapid replan at the same time, they
    are tried highest-ranked first, and the first that outranks the observation and can

@@ -8,7 +8,7 @@ import pytest
 from conops import DITL
 from conops.common import ObsType
 from conops.config import BudgetStep, HousekeepingData, MissionConfig, ObservationTiming
-from conops.ditl import RollingHorizonDITL
+from conops.ditl import ReplanReason, RollingHorizonDITL
 from conops.schedulers import LocalSearchScheduler, PriorityScheduler
 from conops.targets import ObservationSequence, Plan, PlanEntry, Pointing, SequenceStep
 
@@ -375,6 +375,58 @@ class TestRolling:
 
 
 class TestReplanCutoff:
+    def test_a_rapid_replan_does_not_cut_a_visit_for_a_too(self) -> None:
+        """A ToO that outranks the visit under way, submitted during its
+        middle step with a deadline inside the visit, waits for the visit
+        as it does in dispatch: the visit completes whole and the ToO is
+        placed after it, or not at all."""
+        config = _timed_config()
+        targets = _targets(config)
+        ditl = RollingHorizonDITL(
+            config,
+            targets,
+            begin=BEGIN,
+            end=END,
+            horizon=timedelta(hours=3),
+            replan_interval=timedelta(hours=2),
+            commit_lead_time=timedelta(minutes=5),
+            rapid_replans=True,
+            allow_interrupts=True,
+        )
+        ditl.step_size = STEP
+        # The visit is the first observation: its target step begins after
+        # the two reference steps and the setup.
+        submit = T0 + 20 * MIN
+        ditl.submit_too(
+            obsid=900,
+            ra=PATCH[4][0],
+            dec=PATCH[4][1],
+            merit=500.0,
+            exptime=10 * MIN,
+            name="ToO",
+            submit_time=submit,
+            deadline=submit + 90 * MIN,
+            interrupt=True,
+        )
+        assert ditl.calc()
+        assert ditl.validate_plan_matches_execution() == []
+        rapid = [r for r in ditl.replans if r.reason is ReplanReason.RAPID]
+        assert len(rapid) == 1 and rapid[0].interrupted_obsid is None
+        chains = _chains(ditl.plan)
+        assert chains, "no visit was planned"
+        for chain in chains:
+            _check_chain(chain)
+        first = chains[0]
+        assert float(first[0].begin) < submit < float(first[-1].end)
+        too = [e for e in ditl.plan if e.obsid == 900]
+        assert too and all(float(e.begin) >= float(first[-1].end) for e in too)
+        descriptions = [e.description for e in ditl.log.events]
+        assert not any("interrupts observation 500" in d for d in descriptions)
+        assert any("waits for the visit of 500" in d for d in descriptions)
+        assert targets[0].collected_seconds == pytest.approx(
+            SCIENCE * len(chains), abs=2 * STEP
+        )
+
     def test_a_visit_under_way_at_a_replan_cutoff_is_finished(self) -> None:
         """Replanning every half hour with a five-minute commit lead puts a
         cutoff inside the first visit. The visit is kept whole across it:
