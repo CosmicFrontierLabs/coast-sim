@@ -11,8 +11,11 @@ from pydantic import (
 
 from ..common import unixtime2date
 from ..common.enums import ObsType
+from ..config.acs import AttitudeControlSystem
+from ..config.observation_timing import ObservationTiming
 from .merit import MeritBreakdown
 from .plan_entry import PlanEntry
+from .sequence import ObservationSequence
 
 
 class Pointing(PlanEntry):
@@ -41,6 +44,20 @@ class Pointing(PlanEntry):
             "Earliest time (Unix seconds) science collection may begin; the "
             "target cannot be selected before it"
         ),
+    )
+    sequence: ObservationSequence | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description=(
+            "The steps a visit of this target observes, in order; None for a "
+            "plain pointing held for a snapshot"
+        ),
+    )
+    visits: int = Field(
+        default=1,
+        ge=1,
+        exclude_if=lambda v: v == 1,
+        description="How many visits of the sequence are wanted",
     )
     _done: bool = PrivateAttr(default=False)
     _merit_breakdown: MeritBreakdown | None = PrivateAttr(default=None)
@@ -85,6 +102,66 @@ class Pointing(PlanEntry):
     @fom.setter
     def fom(self, value: float) -> None:
         self.merit = value
+
+    @model_validator(mode="after")
+    def _sequence_sets_the_snapshot(self) -> "Pointing":
+        """A sequence target's snapshot is one visit's science: no more and
+        no less, and its exposure is its visits' science unless given."""
+        if self.sequence is not None:
+            science = self.sequence.science_seconds
+            self.ss_min = science
+            self.ss_max = science
+            if self.exptime is None:
+                self.exptime = self.visits * science
+        return self
+
+    def step_pointing(self, index: int) -> "Pointing":
+        """The pointing step ``index`` of this target's sequence observes: at
+        the step's pointing and with its instrument, for its duration, carrying
+        this target's obsid and merit."""
+        assert self.sequence is not None
+        step = self.sequence.steps[index]
+        ra, dec = self.sequence.pointing_of(index, self.ra, self.dec)
+        base = (
+            self.config.payload.observation_timing
+            if self.config is not None
+            else ObservationTiming()
+        )
+        pointing = Pointing(
+            config=self.config,
+            ra=ra,
+            dec=dec,
+            obsid=self.obsid,
+            name=f"{self.name}: {step.name}",
+            merit=self.merit,
+            instrument_name=(
+                step.instrument_name
+                if step.instrument_name is not None
+                else self.instrument_name
+            ),
+            science_data=dict(self.science_data) if step.science else {},
+            # A step is never selected on its own, so it has no minimum: what
+            # it collects to the tick is kept, and the visit checks the rest.
+            ss_min=0,
+            ss_max=step.duration_seconds,
+            step=step.name,
+            calibration=not step.science,
+        )
+        pointing.exptime = step.duration_seconds
+        pointing.merit_breakdown = self.merit_breakdown
+        pointing._step_timing = self.sequence.step_timing(base, index)
+        if self.ephem is not None:
+            pointing.visibility()
+        return pointing
+
+    def sequence_overhead_seconds(
+        self, acs: AttitudeControlSystem, timing: ObservationTiming
+    ) -> float:
+        """Seconds a visit takes beyond its science and the visit's own setup
+        and cleanup; 0 for a plain pointing."""
+        if self.sequence is None:
+            return 0.0
+        return self.sequence.overhead_seconds(acs, timing, self.ra, self.dec)
 
     @model_validator(mode="after")
     def _check_start_before_deadline(self) -> "Pointing":

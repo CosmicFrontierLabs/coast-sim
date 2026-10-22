@@ -35,6 +35,7 @@ from ..config.constraint import (
     attitude_constraint_name_for_scopes,
     attitude_constraint_scope_label,
 )
+from ..config.observation_timing import ObservationTiming
 from ..schedulers import DispatchPolicy
 from ..schedulers.allocator import Allocation, LongRangeAllocator
 from ..simulation.acs_command import ACSCommand
@@ -46,6 +47,7 @@ from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing, Queue, TargetSlewEstimate
 from ..targets.merit import MeritBreakdown, MeritModel
 from ..targets.plan_entry import snapshot_min_seconds
+from ..targets.sequence import ObservationSequence
 from .ditl_log import DITLLog
 from .ditl_mixin import AttitudeRateContinuityError, DITLMixin
 from .ditl_stats import DITLStats
@@ -142,6 +144,26 @@ class _CommittedTOO:
     dispatch_time: float
 
 
+@dataclass
+class _SequenceRun:
+    """A visit of a sequence target under way, step by step."""
+
+    parent: Pointing
+    """The sequence target, credited with each step's science or calibration."""
+    index: int
+    """The step being observed."""
+    begun: float
+    """When the visit began."""
+    advancing: bool = False
+    """Whether the step's observation is ending because the step is over,
+    rather than being cut short."""
+
+    @property
+    def sequence(self) -> ObservationSequence:
+        assert self.parent.sequence is not None
+        return self.parent.sequence
+
+
 class QueueDITL(DITLMixin, DITLStats):
     """
     Class to run a Day In The Life (DITL) simulation based on a target
@@ -228,6 +250,9 @@ class QueueDITL(DITLMixin, DITLStats):
 
         # Event log
         self.log = DITLLog()
+
+        self._sequence: _SequenceRun | None = None
+        """The sequence visit under way, if the observation is one of its steps."""
 
         # TOO (Target of Opportunity) register - holds pending TOOs
         self.too_register: list[TOORequest] = []
@@ -478,6 +503,10 @@ class QueueDITL(DITLMixin, DITLStats):
         if self._committed_too is not None:
             return self._dispatch_committed_too(utime)
         if self.ppt is None or not active:
+            return False
+        if self._sequence is not None:
+            # Nothing is inserted inside a sequence visit; the TOOs are
+            # queued for the next selection.
             return False
         if not self.merit_model.category(self.ppt).interruptible:
             # The observation's category does not allow it to be cut short;
@@ -905,6 +934,158 @@ class QueueDITL(DITLMixin, DITLStats):
             )
         return not attitude_fault
 
+    # ── Sequence visits ───────────────────────────────────────────────────
+
+    def _ppt_timing(self, ppt: PlanEntry) -> ObservationTiming:
+        """The budgets the observation pays: a step's own within a visit."""
+        timing = getattr(ppt, "step_timing", None)
+        if isinstance(timing, ObservationTiming):
+            return timing
+        return self.config.payload.observation_timing
+
+    def _begin_sequence(self, parent: Pointing, utime: float) -> Pointing:
+        """Start a visit of ``parent``: its first step is the observation."""
+        self._sequence = _SequenceRun(parent=parent, index=0, begun=utime)
+        self.log.log_event(
+            utime=utime,
+            event_type="OBSERVATION",
+            description=f"Sequence visit of {parent.name} begins",
+            obsid=parent.obsid,
+            acs_mode=self.acs.acsmode,
+        )
+        return parent.step_pointing(0)
+
+    def _advance_sequence(self, utime: float) -> None:
+        """The current step's time is up: go on to the next, or finish the visit."""
+        run = self._sequence
+        assert run is not None and self.ppt is not None
+        step = run.sequence.steps[run.index]
+        complete = self.ppt.collected_seconds >= step.duration_seconds - self.step_size
+        run.advancing = True
+        try:
+            self._terminate_ppt(
+                utime,
+                reason=(
+                    f"Step {step.name} complete"
+                    if complete
+                    else f"Step {step.name} cut short, ending visit"
+                ),
+            )
+        finally:
+            run.advancing = False
+        if not complete:
+            self._cut_sequence(utime)
+            return
+        if run.index + 1 < len(run.sequence.steps):
+            run.index += 1
+            self._start_sequence_step(utime)
+            return
+        parent = run.parent
+        self._sequence = None
+        if (
+            parent.exptime is not None
+            and parent.exptime < run.sequence.science_seconds - 1e-6
+        ):
+            # Not enough exposure left for another whole visit.
+            parent.done = True
+        self.log.log_event(
+            utime=utime,
+            event_type="OBSERVATION",
+            description=f"Sequence visit of {parent.name} complete",
+            obsid=parent.obsid,
+            acs_mode=self.acs.acsmode,
+        )
+
+    def _cut_sequence(self, utime: float) -> None:
+        """End the visit under way short: the target is revisited for the rest."""
+        run = self._sequence
+        if run is None:
+            return
+        self._sequence = None
+        run.parent.record_interruption(utime)
+        self.log.log_event(
+            utime=utime,
+            event_type="OBSERVATION",
+            description=f"Sequence visit of {run.parent.name} cut short",
+            obsid=run.parent.obsid,
+            acs_mode=self.acs.acsmode,
+        )
+
+    def _start_sequence_step(self, utime: float) -> None:
+        """Observe the visit's next step straight after the last: slew to it
+        where it points elsewhere, with no setup unless the step asks, and
+        cleanup only after the last step. A step that cannot be observed
+        (not visible, constrained, or over a pass) cuts the visit."""
+        run = self._sequence
+        assert run is not None
+        step = run.sequence.steps[run.index]
+        ppt = run.parent.step_pointing(run.index)
+        timing = self._ppt_timing(ppt)
+        slew = self._new_ppt_slew(ppt, utime)
+        execution_time = self._ppt_slew_execution_time(utime)
+        execution_time = (
+            utime + ceil((execution_time - utime) / self.step_size) * self.step_size
+        )
+        self._complete_ppt_slew(slew, ppt, utime, execution_time)
+        slew_end = execution_time + slew.slewtime
+        end = slew_end + timing.total_seconds + step.duration_seconds
+        # The checks below read the observation under way.
+        self.ppt = ppt
+        reason: str | None = None
+        if end > self.uend:
+            reason = "the run ends first"
+        elif not ppt.visible(slew_end, end):
+            reason = "the step's pointing is not visible throughout"
+        elif self._slew_attitude_constraint_violation(slew, ACSMode.SLEWING):
+            reason = "the slew path is constrained"
+        elif self._check_locked_roll_window(
+            slew_end, end, (slew.endra, slew.enddec, slew.endroll)
+        ):
+            reason = "the step's attitude is constrained"
+        elif self._pass_within(execution_time, slew_end, end):
+            reason = "a ground pass falls in the step"
+        if reason is not None:
+            self.ppt = None
+            self.log.log_event(
+                utime=utime,
+                event_type="OBSERVATION",
+                description=f"Step {step.name} of {run.parent.name} not observed: {reason}",
+                obsid=run.parent.obsid,
+                acs_mode=self.acs.acsmode,
+            )
+            self._cut_sequence(utime)
+            return
+        self._apply_slew_metadata(ppt, slew, update_end=True)
+        ppt.end = end
+        ppt.set_collection_window(timing)
+        self.acs.slew_dists.append(slew.slewdist)
+        self.log.log_event(
+            utime=utime,
+            event_type="QUEUE",
+            description=f"Next step: {ppt}",
+            obsid=ppt.obsid,
+            acs_mode=self.acs.acsmode,
+        )
+        self.acs.enqueue_command(
+            ACSCommand(
+                command_type=ACSCommandType.SLEW_TO_TARGET,
+                execution_time=slew.slewstart,
+                slew=slew,
+            )
+        )
+        self._ppt_unavailable = False
+
+    def _pass_within(self, execution_time: float, slew_end: float, end: float) -> bool:
+        """Whether a ground pass is under way at the slew's start or end, or
+        begins before ``end``."""
+        passes = self.acs.passrequests
+        if passes.current_pass(execution_time) is not None:
+            return True
+        if passes.current_pass(slew_end) is not None:
+            return True
+        upcoming = passes.next_pass(slew_end)
+        return upcoming is not None and float(upcoming.begin) < end
+
     def _handle_data_management(self, utime: float, mode: ACSMode) -> None:
         """Handle data generation during observations and downlink during passes."""
         collection_start, collection_stop = self._collection_interval_for_step(
@@ -915,6 +1096,12 @@ class QueueDITL(DITLMixin, DITLStats):
             # Credit the visit at the end of what was collected, not the tick
             # start, so cadence scoring sees how recently the target was observed.
             self.ppt.record_collection(collection_stop, collection_seconds)
+            if self._sequence is not None and self.ppt.step is not None:
+                parent = self._sequence.parent
+                if self.ppt.calibration:
+                    parent.record_calibration(collection_stop, collection_seconds)
+                else:
+                    parent.record_collection(collection_stop, collection_seconds)
         # Use the mixin method to process data generation and downlink
         data_generated, data_downlinked = self._process_data_management(
             utime, mode, self.step_size, collection_seconds=collection_seconds
@@ -1189,8 +1376,7 @@ class QueueDITL(DITLMixin, DITLStats):
             assert entry.collection_end is not None
             cutoff = max(
                 entry.collection_begin,
-                end_time
-                - self.config.payload.observation_timing.post_collection_seconds,
+                end_time - self._ppt_timing(entry).post_collection_seconds,
             )
             # Future collection can be cancelled, but already executed collection
             # cannot be relabelled as cleanup to make an interruption fit.
@@ -1513,7 +1699,7 @@ class QueueDITL(DITLMixin, DITLStats):
             if entry.collection_end is None:
                 entry.end = int(slew.slewstart + slew.slewtime + entry.ss_max)
         if entry.config is not None:
-            timing = entry.config.payload.observation_timing
+            timing = entry.step_timing or entry.config.payload.observation_timing
             entry.set_collection_window(timing)
 
     @staticmethod
@@ -2378,7 +2564,12 @@ class QueueDITL(DITLMixin, DITLStats):
                 reason=f"Target {constraint_text} constrained, ending observation",
             )
         elif utime >= self.ppt.end:
-            self._terminate_ppt(utime, reason="Time window elapsed, ending observation")
+            if self._sequence is not None and self.ppt.step is not None:
+                self._advance_sequence(utime)
+            else:
+                self._terminate_ppt(
+                    utime, reason="Time window elapsed, ending observation"
+                )
         elif (
             self.ppt.deadline is not None
             and self.ppt.collected_seconds == 0
@@ -2467,6 +2658,8 @@ class QueueDITL(DITLMixin, DITLStats):
             obsid=self.ppt.obsid,
             acs_mode=self.acs.acsmode,
         )
+        if self._sequence is not None and not self._sequence.advancing:
+            self._cut_sequence(utime)
 
         # Update plan timeline with actual end time
         if len(self.plan) > 0:
@@ -2882,6 +3075,10 @@ class QueueDITL(DITLMixin, DITLStats):
         the current PPT is the only one in the queue, mark PPT as unavailable.
         """
         rejected_ppt = self.ppt
+        if self._sequence is not None and rejected_ppt is not None:
+            # The step stands in for its sequence target: reject that.
+            rejected_ppt = self._sequence.parent
+            self._sequence = None
         if rejected_ppt is None or not self._can_retry_without_current_ppt():
             self.ppt = None
             self._ppt_unavailable = True
@@ -2966,6 +3163,9 @@ class QueueDITL(DITLMixin, DITLStats):
                 )
                 if self._retry_ppt_fetch_requested:
                     continue
+                if self.ppt is None:
+                    # A sequence whose first step was not admitted never began.
+                    self._sequence = None
                 return slew
         finally:
             temporary_rejections = self._temporary_rejected_ppts or []
@@ -3084,6 +3284,12 @@ class QueueDITL(DITLMixin, DITLStats):
             roll=self.acs.roll,
             recorder_room_gb=self._recorder_room_gb(utime),
         )
+        if self.ppt is not None and isinstance(
+            getattr(self.ppt, "sequence", None), ObservationSequence
+        ):
+            # A sequence target is observed step by step: its first step is
+            # the observation admitted now, the rest follow it directly.
+            self.ppt = self._begin_sequence(self.ppt, utime)
 
         if self.ppt is not None:
             slew = self._new_ppt_slew(self.ppt, utime)
@@ -3186,7 +3392,7 @@ class QueueDITL(DITLMixin, DITLStats):
             slew_end = execution_time + slew.slewtime
             collection_start = self._earliest_science_start(
                 slew_end,
-                slew_end + self.config.payload.observation_timing.setup_seconds,
+                slew_end + self._ppt_timing(self.ppt).setup_seconds,
             )
             if self.ppt.deadline is not None and collection_start > self.ppt.deadline:
                 self.log.log_event(
@@ -3230,7 +3436,7 @@ class QueueDITL(DITLMixin, DITLStats):
             obs_val_end = min(
                 obs_start_time
                 + snapshot_min_seconds(self.ppt)
-                + self.config.payload.observation_timing.total_seconds,
+                + self._ppt_timing(self.ppt).total_seconds,
                 ephem_end,
             )
             violation = self._check_locked_roll_window(
@@ -3290,7 +3496,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 return None
 
             self._apply_slew_metadata(self.ppt, slew, update_end=True)
-            timing = self.config.payload.observation_timing
+            timing = self._ppt_timing(self.ppt)
             deadline, _ = self._next_science_deadline(
                 slew_end, current_time=utime, target_roll=slew.endroll
             )
@@ -3504,6 +3710,8 @@ class QueueDITL(DITLMixin, DITLStats):
                 self._close_last_plan_entry(utime)
             self.ppt.end = utime
             self.ppt = None
+            if self._sequence is not None:
+                self._cut_sequence(utime)
 
     def _terminate_charging_ppt(self, utime: float) -> None:
         """Terminate the current charging PPT if active."""
