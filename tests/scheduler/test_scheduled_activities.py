@@ -11,7 +11,7 @@ from conops.common import ObsType
 from conops.common.enums import ACSMode
 from conops.config import MissionConfig
 from conops.ditl import RollingHorizonDITL
-from conops.schedulers import PriorityScheduler
+from conops.schedulers import LocalSearchScheduler, PriorityScheduler, SchedulingContext
 from conops.targets import (
     ACTIVITY_OBSID,
     Plan,
@@ -82,6 +82,30 @@ def _check_execution(ditl) -> None:
         "Scheduled activity Maintenance begins",
         "Scheduled activity Maintenance ends",
     ]
+
+
+def _check_following(plan: Plan | list, config: MissionConfig) -> None:
+    """Each activity entry holds the attitude of the entry before it, with
+    no slew of its own, and IDLE can hold that attitude through it."""
+    entries = sorted(plan, key=lambda e: float(e.begin))
+    ctx = SchedulingContext(config, BEGIN, END, step_size=STEP)
+    for index, entry in enumerate(entries):
+        if entry.obstype != ObsType.ACTIVITY:
+            continue
+        assert entry.slewtime == 0 and entry.slewdist == 0
+        attitude = (float(entry.ra), float(entry.dec), float(entry.roll))
+        if index > 0:
+            before = entries[index - 1]
+            assert before.obstype != ObsType.ACTIVITY
+            assert attitude == pytest.approx(
+                (float(before.ra), float(before.dec), float(before.roll))
+            )
+        assert (
+            ctx.first_hold_violation(
+                attitude, float(entry.begin), float(entry.end), ACSMode.IDLE
+            )
+            is None
+        )
 
 
 class TestModel:
@@ -155,6 +179,68 @@ class TestPlanning:
         assert ditl.calc()
         assert ditl.validate_plan_matches_execution() == []
         _check_execution(ditl)
+
+    def test_an_activity_takes_the_attitude_of_what_precedes_it(self) -> None:
+        """The science before each activity ends at the block with no slew
+        back to a reserved attitude: the activity holds the attitude that
+        science leaves, and the science after it slews from there."""
+        config = _config(HOURS)
+        scheduler = PriorityScheduler(
+            config, _targets(config), BEGIN, END, step_size=STEP, activities=ACTIVITIES
+        )
+        plan = scheduler.schedule()
+        _check_following(plan, config)
+        entries = sorted(plan, key=lambda e: float(e.begin))
+        for activity in ACTIVITIES:
+            entry = next(e for e in entries if e.name == activity.name)
+            assert float(entry.begin) == activity.begin
+            before = entries[entries.index(entry) - 1]
+            # Science right up to the block, less a snapshot that did not fit.
+            assert float(before.end) <= activity.begin
+            assert (before.ra, before.dec) != pytest.approx(
+                scheduler.ctx.initial_attitude(scheduler.ctx.ustart)[:2]
+            )
+        replay = Plan.model_validate_json(plan.model_dump_json())
+        ditl = DITL(
+            config=config,
+            ephem=config.constraint.ephem,
+            plan=replay,
+            begin=BEGIN,
+            end=END,
+        )
+        ditl.step_size = STEP
+        assert ditl.calc()
+        assert ditl.validate_plan_matches_execution() == []
+        _check_execution(ditl)
+
+    def test_local_search_keeps_the_activities_following(self) -> None:
+        config = _config(HOURS)
+        scheduler = LocalSearchScheduler(
+            config,
+            _targets(config),
+            BEGIN,
+            END,
+            step_size=STEP,
+            activities=ACTIVITIES,
+            time_limit=5.0,
+        )
+        plan = scheduler.schedule()
+        assert [e.name for e in _activities(plan)] == [
+            "Lamp calibration",
+            "Maintenance",
+        ]
+        _check_following(plan, config)
+        replay = Plan.model_validate_json(plan.model_dump_json())
+        ditl = DITL(
+            config=config,
+            ephem=config.constraint.ephem,
+            plan=replay,
+            begin=BEGIN,
+            end=END,
+        )
+        ditl.step_size = STEP
+        assert ditl.calc()
+        assert ditl.validate_plan_matches_execution() == []
 
     def test_an_activity_outside_the_horizon_is_ignored(self) -> None:
         config = _config(HOURS)
@@ -312,3 +398,4 @@ class TestRolling:
         assert ditl.calc()
         assert ditl.validate_plan_matches_execution() == []
         _check_execution(ditl)
+        _check_following(ditl.plan, config)

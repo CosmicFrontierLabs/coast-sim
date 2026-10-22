@@ -144,9 +144,14 @@ How a plan is built
    reach safely. Pass ``include_passes=False`` to plan science only.
    **Scheduled activities** (the ``activities`` argument, a list of
    :class:`~conops.targets.ScheduledActivity`) are reserved the same way: each is a
-   fixed block from its start for its duration, in ``IDLE`` mode, holding the attitude
-   the timeline has when it starts as reserved, so no science is placed across it and
-   the slews around it are planned. A maintenance window, a calibration that needs the
+   fixed block from its start for its duration, in ``IDLE`` mode, so no science is
+   placed across it. An activity holds the attitude of whatever precedes it in the
+   plan: the science before it ends at the block with no slew back, the block holds
+   that science's attitude, and the science after it slews from there. A snapshot
+   whose attitude ``IDLE`` cannot hold through the block, or from which the block
+   after the activity cannot be reached, is not placed before it. With nothing
+   before it, the activity holds the attitude the plan starts from, or the one the
+   fixed block before it leaves. A maintenance window, a calibration that needs the
    spacecraft still or an engineering block is an activity; ``DITL`` commands the
    plan's activity entries, and the plan validator checks that no science, contact or
    charge ran during one. Dispatch takes the same list: it ends the observation under
@@ -184,7 +189,8 @@ How a plan is built
    * collection starts no earlier than the target's ``earliest_start`` and by its
      ``deadline``;
    * the next activity can still be reached on time, with its own slew and wait
-     checked the same way.
+     checked the same way; a scheduled activity next is reached by no slew, and
+     the snapshot's attitude must be one ``IDLE`` holds through it.
 
    **Moving snapshots later to make room.** A request whose snapshots straddle a time
    its target is hidden gets its next snapshot the moment the target rises. By

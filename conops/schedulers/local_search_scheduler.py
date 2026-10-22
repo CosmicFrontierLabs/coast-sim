@@ -389,7 +389,9 @@ class LocalSearchScheduler(PriorityScheduler):
         for index in range(state.cursor, len(timeline) + 1):
             pred = timeline[index - 1] if index > 0 else self._origin
             succ = timeline[index] if index < len(timeline) else None
-            fit = self._fit_in_gap(request, pred, succ, not_before)
+            fit = self._fit_in_gap(
+                request, pred, succ, not_before, beyond=timeline[index + 1 :]
+            )
             if fit is None:
                 continue
             # Only where the battery stays above its planning level, charging
@@ -409,15 +411,13 @@ class LocalSearchScheduler(PriorityScheduler):
             if not self._ledger.fits_all(state.volumes, additions):
                 continue
 
-            # Put the snapshot in place, reconnecting the fixed block after it.
+            # Put the snapshot in place, reconnecting the fixed block after
+            # it, with the chain it leads where it follows.
             self._apply_slew(block, slew)
             placed = [*timeline[:index], block]
             if succ is not None:
                 assert succ_slew is not None
-                moved = self._copy_block(succ)
-                self._apply_slew(moved, succ_slew)
-                placed.append(moved)
-                placed.extend(timeline[index + 1 :])
+                placed.extend(self._reconnected(block, timeline[index:], succ_slew))
 
             # Freeze the value the snapshot has here onto its entry, as the
             # priority-first scheduler does: a Target of Opportunity must beat

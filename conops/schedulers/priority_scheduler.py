@@ -67,6 +67,11 @@ class _Block(BaseModel):
     step_slews: list[Slew | None] = Field(default_factory=list)
     """The slew into each step: the block's own for the first, the slew
     between pointings for a later step, None where it stays put."""
+    follows: bool = False
+    """Whether the block holds the attitude of whatever precedes it, as a
+    scheduled activity does: it is reached by no slew, its attitude is set
+    again whenever the block before it changes, and the block after it is
+    then re-slewed from it."""
 
     @property
     def is_visit(self) -> bool:
@@ -1021,9 +1026,10 @@ class PriorityScheduler:
 
         Starting late keeps any wait at ``pred``'s attitude rather than at the
         block's. Returns None if no start from ``earliest`` reaches the block by
-        its ready time with every check passing.
+        its ready time with every check passing. A block that follows is
+        reached by a slew of no length to the attitude it is at, which it
+        must then hold through its length.
         """
-        target = attitude_in if attitude_in is not None else block.attitude_in
         if block.is_pass:
             obstype = ObsType.GSP
         elif block.is_charge:
@@ -1039,6 +1045,13 @@ class PriorityScheduler:
             if start > idle_limit:
                 start -= self.ctx.step_size
                 continue
+            if attitude_in is not None:
+                target = attitude_in
+            elif block.follows:
+                # The block takes the attitude it is at: no slew.
+                target = self._start_attitude(pred, start)
+            else:
+                target = block.attitude_in
             slew = self.ctx.slew(
                 self._start_attitude(pred, start),
                 target,
@@ -1077,8 +1090,11 @@ class PriorityScheduler:
                 ACSMode.IDLE,
             )
         elif block.is_charge or block.is_activity:
+            # A following block holds the attitude it is given through its
+            # length too; a reserved one was checked when it was placed.
+            until = block.end if block.follows else block.ready
             wait_violation = self.ctx.first_hold_violation(
-                target, slew.slewend, self.ctx.ceil_step(block.ready), ACSMode.IDLE
+                target, slew.slewend, self.ctx.ceil_step(until), ACSMode.IDLE
             )
         else:
             # ACS only flies a science slew the target is visible for.
@@ -1109,9 +1125,11 @@ class PriorityScheduler:
             return False
         succ_slew = None
         if succ is not None:
-            succ_slew = self._connect(block, succ, self.ctx.ceil_step(block.end))
-            if succ_slew is None:
+            reached = self._followed(block, slew) if block.follows else block
+            chain = self._connect_chain(reached, self.timeline[index:])
+            if chain is None:
                 return False
+            succ_slew = chain[0][1]
         self._commit(index, block, slew, succ, succ_slew)
         return True
 
@@ -1136,11 +1154,14 @@ class PriorityScheduler:
                 )
             self._apply_slew(succ, succ_slew)
         self.timeline.insert(index, block)
+        if block.follows or (succ is not None and succ.follows):
+            self._reconnect_following(index)
         self._energy = self._charged_energy(self.timeline)
 
     @staticmethod
     def _apply_slew(block: _Block, slew: Slew) -> None:
-        """Record a block's incoming slew on the block and its plan entry."""
+        """Record a block's incoming slew on the block and its plan entry; a
+        following block takes the attitude the slew ends at."""
         block.slew = slew
         entries = [block.entry, *block.steps[:1]]
         for entry in entries:
@@ -1149,6 +1170,94 @@ class PriorityScheduler:
             entry.slewdist = float(slew.slewdist)
         if block.step_slews:
             block.step_slews[0] = slew
+        if block.follows:
+            attitude = (float(slew.endra), float(slew.enddec), float(slew.endroll))
+            block.attitude_in = block.attitude_out = attitude
+            block.entry.ra, block.entry.dec, block.entry.roll = attitude
+
+    @staticmethod
+    def _followed(block: _Block, slew: Slew) -> _Block:
+        """A stand-in for a following ``block`` reached by ``slew``, at the
+        attitude the slew ends at, for connecting the block after it."""
+        attitude = (float(slew.endra), float(slew.enddec), float(slew.endroll))
+        return block.model_copy(
+            update={"attitude_in": attitude, "attitude_out": attitude, "slew": slew}
+        )
+
+    def _connect_chain(
+        self, pred: _Block | None, after: Sequence[_Block]
+    ) -> list[tuple[_Block, Slew]] | None:
+        """The slews into the first of ``after`` from ``pred`` and, while the
+        block reached follows, into the block after it, which the following
+        block's new attitude must reach; None if any cannot be found."""
+        chain: list[tuple[_Block, Slew]] = []
+        for block in after:
+            slew = self._connect(pred, block, self._earliest_start(pred))
+            if slew is None:
+                return None
+            chain.append((block, slew))
+            if not block.follows:
+                break
+            pred = self._followed(block, slew)
+        return chain
+
+    @staticmethod
+    def _chain_led(beyond: Sequence[_Block]) -> list[_Block]:
+        """The blocks a following block's attitude reaches: those after it
+        up to and including the first that does not follow."""
+        led: list[_Block] = []
+        for block in beyond:
+            led.append(block)
+            if not block.follows:
+                break
+        return led
+
+    def _reconnected(
+        self, pred: _Block | None, after: Sequence[_Block], first: Slew | None
+    ) -> list[_Block]:
+        """The blocks ``after`` ``pred`` with the slews a following chain
+        needs, on copies: the first takes ``first``, each following block
+        the attitude it is given, and the block after a following one a
+        slew from it; the rest are as they are."""
+        if not after:
+            return []
+        result: list[_Block] = []
+        index = 0
+        for index, block in enumerate(after):
+            if index == 0:
+                slew = first
+                if slew is None and block.follows:
+                    slew = self._connect(pred, block, self._earliest_start(pred))
+            else:
+                slew = self._connect(pred, block, self._earliest_start(pred))
+            if slew is None and index > 0:
+                raise RuntimeError(
+                    f"The block after {pred.entry.obsid if pred else 'the start'} "
+                    "cannot be reached from the attitude it follows"
+                )
+            copy = block.model_copy(update={"entry": block.entry.model_copy()})
+            if slew is not None:
+                self._apply_slew(copy, slew)
+            result.append(copy)
+            if not copy.follows:
+                break
+            pred = copy
+        result.extend(after[index + 1 :])
+        return result
+
+    def _reconnect_following(self, index: int) -> None:
+        """Re-derive, in place, the slews into the blocks after timeline
+        position ``index`` while the block before each follows."""
+        while index + 1 < len(self.timeline) and self.timeline[index].follows:
+            pred, block = self.timeline[index], self.timeline[index + 1]
+            slew = self._connect(pred, block, self._earliest_start(pred))
+            if slew is None:
+                raise RuntimeError(
+                    f"Block {block.entry.obsid} cannot be reached from the "
+                    f"attitude activity {pred.entry.obsid} follows"
+                )
+            self._apply_slew(block, slew)
+            index += 1
 
     # ── Locked entries and passes ────────────────────────────────────────
 
@@ -1212,10 +1321,11 @@ class PriorityScheduler:
     def _place_activity(self, activity: ScheduledActivity) -> None:
         """Reserve an activity as a fixed block in IDLE mode.
 
-        It holds the attitude the timeline has when it starts, as reserved:
-        the block before it, or the start attitude. An attitude IDLE cannot
-        hold for the activity's length is not used; the plan then leaves
-        the activity out and says so.
+        It holds the attitude of whatever precedes it: as reserved, the
+        block before it or the start attitude, and later the science placed
+        before it (see :attr:`_Block.follows`). An attitude IDLE cannot hold
+        for the activity's length is not used; the plan then leaves the
+        activity out and says so.
         """
         before = [b for b in self.timeline if b.end <= activity.begin]
         attitude = (
@@ -1245,6 +1355,7 @@ class PriorityScheduler:
             attitude_out=attitude,
             ready=activity.begin,
             end=activity.end,
+            follows=True,
         )
         if not self._insert_fixed(block):
             self._log(
@@ -1366,8 +1477,9 @@ class PriorityScheduler:
             # that needs no attitude downlinks in whatever mode ACS is in)
             # can fall within the gap, so the gap is tried again after it.
             after = not_before
+            beyond = self.timeline[index + 1 :]
             while True:
-                candidate = self._fit_in_gap(request, pred, succ, after)
+                candidate = self._fit_in_gap(request, pred, succ, after, beyond=beyond)
                 if candidate is None:
                     full = False
                     break
@@ -1500,7 +1612,9 @@ class PriorityScheduler:
             later = min(later, latest)
             if later <= addition.begin:
                 return None
-            retry = self._fit_in_gap(request, pred, succ, later)
+            retry = self._fit_in_gap(
+                request, pred, succ, later, beyond=timeline[index + 1 :]
+            )
             if retry is None:
                 return None
             candidate = retry
@@ -1515,14 +1629,11 @@ class PriorityScheduler:
         succ_slew: Slew | None,
     ) -> list[_Block]:
         """The timeline with ``block`` at ``index`` and its successor re-slewed,
-        on copies, so nothing is committed."""
+        with the chain a following successor leads, on copies, so nothing is
+        committed."""
         trial = [*timeline[:index], block]
         if succ is not None:
-            moved = succ.model_copy(update={"entry": succ.entry.model_copy()})
-            if succ_slew is not None:
-                self._apply_slew(moved, succ_slew)
-            trial.append(moved)
-            trial.extend(timeline[index + 1 :])
+            trial.extend(self._reconnected(block, timeline[index:], succ_slew))
         return trial
 
     def _within_level(self, energy: Sequence[Additions]) -> bool:
@@ -1630,6 +1741,7 @@ class PriorityScheduler:
                 if old_request.cadence is not None
                 else None,
                 until=None if last else until,
+                beyond=self.timeline[end + 1 :] if last else (),
             )
             if moved_fit is None:
                 return None
@@ -1655,11 +1767,7 @@ class PriorityScheduler:
             return None
         trial = [*self.timeline[:index], new_block, *(m.new_block for m in moves)]
         if after is not None:
-            moved_after = after.model_copy(update={"entry": after.entry.model_copy()})
-            if after_slew is not None:
-                self._apply_slew(moved_after, after_slew)
-            trial.append(moved_after)
-            trial.extend(self.timeline[end + 1 :])
+            trial.extend(self._reconnected(previous, self.timeline[end:], after_slew))
         if not self._within_level(self._charged_energy(trial)):
             return None
         self._volumes = self._ledger.add_all(self._volumes, additions)
@@ -1672,6 +1780,8 @@ class PriorityScheduler:
             self._apply_slew(after, after_slew)
 
         self.timeline[index:end] = [new_block] + [move.new_block for move in moves]
+        if after is not None and after.follows:
+            self._reconnect_following(index + 1 + len(moves))
         self._energy = self._charged_energy(self.timeline)
 
         for move in moves:
@@ -1715,6 +1825,14 @@ class PriorityScheduler:
         lost_value = sum(move.lost * move.request.steady_value for move in cut)
         return gained * request.steady_value > lost_value
 
+    def _successor_slew(
+        self, fitted: _Block, succ: _Block, beyond: Sequence[_Block]
+    ) -> Slew | None:
+        """The slew from a fitted snapshot into its successor, found with
+        the chain the successor leads if it follows; None if unreachable."""
+        chain = self._connect_chain(fitted, [succ, *beyond])
+        return chain[0][1] if chain is not None else None
+
     def _fit_in_gap(
         self,
         request: _Request,
@@ -1722,12 +1840,15 @@ class PriorityScheduler:
         succ: _Block | None,
         not_before: float | None = None,
         until: float | None = None,
+        beyond: Sequence[_Block] = (),
     ) -> tuple[_Block, Slew, Slew | None] | None:
         """Find the earliest snapshot of ``request`` between ``pred`` and ``succ``.
 
         The slew starts no earlier than ``not_before``, if given. Without a
         ``succ``, the snapshot ends by ``until``, if given, rather than the end
-        of the horizon.
+        of the horizon. ``beyond`` holds the blocks after ``succ``: a
+        successor that follows takes the snapshot's attitude, so the block
+        after it must be reachable from there too.
         """
         self._successor_blocked = False
         target = request.target
@@ -1828,7 +1949,7 @@ class PriorityScheduler:
 
             latest_end = min(window[1], horizon_end)
             succ_slewtime = 0.0
-            if succ is not None:
+            if succ is not None and not succ.follows:
                 succ_slewtime = self.ctx.slew(
                     departure, succ.attitude_in, collection_begin
                 ).slewtime
@@ -1856,9 +1977,7 @@ class PriorityScheduler:
                 if fitted is not None:
                     succ_slew = None
                     if succ is not None:
-                        succ_slew = self._connect(
-                            fitted, succ, self.ctx.ceil_step(fitted.end)
-                        )
+                        succ_slew = self._successor_slew(fitted, succ, beyond)
                     if succ is None or succ_slew is not None:
                         return fitted, slew, succ_slew
                     unreachable += 1
@@ -1918,9 +2037,7 @@ class PriorityScheduler:
             if fitted is not None:
                 succ_slew = None
                 if succ is not None:
-                    succ_slew = self._connect(
-                        fitted, succ, self.ctx.ceil_step(fitted.end)
-                    )
+                    succ_slew = self._successor_slew(fitted, succ, beyond)
                 if succ is None or succ_slew is not None:
                     return fitted, slew, succ_slew
                 unreachable += 1
@@ -2219,21 +2336,38 @@ class PriorityScheduler:
         # attitude depends on it. Idle time holds the drive, so only the
         # blocks move it.
         angles = self._battery.drive_start
+        stale = False
+        """Whether the block before the gap follows and was given a new
+        attitude here, so the block after it must be re-slewed from it."""
         for index in range(len(timeline) + 1):
             pred = timeline[index - 1] if index > 0 else self._origin
+            if stale:
+                # The block as it is here, on its copy where nothing is committed.
+                pred = charged[-1]
             succ = timeline[index] if index < len(timeline) else None
-            charges, succ_slew = self._gap_charges(pred, succ, angles)
+            charges, succ_slew = self._gap_charges(
+                pred, succ, angles, timeline[index + 1 :]
+            )
             charged.extend(charges)
             for charge in charges:
                 angles = self._angles_after(charge, angles)
             if succ is None:
                 continue
-            if charges and succ_slew is not None:
+            if not charges and stale:
+                assert pred is not None
+                succ_slew = self._connect(pred, succ, self._earliest_start(pred))
+                if succ_slew is None:
+                    raise RuntimeError(
+                        f"Block {succ.entry.obsid} cannot be reached from the "
+                        f"attitude activity {pred.entry.obsid} follows"
+                    )
+            if (charges or stale) and succ_slew is not None:
                 if commit:
                     self._apply_slew(succ, succ_slew)
                 else:
                     succ = succ.model_copy(update={"entry": succ.entry.model_copy()})
                     self._apply_slew(succ, succ_slew)
+            stale = bool(charges or stale) and succ.follows
             charged.append(succ)
             angles = self._angles_after(succ, angles)
         return charged
@@ -2245,7 +2379,11 @@ class PriorityScheduler:
         return self._battery.driven_deltas(self._block_addition(block), angles)[1]
 
     def _gap_charges(
-        self, pred: _Block | None, succ: _Block | None, angles: Angles
+        self,
+        pred: _Block | None,
+        succ: _Block | None,
+        angles: Angles,
+        beyond: Sequence[_Block] = (),
     ) -> tuple[list[_Block], Slew | None]:
         """The charges that fit between ``pred`` and ``succ``, and the slew that
         then takes ``succ`` from the last of them.
@@ -2256,10 +2394,18 @@ class PriorityScheduler:
         each charge leaves it after). The last must leave ``succ`` reachable
         from its charging attitude; where it does not, it is shortened, and
         failing that dropped and the one before it tried, until the chain
-        connects. Keyed on what the gap depends on, since the same gap is
-        seen again and again as placements are tried around it.
+        connects. A ``succ`` that follows takes the charging attitude, so the
+        first block it leads to in ``beyond`` must be reachable from there as
+        well. Keyed on what the gap depends on, since the same gap is seen
+        again and again as placements are tried around it.
         """
         ledger = self._battery
+        led: tuple[tuple[int, float, Attitude], ...] = ()
+        if succ is not None and succ.follows:
+            led = tuple(
+                (id(block), block.ready, block.attitude_in)
+                for block in self._chain_led(beyond)
+            )
         key = (
             id(pred) if pred is not None else None,
             pred.end if pred is not None else None,
@@ -2267,6 +2413,7 @@ class PriorityScheduler:
             id(succ) if succ is not None else None,
             succ.ready if succ is not None else None,
             succ.attitude_in if succ is not None else None,
+            led,
             tuple(None if a is None else round(a, 3) for a in angles)
             if ledger.driven
             else (),
@@ -2298,7 +2445,7 @@ class PriorityScheduler:
         succ_slew: Slew | None = None
         while chain and succ is not None:
             block, span_begin, span_end = chain[-1]
-            succ_slew = self._connect(block, succ, self._earliest_start(block))
+            succ_slew = self._successor_slew(block, succ, beyond)
             if succ_slew is not None:
                 break
             chain.pop()
@@ -2309,6 +2456,7 @@ class PriorityScheduler:
                 block.attitude_in,
                 max(span_begin, self._earliest_start(before)),
                 span_end,
+                beyond,
             )
             if shorter is not None:
                 chain.append((shorter[0], span_begin, span_end))
@@ -2325,6 +2473,7 @@ class PriorityScheduler:
         attitude: Attitude,
         span_begin: float,
         span_end: float,
+        beyond: Sequence[_Block] = (),
     ) -> tuple[_Block, Slew | None] | None:
         """Build a charge in a sunlit idle span, or None if none fits.
 
@@ -2355,7 +2504,7 @@ class PriorityScheduler:
             block = self._charge_entry(attitude, slew, hold_begin, hold_end)
             if succ is None:
                 return block, None
-            succ_slew = self._connect(block, succ, self.ctx.ceil_step(hold_end))
+            succ_slew = self._successor_slew(block, succ, beyond)
             if succ_slew is not None:
                 return block, succ_slew
             hold_end -= self.ctx.step_size
