@@ -103,7 +103,8 @@ is observed, in both DITLs and in the battery ledger the planners keep, so a
 request that uses one instrument of several costs the battery less than one that
 uses them all (see the instrument modes under :doc:`configuration`). The modes are
 checked against the payload when the target is made, and the plan records them on
-each entry.
+each entry. A Target of Opportunity names its modes with the ``instrument_modes``
+argument of ``submit_too``.
 
 A target is observed at the power-optimal instrument roll unless it asks for
 another: ``roll_offset_deg`` is added to the power-optimal roll, and ``roll_deg`` is
@@ -137,7 +138,9 @@ How a plan is built
    charge ran during one. Dispatch takes the same list: it ends the observation under
    way when an activity begins, marking it interrupted so it is revisited, holds the
    attitude it has in ``IDLE`` until the activity ends, and starts no observation that
-   would run into the next activity.
+   would run into the next activity. An activity's ``instrument_modes`` names what it
+   uses, such as a calibration lamp's instrument, and its draw is counted during the
+   hold; an activity naming none draws every instrument's idle power.
 3. **Requests** are sorted by merit value at the start of the horizon
    (base merit plus the urgency, cadence and completion-deficit terms; see
    :doc:`configuration`). Each request is split into snapshots of up to ``ss_max``

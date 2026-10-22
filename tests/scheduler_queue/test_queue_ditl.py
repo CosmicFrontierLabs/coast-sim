@@ -5967,6 +5967,7 @@ class TestTOOFunctionality:
             exptime: int,
             deadline: float | None = None,
             science_data: dict[str, ScienceData] | None = None,
+            instrument_modes: dict[str, str] | None = None,
         ) -> Pointing:
             target = Pointing(
                 config=queue_ditl.config,
@@ -6023,6 +6024,7 @@ class TestTOOFunctionality:
             exptime=3600,
             deadline=5000.0,
             science_data={},
+            instrument_modes={},
         )
 
     def test_queued_too_carries_its_science_data(

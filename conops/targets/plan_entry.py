@@ -534,14 +534,14 @@ class PlanEntry(BaseModel):
         )
 
     def effective_instrument_modes(self) -> dict[str, str]:
-        """The mode each instrument is in during this observation, by name:
-        as named, else the named instrument in ``SCIENCE``, else every
-        instrument with modes in ``SCIENCE``. Instruments left out idle."""
+        """The mode each instrument is in during this entry, by name: as
+        named; else, for a science observation, every instrument with modes
+        in ``SCIENCE``; else none. Instruments left out idle. The instrument
+        an observation names for its pointing is not a restriction: a
+        request that uses some instruments only names them."""
         if self.instrument_modes:
             return dict(self.instrument_modes)
-        if self.instrument_name is not None:
-            return {self.instrument_name: SCIENCE_MODE}
-        if self.config is None:
+        if self.config is None or self.obstype not in self._STATIC_TARGET_OBSTYPES:
             return {}
         with_modes = getattr(self.config.payload, "instruments_with_modes", None)
         names = with_modes() if callable(with_modes) else None

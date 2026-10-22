@@ -216,6 +216,7 @@ class RollingHorizonDITL(DITL):
         deadline: float | datetime | None = None,
         science_data: Mapping[str, ScienceData] | None = None,
         interrupt: bool = True,
+        instrument_modes: Mapping[str, str] | None = None,
     ) -> TOORequest:
         """Submit a Target of Opportunity that joins the target pool when active.
 
@@ -235,7 +236,11 @@ class RollingHorizonDITL(DITL):
             interrupt: Whether it may cut short the observation in progress.
                 If False, a rapid replan for it starts it once that
                 observation ends.
+            instrument_modes: The instruments observing the ToO uses and the
+                mode each is in, by name; None: every instrument with modes,
+                in SCIENCE.
         """
+        self.config.payload.check_instrument_modes(dict(instrument_modes or {}))
         too = TOORequest(
             obsid=obsid,
             ra=ra,
@@ -247,6 +252,7 @@ class RollingHorizonDITL(DITL):
             deadline=unixtime_from(deadline) if deadline is not None else None,
             science_data=dict(science_data or {}),
             interrupt=interrupt,
+            instrument_modes=dict(instrument_modes or {}),
         )
         self.too_register.append(too)
         return too
@@ -332,6 +338,7 @@ class RollingHorizonDITL(DITL):
                 ss_max=too.exptime,
                 deadline=too.deadline,
                 science_data=too.science_data,
+                instrument_modes=dict(too.instrument_modes),
             )
             target.exptime = too.exptime
             self._too_targets[id(too)] = target
