@@ -404,7 +404,7 @@ class RollingHorizonDITL(DITL):
     def _plan_start(self, plan_time: float) -> float:
         """Return when a plan built at ``plan_time`` could take over."""
         cutoff = self._cutoff(plan_time)
-        committed = [e for e in self.plan.entries if float(e.begin) < cutoff]
+        committed, _ = self._committed_at(cutoff)
         start_state = self._start_state(committed, plan_time, cutoff)
         return start_state.time if start_state is not None else cutoff
 
@@ -416,6 +416,53 @@ class RollingHorizonDITL(DITL):
     def _cutoff(self, utime: float) -> float:
         """Return the first step a new plan can change."""
         return self._ceil_step(utime + self.commit_lead_time.total_seconds())
+
+    def _committed_at(self, cutoff: float) -> tuple[list[PlanEntry], list[PlanEntry]]:
+        """The plan's entries a new plan keeps, and those it may drop.
+
+        An entry beginning before ``cutoff`` is kept. So are the remaining
+        steps of a sequence visit one of them belongs to: a visit is taken
+        whole, with nothing inserted inside it, so a replan does not cut it
+        after its current step and leave a visit no later plan redoes. The
+        steps of a visit are consecutive entries of its target, from the
+        sequence's first step to the step before the next first step.
+        """
+        entries = sorted(self.plan.entries, key=lambda e: float(e.begin))
+        committed: list[PlanEntry] = []
+        dropped: list[PlanEntry] = []
+        visit: tuple[int, str] | None = None
+        """The target and first step name of a visit still to finish."""
+        for entry in entries:
+            step = entry.step
+            if float(entry.begin) < cutoff:
+                committed.append(entry)
+                visit = None
+                if step is not None:
+                    first = self._first_step_name(int(entry.obsid))
+                    if first is not None:
+                        visit = (int(entry.obsid), first)
+                continue
+            if (
+                visit is not None
+                and step is not None
+                and int(entry.obsid) == visit[0]
+                and step != visit[1]
+            ):
+                # The rest of the visit under way at the cutoff.
+                committed.append(entry)
+                continue
+            visit = None
+            dropped.append(entry)
+        return committed, dropped
+
+    def _first_step_name(self, obsid: int) -> str | None:
+        """The name of the first step of the sequence of target ``obsid``,
+        or None for a target without a sequence."""
+        for target in self.targets:
+            if int(target.obsid) == obsid:
+                sequence = target.sequence
+                return sequence.steps[0].name if sequence is not None else None
+        return None
 
     def _replan(
         self, utime: float, reason: ReplanReason, triggers: Sequence[TOORequest]
@@ -549,8 +596,7 @@ class RollingHorizonDITL(DITL):
         committed and dropped entries, the new entries and how many targets
         could not be placed.
         """
-        committed = [e for e in self.plan.entries if float(e.begin) < cutoff]
-        dropped = [e for e in self.plan.entries if float(e.begin) >= cutoff]
+        committed, dropped = self._committed_at(cutoff)
         leading = [*committed, *pinned]
         start_state = self._start_state(leading, utime, cutoff)
         start = start_state.time if start_state is not None else cutoff
@@ -947,11 +993,14 @@ class RollingHorizonDITL(DITL):
             self._entry_passes.pop(entry_id, None)
         self.plan.entries = [*committed, *new_entries]
 
+        committed_ids = {id(e) for e in committed}
         commanded = self._entries_to_command[: self._next_entry_index]
+        # The committed entries still to command: those before the cutoff
+        # and the rest of a visit under way at it.
         pending = [
             e
             for e in self._entries_to_command[self._next_entry_index :]
-            if id(e) not in dropped_ids and float(e.begin) < cutoff
+            if id(e) in committed_ids
         ]
         self._entries_to_command = [
             *commanded,

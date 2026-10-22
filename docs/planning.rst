@@ -653,9 +653,10 @@ rebuilds it as the simulation runs:
 1. **Initial plan.** At the start, a plan is built for the next ``horizon``.
 2. **Scheduled replans.** Every ``replan_interval``, the plan is rebuilt. Everything
    already commanded, or due to start within ``commit_lead_time`` (the time a new
-   plan takes to reach the spacecraft), is kept. The rest is planned again from
-   where the committed activities leave the spacecraft, using each target's
-   remaining exposure.
+   plan takes to reach the spacecraft), is kept, and so are the remaining steps
+   of a sequence visit under way at that cutoff, since a visit is taken whole. The
+   rest is planned again from where the committed activities leave the
+   spacecraft, using each target's remaining exposure.
 3. **Targets of Opportunity.** A ToO submitted with
    :meth:`~conops.ditl.rolling_ditl.RollingHorizonDITL.submit_too` joins the target
    pool when it becomes active and goes into the next scheduled plan. If its
