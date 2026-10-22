@@ -423,11 +423,14 @@ def quaternion_attitude_distance(
     dec2: float,
     roll2: float,
 ) -> float:
-    """Return the shortest angular distance between two attitudes in degrees."""
+    """Return the shortest angular distance between two attitudes in degrees.
+
+    Identical attitudes are exactly zero apart. See :func:`quaternion_distances`,
+    which this shares its arithmetic with.
+    """
     q1 = attitude_to_quat(ra1, dec1, roll1)
     q2 = attitude_to_quat(ra2, dec2, roll2)
-    dot = float(np.clip(abs(np.dot(q1, q2)), 0.0, 1.0))
-    return float(np.rad2deg(2.0 * np.arccos(dot)))
+    return float(quaternion_distances(q1[None, :], q2[None, :])[0, 0])
 
 
 def quaternion_attitude_delta(
@@ -514,13 +517,37 @@ def quaternion_deltas(
 def quaternion_distances(
     q1: npt.NDArray[np.float64], q2: npt.NDArray[np.float64]
 ) -> npt.NDArray[np.float64]:
-    """:func:`quaternion_attitude_distance` for every pair of quaternions.
+    """The shortest angular distance between every pair of unit quaternions.
 
     ``q1`` is ``(P, 4)`` and ``q2`` is ``(N, 4)``; the result is ``(P, N)``
-    degrees.
+    degrees. For unit quaternions a quarter of the rotation angle has
+    ``|q1 - q2|`` and ``|q1 + q2|`` as the sides of its right triangle, so the
+    angle is ``4 * atan2(|q1 - q2|, |q1 + q2|)`` with the shorter side on top,
+    which also covers ``q2`` and ``-q2`` being the same rotation. Unlike
+    ``2 * acos(|q1 . q2|)`` this does not turn rounding in a dot product that
+    is within an ulp of 1 into millionths of a degree: identical quaternions
+    are exactly zero apart, and a tiny difference stays tiny. The arithmetic is
+    elementwise and left to right, the same for any batch shape.
     """
-    dot = np.clip(np.abs(np.asarray(q1) @ np.asarray(q2).T), 0.0, 1.0)
-    return np.rad2deg(2.0 * np.arccos(dot))
+    a = np.asarray(q1, dtype=np.float64)[:, None, :]
+    b = np.asarray(q2, dtype=np.float64)[None, :, :]
+    d = a - b
+    s = a + b
+    apart = np.sqrt(
+        d[..., 0] * d[..., 0]
+        + d[..., 1] * d[..., 1]
+        + d[..., 2] * d[..., 2]
+        + d[..., 3] * d[..., 3]
+    )
+    together = np.sqrt(
+        s[..., 0] * s[..., 0]
+        + s[..., 1] * s[..., 1]
+        + s[..., 2] * s[..., 2]
+        + s[..., 3] * s[..., 3]
+    )
+    shorter = np.minimum(apart, together)
+    longer = np.maximum(apart, together)
+    return np.rad2deg(4.0 * np.arctan2(shorter, longer))
 
 
 def _quat_mul(

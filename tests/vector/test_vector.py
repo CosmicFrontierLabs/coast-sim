@@ -57,19 +57,48 @@ class TestQuaternionPairs:
         assert angles[3, 4] == 0.0
         assert not axes[3, 4].any()
 
-    def test_distances_match_the_scalar_helper(self) -> None:
-        first = self._attitudes(6, 3)
-        second = self._attitudes(3, 4)
+    def test_distances_equal_the_scalar_helper_exactly(self) -> None:
+        """The path search rounds distances to nine decimals to compare them,
+        so the batch and scalar helpers must agree exactly, not to an ulp."""
+        first = self._attitudes(50, 3)
+        second = self._attitudes(40, 4)
+        for i, j in [(0, 0), (7, 39), (49, 20), (23, 23)]:
+            second[j] = first[i]
         q1 = np.array([attitude_to_quat(*a) for a in first])
         q2 = np.array([attitude_to_quat(*b) for b in second])
 
         distances = quaternion_distances(q1, q2)
 
-        assert distances.shape == (6, 3)
+        assert distances.shape == (50, 40)
         for i, a in enumerate(first):
             for j, b in enumerate(second):
-                expected = quaternion_attitude_distance(*a, *b)
-                assert distances[i, j] == pytest.approx(expected, abs=1e-9)
+                assert distances[i, j] == quaternion_attitude_distance(*a, *b)
+
+    @pytest.mark.parametrize("attitude", [(0.0, 0.0, 0.0), (10.0, -20.0, 30.0)])
+    def test_identical_attitudes_in_a_batch_are_exactly_zero_apart(
+        self, attitude: tuple[float, float, float]
+    ) -> None:
+        """A dot product within an ulp of 1 must not become a millionth of a
+        degree, which the path search would count as motion."""
+        others = self._attitudes(60, 5)
+        others[17] = attitude
+        q = attitude_to_quat(*attitude)[None, :]
+        batch = np.array([attitude_to_quat(*b) for b in others])
+
+        assert quaternion_distances(q, batch)[0, 17] == 0.0
+        assert quaternion_distances(batch, q)[17, 0] == 0.0
+        assert quaternion_distances(batch, batch).diagonal().tolist() == [0.0] * 60
+        assert quaternion_attitude_distance(*attitude, *attitude) == 0.0
+
+    def test_distances_are_the_rotation_angle(self) -> None:
+        """The stable formula gives the same angle as the delta's, to rounding."""
+        first = self._attitudes(20, 6)
+        second = self._attitudes(20, 7)
+        for a, b in zip(first, second):
+            angle, _ = quaternion_attitude_delta(*a, *b)
+            assert quaternion_attitude_distance(*a, *b) == pytest.approx(
+                angle, abs=1e-9
+            )
 
 
 class TestRadec2vec:
