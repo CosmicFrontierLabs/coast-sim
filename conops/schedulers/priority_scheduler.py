@@ -1776,14 +1776,19 @@ class PriorityScheduler:
         unreachable = 0
         search_end = min(idle_limit, gap_end)
 
+        # A visit arrives at its first step, which may point elsewhere than
+        # the target and ask for its own roll.
+        arrival_pointing = (
+            target.step_pointing(0) if target.sequence is not None else target
+        )
         while start <= search_end:
-            if not self.ctx.roll_allowed(target, start):
+            if not self.ctx.roll_allowed(arrival_pointing, start):
                 # The roll the target asks for is beyond the ACS limit from
                 # the power-optimal roll now; it may be within it later.
                 start += self.ctx.step_size
                 continue
-            instrument_roll = self.ctx.instrument_roll(target, start)
-            attitude = target.target_body_attitude(instrument_roll)
+            instrument_roll = self.ctx.instrument_roll(arrival_pointing, start)
+            attitude = arrival_pointing.target_body_attitude(instrument_roll)
             slew = self.ctx.slew(
                 self._start_attitude(pred, start),
                 attitude,
@@ -2035,24 +2040,31 @@ class PriorityScheduler:
         cursor = collection_begin
         previous = attitude
         previous_roll = instrument_roll
+        limit = self.config.spacecraft_bus.attitude_control.max_roll_from_optimum_deg
+        first_pointing = target.step_pointing(0)
+        previous_optimum = self.ctx.optimum_roll(first_pointing, float(slew.slewstart))
         step_slew: Slew | None = slew
         for index, step in enumerate(sequence.steps):
             pointing = target.step_pointing(index)
             if index > 0:
-                # A step at the pointing of the one before stays put, at the
-                # attitude already held, though ACS still settles as it does
-                # for any commanded slew; one elsewhere slews to its own.
+                # A step at the pointing of the one before keeps the
+                # power-optimal roll found there, so its own roll offset is
+                # a roll-only slew and no offset leaves it where it is,
+                # though ACS still settles as for any commanded slew; one
+                # elsewhere slews to its own attitude.
                 same_pointing = sequence.pointing_of(
                     index, target.ra, target.dec
                 ) == sequence.pointing_of(index - 1, target.ra, target.dec)
-                step_roll = (
-                    previous_roll
-                    if same_pointing
-                    else self.ctx.instrument_roll(pointing, cursor)
-                )
+                if not same_pointing:
+                    previous_optimum = self.ctx.optimum_roll(pointing, cursor)
+                requested = pointing.requested_roll(previous_optimum, limit)
+                if requested is None:
+                    # The step's roll is beyond the ACS limit now.
+                    return None
+                step_roll = float(requested)
                 step_attitude = (
                     previous
-                    if same_pointing
+                    if same_pointing and abs(step_roll - previous_roll) < 1e-9
                     else pointing.target_body_attitude(step_roll)
                 )
                 # Commands execute on simulation steps: the slew starts on the
