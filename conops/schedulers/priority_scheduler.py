@@ -1999,6 +1999,9 @@ class PriorityScheduler:
         elsewhere, the setup budget where the step asks, then its duration;
         cleanup and handoff after the last. Each step must be visible and
         allowed throughout, and each slew between steps allowed, else None.
+        A visit that runs past the end of the horizon is None too, checked
+        before anything is sampled past it: the horizon can end with the
+        ephemeris, which has nothing beyond.
         """
         target = request.target
         assert target.sequence is not None
@@ -2041,6 +2044,8 @@ class PriorityScheduler:
                 step_slew = self.ctx.slew(
                     previous, step_attitude, slew_begin, obsid=target.obsid
                 )
+                if float(step_slew.slewend) > self.ctx.uend:
+                    return None
                 if self.ctx.first_slew_violation(step_slew, ACSMode.SLEWING):
                     return None
                 cursor = float(step_slew.slewend)
@@ -2055,7 +2060,7 @@ class PriorityScheduler:
             step_end = cursor + step.duration_seconds
             last = index == len(sequence.steps) - 1
             end = step_end + (self.ctx.post_collection_seconds if last else 0.0)
-            if not pointing.visible(step_begin, step_end):
+            if end > self.ctx.uend or not pointing.visible(step_begin, step_end):
                 return None
             if (
                 self.ctx.first_science_violation(
@@ -2068,7 +2073,9 @@ class PriorityScheduler:
                 config=self.config,
                 name=pointing.name,
                 instrument_name=pointing.instrument_name,
+                instrument_modes=dict(pointing.instrument_modes),
                 science_data=pointing.science_data,
+                own_timing=target.own_timing,
                 ra=pointing.ra,
                 dec=pointing.dec,
                 roll=step_roll,
@@ -2100,7 +2107,9 @@ class PriorityScheduler:
             config=self.config,
             name=target.name,
             instrument_name=first.instrument_name,
+            instrument_modes=dict(target.instrument_modes),
             science_data=target.science_data,
+            own_timing=target.own_timing,
             ra=first.ra,
             dec=first.dec,
             roll=first.roll,

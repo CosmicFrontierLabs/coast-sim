@@ -7,14 +7,15 @@ import pytest
 
 from conops import DITL
 from conops.common import ObsType
-from conops.config import MissionConfig, ObservationTiming
+from conops.config import BudgetStep, HousekeepingData, MissionConfig, ObservationTiming
 from conops.ditl import RollingHorizonDITL
 from conops.schedulers import LocalSearchScheduler, PriorityScheduler
-from conops.targets import Plan, PlanEntry, Pointing
+from conops.targets import ObservationSequence, Plan, PlanEntry, Pointing, SequenceStep
 
-from .planning_scenario import BEGIN, MIN, PATCH
+from .planning_scenario import BEGIN, MIN, PATCH, T0
 from .planning_scenario import make_config as _config
 from .planning_scenario import make_target as _target
+from .test_instrument_modes import _moded_config
 from .test_observation_sequences import REFERENCE, SCIENCE, SEQUENCE, TARGET, TIMING
 
 HOURS = 6
@@ -100,6 +101,142 @@ def _execute(config: MissionConfig, plan: Plan, hours: int = HOURS) -> DITL:
 
 
 class TestPriorityScheduler:
+    def test_step_entries_carry_their_modes_and_the_target_timing(self) -> None:
+        """A planned step is observed in the step's modes, with the
+        calibration step collecting no science data, and the visit's budgets
+        are the target's own where it has them."""
+        config = _moded_config(HOURS)
+        dark = BudgetStep(
+            name="dark",
+            duration_seconds=5 * MIN,
+            instrument_modes={"spectrograph": "SCIENCE"},
+            data_gb=0.2,
+        )
+        own = ObservationTiming(setup_seconds=60, cleanup_steps=[dark])
+        sequence = ObservationSequence(
+            steps=[
+                SequenceStep(
+                    name="flat",
+                    duration_seconds=5 * MIN,
+                    science=False,
+                    instrument_modes={"spectrograph": "SCIENCE"},
+                ),
+                SequenceStep(
+                    name="target",
+                    duration_seconds=10 * MIN,
+                    instrument_modes={"camera": "SCIENCE"},
+                ),
+                SequenceStep(name="again", duration_seconds=5 * MIN),
+            ]
+        )
+        target = Pointing(
+            config=config,
+            obsid=500,
+            name="Moded campaign",
+            ra=TARGET[0],
+            dec=TARGET[1],
+            merit=95.0,
+            sequence=sequence,
+            instrument_modes={"camera": "SCIENCE", "spectrograph": "SCIENCE"},
+            own_timing=own,
+        )
+        scheduler = PriorityScheduler(config, [target], BEGIN, END, step_size=STEP)
+        plan = scheduler.schedule()
+        steps = {e.step: e for e in plan if e.obsid == 500}
+        assert set(steps) == {"flat", "target", "again"}
+        assert steps["flat"].instrument_modes == {"spectrograph": "SCIENCE"}
+        assert steps["target"].instrument_modes == {"camera": "SCIENCE"}
+        # A step naming no modes observes in the target's.
+        assert steps["again"].instrument_modes == {
+            "camera": "SCIENCE",
+            "spectrograph": "SCIENCE",
+        }
+        assert steps["flat"].calibration and steps["flat"].science_data == {}
+        assert all(e.own_timing == own for e in steps.values())
+        # The visit's block on the timeline carries them too, so the
+        # ledgers see the target's budgets.
+        visit = next(b for b in scheduler.timeline if b.is_visit)
+        assert visit.entry.own_timing == own
+        assert visit.entry.instrument_modes == target.instrument_modes
+        # The dark follows the last step, as the target's own cleanup.
+        last = steps["again"]
+        assert float(last.end) - float(last.collection_end) == pytest.approx(
+            5 * MIN, abs=STEP
+        )
+        assert last.extra_data_gb() == pytest.approx(0.2)
+        # The executed plan observes each step in its modes and ends the
+        # visit with the dark's frames on the recorder.
+        config.spacecraft_bus.data_generation = HousekeepingData(rate_gbps=0.0)
+        ditl = _execute(config, plan)
+        assert ditl.validate_plan_matches_execution() == []
+        samples = ditl.telemetry.housekeeping
+
+        def modes_during(entry: PlanEntry) -> set[tuple[tuple[str, str], ...]]:
+            begin, end = float(entry.collection_begin), float(entry.collection_end)
+            return {
+                tuple(sorted(hk.instrument_modes.items()))
+                for hk in samples
+                if begin + STEP <= hk.timestamp.timestamp() < end
+            }
+
+        assert modes_during(steps["flat"]) == {
+            (("camera", "IDLE"), ("spectrograph", "SCIENCE"))
+        }
+        assert modes_during(steps["target"]) == {
+            (("camera", "SCIENCE"), ("spectrograph", "IDLE"))
+        }
+        assert ditl.recorder_volume_gb[-1] == pytest.approx(
+            sum(e.extra_data_gb() for e in steps.values())
+            + sum(
+                config.science_generated(
+                    float(e.collection_end) - float(e.collection_begin),
+                    science=e.science_data,
+                    instrument_modes=e.instrument_modes,
+                )
+                for e in steps.values()
+                if not e.calibration
+            )
+        )
+
+    @pytest.mark.parametrize(
+        "scheduler_class", [PriorityScheduler, LocalSearchScheduler]
+    )
+    def test_a_visit_at_the_end_of_the_horizon_stays_within_the_ephemeris(
+        self, scheduler_class: type[PriorityScheduler]
+    ) -> None:
+        """A visit whose last step would end at the horizon, with cleanup
+        beyond it, is dropped before its hold is sampled past the ephemeris,
+        which ends with the horizon here, so the plan is built whole."""
+        config = _config(2)
+        config.payload.observation_timing = ObservationTiming(
+            setup_seconds=0, cleanup_seconds=3 * STEP, handoff_seconds=0
+        )
+        sequence = ObservationSequence(
+            steps=[
+                SequenceStep(name="a", duration_seconds=STEP),
+                SequenceStep(name="b", duration_seconds=STEP, roll_offset_deg=30.0),
+                SequenceStep(
+                    name="c", duration_seconds=STEP, ra=PATCH[1][0], dec=PATCH[1][1]
+                ),
+            ]
+        )
+        target = Pointing(
+            config=config,
+            obsid=500,
+            name="Dense",
+            ra=TARGET[0],
+            dec=TARGET[1],
+            merit=95.0,
+            sequence=sequence,
+            visits=200,
+        )
+        end = BEGIN + timedelta(hours=2)
+        scheduler = scheduler_class(config, [target], BEGIN, end, step_size=STEP)
+        plan = scheduler.schedule()
+        assert len(plan) > 0
+        assert max(float(e.end) for e in plan) <= end.timestamp()
+        assert max(float(e.end) for e in plan) > T0 + 1.5 * 3600
+
     def test_a_visit_is_one_block_of_steps_that_executes(self) -> None:
         config = _timed_config()
         scheduler = PriorityScheduler(

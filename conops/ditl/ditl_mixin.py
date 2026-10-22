@@ -142,6 +142,7 @@ class DITLMixin:
     repoints_in_observations: list[tuple[float, int, str]]
     _data_observation: tuple[int, float] | None
     _data_collected: float
+    _activity_data_gb: float
     ra: list[float]
     dec: list[float]
     roll: list[float]
@@ -261,6 +262,8 @@ class DITLMixin:
         # The observation whose data is being generated, and its collection so far
         self._data_observation = None
         self._data_collected = 0.0
+        # What activities put on the recorder since the last data step
+        self._activity_data_gb = 0.0
 
         # Initialize common subsystems (can be overridden by subclasses)
         self._init_subsystems()
@@ -287,6 +290,7 @@ class DITLMixin:
             self.ppt = None
             self._data_observation = None
             self._data_collected = 0.0
+            self._activity_data_gb = 0.0
             self.telemetry = Telemetry()
             self.executed_passes = PassTimes(config=self.config)
             self.repoints_in_observations = []
@@ -722,6 +726,14 @@ class DITLMixin:
             start, min(utime + self.step_size, self.uend)
         )
 
+    def _add_activity_data(self, data_gb: float) -> None:
+        """Put what an activity generates on the recorder now, reported as
+        generated at the step's data step."""
+        if data_gb <= 0.0:
+            return
+        self.recorder.add_data(data_gb)
+        self._activity_data_gb += data_gb
+
     def _process_data_management(
         self,
         utime: float,
@@ -811,10 +823,15 @@ class DITLMixin:
                 megabits = effective_rate_mbps * (contact_stop - contact_start)
                 data_to_downlink = megabits / 1000.0
 
+        # What the activities that began since the last step put on the
+        # recorder is on it already; the step reports it as generated.
+        activity_data = self._activity_data_gb
+        self._activity_data_gb = 0.0
+
         if data_to_downlink <= 0:
             if data_generated > 0:
                 self.recorder.add_data(data_generated)
-            return data_generated, data_downlinked
+            return data_generated + activity_data, data_downlinked
 
         # Generation runs on through the contact, so the step is taken in
         # pieces: what is generated before the contact is stored, what is
@@ -828,7 +845,7 @@ class DITLMixin:
             rate * (contact_stop - contact_start), data_to_downlink
         )
         self.recorder.add_data(rate * (utime + interval - contact_stop))
-        return data_generated, data_downlinked
+        return data_generated + activity_data, data_downlinked
 
     def _log_repoints(
         self, begin: float, end: float, collection_seconds: float

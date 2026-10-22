@@ -116,6 +116,55 @@ class TestModel:
             _target(config, 1, 10.0, 10.0).sequence_overhead_seconds(acs, TIMING) == 0
         )
 
+    def test_overhead_counts_the_rolls_between_steps_at_one_pointing(self) -> None:
+        config = _config(2)
+        acs = config.spacecraft_bus.attitude_control
+        axis = (1.0, 0.0, 0.0)
+        rolls = ObservationSequence(
+            steps=[
+                SequenceStep(name="a", duration_seconds=60),
+                SequenceStep(name="b", duration_seconds=60, roll_offset_deg=-15.0),
+                SequenceStep(name="c", duration_seconds=60, roll_offset_deg=15.0),
+                SequenceStep(name="d", duration_seconds=60, roll_offset_deg=15.0),
+                SequenceStep(name="e", duration_seconds=60, roll_offset_deg=-170.0),
+            ]
+        )
+        # Each change of roll at the same pointing is a slew about the
+        # boresight with its settle; no change is no slew, and the
+        # shorter way round is flown.
+        expected = (
+            acs.slew_time(15.0, axis)
+            + acs.slew_time(30.0, axis)
+            + acs.slew_time(175.0, axis)
+        )
+        assert rolls.overhead_seconds(acs, TIMING, 10.0, 10.0) == pytest.approx(
+            expected
+        )
+        # A roll with a change of pointing is flown in that slew.
+        elsewhere = ObservationSequence(
+            steps=[
+                SequenceStep(name="a", duration_seconds=60),
+                SequenceStep(
+                    name="b",
+                    duration_seconds=60,
+                    ra=REFERENCE[0],
+                    dec=REFERENCE[1],
+                    roll_offset_deg=15.0,
+                ),
+            ]
+        )
+        no_roll = ObservationSequence(
+            steps=[
+                SequenceStep(name="a", duration_seconds=60),
+                SequenceStep(
+                    name="b", duration_seconds=60, ra=REFERENCE[0], dec=REFERENCE[1]
+                ),
+            ]
+        )
+        assert elsewhere.overhead_seconds(acs, TIMING, *TARGET) == pytest.approx(
+            no_roll.overhead_seconds(acs, TIMING, *TARGET)
+        )
+
     def test_step_pointings(self) -> None:
         config = _config(2)
         target = _sequence_target(config)

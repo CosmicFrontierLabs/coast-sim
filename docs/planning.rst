@@ -121,7 +121,8 @@ argument of ``submit_too``.
 
 A target is observed at the power-optimal instrument roll unless it asks for
 another: ``roll_offset_deg`` is added to the power-optimal roll, and ``roll_deg`` is
-the roll itself. Dispatch and the planners observe the target at that roll where the
+the roll itself (``queue.add(..., roll_offset_deg=...)`` or ``roll_deg=`` for a
+dispatch target). Dispatch and the planners observe the target at that roll where the
 constraints allow it, and the plan entry's ``roll`` records it. The ACS's
 ``max_roll_from_optimum_deg`` bounds either: an offset beyond it is a configuration
 error, and a target whose absolute roll is beyond it at a time is not selected or
@@ -155,7 +156,8 @@ How a plan is built
    uses, such as a calibration lamp's instrument, and its draw is counted during the
    hold; an activity naming none draws every instrument's idle power. Its
    ``data_gb`` is what it puts on the recorder when it begins, such as its frames,
-   counted by the recorder ledger and the rolling replan's forecast as well.
+   reported as generated at that step and counted by the recorder ledger and the
+   rolling replan's forecast as well.
 3. **Requests** are sorted by merit value at the start of the horizon
    (base merit plus the urgency, cadence and completion-deficit terms; see
    :doc:`configuration`). Each request is split into snapshots of up to ``ss_max``
@@ -350,10 +352,14 @@ and the setup budget where it asks, and cleanup and handoff come after the last;
 every step must be visible and allowed throughout and every slew between steps
 allowed, else the start is tried later. The visit fits before the next activity or
 not at all, the slew to that activity leaves from the last step's attitude, and the
-plan lists the steps as entries. The recorder ledger counts the science steps'
-data and the battery ledger the slews and holds of every step. Local search moves a
+plan lists the steps as entries, each in its step's instrument modes and with the
+target's own timing where it has one. The recorder ledger counts the science steps'
+data and the battery ledger the slews and holds of every step. A visit that would
+run past the end of the horizon is not placed, and nothing of it is checked beyond
+the horizon, which can end with the ephemeris. Local search moves a
 visit as one block, and CP-SAT models it as one task whose length includes the
-calibration, the slews between steps and any step setup, arriving at the first
+calibration, the slews between steps, pointing elsewhere or rolling at the same
+pointing, and any step setup, arriving at the first
 step's attitude and leaving from the last's. A rolling run credits each executed
 step to its target, science or calibration, and ``DITL`` commands the steps as it
 commands any science entries.

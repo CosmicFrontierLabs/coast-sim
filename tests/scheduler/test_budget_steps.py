@@ -237,6 +237,11 @@ class TestActivityData:
         ditl.step_size = STEP
         assert ditl.calc()
         assert max(ditl.recorder_volume_gb) == pytest.approx(1.5)
+        # Counted as generated, at the step the activity begins.
+        assert ditl.data_generated_gb[-1] == pytest.approx(1.5)
+        began = ditl.utime.index(T0 + 2 * HOUR)
+        assert ditl.data_generated_gb[began - 1] == pytest.approx(0.0)
+        assert ditl.data_generated_gb[began] == pytest.approx(1.5)
         entry = next(e for e in ditl.plan if e.name == "lamp")
         assert entry.fixed_data_gb == 1.5
         # The dispatched plan executed.
@@ -252,6 +257,7 @@ class TestActivityData:
         again.step_size = STEP
         assert again.calc()
         assert max(again.recorder_volume_gb) == pytest.approx(1.5)
+        assert again.data_generated_gb[-1] == pytest.approx(1.5)
         # The ledger's view of it.
         config = fresh()
         scheduler = PriorityScheduler(

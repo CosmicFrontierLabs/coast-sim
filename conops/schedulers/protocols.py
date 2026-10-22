@@ -106,6 +106,8 @@ class DispatchPolicy(Protocol):
         visits: int = 1,
         visit_windows: Sequence[VisitWindow] | None = None,
         instrument_modes: Mapping[str, str] | None = None,
+        roll_deg: float | None = None,
+        roll_offset_deg: float | None = None,
     ) -> Pointing:
         """Add a target and return it, as QueueDITL does for a Target of Opportunity.
 
@@ -115,6 +117,10 @@ class DispatchPolicy(Protocol):
                 may begin.
             science_data: Science data observing the target generates, keyed
                 by instrument name.
+            roll_deg: The instrument roll to observe at instead of the
+                power-optimal roll, in degrees.
+            roll_offset_deg: An offset from the power-optimal roll to observe
+                at, in degrees; give this or ``roll_deg``, not both.
         """
         ...
 

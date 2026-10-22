@@ -126,6 +126,8 @@ class TargetQueue:
         visits: int = 1,
         visit_windows: Sequence[VisitWindow] | None = None,
         instrument_modes: Mapping[str, str] | None = None,
+        roll_deg: float | None = None,
+        roll_offset_deg: float | None = None,
     ) -> Pointing:
         """Add a pointing target to the queue.
 
@@ -153,6 +155,10 @@ class TargetQueue:
                 window is open
             instrument_modes: The instruments the observation uses and the
                 mode each is in, by name; instruments not named idle
+            roll_deg: The instrument roll to observe at, in degrees, instead
+                of the power-optimal roll
+            roll_offset_deg: An offset from the power-optimal roll to observe
+                at, in degrees; give this or ``roll_deg``, not both
 
         Returns:
             The added target.
@@ -177,6 +183,8 @@ class TargetQueue:
             visits=visits,
             visit_windows=list(visit_windows or []),
             instrument_modes=dict(instrument_modes or {}),
+            roll_deg=roll_deg,
+            roll_offset_deg=roll_offset_deg,
         )
         if pointing.visit_windows:
             pointing.exptime = pointing.visits * pointing.per_visit_seconds

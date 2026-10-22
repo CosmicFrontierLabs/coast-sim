@@ -796,8 +796,7 @@ class DITL(DITLMixin, DITLStats):
         """Hold the entry's attitude in IDLE for the activity, slewing to it
         first where the spacecraft is elsewhere."""
         self.acs.end_science_observation()
-        if entry.fixed_data_gb > 0.0:
-            self.recorder.add_data(float(entry.fixed_data_gb))
+        self._add_activity_data(float(entry.fixed_data_gb))
         distance, _ = quaternion_attitude_delta(
             self.acs.ra, self.acs.dec, self.acs.roll, entry.ra, entry.dec, entry.roll
         )

@@ -1002,8 +1002,7 @@ class QueueDITL(DITLMixin, DITLStats):
                     interrupted=True,
                 )
         self.acs.end_science_observation()
-        if activity.data_gb > 0.0:
-            self.recorder.add_data(float(activity.data_gb))
+        self._add_activity_data(float(activity.data_gb))
         self._active_activity = activity
         self._activity_started = utime
         self._activity_attitude = attitude
