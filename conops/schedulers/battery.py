@@ -505,6 +505,66 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
         self._addition_cache[key] = addition
         return addition
 
+    def visit_addition(
+        self,
+        steps: Sequence[PlanEntry],
+        slews: Sequence[Slew | None],
+        path_start: Attitude | None,
+    ) -> Addition | None:
+        """What a sequence visit adds over its span: each step's slew at
+        ``SLEWING`` power along its path, from ``path_start`` for the first,
+        then its hold at ``SCIENCE`` power at its own attitude."""
+        if not steps:
+            return None
+        begin = float(steps[0].begin)
+        end = float(steps[-1].end)
+        if end <= begin:
+            return None
+        key = (
+            "visit",
+            tuple(
+                (
+                    float(step.begin),
+                    float(step.slewtime or 0),
+                    float(step.end),
+                    float(step.ra),
+                    float(step.dec),
+                    float(step.roll),
+                )
+                for step in steps
+            ),
+            path_start,
+        )
+        if key in self._addition_cache:
+            return self._addition_cache[key]
+        spans = []
+        for step, slew in zip(steps, slews):
+            arrival = float(step.begin) + float(step.slewtime or 0)
+            spans.append(
+                (
+                    float(step.begin),
+                    arrival,
+                    float(step.end),
+                    slew.attitude if slew is not None else None,
+                    step.target_body_attitude(),
+                )
+            )
+
+        def held_at(utime: float) -> tuple[ACSMode, Attitude | None]:
+            for span_begin, arrival, span_end, path, own in spans:
+                if span_begin <= utime < arrival:
+                    if path is None:
+                        return ACSMode.SLEWING, None
+                    ra, dec, roll = path(utime)
+                    return ACSMode.SLEWING, (float(ra), float(dec), float(roll))
+                if arrival <= utime < span_end:
+                    return ACSMode.SCIENCE, own
+            return ACSMode.SLEWING, None
+
+        addition = self._addition_over(begin, end, held_at)
+        self._addition_cache[key] = addition
+        return addition
+
     def hold_addition(
         self, attitude: Attitude, mode: ACSMode, begin: float, end: float
     ) -> Addition | None:

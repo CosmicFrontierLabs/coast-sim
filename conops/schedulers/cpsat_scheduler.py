@@ -1452,6 +1452,27 @@ class CpSatScheduler(LocalSearchScheduler):
                 attitude = target.target_body_attitude(
                     ctx.instrument_roll(target, max(w0, origin_time))
                 )
+                attitudes = (attitude, attitude)
+                task_overhead = overhead
+                if target.sequence is not None:
+                    # A visit runs whole: its calibration, the slews between
+                    # its steps and any step setup are part of its length,
+                    # and it leaves the spacecraft at its last step.
+                    when = max(w0, origin_time)
+                    first = target.step_pointing(0)
+                    last = target.step_pointing(len(target.sequence.steps) - 1)
+                    attitudes = (
+                        first.target_body_attitude(ctx.instrument_roll(first, when)),
+                        last.target_body_attitude(ctx.instrument_roll(last, when)),
+                    )
+                    task_overhead = overhead + int(
+                        np.ceil(
+                            target.sequence_overhead_seconds(
+                                self.config.spacecraft_bus.attitude_control,
+                                self.config.payload.observation_timing,
+                            )
+                        )
+                    )
                 rate, earliness, offset, late = self._candidate_value(
                     request, shares, origin_time
                 )
@@ -1480,11 +1501,11 @@ class CpSatScheduler(LocalSearchScheduler):
                 for copy in range(copies):
                     task = _Task(
                         (obsid, w0),
-                        (attitude, attitude),
+                        attitudes,
                         (earliest, latest),
                         copy=copy,
                         spacing=spacing,
-                        overhead=overhead,
+                        overhead=task_overhead,
                         setup=int(np.ceil(setup)),
                         collection=(shortest, longest),
                         window=window,
