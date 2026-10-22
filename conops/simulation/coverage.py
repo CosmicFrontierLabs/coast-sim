@@ -66,6 +66,11 @@ class Repoint(NamedTuple):
     end: float
     station: str
     kind: Literal["acquisition", "handover", "drift"]
+    pointing: tuple[float, float, float] | None = None
+    """Where the antenna points after the repoint, as a unit vector in GCRS:
+    the centre of the cap the station is about to cross."""
+    maneuver_deg: float | None = None
+    """How far the antenna turned from its previous pointing, where known."""
 
 
 def cut_windows(
@@ -122,14 +127,16 @@ class StationCoverage:
     planning takes the station as reachable.
 
     A gimballed antenna is re-pointed at each acquisition and handover, and
-    within a contact as the spacecraft moves: when the
-    station's direction has drifted ``repoint_threshold_deg`` since the last
-    repoint (the direction drifts in the body frame as it drifts in the
-    sky while an attitude is held, so the chain is fixed by the geometry
-    from the contact's start), or at the interval the antenna's
-    ``repoint_interval_vs_range_km`` table gives at the spacecraft's range
-    from the Earth's centre. A repoint takes ``repoint_seconds``, during
-    which nothing is downlinked; the contact is split around it.
+    within a contact as the spacecraft moves. The station's direction
+    drifts in the body frame as it drifts in the sky while an attitude is
+    held, so the chain is fixed by the geometry from the contact's start:
+    with ``repoint_threshold_deg``, the antenna is pointed at the centre of
+    the longest arc of the station's coming track that fits within a cap of
+    that radius, and re-pointed where the arc no longer fits, which is the
+    fewest repoints for the allowance; with ``repoint_interval_vs_range_km``
+    instead, at the table's interval at the spacecraft's range from the
+    Earth's centre. A repoint takes ``repoint_seconds``, during which
+    nothing is downlinked; the contact is split around it.
     """
 
     def __init__(self, config: MissionConfig) -> None:
@@ -235,6 +242,7 @@ class StationCoverage:
         """How many contacts began after a gap with no station in view."""
         self.repoints: list[Repoint] = []
         """Every repoint of the antenna over the ephemeris, in time order."""
+        self._last_pointing: np.ndarray | None = None
         self._schedule_contacts()
         self._begins = [span.begin for span in self.contacts]
 
@@ -313,9 +321,20 @@ class StationCoverage:
         if end <= begin:
             return
         code = self.stations[station].code
+        first, drift = self._repoint_arcs(station, begin, end)
+        if (
+            first is not None
+            and self.repoints
+            and self.repoints[-1].station == code
+            and self.repoints[-1].end == begin
+        ):
+            # The repoint that began this contact now has its pointing.
+            self.repoints[-1] = self._pointed(self.repoints[-1], first)
         cursor = begin
-        for t, t_end in self._drift_repoints(station, begin, end):
-            self.repoints.append(Repoint(t, t_end, code, "drift"))
+        for t, t_end, pointing in drift:
+            self.repoints.append(
+                self._pointed(Repoint(t, t_end, code, "drift"), pointing)
+            )
             if t_end <= t:
                 # An instant: the link stays up.
                 continue
@@ -325,14 +344,43 @@ class StationCoverage:
         if end > cursor:
             self.contacts.append(self._span(station, cursor, end))
 
-    def _drift_repoints(
+    def _pointed(self, repoint: Repoint, pointing: np.ndarray) -> Repoint:
+        """``repoint`` with its pointing and the turn from the previous one."""
+        norm = float(np.linalg.norm(pointing))
+        if norm == 0.0:
+            return repoint
+        unit = pointing / norm
+        maneuver = None
+        if self._last_pointing is not None:
+            cosine = float(np.clip(np.dot(unit, self._last_pointing), -1.0, 1.0))
+            maneuver = float(np.degrees(np.arccos(cosine)))
+        self._last_pointing = unit
+        return repoint._replace(
+            pointing=(float(unit[0]), float(unit[1]), float(unit[2])),
+            maneuver_deg=maneuver,
+        )
+
+    def _repoint_arcs(
         self, station: int, begin: float, end: float
-    ) -> list[tuple[float, float]]:
-        """When the antenna is re-pointed within a contact, and until when."""
-        repoints: list[tuple[float, float]] = []
+    ) -> tuple[np.ndarray | None, list[tuple[float, float, np.ndarray]]]:
+        """Where the antenna points from the contact's start, and each drift
+        repoint within the contact: when, until when, and where it points.
+
+        With a threshold, the antenna leads the station: at each repoint it
+        points at the centre of the longest arc of the station's track that
+        fits within a cap of the threshold's radius, so the station enters
+        the cap on one side and leaves on the other, and the next repoint
+        comes where the arc no longer fits. Taking each arc as long as it
+        can be gives the fewest repoints for the allowance. With a table the
+        antenna points at the station at each repoint, at the table's
+        interval.
+        """
+        drift: list[tuple[float, float, np.ndarray]] = []
         if not self.repointing:
-            return repoints
+            return None, drift
+        directions = self._to_station[station]
         if self.repoint_table is not None:
+            first = directions[self.index(begin)]
             t = begin
             while True:
                 t += interpolate_range_table(
@@ -340,25 +388,50 @@ class StationCoverage:
                 )
                 if t >= end:
                     break
-                repoints.append((t, min(t + self.repoint_seconds, end)))
-        elif self.repoint_threshold_deg is not None:
-            directions = self._to_station[station]
-            last = self.index(end - 1e-6)
-            k = self.index(begin)
-            while k < last:
-                reference = directions[k]
-                cosines = np.clip(directions[k + 1 : last + 1] @ reference, -1.0, 1.0)
-                drifted = np.flatnonzero(
-                    np.degrees(np.arccos(cosines)) > self.repoint_threshold_deg
-                )
-                if drifted.size == 0:
-                    break
-                k = k + 1 + int(drifted[0])
+                t_end = min(t + self.repoint_seconds, end)
+                drift.append((t, t_end, directions[self.index(t)]))
+            return first, drift
+        if self.repoint_threshold_deg is None:
+            return None, drift
+        threshold = self.repoint_threshold_deg + 1e-9
+        last = self.index(end - 1e-6)
+
+        def centre(a: int, b: int) -> np.ndarray:
+            chord = directions[a] + directions[b]
+            norm = float(np.linalg.norm(chord))
+            return np.asarray(chord / norm if norm > 0 else directions[a])
+
+        def fits(a: int, b: int) -> bool:
+            cosines = np.clip(directions[a : b + 1] @ centre(a, b), -1.0, 1.0)
+            return bool(np.degrees(np.arccos(cosines)).max() <= threshold)
+
+        k = self.index(begin)
+        first = None
+        while True:
+            # The longest arc from k that fits: gallop, then bisect.
+            lo, step = k, 1
+            while lo + step <= last and fits(k, lo + step):
+                lo += step
+                step *= 2
+            hi = min(lo + step, last)
+            while hi - lo > 1:
+                mid = (lo + hi) // 2
+                if fits(k, mid):
+                    lo = mid
+                else:
+                    hi = mid
+            if hi > lo and fits(k, hi):
+                lo = hi
+            pointing = centre(k, lo)
+            if first is None:
+                first = pointing
+            else:
                 t = float(self.times[k])
-                if t <= begin or t >= end:
-                    continue
-                repoints.append((t, min(t + self.repoint_seconds, end)))
-        return repoints
+                drift.append((t, min(t + self.repoint_seconds, end), pointing))
+            if lo >= last:
+                break
+            k = lo + 1
+        return first, drift
 
     def _span(self, station: int, begin: float, end: float) -> ContactSpan:
         """A span with ``station`` over ``[begin, end)`` at its mean rate."""
