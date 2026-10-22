@@ -1515,6 +1515,9 @@ Each :class:`~conops.config.ObservationCategory` also carries:
   category name
 * ``cadence_seconds`` (float, optional): Desired interval between visits
 * ``time_share`` (float in ``[0, 1]``, optional): Allocated fraction of science time
+* ``antenna_repoints`` (``allowed``, ``reported`` or ``forbidden``, default ``allowed``):
+  What an antenna repoint during one of the category's observations means; ``forbidden``
+  keeps the category's snapshots between repoints (see :doc:`communications`)
 * ``interruptible`` (bool, default ``True``): Whether a Target of Opportunity may cut
   short the category's observations (see :doc:`target_of_opportunity`)
 

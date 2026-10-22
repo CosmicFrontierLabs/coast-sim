@@ -9,6 +9,40 @@ from ..common.enums import AntennaType, Polarization
 from ._base import ConfigModel
 
 
+def validate_range_table(
+    table: list[tuple[float, float]] | None, name: str, *, positive: bool = False
+) -> list[tuple[float, float]] | None:
+    """Check a table of ``(range_km, value)`` rows: at least one row, ranges
+    increasing from zero or more, values not negative (``positive``: above
+    zero). Returns the rows as floats."""
+    if table is None:
+        return None
+    if not table:
+        raise ValueError(f"{name} must have at least one row")
+    for range_km, value in table:
+        if range_km < 0.0 or value < 0.0 or (positive and value <= 0.0):
+            raise ValueError(
+                f"{name} ranges must be >= 0 and values "
+                + ("> 0" if positive else ">= 0")
+            )
+    ranges = [row[0] for row in table]
+    if any(b <= a for a, b in zip(ranges, ranges[1:])):
+        raise ValueError(f"{name} ranges must increase")
+    return [(float(r), float(value)) for r, value in table]
+
+
+def interpolate_range_table(table: list[tuple[float, float]], range_km: float) -> float:
+    """The table's value at a range: linear between rows, held at the end rows."""
+    if range_km <= table[0][0]:
+        return table[0][1]
+    if range_km >= table[-1][0]:
+        return table[-1][1]
+    for (r0, v0), (r1, v1) in zip(table, table[1:]):
+        if r0 <= range_km <= r1:
+            return v0 + (v1 - v0) * (range_km - r0) / (r1 - r0)
+    return table[-1][1]
+
+
 class BandCapability(ConfigModel):
     """Defines a communication band's data rate capabilities."""
 
@@ -35,19 +69,7 @@ class BandCapability(ConfigModel):
     def _validate_rate_table(
         cls, table: list[tuple[float, float]] | None
     ) -> list[tuple[float, float]] | None:
-        if table is None:
-            return None
-        if not table:
-            raise ValueError("downlink_rate_vs_range_km must have at least one row")
-        for range_km, rate in table:
-            if range_km < 0.0 or rate < 0.0:
-                raise ValueError(
-                    "downlink_rate_vs_range_km ranges and rates must be >= 0"
-                )
-        ranges = [row[0] for row in table]
-        if any(b <= a for a, b in zip(ranges, ranges[1:])):
-            raise ValueError("downlink_rate_vs_range_km ranges must increase")
-        return [(float(r), float(rate)) for r, rate in table]
+        return validate_range_table(table, "downlink_rate_vs_range_km")
 
     def downlink_rate_at(self, range_km: float | None) -> float:
         """The downlink rate in Mbps at a range, or the nominal rate without one.
@@ -58,6 +80,7 @@ class BandCapability(ConfigModel):
         table = self.downlink_rate_vs_range_km
         if range_km is None or table is None:
             return self.downlink_rate_mbps
+        return interpolate_range_table(table, range_km)
         if range_km <= table[0][0]:
             return table[0][1]
         if range_km >= table[-1][0]:
@@ -136,6 +159,60 @@ class AntennaPointing(ConfigModel):
         ge=0.0,
         le=180.0,
     )
+
+    repoint_threshold_deg: float | None = Field(
+        default=None,
+        description=(
+            "For a gimballed antenna: the antenna is re-pointed at the tracked "
+            "station when the station's direction has moved this far since "
+            "the last repoint, as the spacecraft moves along its orbit. "
+            "None: no tracking repoints."
+        ),
+        gt=0.0,
+        le=180.0,
+    )
+    repoint_interval_vs_range_km: list[tuple[float, float]] | None = Field(
+        default=None,
+        description=(
+            "Instead of the threshold: the interval between repoints in "
+            "seconds against the spacecraft's distance from the Earth's centre "
+            "in km, as (range_km, seconds) rows in increasing range, "
+            "interpolated at the range at each repoint."
+        ),
+    )
+    repoint_seconds: float = Field(
+        default=0.0,
+        description=(
+            "Seconds a repoint of a gimballed antenna takes, during which "
+            "nothing is downlinked and an observation of a category that "
+            "forbids repoints cannot collect"
+        ),
+        ge=0.0,
+    )
+
+    @field_validator("repoint_interval_vs_range_km")
+    @classmethod
+    def _validate_repoint_table(
+        cls, table: list[tuple[float, float]] | None
+    ) -> list[tuple[float, float]] | None:
+        return validate_range_table(
+            table, "repoint_interval_vs_range_km", positive=True
+        )
+
+    @model_validator(mode="after")
+    def _repoints_need_a_gimbal(self) -> "AntennaPointing":
+        """Only a gimballed antenna is re-pointed: an omni antenna has no
+        direction and a body-fixed one moves with the spacecraft."""
+        if self.antenna_type != AntennaType.GIMBALED and (
+            self.repoint_threshold_deg is not None
+            or self.repoint_interval_vs_range_km is not None
+            or self.repoint_seconds > 0.0
+        ):
+            raise ValueError(
+                "repoint_threshold_deg, repoint_interval_vs_range_km and "
+                "repoint_seconds apply to a gimballed antenna only"
+            )
+        return self
 
     @field_validator("fixed_boresight_body")
     @classmethod

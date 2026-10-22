@@ -18,7 +18,8 @@ passes.
 from __future__ import annotations
 
 from bisect import bisect_right
-from typing import NamedTuple
+from collections.abc import Sequence
+from typing import Literal, NamedTuple
 
 import numpy as np
 import numpy.typing as npt
@@ -26,6 +27,7 @@ import rust_ephem
 
 from ..common import AntennaType, scbodyvector
 from ..config import CommunicationsSystem, MissionConfig
+from ..config.communications import interpolate_range_table
 from ..config.groundstation import (
     GroundStation,
     effective_downlink_rate_mbps,
@@ -49,6 +51,47 @@ class ContactSpan(NamedTuple):
     """The mean downlink rate through the span, in Mbps: the span downlinks
     this rate for its length. With a rate that varies with range it is the
     time-weighted mean of the rate at each step."""
+
+
+class Repoint(NamedTuple):
+    """A repoint of a gimballed antenna at a station.
+
+    The antenna moves from ``time`` to ``end``: for an acquisition or a
+    handover, from the moment the link switches to the moment it is up; for
+    a tracking repoint, for the communications system's ``repoint_seconds``.
+    An instant when both are equal.
+    """
+
+    time: float
+    end: float
+    station: str
+    kind: Literal["acquisition", "handover", "tracking"]
+    pointing: tuple[float, float, float] | None = None
+    """Where the antenna points after the repoint, as a unit vector in GCRS:
+    the centre of the cap the station is about to cross."""
+    maneuver_deg: float | None = None
+    """How far the antenna turned from its previous pointing, where known."""
+
+
+def cut_windows(
+    windows: Sequence[tuple[float, float]], cuts: Sequence[tuple[float, float]]
+) -> list[tuple[float, float]]:
+    """``windows`` less ``cuts``; a cut of no length splits a window in two."""
+    result: list[tuple[float, float]] = []
+    ordered = sorted(cuts)
+    for w0, w1 in windows:
+        start = float(w0)
+        for c0, c1 in ordered:
+            if c1 < start or c0 >= w1:
+                continue
+            if c0 > start:
+                result.append((start, c0))
+            start = max(start, c1)
+            if start >= w1:
+                break
+        if w1 > start:
+            result.append((start, float(w1)))
+    return result
 
 
 class Contact(NamedTuple):
@@ -82,6 +125,18 @@ class StationCoverage:
     the station within its gimbal range from its boresight, which depends
     on the attitude flown and is checked at execution (:meth:`contact_at`);
     planning takes the station as reachable.
+
+    A gimballed antenna is re-pointed at each acquisition and handover, and
+    within a contact as the spacecraft moves. The station's direction
+    moves in the body frame as it moves across the sky while an attitude is
+    held, so the chain is fixed by the geometry from the contact's start:
+    with ``repoint_threshold_deg``, the antenna is pointed at the centre of
+    the longest arc of the station's coming track that fits within a cap of
+    that radius, and re-pointed where the arc no longer fits, which is the
+    fewest repoints for the allowance; with ``repoint_interval_vs_range_km``
+    instead, at the table's interval at the spacecraft's range from the
+    Earth's centre. A repoint takes ``repoint_seconds``, during which
+    nothing is downlinked; the contact is split around it.
     """
 
     def __init__(self, config: MissionConfig) -> None:
@@ -118,6 +173,18 @@ class StationCoverage:
             dtype=float,
         )
         satellite = np.asarray(ephem.gcrs_pv.position, dtype=float)
+        self.earth_range_km: npt.NDArray[np.float64] = np.linalg.norm(satellite, axis=1)
+        """The spacecraft's distance from the Earth's centre at each step."""
+        antenna = (
+            communications.antenna_pointing if communications is not None else None
+        )
+        self.repointing = (
+            antenna is not None and antenna.antenna_type == AntennaType.GIMBALED
+        )
+        """Whether the antenna is re-pointed at all: only a gimballed one is."""
+        self.repoint_threshold_deg = antenna.repoint_threshold_deg if antenna else None
+        self.repoint_table = antenna.repoint_interval_vs_range_km if antenna else None
+        self.repoint_seconds = float(antenna.repoint_seconds) if antenna else 0.0
         count, steps = len(self.stations), len(self.times)
         self.elevation_deg = np.full((count, steps), -90.0)
         self.range_km = np.full((count, steps), np.inf)
@@ -171,6 +238,11 @@ class StationCoverage:
         """The scheduled contacts over the whole ephemeris, in time order."""
         self.handovers = 0
         """How many contacts began with a handover from another station."""
+        self.acquisitions = 0
+        """How many contacts began after a gap with no station in view."""
+        self.repoints: list[Repoint] = []
+        """Every repoint of the antenna over the ephemeris, in time order."""
+        self._last_pointing: np.ndarray | None = None
         self._schedule_contacts()
         self._begins = [span.begin for span in self.contacts]
 
@@ -230,13 +302,136 @@ class StationCoverage:
             if current >= 0:
                 begin += self.handover_seconds
                 self.handovers += 1
+                kind: Literal["acquisition", "handover"] = "handover"
+            else:
+                self.acquisitions += 1
+                kind = "acquisition"
             current = chosen
+            if self.repointing:
+                self.repoints.append(
+                    Repoint(t, begin, self.stations[chosen].code, kind)
+                )
         if current >= 0:
             self._add_contact(current, begin, float(self.times[-1]) + self.step_size)
+        self.repoints.sort(key=lambda r: (r.time, r.end))
 
     def _add_contact(self, station: int, begin: float, end: float) -> None:
-        if end > begin:
-            self.contacts.append(self._span(station, begin, end))
+        """The contact with ``station`` over ``[begin, end)``, split around
+        the tracking repoints within it."""
+        if end <= begin:
+            return
+        code = self.stations[station].code
+        first, tracking = self._repoint_arcs(station, begin, end)
+        if (
+            first is not None
+            and self.repoints
+            and self.repoints[-1].station == code
+            and self.repoints[-1].end == begin
+        ):
+            # The repoint that began this contact now has its pointing.
+            self.repoints[-1] = self._pointed(self.repoints[-1], first)
+        cursor = begin
+        for t, t_end, pointing in tracking:
+            self.repoints.append(
+                self._pointed(Repoint(t, t_end, code, "tracking"), pointing)
+            )
+            if t_end <= t:
+                # An instant: the link stays up.
+                continue
+            if t > cursor:
+                self.contacts.append(self._span(station, cursor, t))
+            cursor = max(cursor, t_end)
+        if end > cursor:
+            self.contacts.append(self._span(station, cursor, end))
+
+    def _pointed(self, repoint: Repoint, pointing: np.ndarray) -> Repoint:
+        """``repoint`` with its pointing and the turn from the previous one."""
+        norm = float(np.linalg.norm(pointing))
+        if norm == 0.0:
+            return repoint
+        unit = pointing / norm
+        maneuver = None
+        if self._last_pointing is not None:
+            cosine = float(np.clip(np.dot(unit, self._last_pointing), -1.0, 1.0))
+            maneuver = float(np.degrees(np.arccos(cosine)))
+        self._last_pointing = unit
+        return repoint._replace(
+            pointing=(float(unit[0]), float(unit[1]), float(unit[2])),
+            maneuver_deg=maneuver,
+        )
+
+    def _repoint_arcs(
+        self, station: int, begin: float, end: float
+    ) -> tuple[np.ndarray | None, list[tuple[float, float, np.ndarray]]]:
+        """Where the antenna points from the contact's start, and each tracking
+        repoint within the contact: when, until when, and where it points.
+
+        With a threshold, the antenna leads the station: at each repoint it
+        points at the centre of the longest arc of the station's track that
+        fits within a cap of the threshold's radius, so the station enters
+        the cap on one side and leaves on the other, and the next repoint
+        comes where the arc no longer fits. Taking each arc as long as it
+        can be gives the fewest repoints for the allowance. With a table the
+        antenna points at the station at each repoint, at the table's
+        interval.
+        """
+        tracking: list[tuple[float, float, np.ndarray]] = []
+        if not self.repointing:
+            return None, tracking
+        directions = self._to_station[station]
+        if self.repoint_table is not None:
+            first = directions[self.index(begin)]
+            t = begin
+            while True:
+                t += interpolate_range_table(
+                    self.repoint_table, float(self.earth_range_km[self.index(t)])
+                )
+                if t >= end:
+                    break
+                t_end = min(t + self.repoint_seconds, end)
+                tracking.append((t, t_end, directions[self.index(t)]))
+            return first, tracking
+        if self.repoint_threshold_deg is None:
+            return None, tracking
+        threshold = self.repoint_threshold_deg + 1e-9
+        last = self.index(end - 1e-6)
+
+        def centre(a: int, b: int) -> np.ndarray:
+            chord = directions[a] + directions[b]
+            norm = float(np.linalg.norm(chord))
+            return np.asarray(chord / norm if norm > 0 else directions[a])
+
+        def fits(a: int, b: int) -> bool:
+            cosines = np.clip(directions[a : b + 1] @ centre(a, b), -1.0, 1.0)
+            return bool(np.degrees(np.arccos(cosines)).max() <= threshold)
+
+        k = self.index(begin)
+        first = None
+        while True:
+            # The longest arc from k that fits: gallop, then bisect.
+            lo, step = k, 1
+            while lo + step <= last and fits(k, lo + step):
+                lo += step
+                step *= 2
+            hi = min(lo + step, last)
+            while hi - lo > 1:
+                mid = (lo + hi) // 2
+                if fits(k, mid):
+                    lo = mid
+                else:
+                    hi = mid
+            if hi > lo and fits(k, hi):
+                lo = hi
+            pointing = centre(k, lo)
+            if first is None:
+                first = pointing
+            else:
+                t = float(self.times[k])
+                tracking.append((t, min(t + self.repoint_seconds, end), pointing))
+            if lo >= last:
+                break
+            k = lo + 1
+        return first, tracking
 
     def _span(self, station: int, begin: float, end: float) -> ContactSpan:
         """A span with ``station`` over ``[begin, end)`` at its mean rate."""
@@ -373,6 +568,25 @@ class StationCoverage:
             return utime
         i = bisect_right(self._begins, utime)
         return self.contacts[i].begin if i < len(self.contacts) else None
+
+    # ── Repoints ──────────────────────────────────────────────────────────
+
+    def repoints_in(self, begin: float, end: float) -> list[Repoint]:
+        """The repoints that begin in ``[begin, end)``."""
+        return [r for r in self.repoints if begin <= r.time < end]
+
+    def repoint_cuts(self, begin: float, end: float) -> list[tuple[float, float]]:
+        """When the antenna is moving in ``[begin, end)``, as ``(time, end)``
+        pairs, to cut from the windows of an observation that must not
+        contain a repoint (see :func:`cut_windows`)."""
+        return [
+            (r.time, r.end) for r in self.repoints if r.time < end and r.end >= begin
+        ]
+
+    def next_repoint_cut(self, utime: float) -> tuple[float, float] | None:
+        """The first repoint still to end after ``utime``: in progress if it
+        began at or before ``utime``, else the next one; None without one."""
+        return next(((r.time, r.end) for r in self.repoints if r.end > utime), None)
 
     def fraction(self, begin: float, end: float) -> float:
         """The fraction of ``[begin, end)`` in contact."""

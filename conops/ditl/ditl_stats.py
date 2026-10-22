@@ -31,6 +31,7 @@ class DITLStats:
     data_downlinked_gb: list[float]
     executed_passes: PassTimes
     coverage: StationCoverage | None
+    repoints_in_observations: list[tuple[float, int, str]]
     acs: ACS
 
     def print_statistics(self) -> None:
@@ -328,6 +329,25 @@ class DITLStats:
             print(
                 f"Time in Contact: {in_contact:.2f} hours "
                 f"({100 * self.coverage.fraction(begin, end):.1f}% of the run)"
+            )
+            repoints = self.coverage.repoints_in(begin, end)
+            kinds = Counter(repoint.kind for repoint in repoints)
+            print(
+                f"Antenna Repoints: {len(repoints)} "
+                f"(acquisition {kinds['acquisition']}, handover {kinds['handover']}, "
+                f"tracking {kinds['tracking']})"
+            )
+            turns = [r.maneuver_deg for r in repoints if r.maneuver_deg is not None]
+            if turns:
+                print(
+                    f"Repoint Maneuver: mean {sum(turns) / len(turns):.1f} deg, "
+                    f"max {max(turns):.1f} deg"
+                )
+            noted = getattr(self, "repoints_in_observations", [])
+            forbidden = sum(1 for _, _, setting in noted if setting == "forbidden")
+            print(
+                f"Repoints During Sensitive Observations: {len(noted)} "
+                f"({forbidden} in observations that forbid them)"
             )
 
         print("\n" + "=" * 70)

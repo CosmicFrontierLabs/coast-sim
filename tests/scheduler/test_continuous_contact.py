@@ -17,6 +17,10 @@ from conops.config import (
     OnboardRecorder,
     ScienceData,
 )
+from conops.config.observation_categories import (
+    ObservationCategories,
+    ObservationCategory,
+)
 from conops.ditl import RollingHorizonDITL
 from conops.schedulers import LongRangeAllocator, PriorityScheduler
 from conops.schedulers.recorder import RecorderLedger
@@ -494,6 +498,121 @@ class TestRangeDependentRates:
                 coverage.downlink_gb(T0 + 24 * HOUR, end),
             ]
         )
+
+
+class TestAntennaRepoints:
+    """Repoints are logged, counted in sensitive observations, and kept out
+    of observations whose category forbids them."""
+
+    def _config(self, hours: int = HOURS) -> MissionConfig:
+        config = _recorder_config(hours=hours)
+        config.spacecraft_bus.communications = CommunicationsSystem(
+            name="S-band",
+            band_capabilities=[BandCapability(band="S", downlink_rate_mbps=RATE_MBPS)],
+            antenna_pointing=AntennaPointing(
+                antenna_type=AntennaType.GIMBALED,
+                gimbal_range_deg=180.0,
+                # Every three minutes of a contact, a minute long.
+                repoint_interval_vs_range_km=[(0.0, 180.0)],
+                repoint_seconds=60.0,
+            ),
+            acquisition_seconds=60.0,
+        )
+        config.observation_categories = ObservationCategories(
+            categories=[
+                ObservationCategory(
+                    name="Sensitive",
+                    obsid_min=1,
+                    obsid_max=3,
+                    antenna_repoints="forbidden",
+                ),
+                ObservationCategory(
+                    name="Watched",
+                    obsid_min=3,
+                    obsid_max=4,
+                    antenna_repoints="reported",
+                ),
+            ]
+        )
+        return config
+
+    @staticmethod
+    def _overlaps(cuts: list[tuple[float, float]], begin: float, end: float) -> bool:
+        return any(c0 < end and c1 > begin or begin <= c0 < end for c0, c1 in cuts)
+
+    def test_a_plan_keeps_forbidden_observations_between_repoints(self) -> None:
+        config = self._config()
+        targets = _targets(config)
+        scheduler = PriorityScheduler(
+            config, targets, BEGIN, BEGIN + timedelta(hours=HOURS), step_size=STEP
+        )
+        plan = scheduler.schedule()
+        coverage = scheduler.ctx.coverage
+        assert coverage is not None
+        cuts = coverage.repoint_cuts(T0, T0 + HOURS * HOUR)
+        assert len(cuts) > 10
+        science = _science(plan)
+        forbidden = [e for e in science if int(e.obsid) in (1, 2)]
+        watched = [e for e in science if int(e.obsid) == 3]
+        assert forbidden and watched
+        for entry in forbidden:
+            assert not self._overlaps(
+                cuts, float(entry.collection_begin), float(entry.collection_end)
+            )
+        # The watched category is placed without regard to repoints: the
+        # same targets without the rule take the same room and some
+        # observation of the run does contain a repoint.
+        free = self._config()
+        free.observation_categories = ObservationCategories(categories=[])
+        free_plan = PriorityScheduler(
+            free, _targets(free), BEGIN, BEGIN + timedelta(hours=HOURS), step_size=STEP
+        ).schedule()
+        assert any(
+            self._overlaps(cuts, float(e.collection_begin), float(e.collection_end))
+            for e in _science(free_plan)
+        )
+        ditl = _execute(config, plan, HOURS, STEP)
+        assert ditl.validate_plan_matches_execution() == []
+        assert all(
+            setting != "forbidden" for _, _, setting in ditl.repoints_in_observations
+        )
+        assert any(
+            e.event_type == "ANTENNA" and "tracking" in e.description
+            for e in ditl.log.events
+        )
+
+    def test_dispatch_keeps_forbidden_observations_between_repoints(self) -> None:
+        config = self._config()
+        ditl = create_ditl(
+            config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
+        )
+        ditl.step_size = STEP
+        assert ditl.calc()
+        assert ditl.coverage is not None
+        assert ditl.queue.coverage is ditl.coverage
+        observed = {hk.obsid for hk in ditl.telemetry.housekeeping if hk.obsid}
+        assert {1, 2, 3} <= observed
+        settings = [setting for _, _, setting in ditl.repoints_in_observations]
+        assert "forbidden" not in settings
+        assert "reported" in settings
+        events = [e for e in ditl.log.events if e.event_type == "ANTENNA"]
+        assert any("during observation 3 (reported)" in e.description for e in events)
+        assert len(events) == len(ditl.coverage.repoints_in(T0, T0 + HOURS * HOUR))
+
+    def test_statistics_report_the_repoints(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        config = self._config()
+        ditl = create_ditl(
+            config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
+        )
+        ditl.step_size = STEP
+        assert ditl.calc()
+        ditl.print_statistics()
+        out = capsys.readouterr().out
+        assert "Antenna Repoints:" in out
+        assert "Repoints During Sensitive Observations:" in out
+        assert "(0 in observations that forbid them)" in out
 
 
 def test_a_ditl_without_coverage_has_the_legacy_downlink() -> None:

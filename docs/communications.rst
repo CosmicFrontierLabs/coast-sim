@@ -76,6 +76,18 @@ Defines how the antenna is mounted and pointed.
   ``fixed_boresight_body`` for GSP attitude generation. Nonzero values are accepted
   with a deprecation warning and do not affect generated GSP attitudes.
 * ``gimbal_range_deg``: Angular range for gimbaled antennas (from boresight)
+* ``repoint_threshold_deg``: For a gimballed antenna, the pointing allowance: the
+  radius of the cap about the antenna's pointing that the tracked station is kept in,
+  the antenna being re-pointed ahead of the station where it would leave (default
+  None: no tracking repoints)
+* ``repoint_interval_vs_range_km``: Instead of the threshold, the interval between
+  repoints in seconds against the spacecraft's distance from the Earth's centre, as
+  ``(range_km, seconds)`` rows interpolated at the range at each repoint
+* ``repoint_seconds``: Seconds a repoint takes, during which nothing is downlinked and
+  an observation of a category that forbids repoints cannot collect (default 0)
+
+The three repoint fields apply to a ``GIMBALED`` antenna only: an omni antenna has no
+direction to re-point and a body-fixed one moves with the spacecraft.
 
 The antenna type decides how the spacecraft gets its contacts. A ``FIXED``
 antenna has to be pointed at the station, so it downlinks during ground-station
@@ -99,6 +111,30 @@ the bands the station and the spacecraft share. A gimballed antenna reaches the 
 the simulation checks at each step; planning takes the station as reachable.
 Every station with a downlink carries data this way, whether or not
 ``schedule_for_tracking`` allows it to be scheduled for passes.
+
+**Antenna repoints.** A gimballed antenna is re-pointed at each acquisition and
+handover, and within a contact as the spacecraft moves along its orbit; an omni antenna
+is never re-pointed, so it has no repoint events. While an
+attitude is held the station's direction moves in the body frame exactly as it moves
+across the sky, so a tracking repoint needs no attitude and the chain is fixed by the
+geometry from the contact's start. With ``repoint_threshold_deg`` set, the antenna
+leads the station: at each repoint it is pointed at the centre of the longest arc of
+the station's coming track that fits within a cap of that radius, so the station
+enters the cap on one side and leaves on the other, and the next repoint comes where
+the arc no longer fits. Taking each arc as long as it can be gives the fewest repoints
+for the allowance, about half as many as re-pointing at the station each time it
+moves the allowance away. With ``repoint_interval_vs_range_km`` set instead, repoints
+follow the table's interval at the spacecraft's range from the Earth's centre, each
+pointing at the station. Each repoint records the antenna's pointing and how far it
+turned, and ``print_statistics`` reports the mean and largest turn. A repoint takes ``repoint_seconds``, during which nothing is
+downlinked, so a contact is split around it; an acquisition or handover repoint lasts
+its latency. The simulation logs each repoint as an ``ANTENNA`` event with the station
+and the observation in progress, and ``print_statistics`` reports them by kind. An
+observation category's ``antenna_repoints`` setting says what a repoint during one of
+its observations means: ``allowed`` (the default), ``reported`` (counted and logged) or
+``forbidden``, in which case the schedulers cut the category's visibility windows at
+each repoint so snapshots are placed between them, and dispatch neither starts such an
+observation during a repoint nor lets it run into the next one (see :doc:`planning`).
 
 A configuration without a communications system keeps the body-fixed behaviour.
 With coverage, a DITL's ``coverage`` holds the model, its data telemetry shows

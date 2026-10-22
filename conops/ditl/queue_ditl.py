@@ -247,6 +247,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 log=self.log,
                 ephem=self.ephem,
             )
+        self.queue.coverage = self.coverage
 
         if allocator is not None:
             if not isinstance(self.queue, Queue):
@@ -3304,6 +3305,13 @@ class QueueDITL(DITLMixin, DITLStats):
             if violation is not None:
                 # Leave from a still-valid sample, with teardown already over.
                 self.ppt.end = min(self.ppt.end, violation[0] - self.step_size)
+            if self.coverage is not None and self._antenna_repoints(self.ppt) == (
+                "forbidden"
+            ):
+                # The observation ends before the antenna next moves.
+                cut = self.coverage.next_repoint_cut(slew_end)
+                if cut is not None:
+                    self.ppt.end = min(self.ppt.end, cut[0])
             self.ppt.set_collection_window(timing)
             if self.ppt.exposure < snapshot_min_seconds(self.ppt):
                 self._retry_fetch_without_current_ppt(utime, ra, dec)
