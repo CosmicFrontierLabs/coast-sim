@@ -21,7 +21,7 @@ from ..simulation.passes import Pass
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing, ScheduledActivity, assign_obsids
 from ..targets.merit import MeritModel
-from ..targets.plan_entry import instrument_modes_of
+from ..targets.plan_entry import extra_data_gb, instrument_modes_of
 from .ditl import DITL
 from .ditl_log import DITLLog
 from .plan_validator import PLAN_SCIENCE_OBSTYPES, entry_obstype
@@ -756,6 +756,13 @@ class RollingHorizonDITL(DITL):
         contacts = [e for e in committed if entry_obstype(e) == ObsType.GSP]
         science: list[tuple[float, float]] = []
         for entry in committed:
+            if (
+                entry_obstype(entry) == ObsType.ACTIVITY
+                and utime <= float(entry.begin) < start
+            ):
+                # An activity still to begin: its frames, when it does.
+                science.append((float(entry.begin), extra_data_gb(entry)))
+                continue
             if entry.collection_begin is None or entry.collection_end is None:
                 continue
             begin = max(float(entry.collection_begin), utime)
@@ -765,10 +772,12 @@ class RollingHorizonDITL(DITL):
             modes = instrument_modes_of(entry)
             volume = self.config.science_generated(
                 end - begin, entry.science_data, modes
-            )
+            ) + extra_data_gb(entry)
             if float(entry.collection_begin) < utime:
                 # Already collecting: its fixed amount is on the recorder.
-                volume -= self.config.science_generated(0.0, entry.science_data, modes)
+                volume -= self.config.science_generated(
+                    0.0, entry.science_data, modes
+                ) + extra_data_gb(entry)
             science.append((begin, volume))
         ledger = RecorderLedger(
             self.config,

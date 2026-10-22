@@ -40,6 +40,11 @@ class ScheduledActivity(BaseModel):
             "name, such as a calibration lamp's; instruments not named idle"
         ),
     )
+    data_gb: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Data the activity puts on the recorder, in Gb, such as its frames",
+    )
     obsid: int | None = Field(
         default=None,
         description="Identifies the activity's plan entries; assigned if None",
@@ -77,6 +82,7 @@ class ScheduledActivity(BaseModel):
         entry = PlanEntry(config=config)
         entry.name = self.name
         entry.instrument_modes = dict(self.instrument_modes)
+        entry.fixed_data_gb = float(self.data_gb)
         entry.obsid = self.obsid
         entry.obstype = ObsType.ACTIVITY
         entry.ra, entry.dec, entry.roll = attitude

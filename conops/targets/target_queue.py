@@ -19,7 +19,7 @@ from ..config.observation_categories import ObservationCategories
 from ..ditl.ditl_log import DITLLog
 from . import Pointing
 from .merit import MeritBreakdown, MeritModel
-from .plan_entry import instrument_modes_of, snapshot_min_seconds
+from .plan_entry import extra_data_gb, instrument_modes_of, snapshot_min_seconds
 from .sequence import ObservationSequence
 from .visits import VisitWindow
 
@@ -838,7 +838,7 @@ class TargetQueue:
             self.config.science_generated(
                 collection_seconds, target.science_data, instrument_modes_of(target)
             )
-        )
+        ) + extra_data_gb(target)
 
     def _select(
         self,

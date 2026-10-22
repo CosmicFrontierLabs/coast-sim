@@ -94,10 +94,11 @@ class ObservationSequence(BaseModel):
         for a step that asks for it, cleanup and handoff for the last step."""
         first = index == 0
         last = index == len(self.steps) - 1
+        pays_setup = first or self.steps[index].setup
         return ObservationTiming(
-            setup_seconds=base.setup_seconds
-            if first or self.steps[index].setup
-            else 0.0,
+            setup_steps=list(base.setup_steps) if pays_setup else [],
+            cleanup_steps=list(base.cleanup_steps) if last else [],
+            setup_seconds=base.setup_seconds if pays_setup else 0.0,
             cleanup_seconds=base.cleanup_seconds if last else 0.0,
             handoff_seconds=base.handoff_seconds if last else 0.0,
         )

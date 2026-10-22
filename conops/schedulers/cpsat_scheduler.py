@@ -34,7 +34,11 @@ from ..config import MissionConfig
 from ..config.acs import scheduled_slew_time
 from ..simulation.slew import Slew
 from ..targets import Plan, Pointing
-from ..targets.plan_entry import instrument_modes_of, snapshot_min_seconds
+from ..targets.plan_entry import (
+    extra_data_gb,
+    instrument_modes_of,
+    snapshot_min_seconds,
+)
 from .context import Attitude
 from .local_search_scheduler import (
     LocalSearchScheduler,
@@ -1553,7 +1557,9 @@ class CpSatScheduler(LocalSearchScheduler):
         if not self._ledger.active:
             return (0, 0)
         modes = instrument_modes_of(target)
-        once = self.config.science_generated(0.0, target.science_data, modes)
+        once = self.config.science_generated(
+            0.0, target.science_data, modes
+        ) + extra_data_gb(target)
         per_second = (
             self.config.science_generated(1.0, target.science_data, modes) - once
         )

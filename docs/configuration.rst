@@ -1078,6 +1078,18 @@ science task. All three values are finite, nonnegative seconds and default to
 zero. ACS ``settle_time`` is already included in ``slewtime``; do not include it
 again in these payload budgets.
 
+A budget can be given as calibration steps instead of one number: ``setup_steps``
+and ``cleanup_steps`` list :class:`~conops.config.BudgetStep` entries in order, each
+with a ``name``, a ``duration_seconds``, the ``instrument_modes`` it puts the
+instruments in while it runs (empty: the observation's own modes apply through it)
+and a ``data_gb`` it puts on the recorder, such as its frames. The budget's seconds
+are then the steps' sum. A target acquisition followed by a characterisation
+frame before every observation, or a dark after it, is written this way; the
+instruments draw the step's modes during it, the mode telemetry records them, and
+the steps' data is counted with the observation's wherever its science data is,
+in the simulation, the recorder ledger and the data budget. A step's modes are
+checked against the payload when the configuration is made.
+
 .. code-block:: yaml
 
    payload:

@@ -19,7 +19,7 @@ from ..simulation.coverage import StationCoverage
 from ..simulation.momentum import MomentumSample, StoredMomentumTracker
 from ..simulation.passes import Pass, PassTimes
 from ..targets import Plan, PlanEntry
-from ..targets.plan_entry import instrument_modes_of
+from ..targets.plan_entry import extra_data_gb, instrument_modes_of
 from .ditl_log import DITLLog
 from .telemetry import SolarArrayDriveAngle, Telemetry
 
@@ -75,7 +75,9 @@ class AttitudeRateContinuityError(RuntimeError):
 
 
 class DITLMixin:
-    def _instrument_modes_telemetry(self, mode: ACSMode | int) -> dict[str, str] | None:
+    def _instrument_modes_telemetry(
+        self, mode: ACSMode | int, utime: float | None = None
+    ) -> dict[str, str] | None:
         """The mode each instrument with modes is in at this step, by name,
         resolved as its power is: the observation's for the instruments it
         uses, and IDLE or a mode named like the ACS mode for the rest. None
@@ -92,17 +94,20 @@ class DITLMixin:
             acs_mode = int(mode)
         except (TypeError, ValueError):
             acs_mode = None
-        named = self._instrument_modes_now(mode) or {}
+        named = self._instrument_modes_now(mode, utime) or {}
         return {
             instrument.name: instrument.mode_in(acs_mode, named.get(instrument.name))
             for instrument in with_modes
         }
 
-    def _instrument_modes_now(self, mode: ACSMode | int) -> dict[str, str] | None:
+    def _instrument_modes_now(
+        self, mode: ACSMode | int, utime: float | None = None
+    ) -> dict[str, str] | None:
         """The mode each instrument is in at this step: the observation's
-        while ACS is in SCIENCE mode, a scheduled activity's while ACS holds
-        for it in IDLE mode, else None, when every instrument idles or holds
-        a mode named like the ACS mode."""
+        while ACS is in SCIENCE mode, a calibration step's own during a
+        setup or cleanup step at ``utime``, a scheduled activity's while ACS
+        holds for it in IDLE mode, else None, when every instrument idles or
+        holds a mode named like the ACS mode."""
         try:
             acs_mode = ACSMode(int(mode))
         except (TypeError, ValueError):
@@ -121,6 +126,10 @@ class DITLMixin:
         ppt = getattr(self, "ppt", None)
         if acs_mode is not ACSMode.SCIENCE or ppt is None:
             return None
+        by_time = getattr(ppt, "instrument_modes_at", None)
+        if utime is not None and callable(by_time):
+            resolved = by_time(utime)
+            return resolved if isinstance(resolved, dict) else None
         modes = getattr(ppt, "effective_instrument_modes", None)
         # A test double's observation names no modes.
         resolved = modes() if callable(modes) else None
@@ -756,6 +765,9 @@ class DITLMixin:
                 data_generated -= self.config.science_generated(
                     before, science=science, instrument_modes=modes
                 )
+            else:
+                # Once per observation: its calibration steps' frames.
+                data_generated += extra_data_gb(self.ppt)
             self._data_observation = observation
             self._data_collected = after
 

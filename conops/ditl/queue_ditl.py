@@ -1002,6 +1002,8 @@ class QueueDITL(DITLMixin, DITLStats):
                     interrupted=True,
                 )
         self.acs.end_science_observation()
+        if activity.data_gb > 0.0:
+            self.recorder.add_data(float(activity.data_gb))
         self._active_activity = activity
         self._activity_started = utime
         self._activity_attitude = attitude
@@ -1639,7 +1641,7 @@ class QueueDITL(DITLMixin, DITLStats):
             collection_seconds=self._collection_seconds_for_step(utime, mode),
             panel_illumination=panel_illumination,
             solar_array_drive_angles=drive_angles,
-            instrument_modes=self._instrument_modes_telemetry(mode),
+            instrument_modes=self._instrument_modes_telemetry(mode, utime),
             power_usage=total_power,
             power_bus=bus_power,
             power_payload=payload_power,
@@ -3760,7 +3762,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
         # Calculate power consumption by subsystem
         bus_power, payload_power, total_power = self._calculate_power_consumption(
-            mode=mode, in_eclipse=in_eclipse
+            mode=mode, in_eclipse=in_eclipse, utime=utime
         )
         self.power_bus.append(bus_power)
         self.power_payload.append(payload_power)
@@ -3856,7 +3858,7 @@ class QueueDITL(DITLMixin, DITLStats):
         return angular_separation(moon_ra, moon_dec, ra, dec)
 
     def _calculate_power_consumption(
-        self, mode: ACSMode, in_eclipse: bool
+        self, mode: ACSMode, in_eclipse: bool, utime: float | None = None
     ) -> tuple[float, float, float]:
         """Calculate total spacecraft power consumption broken down by subsystem.
 
@@ -3867,7 +3869,7 @@ class QueueDITL(DITLMixin, DITLStats):
         payload_power = self.payload.power(
             mode=mode,
             in_eclipse=in_eclipse,
-            instrument_modes=self._instrument_modes_now(mode),
+            instrument_modes=self._instrument_modes_now(mode, utime),
         )
         total_power = bus_power + payload_power
         return bus_power, payload_power, total_power

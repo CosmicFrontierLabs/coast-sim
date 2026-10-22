@@ -146,7 +146,9 @@ How a plan is built
    attitude it has in ``IDLE`` until the activity ends, and starts no observation that
    would run into the next activity. An activity's ``instrument_modes`` names what it
    uses, such as a calibration lamp's instrument, and its draw is counted during the
-   hold; an activity naming none draws every instrument's idle power.
+   hold; an activity naming none draws every instrument's idle power. Its
+   ``data_gb`` is what it puts on the recorder when it begins, such as its frames,
+   counted by the recorder ledger and the rolling replan's forecast as well.
 3. **Requests** are sorted by merit value at the start of the horizon
    (base merit plus the urgency, cadence and completion-deficit terms; see
    :doc:`configuration`). Each request is split into snapshots of up to ``ss_max``
