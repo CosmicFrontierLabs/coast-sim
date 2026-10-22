@@ -388,6 +388,51 @@ class TargetQueue:
         if estimate.slewpath is not None:
             target.slewpath = estimate.slewpath
 
+    def request_openings(self, utime: float) -> list[tuple[float, float, int]]:
+        """The requests whose windows open after ``utime``, as
+        ``(opening, value, obsid)`` in opening order: a request with an
+        ``earliest_start`` still to come opens at its first visibility from
+        then, unless that is past its deadline."""
+        openings: list[tuple[float, float, int]] = []
+        for other in self.targets:
+            start = getattr(other, "earliest_start", None)
+            # A test double's target has no number for a start.
+            if not isinstance(start, (int, float)) or start <= utime:
+                continue
+            if other.done or other.merit <= 0:
+                continue
+            opening = other.next_vis(float(start))
+            if not isinstance(opening, (int, float)) or isinstance(opening, bool):
+                continue
+            deadline = getattr(other, "deadline", None)
+            if isinstance(deadline, (int, float)) and opening > deadline:
+                continue
+            value = float(other.merit) * (1.0 + self._bonus(other))
+            openings.append((float(opening), value, int(other.obsid)))
+        openings.sort()
+        return openings
+
+    def request_cut(
+        self,
+        target: Pointing,
+        openings: list[tuple[float, float, int]],
+        end: float,
+    ) -> tuple[float, int] | None:
+        """When, before ``end``, the window of a request ranked above
+        ``target`` opens, and that request's obsid; None when none does."""
+        merit = getattr(target, "merit", None)
+        # A test double's target has no number for a merit.
+        if not openings or not isinstance(merit, (int, float)):
+            return None
+        value = float(merit) * (1.0 + self._bonus(target))
+        obsid = int(target.obsid)
+        for opening, other_value, other in openings:
+            if opening >= end:
+                return None
+            if other_value > value and other != obsid:
+                return opening, other
+        return None
+
     def get(
         self,
         ra: float,
@@ -419,6 +464,13 @@ class TargetQueue:
                 one that cannot collect its minimum snapshot within it is
                 passed over, as the schedulers pass over what the recorder
                 cannot hold. None checks nothing.
+
+        A candidate's snapshot ends when the window of a request ranked
+        above it opens, if that is sooner, so a long observation does not
+        block a window that opens inside it: a request with an
+        ``earliest_start`` still to come opens at its first visibility from
+        then. A candidate whose minimum snapshot does not fit before the
+        opening is passed over, for a shorter one or for nothing.
 
         Returns:
             Next target to observe, or None if no suitable target found.
@@ -452,6 +504,11 @@ class TargetQueue:
         )
         overfill = 0
         """Candidates passed over because the recorder cannot hold their data."""
+        openings = self.request_openings(utime)
+        blocked: list[tuple[float, int]] = []
+        """The openings that candidates were passed over for."""
+        cuts: dict[int, tuple[float, int]] = {}
+        """The opening each shortened candidate ends at, by obsid."""
         delivered_shares = (
             merit_model.delivered_shares(self.targets)
             if merit_model.completion_deficit_weight > 0.0
@@ -554,11 +611,25 @@ class TargetQueue:
                         float(visibility_window[0]),
                         min(float(visibility_window[1]), cut[0]),
                     ]
+            cut = (
+                self.request_cut(target, openings, float(visibility_window[1]))
+                if visibility_window and openings
+                else None
+            )
+            if visibility_window and cut is not None:
+                # The snapshot ends where a request ranked above this
+                # candidate opens.
+                visibility_window = [float(visibility_window[0]), cut[0]]
+                cuts[int(target.obsid)] = cut
             if visibility_window:
                 target.begin = int(utime)
                 collection = self._candidate_collection_seconds(
                     target, visibility_window, utime
                 )
+                if collection < snapshot_min_seconds(target):
+                    if cut is not None:
+                        blocked.append(cut)
+                    continue
                 if recorder_room_gb is not None:
                     # Collect no more than the recorder can hold from its
                     # fill now; a snapshot shorter than the minimum waits.
@@ -568,8 +639,6 @@ class TargetQueue:
                     if collection < snapshot_min_seconds(target):
                         overfill += 1
                         continue
-                if collection < snapshot_min_seconds(target):
-                    continue
                 target.end = min(
                     float(visibility_window[1]),
                     utime
@@ -591,7 +660,8 @@ class TargetQueue:
                 # If nothing beyond merit order matters, return the first
                 # visible target in merit order (fast path)
                 if not score_candidates:
-                    self._select(target, value)
+                    self._log_blocked(utime, blocked)
+                    self._select(target, value, cut)
                     return target
                 # Otherwise, score all visible targets and pick best
                 slewdist = getattr(target, "slewdist", 0.0)
@@ -676,10 +746,29 @@ class TargetQueue:
                 obsid=None,
                 acs_mode=None,
             )
+        self._log_blocked(utime, blocked)
         if best_target is not None:
             assert best_breakdown is not None
-            self._select(best_target, best_breakdown)
+            self._select(best_target, best_breakdown, cuts.get(int(best_target.obsid)))
         return best_target
+
+    def _log_blocked(self, utime: float, blocked: list[tuple[float, int]]) -> None:
+        """Log the candidates passed over because their minimum snapshot
+        does not fit before a request's window opens."""
+        if not blocked or self.log is None:
+            return
+        opening, request = min(blocked)
+        self.log.log_event(
+            utime=utime,
+            event_type="QUEUE",
+            description=(
+                f"{len(blocked)} targets passed over: their minimum snapshot "
+                f"does not fit before request {request} opens at "
+                f"{unixtime2date(opening)}"
+            ),
+            obsid=None,
+            acs_mode=None,
+        )
 
     def _collection_within(self, target: Pointing, room_gb: float) -> float:
         """Seconds of collection whose science fits in ``room_gb``: without
@@ -702,14 +791,32 @@ class TargetQueue:
             self.config.science_generated(collection_seconds, target.science_data)
         )
 
-    def _select(self, target: Pointing, breakdown: MeritBreakdown) -> None:
-        """Freeze the selected target's value and log its terms."""
+    def _select(
+        self,
+        target: Pointing,
+        breakdown: MeritBreakdown,
+        cut: tuple[float, int] | None = None,
+    ) -> None:
+        """Freeze the selected target's value and log its terms, and the
+        request opening its snapshot ends at, if any."""
         target.merit_breakdown = breakdown
-        if self.log is not None:
+        if self.log is None:
+            return
+        self.log.log_event(
+            utime=self.utime,
+            event_type="QUEUE",
+            description=f"Selected {target.obsid}: {breakdown.describe()}",
+            obsid=target.obsid,
+            acs_mode=None,
+        )
+        if cut is not None:
             self.log.log_event(
                 utime=self.utime,
                 event_type="QUEUE",
-                description=f"Selected {target.obsid}: {breakdown.describe()}",
+                description=(
+                    f"Snapshot of {target.obsid} ends at "
+                    f"{unixtime2date(cut[0])}, when request {cut[1]} opens"
+                ),
                 obsid=target.obsid,
                 acs_mode=None,
             )

@@ -312,6 +312,21 @@ points per gigabit of science data, so that high-data science gives way to low-d
 science before the recorder is full rather than only once it is (see
 :doc:`configuration`).
 
+Dispatch also looks ahead to requests whose windows are still to open. A request
+with an ``earliest_start`` cannot be selected before it, and it opens at its first
+visibility from then, unless that is past its deadline. When a request ranked above
+a candidate opens before the candidate's snapshot would end, the snapshot ends at
+the opening instead, so a long observation does not block a window that opens
+inside it; the request is then selected when it opens, and slews from there. A
+candidate whose minimum snapshot does not fit before the opening is passed over,
+for a shorter candidate or, if none fits, for nothing. The log says when a snapshot
+was shortened and how many candidates were passed over. The ranking is by base
+merit, with any allocation bonus; a request's dynamic terms are not known before it
+opens. Targets of opportunity join the queue when they are submitted, so nothing is
+shortened ahead of them. An exposure therefore need not be split into short
+snapshots to leave room for a timed request, and a timed request needs no slack
+beyond its slew and setup.
+
 Planning within the battery
 ---------------------------
 

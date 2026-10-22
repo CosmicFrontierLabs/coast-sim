@@ -66,6 +66,22 @@ class DispatchPolicy(Protocol):
         """
         ...
 
+    def request_openings(self, utime: float) -> list[tuple[float, float, int]]:
+        """The requests whose windows open after ``utime``, as
+        ``(opening, value, obsid)`` in opening order; QueueDITL ends an
+        observation ranked below a request when that request opens."""
+        ...
+
+    def request_cut(
+        self,
+        target: Pointing,
+        openings: list[tuple[float, float, int]],
+        end: float,
+    ) -> tuple[float, int] | None:
+        """When, before ``end``, the window of a request ranked above
+        ``target`` opens, and that request's obsid; None when none does."""
+        ...
+
     def add(
         self,
         ra: float = 0.0,

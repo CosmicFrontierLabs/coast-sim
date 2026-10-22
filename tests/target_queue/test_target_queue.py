@@ -977,3 +977,93 @@ class TestQueueSelectionBehavior:
             queue_instance.get(ra=0, dec=0, utime=utime)
 
         radiators.exposure_metrics.assert_not_called()
+
+
+class TestRequestLookAhead:
+    """A candidate's snapshot ends when the window of a request ranked
+    above it opens."""
+
+    UTIME = 1762924800.0
+
+    def _request(self, queue_instance, opening: float, merit: float, deadline=None):
+        request = queue_instance.targets[1]
+        request.merit = merit
+        request.earliest_start = opening
+        request.deadline = deadline
+        request.next_vis = Mock(return_value=opening)
+        for target in queue_instance.targets[2:]:
+            target.visible.return_value = False
+        return request
+
+    def test_a_snapshot_ends_when_a_higher_merit_request_opens(self, queue_instance):
+        """The best target's 120 s snapshot, after a 10 s slew, ends at the
+        opening 100 s away of a request ranked above it."""
+        utime = self.UTIME
+        best = queue_instance.targets[0]
+        self._request(queue_instance, utime + 100.0, merit=200.0)
+        overhead = queue_instance.observation_timing.total_seconds
+
+        with patch.object(queue_instance, "meritsort"):
+            assert queue_instance.get(ra=0, dec=0, utime=utime) == best
+        assert best.end == pytest.approx(utime + 100.0)
+        assert best.end - best.begin < 10.0 + 120.0 + overhead
+
+    def test_a_request_ranked_below_the_candidate_shortens_nothing(
+        self, queue_instance
+    ):
+        utime = self.UTIME
+        best = queue_instance.targets[0]
+        self._request(queue_instance, utime + 100.0, merit=50.0)
+        overhead = queue_instance.observation_timing.total_seconds
+
+        with patch.object(queue_instance, "meritsort"):
+            assert queue_instance.get(ra=0, dec=0, utime=utime) == best
+        assert best.end - best.begin == pytest.approx(10.0 + 120.0 + overhead)
+
+    def test_a_candidate_whose_minimum_does_not_fit_is_passed_over(
+        self, queue_instance
+    ):
+        """With the opening 50 s away, 40 s of collection is under the 60 s
+        minimum: nothing is selected, and the log says why."""
+        utime = self.UTIME
+        queue_instance.log = Mock()
+        self._request(queue_instance, utime + 50.0, merit=200.0)
+
+        with patch.object(queue_instance, "meritsort"):
+            assert queue_instance.get(ra=0, dec=0, utime=utime) is None
+        descriptions = [
+            call.kwargs["description"]
+            for call in queue_instance.log.log_event.call_args_list
+        ]
+        assert any(
+            d.startswith(
+                "1 targets passed over: their minimum snapshot does not fit before request 101 opens"
+            )
+            for d in descriptions
+        )
+
+    def test_a_request_past_its_deadline_at_its_opening_is_ignored(
+        self, queue_instance
+    ):
+        utime = self.UTIME
+        best = queue_instance.targets[0]
+        self._request(queue_instance, utime + 100.0, merit=200.0, deadline=utime + 90.0)
+        overhead = queue_instance.observation_timing.total_seconds
+
+        with patch.object(queue_instance, "meritsort"):
+            assert queue_instance.get(ra=0, dec=0, utime=utime) == best
+        assert best.end - best.begin == pytest.approx(10.0 + 120.0 + overhead)
+
+    def test_the_opening_is_the_first_visibility_after_the_earliest_start(
+        self, queue_instance
+    ):
+        """A request not visible at its earliest start opens when it next is."""
+        utime = self.UTIME
+        best = queue_instance.targets[0]
+        request = self._request(queue_instance, utime + 50.0, merit=200.0)
+        request.next_vis = Mock(return_value=utime + 100.0)
+
+        with patch.object(queue_instance, "meritsort"):
+            assert queue_instance.get(ra=0, dec=0, utime=utime) == best
+        assert best.end == pytest.approx(utime + 100.0)
+        request.next_vis.assert_called_with(utime + 50.0)

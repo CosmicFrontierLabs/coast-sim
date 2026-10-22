@@ -137,6 +137,8 @@ class _ScienceDeadlineInputs(BaseModel):
 
     simulation_end: float
     charge_deadline: float | None
+    request_openings: list[tuple[float, float, int]] = []
+    """The requests whose windows are still to open, from the queue."""
 
 
 @dataclass(frozen=True)
@@ -2940,9 +2942,13 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _science_deadline_inputs(self, current_time: float) -> _ScienceDeadlineInputs:
         """Calculate deadline inputs that are stable during one queue fetch."""
+        openings = getattr(self.queue, "request_openings", None)
+        requests = openings(current_time) if callable(openings) else None
         return _ScienceDeadlineInputs(
             simulation_end=self._simulation_end_deadline(),
             charge_deadline=self._next_charge_science_deadline(current_time),
+            # A test double's queue has no requests.
+            request_openings=requests if isinstance(requests, list) else [],
         )
 
     def _next_science_deadline(
@@ -2955,8 +2961,8 @@ class QueueDITL(DITLMixin, DITLStats):
         deadline_inputs: _ScienceDeadlineInputs | None = None,
     ) -> tuple[float, str]:
         """Determine the next science deadline after the slew ends, which could
-        be the end of the current visibility window, the next pass, or the end
-        of the simulation."""
+        be the end of the current visibility window, the next pass, the opening
+        of a request ranked above the target, or the end of the simulation."""
         if deadline_inputs is None:
             deadline_inputs = self._science_deadline_inputs(current_time)
 
@@ -2966,6 +2972,17 @@ class QueueDITL(DITLMixin, DITLStats):
         activity_begin = self._next_activity_begin(slew_end)
         if activity_begin is not None:
             deadlines.append((activity_begin, "scheduled activity"))
+
+        candidate = target or self.ppt
+        if candidate is not None and deadline_inputs.request_openings:
+            # The observation ends when a request ranked above it opens.
+            cut = self.queue.request_cut(
+                candidate,
+                deadline_inputs.request_openings,
+                deadline_inputs.simulation_end,
+            )
+            if cut is not None:
+                deadlines.append((cut[0], f"request {cut[1]} opens"))
 
         visibility_end = self._current_ppt_visibility_deadline(slew_end, target=target)
         if visibility_end is not None:
