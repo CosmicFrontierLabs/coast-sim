@@ -462,6 +462,31 @@ class DITLMixin:
             position_ecef_km=position_ecef_km,
         )
 
+    def _dump_level_n_m_s(self) -> float | None:
+        """The stored momentum at which a thruster dump is called for, if
+        the configuration has thrusters and a capacity."""
+        momentum_config = self.config.spacecraft_bus.attitude_control.stored_momentum
+        return momentum_config.dump_level_n_m_s
+
+    def _unload_stored_momentum(self, utime: float, obsid: int | None) -> None:
+        """A thruster dump ends: take the stored momentum out of the wheels."""
+        tracker = self._stored_momentum_tracker
+        dump = self.config.spacecraft_bus.attitude_control.stored_momentum.thruster_dump
+        if tracker is None or dump is None:
+            return
+        before = tracker.stored_momentum_norm_n_m_s
+        tracker.unload(dump.residual_fraction)
+        self.log.log_event(
+            utime=utime,
+            event_type="MOMENTUM",
+            description=(
+                f"Thruster dump unloads {before:.3f} N m s of stored momentum "
+                f"to {tracker.stored_momentum_norm_n_m_s:.3f} N m s"
+            ),
+            obsid=obsid,
+            acs_mode=self.acs.acsmode,
+        )
+
     def _solar_array_drive_telemetry(self) -> list[SolarArrayDriveAngle] | None:
         """Return executed drive angles with stable configured panel identity."""
         state = self.acs.solar_array_drive_state

@@ -47,6 +47,7 @@ from .config import (
     StoredMomentumConfig,
     Surface,
     SurfaceModel,
+    ThrusterDumpConfig,
 )
 from .ditl import (
     DITL,
@@ -188,6 +189,7 @@ __all__ = [
     "StoredMomentumConfig",
     "Surface",
     "SurfaceModel",
+    "ThrusterDumpConfig",
     "StoredMomentumTracker",
     "TOORequest",
     "create_ditl",

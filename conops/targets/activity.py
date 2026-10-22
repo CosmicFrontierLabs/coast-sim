@@ -24,6 +24,8 @@ from .plan_entry import PlanEntry
 
 ACTIVITY_OBSID = 998000
 """Obsids given to activities without one, in order."""
+DESATURATION_OBSID = 997000
+"""Obsids given to the thruster dumps dispatch calls for, in order."""
 
 
 class ScheduledActivity(BaseModel):
@@ -49,6 +51,13 @@ class ScheduledActivity(BaseModel):
     obsid: int | None = Field(
         default=None,
         description="Identifies the activity's plan entries; assigned if None",
+    )
+    desaturation: bool = Field(
+        default=False,
+        description=(
+            "Whether the activity is a thruster momentum dump: the wheels are "
+            "unloaded when it ends"
+        ),
     )
     fixed: bool = Field(
         default=False,
@@ -93,6 +102,7 @@ class ScheduledActivity(BaseModel):
         entry.name = self.name
         entry.instrument_modes = dict(self.instrument_modes)
         entry.fixed_data_gb = float(self.data_gb)
+        entry.desaturation = self.desaturation
         entry.obsid = self.obsid
         entry.obstype = ObsType.ACTIVITY
         entry.ra, entry.dec, entry.roll = attitude

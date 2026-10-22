@@ -390,7 +390,20 @@ component across it and leave the component along it, which turns as the field
 turns round the orbit. ``residual_dipole_body_a_m2`` is the spacecraft's own
 dipole, torqued by the field. Both are reported as sources by name
 (``magnetorquer_unloading``, ``residual_dipole``), and the field itself in body
-coordinates (``geomagnetic_field_body_t``). Its principal moments must be positive and
+coordinates (``geomagnetic_field_body_t``).
+
+The wheels' capacity, ``capacity_n_m_s`` (taken as the same about every axis), and
+``thruster_dump`` (:class:`~conops.config.ThrusterDumpConfig`: a ``duration_seconds``
+hold and the ``residual_fraction`` left in the wheels) give the spacecraft thruster
+dumps. Dispatch calls for one the moment the stored momentum reaches
+``planning_level`` of the capacity: a desaturation activity due at that step, which
+ends the observation under way, holds the attitude the spacecraft has for the dump's
+length, starts no observation meanwhile, and unloads the wheels when it ends. The
+momentum goes on building through the dump, so the level's margin should cover
+what the dump's length adds. The dump waits for a slew under way as any activity
+does. A planned simulation unloads
+the wheels at the end of each plan entry marked ``desaturation``. Without thrusters
+the wheels fill and the telemetry shows it; the planners do not yet place dumps. Its principal moments must be positive and
 satisfy the triangle inequalities; a planar-body equality is allowed, including
 relative rounding of approximately 1.5e-8 (the square root of float64 machine
 epsilon). The named ``INERTIA_RELATIVE_TOLERANCE`` allows roughly eight significant
@@ -443,6 +456,11 @@ cadences without replanning the science schedule.
          solar_radiation_pressure_enabled: true
          magnetorquer_max_dipole_a_m2: 10.0
          magnetorquer_time_constant_s: 1800.0
+         capacity_n_m_s: 4.0
+         planning_level: 0.8
+         thruster_dump:
+           duration_seconds: 120.0
+           residual_fraction: 0.0
          max_sample_interval_s: 10.0
          max_attitude_step_deg: 5.0
          initial_momentum_body_n_m_s: [0.0, 0.0, 0.0]

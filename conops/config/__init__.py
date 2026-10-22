@@ -29,7 +29,7 @@ from .instrument import (
     TelescopeConfig,
     TelescopeType,
 )
-from .momentum import StoredMomentumConfig
+from .momentum import StoredMomentumConfig, ThrusterDumpConfig
 from .observation_categories import ObservationCategories, ObservationCategory
 from .observation_timing import BudgetStep, ObservationTiming
 from .power import PowerDraw
@@ -130,6 +130,7 @@ __all__ = [
     "SpacecraftBus",
     "StoredMomentumConfig",
     "Surface",
+    "ThrusterDumpConfig",
     "SurfaceModel",
     "box_surfaces",
     "guess_surfaces",

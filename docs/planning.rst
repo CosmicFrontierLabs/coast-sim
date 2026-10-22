@@ -161,7 +161,11 @@ How a plan is built
    activity is due, such as one into a charging attitude, delays the activity to the
    slew's end, and the activity then runs its full length from there; an activity that
    cannot move, such as a maintenance window, is ``fixed`` and begins at its start
-   with the slew finishing inside it. An activity's ``instrument_modes`` names what it
+   with the slew finishing inside it. A thruster momentum dump is an activity
+   dispatch calls for itself, when the stored momentum reaches the planning level of
+   the wheels' capacity (see the stored momentum under :doc:`configuration`); its
+   entry is marked ``desaturation`` and the wheels are unloaded when it ends. An
+   activity's ``instrument_modes`` names what it
    uses, such as a calibration lamp's instrument, and its draw is counted during the
    hold; an activity naming none draws every instrument's idle power. Its
    ``data_gb`` is what it puts on the recorder when it begins, such as its frames,

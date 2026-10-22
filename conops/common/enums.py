@@ -9,6 +9,7 @@ DITLEventType = Literal[
     "CONSTRAINT",
     "ERROR",
     "INFO",
+    "MOMENTUM",
     "OBSERVATION",
     "PASS",
     "QUEUE",

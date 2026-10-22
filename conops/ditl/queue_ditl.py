@@ -46,6 +46,7 @@ from ..simulation.passes import Pass, pass_slew_trigger_buffer
 from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
 from ..simulation.slew import Slew
 from ..targets import (
+    DESATURATION_OBSID,
     Plan,
     PlanEntry,
     Pointing,
@@ -281,6 +282,8 @@ class QueueDITL(DITLMixin, DITLStats):
         self._activity_attitude: tuple[float, float, float] = (0.0, 0.0, 0.0)
         self._activity_waiting: ScheduledActivity | None = None
         """The activity due now that waits for the slew under way to end."""
+        self._desaturations = 0
+        """How many thruster dumps dispatch has called for."""
         self._sequence: _SequenceRun | None = None
         """The sequence visit under way, if the observation is one of its steps."""
 
@@ -986,6 +989,7 @@ class QueueDITL(DITLMixin, DITLStats):
             self._end_activity(utime)
             changed = True
         if self._active_activity is None:
+            self._call_for_desaturation(utime)
             due = next(
                 (
                     a
@@ -1014,6 +1018,48 @@ class QueueDITL(DITLMixin, DITLStats):
                 self._begin_activity(due, utime, (ra, dec, roll))
                 changed = True
         return changed
+
+    def _call_for_desaturation(self, utime: float) -> None:
+        """Begin a thruster dump now when the stored momentum has reached
+        the planning level of the capacity: a desaturation activity due at
+        this step, which ends the observation under way and holds the
+        attitude it has for the dump's length. One at a time: none is called
+        for while one waits for a slew or is still to begin."""
+        level = self._dump_level_n_m_s()
+        tracker = self._stored_momentum_tracker
+        if level is None or tracker is None:
+            return
+        if any(
+            a.desaturation and a.begin > self._activity_started for a in self.activities
+        ):
+            return
+        stored = tracker.stored_momentum_norm_n_m_s
+        if stored < level:
+            return
+        dump = self.config.spacecraft_bus.attitude_control.stored_momentum.thruster_dump
+        assert dump is not None
+        activity = ScheduledActivity(
+            name="Desaturation",
+            begin=utime,
+            duration_seconds=dump.duration_seconds,
+            desaturation=True,
+            obsid=DESATURATION_OBSID + self._desaturations,
+        )
+        self._desaturations += 1
+        self.activities = sorted([*self.activities, activity], key=lambda a: a.begin)
+        capacity = (
+            self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_n_m_s
+        )
+        self.log.log_event(
+            utime=utime,
+            event_type="MOMENTUM",
+            description=(
+                f"Stored momentum {stored:.3f} N m s has reached the planning "
+                f"level {level:.3f} of the {capacity} N m s capacity: thruster dump"
+            ),
+            obsid=activity.obsid,
+            acs_mode=self.acs.acsmode,
+        )
 
     def _slew_under_way(self, utime: float) -> bool:
         """Whether the ACS is flying a slew at ``utime``."""
@@ -1073,6 +1119,8 @@ class QueueDITL(DITLMixin, DITLStats):
             acs_mode=self.acs.acsmode,
         )
         self._active_activity = None
+        if activity.desaturation:
+            self._unload_stored_momentum(utime, activity.obsid)
 
     def _ppt_deadline(self) -> float | None:
         """The latest time the observation may begin collecting: its visit

@@ -776,6 +776,8 @@ class DITL(DITLMixin, DITLStats):
                 obsid=entry.obsid,
                 acs_mode=self.acs.acsmode,
             )
+            if entry.desaturation:
+                self._unload_stored_momentum(utime, entry.obsid)
         else:
             self.acs.cancel_pending_slews(entry.obsid)
             self.acs.end_science_observation()

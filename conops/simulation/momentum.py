@@ -357,6 +357,21 @@ class StoredMomentumTracker:
         self._previous_torque_eci_n_m: npt.NDArray[np.float64] | None = None
         self._previous_utime: float | None = None
 
+    def unload(self, residual_fraction: float = 0.0) -> None:
+        """Take the stored momentum out of the wheels, as a thruster dump
+        does, leaving ``residual_fraction`` of it along the same direction."""
+        if not 0.0 <= residual_fraction < 1.0:
+            raise ValueError("residual_fraction must be in [0, 1)")
+        if self._momentum_eci_n_m_s is not None:
+            self._momentum_eci_n_m_s *= residual_fraction
+
+    @property
+    def stored_momentum_norm_n_m_s(self) -> float:
+        """The stored momentum's norm now."""
+        if self._momentum_eci_n_m_s is None:
+            return float(np.linalg.norm(self.initial_momentum_body_n_m_s))
+        return float(np.linalg.norm(self._momentum_eci_n_m_s))
+
     def validate_sample_interval(self, elapsed_s: float) -> None:
         """Reject undersampling without changing integration state."""
         if not np.isfinite(elapsed_s) or elapsed_s <= 0.0:
