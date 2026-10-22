@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..common import ACSMode, ObsType, unixtime2date
 from ..config import MissionConfig
 from ..config.observation_categories import ObservationCategory
+from ..config.observation_timing import ObservationTiming
 from ..config.solar_panel import SolarArrayDriveState
 from ..ditl.ditl_log import DITLLog
 from ..ditl.plan_validator import entry_obstype
@@ -423,6 +424,10 @@ class PriorityScheduler:
             passes=self.passes,
             coverage=self.coverage,
         )
+        for target in self.targets:
+            own = getattr(target, "own_timing", None)
+            if isinstance(own, ObservationTiming):
+                self.ctx.register_timing(int(target.obsid), own)
         self._battery = self._battery_ledger()
         self._gap_charges_cache: dict[
             tuple[object, ...], tuple[list[_Block], Slew | None]
@@ -2134,6 +2139,7 @@ class PriorityScheduler:
             name=target.name,
             instrument_name=telescope.name if telescope is not None else None,
             instrument_modes=dict(target.instrument_modes),
+            own_timing=target.own_timing,
             science_data=target.science_data,
             ra=target.ra,
             dec=target.dec,

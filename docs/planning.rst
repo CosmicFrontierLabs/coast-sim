@@ -94,6 +94,13 @@ for the look-ahead described under dispatch. A plan entry's ``visit`` says which
 window it observes in, and the target records the windows its visits have
 collected in.
 
+A target's ``own_timing`` replaces its category's setup, cleanup and handoff
+budgets for that target alone, calibration steps included: a long dark after one
+deep field is a cleanup step of that target's own timing, with its mode and its
+frames, while the other targets of the category keep the category's budgets. The
+planners, dispatch and the executed plan all take it from the target, and the plan
+records it on the entry.
+
 A target's ``instrument_modes`` names the instruments its observation uses and
 the mode each is in, by name, such as ``{"camera": "SCIENCE"}``; a sequence step
 can name its own. Instruments not named idle for the observation. A target naming

@@ -1088,7 +1088,9 @@ frame before every observation, or a dark after it, is written this way; the
 instruments draw the step's modes during it, the mode telemetry records them, and
 the steps' data is counted with the observation's wherever its science data is,
 in the simulation, the recorder ledger and the data budget. A step's modes are
-checked against the payload when the configuration is made.
+checked against the payload when the configuration is made. A single target can
+carry its own timing with ``own_timing`` on the :class:`~conops.targets.Pointing`,
+in place of its category's (see :doc:`planning`).
 
 .. code-block:: yaml
 

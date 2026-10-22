@@ -12,7 +12,7 @@ from pydantic import (
 from ..common import unixtime2date, unixtime_from
 from ..common.enums import ObsType
 from ..config.acs import AttitudeControlSystem
-from ..config.observation_timing import ObservationTiming, timing_for
+from ..config.observation_timing import ObservationTiming
 from .merit import MeritBreakdown
 from .plan_entry import PlanEntry
 from .sequence import ObservationSequence
@@ -262,6 +262,11 @@ class Pointing(PlanEntry):
         for modes in checks:
             if modes or not named_only:
                 check(modes)
+        if self.own_timing is not None:
+            # The target's own calibration steps, as the configuration's are.
+            for step in (*self.own_timing.setup_steps, *self.own_timing.cleanup_steps):
+                if step.instrument_modes:
+                    check(step.instrument_modes)
 
     def step_pointing(self, index: int) -> "Pointing":
         """The pointing step ``index`` of this target's sequence observes: at
@@ -270,7 +275,7 @@ class Pointing(PlanEntry):
         assert self.sequence is not None
         step = self.sequence.steps[index]
         ra, dec = self.sequence.pointing_of(index, self.ra, self.dec)
-        base = timing_for(self.config, int(self.obsid))
+        base = self.observation_timing
         roll_deg, roll_offset = self._step_roll_request(step.roll_offset_deg)
         pointing = Pointing(
             config=self.config,

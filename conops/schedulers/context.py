@@ -97,6 +97,8 @@ class SchedulingContext:
         observation is not known. :meth:`setup_for` gives an observation's own."""
         self.post_collection_seconds = float(bound.post_collection_seconds)
         """The longest cleanup and handoff any observation can have."""
+        self._own_timings: dict[int, ObservationTiming] = {}
+        """Targets' own budgets, by obsid, in place of their categories'."""
         self._initial_acs: ACS | None = None
         self._initial_attitudes: list[Attitude] = []
         # Quaternion slews do not depend on when they start, so one slew per
@@ -341,9 +343,20 @@ class SchedulingContext:
 
     # ── Observation timing ────────────────────────────────────────────────
 
+    def register_timing(self, obsid: int, timing: ObservationTiming) -> None:
+        """Give observation ``obsid`` its own budgets, in place of its
+        category's, and widen the bounds to cover them."""
+        self._own_timings[int(obsid)] = timing
+        self.setup_seconds = max(self.setup_seconds, float(timing.setup_seconds))
+        self.post_collection_seconds = max(
+            self.post_collection_seconds, float(timing.post_collection_seconds)
+        )
+
     def timing_for(self, obsid: int) -> ObservationTiming:
-        """The setup, cleanup and handoff budgets of observation ``obsid``."""
-        return timing_for(self.config, obsid)
+        """The setup, cleanup and handoff budgets of observation ``obsid``:
+        its own where registered, else its category's."""
+        own = self._own_timings.get(int(obsid))
+        return own if own is not None else timing_for(self.config, obsid)
 
     def setup_for(self, obsid: int) -> float:
         return float(self.timing_for(obsid).setup_seconds)

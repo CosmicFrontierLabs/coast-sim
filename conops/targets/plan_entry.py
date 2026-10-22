@@ -168,6 +168,15 @@ class PlanEntry(BaseModel):
             "scheduled activity's frames, for instance"
         ),
     )
+    own_timing: ObservationTiming | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description=(
+            "This observation's own setup, cleanup and handoff budgets, with "
+            "their calibration steps, in place of its category's: a long dark "
+            "after one deep field, for instance. None: the category's"
+        ),
+    )
     ra: float = 0.0
     dec: float = 0.0
     roll: float = -1.0
@@ -455,8 +464,11 @@ class PlanEntry(BaseModel):
 
     @property
     def observation_timing(self) -> ObservationTiming:
-        """This observation's setup, cleanup and handoff budgets under its
-        configuration (see :func:`~conops.config.observation_timing.timing_for`)."""
+        """This observation's setup, cleanup and handoff budgets: its own
+        where it has them, else its category's under its configuration (see
+        :func:`~conops.config.observation_timing.timing_for`)."""
+        if self.own_timing is not None:
+            return self.own_timing
         return timing_for(self.config, int(self.obsid))
 
     def set_collection_window(self, timing: ObservationTiming) -> None:

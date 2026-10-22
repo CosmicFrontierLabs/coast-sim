@@ -334,8 +334,12 @@ class DITLMixin:
         category's setting."""
 
     def _timing_for(self, entry: PlanEntry) -> ObservationTiming:
-        """The setup, cleanup and handoff budgets of ``entry`` under the run's
-        configuration: its category's where that sets them, else the payload's."""
+        """The setup, cleanup and handoff budgets of ``entry``: its own where
+        it has them, else its category's under the run's configuration, else
+        the payload's."""
+        own = getattr(entry, "own_timing", None)
+        if isinstance(own, ObservationTiming):
+            return own
         return timing_for(self.config, int(getattr(entry, "obsid", 0) or 0))
 
     def _antenna_repoints(self, target: PlanEntry) -> str:

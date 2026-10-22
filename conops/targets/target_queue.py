@@ -191,8 +191,12 @@ class TargetQueue:
         return pointing
 
     def _timing(self, target: Pointing) -> ObservationTiming:
-        """The timing budgets of ``target``: its category's where that sets
-        them, else the queue's, which is the payload's unless changed."""
+        """The timing budgets of ``target``: its own where it has them, else
+        its category's where that sets them, else the queue's, which is the
+        payload's unless changed."""
+        own = getattr(target, "own_timing", None)
+        if isinstance(own, ObservationTiming):
+            return own
         categories = getattr(self.config, "observation_categories", None)
         obsid = getattr(target, "obsid", None)
         # A test double's target has no number for an obsid.
