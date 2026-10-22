@@ -401,7 +401,7 @@ def _extract_observations(
     }
 
     for ppt in ditl.plan:
-        if ppt.obstype == ObsType.GSP:
+        if ppt.obstype in (ObsType.GSP, ObsType.ACTIVITY):
             continue
 
         # Calculate observation start and duration

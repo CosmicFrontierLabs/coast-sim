@@ -3,6 +3,7 @@ from typing import Literal
 
 DITLEventType = Literal[
     "ACS",
+    "ACTIVITY",
     "ANTENNA",
     "CHARGING",
     "CONSTRAINT",
@@ -64,6 +65,7 @@ class ObsType(str, Enum):
     CHARGE = "CHARGE"  # Battery-charging / sun-pointing maneuver
     GSP = "GSP"  # Ground Station Pass
     IDLE = "IDLE"  # Constraint-safe idle hold
+    ACTIVITY = "ACTIVITY"  # Scheduled non-science activity held in IDLE
 
 
 class AntennaType(str, Enum):
