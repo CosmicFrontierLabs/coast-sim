@@ -95,7 +95,7 @@ def _scheduler(
     config = targets[0].config
     assert config is not None
     settings: dict[str, Option] = {
-        "solver_time_limit": 5.0,
+        "solver_time_limit": 0.5,
         "workers": 1,
         "seed": 1,
     }
@@ -198,7 +198,7 @@ class TestPlans:
 
     def test_plan_with_ground_passes_executes_exactly(self) -> None:
         targets = _targets(12, stations=True)
-        scheduler = _scheduler(targets, 12, solver_time_limit=8.0)
+        scheduler = _scheduler(targets, 12)
 
         plan = scheduler.schedule()
 
@@ -664,7 +664,7 @@ class TestDynamicMerit:
         config = self._monitor_config()
         targets = _monitored(config)
 
-        plan = _scheduler(targets, self.HOURS, solver_time_limit=3.0).schedule()
+        plan = _scheduler(targets, self.HOURS).schedule()
 
         visits = _visits(plan, 1)
         assert len(visits) == 3
@@ -680,7 +680,6 @@ class TestDynamicMerit:
         plan = _scheduler(
             _monitored(config),
             self.HOURS,
-            solver_time_limit=3.0,
             reserved_visits={1: T0 + 20 * MIN},
         ).schedule()
 
@@ -705,9 +704,7 @@ class TestDynamicMerit:
             ss_min=60,
         )
 
-        plan = _scheduler(
-            _monitored(config), self.HOURS, solver_time_limit=3.0, locked=[locked]
-        ).schedule()
+        plan = _scheduler(_monitored(config), self.HOURS, locked=[locked]).schedule()
 
         planned = [
             v for v in _visits(plan, 1) if v != (lock_start, lock_start + 10 * MIN)
@@ -720,7 +717,7 @@ class TestDynamicMerit:
         config = self._programs_config()
         targets = _programs(config)
 
-        plan = _scheduler(targets, self.HOURS, solver_time_limit=3.0).schedule()
+        plan = _scheduler(targets, self.HOURS).schedule()
 
         assert _share(plan, 200, 300) > 0.2
         assert (
@@ -731,7 +728,7 @@ class TestDynamicMerit:
         """Each entry's merit counts the program shares the plan delivers before
         it, so a Target of Opportunity must beat that value to interrupt it."""
         config = self._programs_config()
-        scheduler = _scheduler(_programs(config), self.HOURS, solver_time_limit=3.0)
+        scheduler = _scheduler(_programs(config), self.HOURS)
 
         plan = scheduler.schedule()
 
@@ -782,7 +779,7 @@ class TestRollingHorizon:
             end=BEGIN + timedelta(hours=3),
             replan_interval=timedelta(hours=1),
             scheduler=CpSatScheduler,
-            scheduler_options={"solver_time_limit": 3.0, "workers": 1, "seed": 1},
+            scheduler_options={"solver_time_limit": 0.5, "workers": 1, "seed": 1},
         )
         ditl.step_size = 60
 

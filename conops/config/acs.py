@@ -176,6 +176,23 @@ class AttitudeControlSystem(ConfigModel):
             rotation_axis_body,
         )
 
+    def effective_max_slew_rates(self, rotation_axes_body: np.ndarray) -> np.ndarray:
+        """Slew-rate limits along each body-frame axis in an array of them.
+
+        ``rotation_axes_body`` has shape ``(..., 3)``; the result has shape
+        ``(...)``. A zero axis, which is no rotation, gets the scalar limit.
+        """
+        axes = np.asarray(rotation_axes_body, dtype=np.float64)
+        if self.max_slew_rate_body is None:
+            return np.full(axes.shape[:-1], float(self.max_slew_rate))
+        norms = np.linalg.norm(axes, axis=-1)
+        still = norms < 1e-12
+        unit_axes = axes / np.where(still, 1.0, norms)[..., None]
+        limits = np.asarray(self.max_slew_rate_body, dtype=np.float64)
+        with np.errstate(divide="ignore"):
+            rates = 1.0 / np.linalg.norm(unit_axes / limits, axis=-1)
+        return np.where(still, float(self.max_slew_rate), rates)
+
     def motion_time(
         self,
         angle_deg: float,
