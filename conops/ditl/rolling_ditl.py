@@ -516,9 +516,7 @@ class RollingHorizonDITL(DITL):
         horizon_end = min(utime + self.horizon.total_seconds(), self.uend)
         if horizon_end <= start:
             return committed, dropped, list(pinned), 0
-        start_deficit_wh, start_drive_state = self._battery_start(
-            utime, start, leading
-        )
+        start_deficit_wh, start_drive_state = self._battery_start(utime, start, leading)
         scheduler = self.scheduler(
             self.config,
             # Finished and held targets too: the scheduler does not place
