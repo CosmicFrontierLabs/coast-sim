@@ -957,7 +957,9 @@ base merit high enough for its importance.
   or the end of the current visibility window when no later window opens
   before the deadline. A target cannot be selected once its deadline has passed.
   A target with an ``earliest_start`` (``queue.add(..., earliest_start=...)``),
-  the earliest time science collection may begin, cannot be selected before it.
+  the earliest time science collection may begin, cannot be selected before it;
+  dispatch ends a lower-merit snapshot when such a target's window opens, so the
+  target can be selected then (see :doc:`planning`).
 * ``config.targets.cadence_weight`` - Merit added once a target's category
   ``cadence_seconds`` has elapsed since it last collected science, rising
   linearly from ``0`` just after a visit. A target never yet observed gets the

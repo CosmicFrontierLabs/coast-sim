@@ -346,3 +346,86 @@ class TestDeadlineScienceAvailability:
         assert first.timestamp.timestamp() == BEGIN + 60
         assert first.collection_seconds == pytest.approx(15)
         assert ditl.validate_plan_matches_execution() == []
+
+
+# A long, lower-merit request (C) and a higher-merit request (D) whose window
+# opens an hour in and allows ten minutes to start.
+LONG = {
+    "obsid": 12,
+    "name": "C",
+    "ra": 20.0,
+    "dec": 0.0,
+    "merit": 60.0,
+    "exptime": 3 * HOUR,
+    "ss_min": 600,
+    "ss_max": 3 * HOUR,
+}
+TIMED = {
+    "obsid": 13,
+    "name": "D",
+    "ra": 40.0,
+    "dec": 0.0,
+    "merit": 90.0,
+    "exptime": HOUR // 2,
+    "ss_min": HOUR // 2,
+    "ss_max": HOUR // 2,
+    "earliest_start": BEGIN + HOUR,
+    "deadline": BEGIN + HOUR + 600,
+}
+
+
+class TestLookAhead:
+    def test_a_long_observation_ends_when_a_higher_merit_window_opens(self) -> None:
+        ditl = _run([LONG, TIMED], hours=5)
+
+        assert _science_order(ditl) == [12, 13, 12]
+        first, timed = ditl.plan[0], next(e for e in ditl.plan if e.obsid == 13)
+        assert first.obsid == 12
+        assert first.end <= BEGIN + HOUR
+        assert BEGIN + HOUR <= timed.collection_begin <= BEGIN + HOUR + 600
+        assert any(
+            e.description.startswith("Snapshot of 12 ends at")
+            and e.description.endswith("when request 13 opens")
+            for e in ditl.log.events
+        )
+
+    def test_a_lower_merit_window_does_not_shorten_the_observation(self) -> None:
+        """Ranked below the long request, the timed one waits for it and
+        misses its window."""
+        lower = {**TIMED, "merit": 30.0}
+
+        ditl = _run([LONG, lower], hours=5)
+
+        assert _science_order(ditl) == [12]
+        assert ditl.plan[0].end >= BEGIN + 3 * HOUR
+
+    def test_a_shorter_candidate_is_preferred_when_the_minimum_does_not_fit(
+        self,
+    ) -> None:
+        """The long request needs an hour at least, which does not fit before
+        the window opens half an hour in; a ten-minute request does."""
+        hour_min = {**LONG, "ss_min": HOUR}
+        soon = {
+            **TIMED,
+            "earliest_start": BEGIN + HOUR // 2,
+            "deadline": BEGIN + HOUR // 2 + 600,
+        }
+        short = {
+            "obsid": 14,
+            "name": "E",
+            "ra": 30.0,
+            "dec": 0.0,
+            "merit": 40.0,
+            "exptime": 600,
+            "ss_min": 600,
+            "ss_max": 600,
+        }
+
+        ditl = _run([hour_min, soon, short], hours=5)
+
+        assert _science_order(ditl) == [14, 13, 12]
+        assert any(
+            "passed over: their minimum snapshot does not fit before request 13 opens"
+            in e.description
+            for e in ditl.log.events
+        )
