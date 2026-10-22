@@ -327,10 +327,6 @@ The :class:`~conops.config.AttitudeControlSystem` defines slew performance and p
 * ``max_slew_rate_body`` (tuple[float, float, float] | None): Optional body +X/+Y/+Z slew-rate limits in deg/s
 * ``slew_accuracy`` (float): Pointing accuracy after slew completion in degrees
 * ``settle_time`` (float): Time to settle after slew completion in seconds
-* ``roll_only_slew_seconds`` (float, optional): Motion time of a slew that changes roll
-  only, in place of the kinematic time about the boresight; settling is added as for
-  any slew. None takes the kinematic time from the rates, which with per-axis rates
-  already gives the roll axis its own.
 * ``max_roll_from_optimum_deg`` (float, optional): How far a roll a target asks for
   (``roll_deg`` or ``roll_offset_deg`` on the :class:`~conops.targets.Pointing`) may
   differ from the power-optimal roll, in degrees either way. An offset beyond it is

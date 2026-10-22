@@ -53,15 +53,6 @@ class AttitudeControlSystem(ConfigModel):
     settle_time: float = Field(
         default=120.0, description="Time to settle after slew completion in seconds"
     )
-    roll_only_slew_seconds: float | None = Field(
-        default=None,
-        ge=0.0,
-        description=(
-            "Motion time of a slew that changes roll only, in seconds, in place "
-            "of the kinematic time about the boresight; settling is added as "
-            "for any slew. None: the kinematic time from the rates."
-        ),
-    )
     max_roll_from_optimum_deg: float | None = Field(
         default=None,
         ge=0.0,

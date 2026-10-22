@@ -291,35 +291,8 @@ class Slew(BaseModel):
         roll_diff = self._shortest_roll_diff(self.startroll, self.endroll)
         return (self.startroll + f * roll_diff) % 360
 
-    @property
-    def is_roll_only(self) -> bool:
-        """Whether this slew keeps its boresight and changes only the roll."""
-        same_boresight = (
-            abs(float(self.startra) - float(self.endra)) < 1e-9
-            and abs(float(self.startdec) - float(self.enddec)) < 1e-9
-        )
-        roll_change = abs(
-            (float(self.endroll) - float(self.startroll) + 180.0) % 360.0 - 180.0
-        )
-        return same_boresight and roll_change > 1e-9
-
     @staticmethod
     def duration_upper_bound(acs_config: AttitudeControlSystem) -> int:
-        """Bound any path from the selected algorithm, independent of epoch:
-        the kinematic bound, or a roll-only slew's own time where that is
-        longer."""
-        bound = Slew._kinematic_duration_upper_bound(acs_config)
-        if acs_config.roll_only_slew_seconds is not None:
-            bound = max(
-                bound,
-                scheduled_slew_time(
-                    acs_config.roll_only_slew_seconds + acs_config.settle_time
-                ),
-            )
-        return bound
-
-    @staticmethod
-    def _kinematic_duration_upper_bound(acs_config: AttitudeControlSystem) -> int:
         """Bound any path from the selected algorithm, independent of epoch.
 
         Each shortest quaternion segment is at most 180 degrees. Using the
@@ -385,13 +358,7 @@ class Slew(BaseModel):
         assert self.acs_config is not None, (
             "ACS config must be set to calculate slew time"
         )
-        roll_only_seconds = self.acs_config.roll_only_slew_seconds
-        if distance > 0.0 and roll_only_seconds is not None and self.is_roll_only:
-            # A roll about the boresight has its own motion time.
-            self.slewtime = scheduled_slew_time(
-                roll_only_seconds + self.acs_config.settle_time
-            )
-        elif len(self._slew_segments) > 1:
+        if len(self._slew_segments) > 1:
             if distance <= 0.0:
                 self.slewtime = 0
             else:
