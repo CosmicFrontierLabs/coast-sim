@@ -709,7 +709,9 @@ class QueueDITL(DITLMixin, DITLStats):
     def _too_cleanup_end(self, utime: float) -> float:
         """Return the earliest task end if collection stops for a TOO now."""
         ppt = self.ppt
-        post_collection = self.config.payload.observation_timing.post_collection_seconds
+        post_collection = (
+            self._timing_for(ppt).post_collection_seconds if ppt is not None else 0.0
+        )
         if (
             ppt is None
             or ppt.collection_begin is None
@@ -947,9 +949,9 @@ class QueueDITL(DITLMixin, DITLStats):
         has not. This lets us stop collection before charging without delaying
         the charge command or retroactively subtracting generated data.
         """
-        timing = self.config.payload.observation_timing
         if self.ppt is None or self.ppt.collection_end is None:
             return
+        timing = self._timing_for(self.ppt)
         deadline = self._next_charge_science_deadline(utime + self.step_size)
         if deadline is None or deadline >= self.ppt.end:
             return
@@ -1189,8 +1191,7 @@ class QueueDITL(DITLMixin, DITLStats):
             assert entry.collection_end is not None
             cutoff = max(
                 entry.collection_begin,
-                end_time
-                - self.config.payload.observation_timing.post_collection_seconds,
+                end_time - self._timing_for(entry).post_collection_seconds,
             )
             # Future collection can be cancelled, but already executed collection
             # cannot be relabelled as cleanup to make an interruption fit.
@@ -1513,8 +1514,7 @@ class QueueDITL(DITLMixin, DITLStats):
             if entry.collection_end is None:
                 entry.end = int(slew.slewstart + slew.slewtime + entry.ss_max)
         if entry.config is not None:
-            timing = entry.config.payload.observation_timing
-            entry.set_collection_window(timing)
+            entry.set_collection_window(entry.observation_timing)
 
     @staticmethod
     def _entry_matches_science_slew(entry: PlanEntry, slew: Slew) -> bool:
@@ -2923,7 +2923,7 @@ class QueueDITL(DITLMixin, DITLStats):
             target_roll=target_roll,
         )
         available_collect_time = (
-            deadline - slew_end - self.config.payload.observation_timing.total_seconds
+            deadline - slew_end - self._timing_for(self.ppt).total_seconds
         )
         if available_collect_time >= snapshot_min_seconds(self.ppt):
             return False
@@ -3186,7 +3186,7 @@ class QueueDITL(DITLMixin, DITLStats):
             slew_end = execution_time + slew.slewtime
             collection_start = self._earliest_science_start(
                 slew_end,
-                slew_end + self.config.payload.observation_timing.setup_seconds,
+                slew_end + self._timing_for(self.ppt).setup_seconds,
             )
             if self.ppt.deadline is not None and collection_start > self.ppt.deadline:
                 self.log.log_event(
@@ -3230,7 +3230,7 @@ class QueueDITL(DITLMixin, DITLStats):
             obs_val_end = min(
                 obs_start_time
                 + snapshot_min_seconds(self.ppt)
-                + self.config.payload.observation_timing.total_seconds,
+                + self._timing_for(self.ppt).total_seconds,
                 ephem_end,
             )
             violation = self._check_locked_roll_window(
@@ -3290,7 +3290,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 return None
 
             self._apply_slew_metadata(self.ppt, slew, update_end=True)
-            timing = self.config.payload.observation_timing
+            timing = self._timing_for(self.ppt)
             deadline, _ = self._next_science_deadline(
                 slew_end, current_time=utime, target_roll=slew.endroll
             )

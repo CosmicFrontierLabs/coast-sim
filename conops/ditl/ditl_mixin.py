@@ -13,6 +13,7 @@ from conops.common.vector import quaternion_attitude_delta
 from conops.config.groundstation import GroundStation, effective_downlink_rate_mbps
 
 from ..config import FaultManagementRun, MissionConfig, SolarArrayDriveState
+from ..config.observation_timing import ObservationTiming, timing_for
 from ..simulation.acs import ACS
 from ..simulation.coverage import StationCoverage
 from ..simulation.momentum import MomentumSample, StoredMomentumTracker
@@ -270,6 +271,11 @@ class DITLMixin:
         """Each antenna repoint that fell in an observation whose category
         reports or forbids them: when, the observation's obsid, and the
         category's setting."""
+
+    def _timing_for(self, entry: PlanEntry) -> ObservationTiming:
+        """The setup, cleanup and handoff budgets of ``entry`` under the run's
+        configuration: its category's where that sets them, else the payload's."""
+        return timing_for(self.config, int(getattr(entry, "obsid", 0) or 0))
 
     def _antenna_repoints(self, target: PlanEntry) -> str:
         """The category setting for antenna repoints during ``target``."""
