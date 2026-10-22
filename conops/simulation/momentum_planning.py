@@ -175,7 +175,7 @@ class MomentumObservationPlanner:
             return None
         preferred = self.sim._ppt_optimum_roll(target, start)
         rolls = dict.fromkeys([preferred, *range(0, 360, self.settings.roll_step_deg)])
-        timing = self.sim._timing_for(target)
+        timing = self.sim._ppt_timing(target)
         best: MomentumObservation | None = None
         best_collection = -1.0
         for roll in rolls:
