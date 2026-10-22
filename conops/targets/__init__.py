@@ -1,3 +1,4 @@
+from .activity import ACTIVITY_OBSID, ScheduledActivity, assign_obsids
 from .plan import (
     AttitudeSampleSchema,
     AttitudeTimeseriesSchema,
@@ -30,6 +31,9 @@ from .pointing import Pointing
 from .target_queue import Queue, TargetQueue, TargetSlewEstimate
 
 __all__ = [
+    "ACTIVITY_OBSID",
+    "ScheduledActivity",
+    "assign_obsids",
     "PlanEntry",
     "TargetAttitudeSchema",
     "AttitudeRotationSchema",

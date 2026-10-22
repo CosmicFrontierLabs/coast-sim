@@ -1,5 +1,5 @@
 from bisect import bisect_left, bisect_right
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import copy, deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -48,7 +48,15 @@ from ..simulation.momentum_planning import MomentumObservationPlanner
 from ..simulation.passes import Pass, pass_slew_trigger_buffer
 from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
 from ..simulation.slew import Slew
-from ..targets import Plan, PlanEntry, Pointing, Queue, TargetSlewEstimate
+from ..targets import (
+    Plan,
+    PlanEntry,
+    Pointing,
+    Queue,
+    ScheduledActivity,
+    TargetSlewEstimate,
+    assign_obsids,
+)
 from ..targets.merit import MeritBreakdown, MeritModel
 from ..targets.plan_entry import snapshot_min_seconds
 from .ditl_log import DITLLog
@@ -197,6 +205,7 @@ class QueueDITL(DITLMixin, DITLStats):
         calculate_field_of_regard: bool = False,
         allocator: LongRangeAllocator | None = None,
         allocation_bonus: float = 0.5,
+        activities: Sequence[ScheduledActivity] = (),
     ) -> None:
         """Initialize a queue-driven DITL simulation.
 
@@ -254,6 +263,14 @@ class QueueDITL(DITLMixin, DITLStats):
 
         # Event log
         self.log = DITLLog()
+
+        self.activities = assign_obsids(activities)
+        """Fixed-time activities, in time order: the observation under way
+        ends when one begins, the spacecraft holds its attitude in IDLE for
+        its length, and no observation starts before it ends."""
+        self._active_activity: ScheduledActivity | None = None
+        self._activity_started: float = 0.0
+        self._activity_attitude: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
         # TOO (Target of Opportunity) register - holds pending TOOs
         self.too_register: list[TOORequest] = []
@@ -989,6 +1006,12 @@ class QueueDITL(DITLMixin, DITLStats):
                 self._sync_acs_slew_metadata()
                 mode = self.acs.get_mode(utime)
 
+            # Begin or end a scheduled activity due now
+            if self._manage_activities(utime, ra, dec, roll):
+                ra, dec, roll, obsid = self.acs.pointing(utime)
+                self._sync_acs_slew_metadata()
+                mode = self.acs.get_mode(utime)
+
             # Handle spacecraft operations based on current mode
             self._handle_mode_operations(mode, utime, ra, dec)
 
@@ -1036,6 +1059,8 @@ class QueueDITL(DITLMixin, DITLStats):
             self.acs._advance_attitude(self.uend)
         if self.plan and self.ppt is not None:
             self._close_last_plan_entry(self.uend)
+        if self._active_activity is not None:
+            self._end_activity(self.uend)
 
         attitude_fault = any(
             event.name
@@ -1076,6 +1101,76 @@ class QueueDITL(DITLMixin, DITLStats):
                 acs_mode=self.acs.acsmode,
             )
         return not attitude_fault
+
+    # ── Scheduled activities ──────────────────────────────────────────────
+
+    def _manage_activities(
+        self, utime: float, ra: float, dec: float, roll: float
+    ) -> bool:
+        """End the activity under way once it is over, and begin the one due
+        now. Returns whether the spacecraft's state changed."""
+        changed = False
+        active = self._active_activity
+        if active is not None and utime >= active.end:
+            self._end_activity(utime)
+            changed = True
+        if self._active_activity is None:
+            due = next(
+                (a for a in self.activities if a.begin <= utime < a.end),
+                None,
+            )
+            if due is not None and due.begin > self._activity_started:
+                self._begin_activity(due, utime, (ra, dec, roll))
+                changed = True
+        return changed
+
+    def _begin_activity(
+        self,
+        activity: ScheduledActivity,
+        utime: float,
+        attitude: tuple[float, float, float],
+    ) -> None:
+        if self.ppt is not None:
+            if self.ppt == self.charging_ppt:
+                self._terminate_charging_ppt(utime)
+            else:
+                self._terminate_ppt(
+                    utime,
+                    reason=f"Scheduled activity {activity.name} begins, ending observation",
+                    interrupted=True,
+                )
+        self.acs.end_science_observation()
+        self._active_activity = activity
+        self._activity_started = utime
+        self._activity_attitude = attitude
+        self.log.log_event(
+            utime=utime,
+            event_type="ACTIVITY",
+            description=f"Scheduled activity {activity.name} begins",
+            obsid=activity.obsid,
+            acs_mode=self.acs.acsmode,
+        )
+
+    def _end_activity(self, utime: float) -> None:
+        activity = self._active_activity
+        assert activity is not None
+        entry = activity.plan_entry(
+            self.config, self._activity_attitude, begin=self._activity_started
+        )
+        entry.end = min(utime, activity.end)
+        self.plan.append(entry)
+        self.log.log_event(
+            utime=utime,
+            event_type="ACTIVITY",
+            description=f"Scheduled activity {activity.name} ends",
+            obsid=activity.obsid,
+            acs_mode=self.acs.acsmode,
+        )
+        self._active_activity = None
+
+    def _next_activity_begin(self, after: float) -> float | None:
+        """When the next scheduled activity begins after ``after``."""
+        return next((a.begin for a in self.activities if a.begin > after), None)
 
     def _handle_data_management(self, utime: float, mode: ACSMode) -> None:
         """Handle data generation during observations and downlink during passes."""
@@ -1871,7 +1966,7 @@ class QueueDITL(DITLMixin, DITLStats):
         self._manage_ppt_lifecycle(utime, mode)
 
         # Fetch new PPT if none is active
-        if self.ppt is None:
+        if self.ppt is None and self._active_activity is None:
             if self._gsp_activity_in_progress(utime):
                 self._ppt_unavailable = None
                 return
@@ -3089,6 +3184,9 @@ class QueueDITL(DITLMixin, DITLStats):
         deadlines: list[tuple[float, str]] = [
             (deadline_inputs.simulation_end, "simulation end")
         ]
+        activity_begin = self._next_activity_begin(slew_end)
+        if activity_begin is not None:
+            deadlines.append((activity_begin, "scheduled activity"))
 
         visibility_end = self._current_ppt_visibility_deadline(slew_end, target=target)
         if visibility_end is not None:
