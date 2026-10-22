@@ -132,6 +132,13 @@ class Pointing(PlanEntry):
                 self.exptime = self.visits * science
         return self
 
+    @model_validator(mode="after")
+    def _instrument_modes_are_known(self) -> "Pointing":
+        """A request names instruments the payload has, in modes they define."""
+        if self.instrument_modes and self.config is not None:
+            self.config.payload.check_instrument_modes(self.instrument_modes)
+        return self
+
     def step_pointing(self, index: int) -> "Pointing":
         """The pointing step ``index`` of this target's sequence observes: at
         the step's pointing and with its instrument, for its duration, carrying
@@ -154,6 +161,11 @@ class Pointing(PlanEntry):
                 else self.instrument_name
             ),
             science_data=dict(self.science_data) if step.science else {},
+            instrument_modes=dict(
+                step.instrument_modes
+                if step.instrument_modes is not None
+                else self.instrument_modes
+            ),
             # A step is never selected on its own, so it has no minimum: what
             # it collects to the tick is kept, and the visit checks the rest.
             ss_min=0,

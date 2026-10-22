@@ -1288,10 +1288,11 @@ class CpSatScheduler(LocalSearchScheduler):
             None,
         )
         generation = 0.0 if lit is None else ledger.generation_watts(attitude, lit)
+        modes = target.effective_instrument_modes()
         sunlit = int(
-            np.ceil(ledger._watts(ACSMode.SCIENCE, False)) - np.floor(generation)
+            np.ceil(ledger._watts(ACSMode.SCIENCE, False, modes)) - np.floor(generation)
         )
-        eclipse = int(np.ceil(ledger._watts(ACSMode.SCIENCE, True)))
+        eclipse = int(np.ceil(ledger._watts(ACSMode.SCIENCE, True, modes)))
         return (sunlit, eclipse)
 
     def _pass_tasks(

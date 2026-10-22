@@ -21,6 +21,7 @@ from .geometry import PanelGeometry, compute_shadow_fraction
 from .groundstation import GroundStation, GroundStationRegistry
 from .instrument import (
     Instrument,
+    InstrumentMode,
     InstrumentMounting,
     Payload,
     Telescope,
@@ -93,6 +94,7 @@ __all__ = [
     "GroundStationRegistry",
     "Heater",
     "Instrument",
+    "InstrumentMode",
     "InstrumentMounting",
     "Telescope",
     "TelescopeConfig",

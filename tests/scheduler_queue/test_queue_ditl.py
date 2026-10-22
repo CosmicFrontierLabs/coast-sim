@@ -2407,7 +2407,7 @@ class TestRecordSpacecraftState:
             in_eclipse=False,
         )
         queue_ditl.payload.power.assert_called_once_with(
-            mode=ACSMode.SCIENCE, in_eclipse=False
+            mode=ACSMode.SCIENCE, in_eclipse=False, instrument_modes=None
         )
 
     def test_record_state_power_sum(self, queue_ditl) -> None:

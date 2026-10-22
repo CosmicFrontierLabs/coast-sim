@@ -39,6 +39,7 @@ from ..config.constraint import (
     attitude_constraint_names_for_scopes,
     mounted_science_attitude_constraint_names,
 )
+from ..config.instrument import SCIENCE_MODE
 from ..config.observation_timing import ObservationTiming, timing_for
 from ..simulation.saa import SAA
 
@@ -126,6 +127,15 @@ class PlanEntry(BaseModel):
     ephem: rust_ephem.Ephemeris | None = Field(default=None, exclude=True)
     name: str = ""
     instrument_name: str | None = None
+    instrument_modes: dict[str, str] = Field(
+        default_factory=dict,
+        exclude_if=lambda v: not v,
+        description=(
+            "The instruments this observation uses and the mode each is in, "
+            "by name; instruments not named idle. Empty: the instrument the "
+            "observation names, or every instrument with modes, in SCIENCE"
+        ),
+    )
     science_data: dict[str, ScienceData] = Field(
         default_factory=dict,
         exclude_if=lambda v: not v,
@@ -518,6 +528,23 @@ class PlanEntry(BaseModel):
                 roll_source=roll_source,
             ),
         )
+
+    def effective_instrument_modes(self) -> dict[str, str]:
+        """The mode each instrument is in during this observation, by name:
+        as named, else the named instrument in ``SCIENCE``, else every
+        instrument with modes in ``SCIENCE``. Instruments left out idle."""
+        if self.instrument_modes:
+            return dict(self.instrument_modes)
+        if self.instrument_name is not None:
+            return {self.instrument_name: SCIENCE_MODE}
+        if self.config is None:
+            return {}
+        with_modes = getattr(self.config.payload, "instruments_with_modes", None)
+        names = with_modes() if callable(with_modes) else None
+        # A test double's payload has no instruments.
+        if not isinstance(names, list):
+            return {}
+        return dict.fromkeys(names, SCIENCE_MODE)
 
     def science_telescope(self) -> Telescope | None:
         """Return the telescope assigned to this target, if configured."""

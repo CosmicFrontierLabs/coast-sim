@@ -123,6 +123,7 @@ class TargetQueue:
         science_data: Mapping[str, ScienceData] | None = None,
         sequence: ObservationSequence | None = None,
         visits: int = 1,
+        instrument_modes: Mapping[str, str] | None = None,
     ) -> Pointing:
         """Add a pointing target to the queue.
 
@@ -143,6 +144,8 @@ class TargetQueue:
                 may begin
             science_data: Science data observing the target generates, keyed
                 by instrument name; other instruments generate their own
+            instrument_modes: The instruments the observation uses and the
+                mode each is in, by name; instruments not named idle
 
         Returns:
             The added target.
@@ -165,6 +168,7 @@ class TargetQueue:
             science_data=dict(science_data or {}),
             sequence=sequence,
             visits=visits,
+            instrument_modes=dict(instrument_modes or {}),
         )
         pointing.exptime = (
             visits * sequence.science_seconds if sequence is not None else exptime

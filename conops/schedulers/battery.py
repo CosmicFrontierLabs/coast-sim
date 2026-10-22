@@ -36,7 +36,7 @@ at the drive angles the plan reaches it with.
 from __future__ import annotations
 
 from bisect import bisect_left
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import NamedTuple
 
 import numpy as np
@@ -83,7 +83,10 @@ Additions = tuple[Addition, ...]
 Angles = tuple[float | None, ...]
 """Solar-array drive angles, one per panel; None for an undriven panel."""
 
-_Profile = tuple[tuple[ACSMode, Attitude | None], ...]
+Modes = Mapping[str, str] | None
+"""The mode each instrument is in during an observation, by name; None
+outside observations."""
+_Profile = tuple[tuple[ACSMode, Attitude | None, Modes], ...]
 """The mode and attitude held at each grid step of an addition."""
 
 
@@ -240,11 +243,14 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
 
     # ── Power ─────────────────────────────────────────────────────────────
 
-    def _watts(self, mode: ACSMode, in_eclipse: bool) -> float:
-        """The bus's and payload's draw in ``mode``, in watts."""
+    def _watts(self, mode: ACSMode, in_eclipse: bool, modes: Modes = None) -> float:
+        """The bus's and payload's draw in ``mode``, in watts, the
+        instruments in ``modes`` during an observation."""
         return self.config.spacecraft_bus.power(
             mode.value, in_eclipse=in_eclipse
-        ) + self.config.payload.power(mode.value, in_eclipse=in_eclipse)
+        ) + self.config.payload.power(
+            mode.value, in_eclipse=in_eclipse, instrument_modes=modes
+        )
 
     def _integrate(
         self, begin: float, end: float, watts_at: Callable[[float], float]
@@ -449,6 +455,7 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
             rest,
             path_start,
             track is not None,
+            tuple(sorted(entry.effective_instrument_modes().items())),
         )
         if key in self._addition_cache:
             return self._addition_cache[key]
@@ -490,7 +497,9 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
                     return (float(track_ra), float(track_dec), float(track_roll))
             return own
 
-        def held_at(utime: float) -> tuple[ACSMode, Attitude | None]:
+        modes = entry.effective_instrument_modes() if mode is ACSMode.SCIENCE else None
+
+        def held_at(utime: float) -> tuple[ACSMode, Attitude | None, Modes]:
             if utime < arrival:
                 # ACS reports the slew into a contact as PASS, and the slew
                 # into anything else as SLEWING.
@@ -499,7 +508,11 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
                 step_mode = ACSMode.SLEWING
             else:
                 step_mode = mode
-            return step_mode, attitude_at(utime)
+            return (
+                step_mode,
+                attitude_at(utime),
+                modes if step_mode is ACSMode.SCIENCE else None,
+            )
 
         addition = self._addition_over(begin, braking, held_at)
         self._addition_cache[key] = addition
@@ -530,6 +543,7 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
                     float(step.ra),
                     float(step.dec),
                     float(step.roll),
+                    tuple(sorted(step.effective_instrument_modes().items())),
                 )
                 for step in steps
             ),
@@ -547,19 +561,20 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
                     float(step.end),
                     slew.attitude if slew is not None else None,
                     step.target_body_attitude(),
+                    step.effective_instrument_modes(),
                 )
             )
 
-        def held_at(utime: float) -> tuple[ACSMode, Attitude | None]:
-            for span_begin, arrival, span_end, path, own in spans:
+        def held_at(utime: float) -> tuple[ACSMode, Attitude | None, Modes]:
+            for span_begin, arrival, span_end, path, own, modes in spans:
                 if span_begin <= utime < arrival:
                     if path is None:
-                        return ACSMode.SLEWING, None
+                        return ACSMode.SLEWING, None, None
                     ra, dec, roll = path(utime)
-                    return ACSMode.SLEWING, (float(ra), float(dec), float(roll))
+                    return ACSMode.SLEWING, (float(ra), float(dec), float(roll)), None
                 if arrival <= utime < span_end:
-                    return ACSMode.SCIENCE, own
-            return ACSMode.SLEWING, None
+                    return ACSMode.SCIENCE, own, modes
+            return ACSMode.SLEWING, None, None
 
         addition = self._addition_over(begin, end, held_at)
         self._addition_cache[key] = addition
@@ -577,7 +592,7 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
         if key in self._addition_cache:
             return self._addition_cache[key]
         held = (float(ra), float(dec), float(roll))
-        addition = self._addition_over(begin, end, lambda utime: (mode, held))
+        addition = self._addition_over(begin, end, lambda utime: (mode, held, None))
         self._addition_cache[key] = addition
         return addition
 
@@ -585,7 +600,7 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
         self,
         begin: float,
         end: float,
-        held_at: Callable[[float], tuple[ACSMode, Attitude | None]],
+        held_at: Callable[[float], tuple[ACSMode, Attitude | None, Modes]],
     ) -> Addition:
         """An addition over ``[begin, end)`` holding what ``held_at`` says at
         each grid step: the mode's draw less what the panels generate at the
@@ -607,9 +622,9 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
         drive angles it leaves."""
         deltas = []
         utime = self._first_step(begin)
-        for mode, attitude in profile:
+        for mode, attitude, modes in profile:
             watts, angles = self._step_generation(utime, mode, attitude, angles)
-            draw = self._watts(mode, self.in_eclipse(utime)) - watts
+            draw = self._watts(mode, self.in_eclipse(utime), modes) - watts
             deltas.append(draw * self.step_size / 3600.0)
             utime += self.step_size
         return tuple(deltas), angles
@@ -853,7 +868,7 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
                         else ()
                     )
                     step = self._first_step(addition.begin)
-                    for k, (mode, attitude) in enumerate(profile):
+                    for k, (mode, attitude, _) in enumerate(profile):
                         if step >= utime:
                             break
                         _, angles = self._step_generation(step, mode, attitude, angles)

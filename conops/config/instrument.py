@@ -117,6 +117,30 @@ class TelescopeConfig(ConfigModel):
         return 206265.0 / (self.focal_length_m * 1e6)
 
 
+IDLE_MODE = "IDLE"
+"""The mode an instrument with modes is in when no observation uses it."""
+SCIENCE_MODE = "SCIENCE"
+"""The mode an instrument with modes observes in unless a request names another."""
+
+
+class InstrumentMode(ConfigModel):
+    """One operating mode of an instrument, with its power draw."""
+
+    name: str = Field(description="Mode name, such as IDLE or SCIENCE")
+    power_w: float = Field(ge=0.0, description="Power draw in the mode, in watts")
+    eclipse_power_w: float | None = Field(
+        default=None,
+        ge=0.0,
+        description="Power draw in the mode during eclipse, in watts; None: power_w",
+    )
+
+    def power(self, in_eclipse: bool = False) -> float:
+        """The mode's draw in watts."""
+        if in_eclipse and self.eclipse_power_w is not None:
+            return self.eclipse_power_w
+        return self.power_w
+
+
 class Instrument(ConfigModel):
     """A spacecraft instrument with power consumption and data generation characteristics.
 
@@ -124,6 +148,12 @@ class Instrument(ConfigModel):
         instrument_type: Discriminator tag for polymorphic payload deserialization.
         name: Instrument name/identifier.
         power_draw: Power draw characteristics (nominal, peak, mode-specific).
+        modes: Operating modes with their power draws. With modes, the
+            instrument draws its mode's power: the mode an observation names
+            for it, ``SCIENCE`` when the observation uses it without naming
+            one, a mode named like the ACS mode if the instrument defines
+            one, and ``IDLE`` otherwise; ``power_draw`` is then unused.
+            Without modes it draws ``power_draw`` by ACS mode, as before.
         heater: Optional heater system.
         data_generation: Data generation characteristics.
     """
@@ -141,6 +171,13 @@ class Instrument(ConfigModel):
         ),
         description="Power draw characteristics for the instrument",
     )
+    modes: list[InstrumentMode] = Field(
+        default_factory=list,
+        description=(
+            "Operating modes with their power draws; at least IDLE and SCIENCE "
+            "when any are given. Empty: power_draw by ACS mode applies"
+        ),
+    )
     heater: Heater | None = Field(
         default=None, description="Optional heater system for the instrument"
     )
@@ -148,17 +185,70 @@ class Instrument(ConfigModel):
         default_factory=DataGeneration, description="Data generation characteristics"
     )
 
-    def power(self, mode: int | None = None, in_eclipse: bool = False) -> float:
+    @field_validator("modes")
+    @classmethod
+    def _modes_are_named_once_with_idle_and_science(
+        cls, modes: list[InstrumentMode]
+    ) -> list[InstrumentMode]:
+        if not modes:
+            return modes
+        names = [mode.name for mode in modes]
+        if len(set(names)) != len(names):
+            raise ValueError("instrument modes must have distinct names")
+        for required in (IDLE_MODE, SCIENCE_MODE):
+            if required not in names:
+                raise ValueError(f"instrument modes must include {required}")
+        return modes
+
+    def mode(self, name: str) -> InstrumentMode | None:
+        """The mode called ``name``, if the instrument defines it."""
+        return next((mode for mode in self.modes if mode.name == name), None)
+
+    def mode_in(self, acs_mode: int | None, instrument_mode: str | None) -> str:
+        """The mode the instrument is in: ``instrument_mode``, named for it
+        by the observation; else, outside science, a mode named like the ACS
+        mode, if the instrument defines one; else ``IDLE``. During science an
+        instrument the observation does not name idles."""
+        if instrument_mode is not None:
+            return instrument_mode
+        if acs_mode is not None:
+            try:
+                named = ACSMode(acs_mode).name
+            except ValueError:
+                named = None
+            if (
+                named is not None
+                and named != SCIENCE_MODE
+                and self.mode(named) is not None
+            ):
+                return named
+        return IDLE_MODE
+
+    def power(
+        self,
+        mode: int | None = None,
+        in_eclipse: bool = False,
+        instrument_mode: str | None = None,
+    ) -> float:
         """Get the power draw for the instrument in the given mode.
 
         Args:
-            mode: Operational mode (None for nominal)
+            mode: ACS mode (None for nominal)
             in_eclipse: Whether spacecraft is in eclipse
+            instrument_mode: The instrument's own mode, named for it by the
+                observation in progress; None when no observation uses it
 
         Returns:
             Total power draw in watts
         """
-        base_power = self.power_draw.power(mode, in_eclipse=in_eclipse)
+        if self.modes:
+            name = self.mode_in(mode, instrument_mode)
+            own = self.mode(name)
+            if own is None:
+                raise ValueError(f"instrument {self.name!r} has no mode {name!r}")
+            base_power = own.power(in_eclipse)
+        else:
+            base_power = self.power_draw.power(mode, in_eclipse=in_eclipse)
         heater_power = (
             self.heater.power(mode, in_eclipse=in_eclipse) if self.heater else 0.0
         )
@@ -508,20 +598,58 @@ class Payload(ConfigModel):
             result.append(item)
         return result
 
-    def power(self, mode: int | None = None, in_eclipse: bool = False) -> float:
+    def power(
+        self,
+        mode: int | None = None,
+        in_eclipse: bool = False,
+        instrument_modes: Mapping[str, str] | None = None,
+    ) -> float:
         """Get the total power draw for all instruments in the payload in the given mode.
 
         Args:
-            mode: Operational mode (None for nominal)
+            mode: ACS mode (None for nominal)
             in_eclipse: Whether spacecraft is in eclipse
+            instrument_modes: The mode each instrument is in during the
+                observation in progress, by name; instruments not named,
+                or all of them when None, are in no observation
 
         Returns:
             Total power draw in watts
         """
         return sum(
-            instrument.power(mode, in_eclipse=in_eclipse)
+            instrument.power(
+                mode,
+                in_eclipse=in_eclipse,
+                instrument_mode=(
+                    instrument_modes.get(instrument.name)
+                    if instrument_modes is not None
+                    else None
+                ),
+            )
             for instrument in self.instruments
         )
+
+    def check_instrument_modes(self, instrument_modes: Mapping[str, str]) -> None:
+        """Raise if a mode names an instrument the payload lacks, or a mode
+        the instrument does not define; an instrument without modes may be
+        named in ``IDLE`` or ``SCIENCE`` only."""
+        by_name = {instrument.name: instrument for instrument in self.instruments}
+        for name, mode in instrument_modes.items():
+            instrument = by_name.get(name)
+            if instrument is None:
+                raise ValueError(f"no instrument {name!r} in the payload")
+            if instrument.modes:
+                if instrument.mode(mode) is None:
+                    raise ValueError(f"instrument {name!r} has no mode {mode!r}")
+            elif mode not in (IDLE_MODE, SCIENCE_MODE):
+                raise ValueError(
+                    f"instrument {name!r} has no modes; {mode!r} is not one of "
+                    f"{IDLE_MODE} and {SCIENCE_MODE}"
+                )
+
+    def instruments_with_modes(self) -> list[str]:
+        """The names of the instruments that define modes."""
+        return [instrument.name for instrument in self.instruments if instrument.modes]
 
     def total_data_rate_gbps(self) -> float:
         """Get the total data generation rate across all instruments.
