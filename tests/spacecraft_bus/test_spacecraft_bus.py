@@ -161,6 +161,34 @@ class TestAttitudeControlSystem:
         assert coupled_rate * xy_axis[0] == pytest.approx(np.sqrt(0.02))
         assert coupled_rate * xy_axis[1] == pytest.approx(np.sqrt(0.02))
 
+    def test_directional_rates_over_an_array_of_axes(self):
+        acs = AttitudeControlSystem(
+            max_slew_rate=1.5, max_slew_rate_body=(0.2, 0.2, 2.0)
+        )
+        axes = np.array(
+            [
+                [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+                [[np.sqrt(0.5), np.sqrt(0.5), 0.0], [0.0, 0.0, 0.0]],
+            ]
+        )
+
+        rates = acs.effective_max_slew_rates(axes)
+
+        assert rates.shape == (2, 2)
+        assert rates[0, 0] == pytest.approx(acs.effective_max_slew_rate(axes[0, 0]))
+        assert rates[0, 1] == pytest.approx(acs.effective_max_slew_rate(axes[0, 1]))
+        assert rates[1, 0] == pytest.approx(acs.effective_max_slew_rate(axes[1, 0]))
+        # No rotation has no axis; it gets the scalar limit rather than an error.
+        assert rates[1, 1] == pytest.approx(1.5)
+
+    def test_directional_rates_without_body_limits_are_the_scalar_limit(self):
+        acs = AttitudeControlSystem(max_slew_rate=0.7)
+
+        rates = acs.effective_max_slew_rates(np.zeros((3, 4, 3)))
+
+        assert rates.shape == (3, 4)
+        assert np.all(rates == 0.7)
+
     def test_directional_limits_require_attitude_axis(self):
         acs = AttitudeControlSystem(
             slew_acceleration_body=(0.02, 0.03, 0.2),
