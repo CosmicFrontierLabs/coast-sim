@@ -25,7 +25,7 @@ from ..ditl.plan_validator import entry_obstype
 from ..simulation.coverage import StationCoverage
 from ..simulation.passes import Pass
 from ..simulation.slew import Slew
-from ..targets import Plan, PlanEntry, Pointing
+from ..targets import Plan, PlanEntry, Pointing, ScheduledActivity, assign_obsids
 from ..targets.merit import MeritBreakdown, MeritModel
 from ..targets.plan_entry import snapshot_min_seconds
 from .allocator import AllocatedTime
@@ -68,6 +68,15 @@ class _Block(BaseModel):
     @property
     def is_charge(self) -> bool:
         return entry_obstype(self.entry) == ObsType.CHARGE
+
+    @property
+    def is_activity(self) -> bool:
+        return entry_obstype(self.entry) == ObsType.ACTIVITY
+
+    @property
+    def is_fixed(self) -> bool:
+        """A pass, a charge or an activity: not science, never moved."""
+        return self.is_pass or self.is_charge or self.is_activity
 
     @property
     def slew_start(self) -> float:
@@ -286,9 +295,12 @@ class PriorityScheduler:
         allocated: Mapping[int, Sequence[AllocatedTime]] | None = None,
         allocation_bonus: float = 0.5,
         coverage: StationCoverage | None = None,
+        activities: Sequence[ScheduledActivity] = (),
     ) -> None:
         self.config = config
         self.targets = list(targets)
+        self.activities = assign_obsids(activities)
+        """Fixed-time activities to reserve, in time order."""
         self.held = frozenset(int(obsid) for obsid in held)
         self.start_drive_state = start_drive_state
         """Where the solar-array drive is when the horizon starts; its
@@ -405,6 +417,9 @@ class PriorityScheduler:
             for gspass in self.ctx.predict_passes():
                 if gspass.requires_tracking:
                     self._place_pass(gspass)
+        for activity in self.activities:
+            if self.ctx.ustart <= activity.begin < self.ctx.uend:
+                self._place_activity(activity)
         self._ledger = self._recorder_ledger()
         self._volumes = self._ledger.initial_volumes(
             [block.entry for block in self.timeline]
@@ -929,7 +944,7 @@ class PriorityScheduler:
         """Return the collection seconds accepted locks already hold per request."""
         reserved: dict[int, float] = defaultdict(float)
         for block in self.timeline:
-            if block.is_pass or block.is_charge:
+            if block.is_fixed:
                 continue
             entry = block.entry
             reserved[int(entry.obsid)] += entry.collection_seconds_between(
@@ -986,6 +1001,8 @@ class PriorityScheduler:
             obstype = ObsType.GSP
         elif block.is_charge:
             obstype = ObsType.CHARGE
+        elif block.is_activity:
+            obstype = ObsType.IDLE
         else:
             obstype = ObsType.PPT
         idle_limit = self._idle_limit(pred, earliest, block.ready)
@@ -1032,7 +1049,7 @@ class PriorityScheduler:
                 self.ctx.ceil_step(block.ready),
                 ACSMode.IDLE,
             )
-        elif block.is_charge:
+        elif block.is_charge or block.is_activity:
             wait_violation = self.ctx.first_hold_violation(
                 target, slew.slewend, self.ctx.ceil_step(block.ready), ACSMode.IDLE
             )
@@ -1160,6 +1177,50 @@ class PriorityScheduler:
                 float(entry.begin),
                 f"Locked entry {entry.obsid} cannot be reached; leaving it out",
                 entry.obsid,
+            )
+
+    def _place_activity(self, activity: ScheduledActivity) -> None:
+        """Reserve an activity as a fixed block in IDLE mode.
+
+        It holds the attitude the timeline has when it starts, as reserved:
+        the block before it, or the start attitude. An attitude IDLE cannot
+        hold for the activity's length is not used; the plan then leaves
+        the activity out and says so.
+        """
+        before = [b for b in self.timeline if b.end <= activity.begin]
+        attitude = (
+            before[-1].attitude_out
+            if before
+            else (
+                self._origin.attitude_out
+                if self._origin is not None
+                else self.ctx.initial_attitude(self.ctx.ustart)
+            )
+        )
+        violation = self.ctx.first_hold_violation(
+            attitude, activity.begin, self.ctx.ceil_step(activity.end), ACSMode.IDLE
+        )
+        if violation is not None:
+            self._log(
+                activity.begin,
+                f"Activity {activity.name} cannot hold its attitude in IDLE at "
+                f"{unixtime2date(violation)}; leaving it out",
+                activity.obsid,
+            )
+            return
+        entry = activity.plan_entry(self.config, attitude)
+        block = _Block(
+            entry=entry,
+            attitude_in=attitude,
+            attitude_out=attitude,
+            ready=activity.begin,
+            end=activity.end,
+        )
+        if not self._insert_fixed(block):
+            self._log(
+                activity.begin,
+                f"Activity {activity.name} cannot be reached; leaving it out",
+                activity.obsid,
             )
 
     def _place_pass(self, gspass: Pass) -> None:

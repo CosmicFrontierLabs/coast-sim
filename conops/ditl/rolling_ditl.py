@@ -19,7 +19,7 @@ from ..schedulers.priority_scheduler import PriorityScheduler, StartState
 from ..schedulers.recorder import RecorderLedger
 from ..simulation.passes import Pass
 from ..simulation.slew import Slew
-from ..targets import Plan, PlanEntry, Pointing
+from ..targets import Plan, PlanEntry, Pointing, ScheduledActivity, assign_obsids
 from ..targets.merit import MeritModel
 from .ditl import DITL
 from .ditl_log import DITLLog
@@ -159,6 +159,7 @@ class RollingHorizonDITL(DITL):
         allocation: Allocation | None = None,
         allocation_bonus: float = 0.5,
         calculate_field_of_regard: bool = False,
+        activities: Sequence[ScheduledActivity] = (),
     ) -> None:
         if horizon <= timedelta(0) or replan_interval <= timedelta(0):
             raise ValueError("horizon and replan_interval must be positive")
@@ -175,6 +176,8 @@ class RollingHorizonDITL(DITL):
             calculate_field_of_regard=calculate_field_of_regard,
         )
         self.targets = list(targets)
+        self.activities = assign_obsids(activities)
+        """Fixed-time activities every plan reserves."""
         self.horizon = horizon
         self.replan_interval = replan_interval
         self.commit_lead_time = commit_lead_time
@@ -613,6 +616,7 @@ class RollingHorizonDITL(DITL):
             start_drive_state=start_drive_state,
             passes=self._run_passes,
             coverage=self.coverage,
+            activities=[a for a in self.activities if a.begin >= start],
             **options,  # type: ignore[arg-type]
         )
         return (
