@@ -1072,6 +1072,13 @@ Setup is a generic budget for any pre-collection activity: configuration,
 calibration, acquisition, or another procedure. COAST does not prescribe how
 that time is used.
 
+An observation category can set its own budgets in ``observation_timing``, for
+instruments whose setup differs; a category without them takes the payload's.
+``MissionConfig.observation_timing_for(obsid)`` is the lookup the planners,
+dispatch and execution all use, and a plan entry's ``observation_timing`` is its
+own. Where the observation is not known, the planners bound its overheads by the
+largest of each budget over the payload and every category.
+
 ``QueueDITL`` reserves the budgets before visibility, locked-attitude constraint,
 pass, and simulation deadlines. For a pass with multiple tracking profiles, the
 deadline is the earliest possible ingress trigger across those profiles, not
@@ -1515,6 +1522,9 @@ Each :class:`~conops.config.ObservationCategory` also carries:
   category name
 * ``cadence_seconds`` (float, optional): Desired interval between visits
 * ``time_share`` (float in ``[0, 1]``, optional): Allocated fraction of science time
+* ``observation_timing`` (:class:`~conops.config.ObservationTiming`, optional): The
+  category's own setup, cleanup and handoff budgets, where they differ from
+  ``payload.observation_timing`` (see `Observation Timing Budgets`_)
 * ``antenna_repoints`` (``allowed``, ``reported`` or ``forbidden``, default ``allowed``):
   What an antenna repoint during one of the category's observations means; ``forbidden``
   keeps the category's snapshots between repoints (see :doc:`communications`)

@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from ._base import ConfigModel
+from .observation_timing import ObservationTiming
 
 
 class ObservationCategory(ConfigModel):
@@ -57,6 +58,13 @@ class ObservationCategory(ConfigModel):
         default=True,
         description=(
             "Whether a Target of Opportunity may cut short the category's observations"
+        ),
+    )
+    observation_timing: ObservationTiming | None = Field(
+        default=None,
+        description=(
+            "Setup, cleanup and handoff budgets for the category's observations, "
+            "where they differ from the payload's; None takes the payload's"
         ),
     )
     antenna_repoints: Literal["allowed", "reported", "forbidden"] = Field(

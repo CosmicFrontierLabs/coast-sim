@@ -39,7 +39,7 @@ from ..config.constraint import (
     attitude_constraint_names_for_scopes,
     mounted_science_attitude_constraint_names,
 )
-from ..config.observation_timing import ObservationTiming
+from ..config.observation_timing import ObservationTiming, timing_for
 from ..simulation.saa import SAA
 
 BodyAxis = Literal["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
@@ -383,6 +383,12 @@ class PlanEntry(BaseModel):
     def exposure(self, value: float) -> None:
         """Accept legacy assignment; exposure is derived from the collection window."""
         pass
+
+    @property
+    def observation_timing(self) -> ObservationTiming:
+        """This observation's setup, cleanup and handoff budgets under its
+        configuration (see :func:`~conops.config.observation_timing.timing_for`)."""
+        return timing_for(self.config, int(self.obsid))
 
     def set_collection_window(self, timing: ObservationTiming) -> None:
         """Record the planned collection interval without changing the task boundary."""

@@ -273,7 +273,7 @@ class DITL(DITLMixin, DITLStats):
                 and self.ppt.collection_begin is None
                 and mode in (ACSMode.SCIENCE, ACSMode.SLEWING)
             ):
-                self.ppt.set_collection_window(self.config.payload.observation_timing)
+                self.ppt.set_collection_window(self._timing_for(self.ppt))
             collection_start, collection_stop = self._collection_interval_for_step(
                 self.utime[i], mode, obsid
             )

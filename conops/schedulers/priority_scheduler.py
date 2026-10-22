@@ -966,9 +966,9 @@ class PriorityScheduler:
                 entry.obsid,
             )
             return
-        if float(entry.collection_end) + self.ctx.post_collection_seconds > float(
-            entry.end
-        ):
+        if float(entry.collection_end) + self.ctx.post_collection_for(
+            int(entry.obsid)
+        ) > float(entry.end):
             self._log(
                 float(entry.begin),
                 f"Locked entry {entry.obsid} does not reserve its post-collection "
@@ -982,7 +982,7 @@ class PriorityScheduler:
             entry=entry,
             attitude_in=attitude,
             attitude_out=attitude,
-            ready=float(entry.collection_begin) - self.ctx.setup_seconds,
+            ready=float(entry.collection_begin) - self.ctx.setup_for(int(entry.obsid)),
             end=float(entry.end),
         )
         entry.visibility()
@@ -1220,8 +1220,7 @@ class PriorityScheduler:
         latest = self.ctx.floor_step(
             until
             - snapshot
-            - self.ctx.setup_seconds
-            - self.ctx.post_collection_seconds
+            - self.ctx.timing_for(int(target.obsid)).total_seconds
             - self._battery.slew_allowance
         )
         for _ in range(_BATTERY_RETRIES + 1):
@@ -1471,6 +1470,7 @@ class PriorityScheduler:
         """
         self._successor_blocked = False
         target = request.target
+        timing = self.ctx.timing_for(int(target.obsid))
         ss_min = float(snapshot_min_seconds(target))
         earliest = self._earliest_start(pred)
         horizon_end = self.ctx.uend if until is None else min(until, self.ctx.uend)
@@ -1512,7 +1512,7 @@ class PriorityScheduler:
                 )
                 continue
 
-            collection_begin = float(slew.slewend) + self.ctx.setup_seconds
+            collection_begin = float(slew.slewend) + timing.setup_seconds
             if (
                 target.earliest_start is not None
                 and collection_begin < target.earliest_start
@@ -1558,7 +1558,7 @@ class PriorityScheduler:
                 )
             collection_end = min(
                 collection_begin + snapshot,
-                latest_end - self.ctx.post_collection_seconds,
+                latest_end - timing.post_collection_seconds,
             )
 
             # A cadence visit before a locked visit of its target must end a
@@ -1597,7 +1597,7 @@ class PriorityScheduler:
                 entry=entry,
                 attitude_in=attitude,
                 attitude_out=attitude,
-                ready=collection_begin - self.ctx.setup_seconds,
+                ready=collection_begin - timing.setup_seconds,
                 end=float(entry.end),
             )
             fitted = self._check_snapshot(block, slew, ss_min)
@@ -1628,7 +1628,7 @@ class PriorityScheduler:
         slew = self.ctx.slew(
             self._start_attitude(pred, start), attitude, start, obsid=target.obsid
         )
-        return float(slew.slewend) + self.ctx.setup_seconds
+        return float(slew.slewend) + self.ctx.setup_for(int(target.obsid))
 
     def _visibility_needed_at(self, slew: Slew) -> float:
         """When a science target must be visible for ACS to fly ``slew`` to it.
@@ -1659,7 +1659,7 @@ class PriorityScheduler:
             return block
         # End the observation at the step the attitude stops being allowed.
         assert entry.collection_begin is not None
-        collection_end = violation - self.ctx.post_collection_seconds
+        collection_end = violation - self.ctx.post_collection_for(int(entry.obsid))
         if not _long_enough(collection_end - entry.collection_begin, ss_min):
             return None
         entry.collection_end = collection_end
@@ -1680,7 +1680,7 @@ class PriorityScheduler:
         target = request.target
         mounted = target.uses_mounted_attitude()
         telescope = target.science_telescope()
-        end = collection_end + self.ctx.post_collection_seconds
+        end = collection_end + self.ctx.post_collection_for(int(target.obsid))
         entry = PlanEntry(
             config=self.config,
             name=target.name,
