@@ -89,6 +89,17 @@ How a plan is built
    configuration's random seed, so ``DITL`` predicts the same passes when it executes
    the plan. Each pass is reserved on the first tracking profile the spacecraft can
    reach safely. Pass ``include_passes=False`` to plan science only.
+   **Scheduled activities** (the ``activities`` argument, a list of
+   :class:`~conops.targets.ScheduledActivity`) are reserved the same way: each is a
+   fixed block from its start for its duration, in ``IDLE`` mode, holding the attitude
+   the timeline has when it starts as reserved, so no science is placed across it and
+   the slews around it are planned. A maintenance window, a calibration that needs the
+   spacecraft still or an engineering block is an activity; ``DITL`` commands the
+   plan's activity entries, and the plan validator checks that no science, contact or
+   charge ran during one. Dispatch takes the same list: it ends the observation under
+   way when an activity begins, marking it interrupted so it is revisited, holds the
+   attitude it has in ``IDLE`` until the activity ends, and starts no observation that
+   would run into the next activity.
 3. **Requests** are sorted by merit value at the start of the horizon
    (base merit plus the urgency, cadence and completion-deficit terms; see
    :doc:`configuration`). Each request is split into snapshots of up to ``ss_max``

@@ -16,7 +16,7 @@ from ..common import (
 )
 from ..common.enums import ACSCommandType
 from ..common.ephemeris import position_vectors
-from ..common.vector import attitude_to_quat
+from ..common.vector import attitude_to_quat, quaternion_attitude_delta
 from ..config import AttitudeConstraintScope, MissionConfig
 from ..config.constraint import (
     all_attitude_constraint_name,
@@ -787,6 +787,15 @@ class DITL(DITLMixin, DITLStats):
         elif obstype == ObsType.CHARGE:
             self.acs.cancel_pending_slews(entry.obsid)
             self.acs.request_end_battery_charge(utime)
+        elif obstype == ObsType.ACTIVITY:
+            self.acs.cancel_pending_slews(entry.obsid)
+            self.log.log_event(
+                utime=utime,
+                event_type="ACTIVITY",
+                description=f"Scheduled activity {entry.name} ends",
+                obsid=entry.obsid,
+                acs_mode=self.acs.acsmode,
+            )
         else:
             self.acs.cancel_pending_slews(entry.obsid)
             self.acs.end_science_observation()
@@ -808,6 +817,8 @@ class DITL(DITLMixin, DITLStats):
             self.acs.request_battery_charge(
                 utime, entry.ra, entry.dec, entry.roll, entry.obsid
             )
+        elif obstype == ObsType.ACTIVITY:
+            self._command_activity_entry(entry, utime)
         else:
             self.log.log_event(
                 utime=utime,
@@ -821,6 +832,30 @@ class DITL(DITLMixin, DITLStats):
             return False
         self._active_entry = entry
         return True
+
+    def _command_activity_entry(self, entry: PlanEntry, utime: float) -> None:
+        """Hold the entry's attitude in IDLE for the activity, slewing to it
+        first where the spacecraft is elsewhere."""
+        self.acs.end_science_observation()
+        distance, _ = quaternion_attitude_delta(
+            self.acs.ra, self.acs.dec, self.acs.roll, entry.ra, entry.dec, entry.roll
+        )
+        if distance > 1e-6:
+            self.acs._enqueue_slew(
+                entry.ra,
+                entry.dec,
+                entry.obsid,
+                utime,
+                obstype=ObsType.IDLE,
+                roll=entry.roll,
+            )
+        self.log.log_event(
+            utime=utime,
+            event_type="ACTIVITY",
+            description=f"Scheduled activity {entry.name} begins",
+            obsid=entry.obsid,
+            acs_mode=self.acs.acsmode,
+        )
 
     def _command_science_entry(self, entry: PlanEntry, utime: float) -> None:
         """Slew to a science entry's target attitude."""
