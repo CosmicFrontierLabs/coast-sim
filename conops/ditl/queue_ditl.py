@@ -3489,10 +3489,10 @@ class QueueDITL(DITLMixin, DITLStats):
         :meth:`Pointing.requested_roll`); the optimum where an absolute roll
         is beyond the ACS limit, which :meth:`_roll_allowed` rejects."""
         optimum = self._power_optimal_roll(target, execution_time)
-        requested = getattr(target, "requested_roll", None)
-        if not callable(requested):
+        if not isinstance(target, Pointing):
+            # A test double has no roll request.
             return optimum
-        roll = requested(
+        roll = target.requested_roll(
             optimum,
             self.config.spacecraft_bus.attitude_control.max_roll_from_optimum_deg,
         )
@@ -3501,12 +3501,13 @@ class QueueDITL(DITLMixin, DITLStats):
     def _roll_allowed(self, target: Pointing, execution_time: float) -> bool:
         """Whether the roll ``target`` asks for is within the ACS limit of the
         power-optimal roll at ``execution_time``; True without a request."""
-        requested = getattr(target, "requested_roll", None)
-        if not callable(requested):
+        if not isinstance(target, Pointing):
             return True
         limit = self.config.spacecraft_bus.attitude_control.max_roll_from_optimum_deg
         return (
-            requested(self._power_optimal_roll(target, execution_time), limit)
+            target.requested_roll(
+                self._power_optimal_roll(target, execution_time), limit
+            )
             is not None
         )
 
