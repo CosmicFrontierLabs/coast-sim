@@ -351,6 +351,12 @@ class DITLStats:
                 f"(acquisition {kinds['acquisition']}, handover {kinds['handover']}, "
                 f"drift {kinds['drift']})"
             )
+            turns = [r.maneuver_deg for r in repoints if r.maneuver_deg is not None]
+            if turns:
+                print(
+                    f"Repoint Maneuver: mean {sum(turns) / len(turns):.1f} deg, "
+                    f"max {max(turns):.1f} deg"
+                )
             noted = getattr(self, "repoints_in_observations", [])
             forbidden = sum(1 for _, _, setting in noted if setting == "forbidden")
             print(
