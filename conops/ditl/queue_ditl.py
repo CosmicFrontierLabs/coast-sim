@@ -112,6 +112,9 @@ class TOORequest(BaseModel):
     submit_time: float = 0.0
     deadline: float | None = None
     science_data: dict[str, ScienceData] = Field(default_factory=dict)
+    interrupt: bool = True
+    """Whether the TOO may cut short the observation in progress. If False it
+    waits for that observation to end."""
     executed: bool = False
 
 
@@ -291,15 +294,17 @@ class QueueDITL(DITLMixin, DITLStats):
         submit_time: float | datetime | None = None,
         deadline: float | datetime | None = None,
         science_data: Mapping[str, ScienceData] | None = None,
+        interrupt: bool = True,
     ) -> TOORequest:
         """Submit a Target of Opportunity (TOO) request.
 
         A TOO is an ordinary queue request with a short window. Once its
         ``submit_time`` is reached it joins the target queue with its own merit
         and deadline, and is selected whenever it ranks highest. It interrupts
-        the observation in progress only when it is visible and its tier and
+        the observation in progress only when it is visible, its tier and
         value, evaluated now, beat the tier and value frozen onto the current
-        observation when it was selected.
+        observation when it was selected, it is allowed to interrupt
+        (``interrupt``), and the observation's category is ``interruptible``.
 
         Args:
             obsid: Unique observation identifier for this TOO
@@ -315,6 +320,8 @@ class QueueDITL(DITLMixin, DITLStats):
                 timestamp or a datetime. None means no deadline.
             science_data: Science data observing the TOO generates, keyed by
                 instrument name; other instruments generate their own.
+            interrupt: Whether the TOO may interrupt the observation in
+                progress; if False it is chosen when that observation ends.
 
         Returns:
             The created TOORequest object
@@ -355,6 +362,7 @@ class QueueDITL(DITLMixin, DITLStats):
             else 0.0,
             deadline=self._unix_time(deadline) if deadline is not None else None,
             science_data=dict(science_data or {}),
+            interrupt=interrupt,
             executed=False,
         )
         self.too_register.append(too)
@@ -410,9 +418,11 @@ class QueueDITL(DITLMixin, DITLStats):
         interrupt the observation in progress when:
 
         1. It is active (``submit_time <= utime``) and not yet dispatched.
-        2. Its deadline, if any, has not passed.
-        3. Its target is visible now.
-        4. Its tier and value now beat the current observation's frozen tier
+        2. It may interrupt (``interrupt``), and the current observation's
+           category is ``interruptible``.
+        3. Its deadline, if any, has not passed.
+        4. Its target is visible now.
+        5. Its tier and value now beat the current observation's frozen tier
            and value.
 
         The best candidate must then pass normal dispatch admission (minimum
@@ -448,6 +458,10 @@ class QueueDITL(DITLMixin, DITLStats):
             return self._dispatch_committed_too(utime)
         if self.ppt is None or not active:
             return False
+        if not self.merit_model.category(self.ppt).interruptible:
+            # The observation's category does not allow it to be cut short;
+            # the TOOs are already queued for the next selection.
+            return False
 
         current_rank = self._current_value_rank()
         delivered_shares = (
@@ -457,6 +471,8 @@ class QueueDITL(DITLMixin, DITLStats):
         )
         outranking: list[tuple[TOORequest, Pointing, MeritBreakdown]] = []
         for too, target in active:
+            if not too.interrupt:
+                continue
             if too.deadline is not None and utime > too.deadline:
                 continue
             visibility_window = target.visible(utime, utime)

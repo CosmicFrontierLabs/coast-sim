@@ -9,7 +9,7 @@ block a better packing.
 
 import hashlib
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from enum import Enum, auto
 from typing import NamedTuple
@@ -189,6 +189,9 @@ class PriorityScheduler:
         reserved_visits: When observations scheduled outside this plan and not
             yet collected will finish collecting, by obsid; a cadence target's
             next visit waits for its cadence after them.
+        held: Obsids of targets this plan does not place, though their
+            science, collected and reserved, counts towards their programs'
+            shares as every target's does.
         successor_retries: When a snapshot fits a gap but the activity after
             it cannot then be reached, how many later starts to try in that gap
             before giving up on it (default 3). This plans much faster when many
@@ -215,10 +218,12 @@ class PriorityScheduler:
         start_state: StartState | None = None,
         reserved_seconds: Mapping[int, float] | None = None,
         reserved_visits: Mapping[int, float] | None = None,
+        held: Iterable[int] = (),
         successor_retries: int | None = 3,
     ) -> None:
         self.config = config
         self.targets = list(targets)
+        self.held = frozenset(int(obsid) for obsid in held)
         self.begin = begin
         self.end = end
         self.step_size = step_size
@@ -456,7 +461,11 @@ class PriorityScheduler:
         for target in self.targets:
             exptime = target.exptime if target.exptime is not None else target.ss_max
             remaining = float(exptime) - reserved.get(int(target.obsid), 0.0)
-            if target.done or remaining < target.ss_min:
+            if (
+                target.done
+                or int(target.obsid) in self.held
+                or remaining < target.ss_min
+            ):
                 continue
             category = merit_model.category(target)
             merit = merit_model.value_terms(

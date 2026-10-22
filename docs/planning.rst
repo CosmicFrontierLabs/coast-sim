@@ -368,12 +368,16 @@ rebuilds it as the simulation runs:
    ``deadline`` falls before that plan could start collecting it (its lead time plus a
    worst-case slew and the setup time), a **rapid replan** runs at once. In a rapid
    replan the observation running at the commit cutoff, started or not, is cut short
-   there when ``allow_interrupts`` is set and the ToO's tier and value, evaluated now,
-   beat the tier and value frozen onto that observation. Science it has already
+   there when ``allow_interrupts`` is set, the ToO allows it (``interrupt``, an
+   argument of ``submit_too``), the observation's category is ``interruptible``, and
+   the ToO's tier and value, evaluated now, beat the tier and value frozen onto that
+   observation. Otherwise the ToO can start only after the observation ends. Science it has already
    collected is kept, and its cleanup follows the cut. The cut is kept only if the new
    plan can collect the ToO. If several ToOs need a rapid replan at the same time, they
    are tried highest-ranked first, and the first that outranks the observation and can
-   be placed interrupts it.
+   be placed interrupts it. A ToO that may not interrupt does not take the cut
+   observation's place either, however it ranks: it is planned in after the
+   interrupting ToO, or, if its deadline falls before that, in the next plan.
 
 .. code-block:: python
 
