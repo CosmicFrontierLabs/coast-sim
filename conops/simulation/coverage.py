@@ -58,14 +58,14 @@ class Repoint(NamedTuple):
 
     The antenna moves from ``time`` to ``end``: for an acquisition or a
     handover, from the moment the link switches to the moment it is up; for
-    a drift repoint, for the communications system's ``repoint_seconds``.
+    a tracking repoint, for the communications system's ``repoint_seconds``.
     An instant when both are equal.
     """
 
     time: float
     end: float
     station: str
-    kind: Literal["acquisition", "handover", "drift"]
+    kind: Literal["acquisition", "handover", "tracking"]
     pointing: tuple[float, float, float] | None = None
     """Where the antenna points after the repoint, as a unit vector in GCRS:
     the centre of the cap the station is about to cross."""
@@ -128,7 +128,7 @@ class StationCoverage:
 
     A gimballed antenna is re-pointed at each acquisition and handover, and
     within a contact as the spacecraft moves. The station's direction
-    drifts in the body frame as it drifts in the sky while an attitude is
+    moves in the body frame as it moves across the sky while an attitude is
     held, so the chain is fixed by the geometry from the contact's start:
     with ``repoint_threshold_deg``, the antenna is pointed at the centre of
     the longest arc of the station's coming track that fits within a cap of
@@ -317,11 +317,11 @@ class StationCoverage:
 
     def _add_contact(self, station: int, begin: float, end: float) -> None:
         """The contact with ``station`` over ``[begin, end)``, split around
-        the drift repoints within it."""
+        the tracking repoints within it."""
         if end <= begin:
             return
         code = self.stations[station].code
-        first, drift = self._repoint_arcs(station, begin, end)
+        first, tracking = self._repoint_arcs(station, begin, end)
         if (
             first is not None
             and self.repoints
@@ -331,9 +331,9 @@ class StationCoverage:
             # The repoint that began this contact now has its pointing.
             self.repoints[-1] = self._pointed(self.repoints[-1], first)
         cursor = begin
-        for t, t_end, pointing in drift:
+        for t, t_end, pointing in tracking:
             self.repoints.append(
-                self._pointed(Repoint(t, t_end, code, "drift"), pointing)
+                self._pointed(Repoint(t, t_end, code, "tracking"), pointing)
             )
             if t_end <= t:
                 # An instant: the link stays up.
@@ -363,7 +363,7 @@ class StationCoverage:
     def _repoint_arcs(
         self, station: int, begin: float, end: float
     ) -> tuple[np.ndarray | None, list[tuple[float, float, np.ndarray]]]:
-        """Where the antenna points from the contact's start, and each drift
+        """Where the antenna points from the contact's start, and each tracking
         repoint within the contact: when, until when, and where it points.
 
         With a threshold, the antenna leads the station: at each repoint it
@@ -375,9 +375,9 @@ class StationCoverage:
         antenna points at the station at each repoint, at the table's
         interval.
         """
-        drift: list[tuple[float, float, np.ndarray]] = []
+        tracking: list[tuple[float, float, np.ndarray]] = []
         if not self.repointing:
-            return None, drift
+            return None, tracking
         directions = self._to_station[station]
         if self.repoint_table is not None:
             first = directions[self.index(begin)]
@@ -389,10 +389,10 @@ class StationCoverage:
                 if t >= end:
                     break
                 t_end = min(t + self.repoint_seconds, end)
-                drift.append((t, t_end, directions[self.index(t)]))
-            return first, drift
+                tracking.append((t, t_end, directions[self.index(t)]))
+            return first, tracking
         if self.repoint_threshold_deg is None:
-            return None, drift
+            return None, tracking
         threshold = self.repoint_threshold_deg + 1e-9
         last = self.index(end - 1e-6)
 
@@ -427,11 +427,11 @@ class StationCoverage:
                 first = pointing
             else:
                 t = float(self.times[k])
-                drift.append((t, min(t + self.repoint_seconds, end), pointing))
+                tracking.append((t, min(t + self.repoint_seconds, end), pointing))
             if lo >= last:
                 break
             k = lo + 1
-        return first, drift
+        return first, tracking
 
     def _span(self, station: int, begin: float, end: float) -> ContactSpan:
         """A span with ``station`` over ``[begin, end)`` at its mean rate."""

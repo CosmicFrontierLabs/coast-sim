@@ -577,7 +577,7 @@ class TestAntennaRepoints:
             setting != "forbidden" for _, _, setting in ditl.repoints_in_observations
         )
         assert any(
-            e.event_type == "ANTENNA" and "drift" in e.description
+            e.event_type == "ANTENNA" and "tracking" in e.description
             for e in ditl.log.events
         )
 
