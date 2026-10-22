@@ -1598,6 +1598,11 @@ class PriorityScheduler:
         search_end = min(idle_limit, gap_end)
 
         while start <= search_end:
+            if not self.ctx.roll_allowed(target, start):
+                # The roll the target asks for is beyond the ACS limit from
+                # the power-optimal roll now; it may be within it later.
+                start += self.ctx.step_size
+                continue
             instrument_roll = self.ctx.instrument_roll(target, start)
             attitude = target.target_body_attitude(instrument_roll)
             slew = self.ctx.slew(
