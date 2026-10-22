@@ -587,9 +587,7 @@ class TargetQueue:
             # A target must start collecting by its deadline.
             if (
                 target.deadline is not None
-                and utime
-                + float(target.slewtime)
-                + self._timing(target).setup_seconds
+                and utime + float(target.slewtime) + self._timing(target).setup_seconds
                 > target.deadline
             ):
                 continue
@@ -614,9 +612,7 @@ class TargetQueue:
                 # Not during a repoint, and the minimum snapshot before the
                 # next one; the window then ends where the repoint begins.
                 assert self.coverage is not None
-                collection_start = (
-                    utime + target.slewtime + timing.setup_seconds
-                )
+                collection_start = utime + target.slewtime + timing.setup_seconds
                 cut = self.coverage.next_repoint_cut(collection_start)
                 if cut is not None and (
                     cut[0] <= collection_start
