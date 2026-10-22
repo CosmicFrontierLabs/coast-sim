@@ -11,10 +11,12 @@ instrument. The limit is the recorder's planning limit.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 
-from ..common.enums import ACSMode
+from ..common.enums import ACSMode, ObsType
 from ..config import MissionConfig
+from ..ditl.plan_validator import entry_obstype
 from ..targets import PlanEntry
 from .consumable import ConsumableLedger, Removal
 
@@ -47,17 +49,24 @@ class RecorderLedger(ConsumableLedger):
         begin: Start of the horizon (Unix seconds).
         end: End of the horizon.
         contacts: The plan's ground-contact entries: each has a ``station``
-            and the ``contact_begin`` and ``contact_end`` of its link, and its
-            ``begin`` and ``slewtime`` give the slew into it. Those outside
-            the horizon are ignored, and one that straddles its start or end
-            counts for the part inside it.
+            and the ``contact_begin`` and ``contact_end`` of its link. Those
+            outside the horizon are ignored, and one that straddles its start
+            or end counts for the part inside it.
         start_volume_gb: What is on the recorder at ``begin``.
+        step_size: The simulation step in seconds. The simulation generates
+            housekeeping for each whole step at the rate of the mode the step
+            starts in, so the ledger counts it the same way: a span counts
+            for the steps that start in it. None counts spans exactly.
+        origin: A time the step grid passes through; ``begin`` if None.
 
     Housekeeping is counted at the nominal rate throughout, and at the
-    ``PASS`` rate during contacts and the slews into them, which ACS runs in
-    ``PASS`` mode: the plan does not know when the spacecraft will be in
-    other modes. The limit is kept below, not reached: the recorder's red
-    alert fires at its threshold.
+    ``PASS`` rate during contacts: the plan does not know when the spacecraft
+    will be in other modes. The slew into a contact, which ACS flies in
+    ``PASS`` mode too, depends on where the spacecraft is before it, so what
+    it adds beyond the nominal rate is not in the ledger's own accrual: the
+    schedulers add it with the contact, as they add science, and recompute it
+    when the slew changes (:meth:`ingress_volume`). The limit is kept below,
+    not reached: the recorder's red alert fires at its threshold.
     """
 
     def __init__(
@@ -68,8 +77,12 @@ class RecorderLedger(ConsumableLedger):
         contacts: Sequence[PlanEntry],
         *,
         start_volume_gb: float,
+        step_size: float | None = None,
+        origin: float | None = None,
     ) -> None:
         self.config = config
+        self.step_size = float(step_size) if step_size is not None else None
+        self.origin = float(begin if origin is None else origin)
         removals = []
         for entry in contacts:
             if (
@@ -78,36 +91,40 @@ class RecorderLedger(ConsumableLedger):
                 or entry.contact_end is None
             ):
                 continue
-            link_begin = float(entry.contact_begin)
-            link_end = float(entry.contact_end)
-            if link_end <= link_begin:
+            seconds = float(entry.contact_end) - float(entry.contact_begin)
+            # The steps in contact, in PASS mode; the link's own length sets
+            # what it downlinks.
+            link_begin = self.grid_step(float(entry.contact_begin))
+            link_end = self.grid_step(float(entry.contact_end))
+            if seconds <= 0.0 or link_end <= link_begin:
                 continue
-            seconds = link_end - link_begin
-            # The slew into the contact runs in PASS mode too, from the
-            # entry's begin, though it carries no link.
-            ingress = max(
-                0.0, min(float(entry.slewtime or 0), link_begin - float(entry.begin))
-            )
             removals.append(
                 Removal(
                     link_begin,
                     link_end,
                     contact_downlink_gb(config, entry.station, seconds),
-                    config.housekeeping_generated(seconds, mode=ACSMode.PASS),
-                    lead=ingress,
-                    lead_accrual=config.housekeeping_generated(
-                        ingress, mode=ACSMode.PASS
+                    config.housekeeping_generated(
+                        link_end - link_begin, mode=ACSMode.PASS
                     ),
                 )
             )
         super().__init__(
-            begin,
-            end,
+            self.grid_step(begin),
+            self.grid_step(end),
             removals,
             limit=config.recorder.planning_limit_gb,
             start=start_volume_gb,
             accrual=config.housekeeping_generated,
         )
+
+    def grid_step(self, utime: float) -> float:
+        """The first simulation step at or after ``utime``, or ``utime``
+        itself without a step grid. A span's steps are those that start in
+        it, so a span between two of these is a whole number of steps."""
+        if self.step_size is None:
+            return float(utime)
+        steps = math.ceil((utime - self.origin) / self.step_size - 1e-9)
+        return self.origin + max(0, steps) * self.step_size
 
     # ── In the recorder's terms ───────────────────────────────────────────
 
@@ -128,7 +145,7 @@ class RecorderLedger(ConsumableLedger):
     @property
     def housekeeping_gb(self) -> list[float]:
         """Housekeeping generated in each segment outside its contact, at the
-        nominal rate, and at the ``PASS`` rate during the slew into the next."""
+        nominal rate."""
         return self.accrual
 
     @property
@@ -146,10 +163,52 @@ class RecorderLedger(ConsumableLedger):
         """What a snapshot of ``entry`` collecting for some seconds generates."""
         return self.config.science_generated(collection_seconds, entry.science_data)
 
+    def ingress_volume(
+        self,
+        entry: PlanEntry,
+        *,
+        begin: float | None = None,
+        slewtime: float | None = None,
+    ) -> float:
+        """What the slew into the contact ``entry`` adds beyond nominal
+        housekeeping, in Gb: ACS flies it in ``PASS`` mode, so each step it
+        is under way counts at the ``PASS`` rate instead. As it would be
+        flown from ``begin`` for ``slewtime`` seconds, if given, else as the
+        entry has it; only the part inside the horizon counts. 0 for
+        anything but a contact.
+        """
+        if (
+            entry_obstype(entry) != ObsType.GSP
+            or entry.station is None
+            or entry.contact_begin is None
+        ):
+            return 0.0
+        slew_begin = float(entry.begin if begin is None else begin)
+        seconds = float(entry.slewtime or 0 if slewtime is None else slewtime)
+        slew_end = min(slew_begin + seconds, float(entry.contact_begin))
+        first = max(self.grid_step(slew_begin), self.bounds[0])
+        last = min(self.grid_step(slew_end), self.bounds[-1])
+        if last <= first:
+            return 0.0
+        return self.config.housekeeping_generated(
+            last - first, mode=ACSMode.PASS
+        ) - self.config.housekeeping_generated(last - first)
+
+    def ingress_segment(self, entry: PlanEntry, *, begin: float | None = None) -> int:
+        """The segment the slew into the contact ``entry`` starts in, from
+        ``begin`` if given."""
+        return self.segment(
+            self.grid_step(float(entry.begin if begin is None else begin))
+        )
+
     def initial_volumes(self, entries: Sequence[PlanEntry]) -> tuple[float, ...]:
-        """Science volume by segment of entries already on the timeline."""
+        """What entries already on the timeline add, by segment: science
+        where it is collected, and the slews into contacts where they start."""
         volumes = [0.0] * self.segments
         for entry in entries:
+            ingress = self.ingress_volume(entry)
+            if ingress > 0.0:
+                volumes[self.ingress_segment(entry)] += ingress
             if entry.collection_begin is None or entry.collection_end is None:
                 continue
             seconds = float(entry.collection_end) - float(entry.collection_begin)
