@@ -2,10 +2,11 @@
 planners and executed by both simulations."""
 
 from datetime import timedelta
+from unittest.mock import patch
 
 import pytest
 
-from conops import DITL, create_ditl
+from conops import DITL, QueueDITL, create_ditl
 from conops.common import ObsType
 from conops.common.enums import ACSMode
 from conops.config import MissionConfig
@@ -195,6 +196,104 @@ class TestDispatch:
                 float(entry.end) <= CALIBRATION.begin
                 or float(entry.begin) >= CALIBRATION.end
             )
+
+
+def _slow_slew_run(
+    activities: list[ScheduledActivity],
+) -> tuple[QueueDITL, list[Pointing]]:
+    """Two targets with slews of some minutes between them, dispatched."""
+    config = _config(6)
+    acs = config.spacecraft_bus.attitude_control
+    acs.max_slew_rate = 0.02
+    acs.slew_acceleration = 0.01
+    targets = [
+        _target(config, 1, *PATCH[0], merit=90.0, minutes=60, snapshot=60),
+        _target(config, 2, *PATCH[4], merit=80.0, minutes=60, snapshot=60),
+    ]
+    ditl = create_ditl(
+        config, targets, BEGIN, BEGIN + timedelta(hours=6), activities=activities
+    )
+    assert isinstance(ditl, QueueDITL)
+    ditl.step_size = STEP
+    assert ditl.calc()
+    return ditl, targets
+
+
+def _lamp_after_first(**fields: bool) -> ScheduledActivity:
+    """A half-hour activity due two minutes after the first target's
+    observation ends, inside the slew to the second target."""
+    ditl, _ = _slow_slew_run([])
+    first = next(e for e in ditl.plan if e.obsid == 1)
+    return ScheduledActivity(
+        name="lamp",
+        begin=float(first.end) + 2 * MIN,
+        duration_seconds=30 * MIN,
+        **fields,
+    )
+
+
+class TestSlewsIntoActivities:
+    def test_no_slew_is_admitted_that_crosses_the_activity_start(self) -> None:
+        """The second target's slew would end inside the block, so it is
+        passed over: the block begins on time at the first target's
+        attitude, with no slewing inside, and the target follows it."""
+        lamp = _lamp_after_first()
+        ditl, _ = _slow_slew_run([lamp])
+        first = next(e for e in ditl.plan if e.obsid == 1)
+        activity = next(e for e in ditl.plan if e.obstype == ObsType.ACTIVITY)
+        second = next(e for e in ditl.plan if e.obsid == 2)
+        # The activity begins on the first step from its start, as always.
+        assert lamp.begin <= float(activity.begin) < lamp.begin + STEP
+        assert float(activity.end) == lamp.end
+        assert (activity.ra, activity.dec) == pytest.approx((first.ra, first.dec))
+        assert float(second.begin) >= lamp.end
+        modes = {
+            int(hk.acs_mode)
+            for hk in ditl.telemetry.housekeeping
+            if lamp.begin <= hk.timestamp.timestamp() < lamp.end
+        }
+        assert modes == {int(ACSMode.IDLE)}
+
+    def test_a_slew_under_way_delays_the_activity_which_keeps_its_length(
+        self,
+    ) -> None:
+        """With the activity deadline disabled, the second target's slew is
+        admitted and is under way when the activity is due. The activity
+        waits for the slew's end, runs its full length from there, and holds
+        the attitude the slew reached."""
+        lamp = _lamp_after_first()
+        with patch.object(QueueDITL, "_next_activity_begin", return_value=None):
+            ditl, _ = _slow_slew_run([lamp])
+        second = next(e for e in ditl.plan if e.obsid == 2)
+        activity = next(e for e in ditl.plan if e.obstype == ObsType.ACTIVITY)
+        slew_end = float(second.begin) + second.slewtime
+        assert float(second.begin) < lamp.begin < slew_end
+        assert slew_end <= float(activity.begin) < slew_end + STEP
+        assert float(activity.end) - float(activity.begin) == pytest.approx(
+            lamp.duration_seconds
+        )
+        assert (activity.ra, activity.dec) == pytest.approx((second.ra, second.dec))
+        descriptions = [
+            e.description for e in ditl.log.events if e.event_type == "ACTIVITY"
+        ]
+        assert descriptions[0] == "Scheduled activity lamp waits for the slew under way"
+        assert descriptions[1].startswith("Scheduled activity lamp begins, ")
+        assert descriptions[1].endswith("s after its start")
+        modes = {
+            int(hk.acs_mode)
+            for hk in ditl.telemetry.housekeeping
+            if float(activity.begin) <= hk.timestamp.timestamp() < float(activity.end)
+        }
+        assert modes == {int(ACSMode.IDLE)}
+
+    def test_a_fixed_activity_begins_at_its_start_regardless(self) -> None:
+        lamp = _lamp_after_first(fixed=True)
+        with patch.object(QueueDITL, "_next_activity_begin", return_value=None):
+            ditl, _ = _slow_slew_run([lamp])
+        activity = next(e for e in ditl.plan if e.obstype == ObsType.ACTIVITY)
+        assert float(activity.begin) < lamp.begin + STEP
+        assert float(activity.end) == lamp.end
+        assert not any("waits for the slew" in e.description for e in ditl.log.events)
 
 
 class TestRolling:

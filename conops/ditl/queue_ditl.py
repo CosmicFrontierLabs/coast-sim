@@ -277,7 +277,10 @@ class QueueDITL(DITLMixin, DITLStats):
         its length, and no observation starts before it ends."""
         self._active_activity: ScheduledActivity | None = None
         self._activity_started: float = 0.0
+        self._activity_end: float = 0.0
         self._activity_attitude: tuple[float, float, float] = (0.0, 0.0, 0.0)
+        self._activity_waiting: ScheduledActivity | None = None
+        """The activity due now that waits for the slew under way to end."""
         self._sequence: _SequenceRun | None = None
         """The sequence visit under way, if the observation is one of its steps."""
 
@@ -973,21 +976,49 @@ class QueueDITL(DITLMixin, DITLStats):
         self, utime: float, ra: float, dec: float, roll: float
     ) -> bool:
         """End the activity under way once it is over, and begin the one due
-        now. Returns whether the spacecraft's state changed."""
+        now. An activity due while a slew is under way waits for the slew to
+        end and then runs its full length, unless it is ``fixed``, when it
+        begins at its start and the slew finishes inside it. Returns whether
+        the spacecraft's state changed."""
         changed = False
         active = self._active_activity
-        if active is not None and utime >= active.end:
+        if active is not None and utime >= self._activity_end:
             self._end_activity(utime)
             changed = True
         if self._active_activity is None:
             due = next(
-                (a for a in self.activities if a.begin <= utime < a.end),
+                (
+                    a
+                    for a in self.activities
+                    if a.begin <= utime
+                    and a.begin > self._activity_started
+                    and (not a.fixed or utime < a.end)
+                ),
                 None,
             )
-            if due is not None and due.begin > self._activity_started:
+            if due is not None:
+                if not due.fixed and self._slew_under_way(utime):
+                    if self._activity_waiting is not due:
+                        self._activity_waiting = due
+                        self.log.log_event(
+                            utime=utime,
+                            event_type="ACTIVITY",
+                            description=(
+                                f"Scheduled activity {due.name} waits for the "
+                                "slew under way"
+                            ),
+                            obsid=due.obsid,
+                            acs_mode=self.acs.acsmode,
+                        )
+                    return changed
                 self._begin_activity(due, utime, (ra, dec, roll))
                 changed = True
         return changed
+
+    def _slew_under_way(self, utime: float) -> bool:
+        """Whether the ACS is flying a slew at ``utime``."""
+        slew = self.acs.last_slew
+        return slew is not None and slew.is_slewing(utime)
 
     def _begin_activity(
         self,
@@ -1009,10 +1040,19 @@ class QueueDITL(DITLMixin, DITLStats):
         self._active_activity = activity
         self._activity_started = utime
         self._activity_attitude = attitude
+        # Delayed by a slew, the activity keeps its length from when it begins.
+        delayed = self._activity_waiting is activity
+        self._activity_waiting = None
+        self._activity_end = (
+            utime + activity.duration_seconds if delayed else activity.end
+        )
+        description = f"Scheduled activity {activity.name} begins"
+        if delayed:
+            description += f", {utime - activity.begin:.0f}s after its start"
         self.log.log_event(
             utime=utime,
             event_type="ACTIVITY",
-            description=f"Scheduled activity {activity.name} begins",
+            description=description,
             obsid=activity.obsid,
             acs_mode=self.acs.acsmode,
         )
@@ -1023,7 +1063,7 @@ class QueueDITL(DITLMixin, DITLStats):
         entry = activity.plan_entry(
             self.config, self._activity_attitude, begin=self._activity_started
         )
-        entry.end = min(utime, activity.end)
+        entry.end = min(utime, self._activity_end)
         self.plan.append(entry)
         self.log.log_event(
             utime=utime,
@@ -2999,7 +3039,10 @@ class QueueDITL(DITLMixin, DITLStats):
         deadlines: list[tuple[float, str]] = [
             (deadline_inputs.simulation_end, "simulation end")
         ]
-        activity_begin = self._next_activity_begin(slew_end)
+        # The next activity from now, not from the slew's end: a slew that
+        # would cross the activity's start leaves no collection before it, so
+        # the candidate is passed over rather than flown into the block.
+        activity_begin = self._next_activity_begin(current_time)
         if activity_begin is not None:
             deadlines.append((activity_begin, "scheduled activity"))
 

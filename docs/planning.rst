@@ -151,8 +151,12 @@ How a plan is built
    plan's activity entries, and the plan validator checks that no science, contact or
    charge ran during one. Dispatch takes the same list: it ends the observation under
    way when an activity begins, marking it interrupted so it is revisited, holds the
-   attitude it has in ``IDLE`` until the activity ends, and starts no observation that
-   would run into the next activity. An activity's ``instrument_modes`` names what it
+   attitude it has in ``IDLE`` until the activity ends, and starts no observation
+   whose slew or collection would run into the next activity. A slew under way when an
+   activity is due, such as one into a charging attitude, delays the activity to the
+   slew's end, and the activity then runs its full length from there; an activity that
+   cannot move, such as a maintenance window, is ``fixed`` and begins at its start
+   with the slew finishing inside it. An activity's ``instrument_modes`` names what it
    uses, such as a calibration lamp's instrument, and its draw is counted during the
    hold; an activity naming none draws every instrument's idle power. Its
    ``data_gb`` is what it puts on the recorder when it begins, such as its frames,

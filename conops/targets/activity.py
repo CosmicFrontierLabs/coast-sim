@@ -6,8 +6,9 @@ has a start and a duration, the spacecraft holds the attitude it has in
 ``IDLE`` mode for its length, and no science is observed meanwhile. The
 schedulers reserve activities as fixed blocks, as they reserve ground passes,
 and both simulations execute them: dispatch ends the observation under way at
-the activity's start and starts none until it ends, and the planned
-simulation commands the plan's activity entries.
+the activity's start, starts none whose slew or collection would run into it,
+and starts none until it ends; the planned simulation commands the plan's
+activity entries.
 """
 
 from __future__ import annotations
@@ -48,6 +49,15 @@ class ScheduledActivity(BaseModel):
     obsid: int | None = Field(
         default=None,
         description="Identifies the activity's plan entries; assigned if None",
+    )
+    fixed: bool = Field(
+        default=False,
+        description=(
+            "Whether dispatch begins the activity at its start even while a "
+            "slew is under way, as a maintenance window must. False: a slew "
+            "under way at the start delays the activity to its end, and the "
+            "activity keeps its length"
+        ),
     )
 
     @field_validator("begin", mode="before")
