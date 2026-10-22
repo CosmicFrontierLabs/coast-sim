@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from conops.common import ACSMode
 from conops.config import (
+    ConcurrencyRules,
     DataGeneration,
     Instrument,
     InstrumentMode,
@@ -154,3 +155,57 @@ class TestScienceData:
         assert payload.science_generated(
             100.0, {"imager": ScienceData(rate_gbps=0.02)}, {"imager": "FULL"}
         ) == pytest.approx(2.0 + 0.5)
+
+
+class TestConcurrency:
+    def _payload(self, **rules: object) -> Payload:
+        return Payload(
+            instruments=[
+                _camera(),
+                _spectrograph(),
+                Instrument(
+                    name="guider",
+                    modes=[
+                        InstrumentMode(name="IDLE", power_w=1.0),
+                        InstrumentMode(name="SCIENCE", power_w=2.0),
+                    ],
+                ),
+            ],
+            concurrency=ConcurrencyRules(**rules),  # type: ignore[arg-type]
+        )
+
+    def test_rules_name_instruments_the_payload_has(self) -> None:
+        with pytest.raises(ValidationError, match="lacks"):
+            self._payload(required_guider="radar")
+        with pytest.raises(ValidationError, match="lacks"):
+            self._payload(exclusive=[("camera", "radar")])
+        assert not self._payload().concurrency.active
+
+    def test_at_most_so_many_observe_at_once(self) -> None:
+        payload = self._payload(max_observing=2)
+        payload.check_concurrency({"camera": "SCIENCE", "guider": "SCIENCE"})
+        # IDLE is not observing.
+        payload.check_concurrency(
+            {"camera": "SCIENCE", "guider": "SCIENCE", "spectrograph": "IDLE"}
+        )
+        with pytest.raises(ValueError, match="allows 2"):
+            payload.check_concurrency(
+                {"camera": "FAST", "guider": "SCIENCE", "spectrograph": "SCIENCE"}
+            )
+        # The default, every instrument with modes, breaks the rule.
+        with pytest.raises(ValueError, match="allows 2"):
+            payload.check_request({})
+
+    def test_a_guider_is_required_whenever_anything_observes(self) -> None:
+        payload = self._payload(required_guider="guider")
+        payload.check_concurrency({"camera": "SCIENCE", "guider": "SCIENCE"})
+        payload.check_concurrency({})
+        with pytest.raises(ValueError, match="must also use 'guider'"):
+            payload.check_concurrency({"camera": "SCIENCE"})
+
+    def test_exclusive_instruments_do_not_observe_together(self) -> None:
+        payload = self._payload(exclusive=[("camera", "spectrograph")])
+        payload.check_concurrency({"camera": "SCIENCE"})
+        payload.check_concurrency({"camera": "SCIENCE", "spectrograph": "IDLE"})
+        with pytest.raises(ValueError, match="cannot observe together"):
+            payload.check_concurrency({"camera": "SCIENCE", "spectrograph": "SCIENCE"})

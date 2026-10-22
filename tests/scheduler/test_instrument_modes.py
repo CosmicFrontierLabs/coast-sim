@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from conops import DITL, QueueDITL, create_ditl
 from conops.common import ACSMode
 from conops.config import (
+    ConcurrencyRules,
     DataGeneration,
     Instrument,
     InstrumentMode,
@@ -394,3 +395,86 @@ class TestScienceData:
         assert ditl.calc()
         assert ditl.validate_plan_matches_execution() == []
         assert max(ditl.recorder_volume_gb) == pytest.approx(1.2 + 2.4, abs=0.01)
+
+
+def _ruled_config() -> MissionConfig:
+    config = _moded_config()
+    config.payload.concurrency = ConcurrencyRules(
+        max_observing=1, exclusive=[("camera", "spectrograph")]
+    )
+    return config
+
+
+class TestConcurrency:
+    def test_a_request_breaking_the_rules_is_rejected(self) -> None:
+        config = _ruled_config()
+        Pointing(
+            config=config,
+            obsid=1,
+            ra=0.0,
+            dec=0.0,
+            instrument_modes={"camera": "SCIENCE"},
+        )
+        with pytest.raises(ValidationError, match="allows 1"):
+            Pointing(
+                config=config,
+                obsid=2,
+                ra=0.0,
+                dec=0.0,
+                instrument_modes={"camera": "SCIENCE", "spectrograph": "SCIENCE"},
+            )
+        # Naming no modes means every instrument with modes, which breaks them.
+        with pytest.raises(ValidationError, match="allows 1"):
+            Pointing(config=config, obsid=3, ra=0.0, dec=0.0)
+
+    def test_a_sequence_step_breaking_the_rules_is_rejected(self) -> None:
+        config = _ruled_config()
+        steps = ObservationSequence(
+            steps=[
+                SequenceStep(name="image", duration_seconds=300),
+                SequenceStep(
+                    name="both",
+                    duration_seconds=300,
+                    instrument_modes={"camera": "SCIENCE", "spectrograph": "SCIENCE"},
+                ),
+            ]
+        )
+        with pytest.raises(ValidationError, match="allows 1"):
+            Pointing(
+                config=config,
+                obsid=4,
+                ra=0.0,
+                dec=0.0,
+                instrument_modes={"camera": "SCIENCE"},
+                sequence=steps,
+            )
+
+    def test_toos_and_activities_are_checked_too(self) -> None:
+        config = _ruled_config()
+        ditl = create_ditl(config, [], BEGIN, END)
+        assert isinstance(ditl, QueueDITL)
+        with pytest.raises(ValueError, match="allows 1"):
+            ditl.submit_too(
+                obsid=30001,
+                ra=0.0,
+                dec=0.0,
+                merit=1.0,
+                exptime=60,
+                name="both",
+                instrument_modes={"camera": "SCIENCE", "spectrograph": "SCIENCE"},
+            )
+        with pytest.raises(ValueError, match="allows 1"):
+            ditl.submit_too(
+                obsid=30002, ra=0.0, dec=0.0, merit=1.0, exptime=60, name="all"
+            )
+        lamp = ScheduledActivity(
+            name="lamp",
+            begin=T0,
+            duration_seconds=600,
+            obsid=5,
+            instrument_modes={"camera": "SCIENCE", "spectrograph": "SCIENCE"},
+        )
+        with pytest.raises(ValueError, match="allows 1"):
+            lamp.plan_entry(config, (0.0, 0.0, 0.0))
+        quiet = ScheduledActivity(name="quiet", begin=T0, duration_seconds=600, obsid=6)
+        assert quiet.plan_entry(config, (0.0, 0.0, 0.0)).instrument_modes == {}

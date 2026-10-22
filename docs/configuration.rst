@@ -1018,6 +1018,7 @@ The :class:`~conops.config.Payload` contains the science instruments.
 **Payload Attributes:**
 
 * ``instruments`` (list[Instrument]): List of :class:`~conops.config.Instrument` (or subclass) instances
+* ``concurrency`` (:class:`~conops.config.ConcurrencyRules`): What may observe at once: ``max_observing``, the most instruments one observation may use; ``required_guider``, an instrument every observation that uses any must also use; ``exclusive``, pairs that may not observe together. An instrument observes when a request names it in any mode but ``IDLE``. The rules are checked against each request's ``instrument_modes`` when the target is made, against each of its sequence steps, against a Target of Opportunity when it is submitted and against a scheduled activity's modes; a request naming no modes is checked as using every instrument with modes
 
 **Instrument Attributes:**
 

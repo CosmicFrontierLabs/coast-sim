@@ -241,7 +241,7 @@ class RollingHorizonDITL(DITL):
                 mode each is in, by name; None: every instrument with modes,
                 in SCIENCE.
         """
-        self.config.payload.check_instrument_modes(dict(instrument_modes or {}))
+        self.config.payload.check_request(dict(instrument_modes or {}))
         too = TOORequest(
             obsid=obsid,
             ra=ra,

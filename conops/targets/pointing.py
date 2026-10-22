@@ -12,6 +12,7 @@ from pydantic import (
 from ..common import unixtime2date, unixtime_from
 from ..common.enums import ObsType
 from ..config.acs import AttitudeControlSystem
+from ..config.instrument import ConcurrencyRules
 from ..config.observation_timing import ObservationTiming, timing_for
 from .merit import MeritBreakdown
 from .plan_entry import PlanEntry
@@ -230,9 +231,26 @@ class Pointing(PlanEntry):
 
     @model_validator(mode="after")
     def _instrument_modes_are_known(self) -> "Pointing":
-        """A request names instruments the payload has, in modes they define."""
-        if self.instrument_modes and self.config is not None:
-            self.config.payload.check_instrument_modes(self.instrument_modes)
+        """A request names instruments the payload has, in modes they
+        define, and what it has observing at once is allowed; so does each
+        step of its sequence, with its own modes or the target's."""
+        if self.config is None or self.obstype not in self._STATIC_TARGET_OBSTYPES:
+            return self
+        payload = self.config.payload
+        rules = getattr(payload, "concurrency", None)
+        # A test double's payload has no rules.
+        active = isinstance(rules, ConcurrencyRules) and rules.active
+        checks = [self.instrument_modes]
+        if self.sequence is not None:
+            checks.extend(
+                step.instrument_modes
+                if step.instrument_modes is not None
+                else self.instrument_modes
+                for step in self.sequence.steps
+            )
+        for modes in checks:
+            if modes or active:
+                payload.check_request(modes)
         return self
 
     def step_pointing(self, index: int) -> "Pointing":

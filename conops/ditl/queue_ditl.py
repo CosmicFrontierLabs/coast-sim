@@ -424,7 +424,7 @@ class QueueDITL(DITLMixin, DITLStats):
             ...     submit_time=ditl.ustart + 3600,
             ... )
         """
-        self.config.payload.check_instrument_modes(dict(instrument_modes or {}))
+        self.config.payload.check_request(dict(instrument_modes or {}))
         too = TOORequest(
             obsid=obsid,
             ra=ra,

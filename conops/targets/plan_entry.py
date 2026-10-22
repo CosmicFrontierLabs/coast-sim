@@ -39,7 +39,6 @@ from ..config.constraint import (
     attitude_constraint_names_for_scopes,
     mounted_science_attitude_constraint_names,
 )
-from ..config.instrument import SCIENCE_MODE
 from ..config.observation_timing import ObservationTiming, timing_for
 from ..simulation.saa import SAA
 
@@ -551,12 +550,10 @@ class PlanEntry(BaseModel):
             return dict(self.instrument_modes)
         if self.config is None or self.obstype not in self._STATIC_TARGET_OBSTYPES:
             return {}
-        with_modes = getattr(self.config.payload, "instruments_with_modes", None)
-        names = with_modes() if callable(with_modes) else None
+        default = getattr(self.config.payload, "default_instrument_modes", None)
+        modes = default() if callable(default) else None
         # A test double's payload has no instruments.
-        if not isinstance(names, list):
-            return {}
-        return dict.fromkeys(names, SCIENCE_MODE)
+        return dict(modes) if isinstance(modes, dict) else {}
 
     def science_telescope(self) -> Telescope | None:
         """Return the telescope assigned to this target, if configured."""

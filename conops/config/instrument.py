@@ -564,11 +564,51 @@ _AnyInstrument = Annotated[
 ]
 
 
+class ConcurrencyRules(ConfigModel):
+    """What may observe at once: rules on the instruments an observation
+    uses, checked against each request's instrument modes. An instrument
+    observes when a request names it in any mode but ``IDLE``."""
+
+    max_observing: int | None = Field(
+        default=None,
+        ge=1,
+        description="The most instruments one observation may use; None: any number",
+    )
+    required_guider: str | None = Field(
+        default=None,
+        description=(
+            "An instrument every observation that uses any instrument must "
+            "also use, such as a guider; None: none required"
+        ),
+    )
+    exclusive: list[tuple[str, str]] = Field(
+        default_factory=list,
+        description="Pairs of instruments one observation may not use together",
+    )
+
+    @property
+    def active(self) -> bool:
+        """Whether any rule is set."""
+        return (
+            self.max_observing is not None
+            or self.required_guider is not None
+            or bool(self.exclusive)
+        )
+
+    def names(self) -> set[str]:
+        """Every instrument the rules name."""
+        named = {a for pair in self.exclusive for a in pair}
+        if self.required_guider is not None:
+            named.add(self.required_guider)
+        return named
+
+
 class Payload(ConfigModel):
     """A collection of instruments operated together as the spacecraft payload.
 
     Attributes:
         instruments: List of Instrument (or subclass) instances.
+        concurrency: Rules on what may observe at once.
     """
 
     instruments: list[_AnyInstrument] = [Instrument()]
@@ -576,6 +616,25 @@ class Payload(ConfigModel):
         default_factory=ObservationTiming,
         description="Non-collection setup, cleanup, and handoff budgets for science tasks",
     )
+    concurrency: ConcurrencyRules = Field(
+        default_factory=ConcurrencyRules,
+        description="Rules on the instruments one observation may use at once",
+    )
+
+    @model_validator(mode="after")
+    def _rules_name_instruments(self) -> "Payload":
+        instruments = getattr(self, "instruments", None)
+        rules = getattr(self, "concurrency", None)
+        # A test double standing in for a payload has neither.
+        if not isinstance(instruments, list) or not isinstance(rules, ConcurrencyRules):
+            return self
+        names = {instrument.name for instrument in instruments}
+        unknown = sorted(rules.names() - names)
+        if unknown:
+            raise ValueError(
+                f"concurrency rules name instruments the payload lacks: {unknown}"
+            )
+        return self
 
     @field_validator("instruments", mode="before")
     @classmethod
@@ -657,6 +716,48 @@ class Payload(ConfigModel):
     def instruments_with_modes(self) -> list[str]:
         """The names of the instruments that define modes."""
         return [instrument.name for instrument in self.instruments if instrument.modes]
+
+    def default_instrument_modes(self) -> dict[str, str]:
+        """What a science observation naming no modes uses: every instrument
+        with modes, in ``SCIENCE``."""
+        return dict.fromkeys(self.instruments_with_modes(), SCIENCE_MODE)
+
+    def check_concurrency(self, instrument_modes: Mapping[str, str]) -> None:
+        """Raise if the instruments ``instrument_modes`` has observing, those
+        in any mode but ``IDLE``, break the payload's concurrency rules."""
+        rules = self.concurrency
+        if not rules.active:
+            return
+        observing = sorted(
+            name for name, mode in instrument_modes.items() if mode != IDLE_MODE
+        )
+        if rules.max_observing is not None and len(observing) > rules.max_observing:
+            raise ValueError(
+                f"{len(observing)} instruments observe at once ({observing}); "
+                f"the payload allows {rules.max_observing}"
+            )
+        if (
+            rules.required_guider is not None
+            and observing
+            and rules.required_guider not in observing
+        ):
+            raise ValueError(
+                f"an observation using {observing} must also use "
+                f"{rules.required_guider!r}"
+            )
+        for first, second in rules.exclusive:
+            if first in observing and second in observing:
+                raise ValueError(f"{first!r} and {second!r} cannot observe together")
+
+    def check_request(self, instrument_modes: Mapping[str, str]) -> None:
+        """Check an observation's instrument modes: the instruments and
+        modes exist, and what they have observing is allowed at once. An
+        empty mapping is checked as the default, every instrument with
+        modes in ``SCIENCE``."""
+        self.check_instrument_modes(instrument_modes)
+        self.check_concurrency(
+            instrument_modes if instrument_modes else self.default_instrument_modes()
+        )
 
     def total_data_rate_gbps(self) -> float:
         """Get the total data generation rate across all instruments.
