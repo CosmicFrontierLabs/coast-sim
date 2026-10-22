@@ -46,6 +46,17 @@ class Pointing(PlanEntry):
             "target cannot be selected before it"
         ),
     )
+    protect_opening: bool = Field(
+        default=False,
+        exclude_if=lambda v: v is False,
+        description=(
+            "Whether dispatch keeps the target's window open from its "
+            "opening: the observation before it ends there and candidates "
+            "that run into it are passed over. False: dispatch protects only "
+            "the latest start that still meets the deadline, and a target "
+            "without a deadline is not protected"
+        ),
+    )
     sequence: ObservationSequence | None = Field(
         default=None,
         exclude_if=lambda v: v is None,

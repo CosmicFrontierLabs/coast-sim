@@ -379,14 +379,22 @@ points per gigabit of science data, so that high-data science gives way to low-d
 science before the recorder is full rather than only once it is (see
 :doc:`configuration`).
 
-Dispatch also looks ahead to requests whose windows are still to open. A request
-with an ``earliest_start`` cannot be selected before it, and it opens at its first
-visibility from then, unless that is past its deadline. When a request ranked above
-a candidate opens before the candidate's snapshot would end, the snapshot ends at
-the opening instead, so a long observation does not block a window that opens
-inside it; the request is then selected when it opens, and slews from there. A
-candidate whose minimum snapshot does not fit before the opening is passed over,
-for a shorter candidate or, if none fits, for nothing. The log says when a snapshot
+Dispatch also looks ahead to requests with a deadline, so that none is missed for
+want of looking. A request with an ``earliest_start`` cannot be selected before it,
+and one with a ``deadline`` must begin collecting by it. Dispatch keeps time for each
+such request from its latest start: its deadline less a dispatch step, a worst-case
+slew and its setup, no earlier than its opening (the first visibility from its
+earliest start), and no later than its first visibility from there. When a request
+ranked above a candidate must start before the candidate's snapshot would end, the
+snapshot ends there instead, so a long observation does not make the request miss
+its deadline; the request is then selected and slews from there. A candidate whose
+minimum snapshot does not fit before then is passed over, for a shorter candidate
+or, if none fits, for nothing. A request with slack therefore lets the observation
+before it run on until its slack is used, and a request with no deadline is not
+kept time for at all: it competes by merit once it is open. A request that must
+start at its opening, slack or not, says so with ``protect_opening``
+(``queue.add(..., protect_opening=True)``): dispatch then keeps time for it from
+its opening, as it does for a request with no slack. The log says when a snapshot
 was shortened and how many candidates were passed over. The ranking is by base
 merit, with any allocation bonus; a request's dynamic terms are not known before it
 opens. Targets of opportunity join the queue when they are submitted, so nothing is

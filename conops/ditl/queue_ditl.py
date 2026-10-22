@@ -2990,8 +2990,9 @@ class QueueDITL(DITLMixin, DITLStats):
         deadline_inputs: _ScienceDeadlineInputs | None = None,
     ) -> tuple[float, str]:
         """Determine the next science deadline after the slew ends, which could
-        be the end of the current visibility window, the next pass, the opening
-        of a request ranked above the target, or the end of the simulation."""
+        be the end of the current visibility window, the next pass, the time a
+        request ranked above the target must start, or the end of the
+        simulation."""
         if deadline_inputs is None:
             deadline_inputs = self._science_deadline_inputs(current_time)
 
@@ -3004,14 +3005,14 @@ class QueueDITL(DITLMixin, DITLStats):
 
         candidate = target or self.ppt
         if candidate is not None and deadline_inputs.request_openings:
-            # The observation ends when a request ranked above it opens.
+            # The observation ends when a request ranked above it must start.
             cut = self.queue.request_cut(
                 candidate,
                 deadline_inputs.request_openings,
                 deadline_inputs.simulation_end,
             )
             if cut is not None:
-                deadlines.append((cut[0], f"request {cut[1]} opens"))
+                deadlines.append((cut[0], f"request {cut[1]} must start"))
 
         visibility_end = self._current_ppt_visibility_deadline(slew_end, target=target)
         if visibility_end is not None:

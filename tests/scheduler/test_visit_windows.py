@@ -206,9 +206,18 @@ class TestQueue:
         assert later < near
 
     def test_the_next_window_is_a_request_opening(self) -> None:
+        """The look-ahead keeps time for the next unvisited window from its
+        latest start: its deadline less the slew allowance and the setup."""
         queue, target = self._queue()
-        assert queue.request_openings(T0) == [(STARTS[0], 90.0, 900)]
+        allowance = queue._slew_allowance()
+        assert allowance is not None
+        setup = queue.observation_timing.setup_seconds
+        latest = [w.deadline - allowance - setup for w in WINDOWS]
+        assert queue.request_openings(T0) == [(latest[0], 90.0, 900)]
         target.record_collection(STARTS[0] + 3 * MIN, 3 * MIN)
+        assert queue.request_openings(STARTS[0] + 5 * MIN) == [(latest[1], 90.0, 900)]
+        # Asked to, the target is kept from each window's opening.
+        target.protect_opening = True
         assert queue.request_openings(STARTS[0] + 5 * MIN) == [(STARTS[1], 90.0, 900)]
 
 

@@ -73,9 +73,10 @@ class DispatchPolicy(Protocol):
         ...
 
     def request_openings(self, utime: float) -> list[tuple[float, float, int]]:
-        """The requests whose windows open after ``utime``, as
-        ``(opening, value, obsid)`` in opening order; QueueDITL ends an
-        observation ranked below a request when that request opens."""
+        """The requests dispatch keeps time for after ``utime``, as
+        ``(start, value, obsid)`` in time order, each at the time it must
+        start by; QueueDITL ends an observation ranked below a request
+        there."""
         ...
 
     def request_cut(
@@ -84,8 +85,8 @@ class DispatchPolicy(Protocol):
         openings: list[tuple[float, float, int]],
         end: float,
     ) -> tuple[float, int] | None:
-        """When, before ``end``, the window of a request ranked above
-        ``target`` opens, and that request's obsid; None when none does."""
+        """When, before ``end``, a request ranked above ``target`` must
+        start, and that request's obsid; None when none must."""
         ...
 
     def add(
@@ -108,6 +109,7 @@ class DispatchPolicy(Protocol):
         instrument_modes: Mapping[str, str] | None = None,
         roll_deg: float | None = None,
         roll_offset_deg: float | None = None,
+        protect_opening: bool = False,
     ) -> Pointing:
         """Add a target and return it, as QueueDITL does for a Target of Opportunity.
 
@@ -121,6 +123,8 @@ class DispatchPolicy(Protocol):
                 power-optimal roll, in degrees.
             roll_offset_deg: An offset from the power-optimal roll to observe
                 at, in degrees; give this or ``roll_deg``, not both.
+            protect_opening: Keep the target's window from its opening rather
+                than from the latest start that meets its deadline.
         """
         ...
 

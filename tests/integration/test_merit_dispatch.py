@@ -376,18 +376,63 @@ TIMED = {
 
 class TestLookAhead:
     def test_a_long_observation_ends_when_a_higher_merit_window_opens(self) -> None:
+        """The timed request's ten minutes of slack are spent on the long
+        observation, less a step, a slew and the setup; the request then
+        starts within its window."""
         ditl = _run([LONG, TIMED], hours=5)
 
         assert _science_order(ditl) == [12, 13, 12]
         first, timed = ditl.plan[0], next(e for e in ditl.plan if e.obsid == 13)
         assert first.obsid == 12
-        assert first.end <= BEGIN + HOUR
+        allowance = ditl.queue._slew_allowance()
+        assert allowance is not None
+        setup = ditl.queue.observation_timing.setup_seconds
+        assert BEGIN + HOUR < first.end <= BEGIN + HOUR + 600 - allowance - setup
         assert BEGIN + HOUR <= timed.collection_begin <= BEGIN + HOUR + 600
         assert any(
             e.description.startswith("Snapshot of 12 ends at")
-            and e.description.endswith("when request 13 opens")
+            and e.description.endswith("when request 13 must start")
             for e in ditl.log.events
         )
+
+    def test_a_request_with_slack_lets_the_observation_run_to_its_latest_start(
+        self,
+    ) -> None:
+        """With two hours of slack, the long observation runs on past the
+        opening and ends at the request's latest start, less a slew and the
+        setup; the request then starts by its deadline."""
+        slack = {**TIMED, "deadline": BEGIN + HOUR + 2 * HOUR}
+
+        ditl = _run([LONG, slack], hours=6)
+
+        assert _science_order(ditl) == [12, 13, 12]
+        first, timed = ditl.plan[0], next(e for e in ditl.plan if e.obsid == 13)
+        assert first.obsid == 12
+        allowance = ditl.queue._slew_allowance()
+        assert allowance is not None
+        setup = ditl.queue.observation_timing.setup_seconds
+        latest = BEGIN + 3 * HOUR - allowance - setup
+        assert first.end > BEGIN + 2 * HOUR
+        assert first.end <= latest
+        assert timed.collection_begin <= BEGIN + 3 * HOUR
+        # Asked to keep its opening, the request starts there as before.
+        kept = {**slack, "protect_opening": True}
+        ditl = _run([LONG, kept], hours=6)
+        assert _science_order(ditl) == [12, 13, 12]
+        assert ditl.plan[0].end <= BEGIN + HOUR
+        timed = next(e for e in ditl.plan if e.obsid == 13)
+        assert timed.collection_begin <= BEGIN + HOUR + 600
+
+    def test_a_request_without_a_deadline_does_not_shorten_the_observation(
+        self,
+    ) -> None:
+        """Unbounded slack: the request waits for the long observation."""
+        open_ended = {**TIMED, "deadline": None}
+
+        ditl = _run([LONG, open_ended], hours=5)
+
+        assert _science_order(ditl) == [12, 13]
+        assert ditl.plan[0].end >= BEGIN + 3 * HOUR
 
     def test_a_lower_merit_window_does_not_shorten_the_observation(self) -> None:
         """Ranked below the long request, the timed one waits for it and
@@ -425,7 +470,7 @@ class TestLookAhead:
 
         assert _science_order(ditl) == [14, 13, 12]
         assert any(
-            "passed over: their minimum snapshot does not fit before request 13 opens"
+            "passed over: their minimum snapshot does not fit before request 13 must start"
             in e.description
             for e in ditl.log.events
         )
