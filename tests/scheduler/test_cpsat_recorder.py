@@ -199,6 +199,28 @@ class TestScheduler:
         assert max(ditl.recorder_volume_gb) <= LIMIT + 1e-6
         assert _science(plan)
 
+    def test_a_distinct_pass_rate_executes_within_the_limit(self) -> None:
+        """The model counts each contact's ingress as the priority-first plan
+        has it; a solution that lengthens one is checked by the decoder, so
+        the plan it keeps executes within the limit."""
+        config = _recorder_config()
+        config.spacecraft_bus.data_generation = HousekeepingData(
+            rate_gbps=0.0001, rate_mode={"PASS": 0.001}
+        )
+        targets = _targets(config)
+        scheduler = _scheduler(config, targets)
+
+        plan = scheduler.schedule()
+
+        assert scheduler.solver_score >= scheduler.start_score
+        entries = [block.entry for block in scheduler._best.final.timeline]
+        assert scheduler._best.final.volumes == pytest.approx(
+            scheduler._ledger.initial_volumes(entries)
+        )
+        ditl = _execute(config, plan, HOURS, STEP)
+        assert ditl.validate_plan_matches_execution() == []
+        assert max(ditl.recorder_volume_gb) <= LIMIT + 1e-6
+
     def test_hint_with_the_recorder_reproduces_the_priority_first_plan(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

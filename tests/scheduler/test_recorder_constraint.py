@@ -256,6 +256,64 @@ class TestLedger:
         )
         assert from_origin.bounds == [60.0, 240.0, 1020.0]
 
+    def test_a_replan_during_a_contact_downlinks_only_what_is_left(
+        self, config: MissionConfig
+    ) -> None:
+        """A 90 s link at 200 Mbps is 18 Gb; a horizon starting 60 s in
+        gets the 30 s left, 6 Gb, though on the step grid the link occupies
+        the two steps from 0 to 120."""
+        ledger = RecorderLedger(
+            config,
+            60.0,
+            1000.0,
+            [_contact(0.0, 90.0, "TWENTY")],
+            start_volume_gb=0.0,
+            step_size=60,
+        )
+        assert ledger.bounds == [60.0, 60.0, 1020.0]
+        assert ledger.downlink_gb == pytest.approx([0.0, 6.0])
+        assert ledger.contact_housekeeping_gb == pytest.approx([0.0, 0.09])
+
+    def test_what_the_last_contact_step_generates_after_the_link_stays_on(
+        self, config: MissionConfig
+    ) -> None:
+        """The link from 200 to 290 downlinks the step at 240's housekeeping
+        only up to 290: the 10 s after it, still at the PASS rate, go on the
+        recorder after the link, so a contact that empties the recorder
+        leaves them."""
+        ledger = RecorderLedger(
+            config,
+            0.0,
+            1000.0,
+            [_contact(200.0, 290.0, "TWENTY")],
+            start_volume_gb=1.0,
+            step_size=60,
+        )
+        assert ledger.bounds == [0.0, 240.0, 1020.0]
+        assert ledger.downlink_gb == pytest.approx([0.0, 18.0])
+        assert ledger.contact_housekeeping_gb == pytest.approx([0.0, 0.15])
+        assert ledger.housekeeping_gb == pytest.approx([0.24, 0.73 + 0.02])
+        assert ledger.levels((0.0, 0.0)) == pytest.approx([1.24, 0.75])
+
+    def test_a_pass_rate_below_nominal_makes_a_negative_ingress(
+        self, config: MissionConfig
+    ) -> None:
+        config.spacecraft_bus.data_generation = HousekeepingData(
+            rate_gbps=0.001, rate_mode={"PASS": 0.0005}
+        )
+        contact = PlanEntry(
+            obstype=ObsType.GSP,
+            station="TWENTY",
+            begin=140.0,
+            slewtime=60,
+            end=300.0,
+            contact_begin=200.0,
+            contact_end=300.0,
+        )
+        ledger = RecorderLedger(config, 0.0, 1000.0, [contact], start_volume_gb=0.0)
+        assert ledger.ingress_volume(contact) == pytest.approx(-0.03)
+        assert ledger.initial_volumes([contact]) == pytest.approx((-0.03, 0.0))
+
     def test_contacts_outside_the_horizon_are_ignored(
         self, config: MissionConfig
     ) -> None:
@@ -481,6 +539,26 @@ class TestPriorityScheduler:
         placed = _science(plan)
         assert len(placed) == 1
         assert float(placed[0].begin) > _first_contact(plan)
+
+    def test_a_recorder_already_over_the_limit_is_reported(self) -> None:
+        """Nothing placed can bring the recorder down; the plan says so and
+        places science only after a contact has."""
+        config = _recorder_config()
+        hungry = _data_target(config, 1, 105.0, 10.0, LOW_RATE, minutes=20)
+        scheduler = PriorityScheduler(
+            config,
+            [hungry],
+            BEGIN,
+            BEGIN + timedelta(hours=HOURS),
+            step_size=STEP,
+            start_volume_gb=LIMIT + 1.0,
+        )
+        plan = scheduler.schedule()
+        assert any(
+            "its planning limit being" in e.description for e in scheduler.log.events
+        )
+        first = _first_contact(plan)
+        assert all(float(e.begin) > first for e in _science(plan))
 
     def test_locked_entries_count_towards_the_recorder(self) -> None:
         config = _recorder_config()

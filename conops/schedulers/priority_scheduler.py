@@ -304,6 +304,19 @@ class PriorityScheduler:
             [block.entry for block in self.timeline]
         )
         """Science volume planned in each of the ledger's segments."""
+        limit = self._ledger.limit
+        if limit is not None:
+            over = max(self._ledger.peaks(self._volumes))
+            if over + 1e-9 >= limit:
+                # What is fixed already, with the housekeeping, reaches the
+                # limit: nothing placed here changes that, so it is said.
+                self._log(
+                    self.ctx.ustart,
+                    f"The recorder reaches {over:.2f} Gb, its planning limit "
+                    f"being {limit:.2f} Gb, from what is on it and the "
+                    "locked entries and housekeeping alone; no science is "
+                    "placed before it comes down",
+                )
 
     def _recorder_ledger(self) -> RecorderLedger:
         """The recorder over the horizon, downlinking during the reserved contacts."""
