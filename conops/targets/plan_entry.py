@@ -20,7 +20,7 @@ from pydantic import (
 )
 from rust_ephem.constraints import ConstraintConfig
 
-from ..common import givename, unixtime2date
+from ..common import givename, unixtime2date, unixtime_from
 from ..common.enums import ACSMode, ObsType
 from ..common.vector import (
     attitude_to_quat,
@@ -173,6 +173,14 @@ class PlanEntry(BaseModel):
         exclude_if=lambda v: not v,
         description="Whether this entry is a calibration step, collecting no science",
     )
+    visit: int | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description=(
+            "Which of its target's visit windows this entry observes in, "
+            "from 0, for a target with visit windows"
+        ),
+    )
     windows: list[list[float]] = Field(default_factory=list, exclude=True)
     obstype: ObsType = ObsType.PPT
     slewpath: tuple[list[float], list[float]] = Field(
@@ -289,13 +297,9 @@ class PlanEntry(BaseModel):
         mode="before",
     )
     @classmethod
-    def _coerce_time(cls, v: float | int | str | None) -> float | None:
-        """Accept Unix timestamps (float/int) or ISO-8601 strings."""
-        if v is None:
-            return None
-        if isinstance(v, str):
-            return datetime.fromisoformat(v).timestamp()
-        return float(v)
+    def _coerce_time(cls, v: float | int | str | datetime | None) -> float | None:
+        """Accept Unix timestamps, datetimes (naive means UTC) or ISO-8601 strings."""
+        return None if v is None else unixtime_from(v)
 
     @field_serializer(
         "begin",

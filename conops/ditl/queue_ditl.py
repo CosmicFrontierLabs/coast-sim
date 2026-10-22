@@ -19,6 +19,7 @@ from ..common import (
     radec2vec,
     scbodyvector,
     unixtime2date,
+    unixtime_from,
 )
 from ..common.enums import ACSCommandType, SlewAlgorithm
 from ..common.ephemeris import position_vectors
@@ -422,25 +423,14 @@ class QueueDITL(DITLMixin, DITLStats):
             exptime=exptime,
             name=name,
             # None means active immediately (0.0 is always <= any simulation time)
-            submit_time=self._unix_time(submit_time)
-            if submit_time is not None
-            else 0.0,
-            deadline=self._unix_time(deadline) if deadline is not None else None,
+            submit_time=unixtime_from(submit_time) if submit_time is not None else 0.0,
+            deadline=unixtime_from(deadline) if deadline is not None else None,
             science_data=dict(science_data or {}),
             interrupt=interrupt,
             executed=False,
         )
         self.too_register.append(too)
         return too
-
-    @staticmethod
-    def _unix_time(value: float | datetime) -> float:
-        """Convert a Unix timestamp or datetime (naive means UTC) to Unix seconds."""
-        if isinstance(value, datetime):
-            if value.tzinfo is None:
-                value = value.replace(tzinfo=timezone.utc)
-            return value.timestamp()
-        return float(value)
 
     def _too_target(self, too: TOORequest) -> Pointing:
         """Return the queue target for an active TOO, adding it on first use."""
@@ -1027,6 +1017,18 @@ class QueueDITL(DITLMixin, DITLStats):
             acs_mode=self.acs.acsmode,
         )
         self._active_activity = None
+
+    def _ppt_deadline(self) -> float | None:
+        """The latest time the observation may begin collecting: its visit
+        window's deadline for a visit, else the target's deadline."""
+        ppt = self.ppt
+        if ppt is None:
+            return None
+        current = getattr(ppt, "current_deadline", None)
+        if isinstance(current, (int, float)):
+            return float(current)
+        deadline = getattr(ppt, "deadline", None)
+        return float(deadline) if isinstance(deadline, (int, float)) else None
 
     def _next_activity_begin(self, after: float) -> float | None:
         """When the next scheduled activity begins after ``after``."""
@@ -2670,9 +2672,9 @@ class QueueDITL(DITLMixin, DITLStats):
                     utime, reason="Time window elapsed, ending observation"
                 )
         elif (
-            self.ppt.deadline is not None
+            self._ppt_deadline() is not None
             and self.ppt.collected_seconds == 0
-            and utime > self.ppt.deadline
+            and utime > float(self._ppt_deadline() or 0.0)
         ):
             # A start deadline is missed if no science has begun by then,
             # whatever delayed it (e.g. an unforeseen SAA entry).
@@ -3553,13 +3555,14 @@ class QueueDITL(DITLMixin, DITLStats):
                 slew_end,
                 slew_end + self._ppt_timing(self.ppt).setup_seconds,
             )
-            if self.ppt.deadline is not None and collection_start > self.ppt.deadline:
+            deadline = self._ppt_deadline()
+            if deadline is not None and collection_start > deadline:
                 self.log.log_event(
                     utime=utime,
                     event_type="QUEUE",
                     description=(
                         f"Target {self.ppt.obsid} skipped - collection would start "
-                        f"{collection_start - self.ppt.deadline:.0f}s after its deadline"
+                        f"{collection_start - deadline:.0f}s after its deadline"
                     ),
                     obsid=self.ppt.obsid,
                     acs_mode=self.acs.acsmode,

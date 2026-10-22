@@ -30,6 +30,7 @@ from .plan_schema import PlanEntrySchema, PlanSchema
 from .pointing import Pointing
 from .sequence import ObservationSequence, SequenceStep
 from .target_queue import Queue, TargetQueue, TargetSlewEstimate
+from .visits import VisitWindow, cadence_windows, visit_windows
 
 __all__ = [
     "ACTIVITY_OBSID",
@@ -37,6 +38,9 @@ __all__ = [
     "assign_obsids",
     "ObservationSequence",
     "SequenceStep",
+    "VisitWindow",
+    "cadence_windows",
+    "visit_windows",
     "PlanEntry",
     "TargetAttitudeSchema",
     "AttitudeRotationSchema",

@@ -129,6 +129,13 @@ class _Request(BaseModel):
     on what the plan has collected before it."""
     cadence: float | None = None
     """Seconds a visit waits after the target's last one, when cadence counts."""
+    visit_candidates: list[int] = Field(default_factory=list)
+    """For a target with visit windows, the windows a visit may still be
+    placed in, in order: not visited, not committed, and not yet closed."""
+    skipped: set[int] = Field(default_factory=set)
+    """Visit windows no placement could meet."""
+    visit: int | None = None
+    """The visit window the snapshot being placed is for."""
 
     @property
     def wants_more(self) -> bool:
@@ -136,6 +143,47 @@ class _Request(BaseModel):
         return self.remaining > 0 and self.remaining >= float(
             snapshot_min_seconds(self.target)
         )
+
+    @property
+    def timed(self) -> bool:
+        """Whether the target's visits have windows of their own."""
+        return bool(self.target.visit_windows)
+
+    @property
+    def earliest_start(self) -> float | None:
+        """When the snapshot being placed may begin collecting."""
+        if self.timed and self.visit is not None:
+            return self.target.visit_windows[self.visit].start
+        return self.target.earliest_start
+
+    @property
+    def deadline(self) -> float | None:
+        """By when the snapshot being placed must begin collecting."""
+        if self.timed and self.visit is not None:
+            return self.target.visit_windows[self.visit].deadline
+        return self.target.deadline
+
+    def open_visits(self, last_end: float | None, not_before: float) -> list[int]:
+        """The windows a visit may still go in, in order: the candidates not
+        skipped, after the window of the visit that ended at ``last_end``,
+        and still open at ``not_before``."""
+        target = self.target
+        last = (
+            target.visit_index_at(last_end - target.per_visit_seconds)
+            if last_end is not None
+            else None
+        )
+        return [
+            k
+            for k in self.visit_candidates
+            if k not in self.skipped
+            and (last is None or k > last)
+            and target.visit_windows[k].deadline >= not_before
+        ]
+
+    def next_visit(self, last_end: float | None, not_before: float) -> int | None:
+        """The window the next visit goes in, or None when none is left."""
+        return next(iter(self.open_visits(last_end, not_before)), None)
 
 
 def program_shares(seconds: Mapping[str, float]) -> dict[str, float]:
@@ -620,8 +668,25 @@ class PriorityScheduler:
                         -order[id(r)],
                     ),
                 )
-            block = self._place_snapshot(request, self._cadence_release(request))
+            if request.timed:
+                # The next window to visit; none left ends the request.
+                request.visit = request.next_visit(
+                    self._last_visit.get(int(request.target.obsid)), self.ctx.ustart
+                )
+                if request.visit is None:
+                    request.remaining = 0.0
+            block = (
+                self._place_snapshot(request, self._cadence_release(request))
+                if request.wants_more
+                else None
+            )
             self._reactivate_cut_short(active, order)
+            if block is None and request.timed and request.visit is not None:
+                # This window cannot be met; the later ones may be.
+                request.skipped.add(request.visit)
+                request.remaining -= request.target.per_visit_seconds
+                if request.wants_more:
+                    continue
             if block is not None:
                 # Freeze the value the snapshot was selected at onto its entry,
                 # as dispatch does: a Target of Opportunity must beat it to
@@ -738,7 +803,9 @@ class PriorityScheduler:
         self._program_seconds[program] = (
             self._program_seconds.get(program, 0.0) + seconds
         )
-        if request.cadence is not None and entry.collection_end is not None:
+        if (
+            request.cadence is not None or request.timed
+        ) and entry.collection_end is not None:
             self._last_visit[int(request.target.obsid)] = float(entry.collection_end)
 
     # ── Requests ──────────────────────────────────────────────────────────
@@ -775,6 +842,22 @@ class PriorityScheduler:
         for target in self.targets:
             exptime = target.exptime if target.exptime is not None else target.ss_max
             remaining = float(exptime) - reserved.get(int(target.obsid), 0.0)
+            candidates: list[int] = []
+            if target.visit_windows:
+                # One visit per window still to come: not visited, not after
+                # a committed visit's window, and not closed before the plan.
+                last = self._last_visit.get(int(target.obsid))
+                visited = set(target.visits_done)
+                if last is not None:
+                    index = target.visit_index_at(last - target.per_visit_seconds)
+                    if index is not None:
+                        visited.update(range(index + 1))
+                candidates = [
+                    k
+                    for k, window in enumerate(target.visit_windows)
+                    if k not in visited and window.deadline >= self.ctx.ustart
+                ]
+                remaining = target.per_visit_seconds * len(candidates)
             if (
                 target.done
                 or int(target.obsid) in self.held
@@ -798,6 +881,7 @@ class PriorityScheduler:
                     + merit.urgency
                     + (cadence_weight if cadence is not None else 0.0),
                     cadence=cadence,
+                    visit_candidates=candidates,
                 )
             )
         self._deficit_weight = merit_model.completion_deficit_weight
@@ -1454,7 +1538,7 @@ class PriorityScheduler:
         request = self._movable.get(id(block))
         if request is None:
             return False
-        if request.cadence is None:
+        if request.cadence is None and not request.timed:
             return True
         end = block.entry.collection_end
         return end is not None and self._last_visit.get(
@@ -1523,7 +1607,9 @@ class PriorityScheduler:
         for position, old_block in enumerate(run):
             old_request = self._movable[id(old_block)]
             seconds = _collection_seconds(old_block)
-            same_length = old_request.model_copy(update={"remaining": seconds})
+            same_length = old_request.model_copy(
+                update={"remaining": seconds, "visit": old_block.entry.visit}
+            )
             last = position == len(run) - 1
             moved_fit = self._fit_in_gap(
                 same_length,
@@ -1689,10 +1775,8 @@ class PriorityScheduler:
                 continue
 
             collection_begin = float(slew.slewend) + timing.setup_seconds
-            if (
-                target.earliest_start is not None
-                and collection_begin < target.earliest_start
-            ):
+            earliest_start = request.earliest_start
+            if earliest_start is not None and collection_begin < earliest_start:
                 # Start later by the shortfall, so collection begins at the
                 # earliest start if the slew takes as long. It need not: its
                 # duration changes with the instrument roll, so a longer slew
@@ -1704,9 +1788,7 @@ class PriorityScheduler:
                 # later the later the slew starts.
                 jump = max(
                     start + self.ctx.step_size,
-                    self.ctx.ceil_step(
-                        start + target.earliest_start - collection_begin
-                    ),
+                    self.ctx.ceil_step(start + earliest_start - collection_begin),
                 )
                 jump = min(jump, self.ctx.floor_step(search_end) + self.ctx.step_size)
                 while (
@@ -1714,12 +1796,13 @@ class PriorityScheduler:
                     and self._collection_begin_at(
                         target, pred, jump - self.ctx.step_size
                     )
-                    >= target.earliest_start
+                    >= earliest_start
                 ):
                     jump -= self.ctx.step_size
                 start = jump
                 continue
-            if target.deadline is not None and collection_begin > target.deadline:
+            deadline = request.deadline
+            if deadline is not None and collection_begin > deadline:
                 return None
 
             visit: _Visit | None = None
@@ -2062,6 +2145,7 @@ class PriorityScheduler:
             merit=request.merit.value,
             ss_min=snapshot_min_seconds(target),
             ss_max=target.ss_max,
+            visit=request.visit if request.timed else None,
         )
         entry.exptime = collection_end - collection_begin
         return entry

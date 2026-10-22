@@ -959,7 +959,9 @@ base merit high enough for its importance.
   A target with an ``earliest_start`` (``queue.add(..., earliest_start=...)``),
   the earliest time science collection may begin, cannot be selected before it;
   dispatch ends a lower-merit snapshot when such a target's window opens, so the
-  target can be selected then (see :doc:`planning`).
+  target can be selected then (see :doc:`planning`). A target with
+  ``visit_windows`` is selected only while one of its windows is open and not
+  yet visited, each window opening the same way.
 * ``config.targets.cadence_weight`` - Merit added once a target's category
   ``cadence_seconds`` has elapsed since it last collected science, rising
   linearly from ``0`` just after a visit. A target never yet observed gets the

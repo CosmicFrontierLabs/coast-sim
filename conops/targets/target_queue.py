@@ -1,5 +1,5 @@
 import hashlib
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
@@ -21,6 +21,7 @@ from . import Pointing
 from .merit import MeritBreakdown, MeritModel
 from .plan_entry import snapshot_min_seconds
 from .sequence import ObservationSequence
+from .visits import VisitWindow
 
 if TYPE_CHECKING:
     from ..simulation.coverage import StationCoverage
@@ -123,6 +124,7 @@ class TargetQueue:
         science_data: Mapping[str, ScienceData] | None = None,
         sequence: ObservationSequence | None = None,
         visits: int = 1,
+        visit_windows: Sequence[VisitWindow] | None = None,
     ) -> Pointing:
         """Add a pointing target to the queue.
 
@@ -143,6 +145,11 @@ class TargetQueue:
                 may begin
             science_data: Science data observing the target generates, keyed
                 by instrument name; other instruments generate their own
+            sequence: The steps a visit of the target observes, if any
+            visits: How many visits of the sequence are wanted
+            visit_windows: When each visit may begin collecting, one visit
+                per window; the target is selected only while an unvisited
+                window is open
 
         Returns:
             The added target.
@@ -165,10 +172,14 @@ class TargetQueue:
             science_data=dict(science_data or {}),
             sequence=sequence,
             visits=visits,
+            visit_windows=list(visit_windows or []),
         )
-        pointing.exptime = (
-            visits * sequence.science_seconds if sequence is not None else exptime
-        )
+        if pointing.visit_windows:
+            pointing.exptime = pointing.visits * pointing.per_visit_seconds
+        else:
+            pointing.exptime = (
+                visits * sequence.science_seconds if sequence is not None else exptime
+            )
         pointing.visibility()
         self.targets.append(pointing)
         return pointing
@@ -388,6 +399,34 @@ class TargetQueue:
         if estimate.slewpath is not None:
             target.slewpath = estimate.slewpath
 
+    @staticmethod
+    def _bounds(target: Pointing, utime: float) -> tuple[float | None, float | None]:
+        """When ``target`` may begin collecting if selected at ``utime``: its
+        next visit window's bounds, or its own earliest start and deadline."""
+        windows = getattr(target, "visit_windows", None)
+        # A test double's target has no windows.
+        if isinstance(windows, list) and windows:
+            return target.window_bounds(utime)
+        start = getattr(target, "earliest_start", None)
+        deadline = getattr(target, "deadline", None)
+        return (
+            start if isinstance(start, (int, float)) else None,
+            deadline if isinstance(deadline, (int, float)) else None,
+        )
+
+    def _open_at(self, target: Pointing, utime: float) -> bool:
+        """Whether ``target`` may be selected at ``utime``: at or after its
+        earliest start and by its deadline, or within an unvisited visit
+        window; a target whose windows are all past or visited is not."""
+        start, deadline = self._bounds(target, utime)
+        windows = getattr(target, "visit_windows", None)
+        if isinstance(windows, list) and windows and deadline is None:
+            return False
+        if deadline is not None and utime > deadline:
+            return False
+        # Selected now, it collects after now.
+        return start is None or utime >= start
+
     def request_openings(self, utime: float) -> list[tuple[float, float, int]]:
         """The requests whose windows open after ``utime``, as
         ``(opening, value, obsid)`` in opening order: a request with an
@@ -395,9 +434,8 @@ class TargetQueue:
         then, unless that is past its deadline."""
         openings: list[tuple[float, float, int]] = []
         for other in self.targets:
-            start = getattr(other, "earliest_start", None)
-            # A test double's target has no number for a start.
-            if not isinstance(start, (int, float)) or start <= utime:
+            start, _ = self._bounds(other, utime)
+            if start is None or start <= utime:
                 continue
             if other.done or other.merit <= 0:
                 continue
@@ -489,9 +527,7 @@ class TargetQueue:
             if t.merit > 0
             and self._visible_now(t)
             and not t.done
-            and (t.deadline is None or utime <= t.deadline)
-            # Selected now, it collects after now.
-            and (t.earliest_start is None or utime >= t.earliest_start)
+            and self._open_at(t, utime)
         ]
         score_candidates = (
             self.slew_distance_weight != 0.0
@@ -574,12 +610,13 @@ class TargetQueue:
             )
 
             # A target must start collecting by its deadline.
+            _, deadline = self._bounds(target, utime)
             if (
-                target.deadline is not None
+                deadline is not None
                 and utime
                 + float(target.slewtime)
                 + self.observation_timing.setup_seconds
-                > target.deadline
+                > deadline
             ):
                 continue
 
@@ -623,6 +660,10 @@ class TargetQueue:
                 cuts[int(target.obsid)] = cut
             if visibility_window:
                 target.begin = int(utime)
+                windows = getattr(target, "visit_windows", None)
+                if isinstance(windows, list) and windows:
+                    # The visit this selection would be.
+                    target.visit = target.next_visit(utime)
                 collection = self._candidate_collection_seconds(
                     target, visibility_window, utime
                 )

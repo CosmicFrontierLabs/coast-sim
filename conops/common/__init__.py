@@ -6,6 +6,7 @@ from .common import (
     normalize_acs_mode,
     unixtime2date,
     unixtime2yearday,
+    unixtime_from,
 )
 from .enums import (
     ACSCommandType,
@@ -71,5 +72,6 @@ __all__ = [
     "scbodyvector",
     "separation",
     "unixtime2date",
+    "unixtime_from",
     "unixtime2yearday",
 ]

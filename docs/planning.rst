@@ -75,6 +75,23 @@ Building and executing a plan
 A target's ``earliest_start`` and ``deadline`` (Unix seconds, a datetime or an
 ISO-8601 string) limit when its science collection may begin.
 
+A target observed at set times is one request with ``visit_windows``: a list of
+:class:`~conops.targets.VisitWindow`, each the earliest and latest time one
+visit's collection may begin, in time order and not overlapping. The target is
+visited once per window, in order, each visit whole: one snapshot of ``ss_max``
+seconds for a plain pointing (its ``ss_min`` is set to match), or one visit of its
+sequence. Its exposure is its visits' science unless given. The helpers
+:func:`~conops.targets.visit_windows` (windows opening at given times, each for a
+slack) and :func:`~conops.targets.cadence_windows` (a fixed first epoch, an
+interval and a count) build the list, so a star visited at log-spaced times and a
+field revisited every six hours are each one request. The planners place each
+visit within its window and skip a window no placement can meet; local search and
+CP-SAT keep every visit in its window; dispatch selects the target only while an
+unvisited window is open, and a window still to open counts as a request opening
+for the look-ahead described under dispatch. A plan entry's ``visit`` says which
+window it observes in, and the target records the windows its visits have
+collected in.
+
 A target is observed at the power-optimal instrument roll unless it asks for
 another: ``roll_offset_deg`` is added to the power-optimal roll, and ``roll_deg`` is
 the roll itself. Dispatch and the planners observe the target at that roll where the

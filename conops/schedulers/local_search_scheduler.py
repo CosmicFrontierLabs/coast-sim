@@ -309,12 +309,11 @@ class LocalSearchScheduler(PriorityScheduler):
         """
         entry = block.entry
         worth = value * _collection_seconds(block)
-        target = request.target
-        deadline = target.deadline
+        deadline = request.deadline
         if deadline is None or self.earliness_weight == 0.0:
             return worth
         # Lateness counts from when the request could first start.
-        opens = max(self.ctx.ustart, target.earliest_start or self.ctx.ustart)
+        opens = max(self.ctx.ustart, request.earliest_start or self.ctx.ustart)
         available = deadline - opens
         if available <= 0.0 or entry.collection_begin is None:
             return worth
@@ -373,6 +372,18 @@ class LocalSearchScheduler(PriorityScheduler):
         if request.cadence is not None and last is not None:
             due = last + request.cadence
             not_before = due if not_before is None else max(not_before, due)
+        if request.timed:
+            # The next window still open where the decoding has got to.
+            cursor_time = (
+                state.timeline[state.cursor - 1].end
+                if state.cursor > 0
+                else self.ctx.ustart
+            )
+            request.visit = request.next_visit(
+                last, max(cursor_time, not_before or cursor_time)
+            )
+            if request.visit is None:
+                return state
 
         timeline = state.timeline
         for index in range(state.cursor, len(timeline) + 1):
@@ -421,7 +432,9 @@ class LocalSearchScheduler(PriorityScheduler):
             programs = dict(state.programs)
             self._add_program_seconds(programs, request, block)
             last_visit = state.last_visit
-            if request.cadence is not None and block.entry.collection_end is not None:
+            if (
+                request.cadence is not None or request.timed
+            ) and block.entry.collection_end is not None:
                 last_visit = {**last_visit, obsid: float(block.entry.collection_end)}
             return _State.model_construct(
                 timeline=placed,

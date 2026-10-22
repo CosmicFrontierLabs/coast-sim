@@ -11,11 +11,17 @@ COASTSim runs a scheduler in one of two ways:
   execution differed from the plan.
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Protocol
 
 from ..config import ScienceData
-from ..targets import Plan, Pointing, TargetSlewEstimate
+from ..targets import (
+    ObservationSequence,
+    Plan,
+    Pointing,
+    TargetSlewEstimate,
+    VisitWindow,
+)
 
 if TYPE_CHECKING:
     from ..ditl.ditl_log import DITLLog
@@ -96,6 +102,9 @@ class DispatchPolicy(Protocol):
         deadline: float | None = None,
         earliest_start: float | None = None,
         science_data: Mapping[str, ScienceData] | None = None,
+        sequence: ObservationSequence | None = None,
+        visits: int = 1,
+        visit_windows: Sequence[VisitWindow] | None = None,
     ) -> Pointing:
         """Add a target and return it, as QueueDITL does for a Target of Opportunity.
 

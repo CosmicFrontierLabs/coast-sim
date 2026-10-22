@@ -9,13 +9,14 @@ from pydantic import (
     model_validator,
 )
 
-from ..common import unixtime2date
+from ..common import unixtime2date, unixtime_from
 from ..common.enums import ObsType
 from ..config.acs import AttitudeControlSystem
 from ..config.observation_timing import ObservationTiming, timing_for
 from .merit import MeritBreakdown
 from .plan_entry import PlanEntry
 from .sequence import ObservationSequence
+from .visits import VisitWindow
 
 
 class Pointing(PlanEntry):
@@ -59,6 +60,16 @@ class Pointing(PlanEntry):
         exclude_if=lambda v: v == 1,
         description="How many visits of the sequence are wanted",
     )
+    visit_windows: list[VisitWindow] = Field(
+        default_factory=list,
+        exclude_if=lambda v: not v,
+        description=(
+            "When each visit may begin collecting, in time order and not "
+            "overlapping: one visit per window, taken whole (a snapshot of "
+            "ss_max seconds, or one visit of the sequence), in order. Empty "
+            "for a target observed whenever it ranks highest"
+        ),
+    )
     roll_deg: float | None = Field(
         default=None,
         exclude_if=lambda v: v is None,
@@ -78,6 +89,7 @@ class Pointing(PlanEntry):
     )
     _done: bool = PrivateAttr(default=False)
     _merit_breakdown: MeritBreakdown | None = PrivateAttr(default=None)
+    _visits_done: set[int] = PrivateAttr(default_factory=set)
 
     @field_validator("deadline", "earliest_start", mode="before")
     @classmethod
@@ -85,15 +97,7 @@ class Pointing(PlanEntry):
         cls, v: float | int | str | datetime | None
     ) -> float | None:
         """Accept Unix timestamps, datetimes or ISO-8601 strings."""
-        if v is None:
-            return None
-        if isinstance(v, str):
-            v = datetime.fromisoformat(v)
-        if isinstance(v, datetime):
-            if v.tzinfo is None:
-                v = v.replace(tzinfo=timezone.utc)
-            return v.timestamp()
-        return float(v)
+        return None if v is None else unixtime_from(v)
 
     @field_serializer("deadline", "earliest_start")
     def _serialize_request_time(self, v: float | None) -> str | None:
@@ -132,6 +136,93 @@ class Pointing(PlanEntry):
                 self.exptime = self.visits * science
         return self
 
+    @model_validator(mode="after")
+    def _windows_set_the_visits(self) -> "Pointing":
+        """A target with visit windows is visited once per window, each visit
+        whole: a plain pointing's snapshot is its ``ss_max``, and its
+        exposure is its visits' science unless given."""
+        windows = self.visit_windows
+        if not windows:
+            return self
+        ordered = sorted(windows, key=lambda w: w.start)
+        for earlier, later in zip(ordered, ordered[1:], strict=False):
+            if later.start <= earlier.deadline:
+                raise ValueError("visit windows must not overlap")
+        if ordered != windows:
+            self.visit_windows = ordered
+        self.visits = len(ordered)
+        if self.sequence is None:
+            self.ss_min = self.ss_max
+        if self.exptime is None:
+            self.exptime = self.visits * self.per_visit_seconds
+        return self
+
+    @property
+    def per_visit_seconds(self) -> float:
+        """Science one visit collects: the sequence's, or one snapshot."""
+        if self.sequence is not None:
+            return float(self.sequence.science_seconds)
+        return float(self.ss_max)
+
+    @property
+    def visits_done(self) -> frozenset[int]:
+        """The visit windows a visit has collected science in."""
+        return frozenset(self._visits_done)
+
+    def visit_index_at(self, utime: float) -> int | None:
+        """The visit window that a collection at ``utime`` belongs to: the
+        last one starting at or before it, since a visit begins within its
+        window and the next window starts after the visit before it."""
+        index = None
+        for k, window in enumerate(self.visit_windows):
+            if window.start <= utime:
+                index = k
+        return index
+
+    def next_visit(self, utime: float, *, after_end: float | None = None) -> int | None:
+        """The next visit window to observe in: the first not yet visited
+        whose deadline is at or after ``utime``, and after the window of a
+        visit that ended at ``after_end``, if given. None without windows
+        or when none is left."""
+        last = (
+            self.visit_index_at(after_end - self.per_visit_seconds)
+            if after_end is not None
+            else None
+        )
+        for k, window in enumerate(self.visit_windows):
+            if k in self._visits_done or (last is not None and k <= last):
+                continue
+            if window.deadline >= utime:
+                return k
+        return None
+
+    def window_bounds(self, utime: float) -> tuple[float | None, float | None]:
+        """When collection may begin if the target is selected at ``utime``:
+        the next visit window's bounds, or the target's own earliest start
+        and deadline without windows. ``(None, None)`` when no visit is left."""
+        if not self.visit_windows:
+            return self.earliest_start, self.deadline
+        index = self.next_visit(utime)
+        if index is None:
+            return None, None
+        window = self.visit_windows[index]
+        return window.start, window.deadline
+
+    @property
+    def current_deadline(self) -> float | None:
+        """The latest time this observation may begin collecting: its visit
+        window's deadline when it is a visit, else the target's deadline."""
+        if self.visit_windows and self.visit is not None:
+            return self.visit_windows[self.visit].deadline
+        return self.deadline
+
+    def record_collection(self, utime: float, seconds: float) -> None:
+        super().record_collection(utime, seconds)
+        if seconds > 0 and self.visit_windows:
+            index = self.visit_index_at(utime - seconds)
+            if index is not None:
+                self._visits_done.add(index)
+
     def step_pointing(self, index: int) -> "Pointing":
         """The pointing step ``index`` of this target's sequence observes: at
         the step's pointing and with its instrument, for its duration, carrying
@@ -160,6 +251,7 @@ class Pointing(PlanEntry):
             ss_max=step.duration_seconds,
             step=step.name,
             calibration=not step.science,
+            visit=self.visit,
             roll_deg=roll_deg,
             roll_offset_deg=roll_offset,
         )
@@ -303,6 +395,9 @@ class Pointing(PlanEntry):
     def done(self) -> bool:
         if self.exptime is not None and self.exptime <= 0:
             self._done = True
+        if self.visit_windows and len(self._visits_done) >= len(self.visit_windows):
+            # One visit per window, and every window has had its visit.
+            self._done = True
         return self._done
 
     @done.setter
@@ -317,6 +412,8 @@ class Pointing(PlanEntry):
         self._last_collection_time = None
         self._interruptions = []
         self._merit_breakdown = None
+        self._visits_done = set()
+        self.visit = None
         self.begin = 0
         self.end = 0
         self.slewtime = 0

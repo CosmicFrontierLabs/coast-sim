@@ -9,7 +9,7 @@ import numpy as np
 import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
-from ..common import ObsType
+from ..common import ObsType, unixtime_from
 from ..config import MissionConfig, ObservationTiming, ScienceData
 from ..config.solar_panel import SolarArrayDriveState
 from ..schedulers.allocator import Allocation, LongRangeAllocator
@@ -243,8 +243,8 @@ class RollingHorizonDITL(DITL):
             merit=merit,
             exptime=exptime,
             name=name,
-            submit_time=_unix_time(submit_time) if submit_time is not None else 0.0,
-            deadline=_unix_time(deadline) if deadline is not None else None,
+            submit_time=unixtime_from(submit_time) if submit_time is not None else 0.0,
+            deadline=unixtime_from(deadline) if deadline is not None else None,
             science_data=dict(science_data or {}),
             interrupt=interrupt,
         )
@@ -960,15 +960,6 @@ def _final_attitude(entry: PlanEntry) -> tuple[float, float, float]:
             float(entry.track_end_roll or 0.0),
         )
     return entry.target_body_attitude()
-
-
-def _unix_time(value: float | datetime) -> float:
-    """Convert a Unix timestamp or datetime (naive means UTC) to Unix seconds."""
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.timestamp()
-    return float(value)
 
 
 def _as_datetime(utime: float) -> datetime:
