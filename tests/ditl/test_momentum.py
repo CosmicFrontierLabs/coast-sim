@@ -199,3 +199,45 @@ def test_solar_radiation_pressure_is_tracked_and_reported(kind):
     assert [s.name for s in sim._stored_momentum_tracker.sources] == [
         "solar_radiation_pressure"
     ]
+
+
+@pytest.mark.parametrize("kind", [DITL, QueueDITL])
+def test_magnetorquers_and_a_residual_dipole_are_sources_too(kind):
+    """Magnetorquers configured on the stored-momentum tracking are an
+    unloading source, the residual dipole a torque, both from the dipole
+    field at the ephemeris's Earth-fixed position, which the telemetry reports."""
+    ephem = DummyEphemeris()
+    ephem.step_size = 1
+    ephem.timestamp = [ephem.timestamp[0] + timedelta(seconds=i) for i in range(5)]
+    ephem.itrs_pv = Mock(position=np.array([[6971.0, 0.0, 0.0]] * 5))
+    bus = SpacecraftBus(
+        inertia_tensor_body_kg_m2=np.diag([10.0, 8.0, 6.0]),
+        attitude_control=AttitudeControlSystem(
+            max_slew_rate_body=(0.2, 0.2, 2.0),
+            stored_momentum=StoredMomentumConfig(
+                gravity_gradient_enabled=True,
+                magnetorquer_max_dipole_a_m2=10.0,
+                residual_dipole_body_a_m2=(0.5, 0.0, 0.0),
+                initial_momentum_body_n_m_s=(1.0, 0.0, 0.0),
+            ),
+        ),
+    )
+    sim = kind(config=MissionConfig(spacecraft_bus=bus), ephem=ephem)
+    sim.step_size = 1
+    sim._reset_stored_momentum_tracker()
+    assert [s.name for s in sim._stored_momentum_tracker.sources] == [
+        "gravity_gradient",
+        "residual_dipole",
+        "magnetorquer_unloading",
+    ]
+    time = sim.begin.timestamp()
+    position = sim.ephem.gcrs_pv.position[0]
+    quaternion = attitude_to_quat(0.0, 45.0, 0.0)
+    sim._update_stored_momentum(time, position, quaternion, index=0)
+    sample = sim._update_stored_momentum(time + 1.0, position, quaternion, index=0)
+    assert sample.geomagnetic_field_body_t is not None
+    assert np.linalg.norm(sample.geomagnetic_field_body_t) > 1e-5
+    unloading = np.asarray(sample.torques_body_n_m["magnetorquer_unloading"])
+    # The unloading torque works against the stored momentum.
+    assert unloading @ np.asarray(sample.stored_momentum_body_n_m_s) < 0
+    assert np.linalg.norm(sample.torques_body_n_m["residual_dipole"]) > 0

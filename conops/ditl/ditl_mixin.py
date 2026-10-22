@@ -18,9 +18,12 @@ from ..config.observation_timing import ObservationTiming, timing_for
 from ..config.surfaces import guess_surfaces
 from ..simulation.acs import ACS
 from ..simulation.coverage import StationCoverage
+from ..simulation.geomagnetic import TiltedDipoleField
 from ..simulation.momentum import (
     GravityGradientTorque,
+    MagnetorquerUnloading,
     MomentumSample,
+    ResidualDipoleTorque,
     SolarRadiationPressureTorque,
     StoredMomentumTracker,
     TorqueSource,
@@ -383,6 +386,19 @@ class DITLMixin:
             if surfaces is None:
                 surfaces = guess_surfaces(self.config.solar_panel, self.config.payload)
             sources.append(SolarRadiationPressureTorque(surfaces))
+        field = TiltedDipoleField()
+        if momentum_config.residual_dipole_body_a_m2 is not None:
+            sources.append(
+                ResidualDipoleTorque(field, momentum_config.residual_dipole_body_a_m2)
+            )
+        if momentum_config.magnetorquer_max_dipole_a_m2 is not None:
+            sources.append(
+                MagnetorquerUnloading(
+                    field,
+                    momentum_config.magnetorquer_max_dipole_a_m2,
+                    momentum_config.magnetorquer_time_constant_s,
+                )
+            )
         # A coupled-axis ellipsoid cannot exceed its fastest principal rate.
         # Bound possible motion, not just endpoint separation: a complete slew
         # can occur between samples even when both endpoint torques are zero.
@@ -424,6 +440,7 @@ class DITLMixin:
         if self._stored_momentum_tracker is None:
             return None
         sun_eci_km: npt.NDArray[np.float64] | None = None
+        position_ecef_km: npt.NDArray[np.float64] | None = None
         sunlit = True
         if index is not None:
             sun_positions = position_vectors(self.ephem, "sun")
@@ -432,12 +449,17 @@ class DITLMixin:
                     np.asarray(sun_positions[index], dtype=np.float64) - position_eci_km
                 )
             sunlit = not bool(getattr(self.acs, "in_eclipse", False))
+            # A test double's ephemeris may have no Earth-fixed positions.
+            ecef = getattr(getattr(self.ephem, "itrs_pv", None), "position", None)
+            if ecef is not None and index < len(ecef):
+                position_ecef_km = np.asarray(ecef[index], dtype=np.float64)
         return self._stored_momentum_tracker.update(
             utime=utime,
             position_eci_km=position_eci_km,
             attitude_quaternion_eci_to_body=attitude_quaternion_eci_to_body,
             sun_eci_km=sun_eci_km,
             sunlit=sunlit,
+            position_ecef_km=position_ecef_km,
         )
 
     def _solar_array_drive_telemetry(self) -> list[SolarArrayDriveAngle] | None:

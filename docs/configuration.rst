@@ -376,7 +376,21 @@ box at the body origin, the panels and the apertures, about a centre of mass
 more; a mission's mass properties replace it. Each sunlit plate takes the force
 of what it absorbs and reflects, specularly and diffusely, plates facing away
 from the Sun take none, and nothing does in eclipse; plates do not shadow one
-another. Aerodynamic drag is not yet a source. Its principal moments must be positive and
+another. Aerodynamic drag is not yet a source.
+
+Two more sources use the geomagnetic field, a tilted dipole
+(:class:`~conops.simulation.TiltedDipoleField`: 31.2 µT at the magnetic equator on
+the surface, falling with the cube of the radius, its axis through the geomagnetic
+poles). ``magnetorquer_max_dipole_a_m2`` gives the spacecraft magnetorquers: they
+unload the wheels continuously, commanding the dipole that would remove the stored
+momentum over ``magnetorquer_time_constant_s`` and no more than their greatest
+dipole, so at the cap the unloading torque is the cap times the field. Torquers only
+turn the spacecraft about axes across the field, so they take out the momentum's
+component across it and leave the component along it, which turns as the field
+turns round the orbit. ``residual_dipole_body_a_m2`` is the spacecraft's own
+dipole, torqued by the field. Both are reported as sources by name
+(``magnetorquer_unloading``, ``residual_dipole``), and the field itself in body
+coordinates (``geomagnetic_field_body_t``). Its principal moments must be positive and
 satisfy the triangle inequalities; a planar-body equality is allowed, including
 relative rounding of approximately 1.5e-8 (the square root of float64 machine
 epsilon). The named ``INERTIA_RELATIVE_TOLERANCE`` allows roughly eight significant
@@ -427,6 +441,8 @@ cadences without replanning the science schedule.
        stored_momentum:
          gravity_gradient_enabled: true
          solar_radiation_pressure_enabled: true
+         magnetorquer_max_dipole_a_m2: 10.0
+         magnetorquer_time_constant_s: 1800.0
          max_sample_interval_s: 10.0
          max_attitude_step_deg: 5.0
          initial_momentum_body_n_m_s: [0.0, 0.0, 0.0]

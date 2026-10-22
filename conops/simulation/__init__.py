@@ -2,10 +2,13 @@ from .acs import ACS
 from .acs_command import ACSCommand
 from .coverage import Contact, ContactSpan, Repoint, StationCoverage, cut_windows
 from .emergency_charging import EmergencyCharging
+from .geomagnetic import TiltedDipoleField
 from .momentum import (
     GravityGradientTorque,
+    MagnetorquerUnloading,
     MomentumSample,
     OrbitSample,
+    ResidualDipoleTorque,
     SolarRadiationPressureTorque,
     StoredMomentumTracker,
     TorqueSource,
@@ -37,9 +40,12 @@ __all__ = [
     "Pass",
     "PassTimes",
     "GravityGradientTorque",
+    "MagnetorquerUnloading",
     "MomentumSample",
     "OrbitSample",
+    "ResidualDipoleTorque",
     "SolarRadiationPressureTorque",
+    "TiltedDipoleField",
     "StoredMomentumTracker",
     "TorqueSource",
     "gravity_gradient_torque_body",

@@ -20,6 +20,7 @@ import numpy as np
 import numpy.typing as npt
 
 from ..common.vector import quaternion_to_rotation_matrix
+from .geomagnetic import TiltedDipoleField
 
 if TYPE_CHECKING:
     from ..config.surfaces import SurfaceModel
@@ -141,10 +142,26 @@ class OrbitSample:
     sun_eci_km: npt.NDArray[np.float64] | None = None
     sunlit: bool = True
     velocity_eci_km_s: npt.NDArray[np.float64] | None = None
+    position_ecef_km: npt.NDArray[np.float64] | None = None
+    """The Earth-fixed position, for the geomagnetic field; None where unknown."""
+    stored_momentum_body_n_m_s: npt.NDArray[np.float64] | None = None
+    """The momentum stored as the sample begins, in the body frame, for the
+    sources that act on it."""
 
     def to_body(self, vector_eci: npt.ArrayLike) -> npt.NDArray[np.float64]:
         return np.asarray(
             self.rotation_eci_to_body @ np.asarray(vector_eci), dtype=np.float64
+        )
+
+    def geomagnetic_field_body_t(
+        self, field: TiltedDipoleField
+    ) -> npt.NDArray[np.float64] | None:
+        """The field at the sample in the body frame; None without an
+        Earth-fixed position."""
+        if self.position_ecef_km is None:
+            return None
+        return self.to_body(
+            field.field_eci_t(self.position_eci_km, self.position_ecef_km)
         )
 
 
@@ -198,6 +215,81 @@ class SolarRadiationPressureTorque:
         )
 
 
+class MagnetorquerUnloading:
+    """Magnetorquers unloading the wheels against the geomagnetic field.
+
+    The torquers can only turn the spacecraft about axes perpendicular to
+    the field, so they take out the stored momentum's component across the
+    field and leave the component along it. They aim to remove the stored
+    momentum over ``time_constant_s``, commanding the dipole that gives that
+    torque, capped at ``max_dipole_a_m2``: at the cap the unloading torque is
+    the cap times the field, whatever the momentum. A negative torque source,
+    reported as the others are.
+    """
+
+    name = "magnetorquer_unloading"
+
+    def __init__(
+        self,
+        field: TiltedDipoleField,
+        max_dipole_a_m2: float,
+        time_constant_s: float,
+    ) -> None:
+        if not np.isfinite(max_dipole_a_m2) or max_dipole_a_m2 <= 0.0:
+            raise ValueError("max_dipole_a_m2 must be finite and positive")
+        if not np.isfinite(time_constant_s) or time_constant_s <= 0.0:
+            raise ValueError("time_constant_s must be finite and positive")
+        self.field = field
+        self.max_dipole_a_m2 = float(max_dipole_a_m2)
+        self.time_constant_s = float(time_constant_s)
+
+    def dipole_body_a_m2(
+        self,
+        momentum_body_n_m_s: npt.NDArray[np.float64],
+        field_body_t: npt.NDArray[np.float64],
+    ) -> npt.NDArray[np.float64]:
+        """The dipole commanded against ``momentum_body_n_m_s`` in ``field_body_t``."""
+        field_squared = float(field_body_t @ field_body_t)
+        if field_squared <= 0.0:
+            return np.zeros(3, dtype=np.float64)
+        wanted = -momentum_body_n_m_s / self.time_constant_s
+        # m x B = wanted has the solution m = (B x wanted) / |B|^2 for the
+        # part of ``wanted`` across the field; the part along it is unreachable.
+        dipole = np.cross(field_body_t, wanted) / field_squared
+        magnitude = float(np.linalg.norm(dipole))
+        if magnitude > self.max_dipole_a_m2:
+            dipole *= self.max_dipole_a_m2 / magnitude
+        return np.asarray(dipole, dtype=np.float64)
+
+    def torque_body_n_m(self, sample: OrbitSample) -> npt.NDArray[np.float64]:
+        field = sample.geomagnetic_field_body_t(self.field)
+        momentum = sample.stored_momentum_body_n_m_s
+        if field is None or momentum is None:
+            return np.zeros(3, dtype=np.float64)
+        return np.asarray(np.cross(self.dipole_body_a_m2(momentum, field), field))
+
+
+class ResidualDipoleTorque:
+    """The torque of the geomagnetic field on the spacecraft's residual
+    magnetic dipole, fixed in the body."""
+
+    name = "residual_dipole"
+
+    def __init__(
+        self, field: TiltedDipoleField, dipole_body_a_m2: npt.ArrayLike
+    ) -> None:
+        self.field = field
+        self.dipole_body_a_m2 = _finite_vector3(
+            dipole_body_a_m2, name="dipole_body_a_m2"
+        )
+
+    def torque_body_n_m(self, sample: OrbitSample) -> npt.NDArray[np.float64]:
+        field = sample.geomagnetic_field_body_t(self.field)
+        if field is None:
+            return np.zeros(3, dtype=np.float64)
+        return np.asarray(np.cross(self.dipole_body_a_m2, field), dtype=np.float64)
+
+
 @dataclass(frozen=True)
 class MomentumSample:
     """Instantaneous disturbance torques and accumulated stored momentum."""
@@ -209,6 +301,8 @@ class MomentumSample:
     """Each source's torque in body coordinates, by source name."""
     torque_body_n_m: tuple[float, float, float]
     """The sources' total torque in body coordinates."""
+    geomagnetic_field_body_t: tuple[float, float, float] | None = None
+    """The geomagnetic field in body coordinates where a source uses one."""
 
 
 def _as_tuple(vector: npt.NDArray[np.float64]) -> tuple[float, float, float]:
@@ -283,11 +377,13 @@ class StoredMomentumTracker:
         sun_eci_km: npt.ArrayLike | None = None,
         sunlit: bool = True,
         velocity_eci_km_s: npt.ArrayLike | None = None,
+        position_ecef_km: npt.ArrayLike | None = None,
     ) -> MomentumSample:
         """Advance to one attitude sample using trapezoidal torque integration.
 
-        ``sun_eci_km`` is the vector from the spacecraft to the Sun, and
-        ``sunlit`` whether the Sun shines on it; a source that needs them
+        ``sun_eci_km`` is the vector from the spacecraft to the Sun, ``sunlit``
+        whether the Sun shines on it, and ``position_ecef_km`` the Earth-fixed
+        position for the geomagnetic field; a source that needs them
         contributes nothing without them.
         """
         if not np.isfinite(utime):
@@ -306,6 +402,10 @@ class StoredMomentumTracker:
         rotation_eci_to_body = quaternion_to_rotation_matrix(
             attitude_quaternion_eci_to_body
         )
+        if self._momentum_eci_n_m_s is None:
+            momentum_before = self.initial_momentum_body_n_m_s.copy()
+        else:
+            momentum_before = rotation_eci_to_body @ self._momentum_eci_n_m_s
         sample = OrbitSample(
             utime=float(utime),
             position_eci_km=_finite_vector3(position_eci_km, name="position_eci_km"),
@@ -321,6 +421,12 @@ class StoredMomentumTracker:
                 if velocity_eci_km_s is not None
                 else None
             ),
+            position_ecef_km=(
+                _finite_vector3(position_ecef_km, name="position_ecef_km")
+                if position_ecef_km is not None
+                else None
+            ),
+            stored_momentum_body_n_m_s=np.asarray(momentum_before, dtype=np.float64),
         )
         torques: dict[str, tuple[float, float, float]] = {}
         torque_body = np.zeros(3, dtype=np.float64)
@@ -346,6 +452,13 @@ class StoredMomentumTracker:
         assert self._momentum_eci_n_m_s is not None
         momentum_body = rotation_eci_to_body @ self._momentum_eci_n_m_s
 
+        field_body: tuple[float, float, float] | None = None
+        for source in self.sources:
+            field_model = getattr(source, "field", None)
+            if isinstance(field_model, TiltedDipoleField):
+                field = sample.geomagnetic_field_body_t(field_model)
+                field_body = _as_tuple(field) if field is not None else None
+                break
         return MomentumSample(
             gravity_gradient_torque_body_n_m=torques.get(
                 GravityGradientTorque.name, (0.0, 0.0, 0.0)
@@ -354,4 +467,5 @@ class StoredMomentumTracker:
             stored_momentum_norm_n_m_s=float(np.linalg.norm(self._momentum_eci_n_m_s)),
             torques_body_n_m=torques,
             torque_body_n_m=_as_tuple(torque_body),
+            geomagnetic_field_body_t=field_body,
         )

@@ -67,6 +67,7 @@ class Housekeeping(BaseModel):
         gravity_gradient_torque_body_n_m: Gravity-gradient torque in body coordinates (N m)
         disturbance_torques_body_n_m: Each tracked torque source's body torque, by name (N m)
         disturbance_torque_body_n_m: The tracked sources' total body torque (N m)
+        geomagnetic_field_body_t: The geomagnetic field in body coordinates (T), where used
         stored_momentum_body_n_m_s: Accumulated stored momentum in body coordinates (N m s)
         stored_momentum_norm_n_m_s: Norm of accumulated stored momentum (N m s)
     """
@@ -259,6 +260,13 @@ class Housekeeping(BaseModel):
     disturbance_torque_body_n_m: list[float] | None = Field(
         default=None,
         description="The tracked torque sources' total in body coordinates, in N m",
+    )
+    geomagnetic_field_body_t: list[float] | None = Field(
+        default=None,
+        description=(
+            "The geomagnetic field in body coordinates [x, y, z], in tesla, "
+            "where a tracked source uses it"
+        ),
     )
 
     @classmethod
@@ -565,6 +573,11 @@ class HousekeepingList(list[Housekeeping]):
     def disturbance_torque_body_n_m(self) -> list[list[float] | None]:
         """Get the sources' total body-frame torque from all records."""
         return [hk.disturbance_torque_body_n_m for hk in self]
+
+    @property
+    def geomagnetic_field_body_t(self) -> list[list[float] | None]:
+        """Get the body-frame geomagnetic field from all records."""
+        return [hk.geomagnetic_field_body_t for hk in self]
 
 
 class Telemetry(BaseModel):

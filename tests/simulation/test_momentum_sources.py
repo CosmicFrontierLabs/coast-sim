@@ -19,11 +19,14 @@ from conops.config import (
     panel_surfaces,
     telescope_surfaces,
 )
+from conops.simulation.geomagnetic import EARTH_RADIUS_KM, TiltedDipoleField
 from conops.simulation.momentum import (
     ASTRONOMICAL_UNIT_KM,
     SOLAR_PRESSURE_N_M2,
     GravityGradientTorque,
+    MagnetorquerUnloading,
     OrbitSample,
+    ResidualDipoleTorque,
     SolarRadiationPressureTorque,
     StoredMomentumTracker,
     solar_radiation_pressure_torque_body,
@@ -250,3 +253,117 @@ class TestTrackerSources:
             attitude_quaternion_eci_to_body=attitude_to_quat(0.0, 45.0, 0.0),
         )
         assert list(sample.torques_body_n_m) == ["gravity_gradient"]
+
+
+ORBIT = np.array([EARTH_RADIUS_KM + 600.0, 0.0, 0.0])
+"""Over the equator of an untilted dipole, where the field is along +Z."""
+
+
+def _unloading(max_dipole: float = 10.0, time_constant: float = 1800.0):
+    return MagnetorquerUnloading(
+        TiltedDipoleField(pole_deg=(90.0, 0.0)), max_dipole, time_constant
+    )
+
+
+def _sample(momentum, rotation=None) -> OrbitSample:
+    return OrbitSample(
+        utime=0.0,
+        position_eci_km=ORBIT,
+        rotation_eci_to_body=np.eye(3) if rotation is None else rotation,
+        position_ecef_km=ORBIT,
+        stored_momentum_body_n_m_s=np.asarray(momentum, dtype=np.float64),
+    )
+
+
+class TestMagnetorquerUnloading:
+    def test_unloading_opposes_the_momentum_across_the_field(self) -> None:
+        """A small momentum across the field is removed over the time
+        constant; nothing can be done about the part along the field."""
+        source = _unloading(max_dipole=1e6)
+        field = _sample([0.0, 0.0, 0.0]).geomagnetic_field_body_t(source.field)
+        assert field is not None and field[2] > 0 and abs(field[0]) < 1e-20
+        across = source.torque_body_n_m(_sample([0.1, 0.0, 0.0]))
+        assert across == pytest.approx([-0.1 / 1800.0, 0.0, 0.0], rel=1e-9)
+        along = source.torque_body_n_m(_sample([0.0, 0.0, 0.1]))
+        assert along == pytest.approx([0.0, 0.0, 0.0], abs=1e-20)
+        mixed = source.torque_body_n_m(_sample([0.1, 0.0, 0.1]))
+        assert mixed == pytest.approx([-0.1 / 1800.0, 0.0, 0.0], rel=1e-9)
+
+    def test_the_dipole_saturates(self) -> None:
+        """A large momentum asks for more dipole than the torquers have: the
+        torque is the dipole cap times the field, against the momentum."""
+        source = _unloading(max_dipole=10.0)
+        sample = _sample([5.0, 0.0, 0.0])
+        field = sample.geomagnetic_field_body_t(source.field)
+        assert field is not None
+        dipole = source.dipole_body_a_m2(sample.stored_momentum_body_n_m_s, field)
+        assert np.linalg.norm(dipole) == pytest.approx(10.0)
+        torque = source.torque_body_n_m(sample)
+        assert np.linalg.norm(torque) == pytest.approx(10.0 * np.linalg.norm(field))
+        assert torque[0] < 0 and abs(torque[1]) < 1e-15 and abs(torque[2]) < 1e-15
+
+    def test_nothing_without_a_field_or_momentum(self) -> None:
+        source = _unloading()
+        blind = OrbitSample(
+            utime=0.0,
+            position_eci_km=ORBIT,
+            rotation_eci_to_body=np.eye(3),
+            stored_momentum_body_n_m_s=np.array([1.0, 0.0, 0.0]),
+        )
+        assert np.all(source.torque_body_n_m(blind) == 0.0)
+        with pytest.raises(ValueError, match="positive"):
+            _unloading(max_dipole=0.0)
+
+    def test_the_tracker_unloads_what_it_stores_across_the_field(self) -> None:
+        """Starting with momentum across the field and no disturbance, the
+        tracker's stored momentum decays towards zero; starting with it along
+        the field, nothing changes. The field is reported with the sample."""
+        source = _unloading(max_dipole=1e6, time_constant=100.0)
+        quaternion = attitude_to_quat(0.0, 0.0, 0.0)
+        tracker = StoredMomentumTracker(
+            np.eye(3), initial_momentum_body_n_m_s=(1.0, 0.0, 0.0), sources=[source]
+        )
+        norms = []
+        for k in range(0, 601, 10):
+            sample = tracker.update(
+                utime=float(k),
+                position_eci_km=ORBIT,
+                attitude_quaternion_eci_to_body=quaternion,
+                position_ecef_km=ORBIT,
+            )
+            norms.append(sample.stored_momentum_norm_n_m_s)
+        assert sample.geomagnetic_field_body_t is not None
+        assert norms[0] == pytest.approx(1.0) and norms[-1] < 0.01
+        assert all(a >= b for a, b in zip(norms, norms[1:]))
+        assert set(sample.torques_body_n_m) == {"magnetorquer_unloading"}
+        held = StoredMomentumTracker(
+            np.eye(3), initial_momentum_body_n_m_s=(0.0, 0.0, 1.0), sources=[source]
+        )
+        for k in (0.0, 10.0):
+            sample = held.update(
+                utime=k,
+                position_eci_km=ORBIT,
+                attitude_quaternion_eci_to_body=quaternion,
+                position_ecef_km=ORBIT,
+            )
+        assert sample.stored_momentum_norm_n_m_s == pytest.approx(1.0)
+
+
+class TestResidualDipole:
+    def test_the_torque_is_the_dipole_across_the_field(self) -> None:
+        field = TiltedDipoleField(pole_deg=(90.0, 0.0))
+        source = ResidualDipoleTorque(field, (1.0, 0.0, 0.0))
+        sample = _sample([0.0, 0.0, 0.0])
+        b = sample.geomagnetic_field_body_t(field)
+        assert b is not None
+        assert source.torque_body_n_m(sample) == pytest.approx(
+            np.cross([1.0, 0.0, 0.0], b)
+        )
+        assert np.all(
+            source.torque_body_n_m(
+                OrbitSample(
+                    utime=0.0, position_eci_km=ORBIT, rotation_eci_to_body=np.eye(3)
+                )
+            )
+            == 0.0
+        )

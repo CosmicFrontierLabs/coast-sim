@@ -1762,6 +1762,12 @@ class QueueDITL(DITLMixin, DITLStats):
                 if momentum_sample is not None
                 else None
             ),
+            geomagnetic_field_body_t=(
+                list(momentum_sample.geomagnetic_field_body_t)
+                if momentum_sample is not None
+                and momentum_sample.geomagnetic_field_body_t is not None
+                else None
+            ),
         )
 
     def _track_ppt_in_timeline(self) -> None:

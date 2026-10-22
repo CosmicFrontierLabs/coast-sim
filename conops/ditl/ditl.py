@@ -525,6 +525,12 @@ class DITL(DITLMixin, DITLStats):
                     if momentum_sample is not None
                     else None
                 ),
+                geomagnetic_field_body_t=(
+                    list(momentum_sample.geomagnetic_field_body_t)
+                    if momentum_sample is not None
+                    and momentum_sample.geomagnetic_field_body_t is not None
+                    else None
+                ),
             )
 
             # Check fault management thresholds and red limit constraints
