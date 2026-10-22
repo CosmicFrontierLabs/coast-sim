@@ -15,7 +15,7 @@ from conops.config import (
     GroundStation,
     MissionConfig,
 )
-from conops.simulation import ContactSpan, Repoint, StationCoverage, cut_windows
+from conops.simulation import ContactSpan, StationCoverage, cut_windows
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scheduler"))
 from planning_scenario import HOUR, MIN, T0  # noqa: E402
@@ -192,6 +192,7 @@ def _walk(
     coverage.handovers = 0
     coverage.acquisitions = 0
     coverage.repoints = []
+    coverage._last_pointing = None
     coverage._schedule_contacts()
     coverage._begins = [span.begin for span in coverage.contacts]
     return coverage
@@ -311,6 +312,12 @@ def _turning(steps: int, degrees_per_step: float) -> np.ndarray:
     return np.stack([np.cos(angles), np.sin(angles), np.zeros(steps)], axis=1)[None]
 
 
+def _rotation(degrees: float) -> np.ndarray:
+    """A rotation about z, to apply to a row vector."""
+    c, s = np.cos(np.deg2rad(degrees)), np.sin(np.deg2rad(degrees))
+    return np.array([[c, s, 0.0], [-s, c, 0.0], [0.0, 0.0, 1.0]])
+
+
 class TestRepoints:
     def test_acquisitions_and_handovers_are_repoints(self) -> None:
         coverage = _walk(
@@ -319,11 +326,15 @@ class TestRepoints:
             handover=90.0,
             acquisition=20.0,
         )
-        assert coverage.repoints == [
-            Repoint(0.0, 20.0, "S0", "acquisition"),
-            Repoint(240.0, 350.0, "S1", "handover"),
-            Repoint(420.0, 440.0, "S0", "acquisition"),
+        assert [r[:4] for r in coverage.repoints] == [
+            (0.0, 20.0, "S0", "acquisition"),
+            (240.0, 350.0, "S1", "handover"),
+            (420.0, 440.0, "S0", "acquisition"),
         ]
+        # No station directions here: nothing to point at.
+        assert all(
+            r.pointing is None and r.maneuver_deg is None for r in coverage.repoints
+        )
         assert (coverage.acquisitions, coverage.handovers) == (2, 1)
         assert coverage.repoints_in(0.0, 300.0) == coverage.repoints[:2]
         assert coverage.repoint_cuts(100.0, 430.0) == [(240.0, 350.0), (420.0, 440.0)]
@@ -331,18 +342,46 @@ class TestRepoints:
         assert coverage.next_repoint_cut(20.0) == (240.0, 350.0)
         assert coverage.next_repoint_cut(500.0) is None
 
-    def test_drift_repoints_when_the_station_direction_has_turned(self) -> None:
-        """One degree a step and a 2.5 degree threshold: a repoint every
-        third step, chained from the last repoint, not from the start."""
+    def test_the_antenna_leads_the_station_across_the_cap(self) -> None:
+        """One degree a step and a 2.5 degree allowance: the antenna points
+        2.5 degrees ahead, the station crosses the cap in six steps, and the
+        one repoint comes where the next step would leave it."""
         coverage = _walk(
             [[1] * 10], [10.0], directions=_turning(10, 1.0), threshold=2.5
         )
-        drift = [r for r in coverage.repoints if r.kind == "drift"]
-        assert [r.time for r in drift] == [180.0, 360.0, 540.0]
-        assert all(r.end == r.time and r.station == "S0" for r in drift)
+        acquisition, *drift = coverage.repoints
+        assert acquisition[:4] == (0.0, 0.0, "S0", "acquisition")
+        assert acquisition.pointing == pytest.approx(
+            _turning(1, 0.0)[0, 0] @ _rotation(2.5)
+        )
+        assert acquisition.maneuver_deg is None
+        assert [(r.time, r.end, r.station, r.kind) for r in drift] == [
+            (360.0, 360.0, "S0", "drift")
+        ]
+        # The second arc runs from step 6 to the end: its centre is at 7.5 degrees.
+        assert drift[0].pointing == pytest.approx(
+            _turning(1, 0.0)[0, 0] @ _rotation(7.5)
+        )
+        assert drift[0].maneuver_deg == pytest.approx(5.0)
         # Instant repoints leave the contact whole.
         assert coverage.contacts == [ContactSpan(0.0, 600.0, "S0", 10.0)]
-        assert coverage.repoints[0] == Repoint(0.0, 0.0, "S0", "acquisition")
+
+    def test_a_tighter_allowance_repoints_more_often(self) -> None:
+        tight = _walk([[1] * 40], [10.0], directions=_turning(40, 1.0), threshold=1.5)
+        loose = _walk([[1] * 40], [10.0], directions=_turning(40, 1.0), threshold=4.5)
+        tight_times = [r.time for r in tight.repoints if r.kind == "drift"]
+        loose_times = [r.time for r in loose.repoints if r.kind == "drift"]
+        # Four steps fit in a 1.5 degree cap (a 3 degree arc), ten in 4.5.
+        assert tight_times == [240.0 * n for n in range(1, 10)]
+        assert loose_times == [600.0, 1200.0, 1800.0]
+        # Every point of each arc is within the allowance of its pointing.
+        for coverage, allowance in ((tight, 1.5), (loose, 4.5)):
+            edges = [0.0, *(r.time for r in coverage.repoints[1:]), 2400.0]
+            for repoint, (a, b) in zip(coverage.repoints, zip(edges, edges[1:])):
+                assert repoint.pointing is not None
+                arc = coverage._to_station[0, int(a // 60) : int(b // 60)]
+                cosines = np.clip(arc @ np.array(repoint.pointing), -1.0, 1.0)
+                assert np.degrees(np.arccos(cosines)).max() <= allowance + 1e-6
 
     def test_a_repoint_with_a_duration_splits_the_contact(self) -> None:
         coverage = _walk(
@@ -353,18 +392,11 @@ class TestRepoints:
             repoint_seconds=30.0,
         )
         assert coverage.contacts == [
-            ContactSpan(0.0, 180.0, "S0", 10.0),
-            ContactSpan(210.0, 360.0, "S0", 10.0),
-            ContactSpan(390.0, 540.0, "S0", 10.0),
-            ContactSpan(570.0, 600.0, "S0", 10.0),
+            ContactSpan(0.0, 360.0, "S0", 10.0),
+            ContactSpan(390.0, 600.0, "S0", 10.0),
         ]
-        assert coverage.downlink_gb(0.0, 600.0) == pytest.approx(10.0 * 510.0 / 1000.0)
-        assert coverage.repoint_cuts(0.0, 600.0) == [
-            (0.0, 0.0),
-            (180.0, 210.0),
-            (360.0, 390.0),
-            (540.0, 570.0),
-        ]
+        assert coverage.downlink_gb(0.0, 600.0) == pytest.approx(10.0 * 570.0 / 1000.0)
+        assert coverage.repoint_cuts(0.0, 600.0) == [(0.0, 0.0), (360.0, 390.0)]
 
     def test_an_interval_table_sets_the_repoints(self) -> None:
         coverage = _walk(
@@ -377,6 +409,8 @@ class TestRepoints:
         drift = [r for r in coverage.repoints if r.kind == "drift"]
         assert [r.time for r in drift] == [255.0, 510.0]
         assert [r.end for r in drift] == [265.0, 520.0]
+        # The table points the antenna at the station itself.
+        assert all(r.pointing is None for r in coverage.repoints)
         assert [(c.begin, c.end) for c in coverage.contacts] == [
             (0.0, 255.0),
             (265.0, 510.0),
@@ -429,6 +463,11 @@ class TestRepoints:
         assert coverage is not None
         drift = [r for r in coverage.repoints if r.kind == "drift"]
         assert len(drift) > 10
+        # Each repoint turns the antenna forward along the station's track:
+        # at least the cap's width, and in low Earth orbit, where the track
+        # moves tens of degrees a step, often more.
+        turns = [r.maneuver_deg for r in drift if r.maneuver_deg is not None]
+        assert turns and 10.0 < np.median(turns) < 90.0
         spans = coverage.spans(T0, END)
         for repoint in drift:
             before = [s for s in spans if s.end == repoint.time]

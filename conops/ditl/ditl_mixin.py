@@ -758,7 +758,10 @@ class DITLMixin:
         falls in an observation whose category reports or forbids them."""
         assert self.coverage is not None
         for repoint in self.coverage.repoints_in(begin, end):
-            description = f"Antenna repoint to {repoint.station} ({repoint.kind})"
+            description = f"Antenna repoint to {repoint.station} ({repoint.kind}"
+            if repoint.maneuver_deg is not None:
+                description += f", {repoint.maneuver_deg:.1f} deg"
+            description += ")"
             if self.ppt is not None and collection_seconds > 0:
                 setting = self._antenna_repoints(self.ppt)
                 if setting in ("reported", "forbidden"):
