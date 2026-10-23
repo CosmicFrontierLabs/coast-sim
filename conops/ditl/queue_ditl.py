@@ -1575,13 +1575,16 @@ class QueueDITL(DITLMixin, DITLStats):
         if collection_seconds > 0 and self.ppt is not None:
             # Credit the visit at the end of what was collected, not the tick
             # start, so cadence scoring sees how recently the target was observed.
-            self.ppt.record_collection(collection_stop, collection_seconds)
+            visit = self.ppt.visit
+            self.ppt.record_collection(collection_stop, collection_seconds, visit=visit)
             if self._sequence is not None and self.ppt.step is not None:
                 parent = self._sequence.parent
                 if self.ppt.calibration:
                     parent.record_calibration(collection_stop, collection_seconds)
                 else:
-                    parent.record_collection(collection_stop, collection_seconds)
+                    parent.record_collection(
+                        collection_stop, collection_seconds, visit=visit
+                    )
         # Use the mixin method to process data generation and downlink
         data_generated, data_downlinked = self._process_data_management(
             utime, mode, self.step_size, collection_seconds=collection_seconds

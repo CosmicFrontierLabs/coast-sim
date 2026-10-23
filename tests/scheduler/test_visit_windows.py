@@ -475,6 +475,23 @@ class TestDispatch:
         _in_windows(visits)
         assert all(e.exposure == VISIT * MIN for e in visits)
 
+    def test_collection_is_credited_to_the_entry_visit(self) -> None:
+        """A visit that runs past the next window's start is still its own
+        window's visit when credited by the entry's visit index; by time
+        alone, the collection after the next start would count for the
+        next window and that window would be skipped."""
+        config = _config(HOURS)
+        target = _timed_target(config)
+        late = WINDOWS[1].start + 2 * MIN
+        target.record_collection(late, 5 * MIN, visit=0)
+        target.record_collection(late + 5 * MIN, 5 * MIN, visit=0)
+        assert target.visits_done == {0}
+        assert target.visit_complete(0)
+        assert target.next_visit(late) == 1
+        by_time = _timed_target(config)
+        by_time.record_collection(late + 5 * MIN, 5 * MIN)
+        assert by_time.visits_done == {1}
+
     def test_an_interruption_reopens_only_an_incomplete_window(self) -> None:
         config = _config(HOURS)
         target = _timed_target(config)

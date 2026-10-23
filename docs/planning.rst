@@ -92,7 +92,9 @@ CP-SAT keep every visit in its window; dispatch selects the target only while an
 unvisited window is open, and a window still to open counts as a request opening
 for the look-ahead described under dispatch. A plan entry's ``visit`` says which
 window it observes in, and the target records the windows its visits have
-collected in.
+collected in, each visit credited to its entry's window, so a visit that runs past
+the next window's start is still its own window's and windows need be spaced only
+so that each visit can begin within its own.
 
 A window can give its visit a pointing and a roll request of its own: ``ra`` and
 ``dec`` where the visit points elsewhere than the target, as a moving target's

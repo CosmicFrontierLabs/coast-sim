@@ -281,12 +281,24 @@ class Pointing(PlanEntry):
             return self.visit_windows[self.visit].deadline
         return self.deadline
 
-    def record_collection(self, utime: float, seconds: float) -> None:
+    def record_collection(
+        self, utime: float, seconds: float, *, visit: int | None = None
+    ) -> None:
+        """Credit ``seconds`` of science collected up to ``utime``, to the
+        window of ``visit`` where given, else to the window the collection
+        began in: a visit that runs past the next window's start is still
+        its own window's."""
         super().record_collection(utime, seconds)
         if self._visit_parent is not None:
-            self._visit_parent.record_collection(utime, seconds)
+            self._visit_parent.record_collection(
+                utime, seconds, visit=visit if visit is not None else self.visit
+            )
         if seconds > 0 and self.visit_windows:
-            index = self.visit_index_at(utime - seconds)
+            index = (
+                visit
+                if visit is not None and 0 <= visit < len(self.visit_windows)
+                else self.visit_index_at(utime - seconds)
+            )
             if index is not None:
                 self._visit_seconds[index] = (
                     self._visit_seconds.get(index, 0.0) + seconds

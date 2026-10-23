@@ -308,7 +308,7 @@ class RollingHorizonDITL(DITL):
         if entry.calibration:
             target.record_calibration(stop, stop - start)
         else:
-            target.record_collection(stop, stop - start)
+            target.record_collection(stop, stop - start, visit=entry.visit)
         self._first_collection.setdefault(int(entry.obsid), start)
         for too in self.too_register:
             if too.obsid == entry.obsid:
