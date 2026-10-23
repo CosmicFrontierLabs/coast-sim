@@ -661,6 +661,7 @@ class RollingHorizonDITL(DITL):
             reserved_visits=self._reserved_visits(leading, utime),
             held=[int(t.obsid) for t in held],
             start_volume_gb=self._recorder_volume_at(utime, start, committed),
+            start_momentum_eci_n_m_s=self._momentum_start(),
             start_deficit_wh=start_deficit_wh,
             start_drive_state=start_drive_state,
             passes=self._run_passes,
@@ -872,6 +873,19 @@ class RollingHorizonDITL(DITL):
             ledger.level_at(energy, start),
             ledger.drive_state_at(energy, start) or drive,
         )
+
+    def _momentum_start(self) -> tuple[float, float, float] | None:
+        """The stored momentum now, in inertial coordinates, for the plan's
+        forecast; what the committed activities add before the plan takes
+        over is left out. None where momentum is not tracked or no sample
+        has set it yet."""
+        tracker = self._stored_momentum_tracker
+        if tracker is None:
+            return None
+        momentum = tracker.momentum_eci_n_m_s
+        if momentum is None:
+            return None
+        return (float(momentum[0]), float(momentum[1]), float(momentum[2]))
 
     def _committed_slew(
         self, entry: PlanEntry, start: Attitude, utime: float

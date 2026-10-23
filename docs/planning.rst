@@ -151,7 +151,9 @@ How a plan is built
    whose attitude ``IDLE`` cannot hold through the block, or from which the block
    after the activity cannot be reached, is not placed before it. With nothing
    before it, the activity holds the attitude the plan starts from, or the one the
-   fixed block before it leaves. A maintenance window, a calibration that needs the
+   fixed block before it leaves; where that cannot be held through the activity and
+   the idle time after it, the activity slews to the safe idle attitude of its start,
+   the one the simulation holds before its first command. A maintenance window, a calibration that needs the
    spacecraft still or an engineering block is an activity; ``DITL`` commands the
    plan's activity entries, and the plan validator checks that no science, contact or
    charge ran during one. Dispatch takes the same list: it ends the observation under
@@ -163,9 +165,10 @@ How a plan is built
    cannot move, such as a maintenance window, is ``fixed`` and begins at its start
    with the slew finishing inside it. A thruster momentum dump is an activity
    dispatch calls for itself, when the stored momentum reaches the planning level of
-   the wheels' capacity (see the stored momentum under :doc:`configuration`); its
-   entry is marked ``desaturation`` and the wheels are unloaded when it ends. An
-   activity's ``instrument_modes`` names what it
+   the wheels' capacity (see the stored momentum under :doc:`configuration`), and
+   the planners reserve where their forecast reaches it (see `Planning within the
+   wheels`_); its entry is marked ``desaturation`` and the wheels are unloaded when
+   it ends. An activity's ``instrument_modes`` names what it
    uses, such as a calibration lamp's instrument, and its draw is counted during the
    hold; an activity naming none draws every instrument's idle power. Its
    ``data_gb`` is what it puts on the recorder when it begins, such as its frames,
@@ -309,12 +312,35 @@ fits before the next repoint and ends it there.
 
 The arithmetic is not particular to the recorder. Anything a spacecraft
 accumulates between the events that remove it, and must keep within a limit
-meanwhile, has the same shape: stored momentum builds up until a dump unloads it,
-for instance. :class:`~conops.schedulers.ConsumableLedger` holds that arithmetic
-(segments between removals, accrual, removals that take no more than is there,
-and the check at every later peak), :class:`~conops.schedulers.RecorderLedger`
-maps the recorder onto it, and :class:`~conops.schedulers.BatteryLedger` the
-battery (see `Planning within the battery`_).
+meanwhile, has the same shape. :class:`~conops.schedulers.ConsumableLedger` holds
+that arithmetic (segments between removals, accrual, removals that take no more
+than is there, and the check at every later peak),
+:class:`~conops.schedulers.RecorderLedger` maps the recorder onto it, and
+:class:`~conops.schedulers.BatteryLedger` the battery (see `Planning within the
+battery`_). Stored momentum is the one exception: it is a vector whose build-up
+depends on the attitude flown at every moment, so it is forecast along the plan
+rather than booked by segment (see `Planning within the wheels`_).
+
+Planning within the wheels
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Where the configuration tracks stored momentum (see the stored momentum under
+:doc:`configuration`), every plan is forecast for it.
+:class:`~conops.schedulers.momentum.MomentumForecast` integrates the configured
+torque sources along the plan's timeline with the tracker the simulations use: each
+slew along its path, each observation, contact, charge and activity at its attitude,
+and the idle time between them at the attitude held, sampled every ten seconds, with
+each thruster dump unloading the wheels as it ends. Where the forecast reaches the
+planning level of the capacity and the spacecraft has thrusters, the planner reserves
+a dump there, a fixed desaturation activity holding the attitude of whatever precedes
+it, and plans again from the start with the dumps so far; the plan before each dump
+is then the plan that fills the wheels to it. A dump found earlier than one already
+reserved replaces it and those after it. Each dump costs a planning pass, and a plan
+reserves fifty at most. Without thrusters the plan stands and the log says where the
+forecast passes the capacity. A rolling-horizon run gives each replan the stored
+momentum it has at the replan, so the replan's forecast starts where the wheels are.
+The priority-first, local-search and CP-SAT planners all plan within the wheels this
+way.
 
 A snapshot is placed only where every peak from its segment onwards stays within
 the limit. It is never shortened to fit: a snapshot that does not fit before a

@@ -15,18 +15,12 @@ from conops.config.groundstation import GroundStation, effective_downlink_rate_m
 from ..common.ephemeris import position_vectors
 from ..config import FaultManagementRun, MissionConfig, SolarArrayDriveState
 from ..config.observation_timing import ObservationTiming, timing_for
-from ..config.surfaces import guess_surfaces
 from ..simulation.acs import ACS
 from ..simulation.coverage import StationCoverage
-from ..simulation.geomagnetic import TiltedDipoleField
 from ..simulation.momentum import (
-    GravityGradientTorque,
-    MagnetorquerUnloading,
     MomentumSample,
-    ResidualDipoleTorque,
-    SolarRadiationPressureTorque,
     StoredMomentumTracker,
-    TorqueSource,
+    build_torque_sources,
 )
 from ..simulation.passes import Pass, PassTimes
 from ..targets import Plan, PlanEntry
@@ -378,27 +372,7 @@ class DITLMixin:
                 "inertia_tensor_body_kg_m2 is required when stored-momentum "
                 "tracking is enabled"
             )
-        sources: list[TorqueSource] = []
-        if momentum_config.gravity_gradient_enabled:
-            sources.append(GravityGradientTorque(inertia))
-        if momentum_config.solar_radiation_pressure_enabled:
-            surfaces = self.config.spacecraft_bus.surfaces
-            if surfaces is None:
-                surfaces = guess_surfaces(self.config.solar_panel, self.config.payload)
-            sources.append(SolarRadiationPressureTorque(surfaces))
-        field = TiltedDipoleField()
-        if momentum_config.residual_dipole_body_a_m2 is not None:
-            sources.append(
-                ResidualDipoleTorque(field, momentum_config.residual_dipole_body_a_m2)
-            )
-        if momentum_config.magnetorquer_max_dipole_a_m2 is not None:
-            sources.append(
-                MagnetorquerUnloading(
-                    field,
-                    momentum_config.magnetorquer_max_dipole_a_m2,
-                    momentum_config.magnetorquer_time_constant_s,
-                )
-            )
+        sources = build_torque_sources(self.config)
         # A coupled-axis ellipsoid cannot exceed its fastest principal rate.
         # Bound possible motion, not just endpoint separation: a complete slew
         # can occur between samples even when both endpoint torques are zero.

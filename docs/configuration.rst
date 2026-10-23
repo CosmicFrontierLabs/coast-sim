@@ -402,8 +402,11 @@ length, starts no observation meanwhile, and unloads the wheels when it ends. Th
 momentum goes on building through the dump, so the level's margin should cover
 what the dump's length adds. The dump waits for a slew under way as any activity
 does. A planned simulation unloads
-the wheels at the end of each plan entry marked ``desaturation``. Without thrusters
-the wheels fill and the telemetry shows it; the planners do not yet place dumps. Its principal moments must be positive and
+the wheels at the end of each plan entry marked ``desaturation``. The planners
+forecast the stored momentum along their plan and reserve dumps where it reaches
+the level (see :doc:`planning`, Planning within the wheels). Without thrusters the
+wheels fill, the telemetry shows it, and a plan's log says where its forecast
+passes the capacity. Its principal moments must be positive and
 satisfy the triangle inequalities; a planar-body equality is allowed, including
 relative rounding of approximately 1.5e-8 (the square root of float64 machine
 epsilon). The named ``INERTIA_RELATIVE_TOLERANCE`` allows roughly eight significant

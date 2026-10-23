@@ -23,6 +23,7 @@ from ..common.vector import quaternion_to_rotation_matrix
 from .geomagnetic import TiltedDipoleField
 
 if TYPE_CHECKING:
+    from ..config import MissionConfig
     from ..config.surfaces import SurfaceModel
 
 EARTH_GRAVITATIONAL_PARAMETER_KM3_S2 = 398600.4418
@@ -372,6 +373,22 @@ class StoredMomentumTracker:
             return float(np.linalg.norm(self.initial_momentum_body_n_m_s))
         return float(np.linalg.norm(self._momentum_eci_n_m_s))
 
+    @property
+    def momentum_eci_n_m_s(self) -> npt.NDArray[np.float64] | None:
+        """The stored momentum in inertial coordinates, once a sample has
+        set it; None before the first sample."""
+        if self._momentum_eci_n_m_s is None:
+            return None
+        return self._momentum_eci_n_m_s.copy()
+
+    def start_from_eci(self, momentum_eci_n_m_s: npt.ArrayLike) -> None:
+        """Begin from a stored momentum given in inertial coordinates, as a
+        forecast does from the momentum a run has when its horizon starts."""
+        self.reset()
+        self._momentum_eci_n_m_s = _finite_vector3(
+            momentum_eci_n_m_s, name="momentum_eci_n_m_s"
+        ).copy()
+
     def validate_sample_interval(self, elapsed_s: float) -> None:
         """Reject undersampling without changing integration state."""
         if not np.isfinite(elapsed_s) or elapsed_s <= 0.0:
@@ -452,9 +469,10 @@ class StoredMomentumTracker:
         torque_eci = rotation_eci_to_body.T @ torque_body
 
         if self._previous_utime is None:
-            self._momentum_eci_n_m_s = (
-                rotation_eci_to_body.T @ self.initial_momentum_body_n_m_s
-            )
+            if self._momentum_eci_n_m_s is None:
+                self._momentum_eci_n_m_s = (
+                    rotation_eci_to_body.T @ self.initial_momentum_body_n_m_s
+                )
         else:
             assert self._momentum_eci_n_m_s is not None
             assert self._previous_torque_eci_n_m is not None
@@ -484,3 +502,67 @@ class StoredMomentumTracker:
             torque_body_n_m=_as_tuple(torque_body),
             geomagnetic_field_body_t=field_body,
         )
+
+
+def build_torque_sources(config: MissionConfig) -> list[TorqueSource]:
+    """The torque sources a configuration's stored-momentum tracking enables,
+    in the order they are reported: gravity gradient, solar radiation
+    pressure on the configured or placeholder surfaces, the residual dipole
+    and the magnetorquers' unloading, the last two in a tilted dipole field.
+    Empty where tracking is off."""
+    from ..config.surfaces import guess_surfaces
+
+    momentum_config = config.spacecraft_bus.attitude_control.stored_momentum
+    inertia = config.spacecraft_bus.inertia_tensor_body_kg_m2
+    sources: list[TorqueSource] = []
+    if not momentum_config.enabled:
+        return sources
+    if inertia is None:
+        raise ValueError(
+            "inertia_tensor_body_kg_m2 is required when stored-momentum "
+            "tracking is enabled"
+        )
+    if momentum_config.gravity_gradient_enabled:
+        sources.append(GravityGradientTorque(inertia))
+    if momentum_config.solar_radiation_pressure_enabled:
+        surfaces = config.spacecraft_bus.surfaces
+        if surfaces is None:
+            surfaces = guess_surfaces(config.solar_panel, config.payload)
+        sources.append(SolarRadiationPressureTorque(surfaces))
+    field = TiltedDipoleField()
+    if momentum_config.residual_dipole_body_a_m2 is not None:
+        sources.append(
+            ResidualDipoleTorque(field, momentum_config.residual_dipole_body_a_m2)
+        )
+    if momentum_config.magnetorquer_max_dipole_a_m2 is not None:
+        sources.append(
+            MagnetorquerUnloading(
+                field,
+                momentum_config.magnetorquer_max_dipole_a_m2,
+                momentum_config.magnetorquer_time_constant_s,
+            )
+        )
+    return sources
+
+
+def tracker_from_config(
+    config: MissionConfig, *, max_sample_interval_s: float | None = None
+) -> StoredMomentumTracker | None:
+    """A tracker for a configuration's stored-momentum tracking, or None
+    where it is off. The sample interval is the configured one unless a
+    finer one is given."""
+    momentum_config = config.spacecraft_bus.attitude_control.stored_momentum
+    if not momentum_config.enabled:
+        return None
+    sources = build_torque_sources(config)
+    inertia = config.spacecraft_bus.inertia_tensor_body_kg_m2
+    assert inertia is not None
+    interval = momentum_config.max_sample_interval_s
+    if max_sample_interval_s is not None:
+        interval = min(interval, max_sample_interval_s)
+    return StoredMomentumTracker(
+        inertia_tensor_body_kg_m2=inertia,
+        initial_momentum_body_n_m_s=momentum_config.initial_momentum_body_n_m_s,
+        max_sample_interval_s=interval,
+        sources=sources,
+    )
