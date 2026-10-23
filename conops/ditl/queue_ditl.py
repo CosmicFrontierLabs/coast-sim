@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..common import (
     ACSMode,
+    DITLEventType,
     ObsType,
     angular_separation,
     dtutcfromtimestamp,
@@ -768,7 +769,7 @@ class QueueDITL(DITLMixin, DITLStats):
         """Return the earliest task end if collection stops for a TOO now."""
         ppt = self.ppt
         post_collection = (
-            self._timing_for(ppt).post_collection_seconds if ppt is not None else 0.0
+            self._ppt_timing(ppt).post_collection_seconds if ppt is not None else 0.0
         )
         if (
             ppt is None
@@ -783,28 +784,52 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _reserve_too_cleanup(self, utime: float, *, decision_time: float) -> None:
         """Stop future collection after a replacement passed delayed admission."""
-        cleanup_end = self._too_cleanup_end(utime)
+        self._reserve_cleanup(
+            utime,
+            decision_time=decision_time,
+            event_type="TOO",
+            before="TOO",
+            waiting="preemption",
+        )
+
+    def _reserve_cleanup(
+        self,
+        stop: float,
+        *,
+        decision_time: float,
+        event_type: DITLEventType,
+        before: str,
+        waiting: str,
+    ) -> None:
+        """Stop the observation under way collecting at ``stop`` and end it
+        when its cleanup and handoff budget is paid, so that what is
+        ``waiting`` for it can begin then. Nothing changes where collection
+        was to stop by ``stop`` anyway."""
         ppt = self.ppt
         assert ppt is not None and ppt.collection_end is not None
-        if utime < ppt.collection_end:
-            # Collection from earlier steps is already accounted for. Shorten
-            # only the future window, then keep its full teardown budget.
-            ppt.collection_end = utime
-            ppt.end = cleanup_end
-            if self.plan and self.plan[-1].begin == ppt.begin:
-                self.plan[-1].collection_end = ppt.collection_end
-                self.plan[-1].end = ppt.end
-            self.log.log_event(
-                utime=decision_time,
-                event_type="TOO",
-                description=(
-                    f"Reserved TOO cleanup for obsid {ppt.obsid}; collection "
-                    f"stops at {unixtime2date(utime)}, preemption "
-                    f"waits for cleanup/handoff until {unixtime2date(ppt.end)}"
-                ),
-                obsid=ppt.obsid,
-                acs_mode=self.acs.acsmode,
-            )
+        if ppt.collection_begin is not None:
+            stop = max(stop, ppt.collection_begin)
+        if stop >= ppt.collection_end:
+            return
+        # Collection from earlier steps is already accounted for. Shorten
+        # only the future window, then keep its full teardown budget.
+        post = self._ppt_timing(ppt).post_collection_seconds
+        ppt.collection_end = stop
+        ppt.end = min(ppt.end, stop + post)
+        if self.plan and self.plan[-1].begin == ppt.begin:
+            self.plan[-1].collection_end = ppt.collection_end
+            self.plan[-1].end = ppt.end
+        self.log.log_event(
+            utime=decision_time,
+            event_type=event_type,
+            description=(
+                f"Reserved {before} cleanup for obsid {ppt.obsid}; collection "
+                f"stops at {unixtime2date(stop)}, {waiting} "
+                f"waits for cleanup/handoff until {unixtime2date(ppt.end)}"
+            ),
+            obsid=ppt.obsid,
+            acs_mode=self.acs.acsmode,
+        )
 
     def calc(self) -> bool:
         """
@@ -1020,11 +1045,14 @@ class QueueDITL(DITLMixin, DITLStats):
         return changed
 
     def _call_for_desaturation(self, utime: float) -> None:
-        """Begin a thruster dump now when the stored momentum has reached
-        the planning level of the capacity: a desaturation activity due at
-        this step, which ends the observation under way and holds the
-        attitude it has for the dump's length. One at a time: none is called
-        for while one waits for a slew or is still to begin."""
+        """Call for a thruster dump when the stored momentum has reached the
+        planning level of the capacity: a desaturation activity, which ends
+        the observation under way and holds the attitude it has for the
+        dump's length. It is due at this step, unless the observation is
+        collecting or cleaning up: then its collection stops, its cleanup
+        and handoff budget is paid, and the dump is due at the step that
+        follows. One at a time: none is called for while one waits for a
+        slew or is still to begin."""
         level = self._dump_level_n_m_s()
         tracker = self._stored_momentum_tracker
         if level is None or tracker is None:
@@ -1038,15 +1066,6 @@ class QueueDITL(DITLMixin, DITLStats):
             return
         dump = self.config.spacecraft_bus.attitude_control.stored_momentum.thruster_dump
         assert dump is not None
-        activity = ScheduledActivity(
-            name="Desaturation",
-            begin=utime,
-            duration_seconds=dump.duration_seconds,
-            desaturation=True,
-            obsid=DESATURATION_OBSID + self._desaturations,
-        )
-        self._desaturations += 1
-        self.activities = sorted([*self.activities, activity], key=lambda a: a.begin)
         capacity = (
             self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_n_m_s
         )
@@ -1057,9 +1076,50 @@ class QueueDITL(DITLMixin, DITLStats):
                 f"Stored momentum {stored:.3f} N m s has reached the planning "
                 f"level {level:.3f} of the {capacity} N m s capacity: thruster dump"
             ),
-            obsid=activity.obsid,
+            obsid=DESATURATION_OBSID + self._desaturations,
             acs_mode=self.acs.acsmode,
         )
+        activity = ScheduledActivity(
+            name="Desaturation",
+            begin=self._dump_begin(utime),
+            duration_seconds=dump.duration_seconds,
+            desaturation=True,
+            obsid=DESATURATION_OBSID + self._desaturations,
+        )
+        self._desaturations += 1
+        self.activities = sorted([*self.activities, activity], key=lambda a: a.begin)
+
+    def _dump_begin(self, utime: float) -> float:
+        """When a dump called for at ``utime`` begins: now, unless the
+        observation under way is collecting or in its cleanup. Collection
+        already executed cannot be relabelled as cleanup, so the dump then
+        begins at the first step by which the observation's cleanup and
+        handoff budget is paid, and the observation's collection stops a
+        budget before it. The planning level leaves the capacity the margin
+        for the wait."""
+        ppt = self.ppt
+        if (
+            ppt is None
+            or ppt is self.charging_ppt
+            or ppt.collection_begin is None
+            or ppt.collection_end is None
+            or utime >= ppt.end
+        ):
+            return utime
+        post = self._ppt_timing(ppt).post_collection_seconds
+        if post <= 0.0:
+            return utime
+        stop = max(utime, ppt.collection_begin)
+        cleanup_end = min(ppt.end, stop + post)
+        begin = utime + ceil((cleanup_end - utime) / self.step_size) * self.step_size
+        self._reserve_cleanup(
+            begin - post,
+            decision_time=utime,
+            event_type="MOMENTUM",
+            before="thruster dump",
+            waiting="the dump",
+        )
+        return begin
 
     def _slew_under_way(self, utime: float) -> bool:
         """Whether the ACS is flying a slew at ``utime``."""

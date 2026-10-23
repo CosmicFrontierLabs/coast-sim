@@ -398,10 +398,14 @@ hold and the ``residual_fraction`` left in the wheels) give the spacecraft thrus
 dumps. Dispatch calls for one the moment the stored momentum reaches
 ``planning_level`` of the capacity: a desaturation activity due at that step, which
 ends the observation under way, holds the attitude the spacecraft has for the dump's
-length, starts no observation meanwhile, and unloads the wheels when it ends. The
-momentum goes on building through the dump, so the level's margin should cover
-what the dump's length adds. The dump waits for a slew under way as any activity
-does. A planned simulation unloads
+length, starts no observation meanwhile, and unloads the wheels when it ends. An
+observation collecting, or paying its cleanup budget, when the dump is called for
+finishes paying its cleanup and handoff budget first (see `Observation Timing Budgets`_):
+its collection stops a budget before the step the dump begins at, as before a
+target-of-opportunity preemption. The momentum goes on building through the wait
+and the dump, so the level's margin should cover what the budget and the dump's
+length add. The dump waits for a slew under way as any activity does. A planned
+simulation unloads
 the wheels at the end of each plan entry marked ``desaturation``. The planners
 forecast the stored momentum along their plan and reserve dumps where it reaches
 the level (see :doc:`planning`, Planning within the wheels). Without thrusters the
