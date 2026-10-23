@@ -452,6 +452,16 @@ class DITL(DITLMixin, DITLStats):
             momentum_sample = self._update_stored_momentum(
                 self.utime[i], _pos, _q, index=i
             )
+            active = self._active_entry
+            self._momentum_at_capacity(
+                self.utime[i],
+                (
+                    int(active.obsid)
+                    if active is not None
+                    and active.obstype not in (ObsType.ACTIVITY, ObsType.GSP)
+                    else None
+                ),
+            )
             drive_angles = self._solar_array_drive_telemetry()
             hk = Housekeeping(
                 timestamp=datetime.fromtimestamp(self.utime[i], tz=timezone.utc),

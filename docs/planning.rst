@@ -329,18 +329,28 @@ Where the configuration tracks stored momentum (see the stored momentum under
 :class:`~conops.schedulers.momentum.MomentumForecast` integrates the configured
 torque sources along the plan's timeline with the tracker the simulations use: each
 slew along its path, each observation, contact, charge and activity at its attitude,
-and the idle time between them at the attitude held, sampled every ten seconds, with
-each thruster dump unloading the wheels as it ends. Where the forecast reaches the
-planning level of the capacity and the spacecraft has thrusters, the planner reserves
-a dump there, a fixed desaturation activity holding the attitude of whatever precedes
-it, and plans again from the start with the dumps so far; the plan before each dump
-is then the plan that fills the wheels to it. A dump found earlier than one already
-reserved replaces it and those after it. Each dump costs a planning pass, and a plan
-reserves fifty at most. Without thrusters the plan stands and the log says where the
-forecast passes the capacity. A rolling-horizon run gives each replan the stored
-momentum it has at the replan, so the replan's forecast starts where the wheels are.
-The priority-first, local-search and CP-SAT planners all plan within the wheels this
-way.
+and the idle time between them at the attitude held, sampled at the ephemeris step
+along a hold and at the configured attitude step along a slew, with each thruster
+dump unloading the wheels as it ends. Where the forecast reaches the planning level
+of the capacity and the spacecraft has thrusters, the planner reserves a dump, a
+fixed desaturation activity holding the attitude of whatever precedes it, and plans
+again from the start with the dumps so far. The dump goes between observations.
+Where the level is reached during an observation, the dump follows it, provided the
+wheels stay within the capacity through the dump's own length; where they would not,
+the dump goes before the observation, which then starts from empty wheels, provided
+the observation alone fits within the capacity from empty. A visit that does not fit
+from empty is left out of the plan, with the reason logged, since a visit is not
+cut; a plain observation that does not fit has the dump at the crossing, and the next
+pass places a shorter snapshot after it. Where the level is reached between
+observations, in idle time, a slew or a contact, the dump goes at the crossing. A dump
+found earlier than one already reserved replaces it and those after it. Each dump
+costs a planning pass, and a plan reserves fifty at most. Without thrusters the plan
+stands and the log says where the forecast passes the capacity; with them, the log
+says where the forecast still reaches it, if it does. A rolling-horizon run gives
+each replan the stored momentum it will have when its horizon starts, the committed
+entries and their dumps included, so the replan's forecast starts where the wheels
+will be. The priority-first, local-search and CP-SAT planners all plan within the
+wheels this way.
 
 A snapshot is placed only where every peak from its segment onwards stays within
 the limit. It is never shortened to fit: a snapshot that does not fit before a

@@ -1,4 +1,5 @@
 import math
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any, cast
 
@@ -22,8 +23,10 @@ from ..simulation.momentum import (
     StoredMomentumTracker,
     build_torque_sources,
     slew_sample_interval_s,
+    tracker_from_config,
 )
 from ..simulation.passes import Pass, PassTimes
+from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry
 from ..targets.plan_entry import extra_data_gb, instrument_modes_of
 from .ditl_log import DITLLog
@@ -507,6 +510,121 @@ class DITLMixin:
             ),
             obsid=obsid,
             acs_mode=self.acs.acsmode,
+        )
+        self.fault_management.clear_momentum_capacity(
+            utime=utime, stored_n_m_s=tracker.stored_momentum_norm_n_m_s
+        )
+
+    def _momentum_at_capacity(self, utime: float, obsid: int | None) -> bool:
+        """Whether the stored momentum has reached the wheels' capacity. The
+        first time, fault management records it, with the observation under
+        way if any: an emergency dump interrupting an observation is what
+        the planning level exists to prevent."""
+        tracker = self._stored_momentum_tracker
+        capacity = (
+            self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_n_m_s
+        )
+        if tracker is None or capacity is None:
+            return False
+        stored = tracker.stored_momentum_norm_n_m_s
+        if stored < capacity:
+            return False
+        self.fault_management.report_momentum_capacity(
+            utime=utime, stored_n_m_s=stored, capacity_n_m_s=capacity, obsid=obsid
+        )
+        return True
+
+    def _momentum_ephem_utimes(self) -> npt.NDArray[np.float64]:
+        """The ephemeris sample times in Unix seconds, cached per ephemeris."""
+        timestamps = self.ephem.timestamp
+        cached = getattr(self, "_momentum_utimes_cache", None)
+        if cached is not None and cached[0] is timestamps:
+            utimes: npt.NDArray[np.float64] = cached[1]
+            return utimes
+        utimes = np.array([t.timestamp() for t in timestamps], dtype=np.float64)
+        self._momentum_utimes_cache = (timestamps, utimes)
+        return utimes
+
+    def _forecast_momentum(
+        self,
+        begin: float,
+        end: float,
+        attitude_at: Callable[[float], tuple[float, float, float]],
+        *,
+        start_eci_n_m_s: npt.ArrayLike | None,
+        slew: Slew | None = None,
+    ) -> tuple[
+        npt.NDArray[np.float64],
+        npt.NDArray[np.float64],
+        npt.NDArray[np.float64] | None,
+    ]:
+        """Forecast the stored momentum from ``begin`` to ``end`` at the
+        attitudes ``attitude_at`` gives, from ``start_eci_n_m_s`` or empty
+        wheels where None: the sample times, the norm at each, and the
+        momentum at the end in inertial coordinates. Held attitudes are
+        sampled at the run's step and ``slew`` at the configured attitude
+        step, with the orbit interpolated between ephemeris samples, as the
+        run integrates. Empty where momentum is not tracked."""
+        empty = np.empty(0, dtype=np.float64)
+        forecast = tracker_from_config(self.config)
+        if forecast is None or end <= begin:
+            return empty, empty, None
+        if start_eci_n_m_s is not None:
+            forecast.start_from_eci(start_eci_n_m_s)
+        else:
+            forecast.reset()
+        samples = np.arange(begin, end, self.step_size)
+        if len(samples) == 0 or samples[-1] < end:
+            samples = np.append(samples, end)
+        slew_sample = getattr(self, "_momentum_slew_sample_s", 0.0)
+        if slew is not None and slew.slewtime > 0.0 and slew_sample > 0.0:
+            along = np.arange(
+                max(begin, float(slew.slewstart)),
+                min(end, float(slew.slewend)),
+                slew_sample,
+            )
+            samples = np.unique(np.concatenate([samples, along]))
+        utimes = self._momentum_ephem_utimes()
+        positions = np.asarray(position_vectors(self.ephem, "gcrs"), dtype=np.float64)
+        suns = np.asarray(position_vectors(self.ephem, "sun"), dtype=np.float64)
+        ecef = getattr(getattr(self.ephem, "itrs_pv", None), "position", None)
+        ecefs = np.asarray(ecef, dtype=np.float64) if ecef is not None else None
+
+        def interpolate(
+            table: npt.NDArray[np.float64], at: float
+        ) -> npt.NDArray[np.float64]:
+            return np.array(
+                [np.interp(at, utimes, table[:, k]) for k in range(3)], dtype=np.float64
+            )
+
+        norms: list[float] = []
+        for at in samples:
+            position = interpolate(positions, float(at))
+            # Eclipse is known at the ephemeris samples: the nearest one.
+            nearest = int(np.clip(np.searchsorted(utimes, at), 0, len(utimes) - 1))
+            if nearest > 0 and abs(utimes[nearest - 1] - at) < abs(
+                utimes[nearest] - at
+            ):
+                nearest -= 1
+            sample = forecast.update(
+                utime=float(at),
+                position_eci_km=position,
+                attitude_quaternion_eci_to_body=attitude_to_quat(
+                    *attitude_at(float(at))
+                ),
+                sun_eci_km=interpolate(suns, float(at)) - position,
+                sunlit=not self.config.constraint.in_eclipse(
+                    0.0, 0.0, float(utimes[nearest])
+                ),
+                position_ecef_km=(
+                    interpolate(ecefs, float(at)) if ecefs is not None else None
+                ),
+            )
+            norms.append(sample.stored_momentum_norm_n_m_s)
+        return (
+            np.asarray(samples, dtype=np.float64),
+            np.array(norms, dtype=np.float64),
+            forecast.momentum_eci_n_m_s,
         )
 
     def _solar_array_drive_telemetry(self) -> list[SolarArrayDriveAngle] | None:

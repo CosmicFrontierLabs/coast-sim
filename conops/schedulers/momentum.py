@@ -191,9 +191,32 @@ class MomentumForecast:
             tracker.start_from_eci(self.start_momentum_eci_n_m_s)
         else:
             tracker.reset()
+        return self._integrate(tracker, self._spans(timeline))
+
+    def loading(self, block: _Block) -> float:
+        """The most the block alone stores, from empty wheels: its slew and
+        its hold, with nothing before or after it."""
+        tracker = self.tracker
+        if tracker is None:
+            return 0.0
+        begin = float(block.entry.begin)
+        spans = [
+            span
+            for span in self._spans([block])
+            if span.begin >= begin and span.end <= float(block.end)
+        ]
+        tracker.reset()
+        _, norms = self._integrate(tracker, spans)
+        return float(norms.max()) if len(norms) else 0.0
+
+    def _integrate(
+        self, tracker: StoredMomentumTracker, spans: Sequence[_Span]
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+        """Advance ``tracker`` through ``spans``: the sample times and the
+        norm at each."""
         times: list[float] = []
         norms: list[float] = []
-        for span in self._spans(timeline):
+        for span in spans:
             interval = (
                 self.slew_sample_s if span.slew is not None else self.hold_sample_s
             )

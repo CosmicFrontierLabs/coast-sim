@@ -10,8 +10,6 @@ import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
 from ..common import ObsType, unixtime_from
-from ..common.ephemeris import position_vectors
-from ..common.vector import attitude_to_quat
 from ..config import MissionConfig, ObservationTiming, ScienceData
 from ..config.solar_panel import SolarArrayDriveState
 from ..schedulers.allocator import Allocation, LongRangeAllocator
@@ -19,7 +17,6 @@ from ..schedulers.battery import Addition, BatteryLedger
 from ..schedulers.context import Attitude, SchedulingContext, tracking_rest
 from ..schedulers.priority_scheduler import PriorityScheduler, StartState
 from ..schedulers.recorder import RecorderLedger
-from ..simulation.momentum import tracker_from_config
 from ..simulation.passes import Pass
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing, ScheduledActivity, assign_obsids
@@ -891,10 +888,8 @@ class RollingHorizonDITL(DITL):
         momentum = tracker.momentum_eci_n_m_s
         if momentum is None:
             return None
-        forecast = tracker_from_config(self.config)
-        if forecast is None or start <= utime:
+        if start <= utime:
             return (float(momentum[0]), float(momentum[1]), float(momentum[2]))
-        forecast.start_from_eci(momentum)
         holds = sorted(
             (
                 (float(e.begin), float(e.end), e)
@@ -912,31 +907,26 @@ class RollingHorizonDITL(DITL):
                     return (float(entry.ra), float(entry.dec), float(entry.roll))
             return self.acs.predicted_attitude(at)
 
-        positions = position_vectors(self.ephem, "gcrs")
-        suns = position_vectors(self.ephem, "sun")
-        ecef = getattr(getattr(self.ephem, "itrs_pv", None), "position", None)
-        samples = np.arange(utime, start, self.step_size)
-        if len(samples) == 0 or samples[-1] < start:
-            samples = np.append(samples, start)
-        for at in samples:
-            index = self.ephem.index(datetime.fromtimestamp(float(at), tz=timezone.utc))
-            position = np.asarray(positions[index], dtype=np.float64)
-            forecast.update(
-                utime=float(at),
-                position_eci_km=position,
-                attitude_quaternion_eci_to_body=attitude_to_quat(
-                    *attitude_at(float(at))
-                ),
-                sun_eci_km=np.asarray(suns[index], dtype=np.float64) - position,
-                sunlit=not self.constraint.in_eclipse(0.0, 0.0, float(at)),
-                position_ecef_km=(
-                    np.asarray(ecef[index], dtype=np.float64)
-                    if ecef is not None
-                    else None
-                ),
-            )
-        ahead = forecast.momentum_eci_n_m_s
-        assert ahead is not None
+        # Each committed dump that ends before the start unloads the wheels.
+        dump = self.config.spacecraft_bus.attitude_control.stored_momentum.thruster_dump
+        unloads = sorted(
+            float(e.end)
+            for e in committed
+            if e.desaturation and utime < float(e.end) <= start
+        )
+        ahead = np.asarray(momentum, dtype=np.float64)
+        cursor = utime
+        for at in [*unloads, start]:
+            if at > cursor:
+                _, _, after = self._forecast_momentum(
+                    cursor, at, attitude_at, start_eci_n_m_s=ahead
+                )
+                if after is not None:
+                    ahead = after
+                cursor = at
+            if at < start or at in unloads:
+                if dump is not None and at in unloads:
+                    ahead = ahead * dump.residual_fraction
         return (float(ahead[0]), float(ahead[1]), float(ahead[2]))
 
     def _committed_slew(
