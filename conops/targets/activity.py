@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..common import ObsType
 from ..config import MissionConfig
@@ -68,6 +68,18 @@ class ScheduledActivity(BaseModel):
             "activity keeps its length"
         ),
     )
+    slide_seconds: float = Field(
+        default=0.0,
+        ge=0.0,
+        allow_inf_nan=False,
+        description=(
+            "How long after its start the activity may begin, to let an "
+            "observation under way finish: dispatch waits for one up to the "
+            "latest start, then begins and ends what is under way, and the "
+            "planners let science before the activity run into the window. "
+            "The activity keeps its length. 0: it begins at its start"
+        ),
+    )
 
     @field_validator("begin", mode="before")
     @classmethod
@@ -76,9 +88,24 @@ class ScheduledActivity(BaseModel):
             return value.timestamp()
         return float(value)
 
+    @model_validator(mode="after")
+    def _fixed_does_not_slide(self) -> ScheduledActivity:
+        if self.fixed and self.slide_seconds > 0.0:
+            raise ValueError("a fixed activity begins at its start and cannot slide")
+        return self
+
     @property
     def end(self) -> float:
         return self.begin + self.duration_seconds
+
+    @property
+    def latest_start(self) -> float:
+        """The latest the activity may begin: its start plus its slide."""
+        return self.begin + self.slide_seconds
+
+    @property
+    def slides(self) -> bool:
+        return self.slide_seconds > 0.0
 
     def plan_entry(
         self,
@@ -125,3 +152,46 @@ def assign_obsids(
             activity = activity.model_copy(update={"obsid": ACTIVITY_OBSID + n})
         assigned.append(activity)
     return assigned
+
+
+def periodic_activities(
+    name: str,
+    first: float | datetime,
+    interval_seconds: float,
+    duration_seconds: float,
+    *,
+    count: int | None = None,
+    until: float | datetime | None = None,
+    instrument_modes: dict[str, str] | None = None,
+    data_gb: float = 0.0,
+    fixed: bool = False,
+    slide_seconds: float = 0.0,
+) -> list[ScheduledActivity]:
+    """Activities named ``name`` every ``interval_seconds`` from ``first``,
+    each ``duration_seconds`` long, ``count`` of them or as many as begin by
+    ``until``; the instrument modes, data, ``fixed`` and ``slide_seconds``
+    apply to each. A campaign's twice-daily calibration is one call."""
+    if interval_seconds <= 0.0:
+        raise ValueError("interval_seconds must be positive")
+    if (count is None) == (until is None):
+        raise ValueError("give count or until, not both")
+    start = first.timestamp() if isinstance(first, datetime) else float(first)
+    stop = until.timestamp() if isinstance(until, datetime) else until
+    activities: list[ScheduledActivity] = []
+    k = 0
+    while (count is None or k < count) and (
+        stop is None or start + k * interval_seconds <= stop
+    ):
+        activities.append(
+            ScheduledActivity(
+                name=name,
+                begin=start + k * interval_seconds,
+                duration_seconds=duration_seconds,
+                instrument_modes=dict(instrument_modes or {}),
+                data_gb=data_gb,
+                fixed=fixed,
+                slide_seconds=slide_seconds,
+            )
+        )
+        k += 1
+    return activities

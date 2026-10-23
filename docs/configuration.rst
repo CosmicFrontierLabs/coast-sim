@@ -1458,6 +1458,7 @@ The :class:`~conops.config.Constraint` defines pointing constraints for the spac
 * ``sun_constraint``: Minimum angle from the Sun
 * ``anti_sun_constraint``: Maximum angle from anti-Sun direction
 * ``moon_constraint``: Minimum angle from the Moon
+* ``eclipse_intervals``: Intervals, each a ``(start, end)`` pair in Unix seconds, datetimes or ISO-8601 strings, during which the spacecraft is taken to be in eclipse whatever the ephemeris says, for a test of an eclipse the orbit does not give. The constraint's eclipse test, the solar panels, the bus and instrument eclipse power, the planners' battery ledger, the momentum sources' Sun, telemetry and the timeline plots all see them
 * ``earth_constraint``: Minimum angle from Earth limb
 * ``panel_constraint``: Solar panel pointing constraint
 * ``ephem``: Ephemeris object (set at runtime, not serialized)

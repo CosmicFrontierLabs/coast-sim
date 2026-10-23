@@ -1009,8 +1009,9 @@ class QueueDITL(DITLMixin, DITLStats):
         """End the activity under way once it is over, and begin the one due
         now. An activity due while a slew is under way waits for the slew to
         end and then runs its full length, unless it is ``fixed``, when it
-        begins at its start and the slew finishes inside it. Returns whether
-        the spacecraft's state changed."""
+        begins at its start and the slew finishes inside it. One due while
+        another activity is under way begins when that one ends, for its
+        full length. Returns whether the spacecraft's state changed."""
         changed = False
         active = self._active_activity
         if active is not None and utime >= self._activity_end:
@@ -1022,22 +1023,20 @@ class QueueDITL(DITLMixin, DITLStats):
                 (
                     a
                     for a in self.activities
-                    if a.begin <= utime
-                    and a.begin > self._activity_started
-                    and (not a.fixed or utime < a.end)
+                    if a.begin <= utime and a.begin > self._activity_started
                 ),
                 None,
             )
             if due is not None:
-                if not due.fixed and self._slew_under_way(utime):
+                waits_for = self._activity_waits_for(due, utime)
+                if waits_for is not None:
                     if self._activity_waiting is not due:
                         self._activity_waiting = due
                         self.log.log_event(
                             utime=utime,
                             event_type="ACTIVITY",
                             description=(
-                                f"Scheduled activity {due.name} waits for the "
-                                "slew under way"
+                                f"Scheduled activity {due.name} waits for {waits_for}"
                             ),
                             obsid=due.obsid,
                             acs_mode=self.acs.acsmode,
@@ -1046,6 +1045,26 @@ class QueueDITL(DITLMixin, DITLStats):
                 self._begin_activity(due, utime, (ra, dec, roll))
                 changed = True
         return changed
+
+    def _activity_waits_for(
+        self, activity: ScheduledActivity, utime: float
+    ) -> str | None:
+        """What a due activity waits for before it begins, if anything: a
+        slew under way, unless the activity is fixed; or, within its slide
+        window, the observation under way."""
+        if not activity.fixed and self._slew_under_way(utime):
+            return "the slew under way"
+        ppt = self.ppt
+        if (
+            ppt is not None
+            and ppt is not self.charging_ppt
+            and utime < activity.latest_start
+        ):
+            return (
+                f"observation {ppt.obsid} under way, until "
+                f"{unixtime2date(activity.latest_start)} at the latest"
+            )
+        return None
 
     def _call_for_desaturation(self, utime: float) -> None:
         """Call for a thruster dump where the stored momentum asks for one.
@@ -1350,8 +1369,11 @@ class QueueDITL(DITLMixin, DITLStats):
         self._active_activity = activity
         self._activity_started = utime
         self._activity_attitude = attitude
-        # Delayed by a slew, the activity keeps its length from when it begins.
-        delayed = self._activity_waiting is activity
+        # Delayed by a slew, an observation or the activity that was under
+        # way at its start, the activity keeps its length from when it begins.
+        delayed = (
+            self._activity_waiting is activity or activity.begin < self._activity_end
+        )
         self._activity_waiting = None
         self._activity_end = (
             utime + activity.duration_seconds if delayed else activity.end
@@ -1400,8 +1422,30 @@ class QueueDITL(DITLMixin, DITLStats):
         return float(deadline) if isinstance(deadline, (int, float)) else None
 
     def _next_activity_begin(self, after: float) -> float | None:
-        """When the next scheduled activity begins after ``after``."""
-        return next((a.begin for a in self.activities if a.begin > after), None)
+        """When the next scheduled activity begins after ``after``: its
+        latest start where it may slide, since an observation may run until
+        then."""
+        return next(
+            (
+                a.latest_start
+                for a in self.activities
+                if a.latest_start > after and a.begin > self._activity_started
+            ),
+            None,
+        )
+
+    def _activity_pending(self, utime: float) -> ScheduledActivity | None:
+        """An activity due now that has not begun: one that slides is
+        waiting for the observation under way, and nothing starts before it."""
+        return next(
+            (
+                a
+                for a in self.activities
+                if a.begin <= utime < a.latest_start
+                and a.begin > self._activity_started
+            ),
+            None,
+        )
 
     # ── Sequence visits ───────────────────────────────────────────────────
 
@@ -2355,6 +2399,7 @@ class QueueDITL(DITLMixin, DITLStats):
             self.ppt is None
             and self._active_activity is None
             and not self._dump_pending
+            and self._activity_pending(utime) is None
         ):
             if self._gsp_activity_in_progress(utime):
                 self._ppt_unavailable = None

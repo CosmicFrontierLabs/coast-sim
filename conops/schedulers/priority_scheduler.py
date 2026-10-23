@@ -398,6 +398,8 @@ class PriorityScheduler:
         self.dumps: list[ScheduledActivity] = []
         """The thruster dumps this scheduler has reserved where its momentum
         forecast reached the level, in time order."""
+        self._slidable: dict[int, ScheduledActivity] = {}
+        """The activities reserved with a slide window, by their block."""
         self._momentum_rejected: set[int] = set()
         """Targets whose visit stores more than the wheels' capacity from
         empty: not planned."""
@@ -880,6 +882,7 @@ class PriorityScheduler:
     def _finish(self, timeline: Sequence[_Block]) -> Plan:
         """Record and return the plan for a finished timeline, with its charging."""
         timeline = self._plan_charging(list(timeline))
+        self._settle_sliding_activities(timeline)
         self.plan = Plan(
             entries=[
                 step for block in timeline for step in (block.steps or [block.entry])
@@ -1591,6 +1594,43 @@ class PriorityScheduler:
                 entry.obsid,
             )
 
+    def _settle_sliding_activities(self, timeline: Sequence[_Block]) -> None:
+        """Hold each activity that may begin late, within a slide window or
+        after another activity, from when what precedes it on the timeline
+        has ended: at its start at the earliest and where it was reserved at
+        the latest, for its length."""
+        for index, block in enumerate(timeline):
+            activity = self._slidable.get(id(block))
+            if activity is None:
+                continue
+            begin = activity.begin
+            if index > 0:
+                previous = timeline[index - 1]
+                # A settled activity before it ends where its entry does.
+                ended = (
+                    float(previous.entry.end)
+                    if id(previous) in self._slidable
+                    else float(previous.end)
+                )
+                begin = max(begin, self.ctx.ceil_step(ended))
+            begin = min(begin, block.ready)
+            block.entry.begin = begin
+            block.entry.end = begin + activity.duration_seconds
+
+    def _activity_ready(self, activity: ScheduledActivity) -> float:
+        """When an activity is reserved from: its latest start, or after
+        each activity already on the timeline that is under way then, as
+        one due while another is under way begins when that one ends."""
+        ready = activity.latest_start
+        for block in self.timeline:
+            if (
+                block.is_activity
+                and block.ready < ready + activity.duration_seconds
+                and block.end > ready
+            ):
+                ready = max(ready, self.ctx.ceil_step(float(block.end)))
+        return ready
+
     def _place_activity(self, activity: ScheduledActivity) -> None:
         """Reserve an activity as a fixed block in IDLE mode.
 
@@ -1600,7 +1640,16 @@ class PriorityScheduler:
         for the activity's length is not used; the plan then leaves the
         activity out and says so.
         """
-        before = [b for b in self.timeline if b.end <= activity.begin]
+        ready = self._activity_ready(activity)
+        end = ready + activity.duration_seconds
+        if ready > activity.latest_start:
+            self._log(
+                activity.begin,
+                f"Activity {activity.name} is due during another activity and "
+                f"begins when it ends, by {unixtime2date(ready)}",
+                activity.obsid,
+            )
+        before = [b for b in self.timeline if b.end <= ready]
         attitude = (
             before[-1].attitude_out
             if before
@@ -1612,7 +1661,7 @@ class PriorityScheduler:
         )
         mode = ACSMode.DESAT if activity.desaturation else ACSMode.IDLE
         violation = self.ctx.first_hold_violation(
-            attitude, activity.begin, self.ctx.ceil_step(activity.end), mode
+            attitude, activity.begin, self.ctx.ceil_step(end), mode
         )
         if violation is not None:
             self._log(
@@ -1623,14 +1672,24 @@ class PriorityScheduler:
             )
             return
         entry = activity.plan_entry(self.config, attitude)
+        # An activity that may slide, or that waits for another, is reserved
+        # from its latest start to its latest end, so science before it may
+        # run into its window and nothing is placed where it may still be;
+        # its entry begins after what precedes it, at its start at the
+        # earliest, when the plan is finished.
+        late = activity.slides or ready > activity.latest_start
+        if late:
+            entry.end = end
         block = _Block(
             entry=entry,
             attitude_in=attitude,
             attitude_out=attitude,
-            ready=activity.begin,
-            end=activity.end,
+            ready=ready,
+            end=end,
             follows=True,
         )
+        if late:
+            self._slidable[id(block)] = activity
         if not self._insert_fixed(block):
             self._log(
                 activity.begin,
