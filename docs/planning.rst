@@ -121,9 +121,8 @@ How a plan is built
    snapshot after it could then not be reached in time, that snapshot is moved later
    to make room, along with up to three more packed behind it, as long as the
    activity after them can still be reached. Moving a snapshot can cut it short
-   where its target's visibility ends; that is allowed only if no snapshot cut short
-   is in a higher tier than the new one and the new snapshot's value-weighted seconds
-   exceed those lost. Exposure cut short is left for the request to plan elsewhere.
+   where its target's visibility ends; that is allowed only if the new snapshot's
+   value-weighted seconds exceed those lost. Exposure cut short is left for the request to plan elsewhere.
    Ground passes and locked entries are never moved. A cadence target's visit moves
    only if it is the target's latest, and never earlier than it was, so its visits
    stay a cadence apart.
@@ -175,6 +174,53 @@ visit (``reserved_visits``), so a new plan does not revisit a target straight af
 committed visit.
 
 Without these weights, plans are built exactly as before.
+
+Planning within the recorder
+----------------------------
+
+Every scheduler keeps the onboard recorder below its planning limit,
+``recorder.planning_limit`` as a fraction of ``capacity_gb`` (see
+:doc:`data_management`). By default it is the recorder's ``red_threshold``, which
+is where the red alert fires, so a plan stops just short of the red; set it lower
+to keep margin, or to ``None`` to plan without regard to the recorder.
+
+The recorder fills between ground contacts and empties during them, so its volume
+is highest just before each contact and at the end of the horizon. The reserved
+contacts cut the horizon into segments, and the plan is checked at every segment's
+peak:
+
+* each segment's peak is what was left after the contact before it, plus the
+  housekeeping data generated in it, plus the science data of the snapshots placed
+  in it: for each snapshot, each instrument's rate for its collection time plus its
+  fixed per-observation amount, at the target's own rates where it sets them;
+* each contact removes what its rate and length allow, and no more than is there,
+  so what it cannot remove carries over to the segments after it;
+* housekeeping is counted at the nominal rate throughout, and at the ``PASS`` rate
+  during contacts and the slews into them, which ACS runs in ``PASS`` mode, since
+  the plan does not know when the spacecraft will be in other modes.
+
+The arithmetic is not particular to the recorder. Anything a spacecraft
+accumulates between the events that remove it, and must keep within a limit
+meanwhile, has the same shape: stored momentum builds up until a dump unloads it,
+for instance. :class:`~conops.schedulers.ConsumableLedger` holds that arithmetic
+(segments between removals, accrual, removals that take no more than is there,
+and the check at every later peak), and
+:class:`~conops.schedulers.RecorderLedger` maps the recorder onto it.
+
+A snapshot is placed only where every peak from its segment onwards stays within
+the limit. It is never shortened to fit: a snapshot that does not fit before a
+contact is placed after one, or not at all, and the log says so. The priority-first
+scheduler places higher-merit requests first, so when data runs short it is the
+lowest-merit science that waits, whatever its data rate; local search then trades
+snapshots in and out on merit within the same limit; and CP-SAT has the recorder in
+its model, so the solver trades high-data science against low-data science directly
+(see `Optimizing plans with CP-SAT`_).
+
+:class:`~conops.ditl.RollingHorizonDITL` starts each plan from the recorder's
+actual volume, so a contact that downlinked less than planned is made up for at
+the next replan. A plan takes effect after the commit lead time, so it starts from
+what the committed activities leave on the recorder by then: what they go on to
+generate, less what a committed contact downlinks.
 
 Limitations
 -----------
@@ -285,6 +331,15 @@ CP-SAT chooses candidates and their order:
 * ground passes are fixed tasks that snapshots must leave room to slew to;
 * a request's snapshots never add up to more than its remaining exposure;
 * a cadence target's visits are at least its cadence apart, and after its last one;
+* the recorder stays below its planning limit: each candidate's data (its rate for
+  its collection, plus its fixed amount, at the observed target's rates, rounded up
+  to whole kilobits so the model never counts less than the ledger) goes on the
+  recorder in the segment, between contacts, where its collection starts; each
+  segment's volume is what entered it after its contact, plus housekeeping and the
+  science already planned there, plus the chunk's candidates; what a contact cannot
+  remove carries over; and every segment from the chunk's to the end of the horizon
+  is kept within the limit, so a candidate is traded against the room it takes from
+  everything after it (see `Planning within the recorder`_);
 * the objective is merit-weighted science, with the completion deficit at the chunk's
   start and the earliness discount for requests with a deadline and for cadence
   visits.
@@ -472,6 +527,20 @@ each request's remaining exposure to collect in which bin:
 * re-allocating keeps the previous allocation unless changing it gains something:
   keeping a request's seconds where they were is worth an extra 1%. A ToO that fits
   in the reserve leaves every planned request where it was;
+* the data the run generates fits what its ground contacts can downlink. Each bin
+  generates housekeeping, at the ``PASS`` rate during its contacts, plus the science
+  data of the requests allocated to it: each target's rate for its allocated seconds
+  and its fixed amount per observation, once per bin. Its contacts, from the same
+  pass prediction the schedulers use, take off what they can, and what they cannot
+  is carried on the recorder into the next bin, where it must stay within the
+  recorder's planning limit (see `Planning within the recorder`_). The allocation
+  starts from what is on the recorder, so a run that begins with a full recorder
+  allocates its first day no more data than that day downlinks. High-data science
+  then gives way to low-data science where the contacts cannot keep up, rather than
+  being allocated and refused day by day. There is no budget without a planning
+  limit, or when no request generates data, and nothing is predicted for it then;
+  :attr:`~conops.schedulers.Allocation.downlink`, ``housekeeping`` and ``science``
+  by bin and :meth:`~conops.schedulers.Allocation.recorder_volumes` report it;
 * ``solver="greedy"`` instead takes requests in order of merit, each into
   the bins with the least competing demand. It is quicker but not optimal, is the
   MILP's starting point, and does not need OR-Tools.
