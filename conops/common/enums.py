@@ -35,6 +35,8 @@ class ACSMode(int, Enum):
     CHARGING = 4
     SAFE = 5
     IDLE = 6
+    DESAT = 7
+    """Holding for a thruster momentum dump."""
 
 
 class ChargeState(int, Enum):

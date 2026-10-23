@@ -144,8 +144,8 @@ How a plan is built
    reach safely. Pass ``include_passes=False`` to plan science only.
    **Scheduled activities** (the ``activities`` argument, a list of
    :class:`~conops.targets.ScheduledActivity`) are reserved the same way: each is a
-   fixed block from its start for its duration, in ``IDLE`` mode, so no science is
-   placed across it. An activity holds the attitude of whatever precedes it in the
+   fixed block from its start for its duration, in ``IDLE`` mode (``DESAT`` for a
+   thruster momentum dump), so no science is placed across it. An activity holds the attitude of whatever precedes it in the
    plan: the science before it ends at the block with no slew back, the block holds
    that science's attitude, and the science after it slews from there. A snapshot
    whose attitude ``IDLE`` cannot hold through the block, or from which the block

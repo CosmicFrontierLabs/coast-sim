@@ -149,13 +149,14 @@ class DITLMixin:
         """The mode each instrument is in at this step: the observation's
         while ACS is in SCIENCE mode, a calibration step's own during a
         setup or cleanup step at ``utime``, a scheduled activity's while ACS
-        holds for it in IDLE mode, else None, when every instrument idles or
-        holds a mode named like the ACS mode."""
+        holds for it in IDLE mode, or in DESAT for a thruster dump, else
+        None, when every instrument idles or holds a mode named like the
+        ACS mode."""
         try:
             acs_mode = ACSMode(int(mode))
         except (TypeError, ValueError):
             return None
-        if acs_mode is ACSMode.IDLE:
+        if acs_mode in (ACSMode.IDLE, ACSMode.DESAT):
             # Dispatch holds the activity itself; a plan holds its entry.
             active = getattr(self, "_active_activity", None)
             modes = getattr(active, "instrument_modes", None)
