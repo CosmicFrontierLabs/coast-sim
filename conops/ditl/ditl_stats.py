@@ -1,14 +1,83 @@
 from collections import Counter
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 import numpy as np
 
-from ..common import ChargeState, normalize_acs_mode
+from ..common import ChargeState, normalize_acs_mode, unixtime2date
 from ..config.config import MissionConfig
+from ..config.observation_categories import ObservationCategories
 from ..simulation.acs import ACS
 from ..simulation.coverage import StationCoverage
 from ..simulation.passes import PassTimes
+from ..targets import Plan, PlanEntry, Pointing
+from .plan_validator import PLAN_SCIENCE_OBSTYPES, entry_obstype
 from .telemetry import Telemetry
+
+
+@dataclass(frozen=True)
+class CategorySummary:
+    """What one observation category got over a run."""
+
+    category: str
+    program: str
+    targets: int
+    """Distinct targets observed."""
+    visits: int
+    """Visits taken: a snapshot, or one visit of a sequence, each."""
+    science_hours: float
+    slew_hours: float
+    """Hours slewing into the category's visits."""
+    slew_degrees: float
+    """Degrees slewed into the category's visits."""
+    share: float
+    """The category's fraction of the run's science time."""
+    time_share: float | None
+    """The fraction allocated to it, where the category sets one."""
+
+
+@dataclass(frozen=True)
+class VisitRecord:
+    """One visit of a target as executed, against its window where it has one."""
+
+    obsid: int
+    name: str
+    category: str
+    visit: int | None
+    """The visit window it was taken in, for a target with windows."""
+    window_start: float | None
+    window_deadline: float | None
+    begin: float | None
+    """When the entry began, with its slew; None for a visit not taken."""
+    collection_begin: float | None
+    end: float | None
+    exposure_seconds: float
+    slew_degrees: float
+    roll_deg: float | None
+    status: str
+    """``complete``, ``cut`` (less science than planned) or ``missed`` (a
+    window with no visit)."""
+    attempts: int = 1
+    """How many times the visit was begun, in a per-window record: a visit
+    cut short and taken again within its window counts each attempt."""
+
+
+@dataclass(frozen=True)
+class _Visit:
+    entries: list[PlanEntry]
+
+    @property
+    def first(self) -> PlanEntry:
+        return self.entries[0]
+
+    @property
+    def exposure(self) -> float:
+        return float(sum(e.exposure for e in self.entries if not e.calibration))
+
+    @property
+    def planned(self) -> float:
+        return float(sum(float(e.ss_max) for e in self.entries if not e.calibration))
 
 
 class DITLStats:
@@ -35,6 +104,256 @@ class DITLStats:
     repoints_in_observations: list[tuple[float, int, str]]
     acs: ACS
     telemetry: Telemetry
+
+    # ── Reporting ──────────────────────────────────────────────────────
+
+    def _requests(self) -> list[Pointing]:
+        """The targets the run was given, where it keeps them."""
+        queue = getattr(self, "queue", None)
+        targets = getattr(queue, "targets", None) or getattr(self, "targets", None)
+        return [t for t in (targets or []) if isinstance(t, Pointing)]
+
+    def _science_visits(self) -> list[_Visit]:
+        """The run's science visits, in time order: each snapshot entry, or
+        the step entries of one visit of a sequence, as one. Dispatch begins
+        a visit's next step at the simulation step after the last ended, so
+        steps up to a step apart belong to the same visit."""
+        plan = getattr(self, "plan", None)
+        if not isinstance(plan, Plan):
+            return []
+        step = float(getattr(self, "step_size", 0) or 0)
+        entries = sorted(
+            (
+                e
+                for e in plan
+                if entry_obstype(e) in PLAN_SCIENCE_OBSTYPES and e.obsid is not None
+            ),
+            key=lambda e: (float(e.begin), float(e.end)),
+        )
+        visits: list[_Visit] = []
+        for entry in entries:
+            last = visits[-1] if visits else None
+            if (
+                last is not None
+                and entry.step is not None
+                and last.first.step is not None
+                and int(last.first.obsid) == int(entry.obsid)
+                and last.first.visit == entry.visit
+                and float(entry.begin) <= float(last.entries[-1].end) + step + 1e-6
+            ):
+                last.entries.append(entry)
+            else:
+                visits.append(_Visit([entry]))
+        return visits
+
+    def summary_by_category(self) -> list[CategorySummary]:
+        """What each observation category got over the run, from the plan
+        as executed: targets, visits, science and slew hours, the degrees
+        slewed into its visits, its share of the run's science time, and
+        the fraction allocated to it where the category sets one. One row
+        per configured category, in their order, a category that collected
+        nothing included, then any category science fell to outside them."""
+        categories = getattr(self.config, "observation_categories", None)
+        # A test double's configuration has no categories.
+        if not isinstance(categories, ObservationCategories):
+            return []
+        visits = self._science_visits()
+        by_name: dict[str, list[_Visit]] = {
+            category.name: [] for category in categories.categories
+        }
+        for visit in visits:
+            name = categories.get_category(int(visit.first.obsid)).name
+            by_name.setdefault(name, []).append(visit)
+        total = sum(v.exposure for v in visits)
+        rows = []
+        for name, taken in by_name.items():
+            category = next(
+                (c for c in categories.categories if c.name == name),
+                categories.get_category(int(taken[0].first.obsid)) if taken else None,
+            )
+            if category is None:
+                continue
+            science = sum(v.exposure for v in taken)
+            rows.append(
+                CategorySummary(
+                    category=name,
+                    program=category.program_name,
+                    targets=len({int(v.first.obsid) for v in taken}),
+                    visits=len(taken),
+                    science_hours=science / 3600.0,
+                    slew_hours=sum(float(v.first.slewtime) for v in taken) / 3600.0,
+                    slew_degrees=sum(float(v.first.slewdist) for v in taken),
+                    share=science / total if total > 0 else 0.0,
+                    time_share=category.time_share,
+                )
+            )
+        return rows
+
+    def visit_table(
+        self, targets: Sequence[Pointing] | None = None, *, per_window: bool = False
+    ) -> list[VisitRecord]:
+        """Each visit of the run against its plan: the window it was taken
+        in and when, its science against what was planned, the slew into it
+        and its roll. ``targets``, or the run's own requests, give the
+        windows; a window of theirs with no visit is a ``missed`` row.
+        A visit with less science than planned, less a step, is ``cut``.
+
+        Every attempt is a row, so a visit cut short and taken again within
+        its window is two. With ``per_window`` a window is one row, its
+        verdict: the whole visit where one was taken, with the attempts it
+        took, else the last attempt, cut; a target without windows keeps a
+        row per snapshot."""
+        categories = getattr(self.config, "observation_categories", None)
+        if not isinstance(categories, ObservationCategories):
+            return []
+        requests = list(targets) if targets is not None else self._requests()
+        by_obsid = {int(t.obsid): t for t in requests}
+        step = float(getattr(self, "step_size", 0) or 0)
+        rows: list[VisitRecord] = []
+        taken: dict[tuple[int, int], bool] = {}
+        for visit in self._science_visits():
+            first = visit.first
+            obsid = int(first.obsid)
+            target = by_obsid.get(obsid)
+            windows = getattr(target, "visit_windows", None) or getattr(
+                first, "visit_windows", None
+            )
+            index = first.visit
+            window = (
+                windows[index]
+                if windows and index is not None and 0 <= index < len(windows)
+                else None
+            )
+            planned = visit.planned
+            if target is not None and target.visit_windows:
+                planned = float(target.per_visit_seconds)
+            exposure = visit.exposure
+            status = "cut" if exposure < planned - step - 1e-6 else "complete"
+            if index is not None and status == "complete":
+                taken[(obsid, index)] = True
+            rows.append(
+                VisitRecord(
+                    obsid=obsid,
+                    name=str(first.name),
+                    category=categories.get_category(obsid).name,
+                    visit=index,
+                    window_start=window.start if window is not None else None,
+                    window_deadline=window.deadline if window is not None else None,
+                    begin=float(first.begin),
+                    collection_begin=(
+                        float(first.collection_begin)
+                        if first.collection_begin is not None
+                        else None
+                    ),
+                    end=float(visit.entries[-1].end),
+                    exposure_seconds=exposure,
+                    slew_degrees=float(first.slewdist),
+                    roll_deg=float(first.roll) if first.roll != -1.0 else None,
+                    status=status,
+                )
+            )
+        for target in requests:
+            for index, window in enumerate(target.visit_windows):
+                obsid = int(target.obsid)
+                if (obsid, index) in taken:
+                    continue
+                if any(r.obsid == obsid and r.visit == index for r in rows):
+                    continue
+                rows.append(
+                    VisitRecord(
+                        obsid=obsid,
+                        name=str(target.name),
+                        category=categories.get_category(obsid).name,
+                        visit=index,
+                        window_start=window.start,
+                        window_deadline=window.deadline,
+                        begin=None,
+                        collection_begin=None,
+                        end=None,
+                        exposure_seconds=0.0,
+                        slew_degrees=0.0,
+                        roll_deg=None,
+                        status="missed",
+                    )
+                )
+        if per_window:
+            rows = self._per_window(rows)
+        return sorted(
+            rows,
+            key=lambda r: (
+                r.begin if r.begin is not None else (r.window_start or 0.0),
+                r.obsid,
+            ),
+        )
+
+    @staticmethod
+    def _per_window(rows: list[VisitRecord]) -> list[VisitRecord]:
+        """One record per visit window: the whole visit taken in it, with
+        the attempts it took, else the last attempt."""
+        by_window: dict[tuple[int, int], list[VisitRecord]] = {}
+        verdicts: list[VisitRecord] = []
+        for record in rows:
+            if record.visit is None or record.window_start is None:
+                verdicts.append(record)
+                continue
+            by_window.setdefault((record.obsid, record.visit), []).append(record)
+        for attempts in by_window.values():
+            taken = [r for r in attempts if r.status == "complete"]
+            verdict = taken[0] if taken else attempts[-1]
+            begun = [r for r in attempts if r.status != "missed"]
+            verdicts.append(replace(verdict, attempts=len(begun)))
+        return verdicts
+
+    def _print_reporting(self) -> None:
+        """Print the category summary and, for targets with visit windows,
+        the visit table."""
+        rows = self.summary_by_category()
+        if rows:
+            print("\n" + "-" * 70)
+            print("SCIENCE BY CATEGORY")
+            print("-" * 70)
+            print(
+                f"{'Category':<18} {'Program':<12} {'Targets':>7} {'Visits':>6} "
+                f"{'Science h':>9} {'Slew h':>6} {'Slew deg':>8} {'Share':>6} {'Alloc':>6}"
+            )
+            print("-" * 70)
+            for row in rows:
+                allocated = (
+                    f"{row.time_share:>6.2f}"
+                    if row.time_share is not None
+                    else "     -"
+                )
+                print(
+                    f"{row.category:<18} {row.program:<12} {row.targets:>7} "
+                    f"{row.visits:>6} {row.science_hours:>9.2f} {row.slew_hours:>6.2f} "
+                    f"{row.slew_degrees:>8.1f} {row.share:>6.2f} {allocated}"
+                )
+        visits = [
+            r for r in self.visit_table(per_window=True) if r.window_start is not None
+        ]
+        if visits:
+            print("\n" + "-" * 70)
+            print("VISITS IN WINDOWS")
+            print("-" * 70)
+            print(
+                f"{'Target':<16} {'Visit':>5} {'Window opens':<18} {'Collects':<18} "
+                f"{'Science s':>9} {'Status':<8} {'Tries':>5}"
+            )
+            print("-" * 70)
+            for record in visits:
+                collects = (
+                    unixtime2date(record.collection_begin)
+                    if record.collection_begin is not None
+                    else "-"
+                )
+                opens = (
+                    unixtime2date(record.window_start) if record.window_start else "-"
+                )
+                print(
+                    f"{record.name[:16]:<16} {(record.visit or 0) + 1:>5} {opens:<18} "
+                    f"{collects:<18} {record.exposure_seconds:>9.0f} {record.status:<8} "
+                    f"{record.attempts:>5}"
+                )
 
     def instrument_mode_hours(self) -> dict[str, dict[str, float]]:
         """Hours each instrument with modes spent in each mode over the run,
@@ -114,6 +433,8 @@ class DITLStats:
                     by_mode.items(), key=lambda item: item[1], reverse=True
                 ):
                     print(f"{instrument:<24} {mode_name:<16} {time_hours:>10.2f}")
+
+        self._print_reporting()
 
         # Observation statistics
         print("\n" + "-" * 70)
